@@ -1520,6 +1520,23 @@ async def test_acompletion_additional_args(mock_acompletion, mock_client):
 
 
 @pytest.mark.asyncio
+async def test_acompletion_with_drop_params(mock_acompletion, mock_client):
+  lite_llm_instance = LiteLlm(
+      model="test_model", llm_client=mock_client, drop_params=True
+  )
+
+  async for _ in lite_llm_instance.generate_content_async(
+      LLM_REQUEST_WITH_FUNCTION_DECLARATION
+  ):
+    pass
+
+  mock_acompletion.assert_called_once()
+
+  _, kwargs = mock_acompletion.call_args
+  assert kwargs["drop_params"] is True
+
+
+@pytest.mark.asyncio
 async def test_completion_additional_args(mock_completion, mock_client):
   lite_llm_instance = LiteLlm(
       # valid args
@@ -1559,6 +1576,28 @@ async def test_completion_additional_args(mock_completion, mock_client):
   assert kwargs["stream"]
   assert "llm_client" not in kwargs
   assert kwargs["api_base"] == "some://url"
+
+
+@pytest.mark.asyncio
+async def test_completion_with_drop_params(mock_completion, mock_client):
+  lite_llm_instance = LiteLlm(
+      model="test_model", llm_client=mock_client, drop_params=True
+  )
+
+  mock_completion.return_value = iter(STREAMING_MODEL_RESPONSE)
+
+  responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+      )
+  ]
+  assert len(responses) == 4
+
+  mock_completion.assert_called_once()
+
+  _, kwargs = mock_completion.call_args
+  assert kwargs["drop_params"] is True
 
 
 @pytest.mark.asyncio

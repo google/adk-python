@@ -866,10 +866,11 @@ class LiteLlm(BaseLlm):
       model: The name of the LiteLlm model.
       **kwargs: Additional arguments to pass to the litellm completion api.
     """
+    drop_params = kwargs.pop("drop_params", None)
     super().__init__(model=model, **kwargs)
     # Warn if using Gemini via LiteLLM
     _warn_gemini_via_litellm(model)
-    self._additional_args = kwargs
+    self._additional_args = dict(kwargs)
     # preventing generation call with llm_client
     # and overriding messages, tools and stream which are managed internally
     self._additional_args.pop("llm_client", None)
@@ -877,6 +878,8 @@ class LiteLlm(BaseLlm):
     self._additional_args.pop("tools", None)
     # public api called from runner determines to stream or not
     self._additional_args.pop("stream", None)
+    if drop_params is not None:
+      self._additional_args["drop_params"] = drop_params
 
   async def generate_content_async(
       self, llm_request: LlmRequest, stream: bool = False
