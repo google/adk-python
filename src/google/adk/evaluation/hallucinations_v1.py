@@ -716,7 +716,7 @@ class HallucinationsV1Evaluator(Evaluator):
       expected_invocations: Optional[list[Invocation]],
   ) -> EvaluationResult:
     # expected_invocations are not required by the metric and if they are not
-    # supplied, we provide an a list of None to rest of the code.
+    # supplied, we provide a list of None to rest of the code.
     expected_invocations = (
         [None] * len(actual_invocations)
         if expected_invocations is None

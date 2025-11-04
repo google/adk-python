@@ -437,7 +437,7 @@ class RemoteA2aAgent(BaseAgent):
           event = convert_a2a_task_to_event(task, self.name, ctx)
         else:
           # This is a streaming update without a message (e.g. status change)
-          # or an partial artifact update. We don't emit an event for these
+          # or a partial artifact update. We don't emit an event for these
           # for now.
           return None
 
