@@ -1057,7 +1057,7 @@ def analyze_contribution(
   # Create a session and run the create model query.
   original_write_mode = settings.write_mode
   try:
-    if settings.write_mode == WriteMode.BLOCKED:
+    if original_write_mode == WriteMode.BLOCKED:
       raise ValueError("analyze_contribution is not allowed in this session.")
     elif original_write_mode != WriteMode.PROTECTED:
       # Running create temp model requires a session. So we set the write mode
