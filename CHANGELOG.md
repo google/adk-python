@@ -380,7 +380,7 @@ with Bigtable for building AI Agent applications(experimental feature) ([a953807
 
 ### Bug Fixes
 
-* A2A RPC URL got overriden by host and port param of adk api server ([52284b1](https://github.com/google/adk-python/commit/52284b1bae561e0d6c93c9d3240a09f210551b97))
+* A2A RPC URL got overridden by host and port param of adk api server ([52284b1](https://github.com/google/adk-python/commit/52284b1bae561e0d6c93c9d3240a09f210551b97))
 * Aclose all async generators to fix OTel tracing context ([a30c63c](https://github.com/google/adk-python/commit/a30c63c5933a770b960b08a6e2f8bf13eece8a22))
 * Use PreciseTimestamp for create and update time in database session service to improve precision ([585141e](https://github.com/google/adk-python/commit/585141e0b7dda20abb024c7164073862c8eea7ae))
 * Ignore AsyncGenerator return types in function declarations ([e2518dc](https://github.com/google/adk-python/commit/e2518dc371fe77d7b30328d8d6f5f864176edeac))
