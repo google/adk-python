@@ -160,7 +160,7 @@ async def _merge_agent_run(
 
 
 class ParallelAgent(BaseAgent):
-  """A shell agent that run its sub-agents in parallel in isolated manner.
+  """A shell agent that runs its sub-agents in parallel in an isolated manner.
 
   This approach is beneficial for scenarios requiring multiple perspectives or
   attempts on a single task, such as:
