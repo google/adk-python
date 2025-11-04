@@ -90,7 +90,7 @@ class JudgeModelOptions(EvalBaseModel):
 
 
 class BaseCriterion(BaseModel):
-  """Base creterion to use for an Eval Metric."""
+  """Base criterion to use for an Eval Metric."""
 
   model_config = ConfigDict(
       alias_generator=alias_generators.to_camel,
