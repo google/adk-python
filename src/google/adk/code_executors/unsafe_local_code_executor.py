@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from contextlib import redirect_stdout
 import io
+import logging
 import re
 from typing import Any
 
@@ -26,6 +27,8 @@ from ..agents.invocation_context import InvocationContext
 from .base_code_executor import BaseCodeExecutor
 from .code_execution_utils import CodeExecutionInput
 from .code_execution_utils import CodeExecutionResult
+
+logger = logging.getLogger('google_adk.' + __name__)
 
 
 def _prepare_globals(code: str, globals_: dict[str, Any]) -> None:
@@ -60,6 +63,7 @@ class UnsafeLocalCodeExecutor(BaseCodeExecutor):
       invocation_context: InvocationContext,
       code_execution_input: CodeExecutionInput,
   ) -> CodeExecutionResult:
+    logger.debug('Executing code:\n```\n%s\n```', code_execution_input.code)
     # Execute the code.
     output = ''
     error = ''

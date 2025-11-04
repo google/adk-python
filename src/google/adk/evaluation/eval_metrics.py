@@ -48,6 +48,14 @@ class PrebuiltMetrics(Enum):
 
   FINAL_RESPONSE_MATCH_V2 = "final_response_match_v2"
 
+  RUBRIC_BASED_FINAL_RESPONSE_QUALITY_V1 = (
+      "rubric_based_final_response_quality_v1"
+  )
+
+  HALLUCINATIONS_V1 = "hallucinations_v1"
+
+  RUBRIC_BASED_TOOL_USE_QUALITY_V1 = "rubric_based_tool_use_quality_v1"
+
 
 MetricName: TypeAlias = Union[str, PrebuiltMetrics]
 Threshold: TypeAlias = float
@@ -124,6 +132,24 @@ class RubricsBasedCriterion(BaseCriterion):
   )
 
 
+class HallucinationsCriterion(BaseCriterion):
+  """Criterion to use when evaluating agents response for hallucinations."""
+
+  judge_model_options: JudgeModelOptions = Field(
+      default_factory=JudgeModelOptions,
+      description="Options for the judge model.",
+  )
+
+  evaluate_intermediate_nl_responses: bool = Field(
+      default=False,
+      description=(
+          "Whether any intermediate NL responses should be evaluated"
+          " for hallucinations or not. By default, the metric only evaluates"
+          " final response from the Agent for hallucinations."
+      ),
+  )
+
+
 class EvalMetric(EvalBaseModel):
   """A metric used to evaluate a particular aspect of an eval case."""
 
@@ -190,15 +216,16 @@ class EvalMetricResultPerInvocation(EvalBaseModel):
       )
   )
 
-  expected_invocation: Invocation = Field(
+  expected_invocation: Optional[Invocation] = Field(
+      default=None,
       description=(
           "The expected invocation, usually the reference or golden invocation."
-      )
+      ),
   )
 
   eval_metric_results: list[EvalMetricResult] = Field(
       default=[],
-      description="Eval resutls for each applicable metric.",
+      description="Eval results for each applicable metric.",
   )
 
 

@@ -19,10 +19,17 @@ from pathlib import Path
 import shutil
 from typing import Any
 from typing import Dict
+from typing import List
+from typing import Optional
+
+from google.adk.tools.tool_context import ToolContext
+
+from ..utils.resolve_root_directory import resolve_file_path
 
 
 async def write_files(
     files: Dict[str, str],
+    tool_context: ToolContext,
     create_backup: bool = False,
     create_directories: bool = True,
 ) -> Dict[str, Any]:
@@ -50,6 +57,15 @@ async def write_files(
       - errors: list of general error messages
   """
   try:
+    # Get session state for path resolution
+    session_state = tool_context._invocation_context.session.state
+    project_root: Optional[Path] = None
+    if session_state is not None:
+      try:
+        project_root = resolve_file_path(".", session_state).resolve()
+      except Exception:
+        project_root = None
+
     result = {
         "success": True,
         "files": {},
@@ -59,13 +75,16 @@ async def write_files(
     }
 
     for file_path, content in files.items():
-      file_path_obj = Path(file_path).resolve()
+      # Resolve file path using session state
+      resolved_path = resolve_file_path(file_path, session_state)
+      file_path_obj = resolved_path.resolve()
       file_info = {
           "file_size": 0,
           "existed_before": False,
           "backup_created": False,
           "backup_path": None,
           "error": None,
+          "package_inits_created": [],
       }
 
       try:
@@ -75,6 +94,11 @@ async def write_files(
         # Create parent directories if needed
         if create_directories:
           file_path_obj.parent.mkdir(parents=True, exist_ok=True)
+
+        if file_path_obj.suffix == ".py" and project_root is not None:
+          created_inits = _ensure_package_inits(file_path_obj, project_root)
+          if created_inits:
+            file_info["package_inits_created"] = created_inits
 
         # Create backup if requested and file exists
         if create_backup and file_info["existed_before"]:
@@ -120,3 +144,38 @@ async def write_files(
         "total_files": len(files) if files else 0,
         "errors": [f"Write operation failed: {str(e)}"],
     }
+
+
+def _ensure_package_inits(
+    file_path: Path,
+    project_root: Path,
+) -> List[str]:
+  """Ensure __init__.py files exist for importable subpackages (not project root)."""
+  created_inits: List[str] = []
+  try:
+    target_parent = file_path.parent.resolve()
+    root_path = project_root.resolve()
+    relative_parent = target_parent.relative_to(root_path)
+  except Exception:
+    return created_inits
+
+  def _touch_init(directory: Path) -> None:
+    init_file = directory / "__init__.py"
+    if not init_file.exists():
+      init_file.touch()
+      created_inits.append(str(init_file))
+
+  root_path.mkdir(parents=True, exist_ok=True)
+
+  if not relative_parent.parts:
+    return created_inits
+
+  current_path = root_path
+  for part in relative_parent.parts:
+    if part in (".", ""):
+      continue
+    current_path = current_path / part
+    current_path.mkdir(parents=True, exist_ok=True)
+    _touch_init(current_path)
+
+  return created_inits

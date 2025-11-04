@@ -13,6 +13,8 @@
 # limitations under the License.
 
 from google.adk import Agent
+from google.adk.apps import App
+from google.adk.apps import ResumabilityConfig
 from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.tool_confirmation import ToolConfirmation
 from google.adk.tools.tool_context import ToolContext
@@ -87,4 +89,13 @@ root_agent = Agent(
         request_time_off,
     ],
     generate_content_config=types.GenerateContentConfig(temperature=0.1),
+)
+
+app = App(
+    name='human_tool_confirmation',
+    root_agent=root_agent,
+    # Set the resumability config to enable resumability.
+    resumability_config=ResumabilityConfig(
+        is_resumable=True,
+    ),
 )

@@ -45,7 +45,7 @@ if IS_INTERACTIVE:
 
 
 def list_open_issues(issue_count: int) -> dict[str, Any]:
-  """List most recent `issue_count` numer of open issues in the repo.
+  """List most recent `issue_count` number of open issues in the repo.
 
   Args:
     issue_count: number of issues to return
@@ -75,7 +75,7 @@ def get_issue(issue_number: int) -> dict[str, Any]:
   """Get the details of the specified issue number.
 
   Args:
-    issue_number: issue number of the Github issue.
+    issue_number: issue number of the GitHub issue.
 
   Returns:
     The status of this request, with the issue details when successful.
@@ -92,7 +92,7 @@ def add_comment_to_issue(issue_number: int, comment: str) -> dict[str, any]:
   """Add the specified comment to the given issue number.
 
   Args:
-    issue_number: issue number of the Github issue
+    issue_number: issue number of the GitHub issue
     comment: comment to add
 
   Returns:
@@ -116,7 +116,7 @@ def list_comments_on_issue(issue_number: int) -> dict[str, any]:
   """List all comments on the given issue number.
 
   Args:
-    issue_number: issue number of the Github issue
+    issue_number: issue number of the GitHub issue
 
   Returns:
     The the status of this request, with the list of comments when successful.
