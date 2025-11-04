@@ -132,7 +132,7 @@ class MajorityVotePerInvocationResultsAggregator(
          Weather Agent: No, it will be moderately warm as predicted temperature
          for Seattle, WA tomorrow is 88F.
 
-      Rubric: Agent's reponse was concise and to the point.
+      Rubric: Agent's response was concise and to the point.
 
       We will sample the AutoRater 5 times, and the AutoRater responds
       with (skipping the rationale field for now):
