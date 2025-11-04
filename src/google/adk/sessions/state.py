@@ -12,8 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Any
+from __future__ import annotations
 
+from typing import Any
 
 class State:
   """A state dict that maintains the current value and the pending-commit delta."""
