@@ -209,7 +209,7 @@ class LocalEvalService(BaseEvalService):
 
     # We also keep track of the overall score for a metric, derived from all
     # invocation. For example, if we were keeping track the metric that compares
-    # how well is the final resposne as compared to a golden answer, then each
+    # how well is the final response as compared to a golden answer, then each
     # invocation will have the value of this metric. We will also have an
     # overall score using aggregation strategy across all invocations. This
     # would be the score for the eval case.
@@ -267,7 +267,7 @@ class LocalEvalService(BaseEvalService):
             overall_eval_status=EvalStatus.NOT_EVALUATED
         )
 
-      # Track overall scrore across all invocations.
+      # Track overall score across all invocations.
       eval_metric_result_details = EvalMetricResultDetails(
           rubric_scores=evaluation_result.overall_rubric_scores
       )
@@ -366,8 +366,8 @@ class LocalEvalService(BaseEvalService):
       self, overall_eval_metric_results: list[EvalMetricResult]
   ) -> EvalStatus:
     final_eval_status = EvalStatus.NOT_EVALUATED
-    # Go over the all the eval statuses and mark the final eval status as
-    # passed if all of them pass, otherwise mark the final eval status to
+    # Go over all the eval statuses and mark the final eval status as
+    # passed if all of them pass; otherwise, mark the final eval status to
     # failed.
     for overall_eval_metric_result in overall_eval_metric_results:
       overall_eval_status = overall_eval_metric_result.eval_status

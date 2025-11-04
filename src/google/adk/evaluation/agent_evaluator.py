@@ -49,7 +49,7 @@ from .eval_set import EvalSet
 from .eval_sets_manager import EvalSetsManager
 from .evaluator import EvalStatus
 from .in_memory_eval_sets_manager import InMemoryEvalSetsManager
-from .local_eval_sets_manager import convert_eval_set_to_pydanctic_schema
+from .local_eval_sets_manager import convert_eval_set_to_pydantic_schema
 from .user_simulator_provider import UserSimulatorProvider
 
 logger = logging.getLogger("google_adk." + __name__)
@@ -121,7 +121,7 @@ class AgentEvaluator:
         the agent. There is convention in place here, where the code is going to
         look for 'root_agent' or `get_agent_async` in the loaded module.
       eval_set: The eval set.
-      criteria: Evauation criterias, a dictionary of metric names to their
+      criteria: Evaluation criteria, a dictionary of metric names to their
         respective thresholds. This field is deprecated.
       eval_config: The evauation config.
       num_runs: Number of times all entries in the eval dataset should be
@@ -283,7 +283,7 @@ class AgentEvaluator:
       try:
         eval_set = EvalSet.model_validate_json(content)
         assert len(initial_session) == 0, (
-            "Intial session should be specified as a part of EvalSet file."
+            "Initial session should be specified as a part of EvalSet file."
             " Explicit initial session is only needed, when specifying data in"
             " the older schema."
         )
@@ -315,7 +315,7 @@ class AgentEvaluator:
         "data": data,
         "initial_session": initial_session,
     }
-    return convert_eval_set_to_pydanctic_schema(
+    return convert_eval_set_to_pydantic_schema(
         eval_set_id=str(uuid.uuid4()), eval_set_in_json_format=[eval_data]
     )
 

@@ -875,7 +875,7 @@ def test_execute_sql_non_select_stmt_write_protected_persistent_target(
 ):
   """Test execute_sql tool for non-SELECT query when writes are protected.
 
-  This is a special case when the destination table is a persistent/permananent
+  This is a special case when the destination table is a persistent/permanent
   one and the protected write is enabled. In this case the operation should
   fail.
   """

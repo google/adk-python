@@ -50,7 +50,7 @@ if IS_INTERACTIVE:
 
 
 def list_unlabeled_issues(issue_count: int) -> dict[str, Any]:
-  """List most recent `issue_count` numer of unlabeled issues in the repo.
+  """List most recent `issue_count` number of unlabeled issues in the repo.
 
   Args:
     issue_count: number of issues to return
@@ -87,7 +87,7 @@ def add_label_and_owner_to_issue(
   """Add the specified label and owner to the given issue number.
 
   Args:
-    issue_number: issue number of the Github issue.
+    issue_number: issue number of the GitHub issue.
     label: label to assign
 
   Returns:
@@ -143,7 +143,7 @@ def change_issue_type(issue_number: int, issue_type: str) -> dict[str, Any]:
   """Change the issue type of the given issue number.
 
   Args:
-    issue_number: issue number of the Github issue, in string foramt.
+    issue_number: issue number of the GitHub issue, in string format.
     issue_type: issue type to assign
 
   Returns:
@@ -168,7 +168,7 @@ root_agent = Agent(
     name="adk_triaging_assistant",
     description="Triage ADK issues.",
     instruction=f"""
-      You are a triaging bot for the Github {REPO} repo with the owner {OWNER}. You will help get issues, and recommend a label.
+      You are a triaging bot for the GitHub {REPO} repo with the owner {OWNER}. You will help get issues, and recommend a label.
       IMPORTANT: {APPROVAL_INSTRUCTION}
 
       Here are the rules for labeling:
@@ -177,7 +177,7 @@ root_agent = Agent(
       - If it's about UI/web, label it with "web"
       - If the user is asking about a question, label it with "question"
       - If it's related to tools, label it with "tools"
-      - If it's about agent evalaution, then label it with "eval".
+      - If it's about agent evaluation, then label it with "eval".
       - If it's about streaming/live, label it with "live".
       - If it's about model support(non-Gemini, like Litellm, Ollama, OpenAI models), label it with "models".
       - If it's about tracing, label it with "tracing".

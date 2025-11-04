@@ -30,7 +30,7 @@ from google.adk.utils.feature_decorator import experimental
 from typing_extensions import override
 
 from .base_credential_exchanger import BaseCredentialExchanger
-from .base_credential_exchanger import CredentialExchangError
+from .base_credential_exchanger import CredentialExchangeError
 
 try:
   from authlib.integrations.requests_client import OAuth2Session
@@ -63,10 +63,10 @@ class OAuth2CredentialExchanger(BaseCredentialExchanger):
         The exchanged credential with access token.
 
     Raises:
-        CredentialExchangError: If auth_scheme is missing.
+        CredentialExchangeError: If auth_scheme is missing.
     """
     if not auth_scheme:
-      raise CredentialExchangError(
+      raise CredentialExchangeError(
           "auth_scheme is required for OAuth2 credential exchange"
       )
 

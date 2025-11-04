@@ -362,7 +362,7 @@ def _build_llm_request_for_trace(llm_request: LlmRequest) -> dict[str, Any]:
   Returns:
     A dictionary representation of the LLM request.
   """
-  # Some fields in LlmRequest are function pointers and can not be serialized.
+  # Some fields in LlmRequest are function pointers and cannot be serialized.
   result = {
       'model': llm_request.model,
       'config': llm_request.config.model_dump(
