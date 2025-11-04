@@ -16,25 +16,27 @@
 import os
 
 from google.adk.agents.llm_agent import LlmAgent
+from google.adk.agents.mcp_instruction_provider import McpInstructionProvider
 from google.adk.tools.mcp_tool.mcp_session_manager import SseConnectionParams
 from google.adk.tools.mcp_tool.mcp_toolset import MCPToolset
 
 _allowed_path = os.path.dirname(os.path.abspath(__file__))
 
+connection_params = SseConnectionParams(
+    url='http://localhost:3000/sse',
+    headers={'Accept': 'text/event-stream'},
+)
+
 root_agent = LlmAgent(
     model='gemini-2.0-flash',
     name='enterprise_assistant',
-    instruction=f"""\
-Help user accessing their file systems.
-
-Allowed directory: {_allowed_path}
-    """,
+    instruction=McpInstructionProvider(
+        connection_params=connection_params,
+        prompt_name='file_system_prompt',
+    ),
     tools=[
         MCPToolset(
-            connection_params=SseConnectionParams(
-                url='http://localhost:3000/sse',
-                headers={'Accept': 'text/event-stream'},
-            ),
+            connection_params=connection_params,
             # don't want agent to do write operation
             # you can also do below
             # tool_filter=lambda tool, ctx=None: tool.name
