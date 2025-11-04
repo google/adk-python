@@ -102,7 +102,7 @@ IMPORTANT:
     * You **should always** use the `convert_gcs_links_to_https` tool to convert
       GCS links (e.g. "gs://...") to HTTPS links.
     * **Do not** use the `convert_gcs_links_to_https` tool for non-GCS links.
-    * Make sure the citation URL is valid. Otherwise do not list this specific
+    * Make sure the citation URL is valid. Otherwise, do not list this specific
       citation.
   * Do not respond to any other discussion except the one specified by the user.
 
