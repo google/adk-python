@@ -75,7 +75,7 @@ class SaveFilesAsArtifactsPlugin(BasePlugin):
         continue
 
       try:
-        # Use display_name if available, otherwise generate a filename
+        # Use display_name if available; otherwise, generate a filename
         file_name = part.inline_data.display_name
         if not file_name:
           file_name = f'artifact_{invocation_context.invocation_id}_{i}'
