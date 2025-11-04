@@ -90,6 +90,7 @@ LLM_REQUEST_WITH_FUNCTION_DECLARATION = LlmRequest(
 
 STREAMING_MODEL_RESPONSE = [
     ModelResponse(
+        model="test_model",
         choices=[
             StreamingChoices(
                 finish_reason=None,
@@ -98,9 +99,10 @@ STREAMING_MODEL_RESPONSE = [
                     content="zero, ",
                 ),
             )
-        ]
+        ],
     ),
     ModelResponse(
+        model="test_model",
         choices=[
             StreamingChoices(
                 finish_reason=None,
@@ -109,9 +111,10 @@ STREAMING_MODEL_RESPONSE = [
                     content="one, ",
                 ),
             )
-        ]
+        ],
     ),
     ModelResponse(
+        model="test_model",
         choices=[
             StreamingChoices(
                 finish_reason=None,
@@ -120,9 +123,10 @@ STREAMING_MODEL_RESPONSE = [
                     content="two:",
                 ),
             )
-        ]
+        ],
     ),
     ModelResponse(
+        model="test_model",
         choices=[
             StreamingChoices(
                 finish_reason=None,
@@ -141,9 +145,10 @@ STREAMING_MODEL_RESPONSE = [
                     ],
                 ),
             )
-        ]
+        ],
     ),
     ModelResponse(
+        model="test_model",
         choices=[
             StreamingChoices(
                 finish_reason=None,
@@ -162,14 +167,15 @@ STREAMING_MODEL_RESPONSE = [
                     ],
                 ),
             )
-        ]
+        ],
     ),
     ModelResponse(
+        model="test_model",
         choices=[
             StreamingChoices(
                 finish_reason="tool_use",
             )
-        ]
+        ],
     ),
 ]
 
@@ -342,6 +348,7 @@ STREAM_WITH_EMPTY_CHUNK = [
 @pytest.fixture
 def mock_response():
   return ModelResponse(
+      model="test_model",
       choices=[
           Choices(
               message=ChatCompletionAssistantMessage(
@@ -359,7 +366,7 @@ def mock_response():
                   ],
               )
           )
-      ]
+      ],
   )
 
 
@@ -529,6 +536,7 @@ async def test_generate_content_async(mock_acompletion, lite_llm_instance):
         "test_arg": "test_value"
     }
     assert response.content.parts[1].function_call.id == "test_tool_call_id"
+    assert response.model_version == "test_model"
 
   mock_acompletion.assert_called_once()
 
@@ -1262,6 +1270,19 @@ def test_message_to_generate_content_response_tool_call():
   assert response.content.parts[0].function_call.id == "test_tool_call_id"
 
 
+def test_message_to_generate_content_response_with_model():
+  message = ChatCompletionAssistantMessage(
+      role="assistant",
+      content="Test response",
+  )
+  response = _message_to_generate_content_response(
+      message, model_version="gemini-2.5-pro"
+  )
+  assert response.content.role == "model"
+  assert response.content.parts[0].text == "Test response"
+  assert response.model_version == "gemini-2.5-pro"
+
+
 def test_get_content_text():
   parts = [types.Part.from_text(text="Test text")]
   content = _get_content(parts)
@@ -1556,16 +1577,20 @@ async def test_generate_content_async_stream(
   assert len(responses) == 4
   assert responses[0].content.role == "model"
   assert responses[0].content.parts[0].text == "zero, "
+  assert responses[0].model_version == "test_model"
   assert responses[1].content.role == "model"
   assert responses[1].content.parts[0].text == "one, "
+  assert responses[1].model_version == "test_model"
   assert responses[2].content.role == "model"
   assert responses[2].content.parts[0].text == "two:"
+  assert responses[2].model_version == "test_model"
   assert responses[3].content.role == "model"
   assert responses[3].content.parts[-1].function_call.name == "test_function"
   assert responses[3].content.parts[-1].function_call.args == {
       "test_arg": "test_value"
   }
   assert responses[3].content.parts[-1].function_call.id == "test_tool_call_id"
+  assert responses[3].model_version == "test_model"
   mock_completion.assert_called_once()
 
   _, kwargs = mock_completion.call_args

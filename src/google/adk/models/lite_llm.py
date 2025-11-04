@@ -558,7 +558,9 @@ def _model_response_to_generate_content_response(
   if not message:
     raise ValueError("No message in response")
 
-  llm_response = _message_to_generate_content_response(message)
+  llm_response = _message_to_generate_content_response(
+      message, model_version=response.model
+  )
   if finish_reason:
     # If LiteLLM already provides a FinishReason enum (e.g., for Gemini), use
     # it directly. Otherwise, map the finish_reason string to the enum.
@@ -579,13 +581,14 @@ def _model_response_to_generate_content_response(
 
 
 def _message_to_generate_content_response(
-    message: Message, is_partial: bool = False
+    message: Message, *, is_partial: bool = False, model_version: str = None
 ) -> LlmResponse:
   """Converts a litellm message to LlmResponse.
 
   Args:
     message: The message to convert.
     is_partial: Whether the message is partial.
+    model_version: The model version used to generate the response.
 
   Returns:
     The LlmResponse.
@@ -606,7 +609,9 @@ def _message_to_generate_content_response(
         parts.append(part)
 
   return LlmResponse(
-      content=types.Content(role="model", parts=parts), partial=is_partial
+      content=types.Content(role="model", parts=parts),
+      partial=is_partial,
+      model_version=model_version,
   )
 
 
@@ -950,6 +955,7 @@ class LiteLlm(BaseLlm):
                     content=chunk.text,
                 ),
                 is_partial=True,
+                model_version=part.model,
             )
           elif isinstance(chunk, UsageMetadataChunk):
             usage_metadata = types.GenerateContentResponseUsageMetadata(
@@ -981,14 +987,16 @@ class LiteLlm(BaseLlm):
                         role="assistant",
                         content=text,
                         tool_calls=tool_calls,
-                    )
+                    ),
+                    model_version=part.model,
                 )
             )
             text = ""
             function_calls.clear()
           elif finish_reason == "stop" and text:
             aggregated_llm_response = _message_to_generate_content_response(
-                ChatCompletionAssistantMessage(role="assistant", content=text)
+                ChatCompletionAssistantMessage(role="assistant", content=text),
+                model_version=part.model,
             )
             text = ""
 
