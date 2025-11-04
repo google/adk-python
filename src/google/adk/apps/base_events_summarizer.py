@@ -42,6 +42,6 @@ class BaseEventsSummarizer(abc.ABC):
       events: Events to compact.
 
     Returns:
-      The new compacted event, or None if no compaction happended.
+      The new compacted event, or None if no compaction happened.
     """
     raise NotImplementedError()
