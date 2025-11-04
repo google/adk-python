@@ -223,7 +223,7 @@ class MeanInvocationResultsSummarizer(InvocationResultsSummarizer):
     assessed for each invocation. But, we do want to summarize and make a
     statement on how the eval case as a whole performed on the metric.
 
-    This method helps us aggreate rubric scores across invocation.
+    This method helps us aggregate rubric scores across invocation.
 
     This method calculates the mean score of a rubric across several
     invocations.
