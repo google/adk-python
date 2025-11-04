@@ -122,7 +122,7 @@ class MajorityVotePerInvocationResultsAggregator(
     """Returns a combined result for the invocation using majority vote.
 
     This method takes all those samples for a single invocation and combines
-    them to genreate one single result for the invocation.
+    them to generate one single result for the invocation.
 
     This method specifically uses majority vote to aggregate scores for a
     rubric. Take following Invocation and Rubric for example:
