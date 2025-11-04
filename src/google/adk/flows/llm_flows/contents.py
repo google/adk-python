@@ -251,7 +251,7 @@ def _process_compaction_events(events: list[Event]) -> list[Event]:
   # compaction_1(event_1, event_2, timestamp=3), event_3(timestamp=4),
   # compaction_2(event_2, event_3, timestamp=5), event_4(timestamp=6)]
   # for each compaction event, it only covers the events at most between the
-  # current compaction and the previous compaction. So during copmaction, we
+  # current compaction and the previous compaction. So during compaction, we
   # don't have to go across compaction boundaries.
   # Compaction events are always strictly in order based on event timestamp.
   events_to_process = []
