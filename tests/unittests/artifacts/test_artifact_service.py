@@ -12,17 +12,24 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# pylint: disable=missing-class-docstring,missing-function-docstring
+
 """Tests for the artifact service."""
 
 from datetime import datetime
 import enum
+import json
+from pathlib import Path
 from typing import Any
 from typing import Optional
 from typing import Union
 from unittest import mock
 from unittest.mock import patch
+from urllib.parse import unquote
+from urllib.parse import urlparse
 
 from google.adk.artifacts.base_artifact_service import ArtifactVersion
+from google.adk.artifacts.file_artifact_service import FileArtifactService
 from google.adk.artifacts.gcs_artifact_service import GcsArtifactService
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.genai import types
@@ -35,6 +42,7 @@ FIXED_DATETIME = datetime(2025, 1, 1, 12, 0, 0)
 
 
 class ArtifactServiceType(Enum):
+  FILE = "FILE"
   IN_MEMORY = "IN_MEMORY"
   GCS = "GCS"
 
@@ -159,22 +167,34 @@ def mock_gcs_artifact_service():
     return GcsArtifactService(bucket_name="test_bucket")
 
 
-def get_artifact_service(
-    service_type: ArtifactServiceType = ArtifactServiceType.IN_MEMORY,
-):
-  """Creates an artifact service for testing."""
-  if service_type == ArtifactServiceType.GCS:
-    return mock_gcs_artifact_service()
-  return InMemoryArtifactService()
+@pytest.fixture
+def artifact_service_factory(tmp_path: Path):
+  """Provides an artifact service constructor bound to the test tmp path."""
+
+  def factory(
+      service_type: ArtifactServiceType = ArtifactServiceType.IN_MEMORY,
+  ):
+    if service_type == ArtifactServiceType.GCS:
+      return mock_gcs_artifact_service()
+    if service_type == ArtifactServiceType.FILE:
+      return FileArtifactService(root_dir=tmp_path / "artifacts")
+    return InMemoryArtifactService()
+
+  return factory
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "service_type", [ArtifactServiceType.IN_MEMORY, ArtifactServiceType.GCS]
+    "service_type",
+    [
+        ArtifactServiceType.IN_MEMORY,
+        ArtifactServiceType.GCS,
+        ArtifactServiceType.FILE,
+    ],
 )
-async def test_load_empty(service_type):
+async def test_load_empty(service_type, artifact_service_factory):
   """Tests loading an artifact when none exists."""
-  artifact_service = get_artifact_service(service_type)
+  artifact_service = artifact_service_factory(service_type)
   assert not await artifact_service.load_artifact(
       app_name="test_app",
       user_id="test_user",
@@ -185,11 +205,16 @@ async def test_load_empty(service_type):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "service_type", [ArtifactServiceType.IN_MEMORY, ArtifactServiceType.GCS]
+    "service_type",
+    [
+        ArtifactServiceType.IN_MEMORY,
+        ArtifactServiceType.GCS,
+        ArtifactServiceType.FILE,
+    ],
 )
-async def test_save_load_delete(service_type):
+async def test_save_load_delete(service_type, artifact_service_factory):
   """Tests saving, loading, and deleting an artifact."""
-  artifact_service = get_artifact_service(service_type)
+  artifact_service = artifact_service_factory(service_type)
   artifact = types.Part.from_bytes(data=b"test_data", mime_type="text/plain")
   app_name = "app0"
   user_id = "user0"
@@ -238,11 +263,16 @@ async def test_save_load_delete(service_type):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "service_type", [ArtifactServiceType.IN_MEMORY, ArtifactServiceType.GCS]
+    "service_type",
+    [
+        ArtifactServiceType.IN_MEMORY,
+        ArtifactServiceType.GCS,
+        ArtifactServiceType.FILE,
+    ],
 )
-async def test_list_keys(service_type):
+async def test_list_keys(service_type, artifact_service_factory):
   """Tests listing keys in the artifact service."""
-  artifact_service = get_artifact_service(service_type)
+  artifact_service = artifact_service_factory(service_type)
   artifact = types.Part.from_bytes(data=b"test_data", mime_type="text/plain")
   app_name = "app0"
   user_id = "user0"
@@ -269,11 +299,16 @@ async def test_list_keys(service_type):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "service_type", [ArtifactServiceType.IN_MEMORY, ArtifactServiceType.GCS]
+    "service_type",
+    [
+        ArtifactServiceType.IN_MEMORY,
+        ArtifactServiceType.GCS,
+        ArtifactServiceType.FILE,
+    ],
 )
-async def test_list_versions(service_type):
+async def test_list_versions(service_type, artifact_service_factory):
   """Tests listing versions of an artifact."""
-  artifact_service = get_artifact_service(service_type)
+  artifact_service = artifact_service_factory(service_type)
 
   app_name = "app0"
   user_id = "user0"
@@ -308,11 +343,18 @@ async def test_list_versions(service_type):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "service_type", [ArtifactServiceType.IN_MEMORY, ArtifactServiceType.GCS]
+    "service_type",
+    [
+        ArtifactServiceType.IN_MEMORY,
+        ArtifactServiceType.GCS,
+        ArtifactServiceType.FILE,
+    ],
 )
-async def test_list_keys_preserves_user_prefix(service_type):
+async def test_list_keys_preserves_user_prefix(
+    service_type, artifact_service_factory
+):
   """Tests that list_artifact_keys preserves 'user:' prefix in returned names."""
-  artifact_service = get_artifact_service(service_type)
+  artifact_service = artifact_service_factory(service_type)
   artifact = types.Part.from_bytes(data=b"test_data", mime_type="text/plain")
   app_name = "app0"
   user_id = "user0"
@@ -358,9 +400,11 @@ async def test_list_keys_preserves_user_prefix(service_type):
 @pytest.mark.parametrize(
     "service_type", [ArtifactServiceType.IN_MEMORY, ArtifactServiceType.GCS]
 )
-async def test_list_artifact_versions_and_get_artifact_version(service_type):
+async def test_list_artifact_versions_and_get_artifact_version(
+    service_type, artifact_service_factory
+):
   """Tests listing artifact versions and getting a specific version."""
-  artifact_service = get_artifact_service(service_type)
+  artifact_service = artifact_service_factory(service_type)
   app_name = "app0"
   user_id = "user0"
   session_id = "123"
@@ -443,9 +487,11 @@ async def test_list_artifact_versions_and_get_artifact_version(service_type):
 @pytest.mark.parametrize(
     "service_type", [ArtifactServiceType.IN_MEMORY, ArtifactServiceType.GCS]
 )
-async def test_list_artifact_versions_with_user_prefix(service_type):
+async def test_list_artifact_versions_with_user_prefix(
+    service_type, artifact_service_factory
+):
   """Tests listing artifact versions with user prefix."""
-  artifact_service = get_artifact_service(service_type)
+  artifact_service = artifact_service_factory(service_type)
   app_name = "app0"
   user_id = "user0"
   session_id = "123"
@@ -504,9 +550,11 @@ async def test_list_artifact_versions_with_user_prefix(service_type):
 @pytest.mark.parametrize(
     "service_type", [ArtifactServiceType.IN_MEMORY, ArtifactServiceType.GCS]
 )
-async def test_get_artifact_version_artifact_does_not_exist(service_type):
+async def test_get_artifact_version_artifact_does_not_exist(
+    service_type, artifact_service_factory
+):
   """Tests getting an artifact version when artifact does not exist."""
-  artifact_service = get_artifact_service(service_type)
+  artifact_service = artifact_service_factory(service_type)
   assert not await artifact_service.get_artifact_version(
       app_name="test_app",
       user_id="test_user",
@@ -519,9 +567,11 @@ async def test_get_artifact_version_artifact_does_not_exist(service_type):
 @pytest.mark.parametrize(
     "service_type", [ArtifactServiceType.IN_MEMORY, ArtifactServiceType.GCS]
 )
-async def test_get_artifact_version_out_of_index(service_type):
+async def test_get_artifact_version_out_of_index(
+    service_type, artifact_service_factory
+):
   """Tests loading an artifact with an out-of-index version."""
-  artifact_service = get_artifact_service(service_type)
+  artifact_service = artifact_service_factory(service_type)
   app_name = "app0"
   user_id = "user0"
   session_id = "123"
@@ -544,3 +594,178 @@ async def test_get_artifact_version_out_of_index(service_type):
       filename=filename,
       version=3,
   )
+
+
+@pytest.mark.asyncio
+async def test_file_metadata_camelcase(tmp_path, artifact_service_factory):
+  """Ensures FileArtifactService writes camelCase metadata without newlines."""
+  artifact_service = artifact_service_factory(ArtifactServiceType.FILE)
+  artifact = types.Part.from_bytes(
+      data=b"binary-content", mime_type="application/octet-stream"
+  )
+  await artifact_service.save_artifact(
+      app_name="myapp",
+      user_id="user123",
+      session_id="sess789",
+      filename="docs/report.txt",
+      artifact=artifact,
+  )
+
+  metadata_path = (
+      tmp_path
+      / "artifacts"
+      / "apps"
+      / "myapp"
+      / "users"
+      / "user123"
+      / "sessions"
+      / "sess789"
+      / "artifacts"
+      / "docs"
+      / "report.txt"
+      / "versions"
+      / "0"
+      / "metadata.json"
+  )
+  raw_metadata = metadata_path.read_text(encoding="utf-8")
+  assert "\n" not in raw_metadata
+
+  metadata = json.loads(raw_metadata)
+  payload_path = (metadata_path.parent / "report.txt").resolve()
+  expected_canonical_uri = payload_path.as_uri()
+  create_time = metadata.pop("createTime", None)
+  assert create_time is not None
+  assert metadata == {
+      "fileName": "docs/report.txt",
+      "mimeType": "application/octet-stream",
+      "canonicalUri": expected_canonical_uri,
+      "version": 0,
+      "customMetadata": {},
+  }
+  parsed_canonical = urlparse(metadata["canonicalUri"])
+  canonical_path = Path(unquote(parsed_canonical.path))
+  assert canonical_path.name == "report.txt"
+  assert canonical_path.read_bytes() == b"binary-content"
+
+
+@pytest.mark.asyncio
+async def test_file_list_artifact_versions(tmp_path, artifact_service_factory):
+  """FileArtifactService exposes canonical URIs and metadata for each version."""
+  artifact_service = artifact_service_factory(ArtifactServiceType.FILE)
+  artifact = types.Part.from_bytes(
+      data=b"binary-content", mime_type="application/octet-stream"
+  )
+  custom_metadata = {"origin": "unit-test"}
+  await artifact_service.save_artifact(
+      app_name="myapp",
+      user_id="user123",
+      session_id="sess789",
+      filename="docs/report.txt",
+      artifact=artifact,
+      custom_metadata=custom_metadata,
+  )
+
+  versions = await artifact_service.list_artifact_versions(
+      app_name="myapp",
+      user_id="user123",
+      session_id="sess789",
+      filename="docs/report.txt",
+  )
+  assert len(versions) == 1
+  version_meta = versions[0]
+  assert version_meta.version == 0
+  version_payload_path = (
+      tmp_path
+      / "artifacts"
+      / "apps"
+      / "myapp"
+      / "users"
+      / "user123"
+      / "sessions"
+      / "sess789"
+      / "artifacts"
+      / "docs"
+      / "report.txt"
+      / "versions"
+      / "0"
+      / "report.txt"
+  ).resolve()
+  assert version_meta.canonical_uri == version_payload_path.as_uri()
+  assert version_meta.custom_metadata == custom_metadata
+  parsed_version_uri = urlparse(version_meta.canonical_uri)
+  version_uri_path = Path(unquote(parsed_version_uri.path))
+  assert version_uri_path.read_bytes() == b"binary-content"
+
+  fetched = await artifact_service.get_artifact_version(
+      app_name="myapp",
+      user_id="user123",
+      session_id="sess789",
+      filename="docs/report.txt",
+      version=0,
+  )
+  assert fetched is not None
+  assert fetched.version == version_meta.version
+  assert fetched.canonical_uri == version_meta.canonical_uri
+  assert fetched.custom_metadata == version_meta.custom_metadata
+
+  latest = await artifact_service.get_artifact_version(
+      app_name="myapp",
+      user_id="user123",
+      session_id="sess789",
+      filename="docs/report.txt",
+  )
+  assert latest is not None
+  assert latest.version == version_meta.version
+  assert latest.canonical_uri == version_meta.canonical_uri
+  assert latest.custom_metadata == version_meta.custom_metadata
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("filename", "session_id"),
+    [
+        ("../escape.txt", "sess123"),
+        ("user:../escape.txt", "sess123"),
+        ("/absolute/path.txt", "sess123"),
+        ("user:/absolute/path.txt", None),
+    ],
+)
+async def test_file_save_artifact_rejects_out_of_scope_paths(
+    tmp_path, filename, session_id
+):
+  """FileArtifactService prevents path traversal outside of its storage roots."""
+  artifact_service = FileArtifactService(root_dir=tmp_path / "artifacts")
+  part = types.Part(text="content")
+  with pytest.raises(ValueError):
+    await artifact_service.save_artifact(
+        app_name="myapp",
+        user_id="user123",
+        session_id=session_id,
+        filename=filename,
+        artifact=part,
+    )
+
+
+@pytest.mark.asyncio
+async def test_file_save_artifact_rejects_absolute_path_within_scope(tmp_path):
+  """Absolute filenames are rejected even when they point inside the scope."""
+  artifact_service = FileArtifactService(root_dir=tmp_path / "artifacts")
+  absolute_in_scope = (
+      tmp_path
+      / "artifacts"
+      / "apps"
+      / "myapp"
+      / "users"
+      / "user123"
+      / "artifacts"
+      / "diagram.png"
+  )
+  part = types.Part(text="content")
+  with pytest.raises(ValueError):
+    await artifact_service.save_artifact(
+        app_name="myapp",
+        user_id="user123",
+        session_id=None,
+        filename=str(absolute_in_scope),
+        artifact=part,
+    )
