@@ -208,8 +208,6 @@ async def main():
     # If we have discussion JSON data, include it in the prompt
     # to avoid API call
     if discussion_json_data:
-      import json
-
       discussion_json_str = json.dumps(discussion_json_data, indent=2)
       prompt = (
           f"Please help answer this GitHub discussion #{discussion_number}."

@@ -20,6 +20,7 @@ supported through a workaround that uses a special set_model_response tool.
 """
 
 from google.adk.agents import LlmAgent
+from google.adk.tools.google_search_tool import google_search
 from pydantic import BaseModel
 from pydantic import Field
 import requests
@@ -79,6 +80,22 @@ def get_current_year() -> str:
   return str(datetime.now().year)
 
 
+# Create the knowledge agent that uses google_search tool.
+knowledge_agent = LlmAgent(
+    name="knowledge_agent",
+    model="gemini-2.5-flash",
+    instruction="""
+You are a helpful assistant that gathers information about famous people.
+Use google_search tool to find information about them.
+Provide the output into a structured response using the PersonInfo format.
+""",
+    description="""
+A knowledge agent that gathers information about famous people.
+""",
+    tools=[google_search],
+    output_schema=PersonInfo,
+)
+
 # Create the agent with both output_schema and tools
 root_agent = LlmAgent(
     name="person_info_agent",
@@ -87,15 +104,15 @@ root_agent = LlmAgent(
 You are a helpful assistant that gathers information about famous people.
 
 When asked about a person, you should:
-1. Use the search_wikipedia tool to find information about them
-2. Use the get_current_year tool if you need to calculate ages
-3. Compile the information into a structured response using the PersonInfo format
-
-Always use the set_model_response tool to provide your final answer in the required structured format.
+1. Use the knowledge_agent to find information about politicians
+2. Use the search_wikipedia tool to find information about other people
+3. Use the get_current_year tool if you need to calculate ages
+4. Compile the information into a structured response using the PersonInfo format
     """.strip(),
     output_schema=PersonInfo,
     tools=[
         search_wikipedia,
         get_current_year,
     ],
+    sub_agents=[knowledge_agent],
 )

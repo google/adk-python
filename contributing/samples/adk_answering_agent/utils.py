@@ -115,6 +115,10 @@ def convert_gcs_to_https(gcs_uri: str) -> Optional[str]:
   if relative_path.endswith(".html"):
     relative_path = relative_path.removesuffix(".html") + ".md"
 
+  # Replace .txt with .yaml
+  if relative_path.endswith(".txt"):
+    relative_path = relative_path.removesuffix(".txt") + ".yaml"
+
   # Convert the links for adk-docs
   if prefix == "adk-docs" and relative_path.startswith("docs/"):
     path_after_docs = relative_path[len("docs/") :]
@@ -139,7 +143,7 @@ def convert_gcs_to_https(gcs_uri: str) -> Optional[str]:
     if _check_url_exists(potential_url):
       return potential_url
     else:
-      # If it doesn't exist, fallback to the regular github url
+      # If it doesn't exist, fall back to the regular github url
       return _generate_github_url(prefix, relative_path)
 
   # Convert the links for other cases, e.g. adk-python

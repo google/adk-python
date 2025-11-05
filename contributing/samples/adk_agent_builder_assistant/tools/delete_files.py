@@ -21,9 +21,14 @@ from typing import Any
 from typing import Dict
 from typing import List
 
+from google.adk.tools.tool_context import ToolContext
+
+from ..utils.resolve_root_directory import resolve_file_paths
+
 
 async def delete_files(
     file_paths: List[str],
+    tool_context: ToolContext,
     create_backup: bool = False,
     confirm_deletion: bool = True,
 ) -> Dict[str, Any]:
@@ -54,6 +59,10 @@ async def delete_files(
       - errors: list of general error messages
   """
   try:
+    # Resolve file paths using session state
+    session_state = tool_context._invocation_context.session.state
+    resolved_paths = resolve_file_paths(file_paths, session_state)
+
     result = {
         "success": True,
         "files": {},
@@ -68,8 +77,8 @@ async def delete_files(
       result["errors"].append("Deletion not confirmed by user")
       return result
 
-    for file_path in file_paths:
-      file_path_obj = Path(file_path).resolve()
+    for resolved_path in resolved_paths:
+      file_path_obj = resolved_path.resolve()
       file_info = {
           "existed": False,
           "backup_created": False,

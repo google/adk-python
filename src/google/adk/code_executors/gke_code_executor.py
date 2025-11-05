@@ -162,6 +162,7 @@ class GkeCodeExecutor(BaseCodeExecutor):
       logger.info(
           f"Submitted Job '{job_name}' to namespace '{self.namespace}'."
       )
+      logger.debug("Executing code:\n```\n%s\n```", code_execution_input.code)
       return self._watch_job_completion(job_name)
 
     except ApiException as e:

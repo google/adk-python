@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import json
+import os
 from typing import Any
 from typing import Dict
 from typing import Optional
@@ -23,9 +24,11 @@ from google.adk.agents.llm_agent import LlmAgent
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
-from google.adk.telemetry import trace_call_llm
-from google.adk.telemetry import trace_merged_tool_calls
-from google.adk.telemetry import trace_tool_call
+from google.adk.telemetry.tracing import ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS
+from google.adk.telemetry.tracing import trace_agent_invocation
+from google.adk.telemetry.tracing import trace_call_llm
+from google.adk.telemetry.tracing import trace_merged_tool_calls
+from google.adk.telemetry.tracing import trace_tool_call
 from google.adk.tools.base_tool import BaseTool
 from google.genai import types
 import pytest
@@ -81,6 +84,30 @@ async def _create_invocation_context(
 
 
 @pytest.mark.asyncio
+async def test_trace_agent_invocation(mock_span_fixture):
+  """Test trace_agent_invocation sets span attributes correctly."""
+  agent = LlmAgent(name='test_llm_agent', model='gemini-pro')
+  agent.description = 'Test agent description'
+  invocation_context = await _create_invocation_context(agent)
+
+  trace_agent_invocation(mock_span_fixture, agent, invocation_context)
+
+  expected_calls = [
+      mock.call('gen_ai.operation.name', 'invoke_agent'),
+      mock.call('gen_ai.agent.description', agent.description),
+      mock.call('gen_ai.agent.name', agent.name),
+      mock.call(
+          'gen_ai.conversation.id',
+          invocation_context.session.id,
+      ),
+  ]
+  mock_span_fixture.set_attribute.assert_has_calls(
+      expected_calls, any_order=True
+  )
+  assert mock_span_fixture.set_attribute.call_count == len(expected_calls)
+
+
+@pytest.mark.asyncio
 async def test_trace_call_llm(monkeypatch, mock_span_fixture):
   """Test trace_call_llm sets all telemetry attributes correctly with normal content."""
   monkeypatch.setattr(
@@ -90,6 +117,7 @@ async def test_trace_call_llm(monkeypatch, mock_span_fixture):
   agent = LlmAgent(name='test_agent')
   invocation_context = await _create_invocation_context(agent)
   llm_request = LlmRequest(
+      model='gemini-pro',
       contents=[
           types.Content(
               role='user',
@@ -97,7 +125,6 @@ async def test_trace_call_llm(monkeypatch, mock_span_fixture):
           ),
       ],
       config=types.GenerateContentConfig(
-          system_instruction='You are a helpful assistant.',
           top_p=0.95,
           max_output_tokens=1024,
       ),
@@ -117,6 +144,7 @@ async def test_trace_call_llm(monkeypatch, mock_span_fixture):
       mock.call('gen_ai.system', 'gcp.vertex.agent'),
       mock.call('gen_ai.request.top_p', 0.95),
       mock.call('gen_ai.request.max_tokens', 1024),
+      mock.call('gcp.vertex.agent.llm_response', mock.ANY),
       mock.call('gen_ai.usage.input_tokens', 50),
       mock.call('gen_ai.usage.output_tokens', 50),
       mock.call('gen_ai.response.finish_reasons', ['stop']),
@@ -139,6 +167,7 @@ async def test_trace_call_llm_with_binary_content(
   agent = LlmAgent(name='test_agent')
   invocation_context = await _create_invocation_context(agent)
   llm_request = LlmRequest(
+      model='gemini-pro',
       contents=[
           types.Content(
               role='user',
@@ -166,7 +195,7 @@ async def test_trace_call_llm_with_binary_content(
               ],
           ),
       ],
-      config=types.GenerateContentConfig(system_instruction=''),
+      config=types.GenerateContentConfig(),
   )
   llm_response = LlmResponse(turn_complete=True)
   trace_call_llm(invocation_context, 'test_event_id', llm_request, llm_response)
@@ -228,12 +257,11 @@ def test_trace_tool_call_with_scalar_response(
   )
 
   # Assert
-  assert mock_span_fixture.set_attribute.call_count == 10
   expected_calls = [
-      mock.call('gen_ai.system', 'gcp.vertex.agent'),
       mock.call('gen_ai.operation.name', 'execute_tool'),
       mock.call('gen_ai.tool.name', mock_tool_fixture.name),
       mock.call('gen_ai.tool.description', mock_tool_fixture.description),
+      mock.call('gen_ai.tool.type', 'BaseTool'),
       mock.call('gen_ai.tool.call.id', test_tool_call_id),
       mock.call('gcp.vertex.agent.tool_call_args', json.dumps(test_args)),
       mock.call('gcp.vertex.agent.event_id', test_event_id),
@@ -245,6 +273,7 @@ def test_trace_tool_call_with_scalar_response(
       mock.call('gcp.vertex.agent.llm_response', '{}'),
   ]
 
+  assert mock_span_fixture.set_attribute.call_count == len(expected_calls)
   mock_span_fixture.set_attribute.assert_has_calls(
       expected_calls, any_order=True
   )
@@ -289,10 +318,10 @@ def test_trace_tool_call_with_dict_response(
 
   # Assert
   expected_calls = [
-      mock.call('gen_ai.system', 'gcp.vertex.agent'),
       mock.call('gen_ai.operation.name', 'execute_tool'),
       mock.call('gen_ai.tool.name', mock_tool_fixture.name),
       mock.call('gen_ai.tool.description', mock_tool_fixture.description),
+      mock.call('gen_ai.tool.type', 'BaseTool'),
       mock.call('gen_ai.tool.call.id', test_tool_call_id),
       mock.call('gcp.vertex.agent.tool_call_args', json.dumps(test_args)),
       mock.call('gcp.vertex.agent.event_id', test_event_id),
@@ -303,7 +332,7 @@ def test_trace_tool_call_with_dict_response(
       mock.call('gcp.vertex.agent.llm_response', '{}'),
   ]
 
-  assert mock_span_fixture.set_attribute.call_count == 10
+  assert mock_span_fixture.set_attribute.call_count == len(expected_calls)
   mock_span_fixture.set_attribute.assert_has_calls(
       expected_calls, any_order=True
   )
@@ -328,7 +357,6 @@ def test_trace_merged_tool_calls_sets_correct_attributes(
   )
 
   expected_calls = [
-      mock.call('gen_ai.system', 'gcp.vertex.agent'),
       mock.call('gen_ai.operation.name', 'execute_tool'),
       mock.call('gen_ai.tool.name', '(merged tools)'),
       mock.call('gen_ai.tool.description', '(merged tools)'),
@@ -340,8 +368,152 @@ def test_trace_merged_tool_calls_sets_correct_attributes(
       mock.call('gcp.vertex.agent.llm_response', '{}'),
   ]
 
-  assert mock_span_fixture.set_attribute.call_count == 10
+  assert mock_span_fixture.set_attribute.call_count == len(expected_calls)
   mock_span_fixture.set_attribute.assert_has_calls(
       expected_calls, any_order=True
   )
   mock_event_fixture.model_dumps_json.assert_called_once_with(exclude_none=True)
+
+
+@pytest.mark.asyncio
+async def test_call_llm_disabling_request_response_content(
+    monkeypatch, mock_span_fixture
+):
+  """Test trace_call_llm doesn't set request and response attributes if env is set to false"""
+  # Arrange
+  monkeypatch.setenv(ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS, 'false')
+  monkeypatch.setattr(
+      'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
+  )
+
+  agent = LlmAgent(name='test_agent')
+  invocation_context = await _create_invocation_context(agent)
+  llm_request = LlmRequest(
+      model='gemini-pro',
+      contents=[
+          types.Content(
+              role='user',
+              parts=[types.Part(text='Hello, how are you?')],
+          ),
+      ],
+  )
+  llm_response = LlmResponse(
+      turn_complete=True,
+      finish_reason=types.FinishReason.STOP,
+  )
+
+  # Act
+  trace_call_llm(invocation_context, 'test_event_id', llm_request, llm_response)
+
+  # Assert
+  assert not any(
+      call_obj.args[0] == 'gcp.vertex.agent.llm_request'
+      and call_obj.args[1] != {}
+      for call_obj in mock_span_fixture.set_attribute.call_args_list
+  ), "Attribute 'gcp.vertex.agent.llm_request' was incorrectly set on the span."
+
+  assert not any(
+      call_obj.args[0] == 'gcp.vertex.agent.llm_response'
+      and call_obj.args[1] != {}
+      for call_obj in mock_span_fixture.set_attribute.call_args_list
+  ), (
+      "Attribute 'gcp.vertex.agent.llm_response' was incorrectly set on the"
+      ' span.'
+  )
+
+
+def test_trace_tool_call_disabling_request_response_content(
+    monkeypatch,
+    mock_span_fixture,
+    mock_tool_fixture,
+    mock_event_fixture,
+):
+  """Test trace_tool_call doesn't set request and response attributes if env is set to false"""
+  # Arrange
+  monkeypatch.setenv(ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS, 'false')
+  monkeypatch.setattr(
+      'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
+  )
+
+  test_args: Dict[str, Any] = {'query': 'details', 'id_list': [1, 2, 3]}
+  test_tool_call_id: str = 'tool_call_id_002'
+  test_event_id: str = 'event_id_dict_002'
+  dict_function_response: Dict[str, Any] = {
+      'data': 'structured_data',
+      'count': 5,
+  }
+
+  mock_event_fixture.id = test_event_id
+  mock_event_fixture.content = types.Content(
+      role='user',
+      parts=[
+          types.Part(
+              function_response=types.FunctionResponse(
+                  id=test_tool_call_id,
+                  name='test_function_1',
+                  response=dict_function_response,
+              )
+          ),
+      ],
+  )
+
+  # Act
+  trace_tool_call(
+      tool=mock_tool_fixture,
+      args=test_args,
+      function_response_event=mock_event_fixture,
+  )
+
+  # Assert
+  assert not any(
+      call_obj.args[0] == 'gcp.vertex.agent.tool_call_args'
+      and call_obj.args[1] != {}
+      for call_obj in mock_span_fixture.set_attribute.call_args_list
+  ), (
+      "Attribute 'gcp.vertex.agent.tool_call_args' was incorrectly set on the"
+      ' span.'
+  )
+
+  assert not any(
+      call_obj.args[0] == 'gcp.vertex.agent.tool_response'
+      and call_obj.args[1] != {}
+      for call_obj in mock_span_fixture.set_attribute.call_args_list
+  ), (
+      "Attribute 'gcp.vertex.agent.tool_response' was incorrectly set on the"
+      ' span.'
+  )
+
+
+def test_trace_merged_tool_disabling_request_response_content(
+    monkeypatch,
+    mock_span_fixture,
+    mock_event_fixture,
+):
+  """Test trace_merged_tool doesn't set request and response attributes if env is set to false"""
+  # Arrange
+  monkeypatch.setenv(ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS, 'false')
+  monkeypatch.setattr(
+      'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
+  )
+
+  test_response_event_id = 'merged_evt_id_001'
+  custom_event_json_output = (
+      '{"custom_event_payload": true, "details": "merged_details"}'
+  )
+  mock_event_fixture.model_dumps_json.return_value = custom_event_json_output
+
+  # Act
+  trace_merged_tool_calls(
+      response_event_id=test_response_event_id,
+      function_response_event=mock_event_fixture,
+  )
+
+  # Assert
+  assert not any(
+      call_obj.args[0] == 'gcp.vertex.agent.tool_response'
+      and call_obj.args[1] != {}
+      for call_obj in mock_span_fixture.set_attribute.call_args_list
+  ), (
+      "Attribute 'gcp.vertex.agent.tool_response' was incorrectly set on the"
+      ' span.'
+  )

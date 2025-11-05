@@ -41,10 +41,11 @@ from ...events.event import Event
 from ...models.base_llm_connection import BaseLlmConnection
 from ...models.llm_request import LlmRequest
 from ...models.llm_response import LlmResponse
-from ...telemetry import trace_call_llm
-from ...telemetry import trace_send_data
-from ...telemetry import tracer
+from ...telemetry.tracing import trace_call_llm
+from ...telemetry.tracing import trace_send_data
+from ...telemetry.tracing import tracer
 from ...tools.base_toolset import BaseToolset
+from ...tools.google_search_tool import google_search
 from ...tools.tool_context import ToolContext
 from ...utils.context_utils import Aclosing
 from .audio_cache_manager import AudioCacheManager
@@ -129,25 +130,12 @@ class BaseLlmFlow(ABC):
           if llm_request.contents:
             # Sends the conversation history to the model.
             with tracer.start_as_current_span('send_data'):
-              if invocation_context.transcription_cache:
-                from . import audio_transcriber
-
-                audio_transcriber = audio_transcriber.AudioTranscriber(
-                    init_client=True
-                    if invocation_context.run_config.input_audio_transcription
-                    is None
-                    else False
-                )
-                contents = audio_transcriber.transcribe_file(invocation_context)
-                logger.debug('Sending history to model: %s', contents)
-                await llm_connection.send_history(contents)
-                invocation_context.transcription_cache = None
-                trace_send_data(invocation_context, event_id, contents)
-              else:
-                await llm_connection.send_history(llm_request.contents)
-                trace_send_data(
-                    invocation_context, event_id, llm_request.contents
-                )
+              # Combine regular contents with audio/transcription from session
+              logger.debug('Sending history to model: %s', llm_request.contents)
+              await llm_connection.send_history(llm_request.contents)
+              trace_send_data(
+                  invocation_context, event_id, llm_request.contents
+              )
 
           send_task = asyncio.create_task(
               self._send_to_model(llm_connection, invocation_context)
@@ -263,7 +251,7 @@ class BaseLlmFlow(ABC):
           invocation_context.transcription_cache = []
         if not invocation_context.run_config.input_audio_transcription:
           # if the live model's input transcription is not enabled, then
-          # we use our onwn audio transcriber to achieve that.
+          # we use our own audio transcriber to achieve that.
           invocation_context.transcription_cache.append(
               TranscriptionEntry(role='user', data=live_request.blob)
           )
@@ -312,7 +300,7 @@ class BaseLlmFlow(ABC):
           async for llm_response in agen:
             if llm_response.live_session_resumption_update:
               logger.info(
-                  'Update session resumption hanlde:'
+                  'Update session resumption handle:'
                   f' {llm_response.live_session_resumption_update}.'
               )
               invocation_context.live_session_resumption_handle = (
@@ -324,22 +312,6 @@ class BaseLlmFlow(ABC):
                 author=get_author_for_event(llm_response),
             )
 
-            # Handle transcription events ONCE per llm_response, outside the event loop
-            if llm_response.input_transcription:
-              await self.transcription_manager.handle_input_transcription(
-                  invocation_context, llm_response.input_transcription
-              )
-
-            if llm_response.output_transcription:
-              await self.transcription_manager.handle_output_transcription(
-                  invocation_context, llm_response.output_transcription
-              )
-
-            # Flush audio caches based on control events using configurable settings
-            await self._handle_control_event_flush(
-                invocation_context, llm_response
-            )
-
             async with Aclosing(
                 self._postprocess_live(
                     invocation_context,
@@ -349,28 +321,11 @@ class BaseLlmFlow(ABC):
                 )
             ) as agen:
               async for event in agen:
-                if (
-                    event.content
-                    and event.content.parts
-                    and event.content.parts[0].inline_data is None
-                    and not event.partial
-                ):
-                  # This can be either user data or transcription data.
-                  # when output transcription enabled, it will contain model's
-                  # transcription.
-                  # when input transcription enabled, it will contain user
-                  # transcription.
-                  if not invocation_context.transcription_cache:
-                    invocation_context.transcription_cache = []
-                  invocation_context.transcription_cache.append(
-                      TranscriptionEntry(
-                          role=event.content.role, data=event.content
-                      )
-                  )
                 # Cache output audio chunks from model responses
                 # TODO: support video data
                 if (
-                    event.content
+                    invocation_context.run_config.save_live_audio
+                    and event.content
                     and event.content.parts
                     and event.content.parts[0].inline_data
                     and event.content.parts[0].inline_data.mime_type.startswith(
@@ -422,6 +377,47 @@ class BaseLlmFlow(ABC):
     if invocation_context.end_invocation:
       return
 
+    # Resume the LLM agent based on the last event from the current branch.
+    # 1. User content: continue the normal flow
+    # 2. Function call: call the tool and get the response event.
+    events = invocation_context._get_events(
+        current_invocation=True, current_branch=True
+    )
+
+    # Long running tool calls should have been handled before this point.
+    # If there are still long running tool calls, it means the agent is paused
+    # before, and its branch hasn't been resumed yet.
+    if (
+        invocation_context.is_resumable
+        and events
+        and len(events) > 1
+        # TODO: here we are using the last 2 events to decide whether to pause
+        # the invocation. But this is just being optmisitic, we should find a
+        # way to pause when the long running tool call is followed by more than
+        # one text responses.
+        and (
+            invocation_context.should_pause_invocation(events[-1])
+            or invocation_context.should_pause_invocation(events[-2])
+        )
+    ):
+      return
+
+    if (
+        invocation_context.is_resumable
+        and events
+        and events[-1].get_function_calls()
+    ):
+      model_response_event = events[-1]
+      async with Aclosing(
+          self._postprocess_handle_function_calls_async(
+              invocation_context, model_response_event, llm_request
+          )
+      ) as agen:
+        async for event in agen:
+          event.id = Event.new_id()
+          yield event
+        return
+
     # Calls the LLM.
     model_response_event = Event(
         id=Event.new_id(),
@@ -457,7 +453,9 @@ class BaseLlmFlow(ABC):
 
     agent = invocation_context.agent
     if not isinstance(agent, LlmAgent):
-      return
+      raise TypeError(
+          f'Expected agent to be an LlmAgent, but got {type(agent)}'
+      )
 
     # Runs processors.
     for processor in self.request_processors:
@@ -468,6 +466,11 @@ class BaseLlmFlow(ABC):
           yield event
 
     # Run processors for tools.
+
+    # We may need to wrap some built-in tools if there are other tools
+    # because the built-in tools cannot be used together with other tools.
+    # TODO(b/448114567): Remove once the workaround is no longer needed.
+    multiple_tools = len(agent.tools) > 1
     for tool_union in agent.tools:
       tool_context = ToolContext(invocation_context)
 
@@ -481,7 +484,10 @@ class BaseLlmFlow(ABC):
 
       # Then process all tools from this tool union
       tools = await _convert_tool_union_to_tools(
-          tool_union, ReadonlyContext(invocation_context)
+          tool_union,
+          ReadonlyContext(invocation_context),
+          agent.model,
+          multiple_tools,
       )
       for tool in tools:
         await tool.process_llm_request(
@@ -575,8 +581,39 @@ class BaseLlmFlow(ABC):
         and not llm_response.turn_complete
         and not llm_response.input_transcription
         and not llm_response.output_transcription
+        and not llm_response.usage_metadata
     ):
       return
+
+    # Handle transcription events ONCE per llm_response, outside the event loop
+    if llm_response.input_transcription:
+      input_transcription_event = (
+          await self.transcription_manager.handle_input_transcription(
+              invocation_context, llm_response.input_transcription
+          )
+      )
+      yield input_transcription_event
+      return
+
+    if llm_response.output_transcription:
+      output_transcription_event = (
+          await self.transcription_manager.handle_output_transcription(
+              invocation_context, llm_response.output_transcription
+          )
+      )
+      yield output_transcription_event
+      return
+
+    # Flush audio caches based on control events using configurable settings
+    if invocation_context.run_config.save_live_audio:
+      _handle_control_event_flush_event = (
+          await self._handle_control_event_flush(
+              invocation_context, llm_response
+          )
+      )
+      if _handle_control_event_flush_event:
+        yield _handle_control_event_flush_event
+        return
 
     # Builds the event.
     model_response_event = self._finalize_model_response_event(
@@ -776,8 +813,6 @@ class BaseLlmFlow(ABC):
     from ...agents.llm_agent import LlmAgent
 
     agent = invocation_context.agent
-    if not isinstance(agent, LlmAgent):
-      return
 
     callback_context = CallbackContext(
         invocation_context, event_actions=model_response_event.actions
@@ -815,8 +850,26 @@ class BaseLlmFlow(ABC):
     from ...agents.llm_agent import LlmAgent
 
     agent = invocation_context.agent
-    if not isinstance(agent, LlmAgent):
-      return
+
+    # Add grounding metadata to the response if needed.
+    # TODO(b/448114567): Remove this function once the workaround is no longer needed.
+    async def _maybe_add_grounding_metadata(
+        response: Optional[LlmResponse] = None,
+    ) -> Optional[LlmResponse]:
+      readonly_context = ReadonlyContext(invocation_context)
+      tools = await agent.canonical_tools(readonly_context)
+      if not any(tool.name == 'google_search_agent' for tool in tools):
+        return response
+      ground_metadata = invocation_context.session.state.get(
+          'temp:_adk_grounding_metadata', None
+      )
+      if not ground_metadata:
+        return response
+
+      if not response:
+        response = llm_response
+      response.grounding_metadata = ground_metadata
+      return response
 
     callback_context = CallbackContext(
         invocation_context, event_actions=model_response_event.actions
@@ -830,12 +883,12 @@ class BaseLlmFlow(ABC):
         )
     )
     if callback_response:
-      return callback_response
+      return await _maybe_add_grounding_metadata(callback_response)
 
     # If no overrides are provided from the plugins, further run the canonical
     # callbacks.
     if not agent.canonical_after_model_callbacks:
-      return
+      return await _maybe_add_grounding_metadata()
     for callback in agent.canonical_after_model_callbacks:
       callback_response = callback(
           callback_context=callback_context, llm_response=llm_response
@@ -843,7 +896,8 @@ class BaseLlmFlow(ABC):
       if inspect.isawaitable(callback_response):
         callback_response = await callback_response
       if callback_response:
-        return callback_response
+        return await _maybe_add_grounding_metadata(callback_response)
+    return await _maybe_add_grounding_metadata()
 
   def _finalize_model_response_event(
       self,
@@ -877,32 +931,33 @@ class BaseLlmFlow(ABC):
       invocation_context: The invocation context containing audio caches.
       llm_response: The LLM response containing control event information.
     """
+
+    # Log cache statistics if enabled
+    if DEFAULT_ENABLE_CACHE_STATISTICS:
+      stats = self.audio_cache_manager.get_cache_stats(invocation_context)
+      logger.debug('Audio cache stats: %s', stats)
+
     if llm_response.interrupted:
       # user interrupts so the model will stop. we can flush model audio here
-      await self.audio_cache_manager.flush_caches(
+      return await self.audio_cache_manager.flush_caches(
           invocation_context,
           flush_user_audio=False,
           flush_model_audio=True,
       )
     elif llm_response.turn_complete:
       # turn completes so we can flush both user and model
-      await self.audio_cache_manager.flush_caches(
+      return await self.audio_cache_manager.flush_caches(
           invocation_context,
           flush_user_audio=True,
           flush_model_audio=True,
       )
     elif getattr(llm_response, 'generation_complete', False):
       # model generation complete so we can flush model audio
-      await self.audio_cache_manager.flush_caches(
+      return await self.audio_cache_manager.flush_caches(
           invocation_context,
           flush_user_audio=False,
           flush_model_audio=True,
       )
-
-    # Log cache statistics if enabled
-    if DEFAULT_ENABLE_CACHE_STATISTICS:
-      stats = self.audio_cache_manager.get_cache_stats(invocation_context)
-      logger.debug('Audio cache stats: %s', stats)
 
   async def _run_and_handle_error(
       self,

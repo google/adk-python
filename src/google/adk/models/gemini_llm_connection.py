@@ -40,7 +40,7 @@ class GeminiLlmConnection(BaseLlmConnection):
     """Sends the conversation history to the gemini model.
 
     You call this method right after setting up the model connection.
-    The model will respond if the last content is from user, otherwise it will
+    The model will respond if the last content is from user; otherwise, it will
     wait for new user input before responding.
 
     Args:
@@ -148,6 +148,8 @@ class GeminiLlmConnection(BaseLlmConnection):
       # partial content and emit responses as needed.
       async for message in agen:
         logger.debug('Got LLM Live message: %s', message)
+        if message.usage_metadata:
+          yield LlmResponse(usage_metadata=message.usage_metadata)
         if message.server_content:
           content = message.server_content.model_turn
           if content and content.parts:
@@ -166,38 +168,18 @@ class GeminiLlmConnection(BaseLlmConnection):
               message.server_content.input_transcription
               and message.server_content.input_transcription.text
           ):
-            user_text = message.server_content.input_transcription.text
-            parts = [
-                types.Part.from_text(
-                    text=user_text,
-                )
-            ]
             llm_response = LlmResponse(
-                content=types.Content(role='user', parts=parts)
+                input_transcription=message.server_content.input_transcription,
             )
             yield llm_response
           if (
               message.server_content.output_transcription
               and message.server_content.output_transcription.text
           ):
-            # TODO: Right now, we just support output_transcription without
-            # changing interface and data protocol. Later, we can consider to
-            # support output_transcription as a separate field in LlmResponse.
-
-            # Transcription is always considered as partial event
-            # We rely on other control signals to determine when to yield the
-            # full text response(turn_complete, interrupted, or tool_call).
-            text += message.server_content.output_transcription.text
-            parts = [
-                types.Part.from_text(
-                    text=message.server_content.output_transcription.text
-                )
-            ]
             llm_response = LlmResponse(
-                content=types.Content(role='model', parts=parts), partial=True
+                output_transcription=message.server_content.output_transcription
             )
             yield llm_response
-
           if message.server_content.turn_complete:
             if text:
               yield self.__build_full_text_response(text)
@@ -225,7 +207,7 @@ class GeminiLlmConnection(BaseLlmConnection):
           ]
           yield LlmResponse(content=types.Content(role='model', parts=parts))
         if message.session_resumption_update:
-          logger.info('Redeived session reassumption message: %s', message)
+          logger.info('Received session resumption message: %s', message)
           yield (
               LlmResponse(
                   live_session_resumption_update=message.session_resumption_update

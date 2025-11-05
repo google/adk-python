@@ -17,9 +17,9 @@ from __future__ import annotations
 from typing import Optional
 
 from google.genai import types as genai_types
-from rouge_score import rouge_scorer
 from typing_extensions import override
 
+from ..dependencies.rouge_scorer import rouge_scorer
 from .eval_case import Invocation
 from .eval_metrics import EvalMetric
 from .eval_metrics import Interval
@@ -59,8 +59,11 @@ class RougeEvaluator(Evaluator):
   def evaluate_invocations(
       self,
       actual_invocations: list[Invocation],
-      expected_invocations: list[Invocation],
+      expected_invocations: Optional[list[Invocation]],
   ) -> EvaluationResult:
+    if expected_invocations is None:
+      raise ValueError("expected_invocations is required for this metric.")
+
     total_score = 0.0
     num_invocations = 0
     per_invocation_results = []
