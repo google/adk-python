@@ -72,7 +72,7 @@ PLAYWRIGHT_KEY_MAP = {
 
 
 class PlaywrightComputer(BaseComputer):
-  """Conputer that controls Chromium via Playwright."""
+  """Computer that controls Chromium via Playwright."""
 
   def __init__(
       self,

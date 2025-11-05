@@ -34,7 +34,7 @@ class MyCustomAgentConfig(BaseAgentConfig):
   model_config = ConfigDict(
       extra="forbid",
   )
-  agent_class: str = "core_cutom_agent_config.my_agents.MyCustomAgent"
+  agent_class: str = "core_custom_agent_config.my_agents.MyCustomAgent"
   my_field: str = ""
 
 
