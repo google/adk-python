@@ -136,6 +136,36 @@ def test_get_table_info_no_default_auth(mock_default_auth, mock_get_table):
   mock_default_auth.assert_not_called()
 
 
+@mock.patch.dict(os.environ, {}, clear=True)
+@mock.patch("google.cloud.bigquery.Client.get_job", autospec=True)
+@mock.patch("google.auth.default", autospec=True)
+def test_get_job_info_no_default_auth(mock_default_auth, mock_get_job):
+  """Test get_job_info tool invocation involves no default auth."""
+  mock_credentials = mock.create_autospec(Credentials, instance=True)
+  tool_settings = BigQueryToolConfig()
+
+  # Simulate the behavior of default auth - on purpose throw exception when
+  # the default auth is called
+  mock_default_auth.side_effect = DefaultCredentialsError(
+      "Your default credentials were not found"
+  )
+
+  mock_get_job.return_value = mock.create_autospec(
+      bigquery.QueryJob, instance=True
+  )
+  result = metadata_tool.get_job_info(
+      "my_project_id",
+      "my_job_id",
+      mock_credentials,
+      tool_settings,
+  )
+  assert result != {
+      "status": "ERROR",
+      "error_details": "Your default credentials were not found",
+  }
+  mock_default_auth.assert_not_called()
+
+
 @mock.patch(
     "google.adk.tools.bigquery.client.get_bigquery_client", autospec=True
 )
@@ -148,7 +178,7 @@ def test_list_dataset_ids_bq_client_creation(mock_get_bigquery_client):
 
   metadata_tool.list_dataset_ids(bq_project, bq_credentials, tool_settings)
   mock_get_bigquery_client.assert_called_once()
-  assert len(mock_get_bigquery_client.call_args.kwargs) == 3
+  assert len(mock_get_bigquery_client.call_args.kwargs) == 4
   assert mock_get_bigquery_client.call_args.kwargs["project"] == bq_project
   assert (
       mock_get_bigquery_client.call_args.kwargs["credentials"] == bq_credentials
@@ -174,7 +204,7 @@ def test_get_dataset_info_bq_client_creation(mock_get_bigquery_client):
       bq_project, bq_dataset, bq_credentials, tool_settings
   )
   mock_get_bigquery_client.assert_called_once()
-  assert len(mock_get_bigquery_client.call_args.kwargs) == 3
+  assert len(mock_get_bigquery_client.call_args.kwargs) == 4
   assert mock_get_bigquery_client.call_args.kwargs["project"] == bq_project
   assert (
       mock_get_bigquery_client.call_args.kwargs["credentials"] == bq_credentials
@@ -200,7 +230,7 @@ def test_list_table_ids_bq_client_creation(mock_get_bigquery_client):
       bq_project, bq_dataset, bq_credentials, tool_settings
   )
   mock_get_bigquery_client.assert_called_once()
-  assert len(mock_get_bigquery_client.call_args.kwargs) == 3
+  assert len(mock_get_bigquery_client.call_args.kwargs) == 4
   assert mock_get_bigquery_client.call_args.kwargs["project"] == bq_project
   assert (
       mock_get_bigquery_client.call_args.kwargs["credentials"] == bq_credentials
@@ -227,7 +257,7 @@ def test_get_table_info_bq_client_creation(mock_get_bigquery_client):
       bq_project, bq_dataset, bq_table, bq_credentials, tool_settings
   )
   mock_get_bigquery_client.assert_called_once()
-  assert len(mock_get_bigquery_client.call_args.kwargs) == 3
+  assert len(mock_get_bigquery_client.call_args.kwargs) == 4
   assert mock_get_bigquery_client.call_args.kwargs["project"] == bq_project
   assert (
       mock_get_bigquery_client.call_args.kwargs["credentials"] == bq_credentials

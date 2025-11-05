@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 from typing import TYPE_CHECKING
 
@@ -26,6 +27,8 @@ from .base_tool import BaseTool
 if TYPE_CHECKING:
   from ..models.llm_request import LlmRequest
   from .tool_context import ToolContext
+
+logger = logging.getLogger('google_adk.' + __name__)
 
 
 class LoadArtifactsTool(BaseTool):
@@ -59,7 +62,13 @@ class LoadArtifactsTool(BaseTool):
       self, *, args: dict[str, Any], tool_context: ToolContext
   ) -> Any:
     artifact_names: list[str] = args.get('artifact_names', [])
-    return {'artifact_names': artifact_names}
+    return {
+        'artifact_names': artifact_names,
+        'status': (
+            'artifact contents temporarily inserted and removed. to access'
+            ' these artifacts, call load_artifacts tool again.'
+        ),
+    }
 
   @override
   async def process_llm_request(
@@ -85,8 +94,10 @@ class LoadArtifactsTool(BaseTool):
   {json.dumps(artifact_names)}
 
   When the user asks questions about any of the artifacts, you should call the
-  `load_artifacts` function to load the artifact. Do not generate any text other
-  than the function call.
+  `load_artifacts` function to load the artifact. Always call load_artifacts
+  before answering questions related to the artifacts, regardless of whether the
+  artifacts have been loaded before. Do not depend on prior answers about the
+  artifacts.
   """])
 
     # Attach the content of the artifacts if the model requests them.
@@ -96,7 +107,18 @@ class LoadArtifactsTool(BaseTool):
       if function_response and function_response.name == 'load_artifacts':
         artifact_names = function_response.response['artifact_names']
         for artifact_name in artifact_names:
+          # Try session-scoped first (default behavior)
           artifact = await tool_context.load_artifact(artifact_name)
+
+          # If not found and name doesn't already have user: prefix,
+          # try cross-session artifacts with user: prefix
+          if artifact is None and not artifact_name.startswith('user:'):
+            prefixed_name = f'user:{artifact_name}'
+            artifact = await tool_context.load_artifact(prefixed_name)
+
+          if artifact is None:
+            logger.warning('Artifact "%s" not found, skipping', artifact_name)
+            continue
           llm_request.contents.append(
               types.Content(
                   role='user',

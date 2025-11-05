@@ -12,8 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import re
-from typing import Any
+from datetime import datetime
+from typing import Optional
 from unittest import mock
 
 from google.adk.events.event import Event
@@ -70,119 +70,117 @@ MOCK_SESSION_WITH_EMPTY_EVENTS = Session(
 )
 
 
-RETRIEVE_MEMORIES_REGEX = r'^reasoningEngines/([^/]+)/memories:retrieve$'
-GENERATE_MEMORIES_REGEX = r'^reasoningEngines/([^/]+)/memories:generate$'
-
-
-class MockApiClient:
-  """Mocks the API Client."""
-
-  def __init__(self) -> None:
-    """Initializes MockClient."""
-    self.async_request = mock.AsyncMock()
-    self.async_request.side_effect = self._mock_async_request
-
-  async def _mock_async_request(
-      self, http_method: str, path: str, request_dict: dict[str, Any]
-  ):
-    """Mocks the API Client request method."""
-    if http_method == 'POST':
-      if re.match(GENERATE_MEMORIES_REGEX, path):
-        return {}
-      elif re.match(RETRIEVE_MEMORIES_REGEX, path):
-        if (
-            request_dict.get('scope', None)
-            and request_dict['scope'].get('app_name', None) == MOCK_APP_NAME
-        ):
-          return {
-              'retrievedMemories': [
-                  {
-                      'memory': {
-                          'fact': 'test_content',
-                      },
-                      'updateTime': '2024-12-12T12:12:12.123456Z',
-                  },
-              ],
-          }
-        else:
-          return {'retrievedMemories': []}
-      else:
-        raise ValueError(f'Unsupported path: {path}')
-    else:
-      raise ValueError(f'Unsupported http method: {http_method}')
-
-
-def mock_vertex_ai_memory_bank_service():
+def mock_vertex_ai_memory_bank_service(
+    project: Optional[str] = 'test-project',
+    location: Optional[str] = 'test-location',
+    agent_engine_id: Optional[str] = '123',
+    express_mode_api_key: Optional[str] = None,
+):
   """Creates a mock Vertex AI Memory Bank service for testing."""
   return VertexAiMemoryBankService(
-      project='test-project',
-      location='test-location',
-      agent_engine_id='123',
+      project=project,
+      location=location,
+      agent_engine_id=agent_engine_id,
+      express_mode_api_key=express_mode_api_key,
   )
 
 
 @pytest.fixture
-def mock_get_api_client():
-  api_client = MockApiClient()
+def mock_vertexai_client():
   with mock.patch(
-      'google.adk.memory.vertex_ai_memory_bank_service.VertexAiMemoryBankService._get_api_client',
-      return_value=api_client,
-  ):
-    yield api_client
+      'google.adk.memory.vertex_ai_memory_bank_service.vertexai.Client'
+  ) as mock_client_constructor:
+    mock_client = mock.MagicMock()
+    mock_client.agent_engines.memories.generate = mock.MagicMock()
+    mock_client.agent_engines.memories.retrieve = mock.MagicMock()
+    mock_client_constructor.return_value = mock_client
+    yield mock_client
 
 
 @pytest.mark.asyncio
-@pytest.mark.usefixtures('mock_get_api_client')
-async def test_add_session_to_memory(mock_get_api_client):
-  memory_service = mock_vertex_ai_memory_bank_service()
-  await memory_service.add_session_to_memory(MOCK_SESSION)
-
-  mock_get_api_client.async_request.assert_awaited_once_with(
-      http_method='POST',
-      path='reasoningEngines/123/memories:generate',
-      request_dict={
-          'direct_contents_source': {
-              'events': [
-                  {
-                      'content': {
-                          'parts': [
-                              {'text': 'test_content'},
-                          ],
-                      },
-                  },
-              ],
-          },
-          'scope': {'app_name': MOCK_APP_NAME, 'user_id': MOCK_USER_ID},
-      },
+async def test_initialize_with_project_location_and_api_key_error():
+  with pytest.raises(ValueError) as excinfo:
+    mock_vertex_ai_memory_bank_service(
+        project='test-project',
+        location='test-location',
+        express_mode_api_key='test-api-key',
+    )
+  assert (
+      'Cannot specify project or location and express_mode_api_key. Either use'
+      ' project and location, or just the express_mode_api_key.'
+      in str(excinfo.value)
   )
 
 
 @pytest.mark.asyncio
-@pytest.mark.usefixtures('mock_get_api_client')
-async def test_add_empty_session_to_memory(mock_get_api_client):
+async def test_add_session_to_memory(mock_vertexai_client):
   memory_service = mock_vertex_ai_memory_bank_service()
-  await memory_service.add_session_to_memory(MOCK_SESSION_WITH_EMPTY_EVENTS)
+  await memory_service.add_session_to_memory(MOCK_SESSION)
 
-  mock_get_api_client.async_request.assert_not_called()
+  mock_vertexai_client.agent_engines.memories.generate.assert_called_once_with(
+      name='reasoningEngines/123',
+      direct_contents_source={
+          'events': [
+              {
+                  'content': {
+                      'parts': [{'text': 'test_content'}],
+                  }
+              }
+          ]
+      },
+      scope={'app_name': MOCK_APP_NAME, 'user_id': MOCK_USER_ID},
+      config={'wait_for_completion': False},
+  )
 
 
 @pytest.mark.asyncio
-@pytest.mark.usefixtures('mock_get_api_client')
-async def test_search_memory(mock_get_api_client):
+async def test_add_empty_session_to_memory(mock_vertexai_client):
+  memory_service = mock_vertex_ai_memory_bank_service()
+  await memory_service.add_session_to_memory(MOCK_SESSION_WITH_EMPTY_EVENTS)
+
+  mock_vertexai_client.agent_engines.memories.generate.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_search_memory(mock_vertexai_client):
+  retrieved_memory = mock.MagicMock()
+  retrieved_memory.memory.fact = 'test_content'
+  retrieved_memory.memory.update_time = datetime(
+      2024, 12, 12, 12, 12, 12, 123456
+  )
+
+  mock_vertexai_client.agent_engines.memories.retrieve.return_value = [
+      retrieved_memory
+  ]
   memory_service = mock_vertex_ai_memory_bank_service()
 
   result = await memory_service.search_memory(
       app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID, query='query'
   )
 
-  mock_get_api_client.async_request.assert_awaited_once_with(
-      http_method='POST',
-      path='reasoningEngines/123/memories:retrieve',
-      request_dict={
-          'scope': {'app_name': MOCK_APP_NAME, 'user_id': MOCK_USER_ID},
-          'similarity_search_params': {'search_query': 'query'},
-      },
+  mock_vertexai_client.agent_engines.memories.retrieve.assert_called_once_with(
+      name='reasoningEngines/123',
+      scope={'app_name': MOCK_APP_NAME, 'user_id': MOCK_USER_ID},
+      similarity_search_params={'search_query': 'query'},
   )
 
   assert len(result.memories) == 1
   assert result.memories[0].content.parts[0].text == 'test_content'
+
+
+@pytest.mark.asyncio
+async def test_search_memory_empty_results(mock_vertexai_client):
+  mock_vertexai_client.agent_engines.memories.retrieve.return_value = []
+  memory_service = mock_vertex_ai_memory_bank_service()
+
+  result = await memory_service.search_memory(
+      app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID, query='query'
+  )
+
+  mock_vertexai_client.agent_engines.memories.retrieve.assert_called_once_with(
+      name='reasoningEngines/123',
+      scope={'app_name': MOCK_APP_NAME, 'user_id': MOCK_USER_ID},
+      similarity_search_params={'search_query': 'query'},
+  )
+
+  assert len(result.memories) == 0

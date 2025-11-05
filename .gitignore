@@ -98,3 +98,20 @@ Thumbs.db
 *.bak
 *.tmp
 *.temp
+
+# AI Coding Tools - Project-specific configs
+# Developers should symlink or copy AGENTS.md and add their own overrides locally
+.claude/
+CLAUDE.md
+.cursor/
+.cursorrules
+.cursorignore
+.windsurfrules
+.aider*
+.continue/
+.codeium/
+.githubnext/
+.roo/
+.rooignore
+.bolt/
+.v0/

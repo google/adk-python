@@ -14,6 +14,8 @@
 
 """Utility functions for code execution."""
 
+from __future__ import annotations
+
 import base64
 import binascii
 import copy
@@ -34,9 +36,9 @@ class File:
   The name of the file with file extension (e.g., "file.csv").
   """
 
-  content: str
+  content: str | bytes
   """
-  The base64-encoded bytes of the file content.
+  The base64-encoded bytes of the file content or the original bytes of the file content.
   """
 
   mime_type: str = 'text/plain'
@@ -120,12 +122,12 @@ class CodeExecutionUtils:
         the code blocks.
 
     Returns:
-      The first code block if found, otherwise None.
+      The first code block if found; otherwise, None.
     """
     if not content or not content.parts:
       return
 
-    # Extract the code from the executable code parts if there're no associated
+    # Extract the code from the executable code parts if there are no associated
     # code execution result parts.
     for idx, part in enumerate(content.parts):
       if part.executable_code and (

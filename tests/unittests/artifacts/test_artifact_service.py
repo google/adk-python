@@ -14,17 +14,24 @@
 
 """Tests for the artifact service."""
 
+from datetime import datetime
 import enum
+from typing import Any
 from typing import Optional
 from typing import Union
 from unittest import mock
+from unittest.mock import patch
 
+from google.adk.artifacts.base_artifact_service import ArtifactVersion
 from google.adk.artifacts.gcs_artifact_service import GcsArtifactService
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.genai import types
 import pytest
 
 Enum = enum.Enum
+
+# Define a fixed datetime object to be returned by datetime.now()
+FIXED_DATETIME = datetime(2025, 1, 1, 12, 0, 0)
 
 
 class ArtifactServiceType(Enum):
@@ -49,6 +56,8 @@ class MockBlob:
     self.name = name
     self.content: Optional[bytes] = None
     self.content_type: Optional[str] = None
+    self.time_created = FIXED_DATETIME
+    self.metadata: dict[str, Any] = {}
 
   def upload_from_string(
       self, data: Union[str, bytes], content_type: Optional[str] = None
@@ -113,6 +122,13 @@ class MockBucket:
       self.blobs[blob_name] = MockBlob(blob_name)
     return self.blobs[blob_name]
 
+  def get_blob(self, blob_name: str) -> Optional[MockBlob]:
+    """Mocks getting a blob from storage if it exists and has content."""
+    blob = self.blobs.get(blob_name)
+    if blob and blob.content is not None:
+      return blob
+    return None
+
 
 class MockClient:
   """Mocks the GCS Client."""
@@ -131,9 +147,11 @@ class MockClient:
     """Mocks listing blobs in a bucket, optionally with a prefix."""
     if prefix:
       return [
-          blob for name, blob in bucket.blobs.items() if name.startswith(prefix)
+          blob
+          for name, blob in bucket.blobs.items()
+          if name.startswith(prefix) and blob.content is not None
       ]
-    return list(bucket.blobs.values())
+    return [blob for blob in bucket.blobs.values() if blob.content is not None]
 
 
 def mock_gcs_artifact_service():
@@ -193,6 +211,15 @@ async def test_save_load_delete(service_type):
           filename=filename,
       )
       == artifact
+  )
+
+  # Attempt to load a version that doesn't exist
+  assert not await artifact_service.load_artifact(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session_id,
+      filename=filename,
+      version=3,
   )
 
   await artifact_service.delete_artifact(
@@ -277,3 +304,243 @@ async def test_list_versions(service_type):
   )
 
   assert response_versions == list(range(4))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "service_type", [ArtifactServiceType.IN_MEMORY, ArtifactServiceType.GCS]
+)
+async def test_list_keys_preserves_user_prefix(service_type):
+  """Tests that list_artifact_keys preserves 'user:' prefix in returned names."""
+  artifact_service = get_artifact_service(service_type)
+  artifact = types.Part.from_bytes(data=b"test_data", mime_type="text/plain")
+  app_name = "app0"
+  user_id = "user0"
+  session_id = "123"
+
+  # Save artifacts with "user:" prefix (cross-session artifacts)
+  await artifact_service.save_artifact(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session_id,
+      filename="user:document.pdf",
+      artifact=artifact,
+  )
+
+  await artifact_service.save_artifact(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session_id,
+      filename="user:image.png",
+      artifact=artifact,
+  )
+
+  # Save session-scoped artifact without prefix
+  await artifact_service.save_artifact(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session_id,
+      filename="session_file.txt",
+      artifact=artifact,
+  )
+
+  # List artifacts should return names with "user:" prefix for user-scoped artifacts
+  artifact_keys = await artifact_service.list_artifact_keys(
+      app_name=app_name, user_id=user_id, session_id=session_id
+  )
+
+  # Should contain prefixed names and session file
+  expected_keys = ["user:document.pdf", "user:image.png", "session_file.txt"]
+  assert sorted(artifact_keys) == sorted(expected_keys)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "service_type", [ArtifactServiceType.IN_MEMORY, ArtifactServiceType.GCS]
+)
+async def test_list_artifact_versions_and_get_artifact_version(service_type):
+  """Tests listing artifact versions and getting a specific version."""
+  artifact_service = get_artifact_service(service_type)
+  app_name = "app0"
+  user_id = "user0"
+  session_id = "123"
+  filename = "filename"
+  versions = [
+      types.Part.from_bytes(
+          data=i.to_bytes(2, byteorder="big"), mime_type="text/plain"
+      )
+      for i in range(4)
+  ]
+
+  with patch(
+      "google.adk.artifacts.base_artifact_service.datetime"
+  ) as mock_datetime:
+    mock_datetime.now.return_value = FIXED_DATETIME
+
+    for i in range(4):
+      custom_metadata = {"key": "value" + str(i)}
+      await artifact_service.save_artifact(
+          app_name=app_name,
+          user_id=user_id,
+          session_id=session_id,
+          filename=filename,
+          artifact=versions[i],
+          custom_metadata=custom_metadata,
+      )
+
+    artifact_versions = await artifact_service.list_artifact_versions(
+        app_name=app_name,
+        user_id=user_id,
+        session_id=session_id,
+        filename=filename,
+    )
+
+    expected_artifact_versions = []
+    for i in range(4):
+      metadata = {"key": "value" + str(i)}
+      if service_type == ArtifactServiceType.GCS:
+        uri = (
+            f"gs://test_bucket/{app_name}/{user_id}/{session_id}/{filename}/{i}"
+        )
+      else:
+        uri = f"memory://apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts/{filename}/versions/{i}"
+      expected_artifact_versions.append(
+          ArtifactVersion(
+              version=i,
+              canonical_uri=uri,
+              custom_metadata=metadata,
+              mime_type="text/plain",
+              create_time=FIXED_DATETIME.timestamp(),
+          )
+      )
+    assert artifact_versions == expected_artifact_versions
+
+    # Get latest artifact version when version is not specified
+    assert (
+        await artifact_service.get_artifact_version(
+            app_name=app_name,
+            user_id=user_id,
+            session_id=session_id,
+            filename=filename,
+        )
+        == expected_artifact_versions[-1]
+    )
+
+    # Get artifact version by version number
+    assert (
+        await artifact_service.get_artifact_version(
+            app_name=app_name,
+            user_id=user_id,
+            session_id=session_id,
+            filename=filename,
+            version=2,
+        )
+        == expected_artifact_versions[2]
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "service_type", [ArtifactServiceType.IN_MEMORY, ArtifactServiceType.GCS]
+)
+async def test_list_artifact_versions_with_user_prefix(service_type):
+  """Tests listing artifact versions with user prefix."""
+  artifact_service = get_artifact_service(service_type)
+  app_name = "app0"
+  user_id = "user0"
+  session_id = "123"
+  user_scoped_filename = "user:document.pdf"
+  versions = [
+      types.Part.from_bytes(
+          data=i.to_bytes(2, byteorder="big"), mime_type="text/plain"
+      )
+      for i in range(4)
+  ]
+
+  with patch(
+      "google.adk.artifacts.base_artifact_service.datetime"
+  ) as mock_datetime:
+    mock_datetime.now.return_value = FIXED_DATETIME
+
+    for i in range(4):
+      custom_metadata = {"key": "value" + str(i)}
+      # Save artifacts with "user:" prefix (cross-session artifacts)
+      await artifact_service.save_artifact(
+          app_name=app_name,
+          user_id=user_id,
+          session_id=session_id,
+          filename=user_scoped_filename,
+          artifact=versions[i],
+          custom_metadata=custom_metadata,
+      )
+
+    artifact_versions = await artifact_service.list_artifact_versions(
+        app_name=app_name,
+        user_id=user_id,
+        session_id=session_id,
+        filename=user_scoped_filename,
+    )
+
+    expected_artifact_versions = []
+    for i in range(4):
+      metadata = {"key": "value" + str(i)}
+      if service_type == ArtifactServiceType.GCS:
+        uri = f"gs://test_bucket/{app_name}/{user_id}/user/{user_scoped_filename}/{i}"
+      else:
+        uri = f"memory://apps/{app_name}/users/{user_id}/artifacts/{user_scoped_filename}/versions/{i}"
+      expected_artifact_versions.append(
+          ArtifactVersion(
+              version=i,
+              canonical_uri=uri,
+              custom_metadata=metadata,
+              mime_type="text/plain",
+              create_time=FIXED_DATETIME.timestamp(),
+          )
+      )
+    assert artifact_versions == expected_artifact_versions
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "service_type", [ArtifactServiceType.IN_MEMORY, ArtifactServiceType.GCS]
+)
+async def test_get_artifact_version_artifact_does_not_exist(service_type):
+  """Tests getting an artifact version when artifact does not exist."""
+  artifact_service = get_artifact_service(service_type)
+  assert not await artifact_service.get_artifact_version(
+      app_name="test_app",
+      user_id="test_user",
+      session_id="session_id",
+      filename="filename",
+  )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "service_type", [ArtifactServiceType.IN_MEMORY, ArtifactServiceType.GCS]
+)
+async def test_get_artifact_version_out_of_index(service_type):
+  """Tests loading an artifact with an out-of-index version."""
+  artifact_service = get_artifact_service(service_type)
+  app_name = "app0"
+  user_id = "user0"
+  session_id = "123"
+  filename = "filename"
+  artifact = types.Part.from_bytes(data=b"test_data", mime_type="text/plain")
+
+  await artifact_service.save_artifact(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session_id,
+      filename=filename,
+      artifact=artifact,
+  )
+
+  # Attempt to get a version that doesn't exist
+  assert not await artifact_service.get_artifact_version(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session_id,
+      filename=filename,
+      version=3,
+  )

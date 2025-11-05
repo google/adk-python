@@ -24,9 +24,9 @@ from typing import TYPE_CHECKING
 
 from google.genai import types
 from typing_extensions import override
-from vertexai.preview import rag
 
 from . import _utils
+from ..dependencies.vertexai import rag
 from .base_memory_service import BaseMemoryService
 from .base_memory_service import SearchMemoryResponse
 from .memory_entry import MemoryEntry

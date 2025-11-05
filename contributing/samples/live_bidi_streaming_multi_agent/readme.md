@@ -1,8 +1,6 @@
 # Simplistic Live (Bidi-Streaming) Multi-Agent
-This project provides a basic example of a live, bidirectional streaming multi-agent
+This project provides a basic example of a live, [bidirectional streaming](https://google.github.io/adk-docs/streaming/) multi-agent
 designed for testing and experimentation.
-
-You can see full documentation [here](https://google.github.io/adk-docs/streaming/).
 
 ## Getting Started
 

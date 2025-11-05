@@ -33,6 +33,7 @@ from .eval_metrics import MetricValueInfo
 from .eval_metrics import PrebuiltMetrics
 from .evaluator import EvaluationResult
 from .evaluator import PerInvocationResult
+from .llm_as_judge import AutoRaterScore
 from .llm_as_judge import LlmAsJudge
 from .llm_as_judge_utils import get_eval_status
 from .llm_as_judge_utils import get_text_from_content
@@ -146,7 +147,11 @@ class FinalResponseMatchV2Evaluator(LlmAsJudge):
       self,
       eval_metric: EvalMetric,
   ):
-    super().__init__(eval_metric, FinalResponseMatchV2Evaluator.criterion_type)
+    super().__init__(
+        eval_metric,
+        FinalResponseMatchV2Evaluator.criterion_type,
+        expected_invocations_required=True,
+    )
     self._auto_rater_prompt_template = _FINAL_RESPONSE_MATCH_V2_PROMPT
 
   @staticmethod
@@ -165,8 +170,13 @@ class FinalResponseMatchV2Evaluator(LlmAsJudge):
 
   @override
   def format_auto_rater_prompt(
-      self, actual_invocation: Invocation, expected_invocation: Invocation
+      self,
+      actual_invocation: Invocation,
+      expected_invocation: Optional[Invocation],
   ) -> str:
+    if expected_invocation is None:
+      raise ValueError("expected_invocation is required for this metric.")
+
     reference = get_text_from_content(expected_invocation.final_response)
     response = get_text_from_content(actual_invocation.final_response)
     user_prompt = get_text_from_content(expected_invocation.user_content)
@@ -179,17 +189,17 @@ class FinalResponseMatchV2Evaluator(LlmAsJudge):
   @override
   def convert_auto_rater_response_to_score(
       self, llm_response: LlmResponse
-  ) -> Optional[float]:
+  ) -> AutoRaterScore:
     response_text = get_text_from_content(llm_response.content)
     if response_text is None:
-      return None
+      return AutoRaterScore()
     label = _parse_critique(response_text)
     if label == Label.VALID:
-      return 1.0
+      return AutoRaterScore(score=1.0)
     elif label == Label.INVALID:
-      return 0.0
+      return AutoRaterScore(score=0.0)
     else:
-      return None
+      return AutoRaterScore()
 
   @override
   def aggregate_per_invocation_samples(
