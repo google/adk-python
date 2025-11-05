@@ -392,8 +392,8 @@ def validate_exclusive(ctx, param, value):
     ),
     help=(
         "The json file that contains a previously saved session (by"
-        "--save_session option). The previous session will be re-displayed. And"
-        " user can continue to interact with the agent."
+        " --save_session option). The previous session will be re-displayed."
+        " And user can continue to interact with the agent."
     ),
     callback=validate_exclusive,
 )
@@ -448,6 +448,12 @@ def eval_options():
         ),
         default=None,
     )
+    @click.option(
+        "--log_level",
+        type=LOG_LEVELS,
+        default="INFO",
+        help="Optional. Set the logging level",
+    )
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
       return func(*args, **kwargs)
@@ -480,6 +486,7 @@ def cli_eval(
     config_file_path: str,
     print_detailed_results: bool,
     eval_storage_uri: Optional[str] = None,
+    log_level: str = "INFO",
 ):
   """Evaluates an agent given the eval sets.
 
@@ -511,7 +518,7 @@ def cli_eval(
 
   This will only run eval_1, eval_2 and eval_3 from sample_eval_set_file.json.
 
-  *Eval Set Id*
+  *Eval Set ID*
   For each eval set, all evals will be run by default.
 
   If you want to run only specific evals from a eval set, first create a comma
@@ -536,6 +543,7 @@ def cli_eval(
   PRINT_DETAILED_RESULTS: Prints detailed results on the console.
   """
   envs.load_dotenv_for_agent(agent_module_file_path, ".")
+  logs.setup_adk_logger(getattr(logging, log_level.upper()))
 
   try:
     from ..evaluation.base_eval_service import InferenceConfig
@@ -716,10 +724,12 @@ def cli_create_eval_set(
     agent_module_file_path: str,
     eval_set_id: str,
     eval_storage_uri: Optional[str] = None,
+    log_level: str = "INFO",
 ):
   """Creates an empty EvalSet given the agent_module_file_path and eval_set_id."""
   from .cli_eval import get_eval_sets_manager
 
+  logs.setup_adk_logger(getattr(logging, log_level.upper()))
   app_name = os.path.basename(agent_module_file_path)
   agents_dir = os.path.dirname(agent_module_file_path)
   eval_sets_manager = get_eval_sets_manager(eval_storage_uri, agents_dir)
@@ -754,10 +764,8 @@ def cli_create_eval_set(
     type=click.Path(
         exists=True, dir_okay=False, file_okay=True, resolve_path=True
     ),
-    help=(
-        "Optional. Path to session file containing SessionInput in JSON format."
-    ),
-    default=None,
+    help="Path to session file containing SessionInput in JSON format.",
+    required=True,
 )
 @eval_options()
 def cli_add_eval_case(
@@ -766,6 +774,7 @@ def cli_add_eval_case(
     scenarios_file: str,
     eval_storage_uri: Optional[str] = None,
     session_input_file: Optional[str] = None,
+    log_level: str = "INFO",
 ):
   """Adds eval cases to the given eval set.
 
@@ -774,6 +783,7 @@ def cli_add_eval_case(
 
   If an eval case for the generated id already exists, then we skip adding it.
   """
+  logs.setup_adk_logger(getattr(logging, log_level.upper()))
   try:
     from ..evaluation.conversation_scenarios import ConversationScenarios
     from ..evaluation.eval_case import EvalCase
@@ -787,10 +797,8 @@ def cli_add_eval_case(
   eval_sets_manager = get_eval_sets_manager(eval_storage_uri, agents_dir)
 
   try:
-    session_input = None
-    if session_input_file:
-      with open(session_input_file, "r") as f:
-        session_input = SessionInput.model_validate_json(f.read())
+    with open(session_input_file, "r") as f:
+      session_input = SessionInput.model_validate_json(f.read())
 
     with open(scenarios_file, "r") as f:
       conversation_scenarios = ConversationScenarios.model_validate_json(
@@ -903,7 +911,7 @@ def adk_services_options():
 
 
 def deprecated_adk_services_options():
-  """Depracated ADK services options."""
+  """Deprecated ADK services options."""
 
   def warn(alternative_param, ctx, param, value):
     if value:
@@ -1032,6 +1040,17 @@ def fast_api_common_options():
         ),
         multiple=True,
     )
+    @click.option(
+        "--url_prefix",
+        type=str,
+        help=(
+            "Optional. URL path prefix when the application is mounted behind a"
+            " reverse proxy or API gateway (e.g., '/api/v1', '/adk'). This"
+            " ensures generated URLs and redirects work correctly when the app"
+            " is not served at the root path. Must start with '/' if provided."
+        ),
+        default=None,
+    )
     @functools.wraps(func)
     @click.pass_context
     def wrapper(ctx, *args, **kwargs):
@@ -1069,6 +1088,7 @@ def cli_web(
     allow_origins: Optional[list[str]] = None,
     host: str = "127.0.0.1",
     port: int = 8000,
+    url_prefix: Optional[str] = None,
     trace_to_cloud: bool = False,
     otel_to_cloud: bool = False,
     reload: bool = True,
@@ -1132,6 +1152,7 @@ def cli_web(
       a2a=a2a,
       host=host,
       port=port,
+      url_prefix=url_prefix,
       reload_agents=reload_agents,
       extra_plugins=extra_plugins,
       logo_text=logo_text,
@@ -1168,6 +1189,7 @@ def cli_api_server(
     allow_origins: Optional[list[str]] = None,
     host: str = "127.0.0.1",
     port: int = 8000,
+    url_prefix: Optional[str] = None,
     trace_to_cloud: bool = False,
     otel_to_cloud: bool = False,
     reload: bool = True,
@@ -1207,6 +1229,7 @@ def cli_api_server(
           a2a=a2a,
           host=host,
           port=port,
+          url_prefix=url_prefix,
           reload_agents=reload_agents,
           extra_plugins=extra_plugins,
       ),
@@ -1440,25 +1463,45 @@ def cli_deploy_cloud_run(
 
 @deploy.command("agent_engine")
 @click.option(
+    "--api_key",
+    type=str,
+    default=None,
+    help=(
+        "Optional. The API key to use for Express Mode. If not"
+        " provided, the API key from the GOOGLE_API_KEY environment variable"
+        " will be used. It will only be used if GOOGLE_GENAI_USE_VERTEXAI is"
+        " true. (It will override GOOGLE_API_KEY in the .env file if it"
+        " exists.)"
+    ),
+)
+@click.option(
     "--project",
     type=str,
+    default=None,
     help=(
-        "Required. Google Cloud project to deploy the agent. It will override"
-        " GOOGLE_CLOUD_PROJECT in the .env file (if it exists)."
+        "Optional. Google Cloud project to deploy the agent. It will override"
+        " GOOGLE_CLOUD_PROJECT in the .env file (if it exists). It will be"
+        " ignored if api_key is set."
     ),
 )
 @click.option(
     "--region",
     type=str,
+    default=None,
     help=(
-        "Required. Google Cloud region to deploy the agent. It will override"
-        " GOOGLE_CLOUD_LOCATION in the .env file (if it exists)."
+        "Optional. Google Cloud region to deploy the agent. It will override"
+        " GOOGLE_CLOUD_LOCATION in the .env file (if it exists). It will be"
+        " ignored if api_key is set."
     ),
 )
 @click.option(
     "--staging_bucket",
     type=str,
-    help="Required. GCS bucket for staging the deployment artifacts.",
+    default=None,
+    help=(
+        "Optional. GCS bucket for staging the deployment artifacts. It will be"
+        " ignored if api_key is set."
+    ),
 )
 @click.option(
     "--agent_engine_id",
@@ -1466,17 +1509,20 @@ def cli_deploy_cloud_run(
     default=None,
     help=(
         "Optional. ID of the Agent Engine instance to update if it exists"
-        " (default: None, which means a new instance will be created)."
-        " The corresponding resource name in Agent Engine will be:"
+        " (default: None, which means a new instance will be created). If"
+        " project and region are set, this should be the resource ID, and the"
+        " corresponding resource name in Agent Engine will be:"
         " `projects/{project}/locations/{region}/reasoningEngines/{agent_engine_id}`."
+        " If api_key is set, then agent_engine_id is required to be the full"
+        " resource name (i.e. `projects/*/locations/*/reasoningEngines/*`)."
     ),
 )
 @click.option(
-    "--trace_to_cloud",
+    "--trace_to_cloud/--no-trace_to_cloud",
     type=bool,
     is_flag=True,
     show_default=True,
-    default=False,
+    default=None,
     help="Optional. Whether to enable Cloud Trace for Agent Engine.",
 )
 @click.option(
@@ -1505,15 +1551,20 @@ def cli_deploy_cloud_run(
 @click.option(
     "--temp_folder",
     type=str,
-    default=os.path.join(
-        tempfile.gettempdir(),
-        "agent_engine_deploy_src",
-        datetime.now().strftime("%Y%m%d_%H%M%S"),
-    ),
+    default=None,
     help=(
         "Optional. Temp folder for the generated Agent Engine source files."
         " If the folder already exists, its contents will be removed."
-        " (default: a timestamped folder in the system temp directory)."
+        " (default: a timestamped folder in the current working directory)."
+    ),
+)
+@click.option(
+    "--adk_app_object",
+    type=str,
+    default=None,
+    help=(
+        "Optional. Python object corresponding to the root ADK agent or app."
+        " It can only be `root_agent` or `app`. (default: `root_agent`)"
     ),
 )
 @click.option(
@@ -1538,12 +1589,8 @@ def cli_deploy_cloud_run(
 @click.option(
     "--absolutize_imports",
     type=bool,
-    default=True,
-    help=(
-        "Optional. Whether to absolutize imports. If True, all relative imports"
-        " will be converted to absolute import statements (default: True)."
-        " NOTE: This flag is temporary and will be removed in the future."
-    ),
+    default=False,
+    help=" NOTE: This flag is deprecated and will be removed in the future.",
 )
 @click.option(
     "--agent_engine_config_file",
@@ -1564,15 +1611,17 @@ def cli_deploy_cloud_run(
 )
 def cli_deploy_agent_engine(
     agent: str,
-    project: str,
-    region: str,
-    staging_bucket: str,
+    project: Optional[str],
+    region: Optional[str],
+    staging_bucket: Optional[str],
     agent_engine_id: Optional[str],
-    trace_to_cloud: bool,
+    trace_to_cloud: Optional[bool],
+    api_key: Optional[str],
     display_name: str,
     description: str,
     adk_app: str,
-    temp_folder: str,
+    adk_app_object: Optional[str],
+    temp_folder: Optional[str],
     env_file: str,
     requirements_file: str,
     absolutize_imports: bool,
@@ -1582,9 +1631,13 @@ def cli_deploy_agent_engine(
 
   Example:
 
+    # With Express Mode API Key
+    adk deploy agent_engine --api_key=[api_key] my_agent
+
+    # With Google Cloud Project and Region
     adk deploy agent_engine --project=[project] --region=[region]
       --staging_bucket=[staging_bucket] --display_name=[app_name]
-      path/to/my_agent
+      my_agent
   """
   try:
     cli_deploy.to_agent_engine(
@@ -1594,6 +1647,8 @@ def cli_deploy_agent_engine(
         staging_bucket=staging_bucket,
         agent_engine_id=agent_engine_id,
         trace_to_cloud=trace_to_cloud,
+        api_key=api_key,
+        adk_app_object=adk_app_object,
         display_name=display_name,
         description=description,
         adk_app=adk_app,

@@ -40,7 +40,6 @@ from ..evaluation.local_eval_sets_manager import LocalEvalSetsManager
 from ..memory.in_memory_memory_service import InMemoryMemoryService
 from ..runners import Runner
 from ..sessions.in_memory_session_service import InMemorySessionService
-from ..utils.feature_decorator import working_in_progress
 from .adk_web_server import AdkWebServer
 from .service_registry import get_service_registry
 from .utils import envs
@@ -64,6 +63,7 @@ def get_fast_api_app(
     a2a: bool = False,
     host: str = "127.0.0.1",
     port: int = 8000,
+    url_prefix: Optional[str] = None,
     trace_to_cloud: bool = False,
     otel_to_cloud: bool = False,
     reload_agents: bool = False,
@@ -144,6 +144,7 @@ def get_fast_api_app(
       extra_plugins=extra_plugins,
       logo_text=logo_text,
       logo_image_url=logo_image_url,
+      url_prefix=url_prefix,
   )
 
   # Callbacks & other optional args for when constructing the FastAPI instance
@@ -205,7 +206,6 @@ def get_fast_api_app(
       **extra_fast_api_args,
   )
 
-  @working_in_progress("builder_save is not ready for use.")
   @app.post("/builder/save", response_model_exclude_none=True)
   async def builder_build(
       files: list[UploadFile], tmp: Optional[bool] = False
@@ -243,7 +243,6 @@ def get_fast_api_app(
 
     return True
 
-  @working_in_progress("builder_save is not ready for use.")
   @app.post("/builder/app/{app_name}/cancel", response_model_exclude_none=True)
   async def builder_cancel(app_name: str) -> bool:
     base_path = Path.cwd() / agents_dir
@@ -277,7 +276,6 @@ def get_fast_api_app(
       return False
     return True
 
-  @working_in_progress("builder_get is not ready for use.")
   @app.get(
       "/builder/app/{app_name}",
       response_model_exclude_none=True,

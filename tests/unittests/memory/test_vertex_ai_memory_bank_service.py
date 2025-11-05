@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from datetime import datetime
+from typing import Optional
 from unittest import mock
 
 from google.adk.events.event import Event
@@ -69,12 +70,18 @@ MOCK_SESSION_WITH_EMPTY_EVENTS = Session(
 )
 
 
-def mock_vertex_ai_memory_bank_service():
+def mock_vertex_ai_memory_bank_service(
+    project: Optional[str] = 'test-project',
+    location: Optional[str] = 'test-location',
+    agent_engine_id: Optional[str] = '123',
+    express_mode_api_key: Optional[str] = None,
+):
   """Creates a mock Vertex AI Memory Bank service for testing."""
   return VertexAiMemoryBankService(
-      project='test-project',
-      location='test-location',
-      agent_engine_id='123',
+      project=project,
+      location=location,
+      agent_engine_id=agent_engine_id,
+      express_mode_api_key=express_mode_api_key,
   )
 
 
@@ -88,6 +95,21 @@ def mock_vertexai_client():
     mock_client.agent_engines.memories.retrieve = mock.MagicMock()
     mock_client_constructor.return_value = mock_client
     yield mock_client
+
+
+@pytest.mark.asyncio
+async def test_initialize_with_project_location_and_api_key_error():
+  with pytest.raises(ValueError) as excinfo:
+    mock_vertex_ai_memory_bank_service(
+        project='test-project',
+        location='test-location',
+        express_mode_api_key='test-api-key',
+    )
+  assert (
+      'Cannot specify project or location and express_mode_api_key. Either use'
+      ' project and location, or just the express_mode_api_key.'
+      in str(excinfo.value)
+  )
 
 
 @pytest.mark.asyncio

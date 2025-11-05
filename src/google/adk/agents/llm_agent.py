@@ -105,6 +105,16 @@ AfterToolCallback: TypeAlias = Union[
     list[_SingleAfterToolCallback],
 ]
 
+_SingleOnToolErrorCallback: TypeAlias = Callable[
+    [BaseTool, dict[str, Any], ToolContext, Exception],
+    Union[Awaitable[Optional[dict]], Optional[dict]],
+]
+
+OnToolErrorCallback: TypeAlias = Union[
+    _SingleOnToolErrorCallback,
+    list[_SingleOnToolErrorCallback],
+]
+
 InstructionProvider: TypeAlias = Callable[
     [ReadonlyContext], Union[str, Awaitable[str]]
 ]
@@ -267,8 +277,9 @@ class LlmAgent(BaseAgent):
   disallow_transfer_to_parent: bool = False
   """Disallows LLM-controlled transferring to the parent agent.
 
-  NOTE: Setting this as True also prevents this agent to continue reply to the
-  end-user. This behavior prevents one-way transfer, in which end-user may be
+  NOTE: Setting this as True also prevents this agent from continuing to reply
+  to the end-user, and will transfer control back to the parent agent in the
+  next turn. This behavior prevents one-way transfer, in which end-user may be
   stuck with one agent that cannot transfer to other agents in the agent tree.
   """
   disallow_transfer_to_peers: bool = False
@@ -383,6 +394,21 @@ class LlmAgent(BaseAgent):
   Returns:
     When present, the returned dict will be used as tool result.
   """
+  on_tool_error_callback: Optional[OnToolErrorCallback] = None
+  """Callback or list of callbacks to be called when a tool call encounters an error.
+
+  When a list of callbacks is provided, the callbacks will be called in the
+  order they are listed until a callback does not return None.
+
+  Args:
+    tool: The tool to be called.
+    args: The arguments to the tool.
+    tool_context: ToolContext,
+    error: The error from the tool call.
+
+  Returns:
+    When present, the returned dict will be used as tool result.
+  """
   # Callbacks - End
 
   @override
@@ -404,16 +430,24 @@ class LlmAgent(BaseAgent):
       yield self._create_agent_state_event(ctx)
       return
 
+    should_pause = False
     async with Aclosing(self._llm_flow.run_async(ctx)) as agen:
       async for event in agen:
         self.__maybe_save_output_to_state(event)
         yield event
         if ctx.should_pause_invocation(event):
-          return
+          # Do not pause immediately, wait until the long running tool call is
+          # executed.
+          should_pause = True
+    if should_pause:
+      return
 
     if ctx.is_resumable:
       events = ctx._get_events(current_invocation=True, current_branch=True)
-      if events and ctx.should_pause_invocation(events[-1]):
+      if events and (
+          ctx.should_pause_invocation(events[-1])
+          or ctx.should_pause_invocation(events[-2])
+      ):
         return
       # Only yield an end state if the last event is no longer a long running
       # tool call.
@@ -582,6 +616,20 @@ class LlmAgent(BaseAgent):
     return [self.after_tool_callback]
 
   @property
+  def canonical_on_tool_error_callbacks(
+      self,
+  ) -> list[OnToolErrorCallback]:
+    """The resolved self.on_tool_error_callback field as a list of OnToolErrorCallback.
+
+    This method is only for use by Agent Development Kit.
+    """
+    if not self.on_tool_error_callback:
+      return []
+    if isinstance(self.on_tool_error_callback, list):
+      return self.on_tool_error_callback
+    return [self.on_tool_error_callback]
+
+  @property
   def _llm_flow(self) -> BaseLlmFlow:
     if (
         self.disallow_transfer_to_parent
@@ -641,8 +689,42 @@ class LlmAgent(BaseAgent):
     """Find the agent to run under the root agent by name."""
     agent_to_run = self.root_agent.find_agent(agent_name)
     if not agent_to_run:
-      raise ValueError(f'Agent {agent_name} not found in the agent tree.')
+      available = self._get_available_agent_names()
+      error_msg = (
+          f"Agent '{agent_name}' not found.\n"
+          f"Available agents: {', '.join(available)}\n\n"
+          'Possible causes:\n'
+          '  1. Agent not registered before being referenced\n'
+          '  2. Agent name mismatch (typo or case sensitivity)\n'
+          '  3. Timing issue (agent referenced before creation)\n\n'
+          'Suggested fixes:\n'
+          '  - Verify agent is registered with root agent\n'
+          '  - Check agent name spelling and case\n'
+          '  - Ensure agents are created before being referenced'
+      )
+      raise ValueError(error_msg)
     return agent_to_run
+
+  def _get_available_agent_names(self) -> list[str]:
+    """Helper to get all agent names in the tree for error reporting.
+
+    This is a private helper method used only for error message formatting.
+    Traverses the agent tree starting from root_agent and collects all
+    agent names for display in error messages.
+
+    Returns:
+      List of all agent names in the agent tree.
+    """
+    agents = []
+
+    def collect_agents(agent):
+      agents.append(agent.name)
+      if hasattr(agent, 'sub_agents') and agent.sub_agents:
+        for sub_agent in agent.sub_agents:
+          collect_agents(sub_agent)
+
+    collect_agents(self.root_agent)
+    return agents
 
   def __get_transfer_to_agent_or_none(
       self, event: Event, from_agent: str
@@ -696,31 +778,7 @@ class LlmAgent(BaseAgent):
 
   @model_validator(mode='after')
   def __model_validator_after(self) -> LlmAgent:
-    self.__check_output_schema()
     return self
-
-  def __check_output_schema(self):
-    if not self.output_schema:
-      return
-
-    if (
-        not self.disallow_transfer_to_parent
-        or not self.disallow_transfer_to_peers
-    ):
-      logger.warning(
-          'Invalid config for agent %s: output_schema cannot co-exist with'
-          ' agent transfer configurations. Setting'
-          ' disallow_transfer_to_parent=True, disallow_transfer_to_peers=True',
-          self.name,
-      )
-      self.disallow_transfer_to_parent = True
-      self.disallow_transfer_to_peers = True
-
-    if self.sub_agents:
-      raise ValueError(
-          f'Invalid config for agent {self.name}: if output_schema is set,'
-          ' sub_agents must be empty to disable agent transfer.'
-      )
 
   @field_validator('generate_content_config', mode='after')
   @classmethod

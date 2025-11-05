@@ -125,6 +125,7 @@ class AgentEngineSandboxCodeExecutor(BaseCodeExecutor):
             input_data=input_data,
         )
     )
+    logger.debug('Executed code:\n```\n%s\n```', code_execution_input.code)
     saved_files = []
     stdout = ''
     stderr = ''

@@ -20,7 +20,9 @@ from unittest.mock import MagicMock
 from unittest.mock import patch
 
 from google.adk.agents.llm_agent import Agent
+from google.adk.code_executors.base_code_executor import BaseCodeExecutor
 from google.adk.code_executors.built_in_code_executor import BuiltInCodeExecutor
+from google.adk.code_executors.code_execution_utils import CodeExecutionResult
 from google.adk.flows.llm_flows._code_execution import response_processor
 from google.adk.models.llm_response import LlmResponse
 from google.genai import types
@@ -105,3 +107,44 @@ async def test_builtin_code_executor_image_artifact_creation(mock_datetime):
       == f'Saved as artifact: {expected_filename2}. '
   )
   assert not llm_response.content.parts[2].inline_data
+
+
+@pytest.mark.asyncio
+@patch('google.adk.flows.llm_flows._code_execution.logger')
+async def test_logs_executed_code(mock_logger):
+  """Test that the response processor logs the code it executes."""
+  mock_code_executor = MagicMock(spec=BaseCodeExecutor)
+  mock_code_executor.code_block_delimiters = [('```python\n', '\n```')]
+  mock_code_executor.error_retry_attempts = 2
+  mock_code_executor.stateful = False
+  mock_code_executor.execute_code.return_value = CodeExecutionResult(
+      stdout='hello'
+  )
+
+  agent = Agent(name='test_agent', code_executor=mock_code_executor)
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content='test message'
+  )
+  invocation_context.artifact_service = MagicMock()
+  invocation_context.artifact_service.save_artifact = AsyncMock()
+
+  llm_response = LlmResponse(
+      content=types.Content(
+          parts=[
+              types.Part(text='Here is some code:'),
+              types.Part(text='```python\nprint("hello")\n```'),
+          ]
+      )
+  )
+
+  _ = [
+      event
+      async for event in response_processor.run_async(
+          invocation_context, llm_response
+      )
+  ]
+
+  mock_code_executor.execute_code.assert_called_once()
+  mock_logger.debug.assert_called_once_with(
+      'Executed code:\n```\n%s\n```', 'print("hello")'
+  )

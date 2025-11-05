@@ -52,7 +52,7 @@ class EnterpriseWebSearchTool(BaseTool):
     if is_gemini_model(llm_request.model):
       if is_gemini_1_model(llm_request.model) and llm_request.config.tools:
         raise ValueError(
-            'Enterprise web search tool can not be used with other tools in'
+            'Enterprise web search tool cannot be used with other tools in'
             ' Gemini 1.x.'
         )
       llm_request.config = llm_request.config or types.GenerateContentConfig()

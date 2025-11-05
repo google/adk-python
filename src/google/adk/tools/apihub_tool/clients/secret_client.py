@@ -29,7 +29,7 @@ class SecretManagerClient:
 
   This class provides a simplified interface for retrieving secrets from
   Secret Manager, handling authentication using either a service account
-  JSON keyfile (passed as a string) or a pre-existing authorization token.
+  JSON keyfile (passed as a string) or a preexisting authorization token.
 
   Attributes:
       _credentials:  Google Cloud credentials object (ServiceAccountCredentials

@@ -102,7 +102,7 @@ class PluginManager:
       plugin_name: The name of the plugin to retrieve.
 
     Returns:
-      The plugin instance if found, otherwise `None`.
+      The plugin instance if found; otherwise, `None`.
     """
     return next((p for p in self.plugins if p.name == plugin_name), None)
 

@@ -24,7 +24,7 @@ from google.adk.auth.auth_credential import AuthCredential
 from google.adk.auth.auth_credential import AuthCredentialTypes
 from google.adk.auth.auth_credential import OAuth2Auth
 from google.adk.auth.auth_schemes import OpenIdConnectWithConfig
-from google.adk.auth.exchanger.base_credential_exchanger import CredentialExchangError
+from google.adk.auth.exchanger.base_credential_exchanger import CredentialExchangeError
 from google.adk.auth.exchanger.oauth2_credential_exchanger import OAuth2CredentialExchanger
 import pytest
 
@@ -117,7 +117,7 @@ class TestOAuth2CredentialExchanger:
     try:
       await exchanger.exchange(credential, None)
       assert False, "Should have raised ValueError"
-    except CredentialExchangError as e:
+    except CredentialExchangeError as e:
       assert "auth_scheme is required" in str(e)
 
   @patch("google.adk.auth.oauth2_credential_util.OAuth2Session")
