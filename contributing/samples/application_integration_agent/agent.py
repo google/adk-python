@@ -40,7 +40,7 @@ root_agent = LlmAgent(
     model="gemini-2.0-flash",
     name="Issue_Management_Agent",
     instruction="""
-    You are an agent that helps manage issues in a JIRA instance.
+    You are an agent that helps manage issues in a Jira instance.
     Be accurate in your responses based on the tool response. You can perform any formatting in the response that is appropriate or if asked by the user.
     If there is an error in the tool response, understand the error and try and see if you can fix the error and then  and execute the tool again. For example if a variable or parameter is missing, try and see if you can find it in the request or user query or default it and then execute the tool again or check for other tools that could give you the details.
     If there are any math operations like count or max, min in the user request, call the tool to get the data and perform the math operations and then return the result in the response. For example for maximum, fetch the list and then do the math operation.

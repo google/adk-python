@@ -64,7 +64,8 @@ async def test_with_description():
   ):
     pass
 
-  assert request.config.system_instruction == "\n\n".join([
-      'You are an agent. Your internal name is "agent".',
-      ' The description about you is "test description"',
-  ])
+  assert (
+      request.config.system_instruction
+      == """\
+You are an agent. Your internal name is "agent". The description about you is "test description"."""
+  )

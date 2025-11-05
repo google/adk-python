@@ -23,7 +23,7 @@ distributed via the `google.adk.tools.spanner` module. These tools include:
 
 1. `get_table_schema`
 
-  Fetches Spanner database table schema.
+  Fetches Spanner database table schema and metadata information.
 
 1. `execute_sql`
 
