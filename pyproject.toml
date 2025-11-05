@@ -206,7 +206,7 @@ asyncio_mode = "auto"
 python_version = "3.9"
 exclude = "tests/"
 plugins = ["pydantic.mypy"]
-# Start with non-strict mode, and swtich to strict mode later.
+# Start with non-strict mode, and switch to strict mode later.
 # strict = true
 disable_error_code = ["import-not-found", "import-untyped", "unused-ignore"]
 follow_imports = "skip"
