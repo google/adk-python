@@ -32,6 +32,8 @@ dependencies = [
   "fastapi>=0.115.0, <1.119.0",                              # FastAPI framework
   "google-api-python-client>=2.157.0, <3.0.0",               # Google API client discovery
   "google-cloud-aiplatform[agent_engines]>=1.125.0, <2.0.0", # For VertexAI integrations, e.g. example store.
+  "google-cloud-bigquery-storage>=2.0.0",
+  "google-cloud-bigquery>=2.2.0",
   "google-cloud-bigtable>=2.32.0",                           # For Bigtable database
   "google-cloud-discoveryengine>=0.13.12, <0.14.0",          # For Discovery Engine Search Tool
   "google-cloud-secret-manager>=2.22.0, <3.0.0",             # Fetching secrets in RestAPI Tool
@@ -48,6 +50,7 @@ dependencies = [
   "opentelemetry-exporter-otlp-proto-http>=1.36.0",
   "opentelemetry-resourcedetector-gcp>=1.9.0a0, <2.0.0",
   "opentelemetry-sdk>=1.37.0, <=1.37.0",
+  "pyarrow>=14.0.0",
   "pydantic>=2.0, <3.0.0",                                   # For data validation/models
   "python-dateutil>=2.9.0.post0, <3.0.0",                    # For Vertext AI Session Service
   "python-dotenv>=1.0.0, <2.0.0",                            # To manage environment variables
@@ -206,7 +209,7 @@ asyncio_mode = "auto"
 python_version = "3.9"
 exclude = "tests/"
 plugins = ["pydantic.mypy"]
-# Start with non-strict mode, and switch to strict mode later.
+# Start with non-strict mode, and swtich to strict mode later.
 # strict = true
 disable_error_code = ["import-not-found", "import-untyped", "unused-ignore"]
 follow_imports = "skip"
