@@ -29,6 +29,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.run_config import RunConfig
+from google.adk.apps.app import App
 from google.adk.cli.fast_api import get_fast_api_app
 from google.adk.evaluation.eval_case import EvalCase
 from google.adk.evaluation.eval_case import Invocation
@@ -38,7 +39,9 @@ from google.adk.evaluation.in_memory_eval_sets_manager import InMemoryEvalSetsMa
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
 from google.adk.runners import Runner
-from google.adk.sessions.base_session_service import ListSessionsResponse
+from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.sessions.session import Session
+from google.adk.sessions.state import State
 from google.genai import types
 from pydantic import BaseModel
 import pytest
@@ -151,28 +154,6 @@ class _MockEvalCaseResult(BaseModel):
   eval_metric_result_per_invocation: list = {}
 
 
-# Mock for the run_evals function, tailored for test_run_eval
-async def mock_run_evals_for_fast_api(*args, **kwargs):
-  # This is what the test_run_eval expects for its assertions
-  yield _MockEvalCaseResult(
-      eval_set_id="test_eval_set_id",  # Matches expected in verify_eval_case_result
-      eval_id="test_eval_case_id",  # Matches expected
-      final_eval_status=1,  # Matches expected (assuming 1 is PASSED)
-      user_id="test_user",  # Placeholder, adapt if needed
-      session_id="test_session_for_eval_case",  # Placeholder
-      eval_set_file="test_eval_set_file",  # Placeholder
-      overall_eval_metric_results=[{  # Matches expected
-          "metricName": "tool_trajectory_avg_score",
-          "threshold": 0.5,
-          "score": 1.0,
-          "evalStatus": 1,
-      }],
-      # Provide other fields if RunEvalResult or subsequent processing needs them
-      eval_metric_results=[],
-      eval_metric_result_per_invocation=[],
-  )
-
-
 #################################################
 # Test Fixtures
 #################################################
@@ -214,98 +195,8 @@ def mock_agent_loader():
 
 @pytest.fixture
 def mock_session_service():
-  """Create a mock session service that uses an in-memory dictionary."""
-
-  # In-memory database to store sessions during testing
-  session_data = {
-      "test_app": {
-          "test_user": {
-              "test_session": {
-                  "id": "test_session",
-                  "app_name": "test_app",
-                  "user_id": "test_user",
-                  "events": [],
-                  "state": {},
-                  "created_at": time.time(),
-              }
-          }
-      }
-  }
-
-  # Mock session service class that operates on the in-memory database
-  class MockSessionService:
-
-    async def get_session(self, app_name, user_id, session_id):
-      """Retrieve a session by ID."""
-      if (
-          app_name in session_data
-          and user_id in session_data[app_name]
-          and session_id in session_data[app_name][user_id]
-      ):
-        return session_data[app_name][user_id][session_id]
-      return None
-
-    async def create_session(
-        self, app_name, user_id, state=None, session_id=None
-    ):
-      """Create a new session."""
-      if session_id is None:
-        session_id = f"session_{int(time.time())}"
-
-      # Initialize app_name and user_id if they don't exist
-      if app_name not in session_data:
-        session_data[app_name] = {}
-      if user_id not in session_data[app_name]:
-        session_data[app_name][user_id] = {}
-
-      # Create the session
-      session = {
-          "id": session_id,
-          "app_name": app_name,
-          "user_id": user_id,
-          "events": [],
-          "state": state or {},
-      }
-
-      session_data[app_name][user_id][session_id] = session
-      return session
-
-    async def list_sessions(self, app_name, user_id):
-      """List all sessions for a user."""
-      if app_name not in session_data or user_id not in session_data[app_name]:
-        return {"sessions": []}
-
-      return ListSessionsResponse(
-          sessions=list(session_data[app_name][user_id].values())
-      )
-
-    async def delete_session(self, app_name, user_id, session_id):
-      """Delete a session."""
-      if (
-          app_name in session_data
-          and user_id in session_data[app_name]
-          and session_id in session_data[app_name][user_id]
-      ):
-        del session_data[app_name][user_id][session_id]
-
-    async def append_event(self, session, event):
-      """Append an event to a session."""
-      # Update session state if event has state_delta
-      if event.actions and event.actions.state_delta:
-        session["state"].update(event.actions.state_delta)
-
-      # Add event to session events
-      session["events"].append(event.model_dump())
-
-      # Update the session in storage
-      session_data[session["app_name"]][session["user_id"]][
-          session["id"]
-      ] = session
-
-      return event
-
-  # Return an instance of our mock service
-  return MockSessionService()
+  """Create an in-memory session service instance for testing."""
+  return InMemorySessionService()
 
 
 @pytest.fixture
@@ -451,10 +342,6 @@ def test_app(
           "google.adk.cli.fast_api.LocalEvalSetResultsManager",
           return_value=mock_eval_set_results_manager,
       ),
-      patch(
-          "google.adk.cli.cli_eval.run_evals",  # Patch where it's imported in fast_api.py
-          new=mock_run_evals_for_fast_api,
-      ),
   ):
     # Get the FastAPI app, but don't actually run it
     app = get_fast_api_app(
@@ -489,7 +376,7 @@ async def create_test_session(
       state={},
   )
 
-  logger.info(f"Created test session: {session['id']}")
+  logger.info(f"Created test session: {session.id}")
   return test_session_info
 
 
@@ -602,10 +489,6 @@ def test_app_with_a2a(
           "google.adk.cli.fast_api.LocalEvalSetResultsManager",
           return_value=mock_eval_set_results_manager,
       ),
-      patch(
-          "google.adk.cli.cli_eval.run_evals",
-          new=mock_run_evals_for_fast_api,
-      ),
       patch("a2a.server.tasks.InMemoryTaskStore") as mock_task_store,
       patch(
           "google.adk.a2a.executor.a2a_agent_executor.A2aAgentExecutor"
@@ -680,6 +563,22 @@ def test_create_session_with_id(test_app, test_session_info):
   assert data["appName"] == test_session_info["app_name"]
   assert data["userId"] == test_session_info["user_id"]
   logger.info(f"Created session with ID: {data['id']}")
+
+
+def test_create_session_with_id_already_exists(test_app, test_session_info):
+  """Test creating a session with an ID that already exists."""
+  session_id = "existing_session_id"
+  url = f"/apps/{test_session_info['app_name']}/users/{test_session_info['user_id']}/sessions/{session_id}"
+
+  # Create the session for the first time
+  response = test_app.post(url, json={"state": {}})
+  assert response.status_code == 200
+
+  # Attempt to create it again
+  response = test_app.post(url, json={"state": {}})
+  assert response.status_code == 409
+  assert "Session already exists" in response.json()["detail"]
+  logger.info("Verified 409 on duplicate session creation.")
 
 
 def test_create_session_without_id(test_app, test_session_info):
@@ -781,9 +680,7 @@ def test_update_session(test_app, create_test_session):
   state_patch_events = [
       event
       for event in events
-      if (
-          event.get("invocationId") or event.get("invocation_id", "")
-      ).startswith("p-")
+      if event.get("invocationId", "").startswith("p-")
   ]
 
   assert len(state_patch_events) == 1, (
@@ -794,9 +691,9 @@ def test_update_session(test_app, create_test_session):
   assert state_patch_event["author"] == "user"
 
   # Check for actions in both camelCase and snake_case
-  actions = state_patch_event.get("actions") or state_patch_event.get("actions")
+  actions = state_patch_event.get("actions")
   assert actions is not None, f"No actions found in event: {state_patch_event}"
-  state_delta_in_event = actions.get("state_delta") or actions.get("stateDelta")
+  state_delta_in_event = actions.get("stateDelta")
   assert state_delta_in_event == state_delta
 
   logger.info("Session state patched successfully")
@@ -846,7 +743,7 @@ def test_agent_run(test_app, create_test_session):
   )
 
   # Third event should have interrupted flag
-  assert data[2]["interrupted"] == True
+  assert data[2]["interrupted"] is True
 
   logger.info("Agent run test completed successfully")
 
@@ -1005,6 +902,56 @@ def test_debug_trace(test_app):
   # Verify we get a 404 for a nonexistent trace
   assert response.status_code == 404
   logger.info("Debug trace test completed successfully")
+
+
+def test_get_event_graph_returns_dot_src_for_app_agent():
+  """Ensure graph endpoint unwraps App instances before building the graph."""
+  from google.adk.cli.adk_web_server import AdkWebServer
+
+  root_agent = DummyAgent(name="dummy_agent")
+  app_agent = App(name="test_app", root_agent=root_agent)
+
+  class Loader:
+
+    def load_agent(self, app_name):
+      return app_agent
+
+    def list_agents(self):
+      return [app_agent.name]
+
+  session_service = AsyncMock()
+  session = Session(
+      id="session_id",
+      app_name="test_app",
+      user_id="user",
+      state={},
+      events=[Event(author="dummy_agent")],
+  )
+  event_id = session.events[0].id
+  session_service.get_session.return_value = session
+
+  adk_web_server = AdkWebServer(
+      agent_loader=Loader(),
+      session_service=session_service,
+      memory_service=MagicMock(),
+      artifact_service=MagicMock(),
+      credential_service=MagicMock(),
+      eval_sets_manager=MagicMock(),
+      eval_set_results_manager=MagicMock(),
+      agents_dir=".",
+  )
+
+  fast_api_app = adk_web_server.get_fast_api_app(
+      setup_observer=lambda _observer, _server: None,
+      tear_down_observer=lambda _observer, _server: None,
+  )
+
+  client = TestClient(fast_api_app)
+  response = client.get(
+      f"/apps/test_app/users/user/sessions/session_id/events/{event_id}/graph"
+  )
+  assert response.status_code == 200
+  assert "dotSrc" in response.json()
 
 
 @pytest.mark.skipif(

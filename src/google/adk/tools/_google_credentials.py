@@ -70,7 +70,7 @@ class BaseGoogleCredentialsConfig(BaseModel):
   `google.auth.load_credentials_from_file(...)`. See more details in
   https://cloud.google.com/iam/docs/service-account-creds#user-managed-keys.
 
-  When the deployed environment cannot provide a pre-existing credential,
+  When the deployed environment cannot provide a preexisting credential,
   consider setting below client_id, client_secret and scope for end users to go
   through oauth flow, so that agent can access the user data.
   """

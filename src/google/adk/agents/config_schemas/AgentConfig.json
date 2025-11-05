@@ -629,7 +629,7 @@
             }
           ],
           "default": null,
-          "description": "Optional. The producer of the content. Must be either 'user' or\n      'model'. Useful to set for multi-turn conversations, otherwise can be\n      empty. If role is not specified, SDK will determine the role.",
+          "description": "Optional. The producer of the content. Must be either 'user' or\n      'model'. Useful to set for multi-turn conversations; otherwise, can be\n      empty. If role is not specified, SDK will determine the role.",
           "title": "Role"
         }
       },
@@ -1095,7 +1095,7 @@
             }
           ],
           "default": null,
-          "description": "Optional. Display name of the file data. Used to provide a label or filename to distinguish file datas. It is not currently used in the Gemini GenerateContent calls.",
+          "description": "Optional. Display name of the file data. Used to provide a label or filename to distinguish file data. It is not currently used in the Gemini GenerateContent calls.",
           "title": "Displayname"
         },
         "fileUri": {
@@ -1347,7 +1347,7 @@
             }
           ],
           "default": null,
-          "description": "Optional. Describes the parameters to this function in JSON Schema Object format. Reflects the Open API 3.03 Parameter Object. string Key: the name of the parameter. Parameter names are case sensitive. Schema Value: the Schema defining the type used for the parameter. For function with no parameters, this can be left unset. Parameter names must start with a letter or an underscore and must only contain chars a-z, A-Z, 0-9, or underscores with a maximum length of 64. Example with 1 required and 1 optional parameter: type: OBJECT properties: param1: type: STRING param2: type: INTEGER required: - param1"
+          "description": "Optional. Describes the parameters to this function in JSON Schema Object format. Reflects the Open API 3.03 Parameter Object. string Key: the name of the parameter. Parameter names are case-sensitive. Schema Value: the Schema defining the type used for the parameter. For function with no parameters, this can be left unset. Parameter names must start with a letter or an underscore and must only contain chars a-z, A-Z, 0-9, or underscores with a maximum length of 64. Example with 1 required and 1 optional parameter: type: OBJECT properties: param1: type: STRING param2: type: INTEGER required: - param1"
         },
         "parametersJsonSchema": {
           "anyOf": [
@@ -4083,7 +4083,7 @@
             }
           ],
           "default": null,
-          "description": "Optional. Number of search results to return per query. The default value is 10. The maximumm allowed value is 10.",
+          "description": "Optional. Number of search results to return per query. The default value is 10. The maximum allowed value is 10.",
           "title": "Maxresults"
         }
       },
@@ -4501,7 +4501,7 @@
     },
     "mcp__types__Tool": {
       "additionalProperties": true,
-      "description": "Definition for a tool the client can call.",
+      "description": "Definition for a tool that the client can call.",
       "properties": {
         "name": {
           "title": "Name",

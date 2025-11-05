@@ -395,7 +395,8 @@ class HallucinationsV1Evaluator(Evaluator):
         },
         {
           "name": "get_weather",
-          "description": '''Gets the weather of the given place at the given time.
+          "description": '''Gets the weather of the given place at the given
+          time.
 
     Args:
       location: The location for which to retrieve weather information.
@@ -408,7 +409,8 @@ class HallucinationsV1Evaluator(Evaluator):
             "type": "object",
             "properties": {
               "location": {
-                "description": "The location for which to retrieve weather information.",
+                "description": "The location for which to retrieve weather
+                information.",
                 "type": "string"
               },
               "time": {
@@ -694,7 +696,7 @@ class HallucinationsV1Evaluator(Evaluator):
     if not valid_results:
       return EvaluationResult(
           overall_score=None,
-          overall_eval_status=EvalStatus.FAILED,
+          overall_eval_status=EvalStatus.NOT_EVALUATED,
           per_invocation_results=per_invocation_results,
       )
 
@@ -711,8 +713,15 @@ class HallucinationsV1Evaluator(Evaluator):
   async def evaluate_invocations(
       self,
       actual_invocations: list[Invocation],
-      expected_invocations: list[Invocation],
+      expected_invocations: Optional[list[Invocation]],
   ) -> EvaluationResult:
+    # expected_invocations are not required by the metric and if they are not
+    # supplied, we provide an a list of None to rest of the code.
+    expected_invocations = (
+        [None] * len(actual_invocations)
+        if expected_invocations is None
+        else expected_invocations
+    )
     per_invocation_results = []
     for actual, expected in zip(actual_invocations, expected_invocations):
       step_evaluations = self._get_steps_to_evaluate(actual)

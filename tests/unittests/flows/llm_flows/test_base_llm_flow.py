@@ -14,22 +14,24 @@
 
 """Unit tests for BaseLlmFlow toolset integration."""
 
-from typing import Optional
+from unittest import mock
 from unittest.mock import AsyncMock
 
-from google.adk.agents.callback_context import CallbackContext
 from google.adk.agents.llm_agent import Agent
 from google.adk.events.event import Event
 from google.adk.flows.llm_flows.base_llm_flow import BaseLlmFlow
+from google.adk.models.google_llm import Gemini
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.tools.base_toolset import BaseToolset
-from google.adk.tools.google_search_tool import google_search
+from google.adk.tools.google_search_tool import GoogleSearchTool
 from google.genai import types
 import pytest
 
 from ... import testing_utils
+
+google_search = GoogleSearchTool(bypass_multi_tools_limit=True)
 
 
 class BaseLlmFlowForTesting(BaseLlmFlow):
@@ -93,7 +95,6 @@ async def test_preprocess_calls_toolset_process_llm_request():
 async def test_preprocess_handles_mixed_tools_and_toolsets():
   """Test that _preprocess_async properly handles both tools and toolsets."""
   from google.adk.tools.base_tool import BaseTool
-  from google.adk.tools.function_tool import FunctionTool
 
   # Create a mock tool
   class _MockTool(BaseTool):
@@ -196,6 +197,46 @@ async def test_preprocess_with_google_search_workaround():
   declarations = llm_request.config.tools[0].function_declarations
   assert len(declarations) == 2
   assert {d.name for d in declarations} == {'_my_tool', 'google_search_agent'}
+
+
+@pytest.mark.asyncio
+async def test_preprocess_calls_convert_tool_union_to_tools():
+  """Test that _preprocess_async calls _convert_tool_union_to_tools."""
+
+  class _MockTool:
+    process_llm_request = AsyncMock()
+
+  mock_tool_instance = _MockTool()
+
+  def _my_tool(sides: int) -> int:
+    """A simple tool."""
+    return sides
+
+  with mock.patch(
+      'google.adk.agents.llm_agent._convert_tool_union_to_tools',
+      new_callable=AsyncMock,
+  ) as mock_convert:
+    mock_convert.return_value = [mock_tool_instance]
+
+    model = Gemini(model='gemini-2')
+    agent = Agent(
+        name='test_agent', model=model, tools=[_my_tool, google_search]
+    )
+    invocation_context = await testing_utils.create_invocation_context(
+        agent=agent, user_content='test message'
+    )
+    flow = BaseLlmFlowForTesting()
+    llm_request = LlmRequest(model='gemini-2')
+
+    async for _ in flow._preprocess_async(invocation_context, llm_request):
+      pass
+
+    mock_convert.assert_called_with(
+        google_search,
+        mock.ANY,  # ReadonlyContext(invocation_context)
+        model,
+        True,  # multiple_tools
+    )
 
 
 # TODO(b/448114567): Remove the following

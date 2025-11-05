@@ -87,7 +87,11 @@ class TestDiscoveryEngineSearchTool:
             chunk=discoveryengine.Chunk(
                 document_metadata={
                     "title": "Test Title",
-                    "uri": "http://example.com",
+                    "uri": "gs://test_bucket/test_file",
+                    "struct_data": {
+                        "key1": "value1",
+                        "uri": "http://example.com",
+                    },
                 },
                 content="Test Content",
             )

@@ -152,6 +152,7 @@ class VertexAiCodeExecutor(BaseCodeExecutor):
         code_execution_input.input_files,
         code_execution_input.execution_id,
     )
+    logger.debug('Executed code:\n```\n%s\n```', code_execution_input.code)
 
     # Save output file as artifacts.
     saved_files = []
@@ -187,11 +188,13 @@ class VertexAiCodeExecutor(BaseCodeExecutor):
         )
 
     # Collect the final result.
-    return CodeExecutionResult(
+    result = CodeExecutionResult(
         stdout=code_execution_result.get('execution_result', ''),
         stderr=code_execution_result.get('execution_error', ''),
         output_files=saved_files,
     )
+    logger.debug('Code execution result: %s', result)
+    return result
 
   def _execute_code_interpreter(
       self,

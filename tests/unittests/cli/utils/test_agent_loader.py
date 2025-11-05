@@ -286,7 +286,7 @@ class TestAgentLoader:
       loader = AgentLoader(temp_dir)
       agents_dir = temp_dir  # For use in the expected message string
 
-      # Try to load non-existent agent
+      # Try to load nonexistent agent
       with pytest.raises(ValueError) as exc_info:
         loader.load_agent("nonexistent_agent")
 
@@ -328,12 +328,12 @@ class TestAgentLoader:
       assert "No root_agent found for 'broken_agent'" in str(exc_info.value)
 
   def test_agent_internal_module_not_found_error(self):
-    """Test error when an agent tries to import a non-existent module."""
+    """Test error when an agent tries to import a nonexistent module."""
     with tempfile.TemporaryDirectory() as temp_dir:
       temp_path = Path(temp_dir)
       agent_name = "importer_agent"
 
-      # Create agent that imports a non-existent module
+      # Create agent that imports a nonexistent module
       agent_file = temp_path / f"{agent_name}.py"
       agent_file.write_text(dedent(f"""
                 from google.adk.agents.base_agent import BaseAgent
@@ -526,7 +526,7 @@ class TestAgentLoader:
       loader = AgentLoader(temp_dir)
       agents_dir = temp_dir  # For use in the expected message string
 
-      # Try to load non-existent YAML agent
+      # Try to load nonexistent YAML agent
       with pytest.raises(ValueError) as exc_info:
         loader.load_agent("nonexistent_yaml_agent")
 

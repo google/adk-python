@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime
 from datetime import timezone
 import logging
@@ -55,6 +56,34 @@ DEFAULT_ERROR_MESSAGE = "An error occurred during processing"
 
 # Logger
 logger = logging.getLogger("google_adk." + __name__)
+
+
+AdkEventToA2AEventsConverter = Callable[
+    [
+        Event,
+        InvocationContext,
+        Optional[str],
+        Optional[str],
+        GenAIPartToA2APartConverter,
+    ],
+    List[A2AEvent],
+]
+"""A callable that converts an ADK Event into a list of A2A events.
+
+This interface allows for custom logic to map ADK's event structure to the
+event structure expected by the A2A server.
+
+Args:
+    event: The source ADK Event to convert.
+    invocation_context: The context of the ADK agent invocation.
+    task_id: The ID of the A2A task being processed.
+    context_id: The context ID from the A2A request.
+    part_converter: A function to convert GenAI content parts to A2A
+      parts.
+
+Returns:
+    A list of A2A events.
+"""
 
 
 def _serialize_metadata_value(value: Any) -> str:

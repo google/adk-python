@@ -13,9 +13,6 @@
 # limitations under the License.
 
 import json
-from unittest.mock import AsyncMock
-from unittest.mock import MagicMock
-from unittest.mock import patch
 
 from google.adk.evaluation.app_details import AgentDetails
 from google.adk.evaluation.app_details import AppDetails
@@ -34,13 +31,13 @@ import pytest
 
 
 @pytest.fixture
-def mock_llm_registry():
+def mock_llm_registry(mocker):
   """Mocks LLMRegistry to avoid actual model loading during tests."""
-  with patch(
+  MockLLMRegistry = mocker.patch(
       "google.adk.evaluation.hallucinations_v1.LLMRegistry"
-  ) as MockLLMRegistry:
-    MockLLMRegistry.return_value.resolve.return_value = AsyncMock
-    yield
+  )
+  MockLLMRegistry.return_value.resolve.return_value = mocker.MagicMock()
+  yield
 
 
 @pytest.fixture
@@ -176,8 +173,8 @@ contradicting_excerpt: Pears are blue fruits
 class TestEvaluateNlResponse:
   """Test cases for _evaluate_nl_response method."""
 
-  def _create_genai_response(self, text):
-    response_mock = MagicMock()
+  def _create_genai_response(self, text, mocker):
+    response_mock = mocker.MagicMock()
     response_mock.content = genai_types.Content(
         parts=[genai_types.Part(text=text)]
     )
@@ -185,12 +182,12 @@ class TestEvaluateNlResponse:
 
   @pytest.mark.asyncio
   async def test_evaluate_nl_response_unexpected_labels(
-      self, hallucinations_metric
+      self, hallucinations_metric, mocker
   ):
     """Tests _evaluate_nl_response with unexpected labels."""
     metric = hallucinations_metric
     seg_response = self._create_genai_response(
-        "<sentence>sentence 1</sentence><sentence>sentence 2</sentence>"
+        "<sentence>sentence 1</sentence><sentence>sentence 2</sentence>", mocker
     )
     val_response_text = """sentence: sentence 1
 label:
@@ -204,7 +201,7 @@ rationale: r2
 supporting_excerpt: null
 contradicting_excerpt: null
 """
-    val_response = self._create_genai_response(val_response_text)
+    val_response = self._create_genai_response(val_response_text, mocker)
 
     async def seg_gen():
       yield seg_response
@@ -212,7 +209,7 @@ contradicting_excerpt: null
     async def val_gen():
       yield val_response
 
-    metric._judge_model.generate_content_async = MagicMock(
+    metric._judge_model.generate_content_async = mocker.MagicMock(
         side_effect=[
             seg_gen(),
             val_gen(),
@@ -223,14 +220,14 @@ contradicting_excerpt: null
 
   @pytest.mark.asyncio
   async def test_evaluate_nl_response_missing_label(
-      self, hallucinations_metric
+      self, hallucinations_metric, mocker
   ):
     """Tests _evaluate_nl_response with missing labels in validation results."""
     metric = hallucinations_metric
     seg_response = self._create_genai_response(
-        "<sentence>sentence 1</sentence>"
+        "<sentence>sentence 1</sentence>", mocker
     )
-    val_response = self._create_genai_response("val_response")
+    val_response = self._create_genai_response("val_response", mocker)
 
     async def seg_gen():
       yield seg_response
@@ -238,7 +235,7 @@ contradicting_excerpt: null
     async def val_gen():
       yield val_response
 
-    metric._judge_model.generate_content_async = MagicMock(
+    metric._judge_model.generate_content_async = mocker.MagicMock(
         side_effect=[
             seg_gen(),
             val_gen(),
@@ -585,7 +582,7 @@ class TestEvaluateInvocationsAgentTree:
 
   @pytest.mark.asyncio
   async def test_evaluate_invocations_multi_agents(
-      self, hallucinations_metric, agent_tree_data
+      self, hallucinations_metric, agent_tree_data, mocker
   ):
     """Tests evaluate_invocations with agent tree and checks contexts."""
     invocation, expected_invocation = agent_tree_data
@@ -804,22 +801,22 @@ Agent2 response.
         }])
       return None, "error"
 
-    with patch(
+    mocker.patch(
         "google.adk.evaluation.hallucinations_v1.HallucinationsV1Evaluator._evaluate_nl_response",
         side_effect=mock_evaluate_nl_response,
-    ):
-      result = await metric.evaluate_invocations(
-          [invocation], [expected_invocation]
-      )
+    )
+    result = await metric.evaluate_invocations(
+        [invocation], [expected_invocation]
+    )
 
-      assert result.overall_score == pytest.approx(0.5)
-      assert len(result.per_invocation_results) == 1
-      per_invocation_result = result.per_invocation_results[0]
-      assert per_invocation_result.score == pytest.approx(0.5)
+    assert result.overall_score == pytest.approx(0.5)
+    assert len(result.per_invocation_results) == 1
+    per_invocation_result = result.per_invocation_results[0]
+    assert per_invocation_result.score == pytest.approx(0.5)
 
   @pytest.mark.asyncio
   async def test_evaluate_invocations_agent_tree_skip_intermediate(
-      self, mock_llm_registry, agent_tree_data
+      self, mock_llm_registry, agent_tree_data, mocker
   ):
     """Tests evaluate_invocations with agent tree skipping intermediate steps."""
     invocation, expected_invocation = agent_tree_data
@@ -927,18 +924,18 @@ Agent2 response.
           "label": "contradictory",
       }])
 
-    with patch(
+    mocker.patch(
         "google.adk.evaluation.hallucinations_v1.HallucinationsV1Evaluator._evaluate_nl_response",
         side_effect=mock_evaluate_nl_response,
-    ):
-      result = await metric.evaluate_invocations(
-          [invocation], [expected_invocation]
-      )
+    )
+    result = await metric.evaluate_invocations(
+        [invocation], [expected_invocation]
+    )
 
-      assert result.overall_score == 0.0
-      assert len(result.per_invocation_results) == 1
-      per_invocation_result = result.per_invocation_results[0]
-      assert per_invocation_result.score == 0.0
+    assert result.overall_score == 0.0
+    assert len(result.per_invocation_results) == 1
+    per_invocation_result = result.per_invocation_results[0]
+    assert per_invocation_result.score == 0.0
 
 
 @pytest.fixture
@@ -1053,7 +1050,7 @@ class TestEvaluateInvocationsTimeWeather:
 
   @pytest.mark.asyncio
   async def test_evaluate_invocations_time_weather(
-      self, hallucinations_metric, time_weather_data
+      self, hallucinations_metric, time_weather_data, mocker
   ):
     """Tests evaluate_invocations with time/weather agent."""
     invocation, response1, response2 = time_weather_data
@@ -1190,20 +1187,20 @@ tool_outputs:
         ])
       return None, "error"
 
-    with patch(
+    mocker.patch(
         "google.adk.evaluation.hallucinations_v1.HallucinationsV1Evaluator._evaluate_nl_response",
         side_effect=mock_evaluate_nl_response,
-    ):
-      result = await metric.evaluate_invocations([invocation], [invocation])
+    )
+    result = await metric.evaluate_invocations([invocation], [invocation])
 
-      assert result.overall_score == pytest.approx(5 / 6)
-      assert len(result.per_invocation_results) == 1
-      per_invocation_result = result.per_invocation_results[0]
-      assert per_invocation_result.score == pytest.approx(5 / 6)
+    assert result.overall_score == pytest.approx(5 / 6)
+    assert len(result.per_invocation_results) == 1
+    per_invocation_result = result.per_invocation_results[0]
+    assert per_invocation_result.score == pytest.approx(5 / 6)
 
   @pytest.mark.asyncio
   async def test_evaluate_invocations_time_weather_skip_intermediate(
-      self, mock_llm_registry, time_weather_data
+      self, mock_llm_registry, time_weather_data, mocker
   ):
     """Tests evaluate_invocations with time/weather agent."""
     invocation, _, response2 = time_weather_data
@@ -1300,20 +1297,20 @@ tool_outputs:
           {"sentence": sentence2, "label": "supported"},
       ])
 
-    with patch(
+    mocker.patch(
         "google.adk.evaluation.hallucinations_v1.HallucinationsV1Evaluator._evaluate_nl_response",
         side_effect=mock_evaluate_nl_response,
-    ):
-      result = await metric.evaluate_invocations([invocation], [invocation])
+    )
+    result = await metric.evaluate_invocations([invocation], [invocation])
 
-      assert result.overall_score == 1.0
-      assert len(result.per_invocation_results) == 1
-      per_invocation_result = result.per_invocation_results[0]
-      assert per_invocation_result.score == 1.0
+    assert result.overall_score == 1.0
+    assert len(result.per_invocation_results) == 1
+    per_invocation_result = result.per_invocation_results[0]
+    assert per_invocation_result.score == 1.0
 
 
 @pytest.mark.asyncio
-async def test_evaluate_invocations_success_path(hallucinations_metric):
+async def test_evaluate_invocations_success_path(hallucinations_metric, mocker):
   metric = hallucinations_metric
   app_details = AppDetails(
       agent_details={
@@ -1380,18 +1377,18 @@ async def test_evaluate_invocations_success_path(hallucinations_metric):
       )
     return None, "error"
 
-  with patch(
+  mocker.patch(
       "google.adk.evaluation.hallucinations_v1.HallucinationsV1Evaluator._evaluate_nl_response",
       side_effect=mock_evaluate_nl_response,
-  ):
-    result = await metric.evaluate_invocations(
-        [actual_invocation], [expected_invocation]
-    )
+  )
+  result = await metric.evaluate_invocations(
+      [actual_invocation], [expected_invocation]
+  )
 
-    assert result.overall_score == pytest.approx(0.5)
-    assert len(result.per_invocation_results) == 1
-    per_invocation_result = result.per_invocation_results[0]
-    assert per_invocation_result.score == pytest.approx(0.5)
+  assert result.overall_score == pytest.approx(0.5)
+  assert len(result.per_invocation_results) == 1
+  per_invocation_result = result.per_invocation_results[0]
+  assert per_invocation_result.score == pytest.approx(0.5)
 
 
 @pytest.mark.asyncio
@@ -1446,7 +1443,78 @@ async def test_evaluate_invocations_no_nl_response(hallucinations_metric):
 
 
 @pytest.mark.asyncio
-async def test_evaluate_invocations_partial_failure(hallucinations_metric):
+async def test_evaluate_all_invocations_not_evaluated(
+    hallucinations_metric, mocker
+):
+  metric = hallucinations_metric
+  app_details = AppDetails(
+      agent_details={
+          "root": AgentDetails(
+              name="root",
+              instructions="Root agent instructions.",
+              tool_declarations=[],
+          ),
+      },
+  )
+  user_content = genai_types.Content(
+      parts=[genai_types.Part(text="User query.")]
+  )
+  actual_invocation = Invocation(
+      app_details=app_details,
+      user_content=user_content,
+      intermediate_data=InvocationEvents(
+          invocation_events=[
+              InvocationEvent(
+                  author="root",
+                  content=genai_types.Content(
+                      parts=[
+                          genai_types.Part(text="Intermediate NL response."),
+                      ]
+                  ),
+              ),
+          ]
+      ),
+      final_response=genai_types.Content(
+          parts=[genai_types.Part(text="Final response.")]
+      ),
+  )
+  expected_invocation = Invocation(
+      app_details=app_details,
+      user_content=user_content,
+      final_response=genai_types.Content(
+          parts=[genai_types.Part(text="Final response.")]
+      ),
+  )
+
+  async def mock_evaluate_nl_response(nl_response, context):
+    return None, "Judge model error."
+
+  mocker.patch(
+      "google.adk.evaluation.hallucinations_v1.HallucinationsV1Evaluator._evaluate_nl_response",
+      side_effect=mock_evaluate_nl_response,
+  )
+  result = await metric.evaluate_invocations(
+      [actual_invocation, actual_invocation],
+      [expected_invocation, expected_invocation],
+  )
+
+  assert len(result.per_invocation_results) == 2
+  assert result.per_invocation_results[0].score is None
+  assert (
+      result.per_invocation_results[0].eval_status == EvalStatus.NOT_EVALUATED
+  )
+  assert result.per_invocation_results[1].score is None
+  assert (
+      result.per_invocation_results[1].eval_status == EvalStatus.NOT_EVALUATED
+  )
+  assert result.overall_score is None
+  assert result.overall_eval_status == EvalStatus.NOT_EVALUATED
+
+
+@pytest.mark.asyncio
+async def test_evaluate_invocations_partial_failure(
+    hallucinations_metric, mocker
+):
   metric = hallucinations_metric
   app_details = AppDetails(
       agent_details={
@@ -1496,15 +1564,15 @@ async def test_evaluate_invocations_partial_failure(hallucinations_metric):
       return None, "some error during evaluation"
     return None, "error"
 
-  with patch(
+  mocker.patch(
       "google.adk.evaluation.hallucinations_v1.HallucinationsV1Evaluator._evaluate_nl_response",
       side_effect=mock_evaluate_nl_response,
-  ):
-    result = await metric.evaluate_invocations(
-        [actual_invocation], [expected_invocation]
-    )
+  )
+  result = await metric.evaluate_invocations(
+      [actual_invocation], [expected_invocation]
+  )
 
-    assert result.overall_score == 0.8
-    assert len(result.per_invocation_results) == 1
-    per_invocation_result = result.per_invocation_results[0]
-    assert per_invocation_result.score == 0.8
+  assert result.overall_score == 0.8
+  assert len(result.per_invocation_results) == 1
+  per_invocation_result = result.per_invocation_results[0]
+  assert per_invocation_result.score == 0.8
