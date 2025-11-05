@@ -14,12 +14,10 @@
 
 from google.adk.agents.llm_agent import Agent
 from google.adk.events.event import Event
+from google.adk.events.event_actions import EventActions
 from google.adk.flows.llm_flows import contents
-from google.adk.flows.llm_flows.contents import _convert_foreign_event
-from google.adk.flows.llm_flows.contents import _get_contents
-from google.adk.flows.llm_flows.contents import _merge_function_response_events
-from google.adk.flows.llm_flows.contents import _rearrange_events_for_async_function_responses_in_history
-from google.adk.flows.llm_flows.contents import _rearrange_events_for_latest_function_response
+from google.adk.flows.llm_flows.functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+from google.adk.flows.llm_flows.functions import REQUEST_EUC_FUNCTION_CALL_NAME
 from google.adk.models.llm_request import LlmRequest
 from google.genai import types
 import pytest
@@ -28,510 +26,404 @@ from ... import testing_utils
 
 
 @pytest.mark.asyncio
-async def test_content_processor_no_contents():
-  """Test ContentLlmRequestProcessor when include_contents is 'none'."""
-  agent = Agent(model="gemini-1.5-flash", name="agent", include_contents="none")
-  llm_request = LlmRequest(model="gemini-1.5-flash")
+async def test_include_contents_default_full_history():
+  """Test that include_contents='default' includes full conversation history."""
+  agent = Agent(
+      model="gemini-2.5-flash", name="test_agent", include_contents="default"
+  )
+  llm_request = LlmRequest(model="gemini-2.5-flash")
   invocation_context = await testing_utils.create_invocation_context(
       agent=agent
   )
 
-  # Collect events from async generator
-  events = []
-  async for event in contents.request_processor.run_async(
+  # Create a multi-turn conversation
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("First message"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.ModelContent("First response"),
+      ),
+      Event(
+          invocation_id="inv3",
+          author="user",
+          content=types.UserContent("Second message"),
+      ),
+      Event(
+          invocation_id="inv4",
+          author="test_agent",
+          content=types.ModelContent("Second response"),
+      ),
+      Event(
+          invocation_id="inv5",
+          author="user",
+          content=types.UserContent("Third message"),
+      ),
+  ]
+  invocation_context.session.events = events
+
+  # Process the request
+  async for _ in contents.request_processor.run_async(
       invocation_context, llm_request
   ):
-    events.append(event)
+    pass
 
-  # Should not yield any events
-  assert len(events) == 0
-  # Contents should not be set when include_contents is 'none'
-  assert llm_request.contents == []
+  # Verify full conversation history is included
+  assert llm_request.contents == [
+      types.UserContent("First message"),
+      types.ModelContent("First response"),
+      types.UserContent("Second message"),
+      types.ModelContent("Second response"),
+      types.UserContent("Third message"),
+  ]
 
 
 @pytest.mark.asyncio
-async def test_content_processor_with_contents():
-  """Test ContentLlmRequestProcessor when include_contents is not 'none'."""
-  agent = Agent(model="gemini-1.5-flash", name="agent")
-  llm_request = LlmRequest(model="gemini-1.5-flash")
+async def test_include_contents_none_current_turn_only():
+  """Test that include_contents='none' includes only current turn context."""
+  agent = Agent(
+      model="gemini-2.5-flash", name="test_agent", include_contents="none"
+  )
+  llm_request = LlmRequest(model="gemini-2.5-flash")
   invocation_context = await testing_utils.create_invocation_context(
       agent=agent
   )
 
-  # Add some test events to the session
-  test_event = Event(
-      invocation_id="test_inv",
-      author="user",
-      content=types.Content(
-          role="user", parts=[types.Part.from_text(text="Hello")]
+  # Create a multi-turn conversation
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("First message"),
       ),
-  )
-  invocation_context.session.events = [test_event]
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.ModelContent("First response"),
+      ),
+      Event(
+          invocation_id="inv3",
+          author="user",
+          content=types.UserContent("Second message"),
+      ),
+      Event(
+          invocation_id="inv4",
+          author="test_agent",
+          content=types.ModelContent("Second response"),
+      ),
+      Event(
+          invocation_id="inv5",
+          author="user",
+          content=types.UserContent("Current turn message"),
+      ),
+  ]
+  invocation_context.session.events = events
 
-  # Collect events from async generator
-  events = []
-  async for event in contents.request_processor.run_async(
+  # Process the request
+  async for _ in contents.request_processor.run_async(
       invocation_context, llm_request
   ):
-    events.append(event)
+    pass
 
-  # Should not yield any events (processor doesn't emit events, just modifies request)
-  assert len(events) == 0
-  # Contents should be set
-  assert llm_request.contents is not None
-  assert len(llm_request.contents) == 1
+  # Verify only current turn is included (from last user message)
+  assert llm_request.contents == [
+      types.UserContent("Current turn message"),
+  ]
+
+
+@pytest.mark.asyncio
+async def test_include_contents_none_multi_agent_current_turn():
+  """Test current turn detection in multi-agent scenarios with include_contents='none'."""
+  agent = Agent(
+      model="gemini-2.5-flash", name="current_agent", include_contents="none"
+  )
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  # Create multi-agent conversation where current turn starts from user
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("First user message"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="other_agent",
+          content=types.ModelContent("Other agent response"),
+      ),
+      Event(
+          invocation_id="inv3",
+          author="current_agent",
+          content=types.ModelContent("Current agent first response"),
+      ),
+      Event(
+          invocation_id="inv4",
+          author="user",
+          content=types.UserContent("Current turn request"),
+      ),
+      Event(
+          invocation_id="inv5",
+          author="another_agent",
+          content=types.ModelContent("Another agent responds"),
+      ),
+      Event(
+          invocation_id="inv6",
+          author="current_agent",
+          content=types.ModelContent("Current agent in turn"),
+      ),
+  ]
+  invocation_context.session.events = events
+
+  # Process the request
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  # Verify current turn starts from the most recent other agent message (inv5)
+  assert len(llm_request.contents) == 2
   assert llm_request.contents[0].role == "user"
-  assert llm_request.contents[0].parts[0].text == "Hello"
+  assert llm_request.contents[0].parts == [
+      types.Part(text="For context:"),
+      types.Part(text="[another_agent] said: Another agent responds"),
+  ]
+  assert llm_request.contents[1] == types.ModelContent("Current agent in turn")
 
 
 @pytest.mark.asyncio
-async def test_content_processor_non_llm_agent():
-  """Test ContentLlmRequestProcessor with non-LLM agent."""
-  from google.adk.agents.base_agent import BaseAgent
-
-  # Create a base agent (not LLM agent)
-  agent = BaseAgent(name="base_agent")
-  llm_request = LlmRequest(model="gemini-1.5-flash")
+async def test_authentication_events_are_filtered():
+  """Test that authentication function calls and responses are filtered out."""
+  agent = Agent(model="gemini-2.5-flash", name="test_agent")
+  llm_request = LlmRequest(model="gemini-2.5-flash")
   invocation_context = await testing_utils.create_invocation_context(
       agent=agent
   )
 
-  # Collect events from async generator
-  events = []
-  async for event in contents.request_processor.run_async(
+  # Create authentication function call and response
+  auth_function_call = types.FunctionCall(
+      id="auth_123",
+      name=REQUEST_EUC_FUNCTION_CALL_NAME,
+      args={"credential_type": "oauth"},
+  )
+  auth_response = types.FunctionResponse(
+      id="auth_123",
+      name=REQUEST_EUC_FUNCTION_CALL_NAME,
+      response={
+          "auth_config": {"exchanged_auth_credential": {"token": "secret"}}
+      },
+  )
+
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("Please authenticate"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.ModelContent(
+              [types.Part(function_call=auth_function_call)]
+          ),
+      ),
+      Event(
+          invocation_id="inv3",
+          author="user",
+          content=types.Content(
+              parts=[types.Part(function_response=auth_response)], role="user"
+          ),
+      ),
+      Event(
+          invocation_id="inv4",
+          author="user",
+          content=types.UserContent("Continue after auth"),
+      ),
+  ]
+  invocation_context.session.events = events
+
+  # Process the request
+  async for _ in contents.request_processor.run_async(
       invocation_context, llm_request
   ):
-    events.append(event)
+    pass
 
-  # Should not yield any events and not modify request
-  assert len(events) == 0
-  assert llm_request.contents == []
-
-
-def test_get_contents_empty_events():
-  """Test _get_contents with empty events list."""
-  contents_result = _get_contents(None, [], "test_agent")
-  assert contents_result == []
+  # Verify both authentication call and response are filtered out
+  assert llm_request.contents == [
+      types.UserContent("Please authenticate"),
+      types.UserContent("Continue after auth"),
+  ]
 
 
-def test_get_contents_with_events():
-  """Test _get_contents with valid events."""
-  test_event = Event(
-      invocation_id="test_inv",
-      author="user",
-      content=types.Content(
-          role="user", parts=[types.Part.from_text(text="Hello")]
+@pytest.mark.asyncio
+async def test_confirmation_events_are_filtered():
+  """Test that confirmation function calls and responses are filtered out."""
+  agent = Agent(model="gemini-2.5-flash", name="test_agent")
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  # Create confirmation function call and response
+  confirmation_function_call = types.FunctionCall(
+      id="confirm_123",
+      name=REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+      args={"action": "delete_file", "confirmation": True},
+  )
+  confirmation_response = types.FunctionResponse(
+      id="confirm_123",
+      name=REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+      response={"response": '{"confirmed": true}'},
+  )
+
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("Delete the file"),
       ),
-  )
-
-  contents_result = _get_contents(None, [test_event], "test_agent")
-  assert len(contents_result) == 1
-  assert contents_result[0].role == "user"
-  assert contents_result[0].parts[0].text == "Hello"
-
-
-def test_get_contents_filters_empty_events():
-  """Test _get_contents filters out events with empty content."""
-  # Event with empty text
-  empty_event = Event(
-      invocation_id="test_inv",
-      author="user",
-      content=types.Content(role="user", parts=[types.Part.from_text(text="")]),
-  )
-
-  # Event without content
-  no_content_event = Event(
-      invocation_id="test_inv",
-      author="user",
-  )
-
-  # Valid event
-  valid_event = Event(
-      invocation_id="test_inv",
-      author="user",
-      content=types.Content(
-          role="user", parts=[types.Part.from_text(text="Hello")]
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.ModelContent(
+              [types.Part(function_call=confirmation_function_call)]
+          ),
       ),
-  )
-
-  contents_result = _get_contents(
-      None, [empty_event, no_content_event, valid_event], "test_agent"
-  )
-  assert len(contents_result) == 1
-  assert contents_result[0].role == "user"
-  assert contents_result[0].parts[0].text == "Hello"
-
-
-def test_convert_foreign_event():
-  """Test _convert_foreign_event function."""
-  agent_event = Event(
-      invocation_id="test_inv",
-      author="agent1",
-      content=types.Content(
-          role="model", parts=[types.Part.from_text(text="Agent response")]
+      Event(
+          invocation_id="inv3",
+          author="user",
+          content=types.Content(
+              parts=[types.Part(function_response=confirmation_response)],
+              role="user",
+          ),
       ),
-  )
-
-  converted_event = _convert_foreign_event(agent_event)
-
-  assert converted_event.author == "user"
-  assert converted_event.content.role == "user"
-  assert len(converted_event.content.parts) == 2
-  assert converted_event.content.parts[0].text == "For context:"
-  assert (
-      "[agent1] said: Agent response" in converted_event.content.parts[1].text
-  )
-
-
-def test_convert_event_with_function_call():
-  """Test _convert_foreign_event with function call."""
-  function_call = types.FunctionCall(
-      id="func_123", name="test_function", args={"param": "value"}
-  )
-
-  agent_event = Event(
-      invocation_id="test_inv",
-      author="agent1",
-      content=types.Content(
-          role="model", parts=[types.Part(function_call=function_call)]
+      Event(
+          invocation_id="inv4",
+          author="user",
+          content=types.UserContent("File deleted successfully"),
       ),
-  )
+  ]
+  invocation_context.session.events = events
 
-  converted_event = _convert_foreign_event(agent_event)
-
-  assert converted_event.author == "user"
-  assert converted_event.content.role == "user"
-  assert len(converted_event.content.parts) == 2
-  assert converted_event.content.parts[0].text == "For context:"
-  assert (
-      "[agent1] called tool `test_function`"
-      in converted_event.content.parts[1].text
-  )
-  assert "{'param': 'value'}" in converted_event.content.parts[1].text
-
-
-def test_convert_event_with_function_response():
-  """Test _convert_foreign_event with function response."""
-  function_response = types.FunctionResponse(
-      id="func_123", name="test_function", response={"result": "success"}
-  )
-
-  agent_event = Event(
-      invocation_id="test_inv",
-      author="agent1",
-      content=types.Content(
-          role="user", parts=[types.Part(function_response=function_response)]
-      ),
-  )
-
-  converted_event = _convert_foreign_event(agent_event)
-
-  assert converted_event.author == "user"
-  assert converted_event.content.role == "user"
-  assert len(converted_event.content.parts) == 2
-  assert converted_event.content.parts[0].text == "For context:"
-  assert (
-      "[agent1] `test_function` tool returned result:"
-      in converted_event.content.parts[1].text
-  )
-  assert "{'result': 'success'}" in converted_event.content.parts[1].text
-
-
-def test_merge_function_response_events():
-  """Test _merge_function_response_events function."""
-  # Create initial function response event
-  function_response1 = types.FunctionResponse(
-      id="func_123", name="test_function", response={"status": "pending"}
-  )
-
-  initial_event = Event(
-      invocation_id="test_inv",
-      author="user",
-      content=types.Content(
-          role="user", parts=[types.Part(function_response=function_response1)]
-      ),
-  )
-
-  # Create final function response event
-  function_response2 = types.FunctionResponse(
-      id="func_123", name="test_function", response={"result": "success"}
-  )
-
-  final_event = Event(
-      invocation_id="test_inv2",
-      author="user",
-      content=types.Content(
-          role="user", parts=[types.Part(function_response=function_response2)]
-      ),
-  )
-
-  merged_event = _merge_function_response_events([initial_event, final_event])
-
-  assert (
-      merged_event.invocation_id == "test_inv"
-  )  # Should keep initial event ID
-  assert len(merged_event.content.parts) == 1
-  # The first part should be replaced with the final response
-  assert merged_event.content.parts[0].function_response.response == {
-      "result": "success"
-  }
-
-
-def test_rearrange_events_for_async_function_responses():
-  """Test _rearrange_events_for_async_function_responses_in_history function."""
-  # Create function call event
-  function_call = types.FunctionCall(
-      id="func_123", name="test_function", args={"param": "value"}
-  )
-
-  call_event = Event(
-      invocation_id="test_inv1",
-      author="agent",
-      content=types.Content(
-          role="model", parts=[types.Part(function_call=function_call)]
-      ),
-  )
-
-  # Create function response event
-  function_response = types.FunctionResponse(
-      id="func_123", name="test_function", response={"result": "success"}
-  )
-
-  response_event = Event(
-      invocation_id="test_inv2",
-      author="user",
-      content=types.Content(
-          role="user", parts=[types.Part(function_response=function_response)]
-      ),
-  )
-
-  # Test rearrangement
-  events = [call_event, response_event]
-  rearranged = _rearrange_events_for_async_function_responses_in_history(events)
-
-  # Should have both events in correct order
-  assert len(rearranged) == 2
-  assert rearranged[0] == call_event
-  assert rearranged[1] == response_event
-
-
-def test_rearrange_events_for_latest_function_response():
-  """Test _rearrange_events_for_latest_function_response function."""
-  # Create function call event
-  function_call = types.FunctionCall(
-      id="func_123", name="test_function", args={"param": "value"}
-  )
-
-  call_event = Event(
-      invocation_id="test_inv1",
-      author="agent",
-      content=types.Content(
-          role="model", parts=[types.Part(function_call=function_call)]
-      ),
-  )
-
-  # Create intermediate event
-  intermediate_event = Event(
-      invocation_id="test_inv2",
-      author="agent",
-      content=types.Content(
-          role="model", parts=[types.Part.from_text(text="Processing...")]
-      ),
-  )
-
-  # Create function response event
-  function_response = types.FunctionResponse(
-      id="func_123", name="test_function", response={"result": "success"}
-  )
-
-  response_event = Event(
-      invocation_id="test_inv3",
-      author="user",
-      content=types.Content(
-          role="user", parts=[types.Part(function_response=function_response)]
-      ),
-  )
-
-  # Test with matching function call and response
-  events = [call_event, intermediate_event, response_event]
-  rearranged = _rearrange_events_for_latest_function_response(events)
-
-  # Should remove intermediate events and merge responses
-  assert len(rearranged) == 2
-  assert rearranged[0] == call_event
-  assert rearranged[1] == response_event
-
-
-def test_rearrange_events_for_latest_function_response_multiple_calls():
-  """Test _rearrange_events_for_latest_function_response with multiple function calls."""
-  # Create function call event with multiple calls
-  function_call1 = types.FunctionCall(
-      id="func_123", name="test_function", args={"param": "value1"}
-  )
-  function_call2 = types.FunctionCall(
-      id="func_456", name="test_function2", args={"param": "value2"}
-  )
-
-  call_event = Event(
-      invocation_id="test_inv1",
-      author="agent",
-      content=types.Content(
-          role="model",
-          parts=[
-              types.Part(function_call=function_call1),
-              types.Part(function_call=function_call2),
-          ],
-      ),
-  )
-
-  # Create intermediate event
-  intermediate_event = Event(
-      invocation_id="test_inv2",
-      author="agent",
-      content=types.Content(
-          role="model", parts=[types.Part.from_text(text="Processing...")]
-      ),
-  )
-
-  # Create function response event with only one response
-  function_response = types.FunctionResponse(
-      id="func_123", name="test_function", response={"result": "success"}
-  )
-
-  response_event = Event(
-      invocation_id="test_inv3",
-      author="user",
-      content=types.Content(
-          role="user", parts=[types.Part(function_response=function_response)]
-      ),
-  )
-
-  # Test with matching function call and response
-  events = [call_event, intermediate_event, response_event]
-  rearranged = _rearrange_events_for_latest_function_response(events)
-
-  # Should remove intermediate events and merge responses
-  assert len(rearranged) == 2
-  assert rearranged[0] == call_event
-  assert rearranged[1] == response_event
-
-
-def test_rearrange_events_for_latest_function_response_validation_error():
-  """Test _rearrange_events_for_latest_function_response with validation error."""
-  # Create function call event with one function call
-  function_call = types.FunctionCall(
-      id="func_123", name="test_function", args={"param": "value"}
-  )
-
-  call_event = Event(
-      invocation_id="test_inv1",
-      author="agent",
-      content=types.Content(
-          role="model", parts=[types.Part(function_call=function_call)]
-      ),
-  )
-
-  # Create intermediate event
-  intermediate_event = Event(
-      invocation_id="test_inv2",
-      author="agent",
-      content=types.Content(
-          role="model", parts=[types.Part.from_text(text="Processing...")]
-      ),
-  )
-
-  # Create function response event with the matching function call AND an extra one
-  function_response1 = types.FunctionResponse(
-      id="func_123", name="test_function", response={"result": "success"}
-  )
-  function_response2 = types.FunctionResponse(
-      id="func_456", name="other_function", response={"result": "other"}
-  )
-
-  response_event = Event(
-      invocation_id="test_inv3",
-      author="user",
-      content=types.Content(
-          role="user",
-          parts=[
-              types.Part(function_response=function_response1),
-              types.Part(function_response=function_response2),
-          ],
-      ),
-  )
-
-  # Test with mismatched function call and response
-  events = [call_event, intermediate_event, response_event]
-
-  with pytest.raises(
-      ValueError,
-      match=(
-          "Last response event should only contain the responses for the"
-          " function calls in the same function call event"
-      ),
+  # Process the request
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
   ):
-    _rearrange_events_for_latest_function_response(events)
+    pass
+
+  # Verify both confirmation call and response are filtered out
+  assert llm_request.contents == [
+      types.UserContent("Delete the file"),
+      types.UserContent("File deleted successfully"),
+  ]
 
 
-def test_rearrange_events_for_latest_function_response_mixed_responses():
-  """Test _rearrange_events_for_latest_function_response with mixed function responses."""
-  # Create function call event with two calls
-  function_call1 = types.FunctionCall(
-      id="func_123", name="test_function", args={"param": "value1"}
+@pytest.mark.asyncio
+async def test_rewind_events_are_filtered_out():
+  """Test that events are filtered based on rewind action."""
+  agent = Agent(model="gemini-2.5-flash", name="test_agent")
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
   )
-  function_call2 = types.FunctionCall(
-      id="func_456", name="test_function2", args={"param": "value2"}
-  )
 
-  call_event = Event(
-      invocation_id="test_inv1",
-      author="agent",
-      content=types.Content(
-          role="model",
-          parts=[
-              types.Part(function_call=function_call1),
-              types.Part(function_call=function_call2),
-          ],
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("First message"),
       ),
-  )
-
-  # Create intermediate event
-  intermediate_event = Event(
-      invocation_id="test_inv2",
-      author="agent",
-      content=types.Content(
-          role="model", parts=[types.Part.from_text(text="Processing...")]
+      Event(
+          invocation_id="inv1",
+          author="test_agent",
+          content=types.ModelContent("First response"),
       ),
-  )
-
-  # Create function response event with one matching and one non-matching response
-  function_response1 = types.FunctionResponse(
-      id="func_123", name="test_function", response={"result": "success"}
-  )
-  function_response2 = types.FunctionResponse(
-      id="func_789", name="test_function3", response={"result": "other"}
-  )
-
-  response_event = Event(
-      invocation_id="test_inv3",
-      author="user",
-      content=types.Content(
-          role="user",
-          parts=[
-              types.Part(function_response=function_response1),
-              types.Part(function_response=function_response2),
-          ],
+      Event(
+          invocation_id="inv2",
+          author="user",
+          content=types.UserContent("Second message"),
       ),
-  )
-
-  # Test with mixed function responses
-  events = [call_event, intermediate_event, response_event]
-
-  with pytest.raises(
-      ValueError,
-      match=(
-          "Last response event should only contain the responses for the"
-          " function calls in the same function call event"
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.ModelContent("Second response"),
       ),
+      Event(
+          invocation_id="rewind_inv",
+          author="test_agent",
+          actions=EventActions(rewind_before_invocation_id="inv2"),
+      ),
+      Event(
+          invocation_id="inv3",
+          author="user",
+          content=types.UserContent("Third message"),
+      ),
+  ]
+  invocation_context.session.events = events
+
+  # Process the request
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
   ):
-    _rearrange_events_for_latest_function_response(events)
+    pass
+
+  # Verify rewind correctly filters conversation history
+  assert llm_request.contents == [
+      types.UserContent("First message"),
+      types.ModelContent("First response"),
+      types.UserContent("Third message"),
+  ]
+
+
+@pytest.mark.asyncio
+async def test_events_with_empty_content_are_skipped():
+  """Test that events with empty content (state-only changes) are skipped."""
+  agent = Agent(model="gemini-2.5-flash", name="test_agent")
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("Hello"),
+      ),
+      # Event with no content (state-only change)
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          actions=EventActions(state_delta={"key": "val"}),
+      ),
+      # Event with content that has no meaningful parts
+      Event(
+          invocation_id="inv4",
+          author="test_agent",
+          content=types.Content(parts=[], role="model"),
+      ),
+      Event(
+          invocation_id="inv5",
+          author="user",
+          content=types.UserContent("How are you?"),
+      ),
+  ]
+  invocation_context.session.events = events
+
+  # Process the request
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  # Verify only events with meaningful content are included
+  assert llm_request.contents == [
+      types.UserContent("Hello"),
+      types.UserContent("How are you?"),
+  ]

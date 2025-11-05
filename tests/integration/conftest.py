@@ -114,6 +114,6 @@ def pytest_generate_tests(metafunc: Metafunc):
 def _is_explicitly_marked(mark_name: str, metafunc: Metafunc) -> bool:
   if hasattr(metafunc.function, 'pytestmark'):
     for mark in metafunc.function.pytestmark:
-      if mark.name == 'parametrize' and mark.args[0] == mark_name:
+      if mark.name == 'parametrize' and mark_name in mark.args[0]:
         return True
   return False

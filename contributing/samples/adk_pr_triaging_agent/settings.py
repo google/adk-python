@@ -27,7 +27,6 @@ if not GITHUB_TOKEN:
 
 OWNER = os.getenv("OWNER", "google")
 REPO = os.getenv("REPO", "adk-python")
-BOT_LABEL = os.getenv("BOT_LABEL", "bot triaged")
 PULL_REQUEST_NUMBER = os.getenv("PULL_REQUEST_NUMBER")
 
 IS_INTERACTIVE = os.environ.get("INTERACTIVE", "1").lower() in ["true", "1"]

@@ -34,8 +34,13 @@ from pydantic import ValidationError
 from ..agents.base_agent import BaseAgent
 from ..utils.context_utils import Aclosing
 from .constants import MISSING_EVAL_DEPENDENCIES_MESSAGE
-from .eval_case import IntermediateData
+from .eval_case import get_all_tool_calls
+from .eval_case import IntermediateDataType
 from .eval_case import Invocation
+from .eval_config import EvalConfig
+from .eval_config import get_eval_metrics_from_config
+from .eval_config import get_evaluation_criteria_or_default
+from .eval_metrics import BaseCriterion
 from .eval_metrics import EvalMetric
 from .eval_metrics import EvalMetricResult
 from .eval_metrics import PrebuiltMetrics
@@ -44,7 +49,8 @@ from .eval_set import EvalSet
 from .eval_sets_manager import EvalSetsManager
 from .evaluator import EvalStatus
 from .in_memory_eval_sets_manager import InMemoryEvalSetsManager
-from .local_eval_sets_manager import convert_eval_set_to_pydanctic_schema
+from .local_eval_sets_manager import convert_eval_set_to_pydantic_schema
+from .user_simulator_provider import UserSimulatorProvider
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -71,12 +77,6 @@ REFERENCE_COLUMN = "reference"
 EXPECTED_TOOL_USE_COLUMN = "expected_tool_use"
 
 
-DEFAULT_CRITERIA = {
-    TOOL_TRAJECTORY_SCORE_KEY: 1.0,  # 1-point scale; 1.0 is perfect.
-    RESPONSE_MATCH_SCORE_KEY: 0.8,  # Rouge-1 text match; 0.8 is default.
-}
-
-
 def load_json(file_path: str) -> Union[Dict, List]:
   with open(file_path, "r") as f:
     return json.load(f)
@@ -98,28 +98,18 @@ class AgentEvaluator:
   """An evaluator for Agents, mainly intended for helping with test cases."""
 
   @staticmethod
-  def find_config_for_test_file(test_file: str):
+  def find_config_for_test_file(test_file: str) -> EvalConfig:
     """Find the test_config.json file in the same folder as the test file."""
     test_folder = os.path.dirname(test_file)
     config_path = os.path.join(test_folder, "test_config.json")
-    if os.path.exists(config_path):
-      config_data = load_json(config_path)
-      if "criteria" in config_data and isinstance(
-          config_data["criteria"], dict
-      ):
-        return config_data["criteria"]
-      else:
-        raise ValueError(
-            f"Invalid format for test_config.json at {config_path}. Expected a"
-            " 'criteria' dictionary."
-        )
-    return DEFAULT_CRITERIA
+    return get_evaluation_criteria_or_default(config_path)
 
   @staticmethod
   async def evaluate_eval_set(
       agent_module: str,
       eval_set: EvalSet,
-      criteria: dict[str, float],
+      criteria: Optional[dict[str, float]] = None,
+      eval_config: Optional[EvalConfig] = None,
       num_runs: int = NUM_RUNS,
       agent_name: Optional[str] = None,
       print_detailed_results: bool = True,
@@ -129,10 +119,11 @@ class AgentEvaluator:
     Args:
       agent_module: The path to python module that contains the definition of
         the agent. There is convention in place here, where the code is going to
-        look for 'root_agent' in the loaded module.
+        look for 'root_agent' or `get_agent_async` in the loaded module.
       eval_set: The eval set.
-      criteria: Evauation criterias, a dictionary of metric names to their
-        respective thresholds.
+      criteria: Evaluation criteria, a dictionary of metric names to their
+        respective thresholds. This field is deprecated.
+      eval_config: The evauation config.
       num_runs: Number of times all entries in the eval dataset should be
         assessed.
       agent_name: The name of the agent, if trying to evaluate something other
@@ -140,12 +131,28 @@ class AgentEvaluator:
       print_detailed_results: Whether to print detailed results for each metric
         evaluation.
     """
-    agent_for_eval = AgentEvaluator._get_agent_for_eval(
+    if criteria:
+      logger.warning(
+          "`criteria` field is deprecated and will be removed in future"
+          " iterations. For now, we will automatically map values in `criteria`"
+          " to `eval_config`, but you should move to using `eval_config` field."
+      )
+      base_criteria = {
+          k: BaseCriterion(threshold=v) for k, v in criteria.items()
+      }
+      eval_config = EvalConfig(criteria=base_criteria)
+
+    if eval_config is None:
+      raise ValueError("`eval_config` is required.")
+
+    agent_for_eval = await AgentEvaluator._get_agent_for_eval(
         module_name=agent_module, agent_name=agent_name
     )
-    eval_metrics = [
-        EvalMetric(metric_name=n, threshold=t) for n, t in criteria.items()
-    ]
+    eval_metrics = get_eval_metrics_from_config(eval_config)
+
+    user_simulator_provider = UserSimulatorProvider(
+        user_simulator_config=eval_config.user_simulator_config
+    )
 
     # Step 1: Perform evals, basically inferencing and evaluation of metrics
     eval_results_by_eval_id = await AgentEvaluator._get_eval_results_by_eval_id(
@@ -153,6 +160,7 @@ class AgentEvaluator:
         eval_set=eval_set,
         eval_metrics=eval_metrics,
         num_runs=num_runs,
+        user_simulator_provider=user_simulator_provider,
     )
 
     # Step 2: Post-process the results!
@@ -198,7 +206,7 @@ class AgentEvaluator:
     Args:
       agent_module: The path to python module that contains the definition of
         the agent. There is convention in place here, where the code is going to
-        look for 'root_agent' in the loaded module.
+        look for 'root_agent' or 'get_agent_async' in the loaded module.
       eval_dataset_file_path_or_dir: The eval data set. This can be either a
         string representing full path to the file containing eval dataset, or a
         directory that is recursively explored for all files that have a
@@ -225,15 +233,15 @@ class AgentEvaluator:
     initial_session = AgentEvaluator._get_initial_session(initial_session_file)
 
     for test_file in test_files:
-      criteria = AgentEvaluator.find_config_for_test_file(test_file)
+      eval_config = AgentEvaluator.find_config_for_test_file(test_file)
       eval_set = AgentEvaluator._load_eval_set_from_file(
-          test_file, criteria, initial_session
+          test_file, eval_config, initial_session
       )
 
       await AgentEvaluator.evaluate_eval_set(
           agent_module=agent_module,
           eval_set=eval_set,
-          criteria=criteria,
+          eval_config=eval_config,
           num_runs=num_runs,
           agent_name=agent_name,
           print_detailed_results=print_detailed_results,
@@ -251,11 +259,11 @@ class AgentEvaluator:
           "One of old_eval_data_file or new_eval_data_file is empty."
       )
 
-    criteria = AgentEvaluator.find_config_for_test_file(old_eval_data_file)
+    eval_config = AgentEvaluator.find_config_for_test_file(old_eval_data_file)
     initial_session = AgentEvaluator._get_initial_session(initial_session_file)
 
     eval_set = AgentEvaluator._get_eval_set_from_old_format(
-        old_eval_data_file, criteria, initial_session
+        old_eval_data_file, eval_config, initial_session
     )
 
     with open(new_eval_data_file, "w") as f:
@@ -264,7 +272,7 @@ class AgentEvaluator:
   @staticmethod
   def _load_eval_set_from_file(
       eval_set_file: str,
-      criteria: dict[str, float],
+      eval_config: EvalConfig,
       initial_session: dict[str, Any],
   ) -> EvalSet:
     """Loads an EvalSet from the given file."""
@@ -275,7 +283,7 @@ class AgentEvaluator:
       try:
         eval_set = EvalSet.model_validate_json(content)
         assert len(initial_session) == 0, (
-            "Intial session should be specified as a part of EvalSet file."
+            "Initial session should be specified as a part of EvalSet file."
             " Explicit initial session is only needed, when specifying data in"
             " the older schema."
         )
@@ -291,23 +299,23 @@ class AgentEvaluator:
 
     # If we are here, the data must be specified in the older format.
     return AgentEvaluator._get_eval_set_from_old_format(
-        eval_set_file, criteria, initial_session
+        eval_set_file, eval_config, initial_session
     )
 
   @staticmethod
   def _get_eval_set_from_old_format(
       eval_set_file: str,
-      criteria: dict[str, float],
+      eval_config: EvalConfig,
       initial_session: dict[str, Any],
   ) -> EvalSet:
     data = AgentEvaluator._load_dataset(eval_set_file)[0]
-    AgentEvaluator._validate_input([data], criteria)
+    AgentEvaluator._validate_input([data], eval_config.criteria)
     eval_data = {
         "name": eval_set_file,
         "data": data,
         "initial_session": initial_session,
     }
-    return convert_eval_set_to_pydanctic_schema(
+    return convert_eval_set_to_pydantic_schema(
         eval_set_id=str(uuid.uuid4()), eval_set_in_json_format=[eval_data]
     )
 
@@ -457,20 +465,40 @@ class AgentEvaluator:
 
   @staticmethod
   def _convert_tool_calls_to_text(
-      intermediate_data: Optional[IntermediateData],
+      intermediate_data: Optional[IntermediateDataType],
   ) -> str:
-    if intermediate_data and intermediate_data.tool_uses:
-      return "\n".join([str(t) for t in intermediate_data.tool_uses])
+    tool_calls = get_all_tool_calls(intermediate_data)
 
-    return ""
+    return "\n".join([str(t) for t in tool_calls])
 
   @staticmethod
-  def _get_agent_for_eval(
+  async def _get_agent_for_eval(
       module_name: str, agent_name: Optional[str] = None
   ) -> BaseAgent:
     module_path = f"{module_name}"
     agent_module = importlib.import_module(module_path)
-    root_agent = agent_module.agent.root_agent
+
+    # One of the two things should be satisfied, either the module should have
+    # an "agent" as a member in it or the module name itself should end with
+    # ".agent".
+    if not (hasattr(agent_module, "agent") or module_name.endswith(".agent")):
+      raise ValueError(
+          f"Module {module_name} does not have a member named `agent` or the"
+          " name should endwith `.agent`."
+      )
+
+    agent_module_with_agent = (
+        agent_module.agent if hasattr(agent_module, "agent") else agent_module
+    )
+    if hasattr(agent_module_with_agent, "root_agent"):
+      root_agent = agent_module_with_agent.root_agent
+    elif hasattr(agent_module_with_agent, "get_agent_async"):
+      root_agent, _ = await agent_module_with_agent.get_agent_async()
+    else:
+      raise ValueError(
+          f"Module {module_name} does not have a root_agent or"
+          " get_agent_async method."
+      )
 
     agent_for_eval = root_agent
     if agent_name:
@@ -503,6 +531,7 @@ class AgentEvaluator:
       eval_set: EvalSet,
       eval_metrics: list[EvalMetric],
       num_runs: int,
+      user_simulator_provider: UserSimulatorProvider,
   ) -> dict[str, list[EvalCaseResult]]:
     """Returns EvalCaseResults grouped by eval case id.
 
@@ -526,6 +555,7 @@ class AgentEvaluator:
         eval_sets_manager=AgentEvaluator._get_eval_sets_manager(
             app_name=app_name, eval_set=eval_set
         ),
+        user_simulator_provider=user_simulator_provider,
     )
 
     inference_requests = [
@@ -569,7 +599,7 @@ class AgentEvaluator:
   def _get_eval_metric_results_with_invocation(
       eval_results_per_eval_id: list[EvalCaseResult],
   ) -> dict[str, list[_EvalMetricResultWithInvocation]]:
-    """Retruns _EvalMetricResultWithInvocation grouped by metric.
+    """Returns _EvalMetricResultWithInvocation grouped by metric.
 
     EvalCaseResult contain results for each metric per invocation.
 
@@ -628,7 +658,7 @@ class AgentEvaluator:
       scores = [
           m.eval_metric_result.score
           for m in eval_metric_results_with_invocations
-          if m.eval_metric_result.score
+          if m.eval_metric_result.score is not None
       ]
 
       if scores:

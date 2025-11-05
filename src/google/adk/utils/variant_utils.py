@@ -21,7 +21,8 @@ Please do not rely on the implementation details.
 from __future__ import annotations
 
 from enum import Enum
-import os
+
+from .env_utils import is_env_enabled
 
 _GOOGLE_LLM_VARIANT_VERTEX_AI = 'VERTEX_AI'
 _GOOGLE_LLM_VARIANT_GEMINI_API = 'GEMINI_API'
@@ -39,13 +40,9 @@ class GoogleLLMVariant(Enum):
   """For using API Key from Google AI Studio"""
 
 
-def get_google_llm_variant() -> str:
+def get_google_llm_variant() -> GoogleLLMVariant:
   return (
       GoogleLLMVariant.VERTEX_AI
-      if os.environ.get('GOOGLE_GENAI_USE_VERTEXAI', '0').lower()
-      in [
-          'true',
-          '1',
-      ]
+      if is_env_enabled('GOOGLE_GENAI_USE_VERTEXAI')
       else GoogleLLMVariant.GEMINI_API
   )

@@ -23,8 +23,10 @@ from . import _nl_planning
 from . import _output_schema_processor
 from . import basic
 from . import contents
+from . import context_cache_processor
 from . import identity
 from . import instructions
+from . import request_confirmation
 from ...auth import auth_preprocessor
 from .base_llm_flow import BaseLlmFlow
 
@@ -43,9 +45,12 @@ class SingleFlow(BaseLlmFlow):
     self.request_processors += [
         basic.request_processor,
         auth_preprocessor.request_processor,
+        request_confirmation.request_processor,
         instructions.request_processor,
         identity.request_processor,
         contents.request_processor,
+        # Context cache processor sets up cache config and finds existing cache metadata
+        context_cache_processor.request_processor,
         # Some implementations of NL Planning mark planning contents as thoughts
         # in the post processor. Since these need to be unmarked, NL Planning
         # should be after contents.

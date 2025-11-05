@@ -17,4 +17,4 @@ export NOTION_API_KEY=<your_notion_api_key>
 
 * Send below queries:
   * What can you do for me ?
-  * Seach `XXXX` in my pages.
+  * Search `XXXX` in my pages.

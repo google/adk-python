@@ -15,17 +15,16 @@
 from __future__ import annotations
 
 import os
-import re
 from unittest import mock
 
+import google.adk
 from google.adk.tools.bigquery.client import get_bigquery_client
 from google.auth.exceptions import DefaultCredentialsError
 from google.oauth2.credentials import Credentials
-import pytest
 
 
-def test_bigquery_client_project():
-  """Test BigQuery client project."""
+def test_bigquery_client_default():
+  """Test the default BigQuery client properties."""
   # Trigger the BigQuery client creation
   client = get_bigquery_client(
       project="test-gcp-project",
@@ -34,6 +33,7 @@ def test_bigquery_client_project():
 
   # Verify that the client has the desired project set
   assert client.project == "test-gcp-project"
+  assert client.location is None
 
 
 def test_bigquery_client_project_set_explicit():
@@ -110,8 +110,8 @@ def test_bigquery_client_project_set_with_env():
       assert client.project == "test-gcp-project"
 
 
-def test_bigquery_client_user_agent():
-  """Test BigQuery client user agent."""
+def test_bigquery_client_user_agent_default():
+  """Test BigQuery client default user agent."""
   with mock.patch(
       "google.cloud.bigquery.client.Connection", autospec=True
   ) as mock_connection:
@@ -124,7 +124,47 @@ def test_bigquery_client_user_agent():
     # Verify that the tracking user agent was set
     client_info_arg = mock_connection.call_args[1].get("client_info")
     assert client_info_arg is not None
-    assert re.search(
-        r"adk-bigquery-tool google-adk/([0-9A-Za-z._\-+/]+)",
-        client_info_arg.user_agent,
+    expected_user_agents = {
+        "adk-bigquery-tool",
+        f"google-adk/{google.adk.__version__}",
+    }
+    actual_user_agents = set(client_info_arg.user_agent.split())
+    assert expected_user_agents.issubset(actual_user_agents)
+
+
+def test_bigquery_client_user_agent_custom():
+  """Test BigQuery client custom user agent."""
+  with mock.patch(
+      "google.cloud.bigquery.client.Connection", autospec=True
+  ) as mock_connection:
+    # Trigger the BigQuery client creation
+    get_bigquery_client(
+        project="test-gcp-project",
+        credentials=mock.create_autospec(Credentials, instance=True),
+        user_agent="custom_user_agent",
     )
+
+    # Verify that the tracking user agent was set
+    client_info_arg = mock_connection.call_args[1].get("client_info")
+    assert client_info_arg is not None
+    expected_user_agents = {
+        "adk-bigquery-tool",
+        f"google-adk/{google.adk.__version__}",
+        "custom_user_agent",
+    }
+    actual_user_agents = set(client_info_arg.user_agent.split())
+    assert expected_user_agents.issubset(actual_user_agents)
+
+
+def test_bigquery_client_location_custom():
+  """Test BigQuery client custom location."""
+  # Trigger the BigQuery client creation
+  client = get_bigquery_client(
+      project="test-gcp-project",
+      credentials=mock.create_autospec(Credentials, instance=True),
+      location="us-central1",
+  )
+
+  # Verify that the client has the desired project set
+  assert client.project == "test-gcp-project"
+  assert client.location == "us-central1"
