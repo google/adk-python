@@ -134,6 +134,7 @@ class RestApiTool(BaseTool):
 
     # Private properties
     self.credential_exchanger = AutoAuthCredentialExchanger()
+    self._default_headers: Dict[str, str] = {}
     if should_parse_operation:
       self._operation_parser = OperationParser(self.operation)
 
@@ -215,6 +216,10 @@ class RestApiTool(BaseTool):
     if isinstance(auth_credential, str):
       auth_credential = AuthCredential.model_validate_json(auth_credential)
     self.auth_credential = auth_credential
+
+  def set_default_headers(self, headers: Dict[str, str]):
+    """Sets default headers that are merged into every request."""
+    self._default_headers = headers
 
   def _prepare_auth_request_params(
       self,
@@ -334,6 +339,9 @@ class RestApiTool(BaseTool):
     filtered_query_params: Dict[str, Any] = {
         k: v for k, v in query_params.items() if v is not None
     }
+
+    for key, value in self._default_headers.items():
+      header_params.setdefault(key, value)
 
     request_params: Dict[str, Any] = {
         "method": method,

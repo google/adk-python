@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+from enum import Enum
 import inspect
 import logging
 import types as typing_types
@@ -51,23 +52,6 @@ def _is_builtin_primitive_or_compound(
     annotation: inspect.Parameter.annotation,
 ) -> bool:
   return annotation in _py_builtin_type_to_schema_type.keys()
-
-
-def _update_for_default_if_mldev(schema: types.Schema):
-  if schema.default is not None:
-    # TODO(kech): Remove this workaround once mldev supports default value.
-    schema.default = None
-    logger.warning(
-        'Default value is not supported in function declaration schema for'
-        ' Google AI.'
-    )
-
-
-def _raise_if_schema_unsupported(
-    variant: GoogleLLMVariant, schema: types.Schema
-):
-  if variant == GoogleLLMVariant.GEMINI_API:
-    _update_for_default_if_mldev(schema)
 
 
 def _is_default_value_compatible(
@@ -135,7 +119,19 @@ def _parse_schema_from_parameter(
         raise ValueError(default_value_error_msg)
       schema.default = param.default
     schema.type = _py_builtin_type_to_schema_type[param.annotation]
-    _raise_if_schema_unsupported(variant, schema)
+    return schema
+  if isinstance(param.annotation, type) and issubclass(param.annotation, Enum):
+    schema.type = types.Type.STRING
+    schema.enum = [e.value for e in param.annotation]
+    if param.default is not inspect.Parameter.empty:
+      default_value = (
+          param.default.value
+          if isinstance(param.default, Enum)
+          else param.default
+      )
+      if default_value not in schema.enum:
+        raise ValueError(default_value_error_msg)
+      schema.default = default_value
     return schema
   if (
       get_origin(param.annotation) is Union
@@ -176,7 +172,6 @@ def _parse_schema_from_parameter(
       if not _is_default_value_compatible(param.default, param.annotation):
         raise ValueError(default_value_error_msg)
       schema.default = param.default
-    _raise_if_schema_unsupported(variant, schema)
     return schema
   if isinstance(param.annotation, _GenericAlias) or isinstance(
       param.annotation, typing_types.GenericAlias
@@ -189,7 +184,6 @@ def _parse_schema_from_parameter(
         if not _is_default_value_compatible(param.default, param.annotation):
           raise ValueError(default_value_error_msg)
         schema.default = param.default
-      _raise_if_schema_unsupported(variant, schema)
       return schema
     if origin is Literal:
       if not all(isinstance(arg, str) for arg in args):
@@ -202,7 +196,6 @@ def _parse_schema_from_parameter(
         if not _is_default_value_compatible(param.default, param.annotation):
           raise ValueError(default_value_error_msg)
         schema.default = param.default
-      _raise_if_schema_unsupported(variant, schema)
       return schema
     if origin is list:
       schema.type = types.Type.ARRAY
@@ -219,7 +212,6 @@ def _parse_schema_from_parameter(
         if not _is_default_value_compatible(param.default, param.annotation):
           raise ValueError(default_value_error_msg)
         schema.default = param.default
-      _raise_if_schema_unsupported(variant, schema)
       return schema
     if origin is Union:
       schema.any_of = []
@@ -265,7 +257,6 @@ def _parse_schema_from_parameter(
         if not _is_default_value_compatible(param.default, param.annotation):
           raise ValueError(default_value_error_msg)
         schema.default = param.default
-      _raise_if_schema_unsupported(variant, schema)
       return schema
       # all other generic alias will be invoked in raise branch
   if (
@@ -290,14 +281,12 @@ def _parse_schema_from_parameter(
           ),
           func_name,
       )
-    _raise_if_schema_unsupported(variant, schema)
     return schema
   if param.annotation is None:
     # https://swagger.io/docs/specification/v3_0/data-models/data-types/#null
     # null is not a valid type in schema, use object instead.
     schema.type = types.Type.OBJECT
     schema.nullable = True
-    _raise_if_schema_unsupported(variant, schema)
     return schema
   raise ValueError(
       f'Failed to parse the parameter {param} of function {func_name} for'

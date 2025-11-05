@@ -18,16 +18,18 @@ import inspect
 import logging
 from typing import Any
 from typing import Callable
+from typing import get_args
+from typing import get_origin
 from typing import Optional
 from typing import Union
 
 from google.genai import types
+import pydantic
 from typing_extensions import override
 
 from ..utils.context_utils import Aclosing
 from ._automatic_function_calling_util import build_function_declaration
 from .base_tool import BaseTool
-from .tool_confirmation import ToolConfirmation
 from .tool_context import ToolContext
 
 logger = logging.getLogger('google_adk.' + __name__)
@@ -95,11 +97,69 @@ class FunctionTool(BaseTool):
 
     return function_decl
 
+  def _preprocess_args(self, args: dict[str, Any]) -> dict[str, Any]:
+    """Preprocess and convert function arguments before invocation.
+
+    Currently handles:
+    - Converting JSON dictionaries to Pydantic model instances where expected
+
+    Future extensions could include:
+    - Type coercion for other complex types
+    - Validation and sanitization
+    - Custom conversion logic
+
+    Args:
+      args: Raw arguments from the LLM tool call
+
+    Returns:
+      Processed arguments ready for function invocation
+    """
+    signature = inspect.signature(self.func)
+    converted_args = args.copy()
+
+    for param_name, param in signature.parameters.items():
+      if param_name in args and param.annotation != inspect.Parameter.empty:
+        target_type = param.annotation
+
+        # Handle Optional[PydanticModel] types
+        if get_origin(param.annotation) is Union:
+          union_args = get_args(param.annotation)
+          # Find the non-None type in Optional[T] (which is Union[T, None])
+          non_none_types = [arg for arg in union_args if arg is not type(None)]
+          if len(non_none_types) == 1:
+            target_type = non_none_types[0]
+
+        # Check if the target type is a Pydantic model
+        if inspect.isclass(target_type) and issubclass(
+            target_type, pydantic.BaseModel
+        ):
+          # Skip conversion if the value is None and the parameter is Optional
+          if args[param_name] is None:
+            continue
+
+          # Convert to Pydantic model if it's not already the correct type
+          if not isinstance(args[param_name], target_type):
+            try:
+              converted_args[param_name] = target_type.model_validate(
+                  args[param_name]
+              )
+            except Exception as e:
+              logger.warning(
+                  f"Failed to convert argument '{param_name}' to Pydantic model"
+                  f' {target_type.__name__}: {e}'
+              )
+              # Keep the original value if conversion fails
+              pass
+
+    return converted_args
+
   @override
   async def run_async(
       self, *, args: dict[str, Any], tool_context: ToolContext
   ) -> Any:
-    args_to_call = args.copy()
+    # Preprocess arguments (includes Pydantic model conversion)
+    args_to_call = self._preprocess_args(args)
+
     signature = inspect.signature(self.func)
     valid_params = {param for param in signature.parameters}
     if 'tool_context' in valid_params:
@@ -111,7 +171,7 @@ class FunctionTool(BaseTool):
     # Before invoking the function, we check for if the list of args passed in
     # has all the mandatory arguments or not.
     # If the check fails, then we don't invoke the tool and let the Agent know
-    # that there was a missing a input parameter. This will basically help
+    # that there was a missing input parameter. This will basically help
     # the underlying model fix the issue and retry.
     mandatory_args = self._get_mandatory_args()
     missing_mandatory_args = [
@@ -145,6 +205,7 @@ You could retry calling this tool, but it is IMPORTANT for you to provide all th
                 ' ToolConfirmation payload.'
             ),
         )
+        tool_context.actions.skip_summarization = True
         return {
             'error': (
                 'This tool call requires confirmation, please approve or'
@@ -163,7 +224,7 @@ You could retry calling this tool, but it is IMPORTANT for you to provide all th
 
     # Functions are callable objects, but not all callable objects are functions
     # checking coroutine function is not enough. We also need to check whether
-    # Callable's __call__ function is a coroutine funciton
+    # Callable's __call__ function is a coroutine function
     is_async = inspect.iscoroutinefunction(target) or (
         hasattr(target, '__call__')
         and inspect.iscoroutinefunction(target.__call__)

@@ -38,7 +38,7 @@ ENV_SETUPS = {
 }
 
 
-@fixture(autouse=True)
+@fixture
 def env_variables(request: FixtureRequest):
   # Set up the environment
   env_name: str = request.param
@@ -54,6 +54,35 @@ def env_variables(request: FixtureRequest):
       os.environ.pop(key, None)
     else:
       os.environ[key] = original_val
+
+
+# Store original environment variables to restore later
+_original_env = {}
+
+
+@hookimpl(tryfirst=True)
+def pytest_sessionstart(session):
+  """Set up environment variables at the beginning of the test session."""
+  if not ENV_SETUPS:
+    return
+  # Use the first env setup to initialize environment for module-level imports
+  env_name = next(iter(ENV_SETUPS.keys()))
+  envs = ENV_SETUPS[env_name]
+  global _original_env
+  _original_env = {key: os.environ.get(key) for key in envs}
+  os.environ.update(envs)
+
+
+@hookimpl(trylast=True)
+def pytest_sessionfinish(session):
+  """Restore original environment variables at the end of the test session."""
+  global _original_env
+  for key, original_val in _original_env.items():
+    if original_val is None:
+      os.environ.pop(key, None)
+    else:
+      os.environ[key] = original_val
+  _original_env = {}
 
 
 @hookimpl(tryfirst=True)

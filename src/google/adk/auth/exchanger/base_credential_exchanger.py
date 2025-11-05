@@ -24,7 +24,7 @@ from ..auth_credential import AuthCredential
 from ..auth_schemes import AuthScheme
 
 
-class CredentialExchangError(Exception):
+class CredentialExchangeError(Exception):
   """Base exception for credential exchange errors."""
 
 
@@ -52,6 +52,6 @@ class BaseCredentialExchanger(abc.ABC):
         The exchanged credential.
 
     Raises:
-        CredentialExchangError: If credential exchange fails.
+        CredentialExchangeError: If credential exchange fails.
     """
     pass

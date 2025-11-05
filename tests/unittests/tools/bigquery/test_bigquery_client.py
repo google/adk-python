@@ -23,8 +23,8 @@ from google.auth.exceptions import DefaultCredentialsError
 from google.oauth2.credentials import Credentials
 
 
-def test_bigquery_client_project():
-  """Test BigQuery client project."""
+def test_bigquery_client_default():
+  """Test the default BigQuery client properties."""
   # Trigger the BigQuery client creation
   client = get_bigquery_client(
       project="test-gcp-project",
@@ -33,6 +33,7 @@ def test_bigquery_client_project():
 
   # Verify that the client has the desired project set
   assert client.project == "test-gcp-project"
+  assert client.location is None
 
 
 def test_bigquery_client_project_set_explicit():
@@ -153,3 +154,17 @@ def test_bigquery_client_user_agent_custom():
     }
     actual_user_agents = set(client_info_arg.user_agent.split())
     assert expected_user_agents.issubset(actual_user_agents)
+
+
+def test_bigquery_client_location_custom():
+  """Test BigQuery client custom location."""
+  # Trigger the BigQuery client creation
+  client = get_bigquery_client(
+      project="test-gcp-project",
+      credentials=mock.create_autospec(Credentials, instance=True),
+      location="us-central1",
+  )
+
+  # Verify that the client has the desired project set
+  assert client.project == "test-gcp-project"
+  assert client.location == "us-central1"

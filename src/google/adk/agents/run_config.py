@@ -17,6 +17,7 @@ from __future__ import annotations
 from enum import Enum
 import logging
 import sys
+from typing import Any
 from typing import Optional
 
 from google.genai import types
@@ -35,7 +36,10 @@ class StreamingMode(Enum):
 
 
 class RunConfig(BaseModel):
-  """Configs for runtime behavior of agents."""
+  """Configs for runtime behavior of agents.
+
+  The configs here will be overriden by agent-specific configurations.
+  """
 
   model_config = ConfigDict(
       extra='forbid',
@@ -48,8 +52,15 @@ class RunConfig(BaseModel):
   response_modalities: Optional[list[str]] = None
   """The output modalities. If not set, it's default to AUDIO."""
 
-  save_input_blobs_as_artifacts: bool = False
-  """Whether or not to save the input blobs as artifacts."""
+  save_input_blobs_as_artifacts: bool = Field(
+      default=False,
+      deprecated=True,
+      description=(
+          'Whether or not to save the input blobs as artifacts. DEPRECATED: Use'
+          ' SaveFilesAsArtifactsPlugin instead for better control and'
+          ' flexibility. See google.adk.plugins.SaveFilesAsArtifactsPlugin.'
+      ),
+  )
 
   support_cfc: bool = False
   """
@@ -87,6 +98,11 @@ class RunConfig(BaseModel):
   session_resumption: Optional[types.SessionResumptionConfig] = None
   """Configures session resumption mechanism. Only support transparent session resumption mode now."""
 
+  context_window_compression: Optional[types.ContextWindowCompressionConfig] = (
+      None
+  )
+  """Configuration for context window compression. If set, this will enable context window compression for LLM input."""
+
   save_live_audio: bool = False
   """Saves live video and audio data to session and artifact service.
 
@@ -102,6 +118,9 @@ class RunConfig(BaseModel):
       calls is enforced, if the value is set in this range.
     - Less than or equal to 0: This allows for unbounded number of llm calls.
   """
+
+  custom_metadata: Optional[dict[str, Any]] = None
+  """Custom metadata for the current invocation."""
 
   @field_validator('max_llm_calls', mode='after')
   @classmethod

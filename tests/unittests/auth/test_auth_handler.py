@@ -419,7 +419,7 @@ class TestGetAuthResponse:
     assert result == oauth2_credentials_with_auth_uri
 
   def test_get_auth_response_not_exists(self, auth_config):
-    """Test retrieving a non-existent auth response from state."""
+    """Test retrieving a nonexistent auth response from state."""
     handler = AuthHandler(auth_config)
     state = MockState()
 
