@@ -334,3 +334,18 @@ def test_llm_response_create_empty_content_with_stop_reason():
 
   assert response.error_code is None
   assert response.content is not None
+
+
+def test_llm_response_create_includes_model_version():
+  """Test LlmResponse.create() includes model version."""
+  generate_content_response = types.GenerateContentResponse(
+      model_version='gemini-2.0-flash',
+      candidates=[
+          types.Candidate(
+              content=types.Content(parts=[types.Part(text='Response text')]),
+              finish_reason=types.FinishReason.STOP,
+          )
+      ],
+  )
+  response = LlmResponse.create(generate_content_response)
+  assert response.model_version == 'gemini-2.0-flash'

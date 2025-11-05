@@ -86,7 +86,7 @@ def _safe_json_serialize(obj) -> str:
 def trace_agent_invocation(
     span: trace.Span, agent: BaseAgent, ctx: InvocationContext
 ) -> None:
-  """Sets span attributes immedietely available on agent invocation according to OTEL semconv version 1.37.
+  """Sets span attributes immediately available on agent invocation according to OTEL semconv version 1.37.
 
   Args:
     span: Span on which attributes are set.
