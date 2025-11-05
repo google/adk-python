@@ -146,7 +146,7 @@ class TestUrlContextTool:
     )
 
     with pytest.raises(
-        ValueError, match='Url context tool can not be used in Gemini 1.x'
+        ValueError, match='Url context tool cannot be used in Gemini 1.x'
     ):
       await tool.process_llm_request(
           tool_context=tool_context, llm_request=llm_request
@@ -166,7 +166,7 @@ class TestUrlContextTool:
     )
 
     with pytest.raises(
-        ValueError, match='Url context tool can not be used in Gemini 1.x'
+        ValueError, match='Url context tool cannot be used in Gemini 1.x'
     ):
       await tool.process_llm_request(
           tool_context=tool_context, llm_request=llm_request

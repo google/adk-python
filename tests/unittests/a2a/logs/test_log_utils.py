@@ -15,12 +15,18 @@
 """Tests for log_utils module."""
 
 import json
+import sys
 from unittest.mock import Mock
 from unittest.mock import patch
 
 import pytest
 
-# Import the actual A2A types that we need to mock
+# Skip all tests in this module if Python version is less than 3.10
+pytestmark = pytest.mark.skipif(
+    sys.version_info < (3, 10), reason="A2A requires Python 3.10+"
+)
+
+# Import dependencies with version checking
 try:
   from a2a.types import DataPart as A2ADataPart
   from a2a.types import Message as A2AMessage
@@ -33,20 +39,24 @@ try:
   from a2a.types import TaskState
   from a2a.types import TaskStatus
   from a2a.types import TextPart as A2ATextPart
-
-  A2A_AVAILABLE = True
-except ImportError:
-  A2A_AVAILABLE = False
+  from google.adk.a2a.logs.log_utils import build_a2a_request_log
+  from google.adk.a2a.logs.log_utils import build_a2a_response_log
+  from google.adk.a2a.logs.log_utils import build_message_part_log
+except ImportError as e:
+  if sys.version_info < (3, 10):
+    # Imports are not needed since tests will be skipped due to pytestmark.
+    # The imported names are only used within test methods, not at module level,
+    # so no NameError occurs during module compilation.
+    pass
+  else:
+    raise e
 
 
 class TestBuildMessagePartLog:
   """Test suite for build_message_part_log function."""
 
-  @pytest.mark.skipif(not A2A_AVAILABLE, reason="A2A types not available")
   def test_text_part_short_text(self):
     """Test TextPart with short text."""
-    # Import here to avoid import issues at module level
-    from google.adk.a2a.logs.log_utils import build_message_part_log
 
     # Create real A2A objects
     text_part = A2ATextPart(text="Hello, world!")
@@ -56,10 +66,8 @@ class TestBuildMessagePartLog:
 
     assert result == "TextPart: Hello, world!"
 
-  @pytest.mark.skipif(not A2A_AVAILABLE, reason="A2A types not available")
   def test_text_part_long_text(self):
     """Test TextPart with long text that gets truncated."""
-    from google.adk.a2a.logs.log_utils import build_message_part_log
 
     long_text = "x" * 150  # Long text that should be truncated
     text_part = A2ATextPart(text=long_text)
@@ -70,10 +78,8 @@ class TestBuildMessagePartLog:
     expected = f"TextPart: {'x' * 100}..."
     assert result == expected
 
-  @pytest.mark.skipif(not A2A_AVAILABLE, reason="A2A types not available")
   def test_data_part_simple_data(self):
     """Test DataPart with simple data."""
-    from google.adk.a2a.logs.log_utils import build_message_part_log
 
     data_part = A2ADataPart(data={"key1": "value1", "key2": 42})
     part = A2APart(root=data_part)
@@ -84,10 +90,8 @@ class TestBuildMessagePartLog:
     expected = f"DataPart: {json.dumps(expected_data, indent=2)}"
     assert result == expected
 
-  @pytest.mark.skipif(not A2A_AVAILABLE, reason="A2A types not available")
   def test_data_part_large_values(self):
     """Test DataPart with large values that get summarized."""
-    from google.adk.a2a.logs.log_utils import build_message_part_log
 
     large_dict = {f"key{i}": f"value{i}" for i in range(50)}
     large_list = list(range(100))
@@ -114,7 +118,6 @@ class TestBuildMessagePartLog:
 
   def test_other_part_type(self):
     """Test handling of other part types (not Text or Data)."""
-    from google.adk.a2a.logs.log_utils import build_message_part_log
 
     # Create a mock part that will fall through to the else case
     mock_root = Mock()
@@ -135,35 +138,20 @@ class TestBuildMessagePartLog:
 class TestBuildA2ARequestLog:
   """Test suite for build_a2a_request_log function."""
 
-  def test_request_with_parts_and_config(self):
-    """Test request logging with message parts and configuration."""
-    from google.adk.a2a.logs.log_utils import build_a2a_request_log
+  def test_request_with_parts(self):
+    """Test request logging of message parts."""
 
     # Create mock request with all components
-    req = SendMessageRequest(
-        id="req-123",
-        method="message/send",
-        jsonrpc="2.0",
-        params=MessageSendParams(
-            message=A2AMessage(
-                message_id="msg-456",
-                role="user",
-                task_id="task-789",
-                context_id="ctx-101",
-                parts=[
-                    A2APart(root=A2ATextPart(text="Part 1")),
-                    A2APart(root=A2ATextPart(text="Part 2")),
-                ],
-                metadata={"msg_key": "msg_value"},
-            ),
-            configuration=MessageSendConfiguration(
-                accepted_output_modes=["text", "image"],
-                blocking=True,
-                history_length=10,
-                push_notification_config=None,
-            ),
-            metadata={"key1": "value1"},
-        ),
+    req = A2AMessage(
+        message_id="msg-456",
+        role="user",
+        task_id="task-789",
+        context_id="ctx-101",
+        parts=[
+            A2APart(root=A2ATextPart(text="Part 1")),
+            A2APart(root=A2ATextPart(text="Part 2")),
+        ],
+        metadata={"msg_key": "msg_value"},
     )
 
     with patch(
@@ -174,63 +162,40 @@ class TestBuildA2ARequestLog:
       result = build_a2a_request_log(req)
 
     # Verify all components are present
-    assert "req-123" in result
-    assert "message/send" in result
-    assert "2.0" in result
     assert "msg-456" in result
     assert "user" in result
     assert "task-789" in result
     assert "ctx-101" in result
     assert "Part 0:" in result
     assert "Part 1:" in result
-    assert '"blocking": true' in result
-    assert '"history_length": 10' in result
-    assert '"key1": "value1"' in result
 
   def test_request_without_parts(self):
     """Test request logging without message parts."""
-    from google.adk.a2a.logs.log_utils import build_a2a_request_log
 
     req = Mock()
-    req.id = "req-123"
-    req.method = "message/send"
-    req.jsonrpc = "2.0"
 
-    req.params.message.message_id = "msg-456"
-    req.params.message.role = "user"
-    req.params.message.task_id = "task-789"
-    req.params.message.context_id = "ctx-101"
-    req.params.message.parts = None  # No parts
-    req.params.message.metadata = None  # No message metadata
-
-    req.params.configuration = None  # No configuration
-    req.params.metadata = None  # No metadata
+    req.message_id = "msg-456"
+    req.role = "user"
+    req.task_id = "task-789"
+    req.context_id = "ctx-101"
+    req.parts = None  # No parts
+    req.metadata = None  # No message metadata
 
     result = build_a2a_request_log(req)
 
     assert "No parts" in result
-    assert "Configuration:\nNone" in result
-    # When metadata is None, it's not included in the output
-    assert "Metadata:" not in result
 
   def test_request_with_empty_parts_list(self):
     """Test request logging with empty parts list."""
-    from google.adk.a2a.logs.log_utils import build_a2a_request_log
 
     req = Mock()
-    req.id = "req-123"
-    req.method = "sendMessage"
-    req.jsonrpc = "2.0"
 
-    req.params.message.message_id = "msg-456"
-    req.params.message.role = "user"
-    req.params.message.task_id = "task-789"
-    req.params.message.context_id = "ctx-101"
-    req.params.message.parts = []  # Empty parts list
-    req.params.message.metadata = None  # No message metadata
-
-    req.params.configuration = None
-    req.params.metadata = None
+    req.message_id = "msg-456"
+    req.role = "user"
+    req.task_id = "task-789"
+    req.context_id = "ctx-101"
+    req.parts = []  # Empty parts list
+    req.metadata = None  # No message metadata
 
     result = build_a2a_request_log(req)
 
@@ -240,65 +205,19 @@ class TestBuildA2ARequestLog:
 class TestBuildA2AResponseLog:
   """Test suite for build_a2a_response_log function."""
 
-  def test_error_response(self):
-    """Test error response logging."""
-    from google.adk.a2a.logs.log_utils import build_a2a_response_log
-
-    resp = Mock()
-    resp.root.error.code = 500
-    resp.root.error.message = "Internal Server Error"
-    resp.root.error.data = {"details": "Something went wrong"}
-    resp.root.id = "resp-error"
-    resp.root.jsonrpc = "2.0"
-
-    result = build_a2a_response_log(resp)
-
-    assert "Type: ERROR" in result
-    assert "Error Code: 500" in result
-    assert "Internal Server Error" in result
-    assert '"details": "Something went wrong"' in result
-    assert "resp-error" in result
-    assert "2.0" in result
-
-  def test_error_response_no_data(self):
-    """Test error response logging without error data."""
-    from google.adk.a2a.logs.log_utils import build_a2a_response_log
-
-    resp = Mock()
-    resp.root.error.code = 404
-    resp.root.error.message = "Not Found"
-    resp.root.error.data = None
-    resp.root.id = "resp-404"
-    resp.root.jsonrpc = "2.0"
-
-    result = build_a2a_response_log(resp)
-
-    assert "Type: ERROR" in result
-    assert "Error Code: 404" in result
-    assert "Not Found" in result
-    assert "Error Data: None" in result
-
-  @pytest.mark.skipif(not A2A_AVAILABLE, reason="A2A types not available")
-  def test_success_response_with_task(self):
+  def test_success_response_with_client_event(self):
     """Test success response logging with Task result."""
     # Use module-level imported types consistently
-    from google.adk.a2a.logs.log_utils import build_a2a_response_log
 
     task_status = TaskStatus(state=TaskState.working)
     task = A2ATask(id="task-123", context_id="ctx-456", status=task_status)
 
-    resp = Mock()
-    resp.root.result = task
-    resp.root.id = "resp-789"
-    resp.root.jsonrpc = "2.0"
-
-    # Remove error attribute to ensure success path
-    delattr(resp.root, "error")
+    resp = (task, None)
 
     result = build_a2a_response_log(resp)
 
     assert "Type: SUCCESS" in result
-    assert "Result Type: Task" in result
+    assert "Result Type: ClientEvent" in result
     assert "Task ID: task-123" in result
     assert "Context ID: ctx-456" in result
     # Handle both structured format and JSON fallback due to potential isinstance failures
@@ -309,10 +228,8 @@ class TestBuildA2AResponseLog:
         or '"state": "working"' in result
     )
 
-  @pytest.mark.skipif(not A2A_AVAILABLE, reason="A2A types not available")
   def test_success_response_with_task_and_status_message(self):
     """Test success response with Task that has status message."""
-    from google.adk.a2a.logs.log_utils import build_a2a_response_log
 
     # Create status message using module-level imported types
     status_message = A2AMessage(
@@ -333,13 +250,7 @@ class TestBuildA2AResponseLog:
         artifacts=None,
     )
 
-    resp = Mock()
-    resp.root.result = task
-    resp.root.id = "resp-789"
-    resp.root.jsonrpc = "2.0"
-
-    # Remove error attribute to ensure success path
-    delattr(resp.root, "error")
+    resp = (task, None)
 
     result = build_a2a_response_log(resp)
 
@@ -353,10 +264,8 @@ class TestBuildA2AResponseLog:
     )
     assert "Message Parts:" in result
 
-  @pytest.mark.skipif(not A2A_AVAILABLE, reason="A2A types not available")
   def test_success_response_with_message(self):
     """Test success response logging with Message result."""
-    from google.adk.a2a.logs.log_utils import build_a2a_response_log
 
     # Use module-level imported types consistently
     message = A2AMessage(
@@ -367,13 +276,7 @@ class TestBuildA2AResponseLog:
         parts=[A2APart(root=A2ATextPart(text="Message part 1"))],
     )
 
-    resp = Mock()
-    resp.root.result = message
-    resp.root.id = "resp-101"
-    resp.root.jsonrpc = "2.0"
-
-    # Remove error attribute to ensure success path
-    delattr(resp.root, "error")
+    resp = message
 
     result = build_a2a_response_log(resp)
 
@@ -392,7 +295,6 @@ class TestBuildA2AResponseLog:
 
   def test_success_response_with_message_no_parts(self):
     """Test success response with Message that has no parts."""
-    from google.adk.a2a.logs.log_utils import build_a2a_response_log
 
     # Use mock for this case since we want to test empty parts handling
     message = Mock()
@@ -404,13 +306,7 @@ class TestBuildA2AResponseLog:
     message.parts = None  # No parts
     message.model_dump_json.return_value = '{"message": "empty"}'
 
-    resp = Mock()
-    resp.root.result = message
-    resp.root.id = "resp-empty"
-    resp.root.jsonrpc = "2.0"
-
-    # Remove error attribute to ensure success path
-    delattr(resp.root, "error")
+    resp = message
 
     result = build_a2a_response_log(resp)
 
@@ -419,19 +315,12 @@ class TestBuildA2AResponseLog:
 
   def test_success_response_with_other_result_type(self):
     """Test success response with result type that's not Task or Message."""
-    from google.adk.a2a.logs.log_utils import build_a2a_response_log
 
     other_result = Mock()
     other_result.__class__.__name__ = "OtherResult"
     other_result.model_dump_json.return_value = '{"other": "data"}'
 
-    resp = Mock()
-    resp.root.result = other_result
-    resp.root.id = "resp-other"
-    resp.root.jsonrpc = "2.0"
-
-    # Remove error attribute to ensure success path
-    delattr(resp.root, "error")
+    resp = other_result
 
     result = build_a2a_response_log(resp)
 
@@ -442,20 +331,13 @@ class TestBuildA2AResponseLog:
 
   def test_success_response_without_model_dump_json(self):
     """Test success response with result that doesn't have model_dump_json."""
-    from google.adk.a2a.logs.log_utils import build_a2a_response_log
 
     other_result = Mock()
     other_result.__class__.__name__ = "SimpleResult"
     # Don't add model_dump_json method
     del other_result.model_dump_json
 
-    resp = Mock()
-    resp.root.result = other_result
-    resp.root.id = "resp-simple"
-    resp.root.jsonrpc = "2.0"
-
-    # Remove error attribute to ensure success path
-    delattr(resp.root, "error")
+    resp = other_result
 
     result = build_a2a_response_log(resp)
 
@@ -464,7 +346,6 @@ class TestBuildA2AResponseLog:
 
   def test_build_message_part_log_with_metadata(self):
     """Test build_message_part_log with metadata in the part."""
-    from google.adk.a2a.logs.log_utils import build_message_part_log
 
     mock_root = Mock()
     mock_root.__class__.__name__ = "MockPartWithMetadata"
@@ -483,22 +364,15 @@ class TestBuildA2AResponseLog:
 
   def test_build_a2a_request_log_with_message_metadata(self):
     """Test request logging with message metadata."""
-    from google.adk.a2a.logs.log_utils import build_a2a_request_log
 
     req = Mock()
-    req.id = "req-with-metadata"
-    req.method = "sendMessage"
-    req.jsonrpc = "2.0"
 
-    req.params.message.message_id = "msg-with-metadata"
-    req.params.message.role = "user"
-    req.params.message.task_id = "task-metadata"
-    req.params.message.context_id = "ctx-metadata"
-    req.params.message.parts = []
-    req.params.message.metadata = {"msg_type": "test", "priority": "high"}
-
-    req.params.configuration = None
-    req.params.metadata = None
+    req.message_id = "msg-with-metadata"
+    req.role = "user"
+    req.task_id = "task-metadata"
+    req.context_id = "ctx-metadata"
+    req.parts = []
+    req.metadata = {"msg_type": "test", "priority": "high"}
 
     result = build_a2a_request_log(req)
 

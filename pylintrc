@@ -257,7 +257,7 @@ single-line-if-stmt=yes
 max-module-lines=99999
 
 # String used as indentation unit.  The internal Google style guide mandates 2
-# spaces.  Google's externaly-published style guide says 4, consistent with
+# spaces.  Google's externally-published style guide says 4, consistent with
 # PEP 8.  Here, we use 2 spaces, for conformity with many open-sourced Google
 # projects (like TensorFlow).
 indent-string='  '

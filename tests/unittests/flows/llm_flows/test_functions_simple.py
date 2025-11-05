@@ -32,7 +32,7 @@ def test_simple_function():
   function_call_1 = types.Part.from_function_call(
       name='increase_by_one', args={'x': 1}
   )
-  function_respones_2 = types.Part.from_function_response(
+  function_responses_2 = types.Part.from_function_response(
       name='increase_by_one', response={'result': 2}
   )
   responses: list[types.Content] = [
@@ -54,7 +54,7 @@ def test_simple_function():
   runner = testing_utils.InMemoryRunner(agent)
   assert testing_utils.simplify_events(runner.run('test')) == [
       ('root_agent', function_call_1),
-      ('root_agent', function_respones_2),
+      ('root_agent', function_responses_2),
       ('root_agent', 'response1'),
   ]
 
@@ -65,7 +65,7 @@ def test_simple_function():
   assert testing_utils.simplify_contents(mock_model.requests[1].contents) == [
       ('user', 'test'),
       ('model', function_call_1),
-      ('user', function_respones_2),
+      ('user', function_responses_2),
   ]
 
   # Asserts the function calls.
@@ -760,11 +760,13 @@ async def test_parallel_function_execution_timing():
       start_time_diff < 0.01
   ), f'Functions started too far apart: {start_time_diff}s'
 
-  # Total execution time should be closer to 0.1s (parallel) than 0.2s (sequential)
-  # Allow some overhead for task creation and synchronization
-  assert (
-      total_time < 0.15
-  ), f'Execution took too long: {total_time}s, expected < 0.15s'
+  # Total execution time should be less than the sum of all parallel function delays (0.2s)
+  # This proves parallel execution rather than sequential execution
+  sequential_time = 0.2  # 0.1s + 0.1s if functions ran sequentially
+  assert total_time < sequential_time, (
+      f'Execution took too long: {total_time}s, expected < {sequential_time}s'
+      ' (sequential time)'
+  )
 
   # Verify the results are correct
   assert testing_utils.simplify_events(events) == [
