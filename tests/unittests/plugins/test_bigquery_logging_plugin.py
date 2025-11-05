@@ -38,6 +38,8 @@ from google.cloud import bigquery
 from google.genai import types
 import pytest
 
+BigQueryLoggerConfig = bigquery_logging_plugin.BigQueryLoggerConfig
+
 
 class PluginTestBase:
   """Base class for plugin tests with common context setup."""
@@ -109,14 +111,20 @@ class TestBigQueryAgentAnalyticsPlugin(PluginTestBase):
     )
     self._asyncio_to_thread_patch.start()
 
-    self.plugin = bigquery_logging_plugin.BigQueryAgentAnalyticsPlugin(
+    self.plugin = asyncio.run(self._create_plugin())
+
+  async def _create_plugin(self, config=None):
+    plugin = bigquery_logging_plugin.BigQueryAgentAnalyticsPlugin(
         project_id=self.project_id,
         dataset_id=self.dataset_id,
         table_id=self.table_id,
+        config=config,
     )
-    # Trigger lazy initialization by calling an async method once.
-    asyncio.run(self.plugin._log_to_bigquery_async({"event_type": "INIT"}))
-    self.mock_bq_client.insert_rows_json.reset_mock()
+    if config is None or config.enabled:
+      # Trigger lazy initialization by calling an async method once.
+      await plugin._log_to_bigquery_async({"event_type": "INIT"})
+      self.mock_bq_client.insert_rows_json.reset_mock()
+    return plugin
 
   def _get_logged_entry(self):
     """Helper to get the single logged entry from the mocked client."""
@@ -133,6 +141,98 @@ class TestBigQueryAgentAnalyticsPlugin(PluginTestBase):
     assert log_entry["invocation_id"] == "inv-789"
     assert log_entry["user_id"] == "user-456"
     assert log_entry["timestamp"] is not None
+
+  @pytest.mark.asyncio
+  async def test_plugin_disabled(self):
+    self.mock_bq_client_cls.reset_mock()
+    config = BigQueryLoggerConfig(enabled=False)
+    plugin = await self._create_plugin(config)
+    user_message = types.Content(parts=[types.Part(text="Test")])
+    await plugin.on_user_message_callback(
+        invocation_context=self.invocation_context, user_message=user_message
+    )
+    self.mock_bq_client_cls.assert_not_called()
+    self.mock_bq_client.insert_rows_json.assert_not_called()
+
+  @pytest.mark.asyncio
+  async def test_event_allowlist(self):
+    config = BigQueryLoggerConfig(event_allowlist=["LLM_REQUEST"])
+    plugin = await self._create_plugin(config)
+
+    # This should be logged
+    llm_request = llm_request_lib.LlmRequest(
+        model="gemini-pro",
+        contents=[types.Content(parts=[types.Part(text="Prompt")])],
+    )
+    await plugin.before_model_callback(
+        callback_context=self.callback_context, llm_request=llm_request
+    )
+    self.mock_bq_client.insert_rows_json.assert_called_once()
+    self.mock_bq_client.insert_rows_json.reset_mock()
+
+    # This should NOT be logged
+    user_message = types.Content(parts=[types.Part(text="What is up?")])
+    await plugin.on_user_message_callback(
+        invocation_context=self.invocation_context, user_message=user_message
+    )
+    self.mock_bq_client.insert_rows_json.assert_not_called()
+
+  @pytest.mark.asyncio
+  async def test_event_denylist(self):
+    config = BigQueryLoggerConfig(event_denylist=["USER_MESSAGE_RECEIVED"])
+    plugin = await self._create_plugin(config)
+
+    # This should NOT be logged
+    user_message = types.Content(parts=[types.Part(text="What is up?")])
+    await plugin.on_user_message_callback(
+        invocation_context=self.invocation_context, user_message=user_message
+    )
+    self.mock_bq_client.insert_rows_json.assert_not_called()
+
+    # This should be logged
+    await plugin.before_run_callback(invocation_context=self.invocation_context)
+    self.mock_bq_client.insert_rows_json.assert_called_once()
+
+  @pytest.mark.asyncio
+  async def test_content_formatter(self):
+    def redact_content(content):
+      return "[REDACTED]"
+
+    config = BigQueryLoggerConfig(content_formatter=redact_content)
+    plugin = await self._create_plugin(config)
+
+    user_message = types.Content(parts=[types.Part(text="Secret message")])
+    await plugin.on_user_message_callback(
+        invocation_context=self.invocation_context, user_message=user_message
+    )
+
+    log_entry = self._get_logged_entry()
+    self._assert_common_fields(log_entry, "USER_MESSAGE_RECEIVED")
+    assert log_entry["content"] == "[REDACTED]"
+
+  @pytest.mark.asyncio
+  async def test_content_formatter_error(self):
+    def error_formatter(content):
+      raise ValueError("Formatter failed")
+
+    config = BigQueryLoggerConfig(content_formatter=error_formatter)
+    plugin = await self._create_plugin(config)
+
+    user_message = types.Content(parts=[types.Part(text="Test")])
+    with mock.patch.object(logging, "warning") as mock_log_warning:
+      await plugin.on_user_message_callback(
+          invocation_context=self.invocation_context, user_message=user_message
+      )
+      mock_log_warning.assert_called_once_with(
+          "Error applying custom content formatter for event type %s: %s",
+          "USER_MESSAGE_RECEIVED",
+          mock.ANY,
+      )
+
+    log_entry = self._get_logged_entry()
+    # Content should be a string, even if formatter failed
+    assert isinstance(log_entry["content"], str)
+    assert "User Content: text: 'Test'" in log_entry["content"]
 
   @pytest.mark.asyncio
   async def test_on_user_message_callback_logs_correctly(self):
@@ -371,8 +471,9 @@ class TestBigQueryAgentAnalyticsPlugin(PluginTestBase):
 
   @pytest.mark.asyncio
   async def test_on_model_error_callback_logs_correctly(self):
-    llm_request = mock.create_autospec(
-        llm_request_lib.LlmRequest, instance=True
+    llm_request = llm_request_lib.LlmRequest(
+        model="gemini-pro",
+        contents=[types.Content(parts=[types.Part(text="Prompt")])],
     )
     error = ValueError("LLM failed")
     await self.plugin.on_model_error_callback(
@@ -382,21 +483,26 @@ class TestBigQueryAgentAnalyticsPlugin(PluginTestBase):
     )
     log_entry = self._get_logged_entry()
     self._assert_common_fields(log_entry, "LLM_ERROR")
-    assert log_entry["content"] is None
+    assert (
+        log_entry["content"] is None
+        or "Request Content: " in log_entry["content"]
+    )
     assert log_entry["error_message"] == "LLM failed"
 
   @pytest.mark.asyncio
   async def test_on_tool_error_callback_logs_correctly(self):
     mock_tool = mock.create_autospec(base_tool_lib.BaseTool, instance=True)
     mock_tool.name = "MyTool"
+    tool_args = {"param": "value"}
     error = TimeoutError("Tool timed out")
     await self.plugin.on_tool_error_callback(
         tool=mock_tool,
-        tool_args={"param": "value"},
+        tool_args=tool_args,
         tool_context=self.tool_context,
         error=error,
     )
     log_entry = self._get_logged_entry()
     self._assert_common_fields(log_entry, "TOOL_ERROR")
-    assert log_entry["content"] == "Tool Name: MyTool"
+    assert "Tool Name: MyTool" in log_entry["content"]
+    assert "Arguments: {'param': 'value'}" in log_entry["content"]
     assert log_entry["error_message"] == "Tool timed out"

@@ -101,6 +101,7 @@ class UsageMetadataChunk(BaseModel):
   prompt_tokens: int
   completion_tokens: int
   total_tokens: int
+  cached_prompt_tokens: int = 0
 
 
 class LiteLLMClient:
@@ -217,6 +218,59 @@ def _append_fallback_user_content_if_missing(
   )
 
 
+def _extract_cached_prompt_tokens(usage: Any) -> int:
+  """Extracts cached prompt tokens from LiteLLM usage.
+
+  Providers expose cached token metrics in different shapes. Common patterns:
+  - usage["prompt_tokens_details"]["cached_tokens"] (OpenAI/Azure style)
+  - usage["prompt_tokens_details"] is a list of dicts with cached_tokens
+  - usage["cached_prompt_tokens"] (LiteLLM-normalized for some providers)
+  - usage["cached_tokens"] (flat)
+
+  Args:
+    usage: Usage dictionary from LiteLLM response.
+
+  Returns:
+    Integer number of cached prompt tokens if present; otherwise 0.
+  """
+  try:
+    usage_dict = usage
+    if hasattr(usage, "model_dump"):
+      usage_dict = usage.model_dump()
+    elif isinstance(usage, str):
+      try:
+        usage_dict = json.loads(usage)
+      except json.JSONDecodeError:
+        return 0
+
+    if not isinstance(usage_dict, dict):
+      return 0
+
+    details = usage_dict.get("prompt_tokens_details")
+    if isinstance(details, dict):
+      value = details.get("cached_tokens")
+      if isinstance(value, int):
+        return value
+    elif isinstance(details, list):
+      total = sum(
+          item.get("cached_tokens", 0)
+          for item in details
+          if isinstance(item, dict)
+          and isinstance(item.get("cached_tokens"), int)
+      )
+      if total > 0:
+        return total
+
+    for key in ("cached_prompt_tokens", "cached_tokens"):
+      value = usage_dict.get(key)
+      if isinstance(value, int):
+        return value
+  except (TypeError, AttributeError) as e:
+    logger.debug("Error extracting cached prompt tokens: %s", e)
+
+  return 0
+
+
 def _content_to_message_param(
     content: types.Content,
 ) -> Union[Message, list[Message]]:
@@ -314,33 +368,28 @@ def _get_content(
     ):
       base64_string = base64.b64encode(part.inline_data.data).decode("utf-8")
       data_uri = f"data:{part.inline_data.mime_type};base64,{base64_string}"
+      # LiteLLM providers extract the MIME type from the data URI; avoid
+      # passing a separate `format` field that some backends reject.
 
       if part.inline_data.mime_type.startswith("image"):
-        # Use full MIME type (e.g., "image/png") for providers that validate it
-        format_type = part.inline_data.mime_type
         content_objects.append({
             "type": "image_url",
-            "image_url": {"url": data_uri, "format": format_type},
+            "image_url": {"url": data_uri},
         })
       elif part.inline_data.mime_type.startswith("video"):
-        # Use full MIME type (e.g., "video/mp4") for providers that validate it
-        format_type = part.inline_data.mime_type
         content_objects.append({
             "type": "video_url",
-            "video_url": {"url": data_uri, "format": format_type},
+            "video_url": {"url": data_uri},
         })
       elif part.inline_data.mime_type.startswith("audio"):
-        # Use full MIME type (e.g., "audio/mpeg") for providers that validate it
-        format_type = part.inline_data.mime_type
         content_objects.append({
             "type": "audio_url",
-            "audio_url": {"url": data_uri, "format": format_type},
+            "audio_url": {"url": data_uri},
         })
       elif part.inline_data.mime_type == "application/pdf":
-        format_type = part.inline_data.mime_type
         content_objects.append({
             "type": "file",
-            "file": {"file_data": data_uri, "format": format_type},
+            "file": {"file_data": data_uri},
         })
       else:
         raise ValueError("LiteLlm(BaseLlm) does not support this content part.")
@@ -348,8 +397,6 @@ def _get_content(
       file_object: ChatCompletionFileUrlObject = {
           "file_id": part.file_data.file_uri,
       }
-      if part.file_data.mime_type:
-        file_object["format"] = part.file_data.mime_type
       content_objects.append({
           "type": "file",
           "file": file_object,
@@ -540,6 +587,7 @@ def _model_response_to_chunk(
         prompt_tokens=response["usage"].get("prompt_tokens", 0),
         completion_tokens=response["usage"].get("completion_tokens", 0),
         total_tokens=response["usage"].get("total_tokens", 0),
+        cached_prompt_tokens=_extract_cached_prompt_tokens(response["usage"]),
     ), None
 
 
@@ -565,7 +613,9 @@ def _model_response_to_generate_content_response(
   if not message:
     raise ValueError("No message in response")
 
-  llm_response = _message_to_generate_content_response(message)
+  llm_response = _message_to_generate_content_response(
+      message, model_version=response.model
+  )
   if finish_reason:
     # If LiteLLM already provides a FinishReason enum (e.g., for Gemini), use
     # it directly. Otherwise, map the finish_reason string to the enum.
@@ -581,18 +631,22 @@ def _model_response_to_generate_content_response(
         prompt_token_count=response["usage"].get("prompt_tokens", 0),
         candidates_token_count=response["usage"].get("completion_tokens", 0),
         total_token_count=response["usage"].get("total_tokens", 0),
+        cached_content_token_count=_extract_cached_prompt_tokens(
+            response["usage"]
+        ),
     )
   return llm_response
 
 
 def _message_to_generate_content_response(
-    message: Message, is_partial: bool = False
+    message: Message, *, is_partial: bool = False, model_version: str = None
 ) -> LlmResponse:
   """Converts a litellm message to LlmResponse.
 
   Args:
     message: The message to convert.
     is_partial: Whether the message is partial.
+    model_version: The model version used to generate the response.
 
   Returns:
     The LlmResponse.
@@ -613,7 +667,9 @@ def _message_to_generate_content_response(
         parts.append(part)
 
   return LlmResponse(
-      content=types.Content(role="model", parts=parts), partial=is_partial
+      content=types.Content(role="model", parts=parts),
+      partial=is_partial,
+      model_version=model_version,
   )
 
 
@@ -868,10 +924,11 @@ class LiteLlm(BaseLlm):
       model: The name of the LiteLlm model.
       **kwargs: Additional arguments to pass to the litellm completion api.
     """
+    drop_params = kwargs.pop("drop_params", None)
     super().__init__(model=model, **kwargs)
     # Warn if using Gemini via LiteLLM
     _warn_gemini_via_litellm(model)
-    self._additional_args = kwargs
+    self._additional_args = dict(kwargs)
     # preventing generation call with llm_client
     # and overriding messages, tools and stream which are managed internally
     self._additional_args.pop("llm_client", None)
@@ -879,6 +936,8 @@ class LiteLlm(BaseLlm):
     self._additional_args.pop("tools", None)
     # public api called from runner determines to stream or not
     self._additional_args.pop("stream", None)
+    if drop_params is not None:
+      self._additional_args["drop_params"] = drop_params
 
   async def generate_content_async(
       self, llm_request: LlmRequest, stream: bool = False
@@ -957,12 +1016,14 @@ class LiteLlm(BaseLlm):
                     content=chunk.text,
                 ),
                 is_partial=True,
+                model_version=part.model,
             )
           elif isinstance(chunk, UsageMetadataChunk):
             usage_metadata = types.GenerateContentResponseUsageMetadata(
                 prompt_token_count=chunk.prompt_tokens,
                 candidates_token_count=chunk.completion_tokens,
                 total_token_count=chunk.total_tokens,
+                cached_content_token_count=chunk.cached_prompt_tokens,
             )
 
           if (
@@ -988,14 +1049,16 @@ class LiteLlm(BaseLlm):
                         role="assistant",
                         content=text,
                         tool_calls=tool_calls,
-                    )
+                    ),
+                    model_version=part.model,
                 )
             )
             text = ""
             function_calls.clear()
           elif finish_reason == "stop" and text:
             aggregated_llm_response = _message_to_generate_content_response(
-                ChatCompletionAssistantMessage(role="assistant", content=text)
+                ChatCompletionAssistantMessage(role="assistant", content=text),
+                model_version=part.model,
             )
             text = ""
 

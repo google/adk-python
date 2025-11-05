@@ -25,6 +25,7 @@ from ...agents.invocation_context import InvocationContext
 from ...events.event import Event
 from ...models.llm_request import LlmRequest
 from ...tools.set_model_response_tool import SetModelResponseTool
+from ...utils.output_schema_utils import can_use_output_schema_with_tools
 from ._base_llm_processor import BaseLlmRequestProcessor
 
 
@@ -39,8 +40,13 @@ class _OutputSchemaRequestProcessor(BaseLlmRequestProcessor):
 
     agent = invocation_context.agent
 
-    # Check if we need the processor: output_schema + tools
-    if not agent.output_schema or not agent.tools:
+    # Check if we need the processor: output_schema + tools + cannot use output
+    # schema with tools
+    if (
+        not agent.output_schema
+        or not agent.tools
+        or can_use_output_schema_with_tools(agent.model)
+    ):
       return
 
     # Add the set_model_response tool to handle structured output

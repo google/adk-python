@@ -31,8 +31,10 @@ from google.adk.agents import llm_agent
 from google.adk.agents import loop_agent
 from google.adk.events import event as event_lib
 from google.adk.models import google_llm
+from google.adk.planners import built_in_planner
 from google.adk.tools import base_tool
 from google.genai import types
+from retry import api as retry
 
 
 class EnvResponse(Protocol):
@@ -134,6 +136,11 @@ def _adk_agent(
           model=model or 'gemini-2.5-flash',
           retry_options=_default_retry_options(),
       ),
+      planner=built_in_planner.BuiltInPlanner(
+          thinking_config=types.ThinkingConfig(
+              thinking_budget=-1, include_thoughts=False
+          )
+      ),
       instruction=instruction,
       tools=tools,
       generate_content_config=types.GenerateContentConfig(
@@ -173,11 +180,17 @@ class _UserAgent(base_agent.BaseAgent):
       return
 
     if last_event.content and last_event.content.parts:
-      next_message = last_event.content.parts[-1].text
+      next_message = '\n\n'.join([p.text for p in last_event.content.parts])
     else:
       logging.warn('Empty content with event=%s', last_event)
       next_message = ''
-    env_response = self.env.step(types.Part(text=next_message))
+    env_response = retry.retry_call(
+        self.env.step,
+        fargs=(types.Part(text=next_message),),
+        tries=3,
+        delay=2,
+        backoff=2,
+    )
 
     output_event = event_lib.Event(
         content=types.Content(

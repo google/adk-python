@@ -1057,7 +1057,7 @@ def analyze_contribution(
   # Create a session and run the create model query.
   original_write_mode = settings.write_mode
   try:
-    if settings.write_mode == WriteMode.BLOCKED:
+    if original_write_mode == WriteMode.BLOCKED:
       raise ValueError("analyze_contribution is not allowed in this session.")
     elif original_write_mode != WriteMode.PROTECTED:
       # Running create temp model requires a session. So we set the write mode
@@ -1100,6 +1100,7 @@ def detect_anomalies(
     times_series_timestamp_col: str,
     times_series_data_col: str,
     horizon: Optional[int] = 10,
+    target_data: Optional[str] = None,
     times_series_id_cols: Optional[list[str]] = None,
     anomaly_prob_threshold: Optional[float] = 0.95,
     *,
@@ -1121,6 +1122,9 @@ def detect_anomalies(
         numerical values to be forecasted and anomaly detected.
       horizon (int, optional): The number of time steps to forecast into the
         future. Defaults to 10.
+      target_data (str, optional): The table id of the BigQuery table containing
+        the target time series data or a query statement that select the target
+        data.
       times_series_id_cols (list, optional): The column names of the id columns
         to indicate each time series when there are multiple time series in the
         table. All elements must be strings. Defaults to None.
@@ -1264,6 +1268,18 @@ def detect_anomalies(
   anomaly_detection_query = f"""
   SELECT * FROM ML.DETECT_ANOMALIES(MODEL {model_name}, STRUCT({anomaly_prob_threshold} AS anomaly_prob_threshold))
   """
+  if target_data:
+    trimmed_upper_target_data = target_data.strip().upper()
+    if trimmed_upper_target_data.startswith(
+        "SELECT"
+    ) or trimmed_upper_target_data.startswith("WITH"):
+      target_data_source = f"({target_data})"
+    else:
+      target_data_source = f"SELECT * FROM `{target_data}`"
+
+    anomaly_detection_query = f"""
+    SELECT * FROM ML.DETECT_ANOMALIES(MODEL {model_name}, STRUCT({anomaly_prob_threshold} AS anomaly_prob_threshold), {target_data_source})
+    """
 
   # Create a session and run the create model query.
   original_write_mode = settings.write_mode

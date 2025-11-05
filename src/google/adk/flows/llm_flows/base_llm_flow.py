@@ -581,6 +581,7 @@ class BaseLlmFlow(ABC):
         and not llm_response.turn_complete
         and not llm_response.input_transcription
         and not llm_response.output_transcription
+        and not llm_response.usage_metadata
     ):
       return
 

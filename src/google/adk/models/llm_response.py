@@ -55,6 +55,9 @@ class LlmResponse(BaseModel):
   )
   """The pydantic model config."""
 
+  model_version: Optional[str] = None
+  """Output only. The model version used to generate the response."""
+
   content: Optional[types.Content] = None
   """The generative content of the response.
 
@@ -159,6 +162,7 @@ class LlmResponse(BaseModel):
             citation_metadata=candidate.citation_metadata,
             avg_logprobs=candidate.avg_logprobs,
             logprobs_result=candidate.logprobs_result,
+            model_version=generate_content_response.model_version,
         )
       else:
         return LlmResponse(
@@ -169,6 +173,7 @@ class LlmResponse(BaseModel):
             finish_reason=candidate.finish_reason,
             avg_logprobs=candidate.avg_logprobs,
             logprobs_result=candidate.logprobs_result,
+            model_version=generate_content_response.model_version,
         )
     else:
       if generate_content_response.prompt_feedback:
@@ -177,10 +182,12 @@ class LlmResponse(BaseModel):
             error_code=prompt_feedback.block_reason,
             error_message=prompt_feedback.block_reason_message,
             usage_metadata=usage_metadata,
+            model_version=generate_content_response.model_version,
         )
       else:
         return LlmResponse(
             error_code='UNKNOWN_ERROR',
             error_message='Unknown error.',
             usage_metadata=usage_metadata,
+            model_version=generate_content_response.model_version,
         )
