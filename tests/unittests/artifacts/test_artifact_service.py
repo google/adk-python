@@ -16,6 +16,7 @@
 
 from datetime import datetime
 import enum
+from typing import Any
 from typing import Optional
 from typing import Union
 from unittest import mock
@@ -55,6 +56,8 @@ class MockBlob:
     self.name = name
     self.content: Optional[bytes] = None
     self.content_type: Optional[str] = None
+    self.time_created = FIXED_DATETIME
+    self.metadata: dict[str, Any] = {}
 
   def upload_from_string(
       self, data: Union[str, bytes], content_type: Optional[str] = None
@@ -119,6 +122,13 @@ class MockBucket:
       self.blobs[blob_name] = MockBlob(blob_name)
     return self.blobs[blob_name]
 
+  def get_blob(self, blob_name: str) -> Optional[MockBlob]:
+    """Mocks getting a blob from storage if it exists and has content."""
+    blob = self.blobs.get(blob_name)
+    if blob and blob.content is not None:
+      return blob
+    return None
+
 
 class MockClient:
   """Mocks the GCS Client."""
@@ -137,9 +147,11 @@ class MockClient:
     """Mocks listing blobs in a bucket, optionally with a prefix."""
     if prefix:
       return [
-          blob for name, blob in bucket.blobs.items() if name.startswith(prefix)
+          blob
+          for name, blob in bucket.blobs.items()
+          if name.startswith(prefix) and blob.content is not None
       ]
-    return list(bucket.blobs.values())
+    return [blob for blob in bucket.blobs.values() if blob.content is not None]
 
 
 def mock_gcs_artifact_service():
@@ -295,9 +307,12 @@ async def test_list_versions(service_type):
 
 
 @pytest.mark.asyncio
-async def test_list_keys_preserves_user_prefix():
+@pytest.mark.parametrize(
+    "service_type", [ArtifactServiceType.IN_MEMORY, ArtifactServiceType.GCS]
+)
+async def test_list_keys_preserves_user_prefix(service_type):
   """Tests that list_artifact_keys preserves 'user:' prefix in returned names."""
-  artifact_service = InMemoryArtifactService()
+  artifact_service = get_artifact_service(service_type)
   artifact = types.Part.from_bytes(data=b"test_data", mime_type="text/plain")
   app_name = "app0"
   user_id = "user0"
@@ -340,9 +355,12 @@ async def test_list_keys_preserves_user_prefix():
 
 
 @pytest.mark.asyncio
-async def test_list_artifact_versions_and_get_artifact_version():
+@pytest.mark.parametrize(
+    "service_type", [ArtifactServiceType.IN_MEMORY, ArtifactServiceType.GCS]
+)
+async def test_list_artifact_versions_and_get_artifact_version(service_type):
   """Tests listing artifact versions and getting a specific version."""
-  artifact_service = InMemoryArtifactService()
+  artifact_service = get_artifact_service(service_type)
   app_name = "app0"
   user_id = "user0"
   session_id = "123"
@@ -360,13 +378,14 @@ async def test_list_artifact_versions_and_get_artifact_version():
     mock_datetime.now.return_value = FIXED_DATETIME
 
     for i in range(4):
+      custom_metadata = {"key": "value" + str(i)}
       await artifact_service.save_artifact(
           app_name=app_name,
           user_id=user_id,
           session_id=session_id,
           filename=filename,
           artifact=versions[i],
-          custom_metadata={"key": "value" + str(i)},
+          custom_metadata=custom_metadata,
       )
 
     artifact_versions = await artifact_service.list_artifact_versions(
@@ -376,18 +395,24 @@ async def test_list_artifact_versions_and_get_artifact_version():
         filename=filename,
     )
 
-    expected_artifact_versions = [
-        ArtifactVersion(
-            version=i,
-            canonical_uri=(
-                f"memory://apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts/{filename}/versions/{i}"
-            ),
-            custom_metadata={"key": "value" + str(i)},
-            mime_type="text/plain",
-            create_time=FIXED_DATETIME.timestamp(),
+    expected_artifact_versions = []
+    for i in range(4):
+      metadata = {"key": "value" + str(i)}
+      if service_type == ArtifactServiceType.GCS:
+        uri = (
+            f"gs://test_bucket/{app_name}/{user_id}/{session_id}/{filename}/{i}"
         )
-        for i in range(4)
-    ]
+      else:
+        uri = f"memory://apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts/{filename}/versions/{i}"
+      expected_artifact_versions.append(
+          ArtifactVersion(
+              version=i,
+              canonical_uri=uri,
+              custom_metadata=metadata,
+              mime_type="text/plain",
+              create_time=FIXED_DATETIME.timestamp(),
+          )
+      )
     assert artifact_versions == expected_artifact_versions
 
     # Get latest artifact version when version is not specified
@@ -415,9 +440,12 @@ async def test_list_artifact_versions_and_get_artifact_version():
 
 
 @pytest.mark.asyncio
-async def test_list_artifact_versions_with_user_prefix():
+@pytest.mark.parametrize(
+    "service_type", [ArtifactServiceType.IN_MEMORY, ArtifactServiceType.GCS]
+)
+async def test_list_artifact_versions_with_user_prefix(service_type):
   """Tests listing artifact versions with user prefix."""
-  artifact_service = InMemoryArtifactService()
+  artifact_service = get_artifact_service(service_type)
   app_name = "app0"
   user_id = "user0"
   session_id = "123"
@@ -435,6 +463,7 @@ async def test_list_artifact_versions_with_user_prefix():
     mock_datetime.now.return_value = FIXED_DATETIME
 
     for i in range(4):
+      custom_metadata = {"key": "value" + str(i)}
       # Save artifacts with "user:" prefix (cross-session artifacts)
       await artifact_service.save_artifact(
           app_name=app_name,
@@ -442,7 +471,7 @@ async def test_list_artifact_versions_with_user_prefix():
           session_id=session_id,
           filename=user_scoped_filename,
           artifact=versions[i],
-          custom_metadata={"key": "value" + str(i)},
+          custom_metadata=custom_metadata,
       )
 
     artifact_versions = await artifact_service.list_artifact_versions(
@@ -452,25 +481,32 @@ async def test_list_artifact_versions_with_user_prefix():
         filename=user_scoped_filename,
     )
 
-    expected_artifact_versions = [
-        ArtifactVersion(
-            version=i,
-            canonical_uri=(
-                f"memory://apps/{app_name}/users/{user_id}/artifacts/{user_scoped_filename}/versions/{i}"
-            ),
-            custom_metadata={"key": "value" + str(i)},
-            mime_type="text/plain",
-            create_time=FIXED_DATETIME.timestamp(),
-        )
-        for i in range(4)
-    ]
+    expected_artifact_versions = []
+    for i in range(4):
+      metadata = {"key": "value" + str(i)}
+      if service_type == ArtifactServiceType.GCS:
+        uri = f"gs://test_bucket/{app_name}/{user_id}/user/{user_scoped_filename}/{i}"
+      else:
+        uri = f"memory://apps/{app_name}/users/{user_id}/artifacts/{user_scoped_filename}/versions/{i}"
+      expected_artifact_versions.append(
+          ArtifactVersion(
+              version=i,
+              canonical_uri=uri,
+              custom_metadata=metadata,
+              mime_type="text/plain",
+              create_time=FIXED_DATETIME.timestamp(),
+          )
+      )
     assert artifact_versions == expected_artifact_versions
 
 
 @pytest.mark.asyncio
-async def test_get_artifact_version_artifact_does_not_exist():
+@pytest.mark.parametrize(
+    "service_type", [ArtifactServiceType.IN_MEMORY, ArtifactServiceType.GCS]
+)
+async def test_get_artifact_version_artifact_does_not_exist(service_type):
   """Tests getting an artifact version when artifact does not exist."""
-  artifact_service = InMemoryArtifactService()
+  artifact_service = get_artifact_service(service_type)
   assert not await artifact_service.get_artifact_version(
       app_name="test_app",
       user_id="test_user",
@@ -480,9 +516,12 @@ async def test_get_artifact_version_artifact_does_not_exist():
 
 
 @pytest.mark.asyncio
-async def test_get_artifact_version_out_of_index():
+@pytest.mark.parametrize(
+    "service_type", [ArtifactServiceType.IN_MEMORY, ArtifactServiceType.GCS]
+)
+async def test_get_artifact_version_out_of_index(service_type):
   """Tests loading an artifact with an out-of-index version."""
-  artifact_service = InMemoryArtifactService()
+  artifact_service = get_artifact_service(service_type)
   app_name = "app0"
   user_id = "user0"
   session_id = "123"

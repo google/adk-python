@@ -303,7 +303,7 @@ class TestVertexAiSearchTool:
     with pytest.raises(
         ValueError,
         match=(
-            'Vertex AI search tool can not be used with other tools in'
+            'Vertex AI search tool cannot be used with other tools in'
             ' Gemini 1.x'
         ),
     ):
@@ -335,7 +335,7 @@ class TestVertexAiSearchTool:
     with pytest.raises(
         ValueError,
         match=(
-            'Vertex AI search tool can not be used with other tools in'
+            'Vertex AI search tool cannot be used with other tools in'
             ' Gemini 1.x'
         ),
     ):

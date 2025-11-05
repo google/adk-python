@@ -155,8 +155,8 @@ class BaseAgent(BaseModel):
 
   Returns:
     Optional[types.Content]: The content to return to the user.
-      When the content is present, the provided content will be used as agent
-      response and appended to event history as agent response.
+      When the content is present, an additional event with the provided content
+      will be appended to event history as an additional agent response.
   """
 
   def _load_agent_state(
@@ -232,7 +232,7 @@ class BaseAgent(BaseModel):
       invalid_fields = set(update) - allowed_fields
       if invalid_fields:
         raise ValueError(
-            f'Cannot update non-existent fields in {self.__class__.__name__}:'
+            f'Cannot update nonexistent fields in {self.__class__.__name__}:'
             f' {invalid_fields}'
         )
 
@@ -588,7 +588,7 @@ class BaseAgent(BaseModel):
     """Creates an agent from a config.
 
     If sub-classes uses a custom agent config, override `_from_config_kwargs`
-    method to return an updated kwargs for agent construstor.
+    method to return an updated kwargs for agent constructor.
 
     Args:
       config: The config to create the agent from.
