@@ -131,6 +131,7 @@ class ContainerCodeExecutor(BaseCodeExecutor):
         ['python3', '-c', code_execution_input.code],
         demux=True,
     )
+    logger.debug('Executed code:\n```\n%s\n```', code_execution_input.code)
 
     if exec_result.output and exec_result.output[0]:
       output = exec_result.output[0].decode('utf-8')

@@ -251,7 +251,7 @@ class BaseLlmFlow(ABC):
           invocation_context.transcription_cache = []
         if not invocation_context.run_config.input_audio_transcription:
           # if the live model's input transcription is not enabled, then
-          # we use our onwn audio transcriber to achieve that.
+          # we use our own audio transcriber to achieve that.
           invocation_context.transcription_cache.append(
               TranscriptionEntry(role='user', data=live_request.blob)
           )
@@ -300,7 +300,7 @@ class BaseLlmFlow(ABC):
           async for llm_response in agen:
             if llm_response.live_session_resumption_update:
               logger.info(
-                  'Update session resumption hanlde:'
+                  'Update session resumption handle:'
                   f' {llm_response.live_session_resumption_update}.'
               )
               invocation_context.live_session_resumption_handle = (
@@ -581,6 +581,7 @@ class BaseLlmFlow(ABC):
         and not llm_response.turn_complete
         and not llm_response.input_transcription
         and not llm_response.output_transcription
+        and not llm_response.usage_metadata
     ):
       return
 

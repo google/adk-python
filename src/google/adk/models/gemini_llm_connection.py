@@ -40,7 +40,7 @@ class GeminiLlmConnection(BaseLlmConnection):
     """Sends the conversation history to the gemini model.
 
     You call this method right after setting up the model connection.
-    The model will respond if the last content is from user, otherwise it will
+    The model will respond if the last content is from user; otherwise, it will
     wait for new user input before responding.
 
     Args:
@@ -148,6 +148,8 @@ class GeminiLlmConnection(BaseLlmConnection):
       # partial content and emit responses as needed.
       async for message in agen:
         logger.debug('Got LLM Live message: %s', message)
+        if message.usage_metadata:
+          yield LlmResponse(usage_metadata=message.usage_metadata)
         if message.server_content:
           content = message.server_content.model_turn
           if content and content.parts:

@@ -55,6 +55,7 @@ from tzlocal import get_localzone
 from . import _session_util
 from ..errors.already_exists_error import AlreadyExistsError
 from ..events.event import Event
+from ..events.event_actions import EventActions
 from .base_session_service import BaseSessionService
 from .base_session_service import GetSessionConfig
 from .base_session_service import ListSessionsResponse
@@ -125,14 +126,14 @@ class DynamicPickleType(TypeDecorator):
   def process_bind_param(self, value, dialect):
     """Ensures the pickled value is a bytes object before passing it to the database dialect."""
     if value is not None:
-      if dialect.name == "spanner+spanner":
+      if dialect.name in ("spanner+spanner", "mysql"):
         return pickle.dumps(value)
     return value
 
   def process_result_value(self, value, dialect):
     """Ensures the raw bytes from the database are unpickled back into a Python object."""
     if value is not None:
-      if dialect.name == "spanner+spanner":
+      if dialect.name in ("spanner+spanner", "mysql"):
         return pickle.loads(value)
     return value
 
@@ -342,7 +343,9 @@ class StorageEvent(Base):
         invocation_id=self.invocation_id,
         author=self.author,
         branch=self.branch,
-        actions=self.actions,
+        # This is needed as previous ADK version pickled actions might not have
+        # value defined in the current version of the EventActions model.
+        actions=EventActions().model_copy(update=self.actions.model_dump()),
         timestamp=self.timestamp.timestamp(),
         long_running_tool_ids=self.long_running_tool_ids,
         partial=self.partial,

@@ -41,6 +41,33 @@ LABEL_TO_OWNER = {
     "a2a": "seanzhou1023",
 }
 
+LABEL_GUIDELINES = """
+      Label rubric and disambiguation rules:
+      - "documentation": Tutorials, README content, reference docs, or samples.
+      - "services": Session and memory services, persistence layers, or storage
+        integrations.
+      - "web": ADK web UI, FastAPI server, dashboards, or browser-based flows.
+      - "question": Usage questions without a reproducible problem.
+      - "tools": Built-in tools (e.g., SQL utils, code execution) or tool APIs.
+      - "mcp": Model Context Protocol features. Apply both "mcp" and "tools".
+      - "eval": Evaluation framework, test harnesses, scoring, or datasets.
+      - "live": Streaming, bidi, audio, or Gemini Live configuration.
+      - "models": Non-Gemini model adapters (LiteLLM, Ollama, OpenAI, etc.).
+      - "tracing": Telemetry, observability, structured logs, or spans.
+      - "core": Core ADK runtime (Agent definitions, Runner, planners,
+        thinking config, CLI commands, GlobalInstructionPlugin, CPU usage, or
+        general orchestration). Default to "core" when the topic is about ADK
+        behavior and no other label is a better fit.
+      - "agent engine": Vertex AI Agent Engine deployment or sandbox topics
+        only (e.g., `.agent_engine_config.json`, `ae_ignore`, Agent Engine
+        sandbox, `agent_engine_id`). If the issue does not explicitly mention
+        Agent Engine concepts, do not use this label—choose "core" instead.
+      - "a2a": Agent-to-agent workflows, coordination logic, or A2A protocol.
+
+      When unsure between labels, prefer the most specific match. If a label
+      cannot be assigned confidently, do not call the labeling tool.
+"""
+
 APPROVAL_INSTRUCTION = (
     "Do not ask for user approval for labeling! If you can't find appropriate"
     " labels for the issue, do not label it."
@@ -50,7 +77,7 @@ if IS_INTERACTIVE:
 
 
 def list_unlabeled_issues(issue_count: int) -> dict[str, Any]:
-  """List most recent `issue_count` numer of unlabeled issues in the repo.
+  """List most recent `issue_count` number of unlabeled issues in the repo.
 
   Args:
     issue_count: number of issues to return
@@ -87,7 +114,7 @@ def add_label_and_owner_to_issue(
   """Add the specified label and owner to the given issue number.
 
   Args:
-    issue_number: issue number of the Github issue.
+    issue_number: issue number of the GitHub issue.
     label: label to assign
 
   Returns:
@@ -143,7 +170,7 @@ def change_issue_type(issue_number: int, issue_type: str) -> dict[str, Any]:
   """Change the issue type of the given issue number.
 
   Args:
-    issue_number: issue number of the Github issue, in string foramt.
+    issue_number: issue number of the GitHub issue, in string format.
     issue_type: issue type to assign
 
   Returns:
@@ -168,21 +195,23 @@ root_agent = Agent(
     name="adk_triaging_assistant",
     description="Triage ADK issues.",
     instruction=f"""
-      You are a triaging bot for the Github {REPO} repo with the owner {OWNER}. You will help get issues, and recommend a label.
+      You are a triaging bot for the GitHub {REPO} repo with the owner {OWNER}. You will help get issues, and recommend a label.
       IMPORTANT: {APPROVAL_INSTRUCTION}
+
+      {LABEL_GUIDELINES}
 
       Here are the rules for labeling:
       - If the user is asking about documentation-related questions, label it with "documentation".
-      - If it's about session, memory services, label it with "services"
-      - If it's about UI/web, label it with "web"
-      - If the user is asking about a question, label it with "question"
-      - If it's related to tools, label it with "tools"
-      - If it's about agent evalaution, then label it with "eval".
+      - If it's about session, memory services, label it with "services".
+      - If it's about UI/web, label it with "web".
+      - If the user is asking about a question, label it with "question".
+      - If it's related to tools, label it with "tools".
+      - If it's about agent evaluation, then label it with "eval".
       - If it's about streaming/live, label it with "live".
-      - If it's about model support(non-Gemini, like Litellm, Ollama, OpenAI models), label it with "models".
+      - If it's about model support (non-Gemini, like Litellm, Ollama, OpenAI models), label it with "models".
       - If it's about tracing, label it with "tracing".
-      - If it's agent orchestration, agent definition, label it with "core".
-      - If it's about agent engine, label it with "agent engine".
+      - If it's agent orchestration, agent definition, Runner behavior, planners, or performance, label it with "core".
+      - Use "agent engine" only when the issue clearly references Vertex AI Agent Engine deployment artifacts (for example `.agent_engine_config.json`, `ae_ignore`, `agent_engine_id`, or Agent Engine sandbox errors).
       - If it's about Model Context Protocol (e.g. MCP tool, MCP toolset, MCP session management etc.), label it with both "mcp" and "tools".
       - If it's about A2A integrations or workflows, label it with "a2a".
       - If you can't find a appropriate labels for the issue, follow the previous instruction that starts with "IMPORTANT:".
@@ -193,6 +222,14 @@ root_agent = Agent(
       - If the issue is a bug report, change the issue type to "Bug".
       - If the issue is a feature request, change the issue type to "Feature".
       - Otherwise, **do not change the issue type**.
+
+      Response quality requirements:
+      - Summarize the issue in your own words without leaving template
+        placeholders (never output text like "[fill in later]").
+      - Justify the chosen label with a short explanation referencing the issue
+        details.
+      - Mention the assigned owner when a label maps to one.
+      - If no label is applied, clearly state why.
 
       Present the followings in an easy to read format highlighting issue number and your label.
       - the issue summary in a few sentence

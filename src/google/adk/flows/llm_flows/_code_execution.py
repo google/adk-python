@@ -20,6 +20,7 @@ import base64
 import copy
 import dataclasses
 import datetime
+import logging
 import os
 import re
 from typing import AsyncGenerator
@@ -46,6 +47,8 @@ from ._base_llm_processor import BaseLlmResponseProcessor
 
 if TYPE_CHECKING:
   from ...models.llm_request import LlmRequest
+
+logger = logging.getLogger('google_adk.' + __name__)
 
 
 @dataclasses.dataclass
@@ -202,7 +205,7 @@ async def _run_pre_processor(
   # [Step 1] Extract data files from the session_history and store them in
   # memory. Meanwhile, mutate the inline data file to text part in session
   # history from all turns.
-  all_input_files = _extrac_and_replace_inline_files(
+  all_input_files = _extract_and_replace_inline_files(
       code_executor_context, llm_request
   )
 
@@ -245,6 +248,7 @@ async def _run_pre_processor(
             ),
         ),
     )
+    logger.debug('Executed code:\n```\n%s\n```', code_str)
     # Update the processing results to code executor context.
     code_executor_context.update_code_execution_result(
         invocation_context.invocation_id,
@@ -352,6 +356,7 @@ async def _run_post_processor(
           ),
       ),
   )
+  logger.debug('Executed code:\n```\n%s\n```', code_str)
   code_executor_context.update_code_execution_result(
       invocation_context.invocation_id,
       code_str,
@@ -367,7 +372,7 @@ async def _run_post_processor(
   llm_response.content = None
 
 
-def _extrac_and_replace_inline_files(
+def _extract_and_replace_inline_files(
     code_executor_context: CodeExecutorContext,
     llm_request: LlmRequest,
 ) -> list[File]:
@@ -398,7 +403,7 @@ def _extrac_and_replace_inline_files(
           text='\nAvailable file: `%s`\n' % file_name
       )
 
-      # Add the inlne data as input file to the code executor context.
+      # Add the inline data as input file to the code executor context.
       file = File(
           name=file_name,
           content=CodeExecutionUtils.get_encoded_file_content(

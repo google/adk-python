@@ -25,7 +25,7 @@ ollama show mistral-small3.1
 
 You are supposed to see `tools` listed under capabilities.
 
-You can also look at the template the model is using and tweak it based on your needs.
+You can also look at the model's template and tweak it based on your needs.
 
 ```bash
 ollama show --modelfile llama3.1 > model_file_to_modify

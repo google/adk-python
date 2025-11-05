@@ -97,7 +97,7 @@ class VertexAiSearchTool(BaseTool):
     if is_gemini_model(llm_request.model):
       if is_gemini_1_model(llm_request.model) and llm_request.config.tools:
         raise ValueError(
-            'Vertex AI search tool can not be used with other tools in Gemini'
+            'Vertex AI search tool cannot be used with other tools in Gemini'
             ' 1.x.'
         )
       llm_request.config = llm_request.config or types.GenerateContentConfig()

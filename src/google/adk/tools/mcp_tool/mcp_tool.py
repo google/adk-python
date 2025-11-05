@@ -121,13 +121,10 @@ class McpTool(BaseAuthenticatedTool):
     """
     input_schema = self._mcp_tool.inputSchema
     parameters = _to_gemini_schema(input_schema)
-    output_schema = self._mcp_tool.outputSchema
-    response = _to_gemini_schema(output_schema)
     function_decl = FunctionDeclaration(
         name=self.name,
         description=self.description,
         parameters=parameters,
-        response=response,
     )
     return function_decl
 

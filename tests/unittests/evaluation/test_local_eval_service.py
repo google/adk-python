@@ -174,7 +174,7 @@ async def test_perform_inference_success(
   mock_eval_sets_manager.get_eval_set.return_value = eval_set
 
   mock_inference_result = mocker.MagicMock()
-  eval_service._perform_inference_sigle_eval_item = mocker.AsyncMock(
+  eval_service._perform_inference_single_eval_item = mocker.AsyncMock(
       return_value=mock_inference_result
   )
 
@@ -194,7 +194,7 @@ async def test_perform_inference_success(
   mock_eval_sets_manager.get_eval_set.assert_called_once_with(
       app_name="test_app", eval_set_id="test_eval_set"
   )
-  assert eval_service._perform_inference_sigle_eval_item.call_count == 2
+  assert eval_service._perform_inference_single_eval_item.call_count == 2
 
 
 @pytest.mark.asyncio
@@ -215,7 +215,7 @@ async def test_perform_inference_with_case_ids(
   mock_eval_sets_manager.get_eval_set.return_value = eval_set
 
   mock_inference_result = mocker.MagicMock()
-  eval_service._perform_inference_sigle_eval_item = mocker.AsyncMock(
+  eval_service._perform_inference_single_eval_item = mocker.AsyncMock(
       return_value=mock_inference_result
   )
 
@@ -231,13 +231,13 @@ async def test_perform_inference_with_case_ids(
     results.append(result)
 
   assert len(results) == 2
-  eval_service._perform_inference_sigle_eval_item.assert_any_call(
+  eval_service._perform_inference_single_eval_item.assert_any_call(
       app_name="test_app",
       eval_set_id="test_eval_set",
       eval_case=eval_set.eval_cases[0],
       root_agent=dummy_agent,
   )
-  eval_service._perform_inference_sigle_eval_item.assert_any_call(
+  eval_service._perform_inference_single_eval_item.assert_any_call(
       app_name="test_app",
       eval_set_id="test_eval_set",
       eval_case=eval_set.eval_cases[2],
@@ -527,7 +527,7 @@ def test_generate_final_eval_status_doesn_t_throw_on(eval_service):
   # eval case.
 
   # We go over all the possible values of EvalStatus one by one and expect
-  # the _generate_final_eval_status to handle it without throwing an exeception.
+  # the _generate_final_eval_status to handle it without throwing an exception.
   for status in EvalStatus:
     eval_metric_result = EvalMetricResult(
         metric_name="metric1", threshold=0.5, eval_status=status

@@ -14,12 +14,16 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 from datetime import datetime
 from datetime import timezone
 import json
 import logging
 import threading
 from typing import Any
+from typing import Callable
+from typing import Dict
+from typing import List
 from typing import Optional
 from typing import TYPE_CHECKING
 
@@ -42,6 +46,26 @@ from .base_plugin import BasePlugin
 
 if TYPE_CHECKING:
   from ..agents.invocation_context import InvocationContext
+
+
+@dataclasses.dataclass
+class BigQueryLoggerConfig:
+  """Configuration for the BigQueryAgentAnalyticsPlugin.
+
+  Attributes:
+      enabled: Whether the plugin is enabled.
+      event_allowlist: List of event types to log. If None, all are allowed
+        except those in event_denylist.
+      event_denylist: List of event types to not log. Takes precedence over
+        event_allowlist.
+      content_formatter: Function to format or redact the 'content' field before
+        logging.
+  """
+
+  enabled: bool = True
+  event_allowlist: Optional[List[str]] = None
+  event_denylist: Optional[List[str]] = None
+  content_formatter: Optional[Callable[[Any], str]] = None
 
 
 def _get_event_type(event: Event) -> str:
@@ -109,29 +133,44 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
 
   Each log entry includes a timestamp, event type, agent name, session ID,
   invocation ID, user ID, content payload, and any error messages.
+
+  Logging behavior can be customized using the BigQueryLoggerConfig.
   """
 
   def __init__(
       self,
       project_id: str,
-      dataset_id: str = "adk_agent_logs",
+      dataset_id: str,
       table_id: str = "agent_events",
+      config: Optional[BigQueryLoggerConfig] = None,
       **kwargs,
   ):
     super().__init__(name=kwargs.get("name", "BigQueryAgentAnalyticsPlugin"))
     self._project_id = project_id
     self._dataset_id = dataset_id
     self._table_id = table_id
+    self._config = config if config else BigQueryLoggerConfig()
     self._bq_client: bigquery.Client | None = None
     self._client_init_lock = threading.Lock()
     self._init_done = False
     self._init_succeeded = False
+
+    if not self._config.enabled:
+      logging.info(
+          "BigQueryAgentAnalyticsPlugin %s is disabled by configuration.",
+          self.name,
+      )
+      return
+
     logging.debug(
         "DEBUG: BigQueryAgentAnalyticsPlugin INSTANTIATED (Name: %s)", self.name
     )
 
   def _ensure_initialized_sync(self):
     """Synchronous initialization of BQ client and table."""
+    if not self._config.enabled:
+      return
+
     with self._client_init_lock:
       if self._init_done:
         return
@@ -141,7 +180,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
             scopes=["https://www.googleapis.com/auth/bigquery"]
         )
         client_info = google.api_core.client_info.ClientInfo(
-            user_agent=f"google-adk-plugin/{version.__version__}"
+            user_agent=f"google-adk-bq-logger/{version.__version__}"
         )
         self._bq_client = bigquery.Client(
             project=self._project_id,
@@ -157,7 +196,6 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         table_ref = dataset_ref.table(self._table_id)
         # Schema without separate token columns
         schema = [
-            bigquery.SchemaField("dataset_id", "STRING"),
             bigquery.SchemaField("timestamp", "TIMESTAMP"),
             bigquery.SchemaField("event_type", "STRING"),
             bigquery.SchemaField("agent", "STRING"),
@@ -181,6 +219,39 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         self._init_succeeded = False
 
   async def _log_to_bigquery_async(self, event_dict: dict[str, Any]):
+    if not self._config.enabled:
+      return
+
+    event_type = event_dict.get("event_type")
+
+    # Check denylist
+    if (
+        self._config.event_denylist
+        and event_type in self._config.event_denylist
+    ):
+      return
+
+    # Check allowlist
+    if (
+        self._config.event_allowlist
+        and event_type not in self._config.event_allowlist
+    ):
+      return
+
+    # Apply custom content formatter
+    if self._config.content_formatter and "content" in event_dict:
+      try:
+        event_dict["content"] = self._config.content_formatter(
+            event_dict["content"]
+        )
+      except Exception as e:
+        logging.warning(
+            "Error applying custom content formatter for event type %s: %s",
+            event_type,
+            e,
+        )
+        # Optionally log a generic message or the error
+
     def _sync_log():
       self._ensure_initialized_sync()
       if not self._init_succeeded or not self._bq_client:
@@ -189,7 +260,6 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
           self._table_id
       )
       default_row = {
-          "dataset_id": None,
           "timestamp": datetime.now(timezone.utc).isoformat(),
           "event_type": None,
           "agent": None,
@@ -226,7 +296,6 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
   ) -> Optional[types.Content]:
     """Log user message and invocation start."""
     event_dict = {
-        "dataset_id": self._dataset_id,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "event_type": "USER_MESSAGE_RECEIVED",
         "agent": invocation_context.agent.name,
@@ -243,13 +312,13 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
   ) -> Optional[types.Content]:
     """Log invocation start."""
     event_dict = {
-        "dataset_id": self._dataset_id,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "event_type": "INVOCATION_STARTING",
         "agent": invocation_context.agent.name,
         "session_id": invocation_context.session.id,
         "invocation_id": invocation_context.invocation_id,
         "user_id": invocation_context.session.user_id,
+        "content": None,
     }
     await self._log_to_bigquery_async(event_dict)
     return None
@@ -259,7 +328,6 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
   ) -> Optional[Event]:
     """Logs event data to BigQuery."""
     event_dict = {
-        "dataset_id": self._dataset_id,
         "timestamp": datetime.fromtimestamp(
             event.timestamp, timezone.utc
         ).isoformat(),
@@ -285,13 +353,13 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
   ) -> Optional[None]:
     """Log invocation completion."""
     event_dict = {
-        "dataset_id": self._dataset_id,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "event_type": "INVOCATION_COMPLETED",
         "agent": invocation_context.agent.name,
         "session_id": invocation_context.session.id,
         "invocation_id": invocation_context.invocation_id,
         "user_id": invocation_context.session.user_id,
+        "content": None,
     }
     await self._log_to_bigquery_async(event_dict)
     return None
@@ -301,7 +369,6 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
   ) -> Optional[types.Content]:
     """Log agent execution start."""
     event_dict = {
-        "dataset_id": self._dataset_id,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "event_type": "AGENT_STARTING",
         "agent": agent.name,
@@ -318,7 +385,6 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
   ) -> Optional[types.Content]:
     """Log agent execution completion."""
     event_dict = {
-        "dataset_id": self._dataset_id,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "event_type": "AGENT_COMPLETED",
         "agent": agent.name,
@@ -386,7 +452,6 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     final_content = " | ".join(content_parts)
 
     event_dict = {
-        "dataset_id": self._dataset_id,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "event_type": "LLM_REQUEST",
         "agent": callback_context.agent_name,
@@ -444,7 +509,6 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     final_content = " | ".join(content_parts)
 
     event_dict = {
-        "dataset_id": self._dataset_id,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "event_type": "LLM_RESPONSE",
         "agent": callback_context.agent_name,
@@ -468,7 +532,6 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
   ) -> Optional[None]:
     """Log tool execution start."""
     event_dict = {
-        "dataset_id": self._dataset_id,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "event_type": "TOOL_STARTING",
         "agent": tool_context.agent_name,
@@ -493,7 +556,6 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
   ) -> None:
     """Log tool execution completion."""
     event_dict = {
-        "dataset_id": self._dataset_id,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "event_type": "TOOL_COMPLETED",
         "agent": tool_context.agent_name,
@@ -514,7 +576,6 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
   ) -> Optional[LlmResponse]:
     """Log LLM error."""
     event_dict = {
-        "dataset_id": self._dataset_id,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "event_type": "LLM_ERROR",
         "agent": callback_context.agent_name,
@@ -536,14 +597,15 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
   ) -> None:
     """Log tool error."""
     event_dict = {
-        "dataset_id": self._dataset_id,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "event_type": "TOOL_ERROR",
         "agent": tool_context.agent_name,
         "session_id": tool_context.session.id,
         "invocation_id": tool_context.invocation_id,
         "user_id": tool_context.session.user_id,
-        "content": f"Tool Name: {tool.name}",
+        "content": (
+            f"Tool Name: {tool.name}, Arguments: {_format_args(tool_args)}"
+        ),
         "error_message": str(error),
     }
     await self._log_to_bigquery_async(event_dict)

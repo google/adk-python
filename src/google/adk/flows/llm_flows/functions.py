@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Handles function callings for LLM flow."""
+"""Handles function calling for LLM flow."""
 
 from __future__ import annotations
 
@@ -716,10 +716,17 @@ def _get_tool(
 ):
   """Returns the tool corresponding to the function call."""
   if function_call.name not in tools_dict:
-    raise ValueError(
-        f'Function {function_call.name} is not found in the tools_dict:'
-        f' {tools_dict.keys()}.'
+    available = list(tools_dict.keys())
+    error_msg = (
+        f"Tool '{function_call.name}' not found.\nAvailable tools:"
+        f" {', '.join(available)}\n\nPossible causes:\n  1. LLM hallucinated"
+        ' the function name - review agent instruction clarity\n  2. Tool not'
+        ' registered - verify agent.tools list\n  3. Name mismatch - check for'
+        ' typos\n\nSuggested fixes:\n  - Review agent instruction to ensure'
+        ' tool usage is clear\n  - Verify tool is included in agent.tools'
+        ' list\n  - Check for typos in function name'
     )
+    raise ValueError(error_msg)
 
   return tools_dict[function_call.name]
 

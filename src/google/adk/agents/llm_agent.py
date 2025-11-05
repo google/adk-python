@@ -689,8 +689,42 @@ class LlmAgent(BaseAgent):
     """Find the agent to run under the root agent by name."""
     agent_to_run = self.root_agent.find_agent(agent_name)
     if not agent_to_run:
-      raise ValueError(f'Agent {agent_name} not found in the agent tree.')
+      available = self._get_available_agent_names()
+      error_msg = (
+          f"Agent '{agent_name}' not found.\n"
+          f"Available agents: {', '.join(available)}\n\n"
+          'Possible causes:\n'
+          '  1. Agent not registered before being referenced\n'
+          '  2. Agent name mismatch (typo or case sensitivity)\n'
+          '  3. Timing issue (agent referenced before creation)\n\n'
+          'Suggested fixes:\n'
+          '  - Verify agent is registered with root agent\n'
+          '  - Check agent name spelling and case\n'
+          '  - Ensure agents are created before being referenced'
+      )
+      raise ValueError(error_msg)
     return agent_to_run
+
+  def _get_available_agent_names(self) -> list[str]:
+    """Helper to get all agent names in the tree for error reporting.
+
+    This is a private helper method used only for error message formatting.
+    Traverses the agent tree starting from root_agent and collects all
+    agent names for display in error messages.
+
+    Returns:
+      List of all agent names in the agent tree.
+    """
+    agents = []
+
+    def collect_agents(agent):
+      agents.append(agent.name)
+      if hasattr(agent, 'sub_agents') and agent.sub_agents:
+        for sub_agent in agent.sub_agents:
+          collect_agents(sub_agent)
+
+    collect_agents(self.root_agent)
+    return agents
 
   def __get_transfer_to_agent_or_none(
       self, event: Event, from_agent: str
@@ -744,31 +778,7 @@ class LlmAgent(BaseAgent):
 
   @model_validator(mode='after')
   def __model_validator_after(self) -> LlmAgent:
-    self.__check_output_schema()
     return self
-
-  def __check_output_schema(self):
-    if not self.output_schema:
-      return
-
-    if (
-        not self.disallow_transfer_to_parent
-        or not self.disallow_transfer_to_peers
-    ):
-      logger.warning(
-          'Invalid config for agent %s: output_schema cannot co-exist with'
-          ' agent transfer configurations. Setting'
-          ' disallow_transfer_to_parent=True, disallow_transfer_to_peers=True',
-          self.name,
-      )
-      self.disallow_transfer_to_parent = True
-      self.disallow_transfer_to_peers = True
-
-    if self.sub_agents:
-      raise ValueError(
-          f'Invalid config for agent {self.name}: if output_schema is set,'
-          ' sub_agents must be empty to disable agent transfer.'
-      )
 
   @field_validator('generate_content_config', mode='after')
   @classmethod
