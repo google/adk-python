@@ -15,8 +15,8 @@
 import os
 
 from dotenv import load_dotenv
-from google.adk import Agent
-from google.adk.tools.google_api_tool import BigQueryToolset
+from google.adk.agents.llm_agent import Agent
+from google.adk.tools.google_api_tool.google_api_toolsets import BigQueryToolset
 
 # Load environment variables from .env file
 load_dotenv()
@@ -46,7 +46,7 @@ root_agent = Agent(
       Use the provided tools to conduct various operations on users' data in Google BigQuery.
 
       Scenario 1:
-      The user wants to query their biguqery datasets
+      The user wants to query their bigquery datasets
       Use bigquery_datasets_list to query user's datasets
 
       Scenario 2:

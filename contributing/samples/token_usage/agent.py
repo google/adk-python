@@ -19,8 +19,8 @@ from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.sequential_agent import SequentialAgent
 from google.adk.models.anthropic_llm import Claude
 from google.adk.models.lite_llm import LiteLlm
-from google.adk.planners import BuiltInPlanner
-from google.adk.planners import PlanReActPlanner
+from google.adk.planners.built_in_planner import BuiltInPlanner
+from google.adk.planners.plan_re_act_planner import PlanReActPlanner
 from google.adk.tools.tool_context import ToolContext
 from google.genai import types
 

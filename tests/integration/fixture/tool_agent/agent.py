@@ -90,17 +90,17 @@ def complex_function_list_dict(
   raise ValueError("Wrong param")
 
 
-def repetive_call_1(param: str):
-  return f"Call repetive_call_2 tool with param {param + '_repetive'}"
+def repetitive_call_1(param: str):
+  return f"Call repetitive_call_2 tool with param {param + '_repetitive'}"
 
 
-def repetive_call_2(param: str):
+def repetitive_call_2(param: str):
   return param
 
 
 test_case_retrieval = FilesRetrieval(
     name="test_case_retrieval",
-    description="General guidence for agent test cases",
+    description="General guidance for agent test cases",
     input_dir=os.path.join(os.path.dirname(__file__), "files"),
 )
 
@@ -109,7 +109,7 @@ valid_rag_retrieval = VertexAiRagRetrieval(
     rag_corpora=[
         "projects/1096655024998/locations/us-central1/ragCorpora/4985766262475849728"
     ],
-    description="General guidence for agent test cases",
+    description="General guidance for agent test cases",
 )
 
 invalid_rag_retrieval = VertexAiRagRetrieval(
@@ -131,7 +131,7 @@ non_exist_rag_retrieval = VertexAiRagRetrieval(
 shell_tool = LangchainTool(ShellTool())
 
 docs_tool = CrewaiTool(
-    name="direcotry_read_tool",
+    name="directory_read_tool",
     description="use this to find files for you.",
     tool=DirectoryReadTool(directory="."),
 )
@@ -194,8 +194,8 @@ root_agent = Agent(
         list_str_param_function,
         return_list_str_function,
         # complex_function_list_dict,
-        repetive_call_1,
-        repetive_call_2,
+        repetitive_call_1,
+        repetitive_call_2,
         test_case_retrieval,
         valid_rag_retrieval,
         invalid_rag_retrieval,

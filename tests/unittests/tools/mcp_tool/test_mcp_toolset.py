@@ -29,6 +29,7 @@ pytestmark = pytest.mark.skipif(
 
 # Import dependencies with version checking
 try:
+  from google.adk.agents.readonly_context import ReadonlyContext
   from google.adk.tools.mcp_tool.mcp_session_manager import MCPSessionManager
   from google.adk.tools.mcp_tool.mcp_session_manager import SseConnectionParams
   from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
@@ -55,6 +56,7 @@ except ImportError as e:
     StreamableHTTPConnectionParams = DummyClass
     MCPTool = DummyClass
     MCPToolset = DummyClass
+    ReadonlyContext = DummyClass
   else:
     raise e
 
@@ -246,6 +248,31 @@ class TestMCPToolset:
     assert tools[1].name == "write_file"
 
   @pytest.mark.asyncio
+  async def test_get_tools_with_header_provider(self):
+    """Test get_tools with a header_provider."""
+    mock_tools = [MockMCPTool("tool1"), MockMCPTool("tool2")]
+    self.mock_session.list_tools = AsyncMock(
+        return_value=MockListToolsResult(mock_tools)
+    )
+    mock_readonly_context = Mock(spec=ReadonlyContext)
+    expected_headers = {"X-Tenant-ID": "test-tenant"}
+    header_provider = Mock(return_value=expected_headers)
+
+    toolset = MCPToolset(
+        connection_params=self.mock_stdio_params,
+        header_provider=header_provider,
+    )
+    toolset._mcp_session_manager = self.mock_session_manager
+
+    tools = await toolset.get_tools(readonly_context=mock_readonly_context)
+
+    assert len(tools) == 2
+    header_provider.assert_called_once_with(mock_readonly_context)
+    self.mock_session_manager.create_session.assert_called_once_with(
+        headers=expected_headers
+    )
+
+  @pytest.mark.asyncio
   async def test_close_success(self):
     """Test successful cleanup."""
     toolset = MCPToolset(connection_params=self.mock_stdio_params)
@@ -274,7 +301,7 @@ class TestMCPToolset:
 
     # Should log the error
     error_output = custom_errlog.getvalue()
-    assert "Warning: Error during MCPToolset cleanup" in error_output
+    assert "Warning: Error during McpToolset cleanup" in error_output
     assert "Cleanup error" in error_output
 
   @pytest.mark.asyncio

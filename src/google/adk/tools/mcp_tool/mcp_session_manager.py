@@ -85,9 +85,9 @@ class SseConnectionParams(BaseModel):
 
 
 class StreamableHTTPConnectionParams(BaseModel):
-  """Parameters for the MCP SSE connection.
+  """Parameters for the MCP Streamable HTTP connection.
 
-  See MCP SSE Client documentation for more details.
+  See MCP Streamable HTTP Client documentation for more details.
   https://github.com/modelcontextprotocol/python-sdk/blob/main/src/mcp/client/streamable_http.py
 
   Attributes:

@@ -41,10 +41,10 @@ from ...agents.loop_agent import LoopAgent
 from ...agents.parallel_agent import ParallelAgent
 from ...agents.sequential_agent import SequentialAgent
 from ...tools.example_tool import ExampleTool
-from ...utils.feature_decorator import experimental
+from ..experimental import a2a_experimental
 
 
-@experimental
+@a2a_experimental
 class AgentCardBuilder:
   """Builder class for creating agent cards from ADK agents.
 
@@ -90,11 +90,11 @@ class AgentCardBuilder:
           version=self._agent_version,
           capabilities=self._capabilities,
           skills=all_skills,
-          defaultInputModes=['text/plain'],
-          defaultOutputModes=['text/plain'],
-          supportsAuthenticatedExtendedCard=False,
+          default_input_modes=['text/plain'],
+          default_output_modes=['text/plain'],
+          supports_authenticated_extended_card=False,
           provider=self._provider,
-          securitySchemes=self._security_schemes,
+          security_schemes=self._security_schemes,
       )
     except Exception as e:
       raise RuntimeError(
@@ -125,8 +125,8 @@ async def _build_llm_agent_skills(agent: LlmAgent) -> List[AgentSkill]:
           name='model',
           description=agent_description,
           examples=agent_examples,
-          inputModes=_get_input_modes(agent),
-          outputModes=_get_output_modes(agent),
+          input_modes=_get_input_modes(agent),
+          output_modes=_get_output_modes(agent),
           tags=['llm'],
       )
   )
@@ -160,8 +160,8 @@ async def _build_sub_agent_skills(agent: BaseAgent) -> List[AgentSkill]:
             name=f'{sub_agent.name}: {skill.name}',
             description=skill.description,
             examples=skill.examples,
-            inputModes=skill.inputModes,
-            outputModes=skill.outputModes,
+            input_modes=skill.input_modes,
+            output_modes=skill.output_modes,
             tags=[f'sub_agent:{sub_agent.name}'] + (skill.tags or []),
         )
         sub_agent_skills.append(aggregated_skill)
@@ -197,8 +197,8 @@ async def _build_tool_skills(agent: LlmAgent) -> List[AgentSkill]:
             name=tool_name,
             description=getattr(tool, 'description', f'Tool: {tool_name}'),
             examples=None,
-            inputModes=None,
-            outputModes=None,
+            input_modes=None,
+            output_modes=None,
             tags=['llm', 'tools'],
         )
     )
@@ -213,8 +213,8 @@ def _build_planner_skill(agent: LlmAgent) -> AgentSkill:
       name='planning',
       description='Can think about the tasks to do and make plans',
       examples=None,
-      inputModes=None,
-      outputModes=None,
+      input_modes=None,
+      output_modes=None,
       tags=['llm', 'planning'],
   )
 
@@ -224,10 +224,10 @@ def _build_code_executor_skill(agent: LlmAgent) -> AgentSkill:
   return AgentSkill(
       id=f'{agent.name}-code-executor',
       name='code-execution',
-      description='Can execute codes',
+      description='Can execute code',
       examples=None,
-      inputModes=None,
-      outputModes=None,
+      input_modes=None,
+      output_modes=None,
       tags=['llm', 'code_execution'],
   )
 
@@ -250,8 +250,8 @@ async def _build_non_llm_agent_skills(agent: BaseAgent) -> List[AgentSkill]:
           name=agent_name,
           description=agent_description,
           examples=agent_examples,
-          inputModes=_get_input_modes(agent),
-          outputModes=_get_output_modes(agent),
+          input_modes=_get_input_modes(agent),
+          output_modes=_get_output_modes(agent),
           tags=[agent_type],
       )
   )
@@ -282,8 +282,8 @@ def _build_orchestration_skill(
       name='sub-agents',
       description='Orchestrates: ' + '; '.join(sub_agent_descriptions),
       examples=None,
-      inputModes=None,
-      outputModes=None,
+      input_modes=None,
+      output_modes=None,
       tags=[agent_type, 'orchestration'],
   )
 
@@ -359,11 +359,29 @@ def _build_llm_agent_description_with_instructions(agent: LlmAgent) -> str:
 
 
 def _replace_pronouns(text: str) -> str:
-  """Replace pronouns in text for agent description (you -> I, your -> my, etc.)."""
-  pronoun_map = {'you': 'I', 'your': 'my', 'yours': 'mine'}
+  """Replace pronouns and conjugate common verbs for agent description.
+  (e.g., "You are" -> "I am", "your" -> "my").
+  """
+  pronoun_map = {
+      # Longer phrases with verb conjugations
+      'you are': 'I am',
+      'you were': 'I was',
+      "you're": 'I am',
+      "you've": 'I have',
+      # Standalone pronouns
+      'yours': 'mine',
+      'your': 'my',
+      'you': 'I',
+  }
+
+  # Sort keys by length (descending) to ensure longer phrases are matched first.
+  # This prevents "you" in "you are" from being replaced on its own.
+  sorted_keys = sorted(pronoun_map.keys(), key=len, reverse=True)
+
+  pattern = r'\b(' + '|'.join(re.escape(key) for key in sorted_keys) + r')\b'
 
   return re.sub(
-      r'\b(you|your|yours)\b',
+      pattern,
       lambda match: pronoun_map[match.group(1).lower()],
       text,
       flags=re.IGNORECASE,
@@ -455,7 +473,7 @@ def _get_default_description(agent: BaseAgent) -> str:
 async def _extract_examples_from_agent(
     agent: BaseAgent,
 ) -> Optional[List[Dict]]:
-  """Extract examples from example_tool if configured, otherwise from agent instruction."""
+  """Extract examples from example_tool if configured; otherwise, from agent instruction."""
   if not isinstance(agent, LlmAgent):
     return None
 
@@ -525,7 +543,7 @@ def _get_input_modes(agent: BaseAgent) -> Optional[List[str]]:
     return None
 
   # This could be enhanced to check model capabilities
-  # For now, return None to use defaultInputModes
+  # For now, return None to use default_input_modes
   return None
 
 

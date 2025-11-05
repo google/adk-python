@@ -18,15 +18,15 @@ from unittest import mock
 
 from fastapi.openapi.models import Operation
 from google.adk.agents.readonly_context import ReadonlyContext
-from google.adk.auth import AuthCredentialTypes
-from google.adk.auth import OAuth2Auth
 from google.adk.auth.auth_credential import AuthCredential
+from google.adk.auth.auth_credential import AuthCredentialTypes
+from google.adk.auth.auth_credential import OAuth2Auth
 from google.adk.tools.application_integration_tool.application_integration_toolset import ApplicationIntegrationToolset
 from google.adk.tools.application_integration_tool.integration_connector_tool import IntegrationConnectorTool
 from google.adk.tools.openapi_tool.auth.auth_helpers import dict_to_auth_scheme
-from google.adk.tools.openapi_tool.openapi_spec_parser import ParsedOperation
 from google.adk.tools.openapi_tool.openapi_spec_parser import rest_api_tool
 from google.adk.tools.openapi_tool.openapi_spec_parser.openapi_spec_parser import OperationEndpoint
+from google.adk.tools.openapi_tool.openapi_spec_parser.openapi_spec_parser import ParsedOperation
 import pytest
 
 

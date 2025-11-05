@@ -14,7 +14,7 @@
 
 from google.adk import Agent
 from google.adk.tools import load_artifacts
-from google.adk.tools import ToolContext
+from google.adk.tools.tool_context import ToolContext
 from google.genai import Client
 from google.genai import types
 

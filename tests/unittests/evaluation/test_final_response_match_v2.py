@@ -15,12 +15,15 @@
 from __future__ import annotations
 
 from google.adk.evaluation.eval_case import Invocation
+from google.adk.evaluation.eval_metrics import BaseCriterion
 from google.adk.evaluation.eval_metrics import EvalMetric
+from google.adk.evaluation.eval_metrics import EvalStatus
 from google.adk.evaluation.eval_metrics import JudgeModelOptions
-from google.adk.evaluation.evaluator import EvalStatus
+from google.adk.evaluation.eval_metrics import PrebuiltMetrics
 from google.adk.evaluation.evaluator import PerInvocationResult
 from google.adk.evaluation.final_response_match_v2 import _parse_critique
 from google.adk.evaluation.final_response_match_v2 import FinalResponseMatchV2Evaluator
+from google.adk.evaluation.llm_as_judge import AutoRaterScore
 from google.adk.evaluation.llm_as_judge_utils import Label
 from google.adk.models.llm_response import LlmResponse
 from google.genai import types as genai_types
@@ -129,9 +132,8 @@ def _create_test_evaluator_gemini(
       EvalMetric(
           metric_name="final_response_match_v2",
           threshold=threshold,
-          judge_model_options=JudgeModelOptions(
-              judge_model="gemini-2.5-flash",
-              num_samples=3,
+          criterion=BaseCriterion(
+              threshold=0.5,
           ),
       ),
   )
@@ -205,8 +207,10 @@ def test_convert_auto_rater_response_to_score_valid():
           role="model",
       )
   )
-  score = evaluator.convert_auto_rater_response_to_score(llm_response)
-  assert score == 1.0
+  auto_rater_score = evaluator.convert_auto_rater_response_to_score(
+      llm_response
+  )
+  assert auto_rater_score == AutoRaterScore(score=1.0)
 
 
 def test_convert_auto_rater_response_to_score_invalid():
@@ -223,8 +227,10 @@ def test_convert_auto_rater_response_to_score_invalid():
           role="model",
       )
   )
-  score = evaluator.convert_auto_rater_response_to_score(llm_response)
-  assert score == 0.0
+  auto_rater_score = evaluator.convert_auto_rater_response_to_score(
+      llm_response
+  )
+  assert auto_rater_score == AutoRaterScore(score=0.0)
 
 
 def test_convert_auto_rater_response_to_score_invalid_json():
@@ -235,8 +241,10 @@ def test_convert_auto_rater_response_to_score_invalid_json():
           role="model",
       )
   )
-  score = evaluator.convert_auto_rater_response_to_score(llm_response)
-  assert score is None
+  auto_rater_score = evaluator.convert_auto_rater_response_to_score(
+      llm_response
+  )
+  assert auto_rater_score == AutoRaterScore()
 
 
 def test_convert_auto_rater_response_to_score_missing_key():
@@ -247,8 +255,10 @@ def test_convert_auto_rater_response_to_score_missing_key():
           role="model",
       )
   )
-  score = evaluator.convert_auto_rater_response_to_score(llm_response)
-  assert score is None
+  auto_rater_score = evaluator.convert_auto_rater_response_to_score(
+      llm_response
+  )
+  assert auto_rater_score == AutoRaterScore()
 
 
 def test_aggregate_per_invocation_samples_none_evaluated():
@@ -476,3 +486,13 @@ def test_aggregate_invocation_results():
   # Only 4 / 8 invocations are evaluated, and 2 / 4 are valid.
   assert aggregated_result.overall_score == 0.5
   assert aggregated_result.overall_eval_status == EvalStatus.PASSED
+
+
+def test_get_metric_info():
+  """Test get_metric_info function for Final Response Match V2 metric."""
+  metric_info = FinalResponseMatchV2Evaluator.get_metric_info()
+  assert (
+      metric_info.metric_name == PrebuiltMetrics.FINAL_RESPONSE_MATCH_V2.value
+  )
+  assert metric_info.metric_value_info.interval.min_value == 0.0
+  assert metric_info.metric_value_info.interval.max_value == 1.0

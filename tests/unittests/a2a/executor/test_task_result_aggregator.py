@@ -34,23 +34,18 @@ try:
   from google.adk.a2a.executor.task_result_aggregator import TaskResultAggregator
 except ImportError as e:
   if sys.version_info < (3, 10):
-    # Create dummy classes to prevent NameError during test collection
-    # Tests will be skipped anyway due to pytestmark
-    class DummyTypes:
-      pass
-
-    TaskState = DummyTypes()
-    TaskStatus = DummyTypes()
-    TaskStatusUpdateEvent = DummyTypes()
-    TaskResultAggregator = DummyTypes()
+    # Imports are not needed since tests will be skipped due to pytestmark.
+    # The imported names are only used within test methods, not at module level,
+    # so no NameError occurs during module compilation.
+    pass
   else:
     raise e
 
 
-def create_test_message(text: str) -> Message:
+def create_test_message(text: str):
   """Helper function to create a test Message object."""
   return Message(
-      messageId="test-msg",
+      message_id="test-msg",
       role=Role.agent,
       parts=[Part(root=TextPart(text=text))],
   )
@@ -72,8 +67,8 @@ class TestTaskResultAggregator:
     """Test processing a failed event."""
     status_message = create_test_message("Failed to process")
     event = TaskStatusUpdateEvent(
-        taskId="test-task",
-        contextId="test-context",
+        task_id="test-task",
+        context_id="test-context",
         status=TaskStatus(state=TaskState.failed, message=status_message),
         final=True,
     )
@@ -88,8 +83,8 @@ class TestTaskResultAggregator:
     """Test processing an auth_required event."""
     status_message = create_test_message("Authentication needed")
     event = TaskStatusUpdateEvent(
-        taskId="test-task",
-        contextId="test-context",
+        task_id="test-task",
+        context_id="test-context",
         status=TaskStatus(
             state=TaskState.auth_required, message=status_message
         ),
@@ -106,8 +101,8 @@ class TestTaskResultAggregator:
     """Test processing an input_required event."""
     status_message = create_test_message("Input required")
     event = TaskStatusUpdateEvent(
-        taskId="test-task",
-        contextId="test-context",
+        task_id="test-task",
+        context_id="test-context",
         status=TaskStatus(
             state=TaskState.input_required, message=status_message
         ),
@@ -123,8 +118,8 @@ class TestTaskResultAggregator:
   def test_status_message_with_none_message(self):
     """Test that status message handles None message properly."""
     event = TaskStatusUpdateEvent(
-        taskId="test-task",
-        contextId="test-context",
+        task_id="test-task",
+        context_id="test-context",
         status=TaskStatus(state=TaskState.failed, message=None),
         final=True,
     )
@@ -138,8 +133,8 @@ class TestTaskResultAggregator:
     # First set auth_required
     auth_message = create_test_message("Auth required")
     auth_event = TaskStatusUpdateEvent(
-        taskId="test-task",
-        contextId="test-context",
+        task_id="test-task",
+        context_id="test-context",
         status=TaskStatus(state=TaskState.auth_required, message=auth_message),
         final=False,
     )
@@ -150,8 +145,8 @@ class TestTaskResultAggregator:
     # Then process failed - should override
     failed_message = create_test_message("Failed")
     failed_event = TaskStatusUpdateEvent(
-        taskId="test-task",
-        contextId="test-context",
+        task_id="test-task",
+        context_id="test-context",
         status=TaskStatus(state=TaskState.failed, message=failed_message),
         final=True,
     )
@@ -164,8 +159,8 @@ class TestTaskResultAggregator:
     # First set input_required
     input_message = create_test_message("Input needed")
     input_event = TaskStatusUpdateEvent(
-        taskId="test-task",
-        contextId="test-context",
+        task_id="test-task",
+        context_id="test-context",
         status=TaskStatus(
             state=TaskState.input_required, message=input_message
         ),
@@ -178,8 +173,8 @@ class TestTaskResultAggregator:
     # Then process auth_required - should override
     auth_message = create_test_message("Auth needed")
     auth_event = TaskStatusUpdateEvent(
-        taskId="test-task",
-        contextId="test-context",
+        task_id="test-task",
+        context_id="test-context",
         status=TaskStatus(state=TaskState.auth_required, message=auth_message),
         final=False,
     )
@@ -204,8 +199,8 @@ class TestTaskResultAggregator:
     # First set failed state
     failed_message = create_test_message("Failure message")
     failed_event = TaskStatusUpdateEvent(
-        taskId="test-task",
-        contextId="test-context",
+        task_id="test-task",
+        context_id="test-context",
         status=TaskStatus(state=TaskState.failed, message=failed_message),
         final=True,
     )
@@ -216,8 +211,8 @@ class TestTaskResultAggregator:
     # Then process working - should not override state and should not update message
     # because the current task state is not working
     working_event = TaskStatusUpdateEvent(
-        taskId="test-task",
-        contextId="test-context",
+        task_id="test-task",
+        context_id="test-context",
         status=TaskStatus(state=TaskState.working),
         final=False,
     )
@@ -231,8 +226,8 @@ class TestTaskResultAggregator:
     # Start with input_required
     input_message = create_test_message("Input message")
     input_event = TaskStatusUpdateEvent(
-        taskId="test-task",
-        contextId="test-context",
+        task_id="test-task",
+        context_id="test-context",
         status=TaskStatus(
             state=TaskState.input_required, message=input_message
         ),
@@ -244,8 +239,8 @@ class TestTaskResultAggregator:
     # Override with auth_required
     auth_message = create_test_message("Auth message")
     auth_event = TaskStatusUpdateEvent(
-        taskId="test-task",
-        contextId="test-context",
+        task_id="test-task",
+        context_id="test-context",
         status=TaskStatus(state=TaskState.auth_required, message=auth_message),
         final=False,
     )
@@ -255,8 +250,8 @@ class TestTaskResultAggregator:
     # Override with failed
     failed_message = create_test_message("Failed message")
     failed_event = TaskStatusUpdateEvent(
-        taskId="test-task",
-        contextId="test-context",
+        task_id="test-task",
+        context_id="test-context",
         status=TaskStatus(state=TaskState.failed, message=failed_message),
         final=True,
     )
@@ -266,8 +261,8 @@ class TestTaskResultAggregator:
     # Working should not override failed message because current task state is failed
     working_message = create_test_message("Working message")
     working_event = TaskStatusUpdateEvent(
-        taskId="test-task",
-        contextId="test-context",
+        task_id="test-task",
+        context_id="test-context",
         status=TaskStatus(state=TaskState.working, message=working_message),
         final=False,
     )
@@ -281,8 +276,8 @@ class TestTaskResultAggregator:
     """Test that working state events update the status message."""
     working_message = create_test_message("Working on task")
     event = TaskStatusUpdateEvent(
-        taskId="test-task",
-        contextId="test-context",
+        task_id="test-task",
+        context_id="test-context",
         status=TaskStatus(state=TaskState.working, message=working_message),
         final=False,
     )
@@ -296,8 +291,8 @@ class TestTaskResultAggregator:
   def test_working_event_with_none_message(self):
     """Test that working state events handle None message properly."""
     event = TaskStatusUpdateEvent(
-        taskId="test-task",
-        contextId="test-context",
+        task_id="test-task",
+        context_id="test-context",
         status=TaskStatus(state=TaskState.working, message=None),
         final=False,
     )
@@ -311,8 +306,8 @@ class TestTaskResultAggregator:
     # First set auth_required state
     auth_message = create_test_message("Auth required")
     auth_event = TaskStatusUpdateEvent(
-        taskId="test-task",
-        contextId="test-context",
+        task_id="test-task",
+        context_id="test-context",
         status=TaskStatus(state=TaskState.auth_required, message=auth_message),
         final=False,
     )
@@ -323,8 +318,8 @@ class TestTaskResultAggregator:
     # Then process working - should not update message because task state is not working
     working_message = create_test_message("Working on auth")
     working_event = TaskStatusUpdateEvent(
-        taskId="test-task",
-        contextId="test-context",
+        task_id="test-task",
+        context_id="test-context",
         status=TaskStatus(state=TaskState.working, message=working_message),
         final=False,
     )

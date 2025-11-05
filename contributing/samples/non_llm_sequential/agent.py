@@ -13,8 +13,8 @@
 # limitations under the License.
 
 
-from google.adk.agents import Agent
-from google.adk.agents import SequentialAgent
+from google.adk.agents.llm_agent import Agent
+from google.adk.agents.sequential_agent import SequentialAgent
 
 sub_agent_1 = Agent(
     name='sub_agent_1',

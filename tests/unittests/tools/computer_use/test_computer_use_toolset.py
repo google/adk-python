@@ -370,7 +370,7 @@ class TestComputerUseToolset:
         config=types.GenerateContentConfig(
             tools=[
                 types.Tool(
-                    computer_use=types.ToolComputerUse(
+                    computer_use=types.ComputerUse(
                         environment=types.Environment.ENVIRONMENT_BROWSER
                     )
                 )

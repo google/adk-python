@@ -38,21 +38,10 @@ try:
   from google.genai import types as genai_types
 except ImportError as e:
   if sys.version_info < (3, 10):
-    # Create dummy classes to prevent NameError during test collection
-    # Tests will be skipped anyway due to pytestmark
-    class DummyTypes:
-      pass
-
-    a2a_types = DummyTypes()
-    genai_types = DummyTypes()
-    A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL = "function_call"
-    A2A_DATA_PART_METADATA_TYPE_FUNCTION_RESPONSE = "function_response"
-    A2A_DATA_PART_METADATA_TYPE_CODE_EXECUTION_RESULT = "code_execution_result"
-    A2A_DATA_PART_METADATA_TYPE_EXECUTABLE_CODE = "executable_code"
-    A2A_DATA_PART_METADATA_TYPE_KEY = "type"
-    convert_a2a_part_to_genai_part = lambda x: None
-    convert_genai_part_to_a2a_part = lambda x: None
-    _get_adk_metadata_key = lambda x: f"adk_{x}"
+    # Imports are not needed since tests will be skipped due to pytestmark.
+    # The imported names are only used within test methods, not at module level,
+    # so no NameError occurs during module compilation.
+    pass
   else:
     raise e
 
@@ -79,7 +68,7 @@ class TestConvertA2aPartToGenaiPart:
     a2a_part = a2a_types.Part(
         root=a2a_types.FilePart(
             file=a2a_types.FileWithUri(
-                uri="gs://bucket/file.txt", mimeType="text/plain"
+                uri="gs://bucket/file.txt", mime_type="text/plain"
             )
         )
     )
@@ -105,7 +94,7 @@ class TestConvertA2aPartToGenaiPart:
     a2a_part = a2a_types.Part(
         root=a2a_types.FilePart(
             file=a2a_types.FileWithBytes(
-                bytes=base64_encoded, mimeType="text/plain"
+                bytes=base64_encoded, mime_type="text/plain"
             )
         )
     )
@@ -307,7 +296,7 @@ class TestConvertGenaiPartToA2aPart:
     assert isinstance(result.root, a2a_types.FilePart)
     assert isinstance(result.root.file, a2a_types.FileWithUri)
     assert result.root.file.uri == "gs://bucket/file.txt"
-    assert result.root.file.mimeType == "text/plain"
+    assert result.root.file.mime_type == "text/plain"
 
   def test_convert_inline_data_part(self):
     """Test conversion of GenAI inline_data Part to A2A Part."""
@@ -330,7 +319,7 @@ class TestConvertGenaiPartToA2aPart:
 
     expected_base64 = base64.b64encode(test_bytes).decode("utf-8")
     assert result.root.file.bytes == expected_base64
-    assert result.root.file.mimeType == "text/plain"
+    assert result.root.file.mime_type == "text/plain"
 
   def test_convert_inline_data_part_with_video_metadata(self):
     """Test conversion of GenAI inline_data Part with video metadata to A2A Part."""
@@ -496,7 +485,7 @@ class TestRoundTripConversions:
     a2a_part = a2a_types.Part(
         root=a2a_types.FilePart(
             file=a2a_types.FileWithUri(
-                uri=original_uri, mimeType=original_mime_type
+                uri=original_uri, mime_type=original_mime_type
             )
         )
     )
@@ -511,7 +500,7 @@ class TestRoundTripConversions:
     assert isinstance(result_a2a_part.root, a2a_types.FilePart)
     assert isinstance(result_a2a_part.root.file, a2a_types.FileWithUri)
     assert result_a2a_part.root.file.uri == original_uri
-    assert result_a2a_part.root.file.mimeType == original_mime_type
+    assert result_a2a_part.root.file.mime_type == original_mime_type
 
   def test_file_bytes_round_trip(self):
     """Test round-trip conversion for file parts with bytes."""

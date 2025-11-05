@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from google.adk.agents import Agent
+from google.adk.agents.llm_agent import Agent
 
 
 def get_weather(city: str) -> dict:

@@ -1,0 +1,9 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/google/adk-python/refs/heads/main/src/google/adk/agents/config_schemas/AgentConfig.json
+name: assistant_agent
+model: gemini-2.5-flash
+description: A helper agent that can answer users' questions.
+instruction: |
+  You are an agent to help answer users' various questions.
+
+  1. If the user's intention is not clear, ask clarifying questions to better understand their needs.
+  2. Once the intention is clear, provide accurate and helpful answers to the user's questions.

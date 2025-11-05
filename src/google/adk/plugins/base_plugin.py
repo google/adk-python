@@ -28,7 +28,6 @@ from ..events.event import Event
 from ..models.llm_request import LlmRequest
 from ..models.llm_response import LlmResponse
 from ..tools.base_tool import BaseTool
-from ..utils.feature_decorator import working_in_progress
 
 if TYPE_CHECKING:
   from ..agents.invocation_context import InvocationContext
@@ -174,7 +173,7 @@ class BasePlugin(ABC):
 
   async def after_run_callback(
       self, *, invocation_context: InvocationContext
-  ) -> Optional[None]:
+  ) -> None:
     """Callback executed after an ADK runner run has completed.
 
     This is the final callback in the ADK lifecycle, suitable for cleanup, final
@@ -212,17 +211,14 @@ class BasePlugin(ABC):
   ) -> Optional[types.Content]:
     """Callback executed after an agent's primary logic has completed.
 
-    This callback can be used to inspect, log, or modify the agent's final
-    result before it is returned.
-
     Args:
       agent: The agent that has just run.
       callback_context: The context for the agent invocation.
 
     Returns:
-      An optional `types.Content` object. If a value is returned, it will
-      replace the agent's original result. Returning `None` uses the original,
-      unmodified result.
+      An optional `types.Content` object. The content to return to the user.
+      When the content is present, the provided content will be used as agent
+      response and appended to event history as agent response.
     """
     pass
 
@@ -262,6 +258,31 @@ class BasePlugin(ABC):
       An optional value. A non-`None` return may be used by the framework to
       modify or replace the response. Returning `None` allows the original
       response to be used.
+    """
+    pass
+
+  async def on_model_error_callback(
+      self,
+      *,
+      callback_context: CallbackContext,
+      llm_request: LlmRequest,
+      error: Exception,
+  ) -> Optional[LlmResponse]:
+    """Callback executed when a model call encounters an error.
+
+    This callback provides an opportunity to handle model errors gracefully,
+    potentially providing alternative responses or recovery mechanisms.
+
+    Args:
+      callback_context: The context for the current agent call.
+      llm_request: The request that was sent to the model when the error
+        occurred.
+      error: The exception that was raised during model execution.
+
+    Returns:
+      An optional LlmResponse. If an LlmResponse is returned, it will be used
+      instead of propagating the error. Returning `None` allows the original
+      error to be raised.
     """
     pass
 
@@ -313,5 +334,31 @@ class BasePlugin(ABC):
       the original result from the tool. This allows for post-processing or
       altering tool outputs. Returning `None` uses the original, unmodified
       result.
+    """
+    pass
+
+  async def on_tool_error_callback(
+      self,
+      *,
+      tool: BaseTool,
+      tool_args: dict[str, Any],
+      tool_context: ToolContext,
+      error: Exception,
+  ) -> Optional[dict]:
+    """Callback executed when a tool call encounters an error.
+
+    This callback provides an opportunity to handle tool errors gracefully,
+    potentially providing alternative responses or recovery mechanisms.
+
+    Args:
+      tool: The tool instance that encountered an error.
+      tool_args: The arguments that were passed to the tool.
+      tool_context: The context specific to the tool execution.
+      error: The exception that was raised during tool execution.
+
+    Returns:
+      An optional dictionary. If a dictionary is returned, it will be used as
+      the tool response instead of propagating the error. Returning `None`
+      allows the original error to be raised.
     """
     pass

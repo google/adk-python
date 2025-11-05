@@ -54,39 +54,10 @@ try:
   from google.adk.tools.example_tool import ExampleTool
 except ImportError as e:
   if sys.version_info < (3, 10):
-    # Create dummy classes to prevent NameError during test collection
-    # Tests will be skipped anyway due to pytestmark
-    class DummyTypes:
-      pass
-
-    AgentCapabilities = DummyTypes()
-    AgentCard = DummyTypes()
-    AgentProvider = DummyTypes()
-    AgentSkill = DummyTypes()
-    SecurityScheme = DummyTypes()
-    AgentCardBuilder = DummyTypes()
-    BaseAgent = DummyTypes()
-    LlmAgent = DummyTypes()
-    LoopAgent = DummyTypes()
-    ParallelAgent = DummyTypes()
-    SequentialAgent = DummyTypes()
-    ExampleTool = DummyTypes()
-    # Dummy functions
-    _build_agent_description = lambda x: ""
-    _build_llm_agent_description_with_instructions = lambda x: ""
-    _build_orchestration_skill = lambda x, y: None
-    _build_parallel_description = lambda x: ""
-    _build_sequential_description = lambda x: ""
-    _build_loop_description = lambda x: ""
-    _convert_example_tool_examples = lambda x: []
-    _extract_examples_from_instruction = lambda x: None
-    _get_agent_skill_name = lambda x: ""
-    _get_agent_type = lambda x: ""
-    _get_default_description = lambda x: ""
-    _get_input_modes = lambda x: None
-    _get_output_modes = lambda x: None
-    _get_workflow_description = lambda x: None
-    _replace_pronouns = lambda x: ""
+    # Imports are not needed since tests will be skipped due to pytestmark.
+    # The imported names are only used within test methods, not at module level,
+    # so no NameError occurs during module compilation.
+    pass
   else:
     raise e
 
@@ -181,15 +152,15 @@ class TestAgentCardBuilder:
     assert isinstance(result, AgentCard)
     assert result.name == "test_agent"
     assert result.description == "Test agent description"
-    assert result.documentationUrl is None
+    assert result.documentation_url is None
     assert result.url == "http://localhost:80/a2a"
     assert result.version == "0.0.1"
     assert result.skills == [mock_primary_skill, mock_sub_skill]
-    assert result.defaultInputModes == ["text/plain"]
-    assert result.defaultOutputModes == ["text/plain"]
-    assert result.supportsAuthenticatedExtendedCard is False
+    assert result.default_input_modes == ["text/plain"]
+    assert result.default_output_modes == ["text/plain"]
+    assert result.supports_authenticated_extended_card is False
     assert result.provider is None
-    assert result.securitySchemes is None
+    assert result.security_schemes is None
 
   @patch("google.adk.a2a.utils.agent_card_builder._build_primary_skills")
   @patch("google.adk.a2a.utils.agent_card_builder._build_sub_agent_skills")
@@ -225,15 +196,15 @@ class TestAgentCardBuilder:
     # Assert
     assert result.name == "test_agent"
     assert result.description == "An ADK Agent"  # Default description
-    # The source code uses doc_url parameter but AgentCard expects documentationUrl
-    # Since the source code doesn't map doc_url to documentationUrl, it will be None
-    assert result.documentationUrl is None
+    # The source code uses doc_url parameter but AgentCard expects documentation_url
+    # Since the source code doesn't map doc_url to documentation_url, it will be None
+    assert result.documentation_url is None
     assert (
         result.url == "https://example.com/a2a"
     )  # Should strip trailing slash
     assert result.version == "2.0.0"
     assert result.provider == mock_provider
-    assert result.securitySchemes == mock_security_schemes
+    assert result.security_schemes == mock_security_schemes
 
   @patch("google.adk.a2a.utils.agent_card_builder._build_primary_skills")
   @patch("google.adk.a2a.utils.agent_card_builder._build_sub_agent_skills")
@@ -360,7 +331,7 @@ class TestHelperFunctions:
     assert result == "I should do my work and it will be mine."
 
   def test_replace_pronouns_case_insensitive(self):
-    """Test _replace_pronouns with case insensitive matching."""
+    """Test _replace_pronouns with case-insensitive matching."""
     # Arrange
     text = "YOU should do YOUR work and it will be YOURS."
 
@@ -402,6 +373,17 @@ class TestHelperFunctions:
 
     # Assert
     assert result == "youth, yourself, yourname"  # No changes
+
+  def test_replace_pronouns_phrases(self):
+    """Test _replace_pronouns with phrases that should be replaced."""
+    # Arrange
+    text = "You are a helpful chatbot"
+
+    # Act
+    result = _replace_pronouns(text)
+
+    # Assert
+    assert result == "I am a helpful chatbot"
 
   def test_get_default_description_llm_agent(self):
     """Test _get_default_description for LlmAgent."""
@@ -1091,7 +1073,7 @@ class TestExampleExtractionFunctions:
     assert result is None
 
   def test_extract_examples_from_instruction_case_insensitive(self):
-    """Test _extract_examples_from_instruction with case insensitive matching."""
+    """Test _extract_examples_from_instruction with case-insensitive matching."""
     # Arrange
     instruction = (
         'example query: "What is the weather?" example response: "The weather'

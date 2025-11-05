@@ -15,28 +15,22 @@
 from __future__ import annotations
 
 import importlib
+import inspect
 import os
 from typing import Any
 from typing import List
 
 import yaml
 
-from ..utils.feature_decorator import working_in_progress
+from ..utils.feature_decorator import experimental
 from .agent_config import AgentConfig
 from .base_agent import BaseAgent
-from .base_agent import SubAgentConfig
+from .base_agent_config import BaseAgentConfig
+from .common_configs import AgentRefConfig
 from .common_configs import CodeConfig
-from .llm_agent import LlmAgent
-from .llm_agent import LlmAgentConfig
-from .loop_agent import LoopAgent
-from .loop_agent import LoopAgentConfig
-from .parallel_agent import ParallelAgent
-from .parallel_agent import ParallelAgentConfig
-from .sequential_agent import SequentialAgent
-from .sequential_agent import SequentialAgentConfig
 
 
-@working_in_progress("from_config is not ready for use.")
+@experimental
 def from_config(config_path: str) -> BaseAgent:
   """Build agent from a configfile path.
 
@@ -53,20 +47,38 @@ def from_config(config_path: str) -> BaseAgent:
   """
   abs_path = os.path.abspath(config_path)
   config = _load_config_from_path(abs_path)
+  agent_config = config.root
 
-  if isinstance(config.root, LlmAgentConfig):
-    return LlmAgent.from_config(config.root, abs_path)
-  elif isinstance(config.root, LoopAgentConfig):
-    return LoopAgent.from_config(config.root, abs_path)
-  elif isinstance(config.root, ParallelAgentConfig):
-    return ParallelAgent.from_config(config.root, abs_path)
-  elif isinstance(config.root, SequentialAgentConfig):
-    return SequentialAgent.from_config(config.root, abs_path)
+  # pylint: disable=unidiomatic-typecheck Needs exact class matching.
+  if type(agent_config) is BaseAgentConfig:
+    # Resolve the concrete agent config for user-defined agent classes.
+    agent_class = _resolve_agent_class(agent_config.agent_class)
+    agent_config = agent_class.config_type.model_validate(
+        agent_config.model_dump()
+    )
+    return agent_class.from_config(agent_config, abs_path)
   else:
-    raise ValueError("Unsupported config type")
+    # For built-in agent classes, no need to re-validate.
+    agent_class = _resolve_agent_class(agent_config.agent_class)
+    return agent_class.from_config(agent_config, abs_path)
 
 
-@working_in_progress("_load_config_from_path is not ready for use.")
+def _resolve_agent_class(agent_class: str) -> type[BaseAgent]:
+  """Resolve the agent class from its fully qualified name."""
+  agent_class_name = agent_class or "LlmAgent"
+  if "." not in agent_class_name:
+    agent_class_name = f"google.adk.agents.{agent_class_name}"
+
+  agent_class = resolve_fully_qualified_name(agent_class_name)
+  if inspect.isclass(agent_class) and issubclass(agent_class, BaseAgent):
+    return agent_class
+
+  raise ValueError(
+      f"Invalid agent class `{agent_class_name}`. It must be a subclass of"
+      " BaseAgent."
+  )
+
+
 def _load_config_from_path(config_path: str) -> AgentConfig:
   """Load an agent's configuration from a YAML file.
 
@@ -90,44 +102,57 @@ def _load_config_from_path(config_path: str) -> AgentConfig:
   return AgentConfig.model_validate(config_data)
 
 
-@working_in_progress("build_sub_agent is not ready for use.")
-def build_sub_agent(
-    sub_config: SubAgentConfig, parent_agent_folder_path: str
+@experimental
+def resolve_fully_qualified_name(name: str) -> Any:
+  try:
+    module_path, obj_name = name.rsplit(".", 1)
+    module = importlib.import_module(module_path)
+    return getattr(module, obj_name)
+  except Exception as e:
+    raise ValueError(f"Invalid fully qualified name: {name}") from e
+
+
+@experimental
+def resolve_agent_reference(
+    ref_config: AgentRefConfig, referencing_agent_config_abs_path: str
 ) -> BaseAgent:
-  """Build a sub-agent from configuration.
+  """Build an agent from a reference.
 
   Args:
-    sub_config: The sub-agent configuration (SubAgentConfig).
-    parent_agent_folder_path: The folder path to the parent agent's YAML config.
+    ref_config: The agent reference configuration (AgentRefConfig).
+    referencing_agent_config_abs_path: The absolute path to the agent config
+    that contains the reference.
 
   Returns:
-    The created sub-agent instance.
+    The created agent instance.
   """
-  if sub_config.config:
-    if os.path.isabs(sub_config.config):
-      return from_config(sub_config.config)
+  if ref_config.config_path:
+    if os.path.isabs(ref_config.config_path):
+      return from_config(ref_config.config_path)
     else:
       return from_config(
-          os.path.join(parent_agent_folder_path, sub_config.config)
+          os.path.join(
+              referencing_agent_config_abs_path.rsplit("/", 1)[0],
+              ref_config.config_path,
+          )
       )
-  elif sub_config.code:
-    return _resolve_sub_agent_code_reference(sub_config.code)
+  elif ref_config.code:
+    return _resolve_agent_code_reference(ref_config.code)
   else:
-    raise ValueError("SubAgentConfig must have either 'code' or 'config'")
+    raise ValueError("AgentRefConfig must have either 'code' or 'config_path'")
 
 
-@working_in_progress("_resolve_sub_agent_code_reference is not ready for use.")
-def _resolve_sub_agent_code_reference(code: str) -> Any:
-  """Resolve a code reference to an actual agent object.
+def _resolve_agent_code_reference(code: str) -> Any:
+  """Resolve a code reference to an actual agent instance.
 
   Args:
-    code: The code reference to the sub-agent.
+    code: The fully-qualified path to an agent instance.
 
   Returns:
-    The resolved agent object.
+    The resolved agent instance.
 
   Raises:
-    ValueError: If the code reference cannot be resolved.
+    ValueError: If the agent reference cannot be resolved.
   """
   if "." not in code:
     raise ValueError(f"Invalid code reference: {code}")
@@ -137,12 +162,15 @@ def _resolve_sub_agent_code_reference(code: str) -> Any:
   obj = getattr(module, obj_name)
 
   if callable(obj):
-    raise ValueError(f"Invalid code reference to a callable: {code}")
+    raise ValueError(f"Invalid agent reference to a callable: {code}")
+
+  if not isinstance(obj, BaseAgent):
+    raise ValueError(f"Invalid agent reference to a non-agent instance: {code}")
 
   return obj
 
 
-@working_in_progress("resolve_code_reference is not ready for use.")
+@experimental
 def resolve_code_reference(code_config: CodeConfig) -> Any:
   """Resolve a code reference to actual Python object.
 
@@ -171,7 +199,7 @@ def resolve_code_reference(code_config: CodeConfig) -> Any:
     return obj
 
 
-@working_in_progress("resolve_callbacks is not ready for use.")
+@experimental
 def resolve_callbacks(callbacks_config: List[CodeConfig]) -> Any:
   """Resolve callbacks from configuration.
 

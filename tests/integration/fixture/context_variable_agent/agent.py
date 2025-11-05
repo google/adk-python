@@ -17,8 +17,8 @@ from typing import Union
 
 from google.adk import Agent
 from google.adk.agents.invocation_context import InvocationContext
-from google.adk.planners import PlanReActPlanner
-from google.adk.tools import ToolContext
+from google.adk.planners.plan_re_act_planner import PlanReActPlanner
+from google.adk.tools.tool_context import ToolContext
 
 
 def update_fc(
@@ -43,7 +43,7 @@ def echo_info(customer_id: str) -> str:
 
 def build_global_instruction(invocation_context: InvocationContext) -> str:
   return (
-      'This is the gloabl agent instruction for invocation:'
+      'This is the global agent instruction for invocation:'
       f' {invocation_context.invocation_id}.'
   )
 

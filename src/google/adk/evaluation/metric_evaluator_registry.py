@@ -17,22 +17,27 @@ from __future__ import annotations
 import logging
 
 from ..errors.not_found_error import NotFoundError
+from ..utils.feature_decorator import experimental
 from .eval_metrics import EvalMetric
-from .eval_metrics import MetricName
+from .eval_metrics import MetricInfo
 from .eval_metrics import PrebuiltMetrics
 from .evaluator import Evaluator
 from .final_response_match_v2 import FinalResponseMatchV2Evaluator
+from .hallucinations_v1 import HallucinationsV1Evaluator
 from .response_evaluator import ResponseEvaluator
+from .rubric_based_final_response_quality_v1 import RubricBasedFinalResponseQualityV1Evaluator
+from .rubric_based_tool_use_quality_v1 import RubricBasedToolUseV1Evaluator
 from .safety_evaluator import SafetyEvaluatorV1
 from .trajectory_evaluator import TrajectoryEvaluator
 
 logger = logging.getLogger("google_adk." + __name__)
 
 
+@experimental
 class MetricEvaluatorRegistry:
   """A registry for metric Evaluators."""
 
-  _registry: dict[str, type[Evaluator]] = {}
+  _registry: dict[str, tuple[type[Evaluator], MetricInfo]] = {}
 
   def get_evaluator(self, eval_metric: EvalMetric) -> Evaluator:
     """Returns an Evaluator for the given metric.
@@ -48,15 +53,18 @@ class MetricEvaluatorRegistry:
     if eval_metric.metric_name not in self._registry:
       raise NotFoundError(f"{eval_metric.metric_name} not found in registry.")
 
-    return self._registry[eval_metric.metric_name](eval_metric=eval_metric)
+    return self._registry[eval_metric.metric_name][0](eval_metric=eval_metric)
 
   def register_evaluator(
-      self, metric_name: MetricName, evaluator: type[Evaluator]
+      self,
+      metric_info: MetricInfo,
+      evaluator: type[Evaluator],
   ):
-    """Registers an evaluator given the metric name.
+    """Registers an evaluator given the metric info.
 
     If a mapping already exist, then it is updated.
     """
+    metric_name = metric_info.metric_name
     if metric_name in self._registry:
       logger.info(
           "Updating Evaluator class for %s from %s to %s",
@@ -65,7 +73,16 @@ class MetricEvaluatorRegistry:
           evaluator,
       )
 
-    self._registry[str(metric_name)] = evaluator
+    self._registry[str(metric_name)] = (evaluator, metric_info)
+
+  def get_registered_metrics(
+      self,
+  ) -> list[MetricInfo]:
+    """Returns a list of MetricInfo about the metrics registered so far."""
+    return [
+        evaluator_and_metric_info[1].model_copy(deep=True)
+        for _, evaluator_and_metric_info in self._registry.items()
+    ]
 
 
 def _get_default_metric_evaluator_registry() -> MetricEvaluatorRegistry:
@@ -73,24 +90,41 @@ def _get_default_metric_evaluator_registry() -> MetricEvaluatorRegistry:
   metric_evaluator_registry = MetricEvaluatorRegistry()
 
   metric_evaluator_registry.register_evaluator(
-      metric_name=PrebuiltMetrics.TOOL_TRAJECTORY_AVG_SCORE.value,
+      metric_info=TrajectoryEvaluator.get_metric_info(),
       evaluator=TrajectoryEvaluator,
   )
+
   metric_evaluator_registry.register_evaluator(
-      metric_name=PrebuiltMetrics.RESPONSE_EVALUATION_SCORE.value,
+      metric_info=ResponseEvaluator.get_metric_info(
+          PrebuiltMetrics.RESPONSE_EVALUATION_SCORE.value
+      ),
       evaluator=ResponseEvaluator,
   )
   metric_evaluator_registry.register_evaluator(
-      metric_name=PrebuiltMetrics.RESPONSE_MATCH_SCORE.value,
+      metric_info=ResponseEvaluator.get_metric_info(
+          PrebuiltMetrics.RESPONSE_MATCH_SCORE.value
+      ),
       evaluator=ResponseEvaluator,
   )
   metric_evaluator_registry.register_evaluator(
-      metric_name=PrebuiltMetrics.SAFETY_V1.value,
+      metric_info=SafetyEvaluatorV1.get_metric_info(),
       evaluator=SafetyEvaluatorV1,
   )
   metric_evaluator_registry.register_evaluator(
-      metric_name=PrebuiltMetrics.FINAL_RESPONSE_MATCH_V2.value,
+      metric_info=FinalResponseMatchV2Evaluator.get_metric_info(),
       evaluator=FinalResponseMatchV2Evaluator,
+  )
+  metric_evaluator_registry.register_evaluator(
+      metric_info=RubricBasedFinalResponseQualityV1Evaluator.get_metric_info(),
+      evaluator=RubricBasedFinalResponseQualityV1Evaluator,
+  )
+  metric_evaluator_registry.register_evaluator(
+      metric_info=HallucinationsV1Evaluator.get_metric_info(),
+      evaluator=HallucinationsV1Evaluator,
+  )
+  metric_evaluator_registry.register_evaluator(
+      metric_info=RubricBasedToolUseV1Evaluator.get_metric_info(),
+      evaluator=RubricBasedToolUseV1Evaluator,
   )
 
   return metric_evaluator_registry

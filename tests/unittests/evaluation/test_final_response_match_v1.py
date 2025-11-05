@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from google.adk.evaluation.eval_case import Invocation
 from google.adk.evaluation.eval_metrics import EvalMetric
+from google.adk.evaluation.eval_metrics import PrebuiltMetrics
 from google.adk.evaluation.evaluator import EvalStatus
 from google.adk.evaluation.final_response_match_v1 import _calculate_rouge_1_scores
 from google.adk.evaluation.final_response_match_v1 import RougeEvaluator
@@ -138,3 +139,11 @@ def test_rouge_evaluator_multiple_invocations(
       expected_score, rel=1e-3
   )
   assert evaluation_result.overall_eval_status == expected_status
+
+
+def test_get_metric_info():
+  """Test get_metric_info function for response match metric."""
+  metric_info = RougeEvaluator.get_metric_info()
+  assert metric_info.metric_name == PrebuiltMetrics.RESPONSE_MATCH_SCORE.value
+  assert metric_info.metric_value_info.interval.min_value == 0.0
+  assert metric_info.metric_value_info.interval.max_value == 1.0

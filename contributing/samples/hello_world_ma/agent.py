@@ -14,7 +14,7 @@
 
 import random
 
-from google.adk.agents import Agent
+from google.adk.agents.llm_agent import Agent
 from google.adk.examples.example import Example
 from google.adk.tools.example_tool import ExampleTool
 from google.genai import types
@@ -131,7 +131,7 @@ prime_agent = Agent(
 
 
 root_agent = Agent(
-    model="gemini-1.5-flash",
+    model="gemini-2.5-flash",
     name="root_agent",
     instruction="""
       You are a helpful assistant that can roll dice and check if numbers are prime.

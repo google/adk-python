@@ -14,16 +14,22 @@
 
 import os
 
-from google.adk.agents import llm_agent
-from google.adk.auth import AuthCredentialTypes
-from google.adk.tools.bigquery import BigQueryCredentialsConfig
-from google.adk.tools.bigquery import BigQueryToolset
+from google.adk.agents.llm_agent import LlmAgent
+from google.adk.auth.auth_credential import AuthCredentialTypes
+from google.adk.tools.bigquery.bigquery_credentials import BigQueryCredentialsConfig
+from google.adk.tools.bigquery.bigquery_toolset import BigQueryToolset
 from google.adk.tools.bigquery.config import BigQueryToolConfig
 from google.adk.tools.bigquery.config import WriteMode
 import google.auth
 
-# Define an appropriate credential type
-CREDENTIALS_TYPE = AuthCredentialTypes.OAUTH2
+# Define the desired credential type.
+# By default use Application Default Credentials (ADC) from the local
+# environment, which can be set up by following
+# https://cloud.google.com/docs/authentication/provide-credentials-adc.
+CREDENTIALS_TYPE = None
+
+# Define an appropriate application name
+BIGQUERY_AGENT_NAME = "adk_sample_bigquery_agent"
 
 
 # Define BigQuery tool config with write mode set to allowed. Note that this is
@@ -31,10 +37,12 @@ CREDENTIALS_TYPE = AuthCredentialTypes.OAUTH2
 # you may want to change to BLOCKED (default write mode, effectively makes the
 # tool read-only) or PROTECTED (only allows writes in the anonymous dataset of a
 # BigQuery session) write mode.
-tool_config = BigQueryToolConfig(write_mode=WriteMode.ALLOWED)
+tool_config = BigQueryToolConfig(
+    write_mode=WriteMode.ALLOWED, application_name=BIGQUERY_AGENT_NAME
+)
 
 if CREDENTIALS_TYPE == AuthCredentialTypes.OAUTH2:
-  # Initiaze the tools to do interactive OAuth
+  # Initialize the tools to do interactive OAuth
   # The environment variables OAUTH_CLIENT_ID and OAUTH_CLIENT_SECRET
   # must be set
   credentials_config = BigQueryCredentialsConfig(
@@ -62,9 +70,9 @@ bigquery_toolset = BigQueryToolset(
 
 # The variable name `root_agent` determines what your root agent is for the
 # debug CLI
-root_agent = llm_agent.Agent(
+root_agent = LlmAgent(
     model="gemini-2.0-flash",
-    name="bigquery_agent",
+    name=BIGQUERY_AGENT_NAME,
     description=(
         "Agent to answer questions about BigQuery data and models and execute"
         " SQL queries."

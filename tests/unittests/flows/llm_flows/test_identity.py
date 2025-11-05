@@ -12,9 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from google.adk.agents import Agent
+from google.adk.agents.llm_agent import Agent
 from google.adk.flows.llm_flows import identity
-from google.adk.models import LlmRequest
+from google.adk.models.llm_request import LlmRequest
 from google.genai import types
 import pytest
 
@@ -64,7 +64,8 @@ async def test_with_description():
   ):
     pass
 
-  assert request.config.system_instruction == "\n\n".join([
-      'You are an agent. Your internal name is "agent".',
-      ' The description about you is "test description"',
-  ])
+  assert (
+      request.config.system_instruction
+      == """\
+You are an agent. Your internal name is "agent". The description about you is "test description"."""
+  )
