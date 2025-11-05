@@ -977,6 +977,44 @@ class BaseLlmFlow(ABC):
     Yields:
       A generator of LlmResponse.
     """
+
+    from ...agents.llm_agent import LlmAgent
+
+    agent = invocation_context.agent
+    if not isinstance(agent, LlmAgent):
+      raise TypeError(
+          f'Expected agent to be an LlmAgent, but got {type(agent)}'
+      )
+
+    async def _run_on_model_error_callbacks(
+        *,
+        callback_context: CallbackContext,
+        llm_request: LlmRequest,
+        error: Exception,
+    ) -> Optional[LlmResponse]:
+      error_response = (
+          await invocation_context.plugin_manager.run_on_model_error_callback(
+              callback_context=callback_context,
+              llm_request=llm_request,
+              error=error,
+          )
+      )
+      if error_response is not None:
+        return error_response
+
+      for callback in agent.canonical_on_model_error_callbacks:
+        error_response = callback(
+            callback_context=callback_context,
+            llm_request=llm_request,
+            error=error,
+        )
+        if inspect.isawaitable(error_response):
+          error_response = await error_response
+        if error_response is not None:
+          return error_response
+
+      return None
+
     try:
       async with Aclosing(response_generator) as agen:
         async for response in agen:
@@ -985,12 +1023,10 @@ class BaseLlmFlow(ABC):
       callback_context = CallbackContext(
           invocation_context, event_actions=model_response_event.actions
       )
-      error_response = (
-          await invocation_context.plugin_manager.run_on_model_error_callback(
-              callback_context=callback_context,
-              llm_request=llm_request,
-              error=model_error,
-          )
+      error_response = await _run_on_model_error_callbacks(
+          callback_context=callback_context,
+          llm_request=llm_request,
+          error=model_error,
       )
       if error_response is not None:
         yield error_response

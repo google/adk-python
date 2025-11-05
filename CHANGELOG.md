@@ -79,6 +79,8 @@
 * Fix issue with MCP tools throwing an error ([1a4261a](https://github.com/google/adk-python/commit/1a4261ad4b66cdeb39d39110a086bd6112b17516))
 * Remove redundant `format` field from LiteLLM content objects ([489c39d](https://github.com/google/adk-python/commit/489c39db01465e38ecbc2c7f32781c349b8cddc9))
 * Update the contribution analysis tool to use original write mode ([54db3d4](https://github.com/google/adk-python/commit/54db3d4434e0706b83a589fa2499d11d439a6e4e))
+* Fix agent evaluations detailed output rows wrapping issue([4284c61](https://github.com/google/adk-python/commit/4284c619010b8246c1ecaa011f14b6cc9de512dd))
+* Update dependency version constraints to be based on PyPI versions([0b1784e](https://github.com/google/adk-python/commit/0b1784e0e493a0e2df1edfe37e5ed5f4247e7d9d))
 
 ### Improvements
 
@@ -97,6 +99,7 @@
 * Add sample agent for VertexAiCodeExecutor ([edfe553](https://github.com/google/adk-python/commit/edfe5539421d196ca4da14d3a37fac7b598f8c8d))
 * Adds a new sample agent that demonstrates how to integrate PostgreSQL databases using the Model Context Protocol (MCP) ([45a2168](https://github.com/google/adk-python/commit/45a2168e0e6773e595ecfb825d7e4ab0a38c3a38))
 * Add example for using ADK with Fast MCP sampling ([d3796f9](https://github.com/google/adk-python/commit/d3796f9b33251d28d05e6701f11e80f02a2a49e1))
+* Refactor gepa sample code and clean-up user demo colab([63353b2](https://github.com/google/adk-python/commit/63353b2b74e23e97385892415c5a3f2a59c3504f))
 
 ## [1.17.0](https://github.com/google/adk-python/compare/v1.16.0...v1.17.0) (2025-10-22)
 
