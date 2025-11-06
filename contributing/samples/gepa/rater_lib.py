@@ -120,7 +120,7 @@ def format_user_agent_conversation(conv: list[dict[str, Any]]) -> str:
         res = (
             res
             + 'The execution result from the agent of function'
-            f' {fc["name"]} is: \n{fc["args"]}\n'
+            f' {fc["name"]} is: \n{fc["response"]}\n'
         )
   return res
 

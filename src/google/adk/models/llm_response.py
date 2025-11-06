@@ -33,7 +33,7 @@ class LlmResponse(BaseModel):
   Attributes:
     content: The content of the response.
     grounding_metadata: The grounding metadata of the response.
-    partial: Indicates whether the text content is part of a unfinished text
+    partial: Indicates whether the text content is part of an unfinished text
       stream. Only used for streaming mode and when the content is plain text.
     turn_complete: Indicates whether the response from the model is complete.
       Only used for streaming mode.
@@ -69,7 +69,7 @@ class LlmResponse(BaseModel):
   """The grounding metadata of the response."""
 
   partial: Optional[bool] = None
-  """Indicates whether the text content is part of a unfinished text stream.
+  """Indicates whether the text content is part of an unfinished text stream.
 
   Only used for streaming mode and when the content is plain text.
   """

@@ -53,7 +53,7 @@ class GoogleMapsGroundingTool(BaseTool):
     llm_request.config.tools = llm_request.config.tools or []
     if is_gemini_1_model(llm_request.model):
       raise ValueError(
-          'Google Maps grounding tool can not be used with Gemini 1.x models.'
+          'Google Maps grounding tool cannot be used with Gemini 1.x models.'
       )
     elif is_gemini_model(llm_request.model):
       llm_request.config.tools.append(

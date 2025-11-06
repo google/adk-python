@@ -18,6 +18,9 @@ import logging
 import os
 import tempfile
 import time
+import warnings
+
+import click
 
 LOGGING_FORMAT = (
     '%(asctime)s - %(levelname)s - %(filename)s:%(lineno)d - %(message)s'
@@ -30,6 +33,38 @@ def setup_adk_logger(level=logging.INFO):
 
   adk_logger = logging.getLogger('google_adk')
   adk_logger.setLevel(level)
+
+
+def _create_symlink(symlink_path: str, target_path: str) -> bool:
+  """Creates a symlink at symlink_path pointing to target_path.
+
+  Returns:
+    True if successful, False otherwise.
+  """
+  try:
+    if os.path.islink(symlink_path):
+      os.unlink(symlink_path)
+    elif os.path.exists(symlink_path):
+      warnings.warn(
+          'Cannot create symlink for latest log file: file exists at'
+          f' {symlink_path}'
+      )
+      return False
+    os.symlink(target_path, symlink_path)
+    return True
+  except OSError:
+    return False
+
+
+def _try_create_latest_log_symlink(
+    log_dir: str, log_file_prefix: str, log_filepath: str
+) -> None:
+  """Attempts to create a 'latest' symlink and prints access instructions."""
+  latest_log_link = os.path.join(log_dir, f'{log_file_prefix}.latest.log')
+  if _create_symlink(latest_log_link, log_filepath):
+    click.echo(f'To access latest log: tail -F {latest_log_link}')
+  else:
+    click.echo(f'To access latest log: tail -F {log_filepath}')
 
 
 def log_to_tmp_folder(
@@ -64,12 +99,7 @@ def log_to_tmp_folder(
   root_logger.handlers = []  # Clear handles to disable logging to stderr
   root_logger.addHandler(file_handler)
 
-  print(f'Log setup complete: {log_filepath}')
+  click.echo(f'Log setup complete: {log_filepath}')
+  _try_create_latest_log_symlink(log_dir, log_file_prefix, log_filepath)
 
-  latest_log_link = os.path.join(log_dir, f'{log_file_prefix}.latest.log')
-  if os.path.islink(latest_log_link):
-    os.unlink(latest_log_link)
-  os.symlink(log_filepath, latest_log_link)
-
-  print(f'To access latest log: tail -F {latest_log_link}')
   return log_filepath

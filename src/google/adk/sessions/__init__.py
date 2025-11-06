@@ -11,31 +11,31 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import logging
-
 from .base_session_service import BaseSessionService
 from .in_memory_session_service import InMemorySessionService
 from .session import Session
 from .state import State
 from .vertex_ai_session_service import VertexAiSessionService
 
-logger = logging.getLogger('google_adk.' + __name__)
-
-
 __all__ = [
     'BaseSessionService',
+    'DatabaseSessionService',
     'InMemorySessionService',
     'Session',
     'State',
     'VertexAiSessionService',
 ]
 
-try:
-  from .database_session_service import DatabaseSessionService
 
-  __all__.append('DatabaseSessionService')
-except ImportError:
-  logger.debug(
-      'DatabaseSessionService require sqlalchemy>=2.0, please ensure it is'
-      ' installed correctly.'
-  )
+def __getattr__(name: str):
+  if name == 'DatabaseSessionService':
+    try:
+      from .database_session_service import DatabaseSessionService
+
+      return DatabaseSessionService
+    except ImportError as e:
+      raise ImportError(
+          'DatabaseSessionService requires sqlalchemy>=2.0, please ensure it is'
+          ' installed correctly.'
+      ) from e
+  raise AttributeError(f'module {__name__!r} has no attribute {name!r}')

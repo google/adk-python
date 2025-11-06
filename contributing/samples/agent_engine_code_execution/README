@@ -9,7 +9,7 @@ This sample data science agent uses Agent Engine Code Execution Sandbox to execu
 
 * 1. Follow https://cloud.google.com/vertex-ai/generative-ai/docs/agent-engine/code-execution/overview to create a code execution sandbox environment.
 
-* 2. Replace the SANDBOX_RESOURCE_NAME with the one you just created. If you dont want to create a new sandbox environment directly, the Agent Engine Code Execution Sandbox will create one for you by default using the AGENT_ENGINE_RESOURCE_NAME you specified, however, please ensure to clean up sandboxes after use, otherwise, it will consume quotas.
+* 2. Replace the SANDBOX_RESOURCE_NAME with the one you just created. If you dont want to create a new sandbox environment directly, the Agent Engine Code Execution Sandbox will create one for you by default using the AGENT_ENGINE_RESOURCE_NAME you specified, however, please ensure to clean up sandboxes after use; otherwise, it will consume quotas.
 
 
 ## Sample prompt
