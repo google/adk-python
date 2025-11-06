@@ -26,7 +26,7 @@ from google.genai import types
 class _TestPlugin(base_plugin.BasePlugin):
 
   def __init__(self, outputs):
-    super().__init__(name="test-pluggin")
+    super().__init__(name="test-plugin")
     self._model_output_idx = 0
     self.got_llm_requests = []
     self._outputs = outputs
@@ -324,7 +324,10 @@ def test_model_name_is_set():
   async def _mock_create_session(*args, **kwargs):
     del args, kwargs
     await asyncio.sleep(0.1)
-    return
+    mock_session = mock.Mock()
+    mock.user_id = "fake-user=id"
+    mock.id = "fake-session-id"
+    return mock_session
 
   with mock.patch.object(runners, "InMemoryRunner") as mock_runner_cls:
     mock_runner = mock_runner_cls.return_value
@@ -332,16 +335,14 @@ def test_model_name_is_set():
         _mock_create_session
     )
     mock_runner.run.return_value = []
-    next(
-        adk_agent.run_environment_loop(
-            instruction="some-instruction",
-            env=_TestEnv([]),
-            temperature=0.123,
-            tools=[],
-            task_index=0,
-            agent_model="some-test-model",
-            plugins=[_TestPlugin([])],
-        )
+    adk_agent.run_environment_loop(
+        instruction="some-instruction",
+        env=_TestEnv([]),
+        temperature=0.123,
+        tools=[],
+        task_index=0,
+        agent_model="some-test-model",
+        plugins=[_TestPlugin([])],
     )
     mock_runner_cls.assert_called_once()
     _, runner_kwargs = mock_runner_cls.call_args

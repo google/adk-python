@@ -105,13 +105,14 @@ class GeminiLlmConnection(BaseLlmConnection):
     """
     if isinstance(input, types.Blob):
       input_blob = input.model_dump()
-      logger.debug('Sending LLM Blob: %s', input_blob)
+      # The blob is binary and is very large. So let's not log it.
+      logger.debug('Sending LLM Blob.')
       await self._gemini_session.send(input=input_blob)
     elif isinstance(input, types.ActivityStart):
-      logger.debug('Sending LLM activity start signal')
+      logger.debug('Sending LLM activity start signal.')
       await self._gemini_session.send_realtime_input(activity_start=input)
     elif isinstance(input, types.ActivityEnd):
-      logger.debug('Sending LLM activity end signal')
+      logger.debug('Sending LLM activity end signal.')
       await self._gemini_session.send_realtime_input(activity_end=input)
     else:
       raise ValueError('Unsupported input type: %s' % type(input))
