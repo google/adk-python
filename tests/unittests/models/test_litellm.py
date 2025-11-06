@@ -21,9 +21,11 @@ import warnings
 from google.adk.models.lite_llm import _content_to_message_param
 from google.adk.models.lite_llm import _FINISH_REASON_MAPPING
 from google.adk.models.lite_llm import _function_declaration_to_tool_param
+from google.adk.models.lite_llm import _get_completion_inputs
 from google.adk.models.lite_llm import _get_content
 from google.adk.models.lite_llm import _message_to_generate_content_response
 from google.adk.models.lite_llm import _model_response_to_chunk
+from google.adk.models.lite_llm import _to_litellm_response_format
 from google.adk.models.lite_llm import _to_litellm_role
 from google.adk.models.lite_llm import FunctionChunk
 from google.adk.models.lite_llm import LiteLlm
@@ -40,6 +42,8 @@ from litellm.types.utils import Choices
 from litellm.types.utils import Delta
 from litellm.types.utils import ModelResponse
 from litellm.types.utils import StreamingChoices
+from pydantic import BaseModel
+from pydantic import Field
 import pytest
 
 LLM_REQUEST_WITH_FUNCTION_DECLARATION = LlmRequest(
@@ -178,6 +182,87 @@ STREAMING_MODEL_RESPONSE = [
         ],
     ),
 ]
+
+
+class _StructuredOutput(BaseModel):
+  value: int = Field(description="Value to emit")
+
+
+class _ModelDumpOnly:
+  """Test helper that mimics objects exposing only model_dump."""
+
+  def __init__(self):
+    self._schema = {
+        "type": "object",
+        "properties": {"foo": {"type": "string"}},
+    }
+
+  def model_dump(self, *, exclude_none=True, mode="json"):
+    # The method signature matches pydantic BaseModel.model_dump to simulate
+    # google.genai schema-like objects.
+    del exclude_none
+    del mode
+    return self._schema
+
+
+def test_get_completion_inputs_formats_pydantic_schema_for_litellm():
+  llm_request = LlmRequest(
+      config=types.GenerateContentConfig(response_schema=_StructuredOutput)
+  )
+
+  _, _, response_format, _ = _get_completion_inputs(llm_request)
+
+  assert response_format == {
+      "type": "json_object",
+      "response_schema": _StructuredOutput.model_json_schema(),
+  }
+
+
+def test_to_litellm_response_format_passes_preformatted_dict():
+  response_format = {
+      "type": "json_object",
+      "response_schema": {
+          "type": "object",
+          "properties": {"foo": {"type": "string"}},
+      },
+  }
+
+  assert _to_litellm_response_format(response_format) == response_format
+
+
+def test_to_litellm_response_format_wraps_json_schema_dict():
+  schema = {
+      "type": "object",
+      "properties": {"foo": {"type": "string"}},
+  }
+
+  formatted = _to_litellm_response_format(schema)
+  assert formatted["type"] == "json_object"
+  assert formatted["response_schema"] == schema
+
+
+def test_to_litellm_response_format_handles_model_dump_object():
+  schema_obj = _ModelDumpOnly()
+
+  formatted = _to_litellm_response_format(schema_obj)
+
+  assert formatted["type"] == "json_object"
+  assert formatted["response_schema"] == schema_obj.model_dump()
+
+
+def test_to_litellm_response_format_handles_genai_schema_instance():
+  schema_instance = types.Schema(
+      type=types.Type.OBJECT,
+      properties={"foo": types.Schema(type=types.Type.STRING)},
+      required=["foo"],
+  )
+
+  formatted = _to_litellm_response_format(schema_instance)
+  assert formatted["type"] == "json_object"
+  assert formatted["response_schema"] == schema_instance.model_dump(
+      exclude_none=True, mode="json"
+  )
+
 
 MULTIPLE_FUNCTION_CALLS_STREAM = [
     ModelResponse(

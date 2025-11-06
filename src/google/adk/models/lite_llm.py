@@ -63,6 +63,7 @@ logger = logging.getLogger("google_adk." + __name__)
 
 _NEW_LINE = "\n"
 _EXCLUDED_PART_FIELD = {"inline_data": {"data"}}
+_LITELLM_STRUCTURED_TYPES = {"json_object", "json_schema"}
 
 # Mapping of LiteLLM finish_reason strings to FinishReason enum values
 # Note: tool_calls/function_call map to STOP because:
@@ -673,12 +674,50 @@ def _message_to_generate_content_response(
   )
 
 
+def _to_litellm_response_format(
+    response_schema: types.SchemaUnion,
+) -> Optional[Dict[str, Any]]:
+  """Converts ADK response schema objects into LiteLLM-compatible payloads."""
+
+  if isinstance(response_schema, dict):
+    schema_type = response_schema.get("type")
+    if (
+        isinstance(schema_type, str)
+        and schema_type.lower() in _LITELLM_STRUCTURED_TYPES
+    ):
+      return response_schema
+    schema_dict = dict(response_schema)
+  elif isinstance(response_schema, type) and issubclass(
+      response_schema, BaseModel
+  ):
+    schema_dict = response_schema.model_json_schema()
+  elif isinstance(response_schema, BaseModel):
+    if isinstance(response_schema, types.Schema):
+      # GenAI Schema instances already represent JSON schema definitions.
+      schema_dict = response_schema.model_dump(exclude_none=True, mode="json")
+    else:
+      schema_dict = response_schema.__class__.model_json_schema()
+  elif hasattr(response_schema, "model_dump"):
+    schema_dict = response_schema.model_dump(exclude_none=True, mode="json")
+  else:
+    logger.warning(
+        "Unsupported response_schema type %s for LiteLLM structured outputs.",
+        type(response_schema),
+    )
+    return None
+
+  return {
+      "type": "json_object",
+      "response_schema": schema_dict,
+  }
+
+
 def _get_completion_inputs(
     llm_request: LlmRequest,
 ) -> Tuple[
     List[Message],
     Optional[List[Dict]],
-    Optional[types.SchemaUnion],
+    Optional[Dict[str, Any]],
     Optional[Dict],
 ]:
   """Converts an LlmRequest to litellm inputs and extracts generation params.
@@ -721,9 +760,11 @@ def _get_completion_inputs(
     ]
 
   # 3. Handle response format
-  response_format: Optional[types.SchemaUnion] = None
+  response_format: Optional[Dict[str, Any]] = None
   if llm_request.config and llm_request.config.response_schema:
-    response_format = llm_request.config.response_schema
+    response_format = _to_litellm_response_format(
+        llm_request.config.response_schema
+    )
 
   # 4. Extract generation parameters
   generation_params: Optional[Dict] = None
