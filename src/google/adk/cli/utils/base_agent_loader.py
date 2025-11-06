@@ -23,7 +23,7 @@ from typing import Union
 
 from ...agents.base_agent import BaseAgent
 from ...apps.app import App
-from ..adk_web_server import ListAppsResponse
+
 
 
 class BaseAgentLoader(ABC):
@@ -38,5 +38,5 @@ class BaseAgentLoader(ABC):
     """Lists all agents available in the agent loader in alphabetical order."""
 
   @abstractmethod
-  def list_agents_detailed(self) -> ListAppsResponse:
+  def list_agents_detailed(self) -> list[dict[str, str, str, str]]:
     """Lists all agents with detailed metadata (name, display name, description, type)."""
