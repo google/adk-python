@@ -60,6 +60,6 @@ class ReadonlyContext:
     return self._invocation_context.session
   
   @property
-  def run_config(self) -> RunConfig|None:
+  def run_config(self) -> Optional[RunConfig]:
     """The run config of the current invocation. READONLY field."""
     return self._invocation_context.run_config
