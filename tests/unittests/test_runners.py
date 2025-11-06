@@ -775,5 +775,89 @@ class TestRunnerCacheConfig:
     assert str(runner.context_cache_config) == expected_str
 
 
+class TestRunnerShouldAppendEvent:
+  """Tests for Runner._should_append_event method."""
+
+  def setup_method(self):
+    """Set up test fixtures."""
+    self.session_service = InMemorySessionService()
+    self.artifact_service = InMemoryArtifactService()
+    self.root_agent = MockLlmAgent("root_agent")
+    self.runner = Runner(
+        app_name="test_app",
+        agent=self.root_agent,
+        session_service=self.session_service,
+        artifact_service=self.artifact_service,
+    )
+
+  def test_should_append_event_finished_input_transcription(self):
+    event = Event(
+        invocation_id="inv1",
+        author="user",
+        input_transcription=types.Transcription(text="hello", finished=True),
+    )
+    assert self.runner._should_append_event(event, is_live_call=True) is True
+
+  def test_should_append_event_unfinished_input_transcription(self):
+    event = Event(
+        invocation_id="inv1",
+        author="user",
+        input_transcription=types.Transcription(text="hello", finished=False),
+    )
+    assert self.runner._should_append_event(event, is_live_call=True) is True
+
+  def test_should_append_event_finished_output_transcription(self):
+    event = Event(
+        invocation_id="inv1",
+        author="model",
+        output_transcription=types.Transcription(text="world", finished=True),
+    )
+    assert self.runner._should_append_event(event, is_live_call=True) is True
+
+  def test_should_append_event_unfinished_output_transcription(self):
+    event = Event(
+        invocation_id="inv1",
+        author="model",
+        output_transcription=types.Transcription(text="world", finished=False),
+    )
+    assert self.runner._should_append_event(event, is_live_call=True) is True
+
+  def test_should_not_append_event_live_model_audio(self):
+    event = Event(
+        invocation_id="inv1",
+        author="model",
+        content=types.Content(
+            parts=[
+                types.Part(
+                    inline_data=types.Blob(data=b"123", mime_type="audio/pcm")
+                )
+            ]
+        ),
+    )
+    assert self.runner._should_append_event(event, is_live_call=True) is False
+
+  def test_should_append_event_non_live_model_audio(self):
+    event = Event(
+        invocation_id="inv1",
+        author="model",
+        content=types.Content(
+            parts=[
+                types.Part(
+                    inline_data=types.Blob(data=b"123", mime_type="audio/pcm")
+                )
+            ]
+        ),
+    )
+    assert self.runner._should_append_event(event, is_live_call=False) is True
+
+  def test_should_append_event_other_event(self):
+    event = Event(
+        invocation_id="inv1",
+        author="model",
+        content=types.Content(parts=[types.Part(text="text")]),
+    )
+    assert self.runner._should_append_event(event, is_live_call=True) is True
+
+
 if __name__ == "__main__":
   pytest.main([__file__])

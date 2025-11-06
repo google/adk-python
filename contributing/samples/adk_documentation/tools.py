@@ -392,7 +392,7 @@ def get_issue(
   Args:
       repo_owner: The name of the repository owner.
       repo_name: The name of the repository.
-      issue_number: issue number of the Github issue.
+      issue_number: issue number of the GitHub issue.
 
   Returns:
     The status of this request, with the issue details when successful.

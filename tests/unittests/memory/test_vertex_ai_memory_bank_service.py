@@ -87,9 +87,7 @@ def mock_vertex_ai_memory_bank_service(
 
 @pytest.fixture
 def mock_vertexai_client():
-  with mock.patch(
-      'google.adk.memory.vertex_ai_memory_bank_service.vertexai.Client'
-  ) as mock_client_constructor:
+  with mock.patch('vertexai.Client') as mock_client_constructor:
     mock_client = mock.MagicMock()
     mock_client.agent_engines.memories.generate = mock.MagicMock()
     mock_client.agent_engines.memories.retrieve = mock.MagicMock()

@@ -58,17 +58,15 @@ class TestAgentEngineSandboxCodeExecutor:
           ),
       )
 
-  @patch(
-      "google.adk.code_executors.agent_engine_sandbox_code_executor.vertexai"
-  )
+  @patch("vertexai.Client")
   def test_execute_code_success(
       self,
-      mock_vertexai,
+      mock_vertexai_client,
       mock_invocation_context,
   ):
     # Setup Mocks
     mock_api_client = MagicMock()
-    mock_vertexai.Client.return_value = mock_api_client
+    mock_vertexai_client.return_value = mock_api_client
     mock_response = MagicMock()
     mock_json_output = MagicMock()
     mock_json_output.mime_type = "application/json"

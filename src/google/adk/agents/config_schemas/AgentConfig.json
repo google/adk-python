@@ -1214,7 +1214,7 @@
             }
           ],
           "default": null,
-          "description": "The unique id of the function call. If populated, the client to execute the\n   `function_call` and return the response with the matching `id`.",
+          "description": "The unique ID of the function call. If populated, the client to execute the\n   `function_call` and return the response with the matching `id`.",
           "title": "Id"
         },
         "args": {
@@ -1426,7 +1426,7 @@
             }
           ],
           "default": null,
-          "description": "Optional. The id of the function call this response is for. Populated by the client to match the corresponding function call `id`.",
+          "description": "Optional. The ID of the function call this response is for. Populated by the client to match the corresponding function call `id`.",
           "title": "Id"
         },
         "name": {
