@@ -171,7 +171,7 @@ class BaseAgent(BaseModel):
       state_type: The type of the agent state.
 
     Returns:
-        The current state if resuming, otherwise None.
+        The current state if resuming; otherwise, None.
     """
     if not ctx.is_resumable:
       return None

@@ -91,7 +91,7 @@ def trace_agent_invocation(
   Args:
     span: Span on which attributes are set.
     agent: Agent from which attributes are gathered.
-    ctx: InvocationContext from which attrbiutes are gathered.
+    ctx: InvocationContext from which attributes are gathered.
 
   Inference related fields are not set, due to their planned removal from invoke_agent span:
   https://github.com/open-telemetry/semantic-conventions/issues/2632

@@ -363,7 +363,7 @@ class MockModel(BaseLlm):
   def generate_content(
       self, llm_request: LlmRequest, stream: bool = False
   ) -> Generator[LlmResponse, None, None]:
-    if self.error:
+    if self.error is not None:
       raise self.error
     # Increasement of the index has to happen before the yield.
     self.response_index += 1
@@ -375,6 +375,8 @@ class MockModel(BaseLlm):
   async def generate_content_async(
       self, llm_request: LlmRequest, stream: bool = False
   ) -> AsyncGenerator[LlmResponse, None]:
+    if self.error is not None:
+      raise self.error
     # Increasement of the index has to happen before the yield.
     self.response_index += 1
     self.requests.append(llm_request)

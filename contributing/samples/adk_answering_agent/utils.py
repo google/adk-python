@@ -128,7 +128,7 @@ def convert_gcs_to_https(gcs_uri: str) -> Optional[str]:
 
     base_url = "https://google.github.io/adk-docs/"
     if os.path.basename(path_after_docs) == "index.md":
-      # Use the directory path if it is a index file
+      # Use the directory path if it is an index file
       final_path_segment = os.path.dirname(path_after_docs)
     else:
       # Otherwise, use the file name without extension

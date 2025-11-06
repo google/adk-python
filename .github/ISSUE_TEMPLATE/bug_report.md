@@ -19,7 +19,7 @@ Steps to reproduce the behavior:
 1. Install '...'
 2. Run '....'
 3. Open '....'
-4. Provie error or stacktrace
+4. Provide error or stacktrace
 
 **Expected behavior**
 A clear and concise description of what you expected to happen.

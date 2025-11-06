@@ -841,14 +841,14 @@ def forecast(
 
           >>> forecast(
           ...     project_id="my-gcp-project",
-          ...     history_data="my-dataset.non-existent-table",
+          ...     history_data="my-dataset.nonexistent-table",
           ...     timestamp_col="sale_date",
           ...     data_col="daily_sales"
           ... )
           {
             "status": "ERROR",
             "error_details": "Not found: Table
-            my-gcp-project:my-dataset.non-existent-table was not found in
+            my-gcp-project:my-dataset.nonexistent-table was not found in
             location US"
           }
   """
@@ -1116,7 +1116,7 @@ def detect_anomalies(
       history_data (str): The table id of the BigQuery table containing the
         history time series data or a query statement that select the history
         data.
-      times_series_timestamp_col (str): The name of the colum containing the
+      times_series_timestamp_col (str): The name of the column containing the
         timestamp for each data point.
       times_series_data_col (str): The name of the column containing the
         numerical values to be forecasted and anomaly detected.
@@ -1216,14 +1216,14 @@ def detect_anomalies(
 
           >>> detect_anomalies(
           ...     project_id="my-gcp-project",
-          ...     history_data="my-dataset.non-existent-table",
+          ...     history_data="my-dataset.nonexistent-table",
           ...     times_series_timestamp_col="sale_date",
           ...     times_series_data_col="daily_sales"
           ... )
           {
             "status": "ERROR",
             "error_details": "Not found: Table
-            my-gcp-project:my-dataset.non-existent-table was not found in
+            my-gcp-project:my-dataset.nonexistent-table was not found in
             location US"
           }
   """
