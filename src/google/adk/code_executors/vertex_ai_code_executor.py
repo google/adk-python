@@ -21,7 +21,6 @@ from typing import Any
 from typing import Optional
 
 from typing_extensions import override
-from vertexai.preview.extensions import Extension
 
 from ..agents.invocation_context import InvocationContext
 from .base_code_executor import BaseCodeExecutor
@@ -88,6 +87,8 @@ Total columns: {df.shape[1]}
 
 def _get_code_interpreter_extension(resource_name: str = None):
   """Returns: Load or create the code interpreter extension."""
+  from vertexai.preview.extensions import Extension
+
   if not resource_name:
     resource_name = os.environ.get('CODE_INTERPRETER_EXTENSION_NAME')
   if resource_name:

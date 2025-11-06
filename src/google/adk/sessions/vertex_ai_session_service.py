@@ -20,16 +20,14 @@ import logging
 import re
 from typing import Any
 from typing import Optional
+from typing import TYPE_CHECKING
 from typing import Union
 
 from google.genai import types
-from google.genai.errors import ClientError
-from tenacity import retry
-from tenacity import retry_if_result
-from tenacity import stop_after_attempt
-from tenacity import wait_exponential
 from typing_extensions import override
-import vertexai
+
+if TYPE_CHECKING:
+  import vertexai
 
 from . import _session_util
 from ..events.event import Event
@@ -326,6 +324,8 @@ class VertexAiSessionService(BaseSessionService):
     Returns:
       An API client for the given project and location or express mode api key.
     """
+    import vertexai
+
     return vertexai.Client(
         project=self._project,
         location=self._location,
