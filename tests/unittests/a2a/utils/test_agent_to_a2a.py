@@ -108,6 +108,51 @@ class TestToA2A:
   @patch("google.adk.a2a.utils.agent_to_a2a.InMemoryTaskStore")
   @patch("google.adk.a2a.utils.agent_to_a2a.AgentCardBuilder")
   @patch("google.adk.a2a.utils.agent_to_a2a.Starlette")
+  def test_to_a2a_with_custom_runner(
+      self,
+      mock_starlette_class,
+      mock_card_builder_class,
+      mock_task_store_class,
+      mock_request_handler_class,
+      mock_agent_executor_class,
+  ):
+    """Test to_a2a with a custom runner."""
+    # Arrange
+    mock_app = Mock(spec=Starlette)
+    mock_starlette_class.return_value = mock_app
+    mock_task_store = Mock(spec=InMemoryTaskStore)
+    mock_task_store_class.return_value = mock_task_store
+    mock_agent_executor = Mock(spec=A2aAgentExecutor)
+    mock_agent_executor_class.return_value = mock_agent_executor
+    mock_request_handler = Mock(spec=DefaultRequestHandler)
+    mock_request_handler_class.return_value = mock_request_handler
+    mock_card_builder = Mock(spec=AgentCardBuilder)
+    mock_card_builder_class.return_value = mock_card_builder
+    custom_runner = Mock(spec=Runner)
+
+    # Act
+    result = to_a2a(self.mock_agent, runner=custom_runner)
+
+    # Assert
+    assert result == mock_app
+    mock_starlette_class.assert_called_once()
+    mock_task_store_class.assert_called_once()
+    mock_agent_executor_class.assert_called_once_with(runner=custom_runner)
+    mock_request_handler_class.assert_called_once_with(
+        agent_executor=mock_agent_executor, task_store=mock_task_store
+    )
+    mock_card_builder_class.assert_called_once_with(
+        agent=self.mock_agent, rpc_url="http://localhost:8000/"
+    )
+    mock_app.add_event_handler.assert_called_once_with(
+        "startup", mock_app.add_event_handler.call_args[0][1]
+    )
+
+  @patch("google.adk.a2a.utils.agent_to_a2a.A2aAgentExecutor")
+  @patch("google.adk.a2a.utils.agent_to_a2a.DefaultRequestHandler")
+  @patch("google.adk.a2a.utils.agent_to_a2a.InMemoryTaskStore")
+  @patch("google.adk.a2a.utils.agent_to_a2a.AgentCardBuilder")
+  @patch("google.adk.a2a.utils.agent_to_a2a.Starlette")
   def test_to_a2a_custom_host_port(
       self,
       mock_starlette_class,

@@ -37,7 +37,7 @@ CREDENTIALS_TYPE = None
 tool_settings = SpannerToolSettings(capabilities=[Capabilities.DATA_READ])
 
 if CREDENTIALS_TYPE == AuthCredentialTypes.OAUTH2:
-  # Initiaze the tools to do interactive OAuth
+  # Initialize the tools to do interactive OAuth
   # The environment variables OAUTH_CLIENT_ID and OAUTH_CLIENT_SECRET
   # must be set
   credentials_config = SpannerCredentialsConfig(

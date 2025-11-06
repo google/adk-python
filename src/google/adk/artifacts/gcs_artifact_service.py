@@ -148,6 +148,23 @@ class GcsArtifactService(BaseArtifactService):
     """
     return filename.startswith("user:")
 
+  def _get_blob_prefix(
+      self,
+      app_name: str,
+      user_id: str,
+      filename: str,
+      session_id: Optional[str] = None,
+  ) -> str:
+    """Constructs the blob name prefix in GCS for a given artifact."""
+    if self._file_has_user_namespace(filename):
+      return f"{app_name}/{user_id}/user/{filename}"
+
+    if session_id is None:
+      raise ValueError(
+          "Session ID must be provided for session-scoped artifacts."
+      )
+    return f"{app_name}/{user_id}/{session_id}/{filename}"
+
   def _get_blob_name(
       self,
       app_name: str,
@@ -168,14 +185,9 @@ class GcsArtifactService(BaseArtifactService):
     Returns:
         The constructed blob name in GCS.
     """
-    if self._file_has_user_namespace(filename):
-      return f"{app_name}/{user_id}/user/{filename}/{version}"
-
-    if session_id is None:
-      raise ValueError(
-          "Session ID must be provided for session-scoped artifacts."
-      )
-    return f"{app_name}/{user_id}/{session_id}/{filename}/{version}"
+    return (
+        f"{self._get_blob_prefix(app_name, user_id, filename, session_id)}/{version}"
+    )
 
   def _save_artifact(
       self,
@@ -186,10 +198,6 @@ class GcsArtifactService(BaseArtifactService):
       artifact: types.Part,
       custom_metadata: Optional[dict[str, Any]] = None,
   ) -> int:
-    if custom_metadata:
-      # TODO: b/447451270 - support saving artifact with custom metadata.
-      raise NotImplementedError("custom_metadata is not supported yet.")
-
     versions = self._list_versions(
         app_name=app_name,
         user_id=user_id,
@@ -202,6 +210,8 @@ class GcsArtifactService(BaseArtifactService):
         app_name, user_id, filename, version, session_id
     )
     blob = self.bucket.blob(blob_name)
+    if custom_metadata:
+      blob.metadata = {k: str(v) for k, v in custom_metadata.items()}
 
     if artifact.inline_data:
       blob.upload_from_string(
@@ -211,6 +221,7 @@ class GcsArtifactService(BaseArtifactService):
     elif artifact.text:
       blob.upload_from_string(
           data=artifact.text,
+          content_type="text/plain",
       )
     elif artifact.file_data:
       raise NotImplementedError(
@@ -265,7 +276,12 @@ class GcsArtifactService(BaseArtifactService):
           self.bucket, prefix=session_prefix
       )
       for blob in session_blobs:
-        *_, filename, _ = blob.name.split("/")
+        # blob.name is like session_prefix/filename/version
+        # or session_prefix/path/to/filename/version
+        # we need to extract filename including slashes, but remove prefix
+        # and /version
+        fn_and_version = blob.name[len(session_prefix) :]
+        filename = "/".join(fn_and_version.split("/")[:-1])
         filenames.add(filename)
 
     user_namespace_prefix = f"{app_name}/{user_id}/user/"
@@ -273,7 +289,9 @@ class GcsArtifactService(BaseArtifactService):
         self.bucket, prefix=user_namespace_prefix
     )
     for blob in user_namespace_blobs:
-      *_, filename, _ = blob.name.split("/")
+      # blob.name is like user_namespace_prefix/filename/version
+      fn_and_version = blob.name[len(user_namespace_prefix) :]
+      filename = "/".join(fn_and_version.split("/")[:-1])
       filenames.add(filename)
 
     return sorted(list(filenames))
@@ -323,13 +341,84 @@ class GcsArtifactService(BaseArtifactService):
         artifact.
         Returns an empty list if no versions are found.
     """
-    prefix = self._get_blob_name(app_name, user_id, filename, "", session_id)
-    blobs = self.storage_client.list_blobs(self.bucket, prefix=prefix)
+    prefix = self._get_blob_prefix(app_name, user_id, filename, session_id)
+    blobs = self.storage_client.list_blobs(self.bucket, prefix=f"{prefix}/")
     versions = []
     for blob in blobs:
       *_, version = blob.name.split("/")
       versions.append(int(version))
     return versions
+
+  def _get_artifact_version_sync(
+      self,
+      app_name: str,
+      user_id: str,
+      session_id: Optional[str],
+      filename: str,
+      version: Optional[int] = None,
+  ) -> Optional[ArtifactVersion]:
+    if version is None:
+      versions = self._list_versions(
+          app_name=app_name,
+          user_id=user_id,
+          session_id=session_id,
+          filename=filename,
+      )
+      if not versions:
+        return None
+      version = max(versions)
+
+    blob_name = self._get_blob_name(
+        app_name, user_id, filename, version, session_id
+    )
+    blob = self.bucket.get_blob(blob_name)
+
+    if not blob:
+      return None
+
+    canonical_uri = f"gs://{self.bucket_name}/{blob.name}"
+
+    return ArtifactVersion(
+        version=version,
+        canonical_uri=canonical_uri,
+        create_time=blob.time_created.timestamp(),
+        mime_type=blob.content_type,
+        custom_metadata=blob.metadata if blob.metadata else {},
+    )
+
+  def _list_artifact_versions_sync(
+      self,
+      app_name: str,
+      user_id: str,
+      session_id: Optional[str],
+      filename: str,
+  ) -> list[ArtifactVersion]:
+    """Lists all versions and their metadata of an artifact."""
+    prefix = self._get_blob_prefix(app_name, user_id, filename, session_id)
+    blobs = self.storage_client.list_blobs(self.bucket, prefix=f"{prefix}/")
+    artifact_versions = []
+    for blob in blobs:
+      try:
+        version = int(blob.name.split("/")[-1])
+      except ValueError:
+        logger.warning(
+            "Skipping blob %s because it does not end with a version number.",
+            blob.name,
+        )
+        continue
+
+      canonical_uri = f"gs://{self.bucket_name}/{blob.name}"
+      av = ArtifactVersion(
+          version=version,
+          canonical_uri=canonical_uri,
+          create_time=blob.time_created.timestamp(),
+          mime_type=blob.content_type,
+          custom_metadata=blob.metadata if blob.metadata else {},
+      )
+      artifact_versions.append(av)
+
+    artifact_versions.sort(key=lambda x: x.version)
+    return artifact_versions
 
   @override
   async def list_artifact_versions(
@@ -340,8 +429,13 @@ class GcsArtifactService(BaseArtifactService):
       filename: str,
       session_id: Optional[str] = None,
   ) -> list[ArtifactVersion]:
-    # TODO: b/447451270 - Support list_artifact_versions.
-    raise NotImplementedError("list_artifact_versions is not implemented yet.")
+    return await asyncio.to_thread(
+        self._list_artifact_versions_sync,
+        app_name,
+        user_id,
+        session_id,
+        filename,
+    )
 
   @override
   async def get_artifact_version(
@@ -353,5 +447,11 @@ class GcsArtifactService(BaseArtifactService):
       session_id: Optional[str] = None,
       version: Optional[int] = None,
   ) -> Optional[ArtifactVersion]:
-    # TODO: b/447451270 - Support get_artifact_version.
-    raise NotImplementedError("get_artifact_version is not implemented yet.")
+    return await asyncio.to_thread(
+        self._get_artifact_version_sync,
+        app_name,
+        user_id,
+        session_id,
+        filename,
+        version,
+    )

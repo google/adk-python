@@ -131,6 +131,10 @@ async def test_agent_tool_inherits_parent_app_name(monkeypatch):
       )
       return _empty_async_generator()
 
+    async def close(self):
+      """Mock close method."""
+      pass
+
   monkeypatch.setattr('google.adk.runners.Runner', StubRunner)
 
   tool_agent = Agent(

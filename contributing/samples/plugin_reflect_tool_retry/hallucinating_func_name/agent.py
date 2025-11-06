@@ -55,6 +55,8 @@ def after_model_callback(
 
   if (
       llm_response.content
+      and llm_response.content.parts
+      and llm_response.content.parts[0].function_call
       and llm_response.content.parts[0].function_call.name == "roll_die"
   ):
     llm_response.content.parts[0].function_call.name = "roll_die_wrong_name"

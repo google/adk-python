@@ -52,10 +52,10 @@ class GoogleTool(FunctionTool):
     """Initialize the Google API tool.
 
     Args:
-        func: callable that impelments the tool's logic, can accept one
+        func: callable that implements the tool's logic, can accept one
           'credential" parameter
         credentials_config: credentials config used to call Google API. If None,
-          then we don't hanlde the auth logic
+          then we don't handle the auth logic
         tool_settings: Tool-specific settings. This settings should be provided
           by each toolset that uses this class to create customized tools.
     """

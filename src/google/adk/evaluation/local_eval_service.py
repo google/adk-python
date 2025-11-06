@@ -22,8 +22,6 @@ from typing import Callable
 from typing import Optional
 import uuid
 
-from google.genai.types import Content
-from google.genai.types import Part
 from typing_extensions import override
 
 from ..agents.base_agent import BaseAgent
@@ -51,6 +49,7 @@ from .eval_sets_manager import EvalSetsManager
 from .evaluation_generator import EvaluationGenerator
 from .evaluator import EvalStatus
 from .evaluator import EvaluationResult
+from .evaluator import PerInvocationResult
 from .metric_evaluator_registry import DEFAULT_METRIC_EVALUATOR_REGISTRY
 from .metric_evaluator_registry import MetricEvaluatorRegistry
 from .user_simulator_provider import UserSimulatorProvider
@@ -131,7 +130,7 @@ class LocalEvalService(BaseEvalService):
 
     async def run_inference(eval_case):
       async with semaphore:
-        return await self._perform_inference_sigle_eval_item(
+        return await self._perform_inference_single_eval_item(
             app_name=inference_request.app_name,
             eval_set_id=inference_request.eval_set_id,
             eval_case=eval_case,
@@ -210,7 +209,7 @@ class LocalEvalService(BaseEvalService):
 
     # We also keep track of the overall score for a metric, derived from all
     # invocation. For example, if we were keeping track the metric that compares
-    # how well is the final resposne as compared to a golden answer, then each
+    # how well is the final response as compared to a golden answer, then each
     # invocation will have the value of this metric. We will also have an
     # overall score using aggregation strategy across all invocations. This
     # would be the score for the eval case.
@@ -222,43 +221,9 @@ class LocalEvalService(BaseEvalService):
         else 'test_user_id'
     )
 
-    if eval_case.conversation_scenario:
-      logger.warning(
-          'Skipping evaluation of variable-length conversation scenario in eval'
-          ' set/case %s/%s.',
-          inference_result.eval_set_id,
-          inference_result.eval_case_id,
-      )
-      for actual_invocation in inference_result.inferences:
-        eval_metric_result_per_invocation.append(
-            EvalMetricResultPerInvocation(
-                actual_invocation=actual_invocation,
-                expected_invocation=Invocation(
-                    user_content=actual_invocation.user_content,
-                    final_response=Content(
-                        parts=[Part(text='N/A')], role='model'
-                    ),
-                ),
-            )
-        )
-      eval_case_result = EvalCaseResult(
-          eval_set_file=inference_result.eval_set_id,
-          eval_set_id=inference_result.eval_set_id,
-          eval_id=inference_result.eval_case_id,
-          final_eval_status=EvalStatus.NOT_EVALUATED,
-          overall_eval_metric_results=overall_eval_metric_results,
-          eval_metric_result_per_invocation=eval_metric_result_per_invocation,
-          session_id=inference_result.session_id,
-          session_details=await self._session_service.get_session(
-              app_name=inference_result.app_name,
-              user_id=user_id,
-              session_id=inference_result.session_id,
-          ),
-          user_id=user_id,
-      )
-      return (inference_result, eval_case_result)
-
-    if len(inference_result.inferences) != len(eval_case.conversation):
+    if eval_case.conversation_scenario is None and len(
+        inference_result.inferences
+    ) != len(eval_case.conversation):
       raise ValueError(
           'Inferences should match conversations in eval case. Found'
           f'{len(inference_result.inferences)} inferences '
@@ -266,13 +231,13 @@ class LocalEvalService(BaseEvalService):
       )
 
     # Pre-creating the EvalMetricResults entries for each invocation.
-    for actual, expected in zip(
-        inference_result.inferences, eval_case.conversation
-    ):
+    for idx, actual in enumerate(inference_result.inferences):
       eval_metric_result_per_invocation.append(
           EvalMetricResultPerInvocation(
               actual_invocation=actual,
-              expected_invocation=expected,
+              expected_invocation=eval_case.conversation[idx]
+              if eval_case.conversation
+              else None,
               # We will fill this as we evaluate each metric per invocation.
               eval_metric_results=[],
           )
@@ -280,13 +245,29 @@ class LocalEvalService(BaseEvalService):
 
     for eval_metric in evaluate_config.eval_metrics:
       # Perform evaluation of the metric.
-      evaluation_result = await self._evaluate_metric(
-          eval_metric=eval_metric,
-          actual_invocations=inference_result.inferences,
-          expected_invocations=eval_case.conversation,
-      )
+      try:
+        evaluation_result = await self._evaluate_metric(
+            eval_metric=eval_metric,
+            actual_invocations=inference_result.inferences,
+            expected_invocations=eval_case.conversation,
+        )
+      except Exception as e:
+        # We intentionally catch the Exception as we don't want failures to
+        # affect other metric evaluation.
+        logger.error(
+            "Metric evaluation failed for metric `%s` for eval case id '%s'"
+            ' with following error `%s`',
+            eval_metric.metric_name,
+            eval_case.eval_id,
+            e,
+            exc_info=True,
+        )
+        # We use an empty result.
+        evaluation_result = EvaluationResult(
+            overall_eval_status=EvalStatus.NOT_EVALUATED
+        )
 
-      # Track overall scrore across all invocations.
+      # Track overall score across all invocations.
       eval_metric_result_details = EvalMetricResultDetails(
           rubric_scores=evaluation_result.overall_rubric_scores
       )
@@ -299,8 +280,10 @@ class LocalEvalService(BaseEvalService):
           )
       )
 
-      if len(evaluation_result.per_invocation_results) != len(
-          eval_metric_result_per_invocation
+      if (
+          evaluation_result.overall_eval_status != EvalStatus.NOT_EVALUATED
+          and len(evaluation_result.per_invocation_results)
+          != len(eval_metric_result_per_invocation)
       ):
         raise ValueError(
             'Eval metric should return results for each invocation. Found '
@@ -309,10 +292,14 @@ class LocalEvalService(BaseEvalService):
         )
 
       # Track score across individual invocations.
-      for invocation_result, invocation in zip(
-          evaluation_result.per_invocation_results,
-          eval_metric_result_per_invocation,
-      ):
+      for idx, invocation in enumerate(eval_metric_result_per_invocation):
+        invocation_result = (
+            evaluation_result.per_invocation_results[idx]
+            if evaluation_result.overall_eval_status != EvalStatus.NOT_EVALUATED
+            else PerInvocationResult(
+                actual_invocation=invocation.actual_invocation
+            )
+        )
         eval_metric_result_details = EvalMetricResultDetails(
             rubric_scores=invocation_result.rubric_scores
         )
@@ -351,7 +338,7 @@ class LocalEvalService(BaseEvalService):
       self,
       eval_metric: EvalMetric,
       actual_invocations: list[Invocation],
-      expected_invocations: list[Invocation],
+      expected_invocations: Optional[list[Invocation]],
   ) -> EvaluationResult:
     """Returns EvaluationResult obtained from evaluating a metric using an Evaluator."""
 
@@ -379,8 +366,8 @@ class LocalEvalService(BaseEvalService):
       self, overall_eval_metric_results: list[EvalMetricResult]
   ) -> EvalStatus:
     final_eval_status = EvalStatus.NOT_EVALUATED
-    # Go over the all the eval statuses and mark the final eval status as
-    # passed if all of them pass, otherwise mark the final eval status to
+    # Go over all the eval statuses and mark the final eval status as
+    # passed if all of them pass; otherwise, mark the final eval status to
     # failed.
     for overall_eval_metric_result in overall_eval_metric_results:
       overall_eval_status = overall_eval_metric_result.eval_status
@@ -396,7 +383,7 @@ class LocalEvalService(BaseEvalService):
 
     return final_eval_status
 
-  async def _perform_inference_sigle_eval_item(
+  async def _perform_inference_single_eval_item(
       self,
       app_name: str,
       eval_set_id: str,

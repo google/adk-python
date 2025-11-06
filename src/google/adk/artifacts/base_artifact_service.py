@@ -20,23 +20,44 @@ from typing import Any
 from typing import Optional
 
 from google.genai import types
+from pydantic import alias_generators
 from pydantic import BaseModel
+from pydantic import ConfigDict
 from pydantic import Field
 
 
 class ArtifactVersion(BaseModel):
-  """Represents the metadata of a specific version of an artifact."""
+  """Metadata describing a specific version of an artifact."""
 
-  version: int
-  """The version number of the artifact."""
-  canonical_uri: str
-  """The canonical URI of the artifact version."""
-  custom_metadata: dict[str, Any] = Field(default_factory=dict)
-  """A dictionary of custom metadata associated with the artifact version."""
-  create_time: float = Field(default_factory=lambda: datetime.now().timestamp())
-  """The creation time of the artifact version."""
-  mime_type: Optional[str] = None
-  """The MIME type of the artifact version."""
+  model_config = ConfigDict(
+      alias_generator=alias_generators.to_camel,
+      populate_by_name=True,
+  )
+
+  version: int = Field(
+      description=(
+          "Monotonically increasing identifier for the artifact version."
+      )
+  )
+  canonical_uri: str = Field(
+      description="Canonical URI referencing the persisted artifact payload."
+  )
+  custom_metadata: dict[str, Any] = Field(
+      default_factory=dict,
+      description="Optional user-supplied metadata stored with the artifact.",
+  )
+  create_time: float = Field(
+      default_factory=lambda: datetime.now().timestamp(),
+      description=(
+          "Unix timestamp (seconds) when the version record was created."
+      ),
+  )
+  mime_type: Optional[str] = Field(
+      default=None,
+      description=(
+          "MIME type when the artifact payload is stored as binary data."
+      ),
+  )
 
 
 class BaseArtifactService(ABC):

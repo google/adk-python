@@ -64,8 +64,8 @@ async def test_evaluate_agents_long_running_4_runs_per_eval_item(
   await AgentEvaluator.evaluate(
       agent_module=agent_name,
       eval_dataset_file_path_or_dir=evalfile,
-      # Using a slightly higher value helps us manange the variances that may
+      # Using a slightly higher value helps us manage the variances that may
       # happen in each eval.
-      # This, of course, comes at a cost of incrased test run times.
+      # This, of course, comes at a cost of increased test run times.
       num_runs=4,
   )
