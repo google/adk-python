@@ -219,3 +219,135 @@ async def test_receive_usage_metadata_and_server_content(
   )
   assert usage_response.usage_metadata == expected_usage
   assert content_response.content == mock_content
+
+
+@pytest.mark.asyncio
+async def test_receive_handles_input_transcription_fragments(
+    gemini_connection, mock_gemini_session
+):
+  """Test receive handles input transcription fragments correctly."""
+  message1 = mock.Mock()
+  message1.usage_metadata = None
+  message1.server_content = mock.Mock()
+  message1.server_content.model_turn = None
+  message1.server_content.interrupted = False
+  message1.server_content.input_transcription = types.Transcription(
+      text='Hello', finished=False
+  )
+  message1.server_content.output_transcription = None
+  message1.server_content.turn_complete = False
+  message1.tool_call = None
+  message1.session_resumption_update = None
+
+  message2 = mock.Mock()
+  message2.usage_metadata = None
+  message2.server_content = mock.Mock()
+  message2.server_content.model_turn = None
+  message2.server_content.interrupted = False
+  message2.server_content.input_transcription = types.Transcription(
+      text=' world', finished=False
+  )
+  message2.server_content.output_transcription = None
+  message2.server_content.turn_complete = False
+  message2.tool_call = None
+  message2.session_resumption_update = None
+
+  message3 = mock.Mock()
+  message3.usage_metadata = None
+  message3.server_content = mock.Mock()
+  message3.server_content.model_turn = None
+  message3.server_content.interrupted = False
+  message3.server_content.input_transcription = types.Transcription(
+      text=None, finished=True
+  )
+  message3.server_content.output_transcription = None
+  message3.server_content.turn_complete = False
+  message3.tool_call = None
+  message3.session_resumption_update = None
+
+  async def mock_receive_generator():
+    yield message1
+    yield message2
+    yield message3
+
+  receive_mock = mock.Mock(return_value=mock_receive_generator())
+  mock_gemini_session.receive = receive_mock
+
+  responses = [resp async for resp in gemini_connection.receive()]
+
+  assert len(responses) == 3
+  assert responses[0].input_transcription.text == 'Hello'
+  assert responses[0].input_transcription.finished is False
+  assert responses[0].partial is True
+  assert responses[1].input_transcription.text == ' world'
+  assert responses[1].input_transcription.finished is False
+  assert responses[1].partial is True
+  assert responses[2].input_transcription.text == 'Hello world'
+  assert responses[2].input_transcription.finished is True
+  assert responses[2].partial is False
+
+
+@pytest.mark.asyncio
+async def test_receive_handles_output_transcription_fragments(
+    gemini_connection, mock_gemini_session
+):
+  """Test receive handles output transcription fragments correctly."""
+  message1 = mock.Mock()
+  message1.usage_metadata = None
+  message1.server_content = mock.Mock()
+  message1.server_content.model_turn = None
+  message1.server_content.interrupted = False
+  message1.server_content.input_transcription = None
+  message1.server_content.output_transcription = types.Transcription(
+      text='How can', finished=False
+  )
+  message1.server_content.turn_complete = False
+  message1.tool_call = None
+  message1.session_resumption_update = None
+
+  message2 = mock.Mock()
+  message2.usage_metadata = None
+  message2.server_content = mock.Mock()
+  message2.server_content.model_turn = None
+  message2.server_content.interrupted = False
+  message2.server_content.input_transcription = None
+  message2.server_content.output_transcription = types.Transcription(
+      text=' I help?', finished=False
+  )
+  message2.server_content.turn_complete = False
+  message2.tool_call = None
+  message2.session_resumption_update = None
+
+  message3 = mock.Mock()
+  message3.usage_metadata = None
+  message3.server_content = mock.Mock()
+  message3.server_content.model_turn = None
+  message3.server_content.interrupted = False
+  message3.server_content.input_transcription = None
+  message3.server_content.output_transcription = types.Transcription(
+      text=None, finished=True
+  )
+  message3.server_content.turn_complete = False
+  message3.tool_call = None
+  message3.session_resumption_update = None
+
+  async def mock_receive_generator():
+    yield message1
+    yield message2
+    yield message3
+
+  receive_mock = mock.Mock(return_value=mock_receive_generator())
+  mock_gemini_session.receive = receive_mock
+
+  responses = [resp async for resp in gemini_connection.receive()]
+
+  assert len(responses) == 3
+  assert responses[0].output_transcription.text == 'How can'
+  assert responses[0].output_transcription.finished is False
+  assert responses[0].partial is True
+  assert responses[1].output_transcription.text == ' I help?'
+  assert responses[1].output_transcription.finished is False
+  assert responses[1].partial is True
+  assert responses[2].output_transcription.text == 'How can I help?'
+  assert responses[2].output_transcription.finished is True
+  assert responses[2].partial is False

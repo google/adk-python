@@ -587,21 +587,19 @@ class BaseLlmFlow(ABC):
 
     # Handle transcription events ONCE per llm_response, outside the event loop
     if llm_response.input_transcription:
-      input_transcription_event = (
-          await self.transcription_manager.handle_input_transcription(
-              invocation_context, llm_response.input_transcription
-          )
+      model_response_event.input_transcription = (
+          llm_response.input_transcription
       )
-      yield input_transcription_event
+      model_response_event.partial = llm_response.partial
+      yield model_response_event
       return
 
     if llm_response.output_transcription:
-      output_transcription_event = (
-          await self.transcription_manager.handle_output_transcription(
-              invocation_context, llm_response.output_transcription
-          )
+      model_response_event.output_transcription = (
+          llm_response.output_transcription
       )
-      yield output_transcription_event
+      model_response_event.partial = llm_response.partial
+      yield model_response_event
       return
 
     # Flush audio caches based on control events using configurable settings

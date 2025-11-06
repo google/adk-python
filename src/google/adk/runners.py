@@ -588,6 +588,10 @@ class Runner:
     # Don't append audio response from model in live mode to session.
     # The data is appended to artifacts with a reference in file_data in the
     # event.
+    # We should append non-partial events only.For example, non-finished(partial)
+    # transcription events should not be appended.
+    # Function call and function response events should be appended.
+    # Other control events should be appended.
     if is_live_call and contents._is_live_model_audio_event(event):
       return False
     return True
