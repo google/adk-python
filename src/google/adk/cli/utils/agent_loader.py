@@ -372,7 +372,7 @@ class AgentLoader(BaseAgentLoader):
       if module_path.exists():
         return "python"
 
-    return "package"
+    raise ValueError(f"Could not determine agent type for '{agent_name}'.")
 
   def remove_agent_from_cache(self, agent_name: str):
     # Clear module cache for the agent and its submodules
