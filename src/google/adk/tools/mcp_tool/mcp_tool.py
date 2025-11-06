@@ -140,7 +140,7 @@ class McpTool(BaseAuthenticatedTool):
 
     # Functions are callable objects, but not all callable objects are functions
     # checking coroutine function is not enough. We also need to check whether
-    # Callable's __call__ function is a coroutine funciton
+    # Callable's __call__ function is a coroutine function
     is_async = inspect.iscoroutinefunction(target) or (
         hasattr(target, "__call__")
         and inspect.iscoroutinefunction(target.__call__)

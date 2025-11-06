@@ -392,7 +392,7 @@ class BaseLlmFlow(ABC):
         and events
         and len(events) > 1
         # TODO: here we are using the last 2 events to decide whether to pause
-        # the invocation. But this is just being optmisitic, we should find a
+        # the invocation. But this is just being optimistic, we should find a
         # way to pause when the long running tool call is followed by more than
         # one text responses.
         and (

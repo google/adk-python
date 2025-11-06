@@ -213,7 +213,7 @@ def _rearrange_events_for_latest_function_response(
 def _contains_empty_content(event: Event) -> bool:
   """Check if an event should be skipped due to missing or empty content.
 
-  This can happen to the evnets that only changed session state.
+  This can happen to the events that only changed session state.
   When both content and transcriptions are empty, the event will be considered
   as empty.
 
@@ -251,7 +251,7 @@ def _process_compaction_events(events: list[Event]) -> list[Event]:
   # compaction_1(event_1, event_2, timestamp=3), event_3(timestamp=4),
   # compaction_2(event_2, event_3, timestamp=5), event_4(timestamp=6)]
   # for each compaction event, it only covers the events at most between the
-  # current compaction and the previous compaction. So during copmaction, we
+  # current compaction and the previous compaction. So during compaction, we
   # don't have to go across compaction boundaries.
   # Compaction events are always strictly in order based on event timestamp.
   events_to_process = []
@@ -589,7 +589,7 @@ def _is_event_belongs_to_branch(
 ) -> bool:
   """Check if an event belongs to the current branch.
 
-  This is for event context segration between agents. E.g. agent A shouldn't
+  This is for event context segregation between agents. E.g. agent A shouldn't
   see output of agent B.
   """
   if not invocation_branch or not event.branch:
