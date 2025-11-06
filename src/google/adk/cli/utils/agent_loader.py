@@ -20,6 +20,8 @@ import logging
 import os
 from pathlib import Path
 import sys
+from typing import Any
+from typing import Literal
 from typing import Optional
 from typing import Union
 
@@ -320,6 +322,57 @@ class AgentLoader(BaseAgentLoader):
     ]
     agent_names.sort()
     return agent_names
+
+  def list_agents_detailed(self) -> list[dict[str, Any]]:
+    """Lists all agents with detailed metadata (name, description, type)."""
+    agent_names = self.list_agents()
+    apps_info = []
+
+    for agent_name in agent_names:
+      try:
+        loaded = self.load_agent(agent_name)
+        if isinstance(loaded, App):
+          agent = loaded.root_agent
+        else:
+          agent = loaded
+
+        agent_type = self._determine_agent_type(agent_name)
+
+        # Convert underscores to spaces for display_name
+        agent.name = agent.name.replace("_", " ")
+
+        app_info = {
+            "name": agent_name,
+            "display_name": agent.name,
+            "description": agent.description,
+            "agent_type": agent_type,
+        }
+        apps_info.append(app_info)
+
+      except Exception as e:
+        logger.error("Failed to load agent '%s': %s", agent_name, e)
+        continue
+
+    return apps_info
+
+  def _determine_agent_type(
+      self, agent_name: str
+  ) -> Literal["yaml", "python", "package"]:
+    """Determine the type of agent based on file structure."""
+    base_path = Path.cwd() / self.agents_dir / agent_name
+
+    if (base_path / "root_agent.yaml").exists():
+      return "yaml"
+    elif (base_path / "agent.py").exists():
+      return "package"
+    elif (base_path / "__init__.py").exists():
+      return "package"
+    else:
+      module_path = Path.cwd() / self.agents_dir / f"{agent_name}.py"
+      if module_path.exists():
+        return "python"
+
+    return "package"
 
   def remove_agent_from_cache(self, agent_name: str):
     # Clear module cache for the agent and its submodules

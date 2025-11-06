@@ -18,10 +18,12 @@ from __future__ import annotations
 
 from abc import ABC
 from abc import abstractmethod
+from typing import Any
 from typing import Union
 
 from ...agents.base_agent import BaseAgent
 from ...apps.app import App
+from ..adk_web_server import ListAppsResponse
 
 
 class BaseAgentLoader(ABC):
@@ -34,3 +36,7 @@ class BaseAgentLoader(ABC):
   @abstractmethod
   def list_agents(self) -> list[str]:
     """Lists all agents available in the agent loader in alphabetical order."""
+
+  @abstractmethod
+  def list_agents_detailed(self) -> ListAppsResponse:
+    """Lists all agents with detailed metadata (name, display name, description, type)."""
