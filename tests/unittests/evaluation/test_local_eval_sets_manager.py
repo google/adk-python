@@ -24,7 +24,7 @@ from google.adk.evaluation.eval_case import IntermediateData
 from google.adk.evaluation.eval_case import Invocation
 from google.adk.evaluation.eval_set import EvalSet
 from google.adk.evaluation.local_eval_sets_manager import _EVAL_SET_FILE_EXTENSION
-from google.adk.evaluation.local_eval_sets_manager import convert_eval_set_to_pydanctic_schema
+from google.adk.evaluation.local_eval_sets_manager import convert_eval_set_to_pydantic_schema
 from google.adk.evaluation.local_eval_sets_manager import load_eval_set_from_file
 from google.adk.evaluation.local_eval_sets_manager import LocalEvalSetsManager
 from google.genai import types as genai_types
@@ -32,10 +32,10 @@ from pydantic import ValidationError
 import pytest
 
 
-class TestConvertEvalSetToPydancticSchema:
-  """Tests convert_eval_set_to_pydanctic_schema method."""
+class TestConvertEvalSetToPydanticSchema:
+  """Tests convert_eval_set_to_pydantic_schema method."""
 
-  def test_convert_eval_set_to_pydanctic_schema_complete(self):
+  def test_convert_eval_set_to_pydantic_schema_complete(self):
     eval_set_id = "test_eval_set"
     eval_set_in_json_format = [{
         "name": "roll_17_sided_dice_twice",
@@ -71,7 +71,7 @@ class TestConvertEvalSetToPydancticSchema:
         },
     }]
 
-    eval_set = convert_eval_set_to_pydanctic_schema(
+    eval_set = convert_eval_set_to_pydantic_schema(
         eval_set_id, eval_set_in_json_format
     )
 
@@ -93,14 +93,14 @@ class TestConvertEvalSetToPydancticSchema:
         == 1
     )
 
-  def test_convert_eval_set_to_pydanctic_schema_minimal(self):
+  def test_convert_eval_set_to_pydantic_schema_minimal(self):
     eval_set_id = "test_eval_set"
     eval_set_in_json_format = [{
         "name": "minimal_case",
         "data": [{"query": "Hello", "reference": "World"}],
     }]
 
-    eval_set = convert_eval_set_to_pydanctic_schema(
+    eval_set = convert_eval_set_to_pydantic_schema(
         eval_set_id, eval_set_in_json_format
     )
 
@@ -117,7 +117,7 @@ class TestConvertEvalSetToPydancticSchema:
         == "World"
     )
 
-  def test_convert_eval_set_to_pydanctic_schema_empty_tool_use_and_intermediate_responses(
+  def test_convert_eval_set_to_pydantic_schema_empty_tool_use_and_intermediate_responses(
       self,
   ):
     eval_set_id = "test_eval_set"
@@ -131,7 +131,7 @@ class TestConvertEvalSetToPydancticSchema:
         }],
     }]
 
-    eval_set = convert_eval_set_to_pydanctic_schema(
+    eval_set = convert_eval_set_to_pydantic_schema(
         eval_set_id, eval_set_in_json_format
     )
 
@@ -150,7 +150,7 @@ class TestConvertEvalSetToPydancticSchema:
         == 0
     )
 
-  def test_convert_eval_set_to_pydanctic_schema_empty_initial_session(self):
+  def test_convert_eval_set_to_pydantic_schema_empty_initial_session(self):
     eval_set_id = "test_eval_set"
     eval_set_in_json_format = [{
         "name": "empty_session",
@@ -158,14 +158,14 @@ class TestConvertEvalSetToPydancticSchema:
         "initial_session": {},
     }]
 
-    eval_set = convert_eval_set_to_pydanctic_schema(
+    eval_set = convert_eval_set_to_pydantic_schema(
         eval_set_id, eval_set_in_json_format
     )
 
     assert eval_set.eval_set_id == eval_set_id
     assert eval_set.eval_cases[0].session_input is None
 
-  def test_convert_eval_set_to_pydanctic_schema_invalid_data(self):
+  def test_convert_eval_set_to_pydantic_schema_invalid_data(self):
     # This test implicitly checks for potential validation errors during Pydantic
     # object creation
     eval_set_id = "test_eval_set"
@@ -190,7 +190,7 @@ class TestConvertEvalSetToPydancticSchema:
     }]
 
     with pytest.raises(ValidationError):
-      convert_eval_set_to_pydanctic_schema(eval_set_id, eval_set_in_json_format)
+      convert_eval_set_to_pydantic_schema(eval_set_id, eval_set_in_json_format)
 
 
 class TestLoadEvalSetFromFile:
@@ -300,14 +300,14 @@ class TestLoadEvalSetFromFile:
   def test_load_eval_set_from_file_invalid_data(self, tmp_path, mocker):
     # Create a dummy file with invalid data that fails both Pydantic validation
     # and the old format conversion.  We mock the
-    # convert_eval_set_to_pydanctic_schema function to raise a ValueError
+    # convert_eval_set_to_pydantic_schema function to raise a ValueError
     # so that we can assert that the exception is raised.
     file_path = tmp_path / "invalid_data.json"
     with open(file_path, "w", encoding="utf-8") as f:
       f.write('{"invalid": "data"}')
 
     mocker.patch(
-        "google.adk.evaluation.local_eval_sets_manager.convert_eval_set_to_pydanctic_schema",
+        "google.adk.evaluation.local_eval_sets_manager.convert_eval_set_to_pydantic_schema",
         side_effect=ValueError(),
     )
 
@@ -392,7 +392,7 @@ class TestLocalEvalSetsManager:
     app_name = "test_app"
     eval_set_id = "invalid-id"
 
-    with pytest.raises(ValueError, match="Invalid Eval Set Id"):
+    with pytest.raises(ValueError, match="Invalid Eval Set ID"):
       local_eval_sets_manager.create_eval_set(app_name, eval_set_id)
 
   def test_local_eval_sets_manager_create_eval_set_already_exists(

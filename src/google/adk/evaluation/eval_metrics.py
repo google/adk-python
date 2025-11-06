@@ -48,6 +48,14 @@ class PrebuiltMetrics(Enum):
 
   FINAL_RESPONSE_MATCH_V2 = "final_response_match_v2"
 
+  RUBRIC_BASED_FINAL_RESPONSE_QUALITY_V1 = (
+      "rubric_based_final_response_quality_v1"
+  )
+
+  HALLUCINATIONS_V1 = "hallucinations_v1"
+
+  RUBRIC_BASED_TOOL_USE_QUALITY_V1 = "rubric_based_tool_use_quality_v1"
+
 
 MetricName: TypeAlias = Union[str, PrebuiltMetrics]
 Threshold: TypeAlias = float
@@ -82,7 +90,7 @@ class JudgeModelOptions(EvalBaseModel):
 
 
 class BaseCriterion(BaseModel):
-  """Base creterion to use for an Eval Metric."""
+  """Base criterion to use for an Eval Metric."""
 
   model_config = ConfigDict(
       alias_generator=alias_generators.to_camel,
@@ -118,8 +126,26 @@ class RubricsBasedCriterion(BaseCriterion):
           "Rubrics to be used by Metric. Not all metrics rely on rubrics, but"
           " metrics like `rubric_based_final_response_quality_v1` do. Metrics"
           " that don't use Rubrics, will just ignore this field, if specified."
-          " Metrics that do use rubrics will raise an execption, if they are"
+          " Metrics that do use rubrics will raise an exception, if they are"
           " not specified."
+      ),
+  )
+
+
+class HallucinationsCriterion(BaseCriterion):
+  """Criterion to use when evaluating agents response for hallucinations."""
+
+  judge_model_options: JudgeModelOptions = Field(
+      default_factory=JudgeModelOptions,
+      description="Options for the judge model.",
+  )
+
+  evaluate_intermediate_nl_responses: bool = Field(
+      default=False,
+      description=(
+          "Whether any intermediate NL responses should be evaluated"
+          " for hallucinations or not. By default, the metric only evaluates"
+          " final response from the Agent for hallucinations."
       ),
   )
 
@@ -190,15 +216,16 @@ class EvalMetricResultPerInvocation(EvalBaseModel):
       )
   )
 
-  expected_invocation: Invocation = Field(
+  expected_invocation: Optional[Invocation] = Field(
+      default=None,
       description=(
           "The expected invocation, usually the reference or golden invocation."
-      )
+      ),
   )
 
   eval_metric_results: list[EvalMetricResult] = Field(
       default=[],
-      description="Eval resutls for each applicable metric.",
+      description="Eval results for each applicable metric.",
   )
 
 

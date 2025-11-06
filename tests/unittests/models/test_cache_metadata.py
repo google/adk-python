@@ -32,7 +32,7 @@ class TestCacheMetadata:
         expire_time=time.time() + 1800,
         fingerprint="abc123",
         invocations_used=5,
-        cached_contents_count=3,
+        contents_count=3,
     )
 
     assert (
@@ -42,7 +42,7 @@ class TestCacheMetadata:
     assert metadata.expire_time > time.time()
     assert metadata.fingerprint == "abc123"
     assert metadata.invocations_used == 5
-    assert metadata.cached_contents_count == 3
+    assert metadata.contents_count == 3
     assert metadata.created_at is None  # Optional field
 
   def test_optional_created_at(self):
@@ -54,7 +54,7 @@ class TestCacheMetadata:
         expire_time=time.time() + 1800,
         fingerprint="abc123",
         invocations_used=3,
-        cached_contents_count=2,
+        contents_count=2,
         created_at=current_time,
     )
 
@@ -68,7 +68,7 @@ class TestCacheMetadata:
         expire_time=time.time() + 1800,
         fingerprint="abc123",
         invocations_used=0,
-        cached_contents_count=1,
+        contents_count=1,
     )
     assert metadata.invocations_used == 0
 
@@ -77,7 +77,7 @@ class TestCacheMetadata:
         expire_time=time.time() + 1800,
         fingerprint="abc123",
         invocations_used=10,
-        cached_contents_count=1,
+        contents_count=1,
     )
     assert metadata.invocations_used == 10
 
@@ -88,30 +88,30 @@ class TestCacheMetadata:
           expire_time=time.time() + 1800,
           fingerprint="abc123",
           invocations_used=-1,
-          cached_contents_count=1,
+          contents_count=1,
       )
     assert "greater than or equal to 0" in str(exc_info.value)
 
-  def test_cached_contents_count_validation(self):
-    """Test cached_contents_count validation constraints."""
+  def test_contents_count_validation(self):
+    """Test contents_count validation constraints."""
     # Valid: zero or positive
     metadata = CacheMetadata(
         cache_name="projects/123/locations/us-central1/cachedContents/456",
         expire_time=time.time() + 1800,
         fingerprint="abc123",
         invocations_used=1,
-        cached_contents_count=0,
+        contents_count=0,
     )
-    assert metadata.cached_contents_count == 0
+    assert metadata.contents_count == 0
 
     metadata = CacheMetadata(
         cache_name="projects/123/locations/us-central1/cachedContents/456",
         expire_time=time.time() + 1800,
         fingerprint="abc123",
         invocations_used=1,
-        cached_contents_count=10,
+        contents_count=10,
     )
-    assert metadata.cached_contents_count == 10
+    assert metadata.contents_count == 10
 
     # Invalid: negative
     with pytest.raises(ValidationError) as exc_info:
@@ -120,7 +120,7 @@ class TestCacheMetadata:
           expire_time=time.time() + 1800,
           fingerprint="abc123",
           invocations_used=1,
-          cached_contents_count=-1,
+          contents_count=-1,
       )
     assert "greater than or equal to 0" in str(exc_info.value)
 
@@ -133,7 +133,7 @@ class TestCacheMetadata:
         expire_time=future_time,
         fingerprint="abc123",
         invocations_used=1,
-        cached_contents_count=1,
+        contents_count=1,
     )
     assert not metadata.expire_soon
 
@@ -144,7 +144,7 @@ class TestCacheMetadata:
         expire_time=soon_time,
         fingerprint="abc123",
         invocations_used=1,
-        cached_contents_count=1,
+        contents_count=1,
     )
     assert metadata.expire_soon
 
@@ -158,7 +158,7 @@ class TestCacheMetadata:
         expire_time=expire_time,
         fingerprint="abc123",
         invocations_used=7,
-        cached_contents_count=4,
+        contents_count=4,
     )
 
     str_repr = str(metadata)
@@ -174,7 +174,7 @@ class TestCacheMetadata:
         expire_time=time.time() + 1800,
         fingerprint="abc123",
         invocations_used=5,
-        cached_contents_count=3,
+        contents_count=3,
     )
 
     # Should not be able to modify fields
@@ -188,7 +188,7 @@ class TestCacheMetadata:
         expire_time=time.time() + 1800,
         fingerprint="abc123",
         invocations_used=5,
-        cached_contents_count=3,
+        contents_count=3,
     )
 
     assert metadata.model_config["extra"] == "forbid"
@@ -201,7 +201,7 @@ class TestCacheMetadata:
         expire_time=time.time() + 1800,
         fingerprint="abc123",
         invocations_used=5,
-        cached_contents_count=3,
+        contents_count=3,
     )
     schema = metadata.model_json_schema()
 
@@ -211,10 +211,10 @@ class TestCacheMetadata:
         in schema["properties"]["invocations_used"]["description"]
     )
 
-    assert "cached_contents_count" in schema["properties"]
+    assert "contents_count" in schema["properties"]
     assert (
         "Number of contents"
-        in schema["properties"]["cached_contents_count"]["description"]
+        in schema["properties"]["contents_count"]["description"]
     )
 
   def test_realistic_cache_scenarios(self):
@@ -227,7 +227,7 @@ class TestCacheMetadata:
         expire_time=current_time + 1800,
         fingerprint="fresh_fingerprint",
         invocations_used=1,
-        cached_contents_count=5,
+        contents_count=5,
         created_at=current_time,
     )
     assert fresh_cache.invocations_used == 1
@@ -239,7 +239,7 @@ class TestCacheMetadata:
         expire_time=current_time + 600,
         fingerprint="used_fingerprint",
         invocations_used=8,
-        cached_contents_count=3,
+        contents_count=3,
         created_at=current_time - 1200,
     )
     assert used_cache.invocations_used == 8
@@ -252,7 +252,7 @@ class TestCacheMetadata:
         expire_time=current_time + 60,  # 1 minute
         fingerprint="expiring_fingerprint",
         invocations_used=15,
-        cached_contents_count=10,
+        contents_count=10,
     )
     assert expiring_cache.expire_soon
 
@@ -265,7 +265,7 @@ class TestCacheMetadata:
         expire_time=time.time() + 1800,
         fingerprint="abc123",
         invocations_used=1,
-        cached_contents_count=2,
+        contents_count=2,
     )
 
     str_repr = str(metadata)
@@ -278,7 +278,7 @@ class TestCacheMetadata:
         expire_time=time.time() + 1800,
         fingerprint="abc123",
         invocations_used=5,
-        cached_contents_count=3,
+        contents_count=3,
     )
 
     # Verify that token counts are NOT in CacheMetadata
@@ -288,22 +288,17 @@ class TestCacheMetadata:
     assert not hasattr(metadata, "prompt_tokens")
 
   def test_missing_required_fields(self):
-    """Test validation when required fields are missing."""
-    # Test each required field
+    """Test validation when truly required fields are missing."""
+    # Only fingerprint and contents_count are required now
+    # Other fields are optional (for fingerprint-only state)
     required_fields = [
-        "cache_name",
-        "expire_time",
         "fingerprint",
-        "invocations_used",
-        "cached_contents_count",
+        "contents_count",
     ]
 
     base_args = {
-        "cache_name": "projects/123/locations/us-central1/cachedContents/456",
-        "expire_time": time.time() + 1800,
         "fingerprint": "abc123",
-        "invocations_used": 1,
-        "cached_contents_count": 2,
+        "contents_count": 2,
     }
 
     for field in required_fields:
@@ -312,3 +307,13 @@ class TestCacheMetadata:
 
       with pytest.raises(ValidationError):
         CacheMetadata(**args)
+
+    # Test that optional fields can be omitted (fingerprint-only state)
+    metadata = CacheMetadata(
+        fingerprint="abc123",
+        contents_count=5,
+    )
+    assert metadata.cache_name is None
+    assert metadata.expire_time is None
+    assert metadata.invocations_used is None
+    assert metadata.created_at is None

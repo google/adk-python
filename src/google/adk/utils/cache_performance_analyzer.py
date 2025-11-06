@@ -27,8 +27,10 @@ from typing import Optional
 
 from google.adk.models.cache_metadata import CacheMetadata
 from google.adk.sessions.base_session_service import BaseSessionService
+from google.adk.utils.feature_decorator import experimental
 
 
+@experimental
 class CachePerformanceAnalyzer:
   """Analyzes cache performance through event history."""
 

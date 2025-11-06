@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from pathlib import Path
+import textwrap
 from typing import Optional
 
 from google.adk.agents.base_agent import BaseAgent
@@ -19,7 +21,9 @@ from google.adk.agents.context_cache_config import ContextCacheConfig
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.apps.app import App
+from google.adk.apps.app import ResumabilityConfig
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
+from google.adk.cli.utils.agent_loader import AgentLoader
 from google.adk.events.event import Event
 from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.runners import Runner
@@ -156,6 +160,120 @@ class TestRunnerFindAgentToRun:
         session_service=self.session_service,
         artifact_service=self.artifact_service,
     )
+
+
+@pytest.mark.asyncio
+async def test_session_not_found_message_includes_alignment_hint():
+
+  class RunnerWithMismatch(Runner):
+
+    def _infer_agent_origin(
+        self, agent: BaseAgent
+    ) -> tuple[Optional[str], Optional[Path]]:
+      del agent
+      return "expected_app", Path("/workspace/agents/expected_app")
+
+  session_service = InMemorySessionService()
+  runner = RunnerWithMismatch(
+      app_name="configured_app",
+      agent=MockLlmAgent("root_agent"),
+      session_service=session_service,
+      artifact_service=InMemoryArtifactService(),
+  )
+
+  agen = runner.run_async(
+      user_id="user",
+      session_id="missing",
+      new_message=types.Content(role="user", parts=[]),
+  )
+
+  with pytest.raises(ValueError) as excinfo:
+    await agen.__anext__()
+
+  await agen.aclose()
+
+  message = str(excinfo.value)
+  assert "Session not found" in message
+  assert "configured_app" in message
+  assert "expected_app" in message
+  assert "Ensure the runner app_name matches" in message
+
+
+@pytest.mark.asyncio
+async def test_runner_allows_nested_agent_directories(tmp_path, monkeypatch):
+  project_root = tmp_path / "workspace"
+  agent_dir = project_root / "agents" / "examples" / "001_hello_world"
+  agent_dir.mkdir(parents=True)
+  # Make package structure importable.
+  for pkg_dir in [
+      project_root / "agents",
+      project_root / "agents" / "examples",
+      agent_dir,
+  ]:
+    (pkg_dir / "__init__.py").write_text("", encoding="utf-8")
+  # Extra directories that previously confused origin inference, e.g. virtualenv.
+  (project_root / "agents" / ".venv").mkdir()
+
+  agent_source = textwrap.dedent("""\
+      from google.adk.events.event import Event
+      from google.adk.agents.base_agent import BaseAgent
+      from google.genai import types
+
+
+      class SimpleAgent(BaseAgent):
+
+        def __init__(self):
+          super().__init__(name='simplest_agent', sub_agents=[])
+
+        async def _run_async_impl(self, invocation_context):
+          yield Event(
+              invocation_id=invocation_context.invocation_id,
+              author=self.name,
+              content=types.Content(
+                  role='model',
+                  parts=[types.Part(text='hello from nested')],
+              ),
+          )
+
+
+      root_agent = SimpleAgent()
+      """)
+  (agent_dir / "agent.py").write_text(agent_source, encoding="utf-8")
+
+  monkeypatch.chdir(project_root)
+  loader = AgentLoader(agents_dir="agents/examples")
+  loaded_agent = loader.load_agent("001_hello_world")
+
+  assert isinstance(loaded_agent, BaseAgent)
+  session_service = InMemorySessionService()
+  artifact_service = InMemoryArtifactService()
+  runner = Runner(
+      app_name="001_hello_world",
+      agent=loaded_agent,
+      session_service=session_service,
+      artifact_service=artifact_service,
+  )
+  assert runner._app_name_alignment_hint is None
+
+  session = await session_service.create_session(
+      app_name="001_hello_world",
+      user_id="user",
+  )
+  agen = runner.run_async(
+      user_id=session.user_id,
+      session_id=session.id,
+      new_message=types.Content(
+          role="user",
+          parts=[types.Part(text="hi")],
+      ),
+  )
+  event = await agen.__anext__()
+  await agen.aclose()
+
+  assert event.author == "simplest_agent"
+  assert event.content
+  assert event.content.parts
+  assert event.content.parts[0].text == "hello from nested"
 
   def test_find_agent_to_run_with_function_response_scenario(self):
     """Test finding agent when last event is function response."""
@@ -565,6 +683,7 @@ class TestRunnerCacheConfig:
         name="order_test_app",
         root_agent=self.root_agent,
         context_cache_config=cache_config,
+        resumability_config=ResumabilityConfig(is_resumable=True),
     )
 
     runner = Runner(
@@ -574,7 +693,7 @@ class TestRunnerCacheConfig:
     )
 
     # Test the validation method directly
-    app_name, agent, context_cache_config, plugins = (
+    app_name, agent, context_cache_config, resumability_config, plugins = (
         runner._validate_runner_params(app, None, None, None)
     )
 
@@ -582,6 +701,7 @@ class TestRunnerCacheConfig:
     assert agent == self.root_agent
     assert context_cache_config == cache_config
     assert context_cache_config.cache_intervals == 25
+    assert resumability_config == app.resumability_config
     assert plugins == []
 
   def test_runner_validate_params_without_app(self):
@@ -593,13 +713,14 @@ class TestRunnerCacheConfig:
         artifact_service=self.artifact_service,
     )
 
-    app_name, agent, context_cache_config, plugins = (
+    app_name, agent, context_cache_config, resumability_config, plugins = (
         runner._validate_runner_params(None, "test_app", self.root_agent, None)
     )
 
     assert app_name == "test_app"
     assert agent == self.root_agent
     assert context_cache_config is None
+    assert resumability_config is None
     assert plugins is None
 
   def test_runner_app_name_and_agent_extracted_correctly(self):
@@ -652,6 +773,90 @@ class TestRunnerCacheConfig:
         "ContextCacheConfig(cache_intervals=30, ttl=14400s, min_tokens=4096)"
     )
     assert str(runner.context_cache_config) == expected_str
+
+
+class TestRunnerShouldAppendEvent:
+  """Tests for Runner._should_append_event method."""
+
+  def setup_method(self):
+    """Set up test fixtures."""
+    self.session_service = InMemorySessionService()
+    self.artifact_service = InMemoryArtifactService()
+    self.root_agent = MockLlmAgent("root_agent")
+    self.runner = Runner(
+        app_name="test_app",
+        agent=self.root_agent,
+        session_service=self.session_service,
+        artifact_service=self.artifact_service,
+    )
+
+  def test_should_append_event_finished_input_transcription(self):
+    event = Event(
+        invocation_id="inv1",
+        author="user",
+        input_transcription=types.Transcription(text="hello", finished=True),
+    )
+    assert self.runner._should_append_event(event, is_live_call=True) is True
+
+  def test_should_append_event_unfinished_input_transcription(self):
+    event = Event(
+        invocation_id="inv1",
+        author="user",
+        input_transcription=types.Transcription(text="hello", finished=False),
+    )
+    assert self.runner._should_append_event(event, is_live_call=True) is True
+
+  def test_should_append_event_finished_output_transcription(self):
+    event = Event(
+        invocation_id="inv1",
+        author="model",
+        output_transcription=types.Transcription(text="world", finished=True),
+    )
+    assert self.runner._should_append_event(event, is_live_call=True) is True
+
+  def test_should_append_event_unfinished_output_transcription(self):
+    event = Event(
+        invocation_id="inv1",
+        author="model",
+        output_transcription=types.Transcription(text="world", finished=False),
+    )
+    assert self.runner._should_append_event(event, is_live_call=True) is True
+
+  def test_should_not_append_event_live_model_audio(self):
+    event = Event(
+        invocation_id="inv1",
+        author="model",
+        content=types.Content(
+            parts=[
+                types.Part(
+                    inline_data=types.Blob(data=b"123", mime_type="audio/pcm")
+                )
+            ]
+        ),
+    )
+    assert self.runner._should_append_event(event, is_live_call=True) is False
+
+  def test_should_append_event_non_live_model_audio(self):
+    event = Event(
+        invocation_id="inv1",
+        author="model",
+        content=types.Content(
+            parts=[
+                types.Part(
+                    inline_data=types.Blob(data=b"123", mime_type="audio/pcm")
+                )
+            ]
+        ),
+    )
+    assert self.runner._should_append_event(event, is_live_call=False) is True
+
+  def test_should_append_event_other_event(self):
+    event = Event(
+        invocation_id="inv1",
+        author="model",
+        content=types.Content(parts=[types.Part(text="text")]),
+    )
+    assert self.runner._should_append_event(event, is_live_call=True) is True
 
 
 if __name__ == "__main__":

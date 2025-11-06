@@ -125,8 +125,13 @@ class AgentTool(BaseTool):
           role='user',
           parts=[types.Part.from_text(text=args['request'])],
       )
+    invocation_context = tool_context._invocation_context
+    parent_app_name = (
+        invocation_context.app_name if invocation_context else None
+    )
+    child_app_name = parent_app_name or self.agent.name
     runner = Runner(
-        app_name=self.agent.name,
+        app_name=child_app_name,
         agent=self.agent,
         artifact_service=ForwardingArtifactService(tool_context),
         session_service=InMemorySessionService(),
@@ -141,7 +146,7 @@ class AgentTool(BaseTool):
         if not k.startswith('_adk')  # Filter out adk internal states
     }
     session = await runner.session_service.create_session(
-        app_name=self.agent.name,
+        app_name=child_app_name,
         user_id=tool_context._invocation_context.user_id,
         state=state_dict,
     )
@@ -158,6 +163,10 @@ class AgentTool(BaseTool):
           tool_context.state.update(event.actions.state_delta)
         if event.content:
           last_content = event.content
+
+    # Clean up runner resources (especially MCP sessions)
+    # to avoid "Attempted to exit cancel scope in a different task" errors
+    await runner.close()
 
     if not last_content:
       return ''

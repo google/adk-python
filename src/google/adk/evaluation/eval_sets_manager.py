@@ -23,7 +23,7 @@ from .eval_set import EvalSet
 
 
 class EvalSetsManager(ABC):
-  """An interface to manage an Eval Sets."""
+  """An interface to manage Eval Sets."""
 
   @abstractmethod
   def get_eval_set(self, app_name: str, eval_set_id: str) -> Optional[EvalSet]:
@@ -54,7 +54,7 @@ class EvalSetsManager(ABC):
   def get_eval_case(
       self, app_name: str, eval_set_id: str, eval_case_id: str
   ) -> Optional[EvalCase]:
-    """Returns an EvalCase if found, otherwise None."""
+    """Returns an EvalCase if found; otherwise, None."""
 
   @abstractmethod
   def add_eval_case(self, app_name: str, eval_set_id: str, eval_case: EvalCase):

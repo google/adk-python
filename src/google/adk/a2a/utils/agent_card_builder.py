@@ -473,7 +473,7 @@ def _get_default_description(agent: BaseAgent) -> str:
 async def _extract_examples_from_agent(
     agent: BaseAgent,
 ) -> Optional[List[Dict]]:
-  """Extract examples from example_tool if configured, otherwise from agent instruction."""
+  """Extract examples from example_tool if configured; otherwise, from agent instruction."""
   if not isinstance(agent, LlmAgent):
     return None
 

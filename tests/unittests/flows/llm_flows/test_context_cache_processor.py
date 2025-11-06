@@ -66,7 +66,7 @@ class TestContextCacheRequestProcessor:
     )
 
   def create_cache_metadata(
-      self, invocations_used=1, cache_name="test-cache", cached_contents_count=3
+      self, invocations_used=1, cache_name="test-cache", contents_count=3
   ):
     """Helper to create CacheMetadata."""
     return CacheMetadata(
@@ -76,7 +76,7 @@ class TestContextCacheRequestProcessor:
         expire_time=time.time() + 1800,
         fingerprint="test_fingerprint",
         invocations_used=invocations_used,
-        cached_contents_count=cached_contents_count,
+        contents_count=contents_count,
         created_at=time.time() - 600,
     )
 
@@ -452,3 +452,195 @@ class TestContextCacheRequestProcessor:
     assert llm_request.cache_config == self.cache_config
     assert llm_request.cache_metadata is not None
     assert llm_request.cache_metadata.invocations_used == 11  # 10 + 1
+
+  async def test_cacheable_contents_token_count_extraction(self):
+    """Test that previous prompt token count is extracted and set."""
+    agent = LlmAgent(name="test_agent")
+
+    # Create event with usage metadata
+    event_with_tokens = Event(
+        author="test_agent",
+        usage_metadata=types.UsageMetadata(
+            prompt_token_count=1024,
+            response_token_count=256,
+            total_token_count=1280,
+        ),
+    )
+
+    events = [event_with_tokens]
+
+    invocation_context = self.create_invocation_context(
+        agent,
+        context_cache_config=self.cache_config,
+        session_events=events,
+    )
+
+    llm_request = LlmRequest(
+        model="gemini-2.0-flash",
+        contents=[
+            types.Content(
+                role="user",
+                parts=[types.Part(text="Hello")],
+            )
+        ],
+    )
+
+    async for event in self.processor.run_async(
+        invocation_context, llm_request
+    ):
+      pass
+
+    # Should extract token count from the event
+    assert llm_request.cacheable_contents_token_count == 1024
+
+  async def test_cacheable_contents_token_count_no_usage_metadata(self):
+    """Test when no usage metadata is available."""
+    agent = LlmAgent(name="test_agent")
+
+    events = [
+        Event(author="test_agent", usage_metadata=None),
+        Event(author="other_agent"),
+    ]
+
+    invocation_context = self.create_invocation_context(
+        agent,
+        context_cache_config=self.cache_config,
+        session_events=events,
+    )
+
+    llm_request = LlmRequest(
+        model="gemini-2.0-flash",
+        contents=[
+            types.Content(
+                role="user",
+                parts=[types.Part(text="Hello")],
+            )
+        ],
+    )
+
+    async for event in self.processor.run_async(
+        invocation_context, llm_request
+    ):
+      pass
+
+    # Should not set token count when no usage metadata
+    assert llm_request.cacheable_contents_token_count is None
+
+  async def test_cacheable_contents_token_count_agent_filtering(self):
+    """Test that token count is filtered by agent name."""
+    agent = LlmAgent(name="target_agent")
+
+    events = [
+        Event(
+            author="other_agent",
+            usage_metadata=types.UsageMetadata(prompt_token_count=2048),
+        ),
+        Event(
+            author="target_agent",
+            usage_metadata=types.UsageMetadata(prompt_token_count=1024),
+        ),
+    ]
+
+    invocation_context = self.create_invocation_context(
+        agent,
+        context_cache_config=self.cache_config,
+        session_events=events,
+    )
+
+    llm_request = LlmRequest(
+        model="gemini-2.0-flash",
+        contents=[
+            types.Content(
+                role="user",
+                parts=[types.Part(text="Hello")],
+            )
+        ],
+    )
+
+    async for event in self.processor.run_async(
+        invocation_context, llm_request
+    ):
+      pass
+
+    # Should use target_agent's token count, not other_agent's
+    assert llm_request.cacheable_contents_token_count == 1024
+
+  async def test_cacheable_contents_token_count_latest_selected(self):
+    """Test that the most recent token count is selected."""
+    agent = LlmAgent(name="test_agent")
+
+    events = [
+        Event(
+            author="test_agent",
+            usage_metadata=types.UsageMetadata(prompt_token_count=512),
+        ),
+        Event(
+            author="test_agent",
+            usage_metadata=types.UsageMetadata(prompt_token_count=1024),
+        ),
+    ]
+
+    invocation_context = self.create_invocation_context(
+        agent,
+        context_cache_config=self.cache_config,
+        session_events=events,
+    )
+
+    llm_request = LlmRequest(
+        model="gemini-2.0-flash",
+        contents=[
+            types.Content(
+                role="user",
+                parts=[types.Part(text="Hello")],
+            )
+        ],
+    )
+
+    async for event in self.processor.run_async(
+        invocation_context, llm_request
+    ):
+      pass
+
+    # Should use the latest (most recent) token count
+    assert llm_request.cacheable_contents_token_count == 1024
+
+  async def test_cache_metadata_and_token_count_both_found(self):
+    """Test that both cache metadata and token count are found in single pass."""
+    agent = LlmAgent(name="test_agent")
+    cache_metadata = self.create_cache_metadata(invocations_used=5)
+
+    events = [
+        Event(
+            author="test_agent",
+            cache_metadata=cache_metadata,
+            usage_metadata=types.UsageMetadata(prompt_token_count=1024),
+            invocation_id="previous_invocation",
+        ),
+    ]
+
+    invocation_context = self.create_invocation_context(
+        agent,
+        context_cache_config=self.cache_config,
+        session_events=events,
+        invocation_id="current_invocation",
+    )
+
+    llm_request = LlmRequest(
+        model="gemini-2.0-flash",
+        contents=[
+            types.Content(
+                role="user",
+                parts=[types.Part(text="Hello")],
+            )
+        ],
+    )
+
+    async for event in self.processor.run_async(
+        invocation_context, llm_request
+    ):
+      pass
+
+    # Should find both cache metadata and token count
+    assert llm_request.cache_metadata is not None
+    assert llm_request.cache_metadata.invocations_used == 6  # 5 + 1
+    assert llm_request.cacheable_contents_token_count == 1024

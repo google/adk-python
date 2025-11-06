@@ -14,16 +14,20 @@
 
 """Cleanup unused files tool for Agent Builder Assistant."""
 
-from pathlib import Path
 from typing import Any
 from typing import Dict
 from typing import List
 from typing import Optional
 
+from google.adk.tools.tool_context import ToolContext
+
+from ..utils.resolve_root_directory import resolve_file_path
+from ..utils.resolve_root_directory import resolve_file_paths
+
 
 async def cleanup_unused_files(
-    root_directory: str,
     used_files: List[str],
+    tool_context: ToolContext,
     file_patterns: Optional[List[str]] = None,
     exclude_patterns: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
@@ -31,27 +35,32 @@ async def cleanup_unused_files(
 
   This tool helps clean up unused tool files when agent configurations change.
   It identifies files that match patterns but aren't referenced in used_files
-  list.
+  list. Paths are resolved automatically using the tool context.
 
   Args:
-    root_directory: Root directory to scan for unused files
     used_files: List of file paths currently in use (should not be deleted)
+    tool_context: Tool execution context (provides session state)
     file_patterns: List of glob patterns to match files (default: ["*.py"])
     exclude_patterns: List of patterns to exclude (default: ["__init__.py"])
 
   Returns:
     Dict containing cleanup results:
       - success: bool indicating if scan succeeded
-      - root_directory: absolute path to scanned directory
       - unused_files: list of unused files found
       - deleted_files: list of files actually deleted
       - backup_files: list of backup files created
       - errors: list of error messages
       - total_freed_space: total bytes freed by deletions
   """
+  session_state = tool_context.state
+  root_path = resolve_file_path(".", session_state)
+
   try:
-    root_path = Path(root_directory).resolve()
-    used_files_set = {Path(f).resolve() for f in used_files}
+    root_path = root_path.resolve()
+    resolved_used_files = {
+        path.resolve()
+        for path in resolve_file_paths(used_files or [], session_state)
+    }
 
     # Set defaults
     if file_patterns is None:
@@ -61,7 +70,6 @@ async def cleanup_unused_files(
 
     result = {
         "success": False,
-        "root_directory": str(root_path),
         "unused_files": [],
         "deleted_files": [],
         "backup_files": [],
@@ -85,7 +93,7 @@ async def cleanup_unused_files(
     # Identify unused files
     unused_files = []
     for file_path in all_files:
-      if file_path not in used_files_set:
+      if file_path.resolve() not in resolved_used_files:
         unused_files.append(file_path)
 
     result["unused_files"] = [str(f) for f in unused_files]
@@ -99,7 +107,6 @@ async def cleanup_unused_files(
   except Exception as e:
     return {
         "success": False,
-        "root_directory": root_directory,
         "unused_files": [],
         "deleted_files": [],
         "backup_files": [],

@@ -32,7 +32,7 @@ def test_simple_function():
   function_call_1 = types.Part.from_function_call(
       name='increase_by_one', args={'x': 1}
   )
-  function_respones_2 = types.Part.from_function_response(
+  function_responses_2 = types.Part.from_function_response(
       name='increase_by_one', response={'result': 2}
   )
   responses: list[types.Content] = [
@@ -54,7 +54,7 @@ def test_simple_function():
   runner = testing_utils.InMemoryRunner(agent)
   assert testing_utils.simplify_events(runner.run('test')) == [
       ('root_agent', function_call_1),
-      ('root_agent', function_respones_2),
+      ('root_agent', function_responses_2),
       ('root_agent', 'response1'),
   ]
 
@@ -65,7 +65,7 @@ def test_simple_function():
   assert testing_utils.simplify_contents(mock_model.requests[1].contents) == [
       ('user', 'test'),
       ('model', function_call_1),
-      ('user', function_respones_2),
+      ('user', function_responses_2),
   ]
 
   # Asserts the function calls.

@@ -19,6 +19,7 @@ from __future__ import annotations
 from typing import AsyncGenerator
 from typing import TYPE_CHECKING
 
+from google.genai import _transformers
 from typing_extensions import override
 
 from ...agents.readonly_context import ReadonlyContext
@@ -34,6 +35,28 @@ if TYPE_CHECKING:
 class _InstructionsLlmRequestProcessor(BaseLlmRequestProcessor):
   """Handles instructions and global instructions for LLM flow."""
 
+  async def _process_agent_instruction(
+      self, agent, invocation_context: InvocationContext
+  ) -> str:
+    """Process agent instruction with state injection.
+
+    Args:
+      agent: The agent with instruction to process
+      invocation_context: The invocation context
+
+    Returns:
+      The processed instruction text
+    """
+    raw_si, bypass_state_injection = await agent.canonical_instruction(
+        ReadonlyContext(invocation_context)
+    )
+    si = raw_si
+    if not bypass_state_injection:
+      si = await instructions_utils.inject_session_state(
+          raw_si, ReadonlyContext(invocation_context)
+      )
+    return si
+
   @override
   async def run_async(
       self, invocation_context: InvocationContext, llm_request: LlmRequest
@@ -42,12 +65,11 @@ class _InstructionsLlmRequestProcessor(BaseLlmRequestProcessor):
     from ...agents.llm_agent import LlmAgent
 
     agent = invocation_context.agent
-    if not isinstance(agent, LlmAgent):
-      return
 
     root_agent: BaseAgent = agent.root_agent
 
-    # Handle global instructions
+    # Handle global instructions (DEPRECATED - use GlobalInstructionPlugin instead)
+    # TODO: Remove this code block when global_instruction field is removed
     if isinstance(root_agent, LlmAgent) and root_agent.global_instruction:
       raw_si, bypass_state_injection = (
           await root_agent.canonical_global_instruction(
@@ -63,21 +85,23 @@ class _InstructionsLlmRequestProcessor(BaseLlmRequestProcessor):
 
     # Handle static_instruction - add via append_instructions
     if agent.static_instruction:
-      llm_request.append_instructions(agent.static_instruction)
+      # Convert ContentUnion to Content using genai transformer
+      static_content = _transformers.t_content(agent.static_instruction)
+      llm_request.append_instructions(static_content)
 
     # Handle instruction based on whether static_instruction exists
     if agent.instruction and not agent.static_instruction:
       # Only add to system instructions if no static instruction exists
-      # If static instruction exists, content processor will handle it
-      raw_si, bypass_state_injection = await agent.canonical_instruction(
-          ReadonlyContext(invocation_context)
-      )
-      si = raw_si
-      if not bypass_state_injection:
-        si = await instructions_utils.inject_session_state(
-            raw_si, ReadonlyContext(invocation_context)
-        )
+      si = await self._process_agent_instruction(agent, invocation_context)
       llm_request.append_instructions([si])
+    elif agent.instruction and agent.static_instruction:
+      # Static instruction exists, so add dynamic instruction to content
+      from google.genai import types
+
+      si = await self._process_agent_instruction(agent, invocation_context)
+      # Create user content for dynamic instruction
+      dynamic_content = types.Content(role='user', parts=[types.Part(text=si)])
+      llm_request.contents.append(dynamic_content)
 
     # Maintain async generator behavior
     return

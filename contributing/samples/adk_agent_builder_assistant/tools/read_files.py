@@ -19,8 +19,14 @@ from typing import Any
 from typing import Dict
 from typing import List
 
+from google.adk.tools.tool_context import ToolContext
 
-async def read_files(file_paths: List[str]) -> Dict[str, Any]:
+from ..utils.resolve_root_directory import resolve_file_paths
+
+
+async def read_files(
+    file_paths: List[str], tool_context: ToolContext
+) -> Dict[str, Any]:
   """Read content from multiple files.
 
   This tool reads content from multiple files and returns their contents.
@@ -43,6 +49,10 @@ async def read_files(file_paths: List[str]) -> Dict[str, Any]:
       - errors: list of general error messages
   """
   try:
+    # Resolve file paths using session state
+    session_state = tool_context._invocation_context.session.state
+    resolved_paths = resolve_file_paths(file_paths, session_state)
+
     result = {
         "success": True,
         "files": {},
@@ -51,8 +61,8 @@ async def read_files(file_paths: List[str]) -> Dict[str, Any]:
         "errors": [],
     }
 
-    for file_path in file_paths:
-      file_path_obj = Path(file_path).resolve()
+    for resolved_path in resolved_paths:
+      file_path_obj = resolved_path.resolve()
       file_info = {
           "content": "",
           "file_size": 0,
@@ -72,7 +82,7 @@ async def read_files(file_paths: List[str]) -> Dict[str, Any]:
 
           result["successful_reads"] += 1
       except Exception as e:
-        file_info["error"] = f"Failed to read {file_path}: {str(e)}"
+        file_info["error"] = f"Failed to read {file_path_obj}: {str(e)}"
         result["success"] = False
 
       result["files"][str(file_path_obj)] = file_info

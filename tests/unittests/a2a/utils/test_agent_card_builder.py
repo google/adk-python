@@ -331,7 +331,7 @@ class TestHelperFunctions:
     assert result == "I should do my work and it will be mine."
 
   def test_replace_pronouns_case_insensitive(self):
-    """Test _replace_pronouns with case insensitive matching."""
+    """Test _replace_pronouns with case-insensitive matching."""
     # Arrange
     text = "YOU should do YOUR work and it will be YOURS."
 
@@ -1073,7 +1073,7 @@ class TestExampleExtractionFunctions:
     assert result is None
 
   def test_extract_examples_from_instruction_case_insensitive(self):
-    """Test _extract_examples_from_instruction with case insensitive matching."""
+    """Test _extract_examples_from_instruction with case-insensitive matching."""
     # Arrange
     instruction = (
         'example query: "What is the weather?" example response: "The weather'
