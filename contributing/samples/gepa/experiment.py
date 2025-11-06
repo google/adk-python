@@ -494,7 +494,7 @@ def _get_datasets(
   )
 
 
-def _reflection_inference_fn(model: str) -> Callable[[str], str]:
+def reflection_inference_fn(model: str) -> Callable[[str], str]:
   """Returns an inference function on VertexAI based on provided model."""
   client = genai.Client()
 
@@ -618,7 +618,7 @@ def run_gepa(
       task_lm=None,  # this must be None when a custom adapter is used
       adapter=tau_bench_adapter,
       max_metric_calls=config.max_metric_calls,
-      reflection_lm=_reflection_inference_fn(config.reflection_model),
+      reflection_lm=reflection_inference_fn(config.reflection_model),
       reflection_minibatch_size=config.reflection_minibatch_size,
       run_dir=output_dir,
   )

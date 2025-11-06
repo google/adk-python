@@ -80,6 +80,10 @@ _FINISH_REASON_MAPPING = {
     "content_filter": types.FinishReason.SAFETY,
 }
 
+_SUPPORTED_FILE_CONTENT_MIME_TYPES = set(
+    ["application/pdf", "application/json", "text/plain"]
+)
+
 
 class ChatCompletionFileUrlObject(TypedDict, total=False):
   file_data: str
@@ -387,7 +391,7 @@ def _get_content(
             "type": "audio_url",
             "audio_url": {"url": data_uri},
         })
-      elif part.inline_data.mime_type == "application/pdf":
+      elif part.inline_data.mime_type in _SUPPORTED_FILE_CONTENT_MIME_TYPES:
         content_objects.append({
             "type": "file",
             "file": {"file_data": data_uri},
@@ -493,23 +497,31 @@ def _function_declaration_to_tool_param(
 
   assert function_declaration.name
 
-  properties = {}
+  parameters = {
+      "type": "object",
+      "properties": {},
+  }
   if (
       function_declaration.parameters
       and function_declaration.parameters.properties
   ):
+    properties = {}
     for key, value in function_declaration.parameters.properties.items():
       properties[key] = _schema_to_dict(value)
+
+    parameters = {
+        "type": "object",
+        "properties": properties,
+    }
+  elif function_declaration.parameters_json_schema:
+    parameters = function_declaration.parameters_json_schema
 
   tool_params = {
       "type": "function",
       "function": {
           "name": function_declaration.name,
           "description": function_declaration.description or "",
-          "parameters": {
-              "type": "object",
-              "properties": properties,
-          },
+          "parameters": parameters,
       },
   }
 
