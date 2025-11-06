@@ -339,11 +339,11 @@ class AgentLoader(BaseAgentLoader):
         agent_type = self._determine_agent_type(agent_name)
 
         # Convert underscores to spaces for display_name
-        agent.name = agent.name.replace("_", " ")
+        display_name = agent.name.replace("_", " ")
 
         app_info = {
             "name": agent_name,
-            "display_name": agent.name,
+            "display_name": display_name,
             "description": agent.description,
             "agent_type": agent_type,
         }
