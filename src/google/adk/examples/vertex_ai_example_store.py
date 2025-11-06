@@ -12,9 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 from google.genai import types
 from typing_extensions import override
-from vertexai.preview import example_stores
 
 from .base_example_provider import BaseExampleProvider
 from .example import Example
@@ -35,6 +36,8 @@ class VertexAiExampleStore(BaseExampleProvider):
 
   @override
   def get_examples(self, query: str) -> list[Example]:
+    from ..dependencies.vertexai import example_stores
+
     example_store = example_stores.ExampleStore(self.examples_store_name)
     # Retrieve relevant examples.
     request = {

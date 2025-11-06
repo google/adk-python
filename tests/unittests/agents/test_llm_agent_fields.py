@@ -167,27 +167,7 @@ async def test_async_canonical_global_instruction():
   assert bypass_state_injection
 
 
-def test_output_schema_will_disable_transfer(caplog: pytest.LogCaptureFixture):
-  with caplog.at_level('WARNING'):
-
-    class Schema(BaseModel):
-      pass
-
-    agent = LlmAgent(
-        name='test_agent',
-        output_schema=Schema,
-    )
-
-    # Transfer is automatically disabled
-    assert agent.disallow_transfer_to_parent
-    assert agent.disallow_transfer_to_peers
-    assert (
-        'output_schema cannot co-exist with agent transfer configurations.'
-        in caplog.text
-    )
-
-
-def test_output_schema_with_sub_agents_will_throw():
+def test_output_schema_with_sub_agents_will_not_throw():
   class Schema(BaseModel):
     pass
 
@@ -195,12 +175,18 @@ def test_output_schema_with_sub_agents_will_throw():
       name='sub_agent',
   )
 
-  with pytest.raises(ValueError):
-    _ = LlmAgent(
-        name='test_agent',
-        output_schema=Schema,
-        sub_agents=[sub_agent],
-    )
+  agent = LlmAgent(
+      name='test_agent',
+      output_schema=Schema,
+      sub_agents=[sub_agent],
+  )
+
+  # Transfer is not disabled
+  assert not agent.disallow_transfer_to_parent
+  assert not agent.disallow_transfer_to_peers
+
+  assert agent.output_schema == Schema
+  assert agent.sub_agents == [sub_agent]
 
 
 def test_output_schema_with_tools_will_not_throw():

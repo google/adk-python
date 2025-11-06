@@ -21,8 +21,6 @@ import re
 from typing import Optional
 
 from typing_extensions import override
-import vertexai
-from vertexai import types
 
 from ..agents.invocation_context import InvocationContext
 from ..utils.feature_decorator import experimental
@@ -78,6 +76,8 @@ class AgentEngineSandboxCodeExecutor(BaseCodeExecutor):
           )
       )
     elif agent_engine_resource_name is not None:
+      from vertexai import types
+
       self._project_id, self._location = (
           self._get_project_id_and_location_from_resource_name(
               agent_engine_resource_name, agent_engine_resource_name_pattern
@@ -125,6 +125,7 @@ class AgentEngineSandboxCodeExecutor(BaseCodeExecutor):
             input_data=input_data,
         )
     )
+    logger.debug('Executed code:\n```\n%s\n```', code_execution_input.code)
     saved_files = []
     stdout = ''
     stderr = ''
@@ -173,6 +174,8 @@ class AgentEngineSandboxCodeExecutor(BaseCodeExecutor):
     Returns:
       An API client for the given project and location.
     """
+    import vertexai
+
     return vertexai.Client(project=self._project_id, location=self._location)
 
   def _get_project_id_and_location_from_resource_name(

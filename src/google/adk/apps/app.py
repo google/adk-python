@@ -69,7 +69,6 @@ class EventsCompactionConfig(BaseModel):
   compacted summaries, maintaining context."""
 
 
-@experimental
 class App(BaseModel):
   """Represents an LLM-backed agentic application.
 
