@@ -248,7 +248,7 @@ root_agent = Agent(
       - If it's about tracing, label it with "tracing".
       - If it's agent orchestration, agent definition, label it with "core".
       - If it's about Model Context Protocol (e.g. MCP tool, MCP toolset, MCP session management etc.), label it with "mcp".
-      - If you can't find a appropriate labels for the PR, follow the previous instruction that starts with "IMPORTANT:".
+      - If you can't find an appropriate labels for the PR, follow the previous instruction that starts with "IMPORTANT:".
 
       Here is the contribution guidelines:
       `{CONTRIBUTING_MD}`

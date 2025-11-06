@@ -61,7 +61,7 @@ Here are the steps to help answer GitHub discussions:
 
 3. **Decide whether to respond**:
    * If all the following conditions are met, try to add a comment to the
-     discussion, otherwise, do not respond:
+     discussion; otherwise, do not respond:
      - The discussion is not closed.
      - The latest comment is not from you or other agents (marked as
        "Response from XXX Agent").
@@ -102,7 +102,7 @@ IMPORTANT:
     * You **should always** use the `convert_gcs_links_to_https` tool to convert
       GCS links (e.g. "gs://...") to HTTPS links.
     * **Do not** use the `convert_gcs_links_to_https` tool for non-GCS links.
-    * Make sure the citation URL is valid. Otherwise do not list this specific
+    * Make sure the citation URL is valid. Otherwise, do not list this specific
       citation.
   * Do not respond to any other discussion except the one specified by the user.
 

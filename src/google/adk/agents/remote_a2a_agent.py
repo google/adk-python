@@ -372,7 +372,7 @@ class RemoteA2aAgent(BaseAgent):
       if _is_other_agent_reply(self.name, event):
         event = _present_other_agent_message(event)
 
-      if not event.content or not event.content.parts:
+      if not event or not event.content or not event.content.parts:
         continue
 
       for part in event.content.parts:
@@ -437,7 +437,7 @@ class RemoteA2aAgent(BaseAgent):
           event = convert_a2a_task_to_event(task, self.name, ctx)
         else:
           # This is a streaming update without a message (e.g. status change)
-          # or an partial artifact update. We don't emit an event for these
+          # or a partial artifact update. We don't emit an event for these
           # for now.
           return None
 
@@ -532,7 +532,7 @@ class RemoteA2aAgent(BaseAgent):
         event.custom_metadata[A2A_METADATA_PREFIX + "request"] = (
             a2a_request.model_dump(exclude_none=True, by_alias=True)
         )
-        # If the response is a ClientEvent, record the task state, otherwise
+        # If the response is a ClientEvent, record the task state; otherwise,
         # record the message object.
         if isinstance(a2a_response, tuple):
           event.custom_metadata[A2A_METADATA_PREFIX + "response"] = (

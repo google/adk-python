@@ -12,14 +12,4 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .base_artifact_service import BaseArtifactService
-from .file_artifact_service import FileArtifactService
-from .gcs_artifact_service import GcsArtifactService
-from .in_memory_artifact_service import InMemoryArtifactService
-
-__all__ = [
-    'BaseArtifactService',
-    'FileArtifactService',
-    'GcsArtifactService',
-    'InMemoryArtifactService',
-]
+from . import agent

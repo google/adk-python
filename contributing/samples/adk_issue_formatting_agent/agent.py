@@ -29,7 +29,7 @@ import requests
 BUG_REPORT_TEMPLATE = read_file(
     Path(__file__).parent / "../../../../.github/ISSUE_TEMPLATE/bug_report.md"
 )
-FREATURE_REQUEST_TEMPLATE = read_file(
+FEATURE_REQUEST_TEMPLATE = read_file(
     Path(__file__).parent
     / "../../../../.github/ISSUE_TEMPLATE/feature_request.md"
 )
@@ -145,7 +145,7 @@ root_agent = Agent(
       # 2. CONTEXT & RESOURCES
       * **Repository:** You are operating on the GitHub repository `{OWNER}/{REPO}`.
       * **Bug Report Template:** (`{BUG_REPORT_TEMPLATE}`)
-      * **Feature Request Template:** (`{FREATURE_REQUEST_TEMPLATE}`)
+      * **Feature Request Template:** (`{FEATURE_REQUEST_TEMPLATE}`)
 
       # 3. CORE MISSION
       Your goal is to check if a GitHub issue, identified as either a "bug" or a "feature request,"

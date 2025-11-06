@@ -35,6 +35,8 @@ class GeminiLlmConnection(BaseLlmConnection):
 
   def __init__(self, gemini_session: live.AsyncSession):
     self._gemini_session = gemini_session
+    self._input_transcription_text: str = ''
+    self._output_transcription_text: str = ''
 
   async def send_history(self, history: list[types.Content]):
     """Sends the conversation history to the gemini model.
@@ -105,13 +107,14 @@ class GeminiLlmConnection(BaseLlmConnection):
     """
     if isinstance(input, types.Blob):
       input_blob = input.model_dump()
-      logger.debug('Sending LLM Blob: %s', input_blob)
+      # The blob is binary and is very large. So let's not log it.
+      logger.debug('Sending LLM Blob.')
       await self._gemini_session.send(input=input_blob)
     elif isinstance(input, types.ActivityStart):
-      logger.debug('Sending LLM activity start signal')
+      logger.debug('Sending LLM activity start signal.')
       await self._gemini_session.send_realtime_input(activity_start=input)
     elif isinstance(input, types.ActivityEnd):
-      logger.debug('Sending LLM activity end signal')
+      logger.debug('Sending LLM activity end signal.')
       await self._gemini_session.send_realtime_input(activity_end=input)
     else:
       raise ValueError('Unsupported input type: %s' % type(input))
@@ -164,22 +167,50 @@ class GeminiLlmConnection(BaseLlmConnection):
               yield self.__build_full_text_response(text)
               text = ''
             yield llm_response
-          if (
-              message.server_content.input_transcription
-              and message.server_content.input_transcription.text
-          ):
-            llm_response = LlmResponse(
-                input_transcription=message.server_content.input_transcription,
-            )
-            yield llm_response
-          if (
-              message.server_content.output_transcription
-              and message.server_content.output_transcription.text
-          ):
-            llm_response = LlmResponse(
-                output_transcription=message.server_content.output_transcription
-            )
-            yield llm_response
+          if message.server_content.input_transcription:
+            if message.server_content.input_transcription.text:
+              self._input_transcription_text += (
+                  message.server_content.input_transcription.text
+              )
+              yield LlmResponse(
+                  input_transcription=types.Transcription(
+                      text=message.server_content.input_transcription.text,
+                      finished=False,
+                  ),
+                  partial=True,
+              )
+            # finished=True and partial transcription may happen in the same
+            # message.
+            if message.server_content.input_transcription.finished:
+              yield LlmResponse(
+                  input_transcription=types.Transcription(
+                      text=self._input_transcription_text,
+                      finished=True,
+                  ),
+                  partial=False,
+              )
+              self._input_transcription_text = ''
+          if message.server_content.output_transcription:
+            if message.server_content.output_transcription.text:
+              self._output_transcription_text += (
+                  message.server_content.output_transcription.text
+              )
+              yield LlmResponse(
+                  output_transcription=types.Transcription(
+                      text=message.server_content.output_transcription.text,
+                      finished=False,
+                  ),
+                  partial=True,
+              )
+            if message.server_content.output_transcription.finished:
+              yield LlmResponse(
+                  output_transcription=types.Transcription(
+                      text=self._output_transcription_text,
+                      finished=True,
+                  ),
+                  partial=False,
+              )
+              self._output_transcription_text = ''
           if message.server_content.turn_complete:
             if text:
               yield self.__build_full_text_response(text)
@@ -193,10 +224,12 @@ class GeminiLlmConnection(BaseLlmConnection):
           # in case it's an interrupted message, we merge the previous partial
           # text. Other we don't merge. because content can be none when model
           # safety threshold is triggered
-          if message.server_content.interrupted and text:
-            yield self.__build_full_text_response(text)
-            text = ''
-          yield LlmResponse(interrupted=message.server_content.interrupted)
+          if message.server_content.interrupted:
+            if text:
+              yield self.__build_full_text_response(text)
+              text = ''
+            else:
+              yield LlmResponse(interrupted=message.server_content.interrupted)
         if message.tool_call:
           if text:
             yield self.__build_full_text_response(text)

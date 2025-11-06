@@ -318,7 +318,7 @@ def get_job_info(
       dict: Dictionary representing the properties of the job.
 
   Examples:
-      >>> user may give job id in fomat of: project_id:region.job_id
+      >>> user may give job id in format of: project_id:region.job_id
       like bigquery-public-data:US.bquxjob_12345678_1234567890
       >>> get_job_info("bigquery-public-data", "bquxjob_12345678_1234567890")
       {

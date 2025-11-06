@@ -51,7 +51,7 @@ def _parse_agent_engine_kwargs(
   """Helper to parse agent engine resource name."""
   if not uri_part:
     raise ValueError(
-        "Agent engine resource name or resource id can not be empty."
+        "Agent engine resource name or resource id cannot be empty."
     )
   if "/" in uri_part:
     parts = uri_part.split("/")
@@ -192,7 +192,7 @@ def _register_builtin_services(registry: ServiceRegistry) -> None:
 
     rag_corpus = urlparse(uri).netloc
     if not rag_corpus:
-      raise ValueError("Rag corpus can not be empty.")
+      raise ValueError("Rag corpus cannot be empty.")
     agents_dir = kwargs.get("agents_dir")
     project, location = _load_gcp_config(agents_dir, "RAG memory service")
     return VertexAiRagMemoryService(

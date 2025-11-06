@@ -52,7 +52,7 @@ class FunctionTool(BaseTool):
 
     Args:
       func: The function to wrap.
-      require_confirmation: Wether this tool requires confirmation. A boolean or
+      require_confirmation: Whether this tool requires confirmation. A boolean or
         a callable that takes the function's arguments and returns a boolean. If
         the callable returns True, the tool will require confirmation from the
         user.

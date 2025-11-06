@@ -71,7 +71,7 @@ class BigQueryToolConfig(BaseModel):
   """Name of the application using the BigQuery tools.
 
   By default, no particular application name will be set in the BigQuery
-  interaction. But if the the tool user (agent builder) wants to differentiate
+  interaction. But if the tool user (agent builder) wants to differentiate
   their application/agent for tracking or support purpose, they can set this field.
   """
 
