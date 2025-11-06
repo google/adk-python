@@ -348,25 +348,34 @@ class MCPSessionManager:
 
       # Create a new session (either first time or replacing disconnected one)
       exit_stack = AsyncExitStack()
+      timeout_in_seconds = (
+          self._connection_params.timeout
+          if hasattr(self._connection_params, 'timeout')
+          else None
+      )
+
       try:
         client = self._create_client(merged_headers)
-        transports = await exit_stack.enter_async_context(client)
 
-        # The streamable http client returns a GetSessionCallback in addition to the read/write MemoryObjectStreams
-        # needed to build the ClientSession, we limit then to the two first values to be compatible with all clients.
+        transports = await asyncio.wait_for(
+            exit_stack.enter_async_context(client),
+            timeout=timeout_in_seconds,
+        )
+        # The streamable http client returns a GetSessionCallback in addition to the
+        # read/write MemoryObjectStreams needed to build the ClientSession, we limit
+        # then to the two first values to be compatible with all clients.
         if isinstance(self._connection_params, StdioConnectionParams):
           session = await exit_stack.enter_async_context(
               ClientSession(
                   *transports[:2],
-                  read_timeout_seconds=timedelta(
-                      seconds=self._connection_params.timeout
-                  ),
+                  read_timeout_seconds=timedelta(seconds=timeout_in_seconds),
               )
           )
         else:
           session = await exit_stack.enter_async_context(
               ClientSession(*transports[:2])
           )
+        await asyncio.wait_for(session.initialize(), timeout=timeout_in_seconds)
 
         await session.initialize()
         # Store session and exit stack in the pool
@@ -374,14 +383,16 @@ class MCPSessionManager:
         logger.debug('Created new session: %s', session_key)
         return session
 
-      except Exception:
+      except Exception as e:
         # If session creation fails, clean up the exit stack
         if exit_stack:
           try:
             await exit_stack.aclose()
-          except (anyio.BrokenResourceError, anyio.ClosedResourceError) as e:
-            logger.warning('Error during exit stack cleanup: %s', e)
-        raise
+          except Exception as exit_stack_error:
+            logger.warning(
+                'Error during session creation cleanup: %s', exit_stack_error
+            )
+        raise ConnectionError(f'Failed to create MCP session: {e}') from e
 
   async def close(self):
     """Closes all sessions and cleans up resources."""

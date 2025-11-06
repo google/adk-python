@@ -372,7 +372,7 @@ class RemoteA2aAgent(BaseAgent):
       if _is_other_agent_reply(self.name, event):
         event = _present_other_agent_message(event)
 
-      if not event.content or not event.content.parts:
+      if not event or not event.content or not event.content.parts:
         continue
 
       for part in event.content.parts:

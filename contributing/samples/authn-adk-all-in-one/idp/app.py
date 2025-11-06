@@ -139,7 +139,7 @@ def create_access_token(client_id, scopes, user_sub=None):
     payload = {
         "iss": "http://localhost:5000",  # who issued this token?
         # aud - What client API is this token for? - please check comment in hotel booker is_token_valid
-        # ideally the reqeust's resource parameter (part of OAuth spec extension)
+        # ideally the request's resource parameter (part of OAuth spec extension)
         # Here is an example of such request inbound to this IDP
         # GET http://localhost:5000/authorize?
         #     response_type=code&
@@ -344,7 +344,7 @@ def generate_token():
   client = CLIENT_REGISTRY.get(client_id)
 
   if not client:
-    logging.error(f"invlid client {client_id}")
+    logging.error(f"invalid client {client_id}")
     return (
         jsonify(
             {"error": "invalid_client", "error_description": "Client not found"}

@@ -453,7 +453,11 @@ class AgentEvaluator:
           ),
       })
 
-    print(tabulate(pd.DataFrame(data), headers="keys", tablefmt="grid"))
+    print(
+        tabulate(
+            pd.DataFrame(data), headers="keys", tablefmt="grid", maxcolwidths=25
+        )
+    )
     print("\n\n")  # Few empty lines for visual clarity
 
   @staticmethod

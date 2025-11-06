@@ -14,21 +14,30 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 from datetime import datetime
 from datetime import timezone
 import json
 import logging
 import threading
 from typing import Any
+from typing import Callable
+from typing import Dict
+from typing import List
 from typing import Optional
 from typing import TYPE_CHECKING
+import warnings
 
 import google.api_core.client_info
 import google.auth
 from google.auth import exceptions as auth_exceptions
 from google.cloud import bigquery
 from google.cloud import exceptions as cloud_exceptions
+from google.cloud.bigquery import schema as bq_schema
+from google.cloud.bigquery_storage_v1 import types as bq_storage_types
+from google.cloud.bigquery_storage_v1.services.big_query_write.async_client import BigQueryWriteAsyncClient
 from google.genai import types
+import pyarrow as pa
 
 from .. import version
 from ..agents.base_agent import BaseAgent
@@ -42,6 +51,152 @@ from .base_plugin import BasePlugin
 
 if TYPE_CHECKING:
   from ..agents.invocation_context import InvocationContext
+
+
+def _pyarrow_datetime():
+  return pa.timestamp("us", tz=None)
+
+
+def _pyarrow_numeric():
+  return pa.decimal128(38, 9)
+
+
+def _pyarrow_bignumeric():
+  return pa.decimal256(76, 38)
+
+
+def _pyarrow_time():
+  return pa.time64("us")
+
+
+def _pyarrow_timestamp():
+  return pa.timestamp("us", tz="UTC")
+
+
+_BQ_TO_ARROW_SCALARS = {
+    "BOOL": pa.bool_,
+    "BOOLEAN": pa.bool_,
+    "BYTES": pa.binary,
+    "DATE": pa.date32,
+    "DATETIME": _pyarrow_datetime,
+    "FLOAT": pa.float64,
+    "FLOAT64": pa.float64,
+    "GEOGRAPHY": pa.string,
+    "INT64": pa.int64,
+    "INTEGER": pa.int64,
+    "JSON": pa.string,
+    "NUMERIC": _pyarrow_numeric,
+    "BIGNUMERIC": _pyarrow_bignumeric,
+    "STRING": pa.string,
+    "TIME": _pyarrow_time,
+    "TIMESTAMP": _pyarrow_timestamp,
+}
+
+
+def _bq_to_arrow_scalars(bq_scalar: str):
+  return _BQ_TO_ARROW_SCALARS.get(bq_scalar)
+
+
+_BQ_FIELD_TYPE_TO_ARROW_FIELD_METADATA = {
+    "GEOGRAPHY": {
+        b"ARROW:extension:name": b"google:sqlType:geography",
+        b"ARROW:extension:metadata": b'{"encoding": "WKT"}',
+    },
+    "DATETIME": {b"ARROW:extension:name": b"google:sqlType:datetime"},
+    "JSON": {b"ARROW:extension:name": b"google:sqlType:json"},
+}
+_STRUCT_TYPES = ("RECORD", "STRUCT")
+
+
+def _bq_to_arrow_struct_data_type(field):
+  arrow_fields = []
+  for subfield in field.fields:
+    arrow_subfield = _bq_to_arrow_field(subfield)
+    if arrow_subfield:
+      arrow_fields.append(arrow_subfield)
+    else:
+      return None
+  return pa.struct(arrow_fields)
+
+
+def _bq_to_arrow_range_data_type(field):
+  if field is None:
+    raise ValueError("Range element type cannot be None")
+  element_type = field.element_type.upper()
+  arrow_element_type = _bq_to_arrow_scalars(element_type)()
+  return pa.struct([("start", arrow_element_type), ("end", arrow_element_type)])
+
+
+def _bq_to_arrow_data_type(field):
+  if field.mode is not None and field.mode.upper() == "REPEATED":
+    inner_type = _bq_to_arrow_data_type(
+        bq_schema.SchemaField(field.name, field.field_type, fields=field.fields)
+    )
+    if inner_type:
+      return pa.list_(inner_type)
+    return None
+
+  field_type_upper = field.field_type.upper() if field.field_type else ""
+  if field_type_upper in _STRUCT_TYPES:
+    return _bq_to_arrow_struct_data_type(field)
+
+  if field_type_upper == "RANGE":
+    return _bq_to_arrow_range_data_type(field.range_element_type)
+
+  data_type_constructor = _bq_to_arrow_scalars(field_type_upper)
+  if data_type_constructor is None:
+    return None
+  return data_type_constructor()
+
+
+def _bq_to_arrow_field(bq_field, array_type=None):
+  arrow_type = _bq_to_arrow_data_type(bq_field)
+  if arrow_type is not None:
+    if array_type is not None:
+      arrow_type = array_type
+    metadata = _BQ_FIELD_TYPE_TO_ARROW_FIELD_METADATA.get(
+        bq_field.field_type.upper() if bq_field.field_type else ""
+    )
+    return pa.field(
+        bq_field.name,
+        arrow_type,
+        nullable=False if bq_field.mode.upper() == "REPEATED" else True,
+        metadata=metadata,
+    )
+
+  warnings.warn(f"Unable to determine Arrow type for field '{bq_field.name}'.")
+  return None
+
+
+def to_arrow_schema(bq_schema_list):
+  """Return the Arrow schema, corresponding to a given BigQuery schema."""
+  arrow_fields = []
+  for bq_field in bq_schema_list:
+    arrow_field = _bq_to_arrow_field(bq_field)
+    if arrow_field is None:
+      return None
+    arrow_fields.append(arrow_field)
+  return pa.schema(arrow_fields)
+
+
+@dataclasses.dataclass
+class BigQueryLoggerConfig:
+  """Configuration for the BigQueryAgentAnalyticsPlugin.
+
+  Attributes:
+      enabled: Whether the plugin is enabled.
+      event_allowlist: List of event types to log. If None, all are allowed
+        except those in event_denylist.
+      event_denylist: List of event types to not log. Takes precedence over
+        event_allowlist.
+      content_formatter: Function to format or redact the 'content' field before
+        logging.
+  """
+
+  enabled: bool = True
+  event_allowlist: Optional[List[str]] = None
+  event_denylist: Optional[List[str]] = None
+  content_formatter: Optional[Callable[[Any], str]] = None
 
 
 def _get_event_type(event: Event) -> str:
@@ -107,8 +262,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
   - Events yielded by agents
   - Errors during model and tool execution
 
-  Each log entry includes a timestamp, event type, agent name, session ID,
-  invocation ID, user ID, content payload, and any error messages.
+  Logging behavior can be customized using the BigQueryLoggerConfig.
   """
 
   def __init__(
@@ -116,46 +270,75 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       project_id: str,
       dataset_id: str,
       table_id: str = "agent_events",
+      config: Optional[BigQueryLoggerConfig] = None,
       **kwargs,
   ):
     super().__init__(name=kwargs.get("name", "BigQueryAgentAnalyticsPlugin"))
     self._project_id = project_id
     self._dataset_id = dataset_id
     self._table_id = table_id
+    self._config = config if config else BigQueryLoggerConfig()
     self._bq_client: bigquery.Client | None = None
     self._client_init_lock = threading.Lock()
     self._init_done = False
     self._init_succeeded = False
+
+    self._write_client: BigQueryWriteAsyncClient | None = None
+    self._arrow_schema: pa.Schema | None = None
+    if not self._config.enabled:
+      logging.info(
+          "BigQueryAgentAnalyticsPlugin %s is disabled by configuration.",
+          self.name,
+      )
+      return
+
     logging.debug(
         "DEBUG: BigQueryAgentAnalyticsPlugin INSTANTIATED (Name: %s)", self.name
     )
 
   def _ensure_initialized_sync(self):
     """Synchronous initialization of BQ client and table."""
+    if not self._config.enabled:
+      return
+
     with self._client_init_lock:
       if self._init_done:
         return
       self._init_done = True
       try:
         credentials, _ = google.auth.default(
-            scopes=["https://www.googleapis.com/auth/bigquery"]
+            scopes=[
+                "https://www.googleapis.com/auth/bigquery",
+                "https://www.googleapis.com/auth/cloud-platform",  # For Storage Write
+            ]
         )
         client_info = google.api_core.client_info.ClientInfo(
             user_agent=f"google-adk-bq-logger/{version.__version__}"
         )
+
+        # 1. Init BQ Client (for create_dataset/create_table)
         self._bq_client = bigquery.Client(
             project=self._project_id,
             credentials=credentials,
             client_info=client_info,
         )
+
+        # 2. Init BQ Storage Write Client
+        self._write_client = BigQueryWriteAsyncClient(
+            credentials=credentials, client_info=client_info
+        )
+
         logging.info(
-            "BigQuery client initialized for project %s", self._project_id
+            "BigQuery clients (Core & Storage Write) initialized for"
+            " project %s",
+            self._project_id,
         )
         dataset_ref = self._bq_client.dataset(self._dataset_id)
         self._bq_client.create_dataset(dataset_ref, exists_ok=True)
         logging.info("Dataset %s ensured to exist.", self._dataset_id)
         table_ref = dataset_ref.table(self._table_id)
-        # Schema without separate token columns
+
+        # Schema
         schema = [
             bigquery.SchemaField("timestamp", "TIMESTAMP"),
             bigquery.SchemaField("event_type", "STRING"),
@@ -169,6 +352,11 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         table = bigquery.Table(table_ref, schema=schema)
         self._bq_client.create_table(table, exists_ok=True)
         logging.info("Table %s ensured to exist.", self._table_id)
+
+        # 4. Store Arrow schema for Write API
+        self._arrow_schema = to_arrow_schema(schema)  # USE LOCAL VERSION
+        # --- self._table_ref_str removed ---
+
         self._init_succeeded = True
       except (
           auth_exceptions.GoogleAuthError,
@@ -180,13 +368,50 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         self._init_succeeded = False
 
   async def _log_to_bigquery_async(self, event_dict: dict[str, Any]):
-    def _sync_log():
-      self._ensure_initialized_sync()
-      if not self._init_succeeded or not self._bq_client:
+    if not self._config.enabled:
+      return
+
+    event_type = event_dict.get("event_type")
+
+    # Check denylist
+    if (
+        self._config.event_denylist
+        and event_type in self._config.event_denylist
+    ):
+      return
+
+    # Check allowlist
+    if (
+        self._config.event_allowlist
+        and event_type not in self._config.event_allowlist
+    ):
+      return
+
+    # Apply custom content formatter
+    if self._config.content_formatter and "content" in event_dict:
+      try:
+        event_dict["content"] = self._config.content_formatter(
+            event_dict["content"]
+        )
+      except Exception as e:
+        logging.warning(
+            "Error applying custom content formatter for event type %s: %s",
+            event_type,
+            e,
+        )
+        # Optionally log a generic message or the error
+
+    try:
+      if not self._init_done:
+        await asyncio.to_thread(self._ensure_initialized_sync)
+
+      # Check for all required Storage Write API components
+      if not (
+          self._init_succeeded and self._write_client and self._arrow_schema
+      ):
+        logging.warning("BigQuery write client not initialized. Skipping log.")
         return
-      table_ref = self._bq_client.dataset(self._dataset_id).table(
-          self._table_id
-      )
+
       default_row = {
           "timestamp": datetime.now(timezone.utc).isoformat(),
           "event_type": None,
@@ -199,21 +424,41 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       }
       insert_row = {**default_row, **event_dict}
 
-      errors = self._bq_client.insert_rows_json(table_ref, [insert_row])
-      if errors:
-        logging.error(
-            "Errors occurred while inserting to BigQuery table %s.%s: %s",
-            self._dataset_id,
-            self._table_id,
-            errors,
-        )
+      # --- START MODIFIED STORAGE WRITE API LOGIC (using Default Stream) ---
+      # 1. Convert the single row dict to a PyArrow RecordBatch
+      #    pa.RecordBatch.from_pydict requires a dict of lists
+      pydict = {
+          field.name: [insert_row.get(field.name)]
+          for field in self._arrow_schema
+      }
+      batch = pa.RecordBatch.from_pydict(pydict, schema=self._arrow_schema)
 
-    try:
-      await asyncio.to_thread(_sync_log)
-    except (
-        cloud_exceptions.GoogleCloudError,
-        auth_exceptions.GoogleAuthError,
-    ) as e:
+      # 2. Create the AppendRowsRequest, pointing to the default stream
+      request = bq_storage_types.AppendRowsRequest(
+          write_stream=(
+              f"projects/{self._project_id}/datasets/{self._dataset_id}"
+              f"/tables/{self._table_id}/_default"
+          )
+      )
+      request.arrow_rows.writer_schema.serialized_schema = (
+          self._arrow_schema.serialize().to_pybytes()
+      )
+
+      request.arrow_rows.rows.serialized_record_batch = (
+          batch.serialize().to_pybytes()
+      )
+
+      # 3. Send the request and check for errors
+      response_iterator = self._write_client.append_rows(requests=[request])
+      async for response in response_iterator:
+        if response.row_errors:
+          logging.error(
+              "Errors occurred while writing to BigQuery (Storage Write"
+              " API): %s",
+              response.row_errors,
+          )
+          break  # Only one response expected
+    except Exception as e:
       logging.exception("Failed to log to BigQuery: %s", e)
 
   async def on_user_message_callback(
@@ -246,6 +491,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         "session_id": invocation_context.session.id,
         "invocation_id": invocation_context.invocation_id,
         "user_id": invocation_context.session.user_id,
+        "content": None,
     }
     await self._log_to_bigquery_async(event_dict)
     return None
@@ -286,6 +532,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         "session_id": invocation_context.session.id,
         "invocation_id": invocation_context.invocation_id,
         "user_id": invocation_context.session.user_id,
+        "content": None,
     }
     await self._log_to_bigquery_async(event_dict)
     return None
@@ -333,20 +580,26 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
 
     # Log Full System Instruction
     system_instruction_text = "None"
-    if llm_request.config and hasattr(llm_request.config, "system_instruction"):
+    if llm_request.config and llm_request.config.system_instruction:
       si = llm_request.config.system_instruction
-      if si:
-        if isinstance(si, str):
-          system_instruction_text = si
-        elif hasattr(si, "__iter__"):  # Handles list, tuple, etc. of parts
-          # Join parts together to form the complete system instruction
-          system_instruction_text = "".join(
-              part.text for part in si if hasattr(part, "text")
-          )
-        else:
-          system_instruction_text = str(si)
+      if isinstance(si, str):
+        system_instruction_text = si
+      elif isinstance(si, types.Content):
+        system_instruction_text = "".join(p.text for p in si.parts if p.text)
+      elif isinstance(si, types.Part):
+        system_instruction_text = si.text
+      elif hasattr(si, "__iter__"):
+        texts = []
+        for item in si:
+          if isinstance(item, str):
+            texts.append(item)
+          elif isinstance(item, types.Part) and item.text:
+            texts.append(item.text)
+        system_instruction_text = "".join(texts)
       else:
-        system_instruction_text = "Empty"
+        system_instruction_text = str(si)
+    elif llm_request.config and not llm_request.config.system_instruction:
+      system_instruction_text = "Empty"
 
     content_parts.append(f"System Prompt: {system_instruction_text}")
 
@@ -529,7 +782,9 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         "session_id": tool_context.session.id,
         "invocation_id": tool_context.invocation_id,
         "user_id": tool_context.session.user_id,
-        "content": f"Tool Name: {tool.name}",
+        "content": (
+            f"Tool Name: {tool.name}, Arguments: {_format_args(tool_args)}"
+        ),
         "error_message": str(error),
     }
     await self._log_to_bigquery_async(event_dict)
