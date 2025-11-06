@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Handles function callings for LLM flow."""
+"""Handles function calling for LLM flow."""
 
 from __future__ import annotations
 
@@ -656,7 +656,7 @@ async def _process_function_live_helper(
       }
   elif hasattr(tool, 'func') and inspect.isasyncgenfunction(tool.func):
     # for streaming tool use case
-    # we require the function to be a async generator function
+    # we require the function to be an async generator function
     async def run_tool_and_update_queue(tool, function_args, tool_context):
       try:
         async with Aclosing(

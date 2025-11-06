@@ -390,7 +390,7 @@ def test_function_regular_return_type_vertex_ai():
   assert function_decl.response.type == types.Type.STRING
 
 
-def test_fucntion_with_no_response_annotations():
+def test_function_with_no_response_annotations():
   """Test a function that has no response annotations."""
 
   def transfer_to_agent(agent_name: str, tool_context: ToolContext):

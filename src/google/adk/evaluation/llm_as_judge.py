@@ -122,7 +122,7 @@ class LlmAsJudge(Evaluator):
       raise ValueError("expected_invocations is needed by this metric.")
 
     # If expected_invocation are not required by the metric and if they are not
-    # supplied, we provide an a list of None.
+    # supplied, we provide a list of None.
     expected_invocations = (
         [None] * len(actual_invocations)
         if expected_invocations is None

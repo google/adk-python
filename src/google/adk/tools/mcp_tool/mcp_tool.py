@@ -121,13 +121,10 @@ class McpTool(BaseAuthenticatedTool):
     """
     input_schema = self._mcp_tool.inputSchema
     parameters = _to_gemini_schema(input_schema)
-    output_schema = self._mcp_tool.outputSchema
-    response = _to_gemini_schema(output_schema)
     function_decl = FunctionDeclaration(
         name=self.name,
         description=self.description,
         parameters=parameters,
-        response=response,
     )
     return function_decl
 
@@ -143,7 +140,7 @@ class McpTool(BaseAuthenticatedTool):
 
     # Functions are callable objects, but not all callable objects are functions
     # checking coroutine function is not enough. We also need to check whether
-    # Callable's __call__ function is a coroutine funciton
+    # Callable's __call__ function is a coroutine function
     is_async = inspect.iscoroutinefunction(target) or (
         hasattr(target, "__call__")
         and inspect.iscoroutinefunction(target.__call__)

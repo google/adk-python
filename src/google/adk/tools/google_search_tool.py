@@ -59,7 +59,7 @@ class GoogleSearchTool(BaseTool):
     if is_gemini_1_model(llm_request.model):
       if llm_request.config.tools:
         raise ValueError(
-            'Google search tool can not be used with other tools in Gemini 1.x.'
+            'Google search tool cannot be used with other tools in Gemini 1.x.'
         )
       llm_request.config.tools.append(
           types.Tool(google_search_retrieval=types.GoogleSearchRetrieval())

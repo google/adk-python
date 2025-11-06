@@ -54,7 +54,7 @@ class EvaluationResult(BaseModel):
 
 
 class Evaluator(ABC):
-  """A merics evaluator interface."""
+  """A metrics evaluator interface."""
 
   criterion_type: ClassVar[type[BaseCriterion]] = BaseCriterion
 
@@ -71,6 +71,6 @@ class Evaluator(ABC):
       expected_invocations: An optional list of invocations, if specified,
         usually act as a benchmark/golden response. If these are specified
         usually the expectation is that the length of this list and actual
-        invocaiton is the same.
+        invocation is the same.
     """
     raise NotImplementedError()

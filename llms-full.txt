@@ -7010,7 +7010,7 @@ This approach involves creating individual test files, each representing a singl
 -   `Expected Intermediate Agent Responses`: These are the natural language
     responses that the agent (or sub-agents) generates as it moves towards
     generating a final answer. These natural language responses are usually an
-    artifact of an multi-agent system, where your root agent depends on sub-agents to achieve a goal. These intermediate responses, may or may not be of
+    artifact of a multi-agent system, where your root agent depends on sub-agents to achieve a goal. These intermediate responses, may or may not be of
     interest to the end user, but for a developer/owner of the system, are of
     critical importance, as they give you the confidence that the agent went
     through the right path to generate final response.
@@ -9102,7 +9102,7 @@ Let's break down what's happening:
   replace `u_123` with a specific user ID, and `s_123` with a specific session
   ID.
 * `{"state": {"key1": "value1", "key2": 42}}`: This is optional. You can use
-  this to customize the agent's pre-existing state (dict) when creating the
+  this to customize the agent's preexisting state (dict) when creating the
   session.
 
 This should return the session information if it was created successfully. The
@@ -13315,7 +13315,7 @@ You set up authentication when defining your tool:
 
 ## Journey 1: Building Agentic Applications with Authenticated Tools
 
-This section focuses on using pre-existing tools (like those from `RestApiTool/ OpenAPIToolset`, `APIHubToolset`, `GoogleApiToolSet`) that require authentication within your agentic application. Your main responsibility is configuring the tools and handling the client-side part of interactive authentication flows (if required by the tool).
+This section focuses on using preexisting tools (like those from `RestApiTool/ OpenAPIToolset`, `APIHubToolset`, `GoogleApiToolSet`) that require authentication within your agentic application. Your main responsibility is configuring the tools and handling the client-side part of interactive authentication flows (if required by the tool).
 
 ### 1. Configuring Tools with Authentication
 
