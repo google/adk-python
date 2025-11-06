@@ -165,18 +165,12 @@ class GeminiLlmConnection(BaseLlmConnection):
               yield self.__build_full_text_response(text)
               text = ''
             yield llm_response
-          if (
-              message.server_content.input_transcription
-              and message.server_content.input_transcription.text
-          ):
+          if message.server_content.input_transcription:
             llm_response = LlmResponse(
                 input_transcription=message.server_content.input_transcription,
             )
             yield llm_response
-          if (
-              message.server_content.output_transcription
-              and message.server_content.output_transcription.text
-          ):
+          if message.server_content.output_transcription:
             llm_response = LlmResponse(
                 output_transcription=message.server_content.output_transcription
             )
