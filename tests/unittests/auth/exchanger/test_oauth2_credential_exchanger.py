@@ -23,6 +23,7 @@ from fastapi.openapi.models import OAuthFlows
 from google.adk.auth.auth_credential import AuthCredential
 from google.adk.auth.auth_credential import AuthCredentialTypes
 from google.adk.auth.auth_credential import OAuth2Auth
+from google.adk.auth.auth_schemes import OAuthGrantType
 from google.adk.auth.auth_schemes import OpenIdConnectWithConfig
 from google.adk.auth.exchanger.base_credential_exchanger import CredentialExchangeError
 from google.adk.auth.exchanger.oauth2_credential_exchanger import OAuth2CredentialExchanger
@@ -297,6 +298,50 @@ class TestOAuth2CredentialExchanger:
     assert result == credential
     assert result.oauth2.access_token is None
     mock_client.fetch_token.assert_called_once()
+
+  @patch("google.adk.auth.oauth2_credential_util.OAuth2Session")
+  @pytest.mark.asyncio
+  async def test_exchange_normalize_uri(self, mock_oauth2_session):
+    """Test exchange method normalizes auth_response_uri."""
+    mock_client = Mock()
+    mock_oauth2_session.return_value = mock_client
+    mock_tokens = OAuth2Token({
+        "access_token": "new_access_token",
+        "refresh_token": "new_refresh_token",
+        "expires_at": int(time.time()) + 3600,
+        "expires_in": 3600,
+    })
+    mock_client.fetch_token.return_value = mock_tokens
+
+    scheme = OpenIdConnectWithConfig(
+        type_="openIdConnect",
+        openId_connect_url=(
+            "https://example.com/.well-known/openid_configuration"
+        ),
+        authorization_endpoint="https://example.com/auth",
+        token_endpoint="https://example.com/token",
+        scopes=["openid"],
+    )
+    credential = AuthCredential(
+        auth_type=AuthCredentialTypes.OPEN_ID_CONNECT,
+        oauth2=OAuth2Auth(
+            client_id="test_client_id",
+            client_secret="test_client_secret",
+            auth_response_uri="https://example.com/callback?code=auth_code#",  # URI with trailing hash
+            auth_code="auth_code",
+        ),
+    )
+
+    exchanger = OAuth2CredentialExchanger()
+    await exchanger.exchange(credential, scheme)
+
+    # Verify fetch_token was called with the normalized URI
+    mock_client.fetch_token.assert_called_once_with(
+        "https://example.com/token",
+        authorization_response="https://example.com/callback?code=auth_code",  # Normalized URI
+        code="auth_code",
+        grant_type=OAuthGrantType.AUTHORIZATION_CODE,
+    )
 
   @pytest.mark.asyncio
   async def test_determine_grant_type_client_credentials(self):

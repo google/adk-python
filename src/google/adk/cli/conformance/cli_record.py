@@ -52,12 +52,35 @@ async def _create_conformance_test_files(
     )
 
     # Run the agent with the user messages
+    function_call_name_to_id_map = {}
     for user_message_index, user_message in enumerate(
         test_case.test_spec.user_messages
     ):
       # Create content from UserMessage object
       if user_message.content is not None:
         content = user_message.content
+
+        # If the user provides a function response, it means this is for
+        # long-running tool. Replace the function call ID with the actual
+        # function call ID. This is needed because the function call ID is not
+        # known when writing the test case.
+        if (
+            user_message.content.parts
+            and user_message.content.parts[0].function_response
+            and user_message.content.parts[0].function_response.name
+        ):
+          if (
+              user_message.content.parts[0].function_response.name
+              not in function_call_name_to_id_map
+          ):
+            raise ValueError(
+                "Function response for"
+                f" {user_message.content.parts[0].function_response.name} does"
+                " not match any pending function call."
+            )
+          content.parts[0].function_response.id = function_call_name_to_id_map[
+              user_message.content.parts[0].function_response.name
+          ]
       elif user_message.text is not None:
         content = types.UserContent(parts=[types.Part(text=user_message.text)])
       else:
@@ -66,7 +89,7 @@ async def _create_conformance_test_files(
             " content"
         )
 
-      async for _ in client.run_agent(
+      async for event in client.run_agent(
           RunAgentRequest(
               app_name=test_case.test_spec.agent,
               user_id=user_id,
@@ -78,7 +101,12 @@ async def _create_conformance_test_files(
           test_case_dir=str(test_case_dir),
           user_message_index=user_message_index,
       ):
-        pass
+        if event.content and event.content.parts:
+          for part in event.content.parts:
+            if part.function_call:
+              function_call_name_to_id_map[part.function_call.name] = (
+                  part.function_call.id
+              )
 
     # Retrieve the updated session
     updated_session = await client.get_session(

@@ -12,7 +12,9 @@ The goal of this demo is to take an agent with a simple, underperforming prompt
 and automatically improve it using GEPA, increasing the agent's reliability on a
 customer support task.
 
-## Tau-Bench Retail Environment
+## Examples
+
+### Tau-Bench Retail Environment
 
 We use the `'retail'` environment from
 [Tau-bench](https://github.com/sierra-research/tau-bench), a benchmark designed
@@ -25,6 +27,17 @@ orders less than 30 days old). The agent is built with ADK using a standard
 tool-calling strategy. It receives the conversation history and a list of
 available tools, and it must decide whether to respond to the user or call a
 tool.
+
+The easiest way to run this demo is through the provided Colab notebook:
+[`gepa_tau_bench.ipynb`](https://colab.research.google.com/github/google/adk-python/blob/main/contributing/samples/gepa/gepa_tau_bench.ipynb).
+
+### Improving a voter Agent's PII filtering ability
+
+This demo notebook ([`voter_agent/gepa.ipynb`](https://colab.research.google.com/github/google/adk-python/blob/main/contributing/samples/gepa/voter_agent/gepa.ipynb)) walks you through optimizing an AI
+agent's prompt using the Genetic-Pareto (GEPA) algorithm. We'll use the Google
+Agent Development Kit (ADK) to build and evaluate a "Vote Taker" agent designed
+to collect audience votes while filtering sensitive information.
+
 
 ## GEPA Overview
 

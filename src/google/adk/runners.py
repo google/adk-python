@@ -1244,6 +1244,7 @@ class Runner:
     )
     if modified_user_message is not None:
       new_message = modified_user_message
+      invocation_context.user_content = new_message
 
     if new_message:
       await self._append_new_message_to_session(
