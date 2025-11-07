@@ -122,7 +122,7 @@ root_agent = Agent(
         - If a change in the codebase can be covered by the auto-generated API reference docs, you should just recommend to update the API reference docs (i.e. regenerate the API reference docs) instead of the other human-written ADK docs.
 
       # 5. Output
-      Present the followings in an easy to read format as the final output to the user.
+      Present the following in an easy to read format as the final output to the user.
       - The actions you took and the reasoning
       - The summary of the differences found
     """,
