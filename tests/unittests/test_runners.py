@@ -97,6 +97,7 @@ class MockPlugin(BasePlugin):
     super().__init__(name="mock_plugin")
     self.enable_user_message_callback = False
     self.enable_event_callback = False
+    self.user_content_seen_in_before_run_callback = None
 
   async def on_user_message_callback(
       self,
@@ -109,6 +110,15 @@ class MockPlugin(BasePlugin):
     return types.Content(
         role="model",
         parts=[types.Part(text=self.ON_USER_CALLBACK_MSG)],
+    )
+
+  async def before_run_callback(
+      self,
+      *,
+      invocation_context: InvocationContext,
+  ) -> None:
+    self.user_content_seen_in_before_run_callback = (
+        invocation_context.user_content
     )
 
   async def on_event_callback(
@@ -535,6 +545,11 @@ class TestRunnerWithPlugins:
     modified_user_message = generated_event.content.parts[0].text
 
     assert modified_user_message == MockPlugin.ON_USER_CALLBACK_MSG
+    assert self.plugin.user_content_seen_in_before_run_callback is not None
+    assert (
+        self.plugin.user_content_seen_in_before_run_callback.parts[0].text
+        == MockPlugin.ON_USER_CALLBACK_MSG
+    )
 
   @pytest.mark.asyncio
   async def test_runner_modifies_event_after_execution(self):

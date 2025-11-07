@@ -107,7 +107,7 @@ root_agent = Agent(
       - **Avoid trivial code sample changes:** Update code samples only when adding or modifying functionality. Do not reformat code samples, change variable names, or change code syntax unless you are specifically directed to make those updates.
 
       # 5. Output
-      Present the followings in an easy to read format as the final output to the user.
+      Present the following in an easy to read format as the final output to the user.
       - The actions you took and the reasoning
       - The summary of the pull request created
     """,

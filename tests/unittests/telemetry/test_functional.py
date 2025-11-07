@@ -93,7 +93,7 @@ async def test_tracer_start_as_current_span(
 
   Additionally tests if each async generator invoked is wrapped in Aclosing.
   This is necessary because instrumentation utilizes contextvars, which ran into "ContextVar was created in a different Context" errors,
-  when a given coroutine gets indeterminitely suspended.
+  when a given coroutine gets indeterminately suspended.
   """
   firstiter, finalizer = sys.get_asyncgen_hooks()
 

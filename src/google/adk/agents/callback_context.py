@@ -45,8 +45,6 @@ class CallbackContext(ReadonlyContext):
     from ..events.event_actions import EventActions
     from ..sessions.state import State
 
-    # TODO(weisun): make this public for Agent Development Kit, but private for
-    # users.
     self._event_actions = event_actions or EventActions()
     self._state = State(
         value=invocation_context.session.state,
