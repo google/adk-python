@@ -45,9 +45,28 @@ from .utils import load_agent_config_schema
 class AgentBuilderAssistant:
   """Agent Builder Assistant factory for creating configured instances."""
 
+  _CORE_SCHEMA_DEF_NAMES: tuple[str, ...] = (
+      "LlmAgentConfig",
+      "LoopAgentConfig",
+      "ParallelAgentConfig",
+      "SequentialAgentConfig",
+      "BaseAgentConfig",
+      "AgentRefConfig",
+      "CodeConfig",
+      "ArgumentConfig",
+      "ToolArgsConfig",
+      "google__adk__tools__tool_configs__ToolConfig",
+  )
+  _GEN_CONFIG_FIELDS: tuple[str, ...] = (
+      "temperature",
+      "topP",
+      "topK",
+      "maxOutputTokens",
+  )
+
   @staticmethod
   def create_agent(
-      model: Union[str, BaseLlm] = "gemini-2.5-flash",
+      model: Union[str, BaseLlm] = "gemini-2.5-pro",
       working_directory: Optional[str] = None,
   ) -> LlmAgent:
     """Create Agent Builder Assistant with embedded ADK AgentConfig schema.
@@ -127,11 +146,9 @@ class AgentBuilderAssistant:
   def _load_schema() -> str:
     """Load ADK AgentConfig.json schema content and format for YAML embedding."""
 
-    # CENTRALIZED ADK AGENTCONFIG SCHEMA LOADING: Use common utility function
-    # This avoids duplication across multiple files and provides consistent
-    # ADK AgentConfig schema loading with caching and error handling.
-    schema_dict = load_agent_config_schema()
-    return AgentBuilderAssistant._build_schema_reference(schema_dict)
+    schema_dict = load_agent_config_schema(raw_format=False)
+    subset = AgentBuilderAssistant._extract_core_schema(schema_dict)
+    return AgentBuilderAssistant._build_schema_reference(subset)
 
   @staticmethod
   def _build_schema_reference(schema: dict[str, Any]) -> str:
@@ -299,6 +316,38 @@ class AgentBuilderAssistant:
           add(def_name, indent=2)
 
     return "```text\n" + "\n".join(lines) + "\n```"
+
+  @staticmethod
+  def _extract_core_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """Return only the schema nodes surfaced by the assistant."""
+
+    defs = schema.get("$defs", {})
+    filtered_defs: dict[str, Any] = {}
+    for key in AgentBuilderAssistant._CORE_SCHEMA_DEF_NAMES:
+      if key in defs:
+        filtered_defs[key] = defs[key]
+
+    gen_config = defs.get("GenerateContentConfig")
+    if gen_config:
+      properties = gen_config.get("properties", {})
+      filtered_defs["GenerateContentConfig"] = {
+          "title": gen_config.get("title", "GenerateContentConfig"),
+          "description": (
+              "Common LLM generation knobs exposed by the Agent Builder."
+          ),
+          "type": "object",
+          "additionalProperties": False,
+          "properties": {
+              key: properties[key]
+              for key in AgentBuilderAssistant._GEN_CONFIG_FIELDS
+              if key in properties
+          },
+      }
+
+    return {
+        "$defs": filtered_defs,
+        "properties": schema.get("properties", {}),
+    }
 
   @staticmethod
   def _load_instruction_with_schema(
