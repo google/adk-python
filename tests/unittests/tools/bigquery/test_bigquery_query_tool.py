@@ -1436,12 +1436,12 @@ def test_detect_anomalies_with_table_id(mock_uuid, mock_execute_sql):
 
   expected_create_model_query = """
   CREATE TEMP MODEL detect_anomalies_model_test_uuid
-    OPTIONS (MODEL_TYPE = 'ARIMA_PLUS', TIME_SERIES_TIMESTAMP_COL = 'ts_timestamp', TIME_SERIES_DATA_COL = 'ts_data', HORIZON = 10)
+    OPTIONS (MODEL_TYPE = 'ARIMA_PLUS', TIME_SERIES_TIMESTAMP_COL = 'ts_timestamp', TIME_SERIES_DATA_COL = 'ts_data', HORIZON = 1000)
   AS (SELECT * FROM `test-dataset.test-table`)
   """
 
   expected_anomaly_detection_query = """
-  SELECT * FROM ML.DETECT_ANOMALIES(MODEL detect_anomalies_model_test_uuid, STRUCT(0.95 AS anomaly_prob_threshold))
+  SELECT * FROM ML.DETECT_ANOMALIES(MODEL detect_anomalies_model_test_uuid, STRUCT(0.95 AS anomaly_prob_threshold)) ORDER BY ts_timestamp
   """
 
   assert mock_execute_sql.call_count == 2
@@ -1497,7 +1497,7 @@ def test_detect_anomalies_with_custom_params(mock_uuid, mock_execute_sql):
   """
 
   expected_anomaly_detection_query = """
-  SELECT * FROM ML.DETECT_ANOMALIES(MODEL detect_anomalies_model_test_uuid, STRUCT(0.8 AS anomaly_prob_threshold))
+  SELECT * FROM ML.DETECT_ANOMALIES(MODEL detect_anomalies_model_test_uuid, STRUCT(0.8 AS anomaly_prob_threshold)) ORDER BY dim1, dim2, ts_timestamp
   """
 
   assert mock_execute_sql.call_count == 2
@@ -1555,7 +1555,61 @@ def test_detect_anomalies_on_target_table(mock_uuid, mock_execute_sql):
   """
 
   expected_anomaly_detection_query = """
-    SELECT * FROM ML.DETECT_ANOMALIES(MODEL detect_anomalies_model_test_uuid, STRUCT(0.8 AS anomaly_prob_threshold), (SELECT * FROM `test-dataset.target-table`))
+    SELECT * FROM ML.DETECT_ANOMALIES(MODEL detect_anomalies_model_test_uuid, STRUCT(0.8 AS anomaly_prob_threshold), (SELECT * FROM `test-dataset.target-table`)) ORDER BY dim1, dim2, ts_timestamp
+    """
+
+  assert mock_execute_sql.call_count == 2
+  mock_execute_sql.assert_any_call(
+      project_id="test-project",
+      query=expected_create_model_query,
+      credentials=mock_credentials,
+      settings=mock_settings,
+      tool_context=mock_tool_context,
+      caller_id="detect_anomalies",
+  )
+  mock_execute_sql.assert_any_call(
+      project_id="test-project",
+      query=expected_anomaly_detection_query,
+      credentials=mock_credentials,
+      settings=mock_settings,
+      tool_context=mock_tool_context,
+      caller_id="detect_anomalies",
+  )
+
+
+# detect_anomalies calls execute_sql twice. We need to test that
+# the queries are properly constructed and call execute_sql with the correct
+# parameters exactly twice.
+@mock.patch("google.adk.tools.bigquery.query_tool._execute_sql", autospec=True)
+@mock.patch("uuid.uuid4", autospec=True)
+def test_detect_anomalies_with_str_table_id(mock_uuid, mock_execute_sql):
+  """Test time series anomaly detection tool invocation with a table id."""
+  mock_credentials = mock.MagicMock(spec=Credentials)
+  mock_settings = BigQueryToolConfig(write_mode=WriteMode.PROTECTED)
+  mock_tool_context = mock.create_autospec(ToolContext, instance=True)
+  mock_uuid.return_value = "test_uuid"
+  mock_execute_sql.return_value = {"status": "SUCCESS"}
+
+  history_data_query = "SELECT * FROM `test-dataset.test-table`"
+  detect_anomalies(
+      project_id="test-project",
+      history_data=history_data_query,
+      times_series_timestamp_col="ts_timestamp",
+      times_series_data_col="ts_data",
+      target_data="test-dataset.target-table",
+      credentials=mock_credentials,
+      settings=mock_settings,
+      tool_context=mock_tool_context,
+  )
+
+  expected_create_model_query = """
+  CREATE TEMP MODEL detect_anomalies_model_test_uuid
+    OPTIONS (MODEL_TYPE = 'ARIMA_PLUS', TIME_SERIES_TIMESTAMP_COL = 'ts_timestamp', TIME_SERIES_DATA_COL = 'ts_data', HORIZON = 1000)
+  AS (SELECT * FROM `test-dataset.test-table`)
+  """
+
+  expected_anomaly_detection_query = """
+    SELECT * FROM ML.DETECT_ANOMALIES(MODEL detect_anomalies_model_test_uuid, STRUCT(0.95 AS anomaly_prob_threshold), (SELECT * FROM `test-dataset.target-table`)) ORDER BY ts_timestamp
     """
 
   assert mock_execute_sql.call_count == 2
