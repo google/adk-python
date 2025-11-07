@@ -123,7 +123,7 @@ class AgentEvaluator:
       eval_set: The eval set.
       criteria: Evaluation criteria, a dictionary of metric names to their
         respective thresholds. This field is deprecated.
-      eval_config: The evauation config.
+      eval_config: The evaluation config.
       num_runs: Number of times all entries in the eval dataset should be
         assessed.
       agent_name: The name of the agent, if trying to evaluate something other
@@ -453,7 +453,11 @@ class AgentEvaluator:
           ),
       })
 
-    print(tabulate(pd.DataFrame(data), headers="keys", tablefmt="grid"))
+    print(
+        tabulate(
+            pd.DataFrame(data), headers="keys", tablefmt="grid", maxcolwidths=25
+        )
+    )
     print("\n\n")  # Few empty lines for visual clarity
 
   @staticmethod

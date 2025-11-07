@@ -731,7 +731,7 @@ class TestAgentLoader:
 
         loader = AgentLoader(str(regular_agents_dir))
 
-        # Try to load non-existent special agent
+        # Try to load nonexistent special agent
         with pytest.raises(ValueError) as exc_info:
           loader.load_agent("__nonexistent_special")
 

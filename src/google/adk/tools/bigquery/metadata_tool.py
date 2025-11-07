@@ -51,7 +51,7 @@ def list_dataset_ids(
         project=project_id,
         credentials=credentials,
         location=settings.location,
-        user_agent=settings.application_name,
+        user_agent=[settings.application_name, "list_dataset_ids"],
     )
 
     datasets = []
@@ -123,7 +123,7 @@ def get_dataset_info(
         project=project_id,
         credentials=credentials,
         location=settings.location,
-        user_agent=settings.application_name,
+        user_agent=[settings.application_name, "get_dataset_info"],
     )
     dataset = bq_client.get_dataset(
         bigquery.DatasetReference(project_id, dataset_id)
@@ -162,7 +162,7 @@ def list_table_ids(
         project=project_id,
         credentials=credentials,
         location=settings.location,
-        user_agent=settings.application_name,
+        user_agent=[settings.application_name, "list_table_ids"],
     )
 
     tables = []
@@ -285,7 +285,7 @@ def get_table_info(
         project=project_id,
         credentials=credentials,
         location=settings.location,
-        user_agent=settings.application_name,
+        user_agent=[settings.application_name, "get_table_info"],
     )
     return bq_client.get_table(
         bigquery.TableReference(
@@ -318,7 +318,7 @@ def get_job_info(
       dict: Dictionary representing the properties of the job.
 
   Examples:
-      >>> user may give job id in fomat of: project_id:region.job_id
+      >>> user may give job id in format of: project_id:region.job_id
       like bigquery-public-data:US.bquxjob_12345678_1234567890
       >>> get_job_info("bigquery-public-data", "bquxjob_12345678_1234567890")
       {
@@ -579,8 +579,9 @@ def get_job_info(
         project=project_id,
         credentials=credentials,
         location=settings.location,
-        user_agent=settings.application_name,
+        user_agent=[settings.application_name, "get_job_info"],
     )
+
     job = bq_client.get_job(job_id)
     # We need to use _properties to get the job info because it contains all
     # the job info.

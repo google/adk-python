@@ -97,6 +97,7 @@ class MockPlugin(BasePlugin):
     super().__init__(name="mock_plugin")
     self.enable_user_message_callback = False
     self.enable_event_callback = False
+    self.user_content_seen_in_before_run_callback = None
 
   async def on_user_message_callback(
       self,
@@ -109,6 +110,15 @@ class MockPlugin(BasePlugin):
     return types.Content(
         role="model",
         parts=[types.Part(text=self.ON_USER_CALLBACK_MSG)],
+    )
+
+  async def before_run_callback(
+      self,
+      *,
+      invocation_context: InvocationContext,
+  ) -> None:
+    self.user_content_seen_in_before_run_callback = (
+        invocation_context.user_content
     )
 
   async def on_event_callback(
@@ -535,6 +545,11 @@ class TestRunnerWithPlugins:
     modified_user_message = generated_event.content.parts[0].text
 
     assert modified_user_message == MockPlugin.ON_USER_CALLBACK_MSG
+    assert self.plugin.user_content_seen_in_before_run_callback is not None
+    assert (
+        self.plugin.user_content_seen_in_before_run_callback.parts[0].text
+        == MockPlugin.ON_USER_CALLBACK_MSG
+    )
 
   @pytest.mark.asyncio
   async def test_runner_modifies_event_after_execution(self):
@@ -773,6 +788,90 @@ class TestRunnerCacheConfig:
         "ContextCacheConfig(cache_intervals=30, ttl=14400s, min_tokens=4096)"
     )
     assert str(runner.context_cache_config) == expected_str
+
+
+class TestRunnerShouldAppendEvent:
+  """Tests for Runner._should_append_event method."""
+
+  def setup_method(self):
+    """Set up test fixtures."""
+    self.session_service = InMemorySessionService()
+    self.artifact_service = InMemoryArtifactService()
+    self.root_agent = MockLlmAgent("root_agent")
+    self.runner = Runner(
+        app_name="test_app",
+        agent=self.root_agent,
+        session_service=self.session_service,
+        artifact_service=self.artifact_service,
+    )
+
+  def test_should_append_event_finished_input_transcription(self):
+    event = Event(
+        invocation_id="inv1",
+        author="user",
+        input_transcription=types.Transcription(text="hello", finished=True),
+    )
+    assert self.runner._should_append_event(event, is_live_call=True) is True
+
+  def test_should_append_event_unfinished_input_transcription(self):
+    event = Event(
+        invocation_id="inv1",
+        author="user",
+        input_transcription=types.Transcription(text="hello", finished=False),
+    )
+    assert self.runner._should_append_event(event, is_live_call=True) is True
+
+  def test_should_append_event_finished_output_transcription(self):
+    event = Event(
+        invocation_id="inv1",
+        author="model",
+        output_transcription=types.Transcription(text="world", finished=True),
+    )
+    assert self.runner._should_append_event(event, is_live_call=True) is True
+
+  def test_should_append_event_unfinished_output_transcription(self):
+    event = Event(
+        invocation_id="inv1",
+        author="model",
+        output_transcription=types.Transcription(text="world", finished=False),
+    )
+    assert self.runner._should_append_event(event, is_live_call=True) is True
+
+  def test_should_not_append_event_live_model_audio(self):
+    event = Event(
+        invocation_id="inv1",
+        author="model",
+        content=types.Content(
+            parts=[
+                types.Part(
+                    inline_data=types.Blob(data=b"123", mime_type="audio/pcm")
+                )
+            ]
+        ),
+    )
+    assert self.runner._should_append_event(event, is_live_call=True) is False
+
+  def test_should_append_event_non_live_model_audio(self):
+    event = Event(
+        invocation_id="inv1",
+        author="model",
+        content=types.Content(
+            parts=[
+                types.Part(
+                    inline_data=types.Blob(data=b"123", mime_type="audio/pcm")
+                )
+            ]
+        ),
+    )
+    assert self.runner._should_append_event(event, is_live_call=False) is True
+
+  def test_should_append_event_other_event(self):
+    event = Event(
+        invocation_id="inv1",
+        author="model",
+        content=types.Content(parts=[types.Part(text="text")]),
+    )
+    assert self.runner._should_append_event(event, is_live_call=True) is True
 
 
 if __name__ == "__main__":

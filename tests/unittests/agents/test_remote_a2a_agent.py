@@ -697,7 +697,7 @@ class TestRemoteA2aAgentMessageHandling:
 
   @pytest.mark.asyncio
   async def test_handle_a2a_response_with_task_completed_and_no_update(self):
-    """Test successful A2A response handling with non-streeaming task and no update."""
+    """Test successful A2A response handling with non-streaming task and no update."""
     mock_a2a_task = Mock(spec=A2ATask)
     mock_a2a_task.id = "task-123"
     mock_a2a_task.context_id = "context-123"
@@ -1149,7 +1149,7 @@ class TestRemoteA2aAgentMessageHandlingFromFactory:
 
   @pytest.mark.asyncio
   async def test_handle_a2a_response_with_task_completed_and_no_update(self):
-    """Test successful A2A response handling with non-streeaming task and no update."""
+    """Test successful A2A response handling with non-streaming task and no update."""
     mock_a2a_task = Mock(spec=A2ATask)
     mock_a2a_task.id = "task-123"
     mock_a2a_task.context_id = "context-123"

@@ -31,7 +31,9 @@ dependencies = [
   "click>=8.1.8, <9.0.0",                                    # For CLI tools
   "fastapi>=0.115.0, <1.119.0",                              # FastAPI framework
   "google-api-python-client>=2.157.0, <3.0.0",               # Google API client discovery
-  "google-cloud-aiplatform[agent_engines] @ git+https://github.com/googleapis/python-aiplatform.git@bf1851e59cb34e63b509a2a610e72691e1c4ca28", # For VertexAI integrations, e.g. example store.
+  "google-cloud-aiplatform[agent_engines]>=1.125.0, <2.0.0", # For VertexAI integrations, e.g. example store.
+  "google-cloud-bigquery-storage>=2.0.0",
+  "google-cloud-bigquery>=2.2.0",
   "google-cloud-bigtable>=2.32.0",                           # For Bigtable database
   "google-cloud-discoveryengine>=0.13.12, <0.14.0",          # For Discovery Engine Search Tool
   "google-cloud-secret-manager>=2.22.0, <3.0.0",             # Fetching secrets in RestAPI Tool
@@ -48,6 +50,7 @@ dependencies = [
   "opentelemetry-exporter-otlp-proto-http>=1.36.0",
   "opentelemetry-resourcedetector-gcp>=1.9.0a0, <2.0.0",
   "opentelemetry-sdk>=1.37.0, <=1.37.0",
+  "pyarrow>=14.0.0",
   "pydantic>=2.0, <3.0.0",                                   # For data validation/models
   "python-dateutil>=2.9.0.post0, <3.0.0",                    # For Vertext AI Session Service
   "python-dotenv>=1.0.0, <2.0.0",                            # To manage environment variables

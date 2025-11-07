@@ -61,7 +61,7 @@ Here are some examples of how to configure the model string in `agent.py` to ach
 
     -   `model="apigee/gemini-2.5-flash"`
         -   Uses the default API version.
-        -   Provider is Vertex AI if `GOOGLE_GENAI_USE_VERTEXAI` is true, otherwise Gemini.
+        -   Provider is Vertex AI if `GOOGLE_GENAI_USE_VERTEXAI` is true; otherwise, Gemini.
 
     -   `model="apigee/v1/gemini-2.5-flash"`
         -   Uses API version `v1`.

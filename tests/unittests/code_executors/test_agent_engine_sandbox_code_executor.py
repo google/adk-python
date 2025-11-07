@@ -46,7 +46,7 @@ class TestAgentEngineSandboxCodeExecutor:
     """Tests that class attributes can be overridden at instantiation."""
     with pytest.raises(ValueError):
       AgentEngineSandboxCodeExecutor(
-          sandbox_resource_name="projects/123/locations/us-central1/reasoningEgines/456/sandboxes/789",
+          sandbox_resource_name="projects/123/locations/us-central1/reasoningEngines/456/sandboxes/789",
       )
 
   def test_init_with_agent_engine_overrides_throws_error(self):
@@ -58,17 +58,15 @@ class TestAgentEngineSandboxCodeExecutor:
           ),
       )
 
-  @patch(
-      "google.adk.code_executors.agent_engine_sandbox_code_executor.vertexai"
-  )
+  @patch("vertexai.Client")
   def test_execute_code_success(
       self,
-      mock_vertexai,
+      mock_vertexai_client,
       mock_invocation_context,
   ):
     # Setup Mocks
     mock_api_client = MagicMock()
-    mock_vertexai.Client.return_value = mock_api_client
+    mock_vertexai_client.return_value = mock_api_client
     mock_response = MagicMock()
     mock_json_output = MagicMock()
     mock_json_output.mime_type = "application/json"

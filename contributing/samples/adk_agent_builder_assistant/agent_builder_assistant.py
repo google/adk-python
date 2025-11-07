@@ -15,6 +15,8 @@
 """Agent factory for creating Agent Builder Assistant with embedded schema."""
 
 from pathlib import Path
+import textwrap
+from typing import Any
 from typing import Callable
 from typing import Optional
 from typing import Union
@@ -43,9 +45,28 @@ from .utils import load_agent_config_schema
 class AgentBuilderAssistant:
   """Agent Builder Assistant factory for creating configured instances."""
 
+  _CORE_SCHEMA_DEF_NAMES: tuple[str, ...] = (
+      "LlmAgentConfig",
+      "LoopAgentConfig",
+      "ParallelAgentConfig",
+      "SequentialAgentConfig",
+      "BaseAgentConfig",
+      "AgentRefConfig",
+      "CodeConfig",
+      "ArgumentConfig",
+      "ToolArgsConfig",
+      "google__adk__tools__tool_configs__ToolConfig",
+  )
+  _GEN_CONFIG_FIELDS: tuple[str, ...] = (
+      "temperature",
+      "topP",
+      "topK",
+      "maxOutputTokens",
+  )
+
   @staticmethod
   def create_agent(
-      model: Union[str, BaseLlm] = "gemini-2.5-flash",
+      model: Union[str, BaseLlm] = "gemini-2.5-pro",
       working_directory: Optional[str] = None,
   ) -> LlmAgent:
     """Create Agent Builder Assistant with embedded ADK AgentConfig schema.
@@ -125,28 +146,208 @@ class AgentBuilderAssistant:
   def _load_schema() -> str:
     """Load ADK AgentConfig.json schema content and format for YAML embedding."""
 
-    # CENTRALIZED ADK AGENTCONFIG SCHEMA LOADING: Use common utility function
-    # This avoids duplication across multiple files and provides consistent
-    # ADK AgentConfig schema loading with caching and error handling.
-    schema_content = load_agent_config_schema(
-        raw_format=True,  # Get as JSON string
+    schema_dict = load_agent_config_schema(raw_format=False)
+    subset = AgentBuilderAssistant._extract_core_schema(schema_dict)
+    return AgentBuilderAssistant._build_schema_reference(subset)
+
+  @staticmethod
+  def _build_schema_reference(schema: dict[str, Any]) -> str:
+    """Create compact AgentConfig reference text for prompt embedding."""
+
+    defs: dict[str, Any] = schema.get("$defs", {})
+    top_level_fields: dict[str, Any] = schema.get("properties", {})
+    wrapper = textwrap.TextWrapper(width=78)
+    lines: list[str] = []
+
+    def add(text: str = "", indent: int = 0) -> None:
+      """Append wrapped text with indentation."""
+      if not text:
+        lines.append("")
+        return
+      indent_str = " " * indent
+      wrapper.initial_indent = indent_str
+      wrapper.subsequent_indent = indent_str
+      lines.extend(wrapper.fill(text).split("\n"))
+
+    add("ADK AgentConfig quick reference")
+    add("--------------------------------")
+
+    add()
+    add("LlmAgent (agent_class: LlmAgent)")
+    add(
+        "Required fields: name, instruction. ADK best practice is to always set"
+        " model explicitly.",
+        indent=2,
+    )
+    add("Optional fields:", indent=2)
+    add("agent_class: defaults to LlmAgent; keep for clarity.", indent=4)
+    add("description: short summary string.", indent=4)
+    add("sub_agents: list of AgentRef entries (see below).", indent=4)
+    add(
+        "before_agent_callbacks / after_agent_callbacks: list of CodeConfig "
+        "entries that run before or after the agent loop.",
+        indent=4,
+    )
+    add("model: string model id (required in practice).", indent=4)
+    add(
+        "disallow_transfer_to_parent / disallow_transfer_to_peers: booleans to "
+        "restrict automatic transfer.",
+        indent=4,
+    )
+    add(
+        "input_schema / output_schema: JSON schema objects to validate inputs "
+        "and outputs.",
+        indent=4,
+    )
+    add("output_key: name to store agent output in session context.", indent=4)
+    add(
+        "include_contents: bool; include tool/LLM contents in response.",
+        indent=4,
+    )
+    add("tools: list of ToolConfig entries (see below).", indent=4)
+    add(
+        "before_model_callbacks / after_model_callbacks: list of CodeConfig "
+        "entries around LLM calls.",
+        indent=4,
+    )
+    add(
+        "before_tool_callbacks / after_tool_callbacks: list of CodeConfig "
+        "entries around tool calls.",
+        indent=4,
+    )
+    add(
+        "generate_content_config: passes directly to google.genai "
+        "GenerateContentConfig (supporting temperature, topP, topK, "
+        "maxOutputTokens, safetySettings, responseSchema, routingConfig,"
+        " etc.).",
+        indent=4,
     )
 
-    # Format as indented code block for instruction embedding
-    #
-    # Why indentation is needed:
-    # - The ADK AgentConfig schema gets embedded into instruction templates using .format()
-    # - Proper indentation maintains readability in the final instruction
-    # - Code block markers (```) help LLMs recognize this as structured data
-    #
-    # Example final instruction format:
-    #   "Here is the ADK AgentConfig schema:
-    #   ```json
-    #     {"type": "object", "properties": {...}}
-    #   ```"
-    lines = schema_content.split("\n")
-    indented_lines = ["  " + line for line in lines]  # 2-space indent
-    return "```json\n" + "\n".join(indented_lines) + "\n  ```"
+    add()
+    add("Workflow agents (LoopAgent, ParallelAgent, SequentialAgent)")
+    add(
+        "Share BaseAgent fields: agent_class, name, description, sub_agents, "
+        "before/after_agent_callbacks. Never declare model, instruction, or "
+        "tools on workflow orchestrators.",
+        indent=2,
+    )
+    add(
+        "LoopAgent adds max_iterations (int) controlling iteration cap.",
+        indent=2,
+    )
+
+    add()
+    add("AgentRef")
+    add(
+        "Used inside sub_agents lists. Provide either config_path (string path "
+        "to another YAML file) or code (dotted Python reference) to locate the "
+        "sub-agent definition.",
+        indent=2,
+    )
+
+    add()
+    add("ToolConfig")
+    add(
+        "Items inside tools arrays. Required field name (string). For built-in "
+        "tools use the exported short name, for custom tools use the dotted "
+        "module path.",
+        indent=2,
+    )
+    add(
+        "args: optional object of additional keyword arguments. Use simple "
+        "key-value pairs (ToolArgsConfig) or structured ArgumentConfig entries "
+        "when a list is required by callbacks.",
+        indent=2,
+    )
+
+    add()
+    add("ArgumentConfig")
+    add(
+        "Represents a single argument. value is required and may be any JSON "
+        "type. name is optional (null allowed). Often used in callback args.",
+        indent=2,
+    )
+
+    add()
+    add("CodeConfig")
+    add(
+        "References Python code for callbacks or dynamic tool creation."
+        " Requires name (dotted path). args is an optional list of"
+        " ArgumentConfig items executed when invoking the function.",
+        indent=2,
+    )
+
+    add()
+    add("GenerateContentConfig highlights")
+    add(
+        "Controls LLM generation behavior. Common fields: maxOutputTokens, "
+        "temperature, topP, topK, candidateCount, responseMimeType, "
+        "responseSchema/responseJsonSchema, automaticFunctionCalling, "
+        "safetySettings, routingConfig; see Vertex AI GenAI docs for full "
+        "semantics.",
+        indent=2,
+    )
+
+    add()
+    add(
+        "All other schema definitions in AgentConfig.json remain available but "
+        "are rarely needed for typical agent setups. Refer to the source file "
+        "for exhaustive field descriptions when implementing advanced configs.",
+    )
+
+    if top_level_fields:
+      add()
+      add("Top-level AgentConfig fields (from schema)")
+      for field_name in sorted(top_level_fields):
+        description = top_level_fields[field_name].get("description", "")
+        if description:
+          add(f"{field_name}: {description}", indent=2)
+        else:
+          add(field_name, indent=2)
+
+    if defs:
+      add()
+      add("Additional schema definitions")
+      for def_name in sorted(defs):
+        description = defs[def_name].get("description", "")
+        if description:
+          add(f"{def_name}: {description}", indent=2)
+        else:
+          add(def_name, indent=2)
+
+    return "```text\n" + "\n".join(lines) + "\n```"
+
+  @staticmethod
+  def _extract_core_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """Return only the schema nodes surfaced by the assistant."""
+
+    defs = schema.get("$defs", {})
+    filtered_defs: dict[str, Any] = {}
+    for key in AgentBuilderAssistant._CORE_SCHEMA_DEF_NAMES:
+      if key in defs:
+        filtered_defs[key] = defs[key]
+
+    gen_config = defs.get("GenerateContentConfig")
+    if gen_config:
+      properties = gen_config.get("properties", {})
+      filtered_defs["GenerateContentConfig"] = {
+          "title": gen_config.get("title", "GenerateContentConfig"),
+          "description": (
+              "Common LLM generation knobs exposed by the Agent Builder."
+          ),
+          "type": "object",
+          "additionalProperties": False,
+          "properties": {
+              key: properties[key]
+              for key in AgentBuilderAssistant._GEN_CONFIG_FIELDS
+              if key in properties
+          },
+      }
+
+    return {
+        "$defs": filtered_defs,
+        "properties": schema.get("properties", {}),
+    }
 
   @staticmethod
   def _load_instruction_with_schema(

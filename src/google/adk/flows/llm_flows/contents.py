@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import copy
+import logging
 from typing import AsyncGenerator
 from typing import Optional
 
@@ -28,6 +29,8 @@ from ._base_llm_processor import BaseLlmRequestProcessor
 from .functions import remove_client_function_call_id
 from .functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
 from .functions import REQUEST_EUC_FUNCTION_CALL_NAME
+
+logger = logging.getLogger('google_adk.' + __name__)
 
 
 class _ContentLlmRequestProcessor(BaseLlmRequestProcessor):
@@ -183,6 +186,12 @@ def _rearrange_events_for_latest_function_response(
           break
 
   if function_call_event_idx == -1:
+    logger.debug(
+        'No function call event found for function responses ids: %s in'
+        ' event list: %s',
+        function_responses_ids,
+        events,
+    )
     raise ValueError(
         'No function call event found for function responses ids:'
         f' {function_responses_ids}'
@@ -213,7 +222,7 @@ def _rearrange_events_for_latest_function_response(
 def _contains_empty_content(event: Event) -> bool:
   """Check if an event should be skipped due to missing or empty content.
 
-  This can happen to the evnets that only changed session state.
+  This can happen to the events that only changed session state.
   When both content and transcriptions are empty, the event will be considered
   as empty.
 
@@ -234,6 +243,30 @@ def _contains_empty_content(event: Event) -> bool:
   ) and (not event.output_transcription and not event.input_transcription)
 
 
+def _should_include_event_in_context(
+    current_branch: Optional[str], event: Event
+) -> bool:
+  """Determines if an event should be included in the LLM context.
+
+  This filters out events that are considered empty (e.g., no text, function
+  calls, or transcriptions), do not belong to the current agent's branch, or
+  are internal events like authentication or confirmation requests.
+
+  Args:
+    current_branch: The current branch of the agent.
+    event: The event to filter.
+
+  Returns:
+    True if the event should be included in the context, False otherwise.
+  """
+  return not (
+      _contains_empty_content(event)
+      or not _is_event_belongs_to_branch(current_branch, event)
+      or _is_auth_event(event)
+      or _is_request_confirmation_event(event)
+  )
+
+
 def _process_compaction_events(events: list[Event]) -> list[Event]:
   """Processes events by applying compaction.
 
@@ -251,7 +284,7 @@ def _process_compaction_events(events: list[Event]) -> list[Event]:
   # compaction_1(event_1, event_2, timestamp=3), event_3(timestamp=4),
   # compaction_2(event_2, event_3, timestamp=5), event_4(timestamp=6)]
   # for each compaction event, it only covers the events at most between the
-  # current compaction and the previous compaction. So during copmaction, we
+  # current compaction and the previous compaction. So during compaction, we
   # don't have to go across compaction boundaries.
   # Compaction events are always strictly in order based on event timestamp.
   events_to_process = []
@@ -331,24 +364,15 @@ def _get_contents(
 
   # Parse the events, leaving the contents and the function calls and
   # responses from the current agent.
-  raw_filtered_events = []
-  has_compaction_events = False
-  for event in rewind_filtered_events:
-    if _contains_empty_content(event):
-      continue
-    if not _is_event_belongs_to_branch(current_branch, event):
-      # Skip events not belong to current branch.
-      continue
-    if _is_auth_event(event):
-      # Skip auth events.
-      continue
-    if _is_request_confirmation_event(event):
-      # Skip request confirmation events.
-      continue
+  raw_filtered_events = [
+      e
+      for e in rewind_filtered_events
+      if _should_include_event_in_context(current_branch, e)
+  ]
 
-    if event.actions and event.actions.compaction:
-      has_compaction_events = True
-    raw_filtered_events.append(event)
+  has_compaction_events = any(
+      e.actions and e.actions.compaction for e in raw_filtered_events
+  )
 
   if has_compaction_events:
     events_to_process = _process_compaction_events(raw_filtered_events)
@@ -441,9 +465,9 @@ def _get_current_turn_contents(
   # Find the latest event that starts the current turn and process from there
   for i in range(len(events) - 1, -1, -1):
     event = events[i]
-    if not event.content:
-      continue
-    if event.author == 'user' or _is_other_agent_reply(agent_name, event):
+    if _should_include_event_in_context(current_branch, event) and (
+        event.author == 'user' or _is_other_agent_reply(agent_name, event)
+    ):
       return _get_contents(current_branch, events[i:], agent_name)
 
   return []
@@ -589,7 +613,7 @@ def _is_event_belongs_to_branch(
 ) -> bool:
   """Check if an event belongs to the current branch.
 
-  This is for event context segration between agents. E.g. agent A shouldn't
+  This is for event context segregation between agents. E.g. agent A shouldn't
   see output of agent B.
   """
   if not invocation_branch or not event.branch:

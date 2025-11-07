@@ -286,6 +286,42 @@ async def test_proxy_url_from_env_variable(mock_client_constructor):
     assert kwargs['http_options'].base_url == 'https://env.proxy.url'
 
 
+@pytest.mark.parametrize(
+    ('model_string', 'env_vars'),
+    [
+        (
+            'apigee/vertex_ai/gemini-2.5-flash',
+            {'GOOGLE_CLOUD_LOCATION': 'test-location'},
+        ),
+        (
+            'apigee/vertex_ai/gemini-2.5-flash',
+            {'GOOGLE_CLOUD_PROJECT': 'test-project'},
+        ),
+        (
+            'apigee/gemini-2.5-flash',
+            {
+                'GOOGLE_GENAI_USE_VERTEXAI': 'true',
+                'GOOGLE_CLOUD_LOCATION': 'test-location',
+            },
+        ),
+        (
+            'apigee/gemini-2.5-flash',
+            {
+                'GOOGLE_GENAI_USE_VERTEXAI': 'true',
+                'GOOGLE_CLOUD_PROJECT': 'test-project',
+            },
+        ),
+    ],
+)
+def test_vertex_model_missing_project_or_location_raises_error(
+    model_string, env_vars
+):
+  """Tests that ValueError is raised for Vertex models if project or location is missing."""
+  with mock.patch.dict(os.environ, env_vars, clear=True):
+    with pytest.raises(ValueError, match='environment variable must be set'):
+      ApigeeLlm(model=model_string, proxy_url=PROXY_URL)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     (
@@ -359,6 +395,10 @@ async def test_model_string_parsing_and_client_initialization(
   if use_vertexai_env is not None:
     env_vars['GOOGLE_GENAI_USE_VERTEXAI'] = use_vertexai_env
 
+  if expected_is_vertexai:
+    env_vars['GOOGLE_CLOUD_PROJECT'] = 'test-project'
+    env_vars['GOOGLE_CLOUD_LOCATION'] = 'test-location'
+
   # The ApigeeLlm is initialized in the 'with' block to make sure that the mock
   # of the environment variable is active.
   with mock.patch.dict(os.environ, env_vars, clear=True):
@@ -382,6 +422,9 @@ async def test_model_string_parsing_and_client_initialization(
     mock_client_constructor.assert_called_once()
     _, kwargs = mock_client_constructor.call_args
     assert kwargs['vertexai'] == expected_is_vertexai
+    if expected_is_vertexai:
+      assert kwargs['project'] == 'test-project'
+      assert kwargs['location'] == 'test-location'
     http_options = kwargs['http_options']
     assert http_options.api_version == expected_api_version
 

@@ -10,8 +10,7 @@
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
-# limitations under the License.
-
+# limitations under the Licens
 
 import json
 from unittest.mock import AsyncMock
@@ -21,9 +20,11 @@ import warnings
 from google.adk.models.lite_llm import _content_to_message_param
 from google.adk.models.lite_llm import _FINISH_REASON_MAPPING
 from google.adk.models.lite_llm import _function_declaration_to_tool_param
+from google.adk.models.lite_llm import _get_completion_inputs
 from google.adk.models.lite_llm import _get_content
 from google.adk.models.lite_llm import _message_to_generate_content_response
 from google.adk.models.lite_llm import _model_response_to_chunk
+from google.adk.models.lite_llm import _to_litellm_response_format
 from google.adk.models.lite_llm import _to_litellm_role
 from google.adk.models.lite_llm import FunctionChunk
 from google.adk.models.lite_llm import LiteLlm
@@ -40,6 +41,8 @@ from litellm.types.utils import Choices
 from litellm.types.utils import Delta
 from litellm.types.utils import ModelResponse
 from litellm.types.utils import StreamingChoices
+from pydantic import BaseModel
+from pydantic import Field
 import pytest
 
 LLM_REQUEST_WITH_FUNCTION_DECLARATION = LlmRequest(
@@ -87,6 +90,32 @@ LLM_REQUEST_WITH_FUNCTION_DECLARATION = LlmRequest(
     ),
 )
 
+FILE_URI_TEST_CASES = [
+    pytest.param("gs://bucket/document.pdf", "application/pdf", id="pdf"),
+    pytest.param("gs://bucket/data.json", "application/json", id="json"),
+    pytest.param("gs://bucket/data.txt", "text/plain", id="txt"),
+]
+
+FILE_BYTES_TEST_CASES = [
+    pytest.param(
+        b"test_pdf_data",
+        "application/pdf",
+        "data:application/pdf;base64,dGVzdF9wZGZfZGF0YQ==",
+        id="pdf",
+    ),
+    pytest.param(
+        b'{"hello":"world"}',
+        "application/json",
+        "data:application/json;base64,eyJoZWxsbyI6IndvcmxkIn0=",
+        id="json",
+    ),
+    pytest.param(
+        b"hello world",
+        "text/plain",
+        "data:text/plain;base64,aGVsbG8gd29ybGQ=",
+        id="txt",
+    ),
+]
 
 STREAMING_MODEL_RESPONSE = [
     ModelResponse(
@@ -178,6 +207,87 @@ STREAMING_MODEL_RESPONSE = [
         ],
     ),
 ]
+
+
+class _StructuredOutput(BaseModel):
+  value: int = Field(description="Value to emit")
+
+
+class _ModelDumpOnly:
+  """Test helper that mimics objects exposing only model_dump."""
+
+  def __init__(self):
+    self._schema = {
+        "type": "object",
+        "properties": {"foo": {"type": "string"}},
+    }
+
+  def model_dump(self, *, exclude_none=True, mode="json"):
+    # The method signature matches pydantic BaseModel.model_dump to simulate
+    # google.genai schema-like objects.
+    del exclude_none
+    del mode
+    return self._schema
+
+
+def test_get_completion_inputs_formats_pydantic_schema_for_litellm():
+  llm_request = LlmRequest(
+      config=types.GenerateContentConfig(response_schema=_StructuredOutput)
+  )
+
+  _, _, response_format, _ = _get_completion_inputs(llm_request)
+
+  assert response_format == {
+      "type": "json_object",
+      "response_schema": _StructuredOutput.model_json_schema(),
+  }
+
+
+def test_to_litellm_response_format_passes_preformatted_dict():
+  response_format = {
+      "type": "json_object",
+      "response_schema": {
+          "type": "object",
+          "properties": {"foo": {"type": "string"}},
+      },
+  }
+
+  assert _to_litellm_response_format(response_format) == response_format
+
+
+def test_to_litellm_response_format_wraps_json_schema_dict():
+  schema = {
+      "type": "object",
+      "properties": {"foo": {"type": "string"}},
+  }
+
+  formatted = _to_litellm_response_format(schema)
+  assert formatted["type"] == "json_object"
+  assert formatted["response_schema"] == schema
+
+
+def test_to_litellm_response_format_handles_model_dump_object():
+  schema_obj = _ModelDumpOnly()
+
+  formatted = _to_litellm_response_format(schema_obj)
+
+  assert formatted["type"] == "json_object"
+  assert formatted["response_schema"] == schema_obj.model_dump()
+
+
+def test_to_litellm_response_format_handles_genai_schema_instance():
+  schema_instance = types.Schema(
+      type=types.Type.OBJECT,
+      properties={"foo": types.Schema(type=types.Type.STRING)},
+      required=["foo"],
+  )
+
+  formatted = _to_litellm_response_format(schema_instance)
+  assert formatted["type"] == "json_object"
+  assert formatted["response_schema"] == schema_instance.model_dump(
+      exclude_none=True, mode="json"
+  )
+
 
 MULTIPLE_FUNCTION_CALLS_STREAM = [
     ModelResponse(
@@ -956,6 +1066,46 @@ def test_function_declaration_to_tool_param(
   )
 
 
+def test_function_declaration_to_tool_param_with_parameters_json_schema():
+  """Ensure function declarations using parameters_json_schema are handled.
+
+  This verifies that when a FunctionDeclaration includes a raw
+  `parameters_json_schema` dict, it is used directly as the function
+  parameters in the resulting tool param.
+  """
+
+  func_decl = types.FunctionDeclaration(
+      name="fn_with_json",
+      description="desc",
+      parameters_json_schema={
+          "type": "object",
+          "properties": {
+              "a": {"type": "string"},
+              "b": {"type": "array", "items": {"type": "string"}},
+          },
+          "required": ["a"],
+      },
+  )
+
+  expected = {
+      "type": "function",
+      "function": {
+          "name": "fn_with_json",
+          "description": "desc",
+          "parameters": {
+              "type": "object",
+              "properties": {
+                  "a": {"type": "string"},
+                  "b": {"type": "array", "items": {"type": "string"}},
+              },
+              "required": ["a"],
+          },
+      },
+  }
+
+  assert _function_declaration_to_tool_param(func_decl) == expected
+
+
 @pytest.mark.asyncio
 async def test_generate_content_async_with_system_instruction(
     lite_llm_instance, mock_acompletion
@@ -1098,10 +1248,11 @@ def test_content_to_message_param_user_message():
   assert message["content"] == "Test prompt"
 
 
-def test_content_to_message_param_user_message_with_file_uri():
-  file_part = types.Part.from_uri(
-      file_uri="gs://bucket/document.pdf", mime_type="application/pdf"
-  )
+@pytest.mark.parametrize("file_uri,mime_type", FILE_URI_TEST_CASES)
+def test_content_to_message_param_user_message_with_file_uri(
+    file_uri, mime_type
+):
+  file_part = types.Part.from_uri(file_uri=file_uri, mime_type=mime_type)
   content = types.Content(
       role="user",
       parts=[
@@ -1116,14 +1267,15 @@ def test_content_to_message_param_user_message_with_file_uri():
   assert message["content"][0]["type"] == "text"
   assert message["content"][0]["text"] == "Summarize this file."
   assert message["content"][1]["type"] == "file"
-  assert message["content"][1]["file"]["file_id"] == "gs://bucket/document.pdf"
+  assert message["content"][1]["file"]["file_id"] == file_uri
   assert "format" not in message["content"][1]["file"]
 
 
-def test_content_to_message_param_user_message_file_uri_only():
-  file_part = types.Part.from_uri(
-      file_uri="gs://bucket/only.pdf", mime_type="application/pdf"
-  )
+@pytest.mark.parametrize("file_uri,mime_type", FILE_URI_TEST_CASES)
+def test_content_to_message_param_user_message_file_uri_only(
+    file_uri, mime_type
+):
+  file_part = types.Part.from_uri(file_uri=file_uri, mime_type=mime_type)
   content = types.Content(
       role="user",
       parts=[
@@ -1135,7 +1287,7 @@ def test_content_to_message_param_user_message_file_uri_only():
   assert message["role"] == "user"
   assert isinstance(message["content"], list)
   assert message["content"][0]["type"] == "file"
-  assert message["content"][0]["file"]["file_id"] == "gs://bucket/only.pdf"
+  assert message["content"][0]["file"]["file_id"] == file_uri
   assert "format" not in message["content"][0]["file"]
 
 
@@ -1317,29 +1469,23 @@ def test_get_content_video():
   assert "format" not in content[0]["video_url"]
 
 
-def test_get_content_pdf():
-  parts = [
-      types.Part.from_bytes(data=b"test_pdf_data", mime_type="application/pdf")
-  ]
+@pytest.mark.parametrize(
+    "file_data,mime_type,expected_base64", FILE_BYTES_TEST_CASES
+)
+def test_get_content_file_bytes(file_data, mime_type, expected_base64):
+  parts = [types.Part.from_bytes(data=file_data, mime_type=mime_type)]
   content = _get_content(parts)
   assert content[0]["type"] == "file"
-  assert (
-      content[0]["file"]["file_data"]
-      == "data:application/pdf;base64,dGVzdF9wZGZfZGF0YQ=="
-  )
+  assert content[0]["file"]["file_data"] == expected_base64
   assert "format" not in content[0]["file"]
 
 
-def test_get_content_file_uri():
-  parts = [
-      types.Part.from_uri(
-          file_uri="gs://bucket/document.pdf",
-          mime_type="application/pdf",
-      )
-  ]
+@pytest.mark.parametrize("file_uri,mime_type", FILE_URI_TEST_CASES)
+def test_get_content_file_uri(file_uri, mime_type):
+  parts = [types.Part.from_uri(file_uri=file_uri, mime_type=mime_type)]
   content = _get_content(parts)
   assert content[0]["type"] == "file"
-  assert content[0]["file"]["file_id"] == "gs://bucket/document.pdf"
+  assert content[0]["file"]["file_id"] == file_uri
   assert "format" not in content[0]["file"]
 
 
@@ -1840,7 +1986,8 @@ async def test_generate_content_async_non_compliant_multiple_function_calls(
   This test verifies that:
   1. Multiple function calls with same indices (0) are handled correctly
   2. Arguments and names are properly accumulated for each function call
-  3. The final response contains all function calls with correct incremented indices
+  3. The final response contains all function calls with correct incremented
+  indices
   """
   mock_completion.return_value = NON_COMPLIANT_MULTIPLE_FUNCTION_CALLS_STREAM
 
