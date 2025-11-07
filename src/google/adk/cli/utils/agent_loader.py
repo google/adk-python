@@ -338,12 +338,9 @@ class AgentLoader(BaseAgentLoader):
 
         agent_type = self._determine_agent_type(agent_name)
 
-        # Convert underscores to spaces for display_name
-        display_name = agent.name.replace("_", " ")
-
         app_info = {
-            "name": agent_name,
-            "display_name": display_name,
+            "simple_name": agent_name,
+            "agent_name": agent.name,
             "description": agent.description,
             "agent_type": agent_type,
         }
@@ -357,7 +354,7 @@ class AgentLoader(BaseAgentLoader):
 
   def _determine_agent_type(
       self, agent_name: str
-  ) -> Literal["yaml", "python", "package"]:
+  ) -> Literal["yaml", "package"]:
     """Determine the type of agent based on file structure."""
     base_path = Path.cwd() / self.agents_dir / agent_name
 
@@ -367,10 +364,6 @@ class AgentLoader(BaseAgentLoader):
       return "package"
     elif (base_path / "__init__.py").exists():
       return "package"
-    else:
-      module_path = Path.cwd() / self.agents_dir / f"{agent_name}.py"
-      if module_path.exists():
-        return "python"
 
     raise ValueError(f"Could not determine agent type for '{agent_name}'.")
 

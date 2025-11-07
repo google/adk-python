@@ -281,10 +281,10 @@ class ListMetricsInfoResponse(common.BaseModel):
 
 
 class AppInfo(common.BaseModel):
-  name: str
-  display_name: str
+  simple_name: str
+  agent_name: str
   description: str
-  agent_type: Literal["yaml", "python", "package"]
+  agent_type: Literal["yaml", "package"]
 
 
 class ListAppsResponse(common.BaseModel):
@@ -710,13 +710,13 @@ class AdkWebServer:
       )
 
     @app.get("/list-apps")
-    async def list_apps() -> list[str]:
+    async def list_apps(
+        detailed: bool = Query(default=False, description="Return detailed app information")
+    ) -> list[str] | ListAppsResponse:
+      if detailed:
+        apps_info = self.agent_loader.list_agents_detailed()
+        return ListAppsResponse(apps=[AppInfo(**app) for app in apps_info])
       return self.agent_loader.list_agents()
-
-    @app.get("/list-apps-detailed")
-    async def list_apps_detailed() -> ListAppsResponse:
-      apps_info = self.agent_loader.list_agents_detailed()
-      return ListAppsResponse(apps=[AppInfo(**app) for app in apps_info])
 
     @app.get("/debug/trace/{event_id}", tags=[TAG_DEBUG])
     async def get_trace_dict(event_id: str) -> Any:

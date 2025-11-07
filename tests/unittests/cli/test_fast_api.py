@@ -192,10 +192,10 @@ def mock_agent_loader():
 
     def list_agents_detailed(self):
       return [{
-          "name": "test_app",
-          "display_name": "test_agent",
+          "simple_name": "test_app",
+          "agent_name": "test_agent",
           "description": "A test agent for unit testing",
-          "agent_type": "python",
+          "agent_type": "package",
       }]
 
   return MockAgentLoader(".")
@@ -560,7 +560,7 @@ def test_list_apps(test_app):
 
 def test_list_apps_detailed(test_app):
   """Test listing available applications with detailed metadata."""
-  response = test_app.get("/list-apps-detailed")
+  response = test_app.get("/list-apps?detailed=true")
 
   assert response.status_code == 200
   data = response.json()
@@ -569,11 +569,11 @@ def test_list_apps_detailed(test_app):
   assert isinstance(data["apps"], list)
 
   for app in data["apps"]:
-    assert "name" in app
-    assert "displayName" in app
+    assert "simpleName" in app
+    assert "agentName" in app
     assert "description" in app
     assert "agentType" in app
-    assert app["agentType"] in ["yaml", "python", "package"]
+    assert app["agentType"] in ["yaml", "package"]
 
   logger.info(f"Listed apps: {data}")
 
