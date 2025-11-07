@@ -127,6 +127,7 @@ def _execute_sql(
       )
       if (
           dry_run_query_job.statement_type != "SELECT"
+          and dry_run_query_job.destination
           and dry_run_query_job.destination.dataset_id != bq_session_dataset_id
       ):
         return {
