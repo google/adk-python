@@ -57,7 +57,7 @@ class BaseAuthenticatedTool(BaseTool):
           the tool doesn't configure any credentials
           (auth_config.raw_auth_credential is missing) or the credentials
           configured is not enough to authenticate the tool (e.g. an OAuth
-          client id and client secrect is configured.) and needs client input
+          client id and client secret are configured) and needs client input
           (e.g. client need to involve the end user in an oauth flow and get
           back the oauth response.)
     """
@@ -69,10 +69,9 @@ class BaseAuthenticatedTool(BaseTool):
     if auth_config and auth_config.auth_scheme:
       self._credentials_manager = CredentialManager(auth_config=auth_config)
     else:
-      logger.warning(
-          "auth_config or auth_config.auth_scheme is missing. Will skip"
-          " authentication.Using FunctionTool instead if authentication is not"
-          " required."
+      logger.debug(
+          "auth_config or auth_config.auth_scheme is missing, so authentication"
+          " will be skipped."
       )
       self._credentials_manager = None
     self._response_for_auth_required = response_for_auth_required

@@ -46,9 +46,9 @@ jobs:
           REPO: 'adk-python'
           INTERACTIVE: 0
           PYTHONPATH: contributing/samples
-          DISCUSSION_JSON: ${{ toJson(github.event.discussion) }}
         run: |
-          # Replace single quotes with the sequence that allows them to be used in a single-quoted string
-          # This replaces ' with '\'', which ends the current single-quoted string, adds an escaped single quote, then starts a new single-quoted string
-          SAFE_JSON="${DISCUSSION_JSON//\'/\'\\\'\'}"
-          python -m adk_answering_agent.main --discussion '$SAFE_JSON'
+          # Write discussion data to temporary file to avoid secret masking issues
+          cat > /tmp/discussion.json << 'EOF'
+          ${{ toJson(github.event.discussion) }}
+          EOF
+          python -m adk_answering_agent.main --discussion-file /tmp/discussion.json

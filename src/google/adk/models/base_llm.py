@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 from __future__ import annotations
 
 from abc import abstractmethod
@@ -29,11 +30,7 @@ if TYPE_CHECKING:
 
 
 class BaseLlm(BaseModel):
-  """The BaseLLM class.
-
-  Attributes:
-    model: The name of the LLM, e.g. gemini-1.5-flash or gemini-1.5-flash-001.
-  """
+  """The BaseLLM class."""
 
   model_config = ConfigDict(
       # This allows us to use arbitrary types in the model. E.g. PIL.Image.
@@ -42,7 +39,7 @@ class BaseLlm(BaseModel):
   """The pydantic model config."""
 
   model: str
-  """The name of the LLM, e.g. gemini-1.5-flash or gemini-1.5-flash-001."""
+  """The name of the LLM, e.g. gemini-2.5-flash or gemini-2.5-pro."""
 
   @classmethod
   def supported_models(cls) -> list[str]:

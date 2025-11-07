@@ -18,21 +18,14 @@ import logging
 from typing import Optional
 from typing import Tuple
 
+from authlib.integrations.requests_client import OAuth2Session
+from authlib.oauth2.rfc6749 import OAuth2Token
 from fastapi.openapi.models import OAuth2
 
 from ..utils.feature_decorator import experimental
 from .auth_credential import AuthCredential
 from .auth_schemes import AuthScheme
 from .auth_schemes import OpenIdConnectWithConfig
-
-try:
-  from authlib.integrations.requests_client import OAuth2Session
-  from authlib.oauth2.rfc6749 import OAuth2Token
-
-  AUTHLIB_AVAILABLE = True
-except ImportError:
-  AUTHLIB_AVAILABLE = False
-
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -53,18 +46,34 @@ def create_oauth2_session(
   """
   if isinstance(auth_scheme, OpenIdConnectWithConfig):
     if not hasattr(auth_scheme, "token_endpoint"):
+      logger.warning("OpenIdConnect scheme missing token_endpoint")
       return None, None
     token_endpoint = auth_scheme.token_endpoint
-    scopes = auth_scheme.scopes
+    scopes = auth_scheme.scopes or []
   elif isinstance(auth_scheme, OAuth2):
+    # Support both authorization code and client credentials flows
     if (
-        not auth_scheme.flows.authorizationCode
-        or not auth_scheme.flows.authorizationCode.tokenUrl
+        auth_scheme.flows.authorizationCode
+        and auth_scheme.flows.authorizationCode.tokenUrl
     ):
+      token_endpoint = auth_scheme.flows.authorizationCode.tokenUrl
+      scopes = list(auth_scheme.flows.authorizationCode.scopes.keys())
+    elif (
+        auth_scheme.flows.clientCredentials
+        and auth_scheme.flows.clientCredentials.tokenUrl
+    ):
+      token_endpoint = auth_scheme.flows.clientCredentials.tokenUrl
+      scopes = list(auth_scheme.flows.clientCredentials.scopes.keys())
+    else:
+      logger.warning(
+          "OAuth2 scheme missing required flow configuration. Expected either"
+          " authorizationCode.tokenUrl or clientCredentials.tokenUrl. Auth"
+          " scheme: %s",
+          auth_scheme,
+      )
       return None, None
-    token_endpoint = auth_scheme.flows.authorizationCode.tokenUrl
-    scopes = list(auth_scheme.flows.authorizationCode.scopes.keys())
   else:
+    logger.warning(f"Unsupported auth_scheme type: {type(auth_scheme)}")
     return None, None
 
   if (

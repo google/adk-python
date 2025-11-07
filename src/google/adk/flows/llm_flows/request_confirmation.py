@@ -47,9 +47,9 @@ class _RequestConfirmationLlmRequestProcessor(BaseLlmRequestProcessor):
     from ...agents.llm_agent import LlmAgent
 
     agent = invocation_context.agent
-    if not isinstance(agent, LlmAgent):
-      return
-    events = invocation_context.session.events
+
+    # Only look at events in the current branch.
+    events = invocation_context._get_events(current_branch=True)
     if not events:
       return
 
@@ -78,7 +78,7 @@ class _RequestConfirmationLlmRequestProcessor(BaseLlmRequestProcessor):
             and len(function_response.response.values()) == 1
             and 'response' in function_response.response.keys()
         ):
-          # ADK web client will send a request that is always encapted in a
+          # ADK web client will send a request that is always encapsulated in a
           # 'response' key.
           tool_confirmation = ToolConfirmation.model_validate(
               json.loads(function_response.response['response'])

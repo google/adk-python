@@ -106,12 +106,12 @@ def test_complex_function_calls_success(agent_runner: TestRunner):
     [{"agent": tool_agent.agent.root_agent}],
     indirect=True,
 )
-def test_repetive_call_success(agent_runner: TestRunner):
+def test_repetitive_call_success(agent_runner: TestRunner):
   _call_function_and_assert(
       agent_runner,
-      "repetive_call_1",
+      "repetitive_call_1",
       "test",
-      "test_repetive",
+      "test_repetitive",
   )
 
 

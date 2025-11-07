@@ -26,6 +26,7 @@ from typing_extensions import override
 from ..events.event import Event
 from ..utils.context_utils import Aclosing
 from .base_agent import BaseAgent
+from .base_agent import BaseAgentState
 from .base_agent_config import BaseAgentConfig
 from .invocation_context import InvocationContext
 from .parallel_agent_config import ParallelAgentConfig
@@ -159,7 +160,7 @@ async def _merge_agent_run(
 
 
 class ParallelAgent(BaseAgent):
-  """A shell agent that run its sub-agents in parallel in isolated manner.
+  """A shell agent that runs its sub-agents in parallel in an isolated manner.
 
   This approach is beneficial for scenarios requiring multiple perspectives or
   attempts on a single task, such as:
@@ -175,22 +176,48 @@ class ParallelAgent(BaseAgent):
   async def _run_async_impl(
       self, ctx: InvocationContext
   ) -> AsyncGenerator[Event, None]:
-    agent_runs = [
-        sub_agent.run_async(
-            _create_branch_ctx_for_sub_agent(self, sub_agent, ctx)
-        )
-        for sub_agent in self.sub_agents
-    ]
+    if not self.sub_agents:
+      return
+
+    agent_state = self._load_agent_state(ctx, BaseAgentState)
+    if ctx.is_resumable and agent_state is None:
+      ctx.set_agent_state(self.name, agent_state=BaseAgentState())
+      yield self._create_agent_state_event(ctx)
+
+    agent_runs = []
+    # Prepare and collect async generators for each sub-agent.
+    for sub_agent in self.sub_agents:
+      sub_agent_ctx = _create_branch_ctx_for_sub_agent(self, sub_agent, ctx)
+
+      # Only include sub-agents that haven't finished in a previous run.
+      if not sub_agent_ctx.end_of_agents.get(sub_agent.name):
+        agent_runs.append(sub_agent.run_async(sub_agent_ctx))
+
+    pause_invocation = False
     try:
       # TODO remove if once Python <3.11 is no longer supported.
-      if sys.version_info >= (3, 11):
-        async with Aclosing(_merge_agent_run(agent_runs)) as agen:
-          async for event in agen:
-            yield event
-      else:
-        async with Aclosing(_merge_agent_run_pre_3_11(agent_runs)) as agen:
-          async for event in agen:
-            yield event
+      merge_func = (
+          _merge_agent_run
+          if sys.version_info >= (3, 11)
+          else _merge_agent_run_pre_3_11
+      )
+
+      async with Aclosing(merge_func(agent_runs)) as agen:
+        async for event in agen:
+          yield event
+          if ctx.should_pause_invocation(event):
+            pause_invocation = True
+
+      if pause_invocation:
+        return
+
+      # Once all sub-agents are done, mark the ParallelAgent as final.
+      if ctx.is_resumable and all(
+          ctx.end_of_agents.get(sub_agent.name) for sub_agent in self.sub_agents
+      ):
+        ctx.set_agent_state(self.name, end_of_agent=True)
+        yield self._create_agent_state_event(ctx)
+
     finally:
       for sub_agent_run in agent_runs:
         await sub_agent_run.aclose()

@@ -12,19 +12,28 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from adk_release_analyzer.settings import CODE_OWNER
-from adk_release_analyzer.settings import CODE_REPO
-from adk_release_analyzer.settings import DOC_OWNER
-from adk_release_analyzer.settings import DOC_REPO
-from adk_release_analyzer.settings import IS_INTERACTIVE
-from adk_release_analyzer.settings import LOCAL_REPOS_DIR_PATH
-from adk_release_analyzer.tools import clone_or_pull_repo
-from adk_release_analyzer.tools import create_issue
-from adk_release_analyzer.tools import get_changed_files_between_releases
-from adk_release_analyzer.tools import list_directory_contents
-from adk_release_analyzer.tools import list_releases
-from adk_release_analyzer.tools import read_local_git_repo_file_content
-from adk_release_analyzer.tools import search_local_git_repo
+import os
+import sys
+
+SAMPLES_DIR = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "..")
+)
+if SAMPLES_DIR not in sys.path:
+  sys.path.append(SAMPLES_DIR)
+
+from adk_documentation.settings import CODE_OWNER
+from adk_documentation.settings import CODE_REPO
+from adk_documentation.settings import DOC_OWNER
+from adk_documentation.settings import DOC_REPO
+from adk_documentation.settings import IS_INTERACTIVE
+from adk_documentation.settings import LOCAL_REPOS_DIR_PATH
+from adk_documentation.tools import clone_or_pull_repo
+from adk_documentation.tools import create_issue
+from adk_documentation.tools import get_changed_files_between_releases
+from adk_documentation.tools import list_directory_contents
+from adk_documentation.tools import list_releases
+from adk_documentation.tools import read_local_git_repo_file_content
+from adk_documentation.tools import search_local_git_repo
 from google.adk import Agent
 
 if IS_INTERACTIVE:
@@ -47,17 +56,17 @@ root_agent = Agent(
     ),
     instruction=f"""
       # 1. Identity
-      You are a helper bot that checks if ADK docs in Github Repository {DOC_REPO} owned by {DOC_OWNER}
-      should be updated based on the changes in the ADK Python codebase in Github Repository {CODE_REPO} owned by {CODE_OWNER}.
+      You are a helper bot that checks if ADK docs in GitHub Repository {DOC_REPO} owned by {DOC_OWNER}
+      should be updated based on the changes in the ADK Python codebase in GitHub Repository {CODE_REPO} owned by {CODE_OWNER}.
 
-      You are very familiar with Github, expecially how to search for files in a Github repository using git grep.
+      You are very familiar with GitHub, especially how to search for files in a GitHub repository using git grep.
 
       # 2. Responsibilities
       Your core responsibility includes:
       - Find all the code changes between the two ADK releases.
       - Find **all** the related docs files in ADK Docs repository under the "/docs/" directory.
       - Compare the code changes with the docs files and analyze the differences.
-      - Write the instructions about how to update the ADK docs in markdown format and create a Github issue in the Github Repository {DOC_REPO} with the instructions.
+      - Write the instructions about how to update the ADK docs in markdown format and create a GitHub issue in the GitHub Repository {DOC_REPO} with the instructions.
 
       # 3. Workflow
       1. Always call the `clone_or_pull_repo` tool to make sure the ADK docs and codebase repos exist in the local folder {LOCAL_REPOS_DIR_PATH}/repo_name and are the latest version.
@@ -91,19 +100,19 @@ root_agent = Agent(
              Explanation of why this change is necessary.
 
              **Reference**:
-             Reference to the code change (e.g. https://github.com/google/adk-python/commit/b3b70035c432670a5f0b5cdd1e9467f43b80495c).
              Reference to the code file (e.g. src/google/adk/tools/spanner/metadata_tool.py).
           ```
-        - When referncing doc file, use the full relative path of the doc file in the ADK Docs repository (e.g. docs/sessions/memory.md).
-      9. Create or recommend to create a Github issue in the Github Repository {DOC_REPO} with the instructions using the `create_issue` tool.
+        - When referencing doc file, use the full relative path of the doc file in the ADK Docs repository (e.g. docs/sessions/memory.md).
+      9. Create or recommend to create a GitHub issue in the GitHub Repository {DOC_REPO} with the instructions using the `create_issue` tool.
         - The title of the issue should be "Found docs updates needed from ADK python release <start_tag> to <end_tag>", where start_tag and end_tag are the release tags.
         - The body of the issue should be the instructions about how to update the ADK docs.
+          - Include the compare link between the two ADK releases in the issue body, e.g. https://github.com/google/adk-python/compare/v1.14.0...v1.14.1.
         - **{APPROVAL_INSTRUCTION}**
 
       # 4. Guidelines & Rules
       - **File Paths:** Always use absolute paths when calling the tools to read files, list directories, or search the codebase.
       - **Tool Call Parallelism:** Execute multiple independent tool calls in parallel when feasible (i.e. searching the codebase).
-      - **Explaination:** Provide concise explanations for your actions and reasoning for each step.
+      - **Explanation:** Provide concise explanations for your actions and reasoning for each step.
       - **Reference:** For each recommended change, reference the code changes (i.e. links to the commits) **AND** the code files (i.e. relative paths to the code files in the codebase).
       - **Sorting:** Sort the recommended changes by the importance of the changes, from the most important to the least important.
         - Here are the importance groups: Feature changes > Bug fixes > Other changes.
@@ -113,7 +122,7 @@ root_agent = Agent(
         - If a change in the codebase can be covered by the auto-generated API reference docs, you should just recommend to update the API reference docs (i.e. regenerate the API reference docs) instead of the other human-written ADK docs.
 
       # 5. Output
-      Present the followings in an easy to read format as the final output to the user.
+      Present the following in an easy to read format as the final output to the user.
       - The actions you took and the reasoning
       - The summary of the differences found
     """,

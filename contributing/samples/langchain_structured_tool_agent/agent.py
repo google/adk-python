@@ -17,17 +17,19 @@ This agent aims to test the Langchain tool with Langchain's StructuredTool
 """
 from google.adk.agents.llm_agent import Agent
 from google.adk.tools.langchain_tool import LangchainTool
-from langchain.tools import tool
+from langchain_core.tools import tool
 from langchain_core.tools.structured import StructuredTool
 from pydantic import BaseModel
 
 
 async def add(x, y) -> int:
+  """Adds two numbers."""
   return x + y
 
 
 @tool
 def minus(x, y) -> int:
+  """Subtracts two numbers."""
   return x - y
 
 

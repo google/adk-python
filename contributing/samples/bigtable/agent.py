@@ -29,7 +29,7 @@ CREDENTIALS_TYPE = AuthCredentialTypes.OAUTH2
 tool_settings = BigtableToolSettings()
 
 if CREDENTIALS_TYPE == AuthCredentialTypes.OAUTH2:
-  # Initiaze the tools to do interactive OAuth
+  # Initialize the tools to do interactive OAuth
   # The environment variables OAUTH_CLIENT_ID and OAUTH_CLIENT_SECRET
   # must be set
   credentials_config = BigtableCredentialsConfig(
@@ -62,7 +62,7 @@ bigtable_toolset = BigtableToolset(
 # The variable name `root_agent` determines what your root agent is for the
 # debug CLI
 root_agent = LlmAgent(
-    model="gemini-1.5-flash",
+    model="gemini-2.5-flash",
     name="bigtable_agent",
     description=(
         "Agent to answer questions about Bigtable database tables and"
