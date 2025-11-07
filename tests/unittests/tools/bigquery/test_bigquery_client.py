@@ -156,6 +156,31 @@ def test_bigquery_client_user_agent_custom():
     assert expected_user_agents.issubset(actual_user_agents)
 
 
+def test_bigquery_client_user_agent_custom_list():
+  """Test BigQuery client custom user agent."""
+  with mock.patch(
+      "google.cloud.bigquery.client.Connection", autospec=True
+  ) as mock_connection:
+    # Trigger the BigQuery client creation
+    get_bigquery_client(
+        project="test-gcp-project",
+        credentials=mock.create_autospec(Credentials, instance=True),
+        user_agent=["custom_user_agent1", "custom_user_agent2"],
+    )
+
+    # Verify that the tracking user agents were set
+    client_info_arg = mock_connection.call_args[1].get("client_info")
+    assert client_info_arg is not None
+    expected_user_agents = {
+        "adk-bigquery-tool",
+        f"google-adk/{google.adk.__version__}",
+        "custom_user_agent1",
+        "custom_user_agent2",
+    }
+    actual_user_agents = set(client_info_arg.user_agent.split())
+    assert expected_user_agents.issubset(actual_user_agents)
+
+
 def test_bigquery_client_location_custom():
   """Test BigQuery client custom location."""
   # Trigger the BigQuery client creation

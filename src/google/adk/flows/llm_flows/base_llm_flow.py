@@ -855,7 +855,10 @@ class BaseLlmFlow(ABC):
         response: Optional[LlmResponse] = None,
     ) -> Optional[LlmResponse]:
       readonly_context = ReadonlyContext(invocation_context)
-      tools = await agent.canonical_tools(readonly_context)
+      if (tools := invocation_context.canonical_tools_cache) is None:
+        tools = await agent.canonical_tools(readonly_context)
+        invocation_context.canonical_tools_cache = tools
+
       if not any(tool.name == 'google_search_agent' for tool in tools):
         return response
       ground_metadata = invocation_context.session.state.get(
