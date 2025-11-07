@@ -39,7 +39,7 @@ class ToolConfirmation(BaseModel):
   hint: str = ""
   """The hint text for why the input is needed."""
   confirmed: bool = False
-  """Whether the tool excution is confirmed."""
+  """Whether the tool execution is confirmed."""
   payload: Optional[Any] = None
   """The custom data payload needed from the user to continue the flow.
   It should be JSON serializable."""

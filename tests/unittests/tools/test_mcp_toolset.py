@@ -45,6 +45,7 @@ async def test_mcp_toolset_with_prefix():
   """Test that McpToolset correctly applies the tool_name_prefix."""
   # Mock the connection parameters
   mock_connection_params = MagicMock()
+  mock_connection_params.timeout = None
 
   # Mock the MCPSessionManager and its create_session method
   mock_session_manager = MagicMock()

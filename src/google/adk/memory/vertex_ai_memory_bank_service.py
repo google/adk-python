@@ -20,7 +20,6 @@ from typing import TYPE_CHECKING
 
 from google.genai import types
 from typing_extensions import override
-import vertexai
 
 from ..utils.vertex_ai_utils import get_express_mode_api_key
 from .base_memory_service import BaseMemoryService
@@ -138,6 +137,8 @@ class VertexAiMemoryBankService(BaseMemoryService):
     Returns:
       An API client for the given project and location or express mode api key.
     """
+    import vertexai
+
     return vertexai.Client(
         project=self._project,
         location=self._location,

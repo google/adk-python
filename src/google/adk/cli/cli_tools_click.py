@@ -501,7 +501,7 @@ def cli_eval(
   *Eval Set File Path*
   For each file, all evals will be run by default.
 
-  If you want to run only specific evals from a eval set, first create a comma
+  If you want to run only specific evals from an eval set, first create a comma
   separated list of eval names and then add that as a suffix to the eval set
   file name, demarcated by a `:`.
 
@@ -521,7 +521,7 @@ def cli_eval(
   *Eval Set ID*
   For each eval set, all evals will be run by default.
 
-  If you want to run only specific evals from a eval set, first create a comma
+  If you want to run only specific evals from an eval set, first create a comma
   separated list of eval names and then add that as a suffix to the eval set
   file name, demarcated by a `:`.
 
@@ -1598,7 +1598,7 @@ def cli_deploy_cloud_run(
     default="",
     help=(
         "Optional. The filepath to the `.agent_engine_config.json` file to use."
-        " The values in this file will be overriden by the values set by other"
+        " The values in this file will be overridden by the values set by other"
         " flags. (default: the `.agent_engine_config.json` file in the `agent`"
         " directory, if any.)"
     ),
