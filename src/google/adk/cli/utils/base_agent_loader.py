@@ -25,7 +25,6 @@ from ...agents.base_agent import BaseAgent
 from ...apps.app import App
 
 
-
 class BaseAgentLoader(ABC):
   """Abstract base class for agent loaders."""
 

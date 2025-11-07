@@ -711,7 +711,9 @@ class AdkWebServer:
 
     @app.get("/list-apps")
     async def list_apps(
-        detailed: bool = Query(default=False, description="Return detailed app information")
+        detailed: bool = Query(
+            default=False, description="Return detailed app information"
+        )
     ) -> list[str] | ListAppsResponse:
       if detailed:
         apps_info = self.agent_loader.list_agents_detailed()
