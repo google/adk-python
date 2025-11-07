@@ -231,7 +231,7 @@ root_agent = Agent(
       - Mention the assigned owner when a label maps to one.
       - If no label is applied, clearly state why.
 
-      Present the followings in an easy to read format highlighting issue number and your label.
+      Present the following in an easy to read format highlighting issue number and your label.
       - the issue summary in a few sentence
       - your label recommendation and justification
       - the owner of the label if you assign the issue to an owner
