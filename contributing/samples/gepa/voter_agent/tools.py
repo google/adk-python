@@ -23,9 +23,9 @@ from google.adk.tools import ToolContext
 from google.cloud import bigquery
 
 # Configuration
-GOOGLE_CLOUD_PROJECT = os.getenv("GOOGLE_CLOUD_PROJECT", "local-dev")
-BQ_DATASET = os.getenv("BQ_DATASET", "devfest_demo")
-BQ_VOTES_TABLE = os.getenv("BQ_VOTES_TABLE", "votes")
+GOOGLE_CLOUD_PROJECT = os.getenv("GOOGLE_CLOUD_PROJECT", "")
+BQ_DATASET = os.getenv("BQ_DATASET", "")
+BQ_VOTES_TABLE = os.getenv("BQ_VOTES_TABLE", "")
 LOCAL_MODE = os.getenv("LOCAL_MODE", "true").lower() == "true"
 
 # In-memory storage for local development
