@@ -13,4 +13,4 @@
 # limitations under the License.
 
 # version: major.minor.patch
-__version__ = "1.17.0"
+__version__ = "1.18.0"

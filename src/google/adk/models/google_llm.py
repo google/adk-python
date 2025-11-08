@@ -281,7 +281,8 @@ class Gemini(BaseLlm):
         ],
     )
     llm_request.live_connect_config.tools = llm_request.config.tools
-    logger.info('Connecting to live with llm_request:%s', llm_request)
+    logger.info('Connecting to live for model: %s', llm_request.model)
+    logger.debug('Connecting to live with llm_request:%s', llm_request)
     async with self._live_api_client.aio.live.connect(
         model=llm_request.model, config=llm_request.live_connect_config
     ) as live_session:

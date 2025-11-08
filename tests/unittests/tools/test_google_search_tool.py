@@ -186,7 +186,7 @@ class TestGoogleSearchTool:
     with pytest.raises(
         ValueError,
         match=(
-            'Google search tool can not be used with other tools in Gemini 1.x'
+            'Google search tool cannot be used with other tools in Gemini 1.x'
         ),
     ):
       await tool.process_llm_request(
@@ -215,7 +215,7 @@ class TestGoogleSearchTool:
     with pytest.raises(
         ValueError,
         match=(
-            'Google search tool can not be used with other tools in Gemini 1.x'
+            'Google search tool cannot be used with other tools in Gemini 1.x'
         ),
     ):
       await tool.process_llm_request(

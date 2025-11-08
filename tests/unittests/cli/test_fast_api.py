@@ -700,7 +700,7 @@ def test_update_session(test_app, create_test_session):
 
 
 def test_patch_session_not_found(test_app, test_session_info):
-  """Test patching a non-existent session."""
+  """Test patching a nonexistent session."""
   info = test_session_info
   url = f"/apps/{info['app_name']}/users/{info['user_id']}/sessions/nonexistent"
 

@@ -122,7 +122,7 @@ class MajorityVotePerInvocationResultsAggregator(
     """Returns a combined result for the invocation using majority vote.
 
     This method takes all those samples for a single invocation and combines
-    them to genreate one single result for the invocation.
+    them to generate one single result for the invocation.
 
     This method specifically uses majority vote to aggregate scores for a
     rubric. Take following Invocation and Rubric for example:
@@ -132,7 +132,7 @@ class MajorityVotePerInvocationResultsAggregator(
          Weather Agent: No, it will be moderately warm as predicted temperature
          for Seattle, WA tomorrow is 88F.
 
-      Rubric: Agent's reponse was concise and to the point.
+      Rubric: Agent's response was concise and to the point.
 
       We will sample the AutoRater 5 times, and the AutoRater responds
       with (skipping the rationale field for now):
@@ -223,7 +223,7 @@ class MeanInvocationResultsSummarizer(InvocationResultsSummarizer):
     assessed for each invocation. But, we do want to summarize and make a
     statement on how the eval case as a whole performed on the metric.
 
-    This method helps us aggreate rubric scores across invocation.
+    This method helps us aggregate rubric scores across invocation.
 
     This method calculates the mean score of a rubric across several
     invocations.

@@ -39,14 +39,14 @@ def function_for_testing_with_no_args():
 async def async_function_for_testing_with_1_arg_and_tool_context(
     arg1, tool_context
 ):
-  """Async function for testing with 1 arge and tool context."""
+  """Async function for testing with 1 arg and tool context."""
   assert arg1
   assert tool_context
   return arg1
 
 
 async def async_function_for_testing_with_2_arg_and_no_tool_context(arg1, arg2):
-  """Async function for testing with 2 arge and no tool context."""
+  """Async function for testing with 2 args and no tool context."""
   assert arg1
   assert arg2
   return arg1
@@ -65,7 +65,7 @@ class AsyncCallableWith2ArgsAndNoToolContext:
 
 
 def function_for_testing_with_1_arg_and_tool_context(arg1, tool_context):
-  """Function for testing with 1 arge and tool context."""
+  """Function for testing with 1 arg and tool context."""
   assert arg1
   assert tool_context
   return arg1
@@ -81,7 +81,7 @@ class AsyncCallableWith1ArgAndToolContext:
 
 
 def function_for_testing_with_2_arg_and_no_tool_context(arg1, arg2):
-  """Function for testing with 2 arge and no tool context."""
+  """Function for testing with 2 args and no tool context."""
   assert arg1
   assert arg2
   return arg1
@@ -283,7 +283,7 @@ You could retry calling this tool, but it is IMPORTANT for you to provide all th
 
 @pytest.mark.asyncio
 async def test_run_async_with_optional_args_not_set_sync_func():
-  """Test that run_async calls the function for sync funciton with optional args not set."""
+  """Test that run_async calls the function for sync function with optional args not set."""
 
   def func_with_optional_args(arg1, arg2=None, *, arg3, arg4=None, **kwargs):
     return f"{arg1},{arg3}"
@@ -296,7 +296,7 @@ async def test_run_async_with_optional_args_not_set_sync_func():
 
 @pytest.mark.asyncio
 async def test_run_async_with_optional_args_not_set_async_func():
-  """Test that run_async calls the function for async funciton with optional args not set."""
+  """Test that run_async calls the function for async function with optional args not set."""
 
   async def async_func_with_optional_args(
       arg1, arg2=None, *, arg3, arg4=None, **kwargs

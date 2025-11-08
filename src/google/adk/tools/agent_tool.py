@@ -164,6 +164,10 @@ class AgentTool(BaseTool):
         if event.content:
           last_content = event.content
 
+    # Clean up runner resources (especially MCP sessions)
+    # to avoid "Attempted to exit cancel scope in a different task" errors
+    await runner.close()
+
     if not last_content:
       return ''
     merged_text = '\n'.join(p.text for p in last_content.parts if p.text)

@@ -360,7 +360,7 @@ class TestRemoteA2aAgentResolution:
 
   @pytest.mark.asyncio
   async def test_resolve_agent_card_from_file_not_found(self):
-    """Test agent card resolution from non-existent file raises error."""
+    """Test agent card resolution from nonexistent file raises error."""
     agent = RemoteA2aAgent(
         name="test_agent", agent_card="/path/to/nonexistent.json"
     )
@@ -697,7 +697,7 @@ class TestRemoteA2aAgentMessageHandling:
 
   @pytest.mark.asyncio
   async def test_handle_a2a_response_with_task_completed_and_no_update(self):
-    """Test successful A2A response handling with non-streeaming task and no update."""
+    """Test successful A2A response handling with non-streaming task and no update."""
     mock_a2a_task = Mock(spec=A2ATask)
     mock_a2a_task.id = "task-123"
     mock_a2a_task.context_id = "context-123"
@@ -1149,7 +1149,7 @@ class TestRemoteA2aAgentMessageHandlingFromFactory:
 
   @pytest.mark.asyncio
   async def test_handle_a2a_response_with_task_completed_and_no_update(self):
-    """Test successful A2A response handling with non-streeaming task and no update."""
+    """Test successful A2A response handling with non-streaming task and no update."""
     mock_a2a_task = Mock(spec=A2ATask)
     mock_a2a_task.id = "task-123"
     mock_a2a_task.context_id = "context-123"

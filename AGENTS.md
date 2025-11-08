@@ -236,7 +236,7 @@ isort --check src/
 
 ### In ADK source
 
-Below styles applies to the ADK source code (under `src/` folder of the Github repo).
+Below styles applies to the ADK source code (under `src/` folder of the GitHub repo).
 
 #### Use relative imports (Required)
 

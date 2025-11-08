@@ -18,7 +18,6 @@ from typing import Optional
 
 from typing_extensions import override
 
-from ..dependencies.vertexai import vertexai
 from .eval_case import Invocation
 from .eval_metrics import EvalMetric
 from .eval_metrics import Interval
@@ -30,15 +29,13 @@ from .evaluator import Evaluator
 from .final_response_match_v1 import RougeEvaluator
 from .vertex_ai_eval_facade import _VertexAiEvalFacade
 
-vertexai_types = vertexai.types
-
 
 class ResponseEvaluator(Evaluator):
   """Evaluates Agent's responses.
 
   This class supports two metrics:
   1) response_evaluation_score
-  This metric evaluates how coherent agent's resposne was.
+  This metric evaluates how coherent agent's response was.
 
   Value range of this metric is [1,5], with values closer to 5 more desirable.
 
@@ -68,7 +65,9 @@ class ResponseEvaluator(Evaluator):
       metric_name = eval_metric.metric_name
 
     if PrebuiltMetrics.RESPONSE_EVALUATION_SCORE.value == metric_name:
-      self._metric_name = vertexai_types.PrebuiltMetric.COHERENCE
+      from ..dependencies.vertexai import vertexai
+
+      self._metric_name = vertexai.types.PrebuiltMetric.COHERENCE
     elif PrebuiltMetrics.RESPONSE_MATCH_SCORE.value == metric_name:
       self._metric_name = metric_name
     else:
@@ -83,7 +82,7 @@ class ResponseEvaluator(Evaluator):
       return MetricInfo(
           metric_name=PrebuiltMetrics.RESPONSE_EVALUATION_SCORE.value,
           description=(
-              "This metric evaluates how coherent agent's resposne was. Value"
+              "This metric evaluates how coherent agent's response was. Value"
               " range of this metric is [1,5], with values closer to 5 more"
               " desirable."
           ),

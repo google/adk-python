@@ -527,7 +527,7 @@ def test_generate_final_eval_status_doesn_t_throw_on(eval_service):
   # eval case.
 
   # We go over all the possible values of EvalStatus one by one and expect
-  # the _generate_final_eval_status to handle it without throwing an exeception.
+  # the _generate_final_eval_status to handle it without throwing an exception.
   for status in EvalStatus:
     eval_metric_result = EvalMetricResult(
         metric_name="metric1", threshold=0.5, eval_status=status

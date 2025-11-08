@@ -14,14 +14,13 @@
 
 """Tests for output schema processor functionality."""
 
-import json
+from unittest import mock
 
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.run_config import RunConfig
 from google.adk.flows.llm_flows.single_flow import SingleFlow
 from google.adk.models.llm_request import LlmRequest
-from google.adk.models.llm_response import LlmResponse
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.tools.function_tool import FunctionTool
 from pydantic import BaseModel
@@ -145,7 +144,16 @@ async def test_basic_processor_sets_output_schema_without_tools():
 
 
 @pytest.mark.asyncio
-async def test_output_schema_request_processor():
+@pytest.mark.parametrize(
+    'output_schema_with_tools_allowed',
+    [
+        False,
+        True,
+    ],
+)
+async def test_output_schema_request_processor(
+    output_schema_with_tools_allowed, mocker
+):
   """Test that output schema processor adds set_model_response tool."""
   from google.adk.flows.llm_flows._output_schema_processor import _OutputSchemaRequestProcessor
 
@@ -161,16 +169,29 @@ async def test_output_schema_request_processor():
   llm_request = LlmRequest()
   processor = _OutputSchemaRequestProcessor()
 
+  can_use_output_schema_with_tools = mocker.patch(
+      'google.adk.flows.llm_flows._output_schema_processor.can_use_output_schema_with_tools',
+      mock.MagicMock(return_value=output_schema_with_tools_allowed),
+  )
+
   # Process the request
   events = []
   async for event in processor.run_async(invocation_context, llm_request):
     events.append(event)
 
-  # Should have added set_model_response tool
-  assert 'set_model_response' in llm_request.tools_dict
+  if not output_schema_with_tools_allowed:
+    # Should have added set_model_response tool if output schema with tools is
+    # allowed
+    assert 'set_model_response' in llm_request.tools_dict
+    # Should have added instruction about using set_model_response
+    assert 'set_model_response' in llm_request.config.system_instruction
+  else:
+    # Should skip modifying LlmRequest
+    assert not llm_request.tools_dict
+    assert not llm_request.config.system_instruction
 
-  # Should have added instruction about using set_model_response
-  assert 'set_model_response' in llm_request.config.system_instruction
+  # Should have checked if output schema can be used with tools
+  can_use_output_schema_with_tools.assert_called_once_with(agent.model)
 
 
 @pytest.mark.asyncio

@@ -16,7 +16,7 @@ from google.adk import Agent
 from pydantic import BaseModel
 
 
-class WeahterData(BaseModel):
+class WeatherData(BaseModel):
   temperature: str
   humidity: str
   wind_speed: str
@@ -43,6 +43,6 @@ Here are the data you have for Cupertino
 * wind_speed: 13 mph
 
 """,
-    output_schema=WeahterData,
+    output_schema=WeatherData,
     output_key='weather_data',
 )
