@@ -22,6 +22,7 @@ from urllib.parse import urlparse
 
 from ..artifacts.base_artifact_service import BaseArtifactService
 from ..memory.base_memory_service import BaseMemoryService
+from ..sessions import InMemorySessionService
 from ..sessions.base_session_service import BaseSessionService
 
 
@@ -170,8 +171,22 @@ def _register_builtin_services(registry: ServiceRegistry) -> None:
     kwargs_copy.pop("agents_dir", None)
     return DatabaseSessionService(db_url=uri, **kwargs_copy)
 
+  def sqlite_session_factory(uri: str, **kwargs):
+    from ..sessions.sqlite_session_service import SqliteSessionService
+
+    parsed = urlparse(uri)
+    db_path = parsed.path
+    if not db_path:
+      return InMemorySessionService()
+    elif db_path.startswith("/"):
+      db_path = db_path[1:]
+    kwargs_copy = kwargs.copy()
+    kwargs_copy.pop("agents_dir", None)
+    return SqliteSessionService(db_path=db_path, **kwargs_copy)
+
   registry.register_session_service("agentengine", agentengine_session_factory)
-  for scheme in ["sqlite", "postgresql", "mysql"]:
+  registry.register_session_service("sqlite", sqlite_session_factory)
+  for scheme in ["postgresql", "mysql"]:
     registry.register_session_service(scheme, database_session_factory)
 
   # -- Artifact Services --
