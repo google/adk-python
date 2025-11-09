@@ -86,12 +86,12 @@ def _safe_json_serialize(obj) -> str:
 def trace_agent_invocation(
     span: trace.Span, agent: BaseAgent, ctx: InvocationContext
 ) -> None:
-  """Sets span attributes immedietely available on agent invocation according to OTEL semconv version 1.37.
+  """Sets span attributes immediately available on agent invocation according to OTEL semconv version 1.37.
 
   Args:
     span: Span on which attributes are set.
     agent: Agent from which attributes are gathered.
-    ctx: InvocationContext from which attrbiutes are gathered.
+    ctx: InvocationContext from which attributes are gathered.
 
   Inference related fields are not set, due to their planned removal from invoke_agent span:
   https://github.com/open-telemetry/semantic-conventions/issues/2632
@@ -303,9 +303,13 @@ def trace_call_llm(
           llm_response.usage_metadata.candidates_token_count,
       )
   if llm_response.finish_reason:
+    try:
+      finish_reason_str = llm_response.finish_reason.value.lower()
+    except AttributeError:
+      finish_reason_str = str(llm_response.finish_reason).lower()
     span.set_attribute(
         'gen_ai.response.finish_reasons',
-        [llm_response.finish_reason.value.lower()],
+        [finish_reason_str],
     )
 
 
@@ -358,7 +362,7 @@ def _build_llm_request_for_trace(llm_request: LlmRequest) -> dict[str, Any]:
   Returns:
     A dictionary representation of the LLM request.
   """
-  # Some fields in LlmRequest are function pointers and can not be serialized.
+  # Some fields in LlmRequest are function pointers and cannot be serialized.
   result = {
       'model': llm_request.model,
       'config': llm_request.config.model_dump(

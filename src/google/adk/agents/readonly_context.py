@@ -24,6 +24,7 @@ if TYPE_CHECKING:
 
   from ..sessions.session import Session
   from .invocation_context import InvocationContext
+  from .run_config import RunConfig
 
 
 class ReadonlyContext:
@@ -63,3 +64,8 @@ class ReadonlyContext:
   def user_id(self) -> str:
     """The id of the user. READONLY field."""
     return self._invocation_context.user_id
+
+  @property
+  def run_config(self) -> Optional[RunConfig]:
+    """The run config of the current invocation. READONLY field."""
+    return self._invocation_context.run_config
