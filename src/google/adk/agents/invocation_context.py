@@ -32,6 +32,7 @@ from ..memory.base_memory_service import BaseMemoryService
 from ..plugins.plugin_manager import PluginManager
 from ..sessions.base_session_service import BaseSessionService
 from ..sessions.session import Session
+from ..tools.base_tool import BaseTool
 from .active_streaming_tool import ActiveStreamingTool
 from .base_agent import BaseAgent
 from .base_agent import BaseAgentState
@@ -201,6 +202,9 @@ class InvocationContext(BaseModel):
 
   plugin_manager: PluginManager = Field(default_factory=PluginManager)
   """The manager for keeping track of plugins in this invocation."""
+
+  canonical_tools_cache: Optional[list[BaseTool]] = None
+  """The cache of canonical tools for this invocation."""
 
   _invocation_cost_manager: _InvocationCostManager = PrivateAttr(
       default_factory=_InvocationCostManager

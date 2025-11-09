@@ -138,9 +138,10 @@ def retry_on_closed_resource(func):
     try:
       return await func(self, *args, **kwargs)
     except (anyio.ClosedResourceError, anyio.BrokenResourceError):
-      # Simply retry the function - create_session will handle
-      # detecting and replacing disconnected sessions
-      logger.info('Retrying %s due to closed/broken resource', func.__name__)
+      # If the session connection is closed or unusable, we will retry the
+      # function to reconnect to the server. create_session will handle
+      # detecting and replacing disconnected sessions.
+      logger.info('Retrying %s due to closed resource', func.__name__)
       return await func(self, *args, **kwargs)
 
   return wrapper

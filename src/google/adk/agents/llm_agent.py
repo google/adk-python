@@ -442,7 +442,7 @@ class LlmAgent(BaseAgent):
   ) -> AsyncGenerator[Event, None]:
     agent_state = self._load_agent_state(ctx, BaseAgentState)
 
-    # If there is an sub-agent to resume, run it and then end the current
+    # If there is a sub-agent to resume, run it and then end the current
     # agent.
     if agent_state is not None and (
         agent_to_transfer := self._get_subagent_to_resume(ctx)

@@ -247,7 +247,7 @@ class StorageEvent(Base):
       PreciseTimestamp, default=func.now()
   )
 
-  # === Fileds from llm_response.py ===
+  # === Fields from llm_response.py ===
   content: Mapped[dict[str, Any]] = mapped_column(DynamicJSON, nullable=True)
   grounding_metadata: Mapped[dict[str, Any]] = mapped_column(
       DynamicJSON, nullable=True

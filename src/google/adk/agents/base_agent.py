@@ -164,19 +164,16 @@ class BaseAgent(BaseModel):
       ctx: InvocationContext,
       state_type: Type[AgentState],
   ) -> Optional[AgentState]:
-    """Loads the agent state from the invocation context, handling resumption.
+    """Loads the agent state from the invocation context.
 
     Args:
       ctx: The invocation context.
       state_type: The type of the agent state.
 
     Returns:
-        The current state if resuming, otherwise None.
+        The current state if exists; otherwise, None.
     """
-    if not ctx.is_resumable:
-      return None
-
-    if self.name not in ctx.agent_states:
+    if ctx.agent_states is None or self.name not in ctx.agent_states:
       return None
     else:
       return state_type.model_validate(ctx.agent_states.get(self.name))

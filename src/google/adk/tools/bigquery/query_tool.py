@@ -32,6 +32,161 @@ from .config import WriteMode
 BIGQUERY_SESSION_INFO_KEY = "bigquery_session_info"
 
 
+def _execute_sql(
+    project_id: str,
+    query: str,
+    credentials: Credentials,
+    settings: BigQueryToolConfig,
+    tool_context: ToolContext,
+    dry_run: bool = False,
+    caller_id: Optional[str] = None,
+) -> dict:
+  try:
+    # Validate compute project if applicable
+    if (
+        settings.compute_project_id
+        and project_id != settings.compute_project_id
+    ):
+      return {
+          "status": "ERROR",
+          "error_details": (
+              f"Cannot execute query in the project {project_id}, as the tool"
+              " is restricted to execute queries only in the project"
+              f" {settings.compute_project_id}."
+          ),
+      }
+
+    # Get BigQuery client
+    bq_client = client.get_bigquery_client(
+        project=project_id,
+        credentials=credentials,
+        location=settings.location,
+        user_agent=[settings.application_name, caller_id],
+    )
+
+    # BigQuery connection properties where applicable
+    bq_connection_properties = []
+
+    # BigQuery job labels if applicable
+    bq_job_labels = {}
+    if caller_id:
+      bq_job_labels["adk-bigquery-tool"] = caller_id
+
+    if not settings or settings.write_mode == WriteMode.BLOCKED:
+      dry_run_query_job = bq_client.query(
+          query,
+          project=project_id,
+          job_config=bigquery.QueryJobConfig(
+              dry_run=True, labels=bq_job_labels
+          ),
+      )
+      if dry_run_query_job.statement_type != "SELECT":
+        return {
+            "status": "ERROR",
+            "error_details": "Read-only mode only supports SELECT statements.",
+        }
+    elif settings.write_mode == WriteMode.PROTECTED:
+      # In protected write mode, write operation only to a temporary artifact is
+      # allowed. This artifact must have been created in a BigQuery session. In
+      # such a scenario, the session info (session id and the anonymous dataset
+      # containing the artifact) is persisted in the tool context.
+      bq_session_info = tool_context.state.get(BIGQUERY_SESSION_INFO_KEY, None)
+      if bq_session_info:
+        bq_session_id, bq_session_dataset_id = bq_session_info
+      else:
+        session_creator_job = bq_client.query(
+            "SELECT 1",
+            project=project_id,
+            job_config=bigquery.QueryJobConfig(
+                dry_run=True, create_session=True, labels=bq_job_labels
+            ),
+        )
+        bq_session_id = session_creator_job.session_info.session_id
+        bq_session_dataset_id = session_creator_job.destination.dataset_id
+
+        # Remember the BigQuery session info for subsequent queries
+        tool_context.state[BIGQUERY_SESSION_INFO_KEY] = (
+            bq_session_id,
+            bq_session_dataset_id,
+        )
+
+      # Session connection property will be set in the query execution
+      bq_connection_properties.append(
+          bigquery.ConnectionProperty("session_id", bq_session_id)
+      )
+
+      # Check the query type w.r.t. the BigQuery session
+      dry_run_query_job = bq_client.query(
+          query,
+          project=project_id,
+          job_config=bigquery.QueryJobConfig(
+              dry_run=True,
+              connection_properties=bq_connection_properties,
+              labels=bq_job_labels,
+          ),
+      )
+      if (
+          dry_run_query_job.statement_type != "SELECT"
+          and dry_run_query_job.destination
+          and dry_run_query_job.destination.dataset_id != bq_session_dataset_id
+      ):
+        return {
+            "status": "ERROR",
+            "error_details": (
+                "Protected write mode only supports SELECT statements, or write"
+                " operations in the anonymous dataset of a BigQuery session."
+            ),
+        }
+
+    # Return the dry run characteristics of the query if requested
+    if dry_run:
+      dry_run_job = bq_client.query(
+          query,
+          project=project_id,
+          job_config=bigquery.QueryJobConfig(
+              dry_run=True,
+              connection_properties=bq_connection_properties,
+              labels=bq_job_labels,
+          ),
+      )
+      return {"status": "SUCCESS", "dry_run_info": dry_run_job.to_api_repr()}
+
+    # Finally execute the query, fetch the result, and return it
+    row_iterator = bq_client.query_and_wait(
+        query,
+        job_config=bigquery.QueryJobConfig(
+            connection_properties=bq_connection_properties,
+            labels=bq_job_labels,
+        ),
+        project=project_id,
+        max_results=settings.max_query_result_rows,
+    )
+    rows = []
+    for row in row_iterator:
+      row_values = {}
+      for key, val in row.items():
+        try:
+          # if the json serialization of the value succeeds, use it as is
+          json.dumps(val)
+        except:
+          val = str(val)
+        row_values[key] = val
+      rows.append(row_values)
+
+    result = {"status": "SUCCESS", "rows": rows}
+    if (
+        settings.max_query_result_rows is not None
+        and len(rows) == settings.max_query_result_rows
+    ):
+      result["result_is_likely_truncated"] = True
+    return result
+  except Exception as ex:  # pylint: disable=broad-except
+    return {
+        "status": "ERROR",
+        "error_details": str(ex),
+    }
+
+
 def execute_sql(
     project_id: str,
     query: str,
@@ -118,142 +273,15 @@ def execute_sql(
             }
           }
   """
-  try:
-    # Validate compute project if applicable
-    if (
-        settings.compute_project_id
-        and project_id != settings.compute_project_id
-    ):
-      return {
-          "status": "ERROR",
-          "error_details": (
-              f"Cannot execute query in the project {project_id}, as the tool"
-              " is restricted to execute queries only in the project"
-              f" {settings.compute_project_id}."
-          ),
-      }
-
-    # Get BigQuery client
-    bq_client = client.get_bigquery_client(
-        project=project_id,
-        credentials=credentials,
-        location=settings.location,
-        user_agent=settings.application_name,
-    )
-
-    # BigQuery connection properties where applicable
-    bq_connection_properties = None
-
-    if not settings or settings.write_mode == WriteMode.BLOCKED:
-      dry_run_query_job = bq_client.query(
-          query,
-          project=project_id,
-          job_config=bigquery.QueryJobConfig(dry_run=True),
-      )
-      if dry_run_query_job.statement_type != "SELECT":
-        return {
-            "status": "ERROR",
-            "error_details": "Read-only mode only supports SELECT statements.",
-        }
-    elif settings.write_mode == WriteMode.PROTECTED:
-      # In protected write mode, write operation only to a temporary artifact is
-      # allowed. This artifact must have been created in a BigQuery session. In
-      # such a scenario, the session info (session id and the anonymous dataset
-      # containing the artifact) is persisted in the tool context.
-      bq_session_info = tool_context.state.get(BIGQUERY_SESSION_INFO_KEY, None)
-      if bq_session_info:
-        bq_session_id, bq_session_dataset_id = bq_session_info
-      else:
-        session_creator_job = bq_client.query(
-            "SELECT 1",
-            project=project_id,
-            job_config=bigquery.QueryJobConfig(
-                dry_run=True, create_session=True
-            ),
-        )
-        bq_session_id = session_creator_job.session_info.session_id
-        bq_session_dataset_id = session_creator_job.destination.dataset_id
-
-        # Remember the BigQuery session info for subsequent queries
-        tool_context.state[BIGQUERY_SESSION_INFO_KEY] = (
-            bq_session_id,
-            bq_session_dataset_id,
-        )
-
-      # Session connection property will be set in the query execution
-      bq_connection_properties = [
-          bigquery.ConnectionProperty("session_id", bq_session_id)
-      ]
-
-      # Check the query type w.r.t. the BigQuery session
-      dry_run_query_job = bq_client.query(
-          query,
-          project=project_id,
-          job_config=bigquery.QueryJobConfig(
-              dry_run=True,
-              connection_properties=bq_connection_properties,
-          ),
-      )
-      if (
-          dry_run_query_job.statement_type != "SELECT"
-          and dry_run_query_job.destination.dataset_id != bq_session_dataset_id
-      ):
-        return {
-            "status": "ERROR",
-            "error_details": (
-                "Protected write mode only supports SELECT statements, or write"
-                " operations in the anonymous dataset of a BigQuery session."
-            ),
-        }
-
-    # Finally execute the query and fetch the result
-    if dry_run:
-      job_config_kwargs = {"dry_run": True}
-      if bq_connection_properties:
-        job_config_kwargs["connection_properties"] = bq_connection_properties
-      job_config = bigquery.QueryJobConfig(**job_config_kwargs)
-      dry_run_job = bq_client.query(
-          query,
-          project=project_id,
-          job_config=job_config,
-      )
-      return {"status": "SUCCESS", "dry_run_info": dry_run_job.to_api_repr()}
-
-    job_config = (
-        bigquery.QueryJobConfig(connection_properties=bq_connection_properties)
-        if bq_connection_properties
-        else None
-    )
-    row_iterator = bq_client.query_and_wait(
-        query,
-        job_config=job_config,
-        project=project_id,
-        max_results=settings.max_query_result_rows,
-    )
-    rows = []
-    for row in row_iterator:
-      row_values = {}
-      for key, val in row.items():
-        try:
-          # if the json serialization of the value succeeds, use it as is
-          json.dumps(val)
-        except:
-          val = str(val)
-        row_values[key] = val
-      rows.append(row_values)
-
-    result = {"status": "SUCCESS", "rows": rows}
-    if (
-        settings.max_query_result_rows is not None
-        and len(rows) == settings.max_query_result_rows
-    ):
-      result["result_is_likely_truncated"] = True
-    return result
-  except Exception as ex:  # pylint: disable=broad-except
-    return {
-        "status": "ERROR",
-        "error_details": str(ex),
-    }
+  return _execute_sql(
+      project_id=project_id,
+      query=query,
+      credentials=credentials,
+      settings=settings,
+      tool_context=tool_context,
+      dry_run=dry_run,
+      caller_id="execute_sql",
+  )
 
 
 def _execute_sql_write_mode(*args, **kwargs) -> dict:
@@ -841,14 +869,14 @@ def forecast(
 
           >>> forecast(
           ...     project_id="my-gcp-project",
-          ...     history_data="my-dataset.non-existent-table",
+          ...     history_data="my-dataset.nonexistent-table",
           ...     timestamp_col="sale_date",
           ...     data_col="daily_sales"
           ... )
           {
             "status": "ERROR",
             "error_details": "Not found: Table
-            my-gcp-project:my-dataset.non-existent-table was not found in
+            my-gcp-project:my-dataset.nonexistent-table was not found in
             location US"
           }
   """
@@ -892,7 +920,14 @@ def forecast(
     confidence_level => {confidence_level}
   )
   """
-  return execute_sql(project_id, query, credentials, settings, tool_context)
+  return _execute_sql(
+      project_id=project_id,
+      query=query,
+      credentials=credentials,
+      settings=settings,
+      tool_context=tool_context,
+      caller_id="forecast",
+  )
 
 
 def analyze_contribution(
@@ -1065,22 +1100,24 @@ def analyze_contribution(
       # session.
       settings.write_mode = WriteMode.PROTECTED
 
-    result = execute_sql(
-        project_id,
-        create_model_query,
-        credentials,
-        settings,
-        tool_context,
+    result = _execute_sql(
+        project_id=project_id,
+        query=create_model_query,
+        credentials=credentials,
+        settings=settings,
+        tool_context=tool_context,
+        caller_id="analyze_contribution",
     )
     if result["status"] != "SUCCESS":
       return result
 
-    result = execute_sql(
-        project_id,
-        get_insights_query,
-        credentials,
-        settings,
-        tool_context,
+    result = _execute_sql(
+        project_id=project_id,
+        query=get_insights_query,
+        credentials=credentials,
+        settings=settings,
+        tool_context=tool_context,
+        caller_id="analyze_contribution",
     )
   except Exception as ex:  # pylint: disable=broad-except
     return {
@@ -1099,7 +1136,7 @@ def detect_anomalies(
     history_data: str,
     times_series_timestamp_col: str,
     times_series_data_col: str,
-    horizon: Optional[int] = 10,
+    horizon: Optional[int] = 1000,
     target_data: Optional[str] = None,
     times_series_id_cols: Optional[list[str]] = None,
     anomaly_prob_threshold: Optional[float] = 0.95,
@@ -1116,12 +1153,12 @@ def detect_anomalies(
       history_data (str): The table id of the BigQuery table containing the
         history time series data or a query statement that select the history
         data.
-      times_series_timestamp_col (str): The name of the colum containing the
+      times_series_timestamp_col (str): The name of the column containing the
         timestamp for each data point.
       times_series_data_col (str): The name of the column containing the
         numerical values to be forecasted and anomaly detected.
       horizon (int, optional): The number of time steps to forecast into the
-        future. Defaults to 10.
+        future. Defaults to 1000.
       target_data (str, optional): The table id of the BigQuery table containing
         the target time series data or a query statement that select the target
         data.
@@ -1216,14 +1253,14 @@ def detect_anomalies(
 
           >>> detect_anomalies(
           ...     project_id="my-gcp-project",
-          ...     history_data="my-dataset.non-existent-table",
+          ...     history_data="my-dataset.nonexistent-table",
           ...     times_series_timestamp_col="sale_date",
           ...     times_series_data_col="daily_sales"
           ... )
           {
             "status": "ERROR",
             "error_details": "Not found: Table
-            my-gcp-project:my-dataset.non-existent-table was not found in
+            my-gcp-project:my-dataset.nonexistent-table was not found in
             location US"
           }
   """
@@ -1264,9 +1301,14 @@ def detect_anomalies(
     OPTIONS ({options_str})
   AS {history_data_source}
   """
+  order_by_id_cols = (
+      ", ".join(col for col in times_series_id_cols) + ", "
+      if times_series_id_cols
+      else ""
+  )
 
   anomaly_detection_query = f"""
-  SELECT * FROM ML.DETECT_ANOMALIES(MODEL {model_name}, STRUCT({anomaly_prob_threshold} AS anomaly_prob_threshold))
+  SELECT * FROM ML.DETECT_ANOMALIES(MODEL {model_name}, STRUCT({anomaly_prob_threshold} AS anomaly_prob_threshold)) ORDER BY {order_by_id_cols}{times_series_timestamp_col}
   """
   if target_data:
     trimmed_upper_target_data = target_data.strip().upper()
@@ -1275,10 +1317,10 @@ def detect_anomalies(
     ) or trimmed_upper_target_data.startswith("WITH"):
       target_data_source = f"({target_data})"
     else:
-      target_data_source = f"SELECT * FROM `{target_data}`"
+      target_data_source = f"(SELECT * FROM `{target_data}`)"
 
     anomaly_detection_query = f"""
-    SELECT * FROM ML.DETECT_ANOMALIES(MODEL {model_name}, STRUCT({anomaly_prob_threshold} AS anomaly_prob_threshold), {target_data_source})
+    SELECT * FROM ML.DETECT_ANOMALIES(MODEL {model_name}, STRUCT({anomaly_prob_threshold} AS anomaly_prob_threshold), {target_data_source}) ORDER BY {order_by_id_cols}{times_series_timestamp_col}
     """
 
   # Create a session and run the create model query.
@@ -1292,22 +1334,24 @@ def detect_anomalies(
       # session.
       settings.write_mode = WriteMode.PROTECTED
 
-    result = execute_sql(
-        project_id,
-        create_model_query,
-        credentials,
-        settings,
-        tool_context,
+    result = _execute_sql(
+        project_id=project_id,
+        query=create_model_query,
+        credentials=credentials,
+        settings=settings,
+        tool_context=tool_context,
+        caller_id="detect_anomalies",
     )
     if result["status"] != "SUCCESS":
       return result
 
-    result = execute_sql(
-        project_id,
-        anomaly_detection_query,
-        credentials,
-        settings,
-        tool_context,
+    result = _execute_sql(
+        project_id=project_id,
+        query=anomaly_detection_query,
+        credentials=credentials,
+        settings=settings,
+        tool_context=tool_context,
+        caller_id="detect_anomalies",
     )
   except Exception as ex:  # pylint: disable=broad-except
     return {

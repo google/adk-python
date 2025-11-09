@@ -287,7 +287,7 @@ root_agent = Agent(
         - If it's following the guidelines, recommend or add a label to the PR.
 
       # 5. Output
-      Present the followings in an easy to read format highlighting PR number and your label.
+      Present the following in an easy to read format highlighting PR number and your label.
       - The PR summary in a few sentence
       - The label you recommended or added with the justification
       - The comment you recommended or added to the PR with the justification

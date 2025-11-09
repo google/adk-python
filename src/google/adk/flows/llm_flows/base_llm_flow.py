@@ -392,7 +392,7 @@ class BaseLlmFlow(ABC):
         and events
         and len(events) > 1
         # TODO: here we are using the last 2 events to decide whether to pause
-        # the invocation. But this is just being optmisitic, we should find a
+        # the invocation. But this is just being optimistic, we should find a
         # way to pause when the long running tool call is followed by more than
         # one text responses.
         and (
@@ -587,21 +587,19 @@ class BaseLlmFlow(ABC):
 
     # Handle transcription events ONCE per llm_response, outside the event loop
     if llm_response.input_transcription:
-      input_transcription_event = (
-          await self.transcription_manager.handle_input_transcription(
-              invocation_context, llm_response.input_transcription
-          )
+      model_response_event.input_transcription = (
+          llm_response.input_transcription
       )
-      yield input_transcription_event
+      model_response_event.partial = llm_response.partial
+      yield model_response_event
       return
 
     if llm_response.output_transcription:
-      output_transcription_event = (
-          await self.transcription_manager.handle_output_transcription(
-              invocation_context, llm_response.output_transcription
-          )
+      model_response_event.output_transcription = (
+          llm_response.output_transcription
       )
-      yield output_transcription_event
+      model_response_event.partial = llm_response.partial
+      yield model_response_event
       return
 
     # Flush audio caches based on control events using configurable settings
@@ -857,7 +855,10 @@ class BaseLlmFlow(ABC):
         response: Optional[LlmResponse] = None,
     ) -> Optional[LlmResponse]:
       readonly_context = ReadonlyContext(invocation_context)
-      tools = await agent.canonical_tools(readonly_context)
+      if (tools := invocation_context.canonical_tools_cache) is None:
+        tools = await agent.canonical_tools(readonly_context)
+        invocation_context.canonical_tools_cache = tools
+
       if not any(tool.name == 'google_search_agent' for tool in tools):
         return response
       ground_metadata = invocation_context.session.state.get(

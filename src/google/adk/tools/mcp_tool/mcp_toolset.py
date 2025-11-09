@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import sys
 from typing import Callable
@@ -177,7 +178,17 @@ class McpToolset(BaseToolset):
     session = await self._mcp_session_manager.create_session(headers=headers)
 
     # Fetch available tools from the MCP server
-    tools_response: ListToolsResult = await session.list_tools()
+    timeout_in_seconds = (
+        self._connection_params.timeout
+        if hasattr(self._connection_params, "timeout")
+        else None
+    )
+    try:
+      tools_response: ListToolsResult = await asyncio.wait_for(
+          session.list_tools(), timeout=timeout_in_seconds
+      )
+    except Exception as e:
+      raise ConnectionError("Failed to get tools from MCP server.") from e
 
     # Apply filtering based on context and tool_filter
     tools = []

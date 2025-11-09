@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
 from io import StringIO
 import sys
 import unittest
@@ -303,6 +304,26 @@ class TestMCPToolset:
     error_output = custom_errlog.getvalue()
     assert "Warning: Error during McpToolset cleanup" in error_output
     assert "Cleanup error" in error_output
+
+  @pytest.mark.asyncio
+  async def test_get_tools_with_timeout(self):
+    """Test get_tools with timeout."""
+    stdio_params = StdioConnectionParams(
+        server_params=self.mock_stdio_params, timeout=0.01
+    )
+    toolset = MCPToolset(connection_params=stdio_params)
+    toolset._mcp_session_manager = self.mock_session_manager
+
+    async def long_running_list_tools():
+      await asyncio.sleep(0.1)
+      return MockListToolsResult([])
+
+    self.mock_session.list_tools = long_running_list_tools
+
+    with pytest.raises(
+        ConnectionError, match="Failed to get tools from MCP server."
+    ):
+      await toolset.get_tools()
 
   @pytest.mark.asyncio
   async def test_get_tools_retry_decorator(self):
