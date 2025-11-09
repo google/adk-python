@@ -73,10 +73,6 @@ class SequentialAgent(BaseAgent):
           ctx.set_agent_state(self.name, agent_state=agent_state)
           yield self._create_agent_state_event(ctx)
 
-        # Reset the sub-agent's state in the context to ensure that each
-        # sub-agent starts fresh.
-        ctx.set_agent_state(sub_agent.name)
-
       async with Aclosing(sub_agent.run_async(ctx)) as agen:
         async for event in agen:
           yield event

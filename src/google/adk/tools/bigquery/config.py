@@ -37,7 +37,7 @@ class WriteMode(Enum):
   """Only protected write operations are allowed in a BigQuery session.
 
   In this mode write operations in the anonymous dataset of a BigQuery session
-  are allowed. For example, a temporaray table can be created, manipulated and
+  are allowed. For example, a temporary table can be created, manipulated and
   deleted in the anonymous dataset during Agent interaction, while protecting
   permanent tables from being modified or deleted. To learn more about BigQuery
   sessions, see https://cloud.google.com/bigquery/docs/sessions-intro.
@@ -71,7 +71,7 @@ class BigQueryToolConfig(BaseModel):
   """Name of the application using the BigQuery tools.
 
   By default, no particular application name will be set in the BigQuery
-  interaction. But if the the tool user (agent builder) wants to differentiate
+  interaction. But if the tool user (agent builder) wants to differentiate
   their application/agent for tracking or support purpose, they can set this field.
   """
 

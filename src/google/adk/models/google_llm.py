@@ -60,6 +60,8 @@ class Gemini(BaseLlm):
 
   model: str = 'gemini-2.5-flash'
 
+  speech_config: Optional[types.SpeechConfig] = None
+
   retry_options: Optional[types.HttpRetryOptions] = None
   """Allow Gemini to retry failed responses.
 
@@ -115,10 +117,18 @@ class Gemini(BaseLlm):
     cache_metadata = None
     cache_manager = None
     if llm_request.cache_config:
+      from ..telemetry.tracing import tracer
       from .gemini_context_cache_manager import GeminiContextCacheManager
 
-      cache_manager = GeminiContextCacheManager(self.api_client)
-      cache_metadata = await cache_manager.handle_context_caching(llm_request)
+      with tracer.start_as_current_span('handle_context_caching') as span:
+        cache_manager = GeminiContextCacheManager(self.api_client)
+        cache_metadata = await cache_manager.handle_context_caching(llm_request)
+        if cache_metadata:
+          if cache_metadata.cache_name:
+            span.set_attribute('cache_action', 'active_cache')
+            span.set_attribute('cache_name', cache_metadata.cache_name)
+          else:
+            span.set_attribute('cache_action', 'fingerprint_only')
 
     logger.info(
         'Sending out request, model: %s, backend: %s, stream: %s',
@@ -261,6 +271,9 @@ class Gemini(BaseLlm):
           self._live_api_version
       )
 
+    if self.speech_config is not None:
+      llm_request.live_connect_config.speech_config = self.speech_config
+
     llm_request.live_connect_config.system_instruction = types.Content(
         role='system',
         parts=[
@@ -268,7 +281,8 @@ class Gemini(BaseLlm):
         ],
     )
     llm_request.live_connect_config.tools = llm_request.config.tools
-    logger.info('Connecting to live with llm_request:%s', llm_request)
+    logger.info('Connecting to live for model: %s', llm_request.model)
+    logger.debug('Connecting to live with llm_request:%s', llm_request)
     async with self._live_api_client.aio.live.connect(
         model=llm_request.model, config=llm_request.live_connect_config
     ) as live_session:

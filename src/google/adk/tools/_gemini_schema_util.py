@@ -74,31 +74,6 @@ def _to_snake_case(text: str) -> str:
   return text
 
 
-def _sanitize_schema_type(schema: dict[str, Any]) -> dict[str, Any]:
-  if ("type" not in schema or not schema["type"]) and schema.keys().isdisjoint(
-      schema
-  ):
-    schema["type"] = "object"
-  if isinstance(schema.get("type"), list):
-    nullable = False
-    non_null_type = None
-    for t in schema["type"]:
-      if t == "null":
-        nullable = True
-      elif not non_null_type:
-        non_null_type = t
-    if not non_null_type:
-      non_null_type = "object"
-    if nullable:
-      schema["type"] = [non_null_type, "null"]
-    else:
-      schema["type"] = non_null_type
-  elif schema.get("type") == "null":
-    schema["type"] = ["object", "null"]
-
-  return schema
-
-
 def _dereference_schema(schema: dict[str, Any]) -> dict[str, Any]:
   """Resolves $ref pointers in a JSON schema."""
 
@@ -142,7 +117,9 @@ def _sanitize_schema_formats_for_gemini(
 ) -> dict[str, Any]:
   """Filters the schema to only include fields that are supported by JSONSchema."""
   supported_fields: set[str] = set(_ExtendedJSONSchema.model_fields.keys())
-  schema_field_names: set[str] = {"items"}  # 'additional_properties' to come
+  # Gemini rejects schemas that include `additionalProperties`, so drop it.
+  supported_fields.discard("additional_properties")
+  schema_field_names: set[str] = {"items"}
   list_schema_field_names: set[str] = {
       "any_of",  # 'one_of', 'all_of', 'not' to come
   }
@@ -181,11 +158,15 @@ def _sanitize_schema_formats_for_gemini(
     elif field_name in supported_fields and field_value is not None:
       snake_case_schema[field_name] = field_value
 
-  return _sanitize_schema_type(snake_case_schema)
+  # If the schema is empty, assume it has the type of object
+  if not snake_case_schema:
+    snake_case_schema["type"] = "object"
+
+  return snake_case_schema
 
 
 def _to_gemini_schema(openapi_schema: dict[str, Any]) -> Schema:
-  """Converts an OpenAPI schema dictionary to a Gemini Schema object."""
+  """Converts an OpenAPI v3.1. schema dictionary to a Gemini Schema object."""
   if openapi_schema is None:
     return None
 

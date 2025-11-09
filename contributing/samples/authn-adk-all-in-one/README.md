@@ -28,7 +28,7 @@ This folder comes with -
 
 ### Details
 
-You can read about the Auth Code grant / flow type in detail [here](https://developer.okta.com/blog/2018/04/10/oauth-authorization-code-grant-type). But for the purpose of this demo, following steps take place
+You can read about the [Auth Code grant / flow type](https://developer.okta.com/blog/2018/04/10/oauth-authorization-code-grant-type) in detail. But for the purpose of this demo, following steps take place
 
 1. The user asks the agent to find hotels in "New York".
 2. Agent realizes (based on LLM response) that it needs to call a tool and that the tool needs authentication.

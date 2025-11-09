@@ -6,7 +6,7 @@ After assigning a state using the context object (e.g.
 `tool_context.state['log_query_var'] = 'log_query_var_value'`):
 
 * The state is available for use in a later callback.
-* Once the resulting event is processed by the runner and appneded in the
+* Once the resulting event is processed by the runner and appended in the
   session, the state will be also persisted in the session.
 
 This sample agent is for demonstrating the aforementioned behavior.
@@ -55,7 +55,7 @@ state is available after writing via the context object
 
 ### Current Behavior
 
-The current behavior of pesisting states are:
+The current behavior of persisting states are:
 
 * for `before_agent_callback`: state delta will be persisted after all callbacks are processed.
 * for `before_model_callback`: state delta will be persisted with the final LlmResponse,

@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 import logging
 
 from .base_code_executor import BaseCodeExecutor
@@ -29,6 +31,7 @@ __all__ = [
     'VertexAiCodeExecutor',
     'ContainerCodeExecutor',
     'GkeCodeExecutor',
+    'AgentEngineSandboxCodeExecutor',
 ]
 
 
@@ -61,6 +64,16 @@ def __getattr__(name: str):
     except ImportError as e:
       raise ImportError(
           'GkeCodeExecutor requires additional dependencies. '
+          'Please install with: pip install "google-adk[extensions]"'
+      ) from e
+  elif name == 'AgentEngineSandboxCodeExecutor':
+    try:
+      from .agent_engine_sandbox_code_executor import AgentEngineSandboxCodeExecutor
+
+      return AgentEngineSandboxCodeExecutor
+    except ImportError as e:
+      raise ImportError(
+          'AgentEngineSandboxCodeExecutor requires additional dependencies. '
           'Please install with: pip install "google-adk[extensions]"'
       ) from e
   raise AttributeError(f"module '{__name__}' has no attribute '{name}'")

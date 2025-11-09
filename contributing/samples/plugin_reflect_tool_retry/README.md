@@ -46,8 +46,30 @@ You can run the agent with:
 $ adk web contributing/samples/plugin_reflect_tool_retry
 ```
 
-You can provide the following prompt to see the agent retrying tool calls:
+Select "basic" and provide the following prompt to see the agent retrying tool
+calls:
 
 ```
 Please guess a number! Tell me what number you guess and how is it.
+```
+
+### Hallucinating tool calls
+
+The "hallucinating_func_name" agent is an example to show the plugin can retry
+hallucinating tool calls.
+
+For example, we used the `after_model_callback` to hack a tool call with the
+wrong name then the agent can retry calling with the right tool name.
+
+You can run the agent with:
+
+```bash
+$ adk web contributing/samples/plugin_reflect_tool_retry
+```
+
+Select "hallucinating_func_name" and provide the following prompt to see the
+agent retrying tool calls:
+
+```
+Roll a 6 sided die
 ```

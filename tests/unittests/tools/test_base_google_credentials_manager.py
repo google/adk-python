@@ -107,7 +107,7 @@ class TestGoogleCredentialsManager:
     """Test that existing non-oauth credentials are returned immediately.
 
     When credentials are of non-oauth type, no refresh or OAuth flow
-    is triggered irrespective of whether it is valid or not.
+    is triggered irrespective of whether or not it is valid.
     """
     # Create mock credentials that are already valid
     mock_creds = Mock(spec=AuthCredentials)

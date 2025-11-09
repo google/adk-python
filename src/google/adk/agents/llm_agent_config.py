@@ -143,7 +143,7 @@ Examples:
 
     ```
     # tools.py
-    my_mcp_toolset = MCPToolset(
+    my_mcp_toolset = McpToolset(
         connection_params=StdioServerParameters(
             command="npx",
             args=["-y", "@notionhq/notion-mcp-server"],
