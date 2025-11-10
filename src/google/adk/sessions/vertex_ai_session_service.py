@@ -215,7 +215,7 @@ class VertexAiSessionService(BaseSessionService):
                 id=api_session.name.split('/')[-1],
                 state=getattr(api_session, 'session_state', None) or {},
                 last_update_time=api_session.update_time.timestamp(),
-                display_name=getattr(api_session, 'display_name', None) or None,
+                display_name=getattr(api_session, 'display_name', None),
             )
         )
 
