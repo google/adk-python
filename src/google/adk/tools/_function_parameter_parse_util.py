@@ -29,6 +29,7 @@ from typing import Union
 from google.genai import types
 import pydantic
 
+from ..tools.tool_context import ToolContext
 from ..utils.variant_utils import GoogleLLMVariant
 
 _py_builtin_type_to_schema_type = {
@@ -315,6 +316,13 @@ def _parse_schema_from_parameter(
       )
     _raise_if_schema_unsupported(variant, schema)
     return schema
+  if inspect.isclass(param.annotation) and issubclass(
+      param.annotation, ToolContext
+  ):
+    raise ValueError(
+        '`ToolContext` parameter must be named as `tool_context`. Found'
+        f' `{param.name}` instead in function `{func_name}`.'
+    )
   if param.annotation is None:
     # https://swagger.io/docs/specification/v3_0/data-models/data-types/#null
     # null is not a valid type in schema, use object instead.
