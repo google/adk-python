@@ -188,11 +188,9 @@ class CreateSessionRequest(common.BaseModel):
   state: Optional[dict[str, Any]] = Field(
       default=None, description="The initial state of the session."
   )
-  events: Optional[list[Event]] = (
-      Field(
-          default=None,
-          description="A list of events to initialize the session with.",
-      ),
+  events: Optional[list[Event]] = Field(
+      default=None,
+      description="A list of events to initialize the session with.",
   )
   display_name: Optional[str] = Field(
       default=None,
