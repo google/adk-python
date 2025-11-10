@@ -176,7 +176,7 @@ class VertexAiSessionService(BaseSessionService):
         id=session_id,
         state=getattr(get_session_response, 'session_state', None) or {},
         last_update_time=update_timestamp,
-        display_name=getattr(get_session_response, 'display_name', None) or None,
+        display_name=getattr(get_session_response, 'display_name', None),
     )
     session.events += [
         _from_api_event(event)
