@@ -877,8 +877,12 @@ def adk_services_options():
             sessions. <agent_engine> can either be the full qualified resource
             name 'projects/abc/locations/us-central1/reasoningEngines/123' or
             the resource id '123'.
-          - Use 'sqlite://<path_to_sqlite_file>' to connect to a SQLite DB.
-          - See https://docs.sqlalchemy.org/en/20/core/engines.html#backend-specific-urls for more details on supported database URIs."""
+          - Use 'sqlite://<path_to_sqlite_file>' to connect to an aio-sqlite
+            based session service, which is good for local development.
+          - Use 'postgresql://<user>:<password>@<host>:<port>/<database_name>'
+            to connect to a PostgreSQL DB.
+          - See https://docs.sqlalchemy.org/en/20/core/engines.html#backend-specific-urls
+            for more details on other database URIs supported by SQLAlchemy."""
         ),
     )
     @click.option(

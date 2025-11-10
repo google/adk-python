@@ -410,11 +410,10 @@ async def create_test_eval_set(
 
 
 @pytest.fixture
-@pytest.mark.skipif(
-    sys.version_info < (3, 10), reason="A2A requires Python 3.10+"
-)
 def temp_agents_dir_with_a2a():
   """Create a temporary agents directory with A2A agent configurations for testing."""
+  if sys.version_info < (3, 10):
+    pytest.skip("A2A requires Python 3.10+")
   with tempfile.TemporaryDirectory() as temp_dir:
     # Create test agent directory
     agent_dir = Path(temp_dir) / "test_a2a_agent"
@@ -448,9 +447,6 @@ class TestA2AAgent(BaseAgent):
 
 
 @pytest.fixture
-@pytest.mark.skipif(
-    sys.version_info < (3, 10), reason="A2A requires Python 3.10+"
-)
 def test_app_with_a2a(
     mock_session_service,
     mock_artifact_service,
@@ -461,6 +457,8 @@ def test_app_with_a2a(
     temp_agents_dir_with_a2a,
 ):
   """Create a TestClient for the FastAPI app with A2A enabled."""
+  if sys.version_info < (3, 10):
+    pytest.skip("A2A requires Python 3.10+")
 
   # Mock A2A related classes
   with (

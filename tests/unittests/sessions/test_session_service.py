@@ -22,6 +22,7 @@ from google.adk.events.event_actions import EventActions
 from google.adk.sessions.base_session_service import GetSessionConfig
 from google.adk.sessions.database_session_service import DatabaseSessionService
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.sessions.sqlite_session_service import SqliteSessionService
 from google.genai import types
 import pytest
 
@@ -29,23 +30,32 @@ import pytest
 class SessionServiceType(enum.Enum):
   IN_MEMORY = 'IN_MEMORY'
   DATABASE = 'DATABASE'
+  SQLITE = 'SQLITE'
 
 
 def get_session_service(
     service_type: SessionServiceType = SessionServiceType.IN_MEMORY,
+    tmp_path=None,
 ):
   """Creates a session service for testing."""
   if service_type == SessionServiceType.DATABASE:
-    return DatabaseSessionService('sqlite:///:memory:')
+    return DatabaseSessionService('sqlite+aiosqlite:///:memory:')
+  if service_type == SessionServiceType.SQLITE:
+    return SqliteSessionService(str(tmp_path / 'sqlite.db'))
   return InMemorySessionService()
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    'service_type', [SessionServiceType.IN_MEMORY, SessionServiceType.DATABASE]
+    'service_type',
+    [
+        SessionServiceType.IN_MEMORY,
+        SessionServiceType.DATABASE,
+        SessionServiceType.SQLITE,
+    ],
 )
-async def test_get_empty_session(service_type):
-  session_service = get_session_service(service_type)
+async def test_get_empty_session(service_type, tmp_path):
+  session_service = get_session_service(service_type, tmp_path)
   assert not await session_service.get_session(
       app_name='my_app', user_id='test_user', session_id='123'
   )
@@ -53,10 +63,15 @@ async def test_get_empty_session(service_type):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    'service_type', [SessionServiceType.IN_MEMORY, SessionServiceType.DATABASE]
+    'service_type',
+    [
+        SessionServiceType.IN_MEMORY,
+        SessionServiceType.DATABASE,
+        SessionServiceType.SQLITE,
+    ],
 )
-async def test_create_get_session(service_type):
-  session_service = get_session_service(service_type)
+async def test_create_get_session(service_type, tmp_path):
+  session_service = get_session_service(service_type, tmp_path)
   app_name = 'my_app'
   user_id = 'test_user'
   state = {'key': 'value'}
@@ -97,10 +112,15 @@ async def test_create_get_session(service_type):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    'service_type', [SessionServiceType.IN_MEMORY, SessionServiceType.DATABASE]
+    'service_type',
+    [
+        SessionServiceType.IN_MEMORY,
+        SessionServiceType.DATABASE,
+        SessionServiceType.SQLITE,
+    ],
 )
-async def test_create_and_list_sessions(service_type):
-  session_service = get_session_service(service_type)
+async def test_create_and_list_sessions(service_type, tmp_path):
+  session_service = get_session_service(service_type, tmp_path)
   app_name = 'my_app'
   user_id = 'test_user'
 
@@ -125,10 +145,15 @@ async def test_create_and_list_sessions(service_type):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    'service_type', [SessionServiceType.IN_MEMORY, SessionServiceType.DATABASE]
+    'service_type',
+    [
+        SessionServiceType.IN_MEMORY,
+        SessionServiceType.DATABASE,
+        SessionServiceType.SQLITE,
+    ],
 )
-async def test_list_sessions_all_users(service_type):
-  session_service = get_session_service(service_type)
+async def test_list_sessions_all_users(service_type, tmp_path):
+  session_service = get_session_service(service_type, tmp_path)
   app_name = 'my_app'
   user_id_1 = 'user1'
   user_id_2 = 'user2'
@@ -185,10 +210,15 @@ async def test_list_sessions_all_users(service_type):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    'service_type', [SessionServiceType.IN_MEMORY, SessionServiceType.DATABASE]
+    'service_type',
+    [
+        SessionServiceType.IN_MEMORY,
+        SessionServiceType.DATABASE,
+        SessionServiceType.SQLITE,
+    ],
 )
-async def test_app_state_is_shared_by_all_users_of_app(service_type):
-  session_service = get_session_service(service_type)
+async def test_app_state_is_shared_by_all_users_of_app(service_type, tmp_path):
+  session_service = get_session_service(service_type, tmp_path)
   app_name = 'my_app'
   # User 1 creates a session, establishing app:k1
   session1 = await session_service.create_session(
@@ -218,10 +248,17 @@ async def test_app_state_is_shared_by_all_users_of_app(service_type):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    'service_type', [SessionServiceType.IN_MEMORY, SessionServiceType.DATABASE]
+    'service_type',
+    [
+        SessionServiceType.IN_MEMORY,
+        SessionServiceType.DATABASE,
+        SessionServiceType.SQLITE,
+    ],
 )
-async def test_user_state_is_shared_only_by_user_sessions(service_type):
-  session_service = get_session_service(service_type)
+async def test_user_state_is_shared_only_by_user_sessions(
+    service_type, tmp_path
+):
+  session_service = get_session_service(service_type, tmp_path)
   app_name = 'my_app'
   # User 1 creates a session, establishing user:k1 for user 1
   session1 = await session_service.create_session(
@@ -250,10 +287,15 @@ async def test_user_state_is_shared_only_by_user_sessions(service_type):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    'service_type', [SessionServiceType.IN_MEMORY, SessionServiceType.DATABASE]
+    'service_type',
+    [
+        SessionServiceType.IN_MEMORY,
+        SessionServiceType.DATABASE,
+        SessionServiceType.SQLITE,
+    ],
 )
-async def test_session_state_is_not_shared(service_type):
-  session_service = get_session_service(service_type)
+async def test_session_state_is_not_shared(service_type, tmp_path):
+  session_service = get_session_service(service_type, tmp_path)
   app_name = 'my_app'
   # User 1 creates a session session1, establishing sk1 only for session1
   session1 = await session_service.create_session(
@@ -283,10 +325,17 @@ async def test_session_state_is_not_shared(service_type):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    'service_type', [SessionServiceType.IN_MEMORY, SessionServiceType.DATABASE]
+    'service_type',
+    [
+        SessionServiceType.IN_MEMORY,
+        SessionServiceType.DATABASE,
+        SessionServiceType.SQLITE,
+    ],
 )
-async def test_temp_state_is_not_persisted_in_state_or_events(service_type):
-  session_service = get_session_service(service_type)
+async def test_temp_state_is_not_persisted_in_state_or_events(
+    service_type, tmp_path
+):
+  session_service = get_session_service(service_type, tmp_path)
   app_name = 'my_app'
   user_id = 'u1'
   session = await session_service.create_session(
@@ -313,10 +362,15 @@ async def test_temp_state_is_not_persisted_in_state_or_events(service_type):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    'service_type', [SessionServiceType.IN_MEMORY, SessionServiceType.DATABASE]
+    'service_type',
+    [
+        SessionServiceType.IN_MEMORY,
+        SessionServiceType.DATABASE,
+        SessionServiceType.SQLITE,
+    ],
 )
-async def test_get_session_respects_user_id(service_type):
-  session_service = get_session_service(service_type)
+async def test_get_session_respects_user_id(service_type, tmp_path):
+  session_service = get_session_service(service_type, tmp_path)
   app_name = 'my_app'
   # u1 creates session 's1' and adds an event
   session1 = await session_service.create_session(
@@ -339,10 +393,17 @@ async def test_get_session_respects_user_id(service_type):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    'service_type', [SessionServiceType.IN_MEMORY, SessionServiceType.DATABASE]
+    'service_type',
+    [
+        SessionServiceType.IN_MEMORY,
+        SessionServiceType.DATABASE,
+        SessionServiceType.SQLITE,
+    ],
 )
-async def test_create_session_with_existing_id_raises_error(service_type):
-  session_service = get_session_service(service_type)
+async def test_create_session_with_existing_id_raises_error(
+    service_type, tmp_path
+):
+  session_service = get_session_service(service_type, tmp_path)
   app_name = 'my_app'
   user_id = 'test_user'
   session_id = 'existing_session'
@@ -365,10 +426,15 @@ async def test_create_session_with_existing_id_raises_error(service_type):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    'service_type', [SessionServiceType.IN_MEMORY, SessionServiceType.DATABASE]
+    'service_type',
+    [
+        SessionServiceType.IN_MEMORY,
+        SessionServiceType.DATABASE,
+        SessionServiceType.SQLITE,
+    ],
 )
-async def test_append_event_bytes(service_type):
-  session_service = get_session_service(service_type)
+async def test_append_event_bytes(service_type, tmp_path):
+  session_service = get_session_service(service_type, tmp_path)
   app_name = 'my_app'
   user_id = 'user'
 
@@ -406,10 +472,15 @@ async def test_append_event_bytes(service_type):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    'service_type', [SessionServiceType.IN_MEMORY, SessionServiceType.DATABASE]
+    'service_type',
+    [
+        SessionServiceType.IN_MEMORY,
+        SessionServiceType.DATABASE,
+        SessionServiceType.SQLITE,
+    ],
 )
-async def test_append_event_complete(service_type):
-  session_service = get_session_service(service_type)
+async def test_append_event_complete(service_type, tmp_path):
+  session_service = get_session_service(service_type, tmp_path)
   app_name = 'my_app'
   user_id = 'user'
 
@@ -454,10 +525,15 @@ async def test_append_event_complete(service_type):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    'service_type', [SessionServiceType.IN_MEMORY, SessionServiceType.DATABASE]
+    'service_type',
+    [
+        SessionServiceType.IN_MEMORY,
+        SessionServiceType.DATABASE,
+        SessionServiceType.SQLITE,
+    ],
 )
-async def test_get_session_with_config(service_type):
-  session_service = get_session_service(service_type)
+async def test_get_session_with_config(service_type, tmp_path):
+  session_service = get_session_service(service_type, tmp_path)
   app_name = 'my_app'
   user_id = 'user'
 
@@ -518,10 +594,15 @@ async def test_get_session_with_config(service_type):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    'service_type', [SessionServiceType.IN_MEMORY, SessionServiceType.DATABASE]
+    'service_type',
+    [
+        SessionServiceType.IN_MEMORY,
+        SessionServiceType.DATABASE,
+        SessionServiceType.SQLITE,
+    ],
 )
-async def test_partial_events_are_not_persisted(service_type):
-  session_service = get_session_service(service_type)
+async def test_partial_events_are_not_persisted(service_type, tmp_path):
+  session_service = get_session_service(service_type, tmp_path)
   app_name = 'my_app'
   user_id = 'user'
   session = await session_service.create_session(

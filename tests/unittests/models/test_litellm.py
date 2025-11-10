@@ -1066,6 +1066,40 @@ def test_function_declaration_to_tool_param(
   )
 
 
+def test_function_declaration_to_tool_param_without_required_attribute():
+  """Ensure tools without a required field attribute don't raise errors."""
+
+  class SchemaWithoutRequired:
+    """Mimics a Schema object that lacks the required attribute."""
+
+    def __init__(self):
+      self.properties = {
+          "optional_arg": types.Schema(type=types.Type.STRING),
+      }
+
+  func_decl = types.FunctionDeclaration(
+      name="function_without_required_attr",
+      description="Function missing required attribute",
+  )
+  func_decl.parameters = SchemaWithoutRequired()
+
+  expected = {
+      "type": "function",
+      "function": {
+          "name": "function_without_required_attr",
+          "description": "Function missing required attribute",
+          "parameters": {
+              "type": "object",
+              "properties": {
+                  "optional_arg": {"type": "string"},
+              },
+          },
+      },
+  }
+
+  assert _function_declaration_to_tool_param(func_decl) == expected
+
+
 def test_function_declaration_to_tool_param_with_parameters_json_schema():
   """Ensure function declarations using parameters_json_schema are handled.
 
