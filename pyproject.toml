@@ -26,6 +26,7 @@ classifiers = [ # List of https://pypi.org/classifiers/
 dependencies = [
   # go/keep-sorted start
   "PyYAML>=6.0.2, <7.0.0",                                   # For APIHubToolset.
+  "aiosqlite>=0.21.0",                                       # For SQLite database
   "anyio>=4.9.0, <5.0.0;python_version>='3.10'",             # For MCP Session Manager
   "authlib>=1.5.1, <2.0.0",                                  # For RestAPI Tool
   "click>=8.1.8, <9.0.0",                                    # For CLI tools
