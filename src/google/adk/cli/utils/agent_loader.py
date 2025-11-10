@@ -336,13 +336,13 @@ class AgentLoader(BaseAgentLoader):
         else:
           agent = loaded
 
-        agent_type = self._determine_agent_type(agent_name)
+        language = self._determine_agent_language(agent_name)
 
         app_info = {
-            "simple_name": agent_name,
-            "agent_name": agent.name,
+            "name": agent_name,
+            "root_agent_name": agent.name,
             "description": agent.description,
-            "agent_type": agent_type,
+            "language": language,
         }
         apps_info.append(app_info)
 
@@ -352,18 +352,18 @@ class AgentLoader(BaseAgentLoader):
 
     return apps_info
 
-  def _determine_agent_type(
+  def _determine_agent_language(
       self, agent_name: str
-  ) -> Literal["yaml", "package"]:
+  ) -> Literal["yaml", "python"]:
     """Determine the type of agent based on file structure."""
     base_path = Path.cwd() / self.agents_dir / agent_name
 
     if (base_path / "root_agent.yaml").exists():
       return "yaml"
     elif (base_path / "agent.py").exists():
-      return "package"
+      return "python"
     elif (base_path / "__init__.py").exists():
-      return "package"
+      return "python"
 
     raise ValueError(f"Could not determine agent type for '{agent_name}'.")
 

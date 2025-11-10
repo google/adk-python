@@ -281,10 +281,10 @@ class ListMetricsInfoResponse(common.BaseModel):
 
 
 class AppInfo(common.BaseModel):
-  simple_name: str
-  agent_name: str
+  name: str
+  root_agent_name: str
   description: str
-  agent_type: Literal["yaml", "package"]
+  language: Literal["yaml", "python"]
 
 
 class ListAppsResponse(common.BaseModel):
