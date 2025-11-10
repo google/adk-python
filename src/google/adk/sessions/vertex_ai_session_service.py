@@ -83,6 +83,7 @@ class VertexAiSessionService(BaseSessionService):
       user_id: str,
       state: Optional[dict[str, Any]] = None,
       session_id: Optional[str] = None,
+      display_name: Optional[str] = None,
       **kwargs: Any,
   ) -> Session:
     """Creates a new session.
