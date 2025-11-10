@@ -188,9 +188,15 @@ class CreateSessionRequest(common.BaseModel):
   state: Optional[dict[str, Any]] = Field(
       default=None, description="The initial state of the session."
   )
-  events: Optional[list[Event]] = Field(
+  events: Optional[list[Event]] = (
+      Field(
+          default=None,
+          description="A list of events to initialize the session with.",
+      ),
+  )
+  display_name: Optional[str] = Field(
       default=None,
-      description="A list of events to initialize the session with.",
+      description="The display name of the session.",
   )
 
 
@@ -594,6 +600,7 @@ class AdkWebServer:
       user_id: str,
       session_id: Optional[str] = None,
       state: Optional[dict[str, Any]] = None,
+      display_name: Optional[str] = None,
   ) -> Session:
     try:
       session = await self.session_service.create_session(
@@ -601,6 +608,7 @@ class AdkWebServer:
           user_id=user_id,
           state=state,
           session_id=session_id,
+          display_name=display_name,
       )
       logger.info("New session created: %s", session.id)
       return session
@@ -795,6 +803,7 @@ class AdkWebServer:
           user_id=user_id,
           state=req.state,
           session_id=req.session_id,
+          display_name=req.display_name,
       )
 
       if req.events:

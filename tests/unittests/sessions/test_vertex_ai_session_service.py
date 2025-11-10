@@ -578,6 +578,22 @@ async def test_create_session_with_custom_config(mock_api_client_instance):
 
 @pytest.mark.asyncio
 @pytest.mark.usefixtures('mock_get_api_client')
+async def test_create_session_with_display_name(mock_api_client_instance):
+  """Test that display_name parameter is passed through to the API."""
+  session_service = mock_vertex_ai_session_service()
+
+  display_name = 'Display Name'
+  await session_service.create_session(
+      app_name='123', user_id='user', display_name=display_name
+  )
+  assert (
+      mock_api_client_instance.last_create_session_config['display_name']
+      == display_name
+  )
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
 async def test_append_event():
   session_service = mock_vertex_ai_session_service()
   session_before_append = await session_service.get_session(

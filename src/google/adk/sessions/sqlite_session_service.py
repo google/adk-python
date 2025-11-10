@@ -66,6 +66,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     state TEXT NOT NULL,
     create_time REAL NOT NULL,
     update_time REAL NOT NULL,
+    display_name TEXT,
     PRIMARY KEY (app_name, user_id, id)
 );
 """
@@ -121,6 +122,7 @@ class SqliteSessionService(BaseSessionService):
       user_id: str,
       state: Optional[dict[str, Any]] = None,
       session_id: Optional[str] = None,
+      display_name: Optional[str] = None,
   ) -> Session:
     if session_id:
       session_id = session_id.strip()
@@ -160,8 +162,8 @@ class SqliteSessionService(BaseSessionService):
       # Store the session
       await db.execute(
           """
-          INSERT INTO sessions (app_name, user_id, id, state, create_time, update_time)
-          VALUES (?, ?, ?, ?, ?, ?)
+          INSERT INTO sessions (app_name, user_id, id, state, create_time, update_time, display_name)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
           """,
           (
               app_name,
@@ -170,6 +172,7 @@ class SqliteSessionService(BaseSessionService):
               json.dumps(session_state),
               now,
               now,
+              display_name,
           ),
       )
       await db.commit()
@@ -185,6 +188,7 @@ class SqliteSessionService(BaseSessionService):
           state=merged_state,
           events=[],
           last_update_time=now,
+          display_name=display_name,
       )
 
   @override
@@ -198,8 +202,8 @@ class SqliteSessionService(BaseSessionService):
   ) -> Optional[Session]:
     async with self._get_db_connection() as db:
       async with db.execute(
-          "SELECT state, update_time FROM sessions WHERE app_name=? AND"
-          " user_id=? AND id=?",
+          "SELECT state, update_time, display_name FROM sessions WHERE"
+          " app_name=? AND user_id=? AND id=?",
           (app_name, user_id, session_id),
       ) as cursor:
         session_row = await cursor.fetchone()
@@ -207,6 +211,7 @@ class SqliteSessionService(BaseSessionService):
           return None
         session_state = json.loads(session_row["state"])
         last_update_time = session_row["update_time"]
+        display_name = session_row["display_name"]
 
       # Build events query
       query_parts = [
@@ -248,6 +253,7 @@ class SqliteSessionService(BaseSessionService):
           state=merged_state,
           events=events,
           last_update_time=last_update_time,
+          display_name=display_name,
       )
 
   @override
@@ -259,14 +265,14 @@ class SqliteSessionService(BaseSessionService):
       # Fetch sessions
       if user_id:
         session_rows = await db.execute_fetchall(
-            "SELECT id, user_id, state, update_time FROM sessions WHERE"
-            " app_name=? AND user_id=?",
+            "SELECT id, user_id, state, update_time, display_name FROM sessions"
+            " WHERE app_name=? AND user_id=?",
             (app_name, user_id),
         )
       else:
         session_rows = await db.execute_fetchall(
-            "SELECT id, user_id, state, update_time FROM sessions WHERE"
-            " app_name=?",
+            "SELECT id, user_id, state, update_time, display_name FROM sessions"
+            " WHERE app_name=?",
             (app_name,),
         )
 
@@ -301,6 +307,7 @@ class SqliteSessionService(BaseSessionService):
                 state=merged_state,
                 events=[],
                 last_update_time=row["update_time"],
+                display_name=row["display_name"],
             )
         )
     return ListSessionsResponse(sessions=sessions_list)

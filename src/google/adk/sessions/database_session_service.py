@@ -174,6 +174,10 @@ class StorageSession(Base):
       PreciseTimestamp, default=func.now(), onupdate=func.now()
   )
 
+  display_name: Mapped[Optional[str]] = mapped_column(
+      String(DEFAULT_MAX_VARCHAR_LENGTH), nullable=True
+  )
+
   storage_events: Mapped[list[StorageEvent]] = relationship(
       "StorageEvent",
       back_populates="storage_session",
@@ -215,6 +219,7 @@ class StorageSession(Base):
         state=state,
         events=events,
         last_update_time=self.update_timestamp_tz,
+        display_name=self.display_name,
     )
 
 
@@ -477,6 +482,7 @@ class DatabaseSessionService(BaseSessionService):
       user_id: str,
       state: Optional[dict[str, Any]] = None,
       session_id: Optional[str] = None,
+      display_name: Optional[str] = None,
   ) -> Session:
     # 1. Populate states.
     # 2. Build storage session object
@@ -526,6 +532,7 @@ class DatabaseSessionService(BaseSessionService):
           user_id=user_id,
           id=session_id,
           state=session_state,
+          display_name=display_name,
       )
       sql_session.add(storage_session)
       await sql_session.commit()

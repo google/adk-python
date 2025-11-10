@@ -83,6 +83,7 @@ async def test_create_get_session(service_type, tmp_path):
   assert session.user_id == user_id
   assert session.id
   assert session.state == state
+  assert session.display_name is None
   assert (
       session.last_update_time
       <= datetime.now().astimezone(timezone.utc).timestamp()
@@ -618,3 +619,41 @@ async def test_partial_events_are_not_persisted(service_type, tmp_path):
       app_name=app_name, user_id=user_id, session_id=session.id
   )
   assert len(session_got.events) == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'service_type',
+    [
+        SessionServiceType.IN_MEMORY,
+        SessionServiceType.DATABASE,
+        SessionServiceType.SQLITE,
+    ],
+)
+async def test_create_session_with_display_name(service_type, tmp_path):
+  """Test that display_name is properly stored and retrieved."""
+  session_service = get_session_service(service_type, tmp_path)
+  app_name = 'my_app'
+  user_id = 'test_user'
+  display_name = 'My Test Session'
+
+  # Create a session with a display_name
+  session = await session_service.create_session(
+      app_name=app_name,
+      user_id=user_id,
+      display_name=display_name,
+  )
+  assert session.display_name == display_name
+
+  # Verify display_name is persisted when fetching the session
+  got_session = await session_service.get_session(
+      app_name=app_name, user_id=user_id, session_id=session.id
+  )
+  assert got_session.display_name == display_name
+
+  # Verify display_name appears in list_sessions
+  list_response = await session_service.list_sessions(
+      app_name=app_name, user_id=user_id
+  )
+  assert len(list_response.sessions) == 1
+  assert list_response.sessions[0].display_name == display_name

@@ -56,6 +56,7 @@ class BaseSessionService(abc.ABC):
       user_id: str,
       state: Optional[dict[str, Any]] = None,
       session_id: Optional[str] = None,
+      display_name: Optional[str] = None,
   ) -> Session:
     """Creates a new session.
 
@@ -65,6 +66,7 @@ class BaseSessionService(abc.ABC):
       state: the initial state of the session.
       session_id: the client-provided id of the session. If not provided, a
         generated ID will be used.
+      display_name: the display name of the session.
 
     Returns:
       session: The newly created session instance.
