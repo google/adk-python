@@ -262,6 +262,58 @@ class TestRestApiTool:
           "message": "Needs your authorization to access your data.",
       }
 
+  @patch(
+      "google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool.requests.request"
+  )
+  @pytest.mark.asyncio
+  async def test_call_with_required_param_defaults(
+      self,
+      mock_request,
+      mock_tool_context,
+      sample_endpoint,
+      sample_auth_scheme,
+      sample_auth_credential,
+  ):
+    """Test that required parameters with defaults are auto-filled."""
+    mock_response = MagicMock()
+    mock_response.json.return_value = {"result": "success"}
+    mock_request.return_value = mock_response
+
+    # Create operation with required parameter that has default
+    mock_operation = Operation(
+        operationId="test_op",
+        parameters=[
+            OpenAPIParameter(**{
+                "name": "userId",
+                "in": "path",
+                "required": True,
+                "schema": OpenAPISchema(type="string", default="me"),
+            })
+        ],
+    )
+
+    tool = RestApiTool(
+        name="test_tool",
+        description="Test Tool",
+        endpoint=OperationEndpoint(
+            base_url="https://example.com",
+            path="/users/{userId}/messages",
+            method="GET",
+        ),
+        operation=mock_operation,
+        auth_scheme=sample_auth_scheme,
+        auth_credential=sample_auth_credential,
+    )
+
+    # Call without providing userId - should use default "me"
+    result = await tool.call(args={}, tool_context=mock_tool_context)
+
+    # Verify the default was applied
+    assert mock_request.called
+    call_kwargs = mock_request.call_args[1]
+    assert call_kwargs["url"] == "https://example.com/users/me/messages"
+    assert result == {"result": "success"}
+
   def test_prepare_request_params_query_body(
       self, sample_endpoint, sample_auth_credential, sample_auth_scheme
   ):
