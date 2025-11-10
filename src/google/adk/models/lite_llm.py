@@ -525,13 +525,13 @@ def _function_declaration_to_tool_param(
       },
   }
 
-  if (
-      function_declaration.parameters
-      and function_declaration.parameters.required
-  ):
-    tool_params["function"]["parameters"][
-        "required"
-    ] = function_declaration.parameters.required
+  required_fields = (
+      getattr(function_declaration.parameters, "required", None)
+      if function_declaration.parameters
+      else None
+  )
+  if required_fields:
+    tool_params["function"]["parameters"]["required"] = required_fields
 
   return tool_params
 
