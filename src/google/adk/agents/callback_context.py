@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+from typing import Any
 from typing import Optional
 from typing import TYPE_CHECKING
 
@@ -24,6 +25,7 @@ from .readonly_context import ReadonlyContext
 if TYPE_CHECKING:
   from google.genai import types
 
+  from ..artifacts.base_artifact_service import ArtifactVersion
   from ..auth.auth_credential import AuthCredential
   from ..auth.auth_tool import AuthConfig
   from ..events.event_actions import EventActions
@@ -84,12 +86,18 @@ class CallbackContext(ReadonlyContext):
         version=version,
     )
 
-  async def save_artifact(self, filename: str, artifact: types.Part) -> int:
+  async def save_artifact(
+      self,
+      filename: str,
+      artifact: types.Part,
+      custom_metadata: Optional[dict[str, Any]] = None,
+  ) -> int:
     """Saves an artifact and records it as delta for the current session.
 
     Args:
       filename: The filename of the artifact.
       artifact: The artifact to save.
+      custom_metadata: Custom metadata to associate with the artifact.
 
     Returns:
      The version of the artifact.
@@ -102,9 +110,33 @@ class CallbackContext(ReadonlyContext):
         session_id=self._invocation_context.session.id,
         filename=filename,
         artifact=artifact,
+        custom_metadata=custom_metadata,
     )
     self._event_actions.artifact_delta[filename] = version
     return version
+
+  async def get_artifact_version(
+      self, filename: str, version: Optional[int] = None
+  ) -> Optional[ArtifactVersion]:
+    """Gets artifact version info.
+
+    Args:
+      filename: The filename of the artifact.
+      version: The version of the artifact. If None, the latest version will be
+        returned.
+
+    Returns:
+      The artifact version info.
+    """
+    if self._invocation_context.artifact_service is None:
+      raise ValueError("Artifact service is not initialized.")
+    return await self._invocation_context.artifact_service.get_artifact_version(
+        app_name=self._invocation_context.app_name,
+        user_id=self._invocation_context.user_id,
+        session_id=self._invocation_context.session.id,
+        filename=filename,
+        version=version,
+    )
 
   async def list_artifacts(self) -> list[str]:
     """Lists the filenames of the artifacts attached to the current session."""
