@@ -61,6 +61,11 @@ class ReadonlyContext:
     return self._invocation_context.session
 
   @property
+  def user_id(self) -> str:
+    """The id of the user. READONLY field."""
+    return self._invocation_context.user_id
+
+  @property
   def run_config(self) -> Optional[RunConfig]:
     """The run config of the current invocation. READONLY field."""
     return self._invocation_context.run_config
