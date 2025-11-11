@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import copy
+import logging
 from typing import AsyncGenerator
 from typing import Optional
 
@@ -28,6 +29,8 @@ from ._base_llm_processor import BaseLlmRequestProcessor
 from .functions import remove_client_function_call_id
 from .functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
 from .functions import REQUEST_EUC_FUNCTION_CALL_NAME
+
+logger = logging.getLogger('google_adk.' + __name__)
 
 
 class _ContentLlmRequestProcessor(BaseLlmRequestProcessor):
@@ -183,6 +186,12 @@ def _rearrange_events_for_latest_function_response(
           break
 
   if function_call_event_idx == -1:
+    logger.debug(
+        'No function call event found for function responses ids: %s in'
+        ' event list: %s',
+        function_responses_ids,
+        events,
+    )
     raise ValueError(
         'No function call event found for function responses ids:'
         f' {function_responses_ids}'

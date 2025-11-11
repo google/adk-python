@@ -376,9 +376,12 @@ class RemoteA2aAgent(BaseAgent):
         continue
 
       for part in event.content.parts:
-        converted_part = self._genai_part_converter(part)
-        if converted_part:
-          message_parts.append(converted_part)
+        converted_parts = self._genai_part_converter(part)
+        if not isinstance(converted_parts, list):
+          converted_parts = [converted_parts] if converted_parts else []
+
+        if converted_parts:
+          message_parts.extend(converted_parts)
         else:
           logger.warning("Failed to convert part to A2A format: %s", part)
 

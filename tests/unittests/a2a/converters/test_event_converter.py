@@ -576,6 +576,37 @@ class TestEventConverter:
         assert result.context_id == context_id
         assert result.status.state == TaskState.input_required
 
+  def test_convert_event_to_a2a_message_with_multiple_parts_returned(self):
+    """Test event to message conversion when part_converter returns multiple parts."""
+    from a2a import types as a2a_types
+    from google.adk.a2a.converters.event_converter import convert_event_to_a2a_message
+    from google.genai import types as genai_types
+
+    # Arrange
+    mock_genai_part = genai_types.Part(text="source part")
+    mock_a2a_part1 = a2a_types.Part(root=a2a_types.TextPart(text="part 1"))
+    mock_a2a_part2 = a2a_types.Part(root=a2a_types.TextPart(text="part 2"))
+    mock_convert_part = Mock()
+    mock_convert_part.return_value = [mock_a2a_part1, mock_a2a_part2]
+
+    self.mock_event.content = genai_types.Content(
+        parts=[mock_genai_part], role="model"
+    )
+
+    # Act
+    result = convert_event_to_a2a_message(
+        self.mock_event,
+        self.mock_invocation_context,
+        part_converter=mock_convert_part,
+    )
+
+    # Assert
+    assert result is not None
+    assert len(result.parts) == 2
+    assert result.parts[0].root.text == "part 1"
+    assert result.parts[1].root.text == "part 2"
+    mock_convert_part.assert_called_once_with(mock_genai_part)
+
 
 class TestA2AToEventConverters:
   """Test suite for A2A to Event conversion functions."""
@@ -799,6 +830,36 @@ class TestA2AToEventConverters:
     assert result.content.role == "model"
     assert len(result.content.parts) == 1
     assert result.content.parts[0].text == "test content"
+    mock_convert_part.assert_called_once_with(mock_a2a_part)
+
+  def test_convert_a2a_message_to_event_with_multiple_parts_returned(self):
+    """Test message to event conversion when part_converter returns multiple parts."""
+    from google.adk.a2a.converters.event_converter import convert_a2a_message_to_event
+    from google.genai import types as genai_types
+
+    # Arrange
+    mock_a2a_part = Mock()
+    mock_genai_part1 = genai_types.Part(text="part 1")
+    mock_genai_part2 = genai_types.Part(text="part 2")
+    mock_convert_part = Mock()
+    mock_convert_part.return_value = [mock_genai_part1, mock_genai_part2]
+
+    mock_message = Mock(spec=Message)
+    mock_message.parts = [mock_a2a_part]
+
+    # Act
+    result = convert_a2a_message_to_event(
+        mock_message,
+        "test-author",
+        self.mock_invocation_context,
+        mock_convert_part,
+    )
+
+    # Assert
+    assert result.content.role == "model"
+    assert len(result.content.parts) == 2
+    assert result.content.parts[0].text == "part 1"
+    assert result.content.parts[1].text == "part 2"
     mock_convert_part.assert_called_once_with(mock_a2a_part)
 
   def test_convert_a2a_message_to_event_with_long_running_tools(self):

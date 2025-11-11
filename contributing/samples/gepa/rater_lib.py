@@ -19,6 +19,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from absl import logging
 from google.genai import types
 import jinja2
 from retry import retry
@@ -73,7 +74,7 @@ def parse_rubric_validation_response(
       verdict_str = 'yes'
     elif 'no' in verdict_str:
       verdict_str = 'no'
-    elif 'unkown' in verdict_str:
+    elif 'unknown' in verdict_str:
       verdict_str = 'unknown'
     else:
       verdict_str = 'not_found'
@@ -131,16 +132,30 @@ _COMPLETION_RUBRIC_CRITERIA = """The agent fulfilled the user's primary request.
 class Rater:
   """Rates agent trajectories using an LLM based on rubrics."""
 
-  def __init__(self, tool_declarations: str):
+  def __init__(
+      self,
+      tool_declarations: str,
+      developer_instructions: str = '',
+      rubric: str = _COMPLETION_RUBRIC_CRITERIA,
+      validation_template_path: str = 'rubric_validation_template.txt',
+  ):
     """Initializes the Rater.
 
     Args:
       tool_declarations: JSON string of tool declarations for the agent.
+      developer_instructions: Developer instructions.
+      rubric: rubric.
+      validation_template_path: Path to rubric validation template.
     """
     self._client = genai.Client()
     self._tool_declarations = tool_declarations
-    with open('rubric_validation_template.txt') as f:
+    self._developer_instructions = developer_instructions
+    with open(validation_template_path) as f:
       self._rubric_validation_template = f.read().strip()
+    logging.info(
+        'Loaded rubric validate template from path=%s', validation_template_path
+    )
+    self._rubric = rubric
 
   @retry(tries=3, delay=2, backoff=2)
   def __call__(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
@@ -156,10 +171,10 @@ class Rater:
     env.globals['user_input'] = (
         messages[0].get('parts', [{}])[0].get('text', '') if messages else ''
     )
-    env.globals['developer_instructions'] = ''
+    env.globals['developer_instructions'] = self._developer_instructions
     env.globals['tool_declarations'] = self._tool_declarations
     env.globals['model_response'] = format_user_agent_conversation(messages)
-    env.globals['decomposed_rubric'] = '* ' + _COMPLETION_RUBRIC_CRITERIA
+    env.globals['decomposed_rubric'] = '* ' + self._rubric
     contents = env.from_string(self._rubric_validation_template).render()
     resp = self._client.models.generate_content(
         model='gemini-2.5-pro',

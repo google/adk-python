@@ -653,6 +653,41 @@ class TestRemoteA2aAgentMessageHandling:
       assert result[0][0] == mock_a2a_part
       assert result[1] is None  # context_id
 
+  def test_construct_message_parts_from_session_success_multiple_parts(self):
+    """Test successful message parts construction from session."""
+    # Mock event with text content
+    mock_part = Mock()
+    mock_part.text = "Hello world"
+
+    mock_content = Mock()
+    mock_content.parts = [mock_part]
+
+    mock_event = Mock()
+    mock_event.content = mock_content
+
+    self.mock_session.events = [mock_event]
+
+    with patch(
+        "google.adk.agents.remote_a2a_agent._present_other_agent_message"
+    ) as mock_convert:
+      mock_convert.return_value = mock_event
+
+      mock_a2a_part1 = Mock()
+      mock_a2a_part2 = Mock()
+      self.mock_genai_part_converter.return_value = [
+          mock_a2a_part1,
+          mock_a2a_part2,
+      ]
+
+      result = self.agent._construct_message_parts_from_session(
+          self.mock_context
+      )
+
+      assert len(result) == 2  # Returns tuple of (parts, context_id)
+      assert len(result[0]) == 2  # parts list
+      assert result[0] == [mock_a2a_part1, mock_a2a_part2]
+      assert result[1] is None  # context_id
+
   def test_construct_message_parts_from_session_empty_events(self):
     """Test message parts construction with empty events."""
     self.mock_session.events = []
@@ -697,7 +732,7 @@ class TestRemoteA2aAgentMessageHandling:
 
   @pytest.mark.asyncio
   async def test_handle_a2a_response_with_task_completed_and_no_update(self):
-    """Test successful A2A response handling with non-streeaming task and no update."""
+    """Test successful A2A response handling with non-streaming task and no update."""
     mock_a2a_task = Mock(spec=A2ATask)
     mock_a2a_task.id = "task-123"
     mock_a2a_task.context_id = "context-123"
@@ -1149,7 +1184,7 @@ class TestRemoteA2aAgentMessageHandlingFromFactory:
 
   @pytest.mark.asyncio
   async def test_handle_a2a_response_with_task_completed_and_no_update(self):
-    """Test successful A2A response handling with non-streeaming task and no update."""
+    """Test successful A2A response handling with non-streaming task and no update."""
     mock_a2a_task = Mock(spec=A2ATask)
     mock_a2a_task.id = "task-123"
     mock_a2a_task.context_id = "context-123"

@@ -115,6 +115,7 @@ class Runner:
       session_service: BaseSessionService,
       memory_service: Optional[BaseMemoryService] = None,
       credential_service: Optional[BaseCredentialService] = None,
+      plugin_close_timeout: float = 5.0,
   ):
     """Initializes the Runner.
 
@@ -134,6 +135,7 @@ class Runner:
         session_service: The session service for the runner.
         memory_service: The memory service for the runner.
         credential_service: The credential service for the runner.
+        plugin_close_timeout: The timeout in seconds for plugin close methods.
 
     Raises:
         ValueError: If `app` is provided along with `app_name` or `plugins`, or
@@ -151,7 +153,9 @@ class Runner:
     self.session_service = session_service
     self.memory_service = memory_service
     self.credential_service = credential_service
-    self.plugin_manager = PluginManager(plugins=plugins)
+    self.plugin_manager = PluginManager(
+        plugins=plugins, close_timeout=plugin_close_timeout
+    )
     (
         self._agent_origin_app_name,
         self._agent_origin_dir,
@@ -583,30 +587,15 @@ class Runner:
 
     return rewind_artifact_delta
 
-  async def _run_compaction_default(self, session: Session):
-    """Runs compaction for other types of compactors.
-
-    This method calls `maybe_compact_events` on the compactor with all
-    events in the session.
-
-    Args:
-      session: The session containing events to compact.
-    """
-    compaction_event = (
-        await self.app.events_compaction_config.compactor.maybe_compact_events(
-            events=session.events
-        )
-    )
-    if compaction_event:
-      await self.session_service.append_event(
-          session=session, event=compaction_event
-      )
-
   def _should_append_event(self, event: Event, is_live_call: bool) -> bool:
     """Checks if an event should be appended to the session."""
     # Don't append audio response from model in live mode to session.
     # The data is appended to artifacts with a reference in file_data in the
     # event.
+    # We should append non-partial events only.For example, non-finished(partial)
+    # transcription events should not be appended.
+    # Function call and function response events should be appended.
+    # Other control events should be appended.
     if is_live_call and contents._is_live_model_audio_event(event):
       return False
     return True
@@ -1259,6 +1248,7 @@ class Runner:
     )
     if modified_user_message is not None:
       new_message = modified_user_message
+      invocation_context.user_content = new_message
 
     if new_message:
       await self._append_new_message_to_session(
@@ -1311,7 +1301,15 @@ class Runner:
 
   async def close(self):
     """Closes the runner."""
+    logger.info('Closing runner...')
+    # Close Toolsets
     await self._cleanup_toolsets(self._collect_toolset(self.agent))
+
+    # Close Plugins
+    if self.plugin_manager:
+      await self.plugin_manager.close()
+
+    logger.info('Runner closed.')
 
   async def __aenter__(self):
     """Async context manager entry."""
@@ -1343,6 +1341,7 @@ class InMemoryRunner(Runner):
       app_name: Optional[str] = None,
       plugins: Optional[list[BasePlugin]] = None,
       app: Optional[App] = None,
+      plugin_close_timeout: float = 5.0,
   ):
     """Initializes the InMemoryRunner.
 
@@ -1350,6 +1349,9 @@ class InMemoryRunner(Runner):
         agent: The root agent to run.
         app_name: The application name of the runner. Defaults to
           'InMemoryRunner'.
+        plugins: Optional list of plugins for the runner.
+        app: Optional App instance.
+        plugin_close_timeout: The timeout in seconds for plugin close methods.
     """
     if app is None and app_name is None:
       app_name = 'InMemoryRunner'
@@ -1361,4 +1363,5 @@ class InMemoryRunner(Runner):
         app=app,
         session_service=InMemorySessionService(),
         memory_service=InMemoryMemoryService(),
+        plugin_close_timeout=plugin_close_timeout,
     )

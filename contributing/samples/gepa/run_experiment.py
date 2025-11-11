@@ -26,15 +26,69 @@ from absl import flags
 import experiment
 from google.genai import types
 
-_OUTPUT_DIR = flags.DEFINE_string('output_dir', None, '')
-_EVAL_SET_SIZE = flags.DEFINE_integer('eval_set_size', None, '')
-_MAX_METRIC_CALLS = flags.DEFINE_integer('max_metric_calls', 500, '')
-_NUM_TEST_RECORDS = flags.DEFINE_integer('num_test_records', None, '')
-_NUM_EVAL_TRIALS = flags.DEFINE_integer('num_eval_trials', 4, '')
-_MAX_CONCURRENCY = flags.DEFINE_integer('max_concurrency', 8, '')
-_EVAL_MODE = flags.DEFINE_bool('eval_mode', False, '')
-_USE_RATER = flags.DEFINE_bool('use_rater', False, '')
-_TRAIN_BATCH_SIZE = flags.DEFINE_integer('train_batch_size', 3, '')
+import utils
+
+_OUTPUT_DIR = flags.DEFINE_string(
+    'output_dir',
+    None,
+    'Directory to save experiment results and artifacts.',
+    required=True,
+)
+_EVAL_SET_SIZE = flags.DEFINE_integer(
+    'eval_set_size',
+    None,
+    'Size of the dev set to use for Pareto frontier evaluation in GEPA. If'
+    ' None, uses all available dev tasks. A few tens of examples might'
+    ' suffice more simpler tasks and up to a few hundreds for '
+    ' more complex and variable tasks. Increase the size to mitigate effect of'
+    ' variability at greater cost.',
+)
+_MAX_METRIC_CALLS = flags.DEFINE_integer(
+    'max_metric_calls',
+    500,
+    'Total budget for GEPA prompt evaluations. This is the main control for'
+    ' runtime/cost. One could start with 100 and increase to 500+ for further'
+    ' optimization.',
+)
+_NUM_TEST_RECORDS = flags.DEFINE_integer(
+    'num_test_records',
+    None,
+    'Size of the test set for final evaluation of the optimized prompt. If'
+    ' None, uses all available test tasks.',
+)
+_NUM_EVAL_TRIALS = flags.DEFINE_integer(
+    'num_eval_trials',
+    4,
+    'Number of times each task is run during evaluation. Higher values give'
+    ' more stable evaluation metrics but increase runtime. Recommended: 4-8.',
+)
+_MAX_CONCURRENCY = flags.DEFINE_integer(
+    'max_concurrency',
+    8,
+    'Maximum number of parallel agent-environment interactions. Increase if'
+    ' you have sufficient API quota.',
+)
+_EVAL_MODE = flags.DEFINE_bool(
+    'eval_mode',
+    False,
+    'If set, run evaluation only using the seed prompt, skipping GEPA'
+    ' optimization.',
+)
+_USE_RATER = flags.DEFINE_bool(
+    'use_rater',
+    False,
+    'If set, use an LLM rater to score trajectories.',
+)
+_TRAIN_BATCH_SIZE = flags.DEFINE_integer(
+    'train_batch_size',
+    3,
+    'Number of trajectories sampled from rollouts to be used by the'
+    ' reflection model in each GEPA step to generate prompt improvements.'
+    ' Increasing the batch size may help provide a more stable signal and'
+    ' estimate of a prompt quality but entails higher cost. One can start with'
+    ' a low value and increase the size if significant variations are'
+    ' observed.',
+)
 
 
 def main(argv: Sequence[str]) -> None:
@@ -52,9 +106,7 @@ def main(argv: Sequence[str]) -> None:
   for logger in loggers:
     logger.setLevel(logging.WARNING)
 
-  types.logger.addFilter(experiment.FilterInferenceWarnings())
-  if not _OUTPUT_DIR.value:
-    raise ValueError('outptut dir must be specified')
+  types.logger.addFilter(utils.FilterInferenceWarnings())
   output_dir = os.path.join(
       _OUTPUT_DIR.value, datetime.now().strftime('%Y%m%d%H%M%S%f')
   )
