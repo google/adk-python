@@ -120,7 +120,7 @@ def is_token_valid(token: str):
     # Also you could have verify_aud and verify_iss as False
     # But when they are true issuer and audience are needed in the jwt.decode call
     # they are checked against the values from the token
-    # idealy token validation should also check whether the API being called is part of
+    # ideally token validation should also check whether the API being called is part of
     # audience so for example localhost:8081/api should cover localhost:8081/api/hotels
     # but should not cover localhost:8000/admin
     # so this middleware (decorator - is_token_valid, can check the request url and do that check, but we are

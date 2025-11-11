@@ -23,6 +23,7 @@ from typing import Tuple
 from typing import Union
 
 from fastapi.openapi.models import Operation
+from fastapi.openapi.models import Schema
 from google.genai.types import FunctionDeclaration
 import requests
 from typing_extensions import override
@@ -392,6 +393,17 @@ class RestApiTool(BaseTool):
 
     # Attach parameters from auth into main parameters list
     api_params, api_args = self._operation_parser.get_parameters().copy(), args
+
+    # Add any required arguments that are missing and have defaults:
+    for api_param in api_params:
+      if api_param.py_name not in api_args:
+        if (
+            api_param.required
+            and isinstance(api_param.param_schema, Schema)
+            and api_param.param_schema.default is not None
+        ):
+          api_args[api_param.py_name] = api_param.param_schema.default
+
     if auth_credential:
       # Attach parameters from auth into main parameters list
       auth_param, auth_args = self._prepare_auth_request_params(

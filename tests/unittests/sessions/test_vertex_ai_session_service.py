@@ -228,23 +228,29 @@ def _convert_to_object(data):
     return data
 
 
-class MockApiClient:
+class MockAsyncClient:
   """Mocks the API Client."""
 
   def __init__(self) -> None:
     """Initializes MockClient."""
     self.session_dict: dict[str, Any] = {}
     self.event_dict: dict[str, Tuple[List[Any], Optional[str]]] = {}
-    self.aio = mock.Mock()
-    self.aio.agent_engines.sessions.get.side_effect = self._get_session
-    self.aio.agent_engines.sessions.list.side_effect = self._list_sessions
-    self.aio.agent_engines.sessions.delete.side_effect = self._delete_session
-    self.aio.agent_engines.sessions.create.side_effect = self._create_session
-    self.aio.agent_engines.sessions.events.list.side_effect = self._list_events
-    self.aio.agent_engines.sessions.events.append.side_effect = (
-        self._append_event
-    )
+    self.agent_engines = mock.AsyncMock()
+    self.agent_engines.sessions.get.side_effect = self._get_session
+    self.agent_engines.sessions.list.side_effect = self._list_sessions
+    self.agent_engines.sessions.delete.side_effect = self._delete_session
+    self.agent_engines.sessions.create.side_effect = self._create_session
+    self.agent_engines.sessions.events.list.side_effect = self._list_events
+    self.agent_engines.sessions.events.append.side_effect = self._append_event
     self.last_create_session_config: dict[str, Any] = {}
+
+  async def __aenter__(self):
+    """Enters the asynchronous context."""
+    return self
+
+  async def __aexit__(self, exc_type, exc_val, exc_tb):
+    """Exits the asynchronous context."""
+    pass
 
   async def _get_session(self, name: str):
     session_id = name.split('/')[-1]
@@ -374,7 +380,7 @@ def mock_vertex_ai_session_service(
 @pytest.fixture
 def mock_api_client_instance():
   """Creates a mock API client instance for testing."""
-  api_client = MockApiClient()
+  api_client = MockAsyncClient()
   api_client.session_dict = {
       '1': MOCK_SESSION_JSON_1,
       '2': MOCK_SESSION_JSON_2,

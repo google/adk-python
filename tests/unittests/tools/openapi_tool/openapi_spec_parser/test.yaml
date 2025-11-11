@@ -634,7 +634,7 @@ components:
         requestId:
           description: |-
             The client-generated unique ID for this request.
-            Clients should regenerate this ID for every new request. If an ID provided is the same as for the previous request, the request is ignored.
+            Clients should regenerate this ID for every new request. If an ID provided is the same as the previous request, the request is ignored.
           type: string
         status:
           $ref: "#/components/schemas/ConferenceRequestStatus"
