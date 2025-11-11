@@ -455,7 +455,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     self._background_tasks.add(task)
     task.add_done_callback(self._background_tasks.discard)
 
-  async def shutdown(self):
+  async def close(self):
     """Flushes pending logs and closes client."""
     # 1. Wait for pending background logs (best effort, 2s timeout)
     if self._background_tasks:

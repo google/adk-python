@@ -513,10 +513,8 @@ class TestBigQueryAgentAnalyticsPlugin:
     mock_write_client.append_rows.assert_called_once()
 
   @pytest.mark.asyncio
-  async def test_shutdown(
-      self, bq_plugin_inst, mock_bq_client, mock_write_client
-  ):
-    await bq_plugin_inst.shutdown()
+  async def test_close(self, bq_plugin_inst, mock_bq_client, mock_write_client):
+    await bq_plugin_inst.close()
     mock_write_client.transport.close.assert_called_once()
     mock_bq_client.close.assert_called_once()
 
