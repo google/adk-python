@@ -91,12 +91,9 @@ class LoopAgent(BaseAgent):
               current_sub_agent=sub_agent.name,
               times_looped=times_looped,
           )
-          yield self._create_agent_state_event(ctx, agent_state=agent_state)
+          ctx.set_agent_state(self.name, agent_state=agent_state)
+          yield self._create_agent_state_event(ctx)
 
-        # Reset the sub-agent's state in the context to ensure that each
-        # sub-agent starts fresh.
-        if not is_resuming_at_current_agent:
-          ctx.reset_agent_state(sub_agent.name)
         is_resuming_at_current_agent = False
 
         async with Aclosing(sub_agent.run_async(ctx)) as agen:
@@ -113,13 +110,16 @@ class LoopAgent(BaseAgent):
       # Restart from the beginning of the loop.
       start_index = 0
       times_looped += 1
+      # Reset the state of all sub-agents in the loop.
+      ctx.reset_sub_agent_states(self.name)
 
     # If the invocation is paused, we should not yield the end of agent event.
     if pause_invocation:
       return
 
     if ctx.is_resumable:
-      yield self._create_agent_state_event(ctx, end_of_agent=True)
+      ctx.set_agent_state(self.name, end_of_agent=True)
+      yield self._create_agent_state_event(ctx)
 
   def _get_start_state(
       self,

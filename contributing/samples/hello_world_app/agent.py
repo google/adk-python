@@ -18,6 +18,8 @@ from google.adk import Agent
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.apps import App
+from google.adk.apps.app import EventsCompactionConfig
+from google.adk.apps.llm_event_summarizer import LlmEventSummarizer
 from google.adk.models.llm_request import LlmRequest
 from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.plugins.context_filter_plugin import ContextFilterPlugin
@@ -147,7 +149,12 @@ app = App(
     root_agent=root_agent,
     plugins=[
         CountInvocationPlugin(),
-        ContextFilterPlugin(num_invocations_to_keep=3),
+        # ContextFilterPlugin(num_invocations_to_keep=3),
         SaveFilesAsArtifactsPlugin(),
     ],
+    # Enable event compaction with an LLM-based summarizer.
+    events_compaction_config=EventsCompactionConfig(
+        compaction_interval=2,
+        overlap_size=1,
+    ),
 )

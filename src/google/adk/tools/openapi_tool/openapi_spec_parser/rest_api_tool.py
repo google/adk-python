@@ -23,6 +23,7 @@ from typing import Tuple
 from typing import Union
 
 from fastapi.openapi.models import Operation
+from fastapi.openapi.models import Schema
 from google.genai.types import FunctionDeclaration
 import requests
 from typing_extensions import override
@@ -134,6 +135,7 @@ class RestApiTool(BaseTool):
 
     # Private properties
     self.credential_exchanger = AutoAuthCredentialExchanger()
+    self._default_headers: Dict[str, str] = {}
     if should_parse_operation:
       self._operation_parser = OperationParser(self.operation)
 
@@ -215,6 +217,10 @@ class RestApiTool(BaseTool):
     if isinstance(auth_credential, str):
       auth_credential = AuthCredential.model_validate_json(auth_credential)
     self.auth_credential = auth_credential
+
+  def set_default_headers(self, headers: Dict[str, str]):
+    """Sets default headers that are merged into every request."""
+    self._default_headers = headers
 
   def _prepare_auth_request_params(
       self,
@@ -335,6 +341,9 @@ class RestApiTool(BaseTool):
         k: v for k, v in query_params.items() if v is not None
     }
 
+    for key, value in self._default_headers.items():
+      header_params.setdefault(key, value)
+
     request_params: Dict[str, Any] = {
         "method": method,
         "url": url,
@@ -384,6 +393,17 @@ class RestApiTool(BaseTool):
 
     # Attach parameters from auth into main parameters list
     api_params, api_args = self._operation_parser.get_parameters().copy(), args
+
+    # Add any required arguments that are missing and have defaults:
+    for api_param in api_params:
+      if api_param.py_name not in api_args:
+        if (
+            api_param.required
+            and isinstance(api_param.param_schema, Schema)
+            and api_param.param_schema.default is not None
+        ):
+          api_args[api_param.py_name] = api_param.param_schema.default
+
     if auth_credential:
       # Attach parameters from auth into main parameters list
       auth_param, auth_args = self._prepare_auth_request_params(

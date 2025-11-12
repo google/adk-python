@@ -10,8 +10,7 @@
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
-# limitations under the License.
-
+# limitations under the Licens
 
 import json
 from unittest.mock import AsyncMock
@@ -19,10 +18,13 @@ from unittest.mock import Mock
 import warnings
 
 from google.adk.models.lite_llm import _content_to_message_param
+from google.adk.models.lite_llm import _FINISH_REASON_MAPPING
 from google.adk.models.lite_llm import _function_declaration_to_tool_param
+from google.adk.models.lite_llm import _get_completion_inputs
 from google.adk.models.lite_llm import _get_content
 from google.adk.models.lite_llm import _message_to_generate_content_response
 from google.adk.models.lite_llm import _model_response_to_chunk
+from google.adk.models.lite_llm import _to_litellm_response_format
 from google.adk.models.lite_llm import _to_litellm_role
 from google.adk.models.lite_llm import FunctionChunk
 from google.adk.models.lite_llm import LiteLlm
@@ -39,6 +41,8 @@ from litellm.types.utils import Choices
 from litellm.types.utils import Delta
 from litellm.types.utils import ModelResponse
 from litellm.types.utils import StreamingChoices
+from pydantic import BaseModel
+from pydantic import Field
 import pytest
 
 LLM_REQUEST_WITH_FUNCTION_DECLARATION = LlmRequest(
@@ -86,9 +90,36 @@ LLM_REQUEST_WITH_FUNCTION_DECLARATION = LlmRequest(
     ),
 )
 
+FILE_URI_TEST_CASES = [
+    pytest.param("gs://bucket/document.pdf", "application/pdf", id="pdf"),
+    pytest.param("gs://bucket/data.json", "application/json", id="json"),
+    pytest.param("gs://bucket/data.txt", "text/plain", id="txt"),
+]
+
+FILE_BYTES_TEST_CASES = [
+    pytest.param(
+        b"test_pdf_data",
+        "application/pdf",
+        "data:application/pdf;base64,dGVzdF9wZGZfZGF0YQ==",
+        id="pdf",
+    ),
+    pytest.param(
+        b'{"hello":"world"}',
+        "application/json",
+        "data:application/json;base64,eyJoZWxsbyI6IndvcmxkIn0=",
+        id="json",
+    ),
+    pytest.param(
+        b"hello world",
+        "text/plain",
+        "data:text/plain;base64,aGVsbG8gd29ybGQ=",
+        id="txt",
+    ),
+]
 
 STREAMING_MODEL_RESPONSE = [
     ModelResponse(
+        model="test_model",
         choices=[
             StreamingChoices(
                 finish_reason=None,
@@ -97,9 +128,10 @@ STREAMING_MODEL_RESPONSE = [
                     content="zero, ",
                 ),
             )
-        ]
+        ],
     ),
     ModelResponse(
+        model="test_model",
         choices=[
             StreamingChoices(
                 finish_reason=None,
@@ -108,9 +140,10 @@ STREAMING_MODEL_RESPONSE = [
                     content="one, ",
                 ),
             )
-        ]
+        ],
     ),
     ModelResponse(
+        model="test_model",
         choices=[
             StreamingChoices(
                 finish_reason=None,
@@ -119,9 +152,10 @@ STREAMING_MODEL_RESPONSE = [
                     content="two:",
                 ),
             )
-        ]
+        ],
     ),
     ModelResponse(
+        model="test_model",
         choices=[
             StreamingChoices(
                 finish_reason=None,
@@ -140,9 +174,10 @@ STREAMING_MODEL_RESPONSE = [
                     ],
                 ),
             )
-        ]
+        ],
     ),
     ModelResponse(
+        model="test_model",
         choices=[
             StreamingChoices(
                 finish_reason=None,
@@ -161,16 +196,98 @@ STREAMING_MODEL_RESPONSE = [
                     ],
                 ),
             )
-        ]
+        ],
     ),
     ModelResponse(
+        model="test_model",
         choices=[
             StreamingChoices(
                 finish_reason="tool_use",
             )
-        ]
+        ],
     ),
 ]
+
+
+class _StructuredOutput(BaseModel):
+  value: int = Field(description="Value to emit")
+
+
+class _ModelDumpOnly:
+  """Test helper that mimics objects exposing only model_dump."""
+
+  def __init__(self):
+    self._schema = {
+        "type": "object",
+        "properties": {"foo": {"type": "string"}},
+    }
+
+  def model_dump(self, *, exclude_none=True, mode="json"):
+    # The method signature matches pydantic BaseModel.model_dump to simulate
+    # google.genai schema-like objects.
+    del exclude_none
+    del mode
+    return self._schema
+
+
+def test_get_completion_inputs_formats_pydantic_schema_for_litellm():
+  llm_request = LlmRequest(
+      config=types.GenerateContentConfig(response_schema=_StructuredOutput)
+  )
+
+  _, _, response_format, _ = _get_completion_inputs(llm_request)
+
+  assert response_format == {
+      "type": "json_object",
+      "response_schema": _StructuredOutput.model_json_schema(),
+  }
+
+
+def test_to_litellm_response_format_passes_preformatted_dict():
+  response_format = {
+      "type": "json_object",
+      "response_schema": {
+          "type": "object",
+          "properties": {"foo": {"type": "string"}},
+      },
+  }
+
+  assert _to_litellm_response_format(response_format) == response_format
+
+
+def test_to_litellm_response_format_wraps_json_schema_dict():
+  schema = {
+      "type": "object",
+      "properties": {"foo": {"type": "string"}},
+  }
+
+  formatted = _to_litellm_response_format(schema)
+  assert formatted["type"] == "json_object"
+  assert formatted["response_schema"] == schema
+
+
+def test_to_litellm_response_format_handles_model_dump_object():
+  schema_obj = _ModelDumpOnly()
+
+  formatted = _to_litellm_response_format(schema_obj)
+
+  assert formatted["type"] == "json_object"
+  assert formatted["response_schema"] == schema_obj.model_dump()
+
+
+def test_to_litellm_response_format_handles_genai_schema_instance():
+  schema_instance = types.Schema(
+      type=types.Type.OBJECT,
+      properties={"foo": types.Schema(type=types.Type.STRING)},
+      required=["foo"],
+  )
+
+  formatted = _to_litellm_response_format(schema_instance)
+  assert formatted["type"] == "json_object"
+  assert formatted["response_schema"] == schema_instance.model_dump(
+      exclude_none=True, mode="json"
+  )
+
 
 MULTIPLE_FUNCTION_CALLS_STREAM = [
     ModelResponse(
@@ -341,6 +458,7 @@ STREAM_WITH_EMPTY_CHUNK = [
 @pytest.fixture
 def mock_response():
   return ModelResponse(
+      model="test_model",
       choices=[
           Choices(
               message=ChatCompletionAssistantMessage(
@@ -358,7 +476,7 @@ def mock_response():
                   ],
               )
           )
-      ]
+      ],
   )
 
 
@@ -528,6 +646,7 @@ async def test_generate_content_async(mock_acompletion, lite_llm_instance):
         "test_arg": "test_value"
     }
     assert response.content.parts[1].function_call.id == "test_tool_call_id"
+    assert response.model_version == "test_model"
 
   mock_acompletion.assert_called_once()
 
@@ -545,6 +664,88 @@ async def test_generate_content_async(mock_acompletion, lite_llm_instance):
           "type"
       ]
       == "string"
+  )
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_with_model_override(
+    mock_acompletion, lite_llm_instance
+):
+  llm_request = LlmRequest(
+      model="overridden_model",
+      contents=[
+          types.Content(
+              role="user", parts=[types.Part.from_text(text="Test prompt")]
+          )
+      ],
+  )
+
+  async for response in lite_llm_instance.generate_content_async(llm_request):
+    assert response.content.role == "model"
+    assert response.content.parts[0].text == "Test response"
+
+  mock_acompletion.assert_called_once()
+
+  _, kwargs = mock_acompletion.call_args
+  assert kwargs["model"] == "overridden_model"
+  assert kwargs["messages"][0]["role"] == "user"
+  assert kwargs["messages"][0]["content"] == "Test prompt"
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_without_model_override(
+    mock_acompletion, lite_llm_instance
+):
+  llm_request = LlmRequest(
+      model=None,
+      contents=[
+          types.Content(
+              role="user", parts=[types.Part.from_text(text="Test prompt")]
+          )
+      ],
+  )
+
+  async for response in lite_llm_instance.generate_content_async(llm_request):
+    assert response.content.role == "model"
+
+  mock_acompletion.assert_called_once()
+
+  _, kwargs = mock_acompletion.call_args
+  assert kwargs["model"] == "test_model"
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_adds_fallback_user_message(
+    mock_acompletion, lite_llm_instance
+):
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role="user",
+              parts=[],
+          )
+      ]
+  )
+
+  async for _ in lite_llm_instance.generate_content_async(llm_request):
+    pass
+
+  mock_acompletion.assert_called_once()
+
+  _, kwargs = mock_acompletion.call_args
+  user_messages = [
+      message for message in kwargs["messages"] if message["role"] == "user"
+  ]
+  assert any(
+      message.get("content")
+      == "Handle the requests as specified in the System Instruction."
+      for message in user_messages
+  )
+  assert (
+      sum(1 for content in llm_request.contents if content.role == "user") == 1
+  )
+  assert llm_request.contents[-1].parts[0].text == (
+      "Handle the requests as specified in the System Instruction."
   )
 
 
@@ -865,6 +1066,80 @@ def test_function_declaration_to_tool_param(
   )
 
 
+def test_function_declaration_to_tool_param_without_required_attribute():
+  """Ensure tools without a required field attribute don't raise errors."""
+
+  class SchemaWithoutRequired:
+    """Mimics a Schema object that lacks the required attribute."""
+
+    def __init__(self):
+      self.properties = {
+          "optional_arg": types.Schema(type=types.Type.STRING),
+      }
+
+  func_decl = types.FunctionDeclaration(
+      name="function_without_required_attr",
+      description="Function missing required attribute",
+  )
+  func_decl.parameters = SchemaWithoutRequired()
+
+  expected = {
+      "type": "function",
+      "function": {
+          "name": "function_without_required_attr",
+          "description": "Function missing required attribute",
+          "parameters": {
+              "type": "object",
+              "properties": {
+                  "optional_arg": {"type": "string"},
+              },
+          },
+      },
+  }
+
+  assert _function_declaration_to_tool_param(func_decl) == expected
+
+
+def test_function_declaration_to_tool_param_with_parameters_json_schema():
+  """Ensure function declarations using parameters_json_schema are handled.
+
+  This verifies that when a FunctionDeclaration includes a raw
+  `parameters_json_schema` dict, it is used directly as the function
+  parameters in the resulting tool param.
+  """
+
+  func_decl = types.FunctionDeclaration(
+      name="fn_with_json",
+      description="desc",
+      parameters_json_schema={
+          "type": "object",
+          "properties": {
+              "a": {"type": "string"},
+              "b": {"type": "array", "items": {"type": "string"}},
+          },
+          "required": ["a"],
+      },
+  )
+
+  expected = {
+      "type": "function",
+      "function": {
+          "name": "fn_with_json",
+          "description": "desc",
+          "parameters": {
+              "type": "object",
+              "properties": {
+                  "a": {"type": "string"},
+                  "b": {"type": "array", "items": {"type": "string"}},
+              },
+              "required": ["a"],
+          },
+      },
+  }
+
+  assert _function_declaration_to_tool_param(func_decl) == expected
+
+
 @pytest.mark.asyncio
 async def test_generate_content_async_with_system_instruction(
     lite_llm_instance, mock_acompletion
@@ -972,6 +1247,7 @@ async def test_generate_content_async_with_usage_metadata(
           "prompt_tokens": 10,
           "completion_tokens": 5,
           "total_tokens": 15,
+          "cached_tokens": 8,
       },
   )
   mock_acompletion.return_value = mock_response_with_usage_metadata
@@ -992,6 +1268,7 @@ async def test_generate_content_async_with_usage_metadata(
     assert response.usage_metadata.prompt_token_count == 10
     assert response.usage_metadata.candidates_token_count == 5
     assert response.usage_metadata.total_token_count == 15
+    assert response.usage_metadata.cached_content_token_count == 8
 
   mock_acompletion.assert_called_once()
 
@@ -1003,6 +1280,49 @@ def test_content_to_message_param_user_message():
   message = _content_to_message_param(content)
   assert message["role"] == "user"
   assert message["content"] == "Test prompt"
+
+
+@pytest.mark.parametrize("file_uri,mime_type", FILE_URI_TEST_CASES)
+def test_content_to_message_param_user_message_with_file_uri(
+    file_uri, mime_type
+):
+  file_part = types.Part.from_uri(file_uri=file_uri, mime_type=mime_type)
+  content = types.Content(
+      role="user",
+      parts=[
+          types.Part.from_text(text="Summarize this file."),
+          file_part,
+      ],
+  )
+
+  message = _content_to_message_param(content)
+  assert message["role"] == "user"
+  assert isinstance(message["content"], list)
+  assert message["content"][0]["type"] == "text"
+  assert message["content"][0]["text"] == "Summarize this file."
+  assert message["content"][1]["type"] == "file"
+  assert message["content"][1]["file"]["file_id"] == file_uri
+  assert "format" not in message["content"][1]["file"]
+
+
+@pytest.mark.parametrize("file_uri,mime_type", FILE_URI_TEST_CASES)
+def test_content_to_message_param_user_message_file_uri_only(
+    file_uri, mime_type
+):
+  file_part = types.Part.from_uri(file_uri=file_uri, mime_type=mime_type)
+  content = types.Content(
+      role="user",
+      parts=[
+          file_part,
+      ],
+  )
+
+  message = _content_to_message_param(content)
+  assert message["role"] == "user"
+  assert isinstance(message["content"], list)
+  assert message["content"][0]["type"] == "file"
+  assert message["content"][0]["file"]["file_id"] == file_uri
+  assert "format" not in message["content"][0]["file"]
 
 
 def test_content_to_message_param_multi_part_function_response():
@@ -1138,6 +1458,19 @@ def test_message_to_generate_content_response_tool_call():
   assert response.content.parts[0].function_call.id == "test_tool_call_id"
 
 
+def test_message_to_generate_content_response_with_model():
+  message = ChatCompletionAssistantMessage(
+      role="assistant",
+      content="Test response",
+  )
+  response = _message_to_generate_content_response(
+      message, model_version="gemini-2.5-pro"
+  )
+  assert response.content.role == "model"
+  assert response.content.parts[0].text == "Test response"
+  assert response.model_version == "gemini-2.5-pro"
+
+
 def test_get_content_text():
   parts = [types.Part.from_text(text="Test text")]
   content = _get_content(parts)
@@ -1154,7 +1487,7 @@ def test_get_content_image():
       content[0]["image_url"]["url"]
       == "data:image/png;base64,dGVzdF9pbWFnZV9kYXRh"
   )
-  assert content[0]["image_url"]["format"] == "image/png"
+  assert "format" not in content[0]["image_url"]
 
 
 def test_get_content_video():
@@ -1167,20 +1500,27 @@ def test_get_content_video():
       content[0]["video_url"]["url"]
       == "data:video/mp4;base64,dGVzdF92aWRlb19kYXRh"
   )
-  assert content[0]["video_url"]["format"] == "video/mp4"
+  assert "format" not in content[0]["video_url"]
 
 
-def test_get_content_pdf():
-  parts = [
-      types.Part.from_bytes(data=b"test_pdf_data", mime_type="application/pdf")
-  ]
+@pytest.mark.parametrize(
+    "file_data,mime_type,expected_base64", FILE_BYTES_TEST_CASES
+)
+def test_get_content_file_bytes(file_data, mime_type, expected_base64):
+  parts = [types.Part.from_bytes(data=file_data, mime_type=mime_type)]
   content = _get_content(parts)
   assert content[0]["type"] == "file"
-  assert (
-      content[0]["file"]["file_data"]
-      == "data:application/pdf;base64,dGVzdF9wZGZfZGF0YQ=="
-  )
-  assert content[0]["file"]["format"] == "application/pdf"
+  assert content[0]["file"]["file_data"] == expected_base64
+  assert "format" not in content[0]["file"]
+
+
+@pytest.mark.parametrize("file_uri,mime_type", FILE_URI_TEST_CASES)
+def test_get_content_file_uri(file_uri, mime_type):
+  parts = [types.Part.from_uri(file_uri=file_uri, mime_type=mime_type)]
+  content = _get_content(parts)
+  assert content[0]["type"] == "file"
+  assert content[0]["file"]["file_id"] == file_uri
+  assert "format" not in content[0]["file"]
 
 
 def test_get_content_audio():
@@ -1193,7 +1533,7 @@ def test_get_content_audio():
       content[0]["audio_url"]["url"]
       == "data:audio/mpeg;base64,dGVzdF9hdWRpb19kYXRh"
   )
-  assert content[0]["audio_url"]["format"] == "audio/mpeg"
+  assert "format" not in content[0]["audio_url"]
 
 
 def test_to_litellm_role():
@@ -1362,6 +1702,23 @@ async def test_acompletion_additional_args(mock_acompletion, mock_client):
 
 
 @pytest.mark.asyncio
+async def test_acompletion_with_drop_params(mock_acompletion, mock_client):
+  lite_llm_instance = LiteLlm(
+      model="test_model", llm_client=mock_client, drop_params=True
+  )
+
+  async for _ in lite_llm_instance.generate_content_async(
+      LLM_REQUEST_WITH_FUNCTION_DECLARATION
+  ):
+    pass
+
+  mock_acompletion.assert_called_once()
+
+  _, kwargs = mock_acompletion.call_args
+  assert kwargs["drop_params"] is True
+
+
+@pytest.mark.asyncio
 async def test_completion_additional_args(mock_completion, mock_client):
   lite_llm_instance = LiteLlm(
       # valid args
@@ -1404,6 +1761,28 @@ async def test_completion_additional_args(mock_completion, mock_client):
 
 
 @pytest.mark.asyncio
+async def test_completion_with_drop_params(mock_completion, mock_client):
+  lite_llm_instance = LiteLlm(
+      model="test_model", llm_client=mock_client, drop_params=True
+  )
+
+  mock_completion.return_value = iter(STREAMING_MODEL_RESPONSE)
+
+  responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+      )
+  ]
+  assert len(responses) == 4
+
+  mock_completion.assert_called_once()
+
+  _, kwargs = mock_completion.call_args
+  assert kwargs["drop_params"] is True
+
+
+@pytest.mark.asyncio
 async def test_generate_content_async_stream(
     mock_completion, lite_llm_instance
 ):
@@ -1419,16 +1798,20 @@ async def test_generate_content_async_stream(
   assert len(responses) == 4
   assert responses[0].content.role == "model"
   assert responses[0].content.parts[0].text == "zero, "
+  assert responses[0].model_version == "test_model"
   assert responses[1].content.role == "model"
   assert responses[1].content.parts[0].text == "one, "
+  assert responses[1].model_version == "test_model"
   assert responses[2].content.role == "model"
   assert responses[2].content.parts[0].text == "two:"
+  assert responses[2].model_version == "test_model"
   assert responses[3].content.role == "model"
   assert responses[3].content.parts[-1].function_call.name == "test_function"
   assert responses[3].content.parts[-1].function_call.args == {
       "test_arg": "test_value"
   }
   assert responses[3].content.parts[-1].function_call.id == "test_tool_call_id"
+  assert responses[3].model_version == "test_model"
   mock_completion.assert_called_once()
 
   _, kwargs = mock_completion.call_args
@@ -1517,6 +1900,45 @@ async def test_generate_content_async_stream_with_usage_metadata(
 
 
 @pytest.mark.asyncio
+async def test_generate_content_async_stream_with_usage_metadata(
+    mock_completion, lite_llm_instance
+):
+  """Tests that cached prompt tokens are propagated in streaming mode."""
+  streaming_model_response_with_usage_metadata = [
+      *STREAMING_MODEL_RESPONSE,
+      ModelResponse(
+          usage={
+              "prompt_tokens": 10,
+              "completion_tokens": 5,
+              "total_tokens": 15,
+              "cached_tokens": 8,
+          },
+          choices=[
+              StreamingChoices(
+                  finish_reason=None,
+              )
+          ],
+      ),
+  ]
+
+  mock_completion.return_value = iter(
+      streaming_model_response_with_usage_metadata
+  )
+
+  responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+      )
+  ]
+  assert len(responses) == 4
+  assert responses[3].usage_metadata.prompt_token_count == 10
+  assert responses[3].usage_metadata.candidates_token_count == 5
+  assert responses[3].usage_metadata.total_token_count == 15
+  assert responses[3].usage_metadata.cached_content_token_count == 8
+
+
+@pytest.mark.asyncio
 async def test_generate_content_async_multiple_function_calls(
     mock_completion, lite_llm_instance
 ):
@@ -1598,7 +2020,8 @@ async def test_generate_content_async_non_compliant_multiple_function_calls(
   This test verifies that:
   1. Multiple function calls with same indices (0) are handled correctly
   2. Arguments and names are properly accumulated for each function call
-  3. The final response contains all function calls with correct incremented indices
+  3. The final response contains all function calls with correct incremented
+  indices
   """
   mock_completion.return_value = NON_COMPLIANT_MULTIPLE_FUNCTION_CALLS_STREAM
 
@@ -1803,6 +2226,36 @@ def test_function_declaration_to_tool_param_edge_cases():
   assert "required" not in result["function"]["parameters"]
 
 
+@pytest.mark.parametrize(
+    "usage, expected_tokens",
+    [
+        ({"prompt_tokens_details": {"cached_tokens": 123}}, 123),
+        (
+            {
+                "prompt_tokens_details": [
+                    {"cached_tokens": 50},
+                    {"cached_tokens": 25},
+                ]
+            },
+            75,
+        ),
+        ({"cached_prompt_tokens": 45}, 45),
+        ({"cached_tokens": 67}, 67),
+        ({"prompt_tokens": 100}, 0),
+        ({}, 0),
+        ("not a dict", 0),
+        (None, 0),
+        ({"prompt_tokens_details": {"cached_tokens": "not a number"}}, 0),
+        (json.dumps({"cached_tokens": 89}), 89),
+        (json.dumps({"some_key": "some_value"}), 0),
+    ],
+)
+def test_extract_cached_prompt_tokens(usage, expected_tokens):
+  from google.adk.models.lite_llm import _extract_cached_prompt_tokens
+
+  assert _extract_cached_prompt_tokens(usage) == expected_tokens
+
+
 def test_gemini_via_litellm_warning(monkeypatch):
   """Test that Gemini via LiteLLM shows warning."""
   # Ensure environment variable is not set
@@ -1849,3 +2302,113 @@ def test_non_gemini_litellm_no_warning():
     # Test with non-Gemini model
     LiteLlm(model="openai/gpt-4o")
     assert len(w) == 0
+
+
+@pytest.mark.parametrize(
+    "finish_reason,response_content,expected_content,has_tool_calls",
+    [
+        ("length", "Test response", "Test response", False),
+        ("stop", "Complete response", "Complete response", False),
+        (
+            "tool_calls",
+            "",
+            "",
+            True,
+        ),
+        ("content_filter", "", "", False),
+    ],
+    ids=["length", "stop", "tool_calls", "content_filter"],
+)
+@pytest.mark.asyncio
+async def test_finish_reason_propagation(
+    mock_acompletion,
+    lite_llm_instance,
+    finish_reason,
+    response_content,
+    expected_content,
+    has_tool_calls,
+):
+  """Test that finish_reason is properly propagated from LiteLLM response."""
+  tool_calls = None
+  if has_tool_calls:
+    tool_calls = [
+        ChatCompletionMessageToolCall(
+            type="function",
+            id="test_id",
+            function=Function(
+                name="test_function",
+                arguments='{"arg": "value"}',
+            ),
+        )
+    ]
+
+  mock_response = ModelResponse(
+      choices=[
+          Choices(
+              message=ChatCompletionAssistantMessage(
+                  role="assistant",
+                  content=response_content,
+                  tool_calls=tool_calls,
+              ),
+              finish_reason=finish_reason,
+          )
+      ]
+  )
+  mock_acompletion.return_value = mock_response
+
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role="user", parts=[types.Part.from_text(text="Test prompt")]
+          )
+      ],
+  )
+
+  async for response in lite_llm_instance.generate_content_async(llm_request):
+    assert response.content.role == "model"
+    # Verify finish_reason is mapped to FinishReason enum
+    assert isinstance(response.finish_reason, types.FinishReason)
+    # Verify correct enum mapping using the actual mapping from lite_llm
+    assert response.finish_reason == _FINISH_REASON_MAPPING[finish_reason]
+    if expected_content:
+      assert response.content.parts[0].text == expected_content
+    if has_tool_calls:
+      assert len(response.content.parts) > 0
+      assert response.content.parts[-1].function_call.name == "test_function"
+
+  mock_acompletion.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_finish_reason_unknown_maps_to_other(
+    mock_acompletion, lite_llm_instance
+):
+  """Test that unknown finish_reason values map to FinishReason.OTHER."""
+  mock_response = ModelResponse(
+      choices=[
+          Choices(
+              message=ChatCompletionAssistantMessage(
+                  role="assistant",
+                  content="Test response",
+              ),
+              finish_reason="unknown_reason_type",
+          )
+      ]
+  )
+  mock_acompletion.return_value = mock_response
+
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role="user", parts=[types.Part.from_text(text="Test prompt")]
+          )
+      ],
+  )
+
+  async for response in lite_llm_instance.generate_content_async(llm_request):
+    assert response.content.role == "model"
+    # Unknown finish_reason should map to OTHER
+    assert isinstance(response.finish_reason, types.FinishReason)
+    assert response.finish_reason == types.FinishReason.OTHER
+
+  mock_acompletion.assert_called_once()

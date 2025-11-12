@@ -14,15 +14,17 @@
 
 from __future__ import annotations
 
-from unittest import mock
-
 from google.adk.evaluation.app_details import AgentDetails
 from google.adk.evaluation.app_details import AppDetails
 from google.adk.evaluation.evaluation_generator import EvaluationGenerator
 from google.adk.evaluation.request_intercepter_plugin import _RequestIntercepterPlugin
+from google.adk.evaluation.user_simulator import NextUserMessage
+from google.adk.evaluation.user_simulator import Status as UserSimulatorStatus
+from google.adk.evaluation.user_simulator import UserSimulator
 from google.adk.events.event import Event
 from google.adk.models.llm_request import LlmRequest
 from google.genai import types
+import pytest
 
 
 def _build_event(
@@ -206,17 +208,17 @@ class TestConvertEventsToEvalInvocation:
 class TestGetAppDetailsByInvocationId:
   """Test cases for EvaluationGenerator._get_app_details_by_invocation_id method."""
 
-  def test_get_app_details_by_invocation_id_empty(self):
+  def test_get_app_details_by_invocation_id_empty(self, mocker):
     """Tests with an empty list of events."""
-    mock_request_intercepter = mock.MagicMock(spec=_RequestIntercepterPlugin)
+    mock_request_intercepter = mocker.MagicMock(spec=_RequestIntercepterPlugin)
     app_details = EvaluationGenerator._get_app_details_by_invocation_id(
         [], mock_request_intercepter
     )
     assert app_details == {}
 
-  def test_get_app_details_by_invocation_id_no_model_requests(self):
+  def test_get_app_details_by_invocation_id_no_model_requests(self, mocker):
     """Tests when request_intercepter returns no model requests."""
-    mock_request_intercepter = mock.MagicMock(spec=_RequestIntercepterPlugin)
+    mock_request_intercepter = mocker.MagicMock(spec=_RequestIntercepterPlugin)
     mock_request_intercepter.get_model_request.return_value = None
     events = [
         _build_event("user", [types.Part(text="Hello")], "inv1"),
@@ -230,9 +232,9 @@ class TestGetAppDetailsByInvocationId:
         events[1]
     )
 
-  def test_get_app_details_single_invocation_single_agent(self):
+  def test_get_app_details_single_invocation_single_agent(self, mocker):
     """Tests a single invocation with one agent."""
-    mock_request_intercepter = mock.MagicMock(spec=_RequestIntercepterPlugin)
+    mock_request_intercepter = mocker.MagicMock(spec=_RequestIntercepterPlugin)
     mock_llm_request = LlmRequest(model="test")
     mock_llm_request.config.system_instruction = "instruction1"
     mock_llm_request.config.tools = [types.Tool()]
@@ -262,9 +264,9 @@ class TestGetAppDetailsByInvocationId:
         events[1]
     )
 
-  def test_get_app_details_multiple_invocations_multiple_agents(self):
+  def test_get_app_details_multiple_invocations_multiple_agents(self, mocker):
     """Tests multiple invocations with multiple agents."""
-    mock_request_intercepter = mock.MagicMock(spec=_RequestIntercepterPlugin)
+    mock_request_intercepter = mocker.MagicMock(spec=_RequestIntercepterPlugin)
 
     def get_model_request_side_effect(event):
       mock_llm_request = LlmRequest(model="test")
@@ -326,3 +328,130 @@ class TestGetAppDetailsByInvocationId:
     }
     assert app_details == expected_app_details
     assert mock_request_intercepter.get_model_request.call_count == 3
+
+
+class TestGenerateInferencesForSingleUserInvocation:
+  """Test cases for EvaluationGenerator._generate_inferences_for_single_user_invocation method."""
+
+  @pytest.mark.asyncio
+  async def test_generate_inferences_with_mock_runner(self, mocker):
+    """Tests inference generation with a mocked runner."""
+    runner = mocker.MagicMock()
+
+    agent_parts = [types.Part(text="Agent response")]
+
+    async def mock_run_async(*args, **kwargs):
+      yield _build_event(
+          author="agent",
+          parts=agent_parts,
+          invocation_id="inv1",
+      )
+
+    runner.run_async.return_value = mock_run_async()
+
+    user_content = types.Content(parts=[types.Part(text="User query")])
+
+    events = [
+        event
+        async for event in EvaluationGenerator._generate_inferences_for_single_user_invocation(
+            runner, "test_user", "test_session", user_content
+        )
+    ]
+
+    assert len(events) == 2
+    assert events[0].author == "user"
+    assert events[0].content == user_content
+    assert events[0].invocation_id == "inv1"
+    assert events[1].author == "agent"
+    assert events[1].content.parts == agent_parts
+
+    runner.run_async.assert_called_once_with(
+        user_id="test_user",
+        session_id="test_session",
+        new_message=user_content,
+    )
+
+
+@pytest.fixture
+def mock_runner(mocker):
+  """Provides a mock Runner for testing."""
+  mock_runner_cls = mocker.patch(
+      "google.adk.evaluation.evaluation_generator.Runner"
+  )
+  mock_runner_instance = mocker.AsyncMock()
+  mock_runner_instance.__aenter__.return_value = mock_runner_instance
+  mock_runner_cls.return_value = mock_runner_instance
+  yield mock_runner_instance
+
+
+@pytest.fixture
+def mock_session_service(mocker):
+  """Provides a mock InMemorySessionService for testing."""
+  mock_session_service_cls = mocker.patch(
+      "google.adk.evaluation.evaluation_generator.InMemorySessionService"
+  )
+  mock_session_service_instance = mocker.MagicMock()
+  mock_session_service_instance.create_session = mocker.AsyncMock()
+  mock_session_service_cls.return_value = mock_session_service_instance
+  yield mock_session_service_instance
+
+
+class TestGenerateInferencesFromRootAgent:
+  """Test cases for EvaluationGenerator._generate_inferences_from_root_agent method."""
+
+  @pytest.mark.asyncio
+  async def test_generates_inferences_with_user_simulator(
+      self, mocker, mock_runner, mock_session_service
+  ):
+    """Tests that inferences are generated by interacting with a user simulator."""
+    mock_agent = mocker.MagicMock()
+    mock_user_sim = mocker.MagicMock(spec=UserSimulator)
+
+    # Mock user simulator will produce one message, then stop.
+    async def get_next_user_message_side_effect(*args, **kwargs):
+      if mock_user_sim.get_next_user_message.call_count == 1:
+        return NextUserMessage(
+            status=UserSimulatorStatus.SUCCESS,
+            user_message=types.Content(parts=[types.Part(text="message 1")]),
+        )
+      return NextUserMessage(status=UserSimulatorStatus.STOP_SIGNAL_DETECTED)
+
+    mock_user_sim.get_next_user_message = mocker.AsyncMock(
+        side_effect=get_next_user_message_side_effect
+    )
+
+    mock_generate_inferences = mocker.patch(
+        "google.adk.evaluation.evaluation_generator.EvaluationGenerator._generate_inferences_for_single_user_invocation"
+    )
+    mocker.patch(
+        "google.adk.evaluation.evaluation_generator.EvaluationGenerator._get_app_details_by_invocation_id"
+    )
+    mocker.patch(
+        "google.adk.evaluation.evaluation_generator.EvaluationGenerator.convert_events_to_eval_invocations"
+    )
+
+    # Each call to _generate_inferences_for_single_user_invocation will
+    # yield one user and one agent event.
+    async def mock_generate_inferences_side_effect(
+        runner, user_id, session_id, user_content
+    ):
+      yield _build_event("user", user_content.parts, "inv1")
+      yield _build_event("agent", [types.Part(text="agent_response")], "inv1")
+
+    mock_generate_inferences.side_effect = mock_generate_inferences_side_effect
+
+    await EvaluationGenerator._generate_inferences_from_root_agent(
+        root_agent=mock_agent,
+        user_simulator=mock_user_sim,
+    )
+
+    # Check that user simulator was called until it stopped.
+    assert mock_user_sim.get_next_user_message.call_count == 2
+
+    # Check that we generated inferences for each user message.
+    assert mock_generate_inferences.call_count == 1
+
+    # Check the content of the user messages passed to inference generation
+    mock_generate_inferences.assert_called_once()
+    called_with_content = mock_generate_inferences.call_args.args[3]
+    assert called_with_content.parts[0].text == "message 1"

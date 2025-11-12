@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+from google.adk.evaluation.conversation_scenarios import ConversationScenario
+from google.adk.evaluation.eval_case import EvalCase
 from google.adk.evaluation.eval_case import get_all_tool_calls
 from google.adk.evaluation.eval_case import get_all_tool_calls_with_responses
 from google.adk.evaluation.eval_case import get_all_tool_responses
@@ -246,3 +248,36 @@ def test_get_all_tool_calls_with_responses_with_invocation_events():
       (tool_call1, tool_response1),
       (tool_call2, None),
   ]
+
+
+def test_conversation_and_conversation_scenario_mutual_exclusion():
+  """Tests the ensure_conversation_xor_conversation_scenario validator."""
+  test_conversation_scenario = ConversationScenario(
+      starting_prompt='', conversation_plan=''
+  )
+
+  with pytest.raises(
+      ValueError,
+      match=(
+          'Exactly one of conversation and conversation_scenario must be'
+          ' provided in an EvalCase.'
+      ),
+  ):
+    EvalCase(eval_id='test_id')
+
+  with pytest.raises(
+      ValueError,
+      match=(
+          'Exactly one of conversation and conversation_scenario must be'
+          ' provided in an EvalCase.'
+      ),
+  ):
+    EvalCase(
+        eval_id='test_id',
+        conversation=[],
+        conversation_scenario=test_conversation_scenario,
+    )
+
+  # these two should not cause exceptions
+  EvalCase(eval_id='test_id', conversation=[])
+  EvalCase(eval_id='test_id', conversation_scenario=test_conversation_scenario)

@@ -49,7 +49,7 @@ tools:
     source: my-sqlite-db
     description: >-
       Update a hotel's check-in and check-out dates by its ID. Returns a message
-      indicating  whether the hotel was successfully updated or not.
+      indicating whether or not the hotel was successfully updated.
     parameters:
       - name: hotel_id
         type: string

@@ -198,6 +198,58 @@ async def test_include_contents_none_multi_agent_current_turn():
 
 
 @pytest.mark.asyncio
+async def test_include_contents_none_multi_branch_current_turn():
+  """Test current turn detection in multi-branch scenarios with include_contents='none'."""
+  agent = Agent(
+      model="gemini-2.5-flash", name="current_agent", include_contents="none"
+  )
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  invocation_context.branch = "root.parent_agent"
+
+  # Create multi-branch conversation where current turn starts from user
+  # This can arise from having a Parallel Agent with two or more Sequential
+  # Agents as sub agents, each with two Llm Agents as sub agents
+  events = [
+      Event(
+          invocation_id="inv1",
+          branch="root",
+          author="user",
+          content=types.UserContent("First user message"),
+      ),
+      Event(
+          invocation_id="inv1",
+          branch="root.parent_agent",
+          author="sibling_agent",
+          content=types.ModelContent("Sibling agent response"),
+      ),
+      Event(
+          invocation_id="inv1",
+          branch="root.uncle_agent",
+          author="cousin_agent",
+          content=types.ModelContent("Cousin agent response"),
+      ),
+  ]
+  invocation_context.session.events = events
+
+  # Process the request
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  # Verify current turn starts from the most recent other agent message of the current branch
+  assert len(llm_request.contents) == 1
+  assert llm_request.contents[0].role == "user"
+  assert llm_request.contents[0].parts == [
+      types.Part(text="For context:"),
+      types.Part(text="[sibling_agent] said: Sibling agent response"),
+  ]
+
+
+@pytest.mark.asyncio
 async def test_authentication_events_are_filtered():
   """Test that authentication function calls and responses are filtered out."""
   agent = Agent(model="gemini-2.5-flash", name="test_agent")
@@ -321,6 +373,63 @@ async def test_confirmation_events_are_filtered():
   assert llm_request.contents == [
       types.UserContent("Delete the file"),
       types.UserContent("File deleted successfully"),
+  ]
+
+
+@pytest.mark.asyncio
+async def test_rewind_events_are_filtered_out():
+  """Test that events are filtered based on rewind action."""
+  agent = Agent(model="gemini-2.5-flash", name="test_agent")
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("First message"),
+      ),
+      Event(
+          invocation_id="inv1",
+          author="test_agent",
+          content=types.ModelContent("First response"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="user",
+          content=types.UserContent("Second message"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.ModelContent("Second response"),
+      ),
+      Event(
+          invocation_id="rewind_inv",
+          author="test_agent",
+          actions=EventActions(rewind_before_invocation_id="inv2"),
+      ),
+      Event(
+          invocation_id="inv3",
+          author="user",
+          content=types.UserContent("Third message"),
+      ),
+  ]
+  invocation_context.session.events = events
+
+  # Process the request
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  # Verify rewind correctly filters conversation history
+  assert llm_request.contents == [
+      types.UserContent("First message"),
+      types.ModelContent("First response"),
+      types.UserContent("Third message"),
   ]
 
 

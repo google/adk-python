@@ -13,7 +13,7 @@
 # limitations under the License.
 
 """
-module containing utilities for conversion betwen A2A Part and Google GenAI Part
+module containing utilities for conversion between A2A Part and Google GenAI Part
 """
 
 from __future__ import annotations
@@ -22,7 +22,9 @@ import base64
 from collections.abc import Callable
 import json
 import logging
+from typing import List
 from typing import Optional
+from typing import Union
 
 from .utils import _get_adk_metadata_key
 
@@ -53,10 +55,11 @@ A2A_DATA_PART_METADATA_TYPE_EXECUTABLE_CODE = 'executable_code'
 
 
 A2APartToGenAIPartConverter = Callable[
-    [a2a_types.Part], Optional[genai_types.Part]
+    [a2a_types.Part], Union[Optional[genai_types.Part], List[genai_types.Part]]
 ]
 GenAIPartToA2APartConverter = Callable[
-    [genai_types.Part], Optional[a2a_types.Part]
+    [genai_types.Part],
+    Union[Optional[a2a_types.Part], List[a2a_types.Part]],
 ]
 
 
@@ -191,7 +194,7 @@ def convert_genai_part_to_a2a_part(
   # Convert the funcall and function response to A2A DataPart.
   # This is mainly for converting human in the loop and auth request and
   # response.
-  # TODO once A2A defined how to suervice such information, migrate below
+  # TODO once A2A defined how to service such information, migrate below
   # logic accordingly
   if part.function_call:
     return a2a_types.Part(

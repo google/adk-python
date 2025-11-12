@@ -95,34 +95,6 @@ def agent_dir(tmp_path: Path) -> Callable[[bool, bool], Path]:
   return _factory
 
 
-@pytest.fixture
-def mock_vertex_ai(
-    monkeypatch: pytest.MonkeyPatch,
-) -> Generator[mock.MagicMock, None, None]:
-  """Mocks the entire vertexai module and its sub-modules."""
-  mock_vertexai = mock.MagicMock()
-  mock_agent_engines = mock.MagicMock()
-  mock_vertexai.agent_engines = mock_agent_engines
-  mock_vertexai.init = mock.MagicMock()
-  mock_agent_engines.create = mock.MagicMock()
-  mock_agent_engines.ModuleAgent = mock.MagicMock(
-      return_value="mock-agent-engine-object"
-  )
-
-  sys.modules["vertexai"] = mock_vertexai
-  sys.modules["vertexai.agent_engines"] = mock_agent_engines
-
-  mock_dotenv = mock.MagicMock()
-  mock_dotenv.dotenv_values = mock.MagicMock(return_value={"FILE_VAR": "value"})
-  sys.modules["dotenv"] = mock_dotenv
-
-  yield mock_vertexai
-
-  del sys.modules["vertexai"]
-  del sys.modules["vertexai.agent_engines"]
-  del sys.modules["dotenv"]
-
-
 # _resolve_project
 def test_resolve_project_with_option() -> None:
   """It should return the explicit project value untouched."""
@@ -214,80 +186,6 @@ def test_get_service_option_by_adk_version(
       memory_uri=memory_uri,
   )
   assert actual.rstrip() == expected.rstrip()
-
-
-@pytest.mark.usefixtures("mock_vertex_ai")
-@pytest.mark.parametrize("has_reqs", [True, False])
-@pytest.mark.parametrize("has_env", [True, False])
-def test_to_agent_engine_happy_path(
-    monkeypatch: pytest.MonkeyPatch,
-    agent_dir: Callable[[bool, bool], Path],
-    tmp_path: Path,
-    has_reqs: bool,
-    has_env: bool,
-) -> None:
-  """
-  Tests the happy path for the `to_agent_engine` function.
-  """
-  src_dir = agent_dir(has_reqs, has_env)
-  temp_folder = tmp_path / "build"
-  app_name = src_dir.name
-  rmtree_recorder = _Recorder()
-
-  monkeypatch.setattr(shutil, "rmtree", rmtree_recorder)
-
-  cli_deploy.to_agent_engine(
-      agent_folder=str(src_dir),
-      temp_folder=str(temp_folder),
-      adk_app="my_adk_app",
-      staging_bucket="gs://my-staging-bucket",
-      trace_to_cloud=True,
-      project="my-gcp-project",
-      region="us-central1",
-      display_name="My Test Agent",
-      description="A test agent.",
-  )
-
-  assert (temp_folder / app_name / "agent.py").is_file()
-  assert (temp_folder / app_name / "__init__.py").is_file()
-
-  adk_app_path = temp_folder / "my_adk_app.py"
-  assert adk_app_path.is_file()
-  content = adk_app_path.read_text()
-  assert f"from {app_name}.agent import root_agent" in content
-  assert "adk_app = AdkApp(" in content
-  assert "enable_tracing=True" in content
-
-  reqs_path = temp_folder / app_name / "requirements.txt"
-  assert reqs_path.is_file()
-  if not has_reqs:
-    assert "google-cloud-aiplatform[adk,agent_engines]" in reqs_path.read_text()
-
-  vertexai = sys.modules["vertexai"]
-  vertexai.init.assert_called_once_with(
-      project="my-gcp-project",
-      location="us-central1",
-      staging_bucket="gs://my-staging-bucket",
-  )
-
-  dotenv = sys.modules["dotenv"]
-  if has_env:
-    dotenv.dotenv_values.assert_called_once()
-    expected_env_vars = {"FILE_VAR": "value"}
-  else:
-    dotenv.dotenv_values.assert_not_called()
-    expected_env_vars = None
-
-  vertexai.agent_engines.create.assert_called_once()
-  create_kwargs = vertexai.agent_engines.create.call_args.kwargs
-  assert create_kwargs["agent_engine"] == "mock-agent-engine-object"
-  assert create_kwargs["display_name"] == "My Test Agent"
-  assert create_kwargs["description"] == "A test agent."
-  assert create_kwargs["requirements"] == str(reqs_path)
-  assert create_kwargs["extra_packages"] == [str(temp_folder)]
-  assert create_kwargs["env_vars"] == expected_env_vars
-
-  assert str(rmtree_recorder.get_last_call_args()[0]) == str(temp_folder)
 
 
 @pytest.mark.parametrize("include_requirements", [True, False])

@@ -18,12 +18,24 @@ from typing import Optional
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
+from pydantic import model_validator
 
 from ..agents.base_agent import BaseAgent
 from ..agents.context_cache_config import ContextCacheConfig
-from ..apps.base_events_compactor import BaseEventsCompactor
+from ..apps.base_events_summarizer import BaseEventsSummarizer
 from ..plugins.base_plugin import BasePlugin
 from ..utils.feature_decorator import experimental
+
+
+def validate_app_name(name: str) -> None:
+  """Ensures the provided application name is safe and intuitive."""
+  if not name.isidentifier():
+    raise ValueError(
+        f"Invalid app name '{name}': must be a valid identifier consisting of"
+        " letters, digits, and underscores."
+    )
+  if name == "user":
+    raise ValueError("App name cannot be 'user'; reserved for end-user input.")
 
 
 @experimental
@@ -48,6 +60,27 @@ class ResumabilityConfig(BaseModel):
 
 
 @experimental
+class EventsCompactionConfig(BaseModel):
+  """The config of event compaction for an application."""
+
+  model_config = ConfigDict(
+      arbitrary_types_allowed=True,
+      extra="forbid",
+  )
+
+  summarizer: Optional[BaseEventsSummarizer] = None
+  """The event summarizer to use for compaction."""
+
+  compaction_interval: int
+  """The number of *new* user-initiated invocations that, once
+  fully represented in the session's events, will trigger a compaction."""
+
+  overlap_size: int
+  """The number of preceding invocations to include from the
+  end of the last compacted range. This creates an overlap between consecutive
+  compacted summaries, maintaining context."""
+
+
 class App(BaseModel):
   """Represents an LLM-backed agentic application.
 
@@ -73,8 +106,8 @@ class App(BaseModel):
   plugins: list[BasePlugin] = Field(default_factory=list)
   """The plugins in the application."""
 
-  event_compactor: Optional[BaseEventsCompactor] = None
-  """The event compactor strategy for the application."""
+  events_compaction_config: Optional[EventsCompactionConfig] = None
+  """The config of event compaction for the application."""
 
   context_cache_config: Optional[ContextCacheConfig] = None
   """Context cache configuration that applies to all LLM agents in the app."""
@@ -84,3 +117,8 @@ class App(BaseModel):
   The config of the resumability for the application.
   If configured, will be applied to all agents in the app.
   """
+
+  @model_validator(mode="after")
+  def _validate_name(self) -> App:
+    validate_app_name(self.name)
+    return self

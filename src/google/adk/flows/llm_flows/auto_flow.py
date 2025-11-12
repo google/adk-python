@@ -32,7 +32,7 @@ class AutoFlow(SingleFlow):
   For peer-agent transfers, it's only enabled when all below conditions are met:
 
   - The parent agent is also an LlmAgent.
-  - `disallow_transfer_to_peer` option of this agent is False (default).
+  - `disallow_transfer_to_peers` option of this agent is False (default).
 
   Depending on the target agent type, the transfer may be automatically
   reversed. (see Runner._find_agent_to_run method for which agent will remain
