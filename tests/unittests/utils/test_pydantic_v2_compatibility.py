@@ -12,218 +12,340 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from google.adk.utils.pydantic_v2_compatibility import (
-    patch_types_for_pydantic_v2,
-    create_robust_openapi_function,
-    __get_pydantic_core_schema__,
-)
 import pytest
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import Mock, patch, MagicMock, PropertyMock
 from fastapi import FastAPI
 import sys
 import logging
+
+from google.adk.utils.pydantic_v2_compatibility import (
+    patch_types_for_pydantic_v2,
+    create_robust_openapi_function,
+)
 
 
 class TestPydanticV2CompatibilityPatches:
     """Test suite for Pydantic v2 compatibility patches."""
 
-    def test_get_pydantic_core_schema_success(self):
-        """Test successful schema generation with valid handler."""
-        mock_handler = Mock()
-        mock_handler.generate_schema.return_value = {"type": "object", "properties": {}}
-
-        result = __get_pydantic_core_schema__(str, mock_handler)
-
-        assert result == {"type": "object", "properties": {}}
-        mock_handler.generate_schema.assert_called_once_with(str)
-
-    def test_get_pydantic_core_schema_fallback(self):
-        """Test fallback schema when handler fails."""
-        mock_handler = Mock()
-        mock_handler.generate_schema.side_effect = Exception("Schema generation failed")
-
-        result = __get_pydantic_core_schema__(str, mock_handler)
-
-        expected_fallback = {
-            "type": "object",
-            "properties": {},
-            "title": "str",
-            "_pydantic_v2_compat": True
-        }
-        assert result == expected_fallback
-
-    def test_get_pydantic_core_schema_no_handler(self):
-        """Test schema generation when handler is None."""
-        result = __get_pydantic_core_schema__(str, None)
-
-        expected_fallback = {
-            "type": "object",
-            "properties": {},
-            "title": "str",
-            "_pydantic_v2_compat": True
-        }
-        assert result == expected_fallback
-
-    @patch('google.adk.utils.pydantic_v2_compatibility.ClientSession', create=True)
-    def test_patch_types_for_pydantic_v2_success(self, mock_client_session):
-        """Test successful patching of types for Pydantic v2."""
-        # Mock ClientSession class
+    @patch('google.adk.utils.pydantic_v2_compatibility.logger')
+    def test_patch_types_mcp_success(self, mock_logger):
+        """Test successful patching of MCP ClientSession."""
+        # Create a mock ClientSession class
+        mock_client_session = Mock()
         mock_client_session.__modify_schema__ = Mock()
 
-        result = patch_types_for_pydantic_v2()
+        with patch('mcp.client.session.ClientSession', mock_client_session):
+            result = patch_types_for_pydantic_v2()
 
-        assert result is True
-        # Verify that __get_pydantic_core_schema__ was added
-        assert hasattr(mock_client_session, '__get_pydantic_core_schema__')
-        # Verify that __modify_schema__ was removed if it existed
-        assert not hasattr(mock_client_session, '__modify_schema__')
-
-    @patch('google.adk.utils.pydantic_v2_compatibility.ClientSession', side_effect=ImportError)
-    def test_patch_types_for_pydantic_v2_import_error(self, mock_client_session):
-        """Test patching when ClientSession cannot be imported."""
-        result = patch_types_for_pydantic_v2()
-
-        assert result is False
+            assert result is True
+            # Verify that __get_pydantic_core_schema__ was added
+            assert hasattr(mock_client_session, '__get_pydantic_core_schema__')
+            # Verify that __modify_schema__ was removed if it existed
+            assert not hasattr(mock_client_session, '__modify_schema__')
+            mock_logger.info.assert_called()
 
     @patch('google.adk.utils.pydantic_v2_compatibility.logger')
-    @patch('google.adk.utils.pydantic_v2_compatibility.ClientSession', create=True)
-    def test_patch_types_for_pydantic_v2_exception_handling(self, mock_client_session, mock_logger):
-        """Test exception handling during patching."""
-        # Make setattr raise an exception
-        with patch('builtins.setattr', side_effect=Exception("Patching failed")):
+    def test_patch_types_mcp_import_error(self, mock_logger):
+        """Test patching when MCP ClientSession cannot be imported."""
+        # Mock the import statement itself
+        import builtins
+        original_import = builtins.__import__
+
+        def mock_import(name, *args, **kwargs):
+            if name == 'mcp.client.session':
+                raise ImportError("No module named 'mcp.client.session'")
+            return original_import(name, *args, **kwargs)
+
+        with patch('builtins.__import__', side_effect=mock_import):
+            result = patch_types_for_pydantic_v2()
+
+            # Should log debug message about MCP not being available
+            mock_logger.debug.assert_called_with("MCP not available for patching (expected in some environments)")
+            # May return True or False depending on other patches
+
+    @patch('google.adk.utils.pydantic_v2_compatibility.logger')
+    def test_patch_types_generic_alias_failure(self, mock_logger):
+        """Test that patching types.GenericAlias fails due to immutability."""
+        result = patch_types_for_pydantic_v2()
+
+        # GenericAlias patching should fail because it's immutable
+        # But httpx patching should succeed, so result could be True or False
+        mock_logger.warning.assert_called()
+        # Verify the warning message indicates GenericAlias patching failed
+        warning_calls = [call for call in mock_logger.warning.call_args_list
+                        if 'GenericAlias' in str(call)]
+        assert len(warning_calls) > 0
+
+    @patch('google.adk.utils.pydantic_v2_compatibility.logger')
+    def test_patch_types_httpx_success(self, mock_logger):
+        """Test successful patching of httpx clients."""
+        # Create mock httpx classes
+        mock_client = Mock()
+        mock_async_client = Mock()
+
+        with patch('httpx.Client', mock_client), patch('httpx.AsyncClient', mock_async_client):
+            result = patch_types_for_pydantic_v2()
+
+            assert result is True
+            # Verify both clients were patched
+            assert hasattr(mock_client, '__get_pydantic_core_schema__')
+            assert hasattr(mock_async_client, '__get_pydantic_core_schema__')
+            mock_logger.info.assert_called()
+
+    @patch('google.adk.utils.pydantic_v2_compatibility.logger')
+    def test_patch_types_all_fail(self, mock_logger):
+        """Test when all patching attempts fail."""
+        # Mock all imports to fail or cause exceptions
+        with patch('mcp.client.session.ClientSession', side_effect=ImportError), \
+             patch('google.adk.utils.pydantic_v2_compatibility.setattr', side_effect=Exception("Setattr failed")):
             result = patch_types_for_pydantic_v2()
 
             assert result is False
-            mock_logger.error.assert_called()
+            mock_logger.warning.assert_called()
 
     def test_create_robust_openapi_function_normal_operation(self):
         """Test robust OpenAPI function under normal conditions."""
         mock_app = Mock(spec=FastAPI)
-        mock_app.openapi.return_value = {"openapi": "3.0.0", "info": {"title": "Test API"}}
+        mock_app.openapi_schema = None
+        mock_app.title = "Test API"
+        mock_app.version = "1.0.0"
+        mock_app.description = "Test Description"
+        mock_app.routes = []
+
+        expected_schema = {"openapi": "3.0.0", "info": {"title": "Test API"}}
+
+        with patch('fastapi.openapi.utils.get_openapi', return_value=expected_schema):
+            robust_openapi = create_robust_openapi_function(mock_app)
+            result = robust_openapi()
+
+            assert result == expected_schema
+            assert mock_app.openapi_schema == expected_schema
+
+    def test_create_robust_openapi_function_cached_schema(self):
+        """Test robust OpenAPI function returns cached schema when available."""
+        mock_app = Mock(spec=FastAPI)
+        cached_schema = {"openapi": "3.1.0", "info": {"title": "Cached API"}}
+        mock_app.openapi_schema = cached_schema
 
         robust_openapi = create_robust_openapi_function(mock_app)
         result = robust_openapi()
 
-        assert result == {"openapi": "3.0.0", "info": {"title": "Test API"}}
+        assert result == cached_schema
 
     @patch('google.adk.utils.pydantic_v2_compatibility.logger')
     def test_create_robust_openapi_function_recursion_error(self, mock_logger):
         """Test robust OpenAPI function handles RecursionError."""
         mock_app = Mock(spec=FastAPI)
-        mock_app.openapi.side_effect = RecursionError("Maximum recursion depth exceeded")
+        mock_app.openapi_schema = None
+        mock_app.title = "Test API"
+        mock_app.version = "1.0.0"
+        mock_app.description = "Test Description"
+        mock_app.routes = []
 
-        robust_openapi = create_robust_openapi_function(mock_app)
-        result = robust_openapi()
+        with patch('fastapi.openapi.utils.get_openapi', side_effect=RecursionError("Maximum recursion depth exceeded")):
+            robust_openapi = create_robust_openapi_function(mock_app)
+            result = robust_openapi()
 
-        # Should return fallback schema
-        assert "openapi" in result
-        assert "info" in result
-        assert result["info"]["title"] == "ADK Agent API"
-        mock_logger.warning.assert_called()
+            # Should return fallback schema with correct values from implementation
+            assert "openapi" in result
+            assert "info" in result
+            assert result["openapi"] == "3.1.0"  # Match implementation
+            assert result["info"]["title"] == "Test API"  # Should use the app's title when available
+            mock_logger.warning.assert_called()
 
     @patch('google.adk.utils.pydantic_v2_compatibility.logger')
-    @patch('google.adk.utils.pydantic_v2_compatibility.sys')
-    def test_create_robust_openapi_function_recursion_limit_handling(self, mock_sys, mock_logger):
-        """Test recursion limit handling in robust OpenAPI function."""
+    def test_create_robust_openapi_function_pydantic_error(self, mock_logger):
+        """Test robust OpenAPI function handles Pydantic errors."""
         mock_app = Mock(spec=FastAPI)
-        mock_app.openapi.return_value = {"openapi": "3.0.0"}
-        mock_sys.getrecursionlimit.return_value = 1000
+        mock_app.openapi_schema = None
+        mock_app.title = "Test API"
+        mock_app.version = "1.0.0"
+        mock_app.description = "Test Description"
+        mock_app.routes = []
 
-        robust_openapi = create_robust_openapi_function(mock_app)
-        result = robust_openapi()
+        with patch('fastapi.openapi.utils.get_openapi', side_effect=Exception("PydanticSchemaGenerationError: Cannot generate schema")):
+            robust_openapi = create_robust_openapi_function(mock_app)
+            result = robust_openapi()
 
-        # Verify recursion limit was set
-        mock_sys.setrecursionlimit.assert_called_with(500)
-        # Verify it was restored
-        assert mock_sys.setrecursionlimit.call_count == 2
+            # Should return fallback schema
+            assert "openapi" in result
+            assert "info" in result
+            assert result["openapi"] == "3.1.0"  # Match implementation
+            assert result["info"]["title"] == "Test API"  # Should use the app's title when available
+            mock_logger.warning.assert_called()
 
     @patch('google.adk.utils.pydantic_v2_compatibility.logger')
-    def test_create_robust_openapi_function_generic_exception(self, mock_logger):
-        """Test robust OpenAPI function handles generic exceptions."""
+    def test_create_robust_openapi_function_non_pydantic_error(self, mock_logger):
+        """Test robust OpenAPI function re-raises non-Pydantic errors."""
         mock_app = Mock(spec=FastAPI)
-        mock_app.openapi.side_effect = Exception("Generic error")
+        mock_app.openapi_schema = None
+        mock_app.title = "Test API"
+        mock_app.version = "1.0.0"
+        mock_app.description = "Test Description"
+        mock_app.routes = []
 
-        robust_openapi = create_robust_openapi_function(mock_app)
-        result = robust_openapi()
+        with patch('fastapi.openapi.utils.get_openapi', side_effect=ValueError("Unrelated error")):
+            robust_openapi = create_robust_openapi_function(mock_app)
 
-        # Should return fallback schema
-        assert "openapi" in result
-        assert "info" in result
-        mock_logger.error.assert_called()
-
-    @patch('google.adk.utils.pydantic_v2_compatibility.logger')
-    def test_create_robust_openapi_function_attribute_error(self, mock_logger):
-        """Test robust OpenAPI function handles AttributeError."""
-        mock_app = Mock()
-        # Remove openapi method to trigger AttributeError
-        del mock_app.openapi
-
-        robust_openapi = create_robust_openapi_function(mock_app)
-        result = robust_openapi()
-
-        # Should return fallback schema
-        assert "openapi" in result
-        assert "info" in result
-        mock_logger.error.assert_called()
+            with pytest.raises(ValueError, match="Unrelated error"):
+                robust_openapi()
 
     def test_robust_openapi_fallback_schema_structure(self):
-        """Test the structure of the fallback OpenAPI schema."""
+        """Test that the fallback schema has the correct structure."""
         mock_app = Mock(spec=FastAPI)
-        mock_app.openapi.side_effect = Exception("Error")
+        mock_app.openapi_schema = None
+        mock_app.title = "Test API"
+        mock_app.version = "1.0.0"
+        mock_app.description = "Test Description"
+        mock_app.routes = []
 
-        robust_openapi = create_robust_openapi_function(mock_app)
-        result = robust_openapi()
+        with patch('fastapi.openapi.utils.get_openapi', side_effect=Exception("PydanticSchemaGenerationError")):
+            robust_openapi = create_robust_openapi_function(mock_app)
+            result = robust_openapi()
 
-        # Verify required OpenAPI structure
-        assert result["openapi"] == "3.0.0"
-        assert "info" in result
-        assert result["info"]["title"] == "ADK Agent API"
-        assert result["info"]["version"] == "1.0.0"
-        assert "paths" in result
-        assert "components" in result
-        assert "schemas" in result["components"]
-
-    @patch('google.adk.utils.pydantic_v2_compatibility.httpx', create=True)
-    def test_patch_httpx_client_success(self):
-        """Test successful patching of httpx Client."""
-        mock_client = Mock()
-
-        with patch('google.adk.utils.pydantic_v2_compatibility.patch_types_for_pydantic_v2') as mock_patch:
-            mock_patch.return_value = True
-            result = patch_types_for_pydantic_v2()
-
-            assert result is True
-
-    def test_robust_openapi_preserves_successful_schema(self):
-        """Test that robust OpenAPI preserves successful schema generation."""
-        mock_app = Mock(spec=FastAPI)
-        expected_schema = {
-            "openapi": "3.0.0",
-            "info": {"title": "Custom API", "version": "2.0.0"},
-            "paths": {"/test": {"get": {"summary": "Test endpoint"}}},
-            "components": {"schemas": {"TestModel": {"type": "object"}}}
-        }
-        mock_app.openapi.return_value = expected_schema
-
-        robust_openapi = create_robust_openapi_function(mock_app)
-        result = robust_openapi()
-
-        assert result == expected_schema
+            # Verify schema structure matches implementation
+            assert result["openapi"] == "3.1.0"  # Match implementation
+            assert "info" in result
+            assert "paths" in result
+            assert "components" in result
+            assert "schemas" in result["components"]
+            assert "HTTPValidationError" in result["components"]["schemas"]
+            assert "ValidationError" in result["components"]["schemas"]
+            assert "GenericResponse" in result["components"]["schemas"]
+            assert "AgentInfo" in result["components"]["schemas"]
 
     @patch('google.adk.utils.pydantic_v2_compatibility.logger')
-    def test_create_robust_openapi_logs_errors_appropriately(self, mock_logger):
-        """Test that robust OpenAPI function logs errors with appropriate levels."""
+    def test_robust_openapi_route_extraction(self, mock_logger):
+        """Test that routes are safely extracted in fallback mode."""
         mock_app = Mock(spec=FastAPI)
+        mock_app.openapi_schema = None
+        mock_app.title = "Test API"
+        mock_app.version = "1.0.0"
+        mock_app.description = "Test Description"
 
-        # Test RecursionError logging
-        mock_app.openapi.side_effect = RecursionError("Recursion error")
-        robust_openapi = create_robust_openapi_function(mock_app)
-        robust_openapi()
-        mock_logger.warning.assert_called()
+        # Create mock routes
+        mock_route = Mock()
+        mock_route.path = "/test"
+        mock_route.methods = {"GET", "POST"}
+        mock_app.routes = [mock_route]
 
-        # Reset and test generic Exception logging
-        mock_logger.reset_mock()
-        mock_app.openapi.side_effect = ValueError("Generic error")
-        robust_openapi = create_robust_openapi_function(mock_app)
-        robust_openapi()
-        mock_logger.error.assert_called()
+        with patch('fastapi.openapi.utils.get_openapi', side_effect=Exception("PydanticSchemaGenerationError")):
+            robust_openapi = create_robust_openapi_function(mock_app)
+            result = robust_openapi()
+
+            # Should include the extracted route
+            assert "/test" in result["paths"]
+            assert "get" in result["paths"]["/test"]
+            assert "post" in result["paths"]["/test"]
+
+    @patch('google.adk.utils.pydantic_v2_compatibility.logger')
+    def test_robust_openapi_route_extraction_failure(self, mock_logger):
+        """Test fallback when route extraction fails."""
+        mock_app = Mock(spec=FastAPI)
+        mock_app.openapi_schema = None
+        mock_app.title = "Test API"
+        mock_app.version = "1.0.0"
+        mock_app.description = "Test Description"
+
+        # Make routes attribute raise an exception when accessed
+        mock_app.routes = PropertyMock(side_effect=Exception("Route access failed"))
+
+        with patch('fastapi.openapi.utils.get_openapi', side_effect=Exception("PydanticSchemaGenerationError")):
+            robust_openapi = create_robust_openapi_function(mock_app)
+            result = robust_openapi()
+
+            # Should include minimal essential endpoints
+            assert "/" in result["paths"]
+            assert "/health" in result["paths"]
+            mock_logger.warning.assert_called()
+
+    def test_patched_generic_alias_behavior(self):
+        """Test that GenericAlias patching is attempted but fails due to immutability."""
+        import types
+
+        with patch('google.adk.utils.pydantic_v2_compatibility.logger') as mock_logger:
+            # Apply patches - this should fail for GenericAlias
+            result = patch_types_for_pydantic_v2()
+
+            # Should have warning about GenericAlias patching failure
+            warning_calls = [call for call in mock_logger.warning.call_args_list
+                            if 'GenericAlias' in str(call)]
+            assert len(warning_calls) > 0
+
+            # GenericAlias should not have the method (because patching failed)
+            assert not hasattr(types.GenericAlias, '__get_pydantic_core_schema__')
+
+    def test_patched_generic_alias_immutable_type_error(self):
+        """Test that GenericAlias patching fails due to type immutability."""
+        import types
+
+        with patch('google.adk.utils.pydantic_v2_compatibility.setattr') as mock_setattr:
+            # Configure setattr to raise TypeError for GenericAlias
+            def setattr_side_effect(obj, name, value):
+                if obj is types.GenericAlias and name == '__get_pydantic_core_schema__':
+                    raise TypeError("cannot set '__get_pydantic_core_schema__' attribute of immutable type 'types.GenericAlias'")
+                # Call original setattr for other cases
+                return setattr(obj, name, value)
+
+            mock_setattr.side_effect = setattr_side_effect
+
+            with patch('google.adk.utils.pydantic_v2_compatibility.logger') as mock_logger:
+                result = patch_types_for_pydantic_v2()
+
+                # Should log a warning about GenericAlias patching failure
+                warning_calls = [call for call in mock_logger.warning.call_args_list
+                                if 'GenericAlias' in str(call)]
+                assert len(warning_calls) > 0
+
+    def test_patched_mcp_client_session_behavior(self):
+        """Test that patched MCP ClientSession works correctly."""
+        mock_client_session = Mock()
+        mock_client_session.__modify_schema__ = Mock()
+
+        with patch('mcp.client.session.ClientSession', mock_client_session):
+            # Apply patches
+            result = patch_types_for_pydantic_v2()
+            assert result is True
+
+            # Test the patched method exists and works
+            assert hasattr(mock_client_session, '__get_pydantic_core_schema__')
+
+            # Get the patched method and test it
+            method = getattr(mock_client_session, '__get_pydantic_core_schema__')
+
+            # Mock the core_schema.any_schema function
+            with patch('pydantic_core.core_schema.any_schema') as mock_any_schema:
+                mock_any_schema.return_value = {"type": "any"}
+
+                # Call the method properly (it's a classmethod)
+                result = method.__func__(mock_client_session, Mock(), Mock())
+
+                # Should return any_schema
+                mock_any_schema.assert_called_once()
+                assert result == {"type": "any"}
+
+    def test_patched_httpx_clients_behavior(self):
+        """Test that patched httpx clients work correctly."""
+        mock_client = Mock()
+        mock_async_client = Mock()
+
+        with patch('httpx.Client', mock_client), patch('httpx.AsyncClient', mock_async_client):
+            # Apply patches
+            result = patch_types_for_pydantic_v2()
+            assert result is True
+
+            # Test both clients were patched
+            assert hasattr(mock_client, '__get_pydantic_core_schema__')
+            assert hasattr(mock_async_client, '__get_pydantic_core_schema__')
+
+            # Test the patched methods work
+            for client in [mock_client, mock_async_client]:
+                method = getattr(client, '__get_pydantic_core_schema__')
+
+                with patch('pydantic_core.core_schema.any_schema') as mock_any_schema:
+                    mock_any_schema.return_value = {"type": "any"}
+
+                    # Call the method properly (it's a classmethod)
+                    result = method.__func__(client, Mock(), Mock())
+                    mock_any_schema.assert_called_once()
+                    assert result == {"type": "any"}

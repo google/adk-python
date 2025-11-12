@@ -76,7 +76,7 @@ def patch_types_for_pydantic_v2() -> bool:
             if hasattr(source_type, "__origin__") and hasattr(source_type, "__args__"):
                 try:
                     # Let pydantic handle the origin type (list, dict, etc.)
-                    return handler.generate_schema(source_type.__origin__)
+                    return handler(source_type.__origin__)
                 except Exception:
                     # Fallback to any schema if we can't handle the specific type
                     return core_schema.any_schema()
