@@ -152,6 +152,11 @@ class _TestingAgent(BaseAgent):
     )
 
 
+def _get_final_events(events: list[Event]) -> list[Event]:
+  """Helper function to filter events for final responses."""
+  return [e for e in events if e.is_final_response()]
+
+
 async def _create_parent_invocation_context(
     test_name: str,
     agent: BaseAgent,
@@ -474,7 +479,7 @@ async def test_before_agent_callbacks_chain(
       request.function.__name__, agent
   )
   result = [e async for e in agent.run_async(parent_ctx)]
-  final_events = [e for e in result if e.is_final_response()]
+  final_events = _get_final_events(result)
   assert testing_utils.simplify_events(final_events) == [
       (f'{request.function.__name__}_test_agent', response)
       for response in expected_responses
@@ -536,7 +541,7 @@ async def test_after_agent_callbacks_chain(
       request.function.__name__, agent
   )
   result = [e async for e in agent.run_async(parent_ctx)]
-  final_events = [e for e in result if e.is_final_response()]
+  final_events = _get_final_events(result)
   assert testing_utils.simplify_events(final_events) == [
       (f'{request.function.__name__}_test_agent', response)
       for response in expected_responses
@@ -584,7 +589,7 @@ async def test_run_async_after_agent_callback_use_plugin(
 
   # Assert
   spy_after_agent_callback.assert_not_called()
-  final_events = [e for e in events if e.is_final_response()]
+  final_events = _get_final_events(events)
   assert len(final_events) == 1
   assert final_events[0].content.parts[0].text == mock_plugin.after_agent_text
 
@@ -612,7 +617,7 @@ async def test_run_async_after_agent_callback_noop(
   _, kwargs = spy_after_agent_callback.call_args
   assert 'callback_context' in kwargs
   assert isinstance(kwargs['callback_context'], CallbackContext)
-  final_events = [e for e in events if e.is_final_response()]
+  final_events = _get_final_events(events)
   assert len(final_events) == 1
 
 
@@ -639,7 +644,7 @@ async def test_run_async_with_async_after_agent_callback_noop(
   _, kwargs = spy_after_agent_callback.call_args
   assert 'callback_context' in kwargs
   assert isinstance(kwargs['callback_context'], CallbackContext)
-  final_events = [e for e in events if e.is_final_response()]
+  final_events = _get_final_events(events)
   assert len(final_events) == 1
 
 
@@ -659,7 +664,7 @@ async def test_run_async_after_agent_callback_append_reply(
   # Act
   events = [e async for e in agent.run_async(parent_ctx)]
 
-  final_events = [e for e in events if e.is_final_response()]
+  final_events = _get_final_events(events)
   assert len(final_events) == 1
   assert final_events[0].author == agent.name
   assert (
@@ -684,7 +689,7 @@ async def test_run_async_with_async_after_agent_callback_append_reply(
   # Act
   events = [e async for e in agent.run_async(parent_ctx)]
 
-  final_events = [e for e in events if e.is_final_response()]
+  final_events = _get_final_events(events)
   assert len(final_events) == 1
   assert final_events[0].author == agent.name
   assert (
@@ -707,7 +712,7 @@ async def test_run_async_after_agent_callback_state_only(
 
   events = [e async for e in agent.run_async(parent_ctx)]
 
-  final_events = [e for e in events if e.is_final_response()]
+  final_events = _get_final_events(events)
 
   assert len(final_events) == 1
   assert final_events[0].content.parts[0].text == 'Hello, world!'
