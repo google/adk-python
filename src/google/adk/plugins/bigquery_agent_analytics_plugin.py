@@ -23,7 +23,6 @@ from typing import Any
 from typing import Callable
 from typing import List
 from typing import Optional
-from typing import Set
 from typing import TYPE_CHECKING
 
 from google.api_core.gapic_v1 import client_info as gapic_client_info
@@ -173,10 +172,11 @@ def _bq_to_arrow_field(bq_field):
     metadata = _BQ_FIELD_TYPE_TO_ARROW_FIELD_METADATA.get(
         bq_field.field_type.upper() if bq_field.field_type else ""
     )
+    nullable = bq_field.mode.upper() != "REQUIRED"
     return pa.field(
         bq_field.name,
         arrow_type,
-        nullable=(bq_field.mode != "REPEATED"),
+        nullable=nullable,
         metadata=metadata,
     )
   logging.warning(
@@ -213,12 +213,18 @@ class BigQueryLoggerConfig:
     event_denylist: A list of event types to skip logging.
     content_formatter: An optional function to format event content before
       logging.
+    shutdown_timeout: Seconds to wait for logs to flush during shutdown.
+    client_close_timeout: Seconds to wait for BQ client to close.
+    max_content_length: The maximum length of content parts before truncation.
   """
 
   enabled: bool = True
   event_allowlist: Optional[List[str]] = None
   event_denylist: Optional[List[str]] = None
   content_formatter: Optional[Callable[[Any], str]] = None
+  shutdown_timeout: float = 5.0
+  client_close_timeout: float = 2.0
+  max_content_length: int = 500
 
 
 # --- Helper Formatters ---
@@ -313,16 +319,17 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     self._write_client: BigQueryWriteAsyncClient | None = None
     self._init_lock: asyncio.Lock | None = None
     self._arrow_schema: pa.Schema | None = None
-    self._background_tasks: Set[asyncio.Task] = set()  # Track pending logs
+    self._background_tasks: set[asyncio.Task] = set()
+    self._is_shutting_down = False
     self._schema = [
-        bigquery.SchemaField("timestamp", "TIMESTAMP"),
-        bigquery.SchemaField("event_type", "STRING"),
-        bigquery.SchemaField("agent", "STRING"),
-        bigquery.SchemaField("session_id", "STRING"),
-        bigquery.SchemaField("invocation_id", "STRING"),
-        bigquery.SchemaField("user_id", "STRING"),
-        bigquery.SchemaField("content", "STRING"),
-        bigquery.SchemaField("error_message", "STRING"),
+        bigquery.SchemaField("timestamp", "TIMESTAMP", mode="REQUIRED"),
+        bigquery.SchemaField("event_type", "STRING", mode="NULLABLE"),
+        bigquery.SchemaField("agent", "STRING", mode="NULLABLE"),
+        bigquery.SchemaField("session_id", "STRING", mode="NULLABLE"),
+        bigquery.SchemaField("invocation_id", "STRING", mode="NULLABLE"),
+        bigquery.SchemaField("user_id", "STRING", mode="NULLABLE"),
+        bigquery.SchemaField("content", "STRING", mode="NULLABLE"),
+        bigquery.SchemaField("error_message", "STRING", mode="NULLABLE"),
     ]
 
   def _format_content_safely(
@@ -334,7 +341,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     try:
       if self._config.content_formatter:
         return self._config.content_formatter(content)
-      return _format_content(content)
+      return _format_content(content, max_len=self._config.max_content_length)
     except Exception as e:
       logging.warning(f"Content formatter failed: {e}")
       return "[FORMATTING FAILED]"
@@ -363,14 +370,17 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         # Ensure table exists (sync call in thread)
         def create_resources():
           if self._bq_client:
-            dataset = self._bq_client.create_dataset(
-                self._dataset_id, exists_ok=True
-            )
+            self._bq_client.create_dataset(self._dataset_id, exists_ok=True)
             table = bigquery.Table(
                 f"{self._project_id}.{self._dataset_id}.{self._table_id}",
                 schema=self._schema,
             )
             self._bq_client.create_table(table, exists_ok=True)
+            logging.info(
+                "BQ Plugin: Dataset %s and Table %s ensured to exist.",
+                self._dataset_id,
+                self._table_id,
+            )
 
         await asyncio.to_thread(create_resources)
 
@@ -379,9 +389,12 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
             client_info=client_info,
         )
         self._arrow_schema = to_arrow_schema(self._schema)
+        if not self._arrow_schema:
+          raise RuntimeError("Failed to convert BigQuery schema to Arrow.")
+        logging.info("BQ Plugin: Initialized successfully.")
         return True
       except Exception as e:
-        logging.error(f"BQ Init Failed: {e}")
+        logging.error("BQ Plugin: Init Failed:", exc_info=True)
         return False
 
   async def _perform_write(self, row: dict):
@@ -412,14 +425,16 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
           self._write_client.append_rows(iter([req]))
       ):
         if resp.error.code != 0:
-          logging.error(f"BQ Write Error: {resp.error.message}")
+          logging.error(f"BQ Plugin: Write Error: {resp.error.message}")
 
     except RuntimeError as e:
-      # Silently ignore event loop closed errors during background writes
-      if "Event loop is closed" not in str(e):
-        logging.exception(f"BQ Runtime Error: {e}")
+      if "Event loop is closed" not in str(e) and not self._is_shutting_down:
+        logging.error("BQ Plugin: Runtime Error during write:", exc_info=True)
+    except asyncio.CancelledError:
+      if not self._is_shutting_down:
+        logging.warning("BQ Plugin: Write task cancelled unexpectedly.")
     except Exception as e:
-      logging.error(f"BQ Write Failed: {e}")
+      logging.error("BQ Plugin: Write Failed:", exc_info=True)
 
   async def _log(self, data: dict):
     """Schedules a log entry to be written in the background."""
@@ -457,32 +472,44 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
 
   async def close(self):
     """Flushes pending logs and closes client."""
-    # 1. Wait for pending background logs (best effort, 2s timeout)
-    if self._background_tasks:
-      logging.info(f"Flushing {len(self._background_tasks)} pending BQ logs...")
-      done, pending = await asyncio.wait(self._background_tasks, timeout=2.0)
-      if pending:
-        logging.warning(
-            f"{len(pending)} BQ logs could not be flushed before shutdown."
-        )
+    if self._is_shutting_down:
+      return
+    self._is_shutting_down = True
+    logging.info("BQ Plugin: Shutdown started.")
 
-    # 2. Close client
-    if self._write_client and self._write_client.transport:
+    if self._background_tasks:
+      logging.info(
+          f"BQ Plugin: Flushing {len(self._background_tasks)} pending logs..."
+      )
       try:
-        logging.info("Closing BQ Write client transport...")
+        await asyncio.wait(
+            self._background_tasks, timeout=self._config.shutdown_timeout
+        )
+      except asyncio.TimeoutError:
+        logging.warning("BQ Plugin: Timeout waiting for logs to flush.")
+      except Exception as e:
+        logging.warning("BQ Plugin: Error flushing logs:", exc_info=True)
+
+    # Use getattr for safe access in case transport is not present.
+    if self._write_client and getattr(self._write_client, "transport", None):
+      try:
+        logging.info("BQ Plugin: Closing write client.")
         await asyncio.wait_for(
-            self._write_client.transport.close(), timeout=1.0
+            self._write_client.transport.close(),
+            timeout=self._config.client_close_timeout,
         )
       except Exception as e:
-        logging.warning(f"Error during BQ Write client transport close: {e}")
-      self._write_client = None
+        logging.warning(f"BQ Plugin: Error closing write client: {e}")
     if self._bq_client:
       try:
-        logging.info("Closing BQ client...")
         self._bq_client.close()
       except Exception as e:
-        logging.warning(f"Error during BQ client close: {e}")
-      self._bq_client = None
+        logging.warning(f"BQ Plugin: Error closing BQ client: {e}")
+
+    self._write_client = None
+    self._bq_client = None
+    self._is_shutting_down = False
+    logging.info("BQ Plugin: Shutdown complete.")
 
   # --- Streamlined Callbacks ---
   async def on_user_message_callback(
@@ -523,13 +550,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         "session_id": invocation_context.session.id,
         "invocation_id": invocation_context.invocation_id,
         "user_id": invocation_context.session.user_id,
-        "content": (
-            json.dumps(
-                [part.model_dump(mode="json") for part in event.content.parts]
-            )
-            if event.content and event.content.parts
-            else None
-        ),
+        "content": self._format_content_safely(event.content),
         "error_message": event.error_message,
         "timestamp": datetime.fromtimestamp(event.timestamp, timezone.utc),
     })
@@ -579,6 +600,11 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     content_parts = [
         f"Model: {llm_request.model or 'default'}",
     ]
+    if contents := getattr(llm_request, "contents", None):
+      prompt_str = " | ".join(
+          [f"{c.role}: {self._format_content_safely(c)}" for c in contents]
+      )
+      content_parts.append(f"Prompt: {prompt_str}")
     system_instruction_text = "None"
     if llm_request.config and llm_request.config.system_instruction:
       si = llm_request.config.system_instruction
@@ -627,6 +653,9 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       )
 
     final_content = " | ".join(content_parts)
+    max_len = self._config.max_content_length
+    if len(final_content) > max_len:
+      final_content = final_content[:max_len] + "..."
     await self._log({
         "event_type": "LLM_REQUEST",
         "agent": callback_context.agent_name,
@@ -702,7 +731,8 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         "user_id": tool_context.session.user_id,
         "content": (
             f"Tool Name: {tool.name}, Description: {tool.description},"
-            f" Arguments: {_format_args(tool_args)}"
+            " Arguments:"
+            f" {_format_args(tool_args, max_len=self._config.max_content_length)}"
         ),
     })
 
@@ -721,7 +751,10 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         "session_id": tool_context.session.id,
         "invocation_id": tool_context.invocation_id,
         "user_id": tool_context.session.user_id,
-        "content": f"Tool Name: {tool.name}, Result: {_format_args(result)}",
+        "content": (
+            f"Tool Name: {tool.name}, Result:"
+            f" {_format_args(result, max_len=self._config.max_content_length)}"
+        ),
     })
 
   async def on_model_error_callback(
@@ -757,7 +790,8 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         "invocation_id": tool_context.invocation_id,
         "user_id": tool_context.session.user_id,
         "content": (
-            f"Tool Name: {tool.name}, Arguments: {_format_args(tool_args)}"
+            f"Tool Name: {tool.name}, Arguments:"
+            f" {_format_args(tool_args, max_len=self._config.max_content_length)}"
         ),
         "error_message": str(error),
     })
