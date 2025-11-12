@@ -329,7 +329,9 @@ class BaseAgent(BaseModel):
       if ctx.end_invocation:
         return
 
-      async for event in self._run_with_callbacks(ctx, self._run_async_impl(ctx)):
+      async for event in self._run_with_callbacks(
+          ctx, self._run_async_impl(ctx)
+      ):
         yield event
 
   @final
@@ -355,7 +357,9 @@ class BaseAgent(BaseModel):
       if ctx.end_invocation:
         return
 
-      async for event in self._run_with_callbacks(ctx, self._run_live_impl(ctx)):
+      async for event in self._run_with_callbacks(
+          ctx, self._run_live_impl(ctx)
+      ):
         yield event
 
   async def _run_async_impl(
