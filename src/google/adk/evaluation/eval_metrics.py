@@ -150,6 +150,76 @@ class HallucinationsCriterion(BaseCriterion):
   )
 
 
+class ToolTrajectoryCriterion(BaseCriterion):
+  """Criterion to use when evaluating agent's tool trajectories with a reference one."""
+
+  class MatchType(Enum):
+    """The type of Match between actual and expected tool call trajectories."""
+
+    EXACT = 0
+    """Requires a perfect match between the actual and expected tool calls."""
+
+    IN_ORDER = 1
+    """Requires the actual tool calls to be in the same order as expected tools,
+    with allowance for extra tool calls to have happened.
+
+    This criteria is useful in assuring if certain key actions/tool calls
+    occur and in certain order, leaving some scope for other tools calls to
+    happen as well.
+
+    Example 1: Set of actual vs expected tool calls that satisfies the criteria:
+
+      Expected tools calls: [T1, T2, T3]
+      Actual tool calls: [T1, T1.1, T2, T2.1, T2.2, T3, T3.1]
+
+      This satisfies, as the tools T1, T2 and T3 happened in the "Actual" and in
+      the same order.
+
+    Example 2: Set of actual vs expected tool calls that don't satisfy the
+    criteria:
+
+      Expected tools calls: [T1, T2, T3, T4]
+      Actual tool calls: [T1, T1.1, T2, T2.1, T2.2, T3, T3.1]
+
+      While the tool calls T1, T2 and T3 happened in the "Actual" and in
+      the same order as "Expected", but the the tool calls T4 is missing.
+    """
+
+    ANY_ORDER = 2
+    """Requires the actual tool calls to be in the any order as expected tools,
+    with allowance for extra tool calls to have happened.
+
+    This criteria is helpful for cases where multiple tool calls about the same
+    concept occur, like your agent issues 5 search queries. You don't really
+    care the order in which the search queries are issues, till they occur.
+
+    Example 1: Set of actual vs expected tool calls that satisfies the criteria:
+
+      Expected tools calls: [T1, T2, T3]
+      Actual tool calls: [T2, T2.1, T1, T1.1, T1.2, T3, T3.1]
+
+      This satisfies, as the tools T1, T2 and T3 happened in the "Actual" and
+      are also present in expected. Note that the order is different.
+
+    Example 2: Set of actual vs expected tool calls that don't satisfy the
+    criteria:
+
+      Expected tools calls: [T1, T2, T3, T4]
+      Actual tool calls: [T1, T1.1, T2, T2.1, T2.2, T3, T3.1]
+
+      While the tool calls T1, T2 and T3 happened in the "Actual" and in
+      the same order as "Expected", but the the tool calls T4 is missing.
+    """
+
+  match_type: MatchType = Field(
+      default=MatchType.EXACT,
+      description=(
+          "The type of Match between actual and expected tool call"
+          " trajectories."
+      ),
+  )
+
+
 class EvalMetric(EvalBaseModel):
   """A metric used to evaluate a particular aspect of an eval case."""
 
