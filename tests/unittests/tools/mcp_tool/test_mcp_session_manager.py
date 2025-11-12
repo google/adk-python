@@ -32,7 +32,7 @@ pytestmark = pytest.mark.skipif(
 # Import dependencies with version checking
 try:
   from google.adk.tools.mcp_tool.mcp_session_manager import MCPSessionManager
-  from google.adk.tools.mcp_tool.mcp_session_manager import retry_on_errors
+  from google.adk.tools.mcp_tool.mcp_session_manager import retry_on_closed_resource
   from google.adk.tools.mcp_tool.mcp_session_manager import SseConnectionParams
   from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
   from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
@@ -44,7 +44,7 @@ except ImportError as e:
       pass
 
     MCPSessionManager = DummyClass
-    retry_on_errors = lambda x: x
+    retry_on_closed_resource = lambda x: x
     SseConnectionParams = DummyClass
     StdioConnectionParams = DummyClass
     StreamableHTTPConnectionParams = DummyClass
@@ -375,12 +375,12 @@ class TestMCPSessionManager:
     assert "Close error 1" in error_output
 
 
-def test_retry_on_errors_decorator():
-  """Test the retry_on_errors decorator."""
+def test_retry_on_closed_resource_decorator():
+  """Test the retry_on_closed_resource decorator."""
 
   call_count = 0
 
-  @retry_on_errors
+  @retry_on_closed_resource
   async def mock_function(self):
     nonlocal call_count
     call_count += 1

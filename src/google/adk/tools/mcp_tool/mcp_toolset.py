@@ -37,7 +37,7 @@ from ..base_toolset import ToolPredicate
 from ..tool_configs import BaseToolConfig
 from ..tool_configs import ToolArgsConfig
 from .mcp_session_manager import MCPSessionManager
-from .mcp_session_manager import retry_on_errors
+from .mcp_session_manager import retry_on_closed_resource
 from .mcp_session_manager import SseConnectionParams
 from .mcp_session_manager import StdioConnectionParams
 from .mcp_session_manager import StreamableHTTPConnectionParams
@@ -155,7 +155,7 @@ class McpToolset(BaseToolset):
     self._auth_credential = auth_credential
     self._require_confirmation = require_confirmation
 
-  @retry_on_errors
+  @retry_on_closed_resource
   async def get_tools(
       self,
       readonly_context: Optional[ReadonlyContext] = None,

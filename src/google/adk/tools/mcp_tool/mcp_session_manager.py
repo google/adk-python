@@ -108,10 +108,10 @@ class StreamableHTTPConnectionParams(BaseModel):
   terminate_on_close: bool = True
 
 
-def retry_on_errors(func):
-  """Decorator to automatically retry action when MCP session errors occur.
+def retry_on_closed_resource(func):
+  """Decorator to automatically retry action when MCP session is closed.
 
-  When MCP session errors occur, the decorator will automatically retry the
+  When MCP session was closed, the decorator will automatically retry the
   action once. The create_session method will handle creating a new session
   if the old one was disconnected.
 
@@ -126,11 +126,11 @@ def retry_on_errors(func):
   async def wrapper(self, *args, **kwargs):
     try:
       return await func(self, *args, **kwargs)
-    except Exception as e:
-      # If an error is thrown, we will retry the function to reconnect to the
-      # server. create_session will handle detecting and replacing disconnected
-      # sessions.
-      logger.info('Retrying %s due to error: %s', func.__name__, e)
+    except (anyio.ClosedResourceError, anyio.BrokenResourceError):
+      # If the session connection is closed or unusable, we will retry the
+      # function to reconnect to the server. create_session will handle
+      # detecting and replacing disconnected sessions.
+      logger.info('Retrying %s due to closed resource', func.__name__)
       return await func(self, *args, **kwargs)
 
   return wrapper
