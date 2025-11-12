@@ -404,7 +404,7 @@ AFTER_AGENT_CALLBACK_PARAMS = [
             ('callback_3_response', CallbackType.SYNC),
             (None, CallbackType.ASYNC),
         ],
-        ['Hello, world!', 'callback_2_response'],
+        ['callback_2_response'],
         [1, 1, 0, 0],
         id='middle_async_callback_returns',
     ),
@@ -424,7 +424,7 @@ AFTER_AGENT_CALLBACK_PARAMS = [
             ('callback_1_response', CallbackType.SYNC),
             ('callback_2_response', CallbackType.ASYNC),
         ],
-        ['Hello, world!', 'callback_1_response'],
+        ['callback_1_response'],
         [1, 0],
         id='first_sync_callback_returns',
     ),
@@ -467,7 +467,8 @@ async def test_before_agent_callbacks_chain(
       request.function.__name__, agent
   )
   result = [e async for e in agent.run_async(parent_ctx)]
-  assert testing_utils.simplify_events(result) == [
+  final_events = [e for e in result if e.is_final_response()]
+  assert testing_utils.simplify_events(final_events) == [
       (f'{request.function.__name__}_test_agent', response)
       for response in expected_responses
   ]
@@ -528,7 +529,8 @@ async def test_after_agent_callbacks_chain(
       request.function.__name__, agent
   )
   result = [e async for e in agent.run_async(parent_ctx)]
-  assert testing_utils.simplify_events(result) == [
+  final_events = [e for e in result if e.is_final_response()]
+  assert testing_utils.simplify_events(final_events) == [
       (f'{request.function.__name__}_test_agent', response)
       for response in expected_responses
   ]
@@ -575,10 +577,9 @@ async def test_run_async_after_agent_callback_use_plugin(
 
   # Assert
   spy_after_agent_callback.assert_not_called()
-  # The first event is regular model response, the second event is
-  # after_agent_callback response.
-  assert len(events) == 2
-  assert events[1].content.parts[0].text == mock_plugin.after_agent_text
+  final_events = [e for e in events if e.is_final_response()]
+  assert len(final_events) == 1
+  assert final_events[0].content.parts[0].text == mock_plugin.after_agent_text
 
 
 @pytest.mark.asyncio
@@ -604,7 +605,8 @@ async def test_run_async_after_agent_callback_noop(
   _, kwargs = spy_after_agent_callback.call_args
   assert 'callback_context' in kwargs
   assert isinstance(kwargs['callback_context'], CallbackContext)
-  assert len(events) == 1
+  final_events = [e for e in events if e.is_final_response()]
+  assert len(final_events) == 1
 
 
 @pytest.mark.asyncio
@@ -630,7 +632,8 @@ async def test_run_async_with_async_after_agent_callback_noop(
   _, kwargs = spy_after_agent_callback.call_args
   assert 'callback_context' in kwargs
   assert isinstance(kwargs['callback_context'], CallbackContext)
-  assert len(events) == 1
+  final_events = [e for e in events if e.is_final_response()]
+  assert len(final_events) == 1
 
 
 @pytest.mark.asyncio
@@ -649,11 +652,11 @@ async def test_run_async_after_agent_callback_append_reply(
   # Act
   events = [e async for e in agent.run_async(parent_ctx)]
 
-  # Assert
-  assert len(events) == 2
-  assert events[1].author == agent.name
+  final_events = [e for e in events if e.is_final_response()]
+  assert len(final_events) == 1
+  assert final_events[0].author == agent.name
   assert (
-      events[1].content.parts[0].text
+      final_events[0].content.parts[0].text
       == 'Agent reply from after agent callback.'
   )
 
@@ -674,11 +677,11 @@ async def test_run_async_with_async_after_agent_callback_append_reply(
   # Act
   events = [e async for e in agent.run_async(parent_ctx)]
 
-  # Assert
-  assert len(events) == 2
-  assert events[1].author == agent.name
+  final_events = [e for e in events if e.is_final_response()]
+  assert len(final_events) == 1
+  assert final_events[0].author == agent.name
   assert (
-      events[1].content.parts[0].text
+      final_events[0].content.parts[0].text
       == 'Agent reply from after agent callback.'
   )
 

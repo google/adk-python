@@ -155,8 +155,10 @@ class BaseAgent(BaseModel):
 
   Returns:
     Optional[types.Content]: The content to return to the user.
-      When the content is present, an additional event with the provided content
-      will be appended to event history as an additional agent response.
+      When the content is present, it will replace the agent's original output.
+      The callback's content will be returned as the final agent response instead
+      of the original response. When None is returned, the original agent output
+      is used.
   """
 
   def _load_agent_state(
@@ -287,15 +289,28 @@ class BaseAgent(BaseModel):
       if ctx.end_invocation:
         return
 
+      has_after_callback = bool(self.canonical_after_agent_callbacks)
+
+      final_response_events = []
       async with Aclosing(self._run_async_impl(ctx)) as agen:
         async for event in agen:
-          yield event
+          if event.is_final_response() and has_after_callback:
+            modified_event = event.model_copy(update={'partial': True})
+            final_response_events.append(event)
+            yield modified_event
+          else:
+            yield event
 
       if ctx.end_invocation:
         return
 
-      if event := await self._handle_after_agent_callback(ctx):
-        yield event
+      callback_event = await self._handle_after_agent_callback(ctx)
+
+      if callback_event:
+        yield callback_event
+      elif final_response_events:
+        for event in final_response_events:
+          yield event
 
   @final
   async def run_live(
@@ -320,12 +335,25 @@ class BaseAgent(BaseModel):
       if ctx.end_invocation:
         return
 
+      has_after_callback = bool(self.canonical_after_agent_callbacks)
+
+      final_response_events = []
       async with Aclosing(self._run_live_impl(ctx)) as agen:
         async for event in agen:
-          yield event
+          if event.is_final_response() and has_after_callback:
+            modified_event = event.model_copy(update={'partial': True})
+            final_response_events.append(event)
+            yield modified_event
+          else:
+            yield event
 
-      if event := await self._handle_after_agent_callback(ctx):
-        yield event
+      callback_event = await self._handle_after_agent_callback(ctx)
+
+      if callback_event:
+        yield callback_event
+      elif final_response_events:
+        for event in final_response_events:
+          yield event
 
   async def _run_async_impl(
       self, ctx: InvocationContext
