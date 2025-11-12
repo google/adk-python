@@ -306,11 +306,14 @@ class BaseAgent(BaseModel):
 
       callback_event = await self._handle_after_agent_callback(ctx)
 
-      if callback_event:
+      if callback_event and callback_event.content:
         yield callback_event
-      elif final_response_events:
+      else:
         for event in final_response_events:
           yield event
+        if callback_event:
+          # Mark state-only event as partial (not a final response)
+          yield callback_event.model_copy(update={'partial': True})
 
   @final
   async def run_live(
@@ -349,11 +352,14 @@ class BaseAgent(BaseModel):
 
       callback_event = await self._handle_after_agent_callback(ctx)
 
-      if callback_event:
+      if callback_event and callback_event.content:
         yield callback_event
-      elif final_response_events:
+      else:
         for event in final_response_events:
           yield event
+        if callback_event:
+          # Mark state-only event as partial (not a final response)
+          yield callback_event.model_copy(update={'partial': True})
 
   async def _run_async_impl(
       self, ctx: InvocationContext

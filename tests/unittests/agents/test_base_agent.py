@@ -87,6 +87,13 @@ async def _async_after_agent_callback_append_agent_reply(
   )
 
 
+def _after_agent_callback_state_only(
+    callback_context: CallbackContext,
+) -> None:
+  callback_context.state['test_key'] = 'test_value'
+  return None
+
+
 class MockPlugin(BasePlugin):
   before_agent_text = 'before_agent_text from MockPlugin'
   after_agent_text = 'after_agent_text from MockPlugin'
@@ -684,6 +691,29 @@ async def test_run_async_with_async_after_agent_callback_append_reply(
       final_events[0].content.parts[0].text
       == 'Agent reply from after agent callback.'
   )
+
+
+@pytest.mark.asyncio
+async def test_run_async_after_agent_callback_state_only(
+    request: pytest.FixtureRequest,
+):
+  agent = _TestingAgent(
+      name=f'{request.function.__name__}_test_agent',
+      after_agent_callback=_after_agent_callback_state_only,
+  )
+  parent_ctx = await _create_parent_invocation_context(
+      request.function.__name__, agent
+  )
+
+  events = [e async for e in agent.run_async(parent_ctx)]
+
+  final_events = [e for e in events if e.is_final_response()]
+
+  assert len(final_events) == 1
+  assert final_events[0].content.parts[0].text == 'Hello, world!'
+
+  state_events = [e for e in events if e.content is None]
+  assert len(state_events) == 1
 
 
 @pytest.mark.asyncio
