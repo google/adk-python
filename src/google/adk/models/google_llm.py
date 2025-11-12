@@ -27,6 +27,7 @@ from typing import Optional
 from typing import TYPE_CHECKING
 from typing import Union
 
+from google.genai import Client
 from google.genai import types
 from typing_extensions import override
 
@@ -40,8 +41,6 @@ from .gemini_llm_connection import GeminiLlmConnection
 from .llm_response import LlmResponse
 
 if TYPE_CHECKING:
-  from google.genai import Client
-
   from .llm_request import LlmRequest
 
 logger = logging.getLogger('google_adk.' + __name__)
@@ -201,8 +200,6 @@ class Gemini(BaseLlm):
     Returns:
       The api client.
     """
-    from google.genai import Client
-
     return Client(
         http_options=types.HttpOptions(
             headers=self._tracking_headers,
@@ -242,8 +239,6 @@ class Gemini(BaseLlm):
 
   @cached_property
   def _live_api_client(self) -> Client:
-    from google.genai import Client
-
     return Client(
         http_options=types.HttpOptions(
             headers=self._tracking_headers, api_version=self._live_api_version

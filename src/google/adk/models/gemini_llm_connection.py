@@ -18,6 +18,7 @@ import logging
 from typing import AsyncGenerator
 from typing import Union
 
+from google.genai import live
 from google.genai import types
 
 from ..utils.context_utils import Aclosing
@@ -27,10 +28,6 @@ from .llm_response import LlmResponse
 logger = logging.getLogger('google_adk.' + __name__)
 
 RealtimeInput = Union[types.Blob, types.ActivityStart, types.ActivityEnd]
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-  from google.genai import live
 
 
 class GeminiLlmConnection(BaseLlmConnection):
