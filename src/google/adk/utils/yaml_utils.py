@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 from typing import Optional
 from typing import TYPE_CHECKING
 from typing import Union
@@ -24,6 +25,25 @@ import yaml
 
 if TYPE_CHECKING:
   from pydantic.main import IncEx
+
+
+def load_yaml_file(file_path: Union[str, Path]) -> Any:
+  """Loads a YAML file and returns its content.
+
+  Args:
+    file_path: Path to the YAML file.
+
+  Returns:
+    The content of the YAML file.
+
+  Raises:
+    FileNotFoundError: If the file_path does not exist.
+  """
+  file_path = Path(file_path)
+  if not file_path.is_file():
+    raise FileNotFoundError(f'YAML file not found: {file_path}')
+  with file_path.open('r', encoding='utf-8') as f:
+    return yaml.safe_load(f)
 
 
 def dump_pydantic_to_yaml(

@@ -27,7 +27,6 @@ import logging
 from typing import Any
 from typing import Optional
 
-from google.cloud import storage
 from google.genai import types
 from typing_extensions import override
 
@@ -47,6 +46,8 @@ class GcsArtifactService(BaseArtifactService):
         bucket_name: The name of the bucket to use.
         **kwargs: Keyword arguments to pass to the Google Cloud Storage client.
     """
+    from google.cloud import storage
+
     self.bucket_name = bucket_name
     self.storage_client = storage.Client(**kwargs)
     self.bucket = self.storage_client.bucket(self.bucket_name)
