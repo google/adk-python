@@ -94,6 +94,7 @@ from .utils import evals
 from .utils.base_agent_loader import BaseAgentLoader
 from .utils.shared_value import SharedValue
 from .utils.state import create_empty_state
+from ..utils.pydantic_v2_compatibility import patch_types_for_pydantic_v2, create_robust_openapi_function
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -686,6 +687,13 @@ class AdkWebServer:
     tracer_provider = trace.get_tracer_provider()
     register_processors(tracer_provider)
 
+    # Apply Pydantic v2 compatibility patches before creating FastAPI app
+    patches_applied = patch_types_for_pydantic_v2()
+    if patches_applied:
+      logger.info("Pydantic v2 compatibility patches applied successfully")
+    else:
+      logger.warning("Pydantic v2 compatibility patches could not be applied")
+
     # Run the FastAPI server.
     app = FastAPI(lifespan=internal_lifespan)
 
@@ -697,6 +705,10 @@ class AdkWebServer:
           allow_methods=["*"],
           allow_headers=["*"],
       )
+
+    # Replace default OpenAPI function with robust version
+    app.openapi = create_robust_openapi_function(app)
+    logger.info("Robust OpenAPI generation enabled with Pydantic v2 error handling")
 
     @app.get("/list-apps")
     async def list_apps() -> list[str]:
