@@ -81,8 +81,17 @@ _FINISH_REASON_MAPPING = {
 }
 
 _SUPPORTED_FILE_CONTENT_MIME_TYPES = set(
-    ["application/pdf", "application/json", "text/plain"]
+    ["application/pdf", "application/json"]
 )
+
+
+def _decode_inline_text_data(raw_bytes: bytes) -> str:
+  """Decodes inline file bytes that represent textual content."""
+  try:
+    return raw_bytes.decode("utf-8")
+  except UnicodeDecodeError:
+    logger.debug("Falling back to latin-1 decoding for inline file bytes.")
+    return raw_bytes.decode("latin-1", errors="replace")
 
 
 class ChatCompletionFileUrlObject(TypedDict, total=False):
@@ -371,6 +380,15 @@ def _get_content(
         and part.inline_data.data
         and part.inline_data.mime_type
     ):
+      if part.inline_data.mime_type.startswith("text/"):
+        decoded_text = _decode_inline_text_data(part.inline_data.data)
+        if len(parts) == 1:
+          return decoded_text
+        content_objects.append({
+            "type": "text",
+            "text": decoded_text,
+        })
+        continue
       base64_string = base64.b64encode(part.inline_data.data).decode("utf-8")
       data_uri = f"data:{part.inline_data.mime_type};base64,{base64_string}"
       # LiteLLM providers extract the MIME type from the data URI; avoid
@@ -397,7 +415,10 @@ def _get_content(
             "file": {"file_data": data_uri},
         })
       else:
-        raise ValueError("LiteLlm(BaseLlm) does not support this content part.")
+        raise ValueError(
+            "LiteLlm(BaseLlm) does not support content part with MIME type "
+            f"{part.inline_data.mime_type}."
+        )
     elif part.file_data and part.file_data.file_uri:
       file_object: ChatCompletionFileUrlObject = {
           "file_id": part.file_data.file_uri,
