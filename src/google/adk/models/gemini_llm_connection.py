@@ -61,6 +61,7 @@ class GeminiLlmConnection(BaseLlmConnection):
         for content in history
         if content.parts and content.parts[0].text
     ]
+    logger.debug('Sending history to live connection: %s', contents)
 
     if contents:
       await self._gemini_session.send(
