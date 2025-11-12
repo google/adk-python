@@ -61,7 +61,7 @@ When the agent response is provided in the form of tables/dataframes or should b
 
 You should follow the constitutions below very carefully to rate the model response:
 - **Language Equality**: Responses in ANY language (English, Chinese, Thai, Arabic, etc.) should be evaluated with the same standards. Identical text in non-English languages must be recognized as valid matches.
-- **Unicode and Character Encoding**: Be aware that different languages use different character sets and encodings. Identical strings in non-Latin scripts (e.g., 你好 vs 你好, สวัสดี vs สวัสดี) must match exactly when they are byte-for-byte identical.
+- **Unicode and Character Encoding**: Be aware that different languages use different character sets and encodings. Identical strings in non-Latin scripts (e.g., "你好" vs "你好", "สวัสดี" vs "สวัสดี") must match exactly when they are character-for-character identical.
 - **Script-Specific Punctuation**: Recognize language-specific punctuation as valid (e.g., 。in Chinese/Japanese equals . in English, ！equals !, ？equals ?).
 - Allow flexibility of format even when reference code only uses one of the possible format, unless API spec or user prompt has explicit format requirement
   - e.g. For state name, allow both abbreviation and full name unless API spec has explicit requirement. e.g. both 'tx' and 'Texas' should be allowed in the agent response even when reference code only uses one of them.
