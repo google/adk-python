@@ -296,20 +296,55 @@ def from_function_with_options(
 ) -> 'types.FunctionDeclaration':
 
   parameters_properties = {}
-  for name, param in inspect.signature(func).parameters.items():
-    if param.kind in (
-        inspect.Parameter.POSITIONAL_OR_KEYWORD,
-        inspect.Parameter.KEYWORD_ONLY,
-        inspect.Parameter.POSITIONAL_ONLY,
-    ):
-      # This snippet catches the case when type hints are stored as strings
-      if isinstance(param.annotation, str):
-        param = param.replace(annotation=typing.get_type_hints(func)[name])
+  parameters_json_schema = {}
+  annotation_under_future = typing.get_type_hints(func)
+  try:
+    for name, param in inspect.signature(func).parameters.items():
+      if param.kind in (
+          inspect.Parameter.POSITIONAL_OR_KEYWORD,
+          inspect.Parameter.KEYWORD_ONLY,
+          inspect.Parameter.POSITIONAL_ONLY,
+      ):
+        param = _function_parameter_parse_util._handle_params_as_deferred_annotations(
+            param, annotation_under_future, name
+        )
 
-      schema = _function_parameter_parse_util._parse_schema_from_parameter(
-          variant, param, func.__name__
-      )
-      parameters_properties[name] = schema
+        schema = _function_parameter_parse_util._parse_schema_from_parameter(
+            variant, param, func.__name__
+        )
+        parameters_properties[name] = schema
+  except ValueError:
+    # If the function has complex parameter types that fail in _parse_schema_from_parameter,
+    # we try to generate a json schema for the parameter using pydantic.TypeAdapter.
+    parameters_properties = {}
+    for name, param in inspect.signature(func).parameters.items():
+      if param.kind in (
+          inspect.Parameter.POSITIONAL_OR_KEYWORD,
+          inspect.Parameter.KEYWORD_ONLY,
+          inspect.Parameter.POSITIONAL_ONLY,
+      ):
+        try:
+          if param.annotation == inspect.Parameter.empty:
+            param = param.replace(annotation=Any)
+
+          param = _function_parameter_parse_util._handle_params_as_deferred_annotations(
+              param, annotation_under_future, name
+          )
+
+          _function_parameter_parse_util._raise_for_invalid_enum_value(param)
+
+          json_schema_dict = _function_parameter_parse_util._generate_json_schema_for_parameter(
+              param
+          )
+
+          parameters_json_schema[name] = types.Schema.model_validate(
+              json_schema_dict
+          )
+        except Exception as e:
+          _function_parameter_parse_util._raise_for_unsupported_param(
+              param, func.__name__, e
+          )
+
   declaration = types.FunctionDeclaration(
       name=func.__name__,
       description=func.__doc__,
@@ -324,6 +359,12 @@ def from_function_with_options(
             declaration.parameters
         )
     )
+  elif parameters_json_schema:
+    declaration.parameters = types.Schema(
+        type='OBJECT',
+        properties=parameters_json_schema,
+    )
+
   if variant == GoogleLLMVariant.GEMINI_API:
     return declaration
 
@@ -372,17 +413,35 @@ def from_function_with_options(
       inspect.Parameter.POSITIONAL_OR_KEYWORD,
       annotation=return_annotation,
   )
-  # This snippet catches the case when type hints are stored as strings
   if isinstance(return_value.annotation, str):
     return_value = return_value.replace(
         annotation=typing.get_type_hints(func)['return']
     )
 
-  declaration.response = (
-      _function_parameter_parse_util._parse_schema_from_parameter(
-          variant,
-          return_value,
-          func.__name__,
+  response_schema: Optional[types.Schema] = None
+  response_json_schema: Optional[Union[Dict[str, Any], types.Schema]] = None
+  try:
+    response_schema = (
+        _function_parameter_parse_util._parse_schema_from_parameter(
+            variant,
+            return_value,
+            func.__name__,
+        )
+    )
+  except ValueError:
+    try:
+      response_json_schema = (
+          _function_parameter_parse_util._generate_json_schema_for_parameter(
+              return_value
+          )
       )
-  )
+      response_json_schema = types.Schema.model_validate(response_json_schema)
+    except Exception as e:
+      _function_parameter_parse_util._raise_for_unsupported_param(
+          return_value, func.__name__, e
+      )
+  if response_schema:
+    declaration.response = response_schema
+  elif response_json_schema:
+    declaration.response = response_json_schema
   return declaration
