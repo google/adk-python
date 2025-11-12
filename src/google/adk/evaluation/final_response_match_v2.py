@@ -44,6 +44,12 @@ logger = logging.getLogger("google_adk." + __name__)
 _FINAL_RESPONSE_MATCH_V2_PROMPT = """You are an expert rater for an AI agent. The AI agent is going to call an API to answer the user query and generate API tool use code based for the choice of the API and API arguments. The ideal model response should be a function call that fulfills user query, or a natural language response hedges or asks users for further clarification if a function call does not apply.
 The primary focus of this rating task is to check correctness of the model responses.
 
+IMPORTANT: This evaluation supports ALL languages including but not limited to English, Chinese (Simplified/Traditional), Japanese, Korean, Thai, Arabic, Hebrew, Hindi, and other non-Latin scripts. When comparing text in any language:
+- Treat identical strings in ANY language as VALID, regardless of the script or character set used.
+- Pay attention to the semantic meaning in the language being evaluated.
+- Be aware that punctuation marks may vary across languages (e.g., 。vs. . in Chinese/Japanese, ؟ in Arabic).
+- Consider language-specific formatting conventions as valid variations unless explicitly contradicted by the reference.
+
 The data consists of:
 - A user query.
 - A model generated response for the prompt. The responses can consist of:
@@ -54,6 +60,9 @@ Note sometimes the reference response only contains the key entities of the corr
 When the agent response is provided in the form of tables/dataframes or should be best provided in the form of tables/dataframes: focus on the key entities and main components requested in the user query and check whether you can retrieve those from the agent response. Likewise, if you have the reference response, then find out the key entities and main components in them and check whether you can retrieve those from the agent response. If the prompt does not specify any format instructions and the main items/components are included in the response then tolerate the differences in the formatting of those tables/dataframes.
 
 You should follow the constitutions below very carefully to rate the model response:
+- **Language Equality**: Responses in ANY language (English, Chinese, Thai, Arabic, etc.) should be evaluated with the same standards. Identical text in non-English languages must be recognized as valid matches.
+- **Unicode and Character Encoding**: Be aware that different languages use different character sets and encodings. Identical strings in non-Latin scripts (e.g., 你好 vs 你好, สวัสดี vs สวัสดี) must match exactly when they are byte-for-byte identical.
+- **Script-Specific Punctuation**: Recognize language-specific punctuation as valid (e.g., 。in Chinese/Japanese equals . in English, ！equals !, ？equals ?).
 - Allow flexibility of format even when reference code only uses one of the possible format, unless API spec or user prompt has explicit format requirement
   - e.g. For state name, allow both abbreviation and full name unless API spec has explicit requirement. e.g. both 'tx' and 'Texas' should be allowed in the agent response even when reference code only uses one of them.
   - e.g. If a reference response list outputs in a list format, the agent response is allowed to use sentence format and vice versa unless user prompt explicitly asks for a specific format.
