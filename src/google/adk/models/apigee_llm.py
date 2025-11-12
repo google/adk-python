@@ -18,12 +18,10 @@ from __future__ import annotations
 from functools import cached_property
 import logging
 import os
-import re
 from typing import Optional
 from typing import TYPE_CHECKING
 
 from google.adk import version as adk_version
-from google.genai import Client
 from google.genai import types
 from typing_extensions import override
 
@@ -31,7 +29,10 @@ from ..utils.env_utils import is_env_enabled
 from .google_llm import Gemini
 
 if TYPE_CHECKING:
+  from google.genai import Client
+
   from .llm_request import LlmRequest
+
 
 logger = logging.getLogger('google_adk.' + __name__)
 
@@ -137,6 +138,7 @@ class ApigeeLlm(Gemini):
     Returns:
       The api client.
     """
+    from google.genai import Client
 
     kwargs_for_http_options = {}
     if self._api_version:
