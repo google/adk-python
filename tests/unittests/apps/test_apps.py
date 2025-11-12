@@ -19,6 +19,7 @@ from google.adk.agents.context_cache_config import ContextCacheConfig
 from google.adk.apps.app import App
 from google.adk.apps.app import ResumabilityConfig
 from google.adk.plugins.base_plugin import BasePlugin
+import pytest
 
 
 class TestApp:
@@ -168,3 +169,28 @@ class TestApp:
         resumability_config=None,
     )
     assert app.resumability_config is None
+
+  def test_app_rejects_invalid_name(self):
+    """Test that invalid application names are rejected."""
+    mock_agent = Mock(spec=BaseAgent)
+
+    with pytest.raises(ValueError):
+      App(name="../escape_attempt", root_agent=mock_agent)
+
+    with pytest.raises(ValueError):
+      App(name="nested/path", root_agent=mock_agent)
+
+    with pytest.raises(ValueError):
+      App(name="windows\\path", root_agent=mock_agent)
+
+  def test_app_name_must_be_identifier(self):
+    mock_agent = Mock(spec=BaseAgent)
+
+    with pytest.raises(ValueError):
+      App(name="invalid-name", root_agent=mock_agent)
+
+  def test_app_name_cannot_be_user(self):
+    mock_agent = Mock(spec=BaseAgent)
+
+    with pytest.raises(ValueError):
+      App(name="user", root_agent=mock_agent)

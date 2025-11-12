@@ -582,7 +582,7 @@ class TestRemoteA2aAgentMessageHandling:
     ) as mock_find:
       mock_find.return_value = None
 
-      result = self.agent._create_a2a_request_for_user_function_response(
+      result, _ = self.agent._create_a2a_request_for_user_function_response(
           self.mock_context
       )
 
@@ -593,7 +593,8 @@ class TestRemoteA2aAgentMessageHandling:
     # Mock function call event
     mock_function_event = Mock()
     mock_function_event.custom_metadata = {
-        A2A_METADATA_PREFIX + "task_id": "task-123"
+        A2A_METADATA_PREFIX + "task_id": "task-123",
+        A2A_METADATA_PREFIX + "metadata": {"foo": "bar"},
     }
 
     # Mock latest event with function response - set proper author
@@ -614,13 +615,17 @@ class TestRemoteA2aAgentMessageHandling:
         mock_a2a_message.task_id = None  # Will be set by the method
         mock_convert.return_value = mock_a2a_message
 
-        result = self.agent._create_a2a_request_for_user_function_response(
-            self.mock_context
+        result, metadata = (
+            self.agent._create_a2a_request_for_user_function_response(
+                self.mock_context
+            )
         )
 
         assert result is not None
         assert result == mock_a2a_message
         assert mock_a2a_message.task_id == "task-123"
+        assert metadata is not None
+        assert metadata == {"foo": "bar"}
 
   def test_construct_message_parts_from_session_success(self):
     """Test successful message parts construction from session."""
@@ -644,24 +649,60 @@ class TestRemoteA2aAgentMessageHandling:
       mock_a2a_part = Mock()
       self.mock_genai_part_converter.return_value = mock_a2a_part
 
-      result = self.agent._construct_message_parts_from_session(
-          self.mock_context
+      parts, context_id, metadata = (
+          self.agent._construct_message_parts_from_session(self.mock_context)
       )
 
-      assert len(result) == 2  # Returns tuple of (parts, context_id)
-      assert len(result[0]) == 1  # parts list
-      assert result[0][0] == mock_a2a_part
-      assert result[1] is None  # context_id
+      assert len(parts) == 1
+      assert parts[0] == mock_a2a_part
+      assert context_id is None
+      assert metadata is None
+
+  def test_construct_message_parts_from_session_success_multiple_parts(self):
+    """Test successful message parts construction from session."""
+    # Mock event with text content
+    mock_part = Mock()
+    mock_part.text = "Hello world"
+
+    mock_content = Mock()
+    mock_content.parts = [mock_part]
+
+    mock_event = Mock()
+    mock_event.content = mock_content
+
+    self.mock_session.events = [mock_event]
+
+    with patch(
+        "google.adk.agents.remote_a2a_agent._present_other_agent_message"
+    ) as mock_convert:
+      mock_convert.return_value = mock_event
+
+      mock_a2a_part1 = Mock()
+      mock_a2a_part2 = Mock()
+      self.mock_genai_part_converter.return_value = [
+          mock_a2a_part1,
+          mock_a2a_part2,
+      ]
+
+      parts, context_id, metadata = (
+          self.agent._construct_message_parts_from_session(self.mock_context)
+      )
+
+      assert parts == [mock_a2a_part1, mock_a2a_part2]
+      assert context_id is None
+      assert metadata is None
 
   def test_construct_message_parts_from_session_empty_events(self):
     """Test message parts construction with empty events."""
     self.mock_session.events = []
 
-    result = self.agent._construct_message_parts_from_session(self.mock_context)
+    parts, context_id, metadata = (
+        self.agent._construct_message_parts_from_session(self.mock_context)
+    )
 
-    assert len(result) == 2  # Returns tuple of (parts, context_id)
-    assert result[0] == []  # empty parts list
-    assert result[1] is None  # context_id
+    assert parts == []
+    assert context_id is None
+    assert metadata is None
 
   @pytest.mark.asyncio
   async def test_handle_a2a_response_success_with_message(self):
@@ -783,14 +824,14 @@ class TestRemoteA2aAgentMessageHandling:
 
       self.mock_genai_part_converter.side_effect = mock_converter
 
-      result = self.agent._construct_message_parts_from_session(
-          self.mock_context
+      parts, context_id, metadata = (
+          self.agent._construct_message_parts_from_session(self.mock_context)
       )
 
       # Verify the parts are in correct order
-      assert len(result) == 2  # Returns tuple of (parts, context_id)
-      assert len(result[0]) == 3  # 1 user part + 2 other agent parts
-      assert result[1] is None  # context_id
+      assert len(parts) == 3  # 1 user part + 2 other agent parts
+      assert context_id is None
+      assert metadata is None
 
       # Verify order: user part, then "For context:", then agent message
       assert converted_parts[0].original_text == "User question"
@@ -1033,7 +1074,7 @@ class TestRemoteA2aAgentMessageHandlingFromFactory:
     ) as mock_find:
       mock_find.return_value = None
 
-      result = self.agent._create_a2a_request_for_user_function_response(
+      result, _ = self.agent._create_a2a_request_for_user_function_response(
           self.mock_context
       )
 
@@ -1044,7 +1085,8 @@ class TestRemoteA2aAgentMessageHandlingFromFactory:
     # Mock function call event
     mock_function_event = Mock()
     mock_function_event.custom_metadata = {
-        A2A_METADATA_PREFIX + "task_id": "task-123"
+        A2A_METADATA_PREFIX + "task_id": "task-123",
+        A2A_METADATA_PREFIX + "metadata": {"foo": "bar"},
     }
 
     # Mock latest event with function response - set proper author
@@ -1065,13 +1107,17 @@ class TestRemoteA2aAgentMessageHandlingFromFactory:
         mock_a2a_message.task_id = None  # Will be set by the method
         mock_convert.return_value = mock_a2a_message
 
-        result = self.agent._create_a2a_request_for_user_function_response(
-            self.mock_context
+        result, metadata = (
+            self.agent._create_a2a_request_for_user_function_response(
+                self.mock_context
+            )
         )
 
         assert result is not None
         assert result == mock_a2a_message
         assert mock_a2a_message.task_id == "task-123"
+        assert metadata is not None
+        assert metadata == {"foo": "bar"}
 
   def test_construct_message_parts_from_session_success(self):
     """Test successful message parts construction from session."""
@@ -1098,24 +1144,26 @@ class TestRemoteA2aAgentMessageHandlingFromFactory:
         mock_a2a_part = Mock()
         mock_convert_part.return_value = mock_a2a_part
 
-        result = self.agent._construct_message_parts_from_session(
-            self.mock_context
+        parts, context_id, metadata = (
+            self.agent._construct_message_parts_from_session(self.mock_context)
         )
 
-        assert len(result) == 2  # Returns tuple of (parts, context_id)
-        assert len(result[0]) == 1  # parts list
-        assert result[0][0] == mock_a2a_part
-        assert result[1] is None  # context_id
+        assert len(parts) == 1
+        assert parts[0] == mock_a2a_part
+        assert context_id is None
+        assert metadata is None
 
   def test_construct_message_parts_from_session_empty_events(self):
     """Test message parts construction with empty events."""
     self.mock_session.events = []
 
-    result = self.agent._construct_message_parts_from_session(self.mock_context)
+    parts, context_id, metadata = (
+        self.agent._construct_message_parts_from_session(self.mock_context)
+    )
 
-    assert len(result) == 2  # Returns tuple of (parts, context_id)
-    assert result[0] == []  # empty parts list
-    assert result[1] is None  # context_id
+    assert parts == []
+    assert context_id is None
+    assert metadata is None
 
   @pytest.mark.asyncio
   async def test_handle_a2a_response_success_with_message(self):
@@ -1434,13 +1482,14 @@ class TestRemoteA2aAgentExecution:
       with patch.object(
           self.agent, "_create_a2a_request_for_user_function_response"
       ) as mock_create_func:
-        mock_create_func.return_value = None
+        mock_create_func.return_value = (None, None)
 
         with patch.object(
             self.agent, "_construct_message_parts_from_session"
         ) as mock_construct:
           mock_construct.return_value = (
               [],
+              None,
               None,
           )  # Tuple with empty parts and no context_id
 
@@ -1459,7 +1508,7 @@ class TestRemoteA2aAgentExecution:
       with patch.object(
           self.agent, "_create_a2a_request_for_user_function_response"
       ) as mock_create_func:
-        mock_create_func.return_value = None
+        mock_create_func.return_value = (None, None)
 
         with patch.object(
             self.agent, "_construct_message_parts_from_session"
@@ -1472,6 +1521,7 @@ class TestRemoteA2aAgentExecution:
           mock_construct.return_value = (
               [mock_a2a_part],
               "context-123",
+              {"foo": "bar"},
           )  # Tuple with parts and context_id
 
           # Mock A2A client
@@ -1532,7 +1582,7 @@ class TestRemoteA2aAgentExecution:
       with patch.object(
           self.agent, "_create_a2a_request_for_user_function_response"
       ) as mock_create_func:
-        mock_create_func.return_value = None
+        mock_create_func.return_value = None, None
 
         with patch.object(
             self.agent, "_construct_message_parts_from_session"
@@ -1544,6 +1594,7 @@ class TestRemoteA2aAgentExecution:
           mock_construct.return_value = (
               [mock_a2a_part],
               "context-123",
+              {"foo": "bar"},
           )  # Tuple with parts and context_id
 
           # Mock A2A client that throws an exception
@@ -1625,13 +1676,14 @@ class TestRemoteA2aAgentExecutionFromFactory:
       with patch.object(
           self.agent, "_create_a2a_request_for_user_function_response"
       ) as mock_create_func:
-        mock_create_func.return_value = None
+        mock_create_func.return_value = None, None
 
         with patch.object(
             self.agent, "_construct_message_parts_from_session"
         ) as mock_construct:
           mock_construct.return_value = (
               [],
+              None,
               None,
           )  # Tuple with empty parts and no context_id
 
@@ -1650,7 +1702,7 @@ class TestRemoteA2aAgentExecutionFromFactory:
       with patch.object(
           self.agent, "_create_a2a_request_for_user_function_response"
       ) as mock_create_func:
-        mock_create_func.return_value = None
+        mock_create_func.return_value = None, None
 
         with patch.object(
             self.agent, "_construct_message_parts_from_session"
@@ -1663,6 +1715,7 @@ class TestRemoteA2aAgentExecutionFromFactory:
           mock_construct.return_value = (
               [mock_a2a_part],
               "context-123",
+              None,
           )  # Tuple with parts and context_id
 
           # Mock A2A client
@@ -1725,7 +1778,7 @@ class TestRemoteA2aAgentExecutionFromFactory:
       with patch.object(
           self.agent, "_create_a2a_request_for_user_function_response"
       ) as mock_create_func:
-        mock_create_func.return_value = None
+        mock_create_func.return_value = None, None
 
         with patch.object(
             self.agent, "_construct_message_parts_from_session"
@@ -1737,6 +1790,7 @@ class TestRemoteA2aAgentExecutionFromFactory:
           mock_construct.return_value = (
               [mock_a2a_part],
               "context-123",
+              None,
           )  # Tuple with parts and context_id
 
           # Mock A2A client that throws an exception

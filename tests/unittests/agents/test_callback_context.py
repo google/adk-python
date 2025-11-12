@@ -296,6 +296,7 @@ class TestCallbackContext:
         session_id="test-session-id",
         filename="test_file.txt",
         artifact=test_artifact,
+        custom_metadata=None,
     )
     assert version == 1
 
