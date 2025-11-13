@@ -21,7 +21,6 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
-import os
 from typing import Any
 from typing import Dict
 from typing import List
@@ -173,13 +172,8 @@ def test_to_cloud_run_happy_path(
   assert len(run_recorder.calls) == 1
   gcloud_args = run_recorder.get_last_call_args()[0]
 
-  if os.name == "nt":
-    gcloud_cmd = "gcloud.cmd" 
-  else:
-    gcloud_cmd = "gcloud"
-
   expected_gcloud_command = [
-      gcloud_cmd,
+      cli_deploy.GCLOUD_CMD,
       "run",
       "deploy",
       "svc",
