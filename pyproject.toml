@@ -14,11 +14,11 @@ classifiers = [ # List of https://pypi.org/classifiers/
   "Intended Audience :: Science/Research",
   "Programming Language :: Python",
   "Programming Language :: Python :: 3",
-  "Programming Language :: Python :: 3.9",
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
   "Operating System :: OS Independent",
   "Topic :: Software Development :: Libraries :: Python Modules",
   "License :: OSI Approved :: Apache Software License",
@@ -115,7 +115,7 @@ test = [
   # go/keep-sorted start
   "a2a-sdk>=0.3.0,<0.4.0;python_version>='3.10'",
   "anthropic>=0.43.0",                            # For anthropic model tests
-  "crewai[tools];python_version>='3.10'",         # For CrewaiTool tests
+  "crewai[tools];python_version>='3.10' and python_version<'3.14'",         # For CrewaiTool tests
   "kubernetes>=29.0.0",                           # For GkeCodeExecutor
   "langchain-community>=0.3.17",
   "langgraph>=0.2.60, <0.4.8",                    # For LangGraphAgent
@@ -145,7 +145,7 @@ docs = [
 extensions = [
   "anthropic>=0.43.0",                          # For anthropic model support
   "beautifulsoup4>=3.2.2",                      # For load_web_page tool.
-  "crewai[tools];python_version>='3.10'",       # For CrewaiTool
+  "crewai[tools];python_version>='3.10' and python_version<'3.14'",       # For CrewaiTool
   "docker>=7.0.0",                              # For ContainerCodeExecutor
   "kubernetes>=29.0.0",                         # For GkeCodeExecutor
   "langgraph>=0.2.60, <0.4.8",                  # For LangGraphAgent
