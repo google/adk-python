@@ -1,5 +1,5 @@
 from typing import Any
-from adk_stale_bot.settings import GITHUB_TOKEN
+from adk_stale_agent.settings import GITHUB_TOKEN
 import requests
 
 # Set up headers once to be used by all requests

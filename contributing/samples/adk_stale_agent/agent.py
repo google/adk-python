@@ -1,12 +1,12 @@
 import dateutil.parser
 from typing import Any
 from datetime import datetime, timezone
-from adk_stale_bot.settings import (
+from adk_stale_agent.settings import (
     GITHUB_BASE_URL, OWNER, REPO, STALE_LABEL_NAME,
     REQUEST_CLARIFICATION_LABEL, STALE_HOURS_THRESHOLD, 
     CLOSE_HOURS_AFTER_STALE_THRESHOLD, ISSUES_PER_RUN
 )
-from adk_stale_bot.utils import get_request, put_request, patch_request, post_request, error_response, delete_request
+from adk_stale_agent.utils import get_request, put_request, patch_request, post_request, error_response, delete_request
 from google.adk.agents.llm_agent import Agent
 
 # --- Primary Tools for the Auditor Agent ---

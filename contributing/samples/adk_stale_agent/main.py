@@ -1,5 +1,5 @@
 import asyncio
-from adk_stale_bot.agent import root_agent
+from adk_stale_agent.agent import root_agent
 from google.adk.runners import InMemoryRunner
 import time
 from google.genai import types
