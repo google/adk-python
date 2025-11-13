@@ -26,6 +26,21 @@ def patch_request(url: str, payload: Any) -> dict[str, Any]:
     response.raise_for_status()
     return response.json()
 
+def delete_request(url: str) -> dict[str, Any]:
+    """Sends a DELETE request to the GitHub API."""
+    response = requests.delete(url, headers=headers, timeout=60)
+    response.raise_for_status()
+    # DELETE requests often return a 204 No Content, so we check for that
+    if response.status_code == 204:
+        return {"status": "success"}
+    return response.json()
+
 def error_response(error_message: str) -> dict[str, Any]:
     """Creates a standardized error dictionary for the agent."""
     return {"status": "error", "message": error_message}
+
+def put_request(url: str, payload: Any) -> dict[str, Any]:
+    """Sends a PUT request to the GitHub API."""
+    response = requests.put(url, headers=headers, json=payload, timeout=60)
+    response.raise_for_status()
+    return response.json()
