@@ -152,12 +152,15 @@ def _execute_sql(
       return {"status": "SUCCESS", "dry_run_info": dry_run_job.to_api_repr()}
 
     # Finally execute the query, fetch the result, and return it
+    job_config = bigquery.QueryJobConfig(
+        connection_properties=bq_connection_properties,
+        labels=bq_job_labels,
+    )
+    if settings.maximum_bytes_billed:
+      job_config.maximum_bytes_billed = settings.maximum_bytes_billed
     row_iterator = bq_client.query_and_wait(
         query,
-        job_config=bigquery.QueryJobConfig(
-            connection_properties=bq_connection_properties,
-            labels=bq_job_labels,
-        ),
+        job_config=job_config,
         project=project_id,
         max_results=settings.max_query_result_rows,
     )
