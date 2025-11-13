@@ -294,11 +294,16 @@ def _setup_telemetry(
     )
   else:
     # Old logic - to be removed when above leaves experimental.
-    tracer_provider = TracerProvider()
+    requires_set_trace_provider = False
+    tracer_provider = trace.get_tracer_provider()
+    if isinstance(tracer_provider, trace.ProxyTracerProvider):
+      requires_set_trace_provider = True
+      tracer_provider = TracerProvider()
     if internal_exporters is not None:
       for exporter in internal_exporters:
         tracer_provider.add_span_processor(exporter)
-    trace.set_tracer_provider(tracer_provider=tracer_provider)
+    if requires_set_trace_provider:
+      trace.set_tracer_provider(tracer_provider=tracer_provider)
 
 
 def _otel_env_vars_enabled() -> bool:
