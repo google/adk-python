@@ -16,6 +16,7 @@ from .in_memory_session_service import InMemorySessionService
 from .session import Session
 from .state import State
 from .vertex_ai_session_service import VertexAiSessionService
+from .firestore_session_service import FirestoreSessionService
 
 __all__ = [
     'BaseSessionService',
@@ -24,6 +25,7 @@ __all__ = [
     'Session',
     'State',
     'VertexAiSessionService',
+    'FirestoreSessionService',
 ]
 
 
