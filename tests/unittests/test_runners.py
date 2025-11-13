@@ -15,6 +15,7 @@
 from pathlib import Path
 import textwrap
 from typing import Optional
+from unittest.mock import AsyncMock
 
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.context_cache_config import ContextCacheConfig
@@ -561,6 +562,29 @@ class TestRunnerWithPlugins:
     modified_event_message = generated_event.content.parts[0].text
 
     assert modified_event_message == MockPlugin.ON_EVENT_CALLBACK_MSG
+
+  @pytest.mark.asyncio
+  async def test_runner_close_calls_plugin_close(self):
+    """Test that runner.close() calls plugin manager close."""
+    # Mock the plugin manager's close method
+    self.runner.plugin_manager.close = AsyncMock()
+
+    await self.runner.close()
+
+    self.runner.plugin_manager.close.assert_awaited_once()
+
+  @pytest.mark.asyncio
+  async def test_runner_passes_plugin_close_timeout(self):
+    """Test that runner passes plugin_close_timeout to PluginManager."""
+    runner = Runner(
+        app_name="test_app",
+        agent=MockLlmAgent("test_agent"),
+        session_service=self.session_service,
+        artifact_service=self.artifact_service,
+        plugins=[self.plugin],
+        plugin_close_timeout=10.0,
+    )
+    assert runner.plugin_manager._close_timeout == 10.0
 
   def test_runner_init_raises_error_with_app_and_app_name_and_agent(self):
     """Test that ValueError is raised when app, app_name and agent are provided."""

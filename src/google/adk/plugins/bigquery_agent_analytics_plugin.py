@@ -19,20 +19,15 @@ from datetime import datetime
 from datetime import timezone
 import json
 import logging
-import threading
 from typing import Any
 from typing import Callable
-from typing import Dict
 from typing import List
 from typing import Optional
 from typing import TYPE_CHECKING
-import warnings
 
-import google.api_core.client_info
+from google.api_core.gapic_v1 import client_info as gapic_client_info
 import google.auth
-from google.auth import exceptions as auth_exceptions
 from google.cloud import bigquery
-from google.cloud import exceptions as cloud_exceptions
 from google.cloud.bigquery import schema as bq_schema
 from google.cloud.bigquery_storage_v1 import types as bq_storage_types
 from google.cloud.bigquery_storage_v1.services.big_query_write.async_client import BigQueryWriteAsyncClient
@@ -53,23 +48,29 @@ if TYPE_CHECKING:
   from ..agents.invocation_context import InvocationContext
 
 
+# --- PyArrow Helper Functions ---
 def _pyarrow_datetime():
+  """Returns PyArrow type for BigQuery DATETIME."""
   return pa.timestamp("us", tz=None)
 
 
 def _pyarrow_numeric():
+  """Returns PyArrow type for BigQuery NUMERIC."""
   return pa.decimal128(38, 9)
 
 
 def _pyarrow_bignumeric():
+  """Returns PyArrow type for BigQuery BIGNUMERIC."""
   return pa.decimal256(76, 38)
 
 
 def _pyarrow_time():
+  """Returns PyArrow type for BigQuery TIME."""
   return pa.time64("us")
 
 
 def _pyarrow_timestamp():
+  """Returns PyArrow type for BigQuery TIMESTAMP."""
   return pa.timestamp("us", tz="UTC")
 
 
@@ -92,11 +93,6 @@ _BQ_TO_ARROW_SCALARS = {
     "TIMESTAMP": _pyarrow_timestamp,
 }
 
-
-def _bq_to_arrow_scalars(bq_scalar: str):
-  return _BQ_TO_ARROW_SCALARS.get(bq_scalar)
-
-
 _BQ_FIELD_TYPE_TO_ARROW_FIELD_METADATA = {
     "GEOGRAPHY": {
         b"ARROW:extension:name": b"google:sqlType:geography",
@@ -108,98 +104,132 @@ _BQ_FIELD_TYPE_TO_ARROW_FIELD_METADATA = {
 _STRUCT_TYPES = ("RECORD", "STRUCT")
 
 
+def _bq_to_arrow_scalars(bq_scalar: str):
+  """Converts a BigQuery scalar type string to a PyArrow data type constructor."""
+  return _BQ_TO_ARROW_SCALARS.get(bq_scalar)
+
+
 def _bq_to_arrow_struct_data_type(field):
+  """Converts a BigQuery STRUCT/RECORD field to a PyArrow struct type."""
   arrow_fields = []
   for subfield in field.fields:
     arrow_subfield = _bq_to_arrow_field(subfield)
     if arrow_subfield:
       arrow_fields.append(arrow_subfield)
     else:
+      logging.warning(
+          "Failed to convert STRUCT/RECORD field '%s' due to subfield '%s'.",
+          field.name,
+          subfield.name,
+      )
       return None
   return pa.struct(arrow_fields)
 
 
 def _bq_to_arrow_range_data_type(field):
+  """Converts a BigQuery RANGE field to a PyArrow struct type."""
   if field is None:
     raise ValueError("Range element type cannot be None")
-  element_type = field.element_type.upper()
-  arrow_element_type = _bq_to_arrow_scalars(element_type)()
-  return pa.struct([("start", arrow_element_type), ("end", arrow_element_type)])
+  return pa.struct([
+      ("start", _bq_to_arrow_scalars(field.element_type.upper())()),
+      ("end", _bq_to_arrow_scalars(field.element_type.upper())()),
+  ])
 
 
 def _bq_to_arrow_data_type(field):
-  if field.mode is not None and field.mode.upper() == "REPEATED":
-    inner_type = _bq_to_arrow_data_type(
-        bq_schema.SchemaField(field.name, field.field_type, fields=field.fields)
+  """Converts a BigQuery schema field to a PyArrow data type."""
+  if field.mode == "REPEATED":
+    inner = _bq_to_arrow_data_type(
+        bq_schema.SchemaField(
+            field.name,
+            field.field_type,
+            fields=field.fields,
+            range_element_type=getattr(field, "range_element_type", None),
+        )
     )
-    if inner_type:
-      return pa.list_(inner_type)
-    return None
-
+    return pa.list_(inner) if inner else None
   field_type_upper = field.field_type.upper() if field.field_type else ""
   if field_type_upper in _STRUCT_TYPES:
     return _bq_to_arrow_struct_data_type(field)
-
   if field_type_upper == "RANGE":
     return _bq_to_arrow_range_data_type(field.range_element_type)
-
-  data_type_constructor = _bq_to_arrow_scalars(field_type_upper)
-  if data_type_constructor is None:
+  constructor = _bq_to_arrow_scalars(field_type_upper)
+  if constructor:
+    return constructor()
+  else:
+    logging.warning(
+        "Failed to convert BigQuery field '%s': unsupported type '%s'.",
+        field.name,
+        field.field_type,
+    )
     return None
-  return data_type_constructor()
 
 
-def _bq_to_arrow_field(bq_field, array_type=None):
+def _bq_to_arrow_field(bq_field):
+  """Converts a BigQuery SchemaField to a PyArrow Field."""
   arrow_type = _bq_to_arrow_data_type(bq_field)
-  if arrow_type is not None:
-    if array_type is not None:
-      arrow_type = array_type
+  if arrow_type:
     metadata = _BQ_FIELD_TYPE_TO_ARROW_FIELD_METADATA.get(
         bq_field.field_type.upper() if bq_field.field_type else ""
     )
+    nullable = bq_field.mode.upper() != "REQUIRED"
     return pa.field(
         bq_field.name,
         arrow_type,
-        nullable=False if bq_field.mode.upper() == "REPEATED" else True,
+        nullable=nullable,
         metadata=metadata,
     )
-
-  warnings.warn(f"Unable to determine Arrow type for field '{bq_field.name}'.")
+  logging.warning(
+      "Could not determine Arrow type for field '%s' with type '%s'.",
+      bq_field.name,
+      bq_field.field_type,
+  )
   return None
 
 
 def to_arrow_schema(bq_schema_list):
-  """Return the Arrow schema, corresponding to a given BigQuery schema."""
+  """Converts a list of BigQuery SchemaFields to a PyArrow Schema."""
   arrow_fields = []
   for bq_field in bq_schema_list:
-    arrow_field = _bq_to_arrow_field(bq_field)
-    if arrow_field is None:
+    af = _bq_to_arrow_field(bq_field)
+    if af:
+      arrow_fields.append(af)
+    else:
+      logging.warning(
+          "Failed to convert schema due to field '%s'.", bq_field.name
+      )
       return None
-    arrow_fields.append(arrow_field)
   return pa.schema(arrow_fields)
 
 
 @dataclasses.dataclass
 class BigQueryLoggerConfig:
-  """Configuration for the BigQueryAgentAnalyticsPlugin.
+  """Configuration for BigQueryAgentAnalyticsPlugin.
 
   Attributes:
-      enabled: Whether the plugin is enabled.
-      event_allowlist: List of event types to log. If None, all are allowed
-        except those in event_denylist.
-      event_denylist: List of event types to not log. Takes precedence over
-        event_allowlist.
-      content_formatter: Function to format or redact the 'content' field before
-        logging.
+    enabled: Whether logging is enabled.
+    event_allowlist: A list of event types to log. If None, all events are
+      logged except those in event_denylist.
+    event_denylist: A list of event types to skip logging.
+    content_formatter: An optional function to format event content before
+      logging.
+    shutdown_timeout: Seconds to wait for logs to flush during shutdown.
+    client_close_timeout: Seconds to wait for BQ client to close.
+    max_content_length: The maximum length of content parts before truncation.
   """
 
   enabled: bool = True
   event_allowlist: Optional[List[str]] = None
   event_denylist: Optional[List[str]] = None
   content_formatter: Optional[Callable[[Any], str]] = None
+  shutdown_timeout: float = 5.0
+  client_close_timeout: float = 2.0
+  max_content_length: int = 500
 
 
+# --- Helper Formatters ---
 def _get_event_type(event: Event) -> str:
+  """Determines the event type from an Event object."""
   if event.author == "user":
     return "USER_INPUT"
   if event.get_function_calls():
@@ -210,59 +240,55 @@ def _get_event_type(event: Event) -> str:
     return "MODEL_RESPONSE"
   if event.error_message:
     return "ERROR"
-  return "SYSTEM"  # Fallback for other event types
+  return "SYSTEM"
 
 
 def _format_content(
-    content: Optional[types.Content], max_length: int = 200
+    content: Optional[types.Content], max_len: int = 500
 ) -> str:
-  """Format content for logging, truncating if too long."""
+  """Formats an Event content for logging."""
   if not content or not content.parts:
     return "None"
   parts = []
-  for part in content.parts:
-    if part.text:
-      text = part.text.strip()
-      if len(text) > max_length:
-        text = text[:max_length] + "..."
-      parts.append(f"text: '{text}'")
-    elif part.function_call:
-      parts.append(f"function_call: {part.function_call.name}")
-    elif part.function_response:
-      parts.append(f"function_response: {part.function_response.name}")
-    elif part.code_execution_result:
-      parts.append("code_execution_result")
+  for p in content.parts:
+    if p.text:
+      parts.append(
+          f"text: '{p.text[:max_len]}...' "
+          if len(p.text) > max_len
+          else f"text: '{p.text}'"
+      )
+    elif p.function_call:
+      parts.append(f"call: {p.function_call.name}")
+    elif p.function_response:
+      parts.append(f"resp: {p.function_response.name}")
     else:
-      parts.append("other_part")
+      parts.append("other")
   return " | ".join(parts)
 
 
-def _format_args(args: dict[str, Any], max_length: int = 300) -> str:
-  """Format arguments dictionary for logging."""
+def _format_args(args: dict[str, Any], max_len: int = 1000) -> str:
+  """Formats tool arguments or results for logging."""
   if not args:
     return "{}"
-  formatted = str(args)
-  if len(formatted) > max_length:
-    formatted = formatted[:max_length] + "...}"
-  return formatted
+  try:
+    s = json.dumps(args)
+  except TypeError:
+    s = str(args)
+  return s[:max_len] + "..." if len(s) > max_len else s
 
 
 class BigQueryAgentAnalyticsPlugin(BasePlugin):
-  """A plugin that logs ADK events to a BigQuery table.
+  """A plugin that logs agent analytic events to Google BigQuery.
 
-  This plugin captures critical events during an agent invocation and logs them
-  as structured data to the specified BigQuery table. This allows for
-  persistent storage, auditing, and analysis of agent interactions.
+  This plugin captures key events during an agent's lifecycle—such as user
+  interactions, tool executions, LLM requests/responses, and errors—and
+  streams them to a BigQuery table for analysis and monitoring.
 
-  The plugin logs the following information at each callback point:
-  - User messages and invocation context
-  - Agent execution flow (start and completion)
-  - LLM requests and responses (including token usage in content)
-  - Tool calls with arguments and results
-  - Events yielded by agents
-  - Errors during model and tool execution
-
-  Logging behavior can be customized using the BigQueryLoggerConfig.
+  It uses the BigQuery Write API for efficient, high-throughput streaming
+  ingestion and is designed to be non-blocking, ensuring that logging
+  operations do not impact agent performance. If the destination table does
+  not exist, the plugin will attempt to create it based on a predefined
+  schema.
   """
 
   def __init__(
@@ -273,312 +299,312 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       config: Optional[BigQueryLoggerConfig] = None,
       **kwargs,
   ):
+    """Initializes the BigQueryAgentAnalyticsPlugin.
+
+    Args:
+      project_id: Google Cloud project ID.
+      dataset_id: BigQuery dataset ID.
+      table_id: BigQuery table ID for agent events.
+      config: Plugin configuration.
+      **kwargs: Additional arguments.
+    """
     super().__init__(name=kwargs.get("name", "BigQueryAgentAnalyticsPlugin"))
-    self._project_id = project_id
-    self._dataset_id = dataset_id
-    self._table_id = table_id
+    self._project_id, self._dataset_id, self._table_id = (
+        project_id,
+        dataset_id,
+        table_id,
+    )
     self._config = config if config else BigQueryLoggerConfig()
     self._bq_client: bigquery.Client | None = None
-    self._client_init_lock = threading.Lock()
-    self._init_done = False
-    self._init_succeeded = False
-
     self._write_client: BigQueryWriteAsyncClient | None = None
+    self._init_lock: asyncio.Lock | None = None
     self._arrow_schema: pa.Schema | None = None
-    if not self._config.enabled:
-      logging.info(
-          "BigQueryAgentAnalyticsPlugin %s is disabled by configuration.",
-          self.name,
-      )
-      return
+    self._background_tasks: set[asyncio.Task] = set()
+    self._is_shutting_down = False
+    self._schema = [
+        bigquery.SchemaField("timestamp", "TIMESTAMP", mode="REQUIRED"),
+        bigquery.SchemaField("event_type", "STRING", mode="NULLABLE"),
+        bigquery.SchemaField("agent", "STRING", mode="NULLABLE"),
+        bigquery.SchemaField("session_id", "STRING", mode="NULLABLE"),
+        bigquery.SchemaField("invocation_id", "STRING", mode="NULLABLE"),
+        bigquery.SchemaField("user_id", "STRING", mode="NULLABLE"),
+        bigquery.SchemaField("content", "STRING", mode="NULLABLE"),
+        bigquery.SchemaField("error_message", "STRING", mode="NULLABLE"),
+    ]
 
-    logging.debug(
-        "DEBUG: BigQueryAgentAnalyticsPlugin INSTANTIATED (Name: %s)", self.name
-    )
+  def _format_content_safely(
+      self, content: Optional[types.Content]
+  ) -> str | None:
+    """Formats content using self._config.content_formatter or _format_content, catching errors."""
+    if content is None:
+      return None
+    try:
+      if self._config.content_formatter:
+        return self._config.content_formatter(content)
+      return _format_content(content, max_len=self._config.max_content_length)
+    except Exception as e:
+      logging.warning(f"Content formatter failed: {e}")
+      return "[FORMATTING FAILED]"
 
-  def _ensure_initialized_sync(self):
-    """Synchronous initialization of BQ client and table."""
-    if not self._config.enabled:
-      return
-
-    with self._client_init_lock:
-      if self._init_done:
-        return
-      self._init_done = True
+  async def _ensure_init(self):
+    """Ensures BigQuery clients are initialized."""
+    if self._write_client:
+      return True
+    if not self._init_lock:
+      self._init_lock = asyncio.Lock()
+    async with self._init_lock:
+      if self._write_client:
+        return True
       try:
-        credentials, _ = google.auth.default(
-            scopes=[
-                "https://www.googleapis.com/auth/bigquery",
-                "https://www.googleapis.com/auth/cloud-platform",  # For Storage Write
-            ]
+        creds, _ = await asyncio.to_thread(
+            google.auth.default,
+            scopes=["https://www.googleapis.com/auth/cloud-platform"],
         )
-        client_info = google.api_core.client_info.ClientInfo(
+        client_info = gapic_client_info.ClientInfo(
             user_agent=f"google-adk-bq-logger/{version.__version__}"
         )
-
-        # 1. Init BQ Client (for create_dataset/create_table)
         self._bq_client = bigquery.Client(
-            project=self._project_id,
-            credentials=credentials,
+            project=self._project_id, credentials=creds, client_info=client_info
+        )
+
+        # Ensure table exists (sync call in thread)
+        def create_resources():
+          if self._bq_client:
+            self._bq_client.create_dataset(self._dataset_id, exists_ok=True)
+            table = bigquery.Table(
+                f"{self._project_id}.{self._dataset_id}.{self._table_id}",
+                schema=self._schema,
+            )
+            self._bq_client.create_table(table, exists_ok=True)
+            logging.info(
+                "BQ Plugin: Dataset %s and Table %s ensured to exist.",
+                self._dataset_id,
+                self._table_id,
+            )
+
+        await asyncio.to_thread(create_resources)
+
+        self._write_client = BigQueryWriteAsyncClient(
+            credentials=creds,
             client_info=client_info,
         )
+        self._arrow_schema = to_arrow_schema(self._schema)
+        if not self._arrow_schema:
+          raise RuntimeError("Failed to convert BigQuery schema to Arrow.")
+        logging.info("BQ Plugin: Initialized successfully.")
+        return True
+      except Exception as e:
+        logging.error("BQ Plugin: Init Failed:", exc_info=True)
+        return False
 
-        # 2. Init BQ Storage Write Client
-        self._write_client = BigQueryWriteAsyncClient(
-            credentials=credentials, client_info=client_info
-        )
+  async def _perform_write(self, row: dict):
+    """Actual async write operation, intended to run as a background task."""
+    try:
+      if (
+          not await self._ensure_init()
+          or not self._write_client
+          or not self._arrow_schema
+      ):
+        return
 
-        logging.info(
-            "BigQuery clients (Core & Storage Write) initialized for"
-            " project %s",
-            self._project_id,
-        )
-        dataset_ref = self._bq_client.dataset(self._dataset_id)
-        self._bq_client.create_dataset(dataset_ref, exists_ok=True)
-        logging.info("Dataset %s ensured to exist.", self._dataset_id)
-        table_ref = dataset_ref.table(self._table_id)
+      # Serialize
+      pydict = {f.name: [row.get(f.name)] for f in self._arrow_schema}
+      batch = pa.RecordBatch.from_pydict(pydict, schema=self._arrow_schema)
+      req = bq_storage_types.AppendRowsRequest(
+          write_stream=f"projects/{self._project_id}/datasets/{self._dataset_id}/tables/{self._table_id}/_default"
+      )
+      req.arrow_rows.writer_schema.serialized_schema = (
+          self._arrow_schema.serialize().to_pybytes()
+      )
+      req.arrow_rows.rows.serialized_record_batch = (
+          batch.serialize().to_pybytes()
+      )
 
-        # Schema
-        schema = [
-            bigquery.SchemaField("timestamp", "TIMESTAMP"),
-            bigquery.SchemaField("event_type", "STRING"),
-            bigquery.SchemaField("agent", "STRING"),
-            bigquery.SchemaField("session_id", "STRING"),
-            bigquery.SchemaField("invocation_id", "STRING"),
-            bigquery.SchemaField("user_id", "STRING"),
-            bigquery.SchemaField("content", "STRING"),
-            bigquery.SchemaField("error_message", "STRING"),
-        ]
-        table = bigquery.Table(table_ref, schema=schema)
-        self._bq_client.create_table(table, exists_ok=True)
-        logging.info("Table %s ensured to exist.", self._table_id)
+      # Write with protection against immediate cancellation
+      async for resp in await asyncio.shield(
+          self._write_client.append_rows(iter([req]))
+      ):
+        if resp.error.code != 0:
+          logging.error(f"BQ Plugin: Write Error: {resp.error.message}")
 
-        # 4. Store Arrow schema for Write API
-        self._arrow_schema = to_arrow_schema(schema)  # USE LOCAL VERSION
-        # --- self._table_ref_str removed ---
+    except RuntimeError as e:
+      if "Event loop is closed" not in str(e) and not self._is_shutting_down:
+        logging.error("BQ Plugin: Runtime Error during write:", exc_info=True)
+    except asyncio.CancelledError:
+      if not self._is_shutting_down:
+        logging.warning("BQ Plugin: Write task cancelled unexpectedly.")
+    except Exception as e:
+      logging.error("BQ Plugin: Write Failed:", exc_info=True)
 
-        self._init_succeeded = True
-      except (
-          auth_exceptions.GoogleAuthError,
-          cloud_exceptions.GoogleCloudError,
-      ) as e:
-        logging.exception(
-            "Failed to initialize BigQuery client or table: %s", e
-        )
-        self._init_succeeded = False
-
-  async def _log_to_bigquery_async(self, event_dict: dict[str, Any]):
+  async def _log(self, data: dict):
+    """Schedules a log entry to be written in the background."""
     if not self._config.enabled:
       return
-
-    event_type = event_dict.get("event_type")
-
-    # Check denylist
+    event_type = data.get("event_type")
     if (
         self._config.event_denylist
         and event_type in self._config.event_denylist
     ):
       return
-
-    # Check allowlist
     if (
         self._config.event_allowlist
         and event_type not in self._config.event_allowlist
     ):
       return
 
-    # Apply custom content formatter
-    if self._config.content_formatter and "content" in event_dict:
+    # Prepare row immediately (capture current state)
+    row = {
+        "timestamp": datetime.now(timezone.utc),
+        "event_type": None,
+        "agent": None,
+        "session_id": None,
+        "invocation_id": None,
+        "user_id": None,
+        "content": None,
+        "error_message": None,
+    }
+    row.update(data)
+
+    # Fire and forget: Create task and track it
+    task = asyncio.create_task(self._perform_write(row))
+    self._background_tasks.add(task)
+    task.add_done_callback(self._background_tasks.discard)
+
+  async def close(self):
+    """Flushes pending logs and closes client."""
+    if self._is_shutting_down:
+      return
+    self._is_shutting_down = True
+    logging.info("BQ Plugin: Shutdown started.")
+
+    if self._background_tasks:
+      logging.info(
+          f"BQ Plugin: Flushing {len(self._background_tasks)} pending logs..."
+      )
       try:
-        event_dict["content"] = self._config.content_formatter(
-            event_dict["content"]
+        await asyncio.wait(
+            self._background_tasks, timeout=self._config.shutdown_timeout
+        )
+      except asyncio.TimeoutError:
+        logging.warning("BQ Plugin: Timeout waiting for logs to flush.")
+      except Exception as e:
+        logging.warning("BQ Plugin: Error flushing logs:", exc_info=True)
+
+    # Use getattr for safe access in case transport is not present.
+    if self._write_client and getattr(self._write_client, "transport", None):
+      try:
+        logging.info("BQ Plugin: Closing write client.")
+        await asyncio.wait_for(
+            self._write_client.transport.close(),
+            timeout=self._config.client_close_timeout,
         )
       except Exception as e:
-        logging.warning(
-            "Error applying custom content formatter for event type %s: %s",
-            event_type,
-            e,
-        )
-        # Optionally log a generic message or the error
+        logging.warning(f"BQ Plugin: Error closing write client: {e}")
+    if self._bq_client:
+      try:
+        self._bq_client.close()
+      except Exception as e:
+        logging.warning(f"BQ Plugin: Error closing BQ client: {e}")
 
-    try:
-      if not self._init_done:
-        await asyncio.to_thread(self._ensure_initialized_sync)
+    self._write_client = None
+    self._bq_client = None
+    self._is_shutting_down = False
+    logging.info("BQ Plugin: Shutdown complete.")
 
-      # Check for all required Storage Write API components
-      if not (
-          self._init_succeeded and self._write_client and self._arrow_schema
-      ):
-        logging.warning("BigQuery write client not initialized. Skipping log.")
-        return
-
-      default_row = {
-          "timestamp": datetime.now(timezone.utc).isoformat(),
-          "event_type": None,
-          "agent": None,
-          "session_id": None,
-          "invocation_id": None,
-          "user_id": None,
-          "content": None,
-          "error_message": None,
-      }
-      insert_row = {**default_row, **event_dict}
-
-      # --- START MODIFIED STORAGE WRITE API LOGIC (using Default Stream) ---
-      # 1. Convert the single row dict to a PyArrow RecordBatch
-      #    pa.RecordBatch.from_pydict requires a dict of lists
-      pydict = {
-          field.name: [insert_row.get(field.name)]
-          for field in self._arrow_schema
-      }
-      batch = pa.RecordBatch.from_pydict(pydict, schema=self._arrow_schema)
-
-      # 2. Create the AppendRowsRequest, pointing to the default stream
-      request = bq_storage_types.AppendRowsRequest(
-          write_stream=(
-              f"projects/{self._project_id}/datasets/{self._dataset_id}"
-              f"/tables/{self._table_id}/_default"
-          )
-      )
-      request.arrow_rows.writer_schema.serialized_schema = (
-          self._arrow_schema.serialize().to_pybytes()
-      )
-
-      request.arrow_rows.rows.serialized_record_batch = (
-          batch.serialize().to_pybytes()
-      )
-
-      # 3. Send the request and check for errors
-      response_iterator = self._write_client.append_rows(requests=[request])
-      async for response in response_iterator:
-        if response.row_errors:
-          logging.error(
-              "Errors occurred while writing to BigQuery (Storage Write"
-              " API): %s",
-              response.row_errors,
-          )
-          break  # Only one response expected
-    except Exception as e:
-      logging.exception("Failed to log to BigQuery: %s", e)
-
+  # --- Streamlined Callbacks ---
   async def on_user_message_callback(
       self,
       *,
       invocation_context: InvocationContext,
       user_message: types.Content,
-  ) -> Optional[types.Content]:
-    """Log user message and invocation start."""
-    event_dict = {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+  ) -> None:
+    """Callback for user messages."""
+    await self._log({
         "event_type": "USER_MESSAGE_RECEIVED",
         "agent": invocation_context.agent.name,
         "session_id": invocation_context.session.id,
         "invocation_id": invocation_context.invocation_id,
         "user_id": invocation_context.session.user_id,
-        "content": f"User Content: {_format_content(user_message)}",
-    }
-    await self._log_to_bigquery_async(event_dict)
-    return None
+        "content": f"User Content: {self._format_content_safely(user_message)}",
+    })
 
   async def before_run_callback(
       self, *, invocation_context: InvocationContext
-  ) -> Optional[types.Content]:
-    """Log invocation start."""
-    event_dict = {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+  ) -> None:
+    """Callback before agent invocation."""
+    await self._log({
         "event_type": "INVOCATION_STARTING",
         "agent": invocation_context.agent.name,
         "session_id": invocation_context.session.id,
         "invocation_id": invocation_context.invocation_id,
         "user_id": invocation_context.session.user_id,
-        "content": None,
-    }
-    await self._log_to_bigquery_async(event_dict)
-    return None
+    })
 
   async def on_event_callback(
       self, *, invocation_context: InvocationContext, event: Event
-  ) -> Optional[Event]:
-    """Logs event data to BigQuery."""
-    event_dict = {
-        "timestamp": datetime.fromtimestamp(
-            event.timestamp, timezone.utc
-        ).isoformat(),
+  ) -> None:
+    """Callback for agent events."""
+    await self._log({
         "event_type": _get_event_type(event),
         "agent": event.author,
         "session_id": invocation_context.session.id,
         "invocation_id": invocation_context.invocation_id,
         "user_id": invocation_context.session.user_id,
-        "content": (
-            json.dumps(
-                [part.model_dump(mode="json") for part in event.content.parts]
-            )
-            if event.content and event.content.parts
-            else None
-        ),
+        "content": self._format_content_safely(event.content),
         "error_message": event.error_message,
-    }
-    await self._log_to_bigquery_async(event_dict)
-    return None
+        "timestamp": datetime.fromtimestamp(event.timestamp, timezone.utc),
+    })
 
   async def after_run_callback(
       self, *, invocation_context: InvocationContext
-  ) -> Optional[None]:
-    """Log invocation completion."""
-    event_dict = {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+  ) -> None:
+    """Callback after agent invocation."""
+    await self._log({
         "event_type": "INVOCATION_COMPLETED",
         "agent": invocation_context.agent.name,
         "session_id": invocation_context.session.id,
         "invocation_id": invocation_context.invocation_id,
         "user_id": invocation_context.session.user_id,
-        "content": None,
-    }
-    await self._log_to_bigquery_async(event_dict)
-    return None
+    })
 
   async def before_agent_callback(
       self, *, agent: BaseAgent, callback_context: CallbackContext
-  ) -> Optional[types.Content]:
-    """Log agent execution start."""
-    event_dict = {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+  ) -> None:
+    """Callback before an agent starts."""
+    await self._log({
         "event_type": "AGENT_STARTING",
         "agent": agent.name,
         "session_id": callback_context.session.id,
         "invocation_id": callback_context.invocation_id,
         "user_id": callback_context.session.user_id,
         "content": f"Agent Name: {callback_context.agent_name}",
-    }
-    await self._log_to_bigquery_async(event_dict)
-    return None
+    })
 
   async def after_agent_callback(
       self, *, agent: BaseAgent, callback_context: CallbackContext
-  ) -> Optional[types.Content]:
-    """Log agent execution completion."""
-    event_dict = {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+  ) -> None:
+    """Callback after an agent completes."""
+    await self._log({
         "event_type": "AGENT_COMPLETED",
         "agent": agent.name,
         "session_id": callback_context.session.id,
         "invocation_id": callback_context.invocation_id,
         "user_id": callback_context.session.user_id,
         "content": f"Agent Name: {callback_context.agent_name}",
-    }
-    await self._log_to_bigquery_async(event_dict)
-    return None
+    })
 
   async def before_model_callback(
       self, *, callback_context: CallbackContext, llm_request: LlmRequest
-  ) -> Optional[LlmResponse]:
-    """Log LLM request before sending to model, including the full system instruction."""
-
+  ) -> None:
+    """Callback before LLM call."""
     content_parts = [
         f"Model: {llm_request.model or 'default'}",
     ]
-
-    # Log Full System Instruction
+    if contents := getattr(llm_request, "contents", None):
+      prompt_str = " | ".join(
+          [f"{c.role}: {self._format_content_safely(c)}" for c in contents]
+      )
+      content_parts.append(f"Prompt: {prompt_str}")
     system_instruction_text = "None"
     if llm_request.config and llm_request.config.system_instruction:
       si = llm_request.config.system_instruction
@@ -602,8 +628,6 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       system_instruction_text = "Empty"
 
     content_parts.append(f"System Prompt: {system_instruction_text}")
-
-    # Log Generation Config Parameters
     if llm_request.config:
       config = llm_request.config
       params_to_log = {}
@@ -629,23 +653,22 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       )
 
     final_content = " | ".join(content_parts)
-
-    event_dict = {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+    max_len = self._config.max_content_length
+    if len(final_content) > max_len:
+      final_content = final_content[:max_len] + "..."
+    await self._log({
         "event_type": "LLM_REQUEST",
         "agent": callback_context.agent_name,
         "session_id": callback_context.session.id,
         "invocation_id": callback_context.invocation_id,
         "user_id": callback_context.session.user_id,
         "content": final_content,
-    }
-    await self._log_to_bigquery_async(event_dict)
-    return None
+    })
 
   async def after_model_callback(
       self, *, callback_context: CallbackContext, llm_response: LlmResponse
-  ) -> Optional[LlmResponse]:
-    """Log LLM response after receiving from model."""
+  ) -> None:
+    """Callback after LLM call."""
     content_parts = []
     content = llm_response.content
     is_tool_call = False
@@ -653,7 +676,6 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       is_tool_call = any(part.function_call for part in content.parts)
 
     if is_tool_call:
-      # Explicitly state Tool Name
       fc_names = []
       if content and content.parts:
         fc_names = [
@@ -663,10 +685,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         ]
       content_parts.append(f"Tool Name: {', '.join(fc_names)}")
     else:
-      # This is a text response
-      text_content = _format_content(
-          llm_response.content
-      )  # This returns something like "text: 'The actual message...'"
+      text_content = self._format_content_safely(llm_response.content)
       content_parts.append(f"Tool Name: text_response, {text_content}")
 
     if llm_response.usage_metadata:
@@ -686,21 +705,15 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       content_parts.append(token_usage_str)
 
     final_content = " | ".join(content_parts)
-
-    event_dict = {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+    await self._log({
         "event_type": "LLM_RESPONSE",
         "agent": callback_context.agent_name,
         "session_id": callback_context.session.id,
         "invocation_id": callback_context.invocation_id,
         "user_id": callback_context.session.user_id,
         "content": final_content,
-        "error_message": (
-            llm_response.error_message if llm_response.error_code else None
-        ),
-    }
-    await self._log_to_bigquery_async(event_dict)
-    return None
+        "error_message": llm_response.error_message,
+    })
 
   async def before_tool_callback(
       self,
@@ -708,10 +721,9 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       tool: BaseTool,
       tool_args: dict[str, Any],
       tool_context: ToolContext,
-  ) -> Optional[None]:
-    """Log tool execution start."""
-    event_dict = {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+  ) -> None:
+    """Callback before tool call."""
+    await self._log({
         "event_type": "TOOL_STARTING",
         "agent": tool_context.agent_name,
         "session_id": tool_context.session.id,
@@ -719,11 +731,10 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         "user_id": tool_context.session.user_id,
         "content": (
             f"Tool Name: {tool.name}, Description: {tool.description},"
-            f" Arguments: {_format_args(tool_args)}"
+            " Arguments:"
+            f" {_format_args(tool_args, max_len=self._config.max_content_length)}"
         ),
-    }
-    await self._log_to_bigquery_async(event_dict)
-    return None
+    })
 
   async def after_tool_callback(
       self,
@@ -733,18 +744,18 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       tool_context: ToolContext,
       result: dict[str, Any],
   ) -> None:
-    """Log tool execution completion."""
-    event_dict = {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+    """Callback after tool call."""
+    await self._log({
         "event_type": "TOOL_COMPLETED",
         "agent": tool_context.agent_name,
         "session_id": tool_context.session.id,
         "invocation_id": tool_context.invocation_id,
         "user_id": tool_context.session.user_id,
-        "content": f"Tool Name: {tool.name}, Result: {_format_args(result)}",
-    }
-    await self._log_to_bigquery_async(event_dict)
-    return None
+        "content": (
+            f"Tool Name: {tool.name}, Result:"
+            f" {_format_args(result, max_len=self._config.max_content_length)}"
+        ),
+    })
 
   async def on_model_error_callback(
       self,
@@ -752,19 +763,16 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       callback_context: CallbackContext,
       llm_request: LlmRequest,
       error: Exception,
-  ) -> Optional[LlmResponse]:
-    """Log LLM error."""
-    event_dict = {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+  ) -> None:
+    """Callback for LLM errors."""
+    await self._log({
         "event_type": "LLM_ERROR",
         "agent": callback_context.agent_name,
         "session_id": callback_context.session.id,
         "invocation_id": callback_context.invocation_id,
         "user_id": callback_context.session.user_id,
         "error_message": str(error),
-    }
-    await self._log_to_bigquery_async(event_dict)
-    return None
+    })
 
   async def on_tool_error_callback(
       self,
@@ -774,18 +782,16 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       tool_context: ToolContext,
       error: Exception,
   ) -> None:
-    """Log tool error."""
-    event_dict = {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+    """Callback for tool errors."""
+    await self._log({
         "event_type": "TOOL_ERROR",
         "agent": tool_context.agent_name,
         "session_id": tool_context.session.id,
         "invocation_id": tool_context.invocation_id,
         "user_id": tool_context.session.user_id,
         "content": (
-            f"Tool Name: {tool.name}, Arguments: {_format_args(tool_args)}"
+            f"Tool Name: {tool.name}, Arguments:"
+            f" {_format_args(tool_args, max_len=self._config.max_content_length)}"
         ),
         "error_message": str(error),
-    }
-    await self._log_to_bigquery_async(event_dict)
-    return None
+    })

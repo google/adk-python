@@ -1436,12 +1436,12 @@ def test_detect_anomalies_with_table_id(mock_uuid, mock_execute_sql):
 
   expected_create_model_query = """
   CREATE TEMP MODEL detect_anomalies_model_test_uuid
-    OPTIONS (MODEL_TYPE = 'ARIMA_PLUS', TIME_SERIES_TIMESTAMP_COL = 'ts_timestamp', TIME_SERIES_DATA_COL = 'ts_data', HORIZON = 10)
+    OPTIONS (MODEL_TYPE = 'ARIMA_PLUS', TIME_SERIES_TIMESTAMP_COL = 'ts_timestamp', TIME_SERIES_DATA_COL = 'ts_data', HORIZON = 1000)
   AS (SELECT * FROM `test-dataset.test-table`)
   """
 
   expected_anomaly_detection_query = """
-  SELECT * FROM ML.DETECT_ANOMALIES(MODEL detect_anomalies_model_test_uuid, STRUCT(0.95 AS anomaly_prob_threshold))
+  SELECT * FROM ML.DETECT_ANOMALIES(MODEL detect_anomalies_model_test_uuid, STRUCT(0.95 AS anomaly_prob_threshold)) ORDER BY ts_timestamp
   """
 
   assert mock_execute_sql.call_count == 2
@@ -1497,7 +1497,7 @@ def test_detect_anomalies_with_custom_params(mock_uuid, mock_execute_sql):
   """
 
   expected_anomaly_detection_query = """
-  SELECT * FROM ML.DETECT_ANOMALIES(MODEL detect_anomalies_model_test_uuid, STRUCT(0.8 AS anomaly_prob_threshold))
+  SELECT * FROM ML.DETECT_ANOMALIES(MODEL detect_anomalies_model_test_uuid, STRUCT(0.8 AS anomaly_prob_threshold)) ORDER BY dim1, dim2, ts_timestamp
   """
 
   assert mock_execute_sql.call_count == 2
@@ -1555,7 +1555,61 @@ def test_detect_anomalies_on_target_table(mock_uuid, mock_execute_sql):
   """
 
   expected_anomaly_detection_query = """
-    SELECT * FROM ML.DETECT_ANOMALIES(MODEL detect_anomalies_model_test_uuid, STRUCT(0.8 AS anomaly_prob_threshold), (SELECT * FROM `test-dataset.target-table`))
+    SELECT * FROM ML.DETECT_ANOMALIES(MODEL detect_anomalies_model_test_uuid, STRUCT(0.8 AS anomaly_prob_threshold), (SELECT * FROM `test-dataset.target-table`)) ORDER BY dim1, dim2, ts_timestamp
+    """
+
+  assert mock_execute_sql.call_count == 2
+  mock_execute_sql.assert_any_call(
+      project_id="test-project",
+      query=expected_create_model_query,
+      credentials=mock_credentials,
+      settings=mock_settings,
+      tool_context=mock_tool_context,
+      caller_id="detect_anomalies",
+  )
+  mock_execute_sql.assert_any_call(
+      project_id="test-project",
+      query=expected_anomaly_detection_query,
+      credentials=mock_credentials,
+      settings=mock_settings,
+      tool_context=mock_tool_context,
+      caller_id="detect_anomalies",
+  )
+
+
+# detect_anomalies calls execute_sql twice. We need to test that
+# the queries are properly constructed and call execute_sql with the correct
+# parameters exactly twice.
+@mock.patch("google.adk.tools.bigquery.query_tool._execute_sql", autospec=True)
+@mock.patch("uuid.uuid4", autospec=True)
+def test_detect_anomalies_with_str_table_id(mock_uuid, mock_execute_sql):
+  """Test time series anomaly detection tool invocation with a table id."""
+  mock_credentials = mock.MagicMock(spec=Credentials)
+  mock_settings = BigQueryToolConfig(write_mode=WriteMode.PROTECTED)
+  mock_tool_context = mock.create_autospec(ToolContext, instance=True)
+  mock_uuid.return_value = "test_uuid"
+  mock_execute_sql.return_value = {"status": "SUCCESS"}
+
+  history_data_query = "SELECT * FROM `test-dataset.test-table`"
+  detect_anomalies(
+      project_id="test-project",
+      history_data=history_data_query,
+      times_series_timestamp_col="ts_timestamp",
+      times_series_data_col="ts_data",
+      target_data="test-dataset.target-table",
+      credentials=mock_credentials,
+      settings=mock_settings,
+      tool_context=mock_tool_context,
+  )
+
+  expected_create_model_query = """
+  CREATE TEMP MODEL detect_anomalies_model_test_uuid
+    OPTIONS (MODEL_TYPE = 'ARIMA_PLUS', TIME_SERIES_TIMESTAMP_COL = 'ts_timestamp', TIME_SERIES_DATA_COL = 'ts_data', HORIZON = 1000)
+  AS (SELECT * FROM `test-dataset.test-table`)
+  """
+
+  expected_anomaly_detection_query = """
+    SELECT * FROM ML.DETECT_ANOMALIES(MODEL detect_anomalies_model_test_uuid, STRUCT(0.95 AS anomaly_prob_threshold), (SELECT * FROM `test-dataset.target-table`)) ORDER BY ts_timestamp
     """
 
   assert mock_execute_sql.call_count == 2
@@ -1719,3 +1773,56 @@ def test_ml_tool_job_labels(tool_call, expected_label):
         assert mock_kwargs["job_config"].labels == {
             "adk-bigquery-tool": expected_label
         }
+
+
+def test_execute_sql_max_rows_config():
+  """Test execute_sql tool respects max_query_result_rows from config."""
+  project = "my_project"
+  query = "SELECT 123 AS num"
+  statement_type = "SELECT"
+  query_result = [{"num": i} for i in range(20)]  # 20 rows
+  credentials = mock.create_autospec(Credentials, instance=True)
+  tool_config = BigQueryToolConfig(max_query_result_rows=10)
+  tool_context = mock.create_autospec(ToolContext, instance=True)
+
+  with mock.patch("google.cloud.bigquery.Client", autospec=False) as Client:
+    bq_client = Client.return_value
+    query_job = mock.create_autospec(bigquery.QueryJob)
+    query_job.statement_type = statement_type
+    bq_client.query.return_value = query_job
+    bq_client.query_and_wait.return_value = query_result[:10]
+
+    result = execute_sql(project, query, credentials, tool_config, tool_context)
+
+    # Check that max_results was called with config value
+    bq_client.query_and_wait.assert_called_once()
+    call_args = bq_client.query_and_wait.call_args
+    assert call_args.kwargs["max_results"] == 10
+
+    # Check truncation flag is set
+    assert result["status"] == "SUCCESS"
+    assert result["result_is_likely_truncated"] is True
+
+
+def test_execute_sql_no_truncation():
+  """Test execute_sql tool when results are not truncated."""
+  project = "my_project"
+  query = "SELECT 123 AS num"
+  statement_type = "SELECT"
+  query_result = [{"num": i} for i in range(3)]  # Only 3 rows
+  credentials = mock.create_autospec(Credentials, instance=True)
+  tool_config = BigQueryToolConfig(max_query_result_rows=10)
+  tool_context = mock.create_autospec(ToolContext, instance=True)
+
+  with mock.patch("google.cloud.bigquery.Client", autospec=False) as Client:
+    bq_client = Client.return_value
+    query_job = mock.create_autospec(bigquery.QueryJob)
+    query_job.statement_type = statement_type
+    bq_client.query.return_value = query_job
+    bq_client.query_and_wait.return_value = query_result
+
+    result = execute_sql(project, query, credentials, tool_config, tool_context)
+
+    # Check no truncation flag when fewer rows than limit
+    assert result["status"] == "SUCCESS"
+    assert "result_is_likely_truncated" not in result

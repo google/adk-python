@@ -1136,7 +1136,7 @@ def detect_anomalies(
     history_data: str,
     times_series_timestamp_col: str,
     times_series_data_col: str,
-    horizon: Optional[int] = 10,
+    horizon: Optional[int] = 1000,
     target_data: Optional[str] = None,
     times_series_id_cols: Optional[list[str]] = None,
     anomaly_prob_threshold: Optional[float] = 0.95,
@@ -1158,7 +1158,7 @@ def detect_anomalies(
       times_series_data_col (str): The name of the column containing the
         numerical values to be forecasted and anomaly detected.
       horizon (int, optional): The number of time steps to forecast into the
-        future. Defaults to 10.
+        future. Defaults to 1000.
       target_data (str, optional): The table id of the BigQuery table containing
         the target time series data or a query statement that select the target
         data.
@@ -1301,9 +1301,14 @@ def detect_anomalies(
     OPTIONS ({options_str})
   AS {history_data_source}
   """
+  order_by_id_cols = (
+      ", ".join(col for col in times_series_id_cols) + ", "
+      if times_series_id_cols
+      else ""
+  )
 
   anomaly_detection_query = f"""
-  SELECT * FROM ML.DETECT_ANOMALIES(MODEL {model_name}, STRUCT({anomaly_prob_threshold} AS anomaly_prob_threshold))
+  SELECT * FROM ML.DETECT_ANOMALIES(MODEL {model_name}, STRUCT({anomaly_prob_threshold} AS anomaly_prob_threshold)) ORDER BY {order_by_id_cols}{times_series_timestamp_col}
   """
   if target_data:
     trimmed_upper_target_data = target_data.strip().upper()
@@ -1312,10 +1317,10 @@ def detect_anomalies(
     ) or trimmed_upper_target_data.startswith("WITH"):
       target_data_source = f"({target_data})"
     else:
-      target_data_source = f"SELECT * FROM `{target_data}`"
+      target_data_source = f"(SELECT * FROM `{target_data}`)"
 
     anomaly_detection_query = f"""
-    SELECT * FROM ML.DETECT_ANOMALIES(MODEL {model_name}, STRUCT({anomaly_prob_threshold} AS anomaly_prob_threshold), {target_data_source})
+    SELECT * FROM ML.DETECT_ANOMALIES(MODEL {model_name}, STRUCT({anomaly_prob_threshold} AS anomaly_prob_threshold), {target_data_source}) ORDER BY {order_by_id_cols}{times_series_timestamp_col}
     """
 
   # Create a session and run the create model query.

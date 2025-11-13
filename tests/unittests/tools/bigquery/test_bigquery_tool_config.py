@@ -42,3 +42,17 @@ def test_bigquery_tool_config_invalid_application_name():
       match="Application name should not contain spaces.",
   ):
     BigQueryToolConfig(application_name="my agent")
+
+
+def test_bigquery_tool_config_max_query_result_rows_default():
+  """Test BigQueryToolConfig max_query_result_rows default value."""
+  with pytest.warns(UserWarning):
+    config = BigQueryToolConfig()
+  assert config.max_query_result_rows == 50
+
+
+def test_bigquery_tool_config_max_query_result_rows_custom():
+  """Test BigQueryToolConfig max_query_result_rows custom value."""
+  with pytest.warns(UserWarning):
+    config = BigQueryToolConfig(max_query_result_rows=100)
+  assert config.max_query_result_rows == 100

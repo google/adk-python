@@ -109,12 +109,6 @@ FILE_BYTES_TEST_CASES = [
         "data:application/json;base64,eyJoZWxsbyI6IndvcmxkIn0=",
         id="json",
     ),
-    pytest.param(
-        b"hello world",
-        "text/plain",
-        "data:text/plain;base64,aGVsbG8gd29ybGQ=",
-        id="txt",
-    ),
 ]
 
 STREAMING_MODEL_RESPONSE = [
@@ -1066,6 +1060,40 @@ def test_function_declaration_to_tool_param(
   )
 
 
+def test_function_declaration_to_tool_param_without_required_attribute():
+  """Ensure tools without a required field attribute don't raise errors."""
+
+  class SchemaWithoutRequired:
+    """Mimics a Schema object that lacks the required attribute."""
+
+    def __init__(self):
+      self.properties = {
+          "optional_arg": types.Schema(type=types.Type.STRING),
+      }
+
+  func_decl = types.FunctionDeclaration(
+      name="function_without_required_attr",
+      description="Function missing required attribute",
+  )
+  func_decl.parameters = SchemaWithoutRequired()
+
+  expected = {
+      "type": "function",
+      "function": {
+          "name": "function_without_required_attr",
+          "description": "Function missing required attribute",
+          "parameters": {
+              "type": "object",
+              "properties": {
+                  "optional_arg": {"type": "string"},
+              },
+          },
+      },
+  }
+
+  assert _function_declaration_to_tool_param(func_decl) == expected
+
+
 def test_function_declaration_to_tool_param_with_parameters_json_schema():
   """Ensure function declarations using parameters_json_schema are handled.
 
@@ -1441,6 +1469,38 @@ def test_get_content_text():
   parts = [types.Part.from_text(text="Test text")]
   content = _get_content(parts)
   assert content == "Test text"
+
+
+def test_get_content_text_inline_data_single_part():
+  parts = [
+      types.Part.from_bytes(
+          data="Inline text".encode("utf-8"), mime_type="text/plain"
+      )
+  ]
+  content = _get_content(parts)
+  assert content == "Inline text"
+
+
+def test_get_content_text_inline_data_multiple_parts():
+  parts = [
+      types.Part.from_bytes(
+          data="First part".encode("utf-8"), mime_type="text/plain"
+      ),
+      types.Part.from_text(text="Second part"),
+  ]
+  content = _get_content(parts)
+  assert content[0]["type"] == "text"
+  assert content[0]["text"] == "First part"
+  assert content[1]["type"] == "text"
+  assert content[1]["text"] == "Second part"
+
+
+def test_get_content_text_inline_data_fallback_decoding():
+  parts = [
+      types.Part.from_bytes(data=b"\xff", mime_type="text/plain"),
+  ]
+  content = _get_content(parts)
+  assert content == "ÿ"
 
 
 def test_get_content_image():
