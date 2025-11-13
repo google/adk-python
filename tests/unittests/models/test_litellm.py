@@ -109,12 +109,6 @@ FILE_BYTES_TEST_CASES = [
         "data:application/json;base64,eyJoZWxsbyI6IndvcmxkIn0=",
         id="json",
     ),
-    pytest.param(
-        b"hello world",
-        "text/plain",
-        "data:text/plain;base64,aGVsbG8gd29ybGQ=",
-        id="txt",
-    ),
 ]
 
 STREAMING_MODEL_RESPONSE = [
@@ -1475,6 +1469,38 @@ def test_get_content_text():
   parts = [types.Part.from_text(text="Test text")]
   content = _get_content(parts)
   assert content == "Test text"
+
+
+def test_get_content_text_inline_data_single_part():
+  parts = [
+      types.Part.from_bytes(
+          data="Inline text".encode("utf-8"), mime_type="text/plain"
+      )
+  ]
+  content = _get_content(parts)
+  assert content == "Inline text"
+
+
+def test_get_content_text_inline_data_multiple_parts():
+  parts = [
+      types.Part.from_bytes(
+          data="First part".encode("utf-8"), mime_type="text/plain"
+      ),
+      types.Part.from_text(text="Second part"),
+  ]
+  content = _get_content(parts)
+  assert content[0]["type"] == "text"
+  assert content[0]["text"] == "First part"
+  assert content[1]["type"] == "text"
+  assert content[1]["text"] == "Second part"
+
+
+def test_get_content_text_inline_data_fallback_decoding():
+  parts = [
+      types.Part.from_bytes(data=b"\xff", mime_type="text/plain"),
+  ]
+  content = _get_content(parts)
+  assert content == "ÿ"
 
 
 def test_get_content_image():
