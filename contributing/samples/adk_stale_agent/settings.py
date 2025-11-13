@@ -28,4 +28,4 @@ CLOSE_HOURS_AFTER_STALE_THRESHOLD = float(os.getenv("CLOSE_HOURS_AFTER_STALE_THR
 
 # --- BATCH SIZE CONFIGURATION ---
 # The maximum number of oldest open issues to process in a single run of the bot.
-ISSUES_PER_RUN = int(os.getenv("ISSUES_PER_RUN", 30))
+ISSUES_PER_RUN = int(os.getenv("ISSUES_PER_RUN", 100))

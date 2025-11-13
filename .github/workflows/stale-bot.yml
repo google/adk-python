@@ -48,8 +48,9 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.ADK_TRIAGE_AGENT }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-          OWNER: ${{ github.repository_owner }}
-          REPO: ${{ github.event.repository.name }}
+          OWNER: google
+          REPO: adk-python
+          ISSUES_PER_RUN: 100
           PYTHONPATH: contributing/samples
           
         # The final 'run' command.

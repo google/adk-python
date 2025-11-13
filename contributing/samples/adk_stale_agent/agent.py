@@ -43,64 +43,117 @@ def get_all_open_issues() -> dict[str, Any]:
         return error_response(f"Error fetching all open issues: {e}")
 
 def get_issue_state(item_number: int, maintainers: list[str]) -> dict[str, Any]:
-    """
-    Analyzes an issue's complete timeline to determine its current state.
-    Requires the list of maintainers to be passed in. Returns a simple, 
-    pre-processed summary for the agent to make a decision on.
+    """Analyzes an issue's complete history to create a comprehensive state summary.
+
+    This function acts as the primary "detective" for the agent. It performs the
+    complex, deterministic work of fetching and parsing an issue's full history,
+    allowing the LLM agent to focus on high-level semantic decision-making.
+
+    It is designed to be highly robust by fetching data from the GitHub `/timeline`
+    API endpoint. This endpoint provides a rich, chronological stream of events,
+    including comments, commits, reviews, and title changes, which allows the
+    function to accurately identify the last true human activity on an issue.
+
+    Args:
+        item_number (int): The number of the GitHub issue or pull request to analyze.
+        maintainers (list[str]): A dynamically fetched list of GitHub usernames to be
+            considered maintainers. This is used to categorize actors found in
+            the issue's history.
+
+    Returns:
+        A dictionary that serves as a clean, factual report summarizing the
+        issue's state. On failure, it returns a dictionary with an 'error' status.
+
+        On success, the dictionary contains the following keys:
+            'status' (str): Always "success".
+            'issue_author' (str): The username of the original issue creator.
+            'current_labels' (list[str]): A list of all labels currently on the issue.
+            'last_maintainer_comment_text' (str | None): The raw text of the most
+                recent comment from a maintainer, used for intent analysis by the LLM.
+            'last_maintainer_comment_time' (str | None): The ISO 8601 timestamp of
+                the last maintainer comment.
+            'last_author_event_time' (str | None): The ISO 8601 timestamp of the
+                last substantive action (comment, edit, commit, etc.) taken by
+                the issue author.
+            'last_author_action_type' (str | None): The type of the author's last
+                action (e.g., 'commented', 'renamed'), for debugging and reporting.
+            'last_human_commenter_is_maintainer' (bool): A simple boolean that is
+                True if the absolute last human action on the issue was
+                performed by a maintainer.
+            'stale_label_applied_at' (str | None): The ISO 8601 timestamp of when
+                the 'stale' label was most recently applied.
     """
     try:
+        # Step 1: Fetch all necessary data from the GitHub API.
+        # The 'timeline' endpoint is the most comprehensive source for user activity.
+        print(f"DEBUG: Fetching full timeline for issue #{item_number}...")
         issue_url = f"{GITHUB_BASE_URL}/repos/{OWNER}/{REPO}/issues/{item_number}"
         timeline_url = f"{issue_url}/timeline?per_page=100"
         
         issue_data = get_request(issue_url)
         timeline_data = get_request(timeline_url)
 
+        # Step 2: Initialize key variables for the analysis.
         issue_author = issue_data.get('user', {}).get('login')
         current_labels = [label['name'] for label in issue_data.get('labels', [])]
 
-        last_maintainer_event = None
-        last_author_event = None
-        last_third_party_event = None
-        stale_label_event_time = None
-
+        # Step 3: Filter and sort all events into a clean, chronological history of human activity.
+        human_events = []
         for event in timeline_data:
             actor = event.get('actor', {}).get('login')
-            event_type = event.get('event')
             timestamp_str = event.get('created_at') or event.get('submitted_at')
             
-            if not timestamp_str or not actor or actor.endswith('[bot]'):
+            # Filter out malformed events, events without an actor/timestamp, or events from bots.
+            if not actor or not timestamp_str or actor.endswith('[bot]'):
                 continue
-
-            timestamp = dateutil.parser.isoparse(timestamp_str)
-
-            if event_type == 'labeled' and event.get('label', {}).get('name') == STALE_LABEL_NAME:
-                stale_label_event_time = timestamp
-
-            comment_text = event.get('body') if event_type == 'commented' else None
             
-            if actor in maintainers:
-                last_maintainer_event = {"actor": actor, "time": timestamp, "text": comment_text}
-            elif actor == issue_author:
-                last_author_event = {"actor": actor, "time": timestamp, "type": event_type, "text": comment_text}
-            else:
-                last_third_party_event = {"actor": actor, "time": timestamp, "type": event_type}
+            # Add a parsed datetime object to each event for reliable sorting and comparison.
+            event['parsed_time'] = dateutil.parser.isoparse(timestamp_str)
+            human_events.append(event)
+        
+        # Sort all valid human events by time, from oldest to newest.
+        human_events.sort(key=lambda e: e['parsed_time'])
 
-        last_human_event = max(
-            [e for e in [last_maintainer_event, last_author_event, last_third_party_event] if e],
-            key=lambda x: x['time'],
-            default=None
-        )
+        # Step 4: Find the most recent, relevant events by iterating backwards through the sorted list.
+        # This is an efficient way to find the "last" of each event type.
+        last_maintainer_comment = None
+        stale_label_event_time = None
+        
+        for event in reversed(human_events):
+            # Find the most recent maintainer COMMENT specifically for intent analysis.
+            if not last_maintainer_comment and event.get('actor', {}).get('login') in maintainers and event.get('event') == 'commented':
+                last_maintainer_comment = event
+            
+            # Find the last time the 'stale' label was applied.
+            if not stale_label_event_time and event.get('event') == 'labeled' and event.get('label', {}).get('name') == STALE_LABEL_NAME:
+                stale_label_event_time = event['parsed_time']
+            
+            # Optimization: Stop searching if we've found all the historical data we need.
+            if last_maintainer_comment and stale_label_event_time:
+                break
+        
+        # Find the last substantive action taken by the original author.
+        last_author_action = next((e for e in reversed(human_events) if e.get('actor', {}).get('login') == issue_author), None)
+
+        # Step 5: Build and return the clean, simple summary report for the LLM agent.
+        last_human_event = human_events[-1] if human_events else None
+        last_human_actor = last_human_event.get('actor', {}).get('login') if last_human_event else None
 
         return {
-            "status": "success", "issue_author": issue_author, "current_labels": current_labels,
-            "last_maintainer_event_time": last_maintainer_event['time'].isoformat() if last_maintainer_event else None,
-            "last_maintainer_comment_text": last_maintainer_event['text'] if last_maintainer_event else None,
-            "last_author_event_time": last_author_event['time'].isoformat() if last_author_event else None,
-            "last_human_commenter_is_maintainer": last_human_event['actor'] in maintainers if last_human_event else False,
-            "stale_label_applied_at": stale_label_event_time.isoformat() if stale_label_event_time else None
+            "status": "success",
+            "issue_author": issue_author,
+            "current_labels": current_labels,
+            "last_maintainer_comment_text": last_maintainer_comment.get('body') if last_maintainer_comment else None,
+            "last_maintainer_comment_time": last_maintainer_comment['parsed_time'].isoformat() if last_maintainer_comment else None,
+            "last_author_event_time": last_author_action['parsed_time'].isoformat() if last_author_action else None,
+            "last_author_action_type": last_author_action.get('event') if last_author_action else "unknown",
+            "last_human_commenter_is_maintainer": last_human_actor in maintainers if last_human_actor else False,
+            "stale_label_applied_at": stale_label_event_time.isoformat() if stale_label_event_time else None,
         }
+
     except Exception as e:
-        return error_response(f"Error getting issue state for #{item_number}: {e}")
+        # Provide a detailed error message if the analysis fails for any reason.
+        return error_response(f"Error getting comprehensive issue state for #{item_number}: {e}")
 
 def calculate_time_difference(timestamp_str: str) -> dict[str, Any]:
     """Calculates the difference in hours between a UTC timestamp string and now."""
@@ -161,40 +214,39 @@ root_agent = Agent(
     name="adk_repository_auditor_agent",
     description="Audits open issues to manage their state based on conversation history.",
     instruction=f"""
-      You are a highly intelligent repository auditor for '{OWNER}/{REPO}'.
-      Your job is to analyze all open issues by first gathering repository-level context and then analyzing each issue individually.
+      You are a highly intelligent and transparent repository auditor for '{OWNER}/{REPO}'.
+      Your job is to analyze all open issues and report on your findings before taking any action.
 
       **Primary Directive:** Ignore any events from users ending in `[bot]`.
+      **Reporting Directive:** For EVERY issue you analyze, you MUST output a concise, human-readable summary of your findings, starting with "Analysis for Issue #[number]:".
 
       **WORKFLOW:**
+      1.  **Context Gathering**: Call `get_repository_maintainers` and `get_all_open_issues`.
+      2.  **Per-Issue Analysis**: For each issue, call `get_issue_state` (passing in the maintainers list).
+      3.  **Decision & Reporting**: Based on the summary from `get_issue_state`, follow this strict decision tree and report your findings.
 
-      **Phase 1: Context Gathering (Do this ONLY ONCE)**
-      1.  Call the `get_repository_maintainers` tool to get the list of maintainers.
-      2.  Call the `get_all_open_issues` tool to get the list of candidate issues.
+      --- **DECISION TREE & REPORTING TEMPLATES** ---
 
-      **Phase 2: Per-Issue Analysis (Loop through the candidates)**
-      For each issue you found in Phase 1, you must perform the following steps:
-      1.  Call the `get_issue_state` tool. **Crucially, you must pass the list of maintainers you retrieved in Phase 1 as the `maintainers` argument to this tool.**
-      2.  Based on the JSON summary from `get_issue_state`, follow the decision tree below.
+      **1. IF the `last_human_commenter_is_maintainer` field is `False`:**
+          - **This means the issue is ACTIVE.**
+          - **Decision & Report**: If the '{STALE_LABEL_NAME}' label exists, report: "Analysis for Issue #[number]: Issue is ACTIVE. Action: Removing stale label." Then, call `remove_label_from_issue`. Otherwise, report: "Analysis for Issue #[number]: Issue is ACTIVE. Action: None." and do nothing.
 
-      --- **DECISION TREE** ---
+      **2. ELSE (the `last_human_commenter_is_maintainer` is `True`):**
+          - **This means the issue is PENDING.** Now analyze the maintainer's intent.
+          - **Analyze Intent**: Semantically analyze the `last_maintainer_comment_text`. Is it a question or a request for information/action?
+          
+          - **IF NO (it is not a question):**
+            - **Report**: "Analysis for Issue #[number]: PENDING. Maintainer intent was not a request. Action: None." Do nothing.
 
-      **1. CHECK IF ACTIVE:**
-      - **Condition**: Is the `last_human_commenter_is_maintainer` field `False`?
-      - **Action**: The issue is active. Call `remove_label_from_issue` to remove the '{STALE_LABEL_NAME}' label if it exists.
+          - **ELIF YES (it is a question) and the '{STALE_LABEL_NAME}' label is MISSING from `current_labels`:**
+            - **This is the "Check to Become Stale" path.**
+            - **Get Time Difference**: Call `calculate_time_difference` with the `last_maintainer_event_time`.
+            - **Decision & Report**: If `hours_passed` > **{STALE_HOURS_THRESHOLD}**: Report "Analysis for Issue #[number]: PENDING. Stale threshold met ({STALE_HOURS_THRESHOLD} hours). Action: Marking as stale." Then call `add_stale_label_and_comment` and `add_label_to_issue` for '{REQUEST_CLARIFICATION_LABEL}' if needed. Otherwise, report "Analysis for Issue #[number]: PENDING. Stale threshold not met. Action: None."
 
-      **2. IF PENDING, CHECK IF IT SHOULD BECOME STALE:**
-      - **Condition**: `last_human_commenter_is_maintainer` is `True`.
-      - **Action**: 
-        a. **Analyze Intent**: Semantically analyze the `last_maintainer_comment_text`. Is it a question? Is he requesting more information? Is he asking the author to take action?
-        b. **If YES**: Check the time. If the author hasn't responded since the maintainer's question, call `calculate_time_difference` with `last_maintainer_event_time`. If the returned `hours_passed` is greater than **{STALE_HOURS_THRESHOLD}**:
-           - **Stale Action**:
-             i. Call the `add_stale_label_and_comment` tool.
-             ii. If the '{REQUEST_CLARIFICATION_LABEL}' label is missing from `current_labels`, call `add_label_to_issue` to add it.
-
-      **3. CHECK IF STALE ISSUE SHOULD BE CLOSED:**
-      - **Condition**: The issue is already stale (`'{STALE_LABEL_NAME}'` is in `current_labels`).
-      - **Action**: Call `calculate_time_difference` with `stale_label_applied_at`. If the returned `hours_passed` is greater than **{CLOSE_HOURS_AFTER_STALE_THRESHOLD} hours`, call `close_as_stale`.
+          - **ELIF YES (it is a question) and the '{STALE_LABEL_NAME}' label IS PRESENT in `current_labels`:**
+            - **This is the "Check to Close" path.**
+            - **Get Time Difference**: Call `calculate_time_difference` with the `stale_label_applied_at`.
+            - **Decision & Report**: If `hours_passed` > **{CLOSE_HOURS_AFTER_STALE_THRESHOLD}**: Report "Analysis for Issue #[number]: STALE. Close threshold met ({CLOSE_HOURS_AFTER_STALE_THRESHOLD} hours). Action: Closing issue." Then call `close_as_stale`. Otherwise, report "Analysis for Issue #[number]: STALE. Close threshold not met. Action: None."
     """,
     tools=[
         get_all_open_issues,
