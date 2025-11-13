@@ -24,6 +24,7 @@ from typing import Optional
 import click
 from packaging.version import parse
 
+IS_WINDOWS = os.name == 'nt'
 _DOCKERFILE_TEMPLATE: Final[str] = """
 FROM python:3.11-slim
 WORKDIR /app
@@ -372,8 +373,13 @@ def _resolve_project(project_in_option: Optional[str]) -> str:
   if project_in_option:
     return project_in_option
 
+  if IS_WINDOWS:
+    gcloud_cmd = 'gcloud.cmd'
+  else:
+    gcloud_cmd = 'gcloud'
+
   result = subprocess.run(
-      ['gcloud', 'config', 'get-value', 'project'],
+      [gcloud_cmd, 'config', 'get-value', 'project'],
       check=True,
       capture_output=True,
       text=True,
@@ -578,9 +584,14 @@ def to_cloud_run(
     # Validate that extra gcloud args don't conflict with ADK-managed args
     _validate_gcloud_extra_args(extra_gcloud_args, adk_managed_args)
 
+    if IS_WINDOWS:
+      gcloud = 'gcloud.cmd'
+    else:
+      gcloud = 'gcloud'
+
     # Build the command with extra gcloud args
     gcloud_cmd = [
-        'gcloud',
+        gcloud,
         'run',
         'deploy',
         service_name,
