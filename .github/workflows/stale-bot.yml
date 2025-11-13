@@ -14,7 +14,6 @@ jobs:
       issues: write          
       pull-requests: write 
       contents: read         
-      administration: read  
 
     # The sequence of tasks the job will perform.
     steps:
