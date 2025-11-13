@@ -11,7 +11,7 @@ headers = {
 def get_request(url: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
     """Sends a GET request to the GitHub API."""
     response = requests.get(url, headers=headers, params=params or {}, timeout=60)
-    response.raise_for_status()  # Raises an exception for bad status codes (4xx or 5xx)
+    response.raise_for_status() 
     return response.json()
 
 def post_request(url: str, payload: Any) -> dict[str, Any]:
@@ -30,7 +30,6 @@ def delete_request(url: str) -> dict[str, Any]:
     """Sends a DELETE request to the GitHub API."""
     response = requests.delete(url, headers=headers, timeout=60)
     response.raise_for_status()
-    # DELETE requests often return a 204 No Content, so we check for that
     if response.status_code == 204:
         return {"status": "success"}
     return response.json()

@@ -1,0 +1,49 @@
+name: ADK Stale Issue Auditor
+
+on:
+  workflow_dispatch:
+
+  schedule:
+    - cron: '0 7 * * *'
+
+# A workflow is made up of one or more jobs that run in parallel or sequentially.
+jobs:
+  audit-stale-issues:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write          
+      pull-requests: write 
+      contents: read         
+      administration: read  
+
+    # The sequence of tasks the job will perform.
+    steps:
+      # Step 1: Check out the repository's code onto the runner.
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Step 2: Set up the correct Python environment.
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # Step 3: Install the Python dependencies.
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests python-dotenv google-adk python-dateutil
+
+      # Step 4: Run bot's main script.
+      - name: Run Auditor Agent Script
+        env:
+          # These secrets must be configured in the repository's settings.
+          GITHUB_TOKEN: ${{ secrets.ADK_TRIAGE_AGENT }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          OWNER: ${{ github.repository_owner }}
+          REPO: ${{ github.event.repository.name }}
+          PYTHONPATH: contributing/samples
+          ISSUES_PER_RUN: 10
+        
+        # Executes bot.
+        run: python -m adk_stale_agent.main
