@@ -206,6 +206,9 @@ def get_issue_state(item_number: int, maintainers: list[str]) -> dict[str, Any]:
         "last_author_action_type": (
             last_author_action.get("event") if last_author_action else "unknown"
         ),
+        "last_human_action_type": (
+            last_human_event.get("event") if last_human_event else "unknown"
+        ),
         "last_human_commenter_is_maintainer": (
             last_human_actor in maintainers if last_human_actor else False
         ),
@@ -328,7 +331,7 @@ root_agent = Agent(
       **STEP 1: CHECK FOR ACTIVITY (IS THE ISSUE ACTIVE?)**
       - **Condition**: Was the last human action NOT from a maintainer? (i.e., `last_human_commenter_is_maintainer` is `False`).
       - **Action**: The author or a third party has acted. The issue is ACTIVE.
-        - **Report and Action**: If '{STALE_LABEL_NAME}' is present, report: "Analysis for Issue #[number]: Issue is ACTIVE. The last action was a [action type] by a non-maintainer. To get the [action type], you MUST use the value from the 'last_author_action_type' field in the summary you received from the tool. Action: Removing stale label." and then call `remove_label_from_issue`. Otherwise, report: "Analysis for Issue #[number]: Issue is ACTIVE. No stale label to remove. Action: None."
+        - **Report and Action**: If '{STALE_LABEL_NAME}' is present, report: "Analysis for Issue #[number]: Issue is ACTIVE. The last action was a [action type] by a non-maintainer. To get the [action type], you MUST use the value from the 'last_human_action_type' field in the summary you received from the tool. Action: Removing stale label." and then call `remove_label_from_issue` with the label name '{STALE_LABEL_NAME}'. Otherwise, report: "Analysis for Issue #[number]: Issue is ACTIVE. No stale label to remove. Action: None."
       - **If this condition is met, stop processing this issue.**
 
       **STEP 2: IF PENDING, MANAGE THE STALE LIFECYCLE.**
@@ -347,7 +350,7 @@ root_agent = Agent(
             - **CRITICAL CHECK**: Now, you must verify the author has not already responded. Compare the `last_author_event_time` and the `last_maintainer_comment_time`.
             - **IF the author has NOT responded** (i.e., `last_author_event_time` is older than `last_maintainer_comment_time` or is null):
               - **Get Time Difference**: Call `calculate_time_difference` with the `last_maintainer_comment_time`.
-              - **Decision & Report**: If `hours_passed` > **{STALE_HOURS_THRESHOLD}**: Report "Analysis for Issue #[number]: PENDING. Stale threshold met ({STALE_HOURS_THRESHOLD} hours). Action: Marking as stale." and then call `add_stale_label_and_comment` and `add_label_to_issue` for '{REQUEST_CLARIFICATION_LABEL}'. Otherwise, report: "Analysis for Issue #[number]: PENDING. Stale threshold not met. Action: None."
+              - **Decision & Report**: If `hours_passed` > **{STALE_HOURS_THRESHOLD}**: Report "Analysis for Issue #[number]: PENDING. Stale threshold met ({STALE_HOURS_THRESHOLD} hours). Action: Marking as stale." and then call `add_stale_label_and_comment` and call `add_label_to_issue` with the label name '{REQUEST_CLARIFICATION_LABEL}'. Otherwise, report: "Analysis for Issue #[number]: PENDING. Stale threshold not met. Action: None."
             - **ELSE (the author HAS responded)**:
               - **Report**: "Analysis for Issue #[number]: PENDING, but author has already responded to the last maintainer request. Action: None."
           - **If NO (it is not a request):**
