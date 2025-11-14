@@ -55,6 +55,7 @@ These environment variables can be set in the workflow file to override the defa
 | `STALE_HOURS_THRESHOLD` | The number of hours of inactivity after a maintainer's question before an issue is marked as `stale`. | `168` (7 days) |
 | `CLOSE_HOURS_AFTER_STALE_THRESHOLD` | The number of hours after being marked `stale` before an issue is closed. | `168` (7 days) |
 | `ISSUES_PER_RUN` | The maximum number of oldest open issues to process in a single workflow run. | `100` |
+| `LLM_MODEL_NAME`| LLM model to use. | `gemini-2.5-flash` |
 
 ---
 

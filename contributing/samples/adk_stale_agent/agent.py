@@ -5,6 +5,7 @@ from typing import Any
 from adk_stale_agent.settings import CLOSE_HOURS_AFTER_STALE_THRESHOLD
 from adk_stale_agent.settings import GITHUB_BASE_URL
 from adk_stale_agent.settings import ISSUES_PER_RUN
+from adk_stale_agent.settings import LLM_MODEL_NAME
 from adk_stale_agent.settings import OWNER
 from adk_stale_agent.settings import REPO
 from adk_stale_agent.settings import REQUEST_CLARIFICATION_LABEL
@@ -304,7 +305,7 @@ def close_as_stale(item_number: int) -> dict[str, Any]:
 # --- Agent Definition ---
 
 root_agent = Agent(
-    model="gemini-2.5-flash",
+    model=LLM_MODEL_NAME,
     name="adk_repository_auditor_agent",
     description=(
         "Audits open issues to manage their state based on conversation"

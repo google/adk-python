@@ -51,6 +51,7 @@ jobs:
           OWNER: google
           REPO: adk-python
           ISSUES_PER_RUN: 100
+          LLM_MODEL_NAME: "gemini-2.5-flash"
           PYTHONPATH: contributing/samples
           
         # The final 'run' command.
