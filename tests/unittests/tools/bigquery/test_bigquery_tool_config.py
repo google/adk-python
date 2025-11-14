@@ -56,3 +56,24 @@ def test_bigquery_tool_config_max_query_result_rows_custom():
   with pytest.warns(UserWarning):
     config = BigQueryToolConfig(max_query_result_rows=100)
   assert config.max_query_result_rows == 100
+
+
+def test_bigquery_tool_config_valid_maximum_bytes_billed():
+  """Test BigQueryToolConfig raises exception with valid max bytes billed."""
+  with pytest.warns(UserWarning):
+    config = BigQueryToolConfig(maximum_bytes_billed=10_485_760)
+  assert config.maximum_bytes_billed == 10_485_760
+
+
+def test_bigquery_tool_config_invalid_maximum_bytes_billed():
+  """Test BigQueryToolConfig raises exception with invalid max bytes billed."""
+  with pytest.raises(
+      ValueError,
+      match=(
+          "In BigQuery on-demand pricing, charges are rounded up to the nearest"
+          " MB, with a minimum 10 MB data processed per table referenced by the"
+          " query, and with a minimum 10 MB data processed per query. So"
+          " max_bytes_billed must be set >=10485760."
+      ),
+  ):
+    BigQueryToolConfig(maximum_bytes_billed=10_485_759)

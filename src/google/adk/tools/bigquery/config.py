@@ -61,6 +61,14 @@ class BigQueryToolConfig(BaseModel):
   change in future versions.
   """
 
+  maximum_bytes_billed: Optional[int] = None
+  """Maximum number of bytes to bill for a query.
+
+  In BigQuery on-demand pricing, charges are rounded up to the nearest MB, with
+  a minimum 10 MB data processed per table referenced by the query, and with a
+  minimum 10 MB data processed per query. So this value must be set >=10485760.
+  """
+
   max_query_result_rows: int = 50
   """Maximum number of rows to return from a query.
 
@@ -90,6 +98,19 @@ class BigQueryToolConfig(BaseModel):
   determined based on the data location in the query. For all supported
   locations, see https://cloud.google.com/bigquery/docs/locations.
   """
+
+  @field_validator('maximum_bytes_billed')
+  @classmethod
+  def validate_maximum_bytes_billed(cls, v):
+    """Validate the maximum bytes billed."""
+    if v and v < 10_485_760:
+      raise ValueError(
+          'In BigQuery on-demand pricing, charges are rounded up to the nearest'
+          ' MB, with a minimum 10 MB data processed per table referenced by the'
+          ' query, and with a minimum 10 MB data processed per query. So'
+          ' max_bytes_billed must be set >=10485760.'
+      )
+    return v
 
   @field_validator('application_name')
   @classmethod
