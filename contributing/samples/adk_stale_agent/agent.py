@@ -233,7 +233,7 @@ def calculate_time_difference(timestamp_str: str) -> dict[str, Any]:
     time_difference = current_time_utc - event_time
     hours_passed = time_difference.total_seconds() / 3600
     return {"status": "success", "hours_passed": hours_passed}
-  except RequestException as e:
+  except (dateutil.parser.ParserError, TypeError) as e:
     return error_response(f"Error calculating time difference: {e}")
 
 
