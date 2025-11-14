@@ -283,7 +283,7 @@ def add_stale_label_and_comment(item_number: int) -> dict[str, Any]:
 def close_as_stale(item_number: int) -> dict[str, Any]:
   """Posts a final comment and closes an issue or PR as stale."""
   comment = (
-      f"This has been automatically closed because it has been marked as stale."
+      f"This has been automatically closed because it has been marked as stale for over 7 days."
   )
   try:
     post_request(
@@ -313,7 +313,7 @@ root_agent = Agent(
       Your job is to analyze all open issues and report on your findings before taking any action.
 
       **Primary Directive:** Ignore any events from users ending in `[bot]`.
-      **Reporting Directive:** For EVERY issue you analyze, you MUST output a concise summary of your findings, starting with "Analysis for Issue #[number]:".
+      **Reporting Directive:** For EVERY issue you analyze, you MUST output a concise, human-readable summary, starting with "Analysis for Issue #[number]:".
 
       **WORKFLOW:**
       1.  **Context Gathering**: Call `get_repository_maintainers` and `get_all_open_issues`.
@@ -325,27 +325,30 @@ root_agent = Agent(
       **STEP 1: CHECK FOR ACTIVITY (IS THE ISSUE ACTIVE?)**
       - **Condition**: Was the last human action NOT from a maintainer? (i.e., `last_human_commenter_is_maintainer` is `False`).
       - **Action**: The author or a third party has acted. The issue is ACTIVE.
-        - **Report and Action**: If '{STALE_LABEL_NAME}' is present, report: "Analysis for Issue #[number]: Issue is ACTIVE due to non-maintainer activity. Action: Removing stale label." and then call `remove_label_from_issue`. Otherwise, report: "Analysis for Issue #[number]: Issue is ACTIVE. Action: None."
+        - **Report and Action**: If '{STALE_LABEL_NAME}' is present, report: "Analysis for Issue #[number]: Issue is ACTIVE. The last action was a [action type] by a non-maintainer. To get the [action type], you MUST use the value from the 'last_author_action_type' field in the summary you received from the tool. Action: Removing stale label." and then call `remove_label_from_issue`. Otherwise, report: "Analysis for Issue #[number]: Issue is ACTIVE. No stale label to remove. Action: None."
       - **If this condition is met, stop processing this issue.**
 
       **STEP 2: IF PENDING, MANAGE THE STALE LIFECYCLE.**
       - **Condition**: The last human action WAS from a maintainer (`last_human_commenter_is_maintainer` is `True`). The issue is PENDING.
-      - **Action**: You must now determine the correct state based on the presence of the '{STALE_LABEL_NAME}' label.
+      - **Action**: You must now determine the correct state.
 
-        - **IF the '{STALE_LABEL_NAME}' label IS PRESENT:**
-          - **This issue is already STALE.** Your only job is to check if it should be closed. A new maintainer comment does not reset the close timer.
-          - **Get Time Difference**: Call `calculate_time_difference` with the `stale_label_applied_at` timestamp.
-          - **Decision & Report**: If `hours_passed` > **{CLOSE_HOURS_AFTER_STALE_THRESHOLD}**: Report "Analysis for Issue #[number]: STALE. Close threshold met ({CLOSE_HOURS_AFTER_STALE_THRESHOLD} hours) with no author activity. Action: Closing issue." and then call `close_as_stale`. Otherwise, report "Analysis for Issue #[number]: STALE. Close threshold not yet met. Action: None."
+        - **First, check if the issue is already STALE.**
+          - **Condition**: Is the `'{STALE_LABEL_NAME}'` label present in `current_labels`?
+          - **Action**: The issue is STALE. Your only job is to check if it should be closed.
+            - **Get Time Difference**: Call `calculate_time_difference` with the `stale_label_applied_at` timestamp.
+            - **Decision & Report**: If `hours_passed` > **{CLOSE_HOURS_AFTER_STALE_THRESHOLD}**: Report "Analysis for Issue #[number]: STALE. Close threshold met ({CLOSE_HOURS_AFTER_STALE_THRESHOLD} hours) with no author activity. Action: Closing issue." and then call `close_as_stale`. Otherwise, report "Analysis for Issue #[number]: STALE. Close threshold not yet met. Action: None."
 
-        - **ELSE (the '{STALE_LABEL_NAME}' label is MISSING):**
-          - **This issue is PENDING and might become stale.** Now you must analyze the maintainer's intent.
-          - **Analyze Intent**: Semantically analyze the `last_maintainer_comment_text`. Is it either a question or request for info or suggestion or request for changes?
-          - **If YES (it's a question or request for info or suggestion or request for changes):**
-            - **Get Time Difference**: Call `calculate_time_difference` with the `last_maintainer_comment_time`.
-            - **Decision & Report**: If `hours_passed` > **{STALE_HOURS_THRESHOLD}**: Report "Analysis for Issue #[number]: PENDING. Stale threshold met ({STALE_HOURS_THRESHOLD} hours). Action: Marking as stale." and then call `add_stale_label_and_comment` and `add_label_to_issue` for '{REQUEST_CLARIFICATION_LABEL}'.
-          - **If NO (it's not a question or request for info or suggestion or request for changes) or if time thresholds are not met:**
-            - **Report**: "Analysis for Issue #[number]: PENDING. No action required at this time."
-
+        - **ELSE (the issue is PENDING but not yet stale):**
+          - **Analyze Intent**: Semantically analyze the `last_maintainer_comment_text`. Is it a question, a request for information, a suggestion, or a request for changes?
+          - **If YES (it is a request)**:
+            - **CRITICAL CHECK**: Now, you must verify the author has not already responded. Compare the `last_author_event_time` and the `last_maintainer_comment_time`.
+            - **IF the author has NOT responded** (i.e., `last_author_event_time` is older than `last_maintainer_comment_time` or is null):
+              - **Get Time Difference**: Call `calculate_time_difference` with the `last_maintainer_comment_time`.
+              - **Decision & Report**: If `hours_passed` > **{STALE_HOURS_THRESHOLD}**: Report "Analysis for Issue #[number]: PENDING. Stale threshold met ({STALE_HOURS_THRESHOLD} hours). Action: Marking as stale." and then call `add_stale_label_and_comment` and `add_label_to_issue` for '{REQUEST_CLARIFICATION_LABEL}'. Otherwise, report: "Analysis for Issue #[number]: PENDING. Stale threshold not met. Action: None."
+            - **ELSE (the author HAS responded)**:
+              - **Report**: "Analysis for Issue #[number]: PENDING, but author has already responded to the last maintainer request. Action: None."
+          - **If NO (it is not a request):**
+            - **Report**: "Analysis for Issue #[number]: PENDING. Maintainer's last comment was not a request. Action: None."
     """,
     tools=[
         get_all_open_issues,
