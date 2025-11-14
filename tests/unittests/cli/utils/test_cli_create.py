@@ -143,8 +143,6 @@ def test_run_cmd_overwrite_reject(
   (agent_dir / "dummy.txt").write_text("dummy")
 
   monkeypatch.setattr(os, "getcwd", lambda: str(tmp_path))
-  monkeypatch.setattr(os.path, "exists", lambda _p: True)
-  monkeypatch.setattr(os, "listdir", lambda _p: ["dummy.txt"])
   monkeypatch.setattr(click, "confirm", lambda *a, **k: False)
 
   with pytest.raises(click.Abort):
@@ -165,7 +163,6 @@ def test_run_cmd_with_type_config(
   agent_name = "test_agent"
 
   monkeypatch.setattr(os, "getcwd", lambda: str(tmp_path))
-  monkeypatch.setattr(os.path, "exists", lambda _p: False)
 
   cli_create.run_cmd(
       agent_name,

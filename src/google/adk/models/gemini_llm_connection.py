@@ -18,7 +18,6 @@ import logging
 from typing import AsyncGenerator
 from typing import Union
 
-from google.genai import live
 from google.genai import types
 
 from ..utils.context_utils import Aclosing
@@ -28,6 +27,10 @@ from .llm_response import LlmResponse
 logger = logging.getLogger('google_adk.' + __name__)
 
 RealtimeInput = Union[types.Blob, types.ActivityStart, types.ActivityEnd]
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+  from google.genai import live
 
 
 class GeminiLlmConnection(BaseLlmConnection):
@@ -58,6 +61,7 @@ class GeminiLlmConnection(BaseLlmConnection):
         for content in history
         if content.parts and content.parts[0].text
     ]
+    logger.debug('Sending history to live connection: %s', contents)
 
     if contents:
       await self._gemini_session.send(
@@ -106,10 +110,10 @@ class GeminiLlmConnection(BaseLlmConnection):
       input: The input to send to the model.
     """
     if isinstance(input, types.Blob):
-      input_blob = input.model_dump()
       # The blob is binary and is very large. So let's not log it.
       logger.debug('Sending LLM Blob.')
-      await self._gemini_session.send(input=input_blob)
+      await self._gemini_session.send_realtime_input(media=input)
+
     elif isinstance(input, types.ActivityStart):
       logger.debug('Sending LLM activity start signal.')
       await self._gemini_session.send_realtime_input(activity_start=input)

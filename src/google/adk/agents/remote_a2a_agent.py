@@ -20,6 +20,7 @@ import logging
 from pathlib import Path
 from typing import Any
 from typing import AsyncGenerator
+from typing import Callable
 from typing import Optional
 from typing import Union
 from urllib.parse import urlparse
@@ -125,12 +126,16 @@ class RemoteA2aAgent(BaseAgent):
       self,
       name: str,
       agent_card: Union[AgentCard, str],
+      *,
       description: str = "",
       httpx_client: Optional[httpx.AsyncClient] = None,
       timeout: float = DEFAULT_TIMEOUT,
       genai_part_converter: GenAIPartToA2APartConverter = convert_genai_part_to_a2a_part,
       a2a_part_converter: A2APartToGenAIPartConverter = convert_a2a_part_to_genai_part,
       a2a_client_factory: Optional[A2AClientFactory] = None,
+      a2a_request_meta_provider: Optional[
+          Callable[[InvocationContext, A2AMessage], dict[str, Any]]
+      ] = None,
       **kwargs: Any,
   ) -> None:
     """Initialize RemoteA2aAgent.
@@ -144,6 +149,9 @@ class RemoteA2aAgent(BaseAgent):
       timeout: HTTP timeout in seconds
       a2a_client_factory: Optional A2AClientFactory object (will create own if
         not provided)
+      a2a_request_meta_provider: Optional callable that takes InvocationContext
+        and A2AMessage and returns a metadata object to attach to the A2A
+        request.
       **kwargs: Additional arguments passed to BaseAgent
 
     Raises:
@@ -169,6 +177,7 @@ class RemoteA2aAgent(BaseAgent):
     self._genai_part_converter = genai_part_converter
     self._a2a_part_converter = a2a_part_converter
     self._a2a_client_factory: Optional[A2AClientFactory] = a2a_client_factory
+    self._a2a_request_meta_provider = a2a_request_meta_provider
 
     # Validate and store agent card reference
     if isinstance(agent_card, AgentCard):
@@ -352,7 +361,8 @@ class RemoteA2aAgent(BaseAgent):
       ctx: The invocation context
 
     Returns:
-      List of A2A parts extracted from session events, context ID
+      List of A2A parts extracted from session events, context ID,
+      request metadata
     """
     message_parts: list[A2APart] = []
     context_id = None
@@ -376,9 +386,12 @@ class RemoteA2aAgent(BaseAgent):
         continue
 
       for part in event.content.parts:
-        converted_part = self._genai_part_converter(part)
-        if converted_part:
-          message_parts.append(converted_part)
+        converted_parts = self._genai_part_converter(part)
+        if not isinstance(converted_parts, list):
+          converted_parts = [converted_parts] if converted_parts else []
+
+        if converted_parts:
+          message_parts.extend(converted_parts)
         else:
           logger.warning("Failed to convert part to A2A format: %s", part)
 
@@ -518,8 +531,13 @@ class RemoteA2aAgent(BaseAgent):
     logger.debug(build_a2a_request_log(a2a_request))
 
     try:
+      request_metadata = None
+      if self._a2a_request_meta_provider:
+        request_metadata = self._a2a_request_meta_provider(ctx, a2a_request)
+
       async for a2a_response in self._a2a_client.send_message(
-          request=a2a_request
+          request=a2a_request,
+          request_metadata=request_metadata,
       ):
         logger.debug(build_a2a_response_log(a2a_response))
 
