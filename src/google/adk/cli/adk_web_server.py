@@ -86,6 +86,8 @@ from ..runners import Runner
 from ..sessions.base_session_service import BaseSessionService
 from ..sessions.session import Session
 from ..utils.context_utils import Aclosing
+from ..utils.pydantic_v2_compatibility import create_robust_openapi_function
+from ..utils.pydantic_v2_compatibility import patch_types_for_pydantic_v2
 from .cli_eval import EVAL_SESSION_ID_PREFIX
 from .utils import cleanup
 from .utils import common
@@ -94,7 +96,6 @@ from .utils import evals
 from .utils.base_agent_loader import BaseAgentLoader
 from .utils.shared_value import SharedValue
 from .utils.state import create_empty_state
-from ..utils.pydantic_v2_compatibility import patch_types_for_pydantic_v2, create_robust_openapi_function
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -708,7 +709,9 @@ class AdkWebServer:
 
     # Replace default OpenAPI function with robust version
     app.openapi = create_robust_openapi_function(app)
-    logger.info("Robust OpenAPI generation enabled with Pydantic v2 error handling")
+    logger.info(
+        "Robust OpenAPI generation enabled with Pydantic v2 error handling"
+    )
 
     @app.get("/list-apps")
     async def list_apps() -> list[str]:
