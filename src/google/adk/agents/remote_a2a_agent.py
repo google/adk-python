@@ -530,7 +530,7 @@ class RemoteA2aAgent(BaseAgent):
     try:
       async for a2a_response in self._a2a_client.send_message(
           request=a2a_request,
-          context=request_metadata,
+          request_metadata=request_metadata,
       ):
         logger.debug(build_a2a_response_log(a2a_response))
 
