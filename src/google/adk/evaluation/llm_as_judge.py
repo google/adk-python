@@ -27,6 +27,7 @@ from ..models.llm_response import LlmResponse
 from ..models.registry import LLMRegistry
 from ..utils.context_utils import Aclosing
 from ..utils.feature_decorator import experimental
+from ._retry_options_utils import add_default_retry_options_if_not_present
 from .common import EvalBaseModel
 from .eval_case import Invocation
 from .eval_metrics import BaseCriterion
@@ -142,6 +143,7 @@ class LlmAsJudge(Evaluator):
           ],
           config=self._judge_model_options.judge_model_config,
       )
+      add_default_retry_options_if_not_present(llm_request)
       num_samples = self._judge_model_options.num_samples
       invocation_result_samples = []
       for _ in range(num_samples):
