@@ -1,5 +1,6 @@
 from datetime import datetime
 from datetime import timezone
+import os
 from typing import Any
 
 from adk_stale_agent.settings import CLOSE_HOURS_AFTER_STALE_THRESHOLD
@@ -21,6 +22,18 @@ from google.adk.agents.llm_agent import Agent
 from requests.exceptions import RequestException
 
 # --- Primary Tools for the Agent ---
+
+
+def load_prompt_template(filename: str) -> str:
+  """Loads the prompt text file from the same directory as this script."""
+  file_path = os.path.join(os.path.dirname(__file__), filename)
+
+  # 2. Open the file in 'read' mode ('r').
+  with open(file_path, "r") as f:
+    return f.read()
+
+
+PROMPT_TEMPLATE = load_prompt_template("PROMPT_INSTRUCTION.txt")
 
 
 def get_repository_maintainers() -> dict[str, Any]:
@@ -314,48 +327,14 @@ root_agent = Agent(
         "Audits open issues to manage their state based on conversation"
         " history."
     ),
-    instruction=f"""
-      You are a highly intelligent and transparent repository auditor for '{OWNER}/{REPO}'.
-      Your job is to analyze all open issues and report on your findings before taking any action.
-
-      **Primary Directive:** Ignore any events from users ending in `[bot]`.
-      **Reporting Directive:** For EVERY issue you analyze, you MUST output a concise, human-readable summary, starting with "Analysis for Issue #[number]:".
-
-      **WORKFLOW:**
-      1.  **Context Gathering**: Call `get_repository_maintainers` and `get_all_open_issues`.
-      2.  **Per-Issue Analysis**: For each issue, call `get_issue_state`, passing in the maintainers list.
-      3.  **Decision & Reporting**: Based on the summary from `get_issue_state`, follow this strict decision tree in order.
-
-      --- **DECISION TREE & REPORTING TEMPLATES** ---
-
-      **STEP 1: CHECK FOR ACTIVITY (IS THE ISSUE ACTIVE?)**
-      - **Condition**: Was the last human action NOT from a maintainer? (i.e., `last_human_commenter_is_maintainer` is `False`).
-      - **Action**: The author or a third party has acted. The issue is ACTIVE.
-        - **Report and Action**: If '{STALE_LABEL_NAME}' is present, report: "Analysis for Issue #[number]: Issue is ACTIVE. The last action was a [action type] by a non-maintainer. To get the [action type], you MUST use the value from the 'last_human_action_type' field in the summary you received from the tool. Action: Removing stale label." and then call `remove_label_from_issue` with the label name '{STALE_LABEL_NAME}'. Otherwise, report: "Analysis for Issue #[number]: Issue is ACTIVE. No stale label to remove. Action: None."
-      - **If this condition is met, stop processing this issue.**
-
-      **STEP 2: IF PENDING, MANAGE THE STALE LIFECYCLE.**
-      - **Condition**: The last human action WAS from a maintainer (`last_human_commenter_is_maintainer` is `True`). The issue is PENDING.
-      - **Action**: You must now determine the correct state.
-
-        - **First, check if the issue is already STALE.**
-          - **Condition**: Is the `'{STALE_LABEL_NAME}'` label present in `current_labels`?
-          - **Action**: The issue is STALE. Your only job is to check if it should be closed.
-            - **Get Time Difference**: Call `calculate_time_difference` with the `stale_label_applied_at` timestamp.
-            - **Decision & Report**: If `hours_passed` > **{CLOSE_HOURS_AFTER_STALE_THRESHOLD}**: Report "Analysis for Issue #[number]: STALE. Close threshold met ({CLOSE_HOURS_AFTER_STALE_THRESHOLD} hours) with no author activity. Action: Closing issue." and then call `close_as_stale`. Otherwise, report "Analysis for Issue #[number]: STALE. Close threshold not yet met. Action: None."
-
-        - **ELSE (the issue is PENDING but not yet stale):**
-          - **Analyze Intent**: Semantically analyze the `last_maintainer_comment_text`. Is it a question, a request for information, a suggestion, or a request for changes?
-          - **If YES (it is a request)**:
-            - **CRITICAL CHECK**: Now, you must verify the author has not already responded. Compare the `last_author_event_time` and the `last_maintainer_comment_time`.
-            - **IF the author has NOT responded** (i.e., `last_author_event_time` is older than `last_maintainer_comment_time` or is null):
-              - **Get Time Difference**: Call `calculate_time_difference` with the `last_maintainer_comment_time`.
-              - **Decision & Report**: If `hours_passed` > **{STALE_HOURS_THRESHOLD}**: Report "Analysis for Issue #[number]: PENDING. Stale threshold met ({STALE_HOURS_THRESHOLD} hours). Action: Marking as stale." and then call `add_stale_label_and_comment` and call `add_label_to_issue` with the label name '{REQUEST_CLARIFICATION_LABEL}'. Otherwise, report: "Analysis for Issue #[number]: PENDING. Stale threshold not met. Action: None."
-            - **ELSE (the author HAS responded)**:
-              - **Report**: "Analysis for Issue #[number]: PENDING, but author has already responded to the last maintainer request. Action: None."
-          - **If NO (it is not a request):**
-            - **Report**: "Analysis for Issue #[number]: PENDING. Maintainer's last comment was not a request. Action: None."
-    """,
+    instruction=PROMPT_TEMPLATE.format(
+        OWNER=OWNER,
+        REPO=REPO,
+        STALE_LABEL_NAME=STALE_LABEL_NAME,
+        REQUEST_CLARIFICATION_LABEL=REQUEST_CLARIFICATION_LABEL,
+        STALE_HOURS_THRESHOLD=STALE_HOURS_THRESHOLD,
+        CLOSE_HOURS_AFTER_STALE_THRESHOLD=CLOSE_HOURS_AFTER_STALE_THRESHOLD,
+    ),
     tools=[
         get_all_open_issues,
         get_issue_state,

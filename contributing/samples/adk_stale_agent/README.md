@@ -1,6 +1,6 @@
 # ADK Stale Issue Auditor Agent
 
-This directory contains an autonomous agent designed to audit a GitHub repository for stale issues and pull requests, helping to maintain repository hygiene and ensure that all open items are actionable.
+This directory contains an autonomous agent designed to audit a GitHub repository for stale issues, helping to maintain repository hygiene and ensure that all open items are actionable.
 
 The agent operates as a "Repository Auditor," proactively scanning all open issues rather than waiting for a specific trigger. It uses a combination of deterministic Python tools and the semantic understanding of a Large Language Model (LLM) to make intelligent decisions about the state of a conversation.
 
