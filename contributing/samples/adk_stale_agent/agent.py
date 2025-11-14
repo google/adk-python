@@ -283,7 +283,8 @@ def add_stale_label_and_comment(item_number: int) -> dict[str, Any]:
 def close_as_stale(item_number: int) -> dict[str, Any]:
   """Posts a final comment and closes an issue or PR as stale."""
   comment = (
-      f"This has been automatically closed because it has been marked as stale for over 7 days."
+      f"This has been automatically closed because it has been marked as stale"
+      f" for over 7 days."
   )
   try:
     post_request(
