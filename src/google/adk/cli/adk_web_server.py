@@ -294,15 +294,14 @@ def _setup_telemetry(
     )
   else:
     # Old logic - to be removed when above leaves experimental.
-    requires_set_trace_provider = False
     tracer_provider = trace.get_tracer_provider()
-    if isinstance(tracer_provider, trace.ProxyTracerProvider):
-      requires_set_trace_provider = True
+    is_proxy = isinstance(tracer_provider, trace.ProxyTracerProvider)
+    if is_proxy:
       tracer_provider = TracerProvider()
     if internal_exporters is not None:
       for exporter in internal_exporters:
         tracer_provider.add_span_processor(exporter)
-    if requires_set_trace_provider:
+    if is_proxy:
       trace.set_tracer_provider(tracer_provider=tracer_provider)
 
 
