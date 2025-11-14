@@ -173,7 +173,7 @@ def test_to_cloud_run_happy_path(
   gcloud_args = run_recorder.get_last_call_args()[0]
 
   expected_gcloud_command = [
-      "gcloud",
+      cli_deploy._GCLOUD_CMD,
       "run",
       "deploy",
       "svc",
