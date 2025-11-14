@@ -43,7 +43,6 @@ The agent is configured entirely via environment variables, which should be set 
 
 The `GITHUB_TOKEN` requires the following **Repository Permissions**:
 *   **Issues**: `Read & write` (to read issues, add labels, comment, and close)
-*   **Pull Requests**: `Read & write` (to perform the same actions on PRs)
 *   **Administration**: `Read-only` (to read the list of repository collaborators/maintainers)
 
 ### Optional Configuration

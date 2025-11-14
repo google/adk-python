@@ -24,7 +24,6 @@ jobs:
     # These are standard and syntactically correct.
     permissions:
       issues: write
-      pull-requests: write
       contents: read
 
     # The sequence of steps for the job.
