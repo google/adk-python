@@ -163,6 +163,7 @@ def _rearrange_events_for_latest_function_response(
 
   # Search in full session history if available
   search_events = all_events if all_events else events
+  function_call_event = None
   function_call_event_idx = -1
   # look for corresponding function call event reversely
   for idx in range(len(search_events) - 2, -1, -1):
@@ -171,7 +172,7 @@ def _rearrange_events_for_latest_function_response(
     if function_calls:
       for function_call in function_calls:
         if function_call.id in function_responses_ids:
-          function_call_event_idx = idx
+          function_call_event = event
           function_call_ids = {
               function_call.id for function_call in function_calls
           }
@@ -188,6 +189,15 @@ def _rearrange_events_for_latest_function_response(
           # the last response event
           function_responses_ids = function_call_ids
           break
+      if function_call_event:
+        break
+
+  # Find the index of the function_call_event in the events list
+  if function_call_event:
+    for idx, event in enumerate(events):
+      if event is function_call_event:
+        function_call_event_idx = idx
+        break
 
   if function_call_event_idx == -1:
     logger.debug(
