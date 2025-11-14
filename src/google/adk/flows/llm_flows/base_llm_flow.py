@@ -49,7 +49,6 @@ from ...tools.google_search_tool import google_search
 from ...tools.tool_context import ToolContext
 from ...utils.context_utils import Aclosing
 from .audio_cache_manager import AudioCacheManager
-from .transcription_manager import TranscriptionManager
 
 if TYPE_CHECKING:
   from ...agents.llm_agent import LlmAgent
@@ -82,7 +81,6 @@ class BaseLlmFlow(ABC):
 
     # Initialize configuration and managers
     self.audio_cache_manager = AudioCacheManager()
-    self.transcription_manager = TranscriptionManager()
 
   async def run_live(
       self,
@@ -246,16 +244,6 @@ class BaseLlmFlow(ABC):
       elif live_request.activity_end:
         await llm_connection.send_realtime(types.ActivityEnd())
       elif live_request.blob:
-        # Cache audio data here for transcription
-        if not invocation_context.transcription_cache:
-          invocation_context.transcription_cache = []
-        if not invocation_context.run_config.input_audio_transcription:
-          # if the live model's input transcription is not enabled, then
-          # we use our own audio transcriber to achieve that.
-          invocation_context.transcription_cache.append(
-              TranscriptionEntry(role='user', data=live_request.blob)
-          )
-
         # Cache input audio chunks before flushing
         self.audio_cache_manager.cache_audio(
             invocation_context, live_request.blob, cache_type='input'
@@ -324,7 +312,7 @@ class BaseLlmFlow(ABC):
                 # Cache output audio chunks from model responses
                 # TODO: support video data
                 if (
-                    invocation_context.run_config.save_live_audio
+                    invocation_context.run_config.save_live_blob
                     and event.content
                     and event.content.parts
                     and event.content.parts[0].inline_data
@@ -603,14 +591,13 @@ class BaseLlmFlow(ABC):
       return
 
     # Flush audio caches based on control events using configurable settings
-    if invocation_context.run_config.save_live_audio:
-      _handle_control_event_flush_event = (
-          await self._handle_control_event_flush(
-              invocation_context, llm_response
-          )
+    if invocation_context.run_config.save_live_blob:
+      flushed_events = await self._handle_control_event_flush(
+          invocation_context, llm_response
       )
-      if _handle_control_event_flush_event:
-        yield _handle_control_event_flush_event
+      for event in flushed_events:
+        yield event
+      if flushed_events:
         return
 
     # Builds the event.
@@ -925,12 +912,15 @@ class BaseLlmFlow(ABC):
 
   async def _handle_control_event_flush(
       self, invocation_context: InvocationContext, llm_response: LlmResponse
-  ) -> None:
+  ) -> list[Event]:
     """Handle audio cache flushing based on control events.
 
     Args:
       invocation_context: The invocation context containing audio caches.
       llm_response: The LLM response containing control event information.
+
+    Returns:
+      A list of Event objects created from the flushed caches.
     """
 
     # Log cache statistics if enabled
@@ -959,6 +949,7 @@ class BaseLlmFlow(ABC):
           flush_user_audio=False,
           flush_model_audio=True,
       )
+    return []
 
   async def _run_and_handle_error(
       self,

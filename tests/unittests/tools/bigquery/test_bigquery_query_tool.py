@@ -1773,3 +1773,163 @@ def test_ml_tool_job_labels(tool_call, expected_label):
         assert mock_kwargs["job_config"].labels == {
             "adk-bigquery-tool": expected_label
         }
+
+
+def test_execute_sql_max_rows_config():
+  """Test execute_sql tool respects max_query_result_rows from config."""
+  project = "my_project"
+  query = "SELECT 123 AS num"
+  statement_type = "SELECT"
+  query_result = [{"num": i} for i in range(20)]  # 20 rows
+  credentials = mock.create_autospec(Credentials, instance=True)
+  tool_config = BigQueryToolConfig(max_query_result_rows=10)
+  tool_context = mock.create_autospec(ToolContext, instance=True)
+
+  with mock.patch("google.cloud.bigquery.Client", autospec=False) as Client:
+    bq_client = Client.return_value
+    query_job = mock.create_autospec(bigquery.QueryJob)
+    query_job.statement_type = statement_type
+    bq_client.query.return_value = query_job
+    bq_client.query_and_wait.return_value = query_result[:10]
+
+    result = execute_sql(project, query, credentials, tool_config, tool_context)
+
+    # Check that max_results was called with config value
+    bq_client.query_and_wait.assert_called_once()
+    call_args = bq_client.query_and_wait.call_args
+    assert call_args.kwargs["max_results"] == 10
+
+    # Check truncation flag is set
+    assert result["status"] == "SUCCESS"
+    assert result["result_is_likely_truncated"] is True
+
+
+def test_execute_sql_no_truncation():
+  """Test execute_sql tool when results are not truncated."""
+  project = "my_project"
+  query = "SELECT 123 AS num"
+  statement_type = "SELECT"
+  query_result = [{"num": i} for i in range(3)]  # Only 3 rows
+  credentials = mock.create_autospec(Credentials, instance=True)
+  tool_config = BigQueryToolConfig(max_query_result_rows=10)
+  tool_context = mock.create_autospec(ToolContext, instance=True)
+
+  with mock.patch("google.cloud.bigquery.Client", autospec=False) as Client:
+    bq_client = Client.return_value
+    query_job = mock.create_autospec(bigquery.QueryJob)
+    query_job.statement_type = statement_type
+    bq_client.query.return_value = query_job
+    bq_client.query_and_wait.return_value = query_result
+
+    result = execute_sql(project, query, credentials, tool_config, tool_context)
+
+    # Check no truncation flag when fewer rows than limit
+    assert result["status"] == "SUCCESS"
+    assert "result_is_likely_truncated" not in result
+
+
+def test_execute_sql_maximum_bytes_billed_config():
+  """Test execute_sql tool respects maximum_bytes_billed from config."""
+  project = "my_project"
+  query = "SELECT 123 AS num"
+  statement_type = "SELECT"
+  credentials = mock.create_autospec(Credentials, instance=True)
+  tool_config = BigQueryToolConfig(maximum_bytes_billed=11_000_000)
+  tool_context = mock.create_autospec(ToolContext, instance=True)
+
+  with mock.patch("google.cloud.bigquery.Client", autospec=False) as Client:
+    bq_client = Client.return_value
+    query_job = mock.create_autospec(bigquery.QueryJob)
+    query_job.statement_type = statement_type
+    bq_client.query.return_value = query_job
+
+    execute_sql(project, query, credentials, tool_config, tool_context)
+
+    # Check that maximum_bytes_billed was called with config value
+    bq_client.query_and_wait.assert_called_once()
+    call_args = bq_client.query_and_wait.call_args
+    assert call_args.kwargs["job_config"].maximum_bytes_billed == 11_000_000
+
+
+@pytest.mark.parametrize(
+    ("tool_call",),
+    [
+        pytest.param(
+            lambda settings, tool_context: execute_sql(
+                project_id="test-project",
+                query="SELECT * FROM `test-dataset.test-table`",
+                credentials=mock.create_autospec(Credentials, instance=True),
+                settings=settings,
+                tool_context=tool_context,
+            ),
+            id="execute-sql",
+        ),
+        pytest.param(
+            lambda settings, tool_context: forecast(
+                project_id="test-project",
+                history_data="SELECT * FROM `test-dataset.test-table`",
+                timestamp_col="ts_col",
+                data_col="data_col",
+                credentials=mock.create_autospec(Credentials, instance=True),
+                settings=settings,
+                tool_context=tool_context,
+            ),
+            id="forecast",
+        ),
+        pytest.param(
+            lambda settings, tool_context: analyze_contribution(
+                project_id="test-project",
+                input_data="test-dataset.test-table",
+                dimension_id_cols=["dim1", "dim2"],
+                contribution_metric="SUM(metric)",
+                is_test_col="is_test",
+                credentials=mock.create_autospec(Credentials, instance=True),
+                settings=settings,
+                tool_context=tool_context,
+            ),
+            id="analyze-contribution",
+        ),
+        pytest.param(
+            lambda settings, tool_context: detect_anomalies(
+                project_id="test-project",
+                history_data="SELECT * FROM `test-dataset.test-table`",
+                times_series_timestamp_col="ts_timestamp",
+                times_series_data_col="ts_data",
+                credentials=mock.create_autospec(Credentials, instance=True),
+                settings=settings,
+                tool_context=tool_context,
+            ),
+            id="detect-anomalies",
+        ),
+    ],
+)
+def test_tool_call_doesnt_change_global_settings(tool_call):
+  """Test query tools don't change global settings."""
+  settings = BigQueryToolConfig(write_mode=WriteMode.ALLOWED)
+  tool_context = mock.create_autospec(ToolContext, instance=True)
+  tool_context.state.get.return_value = (
+      "test-bq-session-id",
+      "_anonymous_dataset",
+  )
+
+  with mock.patch("google.cloud.bigquery.Client", autospec=False) as Client:
+    # The mock instance
+    bq_client = Client.return_value
+
+    # Simulate the result of query API
+    query_job = mock.create_autospec(bigquery.QueryJob)
+    query_job.destination.dataset_id = "_anonymous_dataset"
+    bq_client.query.return_value = query_job
+    bq_client.query_and_wait.return_value = []
+
+    # Test settings write mode before
+    assert settings.write_mode == WriteMode.ALLOWED
+
+    # Call the tool
+    result = tool_call(settings, tool_context)
+
+    # Test successfull executeion of the tool
+    assert result == {"status": "SUCCESS", "rows": []}
+
+    # Test settings write mode after
+    assert settings.write_mode == WriteMode.ALLOWED

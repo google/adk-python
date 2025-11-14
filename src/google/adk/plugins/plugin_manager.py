@@ -14,7 +14,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import sys
 from typing import Any
 from typing import List
 from typing import Literal
@@ -70,13 +72,19 @@ class PluginManager:
   tool calls, or model requests.
   """
 
-  def __init__(self, plugins: Optional[List[BasePlugin]] = None):
+  def __init__(
+      self,
+      plugins: Optional[List[BasePlugin]] = None,
+      close_timeout: float = 5.0,
+  ):
     """Initializes the plugin service.
 
     Args:
       plugins: An optional list of plugins to register upon initialization.
+      close_timeout: The timeout in seconds for each plugin's close method.
     """
     self.plugins: List[BasePlugin] = []
+    self._close_timeout = close_timeout
     if plugins:
       for plugin in plugins:
         self.register_plugin(plugin)
@@ -297,3 +305,43 @@ class PluginManager:
         raise RuntimeError(error_message) from e
 
     return None
+
+  async def close(self) -> None:
+    """Calls the close method on all registered plugins concurrently.
+
+    Raises:
+      RuntimeError: If one or more plugins failed to close, containing
+        details of all failures.
+    """
+    exceptions = {}
+    # We iterate sequentially to avoid creating new tasks which can cause issues
+    # with some libraries (like anyio/mcp) that rely on task-local context.
+    for plugin in self.plugins:
+      try:
+        if sys.version_info >= (3, 11):
+          async with asyncio.timeout(self._close_timeout):
+            await plugin.close()
+        else:
+          # For Python < 3.11, we use wait_for which creates a new task.
+          # This might still cause issues with task-local contexts, but
+          # asyncio.timeout is not available.
+          await asyncio.wait_for(plugin.close(), timeout=self._close_timeout)
+      except Exception as e:
+        exceptions[plugin.name] = e
+        if isinstance(e, (asyncio.TimeoutError, asyncio.CancelledError)):
+          logger.warning(
+              "Timeout/Cancelled while closing plugin: %s", plugin.name
+          )
+        else:
+          logger.error(
+              "Error during close of plugin %s: %s",
+              plugin.name,
+              e,
+              exc_info=e,
+          )
+
+    if exceptions:
+      error_summary = ", ".join(
+          f"'{name}': {type(exc).__name__}" for name, exc in exceptions.items()
+      )
+      raise RuntimeError(f"Failed to close plugins: {error_summary}")

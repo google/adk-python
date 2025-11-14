@@ -648,10 +648,10 @@ def _is_request_confirmation_event(event: Event) -> bool:
   return _is_function_call_event(event, REQUEST_CONFIRMATION_FUNCTION_CALL_NAME)
 
 
-def _is_live_model_audio_event(event: Event) -> bool:
-  """Check if the event is an audio event produced by live/bidi models
+def _is_live_model_audio_event_with_inline_data(event: Event) -> bool:
+  """Check if the event is a live/bidi audio event with inline data.
 
-  There are two possible cases:
+  There are two possible cases and we only care about the second case:
   content=Content(
     parts=[
       Part(
@@ -676,22 +676,13 @@ def _is_live_model_audio_event(event: Event) -> bool:
   ) grounding_metadata=None partial=None turn_complete=None finish_reason=None
   error_code=None error_message=None ...
   """
-  if not event.content:
+  if not event.content or not event.content.parts:
     return False
-  if not event.content.parts:
-    return False
-  # If it's audio data, then one event only has one part of audio.
   for part in event.content.parts:
     if (
         part.inline_data
         and part.inline_data.mime_type
         and part.inline_data.mime_type.startswith('audio/')
-    ):
-      return True
-    if (
-        part.file_data
-        and part.file_data.mime_type
-        and part.file_data.mime_type.startswith('audio/')
     ):
       return True
   return False
