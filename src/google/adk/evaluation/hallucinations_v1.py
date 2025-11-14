@@ -32,6 +32,7 @@ from ..models.llm_response import LlmResponse
 from ..models.registry import LLMRegistry
 from ..utils.context_utils import Aclosing
 from ..utils.feature_decorator import experimental
+from ._retry_options_utils import add_default_retry_options_if_not_present
 from .app_details import AppDetails
 from .eval_case import Invocation
 from .eval_case import InvocationEvent
@@ -58,10 +59,10 @@ Your task is to segment the provided response sentence by sentence so that we co
 
 **Instructions:**
 1. Overall, you should decompose the whole provided response into individual sentences. You should make sure the output covers ALL the sentences in the provided response block.
-2. You should COPY each sentence as it is, WORD BY WORD. DO NOT modify the sentence or the surrounding punctuations.
+2. You should COPY each sentence as it is, WORD BY WORD. DO NOT modify the sentence or the surrounding punctuation.
 3. If there are bullet points in the response, you should segment each bullet point into DIFFERENT sentences. If one bullet point has sub bullet points, you should further decompose sub bullet points into DIFFERENT sentences.
 For example, if there are responses like "it has three criteria: * aaa. * bbb. * ccc", you should segment them into FOUR sentences: "it has three criteria", "aaa", "bbb", "ccc". Bullet points could start with numbers (1/2/3/etc) or symbols like "*", "-" etc.
-4. When encoutering tables, you should include the whole table in ONE sentence output.
+4. When encountering tables, you should include the whole table in ONE sentence output.
 5. Each sentence should be meaningful to further analyze on. DO NOT ONLY put symbols themselves into a sentence.
 6. You should ONLY output segmented sentences in the provided response. DO NOT make up any new sentences.
 
@@ -526,6 +527,7 @@ class HallucinationsV1Evaluator(Evaluator):
         ],
         config=self._model_config,
     )
+    add_default_retry_options_if_not_present(segmenter_llm_request)
     try:
       async with Aclosing(
           self._judge_model.generate_content_async(segmenter_llm_request)
@@ -559,6 +561,7 @@ class HallucinationsV1Evaluator(Evaluator):
         ],
         config=self._model_config,
     )
+    add_default_retry_options_if_not_present(validator_llm_request)
     try:
       async with Aclosing(
           self._judge_model.generate_content_async(validator_llm_request)
@@ -716,7 +719,7 @@ class HallucinationsV1Evaluator(Evaluator):
       expected_invocations: Optional[list[Invocation]],
   ) -> EvaluationResult:
     # expected_invocations are not required by the metric and if they are not
-    # supplied, we provide an a list of None to rest of the code.
+    # supplied, we provide a list of None to rest of the code.
     expected_invocations = (
         [None] * len(actual_invocations)
         if expected_invocations is None

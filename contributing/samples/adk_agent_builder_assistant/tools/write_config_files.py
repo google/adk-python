@@ -66,7 +66,7 @@ async def write_config_files(
 
   Args:
     configs: Dict mapping file_path to config_content (YAML as string)
-    backup_existing: Whether to create timest   amped backup of existing files
+    backup_existing: Whether to create timestamped backup of existing files
       before overwriting (default: False, User should decide)
     create_directories: Whether to create parent directories if they don't exist
       (default: True)

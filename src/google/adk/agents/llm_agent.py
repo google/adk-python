@@ -85,6 +85,16 @@ AfterModelCallback: TypeAlias = Union[
     list[_SingleAfterModelCallback],
 ]
 
+_SingleOnModelErrorCallback: TypeAlias = Callable[
+    [CallbackContext, LlmRequest, Exception],
+    Union[Awaitable[Optional[LlmResponse]], Optional[LlmResponse]],
+]
+
+OnModelErrorCallback: TypeAlias = Union[
+    _SingleOnModelErrorCallback,
+    list[_SingleOnModelErrorCallback],
+]
+
 _SingleBeforeToolCallback: TypeAlias = Callable[
     [BaseTool, dict[str, Any], ToolContext],
     Union[Awaitable[Optional[dict]], Optional[dict]],
@@ -364,6 +374,21 @@ class LlmAgent(BaseAgent):
     The content to return to the user. When present, the actual model response
     will be ignored and the provided content will be returned to user.
   """
+  on_model_error_callback: Optional[OnModelErrorCallback] = None
+  """Callback or list of callbacks to be called when a model call encounters an error.
+
+  When a list of callbacks is provided, the callbacks will be called in the
+  order they are listed until a callback does not return None.
+
+  Args:
+    callback_context: CallbackContext,
+    llm_request: LlmRequest, The raw model request.
+    error: The error from the model call.
+
+  Returns:
+    The content to return to the user. When present, the error will be
+    ignored and the provided content will be returned to user.
+  """
   before_tool_callback: Optional[BeforeToolCallback] = None
   """Callback or list of callbacks to be called before calling the tool.
 
@@ -417,7 +442,7 @@ class LlmAgent(BaseAgent):
   ) -> AsyncGenerator[Event, None]:
     agent_state = self._load_agent_state(ctx, BaseAgentState)
 
-    # If there is an sub-agent to resume, run it and then end the current
+    # If there is a sub-agent to resume, run it and then end the current
     # agent.
     if agent_state is not None and (
         agent_to_transfer := self._get_subagent_to_resume(ctx)
@@ -586,6 +611,20 @@ class LlmAgent(BaseAgent):
     if isinstance(self.after_model_callback, list):
       return self.after_model_callback
     return [self.after_model_callback]
+
+  @property
+  def canonical_on_model_error_callbacks(
+      self,
+  ) -> list[_SingleOnModelErrorCallback]:
+    """The resolved self.on_model_error_callback field as a list of _SingleOnModelErrorCallback.
+
+    This method is only for use by Agent Development Kit.
+    """
+    if not self.on_model_error_callback:
+      return []
+    if isinstance(self.on_model_error_callback, list):
+      return self.on_model_error_callback
+    return [self.on_model_error_callback]
 
   @property
   def canonical_before_tool_callbacks(

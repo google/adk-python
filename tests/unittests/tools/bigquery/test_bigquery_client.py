@@ -19,7 +19,9 @@ from unittest import mock
 
 import google.adk
 from google.adk.tools.bigquery.client import get_bigquery_client
+import google.auth
 from google.auth.exceptions import DefaultCredentialsError
+from google.cloud.bigquery import client as bigquery_client
 from google.oauth2.credentials import Credentials
 
 
@@ -41,7 +43,9 @@ def test_bigquery_client_project_set_explicit():
   # Let's simulate that no environment variables are set, so that any project
   # set in there does not interfere with this test
   with mock.patch.dict(os.environ, {}, clear=True):
-    with mock.patch("google.auth.default", autospec=True) as mock_default_auth:
+    with mock.patch.object(
+        google.auth, "default", autospec=True
+    ) as mock_default_auth:
       # Simulate exception from default auth
       mock_default_auth.side_effect = DefaultCredentialsError(
           "Your default credentials were not found"
@@ -66,7 +70,9 @@ def test_bigquery_client_project_set_with_default_auth():
   # Let's simulate that no environment variables are set, so that any project
   # set in there does not interfere with this test
   with mock.patch.dict(os.environ, {}, clear=True):
-    with mock.patch("google.auth.default", autospec=True) as mock_default_auth:
+    with mock.patch.object(
+        google.auth, "default", autospec=True
+    ) as mock_default_auth:
       # Simulate credentials
       mock_creds = mock.create_autospec(Credentials, instance=True)
 
@@ -90,7 +96,9 @@ def test_bigquery_client_project_set_with_env():
   with mock.patch.dict(
       os.environ, {"GOOGLE_CLOUD_PROJECT": "test-gcp-project"}, clear=True
   ):
-    with mock.patch("google.auth.default", autospec=True) as mock_default_auth:
+    with mock.patch.object(
+        google.auth, "default", autospec=True
+    ) as mock_default_auth:
       # Simulate exception from default auth
       mock_default_auth.side_effect = DefaultCredentialsError(
           "Your default credentials were not found"
@@ -112,8 +120,8 @@ def test_bigquery_client_project_set_with_env():
 
 def test_bigquery_client_user_agent_default():
   """Test BigQuery client default user agent."""
-  with mock.patch(
-      "google.cloud.bigquery.client.Connection", autospec=True
+  with mock.patch.object(
+      bigquery_client, "Connection", autospec=True
   ) as mock_connection:
     # Trigger the BigQuery client creation
     get_bigquery_client(
@@ -134,8 +142,8 @@ def test_bigquery_client_user_agent_default():
 
 def test_bigquery_client_user_agent_custom():
   """Test BigQuery client custom user agent."""
-  with mock.patch(
-      "google.cloud.bigquery.client.Connection", autospec=True
+  with mock.patch.object(
+      bigquery_client, "Connection", autospec=True
   ) as mock_connection:
     # Trigger the BigQuery client creation
     get_bigquery_client(
@@ -151,6 +159,31 @@ def test_bigquery_client_user_agent_custom():
         "adk-bigquery-tool",
         f"google-adk/{google.adk.__version__}",
         "custom_user_agent",
+    }
+    actual_user_agents = set(client_info_arg.user_agent.split())
+    assert expected_user_agents.issubset(actual_user_agents)
+
+
+def test_bigquery_client_user_agent_custom_list():
+  """Test BigQuery client custom user agent."""
+  with mock.patch.object(
+      bigquery_client, "Connection", autospec=True
+  ) as mock_connection:
+    # Trigger the BigQuery client creation
+    get_bigquery_client(
+        project="test-gcp-project",
+        credentials=mock.create_autospec(Credentials, instance=True),
+        user_agent=["custom_user_agent1", "custom_user_agent2"],
+    )
+
+    # Verify that the tracking user agents were set
+    client_info_arg = mock_connection.call_args[1].get("client_info")
+    assert client_info_arg is not None
+    expected_user_agents = {
+        "adk-bigquery-tool",
+        f"google-adk/{google.adk.__version__}",
+        "custom_user_agent1",
+        "custom_user_agent2",
     }
     actual_user_agents = set(client_info_arg.user_agent.split())
     assert expected_user_agents.issubset(actual_user_agents)

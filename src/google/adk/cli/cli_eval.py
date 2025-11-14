@@ -269,7 +269,9 @@ def pretty_print_eval_result(eval_result: EvalCaseResult):
       if df_result[col].dtype == "object":
         df_result[col] = df_result[col].str.wrap(40)
 
-    click.echo(tabulate(df_result, headers="keys", tablefmt="grid"))
+    click.echo(
+        tabulate(df_result, headers="keys", tablefmt="grid", maxcolwidths=25)
+    )
     click.echo("\n\n")  # Few empty lines for visual clarity
 
 

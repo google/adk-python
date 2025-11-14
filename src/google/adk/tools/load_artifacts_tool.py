@@ -37,7 +37,10 @@ class LoadArtifactsTool(BaseTool):
   def __init__(self):
     super().__init__(
         name='load_artifacts',
-        description='Loads the artifacts and adds them to the session.',
+        description=("""Loads artifacts into the session for this request.
+
+NOTE: Call when you need access to artifacts (for example, uploads saved by the
+web UI)."""),
     )
 
   def _get_declaration(self) -> types.FunctionDeclaration | None:

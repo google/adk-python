@@ -20,19 +20,19 @@ import os
 import textwrap
 from typing import Optional
 from unittest import mock
+import uuid
 
 import dateutil
 import dateutil.relativedelta
 from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.bigquery import BigQueryCredentialsConfig
 from google.adk.tools.bigquery import BigQueryToolset
+from google.adk.tools.bigquery import client as bq_client_lib
+from google.adk.tools.bigquery import query_tool
 from google.adk.tools.bigquery.config import BigQueryToolConfig
 from google.adk.tools.bigquery.config import WriteMode
-from google.adk.tools.bigquery.query_tool import analyze_contribution
-from google.adk.tools.bigquery.query_tool import detect_anomalies
-from google.adk.tools.bigquery.query_tool import execute_sql
-from google.adk.tools.bigquery.query_tool import forecast
 from google.adk.tools.tool_context import ToolContext
+import google.auth
 from google.auth.exceptions import DefaultCredentialsError
 from google.cloud import bigquery
 from google.oauth2.credentials import Credentials
@@ -654,7 +654,7 @@ def test_execute_sql_select_stmt(write_mode):
       "_anonymous_dataset",
   )
 
-  with mock.patch("google.cloud.bigquery.Client", autospec=False) as Client:
+  with mock.patch.object(bigquery, "Client", autospec=True) as Client:
     # The mock instance
     bq_client = Client.return_value
 
@@ -667,7 +667,7 @@ def test_execute_sql_select_stmt(write_mode):
     bq_client.query_and_wait.return_value = query_result
 
     # Test the tool
-    result = execute_sql(
+    result = query_tool.execute_sql(
         project, query, credentials, tool_settings, tool_context
     )
     assert result == {"status": "SUCCESS", "rows": query_result}
@@ -708,7 +708,7 @@ def test_execute_sql_non_select_stmt_write_allowed(query, statement_type):
   tool_settings = BigQueryToolConfig(write_mode=WriteMode.ALLOWED)
   tool_context = mock.create_autospec(ToolContext, instance=True)
 
-  with mock.patch("google.cloud.bigquery.Client", autospec=False) as Client:
+  with mock.patch.object(bigquery, "Client", autospec=True) as Client:
     # The mock instance
     bq_client = Client.return_value
 
@@ -721,7 +721,7 @@ def test_execute_sql_non_select_stmt_write_allowed(query, statement_type):
     bq_client.query_and_wait.return_value = query_result
 
     # Test the tool
-    result = execute_sql(
+    result = query_tool.execute_sql(
         project, query, credentials, tool_settings, tool_context
     )
     assert result == {"status": "SUCCESS", "rows": query_result}
@@ -762,7 +762,7 @@ def test_execute_sql_non_select_stmt_write_blocked(query, statement_type):
   tool_settings = BigQueryToolConfig(write_mode=WriteMode.BLOCKED)
   tool_context = mock.create_autospec(ToolContext, instance=True)
 
-  with mock.patch("google.cloud.bigquery.Client", autospec=False) as Client:
+  with mock.patch.object(bigquery, "Client", autospec=True) as Client:
     # The mock instance
     bq_client = Client.return_value
 
@@ -775,7 +775,7 @@ def test_execute_sql_non_select_stmt_write_blocked(query, statement_type):
     bq_client.query_and_wait.return_value = query_result
 
     # Test the tool
-    result = execute_sql(
+    result = query_tool.execute_sql(
         project, query, credentials, tool_settings, tool_context
     )
     assert result == {
@@ -823,7 +823,7 @@ def test_execute_sql_non_select_stmt_write_protected(query, statement_type):
       "_anonymous_dataset",
   )
 
-  with mock.patch("google.cloud.bigquery.Client", autospec=False) as Client:
+  with mock.patch.object(bigquery, "Client", autospec=True) as Client:
     # The mock instance
     bq_client = Client.return_value
 
@@ -837,7 +837,7 @@ def test_execute_sql_non_select_stmt_write_protected(query, statement_type):
     bq_client.query_and_wait.return_value = query_result
 
     # Test the tool
-    result = execute_sql(
+    result = query_tool.execute_sql(
         project, query, credentials, tool_settings, tool_context
     )
     assert result == {"status": "SUCCESS", "rows": query_result}
@@ -889,7 +889,7 @@ def test_execute_sql_non_select_stmt_write_protected_persistent_target(
       "_anonymous_dataset",
   )
 
-  with mock.patch("google.cloud.bigquery.Client", autospec=False) as Client:
+  with mock.patch.object(bigquery, "Client", autospec=True) as Client:
     # The mock instance
     bq_client = Client.return_value
 
@@ -903,7 +903,7 @@ def test_execute_sql_non_select_stmt_write_protected_persistent_target(
     bq_client.query_and_wait.return_value = query_result
 
     # Test the tool
-    result = execute_sql(
+    result = query_tool.execute_sql(
         project, query, credentials, tool_settings, tool_context
     )
     assert result == {
@@ -927,14 +927,14 @@ def test_execute_sql_dry_run_true():
       "jobReference": {"projectId": project, "location": "US"},
   }
 
-  with mock.patch("google.cloud.bigquery.Client", autospec=False) as Client:
+  with mock.patch.object(bigquery, "Client", autospec=True) as Client:
     bq_client = Client.return_value
 
     query_job = mock.create_autospec(bigquery.QueryJob)
     query_job.to_api_repr.return_value = api_repr
     bq_client.query.return_value = query_job
 
-    result = execute_sql(
+    result = query_tool.execute_sql(
         project, query, credentials, tool_settings, tool_context, dry_run=True
     )
     assert result == {"status": "SUCCESS", "dry_run_info": api_repr}
@@ -953,9 +953,9 @@ def test_execute_sql_dry_run_true():
     ],
 )
 @mock.patch.dict(os.environ, {}, clear=True)
-@mock.patch("google.cloud.bigquery.Client.query_and_wait", autospec=True)
-@mock.patch("google.cloud.bigquery.Client.query", autospec=True)
-@mock.patch("google.auth.default", autospec=True)
+@mock.patch.object(bigquery.Client, "query_and_wait", autospec=True)
+@mock.patch.object(bigquery.Client, "query", autospec=True)
+@mock.patch.object(google.auth, "default", autospec=True)
 def test_execute_sql_no_default_auth(
     mock_default_auth, mock_query, mock_query_and_wait, write_mode
 ):
@@ -987,7 +987,9 @@ def test_execute_sql_no_default_auth(
   mock_query_and_wait.return_value = query_result
 
   # Test the tool worked without invoking default auth
-  result = execute_sql(project, query, credentials, tool_settings, tool_context)
+  result = query_tool.execute_sql(
+      project, query, credentials, tool_settings, tool_context
+  )
   assert result == {"status": "SUCCESS", "rows": query_result}
   mock_default_auth.assert_not_called()
 
@@ -1103,8 +1105,8 @@ def test_execute_sql_no_default_auth(
     ],
 )
 @mock.patch.dict(os.environ, {}, clear=True)
-@mock.patch("google.cloud.bigquery.Client.query_and_wait", autospec=True)
-@mock.patch("google.cloud.bigquery.Client.query", autospec=True)
+@mock.patch.object(bigquery.Client, "query_and_wait", autospec=True)
+@mock.patch.object(bigquery.Client, "query", autospec=True)
 def test_execute_sql_result_dtype(
     mock_query, mock_query_and_wait, query, query_result, tool_result_rows
 ):
@@ -1128,13 +1130,13 @@ def test_execute_sql_result_dtype(
   mock_query_and_wait.return_value = query_result
 
   # Test the tool worked without invoking default auth
-  result = execute_sql(project, query, credentials, tool_settings, tool_context)
+  result = query_tool.execute_sql(
+      project, query, credentials, tool_settings, tool_context
+  )
   assert result == {"status": "SUCCESS", "rows": tool_result_rows}
 
 
-@mock.patch(
-    "google.adk.tools.bigquery.client.get_bigquery_client", autospec=True
-)
+@mock.patch.object(bq_client_lib, "get_bigquery_client", autospec=True)
 def test_execute_sql_bq_client_creation(mock_get_bigquery_client):
   """Test BigQuery client creation params during execute_sql tool invocation."""
   project = "my_project_id"
@@ -1143,16 +1145,17 @@ def test_execute_sql_bq_client_creation(mock_get_bigquery_client):
   application_name = "my-agent"
   tool_settings = BigQueryToolConfig(application_name=application_name)
   tool_context = mock.create_autospec(ToolContext, instance=True)
-
-  execute_sql(project, query, credentials, tool_settings, tool_context)
+  query_tool.execute_sql(
+      project, query, credentials, tool_settings, tool_context
+  )
   mock_get_bigquery_client.assert_called_once()
   assert len(mock_get_bigquery_client.call_args.kwargs) == 4
   assert mock_get_bigquery_client.call_args.kwargs["project"] == project
   assert mock_get_bigquery_client.call_args.kwargs["credentials"] == credentials
-  assert (
-      mock_get_bigquery_client.call_args.kwargs["user_agent"]
-      == application_name
-  )
+  assert mock_get_bigquery_client.call_args.kwargs["user_agent"] == [
+      application_name,
+      "execute_sql",
+  ]
 
 
 def test_execute_sql_unexpected_project_id():
@@ -1164,7 +1167,7 @@ def test_execute_sql_unexpected_project_id():
   tool_settings = BigQueryToolConfig(compute_project_id=compute_project_id)
   tool_context = mock.create_autospec(ToolContext, instance=True)
 
-  result = execute_sql(
+  result = query_tool.execute_sql(
       tool_call_project_id, query, credentials, tool_settings, tool_context
   )
   assert result == {
@@ -1177,16 +1180,16 @@ def test_execute_sql_unexpected_project_id():
   }
 
 
-# AI.Forecast calls execute_sql with a specific query statement. We need to
-# test that the query is properly constructed and call execute_sql with the
+# AI.Forecast calls _execute_sql with a specific query statement. We need to
+# test that the query is properly constructed and call _execute_sql with the
 # correct parameters exactly once.
-@mock.patch("google.adk.tools.bigquery.query_tool.execute_sql", autospec=True)
+@mock.patch.object(query_tool, "_execute_sql", autospec=True)
 def test_forecast_with_table_id(mock_execute_sql):
   mock_credentials = mock.MagicMock(spec=Credentials)
   mock_settings = BigQueryToolConfig()
   mock_tool_context = mock.create_autospec(ToolContext, instance=True)
 
-  forecast(
+  query_tool.forecast(
       project_id="test-project",
       history_data="test-dataset.test-table",
       timestamp_col="ts_col",
@@ -1210,25 +1213,26 @@ def test_forecast_with_table_id(mock_execute_sql):
   )
   """
   mock_execute_sql.assert_called_once_with(
-      "test-project",
-      expected_query,
-      mock_credentials,
-      mock_settings,
-      mock_tool_context,
+      project_id="test-project",
+      query=expected_query,
+      credentials=mock_credentials,
+      settings=mock_settings,
+      tool_context=mock_tool_context,
+      caller_id="forecast",
   )
 
 
-# AI.Forecast calls execute_sql with a specific query statement. We need to
-# test that the query is properly constructed and call execute_sql with the
+# AI.Forecast calls _execute_sql with a specific query statement. We need to
+# test that the query is properly constructed and call _execute_sql with the
 # correct parameters exactly once.
-@mock.patch("google.adk.tools.bigquery.query_tool.execute_sql", autospec=True)
+@mock.patch.object(query_tool, "_execute_sql", autospec=True)
 def test_forecast_with_query_statement(mock_execute_sql):
   mock_credentials = mock.MagicMock(spec=Credentials)
   mock_settings = BigQueryToolConfig()
   mock_tool_context = mock.create_autospec(ToolContext, instance=True)
 
   history_data_query = "SELECT * FROM `test-dataset.test-table`"
-  forecast(
+  query_tool.forecast(
       project_id="test-project",
       history_data=history_data_query,
       timestamp_col="ts_col",
@@ -1249,11 +1253,12 @@ def test_forecast_with_query_statement(mock_execute_sql):
   )
   """
   mock_execute_sql.assert_called_once_with(
-      "test-project",
-      expected_query,
-      mock_credentials,
-      mock_settings,
-      mock_tool_context,
+      project_id="test-project",
+      query=expected_query,
+      credentials=mock_credentials,
+      settings=mock_settings,
+      tool_context=mock_tool_context,
+      caller_id="forecast",
   )
 
 
@@ -1262,7 +1267,7 @@ def test_forecast_with_invalid_id_cols():
   mock_settings = BigQueryToolConfig()
   mock_tool_context = mock.create_autospec(ToolContext, instance=True)
 
-  result = forecast(
+  result = query_tool.forecast(
       project_id="test-project",
       history_data="test-dataset.test-table",
       timestamp_col="ts_col",
@@ -1277,11 +1282,11 @@ def test_forecast_with_invalid_id_cols():
   assert "All elements in id_cols must be strings." in result["error_details"]
 
 
-# analyze_contribution calls execute_sql twice. We need to test that the
-# queries are properly constructed and call execute_sql with the correct
+# analyze_contribution calls _execute_sql twice. We need to test that the
+# queries are properly constructed and call _execute_sql with the correct
 # parameters exactly twice.
-@mock.patch("google.adk.tools.bigquery.query_tool.execute_sql", autospec=True)
-@mock.patch("uuid.uuid4", autospec=True)
+@mock.patch.object(query_tool, "_execute_sql", autospec=True)
+@mock.patch.object(uuid, "uuid4", autospec=True)
 def test_analyze_contribution_with_table_id(mock_uuid, mock_execute_sql):
   """Test analyze_contribution tool invocation with a table id."""
   mock_credentials = mock.MagicMock(spec=Credentials)
@@ -1289,8 +1294,7 @@ def test_analyze_contribution_with_table_id(mock_uuid, mock_execute_sql):
   mock_tool_context = mock.create_autospec(ToolContext, instance=True)
   mock_uuid.return_value = "test_uuid"
   mock_execute_sql.return_value = {"status": "SUCCESS"}
-
-  analyze_contribution(
+  query_tool.analyze_contribution(
       project_id="test-project",
       input_data="test-dataset.test-table",
       dimension_id_cols=["dim1", "dim2"],
@@ -1313,26 +1317,28 @@ def test_analyze_contribution_with_table_id(mock_uuid, mock_execute_sql):
 
   assert mock_execute_sql.call_count == 2
   mock_execute_sql.assert_any_call(
-      "test-project",
-      expected_create_model_query,
-      mock_credentials,
-      mock_settings,
-      mock_tool_context,
+      project_id="test-project",
+      query=expected_create_model_query,
+      credentials=mock_credentials,
+      settings=mock_settings,
+      tool_context=mock_tool_context,
+      caller_id="analyze_contribution",
   )
   mock_execute_sql.assert_any_call(
-      "test-project",
-      expected_get_insights_query,
-      mock_credentials,
-      mock_settings,
-      mock_tool_context,
+      project_id="test-project",
+      query=expected_get_insights_query,
+      credentials=mock_credentials,
+      settings=mock_settings,
+      tool_context=mock_tool_context,
+      caller_id="analyze_contribution",
   )
 
 
-# analyze_contribution calls execute_sql twice. We need to test that the
-# queries are properly constructed and call execute_sql with the correct
+# analyze_contribution calls _execute_sql twice. We need to test that the
+# queries are properly constructed and call _execute_sql with the correct
 # parameters exactly twice.
-@mock.patch("google.adk.tools.bigquery.query_tool.execute_sql", autospec=True)
-@mock.patch("uuid.uuid4", autospec=True)
+@mock.patch.object(query_tool, "_execute_sql", autospec=True)
+@mock.patch.object(uuid, "uuid4", autospec=True)
 def test_analyze_contribution_with_query_statement(mock_uuid, mock_execute_sql):
   """Test analyze_contribution tool invocation with a query statement."""
   mock_credentials = mock.MagicMock(spec=Credentials)
@@ -1340,9 +1346,8 @@ def test_analyze_contribution_with_query_statement(mock_uuid, mock_execute_sql):
   mock_tool_context = mock.create_autospec(ToolContext, instance=True)
   mock_uuid.return_value = "test_uuid"
   mock_execute_sql.return_value = {"status": "SUCCESS"}
-
   input_data_query = "SELECT * FROM `test-dataset.test-table`"
-  analyze_contribution(
+  query_tool.analyze_contribution(
       project_id="test-project",
       input_data=input_data_query,
       dimension_id_cols=["dim1", "dim2"],
@@ -1365,18 +1370,20 @@ def test_analyze_contribution_with_query_statement(mock_uuid, mock_execute_sql):
 
   assert mock_execute_sql.call_count == 2
   mock_execute_sql.assert_any_call(
-      "test-project",
-      expected_create_model_query,
-      mock_credentials,
-      mock_settings,
-      mock_tool_context,
+      project_id="test-project",
+      query=expected_create_model_query,
+      credentials=mock_credentials,
+      settings=mock_settings,
+      tool_context=mock_tool_context,
+      caller_id="analyze_contribution",
   )
   mock_execute_sql.assert_any_call(
-      "test-project",
-      expected_get_insights_query,
-      mock_credentials,
-      mock_settings,
-      mock_tool_context,
+      project_id="test-project",
+      query=expected_get_insights_query,
+      credentials=mock_credentials,
+      settings=mock_settings,
+      tool_context=mock_tool_context,
+      caller_id="analyze_contribution",
   )
 
 
@@ -1386,7 +1393,7 @@ def test_analyze_contribution_with_invalid_dimension_id_cols():
   mock_settings = BigQueryToolConfig()
   mock_tool_context = mock.create_autospec(ToolContext, instance=True)
 
-  result = analyze_contribution(
+  result = query_tool.analyze_contribution(
       project_id="test-project",
       input_data="test-dataset.test-table",
       dimension_id_cols=["dim1", 123],
@@ -1404,11 +1411,11 @@ def test_analyze_contribution_with_invalid_dimension_id_cols():
   )
 
 
-# detect_anomalies calls execute_sql twice. We need to test that
-# the queries are properly constructed and call execute_sql with the correct
+# detect_anomalies calls _execute_sql twice. We need to test that
+# the queries are properly constructed and call _execute_sql with the correct
 # parameters exactly twice.
-@mock.patch("google.adk.tools.bigquery.query_tool.execute_sql", autospec=True)
-@mock.patch("uuid.uuid4", autospec=True)
+@mock.patch.object(query_tool, "_execute_sql", autospec=True)
+@mock.patch.object(uuid, "uuid4", autospec=True)
 def test_detect_anomalies_with_table_id(mock_uuid, mock_execute_sql):
   """Test time series anomaly detection tool invocation with a table id."""
   mock_credentials = mock.MagicMock(spec=Credentials)
@@ -1416,9 +1423,8 @@ def test_detect_anomalies_with_table_id(mock_uuid, mock_execute_sql):
   mock_tool_context = mock.create_autospec(ToolContext, instance=True)
   mock_uuid.return_value = "test_uuid"
   mock_execute_sql.return_value = {"status": "SUCCESS"}
-
   history_data_query = "SELECT * FROM `test-dataset.test-table`"
-  detect_anomalies(
+  query_tool.detect_anomalies(
       project_id="test-project",
       history_data=history_data_query,
       times_series_timestamp_col="ts_timestamp",
@@ -1430,36 +1436,38 @@ def test_detect_anomalies_with_table_id(mock_uuid, mock_execute_sql):
 
   expected_create_model_query = """
   CREATE TEMP MODEL detect_anomalies_model_test_uuid
-    OPTIONS (MODEL_TYPE = 'ARIMA_PLUS', TIME_SERIES_TIMESTAMP_COL = 'ts_timestamp', TIME_SERIES_DATA_COL = 'ts_data', HORIZON = 10)
+    OPTIONS (MODEL_TYPE = 'ARIMA_PLUS', TIME_SERIES_TIMESTAMP_COL = 'ts_timestamp', TIME_SERIES_DATA_COL = 'ts_data', HORIZON = 1000)
   AS (SELECT * FROM `test-dataset.test-table`)
   """
 
   expected_anomaly_detection_query = """
-  SELECT * FROM ML.DETECT_ANOMALIES(MODEL detect_anomalies_model_test_uuid, STRUCT(0.95 AS anomaly_prob_threshold))
+  SELECT * FROM ML.DETECT_ANOMALIES(MODEL detect_anomalies_model_test_uuid, STRUCT(0.95 AS anomaly_prob_threshold)) ORDER BY ts_timestamp
   """
 
   assert mock_execute_sql.call_count == 2
   mock_execute_sql.assert_any_call(
-      "test-project",
-      expected_create_model_query,
-      mock_credentials,
-      mock_settings,
-      mock_tool_context,
+      project_id="test-project",
+      query=expected_create_model_query,
+      credentials=mock_credentials,
+      settings=mock_settings,
+      tool_context=mock_tool_context,
+      caller_id="detect_anomalies",
   )
   mock_execute_sql.assert_any_call(
-      "test-project",
-      expected_anomaly_detection_query,
-      mock_credentials,
-      mock_settings,
-      mock_tool_context,
+      project_id="test-project",
+      query=expected_anomaly_detection_query,
+      credentials=mock_credentials,
+      settings=mock_settings,
+      tool_context=mock_tool_context,
+      caller_id="detect_anomalies",
   )
 
 
-# detect_anomalies calls execute_sql twice. We need to test that
-# the queries are properly constructed and call execute_sql with the correct
+# detect_anomalies calls _execute_sql twice. We need to test that
+# the queries are properly constructed and call _execute_sql with the correct
 # parameters exactly twice.
-@mock.patch("google.adk.tools.bigquery.query_tool.execute_sql", autospec=True)
-@mock.patch("uuid.uuid4", autospec=True)
+@mock.patch.object(query_tool, "_execute_sql", autospec=True)
+@mock.patch.object(uuid, "uuid4", autospec=True)
 def test_detect_anomalies_with_custom_params(mock_uuid, mock_execute_sql):
   """Test time series anomaly detection tool invocation with a table id."""
   mock_credentials = mock.MagicMock(spec=Credentials)
@@ -1467,9 +1475,8 @@ def test_detect_anomalies_with_custom_params(mock_uuid, mock_execute_sql):
   mock_tool_context = mock.create_autospec(ToolContext, instance=True)
   mock_uuid.return_value = "test_uuid"
   mock_execute_sql.return_value = {"status": "SUCCESS"}
-
   history_data_query = "SELECT * FROM `test-dataset.test-table`"
-  detect_anomalies(
+  query_tool.detect_anomalies(
       project_id="test-project",
       history_data=history_data_query,
       times_series_timestamp_col="ts_timestamp",
@@ -1489,31 +1496,33 @@ def test_detect_anomalies_with_custom_params(mock_uuid, mock_execute_sql):
   """
 
   expected_anomaly_detection_query = """
-  SELECT * FROM ML.DETECT_ANOMALIES(MODEL detect_anomalies_model_test_uuid, STRUCT(0.8 AS anomaly_prob_threshold))
+  SELECT * FROM ML.DETECT_ANOMALIES(MODEL detect_anomalies_model_test_uuid, STRUCT(0.8 AS anomaly_prob_threshold)) ORDER BY dim1, dim2, ts_timestamp
   """
 
   assert mock_execute_sql.call_count == 2
   mock_execute_sql.assert_any_call(
-      "test-project",
-      expected_create_model_query,
-      mock_credentials,
-      mock_settings,
-      mock_tool_context,
+      project_id="test-project",
+      query=expected_create_model_query,
+      credentials=mock_credentials,
+      settings=mock_settings,
+      tool_context=mock_tool_context,
+      caller_id="detect_anomalies",
   )
   mock_execute_sql.assert_any_call(
-      "test-project",
-      expected_anomaly_detection_query,
-      mock_credentials,
-      mock_settings,
-      mock_tool_context,
+      project_id="test-project",
+      query=expected_anomaly_detection_query,
+      credentials=mock_credentials,
+      settings=mock_settings,
+      tool_context=mock_tool_context,
+      caller_id="detect_anomalies",
   )
 
 
-# detect_anomalies calls execute_sql twice. We need to test that
-# the queries are properly constructed and call execute_sql with the correct
+# detect_anomalies calls _execute_sql twice. We need to test that
+# the queries are properly constructed and call _execute_sql with the correct
 # parameters exactly twice.
-@mock.patch("google.adk.tools.bigquery.query_tool.execute_sql", autospec=True)
-@mock.patch("uuid.uuid4", autospec=True)
+@mock.patch.object(query_tool, "_execute_sql", autospec=True)
+@mock.patch.object(uuid, "uuid4", autospec=True)
 def test_detect_anomalies_on_target_table(mock_uuid, mock_execute_sql):
   """Test time series anomaly detection tool with target data is provided."""
   mock_credentials = mock.MagicMock(spec=Credentials)
@@ -1521,10 +1530,9 @@ def test_detect_anomalies_on_target_table(mock_uuid, mock_execute_sql):
   mock_tool_context = mock.create_autospec(ToolContext, instance=True)
   mock_uuid.return_value = "test_uuid"
   mock_execute_sql.return_value = {"status": "SUCCESS"}
-
   history_data_query = "SELECT * FROM `test-dataset.history-table`"
   target_data_query = "SELECT * FROM `test-dataset.target-table`"
-  detect_anomalies(
+  query_tool.detect_anomalies(
       project_id="test-project",
       history_data=history_data_query,
       times_series_timestamp_col="ts_timestamp",
@@ -1545,33 +1553,88 @@ def test_detect_anomalies_on_target_table(mock_uuid, mock_execute_sql):
   """
 
   expected_anomaly_detection_query = """
-    SELECT * FROM ML.DETECT_ANOMALIES(MODEL detect_anomalies_model_test_uuid, STRUCT(0.8 AS anomaly_prob_threshold), (SELECT * FROM `test-dataset.target-table`))
+    SELECT * FROM ML.DETECT_ANOMALIES(MODEL detect_anomalies_model_test_uuid, STRUCT(0.8 AS anomaly_prob_threshold), (SELECT * FROM `test-dataset.target-table`)) ORDER BY dim1, dim2, ts_timestamp
     """
 
   assert mock_execute_sql.call_count == 2
   mock_execute_sql.assert_any_call(
-      "test-project",
-      expected_create_model_query,
-      mock_credentials,
-      mock_settings,
-      mock_tool_context,
+      project_id="test-project",
+      query=expected_create_model_query,
+      credentials=mock_credentials,
+      settings=mock_settings,
+      tool_context=mock_tool_context,
+      caller_id="detect_anomalies",
   )
   mock_execute_sql.assert_any_call(
-      "test-project",
-      expected_anomaly_detection_query,
-      mock_credentials,
-      mock_settings,
-      mock_tool_context,
+      project_id="test-project",
+      query=expected_anomaly_detection_query,
+      credentials=mock_credentials,
+      settings=mock_settings,
+      tool_context=mock_tool_context,
+      caller_id="detect_anomalies",
   )
 
 
-def test_detect_anomalies__with_invalid_id_cols():
+# detect_anomalies calls execute_sql twice. We need to test that
+# the queries are properly constructed and call execute_sql with the correct
+# parameters exactly twice.
+@mock.patch.object(query_tool, "_execute_sql", autospec=True)
+@mock.patch.object(uuid, "uuid4", autospec=True)
+def test_detect_anomalies_with_str_table_id(mock_uuid, mock_execute_sql):
+  """Test time series anomaly detection tool invocation with a table id."""
+  mock_credentials = mock.MagicMock(spec=Credentials)
+  mock_settings = BigQueryToolConfig(write_mode=WriteMode.PROTECTED)
+  mock_tool_context = mock.create_autospec(ToolContext, instance=True)
+  mock_uuid.return_value = "test_uuid"
+  mock_execute_sql.return_value = {"status": "SUCCESS"}
+  history_data_query = "SELECT * FROM `test-dataset.test-table`"
+  query_tool.detect_anomalies(
+      project_id="test-project",
+      history_data=history_data_query,
+      times_series_timestamp_col="ts_timestamp",
+      times_series_data_col="ts_data",
+      target_data="test-dataset.target-table",
+      credentials=mock_credentials,
+      settings=mock_settings,
+      tool_context=mock_tool_context,
+  )
+
+  expected_create_model_query = """
+  CREATE TEMP MODEL detect_anomalies_model_test_uuid
+    OPTIONS (MODEL_TYPE = 'ARIMA_PLUS', TIME_SERIES_TIMESTAMP_COL = 'ts_timestamp', TIME_SERIES_DATA_COL = 'ts_data', HORIZON = 1000)
+  AS (SELECT * FROM `test-dataset.test-table`)
+  """
+
+  expected_anomaly_detection_query = """
+    SELECT * FROM ML.DETECT_ANOMALIES(MODEL detect_anomalies_model_test_uuid, STRUCT(0.95 AS anomaly_prob_threshold), (SELECT * FROM `test-dataset.target-table`)) ORDER BY ts_timestamp
+    """
+
+  assert mock_execute_sql.call_count == 2
+  mock_execute_sql.assert_any_call(
+      project_id="test-project",
+      query=expected_create_model_query,
+      credentials=mock_credentials,
+      settings=mock_settings,
+      tool_context=mock_tool_context,
+      caller_id="detect_anomalies",
+  )
+  mock_execute_sql.assert_any_call(
+      project_id="test-project",
+      query=expected_anomaly_detection_query,
+      credentials=mock_credentials,
+      settings=mock_settings,
+      tool_context=mock_tool_context,
+      caller_id="detect_anomalies",
+  )
+
+
+def test_detect_anomalies_with_invalid_id_cols():
   """Test time series anomaly detection tool invocation with invalid times_series_id_cols."""
   mock_credentials = mock.MagicMock(spec=Credentials)
   mock_settings = BigQueryToolConfig()
   mock_tool_context = mock.create_autospec(ToolContext, instance=True)
 
-  result = detect_anomalies(
+  result = query_tool.detect_anomalies(
       project_id="test-project",
       history_data="test-dataset.test-table",
       times_series_timestamp_col="ts_timestamp",
@@ -1587,3 +1650,289 @@ def test_detect_anomalies__with_invalid_id_cols():
       "All elements in times_series_id_cols must be strings."
       in result["error_details"]
   )
+
+
+@pytest.mark.parametrize(
+    ("write_mode", "dry_run", "query_call_count", "query_and_wait_call_count"),
+    [
+        pytest.param(WriteMode.ALLOWED, False, 0, 1, id="write-allowed"),
+        pytest.param(WriteMode.ALLOWED, True, 1, 0, id="write-allowed-dry-run"),
+        pytest.param(WriteMode.BLOCKED, False, 1, 1, id="write-blocked"),
+        pytest.param(WriteMode.BLOCKED, True, 2, 0, id="write-blocked-dry-run"),
+        pytest.param(WriteMode.PROTECTED, False, 2, 1, id="write-protected"),
+        pytest.param(
+            WriteMode.PROTECTED, True, 3, 0, id="write-protected-dry-run"
+        ),
+    ],
+)
+def test_execute_sql_job_labels(
+    write_mode, dry_run, query_call_count, query_and_wait_call_count
+):
+  """Test execute_sql tool for job label."""
+  project = "my_project"
+  query = "SELECT 123 AS num"
+  statement_type = "SELECT"
+  credentials = mock.create_autospec(Credentials, instance=True)
+  tool_settings = BigQueryToolConfig(write_mode=write_mode)
+  tool_context = mock.create_autospec(ToolContext, instance=True)
+  tool_context.state.get.return_value = None
+
+  with mock.patch.object(bigquery, "Client", autospec=True) as Client:
+    bq_client = Client.return_value
+
+    query_job = mock.create_autospec(bigquery.QueryJob)
+    query_job.statement_type = statement_type
+    bq_client.query.return_value = query_job
+
+    query_tool.execute_sql(
+        project,
+        query,
+        credentials,
+        tool_settings,
+        tool_context,
+        dry_run=dry_run,
+    )
+
+    assert bq_client.query.call_count == query_call_count
+    assert bq_client.query_and_wait.call_count == query_and_wait_call_count
+    for call_args_list in [
+        bq_client.query.call_args_list,
+        bq_client.query_and_wait.call_args_list,
+    ]:
+      for call_args in call_args_list:
+        _, mock_kwargs = call_args
+        assert mock_kwargs["job_config"].labels == {
+            "adk-bigquery-tool": "execute_sql"
+        }
+
+
+@pytest.mark.parametrize(
+    ("tool_call", "expected_label"),
+    [
+        pytest.param(
+            lambda tool_context: query_tool.forecast(
+                project_id="test-project",
+                history_data="SELECT * FROM `test-dataset.test-table`",
+                timestamp_col="ts_col",
+                data_col="data_col",
+                credentials=mock.create_autospec(Credentials, instance=True),
+                settings=BigQueryToolConfig(write_mode=WriteMode.ALLOWED),
+                tool_context=tool_context,
+            ),
+            "forecast",
+            id="forecast",
+        ),
+        pytest.param(
+            lambda tool_context: query_tool.analyze_contribution(
+                project_id="test-project",
+                input_data="test-dataset.test-table",
+                dimension_id_cols=["dim1", "dim2"],
+                contribution_metric="SUM(metric)",
+                is_test_col="is_test",
+                credentials=mock.create_autospec(Credentials, instance=True),
+                settings=BigQueryToolConfig(write_mode=WriteMode.ALLOWED),
+                tool_context=tool_context,
+            ),
+            "analyze_contribution",
+            id="analyze-contribution",
+        ),
+        pytest.param(
+            lambda tool_context: query_tool.detect_anomalies(
+                project_id="test-project",
+                history_data="SELECT * FROM `test-dataset.test-table`",
+                times_series_timestamp_col="ts_timestamp",
+                times_series_data_col="ts_data",
+                credentials=mock.create_autospec(Credentials, instance=True),
+                settings=BigQueryToolConfig(write_mode=WriteMode.ALLOWED),
+                tool_context=tool_context,
+            ),
+            "detect_anomalies",
+            id="detect-anomalies",
+        ),
+    ],
+)
+def test_ml_tool_job_labels(tool_call, expected_label):
+  """Test ML tools for job label."""
+
+  with mock.patch.object(bigquery, "Client", autospec=True) as Client:
+    bq_client = Client.return_value
+
+    tool_context = mock.create_autospec(ToolContext, instance=True)
+    tool_context.state.get.return_value = None
+    tool_call(tool_context)
+
+    for call_args_list in [
+        bq_client.query.call_args_list,
+        bq_client.query_and_wait.call_args_list,
+    ]:
+      for call_args in call_args_list:
+        _, mock_kwargs = call_args
+        assert mock_kwargs["job_config"].labels == {
+            "adk-bigquery-tool": expected_label
+        }
+
+
+def test_execute_sql_max_rows_config():
+  """Test execute_sql tool respects max_query_result_rows from config."""
+  project = "my_project"
+  query = "SELECT 123 AS num"
+  statement_type = "SELECT"
+  query_result = [{"num": i} for i in range(20)]  # 20 rows
+  credentials = mock.create_autospec(Credentials, instance=True)
+  tool_config = BigQueryToolConfig(max_query_result_rows=10)
+  tool_context = mock.create_autospec(ToolContext, instance=True)
+
+  with mock.patch.object(bigquery, "Client", autospec=True) as Client:
+    bq_client = Client.return_value
+    query_job = mock.create_autospec(bigquery.QueryJob)
+    query_job.statement_type = statement_type
+    bq_client.query.return_value = query_job
+    bq_client.query_and_wait.return_value = query_result[:10]
+
+    result = query_tool.execute_sql(
+        project, query, credentials, tool_config, tool_context
+    )
+
+    # Check that max_results was called with config value
+    bq_client.query_and_wait.assert_called_once()
+    call_args = bq_client.query_and_wait.call_args
+    assert call_args.kwargs["max_results"] == 10
+
+    # Check truncation flag is set
+    assert result["status"] == "SUCCESS"
+    assert result["result_is_likely_truncated"] is True
+
+
+def test_execute_sql_no_truncation():
+  """Test execute_sql tool when results are not truncated."""
+  project = "my_project"
+  query = "SELECT 123 AS num"
+  statement_type = "SELECT"
+  query_result = [{"num": i} for i in range(3)]  # Only 3 rows
+  credentials = mock.create_autospec(Credentials, instance=True)
+  tool_config = BigQueryToolConfig(max_query_result_rows=10)
+  tool_context = mock.create_autospec(ToolContext, instance=True)
+
+  with mock.patch.object(bigquery, "Client", autospec=True) as Client:
+    bq_client = Client.return_value
+    query_job = mock.create_autospec(bigquery.QueryJob)
+    query_job.statement_type = statement_type
+    bq_client.query.return_value = query_job
+    bq_client.query_and_wait.return_value = query_result
+
+    result = query_tool.execute_sql(
+        project, query, credentials, tool_config, tool_context
+    )
+
+    # Check no truncation flag when fewer rows than limit
+    assert result["status"] == "SUCCESS"
+    assert "result_is_likely_truncated" not in result
+
+
+def test_execute_sql_maximum_bytes_billed_config():
+  """Test execute_sql tool respects maximum_bytes_billed from config."""
+  project = "my_project"
+  query = "SELECT 123 AS num"
+  statement_type = "SELECT"
+  credentials = mock.create_autospec(Credentials, instance=True)
+  tool_config = BigQueryToolConfig(maximum_bytes_billed=11_000_000)
+  tool_context = mock.create_autospec(ToolContext, instance=True)
+
+  with mock.patch.object(bigquery, "Client", autospec=True) as Client:
+    bq_client = Client.return_value
+    query_job = mock.create_autospec(bigquery.QueryJob)
+    query_job.statement_type = statement_type
+    bq_client.query.return_value = query_job
+
+    query_tool.execute_sql(
+        project, query, credentials, tool_config, tool_context
+    )
+
+    # Check that maximum_bytes_billed was called with config value
+    bq_client.query_and_wait.assert_called_once()
+    call_args = bq_client.query_and_wait.call_args
+    assert call_args.kwargs["job_config"].maximum_bytes_billed == 11_000_000
+
+
+@pytest.mark.parametrize(
+    ("tool_call",),
+    [
+        pytest.param(
+            lambda settings, tool_context: query_tool.execute_sql(
+                project_id="test-project",
+                query="SELECT * FROM `test-dataset.test-table`",
+                credentials=mock.create_autospec(Credentials, instance=True),
+                settings=settings,
+                tool_context=tool_context,
+            ),
+            id="execute-sql",
+        ),
+        pytest.param(
+            lambda settings, tool_context: query_tool.forecast(
+                project_id="test-project",
+                history_data="SELECT * FROM `test-dataset.test-table`",
+                timestamp_col="ts_col",
+                data_col="data_col",
+                credentials=mock.create_autospec(Credentials, instance=True),
+                settings=settings,
+                tool_context=tool_context,
+            ),
+            id="forecast",
+        ),
+        pytest.param(
+            lambda settings, tool_context: query_tool.analyze_contribution(
+                project_id="test-project",
+                input_data="test-dataset.test-table",
+                dimension_id_cols=["dim1", "dim2"],
+                contribution_metric="SUM(metric)",
+                is_test_col="is_test",
+                credentials=mock.create_autospec(Credentials, instance=True),
+                settings=settings,
+                tool_context=tool_context,
+            ),
+            id="analyze-contribution",
+        ),
+        pytest.param(
+            lambda settings, tool_context: query_tool.detect_anomalies(
+                project_id="test-project",
+                history_data="SELECT * FROM `test-dataset.test-table`",
+                times_series_timestamp_col="ts_timestamp",
+                times_series_data_col="ts_data",
+                credentials=mock.create_autospec(Credentials, instance=True),
+                settings=settings,
+                tool_context=tool_context,
+            ),
+            id="detect-anomalies",
+        ),
+    ],
+)
+def test_tool_call_doesnt_change_global_settings(tool_call):
+  """Test query tools don't change global settings."""
+  settings = BigQueryToolConfig(write_mode=WriteMode.ALLOWED)
+  tool_context = mock.create_autospec(ToolContext, instance=True)
+  tool_context.state.get.return_value = (
+      "test-bq-session-id",
+      "_anonymous_dataset",
+  )
+
+  with mock.patch("google.cloud.bigquery.Client", autospec=False) as Client:
+    # The mock instance
+    bq_client = Client.return_value
+
+    # Simulate the result of query API
+    query_job = mock.create_autospec(bigquery.QueryJob)
+    query_job.destination.dataset_id = "_anonymous_dataset"
+    bq_client.query.return_value = query_job
+    bq_client.query_and_wait.return_value = []
+
+    # Test settings write mode before
+    assert settings.write_mode == WriteMode.ALLOWED
+
+    # Call the tool
+    result = tool_call(settings, tool_context)
+
+    # Test successfull executeion of the tool
+    assert result == {"status": "SUCCESS", "rows": []}
+
+    # Test settings write mode after
+    assert settings.write_mode == WriteMode.ALLOWED

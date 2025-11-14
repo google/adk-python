@@ -49,7 +49,6 @@ from ...tools.google_search_tool import google_search
 from ...tools.tool_context import ToolContext
 from ...utils.context_utils import Aclosing
 from .audio_cache_manager import AudioCacheManager
-from .transcription_manager import TranscriptionManager
 
 if TYPE_CHECKING:
   from ...agents.llm_agent import LlmAgent
@@ -82,7 +81,6 @@ class BaseLlmFlow(ABC):
 
     # Initialize configuration and managers
     self.audio_cache_manager = AudioCacheManager()
-    self.transcription_manager = TranscriptionManager()
 
   async def run_live(
       self,
@@ -246,16 +244,6 @@ class BaseLlmFlow(ABC):
       elif live_request.activity_end:
         await llm_connection.send_realtime(types.ActivityEnd())
       elif live_request.blob:
-        # Cache audio data here for transcription
-        if not invocation_context.transcription_cache:
-          invocation_context.transcription_cache = []
-        if not invocation_context.run_config.input_audio_transcription:
-          # if the live model's input transcription is not enabled, then
-          # we use our own audio transcriber to achieve that.
-          invocation_context.transcription_cache.append(
-              TranscriptionEntry(role='user', data=live_request.blob)
-          )
-
         # Cache input audio chunks before flushing
         self.audio_cache_manager.cache_audio(
             invocation_context, live_request.blob, cache_type='input'
@@ -324,7 +312,7 @@ class BaseLlmFlow(ABC):
                 # Cache output audio chunks from model responses
                 # TODO: support video data
                 if (
-                    invocation_context.run_config.save_live_audio
+                    invocation_context.run_config.save_live_blob
                     and event.content
                     and event.content.parts
                     and event.content.parts[0].inline_data
@@ -392,7 +380,7 @@ class BaseLlmFlow(ABC):
         and events
         and len(events) > 1
         # TODO: here we are using the last 2 events to decide whether to pause
-        # the invocation. But this is just being optmisitic, we should find a
+        # the invocation. But this is just being optimistic, we should find a
         # way to pause when the long running tool call is followed by more than
         # one text responses.
         and (
@@ -587,32 +575,29 @@ class BaseLlmFlow(ABC):
 
     # Handle transcription events ONCE per llm_response, outside the event loop
     if llm_response.input_transcription:
-      input_transcription_event = (
-          await self.transcription_manager.handle_input_transcription(
-              invocation_context, llm_response.input_transcription
-          )
+      model_response_event.input_transcription = (
+          llm_response.input_transcription
       )
-      yield input_transcription_event
+      model_response_event.partial = llm_response.partial
+      yield model_response_event
       return
 
     if llm_response.output_transcription:
-      output_transcription_event = (
-          await self.transcription_manager.handle_output_transcription(
-              invocation_context, llm_response.output_transcription
-          )
+      model_response_event.output_transcription = (
+          llm_response.output_transcription
       )
-      yield output_transcription_event
+      model_response_event.partial = llm_response.partial
+      yield model_response_event
       return
 
     # Flush audio caches based on control events using configurable settings
-    if invocation_context.run_config.save_live_audio:
-      _handle_control_event_flush_event = (
-          await self._handle_control_event_flush(
-              invocation_context, llm_response
-          )
+    if invocation_context.run_config.save_live_blob:
+      flushed_events = await self._handle_control_event_flush(
+          invocation_context, llm_response
       )
-      if _handle_control_event_flush_event:
-        yield _handle_control_event_flush_event
+      for event in flushed_events:
+        yield event
+      if flushed_events:
         return
 
     # Builds the event.
@@ -857,7 +842,10 @@ class BaseLlmFlow(ABC):
         response: Optional[LlmResponse] = None,
     ) -> Optional[LlmResponse]:
       readonly_context = ReadonlyContext(invocation_context)
-      tools = await agent.canonical_tools(readonly_context)
+      if (tools := invocation_context.canonical_tools_cache) is None:
+        tools = await agent.canonical_tools(readonly_context)
+        invocation_context.canonical_tools_cache = tools
+
       if not any(tool.name == 'google_search_agent' for tool in tools):
         return response
       ground_metadata = invocation_context.session.state.get(
@@ -924,12 +912,15 @@ class BaseLlmFlow(ABC):
 
   async def _handle_control_event_flush(
       self, invocation_context: InvocationContext, llm_response: LlmResponse
-  ) -> None:
+  ) -> list[Event]:
     """Handle audio cache flushing based on control events.
 
     Args:
       invocation_context: The invocation context containing audio caches.
       llm_response: The LLM response containing control event information.
+
+    Returns:
+      A list of Event objects created from the flushed caches.
     """
 
     # Log cache statistics if enabled
@@ -958,6 +949,7 @@ class BaseLlmFlow(ABC):
           flush_user_audio=False,
           flush_model_audio=True,
       )
+    return []
 
   async def _run_and_handle_error(
       self,
@@ -977,6 +969,44 @@ class BaseLlmFlow(ABC):
     Yields:
       A generator of LlmResponse.
     """
+
+    from ...agents.llm_agent import LlmAgent
+
+    agent = invocation_context.agent
+    if not isinstance(agent, LlmAgent):
+      raise TypeError(
+          f'Expected agent to be an LlmAgent, but got {type(agent)}'
+      )
+
+    async def _run_on_model_error_callbacks(
+        *,
+        callback_context: CallbackContext,
+        llm_request: LlmRequest,
+        error: Exception,
+    ) -> Optional[LlmResponse]:
+      error_response = (
+          await invocation_context.plugin_manager.run_on_model_error_callback(
+              callback_context=callback_context,
+              llm_request=llm_request,
+              error=error,
+          )
+      )
+      if error_response is not None:
+        return error_response
+
+      for callback in agent.canonical_on_model_error_callbacks:
+        error_response = callback(
+            callback_context=callback_context,
+            llm_request=llm_request,
+            error=error,
+        )
+        if inspect.isawaitable(error_response):
+          error_response = await error_response
+        if error_response is not None:
+          return error_response
+
+      return None
+
     try:
       async with Aclosing(response_generator) as agen:
         async for response in agen:
@@ -985,12 +1015,10 @@ class BaseLlmFlow(ABC):
       callback_context = CallbackContext(
           invocation_context, event_actions=model_response_event.actions
       )
-      error_response = (
-          await invocation_context.plugin_manager.run_on_model_error_callback(
-              callback_context=callback_context,
-              llm_request=llm_request,
-              error=model_error,
-          )
+      error_response = await _run_on_model_error_callbacks(
+          callback_context=callback_context,
+          llm_request=llm_request,
+          error=model_error,
       )
       if error_response is not None:
         yield error_response

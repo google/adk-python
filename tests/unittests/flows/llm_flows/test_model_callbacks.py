@@ -56,6 +56,22 @@ class MockAfterModelCallback(BaseModel):
     )
 
 
+class MockOnModelCallback(BaseModel):
+  mock_response: str
+
+  def __call__(
+      self,
+      callback_context: CallbackContext,
+      llm_request: LlmRequest,
+      error: Exception,
+  ) -> LlmResponse:
+    return LlmResponse(
+        content=testing_utils.ModelContent(
+            [types.Part.from_text(text=self.mock_response)]
+        )
+    )
+
+
 def noop_callback(**kwargs) -> Optional[LlmResponse]:
   pass
 
@@ -140,3 +156,40 @@ async def test_after_model_callback_noop():
   assert testing_utils.simplify_events(
       await runner.run_async_with_new_session('test')
   ) == [('root_agent', 'model_response')]
+
+
+@pytest.mark.asyncio
+async def test_on_model_callback_model_error_noop():
+  """Test that the on_model_error_callback is a no-op when the model returns an error."""
+  mock_model = testing_utils.MockModel.create(
+      responses=[], error=SystemError('error')
+  )
+  agent = Agent(
+      name='root_agent',
+      model=mock_model,
+      on_model_error_callback=noop_callback,
+  )
+
+  runner = testing_utils.TestInMemoryRunner(agent)
+  with pytest.raises(SystemError):
+    await runner.run_async_with_new_session('test')
+
+
+@pytest.mark.asyncio
+async def test_on_model_callback_model_error_modify_model_response():
+  """Test that the on_model_error_callback can modify the model response."""
+  mock_model = testing_utils.MockModel.create(
+      responses=[], error=SystemError('error')
+  )
+  agent = Agent(
+      name='root_agent',
+      model=mock_model,
+      on_model_error_callback=MockOnModelCallback(
+          mock_response='on_model_error_callback_response'
+      ),
+  )
+
+  runner = testing_utils.TestInMemoryRunner(agent)
+  assert testing_utils.simplify_events(
+      await runner.run_async_with_new_session('test')
+  ) == [('root_agent', 'on_model_error_callback_response')]

@@ -46,7 +46,7 @@ def llm_request():
 
 
 @pytest.mark.asyncio
-@mock.patch('google.adk.models.apigee_llm.Client')
+@mock.patch('google.genai.Client')
 async def test_generate_content_async_non_streaming(
     mock_client_constructor, llm_request
 ):
@@ -96,7 +96,7 @@ async def test_generate_content_async_non_streaming(
 
 
 @pytest.mark.asyncio
-@mock.patch('google.adk.models.apigee_llm.Client')
+@mock.patch('google.genai.Client')
 async def test_generate_content_async_streaming(
     mock_client_constructor, llm_request
 ):
@@ -167,7 +167,7 @@ async def test_generate_content_async_streaming(
 
 
 @pytest.mark.asyncio
-@mock.patch('google.adk.models.apigee_llm.Client')
+@mock.patch('google.genai.Client')
 async def test_generate_content_async_with_custom_headers(
     mock_client_constructor, llm_request
 ):
@@ -207,7 +207,7 @@ async def test_generate_content_async_with_custom_headers(
 
 
 @pytest.mark.asyncio
-@mock.patch('google.adk.models.apigee_llm.Client')
+@mock.patch('google.genai.Client')
 async def test_vertex_model_path_parsing(mock_client_constructor):
   """Tests that Vertex AI model paths are parsed correctly."""
   apigee_llm = ApigeeLlm(model=APIGEE_VERTEX_MODEL_ID, proxy_url=PROXY_URL)
@@ -249,7 +249,7 @@ async def test_vertex_model_path_parsing(mock_client_constructor):
 
 
 @pytest.mark.asyncio
-@mock.patch('google.adk.models.apigee_llm.Client')
+@mock.patch('google.genai.Client')
 async def test_proxy_url_from_env_variable(mock_client_constructor):
   """Tests that proxy_url is read from environment variable."""
   with mock.patch.dict(
@@ -284,6 +284,42 @@ async def test_proxy_url_from_env_variable(mock_client_constructor):
     mock_client_constructor.assert_called_once()
     _, kwargs = mock_client_constructor.call_args
     assert kwargs['http_options'].base_url == 'https://env.proxy.url'
+
+
+@pytest.mark.parametrize(
+    ('model_string', 'env_vars'),
+    [
+        (
+            'apigee/vertex_ai/gemini-2.5-flash',
+            {'GOOGLE_CLOUD_LOCATION': 'test-location'},
+        ),
+        (
+            'apigee/vertex_ai/gemini-2.5-flash',
+            {'GOOGLE_CLOUD_PROJECT': 'test-project'},
+        ),
+        (
+            'apigee/gemini-2.5-flash',
+            {
+                'GOOGLE_GENAI_USE_VERTEXAI': 'true',
+                'GOOGLE_CLOUD_LOCATION': 'test-location',
+            },
+        ),
+        (
+            'apigee/gemini-2.5-flash',
+            {
+                'GOOGLE_GENAI_USE_VERTEXAI': 'true',
+                'GOOGLE_CLOUD_PROJECT': 'test-project',
+            },
+        ),
+    ],
+)
+def test_vertex_model_missing_project_or_location_raises_error(
+    model_string, env_vars
+):
+  """Tests that ValueError is raised for Vertex models if project or location is missing."""
+  with mock.patch.dict(os.environ, env_vars, clear=True):
+    with pytest.raises(ValueError, match='environment variable must be set'):
+      ApigeeLlm(model=model_string, proxy_url=PROXY_URL)
 
 
 @pytest.mark.asyncio
@@ -345,7 +381,7 @@ async def test_proxy_url_from_env_variable(mock_client_constructor):
         ),
     ],
 )
-@mock.patch('google.adk.models.apigee_llm.Client')
+@mock.patch('google.genai.Client')
 async def test_model_string_parsing_and_client_initialization(
     mock_client_constructor,
     model_string,
@@ -358,6 +394,10 @@ async def test_model_string_parsing_and_client_initialization(
   env_vars = {}
   if use_vertexai_env is not None:
     env_vars['GOOGLE_GENAI_USE_VERTEXAI'] = use_vertexai_env
+
+  if expected_is_vertexai:
+    env_vars['GOOGLE_CLOUD_PROJECT'] = 'test-project'
+    env_vars['GOOGLE_CLOUD_LOCATION'] = 'test-location'
 
   # The ApigeeLlm is initialized in the 'with' block to make sure that the mock
   # of the environment variable is active.
@@ -382,6 +422,9 @@ async def test_model_string_parsing_and_client_initialization(
     mock_client_constructor.assert_called_once()
     _, kwargs = mock_client_constructor.call_args
     assert kwargs['vertexai'] == expected_is_vertexai
+    if expected_is_vertexai:
+      assert kwargs['project'] == 'test-project'
+      assert kwargs['location'] == 'test-location'
     http_options = kwargs['http_options']
     assert http_options.api_version == expected_api_version
 

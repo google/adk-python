@@ -100,7 +100,6 @@ class TestResumableLlmAgent:
   """Test suite for resumable LlmAgent."""
 
   @pytest.fixture
-  @pytest.mark.asyncio
   async def resumable_invocation_context(self):
     """Creates an invocation context for the specified agent."""
 

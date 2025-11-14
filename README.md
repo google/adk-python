@@ -17,7 +17,8 @@
       Important Links:
       <a href="https://google.github.io/adk-docs/">Docs</a>,
       <a href="https://github.com/google/adk-samples">Samples</a>,
-      <a href="https://github.com/google/adk-java">Java ADK</a> &
+      <a href="https://github.com/google/adk-java">Java ADK</a>,
+      <a href="https://github.com/google/adk-go">Go ADK</a> &
       <a href="https://github.com/google/adk-web">ADK Web</a>.
     </h3>
 </html>
@@ -32,7 +33,7 @@ deployment-agnostic, and compatible with other frameworks.
 
 ## 🔥 What's new
 
-- **Custom Service Registration**: Add a service registry to provide a generic way to register custom service implementations to be used in FastAPI server. See short instruction [here](https://github.com/google/adk-python/discussions/3175#discussioncomment-14745120). ([391628f](https://github.com/google/adk-python/commit/391628fcdc7b950c6835f64ae3ccab197163c990))
+- **Custom Service Registration**: Add a service registry to provide a generic way to register custom service implementations to be used in FastAPI server. See [short instruction](https://github.com/google/adk-python/discussions/3175#discussioncomment-14745120). ([391628f](https://github.com/google/adk-python/commit/391628fcdc7b950c6835f64ae3ccab197163c990))
 
 - **Rewind**: Add the ability to rewind a session to before a previous invocation ([9dce06f](https://github.com/google/adk-python/commit/9dce06f9b00259ec42241df4f6638955e783a9d1)).
 
