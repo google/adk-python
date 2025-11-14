@@ -125,6 +125,7 @@ def _rearrange_events_for_async_function_responses_in_history(
 
 def _rearrange_events_for_latest_function_response(
     events: list[Event],
+    all_events: list[Event] | None = None,
 ) -> list[Event]:
   """Rearrange the events for the latest function_response.
 
@@ -134,6 +135,7 @@ def _rearrange_events_for_latest_function_response(
 
   Args:
     events: A list of events.
+    all_events: Full session history to search for function_call.
 
   Returns:
     A list of events with the latest function_response rearranged.
@@ -159,10 +161,12 @@ def _rearrange_events_for_latest_function_response(
       if function_call.id in function_responses_ids:
         return events
 
+  # Search in full session history if available
+  search_events = all_events if all_events else events
   function_call_event_idx = -1
   # look for corresponding function call event reversely
-  for idx in range(len(events) - 2, -1, -1):
-    event = events[idx]
+  for idx in range(len(search_events) - 2, -1, -1):
+    event = search_events[idx]
     function_calls = event.get_function_calls()
     if function_calls:
       for function_call in function_calls:
@@ -424,7 +428,7 @@ def _get_contents(
 
   # Rearrange events for proper function call/response pairing
   result_events = _rearrange_events_for_latest_function_response(
-      filtered_events
+      filtered_events, rewind_filtered_events
   )
   result_events = _rearrange_events_for_async_function_responses_in_history(
       result_events
