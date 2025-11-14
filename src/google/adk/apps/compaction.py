@@ -74,7 +74,7 @@ async def _run_compaction_for_sliding_window(
       `invocation_id` range [1, 2].
       -   The session now contains: `[
           E(inv=1, role=user), E(inv=1, role=model),
-          E(inv=2, role=user), E(inv=2, role=model), 
+          E(inv=2, role=user), E(inv=2, role=model),
           CompactedEvent(inv=[1, 2])]`.
 
   2.  **After `invocation_id` 3 events are added:**
@@ -95,9 +95,9 @@ async def _run_compaction_for_sliding_window(
       -   The session now contains: `[
           E(inv=1, role=user), E(inv=1, role=model),
           E(inv=2, role=user), E(inv=2, role=model),
-          CompactedEvent(inv=[1, 2]), 
+          CompactedEvent(inv=[1, 2]),
           E(inv=3, role=user), E(inv=3, role=model),
-          E(inv=4, role=user), E(inv=4, role=model), 
+          E(inv=4, role=user), E(inv=4, role=model),
           CompactedEvent(inv=[2, 4])]`.
 
 
