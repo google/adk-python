@@ -24,6 +24,8 @@ from google.adk.models.lite_llm import _get_completion_inputs
 from google.adk.models.lite_llm import _get_content
 from google.adk.models.lite_llm import _message_to_generate_content_response
 from google.adk.models.lite_llm import _model_response_to_chunk
+from google.adk.models.lite_llm import _parse_tool_calls_from_text
+from google.adk.models.lite_llm import _split_message_content_and_tool_calls
 from google.adk.models.lite_llm import _to_litellm_response_format
 from google.adk.models.lite_llm import _to_litellm_role
 from google.adk.models.lite_llm import FunctionChunk
@@ -108,12 +110,6 @@ FILE_BYTES_TEST_CASES = [
         "application/json",
         "data:application/json;base64,eyJoZWxsbyI6IndvcmxkIn0=",
         id="json",
-    ),
-    pytest.param(
-        b"hello world",
-        "text/plain",
-        "data:text/plain;base64,aGVsbG8gd29ybGQ=",
-        id="txt",
     ),
 ]
 
@@ -1458,6 +1454,25 @@ def test_message_to_generate_content_response_tool_call():
   assert response.content.parts[0].function_call.id == "test_tool_call_id"
 
 
+def test_message_to_generate_content_response_inline_tool_call_text():
+  message = ChatCompletionAssistantMessage(
+      role="assistant",
+      content=(
+          '{"id":"inline_call","name":"get_current_time",'
+          '"arguments":{"timezone_str":"Asia/Taipei"}} <|im_end|>system'
+      ),
+  )
+
+  response = _message_to_generate_content_response(message)
+  assert len(response.content.parts) == 2
+  text_part = response.content.parts[0]
+  tool_part = response.content.parts[1]
+  assert text_part.text == "<|im_end|>system"
+  assert tool_part.function_call.name == "get_current_time"
+  assert tool_part.function_call.args == {"timezone_str": "Asia/Taipei"}
+  assert tool_part.function_call.id == "inline_call"
+
+
 def test_message_to_generate_content_response_with_model():
   message = ChatCompletionAssistantMessage(
       role="assistant",
@@ -1471,10 +1486,101 @@ def test_message_to_generate_content_response_with_model():
   assert response.model_version == "gemini-2.5-pro"
 
 
+def test_parse_tool_calls_from_text_multiple_calls():
+  text = (
+      '{"name":"alpha","arguments":{"value":1}}\n'
+      "Some filler text "
+      '{"id":"custom","name":"beta","arguments":{"timezone":"Asia/Taipei"}} '
+      "ignored suffix"
+  )
+  tool_calls, remainder = _parse_tool_calls_from_text(text)
+  assert len(tool_calls) == 2
+  assert tool_calls[0].function.name == "alpha"
+  assert json.loads(tool_calls[0].function.arguments) == {"value": 1}
+  assert tool_calls[1].id == "custom"
+  assert tool_calls[1].function.name == "beta"
+  assert json.loads(tool_calls[1].function.arguments) == {
+      "timezone": "Asia/Taipei"
+  }
+  assert remainder == "Some filler text  ignored suffix"
+
+
+def test_parse_tool_calls_from_text_invalid_json_returns_remainder():
+  text = 'Leading {"unused": "payload"} trailing text'
+  tool_calls, remainder = _parse_tool_calls_from_text(text)
+  assert tool_calls == []
+  assert remainder == 'Leading {"unused": "payload"} trailing text'
+
+
+def test_split_message_content_and_tool_calls_inline_text():
+  message = {
+      "role": "assistant",
+      "content": (
+          'Intro {"name":"alpha","arguments":{"value":1}} trailing content'
+      ),
+  }
+  content, tool_calls = _split_message_content_and_tool_calls(message)
+  assert content == "Intro  trailing content"
+  assert len(tool_calls) == 1
+  assert tool_calls[0].function.name == "alpha"
+  assert json.loads(tool_calls[0].function.arguments) == {"value": 1}
+
+
+def test_split_message_content_prefers_existing_structured_calls():
+  tool_call = ChatCompletionMessageToolCall(
+      type="function",
+      id="existing",
+      function=Function(
+          name="existing_call",
+          arguments='{"arg": "value"}',
+      ),
+  )
+  message = {
+      "role": "assistant",
+      "content": "ignored",
+      "tool_calls": [tool_call],
+  }
+  content, tool_calls = _split_message_content_and_tool_calls(message)
+  assert content == "ignored"
+  assert tool_calls == [tool_call]
+
+
 def test_get_content_text():
   parts = [types.Part.from_text(text="Test text")]
   content = _get_content(parts)
   assert content == "Test text"
+
+
+def test_get_content_text_inline_data_single_part():
+  parts = [
+      types.Part.from_bytes(
+          data="Inline text".encode("utf-8"), mime_type="text/plain"
+      )
+  ]
+  content = _get_content(parts)
+  assert content == "Inline text"
+
+
+def test_get_content_text_inline_data_multiple_parts():
+  parts = [
+      types.Part.from_bytes(
+          data="First part".encode("utf-8"), mime_type="text/plain"
+      ),
+      types.Part.from_text(text="Second part"),
+  ]
+  content = _get_content(parts)
+  assert content[0]["type"] == "text"
+  assert content[0]["text"] == "First part"
+  assert content[1]["type"] == "text"
+  assert content[1]["text"] == "Second part"
+
+
+def test_get_content_text_inline_data_fallback_decoding():
+  parts = [
+      types.Part.from_bytes(data=b"\xff", mime_type="text/plain"),
+  ]
+  content = _get_content(parts)
+  assert content == "ÿ"
 
 
 def test_get_content_image():
@@ -1544,7 +1650,7 @@ def test_to_litellm_role():
 
 
 @pytest.mark.parametrize(
-    "response, expected_chunks, expected_finished",
+    "response, expected_chunks, expected_usage_chunk, expected_finished",
     [
         (
             ModelResponse(
@@ -1556,12 +1662,10 @@ def test_to_litellm_role():
                     }
                 ]
             ),
-            [
-                TextChunk(text="this is a test"),
-                UsageMetadataChunk(
-                    prompt_tokens=0, completion_tokens=0, total_tokens=0
-                ),
-            ],
+            [TextChunk(text="this is a test")],
+            UsageMetadataChunk(
+                prompt_tokens=0, completion_tokens=0, total_tokens=0
+            ),
             "stop",
         ),
         (
@@ -1579,12 +1683,10 @@ def test_to_litellm_role():
                     "total_tokens": 8,
                 },
             ),
-            [
-                TextChunk(text="this is a test"),
-                UsageMetadataChunk(
-                    prompt_tokens=3, completion_tokens=5, total_tokens=8
-                ),
-            ],
+            [TextChunk(text="this is a test")],
+            UsageMetadataChunk(
+                prompt_tokens=3, completion_tokens=5, total_tokens=8
+            ),
             "stop",
         ),
         (
@@ -1609,52 +1711,121 @@ def test_to_litellm_role():
                     )
                 ]
             ),
-            [
-                FunctionChunk(id="1", name="test_function", args='{"key": "va'),
-                UsageMetadataChunk(
-                    prompt_tokens=0, completion_tokens=0, total_tokens=0
-                ),
-            ],
+            [FunctionChunk(id="1", name="test_function", args='{"key": "va')],
+            UsageMetadataChunk(
+                prompt_tokens=0, completion_tokens=0, total_tokens=0
+            ),
             None,
         ),
         (
             ModelResponse(choices=[{"finish_reason": "tool_calls"}]),
-            [
-                None,
-                UsageMetadataChunk(
-                    prompt_tokens=0, completion_tokens=0, total_tokens=0
-                ),
-            ],
+            [None],
+            UsageMetadataChunk(
+                prompt_tokens=0, completion_tokens=0, total_tokens=0
+            ),
             "tool_calls",
         ),
         (
             ModelResponse(choices=[{}]),
+            [None],
+            UsageMetadataChunk(
+                prompt_tokens=0, completion_tokens=0, total_tokens=0
+            ),
+            "stop",
+        ),
+        (
+            ModelResponse(
+                choices=[{
+                    "finish_reason": "tool_calls",
+                    "message": {
+                        "role": "assistant",
+                        "content": (
+                            '{"id":"call_1","name":"get_current_time",'
+                            '"arguments":{"timezone_str":"Asia/Taipei"}}'
+                        ),
+                    },
+                }],
+                usage={
+                    "prompt_tokens": 7,
+                    "completion_tokens": 9,
+                    "total_tokens": 16,
+                },
+            ),
             [
-                None,
-                UsageMetadataChunk(
-                    prompt_tokens=0, completion_tokens=0, total_tokens=0
+                FunctionChunk(
+                    id="call_1",
+                    name="get_current_time",
+                    args='{"timezone_str": "Asia/Taipei"}',
+                    index=0,
                 ),
             ],
-            "stop",
+            UsageMetadataChunk(
+                prompt_tokens=7, completion_tokens=9, total_tokens=16
+            ),
+            "tool_calls",
+        ),
+        (
+            ModelResponse(
+                choices=[{
+                    "finish_reason": "tool_calls",
+                    "message": {
+                        "role": "assistant",
+                        "content": (
+                            'Intro {"id":"call_2","name":"alpha",'
+                            '"arguments":{"foo":"bar"}} wrap'
+                        ),
+                    },
+                }],
+                usage={
+                    "prompt_tokens": 11,
+                    "completion_tokens": 13,
+                    "total_tokens": 24,
+                },
+            ),
+            [
+                TextChunk(text="Intro  wrap"),
+                FunctionChunk(
+                    id="call_2",
+                    name="alpha",
+                    args='{"foo": "bar"}',
+                    index=0,
+                ),
+            ],
+            UsageMetadataChunk(
+                prompt_tokens=11, completion_tokens=13, total_tokens=24
+            ),
+            "tool_calls",
         ),
     ],
 )
-def test_model_response_to_chunk(response, expected_chunks, expected_finished):
+def test_model_response_to_chunk(
+    response, expected_chunks, expected_usage_chunk, expected_finished
+):
   result = list(_model_response_to_chunk(response))
-  assert len(result) == 2
-  chunk, finished = result[0]
-  if expected_chunks:
-    assert isinstance(chunk, type(expected_chunks[0]))
-    assert chunk == expected_chunks[0]
-  else:
-    assert chunk is None
-  assert finished == expected_finished
+  observed_chunks = []
+  usage_chunk = None
+  for chunk, finished in result:
+    if isinstance(chunk, UsageMetadataChunk):
+      usage_chunk = chunk
+      continue
+    observed_chunks.append((chunk, finished))
 
-  usage_chunk, _ = result[1]
-  assert usage_chunk is not None
-  assert usage_chunk.prompt_tokens == expected_chunks[1].prompt_tokens
-  assert usage_chunk.completion_tokens == expected_chunks[1].completion_tokens
-  assert usage_chunk.total_tokens == expected_chunks[1].total_tokens
+  assert len(observed_chunks) == len(expected_chunks)
+  for (chunk, finished), expected_chunk in zip(
+      observed_chunks, expected_chunks
+  ):
+    if expected_chunk is None:
+      assert chunk is None
+    else:
+      assert isinstance(chunk, type(expected_chunk))
+      assert chunk == expected_chunk
+    assert finished == expected_finished
+
+  if expected_usage_chunk is None:
+    assert usage_chunk is None
+  else:
+    assert usage_chunk is not None
+    assert usage_chunk == expected_usage_chunk
 
 
 @pytest.mark.asyncio
