@@ -1849,3 +1849,87 @@ def test_execute_sql_maximum_bytes_billed_config():
     bq_client.query_and_wait.assert_called_once()
     call_args = bq_client.query_and_wait.call_args
     assert call_args.kwargs["job_config"].maximum_bytes_billed == 11_000_000
+
+
+@pytest.mark.parametrize(
+    ("tool_call",),
+    [
+        pytest.param(
+            lambda settings, tool_context: execute_sql(
+                project_id="test-project",
+                query="SELECT * FROM `test-dataset.test-table`",
+                credentials=mock.create_autospec(Credentials, instance=True),
+                settings=settings,
+                tool_context=tool_context,
+            ),
+            id="execute-sql",
+        ),
+        pytest.param(
+            lambda settings, tool_context: forecast(
+                project_id="test-project",
+                history_data="SELECT * FROM `test-dataset.test-table`",
+                timestamp_col="ts_col",
+                data_col="data_col",
+                credentials=mock.create_autospec(Credentials, instance=True),
+                settings=settings,
+                tool_context=tool_context,
+            ),
+            id="forecast",
+        ),
+        pytest.param(
+            lambda settings, tool_context: analyze_contribution(
+                project_id="test-project",
+                input_data="test-dataset.test-table",
+                dimension_id_cols=["dim1", "dim2"],
+                contribution_metric="SUM(metric)",
+                is_test_col="is_test",
+                credentials=mock.create_autospec(Credentials, instance=True),
+                settings=settings,
+                tool_context=tool_context,
+            ),
+            id="analyze-contribution",
+        ),
+        pytest.param(
+            lambda settings, tool_context: detect_anomalies(
+                project_id="test-project",
+                history_data="SELECT * FROM `test-dataset.test-table`",
+                times_series_timestamp_col="ts_timestamp",
+                times_series_data_col="ts_data",
+                credentials=mock.create_autospec(Credentials, instance=True),
+                settings=settings,
+                tool_context=tool_context,
+            ),
+            id="detect-anomalies",
+        ),
+    ],
+)
+def test_tool_call_doesnt_change_global_settings(tool_call):
+  """Test query tools don't change global settings."""
+  settings = BigQueryToolConfig(write_mode=WriteMode.ALLOWED)
+  tool_context = mock.create_autospec(ToolContext, instance=True)
+  tool_context.state.get.return_value = (
+      "test-bq-session-id",
+      "_anonymous_dataset",
+  )
+
+  with mock.patch("google.cloud.bigquery.Client", autospec=False) as Client:
+    # The mock instance
+    bq_client = Client.return_value
+
+    # Simulate the result of query API
+    query_job = mock.create_autospec(bigquery.QueryJob)
+    query_job.destination.dataset_id = "_anonymous_dataset"
+    bq_client.query.return_value = query_job
+    bq_client.query_and_wait.return_value = []
+
+    # Test settings write mode before
+    assert settings.write_mode == WriteMode.ALLOWED
+
+    # Call the tool
+    result = tool_call(settings, tool_context)
+
+    # Test successfull executeion of the tool
+    assert result == {"status": "SUCCESS", "rows": []}
+
+    # Test settings write mode after
+    assert settings.write_mode == WriteMode.ALLOWED
