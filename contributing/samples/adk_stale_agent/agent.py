@@ -17,6 +17,7 @@ from adk_stale_agent.utils import patch_request
 from adk_stale_agent.utils import post_request
 import dateutil.parser
 from google.adk.agents.llm_agent import Agent
+from requests.exceptions import RequestException
 
 # --- Primary Tools for the Agent ---
 
@@ -36,7 +37,7 @@ def get_repository_maintainers() -> dict[str, Any]:
     print(f"DEBUG: Found {len(maintainers)} maintainers: {maintainers}")
 
     return {"status": "success", "maintainers": maintainers}
-  except Exception as e:
+  except RequestException as e:
     return error_response(f"Error fetching repository maintainers: {e}")
 
 
@@ -57,7 +58,7 @@ def get_all_open_issues() -> dict[str, Any]:
     items = get_request(url, params)
     print(f"DEBUG: Found {len(items)} open issues to audit.")
     return {"status": "success", "items": items}
-  except Exception as e:
+  except RequestException as e:
     return error_response(f"Error fetching all open issues: {e}")
 
 
@@ -214,7 +215,7 @@ def get_issue_state(item_number: int, maintainers: list[str]) -> dict[str, Any]:
         ),
     }
 
-  except Exception as e:
+  except RequestException as e:
     # Provide a detailed error message if the analysis fails.
     return error_response(
         f"Error getting comprehensive issue state for #{item_number}: {e}"
@@ -231,7 +232,7 @@ def calculate_time_difference(timestamp_str: str) -> dict[str, Any]:
     time_difference = current_time_utc - event_time
     hours_passed = time_difference.total_seconds() / 3600
     return {"status": "success", "hours_passed": hours_passed}
-  except Exception as e:
+  except RequestException as e:
     return error_response(f"Error calculating time difference: {e}")
 
 
@@ -241,7 +242,7 @@ def add_label_to_issue(item_number: int, label_name: str) -> dict[str, Any]:
   try:
     post_request(url, [label_name])
     return {"status": "success"}
-  except Exception as e:
+  except RequestException as e:
     return error_response(f"Error adding label: {e}")
 
 
@@ -253,7 +254,7 @@ def remove_label_from_issue(
   try:
     delete_request(url)
     return {"status": "success"}
-  except Exception as e:
+  except RequestException as e:
     return error_response(f"Error removing label: {e}")
 
 
@@ -276,7 +277,7 @@ def add_stale_label_and_comment(item_number: int) -> dict[str, Any]:
     )
 
     return {"status": "success"}
-  except Exception as e:
+  except RequestException as e:
     return error_response(f"Error marking issue as stale: {e}")
 
 
@@ -284,7 +285,7 @@ def close_as_stale(item_number: int) -> dict[str, Any]:
   """Posts a final comment and closes an issue or PR as stale."""
   comment = (
       f"This has been automatically closed because it has been marked as stale"
-      f" for over 7 days."
+      f" for over {CLOSE_HOURS_AFTER_STALE_THRESHOLD / 24:.0f} days."
   )
   try:
     post_request(
@@ -296,7 +297,7 @@ def close_as_stale(item_number: int) -> dict[str, Any]:
         {"state": "closed"},
     )
     return {"status": "success"}
-  except Exception as e:
+  except RequestException as e:
     return error_response(f"Error closing issue: {e}")
 
 
