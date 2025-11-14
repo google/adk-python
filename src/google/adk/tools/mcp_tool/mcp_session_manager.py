@@ -37,6 +37,7 @@ try:
   from mcp.client.sse import sse_client
   from mcp.client.stdio import stdio_client
   from mcp.client.streamable_http import streamablehttp_client
+  from mcp.types import EmptyResult
 except ImportError as e:
 
   if sys.version_info < (3, 10):
@@ -241,7 +242,7 @@ class MCPSessionManager:
 
     return base_headers
 
-  def _is_session_disconnected(self, session: ClientSession) -> bool:
+  async def _is_session_disconnected(self, session: ClientSession) -> bool:
     """Checks if a session is disconnected or closed.
 
     Args:
@@ -250,7 +251,24 @@ class MCPSessionManager:
     Returns:
         True if the session is disconnected, False otherwise.
     """
-    return session._read_stream._closed or session._write_stream._closed
+    if session._read_stream._closed or session._write_stream._closed:
+      return True
+
+    try:
+      response = await asyncio.wait_for(session.send_ping(), timeout=5.0)
+      if not isinstance(response, EmptyResult):
+        logger.info(
+            'Session ping returns illegal response %s, treating as'
+            ' disconnected',
+            response,
+        )
+        return True
+      return False
+    except Exception as e:
+      logger.info(
+          'Session ping failed with error %s, treating as disconnected', e
+      )
+      return True
 
   def _create_client(self, merged_headers: Optional[Dict[str, str]] = None):
     """Creates an MCP client based on the connection parameters.
@@ -325,7 +343,7 @@ class MCPSessionManager:
         session, exit_stack = self._sessions[session_key]
 
         # Check if the existing session is still connected
-        if not self._is_session_disconnected(session):
+        if not await self._is_session_disconnected(session):
           # Session is still good, return it
           return session
         else:
