@@ -18,7 +18,7 @@ The agent's primary goal is to identify issues where a maintainer has requested 
 4.  **Marks as Stale:** If the maintainer's question has gone unanswered by the author for a configurable period (e.g., 7 days), the agent will:
     *   Apply a `stale` label to the issue.
     *   Post a comment notifying the author that the issue is now considered stale and will be closed if no further action is taken.
-    *   Proactively add a `request-clarification` label if it's missing, to make the issue's state clear.
+    *   Proactively add a `request clarification` label if it's missing, to make the issue's state clear.
 5.  **Handles Activity:** If any non-maintainer (the author or a third party) comments on an issue, the agent will automatically remove the `stale` label, marking the issue as active again.
 6.  **Closes Stale Issues:** If an issue remains in the `stale` state for another configurable period (e.g., 7 days) with no new activity, the agent will post a final comment and close the issue.
 
