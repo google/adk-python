@@ -67,6 +67,8 @@ CMD adk {command} --port={port} {host_option} {service_option} {trace_to_cloud_o
 """
 
 _AGENT_ENGINE_APP_TEMPLATE: Final[str] = """
+import os
+import vertexai
 from vertexai.agent_engines import AdkApp
 
 if {is_config_agent}:
@@ -81,9 +83,12 @@ else:
   from .agent import {adk_app_object}
 
 if {express_mode}: # Whether or not to use Express Mode
-  import os
-  import vertexai
   vertexai.init(api_key=os.environ.get("GOOGLE_API_KEY"))
+else:
+  vertexai.init(
+    project=os.environ.get("GOOGLE_CLOUD_PROJECT"),
+    location=os.environ.get("GOOGLE_CLOUD_LOCATION"),
+  )
 
 adk_app = AdkApp(
     {adk_app_type}={adk_app_object},
