@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Handles function callings for LLM flow."""
+"""Handles function calling for LLM flow."""
 
 from __future__ import annotations
 
@@ -275,6 +275,40 @@ async def _execute_single_function_call_async(
     tool_confirmation: Optional[ToolConfirmation] = None,
 ) -> Optional[Event]:
   """Execute a single function call with thread safety for state modifications."""
+
+  async def _run_on_tool_error_callbacks(
+      *,
+      tool: BaseTool,
+      tool_args: dict[str, Any],
+      tool_context: ToolContext,
+      error: Exception,
+  ) -> Optional[dict[str, Any]]:
+    """Runs the on_tool_error_callbacks for the given tool."""
+    error_response = (
+        await invocation_context.plugin_manager.run_on_tool_error_callback(
+            tool=tool,
+            tool_args=tool_args,
+            tool_context=tool_context,
+            error=error,
+        )
+    )
+    if error_response is not None:
+      return error_response
+
+    for callback in agent.canonical_on_tool_error_callbacks:
+      error_response = callback(
+          tool=tool,
+          args=tool_args,
+          tool_context=tool_context,
+          error=error,
+      )
+      if inspect.isawaitable(error_response):
+        error_response = await error_response
+      if error_response is not None:
+        return error_response
+
+    return None
+
   # Do not use "args" as the variable name, because it is a reserved keyword
   # in python debugger.
   # Make a deep copy to avoid being modified.
@@ -290,13 +324,11 @@ async def _execute_single_function_call_async(
     tool = _get_tool(function_call, tools_dict)
   except ValueError as tool_error:
     tool = BaseTool(name=function_call.name, description='Tool not found')
-    error_response = (
-        await invocation_context.plugin_manager.run_on_tool_error_callback(
-            tool=tool,
-            tool_args=function_args,
-            tool_context=tool_context,
-            error=tool_error,
-        )
+    error_response = await _run_on_tool_error_callbacks(
+        tool=tool,
+        tool_args=function_args,
+        tool_context=tool_context,
+        error=tool_error,
     )
     if error_response is not None:
       return __build_response_event(
@@ -335,13 +367,11 @@ async def _execute_single_function_call_async(
             tool, args=function_args, tool_context=tool_context
         )
       except Exception as tool_error:
-        error_response = (
-            await invocation_context.plugin_manager.run_on_tool_error_callback(
-                tool=tool,
-                tool_args=function_args,
-                tool_context=tool_context,
-                error=tool_error,
-            )
+        error_response = await _run_on_tool_error_callbacks(
+            tool=tool,
+            tool_args=function_args,
+            tool_context=tool_context,
+            error=tool_error,
         )
         if error_response is not None:
           function_response = error_response
@@ -626,7 +656,7 @@ async def _process_function_live_helper(
       }
   elif hasattr(tool, 'func') and inspect.isasyncgenfunction(tool.func):
     # for streaming tool use case
-    # we require the function to be a async generator function
+    # we require the function to be an async generator function
     async def run_tool_and_update_queue(tool, function_args, tool_context):
       try:
         async with Aclosing(
@@ -686,10 +716,17 @@ def _get_tool(
 ):
   """Returns the tool corresponding to the function call."""
   if function_call.name not in tools_dict:
-    raise ValueError(
-        f'Function {function_call.name} is not found in the tools_dict:'
-        f' {tools_dict.keys()}.'
+    available = list(tools_dict.keys())
+    error_msg = (
+        f"Tool '{function_call.name}' not found.\nAvailable tools:"
+        f" {', '.join(available)}\n\nPossible causes:\n  1. LLM hallucinated"
+        ' the function name - review agent instruction clarity\n  2. Tool not'
+        ' registered - verify agent.tools list\n  3. Name mismatch - check for'
+        ' typos\n\nSuggested fixes:\n  - Review agent instruction to ensure'
+        ' tool usage is clear\n  - Verify tool is included in agent.tools'
+        ' list\n  - Check for typos in function name'
     )
+    raise ValueError(error_msg)
 
   return tools_dict[function_call.name]
 

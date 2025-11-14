@@ -11,24 +11,29 @@
       <img src="https://raw.githubusercontent.com/google/adk-python/main/assets/agent-development-kit.png" width="256"/>
     </h2>
     <h3 align="center">
-      An open-source, code-first Python toolkit for building, evaluating, and deploying sophisticated AI agents with flexibility and control.
+      An open-source, code-first Python framework for building, evaluating, and deploying sophisticated AI agents with flexibility and control.
     </h3>
     <h3 align="center">
       Important Links:
       <a href="https://google.github.io/adk-docs/">Docs</a>,
       <a href="https://github.com/google/adk-samples">Samples</a>,
-      <a href="https://github.com/google/adk-java">Java ADK</a> &
+      <a href="https://github.com/google/adk-java">Java ADK</a>,
+      <a href="https://github.com/google/adk-go">Go ADK</a> &
       <a href="https://github.com/google/adk-web">ADK Web</a>.
     </h3>
 </html>
 
-Agent Development Kit (ADK) is a flexible and modular framework for developing and deploying AI agents. While optimized for Gemini and the Google ecosystem, ADK is model-agnostic, deployment-agnostic, and is built for compatibility with other frameworks. ADK was designed to make agent development feel more like software development, to make it easier for developers to create, deploy, and orchestrate agentic architectures that range from simple tasks to complex workflows.
+Agent Development Kit (ADK) is a flexible and modular framework that applies
+software development principles to AI agent creation. It is designed to
+simplify building, deploying, and orchestrating agent workflows, from simple
+tasks to complex systems. While optimized for Gemini, ADK is model-agnostic,
+deployment-agnostic, and compatible with other frameworks.
 
 ---
 
 ## 🔥 What's new
 
-- **Custom Service Registration**: Add a service registry to provide a generic way to register custom service implementations to be used in FastAPI server. See short instruction [here](https://github.com/google/adk-python/discussions/3175#discussioncomment-14745120). ([391628f](https://github.com/google/adk-python/commit/391628fcdc7b950c6835f64ae3ccab197163c990))
+- **Custom Service Registration**: Add a service registry to provide a generic way to register custom service implementations to be used in FastAPI server. See [short instruction](https://github.com/google/adk-python/discussions/3175#discussioncomment-14745120). ([391628f](https://github.com/google/adk-python/commit/391628fcdc7b950c6835f64ae3ccab197163c990))
 
 - **Rewind**: Add the ability to rewind a session to before a previous invocation ([9dce06f](https://github.com/google/adk-python/commit/9dce06f9b00259ec42241df4f6638955e783a9d1)).
 
@@ -37,7 +42,7 @@ Agent Development Kit (ADK) is a flexible and modular framework for developing a
 ## ✨ Key Features
 
 - **Rich Tool Ecosystem**: Utilize pre-built tools, custom functions,
-  OpenAPI specs, or integrate existing tools to give agents diverse
+  OpenAPI specs, MCP tools or integrate existing tools to give agents diverse
   capabilities, all for tight integration with the Google ecosystem.
 
 - **Code-First Development**: Define agent logic, tools, and orchestration
@@ -53,13 +58,6 @@ Agent Development Kit (ADK) is a flexible and modular framework for developing a
 
 - **Deploy Anywhere**: Easily containerize and deploy agents on Cloud Run or
   scale seamlessly with Vertex AI Agent Engine.
-
-## 🤖 Agent2Agent (A2A) Protocol and ADK Integration
-
-For remote agent-to-agent communication, ADK integrates with the
-[A2A protocol](https://github.com/google-a2a/A2A/).
-See this [example](https://github.com/a2aproject/a2a-samples/tree/main/samples/python/agents)
-for how they can work together.
 
 ## 🚀 Installation
 
@@ -83,6 +81,13 @@ pip install git+https://github.com/google/adk-python.git@main
 ```
 
 Note: The development version is built directly from the latest code commits. While it includes the newest fixes and features, it may also contain experimental changes or bugs not present in the stable release. Use it primarily for testing upcoming changes or accessing critical fixes before they are officially released.
+
+## 🤖 Agent2Agent (A2A) Protocol and ADK Integration
+
+For remote agent-to-agent communication, ADK integrates with the
+[A2A protocol](https://github.com/google-a2a/A2A/).
+See this [example](https://github.com/a2aproject/a2a-samples/tree/main/samples/python/agents)
+for how they can work together.
 
 ## 📚 Documentation
 
@@ -150,6 +155,12 @@ adk eval \
 We welcome contributions from the community! Whether it's bug reports, feature requests, documentation improvements, or code contributions, please see our
 - [General contribution guideline and flow](https://google.github.io/adk-docs/contributing-guide/).
 - Then if you want to contribute code, please read [Code Contributing Guidelines](./CONTRIBUTING.md) to get started.
+
+## Community Repo
+
+We have [adk-python-community repo](https://github.com/google/adk-python-community)that is home to a growing ecosystem of community-contributed tools, third-party
+service integrations, and deployment scripts that extend the core capabilities
+of the ADK.
 
 ## Vibe Coding
 

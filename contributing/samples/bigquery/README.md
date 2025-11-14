@@ -21,6 +21,9 @@ distributed via the `google.adk.tools.bigquery` module. These tools include:
 
   Fetches metadata about a BigQuery table.
 
+5. `get_job_info`
+  Fetches metadata about a BigQuery job.
+
 5. `execute_sql`
 
   Runs or dry-runs a SQL query in BigQuery.
@@ -45,6 +48,12 @@ distributed via the `google.adk.tools.bigquery` module. These tools include:
   Perform contribution analysis in BigQuery by creating a temporary
   `CONTRIBUTION_ANALYSIS` model and then querying it with
   `ML.GET_INSIGHTS` to find top contributors for a given metric.
+
+9. `detect_anomalies`
+
+  Perform time series anomaly detection in BigQuery by creating a temporary
+  `ARIMA_PLUS` model and then querying it with
+  `ML.DETECT_ANOMALIES` to detect time series data anomalies.
 
 ## How to use
 

@@ -30,7 +30,7 @@ from google.adk.utils.feature_decorator import experimental
 from typing_extensions import override
 
 from .base_credential_exchanger import BaseCredentialExchanger
-from .base_credential_exchanger import CredentialExchangError
+from .base_credential_exchanger import CredentialExchangeError
 
 try:
   from authlib.integrations.requests_client import OAuth2Session
@@ -53,6 +53,7 @@ class OAuth2CredentialExchanger(BaseCredentialExchanger):
       auth_scheme: Optional[AuthScheme] = None,
   ) -> AuthCredential:
     """Exchange OAuth2 credential from authorization response.
+
     if credential exchange failed, the original credential will be returned.
 
     Args:
@@ -63,10 +64,10 @@ class OAuth2CredentialExchanger(BaseCredentialExchanger):
         The exchanged credential with access token.
 
     Raises:
-        CredentialExchangError: If auth_scheme is missing.
+        CredentialExchangeError: If auth_scheme is missing.
     """
     if not auth_scheme:
-      raise CredentialExchangError(
+      raise CredentialExchangeError(
           "auth_scheme is required for OAuth2 credential exchange"
       )
 
@@ -158,6 +159,14 @@ class OAuth2CredentialExchanger(BaseCredentialExchanger):
 
     return auth_credential
 
+  def _normalize_auth_uri(self, auth_uri: str | None) -> str | None:
+    # Authlib currently used a simplified token check by simply scanning hash existence,
+    # yet itself might sometimes add extraneous hashes.
+    # Drop trailing empty hash if seen.
+    if auth_uri and auth_uri.endswith("#"):
+      return auth_uri[:-1]
+    return auth_uri
+
   async def _exchange_authorization_code(
       self,
       auth_credential: AuthCredential,
@@ -182,7 +191,9 @@ class OAuth2CredentialExchanger(BaseCredentialExchanger):
     try:
       tokens = client.fetch_token(
           token_endpoint,
-          authorization_response=auth_credential.oauth2.auth_response_uri,
+          authorization_response=self._normalize_auth_uri(
+              auth_credential.oauth2.auth_response_uri
+          ),
           code=auth_credential.oauth2.auth_code,
           grant_type=OAuthGrantType.AUTHORIZATION_CODE,
       )

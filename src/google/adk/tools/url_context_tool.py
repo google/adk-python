@@ -49,7 +49,7 @@ class UrlContextTool(BaseTool):
     llm_request.config = llm_request.config or types.GenerateContentConfig()
     llm_request.config.tools = llm_request.config.tools or []
     if is_gemini_1_model(llm_request.model):
-      raise ValueError('Url context tool can not be used in Gemini 1.x.')
+      raise ValueError('Url context tool cannot be used in Gemini 1.x.')
     elif is_gemini_2_or_above(llm_request.model):
       llm_request.config.tools.append(
           types.Tool(url_context=types.UrlContext())

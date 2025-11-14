@@ -42,6 +42,11 @@ class TestExtractModelName:
     path_model_3 = 'projects/test-project/locations/europe-west1/publishers/google/models/claude-3-sonnet'
     assert extract_model_name(path_model_3) == 'claude-3-sonnet'
 
+  def test_extract_model_name_with_models_prefix(self):
+    """Test extraction of model names with 'models/' prefix."""
+    assert extract_model_name('models/gemini-2.5-pro') == 'gemini-2.5-pro'
+    assert extract_model_name('models/gemini-1.5-flash') == 'gemini-1.5-flash'
+
   def test_extract_model_name_invalid_path(self):
     """Test that invalid path formats return the original string."""
     invalid_paths = [
@@ -115,7 +120,7 @@ class TestIsGeminiModel:
     assert is_gemini_model('gemini_1_5_flash') is False
 
   def test_is_gemini_model_case_sensitivity(self):
-    """Test that model detection is case sensitive."""
+    """Test that model detection is case-sensitive."""
     assert is_gemini_model('Gemini-2.5-pro') is False
     assert is_gemini_model('GEMINI-2.5-pro') is False
     assert is_gemini_model('gemini-2.5-PRO') is True  # Only the start matters

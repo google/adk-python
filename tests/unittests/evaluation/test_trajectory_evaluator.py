@@ -17,7 +17,9 @@
 
 from google.adk.evaluation.eval_case import IntermediateData
 from google.adk.evaluation.eval_case import Invocation
+from google.adk.evaluation.eval_metrics import EvalMetric
 from google.adk.evaluation.eval_metrics import PrebuiltMetrics
+from google.adk.evaluation.eval_metrics import ToolTrajectoryCriterion
 from google.adk.evaluation.evaluator import EvalStatus
 from google.adk.evaluation.trajectory_evaluator import TrajectoryEvaluator
 from google.genai import types as genai_types
@@ -41,7 +43,16 @@ def test_get_metric_info():
 @pytest.fixture
 def evaluator() -> TrajectoryEvaluator:
   """Returns a TrajectoryEvaluator."""
-  return TrajectoryEvaluator(threshold=0.5)
+  return TrajectoryEvaluator(
+      eval_metric=EvalMetric(
+          threshold=0.5,
+          metric_name=PrebuiltMetrics.TOOL_TRAJECTORY_AVG_SCORE.value,
+          criterion=ToolTrajectoryCriterion(
+              threshold=0.5,
+              match_type=ToolTrajectoryCriterion.MatchType.EXACT,
+          ),
+      )
+  )
 
 
 def test_evaluate_invocations_equal_tool_calls(evaluator: TrajectoryEvaluator):
@@ -174,6 +185,220 @@ def test_evaluate_invocations_multiple_invocations(
   assert result.per_invocation_results[0].eval_status == EvalStatus.PASSED
   assert result.per_invocation_results[1].score == 0.0
   assert result.per_invocation_results[1].eval_status == EvalStatus.FAILED
+
+
+@pytest.fixture
+def in_order_evaluator() -> TrajectoryEvaluator:
+  """Returns a TrajectoryEvaluator for IN_ORDER match."""
+  return TrajectoryEvaluator(
+      eval_metric=EvalMetric(
+          threshold=0.5,
+          metric_name=PrebuiltMetrics.TOOL_TRAJECTORY_AVG_SCORE.value,
+          criterion=ToolTrajectoryCriterion(
+              threshold=0.5,
+              match_type=ToolTrajectoryCriterion.MatchType.IN_ORDER,
+          ),
+      )
+  )
+
+
+def test_evaluate_invocations_in_order_match_with_extra_tool_calls(
+    in_order_evaluator: TrajectoryEvaluator,
+):
+  """Tests evaluate_invocations with IN_ORDER match type and extra tool calls."""
+  t1 = genai_types.FunctionCall(name="t1", args={})
+  t1_1 = genai_types.FunctionCall(name="t1_1", args={})
+  t2 = genai_types.FunctionCall(name="t2", args={})
+  t2_1 = genai_types.FunctionCall(name="t2_1", args={})
+  t3 = genai_types.FunctionCall(name="t3", args={})
+  t3_1 = genai_types.FunctionCall(name="t3_1", args={})
+  actual_invocation = Invocation(
+      user_content=_USER_CONTENT,
+      intermediate_data=IntermediateData(
+          tool_uses=[t1, t1_1, t2, t2_1, t3, t3_1]
+      ),
+  )
+  expected_invocation = Invocation(
+      user_content=_USER_CONTENT,
+      intermediate_data=IntermediateData(tool_uses=[t1, t2, t3]),
+  )
+  result = in_order_evaluator.evaluate_invocations(
+      [actual_invocation], [expected_invocation]
+  )
+  assert result.overall_score == 1.0
+  assert result.overall_eval_status == EvalStatus.PASSED
+  assert result.per_invocation_results[0].score == 1.0
+  assert result.per_invocation_results[0].eval_status == EvalStatus.PASSED
+
+
+def test_evaluate_invocations_in_order_match_fails_with_missing_tool_call(
+    in_order_evaluator: TrajectoryEvaluator,
+):
+  """Tests evaluate_invocations with IN_ORDER match type and missing tool call."""
+  t1 = genai_types.FunctionCall(name="t1", args={})
+  t1_1 = genai_types.FunctionCall(name="t1_1", args={})
+  t2 = genai_types.FunctionCall(name="t2", args={})
+  t2_1 = genai_types.FunctionCall(name="t2_1", args={})
+  t3_1 = genai_types.FunctionCall(name="t3_1", args={})
+  t4 = genai_types.FunctionCall(name="t4", args={})
+  actual_invocation = Invocation(
+      user_content=_USER_CONTENT,
+      intermediate_data=IntermediateData(tool_uses=[t1, t1_1, t2, t2_1, t3_1]),
+  )
+  expected_invocation = Invocation(
+      user_content=_USER_CONTENT,
+      intermediate_data=IntermediateData(tool_uses=[t1, t2, t4]),
+  )
+  result = in_order_evaluator.evaluate_invocations(
+      [actual_invocation], [expected_invocation]
+  )
+  assert result.overall_score == 0.0
+  assert result.overall_eval_status == EvalStatus.FAILED
+  assert result.per_invocation_results[0].score == 0.0
+  assert result.per_invocation_results[0].eval_status == EvalStatus.FAILED
+
+
+def test_evaluate_invocations_in_order_match_fails_with_wrong_order(
+    in_order_evaluator: TrajectoryEvaluator,
+):
+  """Tests evaluate_invocations with IN_ORDER match type and wrong order."""
+  t1 = genai_types.FunctionCall(name="t1", args={})
+  t2 = genai_types.FunctionCall(name="t2", args={})
+  t3 = genai_types.FunctionCall(name="t3", args={})
+  actual_invocation = Invocation(
+      user_content=_USER_CONTENT,
+      intermediate_data=IntermediateData(tool_uses=[t1, t3, t2]),
+  )
+  expected_invocation = Invocation(
+      user_content=_USER_CONTENT,
+      intermediate_data=IntermediateData(tool_uses=[t1, t2, t3]),
+  )
+  result = in_order_evaluator.evaluate_invocations(
+      [actual_invocation], [expected_invocation]
+  )
+  assert result.overall_score == 0.0
+  assert result.overall_eval_status == EvalStatus.FAILED
+  assert result.per_invocation_results[0].score == 0.0
+  assert result.per_invocation_results[0].eval_status == EvalStatus.FAILED
+
+
+@pytest.fixture
+def any_order_evaluator() -> TrajectoryEvaluator:
+  """Returns a TrajectoryEvaluator for ANY_ORDER match."""
+  return TrajectoryEvaluator(
+      eval_metric=EvalMetric(
+          threshold=0.5,
+          metric_name=PrebuiltMetrics.TOOL_TRAJECTORY_AVG_SCORE.value,
+          criterion=ToolTrajectoryCriterion(
+              threshold=0.5,
+              match_type=ToolTrajectoryCriterion.MatchType.ANY_ORDER,
+          ),
+      )
+  )
+
+
+def test_evaluate_invocations_any_order_match_with_extra_tool_calls_different_order(
+    any_order_evaluator: TrajectoryEvaluator,
+):
+  """Tests evaluate_invocations with ANY_ORDER match type and extra tool calls."""
+  t1 = genai_types.FunctionCall(name="t1", args={})
+  t1_1 = genai_types.FunctionCall(name="t1_1", args={})
+  t2 = genai_types.FunctionCall(name="t2", args={})
+  t2_1 = genai_types.FunctionCall(name="t2_1", args={})
+  t3 = genai_types.FunctionCall(name="t3", args={})
+  t3_1 = genai_types.FunctionCall(name="t3_1", args={})
+  actual_invocation = Invocation(
+      user_content=_USER_CONTENT,
+      intermediate_data=IntermediateData(
+          tool_uses=[t2, t2_1, t1, t1_1, t3, t3_1]
+      ),
+  )
+  expected_invocation = Invocation(
+      user_content=_USER_CONTENT,
+      intermediate_data=IntermediateData(tool_uses=[t1, t2, t3]),
+  )
+  result = any_order_evaluator.evaluate_invocations(
+      [actual_invocation], [expected_invocation]
+  )
+  assert result.overall_score == 1.0
+  assert result.overall_eval_status == EvalStatus.PASSED
+  assert result.per_invocation_results[0].score == 1.0
+  assert result.per_invocation_results[0].eval_status == EvalStatus.PASSED
+
+
+def test_evaluate_invocations_any_order_match_fails_with_missing_tool_call(
+    any_order_evaluator: TrajectoryEvaluator,
+):
+  """Tests evaluate_invocations with ANY_ORDER match type and missing tool call."""
+  t1 = genai_types.FunctionCall(name="t1", args={})
+  t1_1 = genai_types.FunctionCall(name="t1_1", args={})
+  t2 = genai_types.FunctionCall(name="t2", args={})
+  t2_1 = genai_types.FunctionCall(name="t2_1", args={})
+  t3_1 = genai_types.FunctionCall(name="t3_1", args={})
+  t4 = genai_types.FunctionCall(name="t4", args={})
+  actual_invocation = Invocation(
+      user_content=_USER_CONTENT,
+      intermediate_data=IntermediateData(tool_uses=[t1, t1_1, t2, t2_1, t3_1]),
+  )
+  expected_invocation = Invocation(
+      user_content=_USER_CONTENT,
+      intermediate_data=IntermediateData(tool_uses=[t1, t2, t4]),
+  )
+  result = any_order_evaluator.evaluate_invocations(
+      [actual_invocation], [expected_invocation]
+  )
+  assert result.overall_score == 0.0
+  assert result.overall_eval_status == EvalStatus.FAILED
+  assert result.per_invocation_results[0].score == 0.0
+  assert result.per_invocation_results[0].eval_status == EvalStatus.FAILED
+
+
+def test_evaluate_invocations_any_order_match_with_duplicates(
+    any_order_evaluator: TrajectoryEvaluator,
+):
+  """Tests evaluate_invocations with ANY_ORDER match type with duplicates."""
+  t1 = genai_types.FunctionCall(name="t1", args={})
+  t2 = genai_types.FunctionCall(name="t2", args={})
+  t3 = genai_types.FunctionCall(name="t3", args={})
+  actual_invocation = Invocation(
+      user_content=_USER_CONTENT,
+      intermediate_data=IntermediateData(tool_uses=[t1, t2, t3, t1]),
+  )
+  expected_invocation = Invocation(
+      user_content=_USER_CONTENT,
+      intermediate_data=IntermediateData(tool_uses=[t1, t2, t1]),
+  )
+  result = any_order_evaluator.evaluate_invocations(
+      [actual_invocation], [expected_invocation]
+  )
+  assert result.overall_score == 1.0
+  assert result.overall_eval_status == EvalStatus.PASSED
+  assert result.per_invocation_results[0].score == 1.0
+  assert result.per_invocation_results[0].eval_status == EvalStatus.PASSED
+
+
+def test_evaluate_invocations_any_order_match_fails_with_duplicates_missing(
+    any_order_evaluator: TrajectoryEvaluator,
+):
+  """Tests evaluate_invocations with ANY_ORDER match type with missing duplicates."""
+  t1 = genai_types.FunctionCall(name="t1", args={})
+  t2 = genai_types.FunctionCall(name="t2", args={})
+  t3 = genai_types.FunctionCall(name="t3", args={})
+  actual_invocation = Invocation(
+      user_content=_USER_CONTENT,
+      intermediate_data=IntermediateData(tool_uses=[t1, t2, t3]),
+  )
+  expected_invocation = Invocation(
+      user_content=_USER_CONTENT,
+      intermediate_data=IntermediateData(tool_uses=[t1, t2, t1]),
+  )
+  result = any_order_evaluator.evaluate_invocations(
+      [actual_invocation], [expected_invocation]
+  )
+  assert result.overall_score == 0.0
+  assert result.overall_eval_status == EvalStatus.FAILED
+  assert result.per_invocation_results[0].score == 0.0
+  assert result.per_invocation_results[0].eval_status == EvalStatus.FAILED
 
 
 def test_evaluate_invocations_no_invocations(evaluator: TrajectoryEvaluator):

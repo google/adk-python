@@ -36,6 +36,7 @@ try:
   from google.adk.tools.mcp_tool.mcp_tool import MCPTool
   from google.adk.tools.tool_context import ToolContext
   from google.genai.types import FunctionDeclaration
+  from google.genai.types import Type
   from mcp.types import CallToolResult
   from mcp.types import TextContent
 except ImportError as e:
@@ -49,6 +50,7 @@ except ImportError as e:
     MCPTool = DummyClass
     ToolContext = DummyClass
     FunctionDeclaration = DummyClass
+    Type = DummyClass
     CallToolResult = DummyClass
     TextContent = DummyClass
   else:
@@ -70,6 +72,7 @@ class MockMCPTool:
         },
         "required": ["param1"],
     }
+    self.outputSchema = None
 
 
 class TestMCPTool:
@@ -145,6 +148,7 @@ class TestMCPTool:
     assert declaration.name == "test_tool"
     assert declaration.description == "Test tool description"
     assert declaration.parameters is not None
+    assert declaration.response is None
 
   @pytest.mark.asyncio
   async def test_run_async_impl_no_auth(self):

@@ -228,14 +228,14 @@ def _convert_to_object(data):
     return data
 
 
-class MockApiClient:
+class MockAsyncClient:
   """Mocks the API Client."""
 
   def __init__(self) -> None:
     """Initializes MockClient."""
     self.session_dict: dict[str, Any] = {}
     self.event_dict: dict[str, Tuple[List[Any], Optional[str]]] = {}
-    self.agent_engines = mock.Mock()
+    self.agent_engines = mock.AsyncMock()
     self.agent_engines.sessions.get.side_effect = self._get_session
     self.agent_engines.sessions.list.side_effect = self._list_sessions
     self.agent_engines.sessions.delete.side_effect = self._delete_session
@@ -244,13 +244,21 @@ class MockApiClient:
     self.agent_engines.sessions.events.append.side_effect = self._append_event
     self.last_create_session_config: dict[str, Any] = {}
 
-  def _get_session(self, name: str):
+  async def __aenter__(self):
+    """Enters the asynchronous context."""
+    return self
+
+  async def __aexit__(self, exc_type, exc_val, exc_tb):
+    """Exits the asynchronous context."""
+    pass
+
+  async def _get_session(self, name: str):
     session_id = name.split('/')[-1]
     if session_id in self.session_dict:
       return _convert_to_object(self.session_dict[session_id])
     raise api_core_exceptions.NotFound(f'Session not found: {session_id}')
 
-  def _list_sessions(self, name: str, config: dict[str, Any]):
+  async def _list_sessions(self, name: str, config: dict[str, Any]):
     filter_val = config.get('filter', '')
     user_id_match = re.search(r'user_id="([^"]+)"', filter_val)
     if user_id_match:
@@ -271,11 +279,13 @@ class MockApiClient:
         _convert_to_object(session) for session in self.session_dict.values()
     ]
 
-  def _delete_session(self, name: str):
+  async def _delete_session(self, name: str):
     session_id = name.split('/')[-1]
     self.session_dict.pop(session_id)
 
-  def _create_session(self, name: str, user_id: str, config: dict[str, Any]):
+  async def _create_session(
+      self, name: str, user_id: str, config: dict[str, Any]
+  ):
     self.last_create_session_config = config
     new_session_id = '4'
     self.session_dict[new_session_id] = {
@@ -299,7 +309,7 @@ class MockApiClient:
         'response': self.session_dict['4'],
     })
 
-  def _list_events(self, name: str, **kwargs):
+  async def _list_events(self, name: str, **kwargs):
     session_id = name.split('/')[-1]
     events = []
     if session_id in self.event_dict:
@@ -322,7 +332,7 @@ class MockApiClient:
         ]
     return [_convert_to_object(event) for event in events]
 
-  def _append_event(
+  async def _append_event(
       self,
       name: str,
       author: str,
@@ -352,19 +362,25 @@ class MockApiClient:
       self.event_dict[session_id] = ([event_json], None)
 
 
-def mock_vertex_ai_session_service(agent_engine_id: Optional[str] = None):
+def mock_vertex_ai_session_service(
+    project: Optional[str] = 'test-project',
+    location: Optional[str] = 'test-location',
+    agent_engine_id: Optional[str] = None,
+    express_mode_api_key: Optional[str] = None,
+):
   """Creates a mock Vertex AI Session service for testing."""
   return VertexAiSessionService(
-      project='test-project',
-      location='test-location',
+      project=project,
+      location=location,
       agent_engine_id=agent_engine_id,
+      express_mode_api_key=express_mode_api_key,
   )
 
 
 @pytest.fixture
 def mock_api_client_instance():
   """Creates a mock API client instance for testing."""
-  api_client = MockApiClient()
+  api_client = MockAsyncClient()
   api_client.session_dict = {
       '1': MOCK_SESSION_JSON_1,
       '2': MOCK_SESSION_JSON_2,
@@ -387,6 +403,21 @@ def mock_get_api_client(mock_api_client_instance):
       return_value=mock_api_client_instance,
   ):
     yield
+
+
+@pytest.mark.asyncio
+async def test_initialize_with_project_location_and_api_key_error():
+  with pytest.raises(ValueError) as excinfo:
+    mock_vertex_ai_session_service(
+        project='test-project',
+        location='test-location',
+        express_mode_api_key='test-api-key',
+    )
+  assert (
+      'Cannot specify project or location and express_mode_api_key. Either use'
+      ' project and location, or just the express_mode_api_key.'
+      in str(excinfo.value)
+  )
 
 
 @pytest.mark.asyncio

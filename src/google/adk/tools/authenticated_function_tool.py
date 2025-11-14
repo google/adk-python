@@ -58,7 +58,7 @@ class AuthenticatedFunctionTool(FunctionTool):
           the tool doesn't configure any credentials
           (auth_config.raw_auth_credential is missing) or the credentials
           configured is not enough to authenticate the tool (e.g. an OAuth
-          client id and client secrect is configured.) and needs client input
+          client id and client secret are configured) and needs client input
           (e.g. client need to involve the end user in an oauth flow and get
           back the oauth response.)
     """

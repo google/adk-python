@@ -65,7 +65,7 @@ class CodeConfig(BaseModel):
 
   args: Optional[List[ArgumentConfig]] = None
   """Optional. The arguments for the code when `name` refers to a function or a
-  class's contructor.
+  class's constructor.
 
   Examples:
     ```
