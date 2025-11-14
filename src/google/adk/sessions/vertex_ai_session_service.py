@@ -93,6 +93,7 @@ class VertexAiSessionService(BaseSessionService):
       user_id: The ID of the user.
       state: The initial state of the session.
       session_id: The ID of the session.
+      display_name: An optional display name for the session.
       **kwargs: Additional arguments to pass to the session creation. E.g. set
         expire_time='2025-10-01T00:00:00Z' to set the session expiration time.
         See https://cloud.google.com/vertex-ai/generative-ai/docs/reference/rest/v1beta1/projects.locations.reasoningEngines.sessions
@@ -110,6 +111,8 @@ class VertexAiSessionService(BaseSessionService):
     reasoning_engine_id = self._get_reasoning_engine_id(app_name)
 
     config = {'session_state': state} if state else {}
+    if display_name is not None:
+      config['display_name'] = display_name
     config.update(kwargs)
     async with self._get_api_client() as api_client:
       api_response = await api_client.agent_engines.sessions.create(
