@@ -304,12 +304,12 @@ def _from_firestore_doc_to_event(doc: firestore.DocumentSnapshot) -> Event:
     if event_dict.get("actions", None):
         actions_data = event_dict["actions"]
         event_actions = EventActions(
-            skip_summarization=actions_data.get("skipSummarization", None),
-            state_delta=actions_data.get("stateDelta", {}),
-            artifact_delta=actions_data.get("artifactDelta", {}),
-            transfer_to_agent=actions_data.get("transferAgent", None),
+            skip_summarization=actions_data.get("skip_summarization", None),
+            state_delta=actions_data.get("state_delta", {}),
+            artifact_delta=actions_data.get("artifact_delta", {}),
+            transfer_to_agent=actions_data.get("transfer_agent", None),
             escalate=actions_data.get("escalate", None),
-            requested_auth_configs=actions_data.get("requestedAuthConfigs", {}),
+            requested_auth_configs=actions_data.get("requested_auth_configs", {}),
         )
 
     ts_map = event_dict["timestamp"]
