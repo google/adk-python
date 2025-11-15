@@ -196,7 +196,9 @@ class FirestoreSessionService(BaseSessionService):
     @override
     async def append_event(self, session: Session, event: Event) -> Event:
         """Appends an event to the session's event subcollection in Firestore using a thread."""
-        await super().append_event(session=session, event=event)
+        event = await super().append_event(session=session, event=event)
+        if event.actions and event.actions.state_delta:
+            await self.update_session_state(session.id, event.actions.state_delta)
         
         def _append_in_firestore():
             logger.info("Starting _append_in_firestore for session '%s'", session.id)
