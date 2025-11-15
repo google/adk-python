@@ -444,7 +444,7 @@ class DatabaseSessionService(BaseSessionService):
       db_url: Optional[str] = None,
       db_engine: Optional[AsyncEngine] = None,
       **kwargs: Any,
-  ):
+  ) -> None:
     """Initializes the database session service.
 
     Args:
