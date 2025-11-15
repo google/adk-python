@@ -26,9 +26,7 @@ import yaml
         pytest.param("test_data/ask_data_insights_penguins_highest_mass.yaml"),
     ],
 )
-@mock.patch(
-    "google.adk.tools.bigquery.data_insights_tool.requests.Session.post"
-)
+@mock.patch.object(data_insights_tool.requests.Session, "post")
 def test_ask_data_insights_pipeline_from_file(mock_post, case_file_path):
   """Runs a full integration test for the ask_data_insights pipeline using data from a specific file."""
   # 1. Construct the full, absolute path to the data file
@@ -65,7 +63,7 @@ def test_ask_data_insights_pipeline_from_file(mock_post, case_file_path):
   assert result == expected_final_list
 
 
-@mock.patch("google.adk.tools.bigquery.data_insights_tool._get_stream")
+@mock.patch.object(data_insights_tool, "_get_stream")
 def test_ask_data_insights_success(mock_get_stream):
   """Tests the success path of ask_data_insights using decorators."""
   # 1. Configure the behavior of the mocked functions
@@ -92,7 +90,7 @@ def test_ask_data_insights_success(mock_get_stream):
   mock_get_stream.assert_called_once()
 
 
-@mock.patch("google.adk.tools.bigquery.data_insights_tool._get_stream")
+@mock.patch.object(data_insights_tool, "_get_stream")
 def test_ask_data_insights_handles_exception(mock_get_stream):
   """Tests the exception path of ask_data_insights using decorators."""
   # 1. Configure one of the mocks to raise an error

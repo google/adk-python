@@ -1,0 +1,55 @@
+{
+  "eval_set_id": "56540925-a5ff-49fe-a4e1-589fe78066f2",
+  "name": "56540925-a5ff-49fe-a4e1-589fe78066f2",
+  "description": null,
+  "eval_cases": [
+    {
+      "eval_id": "tests/integration/fixture/hello_world_agent_async/roll_die.test.json",
+      "conversation": [
+        {
+          "invocation_id": "b01f67f0-9f23-44d6-bbe4-36ea235cb9fb",
+          "user_content": {
+            "parts": [
+              {
+                "video_metadata": null,
+                "thought": null,
+                "code_execution_result": null,
+                "executable_code": null,
+                "file_data": null,
+                "function_call": null,
+                "function_response": null,
+                "inline_data": null,
+                "text": "Hi who are you?"
+              }
+            ],
+            "role": "user"
+          },
+          "final_response": {
+            "parts": [
+              {
+                "video_metadata": null,
+                "thought": null,
+                "code_execution_result": null,
+                "executable_code": null,
+                "file_data": null,
+                "function_call": null,
+                "function_response": null,
+                "inline_data": null,
+                "text": "I am a data processing agent. I can roll dice and check if the results are prime numbers. What would you like me to do? \n"
+              }
+            ],
+            "role": "model"
+          },
+          "intermediate_data": {
+            "tool_uses": [],
+            "intermediate_responses": []
+          },
+          "creation_timestamp": 1747341775.8937013
+        }
+      ],
+      "session_input": null,
+      "creation_timestamp": 1747341775.8937826
+    }
+  ],
+  "creation_timestamp": 1747341775.8937957
+}

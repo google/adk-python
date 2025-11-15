@@ -105,6 +105,6 @@ root_agent = Agent(
     instruction="""
   Your goal is to plan the best trip according to information listed above.
   You describe why did you choose the city, list top 3
-  attactions and provide a detailed itinerary for each day.""",
+  attractions and provide a detailed itinerary for each day.""",
     sub_agents=[identify_agent, gather_agent, plan_agent],
 )

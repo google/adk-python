@@ -21,7 +21,6 @@ from typing import Any
 from typing import Optional
 
 from typing_extensions import override
-from vertexai.preview.extensions import Extension
 
 from ..agents.invocation_context import InvocationContext
 from .base_code_executor import BaseCodeExecutor
@@ -88,6 +87,8 @@ Total columns: {df.shape[1]}
 
 def _get_code_interpreter_extension(resource_name: str = None):
   """Returns: Load or create the code interpreter extension."""
+  from vertexai.preview.extensions import Extension
+
   if not resource_name:
     resource_name = os.environ.get('CODE_INTERPRETER_EXTENSION_NAME')
   if resource_name:
@@ -152,6 +153,7 @@ class VertexAiCodeExecutor(BaseCodeExecutor):
         code_execution_input.input_files,
         code_execution_input.execution_id,
     )
+    logger.debug('Executed code:\n```\n%s\n```', code_execution_input.code)
 
     # Save output file as artifacts.
     saved_files = []
@@ -187,11 +189,13 @@ class VertexAiCodeExecutor(BaseCodeExecutor):
         )
 
     # Collect the final result.
-    return CodeExecutionResult(
+    result = CodeExecutionResult(
         stdout=code_execution_result.get('execution_result', ''),
         stderr=code_execution_result.get('execution_error', ''),
         output_files=saved_files,
     )
+    logger.debug('Code execution result: %s', result)
+    return result
 
   def _execute_code_interpreter(
       self,

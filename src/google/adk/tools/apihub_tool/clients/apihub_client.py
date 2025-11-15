@@ -37,7 +37,7 @@ class BaseAPIHubClient(ABC):
 
   @abstractmethod
   def get_spec_content(self, resource_name: str) -> str:
-    """From a given resource name, get the soec in the API Hub."""
+    """From a given resource name, get the spec in the API Hub."""
     raise NotImplementedError()
 
 

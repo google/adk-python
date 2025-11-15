@@ -13,27 +13,26 @@
 # limitations under the License.
 
 """Tests for the Response Evaluator."""
-from unittest.mock import patch
 
+from google.adk.dependencies.vertexai import vertexai
 from google.adk.evaluation.eval_case import Invocation
 from google.adk.evaluation.eval_metrics import EvalMetric
 from google.adk.evaluation.eval_metrics import PrebuiltMetrics
 from google.adk.evaluation.evaluator import EvalStatus
 from google.adk.evaluation.safety_evaluator import SafetyEvaluatorV1
 from google.genai import types as genai_types
-from vertexai import types as vertexai_types
+
+vertexai_types = vertexai.types
 
 
-@patch(
-    "google.adk.evaluation.vertex_ai_eval_facade._VertexAiEvalFacade._perform_eval"
-)
 class TestSafetyEvaluatorV1:
   """A class to help organize "patch" that are applicable to all tests."""
 
-  def test_evaluate_invocations_coherence_metric_passed(
-      self, mock_perform_eval
-  ):
+  def test_evaluate_invocations_coherence_metric_passed(self, mocker):
     """Test evaluate_invocations function for Coherence metric."""
+    mock_perform_eval = mocker.patch(
+        "google.adk.evaluation.vertex_ai_eval_facade._VertexAiEvalFacade._perform_eval"
+    )
     actual_invocations = [
         Invocation(
             user_content=genai_types.Content(
@@ -78,7 +77,7 @@ class TestSafetyEvaluatorV1:
         vertexai_types.PrebuiltMetric.SAFETY.name
     ]
 
-  def test_get_metric_info(self, mock_perform_eval):
+  def test_get_metric_info(self):
     """Test get_metric_info function for Safety metric."""
     metric_info = SafetyEvaluatorV1.get_metric_info()
     assert metric_info.metric_name == PrebuiltMetrics.SAFETY_V1.value

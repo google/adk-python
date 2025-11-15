@@ -14,11 +14,14 @@
 
 from __future__ import annotations
 
+import copy
 import importlib
 from typing import Any
+from typing import AsyncGenerator
 from typing import Optional
 import uuid
 
+from google.genai.types import Content
 from pydantic import BaseModel
 
 from ..agents.llm_agent import Agent
@@ -32,6 +35,7 @@ from ..sessions.base_session_service import BaseSessionService
 from ..sessions.in_memory_session_service import InMemorySessionService
 from ..sessions.session import Session
 from ..utils.context_utils import Aclosing
+from ._retry_options_utils import EnsureRetryOptionsPlugin
 from .app_details import AgentDetails
 from .app_details import AppDetails
 from .eval_case import EvalCase
@@ -41,6 +45,9 @@ from .eval_case import InvocationEvents
 from .eval_case import SessionInput
 from .eval_set import EvalSet
 from .request_intercepter_plugin import _RequestIntercepterPlugin
+from .user_simulator import Status as UserSimulatorStatus
+from .user_simulator import UserSimulator
+from .user_simulator_provider import UserSimulatorProvider
 
 _USER_AUTHOR = "user"
 _DEFAULT_AUTHOR = "agent"
@@ -49,7 +56,7 @@ _DEFAULT_AUTHOR = "agent"
 class EvalCaseResponses(BaseModel):
   """Contains multiple responses associated with an EvalCase.
 
-  Multiple responses are a result of repeated requests to genereate inferences.
+  Multiple responses are a result of repeated requests to generate inferences.
   """
 
   eval_case: EvalCase
@@ -79,11 +86,13 @@ class EvaluationGenerator:
     results = []
 
     for eval_case in eval_set.eval_cases:
+      # assume only static conversations are needed
+      user_simulator = UserSimulatorProvider().provide(eval_case)
       responses = []
       for _ in range(repeat_num):
         response_invocations = await EvaluationGenerator._process_query(
-            eval_case.conversation,
             agent_module_path,
+            user_simulator,
             agent_name,
             eval_case.session_input,
         )
@@ -123,8 +132,8 @@ class EvaluationGenerator:
 
   @staticmethod
   async def _process_query(
-      invocations: list[Invocation],
       module_name: str,
+      user_simulator: UserSimulator,
       agent_name: Optional[str] = None,
       initial_session: Optional[SessionInput] = None,
   ) -> list[Invocation]:
@@ -141,13 +150,44 @@ class EvaluationGenerator:
       assert agent_to_evaluate, f"Sub-Agent `{agent_name}` not found."
 
     return await EvaluationGenerator._generate_inferences_from_root_agent(
-        invocations, agent_to_evaluate, reset_func, initial_session
+        agent_to_evaluate,
+        user_simulator=user_simulator,
+        reset_func=reset_func,
+        initial_session=initial_session,
     )
 
   @staticmethod
+  async def _generate_inferences_for_single_user_invocation(
+      runner: Runner,
+      user_id: str,
+      session_id: str,
+      user_content: Content,
+  ) -> AsyncGenerator[Event, None]:
+    invocation_id = None
+
+    async with Aclosing(
+        runner.run_async(
+            user_id=user_id,
+            session_id=session_id,
+            new_message=user_content,
+        )
+    ) as agen:
+
+      async for event in agen:
+        if not invocation_id:
+          invocation_id = event.invocation_id
+          yield Event(
+              content=user_content,
+              author=_USER_AUTHOR,
+              invocation_id=invocation_id,
+          )
+
+        yield event
+
+  @staticmethod
   async def _generate_inferences_from_root_agent(
-      invocations: list[Invocation],
       root_agent: Agent,
+      user_simulator: UserSimulator,
       reset_func: Optional[Any] = None,
       initial_session: Optional[SessionInput] = None,
       session_id: Optional[str] = None,
@@ -155,7 +195,8 @@ class EvaluationGenerator:
       artifact_service: Optional[BaseArtifactService] = None,
       memory_service: Optional[BaseMemoryService] = None,
   ) -> list[Invocation]:
-    """Scrapes the root agent given the list of Invocations."""
+    """Scrapes the root agent in coordination with the user simulator."""
+
     if not session_service:
       session_service = InMemorySessionService()
 
@@ -185,38 +226,34 @@ class EvaluationGenerator:
     request_intercepter_plugin = _RequestIntercepterPlugin(
         name="request_intercepter_plugin"
     )
+    # We ensure that there is some kind of retries on the llm_requests that are
+    # generated from the Agent. This is done to make inferencing step of evals
+    # more resilient to temporary model failures.
+    ensure_retry_options_plugin = EnsureRetryOptionsPlugin(
+        name="ensure_retry_options"
+    )
     async with Runner(
         app_name=app_name,
         agent=root_agent,
         artifact_service=artifact_service,
         session_service=session_service,
         memory_service=memory_service,
-        plugins=[request_intercepter_plugin],
+        plugins=[request_intercepter_plugin, ensure_retry_options_plugin],
     ) as runner:
       events = []
-
-      for invocation in invocations:
-        user_content = invocation.user_content
-        invocation_id = None
-
-        async with Aclosing(
-            runner.run_async(
-                user_id=user_id, session_id=session_id, new_message=user_content
-            )
-        ) as agen:
-
-          async for event in agen:
-            if not invocation_id:
-              invocation_id = event.invocation_id
-              events.append(
-                  Event(
-                      content=user_content,
-                      author=_USER_AUTHOR,
-                      invocation_id=invocation_id,
-                  )
-              )
-
+      while True:
+        next_user_message = await user_simulator.get_next_user_message(
+            copy.deepcopy(events)
+        )
+        if next_user_message.status == UserSimulatorStatus.SUCCESS:
+          async for (
+              event
+          ) in EvaluationGenerator._generate_inferences_for_single_user_invocation(
+              runner, user_id, session_id, next_user_message.user_message
+          ):
             events.append(event)
+        else:  # no message generated
+          break
 
       app_details_by_invocation_id = (
           EvaluationGenerator._get_app_details_by_invocation_id(

@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Optional
 from typing import Union
 
@@ -73,7 +74,7 @@ the third one uses `LlmAsAJudgeCriterion`.
 
   user_simulator_config: Optional[BaseUserSimulatorConfig] = Field(
       default=None,
-      description="""Config to be used by the user simulator.""",
+      description="Config to be used by the user simulator.",
   )
 
 
@@ -89,12 +90,14 @@ def get_evaluation_criteria_or_default(
 
   Otherwise a default one is returned.
   """
-  if eval_config_file_path:
+  if eval_config_file_path and os.path.exists(eval_config_file_path):
     with open(eval_config_file_path, "r", encoding="utf-8") as f:
       content = f.read()
       return EvalConfig.model_validate_json(content)
 
-  logger.info("No config file supplied. Using default criteria.")
+  logger.info(
+      "No config file supplied or file not found. Using default criteria."
+  )
   return _DEFAULT_EVAL_CONFIG
 
 

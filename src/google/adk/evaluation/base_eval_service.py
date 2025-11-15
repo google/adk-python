@@ -31,7 +31,7 @@ from .eval_result import EvalCaseResult
 
 
 class EvaluateConfig(BaseModel):
-  """Contains configurations need to run an evaluations."""
+  """Contains configurations needed to run evaluations."""
 
   model_config = ConfigDict(
       alias_generator=alias_generators.to_camel,
@@ -94,11 +94,11 @@ class InferenceRequest(BaseModel):
       description="""The name of the app to which the eval case belongs to."""
   )
 
-  eval_set_id: str = Field(description="""Id of the eval set.""")
+  eval_set_id: str = Field(description="""ID of the eval set.""")
 
   eval_case_ids: Optional[list[str]] = Field(
       default=None,
-      description="""Id of the eval cases for which inferences need to be
+      description="""ID of the eval cases for which inferences need to be
 generated.
 
 All the eval case ids should belong to the EvalSet.
@@ -133,10 +133,10 @@ class InferenceResult(BaseModel):
       description="""The name of the app to which the eval case belongs to."""
   )
 
-  eval_set_id: str = Field(description="""Id of the eval set.""")
+  eval_set_id: str = Field(description="""ID of the eval set.""")
 
   eval_case_id: str = Field(
-      description="""Id of the eval case for which inferences were generated.""",
+      description="""ID of the eval case for which inferences were generated.""",
   )
 
   inferences: Optional[list[Invocation]] = Field(
@@ -145,7 +145,7 @@ class InferenceResult(BaseModel):
   )
 
   session_id: Optional[str] = Field(
-      description="""Id of the inference session."""
+      description="""ID of the inference session."""
   )
 
   status: InferenceStatus = Field(
