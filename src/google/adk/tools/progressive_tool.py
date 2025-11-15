@@ -48,14 +48,22 @@ class ProgressiveTool(ProgressiveFunctionTool):
     self._results_by_call_id: dict[str, Any] = {}
     # Hide internal progress params from function declaration so the model is
     # never prompted for them and schema parsing doesn't fail.
-    try:
-      ignore_list = list(getattr(self, '_ignore_params', []))
-    except Exception:
-      ignore_list = []
+    ignore_list = list(getattr(self, '_ignore_params', []))
+
     for p in ('progress', 'progress_callback'):
       if p not in ignore_list:
         ignore_list.append(p)
+
     self._ignore_params = ignore_list
+
+  def _prepare_args_for_call(self, args: dict[str, Any], tool_context: ToolContext) -> dict[str, Any]:
+    """Prepares arguments for the wrapped function call."""
+    signature = inspect.signature(self.func)
+    valid_params = {param for param in signature.parameters}
+    args_to_call = {k: v for k, v in args.items() if k in valid_params}
+    if 'tool_context' in valid_params:
+      args_to_call['tool_context'] = tool_context
+    return args_to_call
 
   async def progress_stream(
       self,
@@ -63,13 +71,7 @@ class ProgressiveTool(ProgressiveFunctionTool):
       args: dict[str, Any],
       tool_context: ToolContext,
   ) -> asyncio.AsyncGenerator[Any, None]:
-    signature = inspect.signature(self.func)
-    valid_params = {param for param in signature.parameters}
-
-    # Build args for the wrapped function
-    args_to_call = {k: v for k, v in args.items() if k in valid_params}
-    if 'tool_context' in valid_params:
-      args_to_call['tool_context'] = tool_context
+    args_to_call = self._prepare_args_for_call(args, tool_context)
 
     call_id: Optional[str] = tool_context.function_call_id
 
@@ -134,11 +136,7 @@ class ProgressiveTool(ProgressiveFunctionTool):
       return self._results_by_call_id.pop(call_id)
 
     # Fallback: invoke function directly if progress_stream wasn't used
-    signature = inspect.signature(self.func)
-    valid_params = {param for param in signature.parameters}
-    args_to_call = {k: v for k, v in args.items() if k in valid_params}
-    if 'tool_context' in valid_params:
-      args_to_call['tool_context'] = tool_context
+    args_to_call = self._prepare_args_for_call(args, tool_context)
 
     if inspect.isasyncgenfunction(self.func):
       # Consume generator fully; return last item
