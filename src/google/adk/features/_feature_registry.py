@@ -125,8 +125,13 @@ def is_feature_enabled(feature_name: FeatureName) -> bool:
     raise ValueError(f"Feature {feature_name} is not registered.")
 
   # Check environment variables first (highest priority)
-  enable_var = f"ADK_ENABLE_{feature_name}"
-  disable_var = f"ADK_DISABLE_{feature_name}"
+  feature_name_str = (
+      feature_name.value
+      if isinstance(feature_name, FeatureName)
+      else feature_name
+  )
+  enable_var = f"ADK_ENABLE_{feature_name_str}"
+  disable_var = f"ADK_DISABLE_{feature_name_str}"
   if is_env_enabled(enable_var):
     if config.stage != FeatureStage.STABLE:
       _emit_non_stable_warning_once(feature_name, config.stage)
