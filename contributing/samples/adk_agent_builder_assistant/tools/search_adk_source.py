@@ -46,7 +46,7 @@ async def search_adk_source(
     max_results: Maximum number of results to return (default: 20)
     context_lines: Number of context lines to include around matches (default:
       3)
-    case_sensitive: Whether search should be case sensitive (default: False)
+    case_sensitive: Whether search should be case-sensitive (default: False)
 
   Returns:
     Dict containing search results:

@@ -16,23 +16,34 @@ from __future__ import annotations
 
 from typing import Any
 from typing import Optional
+from typing import Type
+from typing import TypeVar
 
-from google.genai import types
+from .state import State
+
+M = TypeVar("M")
 
 
-def decode_content(
-    content: Optional[dict[str, Any]],
-) -> Optional[types.Content]:
-  """Decodes a content object from a JSON dictionary."""
-  if not content:
+def decode_model(
+    data: Optional[dict[str, Any]], model_cls: Type[M]
+) -> Optional[M]:
+  """Decodes a pydantic model object from a JSON dictionary."""
+  if data is None:
     return None
-  return types.Content.model_validate(content)
+  return model_cls.model_validate(data)
 
 
-def decode_grounding_metadata(
-    grounding_metadata: Optional[dict[str, Any]],
-) -> Optional[types.GroundingMetadata]:
-  """Decodes a grounding metadata object from a JSON dictionary."""
-  if not grounding_metadata:
-    return None
-  return types.GroundingMetadata.model_validate(grounding_metadata)
+def extract_state_delta(
+    state: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
+  """Extracts app, user, and session state deltas from a state dictionary."""
+  deltas = {"app": {}, "user": {}, "session": {}}
+  if state:
+    for key in state.keys():
+      if key.startswith(State.APP_PREFIX):
+        deltas["app"][key.removeprefix(State.APP_PREFIX)] = state[key]
+      elif key.startswith(State.USER_PREFIX):
+        deltas["user"][key.removeprefix(State.USER_PREFIX)] = state[key]
+      elif not key.startswith(State.TEMP_PREFIX):
+        deltas["session"][key] = state[key]
+  return deltas

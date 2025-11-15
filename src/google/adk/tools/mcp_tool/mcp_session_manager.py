@@ -37,6 +37,7 @@ try:
   from mcp.client.sse import sse_client
   from mcp.client.stdio import stdio_client
   from mcp.client.streamable_http import streamablehttp_client
+  from mcp.types import EmptyResult
 except ImportError as e:
 
   if sys.version_info < (3, 10):
@@ -126,9 +127,10 @@ def retry_on_closed_resource(func):
   async def wrapper(self, *args, **kwargs):
     try:
       return await func(self, *args, **kwargs)
-    except anyio.ClosedResourceError:
-      # Simply retry the function - create_session will handle
-      # detecting and replacing disconnected sessions
+    except (anyio.ClosedResourceError, anyio.BrokenResourceError):
+      # If the session connection is closed or unusable, we will retry the
+      # function to reconnect to the server. create_session will handle
+      # detecting and replacing disconnected sessions.
       logger.info('Retrying %s due to closed resource', func.__name__)
       return await func(self, *args, **kwargs)
 
@@ -240,7 +242,7 @@ class MCPSessionManager:
 
     return base_headers
 
-  def _is_session_disconnected(self, session: ClientSession) -> bool:
+  async def _is_session_disconnected(self, session: ClientSession) -> bool:
     """Checks if a session is disconnected or closed.
 
     Args:
@@ -249,7 +251,24 @@ class MCPSessionManager:
     Returns:
         True if the session is disconnected, False otherwise.
     """
-    return session._read_stream._closed or session._write_stream._closed
+    if session._read_stream._closed or session._write_stream._closed:
+      return True
+
+    try:
+      response = await asyncio.wait_for(session.send_ping(), timeout=5.0)
+      if not isinstance(response, EmptyResult):
+        logger.info(
+            'Session ping returns illegal response %s, treating as'
+            ' disconnected',
+            response,
+        )
+        return True
+      return False
+    except Exception as e:
+      logger.info(
+          'Session ping failed with error %s, treating as disconnected', e
+      )
+      return True
 
   def _create_client(self, merged_headers: Optional[Dict[str, str]] = None):
     """Creates an MCP client based on the connection parameters.
@@ -324,7 +343,7 @@ class MCPSessionManager:
         session, exit_stack = self._sessions[session_key]
 
         # Check if the existing session is still connected
-        if not self._is_session_disconnected(session):
+        if not await self._is_session_disconnected(session):
           # Session is still good, return it
           return session
         else:
@@ -339,38 +358,50 @@ class MCPSessionManager:
 
       # Create a new session (either first time or replacing disconnected one)
       exit_stack = AsyncExitStack()
+      timeout_in_seconds = (
+          self._connection_params.timeout
+          if hasattr(self._connection_params, 'timeout')
+          else None
+      )
 
       try:
         client = self._create_client(merged_headers)
 
-        transports = await exit_stack.enter_async_context(client)
-        # The streamable http client returns a GetSessionCallback in addition to the read/write MemoryObjectStreams
-        # needed to build the ClientSession, we limit then to the two first values to be compatible with all clients.
+        transports = await asyncio.wait_for(
+            exit_stack.enter_async_context(client),
+            timeout=timeout_in_seconds,
+        )
+        # The streamable http client returns a GetSessionCallback in addition to the
+        # read/write MemoryObjectStreams needed to build the ClientSession, we limit
+        # then to the two first values to be compatible with all clients.
         if isinstance(self._connection_params, StdioConnectionParams):
           session = await exit_stack.enter_async_context(
               ClientSession(
                   *transports[:2],
-                  read_timeout_seconds=timedelta(
-                      seconds=self._connection_params.timeout
-                  ),
+                  read_timeout_seconds=timedelta(seconds=timeout_in_seconds),
               )
           )
         else:
           session = await exit_stack.enter_async_context(
               ClientSession(*transports[:2])
           )
-        await session.initialize()
+        await asyncio.wait_for(session.initialize(), timeout=timeout_in_seconds)
 
         # Store session and exit stack in the pool
         self._sessions[session_key] = (session, exit_stack)
         logger.debug('Created new session: %s', session_key)
         return session
 
-      except Exception:
+      except Exception as e:
         # If session creation fails, clean up the exit stack
         if exit_stack:
-          await exit_stack.aclose()
-        raise
+          try:
+            await exit_stack.aclose()
+          except Exception as exit_stack_error:
+            logger.warning(
+                'Error during session creation cleanup: %s', exit_stack_error
+            )
+        raise ConnectionError(f'Failed to create MCP session: {e}') from e
 
   async def close(self):
     """Closes all sessions and cleans up resources."""

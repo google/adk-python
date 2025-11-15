@@ -28,7 +28,7 @@ logger = logging.getLogger("google_adk." + __name__)
 def get_eval_set_from_app_and_id(
     eval_sets_manager: EvalSetsManager, app_name: str, eval_set_id: str
 ) -> EvalSet:
-  """Returns an EvalSet if found, otherwise raises NotFoundError."""
+  """Returns an EvalSet if found; otherwise, raises NotFoundError."""
   eval_set = eval_sets_manager.get_eval_set(app_name, eval_set_id)
   if not eval_set:
     raise NotFoundError(f"Eval set `{eval_set_id}` not found.")
@@ -38,7 +38,7 @@ def get_eval_set_from_app_and_id(
 def get_eval_case_from_eval_set(
     eval_set: EvalSet, eval_case_id: str
 ) -> Optional[EvalCase]:
-  """Returns an EvalCase if found, otherwise None."""
+  """Returns an EvalCase if found; otherwise, None."""
   eval_case_to_find = None
 
   # Look up the eval case by eval_case_id

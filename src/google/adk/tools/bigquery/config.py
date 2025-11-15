@@ -37,7 +37,7 @@ class WriteMode(Enum):
   """Only protected write operations are allowed in a BigQuery session.
 
   In this mode write operations in the anonymous dataset of a BigQuery session
-  are allowed. For example, a temporaray table can be created, manipulated and
+  are allowed. For example, a temporary table can be created, manipulated and
   deleted in the anonymous dataset during Agent interaction, while protecting
   permanent tables from being modified or deleted. To learn more about BigQuery
   sessions, see https://cloud.google.com/bigquery/docs/sessions-intro.
@@ -61,6 +61,14 @@ class BigQueryToolConfig(BaseModel):
   change in future versions.
   """
 
+  maximum_bytes_billed: Optional[int] = None
+  """Maximum number of bytes to bill for a query.
+
+  In BigQuery on-demand pricing, charges are rounded up to the nearest MB, with
+  a minimum 10 MB data processed per table referenced by the query, and with a
+  minimum 10 MB data processed per query. So this value must be set >=10485760.
+  """
+
   max_query_result_rows: int = 50
   """Maximum number of rows to return from a query.
 
@@ -71,7 +79,7 @@ class BigQueryToolConfig(BaseModel):
   """Name of the application using the BigQuery tools.
 
   By default, no particular application name will be set in the BigQuery
-  interaction. But if the the tool user (agent builder) wants to differentiate
+  interaction. But if the tool user (agent builder) wants to differentiate
   their application/agent for tracking or support purpose, they can set this field.
   """
 
@@ -81,6 +89,28 @@ class BigQueryToolConfig(BaseModel):
   This can be set as a guardrail to ensure that the tools perform the compute
   operations (such as query execution) in a specific project.
   """
+
+  location: Optional[str] = None
+  """BigQuery location to use for the data and compute.
+
+  This can be set if the BigQuery tools are expected to process data in a
+  particular BigQuery location. If not set, then location would be automatically
+  determined based on the data location in the query. For all supported
+  locations, see https://cloud.google.com/bigquery/docs/locations.
+  """
+
+  @field_validator('maximum_bytes_billed')
+  @classmethod
+  def validate_maximum_bytes_billed(cls, v):
+    """Validate the maximum bytes billed."""
+    if v and v < 10_485_760:
+      raise ValueError(
+          'In BigQuery on-demand pricing, charges are rounded up to the nearest'
+          ' MB, with a minimum 10 MB data processed per table referenced by the'
+          ' query, and with a minimum 10 MB data processed per query. So'
+          ' max_bytes_billed must be set >=10485760.'
+      )
+    return v
 
   @field_validator('application_name')
   @classmethod

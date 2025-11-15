@@ -34,6 +34,7 @@ from google.adk.tools.tool_context import ToolContext
 from google.genai.types import FunctionDeclaration
 from google.genai.types import Schema
 import pytest
+import requests
 
 
 class TestRestApiTool:
@@ -228,6 +229,49 @@ class TestRestApiTool:
       "google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool.requests.request"
   )
   @pytest.mark.asyncio
+  async def test_call_http_failure(
+      self,
+      mock_request,
+      mock_tool_context,
+      sample_endpoint,
+      sample_operation,
+      sample_auth_scheme,
+      sample_auth_credential,
+  ):
+    mock_response = MagicMock()
+    mock_response.status_code = 500
+    mock_response.content = b"Internal Server Error"
+    mock_response.raise_for_status.side_effect = requests.exceptions.HTTPError(
+        "500 Server Error"
+    )
+    mock_request.return_value = mock_response
+
+    tool = RestApiTool(
+        name="test_tool",
+        description="Test Tool",
+        endpoint=sample_endpoint,
+        operation=sample_operation,
+        auth_scheme=sample_auth_scheme,
+        auth_credential=sample_auth_credential,
+    )
+
+    # Call the method
+    result = await tool.call(args={}, tool_context=mock_tool_context)
+
+    # Check the result
+    assert result == {
+        "error": (
+            "Tool test_tool execution failed. Analyze this execution error"
+            " and your inputs. Retry with adjustments if applicable. But"
+            " make sure don't retry more than 3 times. Execution Error:"
+            " Status Code: 500, Internal Server Error"
+        )
+    }
+
+  @patch(
+      "google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool.requests.request"
+  )
+  @pytest.mark.asyncio
   async def test_call_auth_pending(
       self,
       mock_request,
@@ -261,6 +305,58 @@ class TestRestApiTool:
           "pending": True,
           "message": "Needs your authorization to access your data.",
       }
+
+  @patch(
+      "google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool.requests.request"
+  )
+  @pytest.mark.asyncio
+  async def test_call_with_required_param_defaults(
+      self,
+      mock_request,
+      mock_tool_context,
+      sample_endpoint,
+      sample_auth_scheme,
+      sample_auth_credential,
+  ):
+    """Test that required parameters with defaults are auto-filled."""
+    mock_response = MagicMock()
+    mock_response.json.return_value = {"result": "success"}
+    mock_request.return_value = mock_response
+
+    # Create operation with required parameter that has default
+    mock_operation = Operation(
+        operationId="test_op",
+        parameters=[
+            OpenAPIParameter(**{
+                "name": "userId",
+                "in": "path",
+                "required": True,
+                "schema": OpenAPISchema(type="string", default="me"),
+            })
+        ],
+    )
+
+    tool = RestApiTool(
+        name="test_tool",
+        description="Test Tool",
+        endpoint=OperationEndpoint(
+            base_url="https://example.com",
+            path="/users/{userId}/messages",
+            method="GET",
+        ),
+        operation=mock_operation,
+        auth_scheme=sample_auth_scheme,
+        auth_credential=sample_auth_credential,
+    )
+
+    # Call without providing userId - should use default "me"
+    result = await tool.call(args={}, tool_context=mock_tool_context)
+
+    # Verify the default was applied
+    assert mock_request.called
+    call_kwargs = mock_request.call_args[1]
+    assert call_kwargs["url"] == "https://example.com/users/me/messages"
+    assert result == {"result": "success"}
 
   def test_prepare_request_params_query_body(
       self, sample_endpoint, sample_auth_credential, sample_auth_scheme
@@ -685,6 +781,65 @@ class TestRestApiTool:
 
     # Make sure unknown parameters are ignored and do not raise errors.
     assert "unknown_param" not in request_params["params"]
+
+  def test_prepare_request_params_merges_default_headers(
+      self,
+      sample_endpoint,
+      sample_auth_credential,
+      sample_auth_scheme,
+      sample_operation,
+  ):
+    tool = RestApiTool(
+        name="test_tool",
+        description="Test Tool",
+        endpoint=sample_endpoint,
+        operation=sample_operation,
+        auth_credential=sample_auth_credential,
+        auth_scheme=sample_auth_scheme,
+    )
+    tool.set_default_headers({"developer-token": "token"})
+
+    request_params = tool._prepare_request_params([], {})
+
+    assert request_params["headers"]["developer-token"] == "token"
+
+  def test_prepare_request_params_preserves_existing_headers(
+      self,
+      sample_endpoint,
+      sample_auth_credential,
+      sample_auth_scheme,
+      sample_operation,
+      sample_api_parameters,
+  ):
+    tool = RestApiTool(
+        name="test_tool",
+        description="Test Tool",
+        endpoint=sample_endpoint,
+        operation=sample_operation,
+        auth_credential=sample_auth_credential,
+        auth_scheme=sample_auth_scheme,
+    )
+    tool.set_default_headers({
+        "Content-Type": "text/plain",
+        "developer-token": "token",
+        "User-Agent": "custom-default",
+    })
+
+    header_param = ApiParameter(
+        original_name="User-Agent",
+        py_name="user_agent",
+        param_location="header",
+        param_schema=OpenAPISchema(type="string"),
+    )
+
+    params = sample_api_parameters + [header_param]
+    kwargs = {"test_body_param": "value", "user_agent": "api-client"}
+
+    request_params = tool._prepare_request_params(params, kwargs)
+
+    assert request_params["headers"]["Content-Type"] == "application/json"
+    assert request_params["headers"]["developer-token"] == "token"
+    assert request_params["headers"]["User-Agent"] == "api-client"
 
   def test_prepare_request_params_base_url_handling(
       self, sample_auth_credential, sample_auth_scheme, sample_operation

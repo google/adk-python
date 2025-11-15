@@ -1,0 +1,17 @@
+{
+  "capabilities": {},
+  "defaultInputModes": ["text/plain"],
+  "defaultOutputModes": ["application/json"],
+  "description": "Agent for performing Vertex AI Search to find ADK knowledge and documentation",
+  "name": "adk_knowledge_agent",
+  "skills": [
+    {
+      "id": "adk_knowledge_search",
+      "name": "ADK Knowledge Search",
+      "description": "Searches for ADK examples and documentation using the Vertex AI Search tool",
+      "tags": ["search", "documentation", "knowledge base", "Vertex AI", "ADK"]
+    }
+  ],
+  "url": "https://adk-agent-builder-knowledge-service-654646711756.us-central1.run.app/a2a/adk_knowledge_agent",
+  "version": "1.0.0"
+}
