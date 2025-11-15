@@ -428,7 +428,7 @@ class RestApiTool(BaseTool):
               f"Tool {self.name} execution failed. Analyze this execution error"
               " and your inputs. Retry with adjustments if applicable. But"
               " make sure don't retry more than 3 times. Execution Error:"
-              f" {error_details}"
+              f" Status Code: {response.status_code}, {error_details}"
           )
       }
     except ValueError:

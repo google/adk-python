@@ -31,6 +31,7 @@ from typing import Optional
 from typing import Tuple
 from typing import TypedDict
 from typing import Union
+import uuid
 import warnings
 
 from google.genai import types
@@ -64,6 +65,7 @@ logger = logging.getLogger("google_adk." + __name__)
 _NEW_LINE = "\n"
 _EXCLUDED_PART_FIELD = {"inline_data": {"data"}}
 _LITELLM_STRUCTURED_TYPES = {"json_object", "json_schema"}
+_JSON_DECODER = json.JSONDecoder()
 
 # Mapping of LiteLLM finish_reason strings to FinishReason enum values
 # Note: tool_calls/function_call map to STOP because:
@@ -431,6 +433,118 @@ def _get_content(
   return content_objects
 
 
+def _build_tool_call_from_json_dict(
+    candidate: Any, *, index: int
+) -> Optional[ChatCompletionMessageToolCall]:
+  """Creates a tool call object from JSON content embedded in text."""
+
+  if not isinstance(candidate, dict):
+    return None
+
+  name = candidate.get("name")
+  args = candidate.get("arguments")
+  if not isinstance(name, str) or args is None:
+    return None
+
+  if isinstance(args, str):
+    arguments_payload = args
+  else:
+    try:
+      arguments_payload = json.dumps(args, ensure_ascii=False)
+    except (TypeError, ValueError):
+      arguments_payload = _safe_json_serialize(args)
+
+  call_id = candidate.get("id") or f"adk_tool_call_{uuid.uuid4().hex}"
+  call_index = candidate.get("index")
+  if isinstance(call_index, int):
+    index = call_index
+
+  function = Function(
+      name=name,
+      arguments=arguments_payload,
+  )
+  # Some LiteLLM types carry an `index` field only in streaming contexts,
+  # so guard the assignment to stay compatible with older versions.
+  if hasattr(function, "index"):
+    function.index = index  # type: ignore[attr-defined]
+
+  tool_call = ChatCompletionMessageToolCall(
+      type="function",
+      id=str(call_id),
+      function=function,
+  )
+  # Same reasoning as above: not every ChatCompletionMessageToolCall exposes it.
+  if hasattr(tool_call, "index"):
+    tool_call.index = index  # type: ignore[attr-defined]
+
+  return tool_call
+
+
+def _parse_tool_calls_from_text(
+    text_block: str,
+) -> tuple[list[ChatCompletionMessageToolCall], Optional[str]]:
+  """Extracts inline JSON tool calls from LiteLLM text responses."""
+
+  tool_calls = []
+  if not text_block:
+    return tool_calls, None
+
+  remainder_segments = []
+  cursor = 0
+  text_length = len(text_block)
+
+  while cursor < text_length:
+    brace_index = text_block.find("{", cursor)
+    if brace_index == -1:
+      remainder_segments.append(text_block[cursor:])
+      break
+
+    remainder_segments.append(text_block[cursor:brace_index])
+    try:
+      candidate, end = _JSON_DECODER.raw_decode(text_block, brace_index)
+    except json.JSONDecodeError:
+      remainder_segments.append(text_block[brace_index])
+      cursor = brace_index + 1
+      continue
+
+    tool_call = _build_tool_call_from_json_dict(
+        candidate, index=len(tool_calls)
+    )
+    if tool_call:
+      tool_calls.append(tool_call)
+    else:
+      remainder_segments.append(text_block[brace_index:end])
+    cursor = end
+
+  remainder = "".join(segment for segment in remainder_segments if segment)
+  remainder = remainder.strip()
+
+  return tool_calls, remainder or None
+
+
+def _split_message_content_and_tool_calls(
+    message: Message,
+) -> tuple[Optional[OpenAIMessageContent], list[ChatCompletionMessageToolCall]]:
+  """Returns message content and tool calls, parsing inline JSON when needed."""
+
+  existing_tool_calls = message.get("tool_calls") or []
+  normalized_tool_calls = (
+      list(existing_tool_calls) if existing_tool_calls else []
+  )
+  content = message.get("content")
+
+  # LiteLLM responses either provide structured tool_calls or inline JSON, not
+  # both. When tool_calls are present we trust them and skip the fallback parser.
+  if normalized_tool_calls or not isinstance(content, str):
+    return content, normalized_tool_calls
+
+  fallback_tool_calls, remainder = _parse_tool_calls_from_text(content)
+  if fallback_tool_calls:
+    return remainder, fallback_tool_calls
+
+  return content, []
+
+
 def _to_litellm_role(role: Optional[str]) -> Literal["user", "assistant"]:
   """Converts a types.Content role to a litellm role.
 
@@ -584,15 +698,24 @@ def _model_response_to_chunk(
     if message is None and response["choices"][0].get("delta", None):
       message = response["choices"][0]["delta"]
 
-    if message.get("content", None):
-      yield TextChunk(text=message.get("content")), finish_reason
+    message_content: Optional[OpenAIMessageContent] = None
+    tool_calls: list[ChatCompletionMessageToolCall] = []
+    if message is not None:
+      (
+          message_content,
+          tool_calls,
+      ) = _split_message_content_and_tool_calls(message)
 
-    if message.get("tool_calls", None):
-      for tool_call in message.get("tool_calls"):
+    if message_content:
+      yield TextChunk(text=message_content), finish_reason
+
+    if tool_calls:
+      for idx, tool_call in enumerate(tool_calls):
         # aggregate tool_call
         if tool_call.type == "function":
           func_name = tool_call.function.name
           func_args = tool_call.function.arguments
+          func_index = getattr(tool_call, "index", idx)
 
           # Ignore empty chunks that don't carry any information.
           if not func_name and not func_args:
@@ -602,12 +725,10 @@ def _model_response_to_chunk(
               id=tool_call.id,
               name=func_name,
               args=func_args,
-              index=tool_call.index,
+              index=func_index,
           ), finish_reason
 
-    if finish_reason and not (
-        message.get("content", None) or message.get("tool_calls", None)
-    ):
+    if finish_reason and not (message_content or tool_calls):
       yield None, finish_reason
 
   if not message:
@@ -687,11 +808,12 @@ def _message_to_generate_content_response(
   """
 
   parts = []
-  if message.get("content", None):
-    parts.append(types.Part.from_text(text=message.get("content")))
+  message_content, tool_calls = _split_message_content_and_tool_calls(message)
+  if isinstance(message_content, str) and message_content:
+    parts.append(types.Part.from_text(text=message_content))
 
-  if message.get("tool_calls", None):
-    for tool_call in message.get("tool_calls"):
+  if tool_calls:
+    for tool_call in tool_calls:
       if tool_call.type == "function":
         part = types.Part.from_function_call(
             name=tool_call.function.name,
