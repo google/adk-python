@@ -26,7 +26,7 @@ from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 from typing_extensions import override
 
-from google.genai.types import Content
+from google.genai.types import Content, GroundingMetadata
 
 from ..events.event import Event
 from ..events.event_actions import EventActions
@@ -336,9 +336,9 @@ def _from_firestore_doc_to_event(doc: firestore.DocumentSnapshot) -> Event:
         event.turn_complete = metadata.get("turn_complete", None)
         event.interrupted = metadata.get("interrupted", None)
         event.branch = metadata.get("branch", None)
-        # grounding_metadata_dict = metadata.get("grounding_metadata", None)
-        # if grounding_metadata_dict:
-        #     event.grounding_metadata = GroundingMetadata(**grounding_metadata_dict)
+        grounding_metadata_dict = metadata.get("grounding_metadata", None)
+        if grounding_metadata_dict:
+            event.grounding_metadata = GroundingMetadata(**grounding_metadata_dict)
         event.long_running_tool_ids = (
             set(long_running_tool_ids_list) if long_running_tool_ids_list else None
         )
