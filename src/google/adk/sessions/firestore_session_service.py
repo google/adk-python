@@ -60,8 +60,9 @@ class FirestoreSessionService(BaseSessionService):
         session_id: Optional[str] = None,
     ) -> Session:
         """Creates a new session document in Firestore using a thread."""
-        if session_id:
-            raise ValueError("User-provided session ID is not supported.")
+        # If a session_id is provided, we should ideally use it or handle it according to the base class contract.
+        # For now, if Firestore always generates IDs, consider removing session_id from the signature or ignoring it.
+        # raise ValueError("User-provided session ID is not supported.")
 
         def _create_in_firestore():
             session_data = {
