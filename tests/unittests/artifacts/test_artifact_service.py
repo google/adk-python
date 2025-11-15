@@ -20,6 +20,7 @@ from datetime import datetime
 import enum
 import json
 from pathlib import Path
+import sys
 from typing import Any
 from typing import Optional
 from typing import Union
@@ -28,10 +29,12 @@ from unittest.mock import patch
 from urllib.parse import unquote
 from urllib.parse import urlparse
 
+from botocore.exceptions import ClientError
 from google.adk.artifacts.base_artifact_service import ArtifactVersion
 from google.adk.artifacts.file_artifact_service import FileArtifactService
 from google.adk.artifacts.gcs_artifact_service import GcsArtifactService
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
+from google.adk.artifacts.s3_artifact_service import S3ArtifactService
 from google.genai import types
 import pytest
 
@@ -45,6 +48,7 @@ class ArtifactServiceType(Enum):
   FILE = "FILE"
   IN_MEMORY = "IN_MEMORY"
   GCS = "GCS"
+  S3 = "S3"
 
 
 class MockBlob:
@@ -167,6 +171,139 @@ def mock_gcs_artifact_service():
     return GcsArtifactService(bucket_name="test_bucket")
 
 
+class MockBody:
+
+  def __init__(self, data: bytes):
+    self._data = data
+
+  async def read(self) -> bytes:
+    return self._data
+
+  async def __aenter__(self):
+    return self
+
+  async def __aexit__(self, exc_type, exc, tb):
+    pass
+
+
+class MockAsyncS3Object:
+
+  def __init__(self, key):
+    self.key = key
+    self.data = None
+    self.content_type = None
+    self.metadata = {}
+    self.last_modified = FIXED_DATETIME
+
+  async def put(self, Body, ContentType=None, Metadata=None):
+    self.data = Body if isinstance(Body, bytes) else Body.encode("utf-8")
+    self.content_type = ContentType
+    self.metadata = Metadata or {}
+
+  async def get(self):
+    if self.data is None:
+      raise ClientError(
+          {"Error": {"Code": "NoSuchKey", "Message": "Not Found"}},
+          operation_name="GetObject",
+      )
+    return {
+        "Body": MockBody(self.data),
+        "ContentType": self.content_type,
+        "Metadata": self.metadata,
+        "LastModified": self.last_modified,
+    }
+
+
+class MockAsyncS3Bucket:
+
+  def __init__(self, name):
+    self.name = name
+    self.objects = {}
+
+  def object(self, key):
+    if key not in self.objects:
+      self.objects[key] = MockAsyncS3Object(key)
+    return self.objects[key]
+
+  async def listed_keys(self, prefix=None):
+    return [
+        k
+        for k, obj in self.objects.items()
+        if obj.data is not None and (prefix is None or k.startswith(prefix))
+    ]
+
+
+class MockAsyncS3Client:
+
+  def __init__(self):
+    self.buckets = {}
+
+  def get_bucket(self, bucket_name):
+    if bucket_name not in self.buckets:
+      self.buckets[bucket_name] = MockAsyncS3Bucket(bucket_name)
+    return self.buckets[bucket_name]
+
+  async def put_object(
+      self, Bucket, Key, Body, ContentType=None, Metadata=None
+  ):
+    bucket = self.get_bucket(Bucket)
+    await bucket.object(Key).put(
+        Body=Body, ContentType=ContentType, Metadata=Metadata
+    )
+
+  async def get_object(self, Bucket, Key):
+    bucket = self.get_bucket(Bucket)
+    obj = bucket.object(Key)
+    return await obj.get()
+
+  async def delete_object(self, Bucket, Key):
+    bucket = self.get_bucket(Bucket)
+    bucket.objects.pop(Key, None)
+
+  async def list_objects_v2(self, Bucket, Prefix=None):
+    bucket = self.get_bucket(Bucket)
+    keys = await bucket.listed_keys(Prefix)
+    return {
+        "KeyCount": len(keys),
+        "Contents": [
+            {"Key": k, "LastModified": bucket.objects[k].last_modified}
+            for k in keys
+        ],
+    }
+
+  async def head_object(self, Bucket, Key):
+    obj = await self.get_object(Bucket, Key)
+    return {
+        "ContentType": obj["ContentType"],
+        "Metadata": obj.get("Metadata", {}),
+        "LastModified": obj.get("LastModified"),
+    }
+
+
+def mock_s3_artifact_service():
+  mock_s3_client = MockAsyncS3Client()
+
+  class MockSession:
+
+    def client(self, *args, **kwargs):
+      class MockClientCtx:
+
+        async def __aenter__(self_inner):
+          return mock_s3_client
+
+        async def __aexit__(self_inner, exc_type, exc, tb):
+          pass
+
+      return MockClientCtx()
+
+  class MockAioboto3:
+    Session = MockSession
+
+  sys.modules["aioboto3"] = MockAioboto3
+  artifact_service = S3ArtifactService(bucket_name="test_bucket")
+  return artifact_service
+
+
 @pytest.fixture
 def artifact_service_factory(tmp_path: Path):
   """Provides an artifact service constructor bound to the test tmp path."""
@@ -178,6 +315,8 @@ def artifact_service_factory(tmp_path: Path):
       return mock_gcs_artifact_service()
     if service_type == ArtifactServiceType.FILE:
       return FileArtifactService(root_dir=tmp_path / "artifacts")
+    if service_type == ArtifactServiceType.S3:
+      return mock_s3_artifact_service()
     return InMemoryArtifactService()
 
   return factory
@@ -190,6 +329,7 @@ def artifact_service_factory(tmp_path: Path):
         ArtifactServiceType.IN_MEMORY,
         ArtifactServiceType.GCS,
         ArtifactServiceType.FILE,
+        ArtifactServiceType.S3,
     ],
 )
 async def test_load_empty(service_type, artifact_service_factory):
@@ -210,6 +350,7 @@ async def test_load_empty(service_type, artifact_service_factory):
         ArtifactServiceType.IN_MEMORY,
         ArtifactServiceType.GCS,
         ArtifactServiceType.FILE,
+        ArtifactServiceType.S3,
     ],
 )
 async def test_save_load_delete(service_type, artifact_service_factory):
@@ -268,6 +409,7 @@ async def test_save_load_delete(service_type, artifact_service_factory):
         ArtifactServiceType.IN_MEMORY,
         ArtifactServiceType.GCS,
         ArtifactServiceType.FILE,
+        ArtifactServiceType.S3,
     ],
 )
 async def test_list_keys(service_type, artifact_service_factory):
@@ -304,6 +446,7 @@ async def test_list_keys(service_type, artifact_service_factory):
         ArtifactServiceType.IN_MEMORY,
         ArtifactServiceType.GCS,
         ArtifactServiceType.FILE,
+        ArtifactServiceType.S3,
     ],
 )
 async def test_list_versions(service_type, artifact_service_factory):
@@ -348,6 +491,7 @@ async def test_list_versions(service_type, artifact_service_factory):
         ArtifactServiceType.IN_MEMORY,
         ArtifactServiceType.GCS,
         ArtifactServiceType.FILE,
+        ArtifactServiceType.S3,
     ],
 )
 async def test_list_keys_preserves_user_prefix(
@@ -398,7 +542,12 @@ async def test_list_keys_preserves_user_prefix(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "service_type", [ArtifactServiceType.IN_MEMORY, ArtifactServiceType.GCS]
+    "service_type",
+    [
+        ArtifactServiceType.IN_MEMORY,
+        ArtifactServiceType.GCS,
+        ArtifactServiceType.S3,
+    ],
 )
 async def test_list_artifact_versions_and_get_artifact_version(
     service_type, artifact_service_factory
@@ -446,6 +595,10 @@ async def test_list_artifact_versions_and_get_artifact_version(
         uri = (
             f"gs://test_bucket/{app_name}/{user_id}/{session_id}/{filename}/{i}"
         )
+      elif service_type == ArtifactServiceType.S3:
+        uri = (
+            f"s3://test_bucket/{app_name}/{user_id}/{session_id}/{filename}/{i}"
+        )
       else:
         uri = f"memory://apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts/{filename}/versions/{i}"
       expected_artifact_versions.append(
@@ -485,7 +638,12 @@ async def test_list_artifact_versions_and_get_artifact_version(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "service_type", [ArtifactServiceType.IN_MEMORY, ArtifactServiceType.GCS]
+    "service_type",
+    [
+        ArtifactServiceType.IN_MEMORY,
+        ArtifactServiceType.GCS,
+        ArtifactServiceType.S3,
+    ],
 )
 async def test_list_artifact_versions_with_user_prefix(
     service_type, artifact_service_factory
@@ -532,6 +690,8 @@ async def test_list_artifact_versions_with_user_prefix(
       metadata = {"key": "value" + str(i)}
       if service_type == ArtifactServiceType.GCS:
         uri = f"gs://test_bucket/{app_name}/{user_id}/user/{user_scoped_filename}/{i}"
+      elif service_type == ArtifactServiceType.S3:
+        uri = f"s3://test_bucket/{app_name}/{user_id}/user/{user_scoped_filename}/{i}"
       else:
         uri = f"memory://apps/{app_name}/users/{user_id}/artifacts/{user_scoped_filename}/versions/{i}"
       expected_artifact_versions.append(
@@ -548,7 +708,12 @@ async def test_list_artifact_versions_with_user_prefix(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "service_type", [ArtifactServiceType.IN_MEMORY, ArtifactServiceType.GCS]
+    "service_type",
+    [
+        ArtifactServiceType.IN_MEMORY,
+        ArtifactServiceType.GCS,
+        ArtifactServiceType.S3,
+    ],
 )
 async def test_get_artifact_version_artifact_does_not_exist(
     service_type, artifact_service_factory
@@ -565,7 +730,12 @@ async def test_get_artifact_version_artifact_does_not_exist(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "service_type", [ArtifactServiceType.IN_MEMORY, ArtifactServiceType.GCS]
+    "service_type",
+    [
+        ArtifactServiceType.IN_MEMORY,
+        ArtifactServiceType.GCS,
+        ArtifactServiceType.S3,
+    ],
 )
 async def test_get_artifact_version_out_of_index(
     service_type, artifact_service_factory
