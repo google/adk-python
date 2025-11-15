@@ -16,8 +16,6 @@
 
 from __future__ import annotations
 
-from typing import Literal
-
 from pydantic import ConfigDict
 from pydantic import Field
 
@@ -30,12 +28,12 @@ class SequentialAgentConfig(BaseAgentConfig):
   """The config for the YAML schema of a SequentialAgent."""
 
   model_config = ConfigDict(
-      extra='forbid',
+      extra="forbid",
   )
 
-  agent_class: Literal['SequentialAgent'] = Field(
-      default='SequentialAgent',
+  agent_class: str = Field(
+      default="SequentialAgent",
       description=(
-          'The value is used to uniquely identify the SequentialAgent class.'
+          "The value is used to uniquely identify the SequentialAgent class."
       ),
   )

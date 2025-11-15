@@ -19,10 +19,11 @@ from typing import Optional
 from typing import Union
 
 from google.adk.agents.readonly_context import ReadonlyContext
+from google.adk.tools.spanner import metadata_tool
+from google.adk.tools.spanner import query_tool
+from google.adk.tools.spanner import search_tool
 from typing_extensions import override
 
-from . import metadata_tool
-from . import query_tool
 from ...tools.base_tool import BaseTool
 from ...tools.base_toolset import BaseToolset
 from ...tools.base_toolset import ToolPredicate
@@ -109,6 +110,13 @@ class SpannerToolset(BaseToolset):
       all_tools.append(
           GoogleTool(
               func=query_tool.execute_sql,
+              credentials_config=self._credentials_config,
+              tool_settings=self._tool_settings,
+          )
+      )
+      all_tools.append(
+          GoogleTool(
+              func=search_tool.similarity_search,
               credentials_config=self._credentials_config,
               tool_settings=self._tool_settings,
           )

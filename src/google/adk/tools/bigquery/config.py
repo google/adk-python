@@ -15,8 +15,11 @@
 from __future__ import annotations
 
 from enum import Enum
+from typing import Optional
 
 from pydantic import BaseModel
+from pydantic import ConfigDict
+from pydantic import field_validator
 
 from ...utils.feature_decorator import experimental
 
@@ -48,6 +51,9 @@ class WriteMode(Enum):
 class BigQueryToolConfig(BaseModel):
   """Configuration for BigQuery tools."""
 
+  # Forbid any fields not defined in the model
+  model_config = ConfigDict(extra='forbid')
+
   write_mode: WriteMode = WriteMode.BLOCKED
   """Write mode for BigQuery tools.
 
@@ -58,4 +64,37 @@ class BigQueryToolConfig(BaseModel):
   max_query_result_rows: int = 50
   """Maximum number of rows to return from a query.
 
-  By default, the query result will be limited to 50 rows."""
+  By default, the query result will be limited to 50 rows.
+  """
+
+  application_name: Optional[str] = None
+  """Name of the application using the BigQuery tools.
+
+  By default, no particular application name will be set in the BigQuery
+  interaction. But if the the tool user (agent builder) wants to differentiate
+  their application/agent for tracking or support purpose, they can set this field.
+  """
+
+  compute_project_id: Optional[str] = None
+  """GCP project ID to use for the BigQuery compute operations.
+
+  This can be set as a guardrail to ensure that the tools perform the compute
+  operations (such as query execution) in a specific project.
+  """
+
+  location: Optional[str] = None
+  """BigQuery location to use for the data and compute.
+
+  This can be set if the BigQuery tools are expected to process data in a
+  particular BigQuery location. If not set, then location would be automatically
+  determined based on the data location in the query. For all supported
+  locations, see https://cloud.google.com/bigquery/docs/locations.
+  """
+
+  @field_validator('application_name')
+  @classmethod
+  def validate_application_name(cls, v):
+    """Validate the application name."""
+    if v and ' ' in v:
+      raise ValueError('Application name should not contain spaces.')
+    return v

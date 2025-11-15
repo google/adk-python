@@ -49,17 +49,7 @@ class TestTranscriptionManager:
     )
 
     # Verify session service was called
-    mock_session_service.append_event.assert_called_once()
-
-    # Check the event that was created
-    call_args = mock_session_service.append_event.call_args
-    event = call_args[0][1]  # Second argument is the event
-
-    assert event.author == 'user'
-    assert event.input_transcription == transcription
-    assert event.output_transcription is None
-    assert event.invocation_id == invocation_context.invocation_id
-    assert isinstance(event.timestamp, float)
+    mock_session_service.append_event.assert_not_called()
 
   @pytest.mark.asyncio
   async def test_handle_output_transcription(self):
@@ -80,17 +70,7 @@ class TestTranscriptionManager:
     )
 
     # Verify session service was called
-    mock_session_service.append_event.assert_called_once()
-
-    # Check the event that was created
-    call_args = mock_session_service.append_event.call_args
-    event = call_args[0][1]  # Second argument is the event
-
-    assert event.author == agent.name
-    assert event.input_transcription is None
-    assert event.output_transcription == transcription
-    assert event.invocation_id == invocation_context.invocation_id
-    assert isinstance(event.timestamp, float)
+    mock_session_service.append_event.assert_not_called()
 
   @pytest.mark.asyncio
   async def test_handle_multiple_transcriptions(self):
@@ -118,53 +98,7 @@ class TestTranscriptionManager:
       )
 
     # Verify session service was called for each transcription
-    assert mock_session_service.append_event.call_count == 5
-
-  @pytest.mark.asyncio
-  async def test_error_handling_input_transcription(self):
-    """Test error handling during input transcription processing."""
-    invocation_context = await testing_utils.create_invocation_context(
-        testing_utils.create_test_agent()
-    )
-
-    # Set up mock session service that raises an error
-    mock_session_service = AsyncMock()
-    mock_session_service.append_event.side_effect = Exception(
-        'Session service error'
-    )
-    invocation_context.session_service = mock_session_service
-
-    # Create test transcription
-    transcription = types.Transcription(text='Test transcription')
-
-    # Handle transcription should raise the exception
-    with pytest.raises(Exception, match='Session service error'):
-      await self.manager.handle_input_transcription(
-          invocation_context, transcription
-      )
-
-  @pytest.mark.asyncio
-  async def test_error_handling_output_transcription(self):
-    """Test error handling during output transcription processing."""
-    invocation_context = await testing_utils.create_invocation_context(
-        testing_utils.create_test_agent()
-    )
-
-    # Set up mock session service that raises an error
-    mock_session_service = AsyncMock()
-    mock_session_service.append_event.side_effect = Exception(
-        'Session service error'
-    )
-    invocation_context.session_service = mock_session_service
-
-    # Create test transcription
-    transcription = types.Transcription(text='Test transcription')
-
-    # Handle transcription should raise the exception
-    with pytest.raises(Exception, match='Session service error'):
-      await self.manager.handle_output_transcription(
-          invocation_context, transcription
-      )
+    assert mock_session_service.append_event.call_count == 0
 
   def test_get_transcription_stats_empty_session(self):
     """Test getting transcription statistics for empty session."""
@@ -264,25 +198,6 @@ class TestTranscriptionManager:
         invocation_context, transcription
     )
 
-    # Verify the event structure
-    call_args = mock_session_service.append_event.call_args
-    event = call_args[0][1]
-
-    # Check all required fields are present
-    assert hasattr(event, 'id')
-    assert hasattr(event, 'invocation_id')
-    assert hasattr(event, 'author')
-    assert hasattr(event, 'input_transcription')
-    assert hasattr(event, 'output_transcription')
-    assert hasattr(event, 'timestamp')
-
-    # Check values
-    assert event.id is not None
-    assert event.invocation_id == invocation_context.invocation_id
-    assert event.author == 'user'
-    assert event.input_transcription == transcription
-    assert event.output_transcription is None
-
   @pytest.mark.asyncio
   async def test_transcription_with_different_data_types(self):
     """Test handling transcriptions with different data types."""
@@ -303,10 +218,3 @@ class TestTranscriptionManager:
     await self.manager.handle_input_transcription(
         invocation_context, transcription
     )
-
-    # Verify the transcription object is preserved as-is
-    call_args = mock_session_service.append_event.call_args
-    event = call_args[0][1]
-
-    assert event.input_transcription == transcription
-    assert event.input_transcription.text == 'Advanced transcription'

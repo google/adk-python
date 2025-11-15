@@ -132,14 +132,21 @@ class AgentTool(BaseTool):
         session_service=InMemorySessionService(),
         memory_service=InMemoryMemoryService(),
         credential_service=tool_context._invocation_context.credential_service,
+        plugins=list(tool_context._invocation_context.plugin_manager.plugins),
     )
+
+    state_dict = {
+        k: v
+        for k, v in tool_context.state.to_dict().items()
+        if not k.startswith('_adk')  # Filter out adk internal states
+    }
     session = await runner.session_service.create_session(
         app_name=self.agent.name,
         user_id=tool_context._invocation_context.user_id,
-        state=tool_context.state.to_dict(),
+        state=state_dict,
     )
 
-    last_event = None
+    last_content = None
     async with Aclosing(
         runner.run_async(
             user_id=session.user_id, session_id=session.id, new_message=content
@@ -149,11 +156,12 @@ class AgentTool(BaseTool):
         # Forward state delta to parent session.
         if event.actions.state_delta:
           tool_context.state.update(event.actions.state_delta)
-        last_event = event
+        if event.content:
+          last_content = event.content
 
-    if not last_event or not last_event.content or not last_event.content.parts:
+    if not last_content:
       return ''
-    merged_text = '\n'.join(p.text for p in last_event.content.parts if p.text)
+    merged_text = '\n'.join(p.text for p in last_content.parts if p.text)
     if isinstance(self.agent, LlmAgent) and self.agent.output_schema:
       tool_result = self.agent.output_schema.model_validate_json(
           merged_text

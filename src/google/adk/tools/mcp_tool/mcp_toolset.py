@@ -20,6 +20,7 @@ from typing import List
 from typing import Optional
 from typing import TextIO
 from typing import Union
+import warnings
 
 from pydantic import model_validator
 from typing_extensions import override
@@ -59,7 +60,7 @@ from .mcp_tool import MCPTool
 logger = logging.getLogger("google_adk." + __name__)
 
 
-class MCPToolset(BaseToolset):
+class McpToolset(BaseToolset):
   """Connects to a MCP Server, and retrieves MCP Tools into ADK Tools.
 
   This toolset manages the connection to an MCP server and provides tools
@@ -99,6 +100,7 @@ class MCPToolset(BaseToolset):
           StreamableHTTPConnectionParams,
       ],
       tool_filter: Optional[Union[ToolPredicate, List[str]]] = None,
+      tool_name_prefix: Optional[str] = None,
       errlog: TextIO = sys.stderr,
       auth_scheme: Optional[AuthScheme] = None,
       auth_credential: Optional[AuthCredential] = None,
@@ -117,11 +119,13 @@ class MCPToolset(BaseToolset):
       tool_filter: Optional filter to select specific tools. Can be either: - A
         list of tool names to include - A ToolPredicate function for custom
         filtering logic
+      tool_name_prefix: A prefix to be added to the name of each tool in this
+        toolset.
       errlog: TextIO stream for error logging.
       auth_scheme: The auth scheme of the tool for tool calling
       auth_credential: The auth credential of the tool for tool calling
     """
-    super().__init__(tool_filter=tool_filter)
+    super().__init__(tool_filter=tool_filter, tool_name_prefix=tool_name_prefix)
 
     if not connection_params:
       raise ValueError("Missing connection params in MCPToolset.")
@@ -190,7 +194,7 @@ class MCPToolset(BaseToolset):
       cls: type[MCPToolset], config: ToolArgsConfig, config_abs_path: str
   ) -> MCPToolset:
     """Creates an MCPToolset from a configuration object."""
-    mcp_toolset_config = MCPToolsetConfig.model_validate(config.model_dump())
+    mcp_toolset_config = McpToolsetConfig.model_validate(config.model_dump())
 
     if mcp_toolset_config.stdio_server_params:
       connection_params = mcp_toolset_config.stdio_server_params
@@ -206,12 +210,25 @@ class MCPToolset(BaseToolset):
     return cls(
         connection_params=connection_params,
         tool_filter=mcp_toolset_config.tool_filter,
+        tool_name_prefix=mcp_toolset_config.tool_name_prefix,
         auth_scheme=mcp_toolset_config.auth_scheme,
         auth_credential=mcp_toolset_config.auth_credential,
     )
 
 
-class MCPToolsetConfig(BaseToolConfig):
+class MCPToolset(McpToolset):
+  """Deprecated name, use `McpToolset` instead."""
+
+  def __init__(self, *args, **kwargs):
+    warnings.warn(
+        "MCPToolset class is deprecated, use `McpToolset` instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    super().__init__(*args, **kwargs)
+
+
+class McpToolsetConfig(BaseToolConfig):
   """The config for MCPToolset."""
 
   stdio_server_params: Optional[StdioServerParameters] = None
@@ -225,6 +242,8 @@ class MCPToolsetConfig(BaseToolConfig):
   ] = None
 
   tool_filter: Optional[List[str]] = None
+
+  tool_name_prefix: Optional[str] = None
 
   auth_scheme: Optional[AuthScheme] = None
 

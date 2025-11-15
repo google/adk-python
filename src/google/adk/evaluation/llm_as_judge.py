@@ -18,6 +18,7 @@ from abc import abstractmethod
 from typing import Optional
 
 from google.genai import types as genai_types
+from pydantic import ValidationError
 from typing_extensions import override
 
 from ..models.base_llm import BaseLlm
@@ -25,14 +26,24 @@ from ..models.llm_request import LlmRequest
 from ..models.llm_response import LlmResponse
 from ..models.registry import LLMRegistry
 from ..utils.context_utils import Aclosing
+from ..utils.feature_decorator import experimental
+from .common import EvalBaseModel
 from .eval_case import Invocation
+from .eval_metrics import BaseCriterion
 from .eval_metrics import EvalMetric
+from .eval_metrics import RubricScore
 from .evaluator import EvaluationResult
 from .evaluator import Evaluator
 from .evaluator import PerInvocationResult
 from .llm_as_judge_utils import get_eval_status
 
 
+class AutoRaterScore(EvalBaseModel):
+  score: Optional[float] = None
+  rubric_scores: Optional[list[RubricScore]] = None
+
+
+@experimental
 class LlmAsJudge(Evaluator):
   """Evaluator based on a LLM.
 
@@ -49,17 +60,26 @@ class LlmAsJudge(Evaluator):
   """
 
   def __init__(
-      self,
-      eval_metric: EvalMetric,
+      self, eval_metric: EvalMetric, criterion_type: type[BaseCriterion]
   ):
     self._eval_metric = eval_metric
-    if not eval_metric.judge_model_options:
-      raise ValueError("Judge model options is required for LlmAsJudge.")
-    self._judge_model_options = eval_metric.judge_model_options
-    if self._judge_model_options.judge_model_config is None:
-      self._judge_model_options.judge_model_config = (
-          genai_types.GenerateContentConfig()
+
+    expected_criterion_type_error = ValueError(
+        f"`{eval_metric.metric_name}` metric expects a criterion of type"
+        f" `{criterion_type}`."
+    )
+
+    try:
+      if self._eval_metric.criterion is None:
+        raise expected_criterion_type_error
+
+      self._criterion = criterion_type.model_validate(
+          self._eval_metric.criterion.model_dump()
       )
+    except ValidationError as e:
+      raise expected_criterion_type_error from e
+
+    self._judge_model_options = self._criterion.judge_model_options
     self._judge_model = self._setup_auto_rater()
 
   @abstractmethod
@@ -71,7 +91,7 @@ class LlmAsJudge(Evaluator):
   @abstractmethod
   def convert_auto_rater_response_to_score(
       self, auto_rater_response: LlmResponse
-  ) -> Optional[float]:
+  ) -> AutoRaterScore:
     """Parses auto_rater_response and returns the corresponding score, or None if the score cannot be determined."""
 
   @abstractmethod
@@ -115,15 +135,18 @@ class LlmAsJudge(Evaluator):
         ) as agen:
           async for llm_response in agen:
             # Non-streaming call, so there is only one response content.
-            score = self.convert_auto_rater_response_to_score(llm_response)
+            auto_rater_score = self.convert_auto_rater_response_to_score(
+                llm_response
+            )
             invocation_result_samples.append(
                 PerInvocationResult(
                     actual_invocation=actual,
                     expected_invocation=expected,
-                    score=score,
+                    score=auto_rater_score.score,
                     eval_status=get_eval_status(
-                        score, self._eval_metric.threshold
+                        auto_rater_score.score, self._eval_metric.threshold
                     ),
+                    rubric_scores=auto_rater_score.rubric_scores,
                 )
             )
       if not invocation_result_samples:

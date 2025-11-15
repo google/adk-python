@@ -84,7 +84,12 @@ class GcsEvalSetsManager(EvalSetsManager):
     """Writes an EvalSet to GCS."""
     blob = self.bucket.blob(blob_name)
     blob.upload_from_string(
-        eval_set.model_dump_json(indent=2),
+        eval_set.model_dump_json(
+            indent=2,
+            exclude_unset=True,
+            exclude_defaults=True,
+            exclude_none=True,
+        ),
         content_type="application/json",
     )
 

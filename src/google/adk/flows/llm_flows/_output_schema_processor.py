@@ -38,8 +38,6 @@ class _OutputSchemaRequestProcessor(BaseLlmRequestProcessor):
     from ...agents.llm_agent import LlmAgent
 
     agent = invocation_context.agent
-    if not isinstance(agent, LlmAgent):
-      return
 
     # Check if we need the processor: output_schema + tools
     if not agent.output_schema or not agent.tools:
@@ -107,7 +105,7 @@ def get_structured_model_response(function_response_event: Event) -> str | None:
   for func_response in function_response_event.get_function_responses():
     if func_response.name == 'set_model_response':
       # Convert dict to JSON string
-      return json.dumps(func_response.response)
+      return json.dumps(func_response.response, ensure_ascii=False)
 
   return None
 

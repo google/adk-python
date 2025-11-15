@@ -18,9 +18,12 @@ from google.auth.credentials import Credentials
 from google.cloud import bigquery
 
 from . import client
+from .config import BigQueryToolConfig
 
 
-def list_dataset_ids(project_id: str, credentials: Credentials) -> list[str]:
+def list_dataset_ids(
+    project_id: str, credentials: Credentials, settings: BigQueryToolConfig
+) -> list[str]:
   """List BigQuery dataset ids in a Google Cloud project.
 
   Args:
@@ -45,7 +48,10 @@ def list_dataset_ids(project_id: str, credentials: Credentials) -> list[str]:
   """
   try:
     bq_client = client.get_bigquery_client(
-        project=project_id, credentials=credentials
+        project=project_id,
+        credentials=credentials,
+        location=settings.location,
+        user_agent=settings.application_name,
     )
 
     datasets = []
@@ -60,7 +66,10 @@ def list_dataset_ids(project_id: str, credentials: Credentials) -> list[str]:
 
 
 def get_dataset_info(
-    project_id: str, dataset_id: str, credentials: Credentials
+    project_id: str,
+    dataset_id: str,
+    credentials: Credentials,
+    settings: BigQueryToolConfig,
 ) -> dict:
   """Get metadata information about a BigQuery dataset.
 
@@ -111,7 +120,10 @@ def get_dataset_info(
   """
   try:
     bq_client = client.get_bigquery_client(
-        project=project_id, credentials=credentials
+        project=project_id,
+        credentials=credentials,
+        location=settings.location,
+        user_agent=settings.application_name,
     )
     dataset = bq_client.get_dataset(
         bigquery.DatasetReference(project_id, dataset_id)
@@ -125,7 +137,10 @@ def get_dataset_info(
 
 
 def list_table_ids(
-    project_id: str, dataset_id: str, credentials: Credentials
+    project_id: str,
+    dataset_id: str,
+    credentials: Credentials,
+    settings: BigQueryToolConfig,
 ) -> list[str]:
   """List table ids in a BigQuery dataset.
 
@@ -144,7 +159,10 @@ def list_table_ids(
   """
   try:
     bq_client = client.get_bigquery_client(
-        project=project_id, credentials=credentials
+        project=project_id,
+        credentials=credentials,
+        location=settings.location,
+        user_agent=settings.application_name,
     )
 
     tables = []
@@ -161,7 +179,11 @@ def list_table_ids(
 
 
 def get_table_info(
-    project_id: str, dataset_id: str, table_id: str, credentials: Credentials
+    project_id: str,
+    dataset_id: str,
+    table_id: str,
+    credentials: Credentials,
+    settings: BigQueryToolConfig,
 ) -> dict:
   """Get metadata information about a BigQuery table.
 
@@ -260,7 +282,10 @@ def get_table_info(
   """
   try:
     bq_client = client.get_bigquery_client(
-        project=project_id, credentials=credentials
+        project=project_id,
+        credentials=credentials,
+        location=settings.location,
+        user_agent=settings.application_name,
     )
     return bq_client.get_table(
         bigquery.TableReference(
