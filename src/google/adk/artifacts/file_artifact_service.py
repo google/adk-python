@@ -106,7 +106,7 @@ def _resolve_scoped_artifact_path(
   pure_path = _to_posix_path(stripped)
 
   scope_root_resolved = scope_root.resolve(strict=False)
-  if pure_path.is_absolute():
+  if Path(stripped).is_absolute():
     raise ValueError(
         f"Absolute artifact filename {filename!r} is not permitted; "
         "provide a path relative to the storage scope."
