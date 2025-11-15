@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from google.cloud import firestore
@@ -121,19 +122,32 @@ class FirestoreSessionService(BaseSessionService):
                 last_update_time=update_timestamp,
             )
 
-            # Fetch events without ordering from the database to avoid index requirements.
+            # Build the query for events.
+            # Note: This requires a composite index in Firestore on the 'timestamp' field.
             events_ref = session_ref.collection(EVENTS_SUBCOLLECTION)
-            event_docs = events_ref.stream()
-            events_list = [_from_firestore_doc_to_event(doc) for doc in event_docs]
-            # Sort the events in the application code instead.
-            events_list.sort(key=lambda e: e.timestamp)
-            session.events = events_list
+            query = events_ref
 
-            if config:
-                if config.num_recent_events:
-                    session.events = session.events[-config.num_recent_events :]
-                elif config.after_timestamp:
-                    session.events = [e for e in session.events if e.timestamp > config.after_timestamp]
+            if config and config.num_recent_events:
+                query = query.order_by(
+                    "timestamp", direction=firestore.Query.DESCENDING
+                ).limit(config.num_recent_events)
+                event_docs = query.stream()
+                events_list = [_from_firestore_doc_to_event(doc) for doc in event_docs]
+                # Reverse the list to have events in chronological order.
+                events_list.reverse()
+                session.events = events_list
+            else:
+                if config and config.after_timestamp:
+                    # Firestore timestamps can be compared with datetime objects.
+                    after_dt = datetime.fromtimestamp(
+                        config.after_timestamp, tz=timezone.utc
+                    )
+                    query = query.where(filter=FieldFilter("timestamp", ">", after_dt))
+
+                query = query.order_by("timestamp", direction=firestore.Query.ASCENDING)
+                event_docs = query.stream()
+                events_list = [_from_firestore_doc_to_event(doc) for doc in event_docs]
+                session.events = events_list
             
             return session
 
