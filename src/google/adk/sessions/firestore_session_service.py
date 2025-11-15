@@ -167,8 +167,7 @@ class FirestoreSessionService(BaseSessionService):
         """Deletes a session and all its events from Firestore using a thread."""
         def _delete_in_firestore():
             session_ref = self._db.collection(SESSIONS_COLLECTION).document(session_id)
-            session_doc = session_ref.get(field_paths=["app_name", "user_id"])
-            if not session_doc.exists or session_doc.to_dict().get("user_id") != user_id:
+            if not session_doc.exists or session_doc.to_dict().get("user_id") != user_id or session_doc.to_dict().get("app_name") != app_name:
                 return
 
             events_ref = session_ref.collection(EVENTS_SUBCOLLECTION)
