@@ -16,10 +16,12 @@
 
 """Tests for the artifact service."""
 
+import asyncio
 from datetime import datetime
 import enum
 import json
 from pathlib import Path
+import random
 import sys
 from typing import Any
 from typing import Optional
@@ -245,9 +247,18 @@ class MockAsyncS3Client:
     return self.buckets[bucket_name]
 
   async def put_object(
-      self, Bucket, Key, Body, ContentType=None, Metadata=None
+      self, Bucket, Key, Body, ContentType=None, Metadata=None, IfNoneMatch=None
   ):
+    await asyncio.sleep(random.uniform(0, 0.05))
     bucket = self.get_bucket(Bucket)
+    obj_exists = Key in bucket.objects and bucket.objects[Key].data is not None
+
+    if IfNoneMatch == "*" and obj_exists:
+      raise ClientError(
+          {"Error": {"Code": "PreconditionFailed", "Message": "Object exists"}},
+          operation_name="PutObject",
+      )
+
     await bucket.object(Key).put(
         Body=Body, ContentType=ContentType, Metadata=Metadata
     )
@@ -260,6 +271,13 @@ class MockAsyncS3Client:
   async def delete_object(self, Bucket, Key):
     bucket = self.get_bucket(Bucket)
     bucket.objects.pop(Key, None)
+
+  async def delete_objects(self, Bucket, Delete):
+    bucket = self.get_bucket(Bucket)
+    for item in Delete.get("Objects", []):
+      key = item.get("Key")
+      if key in bucket.objects:
+        bucket.objects.pop(key)
 
   async def list_objects_v2(self, Bucket, Prefix=None):
     bucket = self.get_bucket(Bucket)
@@ -280,33 +298,64 @@ class MockAsyncS3Client:
         "LastModified": obj.get("LastModified"),
     }
 
+  def get_paginator(self, operation_name):
+    if operation_name != "list_objects_v2":
+      raise NotImplementedError(
+          f"Paginator for {operation_name} not implemented"
+      )
 
-def mock_s3_artifact_service():
+    class MockAsyncPaginator:
+
+      def __init__(self, client, Bucket, Prefix=None):
+        self.client = client
+        self.Bucket = Bucket
+        self.Prefix = Prefix
+
+      async def __aiter__(self):
+        response = await self.client.list_objects_v2(
+            Bucket=self.Bucket, Prefix=self.Prefix
+        )
+        contents = response.get("Contents", [])
+        page_size = 2
+        for i in range(0, len(contents), page_size):
+          yield {
+              "KeyCount": len(contents[i : i + page_size]),
+              "Contents": contents[i : i + page_size],
+          }
+
+    class MockPaginator:
+
+      def paginate(inner_self, Bucket, Prefix=None):
+        return MockAsyncPaginator(self, Bucket, Prefix)
+
+    return MockPaginator()
+
+
+def mock_s3_artifact_service(monkeypatch):
   mock_s3_client = MockAsyncS3Client()
 
-  class MockSession:
-
-    def client(self, *args, **kwargs):
-      class MockClientCtx:
-
-        async def __aenter__(self_inner):
-          return mock_s3_client
-
-        async def __aexit__(self_inner, exc_type, exc, tb):
-          pass
-
-      return MockClientCtx()
-
   class MockAioboto3:
-    Session = MockSession
 
-  sys.modules["aioboto3"] = MockAioboto3
+    class Session:
+
+      def client(self, *args, **kwargs):
+        class MockClientCtx:
+
+          async def __aenter__(self_inner):
+            return mock_s3_client
+
+          async def __aexit__(self_inner, exc_type, exc, tb):
+            pass
+
+        return MockClientCtx()
+
+  monkeypatch.setitem(sys.modules, "aioboto3", MockAioboto3)
   artifact_service = S3ArtifactService(bucket_name="test_bucket")
   return artifact_service
 
 
 @pytest.fixture
-def artifact_service_factory(tmp_path: Path):
+def artifact_service_factory(tmp_path: Path, monkeypatch):
   """Provides an artifact service constructor bound to the test tmp path."""
 
   def factory(
@@ -317,7 +366,7 @@ def artifact_service_factory(tmp_path: Path):
     if service_type == ArtifactServiceType.FILE:
       return FileArtifactService(root_dir=tmp_path / "artifacts")
     if service_type == ArtifactServiceType.S3:
-      return mock_s3_artifact_service()
+      return mock_s3_artifact_service(monkeypatch)
     return InMemoryArtifactService()
 
   return factory
