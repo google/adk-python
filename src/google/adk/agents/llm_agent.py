@@ -471,7 +471,7 @@ class LlmAgent(BaseAgent):
       events = ctx._get_events(current_invocation=True, current_branch=True)
       if events and (
           ctx.should_pause_invocation(events[-1])
-          or ctx.should_pause_invocation(events[-2])
+          or (len(events) >= 2 and ctx.should_pause_invocation(events[-2]))
       ):
         return
       # Only yield an end state if the last event is no longer a long running
