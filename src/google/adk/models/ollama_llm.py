@@ -1,0 +1,279 @@
+# Copyright 2025 Ayman Hamed
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+from typing import Any
+from typing import AsyncGenerator
+from typing import Optional
+from typing import Sequence
+from typing import Union
+import urllib.error
+import urllib.request
+
+from google.genai import types
+from pydantic import Field
+from typing_extensions import override
+
+from .base_llm import BaseLlm
+from .llm_request import LlmRequest
+from .llm_response import LlmResponse
+
+logger = logging.getLogger('google_adk.' + __name__)
+
+_CHAT_ENDPOINT = '/api/chat'
+
+
+class Ollama(BaseLlm):
+  """Native integration for Ollama hosted models."""
+
+  model: str = 'ollama/llama3.1'
+  host: str = Field(
+      default='http://localhost:11434',
+      description='Base URL of the Ollama server.',
+  )
+  request_timeout: float = Field(
+      default=120.0, description='Timeout in seconds for Ollama requests.'
+  )
+
+  @classmethod
+  @override
+  def supported_models(cls) -> list[str]:
+    return [r'ollama\/.+']
+
+  @override
+  async def generate_content_async(
+      self, llm_request: LlmRequest, stream: bool = False
+  ) -> AsyncGenerator[LlmResponse, None]:
+    if stream:
+      logger.warning(
+          'Streaming is not yet supported for Ollama; falling back to unary.'
+      )
+    self._maybe_append_user_content(llm_request)
+
+    payload = self._build_payload(llm_request)
+    try:
+      response_json = await asyncio.to_thread(self._post_chat, payload)
+    except RuntimeError as exc:
+      logger.error('Failed to call Ollama: %s', exc)
+      yield LlmResponse(error_code='OLLAMA_ERROR', error_message=str(exc))
+      return
+
+    llm_response = self._to_llm_response(response_json)
+    yield llm_response
+
+  def _build_payload(self, llm_request: LlmRequest) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        'model': self._extract_model_name(llm_request.model),
+        'messages': self._convert_messages(llm_request),
+        'stream': False,
+    }
+    if tools := self._convert_tools(llm_request):
+      payload['tools'] = tools
+    if options := self._convert_options(llm_request):
+      payload['options'] = options
+    return payload
+
+  def _extract_model_name(self, request_model: Optional[str]) -> str:
+    model_name = request_model or self.model
+    if model_name.startswith("ollama/") or model_name.startswith("ollama_chat/"):
+      return model_name.split('/', 1)[1]
+    return model_name
+
+  def _convert_messages(self, llm_request: LlmRequest) -> list[dict[str, str]]:
+    messages: list[dict[str, str]] = []
+    if llm_request.config.system_instruction:
+      messages.append(
+          {
+              'role': 'system',
+              'content': llm_request.config.system_instruction,
+          }
+      )
+    for content in llm_request.contents:
+      message_text = self._content_to_text(content)
+      if not message_text:
+        continue
+      role = self._map_role(content.role)
+      messages.append({'role': role, 'content': message_text})
+    return messages
+
+  def _content_to_text(self, content: types.Content) -> str:
+    parts = content.parts or []
+    text_parts: list[str] = []
+    for part in parts:
+      if part.text:
+        text_parts.append(part.text)
+      elif part.function_response:
+        try:
+          response_json = json.dumps(
+              part.function_response.response, ensure_ascii=False
+          )
+        except TypeError:
+          response_json = str(part.function_response.response)
+        text_parts.append(
+            f"[tool_response name={part.function_response.name or ''}] "
+            f"{response_json}"
+        )
+      elif part.function_call:
+        try:
+          args_json = json.dumps(part.function_call.args, ensure_ascii=False)
+        except TypeError:
+          args_json = str(part.function_call.args)
+        text_parts.append(
+            f"[tool_call name={part.function_call.name}] {args_json}"
+        )
+      else:
+        logger.debug(
+            'Skipping unsupported content part for Ollama message: %s', part
+        )
+    return '\n'.join(text_parts)
+
+  def _map_role(self, role: Optional[str]) -> str:
+    if role in ('model', 'assistant'):
+      return 'assistant'
+    if role == 'system':
+      return 'system'
+    return 'user'
+
+  def _convert_tools(self, llm_request: LlmRequest) -> list[dict[str, Any]]:
+    tools_spec: list[dict[str, Any]] = []
+    if not llm_request.config.tools:
+      return tools_spec
+    for tool in llm_request.config.tools:
+      function_declarations: Optional[Sequence[types.FunctionDeclaration]] = (
+          tool.function_declarations
+          if isinstance(tool, types.Tool)
+          else None
+      )
+      if not function_declarations:
+        continue
+      for function_declaration in function_declarations:
+        tools_spec.append(
+            {
+                'type': 'function',
+                'function': {
+                    'name': function_declaration.name,
+                    'description': function_declaration.description or '',
+                    'parameters': self._function_parameters_to_json(
+                        function_declaration
+                    ),
+                },
+            }
+        )
+    return tools_spec
+
+  def _function_parameters_to_json(
+      self, function_declaration: types.FunctionDeclaration
+  ) -> dict[str, Any]:
+    if function_declaration.parameters is None:
+      return {'type': 'object', 'properties': {}}
+    try:
+      return function_declaration.parameters.model_dump(exclude_none=True)
+    except AttributeError:
+      # model_dump is not guaranteed depending on the genai version.
+      try:
+        return json.loads(
+            function_declaration.parameters.model_dump_json(exclude_none=True)
+        )
+      except (AttributeError, json.JSONDecodeError, TypeError) as exc:
+        logger.debug(
+            (
+                'Failed to convert function parameters, defaulting to empty'
+                ' schema: %s'
+            ),
+            exc,
+        )
+        return {'type': 'object', 'properties': {}}
+
+  def _convert_options(self, llm_request: LlmRequest) -> dict[str, Any]:
+    options: dict[str, Any] = {}
+    config = llm_request.config
+    temperature = getattr(config, 'temperature', None)
+    if temperature is not None:
+      options['temperature'] = temperature
+    top_p = getattr(config, 'top_p', None)
+    if top_p is not None:
+      options['top_p'] = top_p
+    max_output_tokens = getattr(config, 'max_output_tokens', None)
+    if max_output_tokens is not None:
+      options['num_predict'] = max_output_tokens
+    return options
+
+  def _post_chat(self, payload: dict[str, Any]) -> dict[str, Any]:
+    url = self.host.rstrip('/') + _CHAT_ENDPOINT
+    data = json.dumps(payload).encode('utf-8')
+    request = urllib.request.Request(
+        url,
+        data=data,
+        headers={'Content-Type': 'application/json'},
+        method='POST',
+    )
+    try:
+      with urllib.request.urlopen(
+          request, timeout=self.request_timeout
+      ) as response:
+        response_body = response.read().decode('utf-8')
+    except urllib.error.URLError as exc:
+      raise RuntimeError(exc.reason) from exc
+    except urllib.error.HTTPError as exc:
+      message = exc.read().decode('utf-8', errors='ignore')
+      raise RuntimeError(f'{exc.code}: {message}') from exc
+    return json.loads(response_body)
+
+  def _to_llm_response(self, response_json: dict[str, Any]) -> LlmResponse:
+    if error := response_json.get('error'):
+      return LlmResponse(
+          error_code='OLLAMA_ERROR',
+          error_message=str(error),
+      )
+
+    message = response_json.get('message', {})
+    parts: list[types.Part] = []
+
+    content = message.get('content')
+    if isinstance(content, str) and content.strip():
+      parts.append(types.Part.from_text(text=content))
+
+    for tool_call in message.get('tool_calls', []):
+      function_payload = tool_call.get('function', {})
+      name = function_payload.get('name')
+      arguments: Union[str, dict[str, Any], None] = function_payload.get(
+          'arguments'
+      )
+      if isinstance(arguments, str):
+        try:
+          arguments = json.loads(arguments)
+        except json.JSONDecodeError:
+          logger.debug(
+              'Failed to parse tool call arguments as JSON: %s', arguments
+          )
+      elif arguments is None:
+        arguments = {}
+      function_call = types.FunctionCall(name=name, args=arguments)
+      if tool_call_id := tool_call.get('id'):
+        setattr(function_call, 'id', tool_call_id)
+      parts.append(types.Part(function_call=function_call))
+
+    if not parts:
+      return LlmResponse(
+          error_code='NO_CONTENT',
+          error_message='Ollama response did not contain model output.',
+      )
+
+    return LlmResponse(
+        content=types.Content(role='model', parts=parts),
+    )
