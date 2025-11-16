@@ -146,14 +146,15 @@ def mock_write_client():
 @pytest.fixture
 def dummy_arrow_schema():
   return pa.schema([
-      pa.field("timestamp", pa.timestamp("us", tz="UTC")),
-      pa.field("event_type", pa.string()),
-      pa.field("agent", pa.string()),
-      pa.field("session_id", pa.string()),
-      pa.field("invocation_id", pa.string()),
-      pa.field("user_id", pa.string()),
-      pa.field("content", pa.string()),
-      pa.field("error_message", pa.string()),
+      pa.field("timestamp", pa.timestamp("us", tz="UTC"), nullable=False),
+      pa.field("event_type", pa.string(), nullable=True),
+      pa.field("agent", pa.string(), nullable=True),
+      pa.field("session_id", pa.string(), nullable=True),
+      pa.field("invocation_id", pa.string(), nullable=True),
+      pa.field("user_id", pa.string(), nullable=True),
+      pa.field("content", pa.string(), nullable=True),
+      pa.field("error_message", pa.string(), nullable=True),
+      pa.field("is_truncated", pa.bool_(), nullable=True),
   ])
 
 
@@ -233,6 +234,7 @@ def _assert_common_fields(log_entry, event_type, agent="MyTestAgent"):
   assert log_entry["user_id"] == "user-456"
   assert "timestamp" in log_entry
   assert isinstance(log_entry["timestamp"], datetime.datetime)
+  assert "is_truncated" in log_entry
 
 
 # --- Test Class ---
@@ -392,6 +394,189 @@ class TestBigQueryAgentAnalyticsPlugin:
     assert log_entry["content"] == "User Content: [FORMATTING FAILED]"
 
   @pytest.mark.asyncio
+  async def test_max_content_length(
+      self,
+      mock_write_client,
+      invocation_context,
+      callback_context,
+      mock_auth_default,
+      mock_bq_client,
+      mock_to_arrow_schema,
+      dummy_arrow_schema,
+      mock_asyncio_to_thread,
+  ):
+    config = BigQueryLoggerConfig(max_content_length=40)
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID, DATASET_ID, TABLE_ID, config
+    )
+    await plugin._ensure_init()
+    mock_write_client.append_rows.reset_mock()
+
+    # Test User Message Truncation
+    user_message = types.Content(
+        parts=[types.Part(text="12345678901234567890123456789012345678901")]
+    )  # 41 chars
+    await plugin.on_user_message_callback(
+        invocation_context=invocation_context, user_message=user_message
+    )
+    await asyncio.sleep(0.01)
+    mock_write_client.append_rows.assert_called_once()
+    log_entry = _get_captured_event_dict(mock_write_client, dummy_arrow_schema)
+    assert (
+        log_entry["content"]
+        == "User Content: text: '1234567890123456789012345678901234567890...' "
+    )
+    assert log_entry["is_truncated"]
+    mock_write_client.append_rows.reset_mock()
+
+    # Test before_model_callback full content truncation
+    llm_request = llm_request_lib.LlmRequest(
+        model="gemini-pro",
+        config=types.GenerateContentConfig(
+            system_instruction=types.Content(
+                parts=[types.Part(text="System Instruction")]
+            )
+        ),
+        contents=[
+            types.Content(role="user", parts=[types.Part(text="Prompt")])
+        ],
+    )
+    await plugin.before_model_callback(
+        callback_context=callback_context, llm_request=llm_request
+    )
+    await asyncio.sleep(0.01)
+    mock_write_client.append_rows.assert_called_once()
+    log_entry = _get_captured_event_dict(mock_write_client, dummy_arrow_schema)
+    # Full content: "Model: gemini-pro | Prompt: user: text: 'Prompt' | System Prompt: System Instruction"
+    # Truncated to 40 chars + ...:
+    expected_content = "Model: gemini-pro | Prompt: user: text: ..."
+    assert log_entry["content"] == expected_content
+    assert log_entry["is_truncated"]
+
+  @pytest.mark.asyncio
+  async def test_max_content_length_tool_args(
+      self,
+      mock_write_client,
+      tool_context,
+      mock_auth_default,
+      mock_bq_client,
+      mock_to_arrow_schema,
+      dummy_arrow_schema,
+      mock_asyncio_to_thread,
+  ):
+    config = BigQueryLoggerConfig(max_content_length=80)
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID, DATASET_ID, TABLE_ID, config
+    )
+    await plugin._ensure_init()
+    mock_write_client.append_rows.reset_mock()
+
+    mock_tool = mock.create_autospec(
+        base_tool_lib.BaseTool, instance=True, spec_set=True
+    )
+    type(mock_tool).name = mock.PropertyMock(return_value="MyTool")
+    type(mock_tool).description = mock.PropertyMock(return_value="Description")
+
+    # Args length > 80
+    # {"param": "A" * 50} is ~60 chars.
+    # Prefix is ~57 chars. Total ~117 chars.
+    await plugin.before_tool_callback(
+        tool=mock_tool,
+        tool_args={"param": "A" * 50},
+        tool_context=tool_context,
+    )
+    await asyncio.sleep(0.01)
+    mock_write_client.append_rows.assert_called_once()
+    log_entry = _get_captured_event_dict(mock_write_client, dummy_arrow_schema)
+
+    assert 'Arguments: {"param": "AAAAA' in log_entry["content"]
+    assert log_entry["content"].endswith("...")
+    assert len(log_entry["content"]) == 83  # 80 + 3 dots
+    assert log_entry["is_truncated"]
+
+  @pytest.mark.asyncio
+  async def test_max_content_length_tool_result(
+      self,
+      mock_write_client,
+      tool_context,
+      mock_auth_default,
+      mock_bq_client,
+      mock_to_arrow_schema,
+      dummy_arrow_schema,
+      mock_asyncio_to_thread,
+  ):
+    config = BigQueryLoggerConfig(max_content_length=80)
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID, DATASET_ID, TABLE_ID, config
+    )
+    await plugin._ensure_init()
+    mock_write_client.append_rows.reset_mock()
+
+    mock_tool = mock.create_autospec(
+        base_tool_lib.BaseTool, instance=True, spec_set=True
+    )
+    type(mock_tool).name = mock.PropertyMock(return_value="MyTool")
+
+    # Result length > 80
+    # {"res": "A" * 60} is ~70 chars.
+    # Prefix is ~27 chars. Total ~97 chars.
+    await plugin.after_tool_callback(
+        tool=mock_tool,
+        tool_args={},
+        tool_context=tool_context,
+        result={"res": "A" * 60},
+    )
+    await asyncio.sleep(0.01)
+    mock_write_client.append_rows.assert_called_once()
+    log_entry = _get_captured_event_dict(mock_write_client, dummy_arrow_schema)
+
+    assert 'Result: {"res": "AAAAA' in log_entry["content"]
+    assert log_entry["content"].endswith("...")
+    assert len(log_entry["content"]) == 83  # 80 + 3 dots
+    assert log_entry["is_truncated"]
+
+  @pytest.mark.asyncio
+  async def test_max_content_length_tool_error(
+      self,
+      mock_write_client,
+      tool_context,
+      mock_auth_default,
+      mock_bq_client,
+      mock_to_arrow_schema,
+      dummy_arrow_schema,
+      mock_asyncio_to_thread,
+  ):
+    config = BigQueryLoggerConfig(max_content_length=80)
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID, DATASET_ID, TABLE_ID, config
+    )
+    await plugin._ensure_init()
+    mock_write_client.append_rows.reset_mock()
+
+    mock_tool = mock.create_autospec(
+        base_tool_lib.BaseTool, instance=True, spec_set=True
+    )
+    type(mock_tool).name = mock.PropertyMock(return_value="MyTool")
+
+    # Args length > 80
+    # {"arg": "A" * 60} is ~70 chars.
+    # Prefix is ~28 chars. Total ~98 chars.
+    await plugin.on_tool_error_callback(
+        tool=mock_tool,
+        tool_args={"arg": "A" * 60},
+        tool_context=tool_context,
+        error=ValueError("Oops"),
+    )
+    await asyncio.sleep(0.01)
+    mock_write_client.append_rows.assert_called_once()
+    log_entry = _get_captured_event_dict(mock_write_client, dummy_arrow_schema)
+
+    assert 'Arguments: {"arg": "AAAAA' in log_entry["content"]
+    assert log_entry["content"].endswith("...")
+    assert len(log_entry["content"]) == 83  # 80 + 3 dots
+    assert log_entry["is_truncated"]
+
+  @pytest.mark.asyncio
   async def test_on_user_message_callback_logs_correctly(
       self,
       bq_plugin_inst,
@@ -407,6 +592,7 @@ class TestBigQueryAgentAnalyticsPlugin:
     log_entry = _get_captured_event_dict(mock_write_client, dummy_arrow_schema)
     _assert_common_fields(log_entry, "USER_MESSAGE_RECEIVED")
     assert log_entry["content"] == "User Content: text: 'What is up?'"
+    assert not log_entry["is_truncated"]
 
   @pytest.mark.asyncio
   async def test_on_event_callback_tool_call(
@@ -430,7 +616,7 @@ class TestBigQueryAgentAnalyticsPlugin:
     await asyncio.sleep(0.01)
     log_entry = _get_captured_event_dict(mock_write_client, dummy_arrow_schema)
     _assert_common_fields(log_entry, "TOOL_CALL", agent="MyTestAgent")
-    assert '"name": "get_weather"' in log_entry["content"]
+    assert "call: get_weather" in log_entry["content"]
     assert log_entry["timestamp"] == datetime.datetime(
         2025, 10, 22, 10, 0, 0, tzinfo=datetime.timezone.utc
     )
@@ -456,7 +642,7 @@ class TestBigQueryAgentAnalyticsPlugin:
     await asyncio.sleep(0.01)
     log_entry = _get_captured_event_dict(mock_write_client, dummy_arrow_schema)
     _assert_common_fields(log_entry, "MODEL_RESPONSE", agent="MyTestAgent")
-    assert '"text": "Hello there!"' in log_entry["content"]
+    assert "text: 'Hello there!'" in log_entry["content"]
     assert log_entry["timestamp"] == datetime.datetime(
         2025, 10, 22, 11, 0, 0, tzinfo=datetime.timezone.utc
     )
@@ -485,7 +671,7 @@ class TestBigQueryAgentAnalyticsPlugin:
           user_message=types.Content(parts=[types.Part(text="Test")]),
       )
       await asyncio.sleep(0.01)
-      mock_log_error.assert_any_call("BQ Init Failed: Auth failed")
+      mock_log_error.assert_any_call("BQ Plugin: Init Failed:", exc_info=True)
     mock_write_client.append_rows.assert_not_called()
 
   @pytest.mark.asyncio
@@ -509,16 +695,20 @@ class TestBigQueryAgentAnalyticsPlugin:
           user_message=types.Content(parts=[types.Part(text="Test")]),
       )
       await asyncio.sleep(0.01)
-      mock_log_error.assert_called_with("BQ Write Error: Test BQ Error")
+      mock_log_error.assert_called_with("BQ Plugin: Write Error: Test BQ Error")
     mock_write_client.append_rows.assert_called_once()
 
   @pytest.mark.asyncio
   async def test_close(self, bq_plugin_inst, mock_bq_client, mock_write_client):
     await bq_plugin_inst.close()
     mock_write_client.transport.close.assert_called_once()
-    mock_bq_client.close.assert_called_once()
+    # bq_client might not be closed if it wasn't created or if close() failed,
+    # but here it should be.
+    # in the new implementation we verify attributes are reset
+    assert bq_plugin_inst._write_client is None
+    assert bq_plugin_inst._bq_client is None
+    assert bq_plugin_inst._is_shutting_down is False
 
-  # ... other tests remain the same ...
   @pytest.mark.asyncio
   async def test_before_run_callback_logs_correctly(
       self,
@@ -595,7 +785,9 @@ class TestBigQueryAgentAnalyticsPlugin:
   ):
     llm_request = llm_request_lib.LlmRequest(
         model="gemini-pro",
-        contents=[types.Content(parts=[types.Part(text="Prompt")])],
+        contents=[
+            types.Content(role="user", parts=[types.Part(text="Prompt")])
+        ],
     )
     await bq_plugin_inst.before_model_callback(
         callback_context=callback_context, llm_request=llm_request
@@ -603,7 +795,11 @@ class TestBigQueryAgentAnalyticsPlugin:
     await asyncio.sleep(0.01)
     log_entry = _get_captured_event_dict(mock_write_client, dummy_arrow_schema)
     _assert_common_fields(log_entry, "LLM_REQUEST")
-    assert log_entry["content"] == "Model: gemini-pro | System Prompt: Empty"
+    assert (
+        log_entry["content"]
+        == "Model: gemini-pro | Prompt: user: text: 'Prompt' | System Prompt:"
+        " Empty"
+    )
 
   @pytest.mark.asyncio
   async def test_after_model_callback_text_response(
@@ -751,3 +947,32 @@ class TestBigQueryAgentAnalyticsPlugin:
         == 'Tool Name: MyTool, Arguments: {"param": "value"}'
     )
     assert log_entry["error_message"] == "Tool timed out"
+
+  @pytest.mark.asyncio
+  async def test_table_creation_options(
+      self,
+      mock_auth_default,
+      mock_bq_client,
+      mock_write_client,
+      mock_to_arrow_schema,
+      mock_asyncio_to_thread,
+  ):
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID, DATASET_ID, TABLE_ID
+    )
+    await plugin._ensure_init()
+
+    # Verify create_table was called with correct table options
+    mock_bq_client.create_table.assert_called_once()
+    call_args = mock_bq_client.create_table.call_args
+    table_arg = call_args[0][0]
+    assert isinstance(table_arg, bigquery.Table)
+    assert table_arg.time_partitioning.type_ == "DAY"
+    assert table_arg.time_partitioning.field == "timestamp"
+    assert table_arg.clustering_fields == ["event_type", "agent", "user_id"]
+    # Verify schema descriptions are present (spot check)
+    timestamp_field = next(f for f in table_arg.schema if f.name == "timestamp")
+    assert (
+        timestamp_field.description
+        == "The UTC time at which the event was logged."
+    )

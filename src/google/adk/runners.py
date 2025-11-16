@@ -596,7 +596,12 @@ class Runner:
     # transcription events should not be appended.
     # Function call and function response events should be appended.
     # Other control events should be appended.
-    if is_live_call and contents._is_live_model_audio_event(event):
+    if is_live_call and contents._is_live_model_audio_event_with_inline_data(
+        event
+    ):
+      # We don't append live model audio events with inline data to avoid
+      # storing large blobs in the session. However, events with file_data
+      # (references to artifacts) should be appended.
       return False
     return True
 
@@ -737,6 +742,36 @@ class Runner:
       session: Optional[Session] = None,
   ) -> AsyncGenerator[Event, None]:
     """Runs the agent in live mode (experimental feature).
+
+    The `run_live` method yields a stream of `Event` objects, but not all
+    yielded events are saved to the session. Here's a breakdown:
+
+    **Events Yielded to Callers:**
+    *   **Live Model Audio Events with Inline Data:** Events containing raw
+        audio `Blob` data(`inline_data`).
+    *   **Live Model Audio Events with File Data:** Both input and ouput audio
+        data are aggregated into a audio file saved into artifacts. The
+        reference to the file is saved in the event as `file_data`.
+    *   **Usage Metadata:** Events containing token usage.
+    *   **Transcription Events:** Both partial and non-partial transcription
+        events are yielded.
+    *   **Function Call and Response Events:** Always saved.
+    *   **Other Control Events:** Most control events are saved.
+
+    **Events Saved to the Session:**
+    *   **Live Model Audio Events with File Data:** Both input and ouput audio
+        data are aggregated into a audio file saved into artifacts. The
+        reference to the file is saved as event in the `file_data` to session
+        if RunConfig.save_live_model_audio_to_session is True.
+    *   **Usage Metadata Events:** Saved to the session.
+    *   **Non-Partial Transcription Events:** Non-partial transcription events
+        are saved.
+    *   **Function Call and Response Events:** Always saved.
+    *   **Other Control Events:** Most control events are saved.
+
+    **Events Not Saved to the Session:**
+    *   **Live Model Audio Events with Inline Data:** Events containing raw
+        audio `Blob` data are **not** saved to the session.
 
     Args:
         user_id: The user ID for the session. Required if `session` is None.
