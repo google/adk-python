@@ -11,8 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 import copy
+import datetime
 import re
 import types
 from typing import Any
@@ -130,6 +130,36 @@ MOCK_SESSION_JSON_PAGE2 = {
     'user_id': 'user_with_pages',
 }
 
+MOCK_SESSION_JSON_5 = {
+    'name': (
+        'projects/test-project/locations/test-location/'
+        'reasoningEngines/123/sessions/5'
+    ),
+    'update_time': '2024-12-12T12:15:12.123456Z',
+    'user_id': 'user_with_many_events',
+}
+
+
+def _generate_mock_events_for_session_5(num_events):
+  events = []
+  start_time = isoparse('2024-12-12T12:12:12.123456Z')
+  for i in range(num_events):
+    event_time = start_time + datetime.timedelta(microseconds=i * 1000)
+    events.append({
+        'name': (
+            'projects/test-project/locations/test-location/'
+            f'reasoningEngines/123/sessions/5/events/{i}'
+        ),
+        'invocation_id': f'invocation_{i}',
+        'author': 'user_with_many_events',
+        'timestamp': event_time.isoformat().replace('+00:00', 'Z'),
+    })
+  return events
+
+
+MANY_EVENTS_COUNT = 200
+MOCK_EVENTS_JSON_5 = _generate_mock_events_for_session_5(MANY_EVENTS_COUNT)
+
 MOCK_SESSION = Session(
     app_name='123',
     user_id='user',
@@ -228,23 +258,34 @@ def _convert_to_object(data):
     return data
 
 
-class MockApiClient:
+async def to_async_iterator(data):
+  for item in data:
+    yield item
+
+
+class MockAsyncClient:
   """Mocks the API Client."""
 
   def __init__(self) -> None:
     """Initializes MockClient."""
     self.session_dict: dict[str, Any] = {}
     self.event_dict: dict[str, Tuple[List[Any], Optional[str]]] = {}
-    self.aio = mock.Mock()
-    self.aio.agent_engines.sessions.get.side_effect = self._get_session
-    self.aio.agent_engines.sessions.list.side_effect = self._list_sessions
-    self.aio.agent_engines.sessions.delete.side_effect = self._delete_session
-    self.aio.agent_engines.sessions.create.side_effect = self._create_session
-    self.aio.agent_engines.sessions.events.list.side_effect = self._list_events
-    self.aio.agent_engines.sessions.events.append.side_effect = (
-        self._append_event
-    )
+    self.agent_engines = mock.AsyncMock()
+    self.agent_engines.sessions.get.side_effect = self._get_session
+    self.agent_engines.sessions.list.side_effect = self._list_sessions
+    self.agent_engines.sessions.delete.side_effect = self._delete_session
+    self.agent_engines.sessions.create.side_effect = self._create_session
+    self.agent_engines.sessions.events.list.side_effect = self._list_events
+    self.agent_engines.sessions.events.append.side_effect = self._append_event
     self.last_create_session_config: dict[str, Any] = {}
+
+  async def __aenter__(self):
+    """Enters the asynchronous context."""
+    return self
+
+  async def __aexit__(self, exc_type, exc_val, exc_tb):
+    """Exits the asynchronous context."""
+    pass
 
   async def _get_session(self, name: str):
     session_id = name.split('/')[-1]
@@ -324,7 +365,7 @@ class MockApiClient:
             for event in events
             if isoparse(event['timestamp']) >= after_timestamp
         ]
-    return [_convert_to_object(event) for event in events]
+    return to_async_iterator([_convert_to_object(event) for event in events])
 
   async def _append_event(
       self,
@@ -356,19 +397,25 @@ class MockApiClient:
       self.event_dict[session_id] = ([event_json], None)
 
 
-def mock_vertex_ai_session_service(agent_engine_id: Optional[str] = None):
+def mock_vertex_ai_session_service(
+    project: Optional[str] = 'test-project',
+    location: Optional[str] = 'test-location',
+    agent_engine_id: Optional[str] = None,
+    express_mode_api_key: Optional[str] = None,
+):
   """Creates a mock Vertex AI Session service for testing."""
   return VertexAiSessionService(
-      project='test-project',
-      location='test-location',
+      project=project,
+      location=location,
       agent_engine_id=agent_engine_id,
+      express_mode_api_key=express_mode_api_key,
   )
 
 
 @pytest.fixture
 def mock_api_client_instance():
   """Creates a mock API client instance for testing."""
-  api_client = MockApiClient()
+  api_client = MockAsyncClient()
   api_client.session_dict = {
       '1': MOCK_SESSION_JSON_1,
       '2': MOCK_SESSION_JSON_2,
@@ -391,6 +438,21 @@ def mock_get_api_client(mock_api_client_instance):
       return_value=mock_api_client_instance,
   ):
     yield
+
+
+@pytest.mark.asyncio
+async def test_initialize_with_project_location_and_api_key_error():
+  with pytest.raises(ValueError) as excinfo:
+    mock_vertex_ai_session_service(
+        project='test-project',
+        location='test-location',
+        express_mode_api_key='test-api-key',
+    )
+  assert (
+      'Cannot specify project or location and express_mode_api_key. Either use'
+      ' project and location, or just the express_mode_api_key.'
+      in str(excinfo.value)
+  )
 
 
 @pytest.mark.asyncio
@@ -471,6 +533,22 @@ async def test_get_session_with_after_timestamp_filter():
 
 @pytest.mark.asyncio
 @pytest.mark.usefixtures('mock_get_api_client')
+async def test_get_session_with_many_events(mock_api_client_instance):
+  mock_api_client_instance.session_dict['5'] = MOCK_SESSION_JSON_5
+  mock_api_client_instance.event_dict['5'] = (
+      copy.deepcopy(MOCK_EVENTS_JSON_5),
+      None,
+  )
+  session_service = mock_vertex_ai_session_service()
+  session = await session_service.get_session(
+      app_name='123', user_id='user_with_many_events', session_id='5'
+  )
+  assert session is not None
+  assert len(session.events) == MANY_EVENTS_COUNT
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
 async def test_list_sessions():
   session_service = mock_vertex_ai_session_service()
   sessions = await session_service.list_sessions(app_name='123', user_id='user')
@@ -497,7 +575,13 @@ async def test_list_sessions_all_users():
   session_service = mock_vertex_ai_session_service()
   sessions = await session_service.list_sessions(app_name='123', user_id=None)
   assert len(sessions.sessions) == 5
-  assert {s.id for s in sessions.sessions} == {'1', '2', '3', 'page1', 'page2'}
+  assert {s.id for s in sessions.sessions} == {
+      '1',
+      '2',
+      '3',
+      'page1',
+      'page2',
+  }
 
 
 @pytest.mark.asyncio

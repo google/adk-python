@@ -85,6 +85,16 @@ AfterModelCallback: TypeAlias = Union[
     list[_SingleAfterModelCallback],
 ]
 
+_SingleOnModelErrorCallback: TypeAlias = Callable[
+    [CallbackContext, LlmRequest, Exception],
+    Union[Awaitable[Optional[LlmResponse]], Optional[LlmResponse]],
+]
+
+OnModelErrorCallback: TypeAlias = Union[
+    _SingleOnModelErrorCallback,
+    list[_SingleOnModelErrorCallback],
+]
+
 _SingleBeforeToolCallback: TypeAlias = Callable[
     [BaseTool, dict[str, Any], ToolContext],
     Union[Awaitable[Optional[dict]], Optional[dict]],
@@ -364,6 +374,21 @@ class LlmAgent(BaseAgent):
     The content to return to the user. When present, the actual model response
     will be ignored and the provided content will be returned to user.
   """
+  on_model_error_callback: Optional[OnModelErrorCallback] = None
+  """Callback or list of callbacks to be called when a model call encounters an error.
+
+  When a list of callbacks is provided, the callbacks will be called in the
+  order they are listed until a callback does not return None.
+
+  Args:
+    callback_context: CallbackContext,
+    llm_request: LlmRequest, The raw model request.
+    error: The error from the model call.
+
+  Returns:
+    The content to return to the user. When present, the error will be
+    ignored and the provided content will be returned to user.
+  """
   before_tool_callback: Optional[BeforeToolCallback] = None
   """Callback or list of callbacks to be called before calling the tool.
 
@@ -417,7 +442,7 @@ class LlmAgent(BaseAgent):
   ) -> AsyncGenerator[Event, None]:
     agent_state = self._load_agent_state(ctx, BaseAgentState)
 
-    # If there is an sub-agent to resume, run it and then end the current
+    # If there is a sub-agent to resume, run it and then end the current
     # agent.
     if agent_state is not None and (
         agent_to_transfer := self._get_subagent_to_resume(ctx)
@@ -588,6 +613,20 @@ class LlmAgent(BaseAgent):
     return [self.after_model_callback]
 
   @property
+  def canonical_on_model_error_callbacks(
+      self,
+  ) -> list[_SingleOnModelErrorCallback]:
+    """The resolved self.on_model_error_callback field as a list of _SingleOnModelErrorCallback.
+
+    This method is only for use by Agent Development Kit.
+    """
+    if not self.on_model_error_callback:
+      return []
+    if isinstance(self.on_model_error_callback, list):
+      return self.on_model_error_callback
+    return [self.on_model_error_callback]
+
+  @property
   def canonical_before_tool_callbacks(
       self,
   ) -> list[BeforeToolCallback]:
@@ -689,8 +728,42 @@ class LlmAgent(BaseAgent):
     """Find the agent to run under the root agent by name."""
     agent_to_run = self.root_agent.find_agent(agent_name)
     if not agent_to_run:
-      raise ValueError(f'Agent {agent_name} not found in the agent tree.')
+      available = self._get_available_agent_names()
+      error_msg = (
+          f"Agent '{agent_name}' not found.\n"
+          f"Available agents: {', '.join(available)}\n\n"
+          'Possible causes:\n'
+          '  1. Agent not registered before being referenced\n'
+          '  2. Agent name mismatch (typo or case sensitivity)\n'
+          '  3. Timing issue (agent referenced before creation)\n\n'
+          'Suggested fixes:\n'
+          '  - Verify agent is registered with root agent\n'
+          '  - Check agent name spelling and case\n'
+          '  - Ensure agents are created before being referenced'
+      )
+      raise ValueError(error_msg)
     return agent_to_run
+
+  def _get_available_agent_names(self) -> list[str]:
+    """Helper to get all agent names in the tree for error reporting.
+
+    This is a private helper method used only for error message formatting.
+    Traverses the agent tree starting from root_agent and collects all
+    agent names for display in error messages.
+
+    Returns:
+      List of all agent names in the agent tree.
+    """
+    agents = []
+
+    def collect_agents(agent):
+      agents.append(agent.name)
+      if hasattr(agent, 'sub_agents') and agent.sub_agents:
+        for sub_agent in agent.sub_agents:
+          collect_agents(sub_agent)
+
+    collect_agents(self.root_agent)
+    return agents
 
   def __get_transfer_to_agent_or_none(
       self, event: Event, from_agent: str
@@ -744,31 +817,7 @@ class LlmAgent(BaseAgent):
 
   @model_validator(mode='after')
   def __model_validator_after(self) -> LlmAgent:
-    self.__check_output_schema()
     return self
-
-  def __check_output_schema(self):
-    if not self.output_schema:
-      return
-
-    if (
-        not self.disallow_transfer_to_parent
-        or not self.disallow_transfer_to_peers
-    ):
-      logger.warning(
-          'Invalid config for agent %s: output_schema cannot co-exist with'
-          ' agent transfer configurations. Setting'
-          ' disallow_transfer_to_parent=True, disallow_transfer_to_peers=True',
-          self.name,
-      )
-      self.disallow_transfer_to_parent = True
-      self.disallow_transfer_to_peers = True
-
-    if self.sub_agents:
-      raise ValueError(
-          f'Invalid config for agent {self.name}: if output_schema is set,'
-          ' sub_agents must be empty to disable agent transfer.'
-      )
 
   @field_validator('generate_content_config', mode='after')
   @classmethod

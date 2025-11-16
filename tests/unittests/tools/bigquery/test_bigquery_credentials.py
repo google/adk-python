@@ -36,7 +36,6 @@ class TestBigQueryCredentials:
     to pass them directly without needing to provide client ID/secret.
     """
     # Create a mock auth credentials object
-    # auth_creds = google.auth.credentials.Credentials()
     auth_creds = mock.create_autospec(
         google.auth.credentials.Credentials, instance=True
     )

@@ -35,7 +35,7 @@ class Aclosing(AbstractAsyncContextManager):
   https://docs.python.org/3/library/contextlib.html#contextlib.aclosing
   which is available in Python 3.10+.
 
-  TODO: replace all occurences with contextlib.aclosing once Python 3.9 is no
+  TODO: replace all occurrences with contextlib.aclosing once Python 3.9 is no
   longer supported.
   """
 

@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
+from datetime import timedelta
 import hashlib
 from io import StringIO
 import json
@@ -52,6 +54,7 @@ except ImportError as e:
 # Import real MCP classes
 try:
   from mcp import StdioServerParameters
+  from mcp.types import EmptyResult
 except ImportError:
   # Create a mock if MCP is not available
   class StdioServerParameters:
@@ -59,6 +62,9 @@ except ImportError:
     def __init__(self, command="test_command", args=None):
       self.command = command
       self.args = args or []
+
+  class EmptyResult:
+    pass
 
 
 class MockClientSession:
@@ -70,6 +76,7 @@ class MockClientSession:
     self._read_stream._closed = False
     self._write_stream._closed = False
     self.initialize = AsyncMock()
+    self.send_ping = AsyncMock()
 
 
 class MockAsyncExitStack:
@@ -257,19 +264,52 @@ class TestMCPSessionManager:
     }
     assert merged == expected
 
-  def test_is_session_disconnected(self):
-    """Test session disconnection detection."""
+  @pytest.mark.asyncio
+  async def test_is_session_disconnected_when_connected(self):
+    """Test session disconnection detection when session is connected."""
     manager = MCPSessionManager(self.mock_stdio_connection_params)
-
-    # Create mock session
     session = MockClientSession()
+    session.send_ping.return_value = EmptyResult()
+    assert not await manager._is_session_disconnected(session)
+    session.send_ping.assert_called_once()
 
-    # Not disconnected
-    assert not manager._is_session_disconnected(session)
-
-    # Disconnected - read stream closed
+  @pytest.mark.asyncio
+  async def test_is_session_disconnected_read_stream_closed(self):
+    """Test session disconnection detection when read stream is closed."""
+    manager = MCPSessionManager(self.mock_stdio_connection_params)
+    session = MockClientSession()
+    session.send_ping.return_value = EmptyResult()
     session._read_stream._closed = True
-    assert manager._is_session_disconnected(session)
+    assert await manager._is_session_disconnected(session)
+    session.send_ping.assert_not_called()
+
+  @pytest.mark.asyncio
+  async def test_is_session_disconnected_write_stream_closed(self):
+    """Test session disconnection detection when write stream is closed."""
+    manager = MCPSessionManager(self.mock_stdio_connection_params)
+    session = MockClientSession()
+    session.send_ping.return_value = EmptyResult()
+    session._write_stream._closed = True
+    assert await manager._is_session_disconnected(session)
+    session.send_ping.assert_not_called()
+
+  @pytest.mark.asyncio
+  async def test_is_session_disconnected_ping_fails(self):
+    """Test session disconnection detection when ping fails."""
+    manager = MCPSessionManager(self.mock_stdio_connection_params)
+    session = MockClientSession()
+    session.send_ping.side_effect = Exception("Ping failed")
+    assert await manager._is_session_disconnected(session)
+    session.send_ping.assert_called_once()
+
+  @pytest.mark.asyncio
+  async def test_is_session_disconnected_ping_returns_wrong_result(self):
+    """Test session disconnection detection when ping returns wrong result."""
+    manager = MCPSessionManager(self.mock_stdio_connection_params)
+    session = MockClientSession()
+    session.send_ping.return_value = "Wrong result"
+    assert await manager._is_session_disconnected(session)
+    session.send_ping.assert_called_once()
 
   @pytest.mark.asyncio
   async def test_create_session_stdio_new(self):
@@ -322,6 +362,7 @@ class TestMCPSessionManager:
     # Session is connected
     existing_session._read_stream._closed = False
     existing_session._write_stream._closed = False
+    existing_session.send_ping.return_value = EmptyResult()
 
     session = await manager.create_session()
 
@@ -331,6 +372,47 @@ class TestMCPSessionManager:
 
     # Should not create new session
     existing_session.initialize.assert_not_called()
+
+  @pytest.mark.asyncio
+  @patch("google.adk.tools.mcp_tool.mcp_session_manager.stdio_client")
+  @patch("google.adk.tools.mcp_tool.mcp_session_manager.AsyncExitStack")
+  @patch("google.adk.tools.mcp_tool.mcp_session_manager.ClientSession")
+  async def test_create_session_timeout(
+      self, mock_session_class, mock_exit_stack_class, mock_stdio
+  ):
+    """Test session creation timeout."""
+    manager = MCPSessionManager(self.mock_stdio_connection_params)
+
+    mock_session = MockClientSession()
+    mock_exit_stack = MockAsyncExitStack()
+
+    mock_exit_stack_class.return_value = mock_exit_stack
+    mock_stdio.return_value = AsyncMock()
+    mock_exit_stack.enter_async_context.side_effect = [
+        ("read", "write"),  # First call returns transports
+        mock_session,  # Second call returns session
+    ]
+    mock_session_class.return_value = mock_session
+
+    # Simulate timeout during session initialization
+    mock_session.initialize.side_effect = asyncio.TimeoutError("Test timeout")
+
+    # Expect ConnectionError due to timeout
+    with pytest.raises(ConnectionError, match="Failed to create MCP session"):
+      await manager.create_session()
+
+    # Verify ClientSession called with timeout
+    mock_session_class.assert_called_with(
+        "read",
+        "write",
+        read_timeout_seconds=timedelta(
+            seconds=manager._connection_params.timeout
+        ),
+    )
+    # Verify session was not added to pool
+    assert not manager._sessions
+    # Verify cleanup was called
+    mock_exit_stack.aclose.assert_called_once()
 
   @pytest.mark.asyncio
   async def test_close_success(self):

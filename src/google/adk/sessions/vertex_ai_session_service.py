@@ -17,25 +17,22 @@ import asyncio
 import datetime
 import json
 import logging
-import os
 import re
 from typing import Any
 from typing import Optional
+from typing import TYPE_CHECKING
 from typing import Union
 
 from google.genai import types
-from google.genai.errors import ClientError
-from tenacity import retry
-from tenacity import retry_if_result
-from tenacity import stop_after_attempt
-from tenacity import wait_exponential
 from typing_extensions import override
-import vertexai
+
+if TYPE_CHECKING:
+  import vertexai
 
 from . import _session_util
 from ..events.event import Event
 from ..events.event_actions import EventActions
-from ..utils.env_utils import is_env_enabled
+from ..utils.vertex_ai_utils import get_express_mode_api_key
 from .base_session_service import BaseSessionService
 from .base_session_service import GetSessionConfig
 from .base_session_service import ListSessionsResponse
@@ -55,6 +52,8 @@ class VertexAiSessionService(BaseSessionService):
       project: Optional[str] = None,
       location: Optional[str] = None,
       agent_engine_id: Optional[str] = None,
+      *,
+      express_mode_api_key: Optional[str] = None,
   ):
     """Initializes the VertexAiSessionService.
 
@@ -62,10 +61,19 @@ class VertexAiSessionService(BaseSessionService):
       project: The project id of the project to use.
       location: The location of the project to use.
       agent_engine_id: The resource ID of the agent engine to use.
+      express_mode_api_key: The API key to use for Express Mode. If not
+        provided, the API key from the GOOGLE_API_KEY environment variable will
+        be used. It will only be used if GOOGLE_GENAI_USE_VERTEXAI is true.
+        Do not use Google AI Studio API key for this field. For more details,
+        visit
+        https://cloud.google.com/vertex-ai/generative-ai/docs/start/express-mode/overview
     """
     self._project = project
     self._location = location
     self._agent_engine_id = agent_engine_id
+    self._express_mode_api_key = get_express_mode_api_key(
+        project, location, express_mode_api_key
+    )
 
   @override
   async def create_session(
@@ -99,49 +107,11 @@ class VertexAiSessionService(BaseSessionService):
       )
 
     reasoning_engine_id = self._get_reasoning_engine_id(app_name)
-    api_client = self._get_api_client()
 
     config = {'session_state': state} if state else {}
     config.update(kwargs)
-
-    if _is_vertex_express_mode(self._project, self._location):
-      config['wait_for_completion'] = False
-      api_response = await api_client.aio.agent_engines.sessions.create(
-          name=f'reasoningEngines/{reasoning_engine_id}',
-          user_id=user_id,
-          config=config,
-      )
-      logger.info('Create session response received.')
-      session_id = api_response.name.split('/')[-3]
-
-      # Express mode doesn't support LRO, so we need to poll
-      # the session resource.
-      # TODO: remove this once LRO polling is supported in Express mode.
-      @retry(
-          stop=stop_after_attempt(6),
-          wait=wait_exponential(multiplier=1, min=1, max=3),
-          retry=retry_if_result(lambda response: not response),
-          reraise=True,
-      )
-      async def _poll_session_resource():
-        try:
-          return await api_client.aio.agent_engines.sessions.get(
-              name=f'reasoningEngines/{reasoning_engine_id}/sessions/{session_id}'
-          )
-        except ClientError:
-          logger.info('Polling session resource')
-          return None
-
-      try:
-        await _poll_session_resource()
-      except Exception as exc:
-        raise ValueError('Failed to create session.') from exc
-
-      get_session_response = await api_client.aio.agent_engines.sessions.get(
-          name=f'reasoningEngines/{reasoning_engine_id}/sessions/{session_id}'
-      )
-    else:
-      api_response = await api_client.aio.agent_engines.sessions.create(
+    async with self._get_api_client() as api_client:
+      api_response = await api_client.agent_engines.sessions.create(
           name=f'reasoningEngines/{reasoning_engine_id}',
           user_id=user_id,
           config=config,
@@ -169,30 +139,29 @@ class VertexAiSessionService(BaseSessionService):
       config: Optional[GetSessionConfig] = None,
   ) -> Optional[Session]:
     reasoning_engine_id = self._get_reasoning_engine_id(app_name)
-    api_client = self._get_api_client()
     session_resource_name = (
         f'reasoningEngines/{reasoning_engine_id}/sessions/{session_id}'
     )
+    async with self._get_api_client() as api_client:
+      # Get session resource and events in parallel.
+      list_events_kwargs = {}
+      if config and not config.num_recent_events and config.after_timestamp:
+        # Filter events based on timestamp.
+        list_events_kwargs['config'] = {
+            'filter': 'timestamp>="{}"'.format(
+                datetime.datetime.fromtimestamp(
+                    config.after_timestamp, tz=datetime.timezone.utc
+                ).isoformat()
+            )
+        }
 
-    # Get session resource and events in parallel.
-    list_events_kwargs = {}
-    if config and not config.num_recent_events and config.after_timestamp:
-      # Filter events based on timestamp.
-      list_events_kwargs['config'] = {
-          'filter': 'timestamp>="{}"'.format(
-              datetime.datetime.fromtimestamp(
-                  config.after_timestamp, tz=datetime.timezone.utc
-              ).isoformat()
-          )
-      }
-
-    get_session_response, events_iterator = await asyncio.gather(
-        api_client.aio.agent_engines.sessions.get(name=session_resource_name),
-        api_client.aio.agent_engines.sessions.events.list(
-            name=session_resource_name,
-            **list_events_kwargs,
-        ),
-    )
+      get_session_response, events_iterator = await asyncio.gather(
+          api_client.agent_engines.sessions.get(name=session_resource_name),
+          api_client.agent_engines.sessions.events.list(
+              name=session_resource_name,
+              **list_events_kwargs,
+          ),
+      )
 
     if get_session_response.user_id != user_id:
       raise ValueError(
@@ -209,7 +178,7 @@ class VertexAiSessionService(BaseSessionService):
     )
     session.events += [
         _from_api_event(event)
-        for event in events_iterator
+        async for event in events_iterator
         if event.timestamp.timestamp() <= update_timestamp
     ]
 
@@ -225,27 +194,27 @@ class VertexAiSessionService(BaseSessionService):
       self, *, app_name: str, user_id: Optional[str] = None
   ) -> ListSessionsResponse:
     reasoning_engine_id = self._get_reasoning_engine_id(app_name)
-    api_client = self._get_api_client()
 
-    sessions = []
-    config = {}
-    if user_id is not None:
-      config['filter'] = f'user_id="{user_id}"'
-    sessions_iterator = await api_client.aio.agent_engines.sessions.list(
-        name=f'reasoningEngines/{reasoning_engine_id}',
-        config=config,
-    )
-
-    for api_session in sessions_iterator:
-      sessions.append(
-          Session(
-              app_name=app_name,
-              user_id=api_session.user_id,
-              id=api_session.name.split('/')[-1],
-              state=getattr(api_session, 'session_state', None) or {},
-              last_update_time=api_session.update_time.timestamp(),
-          )
+    async with self._get_api_client() as api_client:
+      sessions = []
+      config = {}
+      if user_id is not None:
+        config['filter'] = f'user_id="{user_id}"'
+      sessions_iterator = await api_client.agent_engines.sessions.list(
+          name=f'reasoningEngines/{reasoning_engine_id}',
+          config=config,
       )
+
+      for api_session in sessions_iterator:
+        sessions.append(
+            Session(
+                app_name=app_name,
+                user_id=api_session.user_id,
+                id=api_session.name.split('/')[-1],
+                state=getattr(api_session, 'session_state', None) or {},
+                last_update_time=api_session.update_time.timestamp(),
+            )
+        )
 
     return ListSessionsResponse(sessions=sessions)
 
@@ -253,15 +222,17 @@ class VertexAiSessionService(BaseSessionService):
       self, *, app_name: str, user_id: str, session_id: str
   ) -> None:
     reasoning_engine_id = self._get_reasoning_engine_id(app_name)
-    api_client = self._get_api_client()
 
-    try:
-      await api_client.aio.agent_engines.sessions.delete(
-          name=f'reasoningEngines/{reasoning_engine_id}/sessions/{session_id}',
-      )
-    except Exception as e:
-      logger.error('Error deleting session %s: %s', session_id, e)
-      raise e
+    async with self._get_api_client() as api_client:
+      try:
+        await api_client.agent_engines.sessions.delete(
+            name=(
+                f'reasoningEngines/{reasoning_engine_id}/sessions/{session_id}'
+            ),
+        )
+      except Exception as e:
+        logger.error('Error deleting session %s: %s', session_id, e)
+        raise
 
   @override
   async def append_event(self, session: Session, event: Event) -> Event:
@@ -269,7 +240,6 @@ class VertexAiSessionService(BaseSessionService):
     await super().append_event(session=session, event=event)
 
     reasoning_engine_id = self._get_reasoning_engine_id(session.app_name)
-    api_client = self._get_api_client()
 
     config = {}
     if event.content:
@@ -313,15 +283,16 @@ class VertexAiSessionService(BaseSessionService):
       )
     config['event_metadata'] = metadata_dict
 
-    await api_client.aio.agent_engines.sessions.events.append(
-        name=f'reasoningEngines/{reasoning_engine_id}/sessions/{session.id}',
-        author=event.author,
-        invocation_id=event.invocation_id,
-        timestamp=datetime.datetime.fromtimestamp(
-            event.timestamp, tz=datetime.timezone.utc
-        ),
-        config=config,
-    )
+    async with self._get_api_client() as api_client:
+      await api_client.agent_engines.sessions.events.append(
+          name=f'reasoningEngines/{reasoning_engine_id}/sessions/{session.id}',
+          author=event.author,
+          invocation_id=event.invocation_id,
+          timestamp=datetime.datetime.fromtimestamp(
+              event.timestamp, tz=datetime.timezone.utc
+          ),
+          config=config,
+      )
     return event
 
   def _get_reasoning_engine_id(self, app_name: str):
@@ -347,29 +318,20 @@ class VertexAiSessionService(BaseSessionService):
   ) -> Optional[Union[types.HttpOptions, types.HttpOptionsDict]]:
     return None
 
-  def _get_api_client(self) -> vertexai.Client:
+  def _get_api_client(self) -> vertexai.AsyncClient:
     """Instantiates an API client for the given project and location.
 
     Returns:
-      An API client for the given project and location.
+      An API client for the given project and location or express mode api key.
     """
+    import vertexai
+
     return vertexai.Client(
         project=self._project,
         location=self._location,
         http_options=self._api_client_http_options_override(),
-    )
-
-
-def _is_vertex_express_mode(
-    project: Optional[str], location: Optional[str]
-) -> bool:
-  """Check if Vertex AI and API key are both enabled replacing project and location, meaning the user is using the Vertex Express Mode."""
-  return (
-      is_env_enabled('GOOGLE_GENAI_USE_VERTEXAI')
-      and os.environ.get('GOOGLE_API_KEY', None) is not None
-      and project is None
-      and location is None
-  )
+        api_key=self._express_mode_api_key,
+    ).aio
 
 
 def _from_api_event(api_event_obj: vertexai.types.SessionEvent) -> Event:

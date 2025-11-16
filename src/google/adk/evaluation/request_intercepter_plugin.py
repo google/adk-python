@@ -34,7 +34,7 @@ class _RequestIntercepterPlugin(BasePlugin):
   """A plugin that intercepts requests that are made to the model and couples them with the model response.
 
   NOTE: This implementation is intended for eval systems internal usage. Do not
-  take direct depdency on it.
+  take direct dependency on it.
 
   Context behind the creation of this intercepter:
   Some of the newer AutoRater backed metrics need access the pieces of

@@ -214,14 +214,16 @@ def pretty_print_eval_result(eval_result: EvalCaseResult):
     expected_invocation = per_invocation_result.expected_invocation
     row_data = {
         "prompt": _convert_content_to_text(actual_invocation.user_content),
-        "expected_response": _convert_content_to_text(
-            expected_invocation.final_response if expected_invocation else None
+        "expected_response": (
+            _convert_content_to_text(expected_invocation.final_response)
+            if expected_invocation
+            else None
         ),
         "actual_response": _convert_content_to_text(
             actual_invocation.final_response
         ),
-        "expected_tool_calls": _convert_tool_calls_to_text(
-            expected_invocation.intermediate_data
+        "expected_tool_calls": (
+            _convert_tool_calls_to_text(expected_invocation.intermediate_data)
             if expected_invocation
             else None
         ),
@@ -252,11 +254,25 @@ def pretty_print_eval_result(eval_result: EvalCaseResult):
     )
     click.echo("Invocation Details:")
     df = pd.DataFrame(data)
+
+    # Identify columns where ALL values are exactly None
+    columns_to_keep = []
     for col in df.columns:
-      if df[col].dtype == "object":
-        df[col] = df[col].str.wrap(40)
-    click.echo(tabulate(df, headers="keys", tablefmt="grid"))
-  click.echo("\n\n")  # Few empty lines for visual clarity
+      # Check if all elements in the column are NOT None
+      if not df[col].apply(lambda x: x is None).all():
+        columns_to_keep.append(col)
+
+    # Select only the columns to keep
+    df_result = df[columns_to_keep]
+
+    for col in df_result.columns:
+      if df_result[col].dtype == "object":
+        df_result[col] = df_result[col].str.wrap(40)
+
+    click.echo(
+        tabulate(df_result, headers="keys", tablefmt="grid", maxcolwidths=25)
+    )
+    click.echo("\n\n")  # Few empty lines for visual clarity
 
 
 def get_eval_sets_manager(

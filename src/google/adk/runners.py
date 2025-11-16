@@ -60,6 +60,7 @@ from .sessions.in_memory_session_service import InMemorySessionService
 from .sessions.session import Session
 from .telemetry.tracing import tracer
 from .tools.base_toolset import BaseToolset
+from .utils._debug_output import print_event
 from .utils.context_utils import Aclosing
 
 logger = logging.getLogger('google_adk.' + __name__)
@@ -114,6 +115,7 @@ class Runner:
       session_service: BaseSessionService,
       memory_service: Optional[BaseMemoryService] = None,
       credential_service: Optional[BaseCredentialService] = None,
+      plugin_close_timeout: float = 5.0,
   ):
     """Initializes the Runner.
 
@@ -133,6 +135,7 @@ class Runner:
         session_service: The session service for the runner.
         memory_service: The memory service for the runner.
         credential_service: The credential service for the runner.
+        plugin_close_timeout: The timeout in seconds for plugin close methods.
 
     Raises:
         ValueError: If `app` is provided along with `app_name` or `plugins`, or
@@ -150,7 +153,9 @@ class Runner:
     self.session_service = session_service
     self.memory_service = memory_service
     self.credential_service = credential_service
-    self.plugin_manager = PluginManager(plugins=plugins)
+    self.plugin_manager = PluginManager(
+        plugins=plugins, close_timeout=plugin_close_timeout
+    )
     (
         self._agent_origin_app_name,
         self._agent_origin_dir,
@@ -582,31 +587,21 @@ class Runner:
 
     return rewind_artifact_delta
 
-  async def _run_compaction_default(self, session: Session):
-    """Runs compaction for other types of compactors.
-
-    This method calls `maybe_compact_events` on the compactor with all
-    events in the session.
-
-    Args:
-      session: The session containing events to compact.
-    """
-    compaction_event = (
-        await self.app.events_compaction_config.compactor.maybe_compact_events(
-            events=session.events
-        )
-    )
-    if compaction_event:
-      await self.session_service.append_event(
-          session=session, event=compaction_event
-      )
-
   def _should_append_event(self, event: Event, is_live_call: bool) -> bool:
     """Checks if an event should be appended to the session."""
     # Don't append audio response from model in live mode to session.
     # The data is appended to artifacts with a reference in file_data in the
     # event.
-    if is_live_call and contents._is_live_model_audio_event(event):
+    # We should append non-partial events only.For example, non-finished(partial)
+    # transcription events should not be appended.
+    # Function call and function response events should be appended.
+    # Other control events should be appended.
+    if is_live_call and contents._is_live_model_audio_event_with_inline_data(
+        event
+    ):
+      # We don't append live model audio events with inline data to avoid
+      # storing large blobs in the session. However, events with file_data
+      # (references to artifacts) should be appended.
       return False
     return True
 
@@ -748,6 +743,36 @@ class Runner:
   ) -> AsyncGenerator[Event, None]:
     """Runs the agent in live mode (experimental feature).
 
+    The `run_live` method yields a stream of `Event` objects, but not all
+    yielded events are saved to the session. Here's a breakdown:
+
+    **Events Yielded to Callers:**
+    *   **Live Model Audio Events with Inline Data:** Events containing raw
+        audio `Blob` data(`inline_data`).
+    *   **Live Model Audio Events with File Data:** Both input and ouput audio
+        data are aggregated into a audio file saved into artifacts. The
+        reference to the file is saved in the event as `file_data`.
+    *   **Usage Metadata:** Events containing token usage.
+    *   **Transcription Events:** Both partial and non-partial transcription
+        events are yielded.
+    *   **Function Call and Response Events:** Always saved.
+    *   **Other Control Events:** Most control events are saved.
+
+    **Events Saved to the Session:**
+    *   **Live Model Audio Events with File Data:** Both input and ouput audio
+        data are aggregated into a audio file saved into artifacts. The
+        reference to the file is saved as event in the `file_data` to session
+        if RunConfig.save_live_model_audio_to_session is True.
+    *   **Usage Metadata Events:** Saved to the session.
+    *   **Non-Partial Transcription Events:** Non-partial transcription events
+        are saved.
+    *   **Function Call and Response Events:** Always saved.
+    *   **Other Control Events:** Most control events are saved.
+
+    **Events Not Saved to the Session:**
+    *   **Live Model Audio Events with Inline Data:** Events containing raw
+        audio `Blob` data are **not** saved to the session.
+
     Args:
         user_id: The user ID for the session. Required if `session` is None.
         session_id: The session ID for the session. Required if `session` is
@@ -877,7 +902,7 @@ class Runner:
       message)
     """
     # If the last event is a function response, should send this response to
-    # the agent that returned the corressponding function call regardless the
+    # the agent that returned the corresponding function call regardless the
     # type of the agent. e.g. a remote a2a agent may surface a credential
     # request as a special long running function tool call.
     event = find_matching_function_call(session.events)
@@ -931,6 +956,107 @@ class Runner:
       agent = agent.parent_agent
     return True
 
+  async def run_debug(
+      self,
+      user_messages: str | list[str],
+      *,
+      user_id: str = 'debug_user_id',
+      session_id: str = 'debug_session_id',
+      run_config: RunConfig | None = None,
+      quiet: bool = False,
+      verbose: bool = False,
+  ) -> list[Event]:
+    """Debug helper for quick agent experimentation and testing.
+
+    This convenience method is designed for developers getting started with ADK
+    who want to quickly test agents without dealing with session management,
+    content formatting, or event streaming. It automatically handles common
+    boilerplate while hiding complexity.
+
+    IMPORTANT: This is for debugging and experimentation only. For production
+    use, please use the standard run_async() method which provides full control
+    over session management, event streaming, and error handling.
+
+    Args:
+        user_messages: Message(s) to send to the agent. Can be:
+            - Single string: "What is 2+2?"
+            - List of strings: ["Hello!", "What's my name?"]
+        user_id: User identifier. Defaults to "debug_user_id".
+        session_id: Session identifier for conversation persistence.
+            Defaults to "debug_session_id". Reuse the same ID to continue a conversation.
+        run_config: Optional configuration for the agent execution.
+        quiet: If True, suppresses console output. Defaults to False (output shown).
+        verbose: If True, shows detailed tool calls and responses. Defaults to False
+            for cleaner output showing only final agent responses.
+
+    Returns:
+        list[Event]: All events from all messages.
+
+    Raises:
+        ValueError: If session creation/retrieval fails.
+
+    Examples:
+        Quick debugging:
+        >>> runner = InMemoryRunner(agent=my_agent)
+        >>> await runner.run_debug("What is 2+2?")
+
+        Multiple queries in conversation:
+        >>> await runner.run_debug(["Hello!", "What's my name?"])
+
+        Continue a debug session:
+        >>> await runner.run_debug("What did we discuss?")  # Continues default session
+
+        Separate debug sessions:
+        >>> await runner.run_debug("Hi", user_id="alice", session_id="debug1")
+        >>> await runner.run_debug("Hi", user_id="bob", session_id="debug2")
+
+        Capture events for inspection:
+        >>> events = await runner.run_debug("Analyze this")
+        >>> for event in events:
+        ...     inspect_event(event)
+
+    Note:
+        For production applications requiring:
+        - Custom session/memory services (Spanner, Cloud SQL, etc.)
+        - Fine-grained event processing and streaming
+        - Error recovery and resumability
+        - Performance optimization
+        Please use run_async() with proper configuration.
+    """
+    session = await self.session_service.get_session(
+        app_name=self.app_name, user_id=user_id, session_id=session_id
+    )
+    if not session:
+      session = await self.session_service.create_session(
+          app_name=self.app_name, user_id=user_id, session_id=session_id
+      )
+      if not quiet:
+        print(f'\n ### Created new session: {session_id}')
+    elif not quiet:
+      print(f'\n ### Continue session: {session_id}')
+
+    collected_events: list[Event] = []
+
+    if isinstance(user_messages, str):
+      user_messages = [user_messages]
+
+    for message in user_messages:
+      if not quiet:
+        print(f'\nUser > {message}')
+
+      async for event in self.run_async(
+          user_id=user_id,
+          session_id=session.id,
+          new_message=types.UserContent(parts=[types.Part(text=message)]),
+          run_config=run_config,
+      ):
+        if not quiet:
+          print_event(event, verbose=verbose)
+
+        collected_events.append(event)
+
+    return collected_events
+
   async def _setup_context_for_new_invocation(
       self,
       *,
@@ -942,7 +1068,7 @@ class Runner:
     """Sets up the context for a new invocation.
 
     Args:
-      session: The session to setup the invocation context for.
+      session: The session to set up the invocation context for.
       new_message: The new message to process and append to the session.
       run_config: The run config of the agent.
       state_delta: Optional state changes to apply to the session.
@@ -981,7 +1107,7 @@ class Runner:
     """Sets up the context for a resumed invocation.
 
     Args:
-      session: The session to setup the invocation context for.
+      session: The session to set up the invocation context for.
       new_message: The new message to process and append to the session.
       invocation_id: The invocation id to resume.
       run_config: The run config of the agent.
@@ -997,7 +1123,7 @@ class Runner:
     if not session.events:
       raise ValueError(f'Session {session.id} has no events to resume.')
 
-    # Step 1: Maybe retrive a previous user message for the invocation.
+    # Step 1: Maybe retrieve a previous user message for the invocation.
     user_message = new_message or self._find_user_message_for_invocation(
         session.events, invocation_id
     )
@@ -1157,6 +1283,7 @@ class Runner:
     )
     if modified_user_message is not None:
       new_message = modified_user_message
+      invocation_context.user_content = new_message
 
     if new_message:
       await self._append_new_message_to_session(
@@ -1209,7 +1336,15 @@ class Runner:
 
   async def close(self):
     """Closes the runner."""
+    logger.info('Closing runner...')
+    # Close Toolsets
     await self._cleanup_toolsets(self._collect_toolset(self.agent))
+
+    # Close Plugins
+    if self.plugin_manager:
+      await self.plugin_manager.close()
+
+    logger.info('Runner closed.')
 
   async def __aenter__(self):
     """Async context manager entry."""
@@ -1241,6 +1376,7 @@ class InMemoryRunner(Runner):
       app_name: Optional[str] = None,
       plugins: Optional[list[BasePlugin]] = None,
       app: Optional[App] = None,
+      plugin_close_timeout: float = 5.0,
   ):
     """Initializes the InMemoryRunner.
 
@@ -1248,6 +1384,9 @@ class InMemoryRunner(Runner):
         agent: The root agent to run.
         app_name: The application name of the runner. Defaults to
           'InMemoryRunner'.
+        plugins: Optional list of plugins for the runner.
+        app: Optional App instance.
+        plugin_close_timeout: The timeout in seconds for plugin close methods.
     """
     if app is None and app_name is None:
       app_name = 'InMemoryRunner'
@@ -1259,4 +1398,5 @@ class InMemoryRunner(Runner):
         app=app,
         session_service=InMemorySessionService(),
         memory_service=InMemoryMemoryService(),
+        plugin_close_timeout=plugin_close_timeout,
     )

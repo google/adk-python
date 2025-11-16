@@ -83,7 +83,7 @@ def llm_request():
 
 
 @pytest.mark.asyncio
-async def test_generate_content_asyn_with_function(
+async def test_generate_content_async_with_function(
     oss_llm_with_function, llm_request
 ):
   responses = [
@@ -98,7 +98,7 @@ async def test_generate_content_asyn_with_function(
 
 
 @pytest.mark.asyncio
-async def test_generate_content_asyn_stream_with_function(
+async def test_generate_content_async_stream_with_function(
     oss_llm_with_function, llm_request
 ):
   responses = [

@@ -27,7 +27,7 @@ jira_tool = ApplicationIntegrationToolset(
     tool_name="jira_conversation_tool",
     tool_instructions="""
     
-    This tool is to call an integration to search for issues in JIRA
+    This tool is to call an integration to search for issues in Jira
     
     """,
 )

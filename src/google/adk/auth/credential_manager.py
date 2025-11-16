@@ -20,6 +20,7 @@ from typing import Optional
 from fastapi.openapi.models import OAuth2
 
 from ..agents.callback_context import CallbackContext
+from ..tools.openapi_tool.auth.credential_exchangers.service_account_exchanger import ServiceAccountCredentialExchanger
 from ..utils.feature_decorator import experimental
 from .auth_credential import AuthCredential
 from .auth_credential import AuthCredentialTypes
@@ -84,7 +85,6 @@ class CredentialManager:
     self._discovery_manager = OAuth2DiscoveryManager()
 
     # Register default exchangers and refreshers
-    # TODO: support service account credential exchanger
     from .exchanger.oauth2_credential_exchanger import OAuth2CredentialExchanger
     from .refresher.oauth2_credential_refresher import OAuth2CredentialRefresher
 
@@ -94,6 +94,12 @@ class CredentialManager:
     )
     self._exchanger_registry.register(
         AuthCredentialTypes.OPEN_ID_CONNECT, oauth2_exchanger
+    )
+
+    # TODO: Move ServiceAccountCredentialExchanger to the auth module
+    self._exchanger_registry.register(
+        AuthCredentialTypes.SERVICE_ACCOUNT,
+        ServiceAccountCredentialExchanger(),
     )
 
     oauth2_refresher = OAuth2CredentialRefresher()
@@ -207,9 +213,15 @@ class CredentialManager:
     if not exchanger:
       return credential, False
 
-    exchanged_credential = await exchanger.exchange(
-        credential, self._auth_config.auth_scheme
-    )
+    if isinstance(exchanger, ServiceAccountCredentialExchanger):
+      exchanged_credential = exchanger.exchange_credential(
+          self._auth_config.auth_scheme, credential
+      )
+    else:
+      exchanged_credential = await exchanger.exchange(
+          credential, self._auth_config.auth_scheme
+      )
+
     return exchanged_credential, True
 
   async def _refresh_credential(

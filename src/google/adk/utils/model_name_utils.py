@@ -27,8 +27,8 @@ def extract_model_name(model_string: str) -> str:
   """Extract the actual model name from either simple or path-based format.
 
   Args:
-    model_string: Either a simple model name like "gemini-2.5-pro" or
-                  a path-based model name like "projects/.../models/gemini-2.0-flash-001"
+    model_string: Either a simple model name like "gemini-2.5-pro" or a
+      path-based model name like "projects/.../models/gemini-2.0-flash-001"
 
   Returns:
     The extracted model name (e.g., "gemini-2.5-pro")
@@ -40,6 +40,10 @@ def extract_model_name(model_string: str) -> str:
   match = re.match(path_pattern, model_string)
   if match:
     return match.group(1)
+
+  # Handle 'models/' prefixed names like "models/gemini-2.5-pro"
+  if model_string.startswith('models/'):
+    return model_string[len('models/') :]
 
   # If it's not a path-based model, return as-is (simple model name)
   return model_string

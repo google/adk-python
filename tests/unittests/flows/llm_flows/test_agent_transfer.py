@@ -182,7 +182,7 @@ def test_auto_to_auto_to_single(is_resumable: bool):
     ]
 
     # sub_agent_1 should still be the current agent. sub_agent_1_1 is single so
-    # it should not be the current agent, otherwise the conversation will be
+    # it should not be the current agent; otherwise, the conversation will be
     # tied to sub_agent_1_1 forever.
     assert testing_utils.simplify_events(runner.run('test2')) == [
         ('sub_agent_1', 'response2'),

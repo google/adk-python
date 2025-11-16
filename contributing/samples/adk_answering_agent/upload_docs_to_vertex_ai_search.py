@@ -130,7 +130,7 @@ def upload_directory_to_gcs(
         )
         return False
 
-  print(f"Sucessfully uploaded {file_count} files to GCS.")
+  print(f"Successfully uploaded {file_count} files to GCS.")
   return True
 
 
@@ -148,7 +148,7 @@ def import_from_gcs_to_vertex_ai(
         # parent has the format of
         # "projects/{project_number}/locations/{location}/collections/{collection}/dataStores/{datastore_id}/branches/default_branch"
         parent=full_datastore_id + "/branches/default_branch",
-        # Specify the GCS source and use "content" for unstructed data.
+        # Specify the GCS source and use "content" for unstructured data.
         gcs_source=discoveryengine.GcsSource(
             input_uris=[gcs_uri], data_schema="content"
         ),

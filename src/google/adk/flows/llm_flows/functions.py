@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Handles function callings for LLM flow."""
+"""Handles function calling for LLM flow."""
 
 from __future__ import annotations
 
@@ -656,7 +656,7 @@ async def _process_function_live_helper(
       }
   elif hasattr(tool, 'func') and inspect.isasyncgenfunction(tool.func):
     # for streaming tool use case
-    # we require the function to be a async generator function
+    # we require the function to be an async generator function
     async def run_tool_and_update_queue(tool, function_args, tool_context):
       try:
         async with Aclosing(
@@ -716,10 +716,17 @@ def _get_tool(
 ):
   """Returns the tool corresponding to the function call."""
   if function_call.name not in tools_dict:
-    raise ValueError(
-        f'Function {function_call.name} is not found in the tools_dict:'
-        f' {tools_dict.keys()}.'
+    available = list(tools_dict.keys())
+    error_msg = (
+        f"Tool '{function_call.name}' not found.\nAvailable tools:"
+        f" {', '.join(available)}\n\nPossible causes:\n  1. LLM hallucinated"
+        ' the function name - review agent instruction clarity\n  2. Tool not'
+        ' registered - verify agent.tools list\n  3. Name mismatch - check for'
+        ' typos\n\nSuggested fixes:\n  - Review agent instruction to ensure'
+        ' tool usage is clear\n  - Verify tool is included in agent.tools'
+        ' list\n  - Check for typos in function name'
     )
+    raise ValueError(error_msg)
 
   return tools_dict[function_call.name]
 
