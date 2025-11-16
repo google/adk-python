@@ -39,7 +39,7 @@ def get_session_service(
 ):
   """Creates a session service for testing."""
   if service_type == SessionServiceType.DATABASE:
-    return DatabaseSessionService('sqlite:///:memory:')
+    return DatabaseSessionService('sqlite+aiosqlite:///:memory:')
   if service_type == SessionServiceType.SQLITE:
     return SqliteSessionService(str(tmp_path / 'sqlite.db'))
   return InMemorySessionService()

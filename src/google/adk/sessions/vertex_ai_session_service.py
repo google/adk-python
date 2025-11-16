@@ -178,7 +178,7 @@ class VertexAiSessionService(BaseSessionService):
     )
     session.events += [
         _from_api_event(event)
-        for event in events_iterator
+        async for event in events_iterator
         if event.timestamp.timestamp() <= update_timestamp
     ]
 

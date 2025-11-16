@@ -35,6 +35,7 @@ from ..sessions.base_session_service import BaseSessionService
 from ..sessions.in_memory_session_service import InMemorySessionService
 from ..sessions.session import Session
 from ..utils.context_utils import Aclosing
+from ._retry_options_utils import EnsureRetryOptionsPlugin
 from .app_details import AgentDetails
 from .app_details import AppDetails
 from .eval_case import EvalCase
@@ -225,13 +226,19 @@ class EvaluationGenerator:
     request_intercepter_plugin = _RequestIntercepterPlugin(
         name="request_intercepter_plugin"
     )
+    # We ensure that there is some kind of retries on the llm_requests that are
+    # generated from the Agent. This is done to make inferencing step of evals
+    # more resilient to temporary model failures.
+    ensure_retry_options_plugin = EnsureRetryOptionsPlugin(
+        name="ensure_retry_options"
+    )
     async with Runner(
         app_name=app_name,
         agent=root_agent,
         artifact_service=artifact_service,
         session_service=session_service,
         memory_service=memory_service,
-        plugins=[request_intercepter_plugin],
+        plugins=[request_intercepter_plugin, ensure_retry_options_plugin],
     ) as runner:
       events = []
       while True:
