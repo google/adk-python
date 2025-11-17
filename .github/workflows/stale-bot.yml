@@ -40,7 +40,7 @@ jobs:
         # The '|' character allows for multi-line shell commands.
         run: |
           python -m pip install --upgrade pip
-          pip install requests python-dotenv google-adk python-dateutil
+          pip install requests google-adk
 
       - name: Run Auditor Agent Script
         # The 'env' block for setting environment variables.
