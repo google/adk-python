@@ -27,7 +27,6 @@ from typing import Optional
 from typing import TYPE_CHECKING
 from typing import Union
 
-from google.genai import Client
 from google.genai import types
 from typing_extensions import override
 
@@ -41,6 +40,8 @@ from .gemini_llm_connection import GeminiLlmConnection
 from .llm_response import LlmResponse
 
 if TYPE_CHECKING:
+  from google.genai import Client
+
   from .llm_request import LlmRequest
 
 logger = logging.getLogger('google_adk.' + __name__)
@@ -200,6 +201,8 @@ class Gemini(BaseLlm):
     Returns:
       The api client.
     """
+    from google.genai import Client
+
     return Client(
         http_options=types.HttpOptions(
             headers=self._tracking_headers,
@@ -239,6 +242,8 @@ class Gemini(BaseLlm):
 
   @cached_property
   def _live_api_client(self) -> Client:
+    from google.genai import Client
+
     return Client(
         http_options=types.HttpOptions(
             headers=self._tracking_headers, api_version=self._live_api_version
@@ -281,7 +286,9 @@ class Gemini(BaseLlm):
         ],
     )
     llm_request.live_connect_config.tools = llm_request.config.tools
-    logger.info('Connecting to live with llm_request:%s', llm_request)
+    logger.info('Connecting to live for model: %s', llm_request.model)
+    logger.debug('Connecting to live with llm_request:%s', llm_request)
+    logger.debug('Live connect config: %s', llm_request.live_connect_config)
     async with self._live_api_client.aio.live.connect(
         model=llm_request.model, config=llm_request.live_connect_config
     ) as live_session:
@@ -397,9 +404,15 @@ def _build_function_declaration_log(
         k: v.model_dump(exclude_none=True)
         for k, v in func_decl.parameters.properties.items()
     })
+  elif func_decl.parameters_json_schema:
+    param_str = str(func_decl.parameters_json_schema)
+
   return_str = ''
   if func_decl.response:
     return_str = '-> ' + str(func_decl.response.model_dump(exclude_none=True))
+  elif func_decl.response_json_schema:
+    return_str = '-> ' + str(func_decl.response_json_schema)
+
   return f'{func_decl.name}: {param_str} {return_str}'
 
 

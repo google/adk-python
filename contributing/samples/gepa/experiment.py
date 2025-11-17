@@ -26,13 +26,11 @@ import os
 import random
 import traceback
 from typing import Any
-from typing import Callable
 from typing import TypedDict
 
 import gepa
 from gepa.core.adapter import EvaluationBatch
 from gepa.core.adapter import GEPAAdapter
-from google.genai import types
 from litellm import provider_list
 import rater_lib
 from retry import retry
@@ -46,20 +44,7 @@ from tau_bench.types import EnvRunResult
 from tau_bench.types import RunConfig
 import tau_bench_agent as tau_bench_agent_lib
 
-from google import genai
-
-
-class FilterInferenceWarnings(logging.Filter):
-  """Filters out Vertex inference warning about non-text parts in response."""
-
-  def filter(self, record: logging.LogRecord) -> bool:
-    """Filters out Vertex inference warning about non-text parts in response."""
-    if record.levelname != 'WARNING':
-      return True
-    message_identifier = record.getMessage()
-    return not message_identifier.startswith(
-        'Warning: there are non-text parts in the response:'
-    )
+import utils
 
 
 def run_tau_bench_rollouts(
@@ -494,26 +479,6 @@ def _get_datasets(
   )
 
 
-def _reflection_inference_fn(model: str) -> Callable[[str], str]:
-  """Returns an inference function on VertexAI based on provided model."""
-  client = genai.Client()
-
-  @retry(tries=3, delay=10, backoff=2)
-  def _fn(prompt):
-    return client.models.generate_content(
-        model=model,
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            candidate_count=1,
-            thinking_config=types.ThinkingConfig(
-                include_thoughts=True, thinking_budget=-1
-            ),
-        ),
-    ).text
-
-  return _fn
-
-
 SEED_SYSTEM_INSTRUCTION = (
     'you are a customer support agent helping customers resolve their '
     'issues by using the right tools'
@@ -618,7 +583,7 @@ def run_gepa(
       task_lm=None,  # this must be None when a custom adapter is used
       adapter=tau_bench_adapter,
       max_metric_calls=config.max_metric_calls,
-      reflection_lm=_reflection_inference_fn(config.reflection_model),
+      reflection_lm=utils.reflection_inference_fn(config.reflection_model),
       reflection_minibatch_size=config.reflection_minibatch_size,
       run_dir=output_dir,
   )

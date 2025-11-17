@@ -61,7 +61,12 @@ except ImportError as e:
 class MockMCPTool:
   """Mock MCP Tool for testing."""
 
-  def __init__(self, name="test_tool", description="Test tool description"):
+  def __init__(
+      self,
+      name="test_tool",
+      description="Test tool description",
+      outputSchema=None,
+  ):
     self.name = name
     self.description = description
     self.inputSchema = {
@@ -72,7 +77,7 @@ class MockMCPTool:
         },
         "required": ["param1"],
     }
-    self.outputSchema = None
+    self.outputSchema = outputSchema
 
 
 class TestMCPTool:
@@ -148,7 +153,70 @@ class TestMCPTool:
     assert declaration.name == "test_tool"
     assert declaration.description == "Test tool description"
     assert declaration.parameters is not None
+
+  def test_get_declaration_with_json_schema_for_func_decl_enabled(
+      self, monkeypatch
+  ):
+    """Test function declaration generation with json schema for func decl enabled."""
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+    )
+
+    with monkeypatch.context() as m:
+      m.setenv("ADK_ENABLE_JSON_SCHEMA_FOR_FUNC_DECL", "true")
+      declaration = tool._get_declaration()
+
+    assert isinstance(declaration, FunctionDeclaration)
+    assert declaration.name == "test_tool"
+    assert declaration.description == "Test tool description"
+    assert declaration.parameters is None
+    assert declaration.parameters_json_schema is not None
     assert declaration.response is None
+    assert declaration.response_json_schema is None
+
+  def test_get_declaration_with_output_schema_and_json_schema_for_func_decl_enabled(
+      self, monkeypatch
+  ):
+    """Test function declaration generation with an output schema and json schema for func decl enabled."""
+    output_schema = {
+        "type": "object",
+        "properties": {
+            "status": {
+                "type": "string",
+                "description": "The status of the operation",
+            },
+        },
+    }
+
+    tool = MCPTool(
+        mcp_tool=MockMCPTool(outputSchema=output_schema),
+        mcp_session_manager=self.mock_session_manager,
+    )
+
+    with monkeypatch.context() as m:
+      m.setenv("ADK_ENABLE_JSON_SCHEMA_FOR_FUNC_DECL", "true")
+      declaration = tool._get_declaration()
+
+    assert isinstance(declaration, FunctionDeclaration)
+    assert declaration.response is None
+    assert declaration.response_json_schema == output_schema
+
+  def test_get_declaration_with_empty_output_schema_and_json_schema_for_func_decl_enabled(
+      self, monkeypatch
+  ):
+    """Test function declaration with an empty output schema and json schema for func decl enabled."""
+    tool = MCPTool(
+        mcp_tool=MockMCPTool(outputSchema={}),
+        mcp_session_manager=self.mock_session_manager,
+    )
+
+    with monkeypatch.context() as m:
+      m.setenv("ADK_ENABLE_JSON_SCHEMA_FOR_FUNC_DECL", "true")
+      declaration = tool._get_declaration()
+
+    assert declaration.response is None
+    assert not declaration.response_json_schema
 
   @pytest.mark.asyncio
   async def test_run_async_impl_no_auth(self):

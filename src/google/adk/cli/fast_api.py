@@ -19,6 +19,7 @@ import logging
 import os
 from pathlib import Path
 import shutil
+import sys
 from typing import Any
 from typing import Mapping
 from typing import Optional
@@ -42,6 +43,7 @@ from ..runners import Runner
 from ..sessions.in_memory_session_service import InMemorySessionService
 from .adk_web_server import AdkWebServer
 from .service_registry import get_service_registry
+from .service_registry import load_services_module
 from .utils import envs
 from .utils import evals
 from .utils.agent_change_handler import AgentChangeEventHandler
@@ -72,6 +74,7 @@ def get_fast_api_app(
     logo_text: Optional[str] = None,
     logo_image_url: Optional[str] = None,
 ) -> FastAPI:
+
   # Set up eval managers.
   if eval_storage_uri:
     gcs_eval_managers = evals.create_gcs_eval_managers_from_uri(
@@ -82,6 +85,11 @@ def get_fast_api_app(
   else:
     eval_sets_manager = LocalEvalSetsManager(agents_dir=agents_dir)
     eval_set_results_manager = LocalEvalSetResultsManager(agents_dir=agents_dir)
+
+  # initialize Agent Loader
+  agent_loader = AgentLoader(agents_dir)
+  # Load services.py from agents_dir for custom service registration.
+  load_services_module(agents_dir)
 
   service_registry = get_service_registry()
 
@@ -128,9 +136,6 @@ def get_fast_api_app(
 
   # Build  the Credential service
   credential_service = InMemoryCredentialService()
-
-  # initialize Agent Loader
-  agent_loader = AgentLoader(agents_dir)
 
   adk_web_server = AdkWebServer(
       agent_loader=agent_loader,

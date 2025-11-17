@@ -18,12 +18,10 @@ from __future__ import annotations
 from functools import cached_property
 import logging
 import os
-import re
 from typing import Optional
 from typing import TYPE_CHECKING
 
 from google.adk import version as adk_version
-from google.genai import Client
 from google.genai import types
 from typing_extensions import override
 
@@ -31,12 +29,17 @@ from ..utils.env_utils import is_env_enabled
 from .google_llm import Gemini
 
 if TYPE_CHECKING:
+  from google.genai import Client
+
   from .llm_request import LlmRequest
+
 
 logger = logging.getLogger('google_adk.' + __name__)
 
 _APIGEE_PROXY_URL_ENV_VARIABLE_NAME = 'APIGEE_PROXY_URL'
 _GOOGLE_GENAI_USE_VERTEXAI_ENV_VARIABLE_NAME = 'GOOGLE_GENAI_USE_VERTEXAI'
+_PROJECT_ENV_VARIABLE_NAME = 'GOOGLE_CLOUD_PROJECT'
+_LOCATION_ENV_VARIABLE_NAME = 'GOOGLE_CLOUD_LOCATION'
 
 
 class ApigeeLlm(Gemini):
@@ -90,6 +93,24 @@ class ApigeeLlm(Gemini):
       raise ValueError(f'Invalid model string: {model}')
 
     self._isvertexai = _identify_vertexai(model)
+
+    # Set the project and location for Vertex AI.
+    if self._isvertexai:
+      self._project = os.environ.get(_PROJECT_ENV_VARIABLE_NAME)
+      self._location = os.environ.get(_LOCATION_ENV_VARIABLE_NAME)
+
+      if not self._project:
+        raise ValueError(
+            f'The {_PROJECT_ENV_VARIABLE_NAME} environment variable must be'
+            ' set.'
+        )
+
+      if not self._location:
+        raise ValueError(
+            f'The {_LOCATION_ENV_VARIABLE_NAME} environment variable must be'
+            ' set.'
+        )
+
     self._api_version = _identify_api_version(model)
     self._proxy_url = proxy_url or os.environ.get(
         _APIGEE_PROXY_URL_ENV_VARIABLE_NAME
@@ -117,6 +138,7 @@ class ApigeeLlm(Gemini):
     Returns:
       The api client.
     """
+    from google.genai import Client
 
     kwargs_for_http_options = {}
     if self._api_version:
@@ -128,9 +150,15 @@ class ApigeeLlm(Gemini):
         **kwargs_for_http_options,
     )
 
+    kwargs_for_client = {}
+    kwargs_for_client['vertexai'] = self._isvertexai
+    if self._isvertexai:
+      kwargs_for_client['project'] = self._project
+      kwargs_for_client['location'] = self._location
+
     return Client(
-        vertexai=self._isvertexai,
         http_options=http_options,
+        **kwargs_for_client,
     )
 
   @override

@@ -56,7 +56,7 @@ calendar_toolset = CalendarToolset(
 # call right after a function call that request auth
 # see https://github.com/google/adk-python/issues/1944 for details
 def redact_event_content(event_content: str) -> str:
-  """Redact confidential informaiton in the calendar event content
+  """Redact confidential information in the calendar event content
   Args:
       event_content: the content of the calendar event to redact
 

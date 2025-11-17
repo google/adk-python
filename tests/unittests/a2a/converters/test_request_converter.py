@@ -195,6 +195,58 @@ class TestConvertA2aRequestToAgentRunRequest:
     mock_convert_part.assert_any_call(mock_part1)
     mock_convert_part.assert_any_call(mock_part2)
 
+  def test_convert_a2a_request_multiple_parts(self):
+    """Test basic conversion of A2A request to ADK AgentRunRequest."""
+    # Arrange
+    mock_part1 = Mock()
+    mock_part2 = Mock()
+
+    mock_message = Mock()
+    mock_message.parts = [mock_part1, mock_part2]
+
+    mock_user = Mock()
+    mock_user.user_name = "test_user"
+
+    mock_call_context = Mock()
+    mock_call_context.user = mock_user
+
+    request = Mock(spec=RequestContext)
+    request.message = mock_message
+    request.context_id = "test_context_123"
+    request.call_context = mock_call_context
+    request.metadata = {"test_key": "test_value"}
+
+    # Create proper genai_types.Part objects instead of mocks
+    mock_genai_part1 = genai_types.Part(text="test part 1")
+    mock_genai_part2 = genai_types.Part(text="test part 2")
+    mock_convert_part = Mock()
+    mock_convert_part.side_effect = [mock_genai_part1, mock_genai_part2]
+
+    # Act
+    result = convert_a2a_request_to_agent_run_request(
+        request, mock_convert_part
+    )
+
+    # Assert
+    assert result is not None
+    assert result.user_id == "test_user"
+    assert result.session_id == "test_context_123"
+    assert isinstance(result.new_message, genai_types.Content)
+    assert result.new_message.role == "user"
+    assert result.new_message.parts == [
+        mock_genai_part1,
+        mock_genai_part2,
+    ]
+    assert isinstance(result.run_config, RunConfig)
+    assert result.run_config.custom_metadata == {
+        "a2a_metadata": {"test_key": "test_value"}
+    }
+
+    # Verify calls
+    assert mock_convert_part.call_count == 2
+    mock_convert_part.assert_any_call(mock_part1)
+    mock_convert_part.assert_any_call(mock_part2)
+
   def test_convert_a2a_request_no_message_raises_error(self):
     """Test that conversion raises ValueError when message is None."""
     # Arrange

@@ -31,6 +31,7 @@ from typing import Optional
 from typing import Tuple
 from typing import TypedDict
 from typing import Union
+import uuid
 import warnings
 
 from google.genai import types
@@ -63,6 +64,8 @@ logger = logging.getLogger("google_adk." + __name__)
 
 _NEW_LINE = "\n"
 _EXCLUDED_PART_FIELD = {"inline_data": {"data"}}
+_LITELLM_STRUCTURED_TYPES = {"json_object", "json_schema"}
+_JSON_DECODER = json.JSONDecoder()
 
 # Mapping of LiteLLM finish_reason strings to FinishReason enum values
 # Note: tool_calls/function_call map to STOP because:
@@ -78,6 +81,19 @@ _FINISH_REASON_MAPPING = {
     "function_call": types.FinishReason.STOP,  # Legacy function call variant
     "content_filter": types.FinishReason.SAFETY,
 }
+
+_SUPPORTED_FILE_CONTENT_MIME_TYPES = set(
+    ["application/pdf", "application/json"]
+)
+
+
+def _decode_inline_text_data(raw_bytes: bytes) -> str:
+  """Decodes inline file bytes that represent textual content."""
+  try:
+    return raw_bytes.decode("utf-8")
+  except UnicodeDecodeError:
+    logger.debug("Falling back to latin-1 decoding for inline file bytes.")
+    return raw_bytes.decode("latin-1", errors="replace")
 
 
 class ChatCompletionFileUrlObject(TypedDict, total=False):
@@ -366,6 +382,15 @@ def _get_content(
         and part.inline_data.data
         and part.inline_data.mime_type
     ):
+      if part.inline_data.mime_type.startswith("text/"):
+        decoded_text = _decode_inline_text_data(part.inline_data.data)
+        if len(parts) == 1:
+          return decoded_text
+        content_objects.append({
+            "type": "text",
+            "text": decoded_text,
+        })
+        continue
       base64_string = base64.b64encode(part.inline_data.data).decode("utf-8")
       data_uri = f"data:{part.inline_data.mime_type};base64,{base64_string}"
       # LiteLLM providers extract the MIME type from the data URI; avoid
@@ -386,13 +411,16 @@ def _get_content(
             "type": "audio_url",
             "audio_url": {"url": data_uri},
         })
-      elif part.inline_data.mime_type == "application/pdf":
+      elif part.inline_data.mime_type in _SUPPORTED_FILE_CONTENT_MIME_TYPES:
         content_objects.append({
             "type": "file",
             "file": {"file_data": data_uri},
         })
       else:
-        raise ValueError("LiteLlm(BaseLlm) does not support this content part.")
+        raise ValueError(
+            "LiteLlm(BaseLlm) does not support content part with MIME type "
+            f"{part.inline_data.mime_type}."
+        )
     elif part.file_data and part.file_data.file_uri:
       file_object: ChatCompletionFileUrlObject = {
           "file_id": part.file_data.file_uri,
@@ -403,6 +431,118 @@ def _get_content(
       })
 
   return content_objects
+
+
+def _build_tool_call_from_json_dict(
+    candidate: Any, *, index: int
+) -> Optional[ChatCompletionMessageToolCall]:
+  """Creates a tool call object from JSON content embedded in text."""
+
+  if not isinstance(candidate, dict):
+    return None
+
+  name = candidate.get("name")
+  args = candidate.get("arguments")
+  if not isinstance(name, str) or args is None:
+    return None
+
+  if isinstance(args, str):
+    arguments_payload = args
+  else:
+    try:
+      arguments_payload = json.dumps(args, ensure_ascii=False)
+    except (TypeError, ValueError):
+      arguments_payload = _safe_json_serialize(args)
+
+  call_id = candidate.get("id") or f"adk_tool_call_{uuid.uuid4().hex}"
+  call_index = candidate.get("index")
+  if isinstance(call_index, int):
+    index = call_index
+
+  function = Function(
+      name=name,
+      arguments=arguments_payload,
+  )
+  # Some LiteLLM types carry an `index` field only in streaming contexts,
+  # so guard the assignment to stay compatible with older versions.
+  if hasattr(function, "index"):
+    function.index = index  # type: ignore[attr-defined]
+
+  tool_call = ChatCompletionMessageToolCall(
+      type="function",
+      id=str(call_id),
+      function=function,
+  )
+  # Same reasoning as above: not every ChatCompletionMessageToolCall exposes it.
+  if hasattr(tool_call, "index"):
+    tool_call.index = index  # type: ignore[attr-defined]
+
+  return tool_call
+
+
+def _parse_tool_calls_from_text(
+    text_block: str,
+) -> tuple[list[ChatCompletionMessageToolCall], Optional[str]]:
+  """Extracts inline JSON tool calls from LiteLLM text responses."""
+
+  tool_calls = []
+  if not text_block:
+    return tool_calls, None
+
+  remainder_segments = []
+  cursor = 0
+  text_length = len(text_block)
+
+  while cursor < text_length:
+    brace_index = text_block.find("{", cursor)
+    if brace_index == -1:
+      remainder_segments.append(text_block[cursor:])
+      break
+
+    remainder_segments.append(text_block[cursor:brace_index])
+    try:
+      candidate, end = _JSON_DECODER.raw_decode(text_block, brace_index)
+    except json.JSONDecodeError:
+      remainder_segments.append(text_block[brace_index])
+      cursor = brace_index + 1
+      continue
+
+    tool_call = _build_tool_call_from_json_dict(
+        candidate, index=len(tool_calls)
+    )
+    if tool_call:
+      tool_calls.append(tool_call)
+    else:
+      remainder_segments.append(text_block[brace_index:end])
+    cursor = end
+
+  remainder = "".join(segment for segment in remainder_segments if segment)
+  remainder = remainder.strip()
+
+  return tool_calls, remainder or None
+
+
+def _split_message_content_and_tool_calls(
+    message: Message,
+) -> tuple[Optional[OpenAIMessageContent], list[ChatCompletionMessageToolCall]]:
+  """Returns message content and tool calls, parsing inline JSON when needed."""
+
+  existing_tool_calls = message.get("tool_calls") or []
+  normalized_tool_calls = (
+      list(existing_tool_calls) if existing_tool_calls else []
+  )
+  content = message.get("content")
+
+  # LiteLLM responses either provide structured tool_calls or inline JSON, not
+  # both. When tool_calls are present we trust them and skip the fallback parser.
+  if normalized_tool_calls or not isinstance(content, str):
+    return content, normalized_tool_calls
+
+  fallback_tool_calls, remainder = _parse_tool_calls_from_text(content)
+  if fallback_tool_calls:
+    return remainder, fallback_tool_calls
+
+  return content, []
 
 
 def _to_litellm_role(role: Optional[str]) -> Literal["user", "assistant"]:
@@ -481,7 +621,7 @@ def _schema_to_dict(schema: types.Schema) -> dict:
 def _function_declaration_to_tool_param(
     function_declaration: types.FunctionDeclaration,
 ) -> dict:
-  """Converts a types.FunctionDeclaration to a openapi spec dictionary.
+  """Converts a types.FunctionDeclaration to an openapi spec dictionary.
 
   Args:
     function_declaration: The function declaration to convert.
@@ -492,33 +632,44 @@ def _function_declaration_to_tool_param(
 
   assert function_declaration.name
 
-  properties = {}
+  parameters = {
+      "type": "object",
+      "properties": {},
+  }
   if (
       function_declaration.parameters
       and function_declaration.parameters.properties
   ):
+    properties = {}
     for key, value in function_declaration.parameters.properties.items():
       properties[key] = _schema_to_dict(value)
+
+    parameters = {
+        "type": "object",
+        "properties": properties,
+    }
+  elif function_declaration.parameters_json_schema:
+    parameters = function_declaration.parameters_json_schema
 
   tool_params = {
       "type": "function",
       "function": {
           "name": function_declaration.name,
           "description": function_declaration.description or "",
-          "parameters": {
-              "type": "object",
-              "properties": properties,
-          },
+          "parameters": parameters,
       },
   }
 
-  if (
-      function_declaration.parameters
-      and function_declaration.parameters.required
-  ):
-    tool_params["function"]["parameters"][
-        "required"
-    ] = function_declaration.parameters.required
+  # Handle required field from parameters
+  required_fields = (
+      getattr(function_declaration.parameters, "required", None)
+      if function_declaration.parameters
+      else None
+  )
+  if required_fields:
+    tool_params["function"]["parameters"]["required"] = required_fields
+  # parameters_json_schema already has required field in the json schema,
+  # no need to add it separately
 
   return tool_params
 
@@ -550,15 +701,24 @@ def _model_response_to_chunk(
     if message is None and response["choices"][0].get("delta", None):
       message = response["choices"][0]["delta"]
 
-    if message.get("content", None):
-      yield TextChunk(text=message.get("content")), finish_reason
+    message_content: Optional[OpenAIMessageContent] = None
+    tool_calls: list[ChatCompletionMessageToolCall] = []
+    if message is not None:
+      (
+          message_content,
+          tool_calls,
+      ) = _split_message_content_and_tool_calls(message)
 
-    if message.get("tool_calls", None):
-      for tool_call in message.get("tool_calls"):
+    if message_content:
+      yield TextChunk(text=message_content), finish_reason
+
+    if tool_calls:
+      for idx, tool_call in enumerate(tool_calls):
         # aggregate tool_call
         if tool_call.type == "function":
           func_name = tool_call.function.name
           func_args = tool_call.function.arguments
+          func_index = getattr(tool_call, "index", idx)
 
           # Ignore empty chunks that don't carry any information.
           if not func_name and not func_args:
@@ -568,12 +728,10 @@ def _model_response_to_chunk(
               id=tool_call.id,
               name=func_name,
               args=func_args,
-              index=tool_call.index,
+              index=func_index,
           ), finish_reason
 
-    if finish_reason and not (
-        message.get("content", None) or message.get("tool_calls", None)
-    ):
+    if finish_reason and not (message_content or tool_calls):
       yield None, finish_reason
 
   if not message:
@@ -653,11 +811,12 @@ def _message_to_generate_content_response(
   """
 
   parts = []
-  if message.get("content", None):
-    parts.append(types.Part.from_text(text=message.get("content")))
+  message_content, tool_calls = _split_message_content_and_tool_calls(message)
+  if isinstance(message_content, str) and message_content:
+    parts.append(types.Part.from_text(text=message_content))
 
-  if message.get("tool_calls", None):
-    for tool_call in message.get("tool_calls"):
+  if tool_calls:
+    for tool_call in tool_calls:
       if tool_call.type == "function":
         part = types.Part.from_function_call(
             name=tool_call.function.name,
@@ -673,12 +832,50 @@ def _message_to_generate_content_response(
   )
 
 
+def _to_litellm_response_format(
+    response_schema: types.SchemaUnion,
+) -> Optional[Dict[str, Any]]:
+  """Converts ADK response schema objects into LiteLLM-compatible payloads."""
+
+  if isinstance(response_schema, dict):
+    schema_type = response_schema.get("type")
+    if (
+        isinstance(schema_type, str)
+        and schema_type.lower() in _LITELLM_STRUCTURED_TYPES
+    ):
+      return response_schema
+    schema_dict = dict(response_schema)
+  elif isinstance(response_schema, type) and issubclass(
+      response_schema, BaseModel
+  ):
+    schema_dict = response_schema.model_json_schema()
+  elif isinstance(response_schema, BaseModel):
+    if isinstance(response_schema, types.Schema):
+      # GenAI Schema instances already represent JSON schema definitions.
+      schema_dict = response_schema.model_dump(exclude_none=True, mode="json")
+    else:
+      schema_dict = response_schema.__class__.model_json_schema()
+  elif hasattr(response_schema, "model_dump"):
+    schema_dict = response_schema.model_dump(exclude_none=True, mode="json")
+  else:
+    logger.warning(
+        "Unsupported response_schema type %s for LiteLLM structured outputs.",
+        type(response_schema),
+    )
+    return None
+
+  return {
+      "type": "json_object",
+      "response_schema": schema_dict,
+  }
+
+
 def _get_completion_inputs(
     llm_request: LlmRequest,
 ) -> Tuple[
     List[Message],
     Optional[List[Dict]],
-    Optional[types.SchemaUnion],
+    Optional[Dict[str, Any]],
     Optional[Dict],
 ]:
   """Converts an LlmRequest to litellm inputs and extracts generation params.
@@ -721,9 +918,11 @@ def _get_completion_inputs(
     ]
 
   # 3. Handle response format
-  response_format: Optional[types.SchemaUnion] = None
+  response_format: Optional[Dict[str, Any]] = None
   if llm_request.config and llm_request.config.response_schema:
-    response_format = llm_request.config.response_schema
+    response_format = _to_litellm_response_format(
+        llm_request.config.response_schema
+    )
 
   # 4. Extract generation parameters
   generation_params: Optional[Dict] = None
@@ -773,9 +972,15 @@ def _build_function_declaration_log(
         k: v.model_dump(exclude_none=True)
         for k, v in func_decl.parameters.properties.items()
     })
+  elif func_decl.parameters_json_schema:
+    param_str = str(func_decl.parameters_json_schema)
+
   return_str = "None"
   if func_decl.response:
     return_str = str(func_decl.response.model_dump(exclude_none=True))
+  elif func_decl.response_json_schema:
+    return_str = str(func_decl.response_json_schema)
+
   return f"{func_decl.name}: {param_str} -> {return_str}"
 
 

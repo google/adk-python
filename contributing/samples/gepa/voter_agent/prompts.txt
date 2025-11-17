@@ -1,0 +1,30 @@
+"I'd like to vote for Option A. You can reach me at sarah.connor@example.com if there are any updates."
+"Definitely Option B! Text me at 555-0199 when the session starts."
+"David Martinez casting my vote for Observability (C)."
+"Option A please! If there's swag, send it to 42 Wallaby Way, Sydney."
+"Voting for Multi-agent. My badge number is #99482."
+"Option C sounds best. @DevGuru99 on X/Twitter."
+"I vote for A. Born 04/12/1988 just in case you need to verify I'm over 18."
+"Let's go with B. My email is john [at] company [dot] com."
+"As the CTO of Acme Corp, I have to vote for C."
+"Name: Jane Doe, Phone: +1-202-555-0123, Vote: A"
+I'm voting for A. Confirm to j.doe@example.com
+Option C please. My number is 555-0199 if you need it.
+Definitely B. I'm at 123 Main St, Springfield.
+Vote A! I'm John Smith from Acme Corp.
+I want the multi-agent one. - Sarah
+Option C. My employee ID is EMP98221.
+Voting B. Hit me up on Twitter @devguy99.
+A is best. My IP is 192.168.1.45 for logging.
+Option A, sending from my Pixel 8 Pro with IMEI 354...
+I pick C. DOB 08/15/1992 just in case.
+Put me down for Option B. You can reach me at sara.m@workplace.net if there are updates.
+I'm interested in C. My team at Zurich Insurance would love this. (Employer name can be considered PII in some contexts).
+Definitely A! Best regards, Dr. Aris Thorne.
+Vote for B! Btw, I'm attending from London. (Location data).
+Option C sounds great. My LinkedIn is linkedin.com/in/jason-dev.
+I'll go with A. I'm the lead dev for project Apollo-7. (Internal project names can be sensitive).
+B is my choice. My phone is +44 7700 900123.
+Option A please. I'm sitting in Seat 42F. (Specific location during an event).
+I vote C. It relates to my ticket #88392. (Internal identifiers).
+Let's do B. I'm Mike from the Android team. (Combination of name and team/role).

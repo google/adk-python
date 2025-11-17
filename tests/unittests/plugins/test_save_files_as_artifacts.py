@@ -11,13 +11,13 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 from __future__ import annotations
 
 from unittest.mock import AsyncMock
 from unittest.mock import Mock
 
 from google.adk.agents.invocation_context import InvocationContext
+from google.adk.artifacts.base_artifact_service import ArtifactVersion
 from google.adk.plugins.save_files_as_artifacts_plugin import SaveFilesAsArtifactsPlugin
 from google.genai import types
 import pytest
@@ -32,17 +32,32 @@ class TestSaveFilesAsArtifactsPlugin:
 
     # Mock invocation context
     self.mock_context = Mock(spec=InvocationContext)
-    self.mock_context.artifact_service = AsyncMock()
     self.mock_context.app_name = "test_app"
     self.mock_context.user_id = "test_user"
     self.mock_context.invocation_id = "test_invocation_123"
     self.mock_context.session = Mock()
     self.mock_context.session.id = "test_session"
 
+    artifact_service = Mock()
+    artifact_service.save_artifact = AsyncMock(return_value=0)
+
+    async def _mock_get_artifact_version(**kwargs):
+      filename = kwargs.get("filename", "unknown_file")
+      version = kwargs.get("version", 0)
+      return ArtifactVersion(
+          version=version,
+          canonical_uri=f"gs://mock-bucket/{filename}/versions/{version}",
+          mime_type="application/pdf",
+      )
+
+    artifact_service.get_artifact_version = AsyncMock(
+        side_effect=_mock_get_artifact_version
+    )
+    self.mock_context.artifact_service = artifact_service
+
   @pytest.mark.asyncio
   async def test_save_files_with_display_name(self):
     """Test saving files when inline_data has display_name."""
-    # Create a message with inline data
     inline_data = types.Blob(
         display_name="test_document.pdf",
         data=b"test data",
@@ -52,12 +67,10 @@ class TestSaveFilesAsArtifactsPlugin:
     original_part = types.Part(inline_data=inline_data)
     user_message = types.Content(parts=[original_part])
 
-    # Execute the plugin
     result = await self.plugin.on_user_message_callback(
         invocation_context=self.mock_context, user_message=user_message
     )
 
-    # Verify artifact was saved with correct filename (session-scoped by default)
     self.mock_context.artifact_service.save_artifact.assert_called_once_with(
         app_name="test_app",
         user_id="test_user",
@@ -66,13 +79,20 @@ class TestSaveFilesAsArtifactsPlugin:
         artifact=original_part,
     )
 
-    # Verify message was modified with placeholder (clean name)
+    assert result
+    assert len(result.parts) == 2
     assert result.parts[0].text == '[Uploaded Artifact: "test_document.pdf"]'
+    assert result.parts[1].file_data
+    assert (
+        result.parts[1].file_data.file_uri
+        == "gs://mock-bucket/test_document.pdf/versions/0"
+    )
+    assert result.parts[1].file_data.display_name == "test_document.pdf"
+    assert result.parts[1].file_data.mime_type == "application/pdf"
 
   @pytest.mark.asyncio
   async def test_save_files_without_display_name(self):
     """Test saving files when inline_data has no display_name."""
-    # Create inline data without display_name
     inline_data = types.Blob(
         display_name=None, data=b"test data", mime_type="application/pdf"
     )
@@ -80,12 +100,10 @@ class TestSaveFilesAsArtifactsPlugin:
     original_part = types.Part(inline_data=inline_data)
     user_message = types.Content(parts=[original_part])
 
-    # Execute the plugin
     result = await self.plugin.on_user_message_callback(
         invocation_context=self.mock_context, user_message=user_message
     )
 
-    # Verify artifact was saved with generated filename (session-scoped by default)
     expected_filename = "artifact_test_invocation_123_0"
     self.mock_context.artifact_service.save_artifact.assert_called_once_with(
         app_name="test_app",
@@ -95,21 +113,22 @@ class TestSaveFilesAsArtifactsPlugin:
         artifact=original_part,
     )
 
-    # Verify message was modified with generated filename (clean name)
-    generated_display_name = "artifact_test_invocation_123_0"
+    assert result
+    assert len(result.parts) == 2
+    assert result.parts[0].text == f'[Uploaded Artifact: "{expected_filename}"]'
+    assert result.parts[1].file_data
     assert (
-        result.parts[0].text
-        == f'[Uploaded Artifact: "{generated_display_name}"]'
+        result.parts[1].file_data.file_uri
+        == "gs://mock-bucket/artifact_test_invocation_123_0/versions/0"
     )
+    assert result.parts[1].file_data.display_name == expected_filename
 
   @pytest.mark.asyncio
   async def test_multiple_files_in_message(self):
     """Test handling multiple files in a single message."""
-    # Create message with multiple inline data parts
     inline_data1 = types.Blob(
         display_name="file1.txt", data=b"file1 content", mime_type="text/plain"
     )
-
     inline_data2 = types.Blob(
         display_name="file2.jpg", data=b"file2 content", mime_type="image/jpeg"
     )
@@ -122,49 +141,89 @@ class TestSaveFilesAsArtifactsPlugin:
         ]
     )
 
-    # Execute the plugin
     result = await self.plugin.on_user_message_callback(
         invocation_context=self.mock_context, user_message=user_message
     )
 
-    # Verify both artifacts were saved
     assert self.mock_context.artifact_service.save_artifact.call_count == 2
-
-    # Check first file
     first_call = (
         self.mock_context.artifact_service.save_artifact.call_args_list[0]
     )
-    assert first_call[1]["filename"] == "file1.txt"
-
-    # Check second file
     second_call = (
         self.mock_context.artifact_service.save_artifact.call_args_list[1]
     )
+    assert first_call[1]["filename"] == "file1.txt"
     assert second_call[1]["filename"] == "file2.jpg"
 
-    # Verify message parts were modified correctly (clean names)
+    assert result
+    assert len(result.parts) == 5
     assert result.parts[0].text == '[Uploaded Artifact: "file1.txt"]'
-    assert result.parts[1].text == "Some text between files"  # Unchanged
-    assert result.parts[2].text == '[Uploaded Artifact: "file2.jpg"]'
+    assert result.parts[1].file_data
+    assert (
+        result.parts[1].file_data.file_uri
+        == "gs://mock-bucket/file1.txt/versions/0"
+    )
+    assert result.parts[1].file_data.display_name == "file1.txt"
+    assert result.parts[2].text == "Some text between files"
+    assert result.parts[3].text == '[Uploaded Artifact: "file2.jpg"]'
+    assert result.parts[4].file_data
+    assert (
+        result.parts[4].file_data.file_uri
+        == "gs://mock-bucket/file2.jpg/versions/0"
+    )
+    assert result.parts[4].file_data.display_name == "file2.jpg"
+
+  @pytest.mark.asyncio
+  async def test_unsupported_canonical_uri_keeps_inline_data(self):
+    """Fallback to inline data when artifact URI is not model-accessible."""
+    inline_data = types.Blob(
+        display_name="local_only.png",
+        data=b"image data",
+        mime_type="image/png",
+    )
+
+    artifact_service = self.mock_context.artifact_service
+    original_side_effect = artifact_service.get_artifact_version.side_effect
+
+    async def _memory_only_version(**kwargs):
+      return ArtifactVersion(
+          version=kwargs.get("version", 0),
+          canonical_uri=(
+              "memory://apps/test_app/users/test_user/sessions/test_session/"
+              "artifacts/local_only.png/versions/0"
+          ),
+          mime_type="image/png",
+      )
+
+    artifact_service.get_artifact_version.side_effect = _memory_only_version
+
+    try:
+      user_message = types.Content(parts=[types.Part(inline_data=inline_data)])
+      result = await self.plugin.on_user_message_callback(
+          invocation_context=self.mock_context, user_message=user_message
+      )
+
+      assert result
+      assert len(result.parts) == 2
+      assert result.parts[0].text == '[Uploaded Artifact: "local_only.png"]'
+      assert result.parts[1].inline_data == inline_data
+    finally:
+      artifact_service.get_artifact_version.side_effect = original_side_effect
 
   @pytest.mark.asyncio
   async def test_no_artifact_service(self):
     """Test behavior when artifact service is not available."""
-    # Set artifact service to None
     self.mock_context.artifact_service = None
 
     inline_data = types.Blob(
         display_name="test.pdf", data=b"test data", mime_type="application/pdf"
     )
-
     user_message = types.Content(parts=[types.Part(inline_data=inline_data)])
 
-    # Execute the plugin
     result = await self.plugin.on_user_message_callback(
         invocation_context=self.mock_context, user_message=user_message
     )
 
-    # Should return original message unchanged
     assert result == user_message
     assert result.parts[0].inline_data == inline_data
 
@@ -173,15 +232,11 @@ class TestSaveFilesAsArtifactsPlugin:
     """Test behavior when message has no parts."""
     user_message = types.Content(parts=[])
 
-    # Execute the plugin
     result = await self.plugin.on_user_message_callback(
         invocation_context=self.mock_context, user_message=user_message
     )
 
-    # Should return None to proceed with original message
     assert result is None
-
-    # Should not try to save any artifacts
     self.mock_context.artifact_service.save_artifact.assert_not_called()
 
   @pytest.mark.asyncio
@@ -191,21 +246,16 @@ class TestSaveFilesAsArtifactsPlugin:
         parts=[types.Part(text="Hello world"), types.Part(text="No files here")]
     )
 
-    # Execute the plugin
     result = await self.plugin.on_user_message_callback(
         invocation_context=self.mock_context, user_message=user_message
     )
 
-    # Should return None to proceed with original message
     assert result is None
-
-    # Should not try to save any artifacts
     self.mock_context.artifact_service.save_artifact.assert_not_called()
 
   @pytest.mark.asyncio
   async def test_save_artifact_failure(self):
     """Test behavior when saving artifact fails."""
-    # Mock save_artifact to raise an exception
     self.mock_context.artifact_service.save_artifact.side_effect = Exception(
         "Storage error"
     )
@@ -213,33 +263,28 @@ class TestSaveFilesAsArtifactsPlugin:
     inline_data = types.Blob(
         display_name="test.pdf", data=b"test data", mime_type="application/pdf"
     )
+    user_message = types.Content(parts=[types.Part(inline_data=inline_data)])
 
-    original_part = types.Part(inline_data=inline_data)
-    user_message = types.Content(parts=[original_part])
-
-    # Execute the plugin - should not raise exception
     result = await self.plugin.on_user_message_callback(
         invocation_context=self.mock_context, user_message=user_message
     )
 
-    # Should return None when saving fails (no modifications made)
     assert result is None
 
   @pytest.mark.asyncio
   async def test_mixed_success_and_failure(self):
     """Test behavior when some files save successfully and others fail."""
-    # Mock save_artifact to succeed on first call, fail on second
     save_calls = 0
 
-    def mock_save_artifact(*_args, **_kwargs):
+    async def _save_side_effect(*_args, **_kwargs):
       nonlocal save_calls
       save_calls += 1
       if save_calls == 2:
         raise Exception("Storage error on second file")
-      return AsyncMock()
+      return 0
 
     self.mock_context.artifact_service.save_artifact.side_effect = (
-        mock_save_artifact
+        _save_side_effect
     )
 
     inline_data1 = types.Blob(
@@ -247,7 +292,6 @@ class TestSaveFilesAsArtifactsPlugin:
         data=b"success data",
         mime_type="application/pdf",
     )
-
     inline_data2 = types.Blob(
         display_name="failure.pdf",
         data=b"failure data",
@@ -259,17 +303,16 @@ class TestSaveFilesAsArtifactsPlugin:
         parts=[types.Part(inline_data=inline_data1), original_part2]
     )
 
-    # Execute the plugin
     result = await self.plugin.on_user_message_callback(
         invocation_context=self.mock_context, user_message=user_message
     )
 
-    # First file should be replaced with placeholder (clean name)
+    assert result
+    assert len(result.parts) == 3
     assert result.parts[0].text == '[Uploaded Artifact: "success.pdf"]'
-
-    # Second file should remain unchanged due to failure
-    assert result.parts[1] == original_part2
-    assert result.parts[1].inline_data == inline_data2
+    assert result.parts[1].file_data
+    assert result.parts[2] == original_part2
+    assert result.parts[2].inline_data == inline_data2
 
   @pytest.mark.asyncio
   async def test_placeholder_text_format(self):
@@ -277,19 +320,21 @@ class TestSaveFilesAsArtifactsPlugin:
     inline_data = types.Blob(
         display_name="test file with spaces.docx",
         data=b"document data",
-        mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        mime_type=(
+            "application/vnd.openxmlformats-officedocument."
+            "wordprocessingml.document"
+        ),
     )
 
     user_message = types.Content(parts=[types.Part(inline_data=inline_data)])
 
-    # Execute the plugin
     result = await self.plugin.on_user_message_callback(
         invocation_context=self.mock_context, user_message=user_message
     )
 
-    # Verify exact format of placeholder text (clean name)
     expected_text = '[Uploaded Artifact: "test file with spaces.docx"]'
     assert result.parts[0].text == expected_text
+    assert result.parts[1].file_data
 
   def test_plugin_name_default(self):
     """Test that plugin has correct default name."""

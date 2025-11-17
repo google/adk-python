@@ -110,12 +110,19 @@ def convert_a2a_request_to_agent_run_request(
   if request.metadata:
     custom_metadata['a2a_metadata'] = request.metadata
 
+  output_parts = []
+  for a2a_part in request.message.parts:
+    genai_parts = part_converter(a2a_part)
+    if not isinstance(genai_parts, list):
+      genai_parts = [genai_parts] if genai_parts else []
+    output_parts.extend(genai_parts)
+
   return AgentRunRequest(
       user_id=_get_user_id(request),
       session_id=request.context_id,
       new_message=genai_types.Content(
           role='user',
-          parts=[part_converter(part) for part in request.message.parts],
+          parts=output_parts,
       ),
       run_config=RunConfig(custom_metadata=custom_metadata),
   )
