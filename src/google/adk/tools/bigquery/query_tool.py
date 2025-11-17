@@ -68,7 +68,7 @@ def _execute_sql(
     bq_connection_properties = []
 
     # BigQuery job labels if applicable
-    bq_job_labels = {}
+    bq_job_labels = settings.labels if settings and settings.labels else {}
     if caller_id:
       bq_job_labels["adk-bigquery-tool"] = caller_id
 
