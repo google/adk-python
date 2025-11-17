@@ -1,3 +1,17 @@
+# Copyright 2025 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 from datetime import datetime
 from datetime import timezone
 import os
@@ -25,10 +39,16 @@ from requests.exceptions import RequestException
 
 
 def load_prompt_template(filename: str) -> str:
-  """Loads the prompt text file from the same directory as this script."""
+  """Loads the prompt text file from the same directory as this script.
+
+  Args:
+      filename: The name of the prompt file to load.
+
+  Returns:
+      The content of the file as a string.
+  """
   file_path = os.path.join(os.path.dirname(__file__), filename)
 
-  # 2. Open the file in 'read' mode ('r').
   with open(file_path, "r") as f:
     return f.read()
 
@@ -40,6 +60,10 @@ def get_repository_maintainers() -> dict[str, Any]:
   """
   Fetches the list of repository collaborators with 'push' (write) access or higher.
   This should only be called once per run.
+
+  Returns:
+      A dictionary with the status and a list of maintainer usernames, or an
+      error dictionary.
   """
   print("DEBUG: Fetching repository maintainers with push access...")
   try:
@@ -56,7 +80,12 @@ def get_repository_maintainers() -> dict[str, Any]:
 
 
 def get_all_open_issues() -> dict[str, Any]:
-  """Fetches a batch of the oldest open issues for an audit."""
+  """Fetches a batch of the oldest open issues for an audit.
+
+  Returns:
+      A dictionary containing the status and a list of open issues, or an error
+      dictionary.
+  """
   print(
       f"\nDEBUG: Fetching a batch of {ISSUES_PER_RUN} oldest open issues for"
       " audit..."
@@ -104,7 +133,6 @@ def get_issue_state(item_number: int, maintainers: list[str]) -> dict[str, Any]:
     issue_url = f"{GITHUB_BASE_URL}/repos/{OWNER}/{REPO}/issues/{item_number}"
     issue_data = get_request(issue_url)
 
-    # --- PAGINATION LOGIC as suggested by Gemini Code Assist ---
     # Step 2: Fetch ALL pages from the timeline API to build a complete history.
     timeline_url_base = f"{issue_url}/timeline"
     timeline_data = []
@@ -136,9 +164,6 @@ def get_issue_state(item_number: int, maintainers: list[str]) -> dict[str, Any]:
         f"DEBUG: Fetched a total of {len(timeline_data)} timeline events across"
         f" {page} page(s)."
     )
-    # --- END PAGINATION LOGIC ---
-
-    # The rest of the function now proceeds with the complete, unabridged timeline data.
 
     # Step 3: Initialize key variables for the analysis.
     issue_author = issue_data.get("user", {}).get("login")
@@ -240,7 +265,15 @@ def get_issue_state(item_number: int, maintainers: list[str]) -> dict[str, Any]:
 
 
 def calculate_time_difference(timestamp_str: str) -> dict[str, Any]:
-  """Calculates the difference in hours between a UTC timestamp string and now."""
+  """Calculates the difference in hours between a UTC timestamp string and now.
+
+  Args:
+      timestamp_str: An ISO 8601 formatted timestamp string.
+
+  Returns:
+      A dictionary with the status and the time difference in hours, or an error
+      dictionary.
+  """
   try:
     if not timestamp_str:
       return error_response("Input timestamp is empty.")
@@ -254,7 +287,15 @@ def calculate_time_difference(timestamp_str: str) -> dict[str, Any]:
 
 
 def add_label_to_issue(item_number: int, label_name: str) -> dict[str, Any]:
-  """Adds a specific label to an issue."""
+  """Adds a specific label to an issue.
+
+  Args:
+      item_number: The issue number.
+      label_name: The name of the label to add.
+
+  Returns:
+      A dictionary indicating the status of the operation.
+  """
   url = f"{GITHUB_BASE_URL}/repos/{OWNER}/{REPO}/issues/{item_number}/labels"
   try:
     post_request(url, [label_name])
@@ -266,7 +307,15 @@ def add_label_to_issue(item_number: int, label_name: str) -> dict[str, Any]:
 def remove_label_from_issue(
     item_number: int, label_name: str
 ) -> dict[str, Any]:
-  """Removes a specific label from an issue or PR."""
+  """Removes a specific label from an issue or PR.
+
+  Args:
+      item_number: The issue number.
+      label_name: The name of the label to remove.
+
+  Returns:
+      A dictionary indicating the status of the operation.
+  """
   url = f"{GITHUB_BASE_URL}/repos/{OWNER}/{REPO}/issues/{item_number}/labels/{label_name}"
   try:
     delete_request(url)
@@ -276,7 +325,14 @@ def remove_label_from_issue(
 
 
 def add_stale_label_and_comment(item_number: int) -> dict[str, Any]:
-  """Adds the 'stale' label to an issue and posts a comment explaining why."""
+  """Adds the 'stale' label to an issue and posts a comment explaining why.
+
+  Args:
+      item_number: The issue number.
+
+  Returns:
+      A dictionary indicating the status of the operation.
+  """
   comment = (
       "This issue has been automatically marked as stale because it has not"
       " had recent activity after a maintainer requested clarification. It"
@@ -299,7 +355,14 @@ def add_stale_label_and_comment(item_number: int) -> dict[str, Any]:
 
 
 def close_as_stale(item_number: int) -> dict[str, Any]:
-  """Posts a final comment and closes an issue or PR as stale."""
+  """Posts a final comment and closes an issue or PR as stale.
+
+  Args:
+      item_number: The issue number.
+
+  Returns:
+      A dictionary indicating the status of the operation.
+  """
   comment = (
       "This has been automatically closed because it has been marked as stale"
       f" for over {CLOSE_HOURS_AFTER_STALE_THRESHOLD / 24:.0f} days."
