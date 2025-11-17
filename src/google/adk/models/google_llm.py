@@ -357,32 +357,30 @@ class Gemini(BaseLlm):
     """
     import asyncio
 
+    _CLIENT_CLOSE_TIMEOUT = 10.0
     close_tasks = []
 
-    # Check if api_client was accessed and close it
-    if 'api_client' in self.__dict__:
-      client = self.__dict__['api_client']
-      # genai.Client is sync, use .aio for async operations
+    def _add_close_task(client):
+      """Appends the appropriate aclose coroutine to close_tasks."""
       if hasattr(client, 'aio') and hasattr(client.aio, 'aclose'):
         close_tasks.append(client.aio.aclose())
       elif hasattr(client, 'aclose'):
         close_tasks.append(client.aclose())
 
+    # Check if api_client was accessed and close it
+    if 'api_client' in self.__dict__:
+      _add_close_task(self.__dict__['api_client'])
+
     # Check if _live_api_client was accessed and close it
     if '_live_api_client' in self.__dict__:
-      live_client = self.__dict__['_live_api_client']
-      # genai.Client is sync, use .aio for async operations
-      if hasattr(live_client, 'aio') and hasattr(live_client.aio, 'aclose'):
-        close_tasks.append(live_client.aio.aclose())
-      elif hasattr(live_client, 'aclose'):
-        close_tasks.append(live_client.aclose())
+      _add_close_task(self.__dict__['_live_api_client'])
 
     # Execute all close operations concurrently with timeout
     if close_tasks:
       try:
         await asyncio.wait_for(
             asyncio.gather(*close_tasks, return_exceptions=True),
-            timeout=10.0
+            timeout=_CLIENT_CLOSE_TIMEOUT,
         )
       except asyncio.TimeoutError:
         logger.warning('Timeout waiting for API clients to close')

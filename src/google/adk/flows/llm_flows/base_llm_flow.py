@@ -65,6 +65,7 @@ _ADK_AGENT_NAME_LABEL_KEY = 'adk_agent_name'
 DEFAULT_REQUEST_QUEUE_TIMEOUT = 0.25
 DEFAULT_TRANSFER_AGENT_DELAY = 1.0
 DEFAULT_TASK_COMPLETION_DELAY = 1.0
+DEFAULT_LLM_CLEANUP_TIMEOUT = 5.0
 
 # Statistics configuration
 DEFAULT_ENABLE_CACHE_STATISTICS = False
@@ -827,10 +828,12 @@ class BaseLlmFlow(ABC):
           import asyncio
           logger.info(f'Cleaning up LLM instance: {type(llm).__name__}')
           # Use timeout to prevent hanging on cleanup
-          await asyncio.wait_for(llm.aclose(), timeout=5.0)
+          await asyncio.wait_for(llm.aclose(), timeout=DEFAULT_LLM_CLEANUP_TIMEOUT)
           logger.info(f'Successfully cleaned up LLM instance: {type(llm).__name__}')
         except asyncio.TimeoutError:
-          logger.warning('LLM cleanup timed out after 5 seconds')
+          logger.warning(
+              f'LLM cleanup timed out after {DEFAULT_LLM_CLEANUP_TIMEOUT} seconds'
+          )
         except Exception as e:
           logger.warning(f'Error closing LLM instance: {e}')
       else:
