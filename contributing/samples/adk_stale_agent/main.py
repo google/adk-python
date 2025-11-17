@@ -13,11 +13,18 @@
 # limitations under the License.
 
 import asyncio
+import logging
 import time
 
 from adk_stale_agent.agent import root_agent
+from adk_stale_agent.settings import OWNER
+from adk_stale_agent.settings import REPO
+from google.adk.cli.utils import logs
 from google.adk.runners import InMemoryRunner
 from google.genai import types
+
+logs.setup_adk_logger(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 APP_NAME = "adk_stale_agent_app"
 USER_ID = "adk_stale_agent_user"
@@ -25,7 +32,7 @@ USER_ID = "adk_stale_agent_user"
 
 async def main():
   """Initializes and runs the stale issue agent."""
-  print(f"--- Starting Stale Agent at {time.ctime()} ---")
+  logger.info("--- Starting Stale Agent Run ---")
   runner = InMemoryRunner(agent=root_agent, app_name=APP_NAME)
   session = await runner.session_service.create_session(
       user_id=USER_ID, app_name=APP_NAME
@@ -35,7 +42,7 @@ async def main():
       "Find and process all open issues to manage staleness according to your"
       " rules."
   )
-  print(f"Agent Prompt: {prompt_text}\n")
+  logger.info(f"Initial Agent Prompt: {prompt_text}\n")
   prompt_message = types.Content(
       role="user", parts=[types.Part(text=prompt_text)]
   )
@@ -49,10 +56,19 @@ async def main():
         and hasattr(event.content.parts[0], "text")
     ):
       # Print the agent's "thoughts" and actions for logging purposes
-      print(f"** {event.author} (ADK): {event.content.parts[0].text}")
+      logger.debug(f"** {event.author} (ADK): {event.content.parts[0].text}")
 
-  print(f"\n--- Stale Agent Finished at {time.ctime()} ---")
+  logger.info(f"--- Stale Agent Run Finished---")
 
 
 if __name__ == "__main__":
+  start_time = time.time()
+  logger.info(f"Initializing stale agent for repository: {OWNER}/{REPO}")
+  logger.info("-" * 80)
+
   asyncio.run(main())
+
+  logger.info("-" * 80)
+  end_time = time.time()
+  duration = end_time - start_time
+  logger.info(f"Script finished in {duration:.2f} seconds.")

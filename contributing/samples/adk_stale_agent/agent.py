@@ -14,6 +14,7 @@
 
 from datetime import datetime
 from datetime import timezone
+import logging
 import os
 from typing import Any
 
@@ -21,6 +22,9 @@ from adk_stale_agent.settings import CLOSE_HOURS_AFTER_STALE_THRESHOLD
 from adk_stale_agent.settings import GITHUB_BASE_URL
 from adk_stale_agent.settings import ISSUES_PER_RUN
 from adk_stale_agent.settings import LLM_MODEL_NAME
+
+logger = logging.getLogger(__name__)
+
 from adk_stale_agent.settings import OWNER
 from adk_stale_agent.settings import REPO
 from adk_stale_agent.settings import REQUEST_CLARIFICATION_LABEL
@@ -65,17 +69,19 @@ def get_repository_maintainers() -> dict[str, Any]:
       A dictionary with the status and a list of maintainer usernames, or an
       error dictionary.
   """
-  print("DEBUG: Fetching repository maintainers with push access...")
+  logger.debug("Fetching repository maintainers with push access...")
   try:
     url = f"{GITHUB_BASE_URL}/repos/{OWNER}/{REPO}/collaborators"
     params = {"permission": "push"}
     collaborators_data = get_request(url, params)
 
     maintainers = [user["login"] for user in collaborators_data]
-    print(f"DEBUG: Found {len(maintainers)} maintainers: {maintainers}")
+    logger.info(f"Found {len(maintainers)} repository maintainers.")
+    logger.debug(f"Maintainer list: {maintainers}")
 
     return {"status": "success", "maintainers": maintainers}
   except RequestException as e:
+    logger.error(f"Failed to fetch repository maintainers: {e}", exc_info=True)
     return error_response(f"Error fetching repository maintainers: {e}")
 
 
@@ -86,9 +92,8 @@ def get_all_open_issues() -> dict[str, Any]:
       A dictionary containing the status and a list of open issues, or an error
       dictionary.
   """
-  print(
-      f"\nDEBUG: Fetching a batch of {ISSUES_PER_RUN} oldest open issues for"
-      " audit..."
+  logger.info(
+      f"Fetching a batch of {ISSUES_PER_RUN} oldest open issues for audit..."
   )
   url = f"{GITHUB_BASE_URL}/repos/{OWNER}/{REPO}/issues"
   params = {
@@ -99,9 +104,10 @@ def get_all_open_issues() -> dict[str, Any]:
   }
   try:
     items = get_request(url, params)
-    print(f"DEBUG: Found {len(items)} open issues to audit.")
+    logger.info(f"Found {len(items)} open issues to audit.")
     return {"status": "success", "items": items}
   except RequestException as e:
+    logger.error(f"Failed to fetch open issues: {e}", exc_info=True)
     return error_response(f"Error fetching all open issues: {e}")
 
 
@@ -128,48 +134,37 @@ def get_issue_state(item_number: int, maintainers: list[str]) -> dict[str, Any]:
       issue's state. On failure, it returns a dictionary with an 'error' status.
   """
   try:
-    # Step 1: Fetch core issue data and prepare for timeline fetching.
-    print(f"DEBUG: Fetching full timeline for issue #{item_number}...")
+    # Fetch core issue data and prepare for timeline fetching.
+    logger.debug(f"Fetching full timeline for issue #{item_number}...")
     issue_url = f"{GITHUB_BASE_URL}/repos/{OWNER}/{REPO}/issues/{item_number}"
     issue_data = get_request(issue_url)
 
-    # Step 2: Fetch ALL pages from the timeline API to build a complete history.
+    # Fetch ALL pages from the timeline API to build a complete history.
     timeline_url_base = f"{issue_url}/timeline"
     timeline_data = []
     page = 1
 
     while True:
-      # Construct the URL for the current page, requesting 100 items per page.
       paginated_url = f"{timeline_url_base}?per_page=100&page={page}"
-      print(f"DEBUG: Fetching timeline page {page}...")
-
+      logger.debug(f"Fetching timeline page {page} for issue #{item_number}...")
       events_page = get_request(paginated_url)
-
-      # If the API returns an empty list, we have reached the end.
       if not events_page:
         break
-
-      # Add the events from the current page to our master list.
       timeline_data.extend(events_page)
-
-      # Optimization: if the number of events is less than the max page size,
-      # we know it must be the final page, so we can stop early.
       if len(events_page) < 100:
         break
-
-      # Prepare to fetch the next page in the next iteration.
       page += 1
 
-    print(
-        f"DEBUG: Fetched a total of {len(timeline_data)} timeline events across"
-        f" {page} page(s)."
+    logger.debug(
+        f"Fetched a total of {len(timeline_data)} timeline events across"
+        f" {page-1} page(s) for issue #{item_number}."
     )
 
-    # Step 3: Initialize key variables for the analysis.
+    # Initialize key variables for the analysis.
     issue_author = issue_data.get("user", {}).get("login")
     current_labels = [label["name"] for label in issue_data.get("labels", [])]
 
-    # Step 4: Filter and sort all events into a clean, chronological history of human activity.
+    # Filter and sort all events into a clean, chronological history of human activity.
     human_events = []
     for event in timeline_data:
       actor = event.get("actor", {}).get("login")
@@ -183,7 +178,7 @@ def get_issue_state(item_number: int, maintainers: list[str]) -> dict[str, Any]:
 
     human_events.sort(key=lambda e: e["parsed_time"])
 
-    # Step 5: Find the most recent, relevant events by iterating backwards.
+    # Find the most recent, relevant events by iterating backwards.
     last_maintainer_comment = None
     stale_label_event_time = None
 
@@ -214,7 +209,7 @@ def get_issue_state(item_number: int, maintainers: list[str]) -> dict[str, Any]:
         None,
     )
 
-    # Step 6: Build and return the final summary report for the LLM agent.
+    # Build and return the final summary report for the LLM agent.
     last_human_event = human_events[-1] if human_events else None
     last_human_actor = (
         last_human_event.get("actor", {}).get("login")
@@ -258,7 +253,10 @@ def get_issue_state(item_number: int, maintainers: list[str]) -> dict[str, Any]:
     }
 
   except RequestException as e:
-    # Provide a detailed error message if the analysis fails.
+    logger.error(
+        f"Failed to fetch comprehensive issue state for #{item_number}: {e}",
+        exc_info=True,
+    )
     return error_response(
         f"Error getting comprehensive issue state for #{item_number}: {e}"
     )
@@ -283,6 +281,11 @@ def calculate_time_difference(timestamp_str: str) -> dict[str, Any]:
     hours_passed = time_difference.total_seconds() / 3600
     return {"status": "success", "hours_passed": hours_passed}
   except (dateutil.parser.ParserError, TypeError) as e:
+    logger.error(
+        "Error calculating time difference for timestamp"
+        f" '{timestamp_str}': {e}",
+        exc_info=True,
+    )
     return error_response(f"Error calculating time difference: {e}")
 
 
@@ -296,11 +299,16 @@ def add_label_to_issue(item_number: int, label_name: str) -> dict[str, Any]:
   Returns:
       A dictionary indicating the status of the operation.
   """
+  logger.debug(f"Adding label '{label_name}' to issue #{item_number}.")
   url = f"{GITHUB_BASE_URL}/repos/{OWNER}/{REPO}/issues/{item_number}/labels"
   try:
     post_request(url, [label_name])
+    logger.info(
+        f"Successfully added label '{label_name}' to issue #{item_number}."
+    )
     return {"status": "success"}
   except RequestException as e:
+    logger.error(f"Failed to add '{label_name}' to issue #{item_number}: {e}")
     return error_response(f"Error adding label: {e}")
 
 
@@ -316,11 +324,18 @@ def remove_label_from_issue(
   Returns:
       A dictionary indicating the status of the operation.
   """
+  logger.debug(f"Removing label '{label_name}' from issue #{item_number}.")
   url = f"{GITHUB_BASE_URL}/repos/{OWNER}/{REPO}/issues/{item_number}/labels/{label_name}"
   try:
     delete_request(url)
+    logger.info(
+        f"Successfully removed label '{label_name}' from issue #{item_number}."
+    )
     return {"status": "success"}
   except RequestException as e:
+    logger.error(
+        f"Failed to remove '{label_name}' from issue #{item_number}: {e}"
+    )
     return error_response(f"Error removing label: {e}")
 
 
@@ -333,6 +348,7 @@ def add_stale_label_and_comment(item_number: int) -> dict[str, Any]:
   Returns:
       A dictionary indicating the status of the operation.
   """
+  logger.debug(f"Adding stale label and comment to issue #{item_number}.")
   comment = (
       "This issue has been automatically marked as stale because it has not"
       " had recent activity after a maintainer requested clarification. It"
@@ -348,9 +364,12 @@ def add_stale_label_and_comment(item_number: int) -> dict[str, Any]:
         f"{GITHUB_BASE_URL}/repos/{OWNER}/{REPO}/issues/{item_number}/labels",
         [STALE_LABEL_NAME],
     )
-
+    logger.info(f"Successfully marked issue #{item_number} as stale.")
     return {"status": "success"}
   except RequestException as e:
+    logger.error(
+        f"Failed to mark issue #{item_number} as stale: {e}", exc_info=True
+    )
     return error_response(f"Error marking issue as stale: {e}")
 
 
@@ -363,6 +382,7 @@ def close_as_stale(item_number: int) -> dict[str, Any]:
   Returns:
       A dictionary indicating the status of the operation.
   """
+  logger.debug(f"Closing issue #{item_number} as stale.")
   comment = (
       "This has been automatically closed because it has been marked as stale"
       f" for over {CLOSE_HOURS_AFTER_STALE_THRESHOLD / 24:.0f} days."
@@ -376,8 +396,12 @@ def close_as_stale(item_number: int) -> dict[str, Any]:
         f"{GITHUB_BASE_URL}/repos/{OWNER}/{REPO}/issues/{item_number}",
         {"state": "closed"},
     )
+    logger.info(f"Successfully closed issue #{item_number} as stale.")
     return {"status": "success"}
   except RequestException as e:
+    logger.error(
+        f"Failed to close issue #{item_number} as stale: {e}", exc_info=True
+    )
     return error_response(f"Error closing issue: {e}")
 
 
