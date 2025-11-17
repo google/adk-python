@@ -347,6 +347,48 @@ class Gemini(BaseLlm):
       headers[key] = ' '.join(value_parts)
     return headers
 
+  @override
+  async def aclose(self) -> None:
+    """Closes API clients if they were accessed.
+
+    Checks if the cached_property clients have been instantiated and closes
+    them if necessary. Uses asyncio.gather to ensure all cleanup attempts
+    complete even if some fail.
+    """
+    import asyncio
+
+    close_tasks = []
+
+    # Check if api_client was accessed and close it
+    if 'api_client' in self.__dict__:
+      client = self.__dict__['api_client']
+      # genai.Client is sync, use .aio for async operations
+      if hasattr(client, 'aio') and hasattr(client.aio, 'aclose'):
+        close_tasks.append(client.aio.aclose())
+      elif hasattr(client, 'aclose'):
+        close_tasks.append(client.aclose())
+
+    # Check if _live_api_client was accessed and close it
+    if '_live_api_client' in self.__dict__:
+      live_client = self.__dict__['_live_api_client']
+      # genai.Client is sync, use .aio for async operations
+      if hasattr(live_client, 'aio') and hasattr(live_client.aio, 'aclose'):
+        close_tasks.append(live_client.aio.aclose())
+      elif hasattr(live_client, 'aclose'):
+        close_tasks.append(live_client.aclose())
+
+    # Execute all close operations concurrently with timeout
+    if close_tasks:
+      try:
+        await asyncio.wait_for(
+            asyncio.gather(*close_tasks, return_exceptions=True),
+            timeout=10.0
+        )
+      except asyncio.TimeoutError:
+        logger.warning('Timeout waiting for API clients to close')
+      except Exception as e:
+        logger.warning(f'Error during API client cleanup: {e}')
+
 
 def _build_function_declaration_log(
     func_decl: types.FunctionDeclaration,

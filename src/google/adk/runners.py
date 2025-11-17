@@ -1279,6 +1279,43 @@ class Runner:
       toolsets.update(self._collect_toolset(sub_agent))
     return toolsets
 
+  def _collect_llm_models(self, agent: BaseAgent) -> list:
+    """Recursively collects all LLM model instances from the agent tree.
+
+    Args:
+      agent: The root agent to collect LLM models from.
+
+    Returns:
+      A list of unique BaseLlm instances found in the agent tree.
+    """
+    from google.adk.models.base_llm import BaseLlm
+
+    llm_models = []
+    seen_ids = set()
+
+    if isinstance(agent, LlmAgent):
+      # Get the canonical model which resolves the Union[str, BaseLlm] type
+      try:
+        canonical = agent.canonical_model
+        if isinstance(canonical, BaseLlm):
+          model_id = id(canonical)
+          if model_id not in seen_ids:
+            llm_models.append(canonical)
+            seen_ids.add(model_id)
+      except (ValueError, AttributeError):
+        # Agent might not have a model configured or canonical_model fails
+        pass
+
+    # Recursively collect from sub-agents
+    for sub_agent in agent.sub_agents:
+      for model in self._collect_llm_models(sub_agent):
+        model_id = id(model)
+        if model_id not in seen_ids:
+          llm_models.append(model)
+          seen_ids.add(model_id)
+
+    return llm_models
+
   async def _cleanup_toolsets(self, toolsets_to_close: set[BaseToolset]):
     """Clean up toolsets with proper task context management."""
     if not toolsets_to_close:
@@ -1309,9 +1346,45 @@ class Runner:
       except Exception as e:
         logger.error('Error closing toolset %s: %s', type(toolset).__name__, e)
 
+  async def _cleanup_llm_models(self, llm_models_to_close: list):
+    """Clean up LLM models with proper error handling and timeout.
+
+    Args:
+      llm_models_to_close: List of BaseLlm instances to close.
+    """
+    if not llm_models_to_close:
+      return
+
+    for llm_model in llm_models_to_close:
+      try:
+        logger.info('Closing LLM model: %s', type(llm_model).__name__)
+        # Use asyncio.wait_for to add timeout protection
+        await asyncio.wait_for(llm_model.aclose(), timeout=5.0)
+        logger.info('Successfully closed LLM model: %s', type(llm_model).__name__)
+      except asyncio.TimeoutError:
+        logger.warning(
+            'LLM model %s cleanup timed out after 5 seconds',
+            type(llm_model).__name__
+        )
+      except Exception as e:
+        logger.error(
+            'Error closing LLM model %s: %s',
+            type(llm_model).__name__,
+            e
+        )
+
   async def close(self):
-    """Closes the runner."""
+    """Closes the runner and cleans up all resources.
+
+    Cleans up toolsets first, then LLM models, to ensure proper resource
+    cleanup order.
+    """
+    # Clean up toolsets first
     await self._cleanup_toolsets(self._collect_toolset(self.agent))
+
+    # Then clean up LLM models
+    llm_models_to_close = self._collect_llm_models(self.agent)
+    await self._cleanup_llm_models(llm_models_to_close)
 
   async def __aenter__(self):
     """Async context manager entry."""

@@ -739,6 +739,22 @@ class BaseLlmFlow(ABC):
     # Calls the LLM.
     llm = self.__get_llm(invocation_context)
 
+    # Determine if this LLM instance was created just for this request
+    # (needs cleanup) or is a reused instance from the agent (no cleanup).
+    from ...agents.llm_agent import LlmAgent
+    from ...models.base_llm import BaseLlm
+
+    needs_cleanup = False
+    if isinstance(invocation_context.agent, LlmAgent):
+      agent_model = invocation_context.agent.model
+      # If agent.model is a string, canonical_model creates a new instance
+      # that needs cleanup. If agent.model is a BaseLlm instance, it's reused.
+      needs_cleanup = not isinstance(agent_model, BaseLlm)
+      logger.debug(
+          f'LLM cleanup check: agent.model type={type(agent_model).__name__}, '
+          f'needs_cleanup={needs_cleanup}, llm type={type(llm).__name__}'
+      )
+
     async def _call_llm_with_tracing() -> AsyncGenerator[LlmResponse, None]:
       with tracer.start_as_current_span('call_llm'):
         if invocation_context.run_config.support_cfc:
@@ -800,9 +816,25 @@ class BaseLlmFlow(ABC):
 
               yield llm_response
 
-    async with Aclosing(_call_llm_with_tracing()) as agen:
-      async for event in agen:
-        yield event
+    try:
+      async with Aclosing(_call_llm_with_tracing()) as agen:
+        async for event in agen:
+          yield event
+    finally:
+      # Clean up the LLM instance if it was created for this request
+      if needs_cleanup:
+        try:
+          import asyncio
+          logger.info(f'Cleaning up LLM instance: {type(llm).__name__}')
+          # Use timeout to prevent hanging on cleanup
+          await asyncio.wait_for(llm.aclose(), timeout=5.0)
+          logger.info(f'Successfully cleaned up LLM instance: {type(llm).__name__}')
+        except asyncio.TimeoutError:
+          logger.warning('LLM cleanup timed out after 5 seconds')
+        except Exception as e:
+          logger.warning(f'Error closing LLM instance: {e}')
+      else:
+        logger.debug(f'Skipping LLM cleanup (reused instance): {type(llm).__name__}')
 
   async def _handle_before_model_callback(
       self,

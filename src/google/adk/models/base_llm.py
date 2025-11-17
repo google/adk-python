@@ -124,3 +124,14 @@ class BaseLlm(BaseModel):
     raise NotImplementedError(
         f'Live connection is not supported for {self.model}.'
     )
+
+  async def aclose(self) -> None:
+    """Closes the LLM and releases resources.
+
+    This method provides a lifecycle hook for cleanup when the LLM is no longer
+    needed. The default implementation is a no-op for backward compatibility.
+
+    Subclasses that manage resources (e.g., HTTP clients) should override this
+    method to perform proper cleanup.
+    """
+    pass
