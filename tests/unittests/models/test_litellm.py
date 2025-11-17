@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock
 from unittest.mock import Mock
 import warnings
 
+from google.adk.models.lite_llm import _build_function_declaration_log
 from google.adk.models.lite_llm import _content_to_message_param
 from google.adk.models.lite_llm import _FINISH_REASON_MAPPING
 from google.adk.models.lite_llm import _function_declaration_to_tool_param
@@ -627,6 +628,54 @@ class MockLLMClient(LiteLLMClient):
     return self.completion_mock(
         model=model, messages=messages, tools=tools, stream=stream, **kwargs
     )
+
+
+def test_build_function_declaration_log():
+  """Test that _build_function_declaration_log formats function declarations correctly."""
+  # Test case 1: Function with parameters and response
+  func_decl1 = types.FunctionDeclaration(
+      name="test_func1",
+      description="Test function 1",
+      parameters=types.Schema(
+          type=types.Type.OBJECT,
+          properties={
+              "param1": types.Schema(
+                  type=types.Type.STRING, description="param1 desc"
+              )
+          },
+      ),
+      response=types.Schema(type=types.Type.BOOLEAN, description="return bool"),
+  )
+  log1 = _build_function_declaration_log(func_decl1)
+  assert log1 == (
+      "test_func1: {'param1': {'description': 'param1 desc', 'type':"
+      " <Type.STRING: 'STRING'>}} -> {'description': 'return bool', 'type':"
+      " <Type.BOOLEAN: 'BOOLEAN'>}"
+  )
+
+  # Test case 2: Function with JSON schema parameters and response
+  func_decl2 = types.FunctionDeclaration(
+      name="test_func2",
+      description="Test function 2",
+      parameters_json_schema={
+          "type": "object",
+          "properties": {"param2": {"type": "integer"}},
+      },
+      response_json_schema={"type": "string"},
+  )
+  log2 = _build_function_declaration_log(func_decl2)
+  assert log2 == (
+      "test_func2: {'type': 'object', 'properties': {'param2': {'type':"
+      " 'integer'}}} -> {'type': 'string'}"
+  )
+
+  # Test case 3: Function with no parameters and no response
+  func_decl3 = types.FunctionDeclaration(
+      name="test_func3",
+      description="Test function 3",
+  )
+  log3 = _build_function_declaration_log(func_decl3)
+  assert log3 == "test_func3: {} -> None"
 
 
 @pytest.mark.asyncio

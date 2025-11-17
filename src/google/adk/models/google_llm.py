@@ -364,9 +364,15 @@ def _build_function_declaration_log(
         k: v.model_dump(exclude_none=True)
         for k, v in func_decl.parameters.properties.items()
     })
+  elif func_decl.parameters_json_schema:
+    param_str = str(func_decl.parameters_json_schema)
+
   return_str = ''
   if func_decl.response:
     return_str = '-> ' + str(func_decl.response.model_dump(exclude_none=True))
+  elif func_decl.response_json_schema:
+    return_str = '-> ' + str(func_decl.response_json_schema)
+
   return f'{func_decl.name}: {param_str} {return_str}'
 
 
