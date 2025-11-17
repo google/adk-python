@@ -19,6 +19,7 @@ import inspect
 import logging
 from pathlib import Path
 import queue
+import time
 from typing import Any
 from typing import AsyncGenerator
 from typing import Callable
@@ -274,9 +275,113 @@ class Runner:
     if not self._app_name_alignment_hint:
       return message
     return (
-        f'{message}. {self._app_name_alignment_hint} '
-        'The mismatch prevents the runner from locating the session.'
+      f'{message}. {self._app_name_alignment_hint} '
+      'The mismatch prevents the runner from locating the session.'
     )
+
+  async def _append_event_with_retry(
+      self, *, session: Session, event: Event
+  ) -> Session:
+    """Appends an event to the session with retry logic for stale session errors.
+
+    This method retries up to 5 times with linear backoff when encountering
+    stale session errors. On each retry, it refreshes the session from storage
+    to get the latest state before attempting to append the event again.
+
+    Args:
+        session: The session to append the event to.
+        event: The event to append.
+
+    Returns:
+        The updated session object with the latest state from storage.
+
+    Raises:
+        ValueError: If all retry attempts fail after 90 seconds total timeout.
+    """
+    max_retries = 5
+    base_backoff = 0.5  # Start with 0.5 seconds
+    total_timeout = 90.0  # 90 seconds total timeout
+    start_time = time.time()
+
+    for attempt in range(max_retries):
+      try:
+        await self.session_service.append_event(session=session, event=event)
+        # On success, refresh the session to get the latest state
+        updated_session = await self.session_service.get_session(
+            app_name=session.app_name,
+            user_id=session.user_id,
+            session_id=session.id,
+        )
+        if updated_session:
+          return updated_session
+        return session
+      except ValueError as e:
+        error_message = str(e)
+        # Check if this is a stale session error
+        is_stale_error = 'stale session' in error_message.lower()
+
+        if not is_stale_error:
+          # Not a stale session error, re-raise immediately
+          raise
+
+        # Check if we've exceeded the total timeout
+        elapsed_time = time.time() - start_time
+        if elapsed_time >= total_timeout:
+          logger.warning(
+              'Failed to append event after %d attempts and %.1f seconds: %s',
+              attempt + 1,
+              elapsed_time,
+              error_message,
+          )
+          # Return the original session on timeout
+          return session
+
+        # Calculate backoff time (0.5s, 1s, 1.5s, 2s, 2.5s)
+        backoff_time = base_backoff * (attempt + 1)
+
+        # Check if backoff would exceed total timeout
+        if elapsed_time + backoff_time > total_timeout:
+          remaining_time = total_timeout - elapsed_time
+          if remaining_time > 0:
+            backoff_time = remaining_time
+          else:
+            logger.warning(
+                'Timeout exceeded, returning original session after %d attempts',
+                attempt + 1,
+            )
+            return session
+
+        logger.warning(
+            'Stale session detected on attempt %d/%d, retrying after %.1fs: %s',
+            attempt + 1,
+            max_retries,
+            backoff_time,
+            error_message,
+        )
+
+        # Wait with backoff
+        await asyncio.sleep(backoff_time)
+
+        # Refresh the session before retrying
+        refreshed_session = await self.session_service.get_session(
+            app_name=session.app_name,
+            user_id=session.user_id,
+            session_id=session.id,
+        )
+        if refreshed_session:
+          session = refreshed_session
+        else:
+          logger.warning(
+              'Could not refresh session, using original session for retry'
+          )
+
+    # All retries exhausted
+    logger.warning(
+        'Failed to append event after %d retry attempts, returning original'
+        ' session',
+        max_retries,
+    )
+    return session
 
   def run(
       self,
@@ -636,7 +741,7 @@ class Runner:
           content=early_exit_result,
       )
       if self._should_append_event(early_exit_event, is_live_call):
-        await self.session_service.append_event(
+        session = await self._append_event_with_retry(
             session=session,
             event=early_exit_event,
         )
@@ -647,8 +752,9 @@ class Runner:
         async for event in agen:
           if not event.partial:
             if self._should_append_event(event, is_live_call):
-              await self.session_service.append_event(
-                  session=session, event=event
+              session = await self._append_event_with_retry(
+                  session=session,
+                  event=event,
               )
           # Step 3: Run the on_event callbacks to optionally modify the event.
           modified_event = await plugin_manager.run_on_event_callback(
@@ -730,7 +836,7 @@ class Runner:
     if function_call := invocation_context._find_matching_function_call(event):
       event.branch = function_call.branch
 
-    await self.session_service.append_event(session=session, event=event)
+    await self._append_event_with_retry(session=session, event=event)
 
   async def run_live(
       self,
