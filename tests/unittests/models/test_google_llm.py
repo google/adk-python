@@ -24,6 +24,7 @@ from google.adk.models.cache_metadata import CacheMetadata
 from google.adk.models.gemini_llm_connection import GeminiLlmConnection
 from google.adk.models.google_llm import _AGENT_ENGINE_TELEMETRY_ENV_VARIABLE_NAME
 from google.adk.models.google_llm import _AGENT_ENGINE_TELEMETRY_TAG
+from google.adk.models.google_llm import _build_function_declaration_log
 from google.adk.models.google_llm import _build_request_log
 from google.adk.models.google_llm import Gemini
 from google.adk.models.llm_request import LlmRequest
@@ -1642,11 +1643,15 @@ async def test_generate_content_async_with_cache_metadata_integration(
 ):
   """Test integration between Google LLM and cache manager with proper parameter order.
 
-  This test specifically validates that the cache manager's populate_cache_metadata_in_response
-  method is called with the correct parameter order: (llm_response, cache_metadata).
+  This test specifically validates that the cache manager's
+  populate_cache_metadata_in_response
+  method is called with the correct parameter order: (llm_response,
+  cache_metadata).
 
-  This test would have caught the parameter order bug where cache_metadata and llm_response
-  were passed in the wrong order, causing 'CacheMetadata' object has no attribute 'usage_metadata' errors.
+  This test would have caught the parameter order bug where cache_metadata and
+  llm_response
+  were passed in the wrong order, causing 'CacheMetadata' object has no
+  attribute 'usage_metadata' errors.
   """
 
   # Create a mock response with usage metadata including cached tokens
@@ -1727,6 +1732,54 @@ async def test_generate_content_async_with_cache_metadata_integration(
       # Verify cache metadata is preserved
       assert second_arg.cache_name == cache_metadata.cache_name
       assert second_arg.invocations_used == cache_metadata.invocations_used
+
+
+def test_build_function_declaration_log():
+  """Test that _build_function_declaration_log formats function declarations correctly."""
+  # Test case 1: Function with parameters and response
+  func_decl1 = types.FunctionDeclaration(
+      name="test_func1",
+      description="Test function 1",
+      parameters=types.Schema(
+          type=types.Type.OBJECT,
+          properties={
+              "param1": types.Schema(
+                  type=types.Type.STRING, description="param1 desc"
+              )
+          },
+      ),
+      response=types.Schema(type=types.Type.BOOLEAN, description="return bool"),
+  )
+  log1 = _build_function_declaration_log(func_decl1)
+  assert log1 == (
+      "test_func1: {'param1': {'description': 'param1 desc', 'type':"
+      " <Type.STRING: 'STRING'>}} -> {'description': 'return bool', 'type':"
+      " <Type.BOOLEAN: 'BOOLEAN'>}"
+  )
+
+  # Test case 2: Function with JSON schema parameters and response
+  func_decl2 = types.FunctionDeclaration(
+      name="test_func2",
+      description="Test function 2",
+      parameters_json_schema={
+          "type": "object",
+          "properties": {"param2": {"type": "integer"}},
+      },
+      response_json_schema={"type": "string"},
+  )
+  log2 = _build_function_declaration_log(func_decl2)
+  assert log2 == (
+      "test_func2: {'type': 'object', 'properties': {'param2': {'type':"
+      " 'integer'}}} -> {'type': 'string'}"
+  )
+
+  # Test case 3: Function with no parameters and no response
+  func_decl3 = types.FunctionDeclaration(
+      name="test_func3",
+      description="Test function 3",
+  )
+  log3 = _build_function_declaration_log(func_decl3)
+  assert log3 == "test_func3: {} "
 
 
 def test_build_request_log_with_config_multiple_tool_types():
