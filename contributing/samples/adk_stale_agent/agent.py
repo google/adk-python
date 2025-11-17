@@ -22,9 +22,6 @@ from adk_stale_agent.settings import CLOSE_HOURS_AFTER_STALE_THRESHOLD
 from adk_stale_agent.settings import GITHUB_BASE_URL
 from adk_stale_agent.settings import ISSUES_PER_RUN
 from adk_stale_agent.settings import LLM_MODEL_NAME
-
-logger = logging.getLogger(__name__)
-
 from adk_stale_agent.settings import OWNER
 from adk_stale_agent.settings import REPO
 from adk_stale_agent.settings import REQUEST_CLARIFICATION_LABEL
@@ -38,6 +35,8 @@ from adk_stale_agent.utils import post_request
 import dateutil.parser
 from google.adk.agents.llm_agent import Agent
 from requests.exceptions import RequestException
+
+logger = logging.getLogger("google_adk." + __name__)
 
 # --- Primary Tools for the Agent ---
 
@@ -139,7 +138,7 @@ def get_issue_state(item_number: int, maintainers: list[str]) -> dict[str, Any]:
     issue_url = f"{GITHUB_BASE_URL}/repos/{OWNER}/{REPO}/issues/{item_number}"
     issue_data = get_request(issue_url)
 
-    # Fetch ALL pages from the timeline API to build a complete history.
+    # Fetch All pages from the timeline API to build a complete history.
     timeline_url_base = f"{issue_url}/timeline"
     timeline_data = []
     page = 1
@@ -423,13 +422,13 @@ root_agent = Agent(
         CLOSE_HOURS_AFTER_STALE_THRESHOLD=CLOSE_HOURS_AFTER_STALE_THRESHOLD,
     ),
     tools=[
+        add_label_to_issue,
+        add_stale_label_and_comment,
+        calculate_time_difference,
+        close_as_stale,
         get_all_open_issues,
         get_issue_state,
         get_repository_maintainers,
-        calculate_time_difference,
-        add_stale_label_and_comment,
-        add_label_to_issue,
         remove_label_from_issue,
-        close_as_stale,
     ],
 )

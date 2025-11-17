@@ -24,7 +24,7 @@ from google.adk.runners import InMemoryRunner
 from google.genai import types
 
 logs.setup_adk_logger(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("google_adk." + __name__)
 
 APP_NAME = "adk_stale_agent_app"
 USER_ID = "adk_stale_agent_user"
