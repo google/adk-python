@@ -674,15 +674,14 @@ class BaseLlmFlow(ABC):
         final_event_from_progressive = event
         yield event
 
-    # If progressive produced a final event, continue with it; otherwise fallback
-    # to the default async handler (non-progressive tools and parallel merge)
-    function_response_event = final_event_from_progressive
-    if not function_response_event:
-      function_response_event = await functions.handle_function_calls_async(
-          invocation_context, function_call_event, llm_request.tools_dict
+    if function_response_event := await functions.handle_function_calls_async(
+        invocation_context, function_call_event, llm_request.tools_dict
+    ):
+      auth_event = functions.generate_auth_event(
+          invocation_context, function_response_event
       )
-      if not function_response_event:
-        return
+      if auth_event:
+        yield auth_event
 
       tool_confirmation_event = functions.generate_request_confirmation_event(
           invocation_context, function_call_event, function_response_event
@@ -693,28 +692,25 @@ class BaseLlmFlow(ABC):
       # Always yield the function response event first
       yield function_response_event
 
-    # Common path: auth event, structured response, agent transfer
-    auth_event = functions.generate_auth_event(
-        invocation_context, function_response_event
-    )
-    if auth_event:
-      yield auth_event
-
-    if json_response := _output_schema_processor.get_structured_model_response(
-        function_response_event
-    ):
-      final_event = _output_schema_processor.create_final_model_response_event(
-          invocation_context, json_response
-      )
-      yield final_event
-    transfer_to_agent = function_response_event.actions.transfer_to_agent
-    if transfer_to_agent:
-      agent_to_run = self._get_agent_to_run(
-          invocation_context, transfer_to_agent
-      )
-      async with Aclosing(agent_to_run.run_async(invocation_context)) as agen:
-        async for event in agen:
-          yield event
+      # Check if this is a set_model_response function response
+      if json_response := _output_schema_processor.get_structured_model_response(
+          function_response_event
+      ):
+        # Create and yield a final model response event
+        final_event = (
+            _output_schema_processor.create_final_model_response_event(
+                invocation_context, json_response
+            )
+        )
+        yield final_event
+      transfer_to_agent = function_response_event.actions.transfer_to_agent
+      if transfer_to_agent:
+        agent_to_run = self._get_agent_to_run(
+            invocation_context, transfer_to_agent
+        )
+        async with Aclosing(agent_to_run.run_async(invocation_context)) as agen:
+          async for event in agen:
+            yield event
 
   def _get_agent_to_run(
       self, invocation_context: InvocationContext, agent_name: str

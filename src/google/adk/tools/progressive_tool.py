@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 from typing import Any
+from typing import AsyncGenerator
 from typing import Optional
 
 from ..utils.context_utils import Aclosing
@@ -72,7 +73,7 @@ class ProgressiveTool(ProgressiveFunctionTool):
       *,
       args: dict[str, Any],
       tool_context: ToolContext,
-  ) -> asyncio.AsyncGenerator[Any, None]:
+  ) -> AsyncGenerator[Any, None]:
     signature = inspect.signature(self.func)
     valid_params = {param for param in signature.parameters}
 
