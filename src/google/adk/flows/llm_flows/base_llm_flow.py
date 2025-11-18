@@ -664,14 +664,12 @@ class BaseLlmFlow(ABC):
       llm_request: LlmRequest,
   ) -> AsyncGenerator[Event, None]:
     # First, stream progressive tools if present (partial events + final event)
-    final_event_from_progressive = None
     async with Aclosing(
         functions.iter_progressive_function_calls_async(
             invocation_context, function_call_event, llm_request.tools_dict
         )
     ) as agen:
       async for event in agen:
-        final_event_from_progressive = event
         yield event
 
     if function_response_event := await functions.handle_function_calls_async(
