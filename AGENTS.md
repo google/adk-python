@@ -119,7 +119,8 @@ app = App(
 ### Requirements
 
 **Minimum requirements:**
-- Python 3.9+ (**Python 3.11+ strongly recommended** for best performance)
+
+- Python 3.10+ (**Python 3.11+ strongly recommended** for best performance)
 - `uv` package manager (**required** - faster than pip/venv)
 
 **Install uv if not already installed:**
@@ -326,11 +327,6 @@ pytest tests/unittests -n auto
 # Run a specific test file during development
 pytest tests/unittests/agents/test_llm_agent.py
 
-# Python 3.9 compatibility mode (excludes features requiring 3.10+)
-pytest tests/unittests \
-  --ignore=tests/unittests/a2a \
-  --ignore=tests/unittests/tools/mcp_tool \
-  --ignore=tests/unittests/artifacts/test_artifact_service.py
 ```
 
 ### Testing Philosophy

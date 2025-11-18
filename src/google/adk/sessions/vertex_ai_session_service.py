@@ -176,11 +176,12 @@ class VertexAiSessionService(BaseSessionService):
         state=getattr(get_session_response, 'session_state', None) or {},
         last_update_time=update_timestamp,
     )
-    session.events += [
-        _from_api_event(event)
-        async for event in events_iterator
-        if event.timestamp.timestamp() <= update_timestamp
-    ]
+    # Preserve the entire event stream that Vertex returns rather than trying
+    # to discard events written milliseconds after the session resource was
+    # updated. Clock skew between those writes can otherwise drop tool_result
+    # events and permanently break the replayed conversation.
+    async for event in events_iterator:
+      session.events.append(_from_api_event(event))
 
     if config:
       # Filter events based on num_recent_events.

@@ -145,7 +145,7 @@ part before or alongside your code PR.
 
 3.  **Create and activate a virtual environment:**
 
-    **NOTE**: ADK supports Python 3.9+. Python 3.11 and above is strongly
+    **NOTE**: ADK supports Python 3.10+. Python 3.11 and above is strongly
     recommended.
 
     Create a workspace venv using uv.
