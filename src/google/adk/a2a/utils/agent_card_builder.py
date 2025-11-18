@@ -41,10 +41,10 @@ from ...agents.loop_agent import LoopAgent
 from ...agents.parallel_agent import ParallelAgent
 from ...agents.sequential_agent import SequentialAgent
 from ...tools.example_tool import ExampleTool
-from ...utils.feature_decorator import experimental
+from ..experimental import a2a_experimental
 
 
-@experimental
+@a2a_experimental
 class AgentCardBuilder:
   """Builder class for creating agent cards from ADK agents.
 
@@ -224,7 +224,7 @@ def _build_code_executor_skill(agent: LlmAgent) -> AgentSkill:
   return AgentSkill(
       id=f'{agent.name}-code-executor',
       name='code-execution',
-      description='Can execute codes',
+      description='Can execute code',
       examples=None,
       input_modes=None,
       output_modes=None,
@@ -359,11 +359,29 @@ def _build_llm_agent_description_with_instructions(agent: LlmAgent) -> str:
 
 
 def _replace_pronouns(text: str) -> str:
-  """Replace pronouns in text for agent description (you -> I, your -> my, etc.)."""
-  pronoun_map = {'you': 'I', 'your': 'my', 'yours': 'mine'}
+  """Replace pronouns and conjugate common verbs for agent description.
+  (e.g., "You are" -> "I am", "your" -> "my").
+  """
+  pronoun_map = {
+      # Longer phrases with verb conjugations
+      'you are': 'I am',
+      'you were': 'I was',
+      "you're": 'I am',
+      "you've": 'I have',
+      # Standalone pronouns
+      'yours': 'mine',
+      'your': 'my',
+      'you': 'I',
+  }
+
+  # Sort keys by length (descending) to ensure longer phrases are matched first.
+  # This prevents "you" in "you are" from being replaced on its own.
+  sorted_keys = sorted(pronoun_map.keys(), key=len, reverse=True)
+
+  pattern = r'\b(' + '|'.join(re.escape(key) for key in sorted_keys) + r')\b'
 
   return re.sub(
-      r'\b(you|your|yours)\b',
+      pattern,
       lambda match: pronoun_map[match.group(1).lower()],
       text,
       flags=re.IGNORECASE,
@@ -455,7 +473,7 @@ def _get_default_description(agent: BaseAgent) -> str:
 async def _extract_examples_from_agent(
     agent: BaseAgent,
 ) -> Optional[List[Dict]]:
-  """Extract examples from example_tool if configured, otherwise from agent instruction."""
+  """Extract examples from example_tool if configured; otherwise, from agent instruction."""
   if not isinstance(agent, LlmAgent):
     return None
 

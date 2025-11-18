@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 import json
 from typing import Optional
 
@@ -27,7 +29,7 @@ class SecretManagerClient:
 
   This class provides a simplified interface for retrieving secrets from
   Secret Manager, handling authentication using either a service account
-  JSON keyfile (passed as a string) or a pre-existing authorization token.
+  JSON keyfile (passed as a string) or a preexisting authorization token.
 
   Attributes:
       _credentials:  Google Cloud credentials object (ServiceAccountCredentials
@@ -73,7 +75,9 @@ class SecretManagerClient:
       credentials.refresh(request)
     else:
       try:
-        credentials, _ = default_service_credential()
+        credentials, _ = default_service_credential(
+            scopes=["https://www.googleapis.com/auth/cloud-platform"]
+        )
       except Exception as e:
         raise ValueError(
             "'service_account_json' or 'auth_token' are both missing, and"

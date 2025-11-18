@@ -12,10 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from unittest.mock import ANY
 from unittest.mock import AsyncMock
 from unittest.mock import Mock
 from unittest.mock import patch
 
+from fastapi.openapi.models import OAuth2
+from fastapi.openapi.models import OAuthFlowAuthorizationCode
+from fastapi.openapi.models import OAuthFlowImplicit
+from fastapi.openapi.models import OAuthFlows
 from google.adk.auth.auth_credential import AuthCredential
 from google.adk.auth.auth_credential import AuthCredentialTypes
 from google.adk.auth.auth_credential import OAuth2Auth
@@ -23,8 +28,11 @@ from google.adk.auth.auth_credential import ServiceAccount
 from google.adk.auth.auth_credential import ServiceAccountCredential
 from google.adk.auth.auth_schemes import AuthScheme
 from google.adk.auth.auth_schemes import AuthSchemeType
+from google.adk.auth.auth_schemes import ExtendedOAuth2
 from google.adk.auth.auth_tool import AuthConfig
 from google.adk.auth.credential_manager import CredentialManager
+from google.adk.auth.credential_manager import ServiceAccountCredentialExchanger
+from google.adk.auth.oauth2_discovery import AuthorizationServerMetadata
 import pytest
 
 
@@ -99,6 +107,9 @@ class TestCredentialManager:
     auth_config = Mock(spec=AuthConfig)
     auth_config.raw_auth_credential = None
     auth_config.exchanged_auth_credential = None
+    # Add auth_scheme for the _is_client_credentials_flow method
+    auth_config.auth_scheme = Mock()
+    auth_config.auth_scheme.flows = None
 
     callback_context = Mock()
 
@@ -391,36 +402,54 @@ class TestCredentialManager:
       await manager._validate_credential()
 
   @pytest.mark.asyncio
-  async def test_exchange_credentials_service_account(self):
-    """Test _exchange_credential with service account credential."""
-    mock_service_account = Mock(spec=ServiceAccount)
-    mock_credential = Mock(spec=AuthCredential)
-    mock_credential.auth_type = AuthCredentialTypes.SERVICE_ACCOUNT
+  async def test_validate_credential_oauth2_missing_scheme_info(
+      self, extended_oauth2_scheme
+  ):
+    """Test _validate_credential with OAuth2 missing scheme info."""
+    mock_raw_credential = Mock(spec=AuthCredential)
+    mock_raw_credential.auth_type = AuthCredentialTypes.OAUTH2
+    mock_raw_credential.oauth2 = Mock(spec=OAuth2Auth)
 
     auth_config = Mock(spec=AuthConfig)
-    auth_config.auth_scheme = Mock()
-
-    # Mock exchanger
-    mock_exchanger = Mock()
-    mock_exchanger.exchange = AsyncMock(return_value=mock_credential)
+    auth_config.raw_auth_credential = mock_raw_credential
+    auth_config.auth_scheme = extended_oauth2_scheme
 
     manager = CredentialManager(auth_config)
 
-    # Mock the exchanger registry to return our mock exchanger
     with patch.object(
-        manager._exchanger_registry,
-        "get_exchanger",
-        return_value=mock_exchanger,
-    ):
+        manager,
+        "_populate_auth_scheme",
+        return_value=False,
+    ) and pytest.raises(ValueError, match="OAuth scheme info is missing"):
+      await manager._validate_credential()
+
+  @pytest.mark.asyncio
+  async def test_exchange_credentials_service_account(
+      self, service_account_credential, oauth2_auth_scheme
+  ):
+    """Test _exchange_credential with service account credential."""
+    auth_config = Mock(spec=AuthConfig)
+    auth_config.auth_scheme = oauth2_auth_scheme
+
+    exchanged_credential = Mock(spec=AuthCredential)
+
+    manager = CredentialManager(auth_config)
+
+    with patch.object(
+        ServiceAccountCredentialExchanger,
+        "exchange_credential",
+        return_value=exchanged_credential,
+        autospec=True,
+    ) as mock_exchange_credential:
       result, was_exchanged = await manager._exchange_credential(
-          mock_credential
+          service_account_credential
       )
 
-    mock_exchanger.exchange.assert_called_once_with(
-        mock_credential, auth_config.auth_scheme
-    )
-    assert result == mock_credential
-    assert was_exchanged is True
+      mock_exchange_credential.assert_called_once_with(
+          ANY, oauth2_auth_scheme, service_account_credential
+      )
+      assert result == exchanged_credential
+      assert was_exchanged is True
 
   @pytest.mark.asyncio
   async def test_exchange_credential_no_exchanger(self):
@@ -444,6 +473,198 @@ class TestCredentialManager:
 
     assert result == mock_credential
     assert was_exchanged is False
+
+  @pytest.fixture
+  def auth_server_metadata(self):
+    """Create AuthorizationServerMetadata object."""
+    return AuthorizationServerMetadata(
+        issuer="https://auth.example.com",
+        authorization_endpoint="https://auth.example.com/authorize",
+        token_endpoint="https://auth.example.com/token",
+        scopes_supported=["read", "write"],
+    )
+
+  @pytest.fixture
+  def extended_oauth2_scheme(self):
+    """Create ExtendedOAuth2 object with empty endpoints."""
+    return ExtendedOAuth2(
+        issuer_url="https://auth.example.com",
+        flows=OAuthFlows(
+            authorizationCode=OAuthFlowAuthorizationCode(
+                authorizationUrl="",
+                tokenUrl="",
+            )
+        ),
+    )
+
+  @pytest.fixture
+  def implicit_oauth2_scheme(self):
+    """Create OAuth2 object with implicit flow."""
+    return OAuth2(
+        flows=OAuthFlows(
+            implicit=OAuthFlowImplicit(
+                authorizationUrl="https://auth.example.com/authorize"
+            )
+        )
+    )
+
+  @pytest.mark.asyncio
+  async def test_populate_auth_scheme_success(
+      self, auth_server_metadata, extended_oauth2_scheme
+  ):
+    """Test _populate_auth_scheme successfully populates missing info."""
+    auth_config = Mock(spec=AuthConfig)
+    auth_config.auth_scheme = extended_oauth2_scheme
+
+    manager = CredentialManager(auth_config)
+    with patch.object(
+        manager._discovery_manager,
+        "discover_auth_server_metadata",
+        return_value=auth_server_metadata,
+    ):
+      assert await manager._populate_auth_scheme()
+
+    assert (
+        manager._auth_config.auth_scheme.flows.authorizationCode.authorizationUrl
+        == "https://auth.example.com/authorize"
+    )
+    assert (
+        manager._auth_config.auth_scheme.flows.authorizationCode.tokenUrl
+        == "https://auth.example.com/token"
+    )
+
+  @pytest.mark.asyncio
+  async def test_populate_auth_scheme_fail(self, extended_oauth2_scheme):
+    """Test _populate_auth_scheme when auto-discovery fails."""
+    auth_config = Mock(spec=AuthConfig)
+    auth_config.auth_scheme = extended_oauth2_scheme
+
+    manager = CredentialManager(auth_config)
+    with patch.object(
+        manager._discovery_manager,
+        "discover_auth_server_metadata",
+        return_value=None,
+    ):
+      assert not await manager._populate_auth_scheme()
+
+    assert (
+        not manager._auth_config.auth_scheme.flows.authorizationCode.authorizationUrl
+    )
+    assert not manager._auth_config.auth_scheme.flows.authorizationCode.tokenUrl
+
+  @pytest.mark.asyncio
+  async def test_populate_auth_scheme_noop(self, implicit_oauth2_scheme):
+    """Test _populate_auth_scheme when auth scheme info not missing."""
+    auth_config = Mock(spec=AuthConfig)
+    auth_config.auth_scheme = implicit_oauth2_scheme
+
+    manager = CredentialManager(auth_config)
+    assert not await manager._populate_auth_scheme()  # no-op
+
+    assert manager._auth_config.auth_scheme == implicit_oauth2_scheme
+
+  def test_is_client_credentials_flow_oauth2_with_client_credentials(self):
+    """Test _is_client_credentials_flow returns True for OAuth2 with client credentials."""
+    from fastapi.openapi.models import OAuth2
+    from fastapi.openapi.models import OAuthFlowClientCredentials
+    from fastapi.openapi.models import OAuthFlows
+
+    # Create OAuth2 scheme with client credentials flow
+    auth_scheme = OAuth2(
+        flows=OAuthFlows(
+            clientCredentials=OAuthFlowClientCredentials(
+                tokenUrl="https://example.com/token"
+            )
+        )
+    )
+
+    auth_config = Mock(spec=AuthConfig)
+    auth_config.auth_scheme = auth_scheme
+    auth_config.raw_auth_credential = None
+    auth_config.exchanged_auth_credential = None
+
+    manager = CredentialManager(auth_config)
+
+    assert manager._is_client_credentials_flow() is True
+
+  def test_is_client_credentials_flow_oauth2_without_client_credentials(self):
+    """Test _is_client_credentials_flow returns False for OAuth2 without client credentials."""
+    from fastapi.openapi.models import OAuth2
+    from fastapi.openapi.models import OAuthFlowAuthorizationCode
+    from fastapi.openapi.models import OAuthFlows
+
+    # Create OAuth2 scheme with authorization code flow only
+    auth_scheme = OAuth2(
+        flows=OAuthFlows(
+            authorizationCode=OAuthFlowAuthorizationCode(
+                authorizationUrl="https://example.com/auth",
+                tokenUrl="https://example.com/token",
+            )
+        )
+    )
+
+    auth_config = Mock(spec=AuthConfig)
+    auth_config.auth_scheme = auth_scheme
+    auth_config.raw_auth_credential = None
+    auth_config.exchanged_auth_credential = None
+
+    manager = CredentialManager(auth_config)
+
+    assert manager._is_client_credentials_flow() is False
+
+  def test_is_client_credentials_flow_oidc_with_client_credentials(self):
+    """Test _is_client_credentials_flow returns True for OIDC with client credentials."""
+    from google.adk.auth.auth_schemes import OpenIdConnectWithConfig
+
+    # Create OIDC scheme with client credentials support
+    auth_scheme = OpenIdConnectWithConfig(
+        authorization_endpoint="https://example.com/auth",
+        token_endpoint="https://example.com/token",
+        grant_types_supported=["authorization_code", "client_credentials"],
+    )
+
+    auth_config = Mock(spec=AuthConfig)
+    auth_config.auth_scheme = auth_scheme
+    auth_config.raw_auth_credential = None
+    auth_config.exchanged_auth_credential = None
+
+    manager = CredentialManager(auth_config)
+
+    assert manager._is_client_credentials_flow() is True
+
+  def test_is_client_credentials_flow_oidc_without_client_credentials(self):
+    """Test _is_client_credentials_flow returns False for OIDC without client credentials."""
+    from google.adk.auth.auth_schemes import OpenIdConnectWithConfig
+
+    # Create OIDC scheme without client credentials support
+    auth_scheme = OpenIdConnectWithConfig(
+        authorization_endpoint="https://example.com/auth",
+        token_endpoint="https://example.com/token",
+        grant_types_supported=["authorization_code"],
+    )
+
+    auth_config = Mock(spec=AuthConfig)
+    auth_config.auth_scheme = auth_scheme
+    auth_config.raw_auth_credential = None
+    auth_config.exchanged_auth_credential = None
+
+    manager = CredentialManager(auth_config)
+
+    assert manager._is_client_credentials_flow() is False
+
+  def test_is_client_credentials_flow_other_scheme(self):
+    """Test _is_client_credentials_flow returns False for other auth schemes."""
+    # Create a non-OAuth2/OIDC scheme
+    auth_scheme = Mock()
+
+    auth_config = Mock(spec=AuthConfig)
+    auth_config.auth_scheme = auth_scheme
+    auth_config.raw_auth_credential = None
+    auth_config.exchanged_auth_credential = None
+
+    manager = CredentialManager(auth_config)
+
+    assert manager._is_client_credentials_flow() is False
 
 
 @pytest.fixture

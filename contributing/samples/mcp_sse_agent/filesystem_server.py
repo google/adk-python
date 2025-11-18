@@ -45,6 +45,13 @@ def get_cwd() -> str:
   return str(Path.cwd())
 
 
+# Add a prompt for accessing file systems
+@mcp.prompt(name="file_system_prompt")
+def file_system_prompt() -> str:
+  return f"""\
+Help the user access their file systems."""
+
+
 # Graceful shutdown handler
 async def shutdown(signal, loop):
   """Cleanup tasks tied to the service's shutdown."""

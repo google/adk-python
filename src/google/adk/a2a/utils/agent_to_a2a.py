@@ -21,6 +21,7 @@ try:
   from a2a.server.apps import A2AStarletteApplication
   from a2a.server.request_handlers import DefaultRequestHandler
   from a2a.server.tasks import InMemoryTaskStore
+  from a2a.types import AgentCard
 except ImportError as e:
   if sys.version_info < (3, 10):
     raise ImportError(
@@ -28,6 +29,9 @@ except ImportError as e:
     ) from e
   else:
     raise e
+
+from typing import Optional
+from typing import Union
 
 from starlette.applications import Starlette
 
@@ -39,11 +43,54 @@ from ...memory.in_memory_memory_service import InMemoryMemoryService
 from ...runners import Runner
 from ...sessions.in_memory_session_service import InMemorySessionService
 from ..executor.a2a_agent_executor import A2aAgentExecutor
+from ..experimental import a2a_experimental
 from .agent_card_builder import AgentCardBuilder
 
 
+def _load_agent_card(
+    agent_card: Optional[Union[AgentCard, str]],
+) -> Optional[AgentCard]:
+  """Load agent card from various sources.
+
+  Args:
+      agent_card: AgentCard object, path to JSON file, or None
+
+  Returns:
+      AgentCard object or None if no agent card provided
+
+  Raises:
+      ValueError: If loading agent card from file fails
+  """
+  if agent_card is None:
+    return None
+
+  if isinstance(agent_card, str):
+    # Load agent card from file path
+    import json
+    from pathlib import Path
+
+    try:
+      path = Path(agent_card)
+      with path.open("r", encoding="utf-8") as f:
+        agent_card_data = json.load(f)
+        return AgentCard(**agent_card_data)
+    except Exception as e:
+      raise ValueError(
+          f"Failed to load agent card from {agent_card}: {e}"
+      ) from e
+  else:
+    return agent_card
+
+
+@a2a_experimental
 def to_a2a(
-    agent: BaseAgent, *, host: str = "localhost", port: int = 8000
+    agent: BaseAgent,
+    *,
+    host: str = "localhost",
+    port: int = 8000,
+    protocol: str = "http",
+    agent_card: Optional[Union[AgentCard, str]] = None,
+    runner: Optional[Runner] = None,
 ) -> Starlette:
   """Convert an ADK agent to a A2A Starlette application.
 
@@ -51,14 +98,23 @@ def to_a2a(
       agent: The ADK agent to convert
       host: The host for the A2A RPC URL (default: "localhost")
       port: The port for the A2A RPC URL (default: 8000)
+      protocol: The protocol for the A2A RPC URL (default: "http")
+      agent_card: Optional pre-built AgentCard object or path to agent card
+                  JSON. If not provided, will be built automatically from the
+                  agent.
+      runner: Optional pre-built Runner object. If not provided, a default
+              runner will be created using in-memory services.
 
   Returns:
       A Starlette application that can be run with uvicorn
 
   Example:
       agent = MyAgent()
-      app = to_a2a(agent, host="localhost", port=8000)
+      app = to_a2a(agent, host="localhost", port=8000, protocol="http")
       # Then run with: uvicorn module:app --host localhost --port 8000
+
+      # Or with custom agent card:
+      app = to_a2a(agent, agent_card=my_custom_agent_card)
   """
   # Set up ADK logging to ensure logs are visible when using uvicorn directly
   setup_adk_logger(logging.INFO)
@@ -79,15 +135,17 @@ def to_a2a(
   task_store = InMemoryTaskStore()
 
   agent_executor = A2aAgentExecutor(
-      runner=create_runner,
+      runner=runner or create_runner,
   )
 
   request_handler = DefaultRequestHandler(
       agent_executor=agent_executor, task_store=task_store
   )
 
-  # Build agent card
-  rpc_url = f"http://{host}:{port}/"
+  # Use provided agent card or build one from the agent
+  rpc_url = f"{protocol}://{host}:{port}/"
+  provided_agent_card = _load_agent_card(agent_card)
+
   card_builder = AgentCardBuilder(
       agent=agent,
       rpc_url=rpc_url,
@@ -98,12 +156,15 @@ def to_a2a(
 
   # Add startup handler to build the agent card and configure A2A routes
   async def setup_a2a():
-    # Build the agent card asynchronously
-    agent_card = await card_builder.build()
+    # Use provided agent card or build one asynchronously
+    if provided_agent_card is not None:
+      final_agent_card = provided_agent_card
+    else:
+      final_agent_card = await card_builder.build()
 
     # Create the A2A Starlette application
     a2a_app = A2AStarletteApplication(
-        agent_card=agent_card,
+        agent_card=final_agent_card,
         http_handler=request_handler,
     )
 

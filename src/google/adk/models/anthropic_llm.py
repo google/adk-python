@@ -22,7 +22,6 @@ import logging
 import os
 from typing import Any
 from typing import AsyncGenerator
-from typing import Generator
 from typing import Iterable
 from typing import Literal
 from typing import Optional
@@ -45,8 +44,6 @@ if TYPE_CHECKING:
 __all__ = ["Claude"]
 
 logger = logging.getLogger("google_adk." + __name__)
-
-MAX_TOKEN = 8192
 
 
 class ClaudeRequest(BaseModel):
@@ -100,14 +97,29 @@ def part_to_message_block(
     )
   elif part.function_response:
     content = ""
-    if (
-        "result" in part.function_response.response
-        and part.function_response.response["result"]
-    ):
+    response_data = part.function_response.response
+
+    # Handle response with content array
+    if "content" in response_data and response_data["content"]:
+      content_items = []
+      for item in response_data["content"]:
+        if isinstance(item, dict):
+          # Handle text content blocks
+          if item.get("type") == "text" and "text" in item:
+            content_items.append(item["text"])
+          else:
+            # Handle other structured content
+            content_items.append(str(item))
+        else:
+          content_items.append(str(item))
+      content = "\n".join(content_items) if content_items else ""
+    # Handle traditional result format
+    elif "result" in response_data and response_data["result"]:
       # Transformation is required because the content is a list of dict.
       # ToolResultBlockParam content doesn't support list of dict. Converting
       # to str to prevent anthropic.BadRequestError from being thrown.
-      content = str(part.function_response.response["result"])
+      content = str(response_data["result"])
+
     return anthropic_types.ToolResultBlockParam(
         tool_use_id=part.function_response.id or "",
         type="tool_result",
@@ -218,25 +230,35 @@ def _update_type_string(value_dict: dict[str, Any]):
 def function_declaration_to_tool_param(
     function_declaration: types.FunctionDeclaration,
 ) -> anthropic_types.ToolParam:
+  """Converts a function declaration to an Anthropic tool param."""
   assert function_declaration.name
 
-  properties = {}
-  if (
-      function_declaration.parameters
-      and function_declaration.parameters.properties
-  ):
-    for key, value in function_declaration.parameters.properties.items():
-      value_dict = value.model_dump(exclude_none=True)
-      _update_type_string(value_dict)
-      properties[key] = value_dict
+  # Use parameters_json_schema if available, otherwise convert from parameters
+  if function_declaration.parameters_json_schema:
+    input_schema = function_declaration.parameters_json_schema
+  else:
+    properties = {}
+    required_params = []
+    if function_declaration.parameters:
+      if function_declaration.parameters.properties:
+        for key, value in function_declaration.parameters.properties.items():
+          value_dict = value.model_dump(exclude_none=True)
+          _update_type_string(value_dict)
+          properties[key] = value_dict
+      if function_declaration.parameters.required:
+        required_params = function_declaration.parameters.required
+
+    input_schema = {
+        "type": "object",
+        "properties": properties,
+    }
+    if required_params:
+      input_schema["required"] = required_params
 
   return anthropic_types.ToolParam(
       name=function_declaration.name,
       description=function_declaration.description or "",
-      input_schema={
-          "type": "object",
-          "properties": properties,
-      },
+      input_schema=input_schema,
   )
 
 
@@ -245,13 +267,15 @@ class Claude(BaseLlm):
 
   Attributes:
     model: The name of the Claude model.
+    max_tokens: The maximum number of tokens to generate.
   """
 
   model: str = "claude-3-5-sonnet-v2@20241022"
+  max_tokens: int = 8192
 
-  @staticmethod
+  @classmethod
   @override
-  def supported_models() -> list[str]:
+  def supported_models(cls) -> list[str]:
     return [r"claude-3-.*", r"claude-.*-4.*"]
 
   @override
@@ -284,7 +308,7 @@ class Claude(BaseLlm):
         messages=messages,
         tools=tools,
         tool_choice=tool_choice,
-        max_tokens=MAX_TOKEN,
+        max_tokens=self.max_tokens,
     )
     yield message_to_generate_content_response(message)
 

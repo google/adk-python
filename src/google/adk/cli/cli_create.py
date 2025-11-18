@@ -36,6 +36,14 @@ root_agent = Agent(
 )
 """
 
+_AGENT_CONFIG_TEMPLATE = """\
+# yaml-language-server: $schema=https://raw.githubusercontent.com/google/adk-python/refs/heads/main/src/google/adk/agents/config_schemas/AgentConfig.json
+name: root_agent
+description: A helpful assistant for user questions.
+instruction: Answer user questions to the best of your knowledge
+model: {model_name}
+"""
+
 
 _GOOGLE_API_MSG = """
 Don't have API Key? Create one in AI Studio: https://aistudio.google.com/apikey
@@ -51,11 +59,18 @@ Please see below guide to configure other models:
 https://google.github.io/adk-docs/agents/models
 """
 
-_SUCCESS_MSG = """
+_SUCCESS_MSG_CODE = """
 Agent created in {agent_folder}:
 - .env
 - __init__.py
 - agent.py
+"""
+
+_SUCCESS_MSG_CONFIG = """
+Agent created in {agent_folder}:
+- .env
+- __init__.py
+- root_agent.yaml
 """
 
 
@@ -158,13 +173,15 @@ def _generate_files(
     google_cloud_project: Optional[str] = None,
     google_cloud_region: Optional[str] = None,
     model: Optional[str] = None,
+    type: str,
 ):
   """Generates a folder name for the agent."""
   os.makedirs(agent_folder, exist_ok=True)
 
   dotenv_file_path = os.path.join(agent_folder, ".env")
   init_file_path = os.path.join(agent_folder, "__init__.py")
-  agent_file_path = os.path.join(agent_folder, "agent.py")
+  agent_py_file_path = os.path.join(agent_folder, "agent.py")
+  agent_config_file_path = os.path.join(agent_folder, "root_agent.yaml")
 
   with open(dotenv_file_path, "w", encoding="utf-8") as f:
     lines = []
@@ -180,29 +197,38 @@ def _generate_files(
       lines.append(f"GOOGLE_CLOUD_LOCATION={google_cloud_region}")
     f.write("\n".join(lines))
 
-  with open(init_file_path, "w", encoding="utf-8") as f:
-    f.write(_INIT_PY_TEMPLATE)
+  if type == "config":
+    with open(agent_config_file_path, "w", encoding="utf-8") as f:
+      f.write(_AGENT_CONFIG_TEMPLATE.format(model_name=model))
+    with open(init_file_path, "w", encoding="utf-8") as f:
+      f.write("")
+    click.secho(
+        _SUCCESS_MSG_CONFIG.format(agent_folder=agent_folder),
+        fg="green",
+    )
+  else:
+    with open(init_file_path, "w", encoding="utf-8") as f:
+      f.write(_INIT_PY_TEMPLATE)
 
-  with open(agent_file_path, "w", encoding="utf-8") as f:
-    f.write(_AGENT_PY_TEMPLATE.format(model_name=model))
-
-  click.secho(
-      _SUCCESS_MSG.format(agent_folder=agent_folder),
-      fg="green",
-  )
+    with open(agent_py_file_path, "w", encoding="utf-8") as f:
+      f.write(_AGENT_PY_TEMPLATE.format(model_name=model))
+    click.secho(
+        _SUCCESS_MSG_CODE.format(agent_folder=agent_folder),
+        fg="green",
+    )
 
 
 def _prompt_for_model() -> str:
   model_choice = click.prompt(
       """\
 Choose a model for the root agent:
-1. gemini-2.0-flash-001
+1. gemini-2.5-flash
 2. Other models (fill later)
 Choose model""",
       type=click.Choice(["1", "2"]),
   )
   if model_choice == "1":
-    return "gemini-2.0-flash-001"
+    return "gemini-2.5-flash"
   else:
     click.secho(_OTHER_MODEL_MSG, fg="green")
     return "<FILL_IN_MODEL>"
@@ -231,6 +257,22 @@ def _prompt_to_choose_backend(
   return google_api_key, google_cloud_project, google_cloud_region
 
 
+def _prompt_to_choose_type() -> str:
+  """Prompts user to choose type of agent to create."""
+  type_choice = click.prompt(
+      """\
+Choose a type for the root agent:
+1. YAML config (experimental, may change without notice)
+2. Code
+Choose type""",
+      type=click.Choice(["1", "2"]),
+  )
+  if type_choice == "1":
+    return "CONFIG"
+  else:
+    return "CODE"
+
+
 def run_cmd(
     agent_name: str,
     *,
@@ -238,6 +280,7 @@ def run_cmd(
     google_api_key: Optional[str],
     google_cloud_project: Optional[str],
     google_cloud_region: Optional[str],
+    type: Optional[str],
 ):
   """Runs `adk create` command to create agent template.
 
@@ -249,6 +292,7 @@ def run_cmd(
       VertexAI as backend.
     google_cloud_region: Optional[str], The Google Cloud region for using
       VertexAI as backend.
+    type: Optional[str], Whether to define agent with config file or code.
   """
   agent_folder = os.path.join(os.getcwd(), agent_name)
   # check folder doesn't exist or it's empty. Otherwise, throw
@@ -272,10 +316,14 @@ def run_cmd(
           )
       )
 
+  if not type:
+    type = _prompt_to_choose_type()
+
   _generate_files(
       agent_folder,
       google_api_key=google_api_key,
       google_cloud_project=google_cloud_project,
       google_cloud_region=google_cloud_region,
       model=model,
+      type=type.lower(),
   )

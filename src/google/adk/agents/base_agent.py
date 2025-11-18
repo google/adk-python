@@ -19,6 +19,7 @@ from typing import Any
 from typing import AsyncGenerator
 from typing import Awaitable
 from typing import Callable
+from typing import ClassVar
 from typing import Dict
 from typing import final
 from typing import Mapping
@@ -29,7 +30,6 @@ from typing import TypeVar
 from typing import Union
 
 from google.genai import types
-from opentelemetry import trace
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
@@ -38,14 +38,16 @@ from typing_extensions import override
 from typing_extensions import TypeAlias
 
 from ..events.event import Event
-from ..utils.feature_decorator import working_in_progress
+from ..events.event_actions import EventActions
+from ..telemetry import tracing
+from ..telemetry.tracing import tracer
+from ..utils.context_utils import Aclosing
+from ..utils.feature_decorator import experimental
 from .base_agent_config import BaseAgentConfig
 from .callback_context import CallbackContext
 
 if TYPE_CHECKING:
   from .invocation_context import InvocationContext
-
-tracer = trace.get_tracer('gcp.vertex.agent')
 
 _SingleAgentCallback: TypeAlias = Callable[
     [CallbackContext],
@@ -65,6 +67,18 @@ AfterAgentCallback: TypeAlias = Union[
 SelfAgent = TypeVar('SelfAgent', bound='BaseAgent')
 
 
+@experimental
+class BaseAgentState(BaseModel):
+  """Base class for all agent states."""
+
+  model_config = ConfigDict(
+      extra='forbid',
+  )
+
+
+AgentState = TypeVar('AgentState', bound=BaseAgentState)
+
+
 class BaseAgent(BaseModel):
   """Base class for all agents in Agent Development Kit."""
 
@@ -73,6 +87,22 @@ class BaseAgent(BaseModel):
       extra='forbid',
   )
   """The pydantic model config."""
+
+  config_type: ClassVar[type[BaseAgentConfig]] = BaseAgentConfig
+  """The config type for this agent.
+
+  Sub-classes should override this to specify their own config type.
+
+  Example:
+
+  ```
+  class MyAgentConfig(BaseAgentConfig):
+    my_field: str = ''
+
+  class MyAgent(BaseAgent):
+    config_type: ClassVar[type[BaseAgentConfig]] = MyAgentConfig
+  ```
+  """
 
   name: str
   """The agent's name.
@@ -125,9 +155,52 @@ class BaseAgent(BaseModel):
 
   Returns:
     Optional[types.Content]: The content to return to the user.
-      When the content is present, the provided content will be used as agent
-      response and appended to event history as agent response.
+      When the content is present, an additional event with the provided content
+      will be appended to event history as an additional agent response.
   """
+
+  def _load_agent_state(
+      self,
+      ctx: InvocationContext,
+      state_type: Type[AgentState],
+  ) -> Optional[AgentState]:
+    """Loads the agent state from the invocation context.
+
+    Args:
+      ctx: The invocation context.
+      state_type: The type of the agent state.
+
+    Returns:
+        The current state if exists; otherwise, None.
+    """
+    if ctx.agent_states is None or self.name not in ctx.agent_states:
+      return None
+    else:
+      return state_type.model_validate(ctx.agent_states.get(self.name))
+
+  def _create_agent_state_event(
+      self,
+      ctx: InvocationContext,
+  ) -> Event:
+    """Returns an event with current agent state set in the invocation context.
+
+    Args:
+      ctx: The invocation context.
+
+    Returns:
+      An event with the current agent state set in the invocation context.
+    """
+    event_actions = EventActions()
+    if (agent_state := ctx.agent_states.get(self.name)) is not None:
+      event_actions.agent_state = agent_state
+    if ctx.end_of_agents.get(self.name):
+      event_actions.end_of_agent = True
+    return Event(
+        invocation_id=ctx.invocation_id,
+        author=self.name,
+        branch=ctx.branch,
+        actions=event_actions,
+    )
 
   def clone(
       self: SelfAgent, update: Mapping[str, Any] | None = None
@@ -156,11 +229,23 @@ class BaseAgent(BaseModel):
       invalid_fields = set(update) - allowed_fields
       if invalid_fields:
         raise ValueError(
-            f'Cannot update non-existent fields in {self.__class__.__name__}:'
+            f'Cannot update nonexistent fields in {self.__class__.__name__}:'
             f' {invalid_fields}'
         )
 
     cloned_agent = self.model_copy(update=update)
+
+    # If any field is stored as list and not provided in the update, need to
+    # shallow copy it for the cloned agent to avoid sharing the same list object
+    # with the original agent.
+    for field_name in cloned_agent.__class__.model_fields:
+      if field_name == 'sub_agents':
+        continue
+      if update is not None and field_name in update:
+        continue
+      field = getattr(cloned_agent, field_name)
+      if isinstance(field, list):
+        setattr(cloned_agent, field_name, field.copy())
 
     if update is None or 'sub_agents' not in update:
       # If `sub_agents` is not provided in the update, need to recursively clone
@@ -194,21 +279,22 @@ class BaseAgent(BaseModel):
       Event: the events generated by the agent.
     """
 
-    with tracer.start_as_current_span(f'agent_run [{self.name}]'):
+    with tracer.start_as_current_span(f'invoke_agent {self.name}') as span:
       ctx = self._create_invocation_context(parent_context)
-
-      if event := await self.__handle_before_agent_callback(ctx):
+      tracing.trace_agent_invocation(span, self, ctx)
+      if event := await self._handle_before_agent_callback(ctx):
         yield event
       if ctx.end_invocation:
         return
 
-      async for event in self._run_async_impl(ctx):
-        yield event
+      async with Aclosing(self._run_async_impl(ctx)) as agen:
+        async for event in agen:
+          yield event
 
       if ctx.end_invocation:
         return
 
-      if event := await self.__handle_after_agent_callback(ctx):
+      if event := await self._handle_after_agent_callback(ctx):
         yield event
 
   @final
@@ -225,18 +311,20 @@ class BaseAgent(BaseModel):
     Yields:
       Event: the events generated by the agent.
     """
-    with tracer.start_as_current_span(f'agent_run [{self.name}]'):
-      ctx = self._create_invocation_context(parent_context)
 
-      if event := await self.__handle_before_agent_callback(ctx):
+    with tracer.start_as_current_span(f'invoke_agent {self.name}') as span:
+      ctx = self._create_invocation_context(parent_context)
+      tracing.trace_agent_invocation(span, self, ctx)
+      if event := await self._handle_before_agent_callback(ctx):
         yield event
       if ctx.end_invocation:
         return
 
-      async for event in self._run_live_impl(ctx):
-        yield event
+      async with Aclosing(self._run_live_impl(ctx)) as agen:
+        async for event in agen:
+          yield event
 
-      if event := await self.__handle_after_agent_callback(ctx):
+      if event := await self._handle_after_agent_callback(ctx):
         yield event
 
   async def _run_async_impl(
@@ -337,7 +425,7 @@ class BaseAgent(BaseModel):
       return self.after_agent_callback
     return [self.after_agent_callback]
 
-  async def __handle_before_agent_callback(
+  async def _handle_before_agent_callback(
       self, ctx: InvocationContext
   ) -> Optional[Event]:
     """Runs the before_agent_callback if it exists.
@@ -395,7 +483,7 @@ class BaseAgent(BaseModel):
 
     return None
 
-  async def __handle_after_agent_callback(
+  async def _handle_after_agent_callback(
       self, invocation_context: InvocationContext
   ) -> Optional[Event]:
     """Runs the after_agent_callback if it exists.
@@ -460,7 +548,7 @@ class BaseAgent(BaseModel):
 
   @field_validator('name', mode='after')
   @classmethod
-  def __validate_name(cls, value: str):
+  def validate_name(cls, value: str):
     if not value.isidentifier():
       raise ValueError(
           f'Found invalid agent name: `{value}`.'
@@ -486,8 +574,9 @@ class BaseAgent(BaseModel):
       sub_agent.parent_agent = self
     return self
 
+  @final
   @classmethod
-  @working_in_progress('BaseAgent.from_config is not ready for use.')
+  @experimental
   def from_config(
       cls: Type[SelfAgent],
       config: BaseAgentConfig,
@@ -495,19 +584,53 @@ class BaseAgent(BaseModel):
   ) -> SelfAgent:
     """Creates an agent from a config.
 
-    This method converts fields in a config to the corresponding
-    fields in an agent.
-
-    Child classes should re-implement this method to support loading from their
-    custom config types.
+    If sub-classes uses a custom agent config, override `_from_config_kwargs`
+    method to return an updated kwargs for agent constructor.
 
     Args:
       config: The config to create the agent from.
+      config_abs_path: The absolute path to the config file that contains the
+        agent config.
 
     Returns:
       The created agent.
     """
-    from .config_agent_utils import build_sub_agent
+    kwargs = cls.__create_kwargs(config, config_abs_path)
+    kwargs = cls._parse_config(config, config_abs_path, kwargs)
+    return cls(**kwargs)
+
+  @classmethod
+  @experimental
+  def _parse_config(
+      cls: Type[SelfAgent],
+      config: BaseAgentConfig,
+      config_abs_path: str,
+      kwargs: Dict[str, Any],
+  ) -> Dict[str, Any]:
+    """Parses the config and returns updated kwargs to construct the agent.
+
+    Sub-classes should override this method to use a custom agent config class.
+
+    Args:
+      config: The config to parse.
+      config_abs_path: The absolute path to the config file that contains the
+        agent config.
+      kwargs: The keyword arguments used for agent constructor.
+
+    Returns:
+      The updated keyword arguments used for agent constructor.
+    """
+    return kwargs
+
+  @classmethod
+  def __create_kwargs(
+      cls,
+      config: BaseAgentConfig,
+      config_abs_path: str,
+  ) -> Dict[str, Any]:
+    """Creates kwargs for the fields of BaseAgent."""
+
+    from .config_agent_utils import resolve_agent_reference
     from .config_agent_utils import resolve_callbacks
 
     kwargs: Dict[str, Any] = {
@@ -517,9 +640,7 @@ class BaseAgent(BaseModel):
     if config.sub_agents:
       sub_agents = []
       for sub_agent_config in config.sub_agents:
-        sub_agent = build_sub_agent(
-            sub_agent_config, config_abs_path.rsplit('/', 1)[0]
-        )
+        sub_agent = resolve_agent_reference(sub_agent_config, config_abs_path)
         sub_agents.append(sub_agent)
       kwargs['sub_agents'] = sub_agents
 
@@ -531,4 +652,4 @@ class BaseAgent(BaseModel):
       kwargs['after_agent_callback'] = resolve_callbacks(
           config.after_agent_callbacks
       )
-    return cls(**kwargs)
+    return kwargs

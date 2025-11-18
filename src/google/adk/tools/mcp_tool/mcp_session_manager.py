@@ -25,17 +25,22 @@ import sys
 from typing import Any
 from typing import Dict
 from typing import Optional
+from typing import Protocol
+from typing import runtime_checkable
 from typing import TextIO
 from typing import Union
 
 import anyio
 from pydantic import BaseModel
+from pydantic import ConfigDict
 
 try:
   from mcp import ClientSession
   from mcp import StdioServerParameters
   from mcp.client.sse import sse_client
   from mcp.client.stdio import stdio_client
+  from mcp.client.streamable_http import create_mcp_http_client
+  from mcp.client.streamable_http import McpHttpClientFactory
   from mcp.client.streamable_http import streamablehttp_client
 except ImportError as e:
 
@@ -84,10 +89,15 @@ class SseConnectionParams(BaseModel):
   sse_read_timeout: float = 60 * 5.0
 
 
-class StreamableHTTPConnectionParams(BaseModel):
-  """Parameters for the MCP SSE connection.
+@runtime_checkable
+class CheckableMcpHttpClientFactory(McpHttpClientFactory, Protocol):
+  pass
 
-  See MCP SSE Client documentation for more details.
+
+class StreamableHTTPConnectionParams(BaseModel):
+  """Parameters for the MCP Streamable HTTP connection.
+
+  See MCP Streamable HTTP Client documentation for more details.
   https://github.com/modelcontextprotocol/python-sdk/blob/main/src/mcp/client/streamable_http.py
 
   Attributes:
@@ -99,13 +109,18 @@ class StreamableHTTPConnectionParams(BaseModel):
         Streamable HTTP server.
       terminate_on_close: Whether to terminate the MCP Streamable HTTP server
         when the connection is closed.
+      httpx_client_factory: Factory function to create a custom HTTPX client. If
+        not provided, a default factory will be used.
   """
+
+  model_config = ConfigDict(arbitrary_types_allowed=True)
 
   url: str
   headers: dict[str, Any] | None = None
   timeout: float = 5.0
   sse_read_timeout: float = 60 * 5.0
   terminate_on_close: bool = True
+  httpx_client_factory: CheckableMcpHttpClientFactory = create_mcp_http_client
 
 
 def retry_on_closed_resource(func):
@@ -126,9 +141,10 @@ def retry_on_closed_resource(func):
   async def wrapper(self, *args, **kwargs):
     try:
       return await func(self, *args, **kwargs)
-    except anyio.ClosedResourceError:
-      # Simply retry the function - create_session will handle
-      # detecting and replacing disconnected sessions
+    except (anyio.ClosedResourceError, anyio.BrokenResourceError):
+      # If the session connection is closed or unusable, we will retry the
+      # function to reconnect to the server. create_session will handle
+      # detecting and replacing disconnected sessions.
       logger.info('Retrying %s due to closed resource', func.__name__)
       return await func(self, *args, **kwargs)
 
@@ -285,6 +301,7 @@ class MCPSessionManager:
               seconds=self._connection_params.sse_read_timeout
           ),
           terminate_on_close=self._connection_params.terminate_on_close,
+          httpx_client_factory=self._connection_params.httpx_client_factory,
       )
     else:
       raise ValueError(
@@ -339,38 +356,50 @@ class MCPSessionManager:
 
       # Create a new session (either first time or replacing disconnected one)
       exit_stack = AsyncExitStack()
+      timeout_in_seconds = (
+          self._connection_params.timeout
+          if hasattr(self._connection_params, 'timeout')
+          else None
+      )
 
       try:
         client = self._create_client(merged_headers)
 
-        transports = await exit_stack.enter_async_context(client)
-        # The streamable http client returns a GetSessionCallback in addition to the read/write MemoryObjectStreams
-        # needed to build the ClientSession, we limit then to the two first values to be compatible with all clients.
+        transports = await asyncio.wait_for(
+            exit_stack.enter_async_context(client),
+            timeout=timeout_in_seconds,
+        )
+        # The streamable http client returns a GetSessionCallback in addition to the
+        # read/write MemoryObjectStreams needed to build the ClientSession, we limit
+        # then to the two first values to be compatible with all clients.
         if isinstance(self._connection_params, StdioConnectionParams):
           session = await exit_stack.enter_async_context(
               ClientSession(
                   *transports[:2],
-                  read_timeout_seconds=timedelta(
-                      seconds=self._connection_params.timeout
-                  ),
+                  read_timeout_seconds=timedelta(seconds=timeout_in_seconds),
               )
           )
         else:
           session = await exit_stack.enter_async_context(
               ClientSession(*transports[:2])
           )
-        await session.initialize()
+        await asyncio.wait_for(session.initialize(), timeout=timeout_in_seconds)
 
         # Store session and exit stack in the pool
         self._sessions[session_key] = (session, exit_stack)
         logger.debug('Created new session: %s', session_key)
         return session
 
-      except Exception:
+      except Exception as e:
         # If session creation fails, clean up the exit stack
         if exit_stack:
-          await exit_stack.aclose()
-        raise
+          try:
+            await exit_stack.aclose()
+          except Exception as exit_stack_error:
+            logger.warning(
+                'Error during session creation cleanup: %s', exit_stack_error
+            )
+        raise ConnectionError(f'Failed to create MCP session: {e}') from e
 
   async def close(self):
     """Closes all sessions and cleans up resources."""
