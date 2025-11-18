@@ -38,6 +38,8 @@ from ...agents.readonly_context import ReadonlyContext
 from ...agents.run_config import StreamingMode
 from ...agents.transcription_entry import TranscriptionEntry
 from ...events.event import Event
+from ...features import FeatureName
+from ...features import is_feature_enabled
 from ...models.base_llm_connection import BaseLlmConnection
 from ...models.llm_request import LlmRequest
 from ...models.llm_response import LlmResponse
@@ -525,6 +527,16 @@ class BaseLlmFlow(ABC):
 
     # Handles function calls.
     if model_response_event.get_function_calls():
+
+      if is_feature_enabled(FeatureName.PROGRESSIVE_SSE_STREAMING):
+        # In progressive SSE streaming mode stage 1, we skip partial FC events
+        # Only execute FCs in the final aggregated event (partial=False)
+        if (
+            invocation_context.run_config.streaming_mode == StreamingMode.SSE
+            and model_response_event.partial
+        ):
+          return
+
       async with Aclosing(
           self._postprocess_handle_function_calls_async(
               invocation_context, model_response_event, llm_request

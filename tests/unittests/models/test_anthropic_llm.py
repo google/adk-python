@@ -273,6 +273,45 @@ function_declaration_test_cases = [
             },
         ),
     ),
+    (
+        "function_with_parameters_json_schema",
+        types.FunctionDeclaration(
+            name="search_database",
+            description="Searches a database with given criteria.",
+            parameters_json_schema={
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "The search query",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of results",
+                    },
+                },
+                "required": ["query"],
+            },
+        ),
+        anthropic_types.ToolParam(
+            name="search_database",
+            description="Searches a database with given criteria.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "The search query",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of results",
+                    },
+                },
+                "required": ["query"],
+            },
+        ),
+    ),
 ]
 
 
@@ -346,3 +385,80 @@ async def test_generate_content_async_with_max_tokens(
       mock_client.messages.create.assert_called_once()
       _, kwargs = mock_client.messages.create.call_args
       assert kwargs["max_tokens"] == 4096
+
+
+def test_part_to_message_block_with_content():
+  """Test that part_to_message_block handles content format."""
+  from google.adk.models.anthropic_llm import part_to_message_block
+
+  # Create a function response part with content array.
+  mcp_response_part = types.Part.from_function_response(
+      name="generate_sample_filesystem",
+      response={
+          "content": [{
+              "type": "text",
+              "text": '{"name":"root","node_type":"folder","children":[]}',
+          }]
+      },
+  )
+  mcp_response_part.function_response.id = "test_id_123"
+
+  result = part_to_message_block(mcp_response_part)
+
+  # ToolResultBlockParam is a TypedDict.
+  assert isinstance(result, dict)
+  assert result["tool_use_id"] == "test_id_123"
+  assert result["type"] == "tool_result"
+  assert not result["is_error"]
+  # Verify the content was extracted from the content format.
+  assert (
+      '{"name":"root","node_type":"folder","children":[]}' in result["content"]
+  )
+
+
+def test_part_to_message_block_with_traditional_result():
+  """Test that part_to_message_block handles traditional result format."""
+  from google.adk.models.anthropic_llm import part_to_message_block
+
+  # Create a function response part with traditional result format
+  traditional_response_part = types.Part.from_function_response(
+      name="some_tool",
+      response={
+          "result": "This is the result from the tool",
+      },
+  )
+  traditional_response_part.function_response.id = "test_id_456"
+
+  result = part_to_message_block(traditional_response_part)
+
+  # ToolResultBlockParam is a TypedDict.
+  assert isinstance(result, dict)
+  assert result["tool_use_id"] == "test_id_456"
+  assert result["type"] == "tool_result"
+  assert not result["is_error"]
+  # Verify the content was extracted from the traditional format
+  assert "This is the result from the tool" in result["content"]
+
+
+def test_part_to_message_block_with_multiple_content_items():
+  """Test content with multiple items."""
+  from google.adk.models.anthropic_llm import part_to_message_block
+
+  # Create a function response with multiple content items
+  multi_content_part = types.Part.from_function_response(
+      name="multi_response_tool",
+      response={
+          "content": [
+              {"type": "text", "text": "First part"},
+              {"type": "text", "text": "Second part"},
+          ]
+      },
+  )
+  multi_content_part.function_response.id = "test_id_789"
+
+  result = part_to_message_block(multi_content_part)
+
+  # ToolResultBlockParam is a TypedDict.
+  assert isinstance(result, dict)
+  # Multiple text items should be joined with newlines
+  assert result["content"] == "First part\nSecond part"

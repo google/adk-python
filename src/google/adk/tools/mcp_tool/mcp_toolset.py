@@ -175,10 +175,7 @@ class McpToolset(BaseToolset):
         else None
     )
     # Get session from session manager
-    try:
-      session = await self._mcp_session_manager.create_session(headers=headers)
-    except Exception as e:
-      raise ConnectionError(f"Failed to create MCP session") from e
+    session = await self._mcp_session_manager.create_session(headers=headers)
 
     # Fetch available tools from the MCP server
     timeout_in_seconds = (
