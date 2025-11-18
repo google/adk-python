@@ -39,8 +39,8 @@ from ...telemetry.tracing import trace_merged_tool_calls
 from ...telemetry.tracing import trace_tool_call
 from ...telemetry.tracing import tracer
 from ...tools.base_tool import BaseTool
-from ...tools.tool_confirmation import ToolConfirmation
 from ...tools.progressive_function_tool import ProgressiveFunctionTool
+from ...tools.tool_confirmation import ToolConfirmation
 from ...tools.tool_context import ToolContext
 from ...utils.context_utils import Aclosing
 

@@ -56,7 +56,9 @@ class ProgressiveTool(ProgressiveFunctionTool):
 
     self._ignore_params = ignore_list
 
-  def _prepare_args_for_call(self, args: dict[str, Any], tool_context: ToolContext) -> dict[str, Any]:
+  def _prepare_args_for_call(
+      self, args: dict[str, Any], tool_context: ToolContext
+  ) -> dict[str, Any]:
     """Prepares arguments for the wrapped function call."""
     signature = inspect.signature(self.func)
     valid_params = {param for param in signature.parameters}
