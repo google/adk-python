@@ -695,8 +695,41 @@ class TestBigQueryAgentAnalyticsPlugin:
           user_message=types.Content(parts=[types.Part(text="Test")]),
       )
       await asyncio.sleep(0.01)
-      mock_log_error.assert_called_with("BQ Plugin: Write Error: Test BQ Error")
+      mock_log_error.assert_called_with(
+          "BQ Plugin: Write Error: %s", "Test BQ Error"
+      )
     mock_write_client.append_rows.assert_called_once()
+
+  @pytest.mark.asyncio
+  async def test_schema_mismatch_error_handling(
+      self, bq_plugin_inst, mock_write_client, invocation_context
+  ):
+    async def fake_append_rows_with_schema_error(requests, **kwargs):
+      mock_resp = mock.MagicMock()
+      mock_resp.row_errors = []
+      mock_resp.error = mock.MagicMock()
+      mock_resp.error.code = 3
+      mock_resp.error.message = (
+          "Schema mismatch: Field 'new_field' not found in table."
+      )
+      return _async_gen(mock_resp)
+
+    mock_write_client.append_rows.side_effect = (
+        fake_append_rows_with_schema_error
+    )
+
+    with mock.patch.object(logging, "error") as mock_log_error:
+      await bq_plugin_inst.on_user_message_callback(
+          invocation_context=invocation_context,
+          user_message=types.Content(parts=[types.Part(text="Test")]),
+      )
+      await asyncio.sleep(0.01)
+      mock_log_error.assert_called_with(
+          "BQ Plugin: Schema Mismatch Error. The BigQuery table schema may be"
+          " incorrect or out of sync with the plugin. Please verify the table"
+          " definition. Details: %s",
+          "Schema mismatch: Field 'new_field' not found in table.",
+      )
 
   @pytest.mark.asyncio
   async def test_close(self, bq_plugin_inst, mock_bq_client, mock_write_client):
@@ -800,6 +833,42 @@ class TestBigQueryAgentAnalyticsPlugin:
         == "Model: gemini-pro | Prompt: user: text: 'Prompt' | System Prompt:"
         " Empty"
     )
+
+  @pytest.mark.asyncio
+  async def test_before_model_callback_with_params_and_tools(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      callback_context,
+      dummy_arrow_schema,
+  ):
+    llm_request = llm_request_lib.LlmRequest(
+        model="gemini-pro",
+        config=types.GenerateContentConfig(
+            temperature=0.5,
+            top_p=0.9,
+            system_instruction=types.Content(parts=[types.Part(text="Sys")]),
+        ),
+        contents=[types.Content(role="user", parts=[types.Part(text="User")])],
+    )
+    # Manually set tools_dict as it is excluded from init
+    llm_request.tools_dict = {"tool1": "func1", "tool2": "func2"}
+
+    await bq_plugin_inst.before_model_callback(
+        callback_context=callback_context, llm_request=llm_request
+    )
+    await asyncio.sleep(0.01)
+    log_entry = _get_captured_event_dict(mock_write_client, dummy_arrow_schema)
+    _assert_common_fields(log_entry, "LLM_REQUEST")
+    # Order: Model | Params | Tools | Prompt | System Prompt
+    # Note: Params order depends on dict iteration but here we construct it deterministically in code?
+    # The code does: params_to_log["temperature"] = ... then "top_p" = ...
+    # So order should be temperature, top_p.
+    assert "Model: gemini-pro" in log_entry["content"]
+    assert "Params: {temperature=0.5, top_p=0.9}" in log_entry["content"]
+    assert "Available Tools: ['tool1', 'tool2']" in log_entry["content"]
+    assert "Prompt: user: text: 'User'" in log_entry["content"]
+    assert "System Prompt: Sys" in log_entry["content"]
 
   @pytest.mark.asyncio
   async def test_after_model_callback_text_response(

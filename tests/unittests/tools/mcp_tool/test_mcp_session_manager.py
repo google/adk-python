@@ -54,7 +54,6 @@ except ImportError as e:
 # Import real MCP classes
 try:
   from mcp import StdioServerParameters
-  from mcp.types import EmptyResult
 except ImportError:
   # Create a mock if MCP is not available
   class StdioServerParameters:
@@ -62,9 +61,6 @@ except ImportError:
     def __init__(self, command="test_command", args=None):
       self.command = command
       self.args = args or []
-
-  class EmptyResult:
-    pass
 
 
 class MockClientSession:
@@ -76,7 +72,6 @@ class MockClientSession:
     self._read_stream._closed = False
     self._write_stream._closed = False
     self.initialize = AsyncMock()
-    self.send_ping = AsyncMock()
 
 
 class MockAsyncExitStack:
@@ -211,52 +206,19 @@ class TestMCPSessionManager:
     }
     assert merged == expected
 
-  @pytest.mark.asyncio
-  async def test_is_session_disconnected_when_connected(self):
-    """Test session disconnection detection when session is connected."""
+  def test_is_session_disconnected(self):
+    """Test session disconnection detection."""
     manager = MCPSessionManager(self.mock_stdio_connection_params)
-    session = MockClientSession()
-    session.send_ping.return_value = EmptyResult()
-    assert not await manager._is_session_disconnected(session)
-    session.send_ping.assert_called_once()
 
-  @pytest.mark.asyncio
-  async def test_is_session_disconnected_read_stream_closed(self):
-    """Test session disconnection detection when read stream is closed."""
-    manager = MCPSessionManager(self.mock_stdio_connection_params)
+    # Create mock session
     session = MockClientSession()
-    session.send_ping.return_value = EmptyResult()
+
+    # Not disconnected
+    assert not manager._is_session_disconnected(session)
+
+    # Disconnected - read stream closed
     session._read_stream._closed = True
-    assert await manager._is_session_disconnected(session)
-    session.send_ping.assert_not_called()
-
-  @pytest.mark.asyncio
-  async def test_is_session_disconnected_write_stream_closed(self):
-    """Test session disconnection detection when write stream is closed."""
-    manager = MCPSessionManager(self.mock_stdio_connection_params)
-    session = MockClientSession()
-    session.send_ping.return_value = EmptyResult()
-    session._write_stream._closed = True
-    assert await manager._is_session_disconnected(session)
-    session.send_ping.assert_not_called()
-
-  @pytest.mark.asyncio
-  async def test_is_session_disconnected_ping_fails(self):
-    """Test session disconnection detection when ping fails."""
-    manager = MCPSessionManager(self.mock_stdio_connection_params)
-    session = MockClientSession()
-    session.send_ping.side_effect = Exception("Ping failed")
-    assert await manager._is_session_disconnected(session)
-    session.send_ping.assert_called_once()
-
-  @pytest.mark.asyncio
-  async def test_is_session_disconnected_ping_returns_wrong_result(self):
-    """Test session disconnection detection when ping returns wrong result."""
-    manager = MCPSessionManager(self.mock_stdio_connection_params)
-    session = MockClientSession()
-    session.send_ping.return_value = "Wrong result"
-    assert await manager._is_session_disconnected(session)
-    session.send_ping.assert_called_once()
+    assert manager._is_session_disconnected(session)
 
   @pytest.mark.asyncio
   async def test_create_session_stdio_new(self):
@@ -309,7 +271,6 @@ class TestMCPSessionManager:
     # Session is connected
     existing_session._read_stream._closed = False
     existing_session._write_stream._closed = False
-    existing_session.send_ping.return_value = EmptyResult()
 
     session = await manager.create_session()
 

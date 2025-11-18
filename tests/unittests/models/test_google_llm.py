@@ -26,11 +26,14 @@ from google.adk.models.google_llm import _AGENT_ENGINE_TELEMETRY_ENV_VARIABLE_NA
 from google.adk.models.google_llm import _AGENT_ENGINE_TELEMETRY_TAG
 from google.adk.models.google_llm import _build_function_declaration_log
 from google.adk.models.google_llm import _build_request_log
+from google.adk.models.google_llm import _RESOURCE_EXHAUSTED_POSSIBLE_FIX_MESSAGE
+from google.adk.models.google_llm import _ResourceExhaustedError
 from google.adk.models.google_llm import Gemini
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.adk.utils.variant_utils import GoogleLLMVariant
 from google.genai import types
+from google.genai.errors import ClientError
 from google.genai.types import Content
 from google.genai.types import Part
 import pytest
@@ -384,6 +387,60 @@ async def test_generate_content_async_stream_preserves_thinking_and_text_parts(
     assert responses[3].content.parts[0].thought is True
     assert responses[3].content.parts[1].text == "Answer."
     mock_client.aio.models.generate_content_stream.assert_called_once()
+
+
+@pytest.mark.parametrize("stream", [True, False])
+@pytest.mark.asyncio
+async def test_generate_content_async_resource_exhausted_error(
+    stream, gemini_llm, llm_request
+):
+  with mock.patch.object(gemini_llm, "api_client") as mock_client:
+    err = ClientError(code=429, response_json={})
+    err.code = 429
+    if stream:
+      mock_client.aio.models.generate_content_stream.side_effect = err
+    else:
+      mock_client.aio.models.generate_content.side_effect = err
+
+    with pytest.raises(_ResourceExhaustedError) as excinfo:
+      responses = []
+      async for resp in gemini_llm.generate_content_async(
+          llm_request, stream=stream
+      ):
+        responses.append(resp)
+    assert _RESOURCE_EXHAUSTED_POSSIBLE_FIX_MESSAGE in str(excinfo.value)
+    assert excinfo.value.code == 429
+    if stream:
+      mock_client.aio.models.generate_content_stream.assert_called_once()
+    else:
+      mock_client.aio.models.generate_content.assert_called_once()
+
+
+@pytest.mark.parametrize("stream", [True, False])
+@pytest.mark.asyncio
+async def test_generate_content_async_other_client_error(
+    stream, gemini_llm, llm_request
+):
+  with mock.patch.object(gemini_llm, "api_client") as mock_client:
+    err = ClientError(code=500, response_json={})
+    err.code = 500
+    if stream:
+      mock_client.aio.models.generate_content_stream.side_effect = err
+    else:
+      mock_client.aio.models.generate_content.side_effect = err
+
+    with pytest.raises(ClientError) as excinfo:
+      responses = []
+      async for resp in gemini_llm.generate_content_async(
+          llm_request, stream=stream
+      ):
+        responses.append(resp)
+    assert excinfo.value.code == 500
+    assert not isinstance(excinfo.value, _ResourceExhaustedError)
+    if stream:
+      mock_client.aio.models.generate_content_stream.assert_called_once()
+    else:
+      mock_client.aio.models.generate_content.assert_called_once()
 
 
 @pytest.mark.asyncio
