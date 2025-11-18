@@ -31,7 +31,7 @@ class TestResponseEvaluator:
   """A class to help organize "patch" that are applicable to all tests."""
 
   def test_evaluate_invocations_rouge_metric(self, mocker):
-    """Test evaluate_invocations function for Rouge metric."""
+    """Test evaluate_invocations function for Rogue metric."""
     mock_perform_eval = mocker.patch(
         "google.adk.evaluation.vertex_ai_eval_facade._VertexAiEvalFacade._perform_eval"
     )
