@@ -17,7 +17,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Any, AsyncGenerator, Optional, Sequence, Union
+from typing import Any
+from typing import AsyncGenerator
+from typing import Optional
+from typing import Sequence
+from typing import Union
 import urllib.error
 import urllib.request
 
@@ -72,9 +76,7 @@ class Ollama(BaseLlm):
       self, llm_request: LlmRequest, stream: bool = False
   ) -> AsyncGenerator[LlmResponse, None]:
     if stream:
-      logger.warning(
-          "Streaming is not yet supported for Ollama; falling back to unary."
-      )
+      logger.warning("Streaming is not yet supported for Ollama; falling back to unary.")
 
     # Ensure last user content is appended if needed (BaseLlm helper).
     self._maybe_append_user_content(llm_request)
@@ -87,9 +89,7 @@ class Ollama(BaseLlm):
       yield LlmResponse(error_code="OLLAMA_ERROR", error_message=str(exc))
       return
 
-    llm_response = self._to_llm_response(
-        response_json, request_model=llm_request.model
-    )
+    llm_response = self._to_llm_response(response_json, request_model=llm_request.model)
     yield llm_response
 
   # ---------------------------------------------------------------------------
@@ -129,12 +129,10 @@ class Ollama(BaseLlm):
 
     # System instruction → first system message.
     if llm_request.config.system_instruction:
-      messages.append(
-          {
-              "role": "system",
-              "content": llm_request.config.system_instruction,
-          }
-      )
+      messages.append({
+          "role": "system",
+          "content": llm_request.config.system_instruction,
+      })
 
     # User / assistant / tool messages.
     for content in llm_request.contents:
@@ -162,15 +160,10 @@ class Ollama(BaseLlm):
       elif part.function_response:
         # Tool result from a previous call.
         try:
-          response_json = json.dumps(
-              part.function_response.response, ensure_ascii=False
-          )
+          response_json = json.dumps(part.function_response.response, ensure_ascii=False)
         except TypeError:
           response_json = str(part.function_response.response)
-        text_parts.append(
-            f"[tool_response name={part.function_response.name or ''}] "
-            f"{response_json}"
-        )
+        text_parts.append(f"[tool_response name={part.function_response.name or ''}] {response_json}")
 
       elif part.function_call:
         # A model-issued tool call (arguments as JSON).
@@ -178,14 +171,10 @@ class Ollama(BaseLlm):
           args_json = json.dumps(part.function_call.args, ensure_ascii=False)
         except TypeError:
           args_json = str(part.function_call.args)
-        text_parts.append(
-            f"[tool_call name={part.function_call.name}] {args_json}"
-        )
+        text_parts.append(f"[tool_call name={part.function_call.name}] {args_json}")
 
       else:
-        logger.debug(
-            "Skipping unsupported content part for Ollama message: %s", part
-        )
+        logger.debug("Skipping unsupported content part for Ollama message: %s", part)
 
     return "\n".join(text_parts)
 
@@ -205,32 +194,24 @@ class Ollama(BaseLlm):
 
     for tool in llm_request.config.tools:
       function_declarations: Optional[Sequence[types.FunctionDeclaration]] = (
-          tool.function_declarations
-          if isinstance(tool, types.Tool)
-          else None
+          tool.function_declarations if isinstance(tool, types.Tool) else None
       )
       if not function_declarations:
         continue
 
       for function_declaration in function_declarations:
-        tools_spec.append(
-            {
-                "type": "function",
-                "function": {
-                    "name": function_declaration.name,
-                    "description": function_declaration.description or "",
-                    "parameters": self._function_parameters_to_json(
-                        function_declaration
-                    ),
-                },
-            }
-        )
+        tools_spec.append({
+            "type": "function",
+            "function": {
+                "name": function_declaration.name,
+                "description": function_declaration.description or "",
+                "parameters": self._function_parameters_to_json(function_declaration),
+            },
+        })
 
     return tools_spec
 
-  def _function_parameters_to_json(
-      self, function_declaration: types.FunctionDeclaration
-  ) -> dict[str, Any]:
+  def _function_parameters_to_json(self, function_declaration: types.FunctionDeclaration) -> dict[str, Any]:
     """Convert function parameters Schema → JSON Schema for Ollama."""
     if function_declaration.parameters is None:
       return {"type": "object", "properties": {}}
@@ -240,15 +221,10 @@ class Ollama(BaseLlm):
     except AttributeError:
       # model_dump is not guaranteed depending on the genai version.
       try:
-        return json.loads(
-            function_declaration.parameters.model_dump_json(exclude_none=True)
-        )
+        return json.loads(function_declaration.parameters.model_dump_json(exclude_none=True))
       except (AttributeError, json.JSONDecodeError, TypeError) as exc:
         logger.debug(
-            (
-                "Failed to convert function parameters, defaulting to empty"
-                " schema: %s"
-            ),
+            "Failed to convert function parameters, defaulting to empty schema: %s",
             exc,
         )
         return {"type": "object", "properties": {}}
@@ -289,9 +265,7 @@ class Ollama(BaseLlm):
     )
 
     try:
-      with urllib.request.urlopen(
-          request, timeout=self.request_timeout
-      ) as response:
+      with urllib.request.urlopen(request, timeout=self.request_timeout) as response:
         response_body = response.read().decode("utf-8")
     except urllib.error.URLError as exc:
       raise RuntimeError(exc.reason) from exc
@@ -329,17 +303,14 @@ class Ollama(BaseLlm):
     for tool_call in message.get("tool_calls", []):
       function_payload = tool_call.get("function", {}) or {}
       name = function_payload.get("name")
-      arguments: Union[str, dict[str, Any], None] = function_payload.get(
-          "arguments"
-      )
+      arguments: Union[str, dict[str, Any], None] = function_payload.get("arguments")
 
       if isinstance(arguments, str):
         try:
           arguments = json.loads(arguments)
         except json.JSONDecodeError:
           logger.warning(
-              "Failed to parse tool call arguments as JSON: %s. "
-              "Defaulting to empty arguments.",
+              "Failed to parse tool call arguments as JSON: %s. Defaulting to empty arguments.",
               arguments,
           )
           arguments = {}
@@ -386,9 +357,7 @@ class Ollama(BaseLlm):
       )
 
     # 4) Model version: prefer Ollama's `model`, fallback to request model.
-    model_version = response_json.get("model") or self._extract_model_name(
-        request_model or self.model
-    )
+    model_version = response_json.get("model") or self._extract_model_name(request_model or self.model)
 
     return LlmResponse(
         content=types.Content(role="model", parts=parts),
