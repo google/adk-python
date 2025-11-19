@@ -79,55 +79,59 @@ def test_bigquery_tool_config_invalid_maximum_bytes_billed():
     BigQueryToolConfig(maximum_bytes_billed=10_485_759)
 
 
-def test_bigquery_tool_config_valid_labels():
+@pytest.mark.parametrize(
+    "labels",
+    [
+        pytest.param(
+            {"environment": "test", "team": "data"},
+            id="valid-labels",
+        ),
+        pytest.param(
+            {},
+            id="empty-labels",
+        ),
+        pytest.param(
+            None,
+            id="none-labels",
+        ),
+    ],
+)
+def test_bigquery_tool_config_valid_labels(labels):
   """Test BigQueryToolConfig accepts valid labels."""
-  config = BigQueryToolConfig(labels={"environment": "test", "team": "data"})
-  assert config.labels == {"environment": "test", "team": "data"}
+  with pytest.warns(UserWarning):
+    config = BigQueryToolConfig(job_labels=labels)
+  assert config.job_labels == labels
 
 
-def test_bigquery_tool_config_empty_labels():
-  """Test BigQueryToolConfig accepts empty labels dictionary."""
-  config = BigQueryToolConfig(labels={})
-  assert config.labels == {}
-
-
-def test_bigquery_tool_config_none_labels():
-  """Test BigQueryToolConfig accepts None for labels."""
-  config = BigQueryToolConfig(labels=None)
-  assert config.labels is None
-
-
-def test_bigquery_tool_config_invalid_labels_type():
-  """Test BigQueryToolConfig raises exception with invalid labels type."""
+@pytest.mark.parametrize(
+    ("labels", "message"),
+    [
+        pytest.param(
+            "invalid",
+            "Input should be a valid dictionary",
+            id="invalid-type",
+        ),
+        pytest.param(
+            {123: "value"},
+            "Input should be a valid string",
+            id="non-str-key",
+        ),
+        pytest.param(
+            {"key": 123},
+            "Input should be a valid string",
+            id="non-str-value",
+        ),
+        pytest.param(
+            {"": "value"},
+            "Label keys cannot be empty",
+            id="empty-label-key",
+        ),
+    ],
+)
+def test_bigquery_tool_config_invalid_labels(labels, message):
+  """Test BigQueryToolConfig raises an exception with invalid labels."""
   with pytest.raises(
       ValueError,
-      match="Input should be a valid dictionary",
+      match=message,
   ):
-    BigQueryToolConfig(labels="invalid")
-
-
-def test_bigquery_tool_config_invalid_label_key_type():
-  """Test BigQueryToolConfig raises exception with non-string label keys."""
-  with pytest.raises(
-      ValueError,
-      match="Input should be a valid string",
-  ):
-    BigQueryToolConfig(labels={123: "value"})
-
-
-def test_bigquery_tool_config_invalid_label_value_type():
-  """Test BigQueryToolConfig raises exception with non-string label values."""
-  with pytest.raises(
-      ValueError,
-      match="Input should be a valid string",
-  ):
-    BigQueryToolConfig(labels={"key": 123})
-
-
-def test_bigquery_tool_config_empty_label_key():
-  """Test BigQueryToolConfig raises exception with empty label key."""
-  with pytest.raises(
-      ValueError,
-      match="Label keys cannot be empty",
-  ):
-    BigQueryToolConfig(labels={"": "value"})
+    BigQueryToolConfig(job_labels=labels)

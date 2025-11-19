@@ -99,7 +99,7 @@ class BigQueryToolConfig(BaseModel):
   locations, see https://cloud.google.com/bigquery/docs/locations.
   """
 
-  labels: Optional[dict[str, str]] = None
+  job_labels: Optional[dict[str, str]] = None
   """Labels to apply to BigQuery jobs for tracking and monitoring.
 
   These labels will be added to all BigQuery jobs executed by the execute_sql
@@ -130,16 +130,12 @@ class BigQueryToolConfig(BaseModel):
       raise ValueError('Application name should not contain spaces.')
     return v
 
-  @field_validator('labels')
+  @field_validator('job_labels')
   @classmethod
-  def validate_labels(cls, v):
-    """Validate the labels dictionary."""
+  def validate_job_labels(cls, v):
+    """Validate that job_labels keys are not empty."""
     if v is not None:
-      if not isinstance(v, dict):
-        raise ValueError('Labels must be a dictionary.')
-      for key, value in v.items():
-        if not isinstance(key, str) or not isinstance(value, str):
-          raise ValueError('Label keys and values must be strings.')
+      for key in v.keys():
         if not key:
           raise ValueError('Label keys cannot be empty.')
     return v
