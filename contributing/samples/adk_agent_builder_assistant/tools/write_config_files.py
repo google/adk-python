@@ -31,6 +31,7 @@ import jsonschema
 import yaml
 
 from ..utils import load_agent_config_schema
+from ..utils.path_normalizer import sanitize_generated_file_path
 from ..utils.resolve_root_directory import resolve_file_path
 from .write_files import write_files
 
@@ -177,8 +178,9 @@ async def write_config_files(
 
   # Step 1: Validate all configs before writing any files
   for file_path, config_content in configs.items():
+    normalized_input_path = sanitize_generated_file_path(file_path)
     file_result = _validate_single_config(
-        file_path, config_content, project_folder_name
+        normalized_input_path, config_content, project_folder_name
     )
     result["files"][file_path] = file_result
 
@@ -197,7 +199,7 @@ async def write_config_files(
           rename_applied,
           sanitized_name,
           rename_warning,
-      ) = _determine_target_file_path(file_path, agent_name)
+      ) = _determine_target_file_path(normalized_input_path, agent_name)
 
       file_result["target_file_path"] = target_path
       file_result["rename_applied"] = rename_applied
