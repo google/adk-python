@@ -39,6 +39,7 @@ LABEL_TO_OWNER = {
     "core": "Jacksunwei",
     "web": "wyf7107",
     "a2a": "seanzhou1023",
+    "bq": "shobsi",
 }
 
 LABEL_GUIDELINES = """
@@ -63,6 +64,7 @@ LABEL_GUIDELINES = """
         sandbox, `agent_engine_id`). If the issue does not explicitly mention
         Agent Engine concepts, do not use this label—choose "core" instead.
       - "a2a": Agent-to-agent workflows, coordination logic, or A2A protocol.
+      - "bq": BigQuery integration or general issues related to BigQuery.
 
       When unsure between labels, prefer the most specific match. If a label
       cannot be assigned confidently, do not call the labeling tool.
@@ -214,6 +216,7 @@ root_agent = Agent(
       - Use "agent engine" only when the issue clearly references Vertex AI Agent Engine deployment artifacts (for example `.agent_engine_config.json`, `ae_ignore`, `agent_engine_id`, or Agent Engine sandbox errors).
       - If it's about Model Context Protocol (e.g. MCP tool, MCP toolset, MCP session management etc.), label it with both "mcp" and "tools".
       - If it's about A2A integrations or workflows, label it with "a2a".
+      - If it's about BigQuery integrations, label it with "bq".
       - If you can't find an appropriate labels for the issue, follow the previous instruction that starts with "IMPORTANT:".
 
       Call the `add_label_and_owner_to_issue` tool to label the issue, which will also assign the issue to the owner of the label.
