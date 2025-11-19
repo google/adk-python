@@ -12,14 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Utility modules for Agent Builder Assistant."""
+"""Agent Builder Assistant for ADK.
 
-from .adk_source_utils import find_adk_source_folder
-from .adk_source_utils import get_adk_schema_path
-from .adk_source_utils import load_agent_config_schema
+This package provides an intelligent assistant for building multi-agent systems
+using YAML configurations. It can be used directly as an agent or integrated
+with ADK tools and web interfaces.
+"""
+from __future__ import annotations
+
+from . import agent  # Import to make agent.root_agent available
+from .agent_builder_assistant import AgentBuilderAssistant
 
 __all__ = [
-    'load_agent_config_schema',
-    'find_adk_source_folder',
-    'get_adk_schema_path',
+    'AgentBuilderAssistant',
+    'agent',  # Make agent module available for adk web discovery
 ]
