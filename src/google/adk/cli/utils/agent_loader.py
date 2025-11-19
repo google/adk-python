@@ -37,7 +37,7 @@ logger = logging.getLogger("google_adk." + __name__)
 
 # Special agents directory for agents with names starting with double underscore
 SPECIAL_AGENTS_DIR = os.path.join(
-    os.path.dirname(__file__), "..", "..", "built_in_agents"
+    os.path.dirname(__file__), "..", "built_in_agents"
 )
 
 
