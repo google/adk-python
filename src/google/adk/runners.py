@@ -292,6 +292,11 @@ class Runner:
       This sync interface is only for local testing and convenience purpose.
       Consider using `run_async` for production usage.
 
+    If event compaction is enabled in the App configuration, it will be
+    performed after all agent events for the current invocation have been
+    yielded. The generator will only finish iterating after event
+    compaction is complete.
+
     Args:
       user_id: The user ID of the session.
       session_id: The session ID of the session.
@@ -349,6 +354,12 @@ class Runner:
       run_config: Optional[RunConfig] = None,
   ) -> AsyncGenerator[Event, None]:
     """Main entry method to run the agent in this runner.
+
+    If event compaction is enabled in the App configuration, it will be
+    performed after all agent events for the current invocation have been
+    yielded. The async generator will only finish iterating after event
+    compaction is complete. However, this does not block new `run_async`
+    calls for subsequent user queries, which can be started concurrently.
 
     Args:
       user_id: The user ID of the session.
@@ -431,16 +442,12 @@ class Runner:
           async for event in agen:
             yield event
         # Run compaction after all events are yielded from the agent.
-        # (We don't compact in the middle of an invocation, we only compact at the end of an invocation.)
+        # (We don't compact in the middle of an invocation, we only compact at
+        # the end of an invocation.)
         if self.app and self.app.events_compaction_config:
-          logger.info('Running event compactor.')
-          # Run compaction in a separate task to avoid blocking the main thread.
-          # So the users can still finish the event loop from the agent while the
-          # compaction is running.
-          asyncio.create_task(
-              _run_compaction_for_sliding_window(
-                  self.app, session, self.session_service
-              )
+          logger.debug('Running event compactor.')
+          await _run_compaction_for_sliding_window(
+              self.app, session, self.session_service
           )
 
     async with Aclosing(_run_with_trace(new_message, invocation_id)) as agen:
