@@ -776,11 +776,7 @@ def to_agent_engine(
       if not os.path.exists(requirements_txt_path):
         click.echo(f'Creating {requirements_txt_path}...')
         with open(requirements_txt_path, 'w', encoding='utf-8') as f:
-          f.write(
-              'google-cloud-aiplatform[adk,agent_engines] @ '
-              'git+https://github.com/googleapis/python-aiplatform.git@'
-              'bf1851e59cb34e63b509a2a610e72691e1c4ca28'
-          )
+          f.write('google-cloud-aiplatform[adk,agent_engines]')
         click.echo(f'Created {requirements_txt_path}')
       agent_config['requirements_file'] = agent_config.get(
           'requirements',

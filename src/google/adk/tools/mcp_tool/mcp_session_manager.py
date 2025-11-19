@@ -25,22 +25,17 @@ import sys
 from typing import Any
 from typing import Dict
 from typing import Optional
-from typing import Protocol
-from typing import runtime_checkable
 from typing import TextIO
 from typing import Union
 
 import anyio
 from pydantic import BaseModel
-from pydantic import ConfigDict
 
 try:
   from mcp import ClientSession
   from mcp import StdioServerParameters
   from mcp.client.sse import sse_client
   from mcp.client.stdio import stdio_client
-  from mcp.client.streamable_http import create_mcp_http_client
-  from mcp.client.streamable_http import McpHttpClientFactory
   from mcp.client.streamable_http import streamablehttp_client
 except ImportError as e:
 
@@ -89,11 +84,6 @@ class SseConnectionParams(BaseModel):
   sse_read_timeout: float = 60 * 5.0
 
 
-@runtime_checkable
-class CheckableMcpHttpClientFactory(McpHttpClientFactory, Protocol):
-  pass
-
-
 class StreamableHTTPConnectionParams(BaseModel):
   """Parameters for the MCP Streamable HTTP connection.
 
@@ -109,18 +99,13 @@ class StreamableHTTPConnectionParams(BaseModel):
         Streamable HTTP server.
       terminate_on_close: Whether to terminate the MCP Streamable HTTP server
         when the connection is closed.
-      httpx_client_factory: Factory function to create a custom HTTPX client. If
-        not provided, a default factory will be used.
   """
-
-  model_config = ConfigDict(arbitrary_types_allowed=True)
 
   url: str
   headers: dict[str, Any] | None = None
   timeout: float = 5.0
   sse_read_timeout: float = 60 * 5.0
   terminate_on_close: bool = True
-  httpx_client_factory: CheckableMcpHttpClientFactory = create_mcp_http_client
 
 
 def retry_on_closed_resource(func):
@@ -301,7 +286,6 @@ class MCPSessionManager:
               seconds=self._connection_params.sse_read_timeout
           ),
           terminate_on_close=self._connection_params.terminate_on_close,
-          httpx_client_factory=self._connection_params.httpx_client_factory,
       )
     else:
       raise ValueError(
