@@ -101,8 +101,10 @@ class LoopAgent(BaseAgent):
             yield event
             if event.actions.escalate:
               should_exit = True
+              break
             if ctx.should_pause_invocation(event):
               pause_invocation = True
+              break
 
         if should_exit or pause_invocation:
           break  # break inner for loop
