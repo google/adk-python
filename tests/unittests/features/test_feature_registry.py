@@ -17,13 +17,13 @@ from __future__ import annotations
 import os
 import warnings
 
-from google.adk.features.feature_registry import _FEATURE_REGISTRY
-from google.adk.features.feature_registry import _get_feature_config
-from google.adk.features.feature_registry import _register_feature
-from google.adk.features.feature_registry import _WARNED_FEATURES
-from google.adk.features.feature_registry import FeatureConfig
-from google.adk.features.feature_registry import FeatureStage
-from google.adk.features.feature_registry import is_feature_enabled
+from google.adk.features._feature_registry import _FEATURE_REGISTRY
+from google.adk.features._feature_registry import _get_feature_config
+from google.adk.features._feature_registry import _register_feature
+from google.adk.features._feature_registry import _WARNED_FEATURES
+from google.adk.features._feature_registry import FeatureConfig
+from google.adk.features._feature_registry import FeatureStage
+from google.adk.features._feature_registry import is_feature_enabled
 import pytest
 
 FEATURE_CONFIG_WIP = FeatureConfig(FeatureStage.WIP, default_on=False)
@@ -44,16 +44,10 @@ def reset_env_and_registry(monkeypatch):
     if key.startswith("ADK_ENABLE_") or key.startswith("ADK_DISABLE_"):
       monkeypatch.delenv(key, raising=False)
 
-  # Clear registry (but keep it as a dict for adding test entries)
-  _FEATURE_REGISTRY.clear()
-
   # Reset warned features set
   _WARNED_FEATURES.clear()
 
   yield
-
-  # Clean up after test
-  _FEATURE_REGISTRY.clear()
 
   # Reset warned features set
   _WARNED_FEATURES.clear()
