@@ -117,23 +117,44 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
     )
     if custom_metadata:
       artifact_version.custom_metadata = custom_metadata
+    # Safely extract fields from `artifact`, supporting both object-like
+    # `types.Part` and plain `dict` payloads. This makes the in-memory
+    # service resilient to callers that send a dict (AgentSpace uploads).
+    def _get_field(obj, name):
+      if isinstance(obj, dict):
+        return obj.get(name)
+      return getattr(obj, name, None)
 
-    if artifact.inline_data is not None:
-      artifact_version.mime_type = artifact.inline_data.mime_type
-    elif artifact.text is not None:
+    inline_data = _get_field(artifact, "inline_data")
+    text = _get_field(artifact, "text")
+    file_data = _get_field(artifact, "file_data")
+
+    if inline_data is not None:
+      # inline_data may be a dict or an object
+      artifact_version.mime_type = (
+          inline_data.get("mime_type")
+          if isinstance(inline_data, dict)
+          else inline_data.mime_type
+      )
+    elif text is not None:
       artifact_version.mime_type = "text/plain"
-    elif artifact.file_data is not None:
+    elif file_data is not None:
+      # If the artifact is an artifact-ref we validate the referenced URI.
       if artifact_util.is_artifact_ref(artifact):
-        if not artifact_util.parse_artifact_uri(artifact.file_data.file_uri):
-          raise ValueError(
-              f"Invalid artifact reference URI: {artifact.file_data.file_uri}"
-          )
-        # If it's a valid artifact URI, we store the artifact part as-is.
-        # And we don't know the mime type until we load it.
+        file_uri = (
+            file_data.get("file_uri") if isinstance(file_data, dict) else file_data.file_uri
+        )
+        if not artifact_util.parse_artifact_uri(file_uri):
+          raise ValueError(f"Invalid artifact reference URI: {file_uri}")
+        # Valid artifact URI: keep part as-is; mime type may be resolved later.
       else:
-        artifact_version.mime_type = artifact.file_data.mime_type
+        artifact_version.mime_type = (
+            file_data.get("mime_type") if isinstance(file_data, dict) else file_data.mime_type
+        )
     else:
-      raise ValueError("Not supported artifact type.")
+      # Fallback for unknown shapes: preserve behavior by storing the
+      # artifact but use a generic binary mime type instead of raising.
+      artifact_version.mime_type = "application/octet-stream"
 
     self.artifacts[path].append(
         _ArtifactEntry(data=artifact, artifact_version=artifact_version)
@@ -167,15 +188,18 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
 
     # Resolve artifact reference if needed.
     artifact_data = artifact_entry.data
+    # Resolve artifact reference if needed. Support dict-shaped stored
+    # artifacts as well as object-like `types.Part`.
     if artifact_util.is_artifact_ref(artifact_data):
-      parsed_uri = artifact_util.parse_artifact_uri(
-          artifact_data.file_data.file_uri
-      )
+      # Extract file_uri safely for dict or object shapes.
+      if isinstance(artifact_data, dict):
+        file_uri = artifact_data.get("file_data", {}).get("file_uri")
+      else:
+        file_uri = getattr(artifact_data.file_data, "file_uri", None)
+
+      parsed_uri = artifact_util.parse_artifact_uri(file_uri)
       if not parsed_uri:
-        raise ValueError(
-            "Invalid artifact reference URI:"
-            f" {artifact_data.file_data.file_uri}"
-        )
+        raise ValueError(f"Invalid artifact reference URI: {file_uri}")
       return await self.load_artifact(
           app_name=parsed_uri.app_name,
           user_id=parsed_uri.user_id,
@@ -184,12 +208,32 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
           version=parsed_uri.version,
       )
 
-    if (
-        artifact_data == types.Part()
-        or artifact_data == types.Part(text="")
-        or (artifact_data.inline_data and not artifact_data.inline_data.data)
-    ):
+    # Determine emptiness for both shapes.
+    def _is_empty(a):
+      if a is None:
+        return True
+      if isinstance(a, dict):
+        # common empty forms: empty text, empty inline_data, or inline_data with no bytes
+        if a.get("text") in (None, "") and not a.get("inline_data") and not a.get("file_data"):
+          return True
+        inline = a.get("inline_data")
+        if inline and isinstance(inline, dict) and not inline.get("data"):
+          return True
+        return False
+      # object-like types.Part
+      try:
+        if a == types.Part() or a == types.Part(text=""):
+          return True
+        inline = getattr(a, "inline_data", None)
+        if inline and not getattr(inline, "data", None):
+          return True
+      except Exception:
+        return False
+      return False
+
+    if _is_empty(artifact_data):
       return None
+
     return artifact_data
 
   @override

@@ -109,8 +109,15 @@ def is_artifact_ref(artifact: types.Part) -> bool:
   Returns:
       True if the artifact part is an artifact reference, False otherwise.
   """
-  return bool(
-      artifact.file_data
-      and artifact.file_data.file_uri
-      and artifact.file_data.file_uri.startswith("artifact://")
-  )
+  # Support both object-like `types.Part` and plain `dict` shapes.
+  file_data = None
+  if isinstance(artifact, dict):
+    file_data = artifact.get("file_data")
+  else:
+    file_data = getattr(artifact, "file_data", None)
+
+  if not file_data:
+    return False
+
+  file_uri = file_data.get("file_uri") if isinstance(file_data, dict) else getattr(file_data, "file_uri", None)
+  return bool(file_uri and isinstance(file_uri, str) and file_uri.startswith("artifact://"))
