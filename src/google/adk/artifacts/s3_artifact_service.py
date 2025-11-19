@@ -16,10 +16,10 @@ from __future__ import annotations
 import json
 import logging
 from typing import Any
-from typing import override
 
 from google.genai import types
 from pydantic import BaseModel
+from typing_extensions import override
 
 from .base_artifact_service import ArtifactVersion
 from .base_artifact_service import BaseArtifactService
@@ -64,7 +64,16 @@ class S3ArtifactService(BaseArtifactService, BaseModel):
     return {k: json.dumps(v) for k, v in (metadata or {}).items()}
 
   def _unflatten_metadata(self, metadata: dict[str, str]) -> dict[str, Any]:
-    return {k: json.loads(v) for k, v in (metadata or {}).items()}
+    results = {}
+    for k, v in (metadata or {}).items():
+      try:
+        results[k] = json.loads(v)
+      except json.JSONDecodeError:
+        logger.warning(
+            f"Failed to decode metadata value for key {k}. Using raw string."
+        )
+        results[k] = v
+    return results
 
   def _file_has_user_namespace(self, filename: str) -> bool:
     return filename.startswith("user:")
