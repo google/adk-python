@@ -887,3 +887,47 @@ class TestAgentLoader:
       # Verify they are different agents
       assert default_agent.name != custom_agent.name
       assert explicit_agent.name == default_agent.name
+
+  def test_windows_style_path_normalization_on_unix(self):
+    """
+    Even on Unix, Windows-style path strings (with backslashes) should not break.
+    Path() on Unix treats backslashes as literal characters, not separators.
+    This test verifies that AgentLoader uses Path() consistently and safely.
+    """
+    windows_path = "C:\\Dev\\adk\\"
+
+    loader = AgentLoader(windows_path)
+
+    # Path(...) must return a valid string and must not crash
+    assert isinstance(loader.agents_dir, str)
+
+    # On Unix, Path("C:\\Dev\\adk\\") → "C:\\Dev\\adk"
+    # (Backslashes preserved, trailing slash removed)
+    assert loader.agents_dir == str(Path(windows_path))
+
+  def test_mixed_separators_are_handled(self):
+    """Windows users often accidentally mix / and \\ separators."""
+    mixed_path = "C:\\Dev/adk\\subdir/"
+
+    loader = AgentLoader(mixed_path)
+
+    # Path resolves extraneous slashes
+    # The normalized path should not have trailing separators
+    assert not loader.agents_dir.endswith("/")
+    assert not loader.agents_dir.endswith("\\")
+
+  def test_error_message_contains_correct_joined_paths(self):
+    """Test that error messages use os.path.join() for consistent path formatting."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+      loader = AgentLoader(temp_dir)
+
+      # Try to load a nonexistent agent
+      agent_name = "missing_agent"
+      try:
+        loader.load_agent(agent_name)
+      except ValueError as e:
+        message = str(e)
+
+        # Should contain the correct joined path using os.path.join()
+        expected_path = os.path.join(temp_dir, agent_name)
+        assert expected_path in message
