@@ -1,4 +1,4 @@
-# Copyright 2025 Ayman Hamed
+# Copyright 2025 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -128,10 +128,11 @@ class Ollama(BaseLlm):
     messages: list[dict[str, str]] = []
 
     # System instruction → first system message.
-    if llm_request.config.system_instruction:
+    system_instruction = llm_request.config.system_instruction
+    if system_instruction:
       messages.append({
           "role": "system",
-          "content": llm_request.config.system_instruction,
+          "content": self._system_instruction_to_text(system_instruction),
       })
 
     # User / assistant / tool messages.
@@ -143,6 +144,31 @@ class Ollama(BaseLlm):
       messages.append({"role": role, "content": message_text})
 
     return messages
+
+  def _system_instruction_to_text(self, system_instruction: Any) -> str:
+    """Normalize `system_instruction` into plain text.
+
+    It may be:
+      * a plain string
+      * a types.Content object
+      * a list/tuple of types.Content and/or strings
+    """
+    # Single Content object
+    if isinstance(system_instruction, types.Content):
+      return self._content_to_text(system_instruction)
+
+    # Sequence of items (e.g. list[Content])
+    if isinstance(system_instruction, (list, tuple)):
+      pieces: list[str] = []
+      for item in system_instruction:
+        if isinstance(item, types.Content):
+          pieces.append(self._content_to_text(item))
+        elif item is not None:
+          pieces.append(str(item))
+      return "\n".join(pieces)
+
+    # Fallback: assume it's already string-like
+    return str(system_instruction)
 
   def _content_to_text(self, content: types.Content) -> str:
     """Flatten a `Content` into plain text for Ollama.
