@@ -25,19 +25,23 @@ import sys
 from typing import Any
 from typing import Dict
 from typing import Optional
+from typing import Protocol
+from typing import runtime_checkable
 from typing import TextIO
 from typing import Union
 
 import anyio
 from pydantic import BaseModel
+from pydantic import ConfigDict
 
 try:
   from mcp import ClientSession
   from mcp import StdioServerParameters
   from mcp.client.sse import sse_client
   from mcp.client.stdio import stdio_client
+  from mcp.client.streamable_http import create_mcp_http_client
+  from mcp.client.streamable_http import McpHttpClientFactory
   from mcp.client.streamable_http import streamablehttp_client
-  from mcp.types import EmptyResult
 except ImportError as e:
 
   if sys.version_info < (3, 10):
@@ -85,6 +89,11 @@ class SseConnectionParams(BaseModel):
   sse_read_timeout: float = 60 * 5.0
 
 
+@runtime_checkable
+class CheckableMcpHttpClientFactory(McpHttpClientFactory, Protocol):
+  pass
+
+
 class StreamableHTTPConnectionParams(BaseModel):
   """Parameters for the MCP Streamable HTTP connection.
 
@@ -100,13 +109,18 @@ class StreamableHTTPConnectionParams(BaseModel):
         Streamable HTTP server.
       terminate_on_close: Whether to terminate the MCP Streamable HTTP server
         when the connection is closed.
+      httpx_client_factory: Factory function to create a custom HTTPX client. If
+        not provided, a default factory will be used.
   """
+
+  model_config = ConfigDict(arbitrary_types_allowed=True)
 
   url: str
   headers: dict[str, Any] | None = None
   timeout: float = 5.0
   sse_read_timeout: float = 60 * 5.0
   terminate_on_close: bool = True
+  httpx_client_factory: CheckableMcpHttpClientFactory = create_mcp_http_client
 
 
 def retry_on_closed_resource(func):
@@ -242,7 +256,7 @@ class MCPSessionManager:
 
     return base_headers
 
-  async def _is_session_disconnected(self, session: ClientSession) -> bool:
+  def _is_session_disconnected(self, session: ClientSession) -> bool:
     """Checks if a session is disconnected or closed.
 
     Args:
@@ -251,24 +265,7 @@ class MCPSessionManager:
     Returns:
         True if the session is disconnected, False otherwise.
     """
-    if session._read_stream._closed or session._write_stream._closed:
-      return True
-
-    try:
-      response = await asyncio.wait_for(session.send_ping(), timeout=5.0)
-      if not isinstance(response, EmptyResult):
-        logger.info(
-            'Session ping returns illegal response %s, treating as'
-            ' disconnected',
-            response,
-        )
-        return True
-      return False
-    except Exception as e:
-      logger.info(
-          'Session ping failed with error %s, treating as disconnected', e
-      )
-      return True
+    return session._read_stream._closed or session._write_stream._closed
 
   def _create_client(self, merged_headers: Optional[Dict[str, str]] = None):
     """Creates an MCP client based on the connection parameters.
@@ -304,6 +301,7 @@ class MCPSessionManager:
               seconds=self._connection_params.sse_read_timeout
           ),
           terminate_on_close=self._connection_params.terminate_on_close,
+          httpx_client_factory=self._connection_params.httpx_client_factory,
       )
     else:
       raise ValueError(
@@ -343,7 +341,7 @@ class MCPSessionManager:
         session, exit_stack = self._sessions[session_key]
 
         # Check if the existing session is still connected
-        if not await self._is_session_disconnected(session):
+        if not self._is_session_disconnected(session):
           # Session is still good, return it
           return session
         else:

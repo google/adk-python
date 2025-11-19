@@ -47,7 +47,9 @@ class ForwardingArtifactService(BaseArtifactService):
       custom_metadata: Optional[dict[str, Any]] = None,
   ) -> int:
     return await self.tool_context.save_artifact(
-        filename=filename, artifact=artifact
+        filename=filename,
+        artifact=artifact,
+        custom_metadata=custom_metadata,
     )
 
   @override
