@@ -117,17 +117,12 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
     )
     if custom_metadata:
       artifact_version.custom_metadata = custom_metadata
-    # Safely extract fields from `artifact`, supporting both object-like
-    # `types.Part` and plain `dict` payloads. This makes the in-memory
-    # service resilient to callers that send a dict (AgentSpace uploads).
-    def _get_field(obj, name):
-      if isinstance(obj, dict):
-        return obj.get(name)
-      return getattr(obj, name, None)
-
-    inline_data = _get_field(artifact, "inline_data")
-    text = _get_field(artifact, "text")
-    file_data = _get_field(artifact, "file_data")
+    # Use shared helpers to extract fields and URIs from both object-like
+    # and dict-shaped artifacts. Centralizing this logic in `artifact_util`
+    # avoids duplication and keeps behaviour consistent across modules.
+    inline_data = artifact_util.get_part_field(artifact, "inline_data")
+    text = artifact_util.get_part_field(artifact, "text")
+    file_data = artifact_util.get_part_field(artifact, "file_data")
 
     if inline_data is not None:
       # inline_data may be a dict or an object
@@ -141,11 +136,9 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
     elif file_data is not None:
       # If the artifact is an artifact-ref we validate the referenced URI.
       if artifact_util.is_artifact_ref(artifact):
-        file_uri = (
-            file_data.get("file_uri") if isinstance(file_data, dict) else file_data.file_uri
-        )
-        if not artifact_util.parse_artifact_uri(file_uri):
-          raise ValueError(f"Invalid artifact reference URI: {file_uri}")
+          file_uri = artifact_util.get_file_uri(artifact)
+          if not file_uri or not artifact_util.parse_artifact_uri(file_uri):
+            raise ValueError(f"Invalid artifact reference URI: {file_uri}")
         # Valid artifact URI: keep part as-is; mime type may be resolved later.
       else:
         artifact_version.mime_type = (
@@ -155,6 +148,10 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
       # Fallback for unknown shapes: preserve behavior by storing the
       # artifact but use a generic binary mime type instead of raising.
       artifact_version.mime_type = "application/octet-stream"
+      logger.debug(
+          "save_artifact: unknown artifact shape, falling back to application/octet-stream for %s",
+          path,
+      )
 
     self.artifacts[path].append(
         _ArtifactEntry(data=artifact, artifact_version=artifact_version)
