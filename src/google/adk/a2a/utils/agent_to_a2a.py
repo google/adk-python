@@ -30,6 +30,7 @@ except ImportError as e:
   else:
     raise e
 
+from typing import Any
 from typing import Optional
 from typing import Union
 
@@ -91,6 +92,7 @@ def to_a2a(
     protocol: str = "http",
     agent_card: Optional[Union[AgentCard, str]] = None,
     runner: Optional[Runner] = None,
+    task_store: Optional[Any] = None,
 ) -> Starlette:
   """Convert an ADK agent to a A2A Starlette application.
 
@@ -104,6 +106,9 @@ def to_a2a(
                   agent.
       runner: Optional pre-built Runner object. If not provided, a default
               runner will be created using in-memory services.
+      task_store: Optional task store instance. If not provided, an
+                  InMemoryTaskStore will be created. Must be compatible with
+                  DefaultRequestHandler's task_store parameter.
 
   Returns:
       A Starlette application that can be run with uvicorn
@@ -115,6 +120,11 @@ def to_a2a(
 
       # Or with custom agent card:
       app = to_a2a(agent, agent_card=my_custom_agent_card)
+
+      # Or with custom task store:
+      from a2a.server.tasks import MyCustomTaskStore
+      custom_store = MyCustomTaskStore()
+      app = to_a2a(agent, task_store=custom_store)
   """
   # Set up ADK logging to ensure logs are visible when using uvicorn directly
   setup_adk_logger(logging.INFO)
@@ -132,7 +142,8 @@ def to_a2a(
     )
 
   # Create A2A components
-  task_store = InMemoryTaskStore()
+  if task_store is None:
+    task_store = InMemoryTaskStore()
 
   agent_executor = A2aAgentExecutor(
       runner=runner or create_runner,
