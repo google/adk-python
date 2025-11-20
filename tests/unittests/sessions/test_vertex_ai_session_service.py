@@ -33,7 +33,6 @@ from google.adk.sessions.vertex_ai_session_service import VertexAiSessionService
 from google.api_core import exceptions as api_core_exceptions
 from google.genai import types as genai_types
 import pytest
-import this
 
 MOCK_SESSION_JSON_1 = {
     'name': (

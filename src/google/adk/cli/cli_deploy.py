@@ -918,35 +918,6 @@ def to_agent_engine(
           'so it is no longer necessary to absolutize imports.'
       )
     click.echo('Deploying to agent engine...')
-    agent_engine = agent_engines.ModuleAgent(
-        module_name=adk_app,
-        agent_name=ADK_APP_OBJECT_NAME,
-        register_operations={
-            '': [
-                'get_session',
-                'list_sessions',
-                'create_session',
-                'delete_session',
-            ],
-            'async': [
-                'async_get_session',
-                'async_list_sessions',
-                'async_create_session',
-                'async_delete_session',
-            ],
-            'async_stream': ['async_stream_query'],
-            'stream': ['stream_query', 'streaming_agent_run_with_events'],
-        },
-        sys_paths=[temp_folder[1:]],
-    )
-    agent_config = dict(
-        agent_engine=agent_engine,
-        requirements=requirements_file,
-        display_name=display_name,
-        description=description,
-        env_vars=env_vars,
-        extra_packages=[temp_folder],
-    )
     agent_config['entrypoint_module'] = f'{temp_folder}.{adk_app}'
     agent_config['entrypoint_object'] = 'adk_app'
     agent_config['source_packages'] = [temp_folder]
