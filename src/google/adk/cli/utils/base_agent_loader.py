@@ -36,6 +36,14 @@ class BaseAgentLoader(ABC):
   def list_agents(self) -> list[str]:
     """Lists all agents available in the agent loader in alphabetical order."""
 
-  @abstractmethod
   def list_agents_detailed(self) -> list[dict[str, Any]]:
-    """Lists all agents with detailed metadata (name, display name, description, type)."""
+    agent_names = self.list_agents()
+    return [
+        {
+            'name': name,
+            'display_name': None,
+            'description': None,
+            'type': None,
+        }
+        for name in agent_names
+    ]
