@@ -91,7 +91,7 @@ def to_a2a(
     protocol: str = "http",
     agent_card: Optional[Union[AgentCard, str]] = None,
     runner: Optional[Runner] = None,
-    task_store: Optional["TaskStore"] = None,
+    task_store: Optional[TaskStore] = None,
 ) -> Starlette:
   """Convert an ADK agent to a A2A Starlette application.
 
