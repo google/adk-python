@@ -30,7 +30,6 @@ except ImportError as e:
   else:
     raise e
 
-from typing import Any
 from typing import Optional
 from typing import Union
 
