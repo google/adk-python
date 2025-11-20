@@ -19,15 +19,18 @@ This version uses the synchronous Firestore client to prevent event loop errors.
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
+from datetime import timezone
 import logging
-from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any
+from typing import Dict
+from typing import Optional
 
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
+from google.genai.types import Content
+from google.genai.types import GroundingMetadata
 from typing_extensions import override
-
-from google.genai.types import Content, GroundingMetadata
 
 from ..events.event import Event
 from ..events.event_actions import EventActions
