@@ -93,6 +93,4 @@ async def test_process_llm_request_failure_with_multiple_tools_gemini_1_models()
     await tool.process_llm_request(
         tool_context=tool_context, llm_request=llm_request
     )
-  assert 'can not be used with other tools in Gemini 1.x.' in str(
-      exc_info.value
-  )
+  assert 'cannot be used with other tools in Gemini 1.x.' in str(exc_info.value)

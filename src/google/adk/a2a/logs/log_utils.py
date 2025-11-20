@@ -20,11 +20,10 @@ import json
 import sys
 
 try:
+  from a2a.client import ClientEvent as A2AClientEvent
   from a2a.types import DataPart as A2ADataPart
   from a2a.types import Message as A2AMessage
   from a2a.types import Part as A2APart
-  from a2a.types import SendMessageRequest
-  from a2a.types import SendMessageResponse
   from a2a.types import Task as A2ATask
   from a2a.types import TextPart as A2ATextPart
 except ImportError as e:
@@ -47,6 +46,16 @@ def _is_a2a_task(obj) -> bool:
     return isinstance(obj, A2ATask)
   except (TypeError, AttributeError):
     return type(obj).__name__ == "Task" and hasattr(obj, "status")
+
+
+def _is_a2a_client_event(obj) -> bool:
+  """Check if an object is an A2A Client Event (Task, UpdateEvent) tuple."""
+  try:
+    return isinstance(obj, tuple) and _is_a2a_task(obj[0])
+  except (TypeError, AttributeError):
+    return (
+        hasattr(obj, "__getitem__") and len(obj) == 2 and _is_a2a_task(obj[0])
+    )
 
 
 def _is_a2a_message(obj) -> bool:
@@ -114,7 +123,7 @@ def build_message_part_log(part: A2APart) -> str:
   return part_content
 
 
-def build_a2a_request_log(req: SendMessageRequest) -> str:
+def build_a2a_request_log(req: A2AMessage) -> str:
   """Builds a structured log representation of an A2A request.
 
   Args:
@@ -125,100 +134,70 @@ def build_a2a_request_log(req: SendMessageRequest) -> str:
   """
   # Message parts logs
   message_parts_logs = []
-  if req.params.message.parts:
-    for i, part in enumerate(req.params.message.parts):
+  if req.parts:
+    for i, part in enumerate(req.parts):
       part_log = build_message_part_log(part)
       # Replace any internal newlines with indented newlines to maintain formatting
       part_log_formatted = part_log.replace("\n", "\n  ")
       message_parts_logs.append(f"Part {i}: {part_log_formatted}")
 
-  # Configuration logs
-  config_log = "None"
-  if req.params.configuration:
-    config_data = {
-        "accepted_output_modes": req.params.configuration.accepted_output_modes,
-        "blocking": req.params.configuration.blocking,
-        "history_length": req.params.configuration.history_length,
-        "push_notification_config": bool(
-            req.params.configuration.push_notification_config
-        ),
-    }
-    config_log = json.dumps(config_data, indent=2)
-
   # Build message metadata section
   message_metadata_section = ""
-  if req.params.message.metadata:
+  if req.metadata:
     message_metadata_section = f"""
   Metadata:
-  {json.dumps(req.params.message.metadata, indent=2).replace(chr(10), chr(10) + '  ')}"""
+  {json.dumps(req.metadata, indent=2).replace(chr(10), chr(10) + '  ')}"""
 
   # Build optional sections
   optional_sections = []
 
-  if req.params.metadata:
+  if req.metadata:
     optional_sections.append(
         f"""-----------------------------------------------------------
 Metadata:
-{json.dumps(req.params.metadata, indent=2)}"""
+{json.dumps(req.metadata, indent=2)}"""
     )
 
   optional_sections_str = _NEW_LINE.join(optional_sections)
 
   return f"""
-A2A Request:
------------------------------------------------------------
-Request ID: {req.id}
-Method: {req.method}
-JSON-RPC: {req.jsonrpc}
+A2A Send Message Request:
 -----------------------------------------------------------
 Message:
-  ID: {req.params.message.message_id}
-  Role: {req.params.message.role}
-  Task ID: {req.params.message.task_id}
-  Context ID: {req.params.message.context_id}{message_metadata_section}
+  ID: {req.message_id}
+  Role: {req.role}
+  Task ID: {req.task_id}
+  Context ID: {req.context_id}{message_metadata_section}
 -----------------------------------------------------------
 Message Parts:
 {_NEW_LINE.join(message_parts_logs) if message_parts_logs else "No parts"}
 -----------------------------------------------------------
-Configuration:
-{config_log}
 {optional_sections_str}
 -----------------------------------------------------------
 """
 
 
-def build_a2a_response_log(resp: SendMessageResponse) -> str:
+def build_a2a_response_log(resp: A2AClientEvent | A2AMessage) -> str:
   """Builds a structured log representation of an A2A response.
 
   Args:
-    resp: The A2A SendMessageResponse to log.
+    resp: The A2A SendMessage Response to log.
 
   Returns:
     A formatted string representation of the response.
   """
-  # Handle error responses
-  if hasattr(resp.root, "error"):
-    return f"""
-A2A Response:
------------------------------------------------------------
-Type: ERROR
-Error Code: {resp.root.error.code}
-Error Message: {resp.root.error.message}
-Error Data: {json.dumps(resp.root.error.data, indent=2) if resp.root.error.data else "None"}
------------------------------------------------------------
-Response ID: {resp.root.id}
-JSON-RPC: {resp.root.jsonrpc}
------------------------------------------------------------
-"""
 
   # Handle success responses
-  result = resp.root.result
+  result = resp
   result_type = type(result).__name__
+  if result_type == "tuple":
+    result_type = "ClientEvent"
 
   # Build result details based on type
   result_details = []
 
-  if _is_a2a_task(result):
+  if _is_a2a_client_event(result):
+    result = result[0]
     result_details.extend([
         f"Task ID: {result.id}",
         f"Context ID: {result.context_id}",
@@ -341,8 +320,5 @@ Status Message:
 -----------------------------------------------------------
 History:
 {history_section}
------------------------------------------------------------
-Response ID: {resp.root.id}
-JSON-RPC: {resp.root.jsonrpc}
 -----------------------------------------------------------
 """

@@ -41,10 +41,10 @@ from ...agents.loop_agent import LoopAgent
 from ...agents.parallel_agent import ParallelAgent
 from ...agents.sequential_agent import SequentialAgent
 from ...tools.example_tool import ExampleTool
-from ...utils.feature_decorator import experimental
+from ..experimental import a2a_experimental
 
 
-@experimental
+@a2a_experimental
 class AgentCardBuilder:
   """Builder class for creating agent cards from ADK agents.
 
@@ -473,7 +473,7 @@ def _get_default_description(agent: BaseAgent) -> str:
 async def _extract_examples_from_agent(
     agent: BaseAgent,
 ) -> Optional[List[Dict]]:
-  """Extract examples from example_tool if configured, otherwise from agent instruction."""
+  """Extract examples from example_tool if configured; otherwise, from agent instruction."""
   if not isinstance(agent, LlmAgent):
     return None
 

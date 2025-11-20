@@ -125,7 +125,7 @@ def get_github_pr_info_http(pr_number: int) -> str | None:
 system_prompt = """
 You are a helpful assistant to generate reasonable descriptions for pull requests for software engineers.
 
-The descritions should not be too short (e.g.: less than 3 words), or too long (e.g.: more than 30 words).
+The descriptions should not be too short (e.g.: less than 3 words), or too long (e.g.: more than 30 words).
 
 The generated description should start with `chore`, `docs`, `feat`, `fix`, `test`, or `refactor`.
 `feat` stands for a new feature.

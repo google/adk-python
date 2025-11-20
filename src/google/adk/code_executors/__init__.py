@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 import logging
 
 from .base_code_executor import BaseCodeExecutor
@@ -26,26 +28,52 @@ __all__ = [
     'BuiltInCodeExecutor',
     'CodeExecutorContext',
     'UnsafeLocalCodeExecutor',
+    'VertexAiCodeExecutor',
+    'ContainerCodeExecutor',
+    'GkeCodeExecutor',
+    'AgentEngineSandboxCodeExecutor',
 ]
 
-try:
-  from .vertex_ai_code_executor import VertexAiCodeExecutor
 
-  __all__.append('VertexAiCodeExecutor')
-except ImportError:
-  logger.debug(
-      'The Vertex sdk is not installed. If you want to use the Vertex Code'
-      ' Interpreter with agents, please install it. If not, you can ignore this'
-      ' warning.'
-  )
+def __getattr__(name: str):
+  if name == 'VertexAiCodeExecutor':
+    try:
+      from .vertex_ai_code_executor import VertexAiCodeExecutor
 
-try:
-  from .container_code_executor import ContainerCodeExecutor
+      return VertexAiCodeExecutor
+    except ImportError as e:
+      raise ImportError(
+          'VertexAiCodeExecutor requires additional dependencies. '
+          'Please install with: pip install "google-adk[extensions]"'
+      ) from e
+  elif name == 'ContainerCodeExecutor':
+    try:
+      from .container_code_executor import ContainerCodeExecutor
 
-  __all__.append('ContainerCodeExecutor')
-except ImportError:
-  logger.debug(
-      'The docker sdk is not installed. If you want to use the Container Code'
-      ' Executor with agents, please install it. If not, you can ignore this'
-      ' warning.'
-  )
+      return ContainerCodeExecutor
+    except ImportError as e:
+      raise ImportError(
+          'ContainerCodeExecutor requires additional dependencies. '
+          'Please install with: pip install "google-adk[extensions]"'
+      ) from e
+  elif name == 'GkeCodeExecutor':
+    try:
+      from .gke_code_executor import GkeCodeExecutor
+
+      return GkeCodeExecutor
+    except ImportError as e:
+      raise ImportError(
+          'GkeCodeExecutor requires additional dependencies. '
+          'Please install with: pip install "google-adk[extensions]"'
+      ) from e
+  elif name == 'AgentEngineSandboxCodeExecutor':
+    try:
+      from .agent_engine_sandbox_code_executor import AgentEngineSandboxCodeExecutor
+
+      return AgentEngineSandboxCodeExecutor
+    except ImportError as e:
+      raise ImportError(
+          'AgentEngineSandboxCodeExecutor requires additional dependencies. '
+          'Please install with: pip install "google-adk[extensions]"'
+      ) from e
+  raise AttributeError(f"module '{__name__}' has no attribute '{name}'")

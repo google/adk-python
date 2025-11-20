@@ -26,9 +26,7 @@ import yaml
         pytest.param("test_data/ask_data_insights_penguins_highest_mass.yaml"),
     ],
 )
-@mock.patch(
-    "google.adk.tools.bigquery.data_insights_tool.requests.Session.post"
-)
+@mock.patch.object(data_insights_tool.requests.Session, "post")
 def test_ask_data_insights_pipeline_from_file(mock_post, case_file_path):
   """Runs a full integration test for the ask_data_insights pipeline using data from a specific file."""
   # 1. Construct the full, absolute path to the data file
@@ -65,7 +63,7 @@ def test_ask_data_insights_pipeline_from_file(mock_post, case_file_path):
   assert result == expected_final_list
 
 
-@mock.patch("google.adk.tools.bigquery.data_insights_tool._get_stream")
+@mock.patch.object(data_insights_tool, "_get_stream")
 def test_ask_data_insights_success(mock_get_stream):
   """Tests the success path of ask_data_insights using decorators."""
   # 1. Configure the behavior of the mocked functions
@@ -74,8 +72,8 @@ def test_ask_data_insights_success(mock_get_stream):
   # 2. Create mock inputs for the function call
   mock_creds = mock.Mock()
   mock_creds.token = "fake-token"
-  mock_config = mock.Mock()
-  mock_config.max_query_result_rows = 100
+  mock_settings = mock.Mock()
+  mock_settings.max_query_result_rows = 100
 
   # 3. Call the function under test
   result = data_insights_tool.ask_data_insights(
@@ -83,7 +81,7 @@ def test_ask_data_insights_success(mock_get_stream):
       user_query_with_context="test query",
       table_references=[],
       credentials=mock_creds,
-      config=mock_config,
+      settings=mock_settings,
   )
 
   # 4. Assert the results are as expected
@@ -92,7 +90,7 @@ def test_ask_data_insights_success(mock_get_stream):
   mock_get_stream.assert_called_once()
 
 
-@mock.patch("google.adk.tools.bigquery.data_insights_tool._get_stream")
+@mock.patch.object(data_insights_tool, "_get_stream")
 def test_ask_data_insights_handles_exception(mock_get_stream):
   """Tests the exception path of ask_data_insights using decorators."""
   # 1. Configure one of the mocks to raise an error
@@ -101,7 +99,7 @@ def test_ask_data_insights_handles_exception(mock_get_stream):
   # 2. Create mock inputs
   mock_creds = mock.Mock()
   mock_creds.token = "fake-token"
-  mock_config = mock.Mock()
+  mock_settings = mock.Mock()
 
   # 3. Call the function
   result = data_insights_tool.ask_data_insights(
@@ -109,7 +107,7 @@ def test_ask_data_insights_handles_exception(mock_get_stream):
       user_query_with_context="test query",
       table_references=[],
       credentials=mock_creds,
-      config=mock_config,
+      settings=mock_settings,
   )
 
   # 4. Assert that the error was caught and formatted correctly

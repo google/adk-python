@@ -15,8 +15,9 @@
 from __future__ import annotations
 
 from google.adk.tools.bigquery import BigQueryCredentialsConfig
-from google.adk.tools.bigquery import BigQueryTool
 from google.adk.tools.bigquery import BigQueryToolset
+from google.adk.tools.bigquery.config import BigQueryToolConfig
+from google.adk.tools.google_tool import GoogleTool
 import pytest
 
 
@@ -30,19 +31,30 @@ async def test_bigquery_toolset_tools_default():
   credentials_config = BigQueryCredentialsConfig(
       client_id="abc", client_secret="def"
   )
-  toolset = BigQueryToolset(credentials_config=credentials_config)
+  toolset = BigQueryToolset(
+      credentials_config=credentials_config, bigquery_tool_config=None
+  )
+  # Verify that the tool config is initialized to default values.
+  assert isinstance(toolset._tool_settings, BigQueryToolConfig)  # pylint: disable=protected-access
+  assert toolset._tool_settings.__dict__ == BigQueryToolConfig().__dict__  # pylint: disable=protected-access
+
   tools = await toolset.get_tools()
   assert tools is not None
 
-  assert len(tools) == 5
-  assert all([isinstance(tool, BigQueryTool) for tool in tools])
+  assert len(tools) == 10
+  assert all([isinstance(tool, GoogleTool) for tool in tools])
 
   expected_tool_names = set([
       "list_dataset_ids",
       "get_dataset_info",
       "list_table_ids",
       "get_table_info",
+      "get_job_info",
       "execute_sql",
+      "ask_data_insights",
+      "forecast",
+      "analyze_contribution",
+      "detect_anomalies",
   ])
   actual_tool_names = set([tool.name for tool in tools])
   assert actual_tool_names == expected_tool_names
@@ -77,7 +89,7 @@ async def test_bigquery_toolset_tools_selective(selected_tools):
   assert tools is not None
 
   assert len(tools) == len(selected_tools)
-  assert all([isinstance(tool, BigQueryTool) for tool in tools])
+  assert all([isinstance(tool, GoogleTool) for tool in tools])
 
   expected_tool_names = set(selected_tools)
   actual_tool_names = set([tool.name for tool in tools])
@@ -114,7 +126,7 @@ async def test_bigquery_toolset_unknown_tool(selected_tools, returned_tools):
   assert tools is not None
 
   assert len(tools) == len(returned_tools)
-  assert all([isinstance(tool, BigQueryTool) for tool in tools])
+  assert all([isinstance(tool, GoogleTool) for tool in tools])
 
   expected_tool_names = set(returned_tools)
   actual_tool_names = set([tool.name for tool in tools])

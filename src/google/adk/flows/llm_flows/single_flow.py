@@ -14,14 +14,19 @@
 
 """Implementation of single flow."""
 
+from __future__ import annotations
+
 import logging
 
 from . import _code_execution
 from . import _nl_planning
+from . import _output_schema_processor
 from . import basic
 from . import contents
+from . import context_cache_processor
 from . import identity
 from . import instructions
+from . import request_confirmation
 from ...auth import auth_preprocessor
 from .base_llm_flow import BaseLlmFlow
 
@@ -40,9 +45,12 @@ class SingleFlow(BaseLlmFlow):
     self.request_processors += [
         basic.request_processor,
         auth_preprocessor.request_processor,
+        request_confirmation.request_processor,
         instructions.request_processor,
         identity.request_processor,
         contents.request_processor,
+        # Context cache processor sets up cache config and finds existing cache metadata
+        context_cache_processor.request_processor,
         # Some implementations of NL Planning mark planning contents as thoughts
         # in the post processor. Since these need to be unmarked, NL Planning
         # should be after contents.
@@ -50,6 +58,9 @@ class SingleFlow(BaseLlmFlow):
         # Code execution should be after the contents as it mutates the contents
         # to optimize data files.
         _code_execution.request_processor,
+        # Output schema processor add system instruction and set_model_response
+        # when both output_schema and tools are present.
+        _output_schema_processor.request_processor,
     ]
     self.response_processors += [
         _nl_planning.response_processor,

@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 from typing import Any
 
 from pydantic import alias_generators
@@ -23,17 +25,7 @@ from ..events.event import Event
 
 
 class Session(BaseModel):
-  """Represents a series of interactions between a user and agents.
-
-  Attributes:
-    id: The unique identifier of the session.
-    app_name: The name of the app.
-    user_id: The id of the user.
-    state: The state of the session.
-    events: The events of the session, e.g. user input, model response, function
-      call/response, etc.
-    last_update_time: The last update time of the session.
-  """
+  """Represents a series of interactions between a user and agents."""
 
   model_config = ConfigDict(
       extra='forbid',

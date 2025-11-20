@@ -14,7 +14,7 @@
 
 from unittest import mock
 
-from google.adk.tools.bigquery.bigquery_credentials import BigQueryCredentialsConfig
+from google.adk.tools.bigquery import BigQueryCredentialsConfig
 # Mock the Google OAuth and API dependencies
 import google.auth.credentials
 import google.oauth2.credentials
@@ -36,7 +36,6 @@ class TestBigQueryCredentials:
     to pass them directly without needing to provide client ID/secret.
     """
     # Create a mock auth credentials object
-    # auth_creds = google.auth.credentials.Credentials()
     auth_creds = mock.create_autospec(
         google.auth.credentials.Credentials, instance=True
     )
@@ -171,3 +170,12 @@ class TestBigQueryCredentials:
         ),
     ):
       BigQueryCredentialsConfig()
+
+  def test_invalid_property_raises_error(self):
+    """Test BigQueryCredentialsConfig raises exception when setting invalid property."""
+    with pytest.raises(ValueError):
+      BigQueryCredentialsConfig(
+          client_id="test_client_id",
+          client_secret="test_client_secret",
+          non_existent_field="some value",
+      )

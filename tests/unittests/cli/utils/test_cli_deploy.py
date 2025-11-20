@@ -23,7 +23,6 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
-import tempfile
 import types
 from typing import Any
 from typing import Callable
@@ -81,14 +80,6 @@ def reload_cli_deploy():
 def agent_dir(tmp_path: Path) -> Callable[[bool, bool], Path]:
   """
   Return a factory that creates a dummy agent directory tree.
-
-  Args:
-    tmp_path: The temporary path fixture provided by pytest.
-
-  Returns:
-    A factory function that takes two booleans:
-    - include_requirements: Whether to include a `requirements.txt` file.
-    - include_env: Whether to include a `.env` file.
   """
 
   def _factory(include_requirements: bool, include_env: bool) -> Path:
@@ -103,36 +94,6 @@ def agent_dir(tmp_path: Path) -> Callable[[bool, bool], Path]:
     return base
 
   return _factory
-
-
-@pytest.fixture
-def mock_vertex_ai(
-    monkeypatch: pytest.MonkeyPatch,
-) -> Generator[mock.MagicMock, None, None]:
-  """Mocks the entire vertexai module and its sub-modules."""
-  mock_vertexai = mock.MagicMock()
-  mock_agent_engines = mock.MagicMock()
-  mock_vertexai.agent_engines = mock_agent_engines
-  mock_vertexai.init = mock.MagicMock()
-  mock_agent_engines.create = mock.MagicMock()
-  mock_agent_engines.ModuleAgent = mock.MagicMock(
-      return_value="mock-agent-engine-object"
-  )
-
-  sys.modules["vertexai"] = mock_vertexai
-  sys.modules["vertexai.agent_engines"] = mock_agent_engines
-
-  # Also mock dotenv
-  mock_dotenv = mock.MagicMock()
-  mock_dotenv.dotenv_values = mock.MagicMock(return_value={"FILE_VAR": "value"})
-  sys.modules["dotenv"] = mock_dotenv
-
-  yield mock_vertexai
-
-  # Cleanup: remove mocks from sys.modules
-  del sys.modules["vertexai"]
-  del sys.modules["vertexai.agent_engines"]
-  del sys.modules["dotenv"]
 
 
 # _resolve_project
@@ -211,8 +172,6 @@ def test_resolve_project_from_gcloud_fails(
         ("1.2.0", None, "gs://a", None, " --artifact_storage_uri=gs://a"),
     ],
 )
-
-# _get_service_option_by_adk_version
 def test_get_service_option_by_adk_version(
     adk_version: str,
     session_uri: str | None,
@@ -510,6 +469,13 @@ def test_to_agent_engine_happy_path(
 
   # 7. Verify cleanup
   assert str(rmtree_recorder.get_last_call_args()[0]) == str(temp_folder)
+  actual = cli_deploy._get_service_option_by_adk_version(
+      adk_version=adk_version,
+      session_uri=session_uri,
+      artifact_uri=artifact_uri,
+      memory_uri=memory_uri,
+  )
+  assert actual.rstrip() == expected.rstrip()
 
 
 @pytest.mark.usefixtures("mock_vertex_ai")
@@ -624,40 +590,22 @@ def test_to_gke_happy_path(
 ) -> None:
   """
   Tests the happy path for the `to_gke` function.
-
-  Verifies:
-  1. Source files are copied and Dockerfile is created.
-  2. `gcloud builds submit` is called to build the image.
-  3. `deployment.yaml` is created with the correct content.
-  4. `gcloud container get-credentials` and `kubectl apply` are called.
-  5. Cleanup is performed.
   """
   src_dir = agent_dir(include_requirements, False)
   run_recorder = _Recorder()
   rmtree_recorder = _Recorder()
 
   def mock_subprocess_run(*args, **kwargs):
-    # We still use the recorder to check which commands were called
     run_recorder(*args, **kwargs)
-
-    # The command is the first positional argument, e.g., ['kubectl', 'apply', ...]
     command_list = args[0]
-
-    # Check if this is the 'kubectl apply' call
     if command_list and command_list[0:2] == ["kubectl", "apply"]:
-      # If it is, return a fake process object with a .stdout attribute
-      # This mimics the real output from kubectl.
       fake_stdout = "deployment.apps/gke-svc created\nservice/gke-svc created"
       return types.SimpleNamespace(stdout=fake_stdout)
-
-    # For all other subprocess.run calls (like 'gcloud builds submit'),
-    # we don't need a return value, so the default None is fine.
     return None
 
   monkeypatch.setattr(subprocess, "run", mock_subprocess_run)
   monkeypatch.setattr(shutil, "rmtree", rmtree_recorder)
 
-  # Execute
   cli_deploy.to_gke(
       agent_folder=str(src_dir),
       project="gke-proj",
@@ -676,17 +624,14 @@ def test_to_gke_happy_path(
       artifact_service_uri="gs://gke-bucket",
   )
 
-  # 1. Verify Dockerfile (basic check)
   dockerfile_path = tmp_path / "Dockerfile"
   assert dockerfile_path.is_file()
   dockerfile_content = dockerfile_path.read_text()
   assert "CMD adk web --port=9090" in dockerfile_content
   assert "RUN pip install google-adk==1.2.0" in dockerfile_content
 
-  # 2. Verify command executions by checking each recorded call
   assert len(run_recorder.calls) == 3, "Expected 3 subprocess calls"
 
-  # Call 1: gcloud builds submit
   build_args = run_recorder.calls[0][0][0]
   expected_build_args = [
       "gcloud",
@@ -700,7 +645,6 @@ def test_to_gke_happy_path(
   ]
   assert build_args == expected_build_args
 
-  # Call 2: gcloud container clusters get-credentials
   creds_args = run_recorder.calls[1][0][0]
   expected_creds_args = [
       "gcloud",
@@ -720,12 +664,10 @@ def test_to_gke_happy_path(
       in dockerfile_content
   )
 
-  # Call 3: kubectl apply
   apply_args = run_recorder.calls[2][0][0]
   expected_apply_args = ["kubectl", "apply", "-f", str(tmp_path)]
   assert apply_args == expected_apply_args
 
-  # 3. Verify deployment.yaml content
   deployment_yaml_path = tmp_path / "deployment.yaml"
   assert deployment_yaml_path.is_file()
   yaml_content = deployment_yaml_path.read_text()

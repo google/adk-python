@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
+from datetime import timedelta
 import hashlib
 from io import StringIO
 import json
@@ -30,7 +32,7 @@ pytestmark = pytest.mark.skipif(
 # Import dependencies with version checking
 try:
   from google.adk.tools.mcp_tool.mcp_session_manager import MCPSessionManager
-  from google.adk.tools.mcp_tool.mcp_session_manager import retry_on_closed_resource
+  from google.adk.tools.mcp_tool.mcp_session_manager import retry_on_errors
   from google.adk.tools.mcp_tool.mcp_session_manager import SseConnectionParams
   from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
   from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
@@ -42,7 +44,7 @@ except ImportError as e:
       pass
 
     MCPSessionManager = DummyClass
-    retry_on_closed_resource = lambda x: x
+    retry_on_errors = lambda x: x
     SseConnectionParams = DummyClass
     StdioConnectionParams = DummyClass
     StreamableHTTPConnectionParams = DummyClass
@@ -280,6 +282,47 @@ class TestMCPSessionManager:
     existing_session.initialize.assert_not_called()
 
   @pytest.mark.asyncio
+  @patch("google.adk.tools.mcp_tool.mcp_session_manager.stdio_client")
+  @patch("google.adk.tools.mcp_tool.mcp_session_manager.AsyncExitStack")
+  @patch("google.adk.tools.mcp_tool.mcp_session_manager.ClientSession")
+  async def test_create_session_timeout(
+      self, mock_session_class, mock_exit_stack_class, mock_stdio
+  ):
+    """Test session creation timeout."""
+    manager = MCPSessionManager(self.mock_stdio_connection_params)
+
+    mock_session = MockClientSession()
+    mock_exit_stack = MockAsyncExitStack()
+
+    mock_exit_stack_class.return_value = mock_exit_stack
+    mock_stdio.return_value = AsyncMock()
+    mock_exit_stack.enter_async_context.side_effect = [
+        ("read", "write"),  # First call returns transports
+        mock_session,  # Second call returns session
+    ]
+    mock_session_class.return_value = mock_session
+
+    # Simulate timeout during session initialization
+    mock_session.initialize.side_effect = asyncio.TimeoutError("Test timeout")
+
+    # Expect ConnectionError due to timeout
+    with pytest.raises(ConnectionError, match="Failed to create MCP session"):
+      await manager.create_session()
+
+    # Verify ClientSession called with timeout
+    mock_session_class.assert_called_with(
+        "read",
+        "write",
+        read_timeout_seconds=timedelta(
+            seconds=manager._connection_params.timeout
+        ),
+    )
+    # Verify session was not added to pool
+    assert not manager._sessions
+    # Verify cleanup was called
+    mock_exit_stack.aclose.assert_called_once()
+
+  @pytest.mark.asyncio
   async def test_close_success(self):
     """Test successful cleanup of all sessions."""
     manager = MCPSessionManager(self.mock_stdio_connection_params)
@@ -332,12 +375,12 @@ class TestMCPSessionManager:
     assert "Close error 1" in error_output
 
 
-def test_retry_on_closed_resource_decorator():
-  """Test the retry_on_closed_resource decorator."""
+def test_retry_on_errors_decorator():
+  """Test the retry_on_errors decorator."""
 
   call_count = 0
 
-  @retry_on_closed_resource
+  @retry_on_errors
   async def mock_function(self):
     nonlocal call_count
     call_count += 1
