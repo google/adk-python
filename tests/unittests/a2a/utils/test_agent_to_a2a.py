@@ -155,11 +155,11 @@ class TestToA2A:
   @patch("google.adk.a2a.utils.agent_to_a2a.Starlette")
   def test_to_a2a_with_custom_task_store(
       self,
-      mock_starlette_class,
-      mock_card_builder_class,
-      mock_task_store_class,
-      mock_request_handler_class,
       mock_agent_executor_class,
+      mock_request_handler_class,
+      mock_task_store_class,
+      mock_card_builder_class,
+      mock_starlette_class,
   ):
     """Test to_a2a with a custom task store."""
     # Arrange
