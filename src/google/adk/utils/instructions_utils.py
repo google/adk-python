@@ -79,7 +79,16 @@ async def inject_session_state(
     return ''.join(result)
 
   async def _replace_match(match) -> str:
-    var_name = match.group().lstrip('{').rstrip('}').strip()
+    matched_text = match.group()
+
+    # If the pattern is escaped using double braces (e.g. '{{var}}'),
+    # treat it as a literal and unescape to single braces: '{var}'.
+    # This allows instruction text to include code examples like
+    # f"User: {{user_id}}" without attempting substitution.
+    if matched_text.startswith('{{') and matched_text.endswith('}}'):
+      return matched_text[1:-1]
+
+    var_name = matched_text.lstrip('{').rstrip('}').strip()
     optional = False
     if var_name.endswith('?'):
       optional = True

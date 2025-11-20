@@ -110,14 +110,33 @@ def is_artifact_ref(artifact: types.Part) -> bool:
       True if the artifact part is an artifact reference, False otherwise.
   """
   # Support both object-like `types.Part` and plain `dict` shapes.
-  file_data = None
+  file_uri = get_file_uri(artifact)
+  return bool(file_uri and file_uri.startswith("artifact://"))
+
+
+def get_file_uri(artifact: types.Part) -> Optional[str]:
+  """Extracts the `file_uri` from an artifact part, supporting dict and object shapes.
+
+  Returns the file_uri string or None if not present.
+  """
   if isinstance(artifact, dict):
     file_data = artifact.get("file_data")
-  else:
-    file_data = getattr(artifact, "file_data", None)
+    if not file_data or not isinstance(file_data, dict):
+      return None
+    return file_data.get("file_uri")
 
+  # object-like: attempt attribute access
+  file_data = getattr(artifact, "file_data", None)
   if not file_data:
-    return False
+    return None
+  return getattr(file_data, "file_uri", None)
 
-  file_uri = file_data.get("file_uri") if isinstance(file_data, dict) else getattr(file_data, "file_uri", None)
-  return bool(file_uri and isinstance(file_uri, str) and file_uri.startswith("artifact://"))
+
+def get_part_field(artifact: types.Part, name: str):
+  """Safely extracts a field from an artifact part supporting dict or object shapes.
+
+  Returns the field value or None if missing.
+  """
+  if isinstance(artifact, dict):
+    return artifact.get(name)
+  return getattr(artifact, name, None)

@@ -267,3 +267,23 @@ async def test_inject_session_state_with_optional_missing_state_returns_empty():
       instruction_template, invocation_context
   )
   assert populated_instruction == "Optional value: "
+
+
+@pytest.mark.asyncio
+async def test_inject_session_state_with_escaped_braces():
+  instruction_template = (
+    'Example: {{user_id}}\n'
+    'Logger example: logger.error(f"User not found: {{user_id}}")'
+  )
+  # Even if the state contains a value for 'user_id', the double-brace
+  # pattern should be treated as an escaped literal and not substituted.
+  invocation_context = await _create_test_readonly_context(
+    state={"user_id": "SHOULD_NOT_BE_USED"}
+  )
+
+  populated_instruction = await instructions_utils.inject_session_state(
+    instruction_template, invocation_context
+  )
+
+  assert '{user_id}' in populated_instruction
+  assert 'SHOULD_NOT_BE_USED' not in populated_instruction

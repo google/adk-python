@@ -515,6 +515,16 @@ def to_cloud_run(
     memory_service_uri: The URI of the memory service.
   """
   app_name = app_name or os.path.basename(agent_folder)
+  # Validate app_name: it will be used as a package/folder name in the
+  # generated image. Reject names that are not valid Python identifiers
+  # (for example names containing dashes) and provide a helpful error
+  # message. This prevents confusing failures later during import or
+  # when copying files expecting a valid package name.
+  if not app_name.isidentifier():
+    raise click.ClickException(
+        f"Invalid agent folder name '{app_name}'. Agent folder names must be valid "
+        "Python identifiers (letters, digits and underscores). Please rename "
+        "the folder or pass a valid `--app_name`.")
 
   click.echo(f'Start generating Cloud Run source files in {temp_folder}')
 
