@@ -271,6 +271,12 @@ class StorageEvent(Base):
   )
   error_message: Mapped[str] = mapped_column(String(1024), nullable=True)
   interrupted: Mapped[bool] = mapped_column(Boolean, nullable=True)
+  input_transcription: Mapped[dict[str, Any]] = mapped_column(
+      DynamicJSON, nullable=True
+  )
+  output_transcription: Mapped[dict[str, Any]] = mapped_column(
+      DynamicJSON, nullable=True
+  )
 
   storage_session: Mapped[StorageSession] = relationship(
       "StorageSession",
@@ -337,6 +343,14 @@ class StorageEvent(Base):
       storage_event.citation_metadata = event.citation_metadata.model_dump(
           exclude_none=True, mode="json"
       )
+    if event.input_transcription:
+      storage_event.input_transcription = event.input_transcription.model_dump(
+          exclude_none=True, mode="json"
+      )
+    if event.output_transcription:
+      storage_event.output_transcription = (
+          event.output_transcription.model_dump(exclude_none=True, mode="json")
+      )
     return storage_event
 
   def to_event(self) -> Event:
@@ -365,6 +379,12 @@ class StorageEvent(Base):
         ),
         citation_metadata=_session_util.decode_model(
             self.citation_metadata, types.CitationMetadata
+        ),
+        input_transcription=_session_util.decode_model(
+            self.input_transcription, types.Transcription
+        ),
+        output_transcription=_session_util.decode_model(
+            self.output_transcription, types.Transcription
         ),
     )
 
