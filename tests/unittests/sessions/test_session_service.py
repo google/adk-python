@@ -512,6 +512,14 @@ async def test_append_event_complete(service_type, tmp_path):
       ),
       citation_metadata=types.CitationMetadata(),
       custom_metadata={'custom_key': 'custom_value'},
+      input_transcription=types.Transcription(
+          text='input transcription',
+          finished=True,
+      ),
+      output_transcription=types.Transcription(
+          text='output transcription',
+          finished=True,
+      ),
   )
   await session_service.append_event(session=session, event=event)
 

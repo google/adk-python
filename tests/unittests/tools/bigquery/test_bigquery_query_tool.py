@@ -1673,7 +1673,9 @@ def test_execute_sql_job_labels(
   query = "SELECT 123 AS num"
   statement_type = "SELECT"
   credentials = mock.create_autospec(Credentials, instance=True)
-  tool_settings = BigQueryToolConfig(write_mode=write_mode)
+  tool_settings = BigQueryToolConfig(
+      write_mode=write_mode, application_name="test-app"
+  )
   tool_context = mock.create_autospec(ToolContext, instance=True)
   tool_context.state.get.return_value = None
 
@@ -1702,12 +1704,13 @@ def test_execute_sql_job_labels(
       for call_args in call_args_list:
         _, mock_kwargs = call_args
         assert mock_kwargs["job_config"].labels == {
-            "adk-bigquery-tool": "execute_sql"
+            "adk-bigquery-tool": "execute_sql",
+            "adk-bigquery-application-name": "test-app",
         }
 
 
 @pytest.mark.parametrize(
-    ("tool_call", "expected_label"),
+    ("tool_call", "expected_tool_label"),
     [
         pytest.param(
             lambda tool_context: query_tool.forecast(
@@ -1751,7 +1754,7 @@ def test_execute_sql_job_labels(
         ),
     ],
 )
-def test_ml_tool_job_labels(tool_call, expected_label):
+def test_ml_tool_job_labels(tool_call, expected_tool_label):
   """Test ML tools for job label."""
 
   with mock.patch.object(bigquery, "Client", autospec=True) as Client:
@@ -1768,8 +1771,83 @@ def test_ml_tool_job_labels(tool_call, expected_label):
       for call_args in call_args_list:
         _, mock_kwargs = call_args
         assert mock_kwargs["job_config"].labels == {
-            "adk-bigquery-tool": expected_label
+            "adk-bigquery-tool": expected_tool_label
         }
+
+
+@pytest.mark.parametrize(
+    ("tool_call", "expected_tool_label"),
+    [
+        pytest.param(
+            lambda tool_context: query_tool.forecast(
+                project_id="test-project",
+                history_data="SELECT * FROM `test-dataset.test-table`",
+                timestamp_col="ts_col",
+                data_col="data_col",
+                credentials=mock.create_autospec(Credentials, instance=True),
+                settings=BigQueryToolConfig(
+                    write_mode=WriteMode.ALLOWED, application_name="test-app"
+                ),
+                tool_context=tool_context,
+            ),
+            "forecast",
+            id="forecast-app-name",
+        ),
+        pytest.param(
+            lambda tool_context: query_tool.analyze_contribution(
+                project_id="test-project",
+                input_data="test-dataset.test-table",
+                dimension_id_cols=["dim1", "dim2"],
+                contribution_metric="SUM(metric)",
+                is_test_col="is_test",
+                credentials=mock.create_autospec(Credentials, instance=True),
+                settings=BigQueryToolConfig(
+                    write_mode=WriteMode.ALLOWED, application_name="test-app"
+                ),
+                tool_context=tool_context,
+            ),
+            "analyze_contribution",
+            id="analyze-contribution-app-name",
+        ),
+        pytest.param(
+            lambda tool_context: query_tool.detect_anomalies(
+                project_id="test-project",
+                history_data="SELECT * FROM `test-dataset.test-table`",
+                times_series_timestamp_col="ts_timestamp",
+                times_series_data_col="ts_data",
+                credentials=mock.create_autospec(Credentials, instance=True),
+                settings=BigQueryToolConfig(
+                    write_mode=WriteMode.ALLOWED, application_name="test-app"
+                ),
+                tool_context=tool_context,
+            ),
+            "detect_anomalies",
+            id="detect-anomalies-app-name",
+        ),
+    ],
+)
+def test_ml_tool_job_labels_w_application_name(tool_call, expected_tool_label):
+  """Test ML tools for job label with application name."""
+
+  with mock.patch.object(bigquery, "Client", autospec=True) as Client:
+    bq_client = Client.return_value
+
+    tool_context = mock.create_autospec(ToolContext, instance=True)
+    tool_context.state.get.return_value = None
+    tool_call(tool_context)
+
+    expected_labels = {
+        "adk-bigquery-tool": expected_tool_label,
+        "adk-bigquery-application-name": "test-app",
+    }
+
+    for call_args_list in [
+        bq_client.query.call_args_list,
+        bq_client.query_and_wait.call_args_list,
+    ]:
+      for call_args in call_args_list:
+        _, mock_kwargs = call_args
+        assert mock_kwargs["job_config"].labels == expected_labels
 
 
 def test_execute_sql_max_rows_config():

@@ -28,6 +28,7 @@ from ..agents.base_agent import BaseAgent
 from ..artifacts.base_artifact_service import BaseArtifactService
 from ..artifacts.in_memory_artifact_service import InMemoryArtifactService
 from ..errors.not_found_error import NotFoundError
+from ..memory.base_memory_service import BaseMemoryService
 from ..sessions.base_session_service import BaseSessionService
 from ..sessions.in_memory_session_service import InMemorySessionService
 from ..utils.feature_decorator import experimental
@@ -77,6 +78,7 @@ class LocalEvalService(BaseEvalService):
       eval_set_results_manager: Optional[EvalSetResultsManager] = None,
       session_id_supplier: Callable[[], str] = _get_session_id,
       user_simulator_provider: UserSimulatorProvider = UserSimulatorProvider(),
+      memory_service: Optional[BaseMemoryService] = None,
   ):
     self._root_agent = root_agent
     self._eval_sets_manager = eval_sets_manager
@@ -91,6 +93,7 @@ class LocalEvalService(BaseEvalService):
     self._eval_set_results_manager = eval_set_results_manager
     self._session_id_supplier = session_id_supplier
     self._user_simulator_provider = user_simulator_provider
+    self._memory_service = memory_service
 
   @override
   async def perform_inference(
@@ -408,6 +411,7 @@ class LocalEvalService(BaseEvalService):
               session_id=session_id,
               session_service=self._session_service,
               artifact_service=self._artifact_service,
+              memory_service=self._memory_service,
           )
       )
 

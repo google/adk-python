@@ -13,6 +13,7 @@
 # limitations under the License.
 
 """Working directory helper tool to resolve path context issues."""
+from __future__ import annotations
 
 import os
 from pathlib import Path
@@ -20,6 +21,8 @@ from typing import Any
 from typing import Dict
 from typing import List
 from typing import Optional
+
+from .path_normalizer import sanitize_generated_file_path
 
 
 def resolve_file_path(
@@ -40,7 +43,8 @@ def resolve_file_path(
   Returns:
     Resolved absolute Path object
   """
-  file_path_obj = Path(file_path)
+  normalized_path = sanitize_generated_file_path(file_path)
+  file_path_obj = Path(normalized_path)
 
   # If already absolute, use as-is
   if file_path_obj.is_absolute():
@@ -63,7 +67,7 @@ def resolve_file_path(
       resolved_root = Path(os.getcwd()) / root_directory
 
   # Resolve file path relative to root directory
-  return resolved_root / file_path
+  return resolved_root / file_path_obj
 
 
 def resolve_file_paths(
