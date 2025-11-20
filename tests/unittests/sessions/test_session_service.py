@@ -19,6 +19,7 @@ import enum
 from google.adk.errors.already_exists_error import AlreadyExistsError
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
+from google.adk.events.event_actions import EventCompaction
 from google.adk.sessions.base_session_service import GetSessionConfig
 from google.adk.sessions.database_session_service import DatabaseSessionService
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
@@ -626,3 +627,67 @@ async def test_partial_events_are_not_persisted(service_type, tmp_path):
       app_name=app_name, user_id=user_id, session_id=session.id
   )
   assert len(session_got.events) == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'service_type',
+    [
+        SessionServiceType.IN_MEMORY,
+        SessionServiceType.DATABASE,
+        SessionServiceType.SQLITE,
+    ],
+)
+async def test_event_compaction_deserialization(service_type, tmp_path):
+  """Test that EventCompaction is properly deserialized as a Pydantic model.
+
+  This test verifies the fix for https://github.com/google/adk-python/issues/3633
+  where EventCompaction was incorrectly deserialized as a dict instead of a
+  Pydantic model when using DatabaseSessionService.
+  """
+  session_service = get_session_service(service_type, tmp_path)
+  app_name = 'my_app'
+  user_id = 'user'
+
+  session = await session_service.create_session(
+      app_name=app_name, user_id=user_id
+  )
+
+  # Create an event with EventCompaction
+  compaction = EventCompaction(
+      start_timestamp=1.0,
+      end_timestamp=2.0,
+      compacted_content=types.Content(
+          role='model', parts=[types.Part(text='Compacted summary')]
+      ),
+  )
+
+  event = Event(
+      invocation_id='inv1',
+      author='user',
+      actions=EventActions(compaction=compaction),
+  )
+
+  await session_service.append_event(session=session, event=event)
+
+  # Retrieve the session and verify compaction is properly deserialized
+  session_got = await session_service.get_session(
+      app_name=app_name, user_id=user_id, session_id=session.id
+  )
+
+  assert len(session_got.events) == 1
+  retrieved_event = session_got.events[0]
+
+  # Verify that compaction is an EventCompaction instance, not a dict
+  assert retrieved_event.actions is not None
+  assert retrieved_event.actions.compaction is not None
+  assert isinstance(
+      retrieved_event.actions.compaction, EventCompaction
+  ), f'Expected EventCompaction, got {type(retrieved_event.actions.compaction)}'
+
+  # Verify we can access attributes (not dict keys)
+  assert retrieved_event.actions.compaction.start_timestamp == 1.0
+  assert retrieved_event.actions.compaction.end_timestamp == 2.0
+  assert retrieved_event.actions.compaction.compacted_content.parts[0].text == (
+      'Compacted summary'
+  )
