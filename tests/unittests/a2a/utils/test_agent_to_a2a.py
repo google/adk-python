@@ -28,7 +28,7 @@ pytestmark = pytest.mark.skipif(
 try:
   from a2a.server.apps import A2AStarletteApplication
   from a2a.server.request_handlers import DefaultRequestHandler
-  from a2a.server.tasks import InMemoryTaskStore
+  from a2a.server.tasks import TaskStore, InMemoryTaskStore
   from a2a.types import AgentCard
   from google.adk.a2a.executor.a2a_agent_executor import A2aAgentExecutor
   from google.adk.a2a.utils.agent_card_builder import AgentCardBuilder
@@ -165,7 +165,7 @@ class TestToA2A:
     # Arrange
     mock_app = Mock(spec=Starlette)
     mock_starlette_class.return_value = mock_app
-    custom_task_store = Mock(spec=InMemoryTaskStore)
+    custom_task_store = Mock(spec=TaskStore)
     mock_agent_executor = Mock(spec=A2aAgentExecutor)
     mock_agent_executor_class.return_value = mock_agent_executor
     mock_request_handler = Mock(spec=DefaultRequestHandler)
