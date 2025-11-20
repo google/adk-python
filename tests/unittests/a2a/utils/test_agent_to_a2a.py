@@ -168,10 +168,6 @@ class TestToA2A:
     custom_task_store = Mock(spec=TaskStore)
     mock_agent_executor = Mock(spec=A2aAgentExecutor)
     mock_agent_executor_class.return_value = mock_agent_executor
-    mock_request_handler = Mock(spec=DefaultRequestHandler)
-    mock_request_handler_class.return_value = mock_request_handler
-    mock_card_builder = Mock(spec=AgentCardBuilder)
-    mock_card_builder_class.return_value = mock_card_builder
 
     # Act
     result = to_a2a(self.mock_agent, task_store=custom_task_store)
