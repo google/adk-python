@@ -165,7 +165,7 @@ class TestToA2A:
     # Arrange
     mock_app = Mock(spec=Starlette)
     mock_starlette_class.return_value = mock_app
-    custom_task_store = Mock(spec=InMemoryTaskStore)
+    custom_task_store = Mock(spec=TaskStore)
     mock_agent_executor = Mock(spec=A2aAgentExecutor)
     mock_agent_executor_class.return_value = mock_agent_executor
     mock_request_handler = Mock(spec=DefaultRequestHandler)
