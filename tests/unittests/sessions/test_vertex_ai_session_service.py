@@ -533,6 +533,31 @@ async def test_get_session_with_after_timestamp_filter():
 
 @pytest.mark.asyncio
 @pytest.mark.usefixtures('mock_get_api_client')
+async def test_get_session_keeps_events_newer_than_update_time(
+    mock_api_client_instance: MockAsyncClient,
+) -> None:
+  future_event_time = isoparse(
+      MOCK_SESSION_JSON_1['update_time']
+  ) + datetime.timedelta(seconds=1)
+  event = mock_api_client_instance.event_dict['1'][0][0]
+  event['timestamp'] = future_event_time.isoformat().replace('+00:00', 'Z')
+  session_service = mock_vertex_ai_session_service()
+
+  session = await session_service.get_session(
+      app_name='123', user_id='user', session_id='1'
+  )
+
+  assert session is not None
+  assert len(session.events) == 1
+  assert session.events[0].timestamp == future_event_time.timestamp()
+  assert session.events[0].timestamp > session.last_update_time, (
+      'Event timestamp should exceed session update_time to guard against'
+      ' filtering.'
+  )
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
 async def test_get_session_with_many_events(mock_api_client_instance):
   mock_api_client_instance.session_dict['5'] = MOCK_SESSION_JSON_5
   mock_api_client_instance.event_dict['5'] = (

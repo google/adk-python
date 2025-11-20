@@ -37,7 +37,6 @@ try:
   from mcp.client.sse import sse_client
   from mcp.client.stdio import stdio_client
   from mcp.client.streamable_http import streamablehttp_client
-  from mcp.types import EmptyResult
 except ImportError as e:
 
   if sys.version_info < (3, 10):
@@ -109,10 +108,10 @@ class StreamableHTTPConnectionParams(BaseModel):
   terminate_on_close: bool = True
 
 
-def retry_on_closed_resource(func):
-  """Decorator to automatically retry action when MCP session is closed.
+def retry_on_errors(func):
+  """Decorator to automatically retry action when MCP session errors occur.
 
-  When MCP session was closed, the decorator will automatically retry the
+  When MCP session errors occur, the decorator will automatically retry the
   action once. The create_session method will handle creating a new session
   if the old one was disconnected.
 
@@ -127,11 +126,11 @@ def retry_on_closed_resource(func):
   async def wrapper(self, *args, **kwargs):
     try:
       return await func(self, *args, **kwargs)
-    except (anyio.ClosedResourceError, anyio.BrokenResourceError):
-      # If the session connection is closed or unusable, we will retry the
-      # function to reconnect to the server. create_session will handle
-      # detecting and replacing disconnected sessions.
-      logger.info('Retrying %s due to closed resource', func.__name__)
+    except Exception as e:
+      # If an error is thrown, we will retry the function to reconnect to the
+      # server. create_session will handle detecting and replacing disconnected
+      # sessions.
+      logger.info('Retrying %s due to error: %s', func.__name__, e)
       return await func(self, *args, **kwargs)
 
   return wrapper
@@ -242,7 +241,7 @@ class MCPSessionManager:
 
     return base_headers
 
-  async def _is_session_disconnected(self, session: ClientSession) -> bool:
+  def _is_session_disconnected(self, session: ClientSession) -> bool:
     """Checks if a session is disconnected or closed.
 
     Args:
@@ -251,24 +250,7 @@ class MCPSessionManager:
     Returns:
         True if the session is disconnected, False otherwise.
     """
-    if session._read_stream._closed or session._write_stream._closed:
-      return True
-
-    try:
-      response = await asyncio.wait_for(session.send_ping(), timeout=5.0)
-      if not isinstance(response, EmptyResult):
-        logger.info(
-            'Session ping returns illegal response %s, treating as'
-            ' disconnected',
-            response,
-        )
-        return True
-      return False
-    except Exception as e:
-      logger.info(
-          'Session ping failed with error %s, treating as disconnected', e
-      )
-      return True
+    return session._read_stream._closed or session._write_stream._closed
 
   def _create_client(self, merged_headers: Optional[Dict[str, str]] = None):
     """Creates an MCP client based on the connection parameters.
@@ -343,7 +325,7 @@ class MCPSessionManager:
         session, exit_stack = self._sessions[session_key]
 
         # Check if the existing session is still connected
-        if not await self._is_session_disconnected(session):
+        if not self._is_session_disconnected(session):
           # Session is still good, return it
           return session
         else:

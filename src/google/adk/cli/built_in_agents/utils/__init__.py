@@ -12,12 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Sub-agents for Agent Builder Assistant."""
+"""Utility modules for Agent Builder Assistant."""
+from __future__ import annotations
 
-from .google_search_agent import create_google_search_agent
-from .url_context_agent import create_url_context_agent
+from .adk_source_utils import find_adk_source_folder
+from .adk_source_utils import get_adk_schema_path
+from .adk_source_utils import load_agent_config_schema
 
 __all__ = [
-    'create_google_search_agent',
-    'create_url_context_agent',
+    'load_agent_config_schema',
+    'find_adk_source_folder',
+    'get_adk_schema_path',
 ]
