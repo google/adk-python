@@ -218,6 +218,8 @@ async def run_cli(
         session_id=session.id,
     )
     with open(session_path, 'w', encoding='utf-8') as f:
-      f.write(session.model_dump_json(indent=2, exclude_none=True))
+      f.write(
+          session.model_dump_json(indent=2, exclude_none=True, by_alias=True)
+      )
 
     print('Session saved to', session_path)
