@@ -122,7 +122,7 @@ def to_a2a(
 
       # Or with custom task store:
       from a2a.server.tasks import TaskStore
-      class MyCustomTaskStore(TaskStore): pass  # A user-defined TaskStore
+      class MyCustomTaskStore(TaskStore): ...  # A user-defined TaskStore; abstract methods must be implemented
       app = to_a2a(agent, task_store=MyCustomTaskStore())
   """
   # Set up ADK logging to ensure logs are visible when using uvicorn directly
