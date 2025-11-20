@@ -2,11 +2,16 @@ name: ADK Issue Triaging Agent
 
 on:
   issues:
-    types: [opened, reopened]
+    types: [labeled]
+  schedule:
+    # Run every 6 hours to triage planned but not triaged issues
+    - cron: '0 */6 * * *'
 
 jobs:
   agent-triage-issues:
     runs-on: ubuntu-latest
+    # Only run if labeled with "planned" or if it's a scheduled run
+    if: github.event_name == 'schedule' || github.event.label.name == 'planned'
     permissions:
       issues: write
       contents: read

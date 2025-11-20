@@ -416,3 +416,8 @@ class AgentBuilderAssistant:
 
     with open(template_path, "r", encoding="utf-8") as f:
       return f.read()
+
+
+# Expose a module-level root_agent so the AgentLoader can find this built-in
+# assistant when requested as "__adk_agent_builder_assistant".
+root_agent = AgentBuilderAssistant.create_agent()

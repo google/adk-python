@@ -110,6 +110,42 @@ def list_unlabeled_issues(issue_count: int) -> dict[str, Any]:
   return {"status": "success", "issues": unlabeled_issues}
 
 
+def list_planned_untriaged_issues(issue_count: int) -> dict[str, Any]:
+  """List planned issues without component labels (e.g., core, tools, etc.).
+
+  Args:
+    issue_count: number of issues to return
+
+  Returns:
+    The status of this request, with a list of issues when successful.
+  """
+  url = f"{GITHUB_BASE_URL}/search/issues"
+  query = f"repo:{OWNER}/{REPO} is:open is:issue label:planned"
+  params = {
+      "q": query,
+      "sort": "created",
+      "order": "desc",
+      "per_page": issue_count,
+      "page": 1,
+  }
+
+  try:
+    response = get_request(url, params)
+  except requests.exceptions.RequestException as e:
+    return error_response(f"Error: {e}")
+  issues = response.get("items", [])
+
+  # Filter out issues that already have component labels
+  component_labels = set(LABEL_TO_OWNER.keys())
+  untriaged_issues = []
+  for issue in issues:
+    issue_labels = {label["name"] for label in issue.get("labels", [])}
+    # If the issue only has "planned" but no component labels, it's untriaged
+    if not (issue_labels & component_labels):
+      untriaged_issues.append(issue)
+  return {"status": "success", "issues": untriaged_issues}
+
+
 def add_label_and_owner_to_issue(
     issue_number: int, label: str
 ) -> dict[str, Any]:
@@ -241,6 +277,7 @@ root_agent = Agent(
     """,
     tools=[
         list_unlabeled_issues,
+        list_planned_untriaged_issues,
         add_label_and_owner_to_issue,
         change_issue_type,
     ],
