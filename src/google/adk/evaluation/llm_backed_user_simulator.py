@@ -27,6 +27,7 @@ from ..models.llm_request import LlmRequest
 from ..models.registry import LLMRegistry
 from ..utils.context_utils import Aclosing
 from ..utils.feature_decorator import experimental
+from ._retry_options_utils import add_default_retry_options_if_not_present
 from .conversation_scenarios import ConversationScenario
 from .evaluator import Evaluator
 from .user_simulator import BaseUserSimulatorConfig
@@ -200,6 +201,7 @@ class LlmBackedUserSimulator(UserSimulator):
             ),
         ],
     )
+    add_default_retry_options_if_not_present(llm_request)
 
     response = ""
     async with Aclosing(self._llm.generate_content_async(llm_request)) as agen:
