@@ -173,12 +173,11 @@ class TestMCPSessionManager:
         httpx_client_factory=custom_httpx_factory,
     )
 
-  @pytest.mark.asyncio
   @patch("google.adk.tools.mcp_tool.mcp_session_manager.streamablehttp_client")
-  async def test_init_with_streamable_http_default_httpx_factory(
+  def test_init_with_streamable_http_default_httpx_factory(
       self, mock_streamablehttp_client
   ):
-    """Test that streamablehttp_client is called with custom httpx_client_factory."""
+    """Test that streamablehttp_client is called with default httpx_client_factory."""
     from datetime import timedelta
 
     from mcp.client.streamable_http import create_mcp_http_client
