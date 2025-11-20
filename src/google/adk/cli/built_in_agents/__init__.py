@@ -12,24 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tools for Agent Builder Assistant."""
+"""Agent Builder Assistant for ADK.
 
-from .cleanup_unused_files import cleanup_unused_files
-from .delete_files import delete_files
-from .explore_project import explore_project
-from .read_config_files import read_config_files
-from .read_files import read_files
-from .search_adk_source import search_adk_source
-from .write_config_files import write_config_files
-from .write_files import write_files
+This package provides an intelligent assistant for building multi-agent systems
+using YAML configurations. It can be used directly as an agent or integrated
+with ADK tools and web interfaces.
+"""
+from __future__ import annotations
+
+from . import agent  # Import to make agent.root_agent available
+from .adk_agent_builder_assistant import AgentBuilderAssistant
 
 __all__ = [
-    'read_config_files',
-    'write_config_files',
-    'cleanup_unused_files',
-    'delete_files',
-    'read_files',
-    'write_files',
-    'search_adk_source',
-    'explore_project',
+    'AgentBuilderAssistant',
+    'agent',  # Make agent module available for adk web discovery
 ]

@@ -614,8 +614,6 @@ async def test_file_metadata_camelcase(tmp_path, artifact_service_factory):
   metadata_path = (
       tmp_path
       / "artifacts"
-      / "apps"
-      / "myapp"
       / "users"
       / "user123"
       / "sessions"
@@ -677,8 +675,6 @@ async def test_file_list_artifact_versions(tmp_path, artifact_service_factory):
   version_payload_path = (
       tmp_path
       / "artifacts"
-      / "apps"
-      / "myapp"
       / "users"
       / "user123"
       / "sessions"

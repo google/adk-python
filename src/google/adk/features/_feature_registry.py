@@ -24,8 +24,9 @@ from ..utils.env_utils import is_env_enabled
 class FeatureName(str, Enum):
   """Feature names."""
 
-  JSON_SCHEMA_FOR_FUNC_DECL = "JSON_SCHEMA_FOR_FUNC_DECL"
   COMPUTER_USE = "COMPUTER_USE"
+  JSON_SCHEMA_FOR_FUNC_DECL = "JSON_SCHEMA_FOR_FUNC_DECL"
+  PROGRESSIVE_SSE_STREAMING = "PROGRESSIVE_SSE_STREAMING"
 
 
 class FeatureStage(Enum):
@@ -58,11 +59,14 @@ class FeatureConfig:
 
 # Central registry: FeatureName -> FeatureConfig
 _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
+    FeatureName.COMPUTER_USE: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
     FeatureName.JSON_SCHEMA_FOR_FUNC_DECL: FeatureConfig(
         FeatureStage.WIP, default_on=False
     ),
-    FeatureName.COMPUTER_USE: FeatureConfig(
-        FeatureStage.EXPERIMENTAL, default_on=True
+    FeatureName.PROGRESSIVE_SSE_STREAMING: FeatureConfig(
+        FeatureStage.WIP, default_on=False
     ),
 }
 

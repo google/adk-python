@@ -27,6 +27,7 @@ from typing import Tuple
 
 import click
 from google.adk.agents.base_agent import BaseAgent
+from google.adk.apps.app import App
 import google.adk.cli.cli as cli
 import pytest
 
@@ -108,6 +109,28 @@ def fake_agent(tmp_path: Path):
   return parent_dir, "fake_agent"
 
 
+@pytest.fixture()
+def fake_app_agent(tmp_path: Path):
+  """Create an agent package that exposes an App."""
+
+  parent_dir = tmp_path / "agents"
+  parent_dir.mkdir()
+  agent_dir = parent_dir / "fake_app_agent"
+  agent_dir.mkdir()
+  (agent_dir / "__init__.py").write_text(dedent("""
+    from google.adk.agents.base_agent import BaseAgent
+    from google.adk.apps.app import App
+    class FakeAgent(BaseAgent):
+      def __init__(self, name):
+        super().__init__(name=name)
+
+    root_agent = FakeAgent(name="fake_root")
+    app = App(name="custom_cli_app", root_agent=root_agent)
+    """))
+
+  return parent_dir, "fake_app_agent", "custom_cli_app"
+
+
 # _run_input_file
 @pytest.mark.asyncio
 async def test_run_input_file_outputs(
@@ -164,6 +187,40 @@ async def test_run_cli_with_input_file(fake_agent, tmp_path: Path) -> None:
       saved_session_file=None,
       save_session=False,
   )
+
+
+@pytest.mark.asyncio
+async def test_run_cli_app_uses_app_name_for_sessions(
+    fake_app_agent, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """run_cli should honor the App-provided name when creating sessions."""
+  parent_dir, folder_name, app_name = fake_app_agent
+  created_app_names: List[str] = []
+
+  original_session_cls = cli.InMemorySessionService
+
+  class _SpySessionService(original_session_cls):
+
+    async def create_session(self, *, app_name: str, **kwargs: Any) -> Any:
+      created_app_names.append(app_name)
+      return await super().create_session(app_name=app_name, **kwargs)
+
+  monkeypatch.setattr(cli, "InMemorySessionService", _SpySessionService)
+
+  input_json = {"state": {}, "queries": ["ping"]}
+  input_path = tmp_path / "input_app.json"
+  input_path.write_text(json.dumps(input_json))
+
+  await cli.run_cli(
+      agent_parent_dir=str(parent_dir),
+      agent_folder_name=folder_name,
+      input_file=str(input_path),
+      saved_session_file=None,
+      save_session=False,
+  )
+
+  assert created_app_names
+  assert all(name == app_name for name in created_app_names)
 
 
 # _run_cli (interactive + save session branch)

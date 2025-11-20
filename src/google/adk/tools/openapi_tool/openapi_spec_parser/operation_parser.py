@@ -139,10 +139,19 @@ class OperationParser:
             )
         )
       else:
+        # Prefer explicit body name to avoid empty keys when schema lacks type
+        # information (e.g., oneOf/anyOf/allOf) while retaining legacy behavior
+        # for simple scalar types.
+        if schema and (schema.oneOf or schema.anyOf or schema.allOf):
+          param_name = 'body'
+        elif not schema or not schema.type:
+          param_name = 'body'
+        else:
+          param_name = ''
+
         self._params.append(
-            # Empty name for unnamed body param
             ApiParameter(
-                original_name='',
+                original_name=param_name,
                 param_location='body',
                 param_schema=schema,
                 description=description,
