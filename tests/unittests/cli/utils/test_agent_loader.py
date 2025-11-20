@@ -12,12 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import ntpath
 import os
 from pathlib import Path
+from pathlib import PureWindowsPath
 import sys
 import tempfile
 from textwrap import dedent
 
+from google.adk.cli.utils import agent_loader as agent_loader_module
 from google.adk.cli.utils.agent_loader import AgentLoader
 from pydantic import ValidationError
 import pytest
@@ -279,6 +282,46 @@ class TestAgentLoader:
       assert agent1 is not agent2
       assert agent2 is not agent3
       assert agent1.agent_id != agent2.agent_id != agent3.agent_id
+
+  def test_error_messages_use_os_sep_consistently(self):
+    """Verify error messages use os.sep instead of hardcoded '/'."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+      loader = AgentLoader(temp_dir)
+      agent_name = "missing_agent"
+
+      try:
+        loader.load_agent(agent_name)
+      except ValueError as e:
+        message = str(e)
+        expected_path = os.path.join(temp_dir, agent_name)
+
+        assert expected_path in message
+        assert f"{agent_name}{os.sep}root_agent.yaml" in message
+        assert f"<agents_dir>{os.sep}" in message
+
+  def test_agent_loader_with_mocked_windows_path(self, monkeypatch):
+    """Mock Path() to simulate Windows behavior and catch regressions.
+
+    REGRESSION TEST: Fails with rstrip('/'), passes with str(Path()).
+    """
+    windows_path = "C:\\Users\\dev\\agents\\"
+
+    def mock_path_constructor(path_str):
+      class MockPath:
+
+        def __str__(self):
+          return str(PureWindowsPath(path_str))
+
+      return MockPath()
+
+    with monkeypatch.context() as m:
+      m.setattr("google.adk.cli.utils.agent_loader.Path", mock_path_constructor)
+      loader = AgentLoader(windows_path)
+
+      expected = str(PureWindowsPath(windows_path))
+      assert loader.agents_dir == expected
+      assert not loader.agents_dir.endswith("\\")
+      assert not loader.agents_dir.endswith("/")
 
   def test_agent_not_found_error(self):
     """Test that appropriate error is raised when agent is not found."""
@@ -888,46 +931,42 @@ class TestAgentLoader:
       assert default_agent.name != custom_agent.name
       assert explicit_agent.name == default_agent.name
 
-  def test_windows_style_path_normalization_on_unix(self):
-    """
-    Even on Unix, Windows-style path strings (with backslashes) should not break.
-    Path() on Unix treats backslashes as literal characters, not separators.
-    This test verifies that AgentLoader uses Path() consistently and safely.
-    """
+  def test_windows_style_path_normalization_uses_path_equivalent(
+      self, monkeypatch
+  ):
+    """AgentLoader should normalize Windows paths exactly like pathlib on Windows."""
+    monkeypatch.setattr(agent_loader_module, "Path", PureWindowsPath)
     windows_path = "C:\\Dev\\adk\\"
 
     loader = AgentLoader(windows_path)
 
-    # Path(...) must return a valid string and must not crash
-    assert isinstance(loader.agents_dir, str)
+    assert loader.agents_dir == str(PureWindowsPath(windows_path))
 
-    # On Unix, Path("C:\\Dev\\adk\\") → "C:\\Dev\\adk"
-    # (Backslashes preserved, trailing slash removed)
-    assert loader.agents_dir == str(Path(windows_path))
-
-  def test_mixed_separators_are_handled(self):
-    """Windows users often accidentally mix / and \\ separators."""
-    mixed_path = "C:\\Dev/adk\\subdir/"
+  def test_windows_mixed_separators_collapse_to_consistent_form(
+      self, monkeypatch
+  ):
+    """Mixed / and \\ from Windows paths should normalize to PureWindowsPath output."""
+    monkeypatch.setattr(agent_loader_module, "Path", PureWindowsPath)
+    mixed_path = r"C:\Dev/adk\subdir/"
 
     loader = AgentLoader(mixed_path)
 
-    # Path resolves extraneous slashes
-    # The normalized path should not have trailing separators
-    assert not loader.agents_dir.endswith("/")
-    assert not loader.agents_dir.endswith("\\")
+    assert loader.agents_dir == str(PureWindowsPath(mixed_path))
 
-  def test_error_message_contains_correct_joined_paths(self):
-    """Test that error messages use os.path.join() for consistent path formatting."""
-    with tempfile.TemporaryDirectory() as temp_dir:
-      loader = AgentLoader(temp_dir)
+  def test_missing_root_agent_error_uses_windows_separators(
+      self, tmp_path, monkeypatch
+  ):
+    """Error guidance should honor os.sep/os.path.join so Windows users see backslashes."""
+    monkeypatch.setattr(agent_loader_module.os, "sep", "\\", raising=False)
+    monkeypatch.setattr(
+        agent_loader_module.os.path, "join", ntpath.join, raising=False
+    )
+    loader = AgentLoader(str(tmp_path))
 
-      # Try to load a nonexistent agent
-      agent_name = "missing_agent"
-      try:
-        loader.load_agent(agent_name)
-      except ValueError as e:
-        message = str(e)
+    with pytest.raises(ValueError) as exc_info:
+      loader.load_agent("missing_agent")
 
-        # Should contain the correct joined path using os.path.join()
-        expected_path = os.path.join(temp_dir, agent_name)
-        assert expected_path in message
+    message = str(exc_info.value)
+    assert "missing_agent\\root_agent.yaml" in message
+    expected_path = ntpath.join(str(tmp_path), "missing_agent")
+    assert expected_path in message

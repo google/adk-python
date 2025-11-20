@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import ntpath
+import os
 from pathlib import Path
 from typing import Literal
 from typing import Type
@@ -20,6 +22,7 @@ from google.adk.agents import config_agent_utils
 from google.adk.agents.agent_config import AgentConfig
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.base_agent_config import BaseAgentConfig
+from google.adk.agents.common_configs import AgentRefConfig
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.loop_agent import LoopAgent
 from google.adk.agents.parallel_agent import ParallelAgent
@@ -280,3 +283,91 @@ other_field: other value
       config.root.model_dump()
   )
   assert my_custom_config.other_field == "other value"
+
+
+def test_resolve_agent_reference_resolves_relative_paths(tmp_path: Path):
+  """Verify resolve_agent_reference correctly resolves relative sub-agent paths
+  based on the directory of the referencing config file, including nested dirs.
+  """
+
+  sub_agent_dir = tmp_path / "sub_agents"
+  sub_agent_dir.mkdir()
+
+  (sub_agent_dir / "child.yaml").write_text("""
+agent_class: LlmAgent
+name: child_agent
+model: gemini-2.0-flash
+instruction: I am a child agent
+""")
+
+  main_config = tmp_path / "main.yaml"
+  main_config.write_text("""
+agent_class: LlmAgent
+name: main_agent
+model: gemini-2.0-flash
+instruction: I am the main agent
+sub_agents:
+  - config_path: sub_agents/child.yaml
+""")
+
+  ref_config = AgentRefConfig(config_path="sub_agents/child.yaml")
+  agent = config_agent_utils.resolve_agent_reference(
+      ref_config, str(main_config)
+  )
+  assert agent.name == "child_agent"
+
+  main_config_abs = str(main_config.resolve())
+  dirname = os.path.dirname(main_config_abs)
+  assert dirname == str(tmp_path.resolve())
+  assert os.path.exists(os.path.join(dirname, "sub_agents", "child.yaml"))
+
+  nested_dir = tmp_path / "level1" / "level2"
+  nested_dir.mkdir(parents=True)
+  nested_sub_dir = nested_dir / "sub"
+  nested_sub_dir.mkdir()
+
+  (nested_sub_dir / "nested_child.yaml").write_text("""
+agent_class: LlmAgent
+name: nested_child
+model: gemini-2.0-flash
+instruction: I am nested
+""")
+
+  (nested_dir / "nested_main.yaml").write_text("""
+agent_class: LlmAgent
+name: nested_main
+model: gemini-2.0-flash
+instruction: I reference a nested child
+sub_agents:
+  - config_path: sub/nested_child.yaml
+""")
+
+  ref_nested = AgentRefConfig(config_path="sub/nested_child.yaml")
+  agent_nested = config_agent_utils.resolve_agent_reference(
+      ref_nested, str(nested_dir / "nested_main.yaml")
+  )
+  assert agent_nested.name == "nested_child"
+
+
+def test_resolve_agent_reference_uses_windows_dirname(monkeypatch):
+  """Ensure Windows-style config references resolve via os.path.dirname."""
+  ref_config = AgentRefConfig(config_path="sub\\child.yaml")
+  recorded: dict[str, str] = {}
+
+  def fake_from_config(path: str):
+    recorded["path"] = path
+    return "sentinel"
+
+  monkeypatch.setattr(
+      config_agent_utils, "from_config", fake_from_config, raising=False
+  )
+  monkeypatch.setattr(config_agent_utils.os, "path", ntpath, raising=False)
+
+  referencing = r"C:\workspace\agents\main.yaml"
+  result = config_agent_utils.resolve_agent_reference(ref_config, referencing)
+
+  expected_path = ntpath.join(
+      ntpath.dirname(referencing), ref_config.config_path
+  )
+  assert result == "sentinel"
+  assert recorded["path"] == expected_path
