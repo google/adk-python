@@ -15,7 +15,7 @@
 """Agent Builder Assistant instance for ADK web testing."""
 from __future__ import annotations
 
-from .agent_builder_assistant import AgentBuilderAssistant
+from .adk_agent_builder_assistant import AgentBuilderAssistant
 
 # Create the agent instance using the factory
 # The root_agent variable is what ADK looks for when loading agents

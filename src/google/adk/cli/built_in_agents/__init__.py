@@ -21,7 +21,7 @@ with ADK tools and web interfaces.
 from __future__ import annotations
 
 from . import agent  # Import to make agent.root_agent available
-from .agent_builder_assistant import AgentBuilderAssistant
+from .adk_agent_builder_assistant import AgentBuilderAssistant
 
 __all__ = [
     'AgentBuilderAssistant',
