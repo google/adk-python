@@ -71,6 +71,8 @@ def _execute_sql(
     bq_job_labels = {}
     if caller_id:
       bq_job_labels["adk-bigquery-tool"] = caller_id
+    if settings and settings.application_name:
+      bq_job_labels["adk-bigquery-application-name"] = settings.application_name
 
     if not settings or settings.write_mode == WriteMode.BLOCKED:
       dry_run_query_job = bq_client.query(
@@ -1093,21 +1095,23 @@ def analyze_contribution(
   """
 
   # Create a session and run the create model query.
-  original_write_mode = settings.write_mode
   try:
-    if original_write_mode == WriteMode.BLOCKED:
+    execute_sql_settings = settings
+    if execute_sql_settings.write_mode == WriteMode.BLOCKED:
       raise ValueError("analyze_contribution is not allowed in this session.")
-    elif original_write_mode != WriteMode.PROTECTED:
+    elif execute_sql_settings.write_mode != WriteMode.PROTECTED:
       # Running create temp model requires a session. So we set the write mode
       # to PROTECTED to run the create model query and job query in the same
       # session.
-      settings.write_mode = WriteMode.PROTECTED
+      execute_sql_settings = settings.model_copy(
+          update={"write_mode": WriteMode.PROTECTED}
+      )
 
     result = _execute_sql(
         project_id=project_id,
         query=create_model_query,
         credentials=credentials,
-        settings=settings,
+        settings=execute_sql_settings,
         tool_context=tool_context,
         caller_id="analyze_contribution",
     )
@@ -1118,18 +1122,15 @@ def analyze_contribution(
         project_id=project_id,
         query=get_insights_query,
         credentials=credentials,
-        settings=settings,
+        settings=execute_sql_settings,
         tool_context=tool_context,
         caller_id="analyze_contribution",
     )
   except Exception as ex:  # pylint: disable=broad-except
     return {
         "status": "ERROR",
-        "error_details": f"Error during analyze_contribution: {str(ex)}",
+        "error_details": f"Error during analyze_contribution: {repr(ex)}",
     }
-  finally:
-    # Restore the original write mode.
-    settings.write_mode == original_write_mode
 
   return result
 
@@ -1327,21 +1328,23 @@ def detect_anomalies(
     """
 
   # Create a session and run the create model query.
-  original_write_mode = settings.write_mode
   try:
-    if settings.write_mode == WriteMode.BLOCKED:
+    execute_sql_settings = settings
+    if execute_sql_settings.write_mode == WriteMode.BLOCKED:
       raise ValueError("anomaly detection is not allowed in this session.")
-    elif original_write_mode != WriteMode.PROTECTED:
+    elif execute_sql_settings.write_mode != WriteMode.PROTECTED:
       # Running create temp model requires a session. So we set the write mode
       # to PROTECTED to run the create model query and job query in the same
       # session.
-      settings.write_mode = WriteMode.PROTECTED
+      execute_sql_settings = settings.model_copy(
+          update={"write_mode": WriteMode.PROTECTED}
+      )
 
     result = _execute_sql(
         project_id=project_id,
         query=create_model_query,
         credentials=credentials,
-        settings=settings,
+        settings=execute_sql_settings,
         tool_context=tool_context,
         caller_id="detect_anomalies",
     )
@@ -1352,17 +1355,14 @@ def detect_anomalies(
         project_id=project_id,
         query=anomaly_detection_query,
         credentials=credentials,
-        settings=settings,
+        settings=execute_sql_settings,
         tool_context=tool_context,
         caller_id="detect_anomalies",
     )
   except Exception as ex:  # pylint: disable=broad-except
     return {
         "status": "ERROR",
-        "error_details": f"Error during anomaly detection: {str(ex)}",
+        "error_details": f"Error during anomaly detection: {repr(ex)}",
     }
-  finally:
-    # Restore the original write mode.
-    settings.write_mode == original_write_mode
 
   return result

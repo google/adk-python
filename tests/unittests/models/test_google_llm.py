@@ -24,12 +24,16 @@ from google.adk.models.cache_metadata import CacheMetadata
 from google.adk.models.gemini_llm_connection import GeminiLlmConnection
 from google.adk.models.google_llm import _AGENT_ENGINE_TELEMETRY_ENV_VARIABLE_NAME
 from google.adk.models.google_llm import _AGENT_ENGINE_TELEMETRY_TAG
+from google.adk.models.google_llm import _build_function_declaration_log
 from google.adk.models.google_llm import _build_request_log
+from google.adk.models.google_llm import _RESOURCE_EXHAUSTED_POSSIBLE_FIX_MESSAGE
+from google.adk.models.google_llm import _ResourceExhaustedError
 from google.adk.models.google_llm import Gemini
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.adk.utils.variant_utils import GoogleLLMVariant
 from google.genai import types
+from google.genai.errors import ClientError
 from google.genai.types import Content
 from google.genai.types import Part
 import pytest
@@ -383,6 +387,60 @@ async def test_generate_content_async_stream_preserves_thinking_and_text_parts(
     assert responses[3].content.parts[0].thought is True
     assert responses[3].content.parts[1].text == "Answer."
     mock_client.aio.models.generate_content_stream.assert_called_once()
+
+
+@pytest.mark.parametrize("stream", [True, False])
+@pytest.mark.asyncio
+async def test_generate_content_async_resource_exhausted_error(
+    stream, gemini_llm, llm_request
+):
+  with mock.patch.object(gemini_llm, "api_client") as mock_client:
+    err = ClientError(code=429, response_json={})
+    err.code = 429
+    if stream:
+      mock_client.aio.models.generate_content_stream.side_effect = err
+    else:
+      mock_client.aio.models.generate_content.side_effect = err
+
+    with pytest.raises(_ResourceExhaustedError) as excinfo:
+      responses = []
+      async for resp in gemini_llm.generate_content_async(
+          llm_request, stream=stream
+      ):
+        responses.append(resp)
+    assert _RESOURCE_EXHAUSTED_POSSIBLE_FIX_MESSAGE in str(excinfo.value)
+    assert excinfo.value.code == 429
+    if stream:
+      mock_client.aio.models.generate_content_stream.assert_called_once()
+    else:
+      mock_client.aio.models.generate_content.assert_called_once()
+
+
+@pytest.mark.parametrize("stream", [True, False])
+@pytest.mark.asyncio
+async def test_generate_content_async_other_client_error(
+    stream, gemini_llm, llm_request
+):
+  with mock.patch.object(gemini_llm, "api_client") as mock_client:
+    err = ClientError(code=500, response_json={})
+    err.code = 500
+    if stream:
+      mock_client.aio.models.generate_content_stream.side_effect = err
+    else:
+      mock_client.aio.models.generate_content.side_effect = err
+
+    with pytest.raises(ClientError) as excinfo:
+      responses = []
+      async for resp in gemini_llm.generate_content_async(
+          llm_request, stream=stream
+      ):
+        responses.append(resp)
+    assert excinfo.value.code == 500
+    assert not isinstance(excinfo.value, _ResourceExhaustedError)
+    if stream:
+      mock_client.aio.models.generate_content_stream.assert_called_once()
+    else:
+      mock_client.aio.models.generate_content.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -1642,11 +1700,15 @@ async def test_generate_content_async_with_cache_metadata_integration(
 ):
   """Test integration between Google LLM and cache manager with proper parameter order.
 
-  This test specifically validates that the cache manager's populate_cache_metadata_in_response
-  method is called with the correct parameter order: (llm_response, cache_metadata).
+  This test specifically validates that the cache manager's
+  populate_cache_metadata_in_response
+  method is called with the correct parameter order: (llm_response,
+  cache_metadata).
 
-  This test would have caught the parameter order bug where cache_metadata and llm_response
-  were passed in the wrong order, causing 'CacheMetadata' object has no attribute 'usage_metadata' errors.
+  This test would have caught the parameter order bug where cache_metadata and
+  llm_response
+  were passed in the wrong order, causing 'CacheMetadata' object has no
+  attribute 'usage_metadata' errors.
   """
 
   # Create a mock response with usage metadata including cached tokens
@@ -1727,6 +1789,54 @@ async def test_generate_content_async_with_cache_metadata_integration(
       # Verify cache metadata is preserved
       assert second_arg.cache_name == cache_metadata.cache_name
       assert second_arg.invocations_used == cache_metadata.invocations_used
+
+
+def test_build_function_declaration_log():
+  """Test that _build_function_declaration_log formats function declarations correctly."""
+  # Test case 1: Function with parameters and response
+  func_decl1 = types.FunctionDeclaration(
+      name="test_func1",
+      description="Test function 1",
+      parameters=types.Schema(
+          type=types.Type.OBJECT,
+          properties={
+              "param1": types.Schema(
+                  type=types.Type.STRING, description="param1 desc"
+              )
+          },
+      ),
+      response=types.Schema(type=types.Type.BOOLEAN, description="return bool"),
+  )
+  log1 = _build_function_declaration_log(func_decl1)
+  assert log1 == (
+      "test_func1: {'param1': {'description': 'param1 desc', 'type':"
+      " <Type.STRING: 'STRING'>}} -> {'description': 'return bool', 'type':"
+      " <Type.BOOLEAN: 'BOOLEAN'>}"
+  )
+
+  # Test case 2: Function with JSON schema parameters and response
+  func_decl2 = types.FunctionDeclaration(
+      name="test_func2",
+      description="Test function 2",
+      parameters_json_schema={
+          "type": "object",
+          "properties": {"param2": {"type": "integer"}},
+      },
+      response_json_schema={"type": "string"},
+  )
+  log2 = _build_function_declaration_log(func_decl2)
+  assert log2 == (
+      "test_func2: {'type': 'object', 'properties': {'param2': {'type':"
+      " 'integer'}}} -> {'type': 'string'}"
+  )
+
+  # Test case 3: Function with no parameters and no response
+  func_decl3 = types.FunctionDeclaration(
+      name="test_func3",
+      description="Test function 3",
+  )
+  log3 = _build_function_declaration_log(func_decl3)
+  assert log3 == "test_func3: {} "
 
 
 def test_build_request_log_with_config_multiple_tool_types():
