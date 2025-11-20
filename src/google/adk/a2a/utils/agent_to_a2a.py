@@ -20,7 +20,7 @@ import sys
 try:
   from a2a.server.apps import A2AStarletteApplication
   from a2a.server.request_handlers import DefaultRequestHandler
-  from a2a.server.tasks import InMemoryTaskStore
+  from a2a.server.tasks import TaskStore, InMemoryTaskStore
   from a2a.types import AgentCard
 except ImportError as e:
   if sys.version_info < (3, 10):
@@ -91,7 +91,7 @@ def to_a2a(
     protocol: str = "http",
     agent_card: Optional[Union[AgentCard, str]] = None,
     runner: Optional[Runner] = None,
-    task_store: Optional["InMemoryTaskStore"] = None,
+    task_store: Optional["TaskStore"] = None,
 ) -> Starlette:
   """Convert an ADK agent to a A2A Starlette application.
 
