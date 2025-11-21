@@ -54,8 +54,10 @@ class _RequestConfirmationLlmRequestProcessor(BaseLlmRequestProcessor):
       return
 
     request_confirmation_function_responses = dict()
+
     confirmation_event_index = -1
 
+    # Helper to unwrap redundant response envelopes and decode the innermost JSON.
     def _parse_tool_confirmation_payload(payload):
       while (
           isinstance(payload, dict)
@@ -74,6 +76,7 @@ class _RequestConfirmationLlmRequestProcessor(BaseLlmRequestProcessor):
 
     for k in range(len(events) - 1, -1, -1):
       event = events[k]
+      # Find the first event authored by user
       if not event.author or event.author != 'user':
         continue
       responses = event.get_function_responses()
@@ -87,6 +90,7 @@ class _RequestConfirmationLlmRequestProcessor(BaseLlmRequestProcessor):
         confirmation_payload = _parse_tool_confirmation_payload(
             function_response.response
         )
+
         tool_confirmation = ToolConfirmation.model_validate(
             confirmation_payload
         )
@@ -101,6 +105,8 @@ class _RequestConfirmationLlmRequestProcessor(BaseLlmRequestProcessor):
 
     for i in range(len(events) - 2, -1, -1):
       event = events[i]
+      # Find the system generated FunctionCall event requesting the tool
+      # confirmation
       function_calls = event.get_function_calls()
       if not function_calls:
         continue
@@ -130,6 +136,7 @@ class _RequestConfirmationLlmRequestProcessor(BaseLlmRequestProcessor):
       if not tools_to_resume_with_confirmation:
         continue
 
+      # Remove the tools that have already been confirmed.
       for i in range(len(events) - 1, confirmation_event_index, -1):
         event = events[i]
         function_response = event.get_function_responses()
@@ -155,10 +162,13 @@ class _RequestConfirmationLlmRequestProcessor(BaseLlmRequestProcessor):
                   ReadonlyContext(invocation_context)
               )
           },
+          # There could be parallel function calls that require input
+          # response would be a dict keyed by function call id
           tools_to_resume_with_confirmation.keys(),
           tools_to_resume_with_confirmation,
       ):
         yield function_response_event
       return
+
 
 request_processor = _RequestConfirmationLlmRequestProcessor()
