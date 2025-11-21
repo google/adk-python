@@ -1384,40 +1384,42 @@ class Runner:
       try:
         logger.info('Closing LLM model: %s', type(llm_model).__name__)
         # Use asyncio.wait_for to add timeout protection
-        await asyncio.wait_for(llm_model.aclose(), timeout=_LLM_MODEL_CLEANUP_TIMEOUT)
-        logger.info('Successfully closed LLM model: %s', type(llm_model).__name__)
+        await asyncio.wait_for(
+            llm_model.aclose(), timeout=_LLM_MODEL_CLEANUP_TIMEOUT
+        )
+        logger.info(
+            'Successfully closed LLM model: %s', type(llm_model).__name__
+        )
       except asyncio.TimeoutError:
         logger.warning(
             'LLM model %s cleanup timed out after %s seconds',
             type(llm_model).__name__,
-            _LLM_MODEL_CLEANUP_TIMEOUT
+            _LLM_MODEL_CLEANUP_TIMEOUT,
         )
       except Exception as e:
         logger.error(
-            'Error closing LLM model %s: %s',
-            type(llm_model).__name__,
-            e
+            'Error closing LLM model %s: %s', type(llm_model).__name__, e
         )
 
   async def close(self):
-      """Closes the runner and cleans up all resources.
+    """Closes the runner and cleans up all resources.
 
-      Cleans up toolsets first, then LLM models, to ensure proper resource
-      cleanup order.
-      """
-      logger.info('Closing runner...')
-      # Clean up toolsets first
-      await self._cleanup_toolsets(self._collect_toolset(self.agent))
+    Cleans up toolsets first, then LLM models, to ensure proper resource
+    cleanup order.
+    """
+    logger.info('Closing runner...')
+    # Clean up toolsets first
+    await self._cleanup_toolsets(self._collect_toolset(self.agent))
 
-      # Then clean up LLM models
-      llm_models_to_close = self._collect_llm_models(self.agent)
-      await self._cleanup_llm_models(llm_models_to_close)
+    # Then clean up LLM models
+    llm_models_to_close = self._collect_llm_models(self.agent)
+    await self._cleanup_llm_models(llm_models_to_close)
 
-      # Close Plugins
-      if self.plugin_manager:
-        await self.plugin_manager.close()
+    # Close Plugins
+    if self.plugin_manager:
+      await self.plugin_manager.close()
 
-      logger.info('Runner closed.')
+    logger.info('Runner closed.')
 
   async def __aenter__(self):
     """Async context manager entry."""

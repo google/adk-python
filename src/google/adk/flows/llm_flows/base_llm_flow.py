@@ -811,18 +811,26 @@ class BaseLlmFlow(ABC):
       if needs_cleanup:
         try:
           import asyncio
+
           logger.info(f'Cleaning up LLM instance: {type(llm).__name__}')
           # Use timeout to prevent hanging on cleanup
-          await asyncio.wait_for(llm.aclose(), timeout=DEFAULT_LLM_CLEANUP_TIMEOUT)
-          logger.info(f'Successfully cleaned up LLM instance: {type(llm).__name__}')
+          await asyncio.wait_for(
+              llm.aclose(), timeout=DEFAULT_LLM_CLEANUP_TIMEOUT
+          )
+          logger.info(
+              f'Successfully cleaned up LLM instance: {type(llm).__name__}'
+          )
         except asyncio.TimeoutError:
           logger.warning(
-              f'LLM cleanup timed out after {DEFAULT_LLM_CLEANUP_TIMEOUT} seconds'
+              'LLM cleanup timed out after'
+              f' {DEFAULT_LLM_CLEANUP_TIMEOUT} seconds'
           )
         except Exception as e:
           logger.warning(f'Error closing LLM instance: {e}')
       else:
-        logger.debug(f'Skipping LLM cleanup (reused instance): {type(llm).__name__}')
+        logger.debug(
+            f'Skipping LLM cleanup (reused instance): {type(llm).__name__}'
+        )
 
   async def _handle_before_model_callback(
       self,
