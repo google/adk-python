@@ -13,7 +13,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Clone adk-docs repository
         run: git clone https://github.com/google/adk-docs.git /tmp/adk-docs
@@ -22,7 +22,7 @@ jobs:
         run: git clone https://github.com/google/adk-python.git /tmp/adk-python
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.11'
 
