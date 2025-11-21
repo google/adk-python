@@ -74,6 +74,24 @@ class TestApiParameter:
     )
     assert param.py_name == 'param_in'
 
+  def test_api_parameter_uses_location_default_when_name_missing(self):
+    schema = Schema(type='string')
+    param = ApiParameter(
+        original_name='',
+        param_location='body',
+        param_schema=schema,
+    )
+    assert param.py_name == 'body'
+
+  def test_api_parameter_uses_value_default_when_location_unknown(self):
+    schema = Schema(type='integer')
+    param = ApiParameter(
+        original_name='',
+        param_location='',
+        param_schema=schema,
+    )
+    assert param.py_name == 'value'
+
   def test_api_parameter_custom_py_name(self):
     schema = Schema(type='integer')
     param = ApiParameter(

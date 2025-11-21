@@ -16,6 +16,7 @@ import asyncio
 import time
 
 from adk_triaging_agent import agent
+from adk_triaging_agent.agent import LABEL_TO_OWNER
 from adk_triaging_agent.settings import EVENT_NAME
 from adk_triaging_agent.settings import GITHUB_BASE_URL
 from adk_triaging_agent.settings import ISSUE_BODY
@@ -37,21 +38,32 @@ USER_ID = "adk_triage_user"
 
 
 async def fetch_specific_issue_details(issue_number: int):
-  """Fetches details for a single issue if it's unlabelled."""
+  """Fetches details for a single issue if it needs triaging."""
   url = f"{GITHUB_BASE_URL}/repos/{OWNER}/{REPO}/issues/{issue_number}"
   print(f"Fetching details for specific issue: {url}")
 
   try:
     issue_data = get_request(url)
-    if not issue_data.get("labels", None):
-      print(f"Issue #{issue_number} is unlabelled. Proceeding.")
+    labels = issue_data.get("labels", [])
+    label_names = {label["name"] for label in labels}
+
+    # Check if issue has "planned" label but no component labels
+    component_labels = set(LABEL_TO_OWNER.keys())
+    has_planned = "planned" in label_names
+    has_component = bool(label_names & component_labels)
+
+    if has_planned and not has_component:
+      print(f"Issue #{issue_number} is planned but not triaged. Proceeding.")
       return {
           "number": issue_data["number"],
           "title": issue_data["title"],
           "body": issue_data.get("body", ""),
       }
     else:
-      print(f"Issue #{issue_number} is already labelled. Skipping.")
+      print(
+          f"Issue #{issue_number} is already triaged or doesn't have"
+          " 'planned' label. Skipping."
+      )
       return None
   except requests.exceptions.RequestException as e:
     print(f"Error fetching issue #{issue_number}: {e}")
@@ -108,26 +120,32 @@ async def main():
     specific_issue = await fetch_specific_issue_details(issue_number)
     if specific_issue is None:
       print(
-          f"No unlabelled issue details found for #{issue_number} or an error"
-          " occurred. Skipping agent interaction."
+          f"No issue details found for #{issue_number} that needs triaging,"
+          " or an error occurred. Skipping agent interaction."
       )
       return
 
     issue_title = ISSUE_TITLE or specific_issue["title"]
     issue_body = ISSUE_BODY or specific_issue["body"]
     prompt = (
-        f"A new GitHub issue #{issue_number} has been opened or"
-        f' reopened. Title: "{issue_title}"\nBody:'
+        f"A GitHub issue #{issue_number} has been labeled as 'planned'."
+        f' Title: "{issue_title}"\nBody:'
         f' "{issue_body}"\n\nBased on the rules, recommend an'
-        " appropriate label and its justification."
-        " Then, use the 'add_label_to_issue' tool to apply the label "
-        "directly to this issue. Only label it, do not"
+        " appropriate component label and its justification."
+        " Then, use the 'add_label_and_owner_to_issue' tool to apply the"
+        " label directly to this issue. Only label it, do not"
         " process any other issues."
     )
   else:
     print(f"EVENT: Processing batch of issues (event: {EVENT_NAME}).")
     issue_count = parse_number_string(ISSUE_COUNT_TO_PROCESS, default_value=3)
-    prompt = f"Please triage the most recent {issue_count} issues."
+    prompt = (
+        "Please use the 'list_planned_untriaged_issues' tool to find the"
+        f" most recent {issue_count} planned issues that haven't been"
+        " triaged yet (i.e., issues with 'planned' label but no component"
+        " labels like 'core', 'tools', etc.). Then triage each of them by"
+        " applying appropriate component labels."
+    )
 
   response = await call_agent_async(runner, USER_ID, session.id, prompt)
   print(f"<<<< Agent Final Output: {response}\n")

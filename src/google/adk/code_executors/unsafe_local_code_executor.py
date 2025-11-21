@@ -72,7 +72,7 @@ class UnsafeLocalCodeExecutor(BaseCodeExecutor):
       _prepare_globals(code_execution_input.code, globals_)
       stdout = io.StringIO()
       with redirect_stdout(stdout):
-        exec(code_execution_input.code, globals_)
+        exec(code_execution_input.code, globals_, globals_)
       output = stdout.getvalue()
     except Exception as e:
       error = str(e)
