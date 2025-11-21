@@ -465,6 +465,43 @@ async def test_events_with_empty_content_are_skipped():
           author="user",
           content=types.UserContent("How are you?"),
       ),
+      # Event with content that has only empty text part
+      Event(
+          invocation_id="inv6",
+          author="user",
+          content=types.Content(parts=[types.Part(text="")], role="model"),
+      ),
+      # Event with content that has only inline data part
+      Event(
+          invocation_id="inv7",
+          author="user",
+          content=types.Content(
+              parts=[
+                  types.Part(
+                      inline_data=types.Blob(
+                          data=b"test", mime_type="image/png"
+                      )
+                  )
+              ],
+              role="user",
+          ),
+      ),
+      # Event with content that has only file data part
+      Event(
+          invocation_id="inv8",
+          author="user",
+          content=types.Content(
+              parts=[
+                  types.Part(
+                      file_data=types.FileData(
+                          file_uri="gs://test_bucket/test_file.png",
+                          mime_type="image/png",
+                      )
+                  )
+              ],
+              role="user",
+          ),
+      ),
   ]
   invocation_context.session.events = events
 
@@ -478,4 +515,23 @@ async def test_events_with_empty_content_are_skipped():
   assert llm_request.contents == [
       types.UserContent("Hello"),
       types.UserContent("How are you?"),
+      types.Content(
+          parts=[
+              types.Part(
+                  inline_data=types.Blob(data=b"test", mime_type="image/png")
+              )
+          ],
+          role="user",
+      ),
+      types.Content(
+          parts=[
+              types.Part(
+                  file_data=types.FileData(
+                      file_uri="gs://test_bucket/test_file.png",
+                      mime_type="image/png",
+                  )
+              )
+          ],
+          role="user",
+      ),
   ]
