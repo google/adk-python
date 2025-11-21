@@ -26,6 +26,7 @@ from google.adk.models.lite_llm import _message_to_generate_content_response
 from google.adk.models.lite_llm import _model_response_to_chunk
 from google.adk.models.lite_llm import _model_response_to_generate_content_response
 from google.adk.models.lite_llm import _parse_tool_calls_from_text
+from google.adk.models.lite_llm import _schema_to_dict
 from google.adk.models.lite_llm import _split_message_content_and_tool_calls
 from google.adk.models.lite_llm import _to_litellm_response_format
 from google.adk.models.lite_llm import _to_litellm_role
@@ -284,6 +285,28 @@ def test_to_litellm_response_format_handles_genai_schema_instance():
   assert formatted["response_schema"] == schema_instance.model_dump(
       exclude_none=True, mode="json"
   )
+
+
+def test_schema_to_dict_filters_none_enum_values():
+  # Use model_construct to bypass strict enum validation.
+  top_level_schema = types.Schema.model_construct(
+      type=types.Type.STRING,
+      enum=["ACTIVE", None, "INACTIVE"],
+  )
+  nested_schema = types.Schema.model_construct(
+      type=types.Type.OBJECT,
+      properties={
+          "status": types.Schema.model_construct(
+              type=types.Type.STRING, enum=["READY", None, "DONE"]
+          ),
+      },
+  )
+
+  assert _schema_to_dict(top_level_schema)["enum"] == ["ACTIVE", "INACTIVE"]
+  assert _schema_to_dict(nested_schema)["properties"]["status"]["enum"] == [
+      "READY",
+      "DONE",
+  ]
 
 
 MULTIPLE_FUNCTION_CALLS_STREAM = [
