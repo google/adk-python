@@ -96,6 +96,64 @@ def _decode_inline_text_data(raw_bytes: bytes) -> str:
     return raw_bytes.decode("latin-1", errors="replace")
 
 
+def _iter_reasoning_texts(reasoning_value: Any) -> Iterable[str]:
+  """Yields textual fragments from provider specific reasoning payloads."""
+  if reasoning_value is None:
+    return
+
+  if isinstance(reasoning_value, types.Content):
+    if not reasoning_value.parts:
+      return
+    for part in reasoning_value.parts:
+      if part and part.text:
+        yield part.text
+    return
+
+  if isinstance(reasoning_value, str):
+    yield reasoning_value
+    return
+
+  if isinstance(reasoning_value, list):
+    for value in reasoning_value:
+      yield from _iter_reasoning_texts(value)
+    return
+
+  if isinstance(reasoning_value, dict):
+    # LiteLLM currently nests “reasoning” text under a few known keys.
+    # (Documented in https://docs.litellm.ai/docs/openai#reasoning-outputs)
+    for key in ("text", "content", "reasoning", "reasoning_content"):
+      text_value = reasoning_value.get(key)
+      if isinstance(text_value, str):
+        yield text_value
+    return
+
+  text_attr = getattr(reasoning_value, "text", None)
+  if isinstance(text_attr, str):
+    yield text_attr
+  elif isinstance(reasoning_value, (int, float, bool)):
+    yield str(reasoning_value)
+
+
+def _convert_reasoning_value_to_parts(reasoning_value: Any) -> List[types.Part]:
+  """Converts provider reasoning payloads into Gemini thought parts."""
+  return [
+      types.Part(text=text, thought=True)
+      for text in _iter_reasoning_texts(reasoning_value)
+      if text
+  ]
+
+
+def _extract_reasoning_value(message: Message | Dict[str, Any]) -> Any:
+  """Fetches the reasoning payload from a LiteLLM message or dict."""
+  if message is None:
+    return None
+  if hasattr(message, "reasoning_content"):
+    return getattr(message, "reasoning_content")
+  if isinstance(message, dict):
+    return message.get("reasoning_content")
+  return None
+
+
 class ChatCompletionFileUrlObject(TypedDict, total=False):
   file_data: str
   file_id: str
@@ -111,6 +169,10 @@ class FunctionChunk(BaseModel):
 
 class TextChunk(BaseModel):
   text: str
+
+
+class ReasoningChunk(BaseModel):
+  parts: List[types.Part]
 
 
 class UsageMetadataChunk(BaseModel):
@@ -660,7 +722,6 @@ def _function_declaration_to_tool_param(
       },
   }
 
-  # Handle required field from parameters
   required_fields = (
       getattr(function_declaration.parameters, "required", None)
       if function_declaration.parameters
@@ -668,8 +729,6 @@ def _function_declaration_to_tool_param(
   )
   if required_fields:
     tool_params["function"]["parameters"]["required"] = required_fields
-  # parameters_json_schema already has required field in the json schema,
-  # no need to add it separately
 
   return tool_params
 
@@ -678,7 +737,14 @@ def _model_response_to_chunk(
     response: ModelResponse,
 ) -> Generator[
     Tuple[
-        Optional[Union[TextChunk, FunctionChunk, UsageMetadataChunk]],
+        Optional[
+            Union[
+                TextChunk,
+                FunctionChunk,
+                UsageMetadataChunk,
+                ReasoningChunk,
+            ]
+        ],
         Optional[str],
     ],
     None,
@@ -703,11 +769,18 @@ def _model_response_to_chunk(
 
     message_content: Optional[OpenAIMessageContent] = None
     tool_calls: list[ChatCompletionMessageToolCall] = []
+    reasoning_parts: List[types.Part] = []
     if message is not None:
       (
           message_content,
           tool_calls,
       ) = _split_message_content_and_tool_calls(message)
+      reasoning_value = _extract_reasoning_value(message)
+      if reasoning_value:
+        reasoning_parts = _convert_reasoning_value_to_parts(reasoning_value)
+
+    if reasoning_parts:
+      yield ReasoningChunk(parts=reasoning_parts), finish_reason
 
     if message_content:
       yield TextChunk(text=message_content), finish_reason
@@ -771,8 +844,13 @@ def _model_response_to_generate_content_response(
   if not message:
     raise ValueError("No message in response")
 
+  thought_parts = _convert_reasoning_value_to_parts(
+      _extract_reasoning_value(message)
+  )
   llm_response = _message_to_generate_content_response(
-      message, model_version=response.model
+      message,
+      model_version=response.model,
+      thought_parts=thought_parts or None,
   )
   if finish_reason:
     # If LiteLLM already provides a FinishReason enum (e.g., for Gemini), use
@@ -797,7 +875,11 @@ def _model_response_to_generate_content_response(
 
 
 def _message_to_generate_content_response(
-    message: Message, *, is_partial: bool = False, model_version: str = None
+    message: Message,
+    *,
+    is_partial: bool = False,
+    model_version: str = None,
+    thought_parts: Optional[List[types.Part]] = None,
 ) -> LlmResponse:
   """Converts a litellm message to LlmResponse.
 
@@ -810,7 +892,13 @@ def _message_to_generate_content_response(
     The LlmResponse.
   """
 
-  parts = []
+  parts: List[types.Part] = []
+  if not thought_parts:
+    thought_parts = _convert_reasoning_value_to_parts(
+        _extract_reasoning_value(message)
+    )
+  if thought_parts:
+    parts.extend(thought_parts)
   message_content, tool_calls = _split_message_content_and_tool_calls(message)
   if isinstance(message_content, str) and message_content:
     parts.append(types.Part.from_text(text=message_content))
@@ -972,15 +1060,9 @@ def _build_function_declaration_log(
         k: v.model_dump(exclude_none=True)
         for k, v in func_decl.parameters.properties.items()
     })
-  elif func_decl.parameters_json_schema:
-    param_str = str(func_decl.parameters_json_schema)
-
   return_str = "None"
   if func_decl.response:
     return_str = str(func_decl.response.model_dump(exclude_none=True))
-  elif func_decl.response_json_schema:
-    return_str = str(func_decl.response_json_schema)
-
   return f"{func_decl.name}: {param_str} -> {return_str}"
 
 
@@ -1182,6 +1264,7 @@ class LiteLlm(BaseLlm):
 
     if stream:
       text = ""
+      reasoning_parts: List[types.Part] = []
       # Track function calls by index
       function_calls = {}  # index -> {name, args, id}
       completion_args["stream"] = True
@@ -1223,6 +1306,14 @@ class LiteLlm(BaseLlm):
                 is_partial=True,
                 model_version=part.model,
             )
+          elif isinstance(chunk, ReasoningChunk):
+            if chunk.parts:
+              reasoning_parts.extend(chunk.parts)
+              yield LlmResponse(
+                  content=types.Content(role="model", parts=list(chunk.parts)),
+                  partial=True,
+                  model_version=part.model,
+              )
           elif isinstance(chunk, UsageMetadataChunk):
             usage_metadata = types.GenerateContentResponseUsageMetadata(
                 prompt_token_count=chunk.prompt_tokens,
@@ -1256,16 +1347,27 @@ class LiteLlm(BaseLlm):
                         tool_calls=tool_calls,
                     ),
                     model_version=part.model,
+                    thought_parts=list(reasoning_parts)
+                    if reasoning_parts
+                    else None,
                 )
             )
             text = ""
+            reasoning_parts = []
             function_calls.clear()
-          elif finish_reason == "stop" and text:
+          elif finish_reason == "stop" and (text or reasoning_parts):
+            message_content = text if text else None
             aggregated_llm_response = _message_to_generate_content_response(
-                ChatCompletionAssistantMessage(role="assistant", content=text),
+                ChatCompletionAssistantMessage(
+                    role="assistant", content=message_content
+                ),
                 model_version=part.model,
+                thought_parts=list(reasoning_parts)
+                if reasoning_parts
+                else None,
             )
             text = ""
+            reasoning_parts = []
 
       # waiting until streaming ends to yield the llm_response as litellm tends
       # to send chunk that contains usage_metadata after the chunk with
