@@ -80,7 +80,9 @@ class BigQueryToolConfig(BaseModel):
 
   By default, no particular application name will be set in the BigQuery
   interaction. But if the tool user (agent builder) wants to differentiate
-  their application/agent for tracking or support purpose, they can set this field.
+  their application/agent for tracking or support purpose, they can set this
+  field. If set, this value will be added to the user_agent in BigQuery API calls, and also to the BigQuery job labels with the key
+  "adk-bigquery-application-name".
   """
 
   compute_project_id: Optional[str] = None

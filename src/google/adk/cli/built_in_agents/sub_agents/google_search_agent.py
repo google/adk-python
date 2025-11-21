@@ -13,6 +13,7 @@
 # limitations under the License.
 
 """Sub-agent for Google Search functionality."""
+from __future__ import annotations
 
 from google.adk.agents import LlmAgent
 from google.adk.tools import google_search

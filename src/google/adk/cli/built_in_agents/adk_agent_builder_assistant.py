@@ -13,6 +13,7 @@
 # limitations under the License.
 
 """Agent factory for creating Agent Builder Assistant with embedded schema."""
+from __future__ import annotations
 
 from pathlib import Path
 import textwrap
@@ -415,3 +416,8 @@ class AgentBuilderAssistant:
 
     with open(template_path, "r", encoding="utf-8") as f:
       return f.read()
+
+
+# Expose a module-level root_agent so the AgentLoader can find this built-in
+# assistant when requested as "__adk_agent_builder_assistant".
+root_agent = AgentBuilderAssistant.create_agent()

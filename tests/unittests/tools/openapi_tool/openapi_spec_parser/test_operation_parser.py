@@ -164,6 +164,40 @@ def test_process_request_body_no_name():
   assert parser._params[0].param_location == 'body'
 
 
+def test_process_request_body_one_of_schema_assigns_name():
+  """Ensures oneOf bodies result in a named parameter."""
+  operation = Operation(
+      operationId='one_of_request',
+      requestBody=RequestBody(
+          content={
+              'application/json': MediaType(
+                  schema=Schema(
+                      oneOf=[
+                          Schema(
+                              type='object',
+                              properties={
+                                  'type': Schema(type='string'),
+                                  'stage': Schema(type='string'),
+                              },
+                          )
+                      ],
+                      discriminator={'propertyName': 'type'},
+                  )
+              )
+          }
+      ),
+      responses={'200': Response(description='ok')},
+  )
+  parser = OperationParser(operation)
+  params = parser.get_parameters()
+  assert len(params) == 1
+  assert params[0].original_name == 'body'
+  assert params[0].py_name == 'body'
+  schema = parser.get_json_schema()
+  assert 'body' in schema['properties']
+  assert '' not in schema['properties']
+
+
 def test_process_request_body_empty_object():
   """Test _process_request_body with a schema that is of type object but with no properties."""
   operation = Operation(
