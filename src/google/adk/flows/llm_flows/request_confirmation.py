@@ -58,7 +58,7 @@ class _RequestConfirmationLlmRequestProcessor(BaseLlmRequestProcessor):
     confirmation_event_index = -1
 
     # Helper to unwrap redundant response envelopes and decode the innermost JSON.
-    def _parse_tool_confirmation_payload(payload):
+    def _parse_tool_confirmation_payload(payload: 'Any') -> 'Any':
       while (
           isinstance(payload, dict)
           and len(payload) == 1
