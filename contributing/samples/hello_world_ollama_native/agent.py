@@ -59,7 +59,7 @@ def check_prime(numbers: list[int]) -> str:
 
 
 root_agent = Agent(
-    model=Ollama(model='llama3.1'),
+    model=Ollama(model="llama3.1"),
     name="dice_roll_agent",
     description=(
         "hello world agent that can roll a dice of any number of sides and"
