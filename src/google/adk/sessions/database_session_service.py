@@ -722,6 +722,11 @@ class DatabaseSessionService(BaseSessionService):
         if session_state_delta:
           storage_session.state = storage_session.state | session_state_delta
 
+      if storage_session._dialect_name == "sqlite":
+        update_time = datetime.utcfromtimestamp(event.timestamp)
+      else:
+        update_time = datetime.fromtimestamp(event.timestamp)
+      storage_session.update_time = update_time
       sql_session.add(StorageEvent.from_event(session, event))
 
       await sql_session.commit()
