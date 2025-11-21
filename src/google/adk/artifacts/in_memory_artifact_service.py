@@ -136,20 +136,23 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
     elif file_data is not None:
       # If the artifact is an artifact-ref we validate the referenced URI.
       if artifact_util.is_artifact_ref(artifact):
-          file_uri = artifact_util.get_file_uri(artifact)
-          if not file_uri or not artifact_util.parse_artifact_uri(file_uri):
-            raise ValueError(f"Invalid artifact reference URI: {file_uri}")
-        # Valid artifact URI: keep part as-is; mime type may be resolved later.
+        file_uri = artifact_util.get_file_uri(artifact)
+        if not file_uri or not artifact_util.parse_artifact_uri(file_uri):
+          raise ValueError(f"Invalid artifact reference URI: {file_uri}")
+      # Valid artifact URI: keep part as-is; mime type may be resolved later.
       else:
         artifact_version.mime_type = (
-            file_data.get("mime_type") if isinstance(file_data, dict) else file_data.mime_type
+            file_data.get("mime_type")
+            if isinstance(file_data, dict)
+            else file_data.mime_type
         )
     else:
       # Fallback for unknown shapes: preserve behavior by storing the
       # artifact but use a generic binary mime type instead of raising.
       artifact_version.mime_type = "application/octet-stream"
       logger.debug(
-          "save_artifact: unknown artifact shape, falling back to application/octet-stream for %s",
+          "save_artifact: unknown artifact shape, falling back to"
+          " application/octet-stream for %s",
           path,
       )
 
@@ -211,7 +214,11 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
         return True
       if isinstance(a, dict):
         # common empty forms: empty text, empty inline_data, or inline_data with no bytes
-        if a.get("text") in (None, "") and not a.get("inline_data") and not a.get("file_data"):
+        if (
+            a.get("text") in (None, "")
+            and not a.get("inline_data")
+            and not a.get("file_data")
+        ):
           return True
         inline = a.get("inline_data")
         if inline and isinstance(inline, dict) and not inline.get("data"):

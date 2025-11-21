@@ -525,9 +525,10 @@ def to_cloud_run(
   # when copying files expecting a valid package name.
   if not app_name.isidentifier():
     raise click.ClickException(
-        f"Invalid agent folder name '{app_name}'. Agent folder names must be valid "
-        "Python identifiers (letters, digits and underscores). Please rename "
-        "the folder or pass a valid `--app_name`.")
+        f"Invalid agent folder name '{app_name}'. Agent folder names must be"
+        ' valid Python identifiers (letters, digits and underscores). Please'
+        ' rename the folder or pass a valid `--app_name`.'
+    )
 
   click.echo(f'Start generating Cloud Run source files in {temp_folder}')
 
