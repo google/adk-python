@@ -17,7 +17,6 @@ from unittest.mock import AsyncMock
 from unittest.mock import Mock
 import warnings
 
-from google.adk.models.lite_llm import _build_function_declaration_log
 from google.adk.models.lite_llm import _content_to_message_param
 from google.adk.models.lite_llm import _FINISH_REASON_MAPPING
 from google.adk.models.lite_llm import _function_declaration_to_tool_param
@@ -25,7 +24,9 @@ from google.adk.models.lite_llm import _get_completion_inputs
 from google.adk.models.lite_llm import _get_content
 from google.adk.models.lite_llm import _message_to_generate_content_response
 from google.adk.models.lite_llm import _model_response_to_chunk
+from google.adk.models.lite_llm import _model_response_to_generate_content_response
 from google.adk.models.lite_llm import _parse_tool_calls_from_text
+from google.adk.models.lite_llm import _schema_to_dict
 from google.adk.models.lite_llm import _split_message_content_and_tool_calls
 from google.adk.models.lite_llm import _to_litellm_response_format
 from google.adk.models.lite_llm import _to_litellm_role
@@ -284,6 +285,28 @@ def test_to_litellm_response_format_handles_genai_schema_instance():
   assert formatted["response_schema"] == schema_instance.model_dump(
       exclude_none=True, mode="json"
   )
+
+
+def test_schema_to_dict_filters_none_enum_values():
+  # Use model_construct to bypass strict enum validation.
+  top_level_schema = types.Schema.model_construct(
+      type=types.Type.STRING,
+      enum=["ACTIVE", None, "INACTIVE"],
+  )
+  nested_schema = types.Schema.model_construct(
+      type=types.Type.OBJECT,
+      properties={
+          "status": types.Schema.model_construct(
+              type=types.Type.STRING, enum=["READY", None, "DONE"]
+          ),
+      },
+  )
+
+  assert _schema_to_dict(top_level_schema)["enum"] == ["ACTIVE", "INACTIVE"]
+  assert _schema_to_dict(nested_schema)["properties"]["status"]["enum"] == [
+      "READY",
+      "DONE",
+  ]
 
 
 MULTIPLE_FUNCTION_CALLS_STREAM = [
@@ -628,54 +651,6 @@ class MockLLMClient(LiteLLMClient):
     return self.completion_mock(
         model=model, messages=messages, tools=tools, stream=stream, **kwargs
     )
-
-
-def test_build_function_declaration_log():
-  """Test that _build_function_declaration_log formats function declarations correctly."""
-  # Test case 1: Function with parameters and response
-  func_decl1 = types.FunctionDeclaration(
-      name="test_func1",
-      description="Test function 1",
-      parameters=types.Schema(
-          type=types.Type.OBJECT,
-          properties={
-              "param1": types.Schema(
-                  type=types.Type.STRING, description="param1 desc"
-              )
-          },
-      ),
-      response=types.Schema(type=types.Type.BOOLEAN, description="return bool"),
-  )
-  log1 = _build_function_declaration_log(func_decl1)
-  assert log1 == (
-      "test_func1: {'param1': {'description': 'param1 desc', 'type':"
-      " <Type.STRING: 'STRING'>}} -> {'description': 'return bool', 'type':"
-      " <Type.BOOLEAN: 'BOOLEAN'>}"
-  )
-
-  # Test case 2: Function with JSON schema parameters and response
-  func_decl2 = types.FunctionDeclaration(
-      name="test_func2",
-      description="Test function 2",
-      parameters_json_schema={
-          "type": "object",
-          "properties": {"param2": {"type": "integer"}},
-      },
-      response_json_schema={"type": "string"},
-  )
-  log2 = _build_function_declaration_log(func_decl2)
-  assert log2 == (
-      "test_func2: {'type': 'object', 'properties': {'param2': {'type':"
-      " 'integer'}}} -> {'type': 'string'}"
-  )
-
-  # Test case 3: Function with no parameters and no response
-  func_decl3 = types.FunctionDeclaration(
-      name="test_func3",
-      description="Test function 3",
-  )
-  log3 = _build_function_declaration_log(func_decl3)
-  assert log3 == "test_func3: {} -> None"
 
 
 @pytest.mark.asyncio
@@ -1533,6 +1508,42 @@ def test_message_to_generate_content_response_with_model():
   assert response.content.role == "model"
   assert response.content.parts[0].text == "Test response"
   assert response.model_version == "gemini-2.5-pro"
+
+
+def test_message_to_generate_content_response_reasoning_content():
+  message = {
+      "role": "assistant",
+      "content": "Visible text",
+      "reasoning_content": "Hidden chain",
+  }
+  response = _message_to_generate_content_response(message)
+
+  assert len(response.content.parts) == 2
+  thought_part = response.content.parts[0]
+  text_part = response.content.parts[1]
+  assert thought_part.text == "Hidden chain"
+  assert thought_part.thought is True
+  assert text_part.text == "Visible text"
+
+
+def test_model_response_to_generate_content_response_reasoning_content():
+  model_response = ModelResponse(
+      model="thinking-model",
+      choices=[{
+          "message": {
+              "role": "assistant",
+              "content": "Answer",
+              "reasoning_content": "Step-by-step",
+          },
+          "finish_reason": "stop",
+      }],
+  )
+
+  response = _model_response_to_generate_content_response(model_response)
+
+  assert response.content.parts[0].text == "Step-by-step"
+  assert response.content.parts[0].thought is True
+  assert response.content.parts[1].text == "Answer"
 
 
 def test_parse_tool_calls_from_text_multiple_calls():
