@@ -540,6 +540,79 @@ async def test_append_event_complete(service_type, tmp_path):
         SessionServiceType.SQLITE,
     ],
 )
+async def test_session_last_update_time_updates_on_event(
+    service_type, tmp_path
+):
+  session_service = get_session_service(service_type, tmp_path)
+  app_name = 'my_app'
+  user_id = 'user'
+
+  session = await session_service.create_session(
+      app_name=app_name, user_id=user_id
+  )
+  original_update_time = session.last_update_time
+
+  event_timestamp = original_update_time + 10
+  event = Event(
+      invocation_id='invocation',
+      author='user',
+      timestamp=event_timestamp,
+  )
+  await session_service.append_event(session=session, event=event)
+
+  assert session.last_update_time == pytest.approx(event_timestamp, abs=1e-6)
+
+  refreshed_session = await session_service.get_session(
+      app_name=app_name, user_id=user_id, session_id=session.id
+  )
+  assert refreshed_session is not None
+  assert refreshed_session.last_update_time == pytest.approx(
+      event_timestamp, abs=1e-6
+  )
+  assert refreshed_session.last_update_time > original_update_time
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'service_type',
+    [
+        SessionServiceType.IN_MEMORY,
+        SessionServiceType.DATABASE,
+        SessionServiceType.SQLITE,
+    ],
+)
+async def test_get_session_with_config(service_type):
+  session_service = get_session_service(service_type)
+  app_name = 'my_app'
+  user_id = 'user'
+
+  session = await session_service.create_session(
+      app_name=app_name, user_id=user_id
+  )
+  original_update_time = session.last_update_time
+
+  event = Event(invocation_id='invocation', author='user')
+  await session_service.append_event(session=session, event=event)
+
+  assert session.last_update_time >= event.timestamp
+
+  refreshed_session = await session_service.get_session(
+      app_name=app_name, user_id=user_id, session_id=session.id
+  )
+  assert refreshed_session is not None
+  assert refreshed_session.last_update_time >= event.timestamp
+  assert refreshed_session.last_update_time > original_update_time
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'service_type',
+    [
+        SessionServiceType.IN_MEMORY,
+        SessionServiceType.DATABASE,
+        SessionServiceType.SQLITE,
+    ],
+)
 async def test_get_session_with_config(service_type, tmp_path):
   session_service = get_session_service(service_type, tmp_path)
   app_name = 'my_app'
