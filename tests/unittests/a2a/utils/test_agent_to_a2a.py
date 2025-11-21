@@ -28,7 +28,8 @@ pytestmark = pytest.mark.skipif(
 try:
   from a2a.server.apps import A2AStarletteApplication
   from a2a.server.request_handlers import DefaultRequestHandler
-  from a2a.server.tasks import TaskStore, InMemoryTaskStore
+  from a2a.server.tasks import InMemoryTaskStore
+  from a2a.server.tasks import TaskStore
   from a2a.types import AgentCard
   from google.adk.a2a.executor.a2a_agent_executor import A2aAgentExecutor
   from google.adk.a2a.utils.agent_card_builder import AgentCardBuilder
