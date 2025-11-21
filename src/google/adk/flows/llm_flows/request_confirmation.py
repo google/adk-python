@@ -53,14 +53,27 @@ class _RequestConfirmationLlmRequestProcessor(BaseLlmRequestProcessor):
     if not events:
       return
 
-    request_confirmation_function_responses = (
-        dict()
-    )  # {function call id, tool confirmation}
-
+    request_confirmation_function_responses = dict()
     confirmation_event_index = -1
+
+    def _parse_tool_confirmation_payload(payload):
+      while (
+          isinstance(payload, dict)
+          and len(payload) == 1
+          and 'response' in payload
+      ):
+        payload = payload['response']
+      if isinstance(payload, str):
+        try:
+          payload = json.loads(payload)
+        except json.JSONDecodeError as exc:
+          raise ValueError(
+              'Failed to decode tool confirmation payload.'
+          ) from exc
+      return payload
+
     for k in range(len(events) - 1, -1, -1):
       event = events[k]
-      # Find the first event authored by user
       if not event.author or event.author != 'user':
         continue
       responses = event.get_function_responses()
@@ -71,22 +84,12 @@ class _RequestConfirmationLlmRequestProcessor(BaseLlmRequestProcessor):
         if function_response.name != REQUEST_CONFIRMATION_FUNCTION_CALL_NAME:
           continue
 
-        # Find the FunctionResponse event that contains the user provided tool
-        # confirmation
-        if (
+        confirmation_payload = _parse_tool_confirmation_payload(
             function_response.response
-            and len(function_response.response.values()) == 1
-            and 'response' in function_response.response.keys()
-        ):
-          # ADK web client will send a request that is always encapsulated in a
-          # 'response' key.
-          tool_confirmation = ToolConfirmation.model_validate(
-              json.loads(function_response.response['response'])
-          )
-        else:
-          tool_confirmation = ToolConfirmation.model_validate(
-              function_response.response
-          )
+        )
+        tool_confirmation = ToolConfirmation.model_validate(
+            confirmation_payload
+        )
         request_confirmation_function_responses[function_response.id] = (
             tool_confirmation
         )
@@ -98,16 +101,12 @@ class _RequestConfirmationLlmRequestProcessor(BaseLlmRequestProcessor):
 
     for i in range(len(events) - 2, -1, -1):
       event = events[i]
-      # Find the system generated FunctionCall event requesting the tool
-      # confirmation
       function_calls = event.get_function_calls()
       if not function_calls:
         continue
 
-      tools_to_resume_with_confirmation = (
-          dict()
-      )  # {Function call id, tool confirmation}
-      tools_to_resume_with_args = dict()  # {Function call id, function calls}
+      tools_to_resume_with_confirmation = dict()
+      tools_to_resume_with_args = dict()
 
       for function_call in function_calls:
         if (
@@ -131,7 +130,6 @@ class _RequestConfirmationLlmRequestProcessor(BaseLlmRequestProcessor):
       if not tools_to_resume_with_confirmation:
         continue
 
-      # Remove the tools that have already been confirmed.
       for i in range(len(events) - 1, confirmation_event_index, -1):
         event = events[i]
         function_response = event.get_function_responses()
@@ -157,13 +155,10 @@ class _RequestConfirmationLlmRequestProcessor(BaseLlmRequestProcessor):
                   ReadonlyContext(invocation_context)
               )
           },
-          # There could be parallel function calls that require input
-          # response would be a dict keyed by function call id
           tools_to_resume_with_confirmation.keys(),
           tools_to_resume_with_confirmation,
       ):
         yield function_response_event
       return
-
 
 request_processor = _RequestConfirmationLlmRequestProcessor()
