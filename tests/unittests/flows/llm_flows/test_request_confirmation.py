@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import json
 from unittest.mock import patch
 
 from google.adk.agents.llm_agent import LlmAgent
@@ -205,6 +204,103 @@ async def test_request_confirmation_processor_success():
 
     assert list(args[1]) == [original_function_call]  # function_calls
     assert args[3] == {MOCK_FUNCTION_CALL_ID}  # tools_to_confirm
+    assert (
+        args[4][MOCK_FUNCTION_CALL_ID] == user_confirmation
+    )  # tool_confirmation_dict
+
+
+@pytest.mark.asyncio
+async def test_request_confirmation_processor_doubly_wrapped_response():
+  """Test confirmation parsing when responses are nested under multiple keys."""
+  agent = LlmAgent(name="test_agent", tools=[mock_tool])
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  llm_request = LlmRequest()
+
+  original_function_call = types.FunctionCall(
+      name=MOCK_TOOL_NAME, args={"param1": "test"}, id=MOCK_FUNCTION_CALL_ID
+  )
+
+  tool_confirmation = ToolConfirmation(confirmed=False, hint="test hint")
+  tool_confirmation_args = {
+      "originalFunctionCall": original_function_call.model_dump(
+          exclude_none=True, by_alias=True
+      ),
+      "toolConfirmation": tool_confirmation.model_dump(
+          by_alias=True, exclude_none=True
+      ),
+  }
+
+  invocation_context.session.events.append(
+      Event(
+          author="agent",
+          content=types.Content(
+              parts=[
+                  types.Part(
+                      function_call=types.FunctionCall(
+                          name=functions.REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+                          args=tool_confirmation_args,
+                          id=MOCK_CONFIRMATION_FUNCTION_CALL_ID,
+                      )
+                  )
+              ]
+          ),
+      )
+  )
+
+  user_confirmation = ToolConfirmation(confirmed=True)
+  invocation_context.session.events.append(
+      Event(
+          author="user",
+          content=types.Content(
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          name=functions.REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+                          id=MOCK_CONFIRMATION_FUNCTION_CALL_ID,
+                          response={
+                              "response": {
+                                  "response": user_confirmation.model_dump_json()
+                              }
+                          },
+                      )
+                  )
+              ]
+          ),
+      )
+  )
+
+  expected_event = Event(
+      author="agent",
+      content=types.Content(
+          parts=[
+              types.Part(
+                  function_response=types.FunctionResponse(
+                      name=MOCK_TOOL_NAME,
+                      id=MOCK_FUNCTION_CALL_ID,
+                      response={"result": "Mock tool result with test"},
+                  )
+              )
+          ]
+      ),
+  )
+
+  with patch(
+      "google.adk.flows.llm_flows.functions.handle_function_call_list_async"
+  ) as mock_handle_function_call_list_async:
+    mock_handle_function_call_list_async.return_value = expected_event
+
+    events = []
+    async for event in request_processor.run_async(
+        invocation_context, llm_request
+    ):
+      events.append(event)
+
+    assert len(events) == 1
+    assert events[0] == expected_event
+
+    args, _ = mock_handle_function_call_list_async.call_args
     assert (
         args[4][MOCK_FUNCTION_CALL_ID] == user_confirmation
     )  # tool_confirmation_dict
