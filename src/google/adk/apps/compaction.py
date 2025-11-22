@@ -72,9 +72,10 @@ async def _run_compaction_for_sliding_window(
       beginning.
       -   A `CompactedEvent` is generated, summarizing events within
       `invocation_id` range [1, 2].
-      -   The session now contains: `[E(inv=1, role=user), E(inv=1, role=model),
-      E(inv=2, role=user), E(inv=2, role=model), E(inv=2, role=user),
-      CompactedEvent(inv=[1, 2])]`.
+      -   The session now contains: `[
+          E(inv=1, role=user), E(inv=1, role=model),
+          E(inv=2, role=user), E(inv=2, role=model),
+          CompactedEvent(inv=[1, 2])]`.
 
   2.  **After `invocation_id` 3 events are added:**
       -   No compaction happens yet, because only 1 new invocation (`inv=3`)
@@ -91,10 +92,13 @@ async def _run_compaction_for_sliding_window(
       -   The new compaction range is from `invocation_id` 2 to 4.
       -   A new `CompactedEvent` is generated, summarizing events within
       `invocation_id` range [2, 4].
-      -   The session now contains: `[E(inv=1, role=user), E(inv=1, role=model),
-      E(inv=2, role=user), E(inv=2, role=model), E(inv=2, role=user),
-      CompactedEvent(inv=[1, 2]), E(inv=3, role=user), E(inv=3, role=model),
-      E(inv=4, role=user), E(inv=4, role=model), CompactedEvent(inv=[2, 4])]`.
+      -   The session now contains: `[
+          E(inv=1, role=user), E(inv=1, role=model),
+          E(inv=2, role=user), E(inv=2, role=model),
+          CompactedEvent(inv=[1, 2]),
+          E(inv=3, role=user), E(inv=3, role=model),
+          E(inv=4, role=user), E(inv=4, role=model),
+          CompactedEvent(inv=[2, 4])]`.
 
 
   Args:
