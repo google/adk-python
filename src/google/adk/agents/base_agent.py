@@ -563,46 +563,6 @@ class BaseAgent(BaseModel):
       )
     return value
 
-  @field_validator('sub_agents', mode='after')
-  @classmethod
-  def validate_sub_agents_unique_names(
-      cls, value: list[BaseAgent]
-  ) -> list[BaseAgent]:
-    """Validates that all sub-agents have unique names.
-
-    Args:
-      value: The list of sub-agents to validate.
-
-    Returns:
-      The validated list of sub-agents.
-
-    Raises:
-      ValueError: If duplicate sub-agent names are found.
-    """
-    if not value:
-      return value
-
-    seen_names: set[str] = set()
-    duplicates: set[str] = set()
-
-    for sub_agent in value:
-      name = sub_agent.name
-      if name in seen_names:
-        duplicates.add(name)
-      else:
-        seen_names.add(name)
-
-    if duplicates:
-      duplicate_names_str = ', '.join(
-          f'`{name}`' for name in sorted(duplicates)
-      )
-      raise ValueError(
-          f'Found duplicate sub-agent names: {duplicate_names_str}. '
-          'All sub-agents must have unique names.'
-      )
-
-    return value
-
   def __set_parent_agent_for_sub_agents(self) -> BaseAgent:
     for sub_agent in self.sub_agents:
       if sub_agent.parent_agent is not None:
