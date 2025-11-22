@@ -267,3 +267,200 @@ async def test_inject_session_state_with_optional_missing_state_returns_empty():
       instruction_template, invocation_context
   )
   assert populated_instruction == "Optional value: "
+
+
+# Tests for nested state access feature
+@pytest.mark.asyncio
+async def test_inject_session_state_with_nested_dict_access():
+  instruction_template = (
+      "User name is {user.name} and role is {user.profile.role}"
+  )
+  invocation_context = await _create_test_readonly_context(
+      state={
+          "user": {
+              "name": "Alice",
+              "profile": {"role": "Engineer", "level": "Senior"},
+          }
+      }
+  )
+
+  populated_instruction = await instructions_utils.inject_session_state(
+      instruction_template, invocation_context
+  )
+  assert populated_instruction == "User name is Alice and role is Engineer"
+
+
+@pytest.mark.asyncio
+async def test_inject_session_state_with_deep_nested_access():
+  instruction_template = "Deep value: {level1.level2.level3.value}"
+  invocation_context = await _create_test_readonly_context(
+      state={
+          "level1": {
+              "level2": {"level3": {"value": "deep_data", "other": "ignored"}}
+          }
+      }
+  )
+
+  populated_instruction = await instructions_utils.inject_session_state(
+      instruction_template, invocation_context
+  )
+  assert populated_instruction == "Deep value: deep_data"
+
+
+@pytest.mark.asyncio
+async def test_inject_session_state_with_optional_nested_access_existing():
+  instruction_template = "Name: {user?.name} Role: {user?.profile?.role}"
+  invocation_context = await _create_test_readonly_context(
+      state={
+          "user": {
+              "name": "Bob",
+              "profile": {"role": "Developer"},
+          }
+      }
+  )
+
+  populated_instruction = await instructions_utils.inject_session_state(
+      instruction_template, invocation_context
+  )
+  assert populated_instruction == "Name: Bob Role: Developer"
+
+
+@pytest.mark.asyncio
+async def test_inject_session_state_with_optional_nested_access_missing():
+  instruction_template = "Name: {user?.name} Missing: {user?.missing?.field?}"
+  invocation_context = await _create_test_readonly_context(
+      state={"user": {"name": "Charlie"}}
+  )
+
+  populated_instruction = await instructions_utils.inject_session_state(
+      instruction_template, invocation_context
+  )
+  assert populated_instruction == "Name: Charlie Missing: "
+
+
+@pytest.mark.asyncio
+async def test_inject_session_state_with_optional_nested_missing_root():
+  instruction_template = "Optional nested: {missing_root?.nested?.value?}"
+  invocation_context = await _create_test_readonly_context(state={})
+
+  populated_instruction = await instructions_utils.inject_session_state(
+      instruction_template, invocation_context
+  )
+  assert populated_instruction == "Optional nested: "
+
+
+@pytest.mark.asyncio
+async def test_inject_session_state_with_nested_none_value():
+  instruction_template = "Value: {user.profile.role}"
+  invocation_context = await _create_test_readonly_context(
+      state={"user": {"profile": None}}
+  )
+
+  # When a value in the path is None, it returns empty string
+  populated_instruction = await instructions_utils.inject_session_state(
+      instruction_template, invocation_context
+  )
+  assert populated_instruction == "Value: "
+
+
+@pytest.mark.asyncio
+async def test_inject_session_state_with_optional_nested_none_value():
+  instruction_template = "Value: {user.profile?.role?}"
+  invocation_context = await _create_test_readonly_context(
+      state={"user": {"profile": None}}
+  )
+
+  populated_instruction = await instructions_utils.inject_session_state(
+      instruction_template, invocation_context
+  )
+  assert populated_instruction == "Value: "
+
+
+@pytest.mark.asyncio
+async def test_inject_session_state_with_missing_nested_key_raises_error():
+  instruction_template = "Value: {user.profile.missing_key}"
+  invocation_context = await _create_test_readonly_context(
+      state={"user": {"profile": {"role": "Engineer"}}}
+  )
+
+  with pytest.raises(
+      KeyError, match="Context variable not found: `user.profile.missing_key`"
+  ):
+    await instructions_utils.inject_session_state(
+        instruction_template, invocation_context
+    )
+
+
+@pytest.mark.asyncio
+async def test_inject_session_state_with_nested_and_prefixed_state():
+  instruction_template = "User: {app:user.name} Temp: {temp:session.id}"
+  invocation_context = await _create_test_readonly_context(
+      state={
+          "app:user": {"name": "Dana"},
+          "temp:session": {"id": "session_123"},
+      }
+  )
+
+  populated_instruction = await instructions_utils.inject_session_state(
+      instruction_template, invocation_context
+  )
+  assert populated_instruction == "User: Dana Temp: session_123"
+
+
+@pytest.mark.asyncio
+async def test_inject_session_state_with_mixed_nested_and_flat_state():
+  instruction_template = (
+      "Flat: {simple_key}, Nested: {user.name}, Deep: {config.app.version}"
+  )
+  invocation_context = await _create_test_readonly_context(
+      state={
+          "simple_key": "simple_value",
+          "user": {"name": "Eve"},
+          "config": {"app": {"version": "1.0.0"}},
+      }
+  )
+
+  populated_instruction = await instructions_utils.inject_session_state(
+      instruction_template, invocation_context
+  )
+  assert populated_instruction == "Flat: simple_value, Nested: Eve, Deep: 1.0.0"
+
+
+@pytest.mark.asyncio
+async def test_inject_session_state_with_numeric_nested_values():
+  instruction_template = "Age: {user.age}, Score: {user.metrics.score}"
+  invocation_context = await _create_test_readonly_context(
+      state={"user": {"age": 25, "metrics": {"score": 95.5}}}
+  )
+
+  populated_instruction = await instructions_utils.inject_session_state(
+      instruction_template, invocation_context
+  )
+  assert populated_instruction == "Age: 25, Score: 95.5"
+
+
+@pytest.mark.asyncio
+async def test_inject_session_state_with_nested_object_attribute_access():
+  """Test accessing attributes on objects (not just dicts)"""
+
+  class UserProfile:
+
+    def __init__(self):
+      self.role = "Engineer"
+      self.department = "Engineering"
+
+  class User:
+
+    def __init__(self):
+      self.name = "Frank"
+      self.profile = UserProfile()
+
+  instruction_template = "Name: {user.name}, Role: {user.profile.role}"
+  invocation_context = await _create_test_readonly_context(
+      state={"user": User()}
+  )
+
+  populated_instruction = await instructions_utils.inject_session_state(
+      instruction_template, invocation_context
+  )
+  assert populated_instruction == "Name: Frank, Role: Engineer"
