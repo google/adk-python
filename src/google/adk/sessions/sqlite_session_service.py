@@ -323,7 +323,7 @@ class SqliteSessionService(BaseSessionService):
 
     # Trim temp state before persisting
     event = self._trim_temp_delta_state(event)
-    now = time.time()
+    event_timestamp = event.timestamp
 
     async with self._get_db_connection() as db:
       # Check for stale session
@@ -355,11 +355,15 @@ class SqliteSessionService(BaseSessionService):
 
         if app_state_delta:
           await self._upsert_app_state(
-              db, session.app_name, app_state_delta, now
+              db, session.app_name, app_state_delta, event_timestamp
           )
         if user_state_delta:
           await self._upsert_user_state(
-              db, session.app_name, session.user_id, user_state_delta, now
+              db,
+              session.app_name,
+              session.user_id,
+              user_state_delta,
+              event_timestamp,
           )
         if session_state_delta:
           await self._update_session_state_in_db(
@@ -368,7 +372,7 @@ class SqliteSessionService(BaseSessionService):
               session.user_id,
               session.id,
               session_state_delta,
-              now,
+              event_timestamp,
           )
           has_session_state_delta = True
 
@@ -392,12 +396,17 @@ class SqliteSessionService(BaseSessionService):
         await db.execute(
             "UPDATE sessions SET update_time=? WHERE app_name=? AND user_id=?"
             " AND id=?",
-            (now, session.app_name, session.user_id, session.id),
+            (
+                event_timestamp,
+                session.app_name,
+                session.user_id,
+                session.id,
+            ),
         )
       await db.commit()
 
-      # Update timestamp with commit time
-      session.last_update_time = now
+      # Update timestamp based on event time
+      session.last_update_time = event_timestamp
 
     # Also update the in-memory session
     await super().append_event(session=session, event=event)

@@ -20,6 +20,8 @@ import logging
 import os
 from pathlib import Path
 import sys
+from typing import Any
+from typing import Literal
 from typing import Optional
 from typing import Union
 
@@ -37,7 +39,7 @@ logger = logging.getLogger("google_adk." + __name__)
 
 # Special agents directory for agents with names starting with double underscore
 SPECIAL_AGENTS_DIR = os.path.join(
-    os.path.dirname(__file__), "..", "..", "built_in_agents"
+    os.path.dirname(__file__), "..", "built_in_agents"
 )
 
 
@@ -192,10 +194,30 @@ class AgentLoader(BaseAgentLoader):
       agents_dir = os.path.abspath(SPECIAL_AGENTS_DIR)
       # Remove the double underscore prefix for the actual agent name
       actual_agent_name = agent_name[2:]
+      # If this special agents directory is part of a package (has __init__.py
+      # up the tree), build a fully-qualified module path so the built-in agent
+      # can continue to use relative imports. Otherwise, fall back to importing
+      # by module name relative to agents_dir.
+      module_base_name = actual_agent_name
+      package_parts: list[str] = []
+      package_root: Optional[Path] = None
+      current_dir = Path(agents_dir).resolve()
+      while True:
+        if not (current_dir / "__init__.py").is_file():
+          package_root = current_dir
+          break
+        package_parts.append(current_dir.name)
+        current_dir = current_dir.parent
+      if package_parts:
+        package_parts.reverse()
+        module_base_name = ".".join(package_parts + [actual_agent_name])
+        if str(package_root) not in sys.path:
+          sys.path.insert(0, str(package_root))
     else:
       # Regular agent: use the configured agents directory
       agents_dir = self.agents_dir
       actual_agent_name = agent_name
+      module_base_name = actual_agent_name
 
     # Add agents_dir to sys.path
     if agents_dir not in sys.path:
@@ -204,20 +226,20 @@ class AgentLoader(BaseAgentLoader):
     logger.debug("Loading .env for agent %s from %s", agent_name, agents_dir)
     envs.load_dotenv_for_agent(actual_agent_name, str(agents_dir))
 
-    if root_agent := self._load_from_module_or_package(actual_agent_name):
+    if root_agent := self._load_from_module_or_package(module_base_name):
       self._record_origin_metadata(
           loaded=root_agent,
-          expected_app_name=actual_agent_name,
-          module_name=actual_agent_name,
+          expected_app_name=agent_name,
+          module_name=module_base_name,
           agents_dir=agents_dir,
       )
       return root_agent
 
-    if root_agent := self._load_from_submodule(actual_agent_name):
+    if root_agent := self._load_from_submodule(module_base_name):
       self._record_origin_metadata(
           loaded=root_agent,
-          expected_app_name=actual_agent_name,
-          module_name=f"{actual_agent_name}.agent",
+          expected_app_name=agent_name,
+          module_name=f"{module_base_name}.agent",
           agents_dir=agents_dir,
       )
       return root_agent
@@ -320,6 +342,50 @@ class AgentLoader(BaseAgentLoader):
     ]
     agent_names.sort()
     return agent_names
+
+  def list_agents_detailed(self) -> list[dict[str, Any]]:
+    """Lists all agents with detailed metadata (name, description, type)."""
+    agent_names = self.list_agents()
+    apps_info = []
+
+    for agent_name in agent_names:
+      try:
+        loaded = self.load_agent(agent_name)
+        if isinstance(loaded, App):
+          agent = loaded.root_agent
+        else:
+          agent = loaded
+
+        language = self._determine_agent_language(agent_name)
+
+        app_info = {
+            "name": agent_name,
+            "root_agent_name": agent.name,
+            "description": agent.description,
+            "language": language,
+        }
+        apps_info.append(app_info)
+
+      except Exception as e:
+        logger.error("Failed to load agent '%s': %s", agent_name, e)
+        continue
+
+    return apps_info
+
+  def _determine_agent_language(
+      self, agent_name: str
+  ) -> Literal["yaml", "python"]:
+    """Determine the type of agent based on file structure."""
+    base_path = Path.cwd() / self.agents_dir / agent_name
+
+    if (base_path / "root_agent.yaml").exists():
+      return "yaml"
+    elif (base_path / "agent.py").exists():
+      return "python"
+    elif (base_path / "__init__.py").exists():
+      return "python"
+
+    raise ValueError(f"Could not determine agent type for '{agent_name}'.")
 
   def remove_agent_from_cache(self, agent_name: str):
     # Clear module cache for the agent and its submodules

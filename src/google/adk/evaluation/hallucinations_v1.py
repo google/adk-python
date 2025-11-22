@@ -32,6 +32,7 @@ from ..models.llm_response import LlmResponse
 from ..models.registry import LLMRegistry
 from ..utils.context_utils import Aclosing
 from ..utils.feature_decorator import experimental
+from ._retry_options_utils import add_default_retry_options_if_not_present
 from .app_details import AppDetails
 from .eval_case import Invocation
 from .eval_case import InvocationEvent
@@ -526,6 +527,7 @@ class HallucinationsV1Evaluator(Evaluator):
         ],
         config=self._model_config,
     )
+    add_default_retry_options_if_not_present(segmenter_llm_request)
     try:
       async with Aclosing(
           self._judge_model.generate_content_async(segmenter_llm_request)
@@ -559,6 +561,7 @@ class HallucinationsV1Evaluator(Evaluator):
         ],
         config=self._model_config,
     )
+    add_default_retry_options_if_not_present(validator_llm_request)
     try:
       async with Aclosing(
           self._judge_model.generate_content_async(validator_llm_request)

@@ -34,6 +34,7 @@ from google.adk.tools.tool_context import ToolContext
 from google.genai.types import FunctionDeclaration
 from google.genai.types import Schema
 import pytest
+import requests
 
 
 class TestRestApiTool:
@@ -223,6 +224,49 @@ class TestRestApiTool:
 
     # Check the result
     assert result == {"result": "success"}
+
+  @patch(
+      "google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool.requests.request"
+  )
+  @pytest.mark.asyncio
+  async def test_call_http_failure(
+      self,
+      mock_request,
+      mock_tool_context,
+      sample_endpoint,
+      sample_operation,
+      sample_auth_scheme,
+      sample_auth_credential,
+  ):
+    mock_response = MagicMock()
+    mock_response.status_code = 500
+    mock_response.content = b"Internal Server Error"
+    mock_response.raise_for_status.side_effect = requests.exceptions.HTTPError(
+        "500 Server Error"
+    )
+    mock_request.return_value = mock_response
+
+    tool = RestApiTool(
+        name="test_tool",
+        description="Test Tool",
+        endpoint=sample_endpoint,
+        operation=sample_operation,
+        auth_scheme=sample_auth_scheme,
+        auth_credential=sample_auth_credential,
+    )
+
+    # Call the method
+    result = await tool.call(args={}, tool_context=mock_tool_context)
+
+    # Check the result
+    assert result == {
+        "error": (
+            "Tool test_tool execution failed. Analyze this execution error"
+            " and your inputs. Retry with adjustments if applicable. But"
+            " make sure don't retry more than 3 times. Execution Error:"
+            " Status Code: 500, Internal Server Error"
+        )
+    }
 
   @patch(
       "google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool.requests.request"

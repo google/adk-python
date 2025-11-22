@@ -31,6 +31,7 @@ from typing import Optional
 from typing import Tuple
 from typing import TypedDict
 from typing import Union
+import uuid
 import warnings
 
 from google.genai import types
@@ -38,8 +39,8 @@ import litellm
 from litellm import acompletion
 from litellm import ChatCompletionAssistantMessage
 from litellm import ChatCompletionAssistantToolCall
-from litellm import ChatCompletionDeveloperMessage
 from litellm import ChatCompletionMessageToolCall
+from litellm import ChatCompletionSystemMessage
 from litellm import ChatCompletionToolMessage
 from litellm import ChatCompletionUserMessage
 from litellm import completion
@@ -64,6 +65,7 @@ logger = logging.getLogger("google_adk." + __name__)
 _NEW_LINE = "\n"
 _EXCLUDED_PART_FIELD = {"inline_data": {"data"}}
 _LITELLM_STRUCTURED_TYPES = {"json_object", "json_schema"}
+_JSON_DECODER = json.JSONDecoder()
 
 # Mapping of LiteLLM finish_reason strings to FinishReason enum values
 # Note: tool_calls/function_call map to STOP because:
@@ -94,6 +96,64 @@ def _decode_inline_text_data(raw_bytes: bytes) -> str:
     return raw_bytes.decode("latin-1", errors="replace")
 
 
+def _iter_reasoning_texts(reasoning_value: Any) -> Iterable[str]:
+  """Yields textual fragments from provider specific reasoning payloads."""
+  if reasoning_value is None:
+    return
+
+  if isinstance(reasoning_value, types.Content):
+    if not reasoning_value.parts:
+      return
+    for part in reasoning_value.parts:
+      if part and part.text:
+        yield part.text
+    return
+
+  if isinstance(reasoning_value, str):
+    yield reasoning_value
+    return
+
+  if isinstance(reasoning_value, list):
+    for value in reasoning_value:
+      yield from _iter_reasoning_texts(value)
+    return
+
+  if isinstance(reasoning_value, dict):
+    # LiteLLM currently nests “reasoning” text under a few known keys.
+    # (Documented in https://docs.litellm.ai/docs/openai#reasoning-outputs)
+    for key in ("text", "content", "reasoning", "reasoning_content"):
+      text_value = reasoning_value.get(key)
+      if isinstance(text_value, str):
+        yield text_value
+    return
+
+  text_attr = getattr(reasoning_value, "text", None)
+  if isinstance(text_attr, str):
+    yield text_attr
+  elif isinstance(reasoning_value, (int, float, bool)):
+    yield str(reasoning_value)
+
+
+def _convert_reasoning_value_to_parts(reasoning_value: Any) -> List[types.Part]:
+  """Converts provider reasoning payloads into Gemini thought parts."""
+  return [
+      types.Part(text=text, thought=True)
+      for text in _iter_reasoning_texts(reasoning_value)
+      if text
+  ]
+
+
+def _extract_reasoning_value(message: Message | Dict[str, Any]) -> Any:
+  """Fetches the reasoning payload from a LiteLLM message or dict."""
+  if message is None:
+    return None
+  if hasattr(message, "reasoning_content"):
+    return getattr(message, "reasoning_content")
+  if isinstance(message, dict):
+    return message.get("reasoning_content")
+  return None
+
+
 class ChatCompletionFileUrlObject(TypedDict, total=False):
   file_data: str
   file_id: str
@@ -109,6 +169,10 @@ class FunctionChunk(BaseModel):
 
 class TextChunk(BaseModel):
   text: str
+
+
+class ReasoningChunk(BaseModel):
+  parts: List[types.Part]
 
 
 class UsageMetadataChunk(BaseModel):
@@ -431,6 +495,118 @@ def _get_content(
   return content_objects
 
 
+def _build_tool_call_from_json_dict(
+    candidate: Any, *, index: int
+) -> Optional[ChatCompletionMessageToolCall]:
+  """Creates a tool call object from JSON content embedded in text."""
+
+  if not isinstance(candidate, dict):
+    return None
+
+  name = candidate.get("name")
+  args = candidate.get("arguments")
+  if not isinstance(name, str) or args is None:
+    return None
+
+  if isinstance(args, str):
+    arguments_payload = args
+  else:
+    try:
+      arguments_payload = json.dumps(args, ensure_ascii=False)
+    except (TypeError, ValueError):
+      arguments_payload = _safe_json_serialize(args)
+
+  call_id = candidate.get("id") or f"adk_tool_call_{uuid.uuid4().hex}"
+  call_index = candidate.get("index")
+  if isinstance(call_index, int):
+    index = call_index
+
+  function = Function(
+      name=name,
+      arguments=arguments_payload,
+  )
+  # Some LiteLLM types carry an `index` field only in streaming contexts,
+  # so guard the assignment to stay compatible with older versions.
+  if hasattr(function, "index"):
+    function.index = index  # type: ignore[attr-defined]
+
+  tool_call = ChatCompletionMessageToolCall(
+      type="function",
+      id=str(call_id),
+      function=function,
+  )
+  # Same reasoning as above: not every ChatCompletionMessageToolCall exposes it.
+  if hasattr(tool_call, "index"):
+    tool_call.index = index  # type: ignore[attr-defined]
+
+  return tool_call
+
+
+def _parse_tool_calls_from_text(
+    text_block: str,
+) -> tuple[list[ChatCompletionMessageToolCall], Optional[str]]:
+  """Extracts inline JSON tool calls from LiteLLM text responses."""
+
+  tool_calls = []
+  if not text_block:
+    return tool_calls, None
+
+  remainder_segments = []
+  cursor = 0
+  text_length = len(text_block)
+
+  while cursor < text_length:
+    brace_index = text_block.find("{", cursor)
+    if brace_index == -1:
+      remainder_segments.append(text_block[cursor:])
+      break
+
+    remainder_segments.append(text_block[cursor:brace_index])
+    try:
+      candidate, end = _JSON_DECODER.raw_decode(text_block, brace_index)
+    except json.JSONDecodeError:
+      remainder_segments.append(text_block[brace_index])
+      cursor = brace_index + 1
+      continue
+
+    tool_call = _build_tool_call_from_json_dict(
+        candidate, index=len(tool_calls)
+    )
+    if tool_call:
+      tool_calls.append(tool_call)
+    else:
+      remainder_segments.append(text_block[brace_index:end])
+    cursor = end
+
+  remainder = "".join(segment for segment in remainder_segments if segment)
+  remainder = remainder.strip()
+
+  return tool_calls, remainder or None
+
+
+def _split_message_content_and_tool_calls(
+    message: Message,
+) -> tuple[Optional[OpenAIMessageContent], list[ChatCompletionMessageToolCall]]:
+  """Returns message content and tool calls, parsing inline JSON when needed."""
+
+  existing_tool_calls = message.get("tool_calls") or []
+  normalized_tool_calls = (
+      list(existing_tool_calls) if existing_tool_calls else []
+  )
+  content = message.get("content")
+
+  # LiteLLM responses either provide structured tool_calls or inline JSON, not
+  # both. When tool_calls are present we trust them and skip the fallback parser.
+  if normalized_tool_calls or not isinstance(content, str):
+    return content, normalized_tool_calls
+
+  fallback_tool_calls, remainder = _parse_tool_calls_from_text(content)
+  if fallback_tool_calls:
+    return remainder, fallback_tool_calls
+
+  return content, []
+
+
 def _to_litellm_role(role: Optional[str]) -> Literal["user", "assistant"]:
   """Converts a types.Content role to a litellm role.
 
@@ -456,10 +632,8 @@ TYPE_LABELS = {
 }
 
 
-def _schema_to_dict(schema: types.Schema) -> dict:
-  """Recursively converts a types.Schema to a pure-python dict
-
-  with all enum values written as lower-case strings.
+def _schema_to_dict(schema: types.Schema | dict[str, Any]) -> dict:
+  """Recursively converts a schema object or dict to a pure-python dict.
 
   Args:
     schema: The schema to convert.
@@ -467,38 +641,36 @@ def _schema_to_dict(schema: types.Schema) -> dict:
   Returns:
     The dictionary representation of the schema.
   """
-  # Dump without json encoding so we still get Enum members
-  schema_dict = schema.model_dump(exclude_none=True)
+  schema_dict = (
+      schema.model_dump(exclude_none=True)
+      if isinstance(schema, types.Schema)
+      else dict(schema)
+  )
+  enum_values = schema_dict.get("enum")
+  if isinstance(enum_values, (list, tuple)):
+    schema_dict["enum"] = [value for value in enum_values if value is not None]
 
-  # ---- normalise this level ------------------------------------------------
-  if "type" in schema_dict:
-    # schema_dict["type"] can be an Enum or a str
+  if "type" in schema_dict and schema_dict["type"] is not None:
     t = schema_dict["type"]
-    schema_dict["type"] = (t.value if isinstance(t, types.Type) else t).lower()
+    schema_dict["type"] = (
+        t.value if isinstance(t, types.Type) else str(t)
+    ).lower()
 
-  # ---- recurse into `items` -----------------------------------------------
   if "items" in schema_dict:
-    schema_dict["items"] = _schema_to_dict(
-        schema.items
-        if isinstance(schema.items, types.Schema)
-        else types.Schema.model_validate(schema_dict["items"])
+    items = schema_dict["items"]
+    schema_dict["items"] = (
+        _schema_to_dict(items)
+        if isinstance(items, (types.Schema, dict))
+        else items
     )
 
-  # ---- recurse into `properties` ------------------------------------------
   if "properties" in schema_dict:
     new_props = {}
     for key, value in schema_dict["properties"].items():
-      # value is a dict → rebuild a Schema object and recurse
-      if isinstance(value, dict):
-        new_props[key] = _schema_to_dict(types.Schema.model_validate(value))
-      # value is already a Schema instance
-      elif isinstance(value, types.Schema):
+      if isinstance(value, (types.Schema, dict)):
         new_props[key] = _schema_to_dict(value)
-      # plain dict without nested schemas
       else:
         new_props[key] = value
-        if "type" in new_props[key]:
-          new_props[key]["type"] = new_props[key]["type"].lower()
     schema_dict["properties"] = new_props
 
   return schema_dict
@@ -561,7 +733,14 @@ def _model_response_to_chunk(
     response: ModelResponse,
 ) -> Generator[
     Tuple[
-        Optional[Union[TextChunk, FunctionChunk, UsageMetadataChunk]],
+        Optional[
+            Union[
+                TextChunk,
+                FunctionChunk,
+                UsageMetadataChunk,
+                ReasoningChunk,
+            ]
+        ],
         Optional[str],
     ],
     None,
@@ -584,15 +763,31 @@ def _model_response_to_chunk(
     if message is None and response["choices"][0].get("delta", None):
       message = response["choices"][0]["delta"]
 
-    if message.get("content", None):
-      yield TextChunk(text=message.get("content")), finish_reason
+    message_content: Optional[OpenAIMessageContent] = None
+    tool_calls: list[ChatCompletionMessageToolCall] = []
+    reasoning_parts: List[types.Part] = []
+    if message is not None:
+      (
+          message_content,
+          tool_calls,
+      ) = _split_message_content_and_tool_calls(message)
+      reasoning_value = _extract_reasoning_value(message)
+      if reasoning_value:
+        reasoning_parts = _convert_reasoning_value_to_parts(reasoning_value)
 
-    if message.get("tool_calls", None):
-      for tool_call in message.get("tool_calls"):
+    if reasoning_parts:
+      yield ReasoningChunk(parts=reasoning_parts), finish_reason
+
+    if message_content:
+      yield TextChunk(text=message_content), finish_reason
+
+    if tool_calls:
+      for idx, tool_call in enumerate(tool_calls):
         # aggregate tool_call
         if tool_call.type == "function":
           func_name = tool_call.function.name
           func_args = tool_call.function.arguments
+          func_index = getattr(tool_call, "index", idx)
 
           # Ignore empty chunks that don't carry any information.
           if not func_name and not func_args:
@@ -602,12 +797,10 @@ def _model_response_to_chunk(
               id=tool_call.id,
               name=func_name,
               args=func_args,
-              index=tool_call.index,
+              index=func_index,
           ), finish_reason
 
-    if finish_reason and not (
-        message.get("content", None) or message.get("tool_calls", None)
-    ):
+    if finish_reason and not (message_content or tool_calls):
       yield None, finish_reason
 
   if not message:
@@ -647,8 +840,13 @@ def _model_response_to_generate_content_response(
   if not message:
     raise ValueError("No message in response")
 
+  thought_parts = _convert_reasoning_value_to_parts(
+      _extract_reasoning_value(message)
+  )
   llm_response = _message_to_generate_content_response(
-      message, model_version=response.model
+      message,
+      model_version=response.model,
+      thought_parts=thought_parts or None,
   )
   if finish_reason:
     # If LiteLLM already provides a FinishReason enum (e.g., for Gemini), use
@@ -673,7 +871,11 @@ def _model_response_to_generate_content_response(
 
 
 def _message_to_generate_content_response(
-    message: Message, *, is_partial: bool = False, model_version: str = None
+    message: Message,
+    *,
+    is_partial: bool = False,
+    model_version: str = None,
+    thought_parts: Optional[List[types.Part]] = None,
 ) -> LlmResponse:
   """Converts a litellm message to LlmResponse.
 
@@ -686,12 +888,19 @@ def _message_to_generate_content_response(
     The LlmResponse.
   """
 
-  parts = []
-  if message.get("content", None):
-    parts.append(types.Part.from_text(text=message.get("content")))
+  parts: List[types.Part] = []
+  if not thought_parts:
+    thought_parts = _convert_reasoning_value_to_parts(
+        _extract_reasoning_value(message)
+    )
+  if thought_parts:
+    parts.extend(thought_parts)
+  message_content, tool_calls = _split_message_content_and_tool_calls(message)
+  if isinstance(message_content, str) and message_content:
+    parts.append(types.Part.from_text(text=message_content))
 
-  if message.get("tool_calls", None):
-    for tool_call in message.get("tool_calls"):
+  if tool_calls:
+    for tool_call in tool_calls:
       if tool_call.type == "function":
         part = types.Part.from_function_call(
             name=tool_call.function.name,
@@ -774,8 +983,8 @@ def _get_completion_inputs(
   if llm_request.config.system_instruction:
     messages.insert(
         0,
-        ChatCompletionDeveloperMessage(
-            role="developer",
+        ChatCompletionSystemMessage(
+            role="system",
             content=llm_request.config.system_instruction,
         ),
     )
@@ -1051,6 +1260,7 @@ class LiteLlm(BaseLlm):
 
     if stream:
       text = ""
+      reasoning_parts: List[types.Part] = []
       # Track function calls by index
       function_calls = {}  # index -> {name, args, id}
       completion_args["stream"] = True
@@ -1092,6 +1302,14 @@ class LiteLlm(BaseLlm):
                 is_partial=True,
                 model_version=part.model,
             )
+          elif isinstance(chunk, ReasoningChunk):
+            if chunk.parts:
+              reasoning_parts.extend(chunk.parts)
+              yield LlmResponse(
+                  content=types.Content(role="model", parts=list(chunk.parts)),
+                  partial=True,
+                  model_version=part.model,
+              )
           elif isinstance(chunk, UsageMetadataChunk):
             usage_metadata = types.GenerateContentResponseUsageMetadata(
                 prompt_token_count=chunk.prompt_tokens,
@@ -1125,16 +1343,27 @@ class LiteLlm(BaseLlm):
                         tool_calls=tool_calls,
                     ),
                     model_version=part.model,
+                    thought_parts=list(reasoning_parts)
+                    if reasoning_parts
+                    else None,
                 )
             )
             text = ""
+            reasoning_parts = []
             function_calls.clear()
-          elif finish_reason == "stop" and text:
+          elif finish_reason == "stop" and (text or reasoning_parts):
+            message_content = text if text else None
             aggregated_llm_response = _message_to_generate_content_response(
-                ChatCompletionAssistantMessage(role="assistant", content=text),
+                ChatCompletionAssistantMessage(
+                    role="assistant", content=message_content
+                ),
                 model_version=part.model,
+                thought_parts=list(reasoning_parts)
+                if reasoning_parts
+                else None,
             )
             text = ""
+            reasoning_parts = []
 
       # waiting until streaming ends to yield the llm_response as litellm tends
       # to send chunk that contains usage_metadata after the chunk with
