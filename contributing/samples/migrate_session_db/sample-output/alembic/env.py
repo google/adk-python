@@ -31,8 +31,27 @@ if config.config_file_name is not None:
 # for 'autogenerate' support
 from google.adk.sessions.database_session_service import Base
 
-# target_metadata = mymodel.Base.metadata
-target_metadata = Base.metadata
+# Only operate on tables defined in these metadata objects.
+TARGET_METADATAS = (Base.metadata,)
+target_metadata = TARGET_METADATAS[0]
+
+_ALLOWED_TABLE_NAMES = frozenset(
+    table_name
+    for metadata in TARGET_METADATAS
+    for table_name in metadata.tables
+)
+
+
+def include_object(obj, name, type_, reflected, compare_to):
+  """Only include tables (and their indexes) defined in TARGET_METADATAS."""
+  if type_ == "table":
+    return bool(_ALLOWED_TABLE_NAMES) and name in _ALLOWED_TABLE_NAMES
+  if type_ == "index":
+    try:
+      return obj.table.name in _ALLOWED_TABLE_NAMES
+    except Exception:
+      return False
+  return True
 
 # other values from the config, defined by the needs of env.py,
 # can be acquired:
@@ -58,6 +77,8 @@ def run_migrations_offline() -> None:
       target_metadata=target_metadata,
       literal_binds=True,
       dialect_opts={"paramstyle": "named"},
+      include_object=include_object,
+      version_table="alembic_version_adk",
   )
 
   with context.begin_transaction():
@@ -78,7 +99,12 @@ def run_migrations_online() -> None:
   )
 
   with connectable.connect() as connection:
-    context.configure(connection=connection, target_metadata=target_metadata)
+    context.configure(
+        connection=connection,
+        target_metadata=target_metadata,
+        include_object=include_object,
+        version_table="alembic_version_adk",
+    )
 
     with context.begin_transaction():
       context.run_migrations()
