@@ -33,6 +33,8 @@ from google.adk.cli.utils.agent_loader import AgentLoader
 from google.adk.events.event import Event
 from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.runners import Runner
+from google.adk.sessions.base_session_service import BaseSessionService
+from google.adk.sessions.base_session_service import GetSessionConfig
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.sessions.session import Session
 from google.adk.tools.function_tool import FunctionTool
@@ -1319,6 +1321,133 @@ class TestRunnerInferAgentOrigin:
     assert runner._app_name_alignment_hint is not None
     assert "wrong_name" in runner._app_name_alignment_hint
     assert "actual_name" in runner._app_name_alignment_hint
+class TestRunnerGetSessionConfig:
+  """Tests for Runner get_session_config passing to session service."""
+
+  def setup_method(self):
+    """Set up test fixtures."""
+    self.mock_session_service = AsyncMock(spec=BaseSessionService)
+    self.artifact_service = InMemoryArtifactService()
+    self.root_agent = MockLlmAgent("root_agent")
+
+    # Create a mock session to return
+    self.mock_session = Session(
+        id=TEST_SESSION_ID,
+        app_name=TEST_APP_ID,
+        user_id=TEST_USER_ID,
+        events=[],
+    )
+
+    # Configure the mock to return the session
+    self.mock_session_service.get_session = AsyncMock(
+        return_value=self.mock_session
+    )
+
+    self.runner = Runner(
+        app_name=TEST_APP_ID,
+        agent=self.root_agent,
+        session_service=self.mock_session_service,
+        artifact_service=self.artifact_service,
+    )
+
+  @pytest.mark.asyncio
+  async def test_run_async_passes_get_session_config(self):
+    """Test that run_async passes get_session_config to session service."""
+    config = GetSessionConfig(num_recent_events=5)
+    run_config = RunConfig(get_session_config=config)
+
+    agen = self.runner.run_async(
+        user_id=TEST_USER_ID,
+        session_id=TEST_SESSION_ID,
+        new_message=types.Content(role="user", parts=[types.Part(text="test")]),
+        run_config=run_config,
+    )
+
+    # Consume first event to trigger get_session call
+    try:
+      await agen.__anext__()
+    except StopAsyncIteration:
+      pass
+    finally:
+      await agen.aclose()
+
+    # Verify get_session was called with the config
+    self.mock_session_service.get_session.assert_called_once()
+    call_kwargs = self.mock_session_service.get_session.call_args.kwargs
+    assert call_kwargs["config"] == config
+    assert call_kwargs["app_name"] == TEST_APP_ID
+    assert call_kwargs["user_id"] == TEST_USER_ID
+    assert call_kwargs["session_id"] == TEST_SESSION_ID
+
+  @pytest.mark.asyncio
+  async def test_run_async_passes_none_when_no_config(self):
+    """Test that run_async passes None when get_session_config is not set."""
+    agen = self.runner.run_async(
+        user_id=TEST_USER_ID,
+        session_id=TEST_SESSION_ID,
+        new_message=types.Content(role="user", parts=[types.Part(text="test")]),
+    )
+
+    # Consume first event to trigger get_session call
+    try:
+      await agen.__anext__()
+    except StopAsyncIteration:
+      pass
+    finally:
+      await agen.aclose()
+
+    # Verify get_session was called with config=None
+    self.mock_session_service.get_session.assert_called_once()
+    call_kwargs = self.mock_session_service.get_session.call_args.kwargs
+    assert call_kwargs["config"] is None
+
+  @pytest.mark.asyncio
+  async def test_run_debug_passes_get_session_config(self):
+    """Test that run_debug passes get_session_config to session service."""
+    # Mock create_session as well since run_debug creates session if not found
+    self.mock_session_service.create_session = AsyncMock(
+        return_value=self.mock_session
+    )
+
+    config = GetSessionConfig(num_recent_events=10)
+    run_config = RunConfig(get_session_config=config)
+
+    await self.runner.run_debug(
+        user_id=TEST_USER_ID,
+        session_id=TEST_SESSION_ID,
+        user_messages="test",
+        run_config=run_config,
+        quiet=True,
+    )
+
+    # Verify get_session was called with the config
+    # Note: get_session is called twice - once in run_debug, once in run_async
+    assert self.mock_session_service.get_session.call_count == 2
+    # Check both calls had the config
+    for call in self.mock_session_service.get_session.call_args_list:
+      assert call.kwargs["config"] == config
+
+  @pytest.mark.asyncio
+  async def test_run_debug_passes_none_when_no_config(self):
+    """Test that run_debug passes None when run_config is not provided."""
+    # Mock create_session
+    self.mock_session_service.create_session = AsyncMock(
+        return_value=self.mock_session
+    )
+
+    await self.runner.run_debug(
+        user_id=TEST_USER_ID,
+        session_id=TEST_SESSION_ID,
+        user_messages="test",
+        quiet=True,
+    )
+
+    # Verify get_session was called with config=None
+    # Note: get_session is called twice - once in run_debug, once in run_async
+    assert self.mock_session_service.get_session.call_count == 2
+    # Check both calls had config=None
+    for call in self.mock_session_service.get_session.call_args_list:
+      assert call.kwargs["config"] is None
 
 
 if __name__ == "__main__":

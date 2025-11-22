@@ -494,8 +494,11 @@ class Runner:
         invocation_id: Optional[str] = None,
     ) -> AsyncGenerator[Event, None]:
       with tracer.start_as_current_span('invocation'):
-        session = await self._get_or_create_session(
-            user_id=user_id, session_id=session_id
+        session = await self.session_service.get_session(
+            app_name=self.app_name,
+            user_id=user_id,
+            session_id=session_id,
+            config=run_config.get_session_config,
         )
         if not invocation_id and not new_message:
           raise ValueError(
@@ -1000,8 +1003,11 @@ class Runner:
           stacklevel=2,
       )
     if not session:
-      session = await self._get_or_create_session(
-          user_id=user_id, session_id=session_id
+      session = await self.session_service.get_session(
+          app_name=self.app_name,
+          user_id=user_id,
+          session_id=session_id,
+          config=run_config.get_session_config,
       )
     invocation_context = self._new_invocation_context_for_live(
         session,
@@ -1219,7 +1225,10 @@ class Runner:
         Please use run_async() with proper configuration.
     """
     session = await self.session_service.get_session(
-        app_name=self.app_name, user_id=user_id, session_id=session_id
+        app_name=self.app_name,
+        user_id=user_id,
+        session_id=session_id,
+        config=run_config.get_session_config if run_config else None,
     )
     if not session:
       session = await self.session_service.create_session(

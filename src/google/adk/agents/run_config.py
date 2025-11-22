@@ -28,6 +28,8 @@ from pydantic import Field
 from pydantic import field_validator
 from pydantic import model_validator
 
+from ..sessions.base_session_service import GetSessionConfig
+
 logger = logging.getLogger('google_adk.' + __name__)
 
 
@@ -253,6 +255,9 @@ class RunConfig(BaseModel):
 
   custom_metadata: Optional[dict[str, Any]] = None
   """Custom metadata for the current invocation."""
+
+  get_session_config: Optional[GetSessionConfig] = None
+  """Configuration for controlling which events are fetched from session storage."""
 
   @model_validator(mode='before')
   @classmethod
