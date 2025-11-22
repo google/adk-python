@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from .base_session_service import BaseSessionService
-from .firestore_session_service import FirestoreSessionService
 from .in_memory_session_service import InMemorySessionService
 from .session import Session
 from .state import State
@@ -39,5 +38,15 @@ def __getattr__(name: str):
       raise ImportError(
           'DatabaseSessionService requires sqlalchemy>=2.0, please ensure it is'
           ' installed correctly.'
+      ) from e
+  if name == 'FirestoreSessionService':
+    try:
+      from .firestore_session_service import FirestoreSessionService
+
+      return FirestoreSessionService
+    except ImportError as e:
+      raise ImportError(
+          'FirestoreSessionService requires google-cloud-firestore, please'
+          ' ensure it is installed correctly.'
       ) from e
   raise AttributeError(f'module {__name__!r} has no attribute {name!r}')
