@@ -39,8 +39,8 @@ import litellm
 from litellm import acompletion
 from litellm import ChatCompletionAssistantMessage
 from litellm import ChatCompletionAssistantToolCall
-from litellm import ChatCompletionDeveloperMessage
 from litellm import ChatCompletionMessageToolCall
+from litellm import ChatCompletionSystemMessage
 from litellm import ChatCompletionToolMessage
 from litellm import ChatCompletionUserMessage
 from litellm import completion
@@ -983,8 +983,8 @@ def _get_completion_inputs(
   if llm_request.config.system_instruction:
     messages.insert(
         0,
-        ChatCompletionDeveloperMessage(
-            role="developer",
+        ChatCompletionSystemMessage(
+            role="system",
             content=llm_request.config.system_instruction,
         ),
     )
