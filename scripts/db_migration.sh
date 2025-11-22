@@ -92,13 +92,13 @@ _ALLOWED_TABLE_NAMES = frozenset(
 )
 
 
-def include_object(object, name, type_, reflected, compare_to):
+def include_object(obj, name, type_, reflected, compare_to):
     if type_ == "table":
         return bool(_ALLOWED_TABLE_NAMES) and name in _ALLOWED_TABLE_NAMES
     if type_ == "index":
         try:
-            return object.table.name in _ALLOWED_TABLE_NAMES
-        except Exception:
+            return obj.table.name in _ALLOWED_TABLE_NAMES
+        except AttributeError:
             return False
     return True
 

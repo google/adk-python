@@ -49,7 +49,7 @@ def include_object(obj, name, type_, reflected, compare_to):
   if type_ == "index":
     try:
       return obj.table.name in _ALLOWED_TABLE_NAMES
-    except Exception:
+    except AttributeError:
       return False
   return True
 
