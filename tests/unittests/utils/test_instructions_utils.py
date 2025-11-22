@@ -392,6 +392,24 @@ async def test_inject_session_state_with_missing_nested_key_raises_error():
 
 
 @pytest.mark.asyncio
+async def test_inject_session_state_with_required_parent_missing_raises_error():
+  """Test that {user.profile?} raises error when 'user' (required) is missing.
+
+  This verifies that optional chaining is per-segment, not for the whole path.
+  Even though 'profile?' is optional, 'user' is required and should raise error.
+  """
+  instruction_template = "Value: {user.profile?}"
+  invocation_context = await _create_test_readonly_context(state={})
+
+  with pytest.raises(
+      KeyError, match="Context variable not found: `user.profile\\?`"
+  ):
+    await instructions_utils.inject_session_state(
+        instruction_template, invocation_context
+    )
+
+
+@pytest.mark.asyncio
 async def test_inject_session_state_with_nested_and_prefixed_state():
   instruction_template = "User: {app:user.name} Temp: {temp:session.id}"
   invocation_context = await _create_test_readonly_context(

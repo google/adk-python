@@ -156,15 +156,8 @@ async def inject_session_state(
         if value is None:
           return ''
         return str(value)
-      except KeyError:
-        if '?' in full_path:
-          logger.debug(
-              'Context variable %s not found (safe navigation), replacing with'
-              ' empty string',
-              full_path,
-          )
-          return ''
-        raise KeyError(f'Context variable not found: `{full_path}`.')
+      except KeyError as e:
+        raise KeyError(f'Context variable not found: `{full_path}`.') from e
 
   return await _async_sub(r'{+[^{}]*}+', _replace_match, template)
 
