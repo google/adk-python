@@ -45,6 +45,23 @@ class DummyAgent(BaseAgent):
     super().__init__(name=name)
     self.sub_agents = []
 
+  async def run_async(self, invocation_context):
+    """Mock run_async method for evaluation compatibility."""
+    from google.adk.events.event import Event
+    from google.adk.events.event import EventActions
+    from google.genai import types as genai_types
+
+    # Create a simple response event
+    content = genai_types.Content(
+        parts=[genai_types.Part(text="Mock response from dummy agent")]
+    )
+    event = Event(
+        author=self.name,
+        content=content,
+        action=EventActions.MODEL_RESPONSE,
+    )
+    yield event
+
 
 root_agent = DummyAgent(name="dummy_agent")
 
@@ -847,3 +864,127 @@ def test_cli_deploy_cloud_run_gcloud_arg_conflict(
       " command."
   )
   assert expected_msg in result.output
+
+
+# Dev Mode Tests
+
+def test_dev_mode_change_handler_py_file():
+  """Test DevModeChangeHandler detects .py file changes."""
+  from google.adk.cli.cli import DevModeChangeHandler
+  from watchdog.events import FileSystemEvent
+
+  handler = DevModeChangeHandler()
+
+  # Test .py file change
+  event = FileSystemEvent('test.py')
+  event.is_directory = False
+  handler.on_modified(event)
+
+  reload_needed, file_changed = handler.check_and_reset()
+  assert reload_needed is True
+  assert file_changed == 'test.py'
+
+  # Test reset works
+  reload_needed2, file_changed2 = handler.check_and_reset()
+  assert reload_needed2 is False
+  assert file_changed2 is None
+
+
+def test_dev_mode_change_handler_yaml_file():
+  """Test DevModeChangeHandler detects .yaml file changes."""
+  from google.adk.cli.cli import DevModeChangeHandler
+  from watchdog.events import FileSystemEvent
+
+  handler = DevModeChangeHandler()
+
+  # Test .yaml file change
+  event = FileSystemEvent('config.yaml')
+  event.is_directory = False
+  handler.on_modified(event)
+
+  reload_needed, file_changed = handler.check_and_reset()
+  assert reload_needed is True
+  assert file_changed == 'config.yaml'
+
+
+def test_dev_mode_change_handler_ignores_non_matching_files():
+  """Test DevModeChangeHandler ignores files that don't match .py or .yaml."""
+  from google.adk.cli.cli import DevModeChangeHandler
+  from watchdog.events import FileSystemEvent
+
+  handler = DevModeChangeHandler()
+
+  # Test .txt file (should be ignored)
+  event = FileSystemEvent('readme.txt')
+  event.is_directory = False
+  handler.on_modified(event)
+
+  reload_needed, file_changed = handler.check_and_reset()
+  assert reload_needed is False
+  assert file_changed is None
+
+
+def test_dev_mode_change_handler_ignores_directories():
+  """Test DevModeChangeHandler ignores directory events."""
+  from google.adk.cli.cli import DevModeChangeHandler
+  from watchdog.events import FileSystemEvent
+
+  handler = DevModeChangeHandler()
+
+  # Test directory event (should be ignored)
+  event = FileSystemEvent('subdir')
+  event.is_directory = True
+  handler.on_modified(event)
+
+  reload_needed, file_changed = handler.check_and_reset()
+  assert reload_needed is False
+  assert file_changed is None
+
+
+def test_dev_mode_change_handler_on_created():
+  """Test DevModeChangeHandler detects file creation."""
+  from google.adk.cli.cli import DevModeChangeHandler
+  from watchdog.events import FileSystemEvent
+
+  handler = DevModeChangeHandler()
+
+  # Test file creation
+  event = FileSystemEvent('new_agent.py')
+  event.is_directory = False
+  handler.on_created(event)
+
+  reload_needed, file_changed = handler.check_and_reset()
+  assert reload_needed is True
+  assert file_changed == 'new_agent.py'
+
+
+async def test_cli_run_with_dev_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """`adk run --dev` should call run_cli with dev_mode=True."""
+  rec = _Recorder()
+  monkeypatch.setattr(cli_tools_click, "run_cli", lambda **kwargs: rec(kwargs))
+  monkeypatch.setattr(
+      cli_tools_click.asyncio, "run", lambda coro: coro
+  )  # pass-through
+
+  # create dummy agent directory
+  agent_dir = tmp_path / "agent"
+  agent_dir.mkdir()
+  (agent_dir / "__init__.py").touch()
+  (agent_dir / "agent.py").touch()
+
+  runner = CliRunner()
+  result = runner.invoke(cli_tools_click.main, ["run", "--dev", str(agent_dir)])
+  assert result.exit_code == 0
+  assert rec.calls and rec.calls[0][0][0]["dev_mode"] is True
+
+
+def test_cli_run_dev_flag_help_text():
+  """Test that --dev flag appears in help text."""
+  runner = CliRunner()
+  result = runner.invoke(cli_tools_click.main, ["run", "--help"])
+  assert result.exit_code == 0
+  assert "--dev" in result.output
+  assert "Enable development mode" in result.output
+  assert "automatic agent" in result.output
