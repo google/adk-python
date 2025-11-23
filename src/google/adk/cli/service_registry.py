@@ -76,7 +76,6 @@ from urllib.parse import urlparse
 
 from ..artifacts.base_artifact_service import BaseArtifactService
 from ..memory.base_memory_service import BaseMemoryService
-from ..sessions import InMemorySessionService
 from ..sessions.base_session_service import BaseSessionService
 from ..utils import yaml_utils
 
