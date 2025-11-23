@@ -17,8 +17,12 @@ import logging
 import time
 
 from adk_stale_agent.agent import root_agent
-from adk_stale_agent.settings import OWNER
-from adk_stale_agent.settings import REPO
+from adk_stale_agent.settings import OWNER, REPO, STALE_HOURS_THRESHOLD, CONCURRENCY_LIMIT
+from adk_stale_agent.utils import (
+    get_api_call_count,
+    get_old_open_issue_numbers,
+    reset_api_call_count,
+)
 from google.adk.cli.utils import logs
 from google.adk.runners import InMemoryRunner
 from google.genai import types
@@ -26,49 +30,112 @@ from google.genai import types
 logs.setup_adk_logger(level=logging.INFO)
 logger = logging.getLogger("google_adk." + __name__)
 
-APP_NAME = "adk_stale_agent_app"
-USER_ID = "adk_stale_agent_user"
+APP_NAME = "stale_bot_app"
+USER_ID = "stale_bot_user"
 
-
-async def main():
-  """Initializes and runs the stale issue agent."""
-  logger.info("--- Starting Stale Agent Run ---")
+async def process_single_issue(issue_number: int):
+  """Processes a single GitHub issue and logs its metrics."""
+  issue_start_time = time.time()
+  # Reset counter for each individual issue to get isolated metrics
+  reset_api_call_count()
+  
+  logger.info(f"Processing Issue #{issue_number}...")
+  
   runner = InMemoryRunner(agent=root_agent, app_name=APP_NAME)
   session = await runner.session_service.create_session(
       user_id=USER_ID, app_name=APP_NAME
   )
+  prompt_text = f"Audit Issue #{issue_number}."
+  prompt_message = types.Content(role="user", parts=[types.Part(text=prompt_text)])
 
-  prompt_text = (
-      "Find and process all open issues to manage staleness according to your"
-      " rules."
-  )
-  logger.info(f"Initial Agent Prompt: {prompt_text}\n")
-  prompt_message = types.Content(
-      role="user", parts=[types.Part(text=prompt_text)]
-  )
-
-  async for event in runner.run_async(
-      user_id=USER_ID, session_id=session.id, new_message=prompt_message
-  ):
-    if (
-        event.content
-        and event.content.parts
-        and hasattr(event.content.parts[0], "text")
+  try:
+    async for event in runner.run_async(
+        user_id=USER_ID, session_id=session.id, new_message=prompt_message
     ):
-      # Print the agent's "thoughts" and actions for logging purposes
-      logger.debug(f"** {event.author} (ADK): {event.content.parts[0].text}")
+      if (
+          event.content
+          and event.content.parts
+          and hasattr(event.content.parts[0], "text")
+      ):
+        text = event.content.parts[0].text
+        if text:
+          logger.info(f"#{issue_number} Decision: {text[:150]}...")
+  except Exception as e:
+    logger.error(f"Error processing issue #{issue_number}: {e}")
+  
+  # --- Logging is now inside this function ---
+  issue_duration = time.time() - issue_start_time
+  issue_api_calls = get_api_call_count()
 
-  logger.info(f"--- Stale Agent Run Finished---")
+  logger.info(
+      f"Issue #{issue_number} finished in {issue_duration:.2f} seconds "
+      f"with {issue_api_calls} API calls."
+  )
+  # Return metrics for final summary
+  return issue_duration, issue_api_calls
+
+
+async def main():
+  """Main function to run the stale issue bot concurrently."""
+  logger.info(f"--- Starting Stale Bot for {OWNER}/{REPO} ---")
+  logger.info(f"Concurrency level set to {CONCURRENCY_LIMIT}")
+
+  reset_api_call_count()
+  filter_days = STALE_HOURS_THRESHOLD / 24
+  
+  all_issues = get_old_open_issue_numbers(OWNER, REPO, days_old=filter_days)
+  total_count = len(all_issues)
+  search_api_calls = get_api_call_count()
+
+  if total_count == 0:
+    logger.info("No issues matched the criteria. Run finished.")
+    return
+
+  logger.info(
+      f"Found {total_count} issues to process. "
+      f"(Initial search used {search_api_calls} API calls)."
+  )
+
+  total_processing_time = 0
+  total_issue_api_calls = 0
+  processed_count = 0
+
+  # --- Concurrency Logic ---
+  # Process the list in chunks of size CONCURRENCY_LIMIT
+  for i in range(0, total_count, CONCURRENCY_LIMIT):
+    chunk = all_issues[i:i + CONCURRENCY_LIMIT]
+    
+    # Create a list of tasks for the current chunk
+    tasks = [process_single_issue(issue_num) for issue_num in chunk]
+    
+    logger.info(f"--- Starting chunk {i//CONCURRENCY_LIMIT + 1}: Processing issues {chunk} ---")
+    
+    # Run the tasks in the chunk concurrently
+    results = await asyncio.gather(*tasks)
+
+    # Aggregate the results from the chunk
+    for duration, api_calls in results:
+        total_processing_time += duration
+        total_issue_api_calls += api_calls
+    processed_count += len(chunk)
+
+    logger.info(f"--- Finished chunk. Processed so far: {processed_count}/{total_count} ---")
+    
+    # A small delay between chunks to be respectful to the GitHub API
+    if (i + CONCURRENCY_LIMIT) < total_count:
+        time.sleep(1.5)
+
+  total_api_calls_for_run = search_api_calls + total_issue_api_calls
+  avg_time_per_issue = total_processing_time / total_count if total_count > 0 else 0
+
+  logger.info("--- Stale Agent Run Finished ---")
+  logger.info(f"Successfully processed {processed_count} issues.")
+  logger.info(f"Total API calls made this run: {total_api_calls_for_run}")
+  logger.info(f"Average time per issue: {avg_time_per_issue:.2f} seconds.")
 
 
 if __name__ == "__main__":
   start_time = time.time()
-  logger.info(f"Initializing stale agent for repository: {OWNER}/{REPO}")
-  logger.info("-" * 80)
-
   asyncio.run(main())
-
-  logger.info("-" * 80)
-  end_time = time.time()
-  duration = end_time - start_time
-  logger.info(f"Script finished in {duration:.2f} seconds.")
+  duration = time.time() - start_time
+  logger.info(f"Full audit finished in {duration/60:.2f} minutes.")

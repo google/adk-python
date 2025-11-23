@@ -33,7 +33,6 @@ STALE_LABEL_NAME = "stale"
 REQUEST_CLARIFICATION_LABEL = "request clarification"
 
 # --- THRESHOLDS IN HOURS ---
-# These values can be overridden in a .env file for rapid testing (e.g., STALE_HOURS_THRESHOLD=1)
 # Default: 168 hours (7 days)
 # The number of hours of inactivity after a maintainer comment before an issue is marked as stale.
 STALE_HOURS_THRESHOLD = float(os.getenv("STALE_HOURS_THRESHOLD", 168))
@@ -44,6 +43,7 @@ CLOSE_HOURS_AFTER_STALE_THRESHOLD = float(
     os.getenv("CLOSE_HOURS_AFTER_STALE_THRESHOLD", 168)
 )
 
-# --- BATCH SIZE CONFIGURATION ---
-# The maximum number of oldest open issues to process in a single run of the bot.
-ISSUES_PER_RUN = int(os.getenv("ISSUES_PER_RUN", 100))
+# --- Performance Configuration ---
+# The number of issues to process concurrently.
+# Higher values are faster but increase the immediate rate of API calls
+CONCURRENCY_LIMIT = int(os.getenv("CONCURRENCY_LIMIT", 3))
