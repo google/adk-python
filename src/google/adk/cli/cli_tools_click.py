@@ -397,6 +397,16 @@ def validate_exclusive(ctx, param, value):
     ),
     callback=validate_exclusive,
 )
+@click.option(
+    "--dev",
+    is_flag=True,
+    show_default=True,
+    default=False,
+    help=(
+        "Optional. Enable development mode with automatic agent reloading when"
+        " source files change. Watches for changes in .py and .yaml files."
+    ),
+)
 @click.argument(
     "agent",
     type=click.Path(
@@ -409,6 +419,7 @@ def cli_run(
     session_id: Optional[str],
     replay: Optional[str],
     resume: Optional[str],
+    dev: bool,
 ):
   """Runs an interactive CLI for a certain agent.
 
@@ -417,6 +428,8 @@ def cli_run(
   Example:
 
     adk run path/to/my_agent
+
+    adk run --dev path/to/my_agent
   """
   logs.log_to_tmp_folder()
 
@@ -431,6 +444,7 @@ def cli_run(
           saved_session_file=resume,
           save_session=save_session,
           session_id=session_id,
+          dev_mode=dev,
       )
   )
 

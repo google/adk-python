@@ -15,12 +15,16 @@
 from __future__ import annotations
 
 from datetime import datetime
+import threading
 from typing import Optional
 from typing import Union
 
 import click
 from google.genai import types
 from pydantic import BaseModel
+from watchdog.events import FileSystemEvent
+from watchdog.events import FileSystemEventHandler
+from watchdog.observers import Observer
 
 from ..agents.base_agent import BaseAgent
 from ..agents.llm_agent import LlmAgent
@@ -42,6 +46,35 @@ from .utils.agent_loader import AgentLoader
 class InputFile(BaseModel):
   state: dict[str, object]
   queries: list[str]
+
+
+class DevModeChangeHandler(FileSystemEventHandler):
+  """Handles file system events for development mode auto-reload."""
+
+  def __init__(self):
+    self.reload_needed = threading.Event()
+    self.last_modified_file = None
+
+  def on_modified(self, event: FileSystemEvent):
+    if event.is_directory:
+      return
+    if event.src_path.endswith('.py') or event.src_path.endswith('.yaml'):
+      self.last_modified_file = event.src_path
+      self.reload_needed.set()
+
+  def on_created(self, event: FileSystemEvent):
+    if event.is_directory:
+      return
+    if event.src_path.endswith('.py') or event.src_path.endswith('.yaml'):
+      self.last_modified_file = event.src_path
+      self.reload_needed.set()
+
+  def check_and_reset(self) -> tuple[bool, Optional[str]]:
+    """Check if reload is needed and reset the flag."""
+    if self.reload_needed.is_set():
+      self.reload_needed.clear()
+      return True, self.last_modified_file
+    return False, None
 
 
 async def run_input_file(
@@ -92,6 +125,9 @@ async def run_interactively(
     session: Session,
     session_service: BaseSessionService,
     credential_service: BaseCredentialService,
+    agent_loader: Optional[AgentLoader] = None,
+    agent_folder_name: Optional[str] = None,
+    change_handler: Optional[DevModeChangeHandler] = None,
 ) -> None:
   app = (
       root_agent_or_app
@@ -104,7 +140,44 @@ async def run_interactively(
       session_service=session_service,
       credential_service=credential_service,
   )
+
+  current_agent_or_app = root_agent_or_app
+
   while True:
+    # Check if we need to reload the agent in dev mode
+    if change_handler and agent_loader and agent_folder_name:
+      needs_reload, changed_file = change_handler.check_and_reset()
+      if needs_reload:
+        try:
+          click.secho(
+              f'\nDetected change in {changed_file}',
+              fg='yellow',
+          )
+          click.secho('Reloading agent...', fg='yellow')
+          # Remove from cache and reload
+          agent_loader.remove_agent_from_cache(agent_folder_name)
+          current_agent_or_app = agent_loader.load_agent(agent_folder_name)
+
+          # Update the app and runner with the new agent
+          app = (
+              current_agent_or_app
+              if isinstance(current_agent_or_app, App)
+              else App(name=session.app_name, root_agent=current_agent_or_app)
+          )
+          await runner.close()
+          runner = Runner(
+              app=app,
+              artifact_service=artifact_service,
+              session_service=session_service,
+              credential_service=credential_service,
+          )
+          click.secho('Agent reloaded successfully!\n', fg='green')
+        except Exception as e:
+          click.secho(
+              f'Error reloading agent: {e}\n',
+              fg='red',
+          )
+
     query = input('[user]: ')
     if not query or not query.strip():
       continue
@@ -134,6 +207,7 @@ async def run_cli(
     saved_session_file: Optional[str] = None,
     save_session: bool,
     session_id: Optional[str] = None,
+    dev_mode: bool = False,
 ) -> None:
   """Runs an interactive CLI for a certain agent.
 
@@ -148,6 +222,7 @@ async def run_cli(
       contains a previously saved session, exclusive with input_file.
     save_session: bool, whether to save the session on exit.
     session_id: Optional[str], the session ID to save the session to on exit.
+    dev_mode: bool, whether to enable development mode with auto-reload.
   """
 
   artifact_service = InMemoryArtifactService()
@@ -155,9 +230,8 @@ async def run_cli(
   credential_service = InMemoryCredentialService()
 
   user_id = 'test_user'
-  agent_or_app = AgentLoader(agents_dir=agent_parent_dir).load_agent(
-      agent_folder_name
-  )
+  agent_loader = AgentLoader(agents_dir=agent_parent_dir)
+  agent_or_app = agent_loader.load_agent(agent_folder_name)
   session_app_name = (
       agent_or_app.name if isinstance(agent_or_app, App) else agent_folder_name
   )
@@ -166,44 +240,73 @@ async def run_cli(
   )
   if not is_env_enabled('ADK_DISABLE_LOAD_DOTENV'):
     envs.load_dotenv_for_agent(agent_folder_name, agent_parent_dir)
-  if input_file:
-    session = await run_input_file(
-        app_name=session_app_name,
-        user_id=user_id,
-        agent_or_app=agent_or_app,
-        artifact_service=artifact_service,
-        session_service=session_service,
-        credential_service=credential_service,
-        input_path=input_file,
-    )
-  elif saved_session_file:
-    with open(saved_session_file, 'r', encoding='utf-8') as f:
-      loaded_session = Session.model_validate_json(f.read())
 
-    if loaded_session:
-      for event in loaded_session.events:
-        await session_service.append_event(session, event)
-        content = event.content
-        if not content or not content.parts or not content.parts[0].text:
-          continue
-        click.echo(f'[{event.author}]: {content.parts[0].text}')
+  # Set up watchdog observer for dev mode
+  observer: Optional[Observer] = None
+  change_handler: Optional[DevModeChangeHandler] = None
+  if dev_mode:
+    import os
 
-    await run_interactively(
-        agent_or_app,
-        artifact_service,
-        session,
-        session_service,
-        credential_service,
+    agent_path = os.path.join(agent_parent_dir, agent_folder_name)
+    change_handler = DevModeChangeHandler()
+    observer = Observer()
+    observer.schedule(change_handler, agent_path, recursive=True)
+    observer.start()
+    click.secho(
+        'Auto-reload enabled - watching for file changes...',
+        fg='green',
     )
-  else:
-    click.echo(f'Running agent {agent_or_app.name}, type exit to exit.')
-    await run_interactively(
-        agent_or_app,
-        artifact_service,
-        session,
-        session_service,
-        credential_service,
-    )
+
+  try:
+    if input_file:
+      session = await run_input_file(
+          app_name=session_app_name,
+          user_id=user_id,
+          agent_or_app=agent_or_app,
+          artifact_service=artifact_service,
+          session_service=session_service,
+          credential_service=credential_service,
+          input_path=input_file,
+      )
+    elif saved_session_file:
+      with open(saved_session_file, 'r', encoding='utf-8') as f:
+        loaded_session = Session.model_validate_json(f.read())
+
+      if loaded_session:
+        for event in loaded_session.events:
+          await session_service.append_event(session, event)
+          content = event.content
+          if not content or not content.parts or not content.parts[0].text:
+            continue
+          click.echo(f'[{event.author}]: {content.parts[0].text}')
+
+      await run_interactively(
+          agent_or_app,
+          artifact_service,
+          session,
+          session_service,
+          credential_service,
+          agent_loader=agent_loader if dev_mode else None,
+          agent_folder_name=agent_folder_name if dev_mode else None,
+          change_handler=change_handler,
+      )
+    else:
+      click.echo(f'Running agent {agent_or_app.name}, type exit to exit.')
+      await run_interactively(
+          agent_or_app,
+          artifact_service,
+          session,
+          session_service,
+          credential_service,
+          agent_loader=agent_loader if dev_mode else None,
+          agent_folder_name=agent_folder_name if dev_mode else None,
+          change_handler=change_handler,
+      )
+  finally:
+    # Clean up observer
+    if observer:
+      observer.stop()
+      observer.join()
 
   if save_session:
     session_id = session_id or input('Session ID to save: ')
