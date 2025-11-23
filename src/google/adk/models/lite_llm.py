@@ -1348,6 +1348,20 @@ class LiteLlm(BaseLlm):
                     else None,
                 )
             )
+            # FIX: Map finish_reason to FinishReason enum for streaming responses.
+            # Previously, streaming responses did not set finish_reason on aggregated
+            # LlmResponse objects, causing the ADK agent runner to not properly recognize
+            # completion states. This mirrors the logic from non-streaming path (lines 776-784)
+            # to ensure consistent behavior across both streaming and non-streaming modes.
+            # Without this, Claude and other models via LiteLLM would hit stop conditions
+            # that the agent couldn't properly handle.
+            if isinstance(finish_reason, types.FinishReason):
+              aggregated_llm_response_with_tool_call.finish_reason = finish_reason
+            else:
+              finish_reason_str = str(finish_reason).lower()
+              aggregated_llm_response_with_tool_call.finish_reason = _FINISH_REASON_MAPPING.get(
+                  finish_reason_str, types.FinishReason.OTHER
+              )
             text = ""
             reasoning_parts = []
             function_calls.clear()
@@ -1362,6 +1376,20 @@ class LiteLlm(BaseLlm):
                 if reasoning_parts
                 else None,
             )
+            # FIX: Map finish_reason to FinishReason enum for streaming text-only responses.
+            # Previously, streaming responses did not set finish_reason on aggregated
+            # LlmResponse objects, causing the ADK agent runner to not properly recognize
+            # completion states. This mirrors the logic from non-streaming path (lines 776-784)
+            # to ensure consistent behavior across both streaming and non-streaming modes.
+            # Without this, Claude and other models via LiteLLM would hit stop conditions
+            # that the agent couldn't properly handle.
+            if isinstance(finish_reason, types.FinishReason):
+              aggregated_llm_response.finish_reason = finish_reason
+            else:
+              finish_reason_str = str(finish_reason).lower()
+              aggregated_llm_response.finish_reason = _FINISH_REASON_MAPPING.get(
+                  finish_reason_str, types.FinishReason.OTHER
+              )
             text = ""
             reasoning_parts = []
 
