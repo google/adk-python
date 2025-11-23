@@ -35,8 +35,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.ADK_TRIAGE_AGENT }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-          OWNER: ${{ github.repository_owner }}
-          REPO: ${{ github.event.repository.name }}
+          OWNER: ryanaiagent
+          REPO: adk-python
           CONCURRENCY_LIMIT: 3
           LLM_MODEL_NAME: "gemini-2.5-flash"
           PYTHONPATH: contributing/samples
