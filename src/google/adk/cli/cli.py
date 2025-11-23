@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import os
 import threading
 from typing import Optional
 from typing import Union
@@ -55,19 +56,19 @@ class DevModeChangeHandler(FileSystemEventHandler):
     self.reload_needed = threading.Event()
     self.last_modified_file = None
 
-  def on_modified(self, event: FileSystemEvent):
+  def _handle_event(self, event: FileSystemEvent):
+    """Handle file system events for .py and .yaml files."""
     if event.is_directory:
       return
-    if event.src_path.endswith('.py') or event.src_path.endswith('.yaml'):
+    if event.src_path.endswith(('.py', '.yaml')):
       self.last_modified_file = event.src_path
       self.reload_needed.set()
 
+  def on_modified(self, event: FileSystemEvent):
+    self._handle_event(event)
+
   def on_created(self, event: FileSystemEvent):
-    if event.is_directory:
-      return
-    if event.src_path.endswith('.py') or event.src_path.endswith('.yaml'):
-      self.last_modified_file = event.src_path
-      self.reload_needed.set()
+    self._handle_event(event)
 
   def check_and_reset(self) -> tuple[bool, Optional[str]]:
     """Check if reload is needed and reset the flag."""
@@ -245,8 +246,6 @@ async def run_cli(
   observer: Optional[Observer] = None
   change_handler: Optional[DevModeChangeHandler] = None
   if dev_mode:
-    import os
-
     agent_path = os.path.join(agent_parent_dir, agent_folder_name)
     change_handler = DevModeChangeHandler()
     observer = Observer()
