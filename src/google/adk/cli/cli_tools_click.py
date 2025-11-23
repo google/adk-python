@@ -425,7 +425,7 @@ def cli_run(
 
     adk run path/to/my_agent
   """
-  logs.log_to_tmp_folder(level=log_level)
+  logs.log_to_tmp_folder(level=getattr(logging, log_level.upper()))
 
   agent_parent_folder = os.path.dirname(agent)
   agent_folder_name = os.path.basename(agent)
