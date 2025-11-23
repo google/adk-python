@@ -8,10 +8,9 @@ on:
     - cron: '0 6 * * *'
 
 jobs:
-  run-agent:
-    timeout-minutes: 60
   audit-stale-issues:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
 
     permissions:
       issues: write
