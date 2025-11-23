@@ -397,6 +397,12 @@ def validate_exclusive(ctx, param, value):
     ),
     callback=validate_exclusive,
 )
+@click.option(
+    "--log_level",
+    type=LOG_LEVELS,
+    default="INFO",
+    help="Optional. Set the logging level",
+)
 @click.argument(
     "agent",
     type=click.Path(
@@ -409,6 +415,7 @@ def cli_run(
     session_id: Optional[str],
     replay: Optional[str],
     resume: Optional[str],
+    log_level: str = "INFO",
 ):
   """Runs an interactive CLI for a certain agent.
 
@@ -418,7 +425,7 @@ def cli_run(
 
     adk run path/to/my_agent
   """
-  logs.log_to_tmp_folder()
+  logs.log_to_tmp_folder(level=log_level)
 
   agent_parent_folder = os.path.dirname(agent)
   agent_folder_name = os.path.basename(agent)
