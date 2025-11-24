@@ -343,7 +343,7 @@ class StorageEvent(Base):
         if hasattr(usage_meta, 'model_dump'):
           storage_event.usage_metadata = usage_meta.model_dump(exclude_none=False, mode="json")
       except Exception as e:
-        logger.error(f"[StorageEvent.from_event] Erro ao salvar usage_metadata: {e}")
+        logger.error(f"[StorageEvent.from_event] Error while saving usage_metadata: {e}")
     
     if hasattr(event, 'citation_metadata') and event.citation_metadata:
       storage_event.citation_metadata = event.citation_metadata.model_dump(
