@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
 
   schedule:
-    # This runs at 6:00 AM UTC (e.g., 10 PM PST).
+    # This runs at 6:00 AM UTC (10 PM PST)
     - cron: '0 6 * * *'
 
 jobs:
@@ -34,7 +34,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.ADK_TRIAGE_AGENT }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-          OWNER: ryanaiagent
+          OWNER: ${{ github.repository_owner }}
           REPO: adk-python
           CONCURRENCY_LIMIT: 3
           LLM_MODEL_NAME: "gemini-2.5-flash"
