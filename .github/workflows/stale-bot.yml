@@ -1,0 +1,57 @@
+# .github/workflows/stale-issue-auditor.yml
+
+# Best Practice: Always have a 'name' field at the top.
+name: ADK Stale Issue Auditor
+
+# The 'on' block defines the triggers.
+on:
+  # The 'workflow_dispatch' trigger allows manual runs.
+  workflow_dispatch:
+
+  # The 'schedule' trigger runs the bot on a timer.
+  schedule:
+    # This runs at 6:00 AM UTC (e.g., 10 PM PST).
+    - cron: '0 6 * * *'
+
+# The 'jobs' block contains the work to be done.
+jobs:
+  # A unique ID for the job.
+  audit-stale-issues:
+    # The runner environment.
+    runs-on: ubuntu-latest
+
+    # Permissions for the job's temporary GITHUB_TOKEN.
+    # These are standard and syntactically correct.
+    permissions:
+      issues: write
+      contents: read
+
+    # The sequence of steps for the job.
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        # The '|' character allows for multi-line shell commands.
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests google-adk
+
+      - name: Run Auditor Agent Script
+        # The 'env' block for setting environment variables.
+        env:
+          GITHUB_TOKEN: ${{ secrets.ADK_TRIAGE_AGENT }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          OWNER: google
+          REPO: adk-python
+          ISSUES_PER_RUN: 100
+          LLM_MODEL_NAME: "gemini-2.5-flash"
+          PYTHONPATH: contributing/samples
+
+        # The final 'run' command.
+        run: python -m adk_stale_agent.main
