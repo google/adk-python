@@ -32,32 +32,31 @@ from pytest import mark
 from .. import testing_utils
 
 function_call_no_schema = Part.from_function_call(
-    name='tool_agent', args={'request': 'test1'}
+    name="tool_agent", args={"request": "test1"}
 )
 
 
 @mark.asyncio
 async def test_agent_tool_handles_dict_args():
   """Test that AgentTool handles dictionary arguments correctly (non-request key)."""
-  
+
   mock_model = testing_utils.MockModel.create(
-      responses=['response to dict arg']
+      responses=["response to dict arg"]
   )
-  
+
   tool_agent = Agent(
-      name='tool_agent',
+      name="tool_agent",
       model=mock_model,
   )
-  
+
   # Create invocation context
   session_service = InMemorySessionService()
   session = await session_service.create_session(
-      app_name='test_app',
-      user_id='test_user'
+      app_name="test_app", user_id="test_user"
   )
-  
+
   invocation_context = InvocationContext(
-      invocation_id='test_invocation',
+      invocation_id="test_invocation",
       agent=tool_agent,
       session=session,
       session_service=session_service,
@@ -66,41 +65,40 @@ async def test_agent_tool_handles_dict_args():
       plugin_manager=PluginManager(plugins=[]),
       run_config=RunConfig(),
   )
-  
+
   tool_context = ToolContext(invocation_context=invocation_context)
   agent_tool = AgentTool(agent=tool_agent)
-  
+
   # Test with dict argument that doesn't have 'request' key
   result = await agent_tool.run_async(
-      args={"custom_key": "custom_value"},
-      tool_context=tool_context
+      args={"custom_key": "custom_value"}, tool_context=tool_context
   )
-  
+
   assert result is not None
-  assert 'response to dict arg' in str(result)
+  assert "response to dict arg" in str(result)
 
 
 @mark.asyncio
 async def test_database_session_service_persists_usage_metadata():
   """Test that DatabaseSessionService correctly persists usage_metadata with flag_modified."""
-  from google.adk.sessions.database_session_service import DatabaseSessionService
-  import tempfile
   import os
-  
+  import tempfile
+
+  from google.adk.sessions.database_session_service import DatabaseSessionService
+
   # Create temporary database
-  temp_db = tempfile.NamedTemporaryFile(delete=False, suffix='.db')
+  temp_db = tempfile.NamedTemporaryFile(delete=False, suffix=".db")
   temp_db.close()
   db_url = f"sqlite+aiosqlite:///{temp_db.name}"
-  
+
   try:
     service = DatabaseSessionService(db_url)
-    
+
     # Create session
     session = await service.create_session(
-        app_name="test_app",
-        user_id="user123"
+        app_name="test_app", user_id="user123"
     )
-    
+
     # Create event with usage_metadata
     event = Event(
         id="evt1",
@@ -110,23 +108,21 @@ async def test_database_session_service_persists_usage_metadata():
         usage_metadata=types.GenerateContentResponseUsageMetadata(
             prompt_token_count=100,
             candidates_token_count=50,
-            total_token_count=150
-        )
+            total_token_count=150,
+        ),
     )
-    
+
     # Persist event
     await service.append_event(session, event)
-    
+
     # Retrieve session and verify usage_metadata was persisted
     retrieved_session = await service.get_session(
-        app_name="test_app",
-        user_id="user123",
-        session_id=session.id
+        app_name="test_app", user_id="user123", session_id=session.id
     )
-    
+
     assert retrieved_session is not None
     assert len(retrieved_session.events) > 0
-    
+
     # Find the event with usage_metadata
     found_usage_metadata = False
     for evt in retrieved_session.events:
@@ -136,9 +132,9 @@ async def test_database_session_service_persists_usage_metadata():
         assert evt.usage_metadata.candidates_token_count == 50
         found_usage_metadata = True
         break
-    
+
     assert found_usage_metadata, "usage_metadata was not persisted correctly"
-    
+
   finally:
     # Cleanup
     if os.path.exists(temp_db.name):
@@ -148,24 +144,24 @@ async def test_database_session_service_persists_usage_metadata():
 @mark.asyncio
 async def test_database_session_service_persists_citation_metadata():
   """Test that DatabaseSessionService correctly persists citation_metadata."""
-  from google.adk.sessions.database_session_service import DatabaseSessionService
-  import tempfile
   import os
-  
+  import tempfile
+
+  from google.adk.sessions.database_session_service import DatabaseSessionService
+
   # Create temporary database
-  temp_db = tempfile.NamedTemporaryFile(delete=False, suffix='.db')
+  temp_db = tempfile.NamedTemporaryFile(delete=False, suffix=".db")
   temp_db.close()
   db_url = f"sqlite+aiosqlite:///{temp_db.name}"
-  
+
   try:
     service = DatabaseSessionService(db_url)
-    
+
     # Create session
     session = await service.create_session(
-        app_name="test_app",
-        user_id="user123"
+        app_name="test_app", user_id="user123"
     )
-    
+
     # Create event with citation_metadata
     event = Event(
         id="evt1",
@@ -178,25 +174,23 @@ async def test_database_session_service_persists_citation_metadata():
                     start_index=0,
                     end_index=10,
                     uri="https://example.com",
-                    title="Example Source"
+                    title="Example Source",
                 )
             ]
-        )
+        ),
     )
-    
+
     # Persist event
     await service.append_event(session, event)
-    
+
     # Retrieve session and verify citation_metadata was persisted
     retrieved_session = await service.get_session(
-        app_name="test_app",
-        user_id="user123",
-        session_id=session.id
+        app_name="test_app", user_id="user123", session_id=session.id
     )
-    
+
     assert retrieved_session is not None
     assert len(retrieved_session.events) > 0
-    
+
     # Find the event with citation_metadata
     found_citation_metadata = False
     for evt in retrieved_session.events:
@@ -206,12 +200,15 @@ async def test_database_session_service_persists_citation_metadata():
         assert evt.citation_metadata.citations[0].title == "Example Source"
         found_citation_metadata = True
         break
-    
-    assert found_citation_metadata, "citation_metadata was not persisted correctly"
-    
+
+    assert (
+        found_citation_metadata
+    ), "citation_metadata was not persisted correctly"
+
   finally:
     # Cleanup
     if os.path.exists(temp_db.name):
       os.unlink(temp_db.name)
+
 
 # Made with Bob

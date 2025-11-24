@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+import json
+import logging
 from typing import Any
 from typing import TYPE_CHECKING
 
@@ -23,7 +25,9 @@ from typing_extensions import override
 
 from . import _automatic_function_calling_util
 from ..agents.common_configs import AgentRefConfig
+from ..events.event import Event
 from ..memory.in_memory_memory_service import InMemoryMemoryService
+from ..sessions import Session
 from ..utils.context_utils import Aclosing
 from ._forwarding_artifact_service import ForwardingArtifactService
 from .base_tool import BaseTool
@@ -33,6 +37,8 @@ from .tool_context import ToolContext
 
 if TYPE_CHECKING:
   from ..agents.base_agent import BaseAgent
+
+logger = logging.getLogger(__name__)
 
 
 class AgentTool(BaseTool):
@@ -138,7 +144,8 @@ class AgentTool(BaseTool):
           role='user',
           parts=[
               types.Part.from_text(
-                  text=str(args) if isinstance(args, str) else json.dumps(args))
+                  text=str(args) if isinstance(args, str) else json.dumps(args)
+              )
           ],
       )
     invocation_context = tool_context._invocation_context
@@ -175,16 +182,18 @@ class AgentTool(BaseTool):
     # Collect all text chunks from streaming response instead of just last content
     chunks: list[str] = []
     sub_agent_events = []
-    
+
     def iter_text_parts(parts):
       """Safely iterate over parts and extract text, skipping None values."""
       for p in parts or []:
-        if hasattr(p, "text") and p.text is not None:
+        if hasattr(p, 'text') and p.text is not None:
           yield p.text
-    
+
     async with Aclosing(
         runner.run_async(
-            user_id=sub_agent_session.user_id, session_id=sub_agent_session.id, new_message=content
+            user_id=sub_agent_session.user_id,
+            session_id=sub_agent_session.id,
+            new_message=content,
         )
     ) as agen:
       async for event in agen:
@@ -196,54 +205,42 @@ class AgentTool(BaseTool):
         sub_agent_events.append(event)
 
     if sub_agent_events and hasattr(tool_context, '_invocation_context'):
-      from ..sessions import Session
-      from ..events.event import Event
-      
       main_session = tool_context._invocation_context.session
-      if main_session and hasattr(tool_context._invocation_context, 'session_service'):
+      if main_session and hasattr(
+          tool_context._invocation_context, 'session_service'
+      ):
         session_service = tool_context._invocation_context.session_service
-        parent_agent_name = tool_context._invocation_context.agent.name if hasattr(tool_context._invocation_context, 'agent') else "root_agent"
-        
+        parent_agent_name = (
+            tool_context._invocation_context.agent.name
+            if hasattr(tool_context._invocation_context, 'agent')
+            else 'root_agent'
+        )
+
         for sub_event in sub_agent_events:
 
           try:
             if hasattr(sub_event, 'branch') and sub_event.branch:
               event_branch = sub_event.branch
             else:
-              event_branch = f"{parent_agent_name}.{self.agent.name}"
-            
-            copied_event = Event(
-              id=sub_event.id,
-              invocation_id=sub_event.invocation_id,
-              author=sub_event.author,
-              branch=event_branch,
-              actions=sub_event.actions,
-              content=sub_event.content,
-              long_running_tool_ids=sub_event.long_running_tool_ids,
-              partial=sub_event.partial,
-              turn_complete=sub_event.turn_complete,
-              error_code=sub_event.error_code,
-              error_message=sub_event.error_message,
-              interrupted=sub_event.interrupted,
-              grounding_metadata=sub_event.grounding_metadata,
-              custom_metadata=sub_event.custom_metadata,
-              usage_metadata=sub_event.usage_metadata,
-              citation_metadata=getattr(sub_event, 'citation_metadata', None),
-            )
-            
+              event_branch = f'{parent_agent_name}.{self.agent.name}'
+
+            copied_event = sub_event.model_copy(update={'branch': event_branch})
+
             await session_service.append_event(main_session, copied_event)
           except Exception as e:
-            import logging
-            logger = logging.getLogger(__name__)
-            logger.warning(f"Erro ao copiar evento do sub-agente {self.agent.name} para sessão principal: {e}")
+            logger.warning(
+                "Error copying sub-agent event from '%s' to main session: %s",
+                self.agent.name,
+                e,
+            )
 
     # Clean up runner resources (especially MCP sessions)
     # to avoid "Attempted to exit cancel scope in a different task" errors
     await runner.close()
 
     # Merge all collected chunks into final text
-    merged_text = "".join(chunks)
-    
+    merged_text = ''.join(chunks)
+
     if not merged_text:
       return ''
     if isinstance(self.agent, LlmAgent) and self.agent.output_schema:
@@ -252,7 +249,7 @@ class AgentTool(BaseTool):
       ).model_dump(exclude_none=True)
     else:
       tool_result = merged_text
-    
+
     return tool_result
 
   @override

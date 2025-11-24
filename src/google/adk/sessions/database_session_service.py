@@ -336,16 +336,20 @@ class StorageEvent(Base):
       )
     if event.custom_metadata:
       storage_event.custom_metadata = event.custom_metadata
-    
-    if hasattr(event, 'usage_metadata') and event.usage_metadata is not None:
+
+    if hasattr(event, "usage_metadata") and event.usage_metadata is not None:
       try:
         usage_meta = event.usage_metadata
-        if hasattr(usage_meta, 'model_dump'):
-          storage_event.usage_metadata = usage_meta.model_dump(exclude_none=False, mode="json")
+        if hasattr(usage_meta, "model_dump"):
+          storage_event.usage_metadata = usage_meta.model_dump(
+              exclude_none=False, mode="json"
+          )
       except Exception as e:
-        logger.error(f"[StorageEvent.from_event] Error while saving usage_metadata: {e}")
-    
-    if hasattr(event, 'citation_metadata') and event.citation_metadata:
+        logger.error(
+            f"[StorageEvent.from_event] Error while saving usage_metadata: {e}"
+        )
+
+    if hasattr(event, "citation_metadata") and event.citation_metadata:
       storage_event.citation_metadata = event.citation_metadata.model_dump(
           exclude_none=True, mode="json"
       )
@@ -734,9 +738,9 @@ class DatabaseSessionService(BaseSessionService):
         update_time = datetime.fromtimestamp(event.timestamp)
       storage_session.update_time = update_time
       storage_event = StorageEvent.from_event(session, event)
-      
+
       sql_session.add(storage_event)
-      
+
       # Forçar SQLAlchemy a detectar mudanças em campos MutableDict/DynamicJSON
       if storage_event.usage_metadata is not None:
         flag_modified(storage_event, "usage_metadata")
