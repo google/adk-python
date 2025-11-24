@@ -46,6 +46,7 @@ from sqlalchemy.orm import DeclarativeBase
 from sqlalchemy.orm import Mapped
 from sqlalchemy.orm import mapped_column
 from sqlalchemy.orm import relationship
+from sqlalchemy.orm.attributes import flag_modified
 from sqlalchemy.schema import MetaData
 from sqlalchemy.types import DateTime
 from sqlalchemy.types import PickleType
@@ -335,11 +336,16 @@ class StorageEvent(Base):
       )
     if event.custom_metadata:
       storage_event.custom_metadata = event.custom_metadata
-    if event.usage_metadata:
-      storage_event.usage_metadata = event.usage_metadata.model_dump(
-          exclude_none=True, mode="json"
-      )
-    if event.citation_metadata:
+    
+    if hasattr(event, 'usage_metadata') and event.usage_metadata is not None:
+      try:
+        usage_meta = event.usage_metadata
+        if hasattr(usage_meta, 'model_dump'):
+          storage_event.usage_metadata = usage_meta.model_dump(exclude_none=False, mode="json")
+      except Exception as e:
+        logger.error(f"[StorageEvent.from_event] Erro ao salvar usage_metadata: {e}")
+    
+    if hasattr(event, 'citation_metadata') and event.citation_metadata:
       storage_event.citation_metadata = event.citation_metadata.model_dump(
           exclude_none=True, mode="json"
       )
@@ -727,7 +733,15 @@ class DatabaseSessionService(BaseSessionService):
       else:
         update_time = datetime.fromtimestamp(event.timestamp)
       storage_session.update_time = update_time
-      sql_session.add(StorageEvent.from_event(session, event))
+      storage_event = StorageEvent.from_event(session, event)
+      
+      sql_session.add(storage_event)
+      
+      # Forçar SQLAlchemy a detectar mudanças em campos MutableDict/DynamicJSON
+      if storage_event.usage_metadata is not None:
+        flag_modified(storage_event, "usage_metadata")
+      if storage_event.citation_metadata is not None:
+        flag_modified(storage_event, "citation_metadata")
 
       await sql_session.commit()
       await sql_session.refresh(storage_session)

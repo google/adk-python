@@ -136,7 +136,10 @@ class AgentTool(BaseTool):
     else:
       content = types.Content(
           role='user',
-          parts=[types.Part.from_text(text=args['request'])],
+          parts=[
+              types.Part.from_text(
+                  text=str(args) if isinstance(args, str) else __import__('json').dumps(args))
+          ],
       )
     invocation_context = tool_context._invocation_context
     parent_app_name = (
@@ -161,40 +164,95 @@ class AgentTool(BaseTool):
     state_dict = {
         k: v
         for k, v in tool_context.state.to_dict().items()
-        if not k.startswith('_adk')  # Filter out adk internal states
+        if not k.startswith('_adk')
     }
-    session = await runner.session_service.create_session(
+    sub_agent_session = await runner.session_service.create_session(
         app_name=child_app_name,
         user_id=tool_context._invocation_context.user_id,
         state=state_dict,
     )
 
-    last_content = None
+    # Collect all text chunks from streaming response instead of just last content
+    chunks: list[str] = []
+    sub_agent_events = []
+    
+    def iter_text_parts(parts):
+      """Safely iterate over parts and extract text, skipping None values."""
+      for p in parts or []:
+        if hasattr(p, "text") and p.text is not None:
+          yield p.text
+    
     async with Aclosing(
         runner.run_async(
-            user_id=session.user_id, session_id=session.id, new_message=content
+            user_id=sub_agent_session.user_id, session_id=sub_agent_session.id, new_message=content
         )
     ) as agen:
       async for event in agen:
-        # Forward state delta to parent session.
         if event.actions.state_delta:
           tool_context.state.update(event.actions.state_delta)
+        # Collect text chunks from all events, not just the last one
         if event.content:
-          last_content = event.content
+          chunks.extend(iter_text_parts(event.content.parts))
+        sub_agent_events.append(event)
+
+    if sub_agent_events and hasattr(tool_context, '_invocation_context'):
+      from ..sessions import Session
+      from ..events.event import Event
+      
+      main_session = tool_context._invocation_context.session
+      if main_session and hasattr(tool_context._invocation_context, 'session_service'):
+        session_service = tool_context._invocation_context.session_service
+        parent_agent_name = tool_context._invocation_context.agent.name if hasattr(tool_context._invocation_context, 'agent') else "root_agent"
+        
+        for sub_event in sub_agent_events:
+
+          try:
+            if hasattr(sub_event, 'branch') and sub_event.branch:
+              event_branch = sub_event.branch
+            else:
+              event_branch = f"{parent_agent_name}.{self.agent.name}"
+            
+            copied_event = Event(
+              id=sub_event.id,
+              invocation_id=sub_event.invocation_id,
+              author=sub_event.author,
+              branch=event_branch,
+              actions=sub_event.actions,
+              content=sub_event.content,
+              long_running_tool_ids=sub_event.long_running_tool_ids,
+              partial=sub_event.partial,
+              turn_complete=sub_event.turn_complete,
+              error_code=sub_event.error_code,
+              error_message=sub_event.error_message,
+              interrupted=sub_event.interrupted,
+              grounding_metadata=sub_event.grounding_metadata,
+              custom_metadata=sub_event.custom_metadata,
+              usage_metadata=sub_event.usage_metadata,
+              citation_metadata=getattr(sub_event, 'citation_metadata', None),
+            )
+            
+            await session_service.append_event(main_session, copied_event)
+          except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning(f"Erro ao copiar evento do sub-agente {self.agent.name} para sessão principal: {e}")
 
     # Clean up runner resources (especially MCP sessions)
     # to avoid "Attempted to exit cancel scope in a different task" errors
     await runner.close()
 
-    if not last_content:
+    # Merge all collected chunks into final text
+    merged_text = "".join(chunks)
+    
+    if not merged_text:
       return ''
-    merged_text = '\n'.join(p.text for p in last_content.parts if p.text)
     if isinstance(self.agent, LlmAgent) and self.agent.output_schema:
       tool_result = self.agent.output_schema.model_validate_json(
           merged_text
       ).model_dump(exclude_none=True)
     else:
       tool_result = merged_text
+    
     return tool_result
 
   @override
