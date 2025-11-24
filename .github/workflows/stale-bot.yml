@@ -2,6 +2,9 @@ name: ADK Stale Issue Auditor
 
 on:
   workflow_dispatch:
+  push:                  
+    branches:
+      - feat/improve-stale-agent
 
   schedule:
     # This runs at 6:00 AM UTC (10 PM PST)
