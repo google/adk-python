@@ -29,6 +29,9 @@ from adk_stale_agent.settings import REPO
 from adk_stale_agent.settings import REQUEST_CLARIFICATION_LABEL
 from adk_stale_agent.settings import STALE_HOURS_THRESHOLD
 from adk_stale_agent.settings import STALE_LABEL_NAME
+from adk_stale_agent.settings import GRAPHQL_COMMENT_LIMIT
+from adk_stale_agent.settings import GRAPHQL_EDIT_LIMIT
+from adk_stale_agent.settings import GRAPHQL_TIMELINE_LIMIT
 from adk_stale_agent.utils import delete_request
 from adk_stale_agent.utils import error_response
 from adk_stale_agent.utils import get_request
@@ -148,8 +151,8 @@ def get_issue_state(item_number: int) -> Dict[str, Any]:
           createdAt
           labels(first: 20) { nodes { name } }
           
-          # 1. Comments (Fetch last 30 to scan for previous bot alerts)
-          comments(last: 30) {
+          # 1. Comments (Fetch last commentLimit)
+          comments(last: $commentLimit) {
             nodes {
               author { login }
               body
@@ -158,8 +161,8 @@ def get_issue_state(item_number: int) -> Dict[str, Any]:
             }
           }
           
-          # 2. Description Edits (Fetch last 10)
-          userContentEdits(last: 10) {
+          # 2. Description Edits (Fetch last editLimit)
+          userContentEdits(last: $editLimit) {
             nodes {
               editor { login }
               editedAt
@@ -167,7 +170,7 @@ def get_issue_state(item_number: int) -> Dict[str, Any]:
           }
           
           # 3. Timeline Events (Renames, Reopens, Labels)
-          timelineItems(itemTypes: [LABELED_EVENT, RENAMED_TITLE_EVENT, REOPENED_EVENT], last: 20) {
+          timelineItems(itemTypes: [LABELED_EVENT, RENAMED_TITLE_EVENT, REOPENED_EVENT], last: $timelineLimit) {
             nodes {
               __typename
               ... on LabeledEvent {
@@ -190,7 +193,14 @@ def get_issue_state(item_number: int) -> Dict[str, Any]:
     }
     """
 
-  variables = {"owner": OWNER, "name": REPO, "number": item_number}
+  variables = {
+      "owner": OWNER,
+      "name": REPO,
+      "number": item_number,
+      "commentLimit": GRAPHQL_COMMENT_LIMIT,
+      "editLimit": GRAPHQL_EDIT_LIMIT,
+      "timelineLimit": GRAPHQL_TIMELINE_LIMIT
+  }
 
   try:
     response = post_request(

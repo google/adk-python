@@ -22,6 +22,7 @@ from adk_stale_agent.settings import CONCURRENCY_LIMIT
 from adk_stale_agent.settings import OWNER
 from adk_stale_agent.settings import REPO
 from adk_stale_agent.settings import STALE_HOURS_THRESHOLD
+from adk_stale_agent.settings import SLEEP_BETWEEN_CHUNKS
 from adk_stale_agent.utils import get_api_call_count
 from adk_stale_agent.utils import get_old_open_issue_numbers
 from adk_stale_agent.utils import reset_api_call_count
@@ -162,8 +163,8 @@ async def main():
     )
 
     if (i + CONCURRENCY_LIMIT) < total_count:
-      logger.debug("Sleeping for 1.5s to respect rate limits...")
-      await asyncio.sleep(1.5)
+      logger.debug(f"Sleeping for {SLEEP_BETWEEN_CHUNKS}s to respect rate limits...")
+      await asyncio.sleep(SLEEP_BETWEEN_CHUNKS)
 
   total_api_calls_for_run = search_api_calls + total_issue_api_calls
   avg_time_per_issue = (
