@@ -23,15 +23,15 @@ from typing import Optional
 
 from adk_stale_agent.settings import CLOSE_HOURS_AFTER_STALE_THRESHOLD
 from adk_stale_agent.settings import GITHUB_BASE_URL
+from adk_stale_agent.settings import GRAPHQL_COMMENT_LIMIT
+from adk_stale_agent.settings import GRAPHQL_EDIT_LIMIT
+from adk_stale_agent.settings import GRAPHQL_TIMELINE_LIMIT
 from adk_stale_agent.settings import LLM_MODEL_NAME
 from adk_stale_agent.settings import OWNER
 from adk_stale_agent.settings import REPO
 from adk_stale_agent.settings import REQUEST_CLARIFICATION_LABEL
 from adk_stale_agent.settings import STALE_HOURS_THRESHOLD
 from adk_stale_agent.settings import STALE_LABEL_NAME
-from adk_stale_agent.settings import GRAPHQL_COMMENT_LIMIT
-from adk_stale_agent.settings import GRAPHQL_EDIT_LIMIT
-from adk_stale_agent.settings import GRAPHQL_TIMELINE_LIMIT
 from adk_stale_agent.utils import delete_request
 from adk_stale_agent.utils import error_response
 from adk_stale_agent.utils import get_request
@@ -199,7 +199,7 @@ def get_issue_state(item_number: int) -> Dict[str, Any]:
       "number": item_number,
       "commentLimit": GRAPHQL_COMMENT_LIMIT,
       "editLimit": GRAPHQL_EDIT_LIMIT,
-      "timelineLimit": GRAPHQL_TIMELINE_LIMIT
+      "timelineLimit": GRAPHQL_TIMELINE_LIMIT,
   }
 
   try:
@@ -383,6 +383,18 @@ def get_issue_state(item_number: int) -> Dict[str, Any]:
 # --- Tool Definitions ---
 
 
+def _format_days(hours: float) -> str:
+  """
+  Formats a duration in hours into a clean day string.
+
+  Example:
+      168.0 -> "7"
+      12.0  -> "0.5"
+  """
+  days = hours / 24
+  return f"{days:.1f}" if days % 1 != 0 else f"{int(days)}"
+
+
 def add_label_to_issue(item_number: int, label_name: str) -> dict[str, Any]:
   """
   Adds a label to the issue.
@@ -426,15 +438,14 @@ def add_stale_label_and_comment(item_number: int) -> dict[str, Any]:
   Args:
       item_number (int): The GitHub issue number.
   """
-  # Format days cleanly (e.g., "7" instead of "7.0", or "0.5" instead of "0")
-  days = CLOSE_HOURS_AFTER_STALE_THRESHOLD / 24
-  days_str = f"{days:.1f}" if days % 1 != 0 else f"{int(days)}"
+  stale_days_str = _format_days(STALE_HOURS_THRESHOLD)
+  close_days_str = _format_days(CLOSE_HOURS_AFTER_STALE_THRESHOLD)
 
   comment = (
       "This issue has been automatically marked as stale because it has not"
-      " had recent activity after a maintainer requested clarification. It"
-      " will be closed if no further activity occurs within"
-      f" {days_str} days."
+      f" had recent activity for {stale_days_str} days after a maintainer"
+      " requested clarification. It will be closed if no further activity"
+      f" occurs within {close_days_str} days."
   )
   try:
     post_request(
@@ -476,8 +487,7 @@ def close_as_stale(item_number: int) -> dict[str, Any]:
   Args:
       item_number (int): The GitHub issue number.
   """
-  days = CLOSE_HOURS_AFTER_STALE_THRESHOLD / 24
-  days_str = f"{days:.1f}" if days % 1 != 0 else f"{int(days)}"
+  days_str = _format_days(CLOSE_HOURS_AFTER_STALE_THRESHOLD)
 
   comment = (
       "This has been automatically closed because it has been marked as stale"
