@@ -138,7 +138,7 @@ class AgentTool(BaseTool):
           role='user',
           parts=[
               types.Part.from_text(
-                  text=str(args) if isinstance(args, str) else __import__('json').dumps(args))
+                  text=str(args) if isinstance(args, str) else json.dumps(args))
           ],
       )
     invocation_context = tool_context._invocation_context
