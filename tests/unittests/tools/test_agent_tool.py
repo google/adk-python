@@ -679,3 +679,26 @@ def test_include_plugins_false():
 
   # Plugin should only be called for root_agent, not tool_agent
   assert tracking_plugin.before_agent_calls == 1
+
+
+def test_agent_tool_description_with_input_schema():
+  """Test that agent description is propagated when using input_schema."""
+
+  class CustomInput(BaseModel):
+    """This is the Pydantic model docstring."""
+
+    custom_input: str
+
+  agent_description = 'This is the agent description that should be used'
+  tool_agent = Agent(
+      name='tool_agent',
+      model=testing_utils.MockModel.create(responses=['test response']),
+      description=agent_description,
+      input_schema=CustomInput,
+  )
+
+  agent_tool = AgentTool(agent=tool_agent)
+  declaration = agent_tool._get_declaration()
+
+  # The description should come from the agent, not the Pydantic model
+  assert declaration.description == agent_description

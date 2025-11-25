@@ -12,12 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import ntpath
 import os
 from pathlib import Path
+from pathlib import PureWindowsPath
+import re
 import sys
 import tempfile
 from textwrap import dedent
 
+from google.adk.cli.utils import agent_loader as agent_loader_module
 from google.adk.cli.utils.agent_loader import AgentLoader
 from pydantic import ValidationError
 import pytest
@@ -279,6 +283,43 @@ class TestAgentLoader:
       assert agent1 is not agent2
       assert agent2 is not agent3
       assert agent1.agent_id != agent2.agent_id != agent3.agent_id
+
+  def test_error_messages_use_os_sep_consistently(self):
+    """Verify error messages use os.sep instead of hardcoded '/'."""
+    del self
+    with tempfile.TemporaryDirectory() as temp_dir:
+      loader = AgentLoader(temp_dir)
+      agent_name = "missing_agent"
+
+      expected_path = os.path.join(temp_dir, agent_name)
+
+      with pytest.raises(ValueError) as exc_info:
+        loader.load_agent(agent_name)
+
+      exc_info.match(re.escape(expected_path))
+      exc_info.match(re.escape(f"{agent_name}{os.sep}root_agent.yaml"))
+      exc_info.match(re.escape(f"<agents_dir>{os.sep}"))
+
+  def test_agent_loader_with_mocked_windows_path(self, monkeypatch):
+    """Mock Path() to simulate Windows behavior and catch regressions.
+
+    REGRESSION TEST: Fails with rstrip('/'), passes with str(Path()).
+    """
+    del self
+    windows_path = "C:\\Users\\dev\\agents\\"
+
+    with monkeypatch.context() as m:
+      m.setattr(
+          agent_loader_module,
+          "Path",
+          lambda path_str: PureWindowsPath(path_str),
+      )
+      loader = AgentLoader(windows_path)
+
+      expected = str(PureWindowsPath(windows_path))
+      assert loader.agents_dir == expected
+      assert not loader.agents_dir.endswith("\\")
+      assert not loader.agents_dir.endswith("/")
 
   def test_agent_not_found_error(self):
     """Test that appropriate error is raised when agent is not found."""

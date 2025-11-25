@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import inspect
+import logging
 from typing import Any
 from typing import AsyncGenerator
 from typing import Awaitable
@@ -48,6 +49,8 @@ from .callback_context import CallbackContext
 
 if TYPE_CHECKING:
   from .invocation_context import InvocationContext
+
+logger = logging.getLogger('google_adk.' + __name__)
 
 _SingleAgentCallback: TypeAlias = Callable[
     [CallbackContext],
@@ -576,8 +579,6 @@ class BaseAgent(BaseModel):
     Returns:
       The validated list of sub-agents.
 
-    Raises:
-      ValueError: If duplicate sub-agent names are found.
     """
     if not value:
       return value
@@ -596,9 +597,10 @@ class BaseAgent(BaseModel):
       duplicate_names_str = ', '.join(
           f'`{name}`' for name in sorted(duplicates)
       )
-      raise ValueError(
-          f'Found duplicate sub-agent names: {duplicate_names_str}. '
-          'All sub-agents must have unique names.'
+      logger.warning(
+          'Found duplicate sub-agent names: %s. '
+          'All sub-agents must have unique names.',
+          duplicate_names_str,
       )
 
     return value

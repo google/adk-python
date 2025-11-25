@@ -79,6 +79,8 @@ class AgentTool(BaseTool):
       result = _automatic_function_calling_util.build_function_declaration(
           func=self.agent.input_schema, variant=self._api_variant
       )
+      # Override the description with the agent's description
+      result.description = self.agent.description
     else:
       result = types.FunctionDeclaration(
           parameters=types.Schema(
