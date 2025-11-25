@@ -26,6 +26,7 @@ import warnings
 
 from google.adk.models.lite_llm import _append_fallback_user_content_if_missing
 from google.adk.models.lite_llm import _content_to_message_param
+from google.adk.models.lite_llm import _extract_reasoning_value
 from google.adk.models.lite_llm import _FILE_ID_REQUIRED_PROVIDERS
 from google.adk.models.lite_llm import _FINISH_REASON_MAPPING
 from google.adk.models.lite_llm import _function_declaration_to_tool_param
@@ -2141,6 +2142,170 @@ def test_model_response_to_generate_content_response_reasoning_content():
   assert response.content.parts[0].text == "Step-by-step"
   assert response.content.parts[0].thought is True
   assert response.content.parts[1].text == "Answer"
+
+
+def test_message_to_generate_content_response_reasoning_field():
+  """Test that 'reasoning' field is supported (alternative field name)."""
+  message = {
+      "role": "assistant",
+      "content": "Final answer",
+      "reasoning": "Thinking process",
+  }
+  response = _message_to_generate_content_response(message)
+
+  assert len(response.content.parts) == 2
+  thought_part = response.content.parts[0]
+  text_part = response.content.parts[1]
+  assert thought_part.text == "Thinking process"
+  assert thought_part.thought is True
+  assert text_part.text == "Final answer"
+
+
+def test_model_response_to_generate_content_response_reasoning_field():
+  """Test that 'reasoning' field is supported in ModelResponse."""
+  model_response = ModelResponse(
+      model="test-model",
+      choices=[{
+          "message": {
+              "role": "assistant",
+              "content": "Result",
+              "reasoning": "Chain of thought",
+          },
+          "finish_reason": "stop",
+      }],
+  )
+
+  response = _model_response_to_generate_content_response(model_response)
+
+  assert response.content.parts[0].text == "Chain of thought"
+  assert response.content.parts[0].thought is True
+  assert response.content.parts[1].text == "Result"
+
+
+def test_reasoning_content_takes_precedence_over_reasoning():
+  """Test that 'reasoning_content' is prioritized over 'reasoning'."""
+  message = {
+      "role": "assistant",
+      "content": "Answer",
+      "reasoning_content": "LiteLLM standard reasoning",
+      "reasoning": "Alternative reasoning",
+  }
+  response = _message_to_generate_content_response(message)
+
+  assert len(response.content.parts) == 2
+  thought_part = response.content.parts[0]
+  # Should use reasoning_content, not reasoning
+  assert thought_part.text == "LiteLLM standard reasoning"
+  assert thought_part.thought is True
+
+
+def test_extract_reasoning_value_from_reasoning_content_attribute():
+  """Test extraction from reasoning_content attribute (LiteLLM standard)."""
+  message = ChatCompletionAssistantMessage(
+      role="assistant",
+      content="Answer",
+      reasoning_content="LiteLLM reasoning",
+  )
+
+  result = _extract_reasoning_value(message)
+  assert result == "LiteLLM reasoning"
+
+
+def test_extract_reasoning_value_from_reasoning_attribute():
+  """Test extraction from reasoning attribute (alternative field name)."""
+
+  # Create a mock object with reasoning attribute
+  class MockMessage:
+
+    def __init__(self):
+      self.role = "assistant"
+      self.content = "Answer"
+      self.reasoning = "Alternative reasoning"
+
+  message = MockMessage()
+  result = _extract_reasoning_value(message)
+  assert result == "Alternative reasoning"
+
+
+def test_extract_reasoning_value_from_dict_reasoning_content():
+  """Test extraction from dict with reasoning_content field."""
+  message = {
+      "role": "assistant",
+      "content": "Answer",
+      "reasoning_content": "Dict reasoning content",
+  }
+
+  result = _extract_reasoning_value(message)
+  assert result == "Dict reasoning content"
+
+
+def test_extract_reasoning_value_from_dict_reasoning():
+  """Test extraction from dict with reasoning field."""
+  message = {
+      "role": "assistant",
+      "content": "Answer",
+      "reasoning": "Dict reasoning",
+  }
+
+  result = _extract_reasoning_value(message)
+  assert result == "Dict reasoning"
+
+
+def test_extract_reasoning_value_prioritizes_reasoning_content():
+  """Test that reasoning_content takes precedence over reasoning."""
+  message = {
+      "role": "assistant",
+      "content": "Answer",
+      "reasoning_content": "Primary reasoning",
+      "reasoning": "Secondary reasoning",
+  }
+
+  result = _extract_reasoning_value(message)
+  assert result == "Primary reasoning"
+
+
+def test_extract_reasoning_value_returns_none_when_missing():
+  """Test that None is returned when no reasoning fields exist."""
+  message = {
+      "role": "assistant",
+      "content": "Answer only",
+  }
+
+  result = _extract_reasoning_value(message)
+  assert result is None
+
+
+def test_extract_reasoning_value_handles_none_message():
+  """Test that None message returns None."""
+  result = _extract_reasoning_value(None)
+  assert result is None
+
+
+def test_extract_reasoning_value_with_empty_reasoning():
+  """Test handling of empty reasoning strings."""
+  message = {
+      "role": "assistant",
+      "content": "Answer",
+      "reasoning": "",
+  }
+
+  result = _extract_reasoning_value(message)
+  # Empty string is returned as-is (dict.get returns empty string)
+  assert result == ""
+
+
+def test_extract_reasoning_value_with_empty_reasoning_content():
+  """Test handling of empty reasoning_content strings."""
+  message = {
+      "role": "assistant",
+      "content": "Answer",
+      "reasoning_content": "",
+  }
+
+  result = _extract_reasoning_value(message)
+  # Empty string from reasoning_content is returned, but 'or' makes it None
+  # because empty string is falsy and reasoning is not present
+  assert result is None
 
 
 def test_parse_tool_calls_from_text_multiple_calls():

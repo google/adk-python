@@ -383,13 +383,21 @@ def _convert_reasoning_value_to_parts(reasoning_value: Any) -> List[types.Part]:
 
 
 def _extract_reasoning_value(message: Message | Dict[str, Any]) -> Any:
-  """Fetches the reasoning payload from a LiteLLM message or dict."""
+  """Fetches the reasoning payload from a LiteLLM message or dict.
+  Checks for both 'reasoning_content' (LiteLLM standard) and 'reasoning' (used by some providers).
+  """
   if message is None:
     return None
+
   if hasattr(message, "reasoning_content"):
     return getattr(message, "reasoning_content")
+
+  if hasattr(message, "reasoning"):
+    return getattr(message, "reasoning")
+
   if isinstance(message, dict):
-    return message.get("reasoning_content")
+    return message.get("reasoning_content") or message.get("reasoning")
+
   return None
 
 
