@@ -105,7 +105,12 @@ class BaseSessionService(abc.ABC):
 
   @abc.abstractmethod
   async def update_session_title(
-      self, *, app_name: str, user_id: str, session_id: str, title: Optional[str]
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      session_id: str,
+      title: Optional[str],
   ) -> None:
     """Updates the title of a session.
 

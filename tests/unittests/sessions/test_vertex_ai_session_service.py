@@ -725,7 +725,10 @@ async def test_create_session_with_title(mock_api_client_instance):
       app_name='123', user_id='user', title='Test Title'
   )
   assert session.title == 'Test Title'
-  assert mock_api_client_instance.last_create_session_config['display_name'] == 'Test Title'
+  assert (
+      mock_api_client_instance.last_create_session_config['display_name']
+      == 'Test Title'
+  )
 
   got_session = await session_service.get_session(
       app_name='123', user_id='user', session_id=session.id

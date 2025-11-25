@@ -168,7 +168,10 @@ async def test_session_title(service_type, tmp_path):
   assert got_session.title == 'Test Title'
 
   await session_service.update_session_title(
-      app_name=app_name, user_id=user_id, session_id=session.id, title='New Title'
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session.id,
+      title='New Title',
   )
 
   updated_session = await session_service.get_session(

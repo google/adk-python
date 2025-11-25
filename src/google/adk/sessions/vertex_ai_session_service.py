@@ -231,7 +231,12 @@ class VertexAiSessionService(BaseSessionService):
 
   @override
   async def update_session_title(
-      self, *, app_name: str, user_id: str, session_id: str, title: Optional[str]
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      session_id: str,
+      title: Optional[str],
   ) -> None:
     reasoning_engine_id = self._get_reasoning_engine_id(app_name)
 

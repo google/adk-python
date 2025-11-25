@@ -681,7 +681,12 @@ class DatabaseSessionService(BaseSessionService):
 
   @override
   async def update_session_title(
-      self, *, app_name: str, user_id: str, session_id: str, title: Optional[str]
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      session_id: str,
+      title: Optional[str],
   ) -> None:
     await self._ensure_tables_created()
     async with self.database_session_factory() as sql_session:

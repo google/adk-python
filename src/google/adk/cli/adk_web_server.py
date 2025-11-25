@@ -826,7 +826,10 @@ class AdkWebServer:
         response_model_exclude_none=True,
     )
     async def update_session_title(
-        app_name: str, user_id: str, session_id: str, title: Optional[str] = None
+        app_name: str,
+        user_id: str,
+        session_id: str,
+        title: Optional[str] = None,
     ) -> dict[str, str]:
       await self.session_service.update_session_title(
           app_name=app_name, user_id=user_id, session_id=session_id, title=title
