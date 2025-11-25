@@ -280,6 +280,17 @@ class ListMetricsInfoResponse(common.BaseModel):
   metrics_info: list[MetricInfo]
 
 
+class AppInfo(common.BaseModel):
+  name: str
+  root_agent_name: str
+  description: str
+  language: Literal["yaml", "python"]
+
+
+class ListAppsResponse(common.BaseModel):
+  apps: list[AppInfo]
+
+
 def _setup_telemetry(
     otel_to_cloud: bool = False,
     internal_exporters: Optional[list[SpanProcessor]] = None,
@@ -699,7 +710,14 @@ class AdkWebServer:
       )
 
     @app.get("/list-apps")
-    async def list_apps() -> list[str]:
+    async def list_apps(
+        detailed: bool = Query(
+            default=False, description="Return detailed app information"
+        )
+    ) -> list[str] | ListAppsResponse:
+      if detailed:
+        apps_info = self.agent_loader.list_agents_detailed()
+        return ListAppsResponse(apps=[AppInfo(**app) for app in apps_info])
       return self.agent_loader.list_agents()
 
     @app.get("/debug/trace/{event_id}", tags=[TAG_DEBUG])

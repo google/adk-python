@@ -19,6 +19,7 @@ import inspect
 import logging
 from pathlib import Path
 import queue
+import sys
 from typing import Any
 from typing import AsyncGenerator
 from typing import Callable
@@ -985,16 +986,16 @@ class Runner:
     over session management, event streaming, and error handling.
 
     Args:
-        user_messages: Message(s) to send to the agent. Can be:
-            - Single string: "What is 2+2?"
-            - List of strings: ["Hello!", "What's my name?"]
+        user_messages: Message(s) to send to the agent. Can be: - Single string:
+          "What is 2+2?" - List of strings: ["Hello!", "What's my name?"]
         user_id: User identifier. Defaults to "debug_user_id".
-        session_id: Session identifier for conversation persistence.
-            Defaults to "debug_session_id". Reuse the same ID to continue a conversation.
+        session_id: Session identifier for conversation persistence. Defaults to
+          "debug_session_id". Reuse the same ID to continue a conversation.
         run_config: Optional configuration for the agent execution.
-        quiet: If True, suppresses console output. Defaults to False (output shown).
-        verbose: If True, shows detailed tool calls and responses. Defaults to False
-            for cleaner output showing only final agent responses.
+        quiet: If True, suppresses console output. Defaults to False (output
+          shown).
+        verbose: If True, shows detailed tool calls and responses. Defaults to
+          False for cleaner output showing only final agent responses.
 
     Returns:
         list[Event]: All events from all messages.
@@ -1011,7 +1012,8 @@ class Runner:
         >>> await runner.run_debug(["Hello!", "What's my name?"])
 
         Continue a debug session:
-        >>> await runner.run_debug("What did we discuss?")  # Continues default session
+        >>> await runner.run_debug("What did we discuss?")  # Continues default
+        session
 
         Separate debug sessions:
         >>> await runner.run_debug("Hi", user_id="alice", session_id="debug1")
@@ -1353,7 +1355,12 @@ class Runner:
 
     logger.info('Runner closed.')
 
-  async def __aenter__(self):
+  if sys.version_info < (3, 11):
+    Self = 'Runner'  # pylint: disable=invalid-name
+  else:
+    from typing import Self  # pylint: disable=g-import-not-at-top
+
+  async def __aenter__(self) -> Self:
     """Async context manager entry."""
     return self
 

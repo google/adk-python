@@ -34,7 +34,7 @@ from ...features import FeatureName
 from ...features import is_feature_enabled
 from .._gemini_schema_util import _to_gemini_schema
 from .mcp_session_manager import MCPSessionManager
-from .mcp_session_manager import retry_on_closed_resource
+from .mcp_session_manager import retry_on_errors
 
 # Attempt to import MCP Tool from the MCP library, and hints user to upgrade
 # their Python version to 3.10 if it fails.
@@ -195,7 +195,7 @@ class McpTool(BaseAuthenticatedTool):
         return {"error": "This tool call is rejected."}
     return await super().run_async(args=args, tool_context=tool_context)
 
-  @retry_on_closed_resource
+  @retry_on_errors
   @override
   async def _run_async_impl(
       self, *, args, tool_context: ToolContext, credential: AuthCredential
