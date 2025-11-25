@@ -132,7 +132,7 @@ def resolve_agent_reference(
     else:
       return from_config(
           os.path.join(
-              referencing_agent_config_abs_path.rsplit("/", 1)[0],
+              os.path.dirname(referencing_agent_config_abs_path),
               ref_config.config_path,
           )
       )
