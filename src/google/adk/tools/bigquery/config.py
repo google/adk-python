@@ -104,9 +104,9 @@ class BigQueryToolConfig(BaseModel):
   job_labels: Optional[dict[str, str]] = None
   """Labels to apply to BigQuery jobs for tracking and monitoring.
 
-  These labels will be added to all BigQuery jobs executed by the execute_sql
-  function. Labels must be key-value pairs where both keys and values are
-  strings. Labels can be used for billing, monitoring, and resource organization.
+  These labels will be added to all BigQuery jobs executed by the tools.
+  Labels must be key-value pairs where both keys and values are strings.
+  Labels can be used for billing, monitoring, and resource organization.
   For more information about labels, see 
   https://cloud.google.com/bigquery/docs/labels-intro.
   """
