@@ -20,6 +20,7 @@ from typing import Any
 from typing import Dict
 from typing import List
 from typing import Optional
+from typing import Tuple
 
 from adk_stale_agent.settings import CLOSE_HOURS_AFTER_STALE_THRESHOLD
 from adk_stale_agent.settings import GITHUB_BASE_URL
@@ -119,39 +120,28 @@ def load_prompt_template(filename: str) -> str:
 PROMPT_TEMPLATE = load_prompt_template("PROMPT_INSTRUCTION.txt")
 
 
-def get_issue_state(item_number: int) -> Dict[str, Any]:
+def _fetch_graphql_data(item_number: int) -> Dict[str, Any]:
   """
-  Retrieves the comprehensive state of a GitHub issue using GraphQL.
-
-  This function constructs a unified timeline of comments, body edits,
-  renames, and reopens to determine who the *absolute last* actor was.
-  It handles 'Ghost Edits' (description updates without comments) and
-  prevents spamming alerts if the bot has already notified maintainers.
+  Executes the GraphQL query to fetch raw issue data, including comments,
+  edits, and timeline events.
 
   Args:
       item_number (int): The GitHub issue number.
 
   Returns:
-      Dict[str, Any]: A dictionary containing metadata for the LLM.
-          - last_action_role (str): 'author', 'maintainer', or 'other_user'.
-          - is_stale (bool): Whether the issue is currently marked stale.
-          - maintainer_alert_needed (bool): True if a silent edit needs an alert.
-          - days_since_activity (float): Days since the last human action.
-          - last_comment_text (str|None): The text of the last comment, if applicable.
-          - current_labels (List[str]): List of labels on the issue.
-  """
-  maintainers = _get_cached_maintainers()
+      Dict[str, Any]: The raw 'issue' object from the GraphQL response.
 
-  # GraphQL Query: Fetches Comments, Edits, and Timeline Events in one go.
+  Raises:
+      RequestException: If the GraphQL query returns errors or the issue is not found.
+  """
   query = """
-    query($owner: String!, $name: String!, $number: Int!) {
+    query($owner: String!, $name: String!, $number: Int!, $commentLimit: Int!, $timelineLimit: Int!) {
       repository(owner: $owner, name: $name) {
         issue(number: $number) {
           author { login }
           createdAt
           labels(first: 20) { nodes { name } }
           
-          # 1. Comments (Fetch last commentLimit)
           comments(last: $commentLimit) {
             nodes {
               author { login }
@@ -161,7 +151,6 @@ def get_issue_state(item_number: int) -> Dict[str, Any]:
             }
           }
           
-          # 2. Description Edits (Fetch last editLimit)
           userContentEdits(last: $editLimit) {
             nodes {
               editor { login }
@@ -169,7 +158,6 @@ def get_issue_state(item_number: int) -> Dict[str, Any]:
             }
           }
           
-          # 3. Timeline Events (Renames, Reopens, Labels)
           timelineItems(itemTypes: [LABELED_EVENT, RENAMED_TITLE_EVENT, REOPENED_EVENT], last: $timelineLimit) {
             nodes {
               __typename
@@ -202,153 +190,209 @@ def get_issue_state(item_number: int) -> Dict[str, Any]:
       "timelineLimit": GRAPHQL_TIMELINE_LIMIT,
   }
 
+  response = post_request(
+      f"{GITHUB_BASE_URL}/graphql", {"query": query, "variables": variables}
+  )
+
+  if "errors" in response:
+    raise RequestException(f"GraphQL Error: {response['errors'][0]['message']}")
+
+  data = response.get("data", {}).get("repository", {}).get("issue", {})
+  if not data:
+    raise RequestException(f"Issue #{item_number} not found.")
+
+  return data
+
+
+def _build_history_timeline(
+    data: Dict[str, Any],
+) -> Tuple[List[Dict[str, Any]], List[datetime], Optional[datetime]]:
+  """
+  Parses raw GraphQL data into a unified, chronologically sorted history list.
+  Also extracts specific event times needed for logic checks.
+
+  Args:
+      data (Dict[str, Any]): The raw issue data from `_fetch_graphql_data`.
+
+  Returns:
+      Tuple[List[Dict], List[datetime], Optional[datetime]]:
+          - history: A list of normalized event dictionaries sorted by time.
+          - label_events: A list of timestamps when the stale label was applied.
+          - last_bot_alert_time: Timestamp of the last bot silent-edit alert (if any).
+  """
+  issue_author = data.get("author", {}).get("login")
+  history = []
+  label_events = []
+  last_bot_alert_time = None
+
+  # 1. Baseline: Issue Creation
+  history.append({
+      "type": "created",
+      "actor": issue_author,
+      "time": dateutil.parser.isoparse(data["createdAt"]),
+      "data": None,
+  })
+
+  # 2. Process Comments
+  for c in data.get("comments", {}).get("nodes", []):
+    if not c:
+      continue
+
+    actor = c.get("author", {}).get("login")
+    c_body = c.get("body", "")
+    c_time = dateutil.parser.isoparse(c.get("createdAt"))
+
+    # Track bot alerts for spam prevention
+    if BOT_ALERT_SIGNATURE in c_body:
+      if last_bot_alert_time is None or c_time > last_bot_alert_time:
+        last_bot_alert_time = c_time
+
+    if actor and not actor.endswith("[bot]"):
+      # Use edit time if available, otherwise creation time
+      e_time = c.get("lastEditedAt")
+      actual_time = dateutil.parser.isoparse(e_time) if e_time else c_time
+      history.append({
+          "type": "commented",
+          "actor": actor,
+          "time": actual_time,
+          "data": c_body,
+      })
+
+  # 3. Process Body Edits ("Ghost Edits")
+  for e in data.get("userContentEdits", {}).get("nodes", []):
+    if not e:
+      continue
+    actor = e.get("editor", {}).get("login")
+    if actor and not actor.endswith("[bot]"):
+      history.append({
+          "type": "edited_description",
+          "actor": actor,
+          "time": dateutil.parser.isoparse(e.get("editedAt")),
+          "data": None,
+      })
+
+  # 4. Process Timeline Events
+  for t in data.get("timelineItems", {}).get("nodes", []):
+    if not t:
+      continue
+
+    etype = t.get("__typename")
+    actor = t.get("actor", {}).get("login")
+    time_val = dateutil.parser.isoparse(t.get("createdAt"))
+
+    if etype == "LabeledEvent":
+      if t.get("label", {}).get("name") == STALE_LABEL_NAME:
+        label_events.append(time_val)
+      continue
+
+    if actor and not actor.endswith("[bot]"):
+      pretty_type = (
+          "renamed_title" if etype == "RenamedTitleEvent" else "reopened"
+      )
+      history.append({
+          "type": pretty_type,
+          "actor": actor,
+          "time": time_val,
+          "data": None,
+      })
+
+  # Sort chronologically
+  history.sort(key=lambda x: x["time"])
+  return history, label_events, last_bot_alert_time
+
+
+def _replay_history_to_find_state(
+    history: List[Dict[str, Any]], maintainers: List[str], issue_author: str
+) -> Dict[str, Any]:
+  """
+  Replays the unified event history to determine the absolute last actor and their role.
+
+  Args:
+      history (List[Dict]): Chronologically sorted list of events.
+      maintainers (List[str]): List of maintainer usernames.
+      issue_author (str): Username of the issue author.
+
+  Returns:
+      Dict[str, Any]: A dictionary containing the last state of the issue:
+          - last_action_role (str): 'author', 'maintainer', or 'other_user'.
+          - last_activity_time (datetime): Timestamp of the last human action.
+          - last_action_type (str): The type of the last action (e.g., 'commented').
+          - last_comment_text (Optional[str]): The text of the last comment.
+  """
+  last_action_role = "author"
+  last_activity_time = history[0]["time"]
+  last_action_type = "created"
+  last_comment_text = None
+
+  for event in history:
+    actor = event["actor"]
+    etype = event["type"]
+
+    role = "other_user"
+    if actor == issue_author:
+      role = "author"
+    elif actor in maintainers:
+      role = "maintainer"
+
+    last_action_role = role
+    last_activity_time = event["time"]
+    last_action_type = etype
+
+    # Only store text if it was a comment (resets on other events like labels/edits)
+    if etype == "commented":
+      last_comment_text = event["data"]
+    else:
+      last_comment_text = None
+
+  return {
+      "last_action_role": last_action_role,
+      "last_activity_time": last_activity_time,
+      "last_action_type": last_action_type,
+      "last_comment_text": last_comment_text,
+  }
+
+
+def get_issue_state(item_number: int) -> Dict[str, Any]:
+  """
+  Retrieves the comprehensive state of a GitHub issue using GraphQL.
+
+  This function orchestrates the fetching, parsing, and analysis of the issue's
+  history to determine if it is stale, active, or pending maintainer review.
+
+  Args:
+      item_number (int): The GitHub issue number.
+
+  Returns:
+      Dict[str, Any]: A comprehensive state dictionary for the LLM agent.
+          Contains keys such as 'last_action_role', 'is_stale', 'days_since_activity',
+          and 'maintainer_alert_needed'.
+  """
   try:
-    response = post_request(
-        f"{GITHUB_BASE_URL}/graphql", {"query": query, "variables": variables}
+    maintainers = _get_cached_maintainers()
+
+    # 1. Fetch
+    raw_data = _fetch_graphql_data(item_number)
+
+    issue_author = raw_data.get("author", {}).get("login")
+    labels_list = [
+        l["name"] for l in raw_data.get("labels", {}).get("nodes", [])
+    ]
+
+    # 2. Parse & Sort
+    history, label_events, last_bot_alert_time = _build_history_timeline(
+        raw_data
     )
 
-    if "errors" in response:
-      msg = response["errors"][0]["message"]
-      return error_response(f"GraphQL Error: {msg}")
+    # 3. Analyze (Replay)
+    state = _replay_history_to_find_state(history, maintainers, issue_author)
 
-    data = response.get("data", {}).get("repository", {}).get("issue", {})
-    if not data:
-      return error_response(f"Issue #{item_number} not found.")
-
-    issue_author = data.get("author", {}).get("login")
-    labels_list = [l["name"] for l in data.get("labels", {}).get("nodes", [])]
-
-    # Unified list of ALL events to replay history chronologically.
-    history = []
-    last_bot_alert_time = None
-
-    # 1. Baseline: Issue Creation
-    history.append({
-        "type": "created",
-        "actor": issue_author,
-        "time": dateutil.parser.isoparse(data["createdAt"]),
-        "data": None,
-    })
-
-    # 2. Process Comments
-    for c in data.get("comments", {}).get("nodes", []):
-      if not c:
-        continue
-
-      actor = c.get("author", {}).get("login")
-      c_body = c.get("body", "")
-      c_time = dateutil.parser.isoparse(c.get("createdAt"))
-
-      if BOT_ALERT_SIGNATURE in c_body:
-        if last_bot_alert_time is None or c_time > last_bot_alert_time:
-          last_bot_alert_time = c_time
-
-      if actor and not actor.endswith("[bot]"):
-        e_time = c.get("lastEditedAt")
-        actual_time = dateutil.parser.isoparse(e_time) if e_time else c_time
-        history.append({
-            "type": "commented",
-            "actor": actor,
-            "time": actual_time,
-            "data": c_body,
-        })
-
-    # 3. Process Body Edits
-    for e in data.get("userContentEdits", {}).get("nodes", []):
-      if not e:
-        continue
-
-      actor = e.get("editor", {}).get("login")
-      if actor and not actor.endswith("[bot]"):
-        history.append({
-            "type": "edited_description",
-            "actor": actor,
-            "time": dateutil.parser.isoparse(e.get("editedAt")),
-            "data": None,
-        })
-
-    # 4. Process Timeline Events (Labels, Renames, Reopens)
-    label_events = []
-    for t in data.get("timelineItems", {}).get("nodes", []):
-      if not t:
-        continue
-
-      etype = t.get("__typename")
-      actor = t.get("actor", {}).get("login")
-      time_val = dateutil.parser.isoparse(t.get("createdAt"))
-
-      if etype == "LabeledEvent":
-        if t.get("label", {}).get("name") == STALE_LABEL_NAME:
-          label_events.append(time_val)
-        continue
-
-      if actor and not actor.endswith("[bot]"):
-        pretty_type = (
-            "renamed_title" if etype == "RenamedTitleEvent" else "reopened"
-        )
-        history.append({
-            "type": pretty_type,
-            "actor": actor,
-            "time": time_val,
-            "data": None,
-        })
-
-    # --- History Replay (Chronological Sort) ---
-    history.sort(key=lambda x: x["time"])
-
-    last_action_role = "author"
-    last_activity_time = history[0]["time"]
-    last_action_type = "created"
-    last_comment_text = None
-
-    logger.debug(f"--- Activity Trace for #{item_number} ---")
-
-    for event in history:
-      actor = event["actor"]
-      etype = event["type"]
-
-      role = "other_user"
-      if actor == issue_author:
-        role = "author"
-      elif actor in maintainers:
-        role = "maintainer"
-
-      logger.debug(
-          f"  [{event['time'].strftime('%m-%d %H:%M')}] "
-          f"{etype.upper()} by {actor} ({role})"
-      )
-
-      last_action_role = role
-      last_activity_time = event["time"]
-      last_action_type = etype
-
-      if etype == "commented":
-        last_comment_text = event["data"]
-      else:
-        last_comment_text = None
-
-    # --- Spam Prevention / Alert Logic ---
-    maintainer_alert_needed = False
-    if (
-        last_action_role in ["author", "other_user"]
-        and last_action_type == "edited_description"
-    ):
-      if last_bot_alert_time and last_bot_alert_time > last_activity_time:
-        maintainer_alert_needed = False
-        logger.info(
-            f"#{item_number}: Silent edit detected, but Bot already alerted at "
-            f"{last_bot_alert_time.strftime('%m-%d %H:%M')}. No spam."
-        )
-      else:
-        maintainer_alert_needed = True
-        logger.info(f"#{item_number}: Silent edit detected. Alert needed.")
-
-    # --- Final Metric Calculations ---
+    # 4. Final Calculations & Alert Logic
     current_time = datetime.now(timezone.utc)
     days_since_activity = (
-        current_time - last_activity_time
+        current_time - state["last_activity_time"]
     ).total_seconds() / 86400
 
+    # Stale Checks
     is_stale = STALE_LABEL_NAME in labels_list
     days_since_stale_label = 0.0
     if is_stale and label_events:
@@ -357,20 +401,38 @@ def get_issue_state(item_number: int) -> Dict[str, Any]:
           current_time - latest_label_time
       ).total_seconds() / 86400
 
+    # Silent Edit Alert Logic
+    maintainer_alert_needed = False
+    if (
+        state["last_action_role"] in ["author", "other_user"]
+        and state["last_action_type"] == "edited_description"
+    ):
+      if (
+          last_bot_alert_time
+          and last_bot_alert_time > state["last_activity_time"]
+      ):
+        logger.info(
+            f"#{item_number}: Silent edit detected, but Bot already alerted. No"
+            " spam."
+        )
+      else:
+        maintainer_alert_needed = True
+        logger.info(f"#{item_number}: Silent edit detected. Alert needed.")
+
     logger.debug(
-        f"  -> FINAL VERDICT: Last Actor = {last_action_role.upper()}, "
-        f"Idle = {days_since_activity:.2f} days"
+        f"#{item_number} VERDICT: Role={state['last_action_role']}, "
+        f"Idle={days_since_activity:.2f}d"
     )
 
     return {
         "status": "success",
-        "last_action_role": last_action_role,
-        "last_action_type": last_action_type,
+        "last_action_role": state["last_action_role"],
+        "last_action_type": state["last_action_type"],
         "maintainer_alert_needed": maintainer_alert_needed,
         "is_stale": is_stale,
         "days_since_activity": days_since_activity,
         "days_since_stale_label": days_since_stale_label,
-        "last_comment_text": last_comment_text,
+        "last_comment_text": state["last_comment_text"],
         "current_labels": labels_list,
         "stale_threshold_days": STALE_HOURS_THRESHOLD / 24,
         "close_threshold_days": CLOSE_HOURS_AFTER_STALE_THRESHOLD / 24,
@@ -378,6 +440,11 @@ def get_issue_state(item_number: int) -> Dict[str, Any]:
 
   except RequestException as e:
     return error_response(f"Network Error: {e}")
+  except Exception as e:
+    logger.error(
+        f"Unexpected error analyzing #{item_number}: {e}", exc_info=True
+    )
+    return error_response(f"Analysis Error: {e}")
 
 
 # --- Tool Definitions ---
