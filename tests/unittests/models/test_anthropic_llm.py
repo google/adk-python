@@ -20,6 +20,7 @@ from anthropic import types as anthropic_types
 from google.adk import version as adk_version
 from google.adk.models import anthropic_llm
 from google.adk.models.anthropic_llm import Claude
+from google.adk.models.anthropic_llm import content_to_message_param
 from google.adk.models.anthropic_llm import function_declaration_to_tool_param
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
@@ -462,3 +463,81 @@ def test_part_to_message_block_with_multiple_content_items():
   assert isinstance(result, dict)
   # Multiple text items should be joined with newlines
   assert result["content"] == "First part\nSecond part"
+
+
+content_to_message_param_test_cases = [
+    (
+        "user_role_with_text_and_image",
+        Content(
+            role="user",
+            parts=[
+                Part.from_text(text="What's in this image?"),
+                Part(
+                    inline_data=types.Blob(
+                        mime_type="image/jpeg", data=b"fake_image_data"
+                    )
+                ),
+            ],
+        ),
+        "user",
+        2,  # Expected content length
+        False,  # Should not log warning
+    ),
+    (
+        "model_role_with_text_and_image",
+        Content(
+            role="model",
+            parts=[
+                Part.from_text(text="I see a cat."),
+                Part(
+                    inline_data=types.Blob(
+                        mime_type="image/png", data=b"fake_image_data"
+                    )
+                ),
+            ],
+        ),
+        "assistant",
+        1,  # Image filtered out, only text remains
+        True,  # Should log warning
+    ),
+    (
+        "assistant_role_with_text_and_image",
+        Content(
+            role="assistant",
+            parts=[
+                Part.from_text(text="Here's what I found."),
+                Part(
+                    inline_data=types.Blob(
+                        mime_type="image/webp", data=b"fake_image_data"
+                    )
+                ),
+            ],
+        ),
+        "assistant",
+        1,  # Image filtered out, only text remains
+        True,  # Should log warning
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "_, content, expected_role, expected_content_length, should_log_warning",
+    content_to_message_param_test_cases,
+    ids=[case[0] for case in content_to_message_param_test_cases],
+)
+def test_content_to_message_param_with_images(
+    _, content, expected_role, expected_content_length, should_log_warning
+):
+  """Test content_to_message_param handles images correctly based on role."""
+  with mock.patch("google.adk.models.anthropic_llm.logger") as mock_logger:
+    result = content_to_message_param(content)
+
+    assert result["role"] == expected_role
+    assert len(result["content"]) == expected_content_length
+
+    if should_log_warning:
+      mock_logger.warning.assert_called_once_with(
+          "Image data is not supported in Claude for assistant turns."
+      )
+    else:
+      mock_logger.warning.assert_not_called()
