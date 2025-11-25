@@ -155,9 +155,11 @@ def content_to_message_param(
 ) -> anthropic_types.MessageParam:
   message_block = []
   for part in content.parts or []:
-    # Image data is not supported in Claude for model turns.
-    if _is_image_part(part):
-      logger.warning("Image data is not supported in Claude for model turns.")
+    # Image data is not supported in Claude for assistant turns.
+    if content.role != "user" and _is_image_part(part):
+      logger.warning(
+          "Image data is not supported in Claude for assistant turns."
+      )
       continue
 
     message_block.append(part_to_message_block(part))
