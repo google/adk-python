@@ -396,7 +396,7 @@ def _extract_reasoning_value(message: Message | Dict[str, Any]) -> Any:
     return getattr(message, "reasoning")
 
   if isinstance(message, dict):
-    return message.get("reasoning_content") or message.get("reasoning")
+    return message.get("reasoning_content", message.get("reasoning"))
 
   return None
 

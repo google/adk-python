@@ -2303,9 +2303,8 @@ def test_extract_reasoning_value_with_empty_reasoning_content():
   }
 
   result = _extract_reasoning_value(message)
-  # Empty string from reasoning_content is returned, but 'or' makes it None
-  # because empty string is falsy and reasoning is not present
-  assert result is None
+  # Empty string should be returned to maintain precedence
+  assert result == ""
 
 
 def test_parse_tool_calls_from_text_multiple_calls():
