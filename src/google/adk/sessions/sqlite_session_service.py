@@ -323,19 +323,15 @@ class SqliteSessionService(BaseSessionService):
       title: Optional[str],
   ) -> None:
     async with self._get_db_connection() as db:
-      async with db.execute(
-          "SELECT 1 FROM sessions WHERE app_name=? AND user_id=? AND id=?",
-          (app_name, user_id, session_id),
-      ) as cursor:
-        if not await cursor.fetchone():
-          raise ValueError(
-              f"Session not found: app_name={app_name}, user_id={user_id},"
-              f" session_id={session_id}"
-          )
-      await db.execute(
+      cursor = await db.execute(
           "UPDATE sessions SET title=? WHERE app_name=? AND user_id=? AND id=?",
           (title, app_name, user_id, session_id),
       )
+      if cursor.rowcount == 0:
+        raise ValueError(
+            f"Session not found: app_name={app_name}, user_id={user_id},"
+            f" session_id={session_id}"
+        )
       await db.commit()
 
   @override

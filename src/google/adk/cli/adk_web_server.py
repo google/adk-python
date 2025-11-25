@@ -29,6 +29,7 @@ from typing import List
 from typing import Literal
 from typing import Optional
 
+from fastapi import Body
 from fastapi import FastAPI
 from fastapi import HTTPException
 from fastapi import Query
@@ -829,7 +830,7 @@ class AdkWebServer:
         app_name: str,
         user_id: str,
         session_id: str,
-        title: Optional[str] = None,
+        title: Optional[str] = Body(None, embed=True),
     ) -> dict[str, str]:
       await self.session_service.update_session_title(
           app_name=app_name, user_id=user_id, session_id=session_id, title=title
