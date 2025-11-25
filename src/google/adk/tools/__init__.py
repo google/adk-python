@@ -37,6 +37,7 @@ if TYPE_CHECKING:
   from .preload_memory_tool import preload_memory_tool as preload_memory
   from .tool_context import ToolContext
   from .transfer_to_agent_tool import transfer_to_agent
+  from .transfer_to_agent_tool import TransferToAgentTool
   from .url_context_tool import url_context
   from .vertex_ai_search_tool import VertexAiSearchTool
 
@@ -75,6 +76,10 @@ _LAZY_MAPPING = {
     'preload_memory': ('.preload_memory_tool', 'preload_memory_tool'),
     'ToolContext': ('.tool_context', 'ToolContext'),
     'transfer_to_agent': ('.transfer_to_agent_tool', 'transfer_to_agent'),
+    'TransferToAgentTool': (
+        '.transfer_to_agent_tool',
+        'TransferToAgentTool',
+    ),
     'url_context': ('.url_context_tool', 'url_context'),
     'VertexAiSearchTool': ('.vertex_ai_search_tool', 'VertexAiSearchTool'),
     'MCPToolset': ('.mcp_tool.mcp_toolset', 'MCPToolset'),
