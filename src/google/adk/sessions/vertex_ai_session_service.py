@@ -83,6 +83,7 @@ class VertexAiSessionService(BaseSessionService):
       user_id: str,
       state: Optional[dict[str, Any]] = None,
       session_id: Optional[str] = None,
+      title: Optional[str] = None,
       **kwargs: Any,
   ) -> Session:
     """Creates a new session.
@@ -92,6 +93,7 @@ class VertexAiSessionService(BaseSessionService):
       user_id: The ID of the user.
       state: The initial state of the session.
       session_id: The ID of the session.
+      title: The title of the session.
       **kwargs: Additional arguments to pass to the session creation. E.g. set
         expire_time='2025-10-01T00:00:00Z' to set the session expiration time.
         See https://cloud.google.com/vertex-ai/generative-ai/docs/reference/rest/v1beta1/projects.locations.reasoningEngines.sessions
@@ -109,6 +111,8 @@ class VertexAiSessionService(BaseSessionService):
     reasoning_engine_id = self._get_reasoning_engine_id(app_name)
 
     config = {'session_state': state} if state else {}
+    if title:
+      config['display_name'] = title
     config.update(kwargs)
     async with self._get_api_client() as api_client:
       api_response = await api_client.agent_engines.sessions.create(
@@ -120,12 +124,14 @@ class VertexAiSessionService(BaseSessionService):
       get_session_response = api_response.response
       session_id = get_session_response.name.split('/')[-1]
 
+    final_title = getattr(get_session_response, 'display_name', None)
     session = Session(
         app_name=app_name,
         user_id=user_id,
         id=session_id,
         state=getattr(get_session_response, 'session_state', None) or {},
         last_update_time=get_session_response.update_time.timestamp(),
+        title=final_title,
     )
     return session
 
@@ -169,12 +175,14 @@ class VertexAiSessionService(BaseSessionService):
       )
 
     update_timestamp = get_session_response.update_time.timestamp()
+    title = getattr(get_session_response, 'display_name', None)
     session = Session(
         app_name=app_name,
         user_id=user_id,
         id=session_id,
         state=getattr(get_session_response, 'session_state', None) or {},
         last_update_time=update_timestamp,
+        title=title,
     )
     # Preserve the entire event stream that Vertex returns rather than trying
     # to discard events written milliseconds after the session resource was
@@ -207,6 +215,7 @@ class VertexAiSessionService(BaseSessionService):
       )
 
       for api_session in sessions_iterator:
+        title = getattr(api_session, 'display_name', None)
         sessions.append(
             Session(
                 app_name=app_name,
@@ -214,10 +223,29 @@ class VertexAiSessionService(BaseSessionService):
                 id=api_session.name.split('/')[-1],
                 state=getattr(api_session, 'session_state', None) or {},
                 last_update_time=api_session.update_time.timestamp(),
+                title=title,
             )
         )
 
     return ListSessionsResponse(sessions=sessions)
+
+  @override
+  async def update_session_title(
+      self, *, app_name: str, user_id: str, session_id: str, title: Optional[str]
+  ) -> None:
+    reasoning_engine_id = self._get_reasoning_engine_id(app_name)
+
+    async with self._get_api_client() as api_client:
+      try:
+        await api_client.agent_engines.sessions.update(
+            name=(
+                f'reasoningEngines/{reasoning_engine_id}/sessions/{session_id}'
+            ),
+            display_name=title,
+        )
+      except Exception as e:
+        logger.error('Error updating session title %s: %s', session_id, e)
+        raise
 
   async def delete_session(
       self, *, app_name: str, user_id: str, session_id: str

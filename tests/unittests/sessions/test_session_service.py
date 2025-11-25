@@ -152,6 +152,49 @@ async def test_create_and_list_sessions(service_type, tmp_path):
         SessionServiceType.SQLITE,
     ],
 )
+async def test_session_title(service_type, tmp_path):
+  session_service = get_session_service(service_type, tmp_path)
+  app_name = 'my_app'
+  user_id = 'test_user'
+
+  session = await session_service.create_session(
+      app_name=app_name, user_id=user_id, title='Test Title'
+  )
+  assert session.title == 'Test Title'
+
+  got_session = await session_service.get_session(
+      app_name=app_name, user_id=user_id, session_id=session.id
+  )
+  assert got_session.title == 'Test Title'
+
+  await session_service.update_session_title(
+      app_name=app_name, user_id=user_id, session_id=session.id, title='New Title'
+  )
+
+  updated_session = await session_service.get_session(
+      app_name=app_name, user_id=user_id, session_id=session.id
+  )
+  assert updated_session.title == 'New Title'
+
+  await session_service.update_session_title(
+      app_name=app_name, user_id=user_id, session_id=session.id, title=None
+  )
+
+  cleared_session = await session_service.get_session(
+      app_name=app_name, user_id=user_id, session_id=session.id
+  )
+  assert cleared_session.title is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'service_type',
+    [
+        SessionServiceType.IN_MEMORY,
+        SessionServiceType.DATABASE,
+        SessionServiceType.SQLITE,
+    ],
+)
 async def test_list_sessions_all_users(service_type, tmp_path):
   session_service = get_session_service(service_type, tmp_path)
   app_name = 'my_app'

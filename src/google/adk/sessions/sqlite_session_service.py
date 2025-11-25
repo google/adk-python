@@ -64,6 +64,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     user_id TEXT NOT NULL,
     id TEXT NOT NULL,
     state TEXT NOT NULL,
+    title TEXT,
     create_time REAL NOT NULL,
     update_time REAL NOT NULL,
     PRIMARY KEY (app_name, user_id, id)
@@ -121,6 +122,7 @@ class SqliteSessionService(BaseSessionService):
       user_id: str,
       state: Optional[dict[str, Any]] = None,
       session_id: Optional[str] = None,
+      title: Optional[str] = None,
   ) -> Session:
     if session_id:
       session_id = session_id.strip()
@@ -160,14 +162,15 @@ class SqliteSessionService(BaseSessionService):
       # Store the session
       await db.execute(
           """
-          INSERT INTO sessions (app_name, user_id, id, state, create_time, update_time)
-          VALUES (?, ?, ?, ?, ?, ?)
+          INSERT INTO sessions (app_name, user_id, id, state, title, create_time, update_time)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
           """,
           (
               app_name,
               user_id,
               session_id,
               json.dumps(session_state),
+              title,
               now,
               now,
           ),
@@ -185,6 +188,7 @@ class SqliteSessionService(BaseSessionService):
           state=merged_state,
           events=[],
           last_update_time=now,
+          title=title,
       )
 
   @override
@@ -198,7 +202,7 @@ class SqliteSessionService(BaseSessionService):
   ) -> Optional[Session]:
     async with self._get_db_connection() as db:
       async with db.execute(
-          "SELECT state, update_time FROM sessions WHERE app_name=? AND"
+          "SELECT state, title, update_time FROM sessions WHERE app_name=? AND"
           " user_id=? AND id=?",
           (app_name, user_id, session_id),
       ) as cursor:
@@ -206,6 +210,7 @@ class SqliteSessionService(BaseSessionService):
         if session_row is None:
           return None
         session_state = json.loads(session_row["state"])
+        title = session_row["title"]
         last_update_time = session_row["update_time"]
 
       # Build events query
@@ -248,6 +253,7 @@ class SqliteSessionService(BaseSessionService):
           state=merged_state,
           events=events,
           last_update_time=last_update_time,
+          title=title,
       )
 
   @override
@@ -259,13 +265,13 @@ class SqliteSessionService(BaseSessionService):
       # Fetch sessions
       if user_id:
         session_rows = await db.execute_fetchall(
-            "SELECT id, user_id, state, update_time FROM sessions WHERE"
+            "SELECT id, user_id, state, title, update_time FROM sessions WHERE"
             " app_name=? AND user_id=?",
             (app_name, user_id),
         )
       else:
         session_rows = await db.execute_fetchall(
-            "SELECT id, user_id, state, update_time FROM sessions WHERE"
+            "SELECT id, user_id, state, title, update_time FROM sessions WHERE"
             " app_name=?",
             (app_name,),
         )
@@ -291,6 +297,7 @@ class SqliteSessionService(BaseSessionService):
       for row in session_rows:
         session_user_id = row["user_id"]
         session_state = json.loads(row["state"])
+        title = row["title"]
         user_state = user_states_map.get(session_user_id, {})
         merged_state = _merge_state(app_state, user_state, session_state)
         sessions_list.append(
@@ -301,9 +308,30 @@ class SqliteSessionService(BaseSessionService):
                 state=merged_state,
                 events=[],
                 last_update_time=row["update_time"],
+                title=title,
             )
         )
     return ListSessionsResponse(sessions=sessions_list)
+
+  @override
+  async def update_session_title(
+      self, *, app_name: str, user_id: str, session_id: str, title: Optional[str]
+  ) -> None:
+    async with self._get_db_connection() as db:
+      async with db.execute(
+          "SELECT 1 FROM sessions WHERE app_name=? AND user_id=? AND id=?",
+          (app_name, user_id, session_id),
+      ) as cursor:
+        if not await cursor.fetchone():
+          raise ValueError(
+              f"Session not found: app_name={app_name}, user_id={user_id},"
+              f" session_id={session_id}"
+          )
+      await db.execute(
+          "UPDATE sessions SET title=? WHERE app_name=? AND user_id=? AND id=?",
+          (title, app_name, user_id, session_id),
+      )
+      await db.commit()
 
   @override
   async def delete_session(

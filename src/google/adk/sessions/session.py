@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 from typing import Any
+from typing import Optional
 
 from pydantic import alias_generators
 from pydantic import BaseModel
@@ -48,3 +49,5 @@ class Session(BaseModel):
   call/response, etc."""
   last_update_time: float = 0.0
   """The last update time of the session."""
+  title: Optional[str] = None
+  """The title of the session."""

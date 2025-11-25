@@ -56,6 +56,7 @@ class BaseSessionService(abc.ABC):
       user_id: str,
       state: Optional[dict[str, Any]] = None,
       session_id: Optional[str] = None,
+      title: Optional[str] = None,
   ) -> Session:
     """Creates a new session.
 
@@ -101,6 +102,19 @@ class BaseSessionService(abc.ABC):
       self, *, app_name: str, user_id: str, session_id: str
   ) -> None:
     """Deletes a session."""
+
+  @abc.abstractmethod
+  async def update_session_title(
+      self, *, app_name: str, user_id: str, session_id: str, title: Optional[str]
+  ) -> None:
+    """Updates the title of a session.
+
+    Args:
+      app_name: The name of the app.
+      user_id: The id of the user.
+      session_id: The id of the session.
+      title: The new title for the session. If None, clears the title.
+    """
 
   async def append_event(self, session: Session, event: Event) -> Event:
     """Appends an event to a session object."""

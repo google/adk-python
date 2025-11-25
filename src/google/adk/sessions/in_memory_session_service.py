@@ -58,12 +58,14 @@ class InMemorySessionService(BaseSessionService):
       user_id: str,
       state: Optional[dict[str, Any]] = None,
       session_id: Optional[str] = None,
+      title: Optional[str] = None,
   ) -> Session:
     return self._create_session_impl(
         app_name=app_name,
         user_id=user_id,
         state=state,
         session_id=session_id,
+        title=title,
     )
 
   def create_session_sync(
@@ -73,6 +75,7 @@ class InMemorySessionService(BaseSessionService):
       user_id: str,
       state: Optional[dict[str, Any]] = None,
       session_id: Optional[str] = None,
+      title: Optional[str] = None,
   ) -> Session:
     logger.warning('Deprecated. Please migrate to the async method.')
     return self._create_session_impl(
@@ -80,6 +83,7 @@ class InMemorySessionService(BaseSessionService):
         user_id=user_id,
         state=state,
         session_id=session_id,
+        title=title,
     )
 
   def _create_session_impl(
@@ -89,6 +93,7 @@ class InMemorySessionService(BaseSessionService):
       user_id: str,
       state: Optional[dict[str, Any]] = None,
       session_id: Optional[str] = None,
+      title: Optional[str] = None,
   ) -> Session:
     if session_id and self._get_session_impl(
         app_name=app_name, user_id=user_id, session_id=session_id
@@ -116,6 +121,7 @@ class InMemorySessionService(BaseSessionService):
         id=session_id,
         state=session_state or {},
         last_update_time=time.time(),
+        title=title,
     )
 
     if app_name not in self.sessions:
@@ -285,6 +291,21 @@ class InMemorySessionService(BaseSessionService):
       return
 
     self.sessions[app_name][user_id].pop(session_id)
+
+  @override
+  async def update_session_title(
+      self, *, app_name: str, user_id: str, session_id: str, title: Optional[str]
+  ) -> None:
+    if (
+        app_name not in self.sessions
+        or user_id not in self.sessions[app_name]
+        or session_id not in self.sessions[app_name][user_id]
+    ):
+      raise ValueError(
+          f"Session not found: app_name={app_name}, user_id={user_id},"
+          f" session_id={session_id}"
+      )
+    self.sessions[app_name][user_id][session_id].title = title
 
   @override
   async def append_event(self, session: Session, event: Event) -> Event:

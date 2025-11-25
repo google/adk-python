@@ -167,6 +167,10 @@ class StorageSession(Base):
       MutableDict.as_mutable(DynamicJSON), default={}
   )
 
+  title: Mapped[Optional[str]] = mapped_column(
+      String(DEFAULT_MAX_VARCHAR_LENGTH), nullable=True
+  )
+
   create_time: Mapped[datetime] = mapped_column(
       PreciseTimestamp, default=func.now()
   )
@@ -215,6 +219,7 @@ class StorageSession(Base):
         state=state,
         events=events,
         last_update_time=self.update_timestamp_tz,
+        title=self.title,
     )
 
 
@@ -497,6 +502,7 @@ class DatabaseSessionService(BaseSessionService):
       user_id: str,
       state: Optional[dict[str, Any]] = None,
       session_id: Optional[str] = None,
+      title: Optional[str] = None,
   ) -> Session:
     # 1. Populate states.
     # 2. Build storage session object
@@ -546,6 +552,7 @@ class DatabaseSessionService(BaseSessionService):
           user_id=user_id,
           id=session_id,
           state=session_state,
+          title=title,
       )
       sql_session.add(storage_session)
       await sql_session.commit()
@@ -670,6 +677,23 @@ class DatabaseSessionService(BaseSessionService):
           StorageSession.id == session_id,
       )
       await sql_session.execute(stmt)
+      await sql_session.commit()
+
+  @override
+  async def update_session_title(
+      self, *, app_name: str, user_id: str, session_id: str, title: Optional[str]
+  ) -> None:
+    await self._ensure_tables_created()
+    async with self.database_session_factory() as sql_session:
+      storage_session = await sql_session.get(
+          StorageSession, (app_name, user_id, session_id)
+      )
+      if storage_session is None:
+        raise ValueError(
+            f"Session not found: app_name={app_name}, user_id={user_id},"
+            f" session_id={session_id}"
+        )
+      storage_session.title = title
       await sql_session.commit()
 
   @override

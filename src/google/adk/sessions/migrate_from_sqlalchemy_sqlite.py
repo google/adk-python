@@ -86,16 +86,40 @@ def migrate(source_db_url: str, dest_db_path: str):
 
     # Migrate sessions
     logger.info("Migrating sessions...")
-    sessions = source_session.query(dss.StorageSession).all()
+    rows = source_session.query(
+        dss.StorageSession.app_name,
+        dss.StorageSession.user_id,
+        dss.StorageSession.id,
+        dss.StorageSession.state,
+        dss.StorageSession.create_time,
+        dss.StorageSession.update_time,
+    ).all()
+    sessions = [
+        type(
+            "StorageSession",
+            (),
+            {
+                "app_name": row[0],
+                "user_id": row[1],
+                "id": row[2],
+                "state": row[3],
+                "create_time": row[4],
+                "update_time": row[5],
+                "title": None,
+            },
+        )()
+        for row in rows
+    ]
     for item in sessions:
       dest_cursor.execute(
-          "INSERT INTO sessions (app_name, user_id, id, state, create_time,"
-          " update_time) VALUES (?, ?, ?, ?, ?, ?)",
+          "INSERT INTO sessions (app_name, user_id, id, state, title,"
+          " create_time, update_time) VALUES (?, ?, ?, ?, ?, ?, ?)",
           (
               item.app_name,
               item.user_id,
               item.id,
               json.dumps(item.state),
+              item.title,
               item.create_time.replace(tzinfo=timezone.utc).timestamp(),
               item.update_time.replace(tzinfo=timezone.utc).timestamp(),
           ),

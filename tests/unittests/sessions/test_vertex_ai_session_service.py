@@ -275,6 +275,7 @@ class MockAsyncClient:
     self.agent_engines.sessions.list.side_effect = self._list_sessions
     self.agent_engines.sessions.delete.side_effect = self._delete_session
     self.agent_engines.sessions.create.side_effect = self._create_session
+    self.agent_engines.sessions.update.side_effect = self._update_session
     self.agent_engines.sessions.events.list.side_effect = self._list_events
     self.agent_engines.sessions.events.append.side_effect = self._append_event
     self.last_create_session_config: dict[str, Any] = {}
@@ -318,6 +319,15 @@ class MockAsyncClient:
     session_id = name.split('/')[-1]
     self.session_dict.pop(session_id)
 
+  async def _update_session(self, name: str, **kwargs: Any):
+    session_id = name.split('/')[-1]
+    if session_id not in self.session_dict:
+      raise api_core_exceptions.NotFound(f'Session not found: {session_id}')
+    if 'display_name' in kwargs:
+      self.session_dict[session_id]['display_name'] = kwargs['display_name']
+    if 'session_state' in kwargs:
+      self.session_dict[session_id]['session_state'] = kwargs['session_state']
+
   async def _create_session(
       self, name: str, user_id: str, config: dict[str, Any]
   ):
@@ -331,6 +341,7 @@ class MockAsyncClient:
         ),
         'user_id': user_id,
         'session_state': config.get('session_state', {}),
+        'display_name': config.get('display_name'),
         'update_time': '2024-12-12T12:12:12.123456Z',
     }
     return _convert_to_object({
@@ -703,3 +714,99 @@ async def test_append_event():
   assert len(retrieved_session.events) == 2
   event_to_append.id = retrieved_session.events[1].id
   assert retrieved_session.events[1] == event_to_append
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
+async def test_create_session_with_title(mock_api_client_instance):
+  session_service = mock_vertex_ai_session_service()
+
+  session = await session_service.create_session(
+      app_name='123', user_id='user', title='Test Title'
+  )
+  assert session.title == 'Test Title'
+  assert mock_api_client_instance.last_create_session_config['display_name'] == 'Test Title'
+
+  got_session = await session_service.get_session(
+      app_name='123', user_id='user', session_id=session.id
+  )
+  assert got_session.title == 'Test Title'
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
+async def test_get_session_with_title(mock_api_client_instance):
+  session_service = mock_vertex_ai_session_service()
+
+  mock_api_client_instance.session_dict['1']['session_state'] = {
+      'key': {'value': 'test_value'},
+  }
+  mock_api_client_instance.session_dict['1']['display_name'] = 'Existing Title'
+
+  session = await session_service.get_session(
+      app_name='123', user_id='user', session_id='1'
+  )
+  assert session.title == 'Existing Title'
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
+async def test_list_sessions_with_title(mock_api_client_instance):
+  session_service = mock_vertex_ai_session_service()
+
+  mock_api_client_instance.session_dict['1']['session_state'] = {
+      'key': {'value': 'test_value'},
+  }
+  mock_api_client_instance.session_dict['1']['display_name'] = 'Session 1 Title'
+  mock_api_client_instance.session_dict['2']['display_name'] = 'Session 2 Title'
+
+  sessions = await session_service.list_sessions(app_name='123', user_id='user')
+  assert len(sessions.sessions) == 2
+  assert sessions.sessions[0].title == 'Session 1 Title'
+  assert sessions.sessions[1].title == 'Session 2 Title'
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
+async def test_update_session_title(mock_api_client_instance):
+  session_service = mock_vertex_ai_session_service()
+
+  await session_service.update_session_title(
+      app_name='123', user_id='user', session_id='1', title='New Title'
+  )
+
+  updated_session = await session_service.get_session(
+      app_name='123', user_id='user', session_id='1'
+  )
+  assert updated_session.title == 'New Title'
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
+async def test_update_session_title_to_none(mock_api_client_instance):
+  session_service = mock_vertex_ai_session_service()
+
+  mock_api_client_instance.session_dict['1']['session_state'] = {
+      'key': {'value': 'test_value'},
+  }
+  mock_api_client_instance.session_dict['1']['display_name'] = 'Old Title'
+
+  await session_service.update_session_title(
+      app_name='123', user_id='user', session_id='1', title=None
+  )
+
+  updated_session = await session_service.get_session(
+      app_name='123', user_id='user', session_id='1'
+  )
+  assert updated_session.title is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
+async def test_update_session_title_not_found(mock_api_client_instance):
+  session_service = mock_vertex_ai_session_service()
+
+  with pytest.raises(api_core_exceptions.NotFound):
+    await session_service.update_session_title(
+        app_name='123', user_id='user', session_id='nonexistent', title='Title'
+    )
