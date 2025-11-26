@@ -189,6 +189,9 @@ class AgentTool(BaseTool):
     if not last_content or not last_content.parts:
       return ''
     merged_text = '\n'.join(p.text for p in last_content.parts if p.text)
+    # no text present -> no json, return empty string
+    if not merged_text:
+      return ''
     if isinstance(self.agent, LlmAgent) and self.agent.output_schema:
       tool_result = self.agent.output_schema.model_validate_json(
           merged_text
