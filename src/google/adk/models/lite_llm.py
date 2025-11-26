@@ -1388,11 +1388,19 @@ class LiteLlm(BaseLlm):
   def supported_models(cls) -> list[str]:
     """Provides the list of supported models.
 
-    LiteLlm supports all models supported by litellm. We do not keep track of
-    these models here. So we return an empty list.
+    This registers common provider prefixes. LiteLlm can handle many more,
+    but these patterns activate the integration for the most common use cases.
+    See https://docs.litellm.ai/docs/providers for a full list.
 
     Returns:
       A list of supported models.
     """
 
-    return []
+    return [
+        # For OpenAI models (e.g., "openai/gpt-4o")
+        r"openai/.*",
+        # For Groq models via Groq API (e.g., "groq/llama3-70b-8192")
+        r"groq/.*",
+        # For Anthropic models (e.g., "anthropic/claude-3-opus-20240229")
+        r"anthropic/.*",
+    ]
