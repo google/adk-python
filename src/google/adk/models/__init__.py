@@ -27,6 +27,8 @@ __all__ = [
     'Gemini',
     'Gemma',
     'LLMRegistry',
+    'LlmRequest',
+    'LlmResponse',
 ]
 
 
