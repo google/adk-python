@@ -32,7 +32,6 @@ def create_session_service_from_options(
     base_dir: Path | str,
     session_service_uri: Optional[str] = None,
     session_db_kwargs: Optional[dict[str, Any]] = None,
-    per_agent: bool = False,
 ) -> BaseSessionService:
   """Creates a session service based on CLI/web options."""
   base_path = Path(base_dir)
@@ -40,17 +39,11 @@ def create_session_service_from_options(
 
   kwargs: dict[str, Any] = {
       "agents_dir": str(base_path),
-      "per_agent": per_agent,
   }
   if session_db_kwargs:
     kwargs.update(session_db_kwargs)
 
   if session_service_uri:
-    if per_agent:
-      logger.warning(
-          "per_agent is not supported with remote session service URIs,"
-          " ignoring"
-      )
     logger.info("Using session service URI: %s", session_service_uri)
     service = registry.create_session_service(session_service_uri, **kwargs)
     if service is not None:
@@ -63,7 +56,6 @@ def create_session_service_from_options(
 
     fallback_kwargs = dict(kwargs)
     fallback_kwargs.pop("agents_dir", None)
-    fallback_kwargs.pop("per_agent", None)
     logger.info(
         "Falling back to DatabaseSessionService for URI: %s",
         session_service_uri,
@@ -105,23 +97,16 @@ def create_artifact_service_from_options(
     *,
     base_dir: Path | str,
     artifact_service_uri: Optional[str] = None,
-    per_agent: bool = False,
 ) -> BaseArtifactService:
   """Creates an artifact service based on CLI/web options."""
   base_path = Path(base_dir)
   registry = get_service_registry()
 
   if artifact_service_uri:
-    if per_agent:
-      logger.warning(
-          "per_agent is not supported with remote artifact service URIs,"
-          " ignoring"
-      )
     logger.info("Using artifact service URI: %s", artifact_service_uri)
     service = registry.create_artifact_service(
         artifact_service_uri,
         agents_dir=str(base_path),
-        per_agent=per_agent,
     )
     if service is None:
       logger.warning(
@@ -133,6 +118,4 @@ def create_artifact_service_from_options(
       return InMemoryArtifactService()
     return service
 
-  if per_agent:
-    logger.info("Using shared file artifact service rooted at %s", base_dir)
-  return create_local_artifact_service(base_dir=base_path, per_agent=per_agent)
+  return create_local_artifact_service(base_dir=base_path)
