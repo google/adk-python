@@ -186,7 +186,7 @@ class AgentTool(BaseTool):
     # to avoid "Attempted to exit cancel scope in a different task" errors
     await runner.close()
 
-    if not last_content:
+    if not last_content or not last_content.parts:
       return ''
     merged_text = '\n'.join(p.text for p in last_content.parts if p.text)
     if isinstance(self.agent, LlmAgent) and self.agent.output_schema:
