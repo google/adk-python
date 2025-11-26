@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
   from ..auth.auth_tool import AuthToolArguments
   from .agent_tool import AgentTool
+  from .api_registry import ApiRegistry
   from .apihub_tool.apihub_toolset import APIHubToolset
   from .base_tool import BaseTool
   from .discovery_engine_search_tool import DiscoveryEngineSearchTool
@@ -84,6 +85,7 @@ _LAZY_MAPPING = {
     'VertexAiSearchTool': ('.vertex_ai_search_tool', 'VertexAiSearchTool'),
     'MCPToolset': ('.mcp_tool.mcp_toolset', 'MCPToolset'),
     'McpToolset': ('.mcp_tool.mcp_toolset', 'McpToolset'),
+    'ApiRegistry': ('.api_registry', 'ApiRegistry'),
 }
 
 __all__ = list(_LAZY_MAPPING.keys())
