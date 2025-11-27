@@ -58,13 +58,12 @@ def create_local_database_session_service(
 
 
 def create_local_artifact_service(
-    *, base_dir: Path | str, per_agent: bool = False
+    *, base_dir: Path | str
 ) -> BaseArtifactService:
   """Creates a file-backed artifact service rooted in `.adk/artifacts`.
 
   Args:
     base_dir: Directory whose `.adk` folder will store artifacts.
-    per_agent: Indicates whether the service is being used in multi-agent mode.
 
   Returns:
     A `FileArtifactService` scoped to the derived root directory.
@@ -72,13 +71,7 @@ def create_local_artifact_service(
   manager = DotAdkFolder(base_dir)
   artifact_root = manager.artifacts_dir
   artifact_root.mkdir(parents=True, exist_ok=True)
-  if per_agent:
-    logger.info(
-        "Using shared file artifact service rooted at %s for multi-agent mode",
-        artifact_root,
-    )
-  else:
-    logger.info("Using file artifact service at %s", artifact_root)
+  logger.info("Using file artifact service at %s", artifact_root)
   return FileArtifactService(root_dir=artifact_root)
 
 

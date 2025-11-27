@@ -106,7 +106,6 @@ def get_fast_api_app(
       base_dir=agents_dir,
       session_service_uri=session_service_uri,
       session_db_kwargs=session_db_kwargs,
-      per_agent=True,  # Multi-agent mode
   )
 
   # Build the Artifact service
@@ -114,7 +113,6 @@ def get_fast_api_app(
     artifact_service = create_artifact_service_from_options(
         base_dir=agents_dir,
         artifact_service_uri=artifact_service_uri,
-        per_agent=True,  # Multi-agent mode
     )
   except ValueError as exc:
     raise click.ClickException(str(exc)) from exc
