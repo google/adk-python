@@ -41,35 +41,12 @@ def test_create_session_service_uses_registry(tmp_path: Path, monkeypatch):
   registry.create_session_service.assert_called_once_with(
       "sqlite:///test.db",
       agents_dir=str(tmp_path),
-      per_agent=False,
   )
 
 
-def test_create_session_service_per_agent_uri(tmp_path: Path, monkeypatch):
-  registry = Mock()
-  expected = object()
-  registry.create_session_service.return_value = expected
-  monkeypatch.setattr(service_factory, "get_service_registry", lambda: registry)
-
-  result = service_factory.create_session_service_from_options(
-      base_dir=tmp_path,
-      session_service_uri="memory://",
-      per_agent=True,
-  )
-
-  assert result is expected
-  registry.create_session_service.assert_called_once_with(
-      "memory://", agents_dir=str(tmp_path), per_agent=True
-  )
-
-
-@pytest.mark.parametrize("per_agent", [True, False])
-def test_create_session_service_defaults_to_memory(
-    tmp_path: Path, per_agent: bool
-):
+def test_create_session_service_defaults_to_memory(tmp_path: Path):
   service = service_factory.create_session_service_from_options(
       base_dir=tmp_path,
-      per_agent=per_agent,
   )
 
   assert isinstance(service, InMemorySessionService)
@@ -94,15 +71,11 @@ def test_create_session_service_fallbacks_to_database(
   registry.create_session_service.assert_called_once_with(
       "sqlite+aiosqlite:///:memory:",
       agents_dir=str(tmp_path),
-      per_agent=False,
       echo=True,
   )
 
 
-@pytest.mark.parametrize("per_agent", [True, False])
-def test_create_artifact_service_uses_registry(
-    tmp_path: Path, monkeypatch, per_agent: bool
-):
+def test_create_artifact_service_uses_registry(tmp_path: Path, monkeypatch):
   registry = Mock()
   expected = object()
   registry.create_artifact_service.return_value = expected
@@ -111,14 +84,12 @@ def test_create_artifact_service_uses_registry(
   result = service_factory.create_artifact_service_from_options(
       base_dir=tmp_path,
       artifact_service_uri="gs://bucket/path",
-      per_agent=per_agent,
   )
 
   assert result is expected
   registry.create_artifact_service.assert_called_once_with(
       "gs://bucket/path",
       agents_dir=str(tmp_path),
-      per_agent=per_agent,
   )
 
 
