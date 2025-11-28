@@ -93,7 +93,7 @@ async def inject_session_state(
         return None
 
       optional = part.endswith('?')
-      key = part[:-1] if optional else part
+      key = part.removesuffix('?')
 
       # Try dictionary access first
       if hasattr(current, '__getitem__'):
@@ -127,7 +127,7 @@ async def inject_session_state(
       var_name = full_path.removeprefix('artifact.')
       optional = var_name.endswith('?')
       if optional:
-        var_name = var_name[:-1]
+        var_name = var_name.removesuffix('?')
 
       if invocation_context.artifact_service is None:
         raise ValueError('Artifact service is not initialized.')
