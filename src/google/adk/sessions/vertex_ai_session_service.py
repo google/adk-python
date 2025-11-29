@@ -162,26 +162,25 @@ class VertexAiSessionService(BaseSessionService):
               **list_events_kwargs,
           ),
       )
+      if get_session_response.user_id != user_id:
+        raise ValueError(
+            f'Session {session_id} does not belong to user {user_id}.'
+        )
 
-    if get_session_response.user_id != user_id:
-      raise ValueError(
-          f'Session {session_id} does not belong to user {user_id}.'
+      update_timestamp = get_session_response.update_time.timestamp()
+      session = Session(
+          app_name=app_name,
+          user_id=user_id,
+          id=session_id,
+          state=getattr(get_session_response, 'session_state', None) or {},
+          last_update_time=update_timestamp,
       )
-
-    update_timestamp = get_session_response.update_time.timestamp()
-    session = Session(
-        app_name=app_name,
-        user_id=user_id,
-        id=session_id,
-        state=getattr(get_session_response, 'session_state', None) or {},
-        last_update_time=update_timestamp,
-    )
-    # Preserve the entire event stream that Vertex returns rather than trying
-    # to discard events written milliseconds after the session resource was
-    # updated. Clock skew between those writes can otherwise drop tool_result
-    # events and permanently break the replayed conversation.
-    async for event in events_iterator:
-      session.events.append(_from_api_event(event))
+      # Preserve the entire event stream that Vertex returns rather than trying
+      # to discard events written milliseconds after the session resource was
+      # updated. Clock skew between those writes can otherwise drop tool_result
+      # events and permanently break the replayed conversation.
+      async for event in events_iterator:
+        session.events.append(_from_api_event(event))
 
     if config:
       # Filter events based on num_recent_events.
