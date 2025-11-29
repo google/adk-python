@@ -158,7 +158,7 @@ We welcome contributions from the community! Whether it's bug reports, feature r
 
 ## Community Repo
 
-We have [adk-python-community repo](https://github.com/google/adk-python-community)that is home to a growing ecosystem of community-contributed tools, third-party
+We have [adk-python-community repo](https://github.com/google/adk-python-community) that is home to a growing ecosystem of community-contributed tools, third-party
 service integrations, and deployment scripts that extend the core capabilities
 of the ADK.
 
