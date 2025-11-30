@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from datetime import datetime
 import os
+from pathlib import Path
 import threading
 from typing import Optional
 from typing import Union
@@ -27,7 +28,6 @@ from watchdog.events import FileSystemEvent
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
-from ..agents.base_agent import BaseAgent
 from ..agents.llm_agent import LlmAgent
 from ..apps.app import App
 from ..artifacts.base_artifact_service import BaseArtifactService
@@ -40,8 +40,11 @@ from ..sessions.in_memory_session_service import InMemorySessionService
 from ..sessions.session import Session
 from ..utils.context_utils import Aclosing
 from ..utils.env_utils import is_env_enabled
+from .service_registry import load_services_module
 from .utils import envs
 from .utils.agent_loader import AgentLoader
+from .utils.service_factory import create_artifact_service_from_options
+from .utils.service_factory import create_session_service_from_options
 
 
 class InputFile(BaseModel):
@@ -100,7 +103,7 @@ async def run_input_file(
   )
   with open(input_path, 'r', encoding='utf-8') as f:
     input_file = InputFile.model_validate_json(f.read())
-  input_file.state['_time'] = datetime.now()
+  input_file.state['_time'] = datetime.now().isoformat()
 
   session = await session_service.create_session(
       app_name=app_name, user_id=user_id, state=input_file.state
@@ -209,6 +212,8 @@ async def run_cli(
     save_session: bool,
     session_id: Optional[str] = None,
     dev_mode: bool = False,
+    session_service_uri: Optional[str] = None,
+    artifact_service_uri: Optional[str] = None,
 ) -> None:
   """Runs an interactive CLI for a certain agent.
 
@@ -224,23 +229,46 @@ async def run_cli(
     save_session: bool, whether to save the session on exit.
     session_id: Optional[str], the session ID to save the session to on exit.
     dev_mode: bool, whether to enable development mode with auto-reload.
+    session_service_uri: Optional[str], custom session service URI.
+    artifact_service_uri: Optional[str], custom artifact service URI.
   """
-
-  artifact_service = InMemoryArtifactService()
-  session_service = InMemorySessionService()
-  credential_service = InMemoryCredentialService()
-
+  agent_parent_path = Path(agent_parent_dir).resolve()
+  agent_root = agent_parent_path / agent_folder_name
+  load_services_module(str(agent_root))
   user_id = 'test_user'
-  agent_loader = AgentLoader(agents_dir=agent_parent_dir)
+
+  # Create session and artifact services using factory functions
+  session_service = create_session_service_from_options(
+      base_dir=agent_root,
+      session_service_uri=session_service_uri,
+  )
+
+  artifact_service = create_artifact_service_from_options(
+      base_dir=agent_root,
+      artifact_service_uri=artifact_service_uri,
+  )
+
+  credential_service = InMemoryCredentialService()
+  agents_dir = str(agent_parent_path)
+  agent_loader = AgentLoader(agents_dir=agents_dir)
   agent_or_app = agent_loader.load_agent(agent_folder_name)
+
   session_app_name = (
       agent_or_app.name if isinstance(agent_or_app, App) else agent_folder_name
   )
-  session = await session_service.create_session(
-      app_name=session_app_name, user_id=user_id
-  )
   if not is_env_enabled('ADK_DISABLE_LOAD_DOTENV'):
-    envs.load_dotenv_for_agent(agent_folder_name, agent_parent_dir)
+    envs.load_dotenv_for_agent(agent_folder_name, agents_dir)
+
+  # Helper function for printing events
+  def _print_event(event) -> None:
+    content = event.content
+    if not content or not content.parts:
+      return
+    text_parts = [part.text for part in content.parts if part.text]
+    if not text_parts:
+      return
+    author = event.author or 'system'
+    click.echo(f'[{author}]: {"".join(text_parts)}')
 
   # Set up watchdog observer for dev mode
   observer: Optional[Observer] = None
@@ -268,16 +296,22 @@ async def run_cli(
           input_path=input_file,
       )
     elif saved_session_file:
+      # Load the saved session from file
       with open(saved_session_file, 'r', encoding='utf-8') as f:
         loaded_session = Session.model_validate_json(f.read())
 
+      # Create a new session in the service, copying state from the file
+      session = await session_service.create_session(
+          app_name=session_app_name,
+          user_id=user_id,
+          state=loaded_session.state if loaded_session else None,
+      )
+
+      # Append events from the file to the new session and display them
       if loaded_session:
         for event in loaded_session.events:
           await session_service.append_event(session, event)
-          content = event.content
-          if not content or not content.parts or not content.parts[0].text:
-            continue
-          click.echo(f'[{event.author}]: {content.parts[0].text}')
+          _print_event(event)
 
       await run_interactively(
           agent_or_app,
@@ -290,6 +324,9 @@ async def run_cli(
           change_handler=change_handler,
       )
     else:
+      session = await session_service.create_session(
+          app_name=session_app_name, user_id=user_id
+      )
       click.echo(f'Running agent {agent_or_app.name}, type exit to exit.')
       await run_interactively(
           agent_or_app,
@@ -309,9 +346,7 @@ async def run_cli(
 
   if save_session:
     session_id = session_id or input('Session ID to save: ')
-    session_path = (
-        f'{agent_parent_dir}/{agent_folder_name}/{session_id}.session.json'
-    )
+    session_path = agent_root / f'{session_id}.session.json'
 
     # Fetch the session again to get all the details.
     session = await session_service.get_session(
@@ -319,9 +354,9 @@ async def run_cli(
         user_id=session.user_id,
         session_id=session.id,
     )
-    with open(session_path, 'w', encoding='utf-8') as f:
-      f.write(
-          session.model_dump_json(indent=2, exclude_none=True, by_alias=True)
-      )
+    session_path.write_text(
+        session.model_dump_json(indent=2, exclude_none=True, by_alias=True),
+        encoding='utf-8',
+    )
 
     print('Session saved to', session_path)

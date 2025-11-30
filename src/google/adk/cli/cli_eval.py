@@ -97,7 +97,15 @@ def parse_and_get_evals_to_run(
   eval_set_to_evals = {}
   for input_eval_set in evals_to_run_info:
     evals = []
-    if ":" not in input_eval_set:
+    # Check if the input is a file path that exists (e.g. C:\path\to\file.json)
+    if os.path.exists(input_eval_set):
+      eval_set = input_eval_set
+    # Check if it's a file path with cases (e.g. C:\path\to\file.json:case1,case2)
+    elif ":" in input_eval_set and os.path.exists(input_eval_set.rsplit(":", 1)[0]):
+      eval_set = input_eval_set.rsplit(":", 1)[0]
+      evals = input_eval_set.rsplit(":", 1)[1].split(",")
+      evals = [s for s in evals if s.strip()]
+    elif ":" not in input_eval_set:
       # We don't have any eval cases specified. This would be the case where the
       # the user wants to run all eval cases in the eval set.
       eval_set = input_eval_set

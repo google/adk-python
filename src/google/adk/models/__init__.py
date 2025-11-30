@@ -33,3 +33,23 @@ __all__ = [
 LLMRegistry.register(Gemini)
 LLMRegistry.register(Gemma)
 LLMRegistry.register(ApigeeLlm)
+
+# Optionally register Claude if anthropic package is installed
+try:
+  from .anthropic_llm import Claude
+
+  LLMRegistry.register(Claude)
+  __all__.append('Claude')
+except Exception:
+  # Claude support requires: pip install google-adk[extensions]
+  pass
+
+# Optionally register LiteLlm if litellm package is installed
+try:
+  from .lite_llm import LiteLlm
+
+  LLMRegistry.register(LiteLlm)
+  __all__.append('LiteLlm')
+except Exception:
+  # LiteLLM support requires: pip install google-adk[extensions]
+  pass

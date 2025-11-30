@@ -271,18 +271,14 @@ def _register_builtin_services(registry: ServiceRegistry) -> None:
 
     kwargs_copy = kwargs.copy()
     kwargs_copy.pop("agents_dir", None)
+    kwargs_copy.pop("per_agent", None)
     parsed_uri = urlparse(uri)
     bucket_name = parsed_uri.netloc
     return GcsArtifactService(bucket_name=bucket_name, **kwargs_copy)
 
-  def file_artifact_factory(uri: str, **kwargs):
+  def file_artifact_factory(uri: str, **_):
     from ..artifacts.file_artifact_service import FileArtifactService
 
-    per_agent = kwargs.get("per_agent", False)
-    if per_agent:
-      raise ValueError(
-          "file:// artifact URIs are not supported in multi-agent mode."
-      )
     parsed_uri = urlparse(uri)
     if parsed_uri.netloc not in ("", "localhost"):
       raise ValueError(

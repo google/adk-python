@@ -723,6 +723,7 @@ class TestRemoteA2aAgentMessageHandling:
           mock_a2a_message,
           self.agent.name,
           self.mock_context,
+          self.mock_a2a_part_converter,
       )
       # Check that metadata was added
       assert result.custom_metadata is not None
@@ -760,6 +761,7 @@ class TestRemoteA2aAgentMessageHandling:
           mock_a2a_task,
           self.agent.name,
           self.mock_context,
+          self.mock_a2a_part_converter,
       )
       # Check the parts are not updated as Thought
       assert result.content.parts[0].thought is None
@@ -864,6 +866,7 @@ class TestRemoteA2aAgentMessageHandling:
           mock_a2a_task,
           self.agent.name,
           self.mock_context,
+          self.mock_a2a_part_converter,
       )
       # Check the parts are updated as Thought
       assert result.content.parts[0].thought is True
@@ -909,6 +912,7 @@ class TestRemoteA2aAgentMessageHandling:
           mock_a2a_message,
           self.agent.name,
           self.mock_context,
+          self.mock_a2a_part_converter,
       )
       # Check that metadata was added
       assert result.custom_metadata is not None
@@ -954,6 +958,7 @@ class TestRemoteA2aAgentMessageHandling:
           mock_a2a_message,
           self.agent.name,
           self.mock_context,
+          self.mock_a2a_part_converter,
       )
       # Check that metadata was added
       assert result.custom_metadata is not None
@@ -1009,7 +1014,10 @@ class TestRemoteA2aAgentMessageHandling:
 
       assert result == mock_event
       mock_convert.assert_called_once_with(
-          mock_a2a_task, self.agent.name, self.mock_context
+          mock_a2a_task,
+          self.agent.name,
+          self.mock_context,
+          self.agent._a2a_part_converter,
       )
       # Check that metadata was added
       assert result.custom_metadata is not None
@@ -1039,6 +1047,8 @@ class TestRemoteA2aAgentMessageHandlingFromFactory:
 
   def setup_method(self):
     """Setup test fixtures."""
+    self.mock_a2a_part_converter = Mock()
+
     self.agent_card = create_test_agent_card()
     self.agent = RemoteA2aAgent(
         name="test_agent",
@@ -1046,6 +1056,7 @@ class TestRemoteA2aAgentMessageHandlingFromFactory:
         a2a_client_factory=ClientFactory(
             config=ClientConfig(httpx_client=httpx.AsyncClient()),
         ),
+        a2a_part_converter=self.mock_a2a_part_converter,
     )
 
     # Mock session and context
@@ -1173,7 +1184,10 @@ class TestRemoteA2aAgentMessageHandlingFromFactory:
 
       assert result == mock_event
       mock_convert.assert_called_once_with(
-          mock_a2a_message, self.agent.name, self.mock_context
+          mock_a2a_message,
+          self.agent.name,
+          self.mock_context,
+          self.mock_a2a_part_converter,
       )
       # Check that metadata was added
       assert result.custom_metadata is not None
@@ -1211,6 +1225,7 @@ class TestRemoteA2aAgentMessageHandlingFromFactory:
           mock_a2a_task,
           self.agent.name,
           self.mock_context,
+          self.mock_a2a_part_converter,
       )
       # Check the parts are not updated as Thought
       assert result.content.parts[0].thought is None
@@ -1251,6 +1266,7 @@ class TestRemoteA2aAgentMessageHandlingFromFactory:
           mock_a2a_task,
           self.agent.name,
           self.mock_context,
+          self.agent._a2a_part_converter,
       )
       # Check the parts are updated as Thought
       assert result.content.parts[0].thought is True
@@ -1296,6 +1312,7 @@ class TestRemoteA2aAgentMessageHandlingFromFactory:
           mock_a2a_message,
           self.agent.name,
           self.mock_context,
+          self.agent._a2a_part_converter,
       )
       # Check that metadata was added
       assert result.custom_metadata is not None
@@ -1341,6 +1358,7 @@ class TestRemoteA2aAgentMessageHandlingFromFactory:
           mock_a2a_message,
           self.agent.name,
           self.mock_context,
+          self.agent._a2a_part_converter,
       )
       # Check that metadata was added
       assert result.custom_metadata is not None
@@ -1396,7 +1414,10 @@ class TestRemoteA2aAgentMessageHandlingFromFactory:
 
       assert result == mock_event
       mock_convert.assert_called_once_with(
-          mock_a2a_task, self.agent.name, self.mock_context
+          mock_a2a_task,
+          self.agent.name,
+          self.mock_context,
+          self.agent._a2a_part_converter,
       )
       # Check that metadata was added
       assert result.custom_metadata is not None
