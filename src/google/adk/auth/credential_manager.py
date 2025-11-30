@@ -214,15 +214,12 @@ class CredentialManager:
       return credential, False
 
     if isinstance(exchanger, ServiceAccountCredentialExchanger):
-      exchanged_credential = exchanger.exchange_credential(
-          self._auth_config.auth_scheme, credential
-      )
-    else:
-      exchanged_credential = await exchanger.exchange(
-          credential, self._auth_config.auth_scheme
+      return (
+        exchanger.exchange_credential(self._auth_config.auth_scheme, credential),
+        True
       )
 
-    return exchanged_credential, True
+    return await exchanger.exchange(credential, self._auth_config.auth_scheme)
 
   async def _refresh_credential(
       self, credential: AuthCredential

@@ -41,7 +41,7 @@ class BaseCredentialExchanger(abc.ABC):
       self,
       auth_credential: AuthCredential,
       auth_scheme: Optional[AuthScheme] = None,
-  ) -> AuthCredential:
+  ) -> tuple[AuthCredential, bool]:
     """Exchange credential if needed.
 
     Args:
@@ -49,7 +49,10 @@ class BaseCredentialExchanger(abc.ABC):
         auth_scheme: The authentication scheme (optional, some exchangers don't need it).
 
     Returns:
-        The exchanged credential.
+        A tuple of (credential, exchanged) where:
+        - credential: The exchanged credential if exchange occurred, otherwise
+          the original credential.
+        - exchanged: True if credential was exchanged, False otherwise.
 
     Raises:
         CredentialExchangeError: If credential exchange fails.
