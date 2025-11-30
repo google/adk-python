@@ -78,38 +78,6 @@ if IS_INTERACTIVE:
   APPROVAL_INSTRUCTION = "Only label them when the user approves the labeling!"
 
 
-def list_unlabeled_issues(issue_count: int) -> dict[str, Any]:
-  """List most recent `issue_count` number of unlabeled issues in the repo.
-
-  Args:
-    issue_count: number of issues to return
-
-  Returns:
-    The status of this request, with a list of issues when successful.
-  """
-  url = f"{GITHUB_BASE_URL}/search/issues"
-  query = f"repo:{OWNER}/{REPO} is:open is:issue no:label"
-  params = {
-      "q": query,
-      "sort": "created",
-      "order": "desc",
-      "per_page": issue_count,
-      "page": 1,
-  }
-
-  try:
-    response = get_request(url, params)
-  except requests.exceptions.RequestException as e:
-    return error_response(f"Error: {e}")
-  issues = response.get("items", None)
-
-  unlabeled_issues = []
-  for issue in issues:
-    if not issue.get("labels", None):
-      unlabeled_issues.append(issue)
-  return {"status": "success", "issues": unlabeled_issues}
-
-
 def list_planned_untriaged_issues(issue_count: int) -> dict[str, Any]:
   """List planned issues without component labels (e.g., core, tools, etc.).
 
@@ -276,7 +244,6 @@ root_agent = Agent(
       - the owner of the label if you assign the issue to an owner
     """,
     tools=[
-        list_unlabeled_issues,
         list_planned_untriaged_issues,
         add_label_and_owner_to_issue,
         change_issue_type,

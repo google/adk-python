@@ -411,3 +411,19 @@ def test_function_with_no_response_annotations():
   # Changed: Now uses Any type instead of NULL for no return annotation
   assert function_decl.response is not None
   assert function_decl.response.type is None  # Any type maps to None in schema
+
+
+def test_transfer_to_agent_tool_with_enum_constraint():
+  """Test TransferToAgentTool adds enum constraint to agent_name."""
+  from google.adk.tools.transfer_to_agent_tool import TransferToAgentTool
+
+  agent_names = ['agent_a', 'agent_b', 'agent_c']
+  tool = TransferToAgentTool(agent_names=agent_names)
+
+  function_decl = tool._get_declaration()
+
+  assert function_decl.name == 'transfer_to_agent'
+  assert function_decl.parameters.type == 'OBJECT'
+  assert function_decl.parameters.properties['agent_name'].type == 'STRING'
+  assert function_decl.parameters.properties['agent_name'].enum == agent_names
+  assert 'tool_context' not in function_decl.parameters.properties

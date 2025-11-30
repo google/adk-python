@@ -325,6 +325,23 @@ class Gemini(BaseLlm):
             types.Part.from_text(text=llm_request.config.system_instruction)
         ],
     )
+    if (
+        llm_request.live_connect_config.session_resumption
+        and llm_request.live_connect_config.session_resumption.transparent
+    ):
+      logger.debug(
+          'session resumption config: %s',
+          llm_request.live_connect_config.session_resumption,
+      )
+      logger.debug(
+          'self._api_backend: %s',
+          self._api_backend,
+      )
+      if self._api_backend == GoogleLLMVariant.GEMINI_API:
+        raise ValueError(
+            'Transparent session resumption is only supported for Vertex AI'
+            ' backend. Please use Vertex AI backend.'
+        )
     llm_request.live_connect_config.tools = llm_request.config.tools
     logger.info('Connecting to live for model: %s', llm_request.model)
     logger.debug('Connecting to live with llm_request:%s', llm_request)

@@ -417,7 +417,9 @@ class RemoteA2aAgent(BaseAgent):
           # This is the initial response for a streaming task or the complete
           # response for a non-streaming task, which is the full task state.
           # We process this to get the initial message.
-          event = convert_a2a_task_to_event(task, self.name, ctx)
+          event = convert_a2a_task_to_event(
+              task, self.name, ctx, self._a2a_part_converter
+          )
           # for streaming task, we update the event with the task status.
           # We update the event as Thought updates.
           if task and task.status and task.status.state == TaskState.submitted:
@@ -429,7 +431,7 @@ class RemoteA2aAgent(BaseAgent):
         ):
           # This is a streaming task status update with a message.
           event = convert_a2a_message_to_event(
-              update.status.message, self.name, ctx
+              update.status.message, self.name, ctx, self._a2a_part_converter
           )
           if event.content and update.status.state in [
               TaskState.submitted,
@@ -447,7 +449,9 @@ class RemoteA2aAgent(BaseAgent):
           # signals:
           # 1. append: True for partial updates, False for full updates.
           # 2. last_chunk: True for full updates, False for partial updates.
-          event = convert_a2a_task_to_event(task, self.name, ctx)
+          event = convert_a2a_task_to_event(
+              task, self.name, ctx, self._a2a_part_converter
+          )
         else:
           # This is a streaming update without a message (e.g. status change)
           # or a partial artifact update. We don't emit an event for these
@@ -463,7 +467,9 @@ class RemoteA2aAgent(BaseAgent):
 
       # Otherwise, it's a regular A2AMessage for non-streaming responses.
       elif isinstance(a2a_response, A2AMessage):
-        event = convert_a2a_message_to_event(a2a_response, self.name, ctx)
+        event = convert_a2a_message_to_event(
+            a2a_response, self.name, ctx, self._a2a_part_converter
+        )
         event.custom_metadata = event.custom_metadata or {}
 
         if a2a_response.context_id:
