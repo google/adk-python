@@ -109,6 +109,7 @@ class PerAgentDatabaseSessionService(BaseSessionService):
       user_id: str,
       state: Optional[dict[str, object]] = None,
       session_id: Optional[str] = None,
+      title: Optional[str] = None,
   ) -> Session:
     service = await self._get_service(app_name)
     return await service.create_session(
@@ -116,6 +117,7 @@ class PerAgentDatabaseSessionService(BaseSessionService):
         user_id=user_id,
         state=state,
         session_id=session_id,
+        title=title,
     )
 
   @override
@@ -156,6 +158,23 @@ class PerAgentDatabaseSessionService(BaseSessionService):
     service = await self._get_service(app_name)
     await service.delete_session(
         app_name=app_name, user_id=user_id, session_id=session_id
+    )
+
+  @override
+  async def update_session_title(
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      session_id: str,
+      title: Optional[str],
+  ) -> None:
+    service = await self._get_service(app_name)
+    await service.update_session_title(
+        app_name=app_name,
+        user_id=user_id,
+        session_id=session_id,
+        title=title,
     )
 
   @override
