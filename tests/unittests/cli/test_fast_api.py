@@ -190,6 +190,14 @@ def mock_agent_loader():
     def list_agents(self):
       return ["test_app"]
 
+    def list_agents_detailed(self):
+      return [{
+          "name": "test_app",
+          "root_agent_name": "test_agent",
+          "description": "A test agent for unit testing",
+          "language": "python",
+      }]
+
   return MockAgentLoader(".")
 
 
@@ -319,15 +327,15 @@ def test_app(
   with (
       patch("signal.signal", return_value=None),
       patch(
-          "google.adk.cli.fast_api.InMemorySessionService",
+          "google.adk.cli.fast_api.create_session_service_from_options",
           return_value=mock_session_service,
       ),
       patch(
-          "google.adk.cli.fast_api.InMemoryArtifactService",
+          "google.adk.cli.fast_api.create_artifact_service_from_options",
           return_value=mock_artifact_service,
       ),
       patch(
-          "google.adk.cli.fast_api.InMemoryMemoryService",
+          "google.adk.cli.fast_api.create_memory_service_from_options",
           return_value=mock_memory_service,
       ),
       patch(
@@ -464,15 +472,15 @@ def test_app_with_a2a(
   with (
       patch("signal.signal", return_value=None),
       patch(
-          "google.adk.cli.fast_api.InMemorySessionService",
+          "google.adk.cli.fast_api.create_session_service_from_options",
           return_value=mock_session_service,
       ),
       patch(
-          "google.adk.cli.fast_api.InMemoryArtifactService",
+          "google.adk.cli.fast_api.create_artifact_service_from_options",
           return_value=mock_artifact_service,
       ),
       patch(
-          "google.adk.cli.fast_api.InMemoryMemoryService",
+          "google.adk.cli.fast_api.create_memory_service_from_options",
           return_value=mock_memory_service,
       ),
       patch(
@@ -545,6 +553,26 @@ def test_list_apps(test_app):
   assert response.status_code == 200
   data = response.json()
   assert isinstance(data, list)
+  logger.info(f"Listed apps: {data}")
+
+
+def test_list_apps_detailed(test_app):
+  """Test listing available applications with detailed metadata."""
+  response = test_app.get("/list-apps?detailed=true")
+
+  assert response.status_code == 200
+  data = response.json()
+  assert isinstance(data, dict)
+  assert "apps" in data
+  assert isinstance(data["apps"], list)
+
+  for app in data["apps"]:
+    assert "name" in app
+    assert "rootAgentName" in app
+    assert "description" in app
+    assert "language" in app
+    assert app["language"] in ["yaml", "python"]
+
   logger.info(f"Listed apps: {data}")
 
 

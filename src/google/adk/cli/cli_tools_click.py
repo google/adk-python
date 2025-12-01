@@ -24,6 +24,7 @@ import logging
 import os
 from pathlib import Path
 import tempfile
+import textwrap
 from typing import Optional
 
 import click
@@ -35,6 +36,7 @@ from . import cli_create
 from . import cli_deploy
 from .. import version
 from ..evaluation.constants import MISSING_EVAL_DEPENDENCIES_MESSAGE
+from ..sessions.migration import migration_runner
 from .cli import run_cli
 from .fast_api import get_fast_api_app
 from .utils import envs
@@ -354,7 +356,62 @@ def validate_exclusive(ctx, param, value):
   return value
 
 
+def adk_services_options():
+  """Decorator to add ADK services options to click commands."""
+
+  def decorator(func):
+    @click.option(
+        "--session_service_uri",
+        help=textwrap.dedent(
+            """\
+            Optional. The URI of the session service.
+            - Leave unset to use the in-memory session service (default).
+            - Use 'agentengine://<agent_engine>' to connect to Agent Engine
+              sessions. <agent_engine> can either be the full qualified resource
+              name 'projects/abc/locations/us-central1/reasoningEngines/123' or
+              the resource id '123'.
+            - Use 'memory://' to run with the in-memory session service.
+            - Use 'sqlite://<path_to_sqlite_file>' to connect to a SQLite DB.
+            - See https://docs.sqlalchemy.org/en/20/core/engines.html#backend-specific-urls for more details on supported database URIs."""
+        ),
+    )
+    @click.option(
+        "--artifact_service_uri",
+        type=str,
+        help=textwrap.dedent(
+            """\
+            Optional. The URI of the artifact service.
+            - Leave unset to store artifacts under '.adk/artifacts' locally.
+            - Use 'gs://<bucket_name>' to connect to the GCS artifact service.
+            - Use 'memory://' to force the in-memory artifact service.
+            - Use 'file://<path>' to store artifacts in a custom local directory."""
+        ),
+        default=None,
+    )
+    @click.option(
+        "--memory_service_uri",
+        type=str,
+        help=textwrap.dedent("""\
+            Optional. The URI of the memory service.
+            - Use 'rag://<rag_corpus_id>' to connect to Vertex AI Rag Memory Service.
+            - Use 'agentengine://<agent_engine>' to connect to Agent Engine
+              sessions. <agent_engine> can either be the full qualified resource
+              name 'projects/abc/locations/us-central1/reasoningEngines/123' or
+              the resource id '123'.
+            - Use 'memory://' to force the in-memory memory service."""),
+        default=None,
+    )
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+      return func(*args, **kwargs)
+
+    return wrapper
+
+  return decorator
+
+
 @main.command("run", cls=HelpfulCommand)
+@adk_services_options()
 @click.option(
     "--save_session",
     type=bool,
@@ -409,6 +466,9 @@ def cli_run(
     session_id: Optional[str],
     replay: Optional[str],
     resume: Optional[str],
+    session_service_uri: Optional[str] = None,
+    artifact_service_uri: Optional[str] = None,
+    memory_service_uri: Optional[str] = None,
 ):
   """Runs an interactive CLI for a certain agent.
 
@@ -419,6 +479,14 @@ def cli_run(
     adk run path/to/my_agent
   """
   logs.log_to_tmp_folder()
+
+  # Validation warning for memory_service_uri (not supported for adk run)
+  if memory_service_uri:
+    click.secho(
+        "WARNING: --memory_service_uri is not supported for adk run.",
+        fg="yellow",
+        err=True,
+    )
 
   agent_parent_folder = os.path.dirname(agent)
   agent_folder_name = os.path.basename(agent)
@@ -431,6 +499,8 @@ def cli_run(
           saved_session_file=resume,
           save_session=save_session,
           session_id=session_id,
+          session_service_uri=session_service_uri,
+          artifact_service_uri=artifact_service_uri,
       )
   )
 
@@ -865,55 +935,6 @@ def web_options():
   return decorator
 
 
-def adk_services_options():
-  """Decorator to add ADK services options to click commands."""
-
-  def decorator(func):
-    @click.option(
-        "--session_service_uri",
-        help=(
-            """Optional. The URI of the session service.
-          - Use 'agentengine://<agent_engine>' to connect to Agent Engine
-            sessions. <agent_engine> can either be the full qualified resource
-            name 'projects/abc/locations/us-central1/reasoningEngines/123' or
-            the resource id '123'.
-          - Use 'sqlite://<path_to_sqlite_file>' to connect to an aio-sqlite
-            based session service, which is good for local development.
-          - Use 'postgresql://<user>:<password>@<host>:<port>/<database_name>'
-            to connect to a PostgreSQL DB.
-          - See https://docs.sqlalchemy.org/en/20/core/engines.html#backend-specific-urls
-            for more details on other database URIs supported by SQLAlchemy."""
-        ),
-    )
-    @click.option(
-        "--artifact_service_uri",
-        type=str,
-        help=(
-            "Optional. The URI of the artifact service,"
-            " supported URIs: gs://<bucket name> for GCS artifact service."
-        ),
-        default=None,
-    )
-    @click.option(
-        "--memory_service_uri",
-        type=str,
-        help=("""Optional. The URI of the memory service.
-            - Use 'rag://<rag_corpus_id>' to connect to Vertex AI Rag Memory Service.
-            - Use 'agentengine://<agent_engine>' to connect to Agent Engine
-              sessions. <agent_engine> can either be the full qualified resource
-              name 'projects/abc/locations/us-central1/reasoningEngines/123' or
-              the resource id '123'."""),
-        default=None,
-    )
-    @functools.wraps(func)
-    def wrapper(*args, **kwargs):
-      return func(*args, **kwargs)
-
-    return wrapper
-
-  return decorator
-
-
 def deprecated_adk_services_options():
   """Deprecated ADK services options."""
 
@@ -921,7 +942,7 @@ def deprecated_adk_services_options():
     if value:
       click.echo(
           click.style(
-              f"WARNING: Deprecated option {param.name} is used. Please use"
+              f"WARNING: Deprecated option --{param.name} is used. Please use"
               f" {alternative_param} instead.",
               fg="yellow",
           ),
@@ -1116,6 +1137,8 @@ def cli_web(
 
     adk web --session_service_uri=[uri] --port=[port] path/to/agents_dir
   """
+  session_service_uri = session_service_uri or session_db_url
+  artifact_service_uri = artifact_service_uri or artifact_storage_uri
   logs.setup_adk_logger(getattr(logging, log_level.upper()))
 
   @asynccontextmanager
@@ -1140,8 +1163,6 @@ def cli_web(
         fg="green",
     )
 
-  session_service_uri = session_service_uri or session_db_url
-  artifact_service_uri = artifact_service_uri or artifact_storage_uri
   app = get_fast_api_app(
       agents_dir=agents_dir,
       session_service_uri=session_service_uri,
@@ -1215,10 +1236,10 @@ def cli_api_server(
 
     adk api_server --session_service_uri=[uri] --port=[port] path/to/agents_dir
   """
-  logs.setup_adk_logger(getattr(logging, log_level.upper()))
-
   session_service_uri = session_service_uri or session_db_url
   artifact_service_uri = artifact_service_uri or artifact_storage_uri
+  logs.setup_adk_logger(getattr(logging, log_level.upper()))
+
   config = uvicorn.Config(
       get_fast_api_app(
           agents_dir=agents_dir,
@@ -1463,6 +1484,41 @@ def cli_deploy_cloud_run(
     )
   except Exception as e:
     click.secho(f"Deploy failed: {e}", fg="red", err=True)
+
+
+@main.group()
+def migrate():
+  """Migrate ADK database schemas."""
+  pass
+
+
+@migrate.command("session", cls=HelpfulCommand)
+@click.option(
+    "--source_db_url",
+    required=True,
+    help="SQLAlchemy URL of source database.",
+)
+@click.option(
+    "--dest_db_url",
+    required=True,
+    help="SQLAlchemy URL of destination database.",
+)
+@click.option(
+    "--log_level",
+    type=LOG_LEVELS,
+    default="INFO",
+    help="Optional. Set the logging level",
+)
+def cli_migrate_session(
+    *, source_db_url: str, dest_db_url: str, log_level: str
+):
+  """Migrates a session database to the latest schema version."""
+  logs.setup_adk_logger(getattr(logging, log_level.upper()))
+  try:
+    migration_runner.upgrade(source_db_url, dest_db_url)
+    click.secho("Migration check and upgrade process finished.", fg="green")
+  except Exception as e:
+    click.secho(f"Migration failed: {e}", fg="red", err=True)
 
 
 @deploy.command("agent_engine")

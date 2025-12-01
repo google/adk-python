@@ -72,7 +72,8 @@ class BaseLlmConnection:
     Yields:
       LlmResponse: The model response.
     """
-    pass
+    # We need to yield here to help type checkers infer the correct type.
+    yield
 
   @abstractmethod
   async def close(self):

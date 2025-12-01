@@ -397,3 +397,245 @@ def test_progressive_sse_preserves_part_ordering():
   # Part 4: Second function call (from chunk8)
   assert parts[4].function_call.name == "get_weather"
   assert parts[4].function_call.args["location"] == "New York"
+
+
+def test_progressive_sse_streaming_function_call_arguments():
+  """Test streaming function call arguments feature.
+
+  This test simulates the streamFunctionCallArguments feature where a function
+  call's arguments are streamed incrementally across multiple chunks:
+
+  Chunk 1: FC name + partial location argument ("New ")
+  Chunk 2: Continue location argument ("York") -> concatenated to "New York"
+  Chunk 3: Add unit argument ("celsius"), willContinue=False -> FC complete
+
+  Expected result: FunctionCall(name="get_weather",
+                                 args={"location": "New York", "unit":
+                                 "celsius"},
+                                 id="fc_001")
+  """
+
+  aggregator = StreamingResponseAggregator()
+
+  # Chunk 1: FC name + partial location argument
+  chunk1_fc = types.FunctionCall(
+      name="get_weather",
+      id="fc_001",
+      partial_args=[
+          types.PartialArg(json_path="$.location", string_value="New ")
+      ],
+      will_continue=True,
+  )
+  chunk1 = types.GenerateContentResponse(
+      candidates=[
+          types.Candidate(
+              content=types.Content(
+                  role="model", parts=[types.Part(function_call=chunk1_fc)]
+              )
+          )
+      ]
+  )
+
+  # Chunk 2: Continue streaming location argument
+  chunk2_fc = types.FunctionCall(
+      partial_args=[
+          types.PartialArg(json_path="$.location", string_value="York")
+      ],
+      will_continue=True,
+  )
+  chunk2 = types.GenerateContentResponse(
+      candidates=[
+          types.Candidate(
+              content=types.Content(
+                  role="model", parts=[types.Part(function_call=chunk2_fc)]
+              )
+          )
+      ]
+  )
+
+  # Chunk 3: Add unit argument, FC complete
+  chunk3_fc = types.FunctionCall(
+      partial_args=[
+          types.PartialArg(json_path="$.unit", string_value="celsius")
+      ],
+      will_continue=False,  # FC complete
+  )
+  chunk3 = types.GenerateContentResponse(
+      candidates=[
+          types.Candidate(
+              content=types.Content(
+                  role="model", parts=[types.Part(function_call=chunk3_fc)]
+              ),
+              finish_reason=types.FinishReason.STOP,
+          )
+      ]
+  )
+
+  # Process all chunks through aggregator
+  processed_chunks = []
+  for chunk in [chunk1, chunk2, chunk3]:
+
+    async def process():
+      results = []
+      async for response in aggregator.process_response(chunk):
+        results.append(response)
+      return results
+
+    import asyncio
+
+    chunk_results = asyncio.run(process())
+    processed_chunks.extend(chunk_results)
+
+  # Get final aggregated response
+  final_response = aggregator.close()
+
+  # Verify final aggregated response has complete FC
+  assert final_response is not None
+  assert len(final_response.content.parts) == 1
+
+  fc_part = final_response.content.parts[0]
+  assert fc_part.function_call is not None
+  assert fc_part.function_call.name == "get_weather"
+  assert fc_part.function_call.id == "fc_001"
+
+  # Verify arguments were correctly assembled from streaming chunks
+  args = fc_part.function_call.args
+  assert args["location"] == "New York"  # "New " + "York" concatenated
+  assert args["unit"] == "celsius"
+
+
+def test_progressive_sse_preserves_thought_signature():
+  """Test that thought_signature is preserved when streaming FC arguments.
+
+  This test verifies that when a streaming function call has a thought_signature
+  in the Part, it is correctly preserved in the final aggregated FunctionCall.
+  """
+
+  aggregator = StreamingResponseAggregator()
+
+  # Create a thought signature (simulating what Gemini returns)
+  # thought_signature is bytes (base64 encoded)
+  test_thought_signature = b"test_signature_abc123"
+
+  # Chunk with streaming FC args and thought_signature
+  chunk_fc = types.FunctionCall(
+      name="add_5_numbers",
+      id="fc_003",
+      partial_args=[
+          types.PartialArg(json_path="$.num1", number_value=10),
+          types.PartialArg(json_path="$.num2", number_value=20),
+      ],
+      will_continue=False,
+  )
+
+  # Create Part with both function_call AND thought_signature
+  chunk_part = types.Part(
+      function_call=chunk_fc, thought_signature=test_thought_signature
+  )
+
+  chunk = types.GenerateContentResponse(
+      candidates=[
+          types.Candidate(
+              content=types.Content(role="model", parts=[chunk_part]),
+              finish_reason=types.FinishReason.STOP,
+          )
+      ]
+  )
+
+  # Process chunk through aggregator
+  async def process():
+    results = []
+    async for response in aggregator.process_response(chunk):
+      results.append(response)
+    return results
+
+  import asyncio
+
+  asyncio.run(process())
+
+  # Get final aggregated response
+  final_response = aggregator.close()
+
+  # Verify thought_signature was preserved in the Part
+  assert final_response is not None
+  assert len(final_response.content.parts) == 1
+
+  fc_part = final_response.content.parts[0]
+  assert fc_part.function_call is not None
+  assert fc_part.function_call.name == "add_5_numbers"
+
+  assert fc_part.thought_signature == test_thought_signature
+
+
+def test_progressive_sse_handles_empty_function_call():
+  """Test that empty function calls are skipped.
+
+  When using streamFunctionCallArguments, Gemini may send an empty
+  functionCall: {} as the final chunk to signal streaming completion.
+  This test verifies that such empty function calls are properly skipped
+  and don't cause errors.
+  """
+
+  aggregator = StreamingResponseAggregator()
+
+  # Chunk 1: Streaming FC with partial args
+  chunk1_fc = types.FunctionCall(
+      name="concat_number_and_string",
+      id="fc_001",
+      partial_args=[
+          types.PartialArg(json_path="$.num", number_value=100),
+          types.PartialArg(json_path="$.s", string_value="ADK"),
+      ],
+      will_continue=False,
+  )
+  chunk1 = types.GenerateContentResponse(
+      candidates=[
+          types.Candidate(
+              content=types.Content(
+                  role="model", parts=[types.Part(function_call=chunk1_fc)]
+              )
+          )
+      ]
+  )
+
+  # Chunk 2: Empty function call (streaming end marker)
+  chunk2_fc = types.FunctionCall()  # Empty function call
+  chunk2 = types.GenerateContentResponse(
+      candidates=[
+          types.Candidate(
+              content=types.Content(
+                  role="model", parts=[types.Part(function_call=chunk2_fc)]
+              ),
+              finish_reason=types.FinishReason.STOP,
+          )
+      ]
+  )
+
+  # Process all chunks through aggregator
+  async def process():
+    results = []
+    for chunk in [chunk1, chunk2]:
+      async for response in aggregator.process_response(chunk):
+        results.append(response)
+    return results
+
+  import asyncio
+
+  asyncio.run(process())
+
+  # Get final aggregated response
+  final_response = aggregator.close()
+
+  # Verify final response only has the real FC, not the empty one
+  assert final_response is not None
+  assert len(final_response.content.parts) == 1
+
+  fc_part = final_response.content.parts[0]
+  assert fc_part.function_call is not None
+  assert fc_part.function_call.name == "concat_number_and_string"
+  assert fc_part.function_call.id == "fc_001"
+
+  # Verify arguments
+  args = fc_part.function_call.args
+  assert args["num"] == 100
+  assert args["s"] == "ADK"
