@@ -26,12 +26,10 @@ from pydantic import BaseModel
 from ..agents.llm_agent import LlmAgent
 from ..apps.app import App
 from ..artifacts.base_artifact_service import BaseArtifactService
-from ..artifacts.in_memory_artifact_service import InMemoryArtifactService
 from ..auth.credential_service.base_credential_service import BaseCredentialService
 from ..auth.credential_service.in_memory_credential_service import InMemoryCredentialService
 from ..runners import Runner
 from ..sessions.base_session_service import BaseSessionService
-from ..sessions.in_memory_session_service import InMemorySessionService
 from ..sessions.session import Session
 from ..utils.context_utils import Aclosing
 from ..utils.env_utils import is_env_enabled
@@ -162,8 +160,9 @@ async def run_cli(
   user_id = 'test_user'
 
   # Create session and artifact services using factory functions
+  # Sessions persist under <agents_dir>/<agent>/.adk/session.db by default.
   session_service = create_session_service_from_options(
-      base_dir=agent_root,
+      base_dir=agent_parent_path,
       session_service_uri=session_service_uri,
   )
 

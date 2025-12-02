@@ -342,7 +342,7 @@ class Gemini(BaseLlm):
     async with self._live_api_client.aio.live.connect(
         model=llm_request.model, config=llm_request.live_connect_config
     ) as live_session:
-      yield GeminiLlmConnection(live_session)
+      yield GeminiLlmConnection(live_session, api_backend=self._api_backend)
 
   async def _adapt_computer_use_tool(self, llm_request: LlmRequest) -> None:
     """Adapt the google computer use predefined functions to the adk computer use toolset."""
