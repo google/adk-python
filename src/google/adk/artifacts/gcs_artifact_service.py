@@ -30,6 +30,7 @@ from typing import Optional
 from google.genai import types
 from typing_extensions import override
 
+from ..errors.input_validation_error import InputValidationError
 from .base_artifact_service import ArtifactVersion
 from .base_artifact_service import BaseArtifactService
 
@@ -161,7 +162,7 @@ class GcsArtifactService(BaseArtifactService):
       return f"{app_name}/{user_id}/user/{filename}"
 
     if session_id is None:
-      raise ValueError(
+      raise InputValidationError(
           "Session ID must be provided for session-scoped artifacts."
       )
     return f"{app_name}/{user_id}/{session_id}/{filename}"
@@ -230,7 +231,9 @@ class GcsArtifactService(BaseArtifactService):
           " GcsArtifactService."
       )
     else:
-      raise ValueError("Artifact must have either inline_data or text.")
+      raise InputValidationError(
+          "Artifact must have either inline_data or text."
+      )
 
     return version
 

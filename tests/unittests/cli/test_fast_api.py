@@ -30,7 +30,9 @@ from fastapi.testclient import TestClient
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.run_config import RunConfig
 from google.adk.apps.app import App
+from google.adk.artifacts.base_artifact_service import ArtifactVersion
 from google.adk.cli.fast_api import get_fast_api_app
+from google.adk.errors.input_validation_error import InputValidationError
 from google.adk.evaluation.eval_case import EvalCase
 from google.adk.evaluation.eval_case import Invocation
 from google.adk.evaluation.eval_result import EvalSetResult
@@ -211,48 +213,135 @@ def mock_session_service():
 def mock_artifact_service():
   """Create a mock artifact service."""
 
-  # Storage for artifacts
-  artifacts = {}
+  artifacts: dict[str, list[dict[str, Any]]] = {}
+
+  def _artifact_key(
+      app_name: str, user_id: str, session_id: Optional[str], filename: str
+  ) -> str:
+    if session_id is None:
+      return f"{app_name}:{user_id}:user:{filename}"
+    return f"{app_name}:{user_id}:{session_id}:{filename}"
+
+  def _canonical_uri(
+      app_name: str,
+      user_id: str,
+      session_id: Optional[str],
+      filename: str,
+      version: int,
+  ) -> str:
+    if session_id is None:
+      return (
+          f"artifact://apps/{app_name}/users/{user_id}/artifacts/"
+          f"{filename}/versions/{version}"
+      )
+    return (
+        f"artifact://apps/{app_name}/users/{user_id}/sessions/{session_id}/"
+        f"artifacts/{filename}/versions/{version}"
+    )
 
   class MockArtifactService:
+
+    def __init__(self):
+      self._artifacts = artifacts
+      self.save_artifact_side_effect: Optional[BaseException] = None
+
+    async def save_artifact(
+        self,
+        *,
+        app_name: str,
+        user_id: str,
+        filename: str,
+        artifact: types.Part,
+        session_id: Optional[str] = None,
+        custom_metadata: Optional[dict[str, Any]] = None,
+    ) -> int:
+      if self.save_artifact_side_effect is not None:
+        effect = self.save_artifact_side_effect
+        if isinstance(effect, BaseException):
+          raise effect
+        raise TypeError(
+            "save_artifact_side_effect must be an exception instance."
+        )
+      key = _artifact_key(app_name, user_id, session_id, filename)
+      entries = artifacts.setdefault(key, [])
+      version = len(entries)
+      artifact_version = ArtifactVersion(
+          version=version,
+          canonical_uri=_canonical_uri(
+              app_name, user_id, session_id, filename, version
+          ),
+          custom_metadata=custom_metadata or {},
+      )
+      if artifact.inline_data is not None:
+        artifact_version.mime_type = artifact.inline_data.mime_type
+      elif artifact.text is not None:
+        artifact_version.mime_type = "text/plain"
+      elif artifact.file_data is not None:
+        artifact_version.mime_type = artifact.file_data.mime_type
+
+      entries.append({
+          "version": version,
+          "artifact": artifact,
+          "metadata": artifact_version,
+      })
+      return version
 
     async def load_artifact(
         self, app_name, user_id, session_id, filename, version=None
     ):
       """Load an artifact by filename."""
-      key = f"{app_name}:{user_id}:{session_id}:{filename}"
+      key = _artifact_key(app_name, user_id, session_id, filename)
       if key not in artifacts:
         return None
 
       if version is not None:
-        # Get a specific version
-        for v in artifacts[key]:
-          if v["version"] == version:
-            return v["artifact"]
+        for entry in artifacts[key]:
+          if entry["version"] == version:
+            return entry["artifact"]
         return None
 
-      # Get the latest version
-      return sorted(artifacts[key], key=lambda x: x["version"])[-1]["artifact"]
+      return artifacts[key][-1]["artifact"]
 
     async def list_artifact_keys(self, app_name, user_id, session_id):
       """List artifact names for a session."""
       prefix = f"{app_name}:{user_id}:{session_id}:"
       return [
-          k.split(":")[-1] for k in artifacts.keys() if k.startswith(prefix)
+          key.split(":")[-1]
+          for key in artifacts.keys()
+          if key.startswith(prefix)
       ]
 
     async def list_versions(self, app_name, user_id, session_id, filename):
       """List versions of an artifact."""
-      key = f"{app_name}:{user_id}:{session_id}:{filename}"
+      key = _artifact_key(app_name, user_id, session_id, filename)
       if key not in artifacts:
         return []
-      return [a["version"] for a in artifacts[key]]
+      return [entry["version"] for entry in artifacts[key]]
 
     async def delete_artifact(self, app_name, user_id, session_id, filename):
       """Delete an artifact."""
-      key = f"{app_name}:{user_id}:{session_id}:{filename}"
-      if key in artifacts:
-        del artifacts[key]
+      key = _artifact_key(app_name, user_id, session_id, filename)
+      artifacts.pop(key, None)
+
+    async def get_artifact_version(
+        self,
+        *,
+        app_name: str,
+        user_id: str,
+        filename: str,
+        session_id: Optional[str] = None,
+        version: Optional[int] = None,
+    ) -> Optional[ArtifactVersion]:
+      key = _artifact_key(app_name, user_id, session_id, filename)
+      entries = artifacts.get(key)
+      if not entries:
+        return None
+      if version is None:
+        return entries[-1]["metadata"]
+      for entry in entries:
+        if entry["version"] == version:
+          return entry["metadata"]
+      return None
 
   return MockArtifactService()
 
@@ -327,15 +416,15 @@ def test_app(
   with (
       patch("signal.signal", return_value=None),
       patch(
-          "google.adk.cli.fast_api.create_session_service_from_options",
+          "google.adk.cli.fast_api.InMemorySessionService",
           return_value=mock_session_service,
       ),
       patch(
-          "google.adk.cli.fast_api.create_artifact_service_from_options",
+          "google.adk.cli.fast_api.InMemoryArtifactService",
           return_value=mock_artifact_service,
       ),
       patch(
-          "google.adk.cli.fast_api.create_memory_service_from_options",
+          "google.adk.cli.fast_api.InMemoryMemoryService",
           return_value=mock_memory_service,
       ),
       patch(
@@ -472,15 +561,15 @@ def test_app_with_a2a(
   with (
       patch("signal.signal", return_value=None),
       patch(
-          "google.adk.cli.fast_api.create_session_service_from_options",
+          "google.adk.cli.fast_api.InMemorySessionService",
           return_value=mock_session_service,
       ),
       patch(
-          "google.adk.cli.fast_api.create_artifact_service_from_options",
+          "google.adk.cli.fast_api.InMemoryArtifactService",
           return_value=mock_artifact_service,
       ),
       patch(
-          "google.adk.cli.fast_api.create_memory_service_from_options",
+          "google.adk.cli.fast_api.InMemoryMemoryService",
           return_value=mock_memory_service,
       ),
       patch(
@@ -808,6 +897,87 @@ def test_list_artifact_names(test_app, create_test_session):
   data = response.json()
   assert isinstance(data, list)
   logger.info(f"Listed {len(data)} artifacts")
+
+
+def test_save_artifact(test_app, create_test_session, mock_artifact_service):
+  """Test saving an artifact through the FastAPI endpoint."""
+  info = create_test_session
+  url = (
+      f"/apps/{info['app_name']}/users/{info['user_id']}/sessions/"
+      f"{info['session_id']}/artifacts"
+  )
+  artifact_part = types.Part(text="hello world")
+  payload = {
+      "filename": "greeting.txt",
+      "artifact": artifact_part.model_dump(by_alias=True, exclude_none=True),
+  }
+
+  response = test_app.post(url, json=payload)
+  assert response.status_code == 200
+  data = response.json()
+  assert data["version"] == 0
+  assert data["customMetadata"] == {}
+  assert data["mimeType"] in (None, "text/plain")
+  assert data["canonicalUri"].endswith(
+      f"/sessions/{info['session_id']}/artifacts/"
+      f"{payload['filename']}/versions/0"
+  )
+  assert isinstance(data["createTime"], float)
+
+  key = (
+      f"{info['app_name']}:{info['user_id']}:{info['session_id']}:"
+      f"{payload['filename']}"
+  )
+  stored = mock_artifact_service._artifacts[key][0]
+  assert stored["artifact"].text == "hello world"
+
+
+def test_save_artifact_returns_400_on_validation_error(
+    test_app, create_test_session, mock_artifact_service
+):
+  """Test save artifact endpoint surfaces validation errors as HTTP 400."""
+  info = create_test_session
+  url = (
+      f"/apps/{info['app_name']}/users/{info['user_id']}/sessions/"
+      f"{info['session_id']}/artifacts"
+  )
+  artifact_part = types.Part(text="bad data")
+  payload = {
+      "filename": "invalid.txt",
+      "artifact": artifact_part.model_dump(by_alias=True, exclude_none=True),
+  }
+
+  mock_artifact_service.save_artifact_side_effect = InputValidationError(
+      "invalid artifact"
+  )
+
+  response = test_app.post(url, json=payload)
+  assert response.status_code == 400
+  assert response.json()["detail"] == "invalid artifact"
+
+
+def test_save_artifact_returns_500_on_unexpected_error(
+    test_app, create_test_session, mock_artifact_service
+):
+  """Test save artifact endpoint surfaces unexpected errors as HTTP 500."""
+  info = create_test_session
+  url = (
+      f"/apps/{info['app_name']}/users/{info['user_id']}/sessions/"
+      f"{info['session_id']}/artifacts"
+  )
+  artifact_part = types.Part(text="bad data")
+  payload = {
+      "filename": "invalid.txt",
+      "artifact": artifact_part.model_dump(by_alias=True, exclude_none=True),
+  }
+
+  mock_artifact_service.save_artifact_side_effect = RuntimeError(
+      "unexpected failure"
+  )
+
+  response = test_app.post(url, json=payload)
+  assert response.status_code == 500
+  assert response.json()["detail"] == "unexpected failure"
 
 
 def test_create_eval_set(test_app, test_session_info):
