@@ -32,8 +32,11 @@ logs.log_to_tmp_folder()
 
 async def main():
   # Check for NVIDIA NIM API key
-  if not os.environ.get("NVIDIA_NIM_API_KEY"):
-    print(" Your NVIDIA_NIM_API_KEY is not set. Set it before you continue by running the following code:")
+  if not os.environ.get('NVIDIA_NIM_API_KEY'):
+    print(
+        ' Your NVIDIA_NIM_API_KEY is not set. Set it before you continue by'
+        ' running the following code:'
+    )
     print(" export NVIDIA_NIM_API_KEY='your-nvidia-api-key'")
     return
 
@@ -83,4 +86,4 @@ async def main():
 
 
 if __name__ == '__main__':
-  asyncio.run(main()) 
+  asyncio.run(main())

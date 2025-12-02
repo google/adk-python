@@ -62,8 +62,8 @@ root_agent = Agent(
     model=LiteLlm(model="nvidia_nim/meta/llama3-8b-instruct"),
     name="hello_world_nvidia_nim_agent",
     description=(
-        "hello world agent powered by NVIDIA NIM that can roll a dice of 8 sides and check prime"
-        " numbers."
+        "hello world agent powered by NVIDIA NIM that can roll a dice of 8"
+        " sides and check prime numbers."
     ),
     instruction="""
       You are a helpful assistant powered by NVIDIA AI models through NVIDIA NIM.
@@ -87,4 +87,4 @@ root_agent = Agent(
         roll_die,
         check_prime,
     ],
-) 
+)
