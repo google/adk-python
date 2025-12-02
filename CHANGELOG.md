@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Bug Fixes
+
+* fix(agents): tolerate empty A2A message parts in RemoteA2aAgent; add unit test ([fix/a2a-handle-empty-parts])
+
 ## [1.20.0](https://github.com/google/adk-python/compare/v1.19.0...v1.20.0) (2025-12-01)
 
 
@@ -39,7 +45,6 @@
 ### Documentation
 
 * Add Code Wiki badge to README ([caf23ac](https://github.com/google/adk-python/commit/caf23ac49fe08bc7f625c61eed4635c26852c3ba))
-
 
 ## [1.19.0](https://github.com/google/adk-python/compare/v1.18.0...v1.19.0) (2025-11-19)
 
