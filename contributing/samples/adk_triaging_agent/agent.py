@@ -78,22 +78,27 @@ if IS_INTERACTIVE:
   APPROVAL_INSTRUCTION = "Only label them when the user approves the labeling!"
 
 
-def list_planned_untriaged_issues(issue_count: int) -> dict[str, Any]:
-  """List planned issues without component labels (e.g., core, tools, etc.).
+def list_untriaged_issues(issue_count: int) -> dict[str, Any]:
+  """List open issues that need triaging.
+
+  Returns issues that need any of the following actions:
+  1. Issues without component labels (need labeling + type setting)
+  2. Issues with 'planned' label but no assignee (need owner assignment)
 
   Args:
     issue_count: number of issues to return
 
   Returns:
     The status of this request, with a list of issues when successful.
+    Each issue includes flags indicating what actions are needed.
   """
   url = f"{GITHUB_BASE_URL}/search/issues"
-  query = f"repo:{OWNER}/{REPO} is:open is:issue label:planned"
+  query = f"repo:{OWNER}/{REPO} is:open is:issue"
   params = {
       "q": query,
       "sort": "created",
       "order": "desc",
-      "per_page": issue_count,
+      "per_page": 100,  # Fetch more to filter
       "page": 1,
   }
 
@@ -103,29 +108,46 @@ def list_planned_untriaged_issues(issue_count: int) -> dict[str, Any]:
     return error_response(f"Error: {e}")
   issues = response.get("items", [])
 
-  # Filter out issues that already have component labels
   component_labels = set(LABEL_TO_OWNER.keys())
   untriaged_issues = []
   for issue in issues:
     issue_labels = {label["name"] for label in issue.get("labels", [])}
-    # If the issue only has "planned" but no component labels, it's untriaged
-    if not (issue_labels & component_labels):
+    assignees = issue.get("assignees", [])
+
+    existing_component_labels = issue_labels & component_labels
+    has_component = bool(existing_component_labels)
+    has_planned = "planned" in issue_labels
+
+    # Determine what actions are needed
+    needs_component_label = not has_component
+    needs_owner = has_planned and not assignees
+
+    # Include issue if it needs any action
+    if needs_component_label or needs_owner:
+      issue["has_planned_label"] = has_planned
+      issue["has_component_label"] = has_component
+      issue["existing_component_label"] = (
+          list(existing_component_labels)[0]
+          if existing_component_labels
+          else None
+      )
+      issue["needs_component_label"] = needs_component_label
+      issue["needs_owner"] = needs_owner
       untriaged_issues.append(issue)
+      if len(untriaged_issues) >= issue_count:
+        break
   return {"status": "success", "issues": untriaged_issues}
 
 
-def add_label_and_owner_to_issue(
-    issue_number: int, label: str
-) -> dict[str, Any]:
-  """Add the specified label and owner to the given issue number.
+def add_label_to_issue(issue_number: int, label: str) -> dict[str, Any]:
+  """Add the specified component label to the given issue number.
 
   Args:
     issue_number: issue number of the GitHub issue.
     label: label to assign
 
   Returns:
-    The the status of this request, with the applied label and assigned owner
-    when successful.
+    The status of this request, with the applied label when successful.
   """
   print(f"Attempting to add label '{label}' to issue #{issue_number}")
   if label not in LABEL_TO_OWNER:
@@ -143,15 +165,38 @@ def add_label_and_owner_to_issue(
   except requests.exceptions.RequestException as e:
     return error_response(f"Error: {e}")
 
+  return {
+      "status": "success",
+      "message": response,
+      "applied_label": label,
+  }
+
+
+def add_owner_to_issue(issue_number: int, label: str) -> dict[str, Any]:
+  """Assign an owner to the issue based on the component label.
+
+  This should only be called for issues that have the 'planned' label.
+
+  Args:
+    issue_number: issue number of the GitHub issue.
+    label: component label that determines the owner to assign
+
+  Returns:
+    The status of this request, with the assigned owner when successful.
+  """
+  print(
+      f"Attempting to assign owner for label '{label}' to issue #{issue_number}"
+  )
+  if label not in LABEL_TO_OWNER:
+    return error_response(
+        f"Error: Label '{label}' is not a valid component label."
+    )
+
   owner = LABEL_TO_OWNER.get(label, None)
   if not owner:
     return {
         "status": "warning",
-        "message": (
-            f"{response}\n\nLabel '{label}' does not have an owner. Will not"
-            " assign."
-        ),
-        "applied_label": label,
+        "message": f"Label '{label}' does not have an owner. Will not assign.",
     }
 
   assignee_url = (
@@ -167,7 +212,6 @@ def add_label_and_owner_to_issue(
   return {
       "status": "success",
       "message": response,
-      "applied_label": label,
       "assigned_owner": owner,
   }
 
@@ -223,29 +267,46 @@ root_agent = Agent(
       - If it's about BigQuery integrations, label it with "bq".
       - If you can't find an appropriate labels for the issue, follow the previous instruction that starts with "IMPORTANT:".
 
-      Call the `add_label_and_owner_to_issue` tool to label the issue, which will also assign the issue to the owner of the label.
+      ## Triaging Workflow
 
-      After you label the issue, call the `change_issue_type` tool to change the issue type:
-      - If the issue is a bug report, change the issue type to "Bug".
-      - If the issue is a feature request, change the issue type to "Feature".
-      - Otherwise, **do not change the issue type**.
+      Each issue will have flags indicating what actions are needed:
+      - `needs_component_label`: true if the issue needs a component label
+      - `needs_owner`: true if the issue needs an owner assigned (has 'planned' label but no assignee)
+
+      For each issue, perform ONLY the required actions based on the flags:
+
+      1. **If `needs_component_label` is true**:
+         - Use `add_label_to_issue` to add the appropriate component label
+         - Use `change_issue_type` to set the issue type:
+           - Bug report → "Bug"
+           - Feature request → "Feature"
+           - Otherwise → do not change the issue type
+
+      2. **If `needs_owner` is true**:
+         - Use `add_owner_to_issue` to assign an owner based on the component label
+         - Note: If the issue already has a component label (`has_component_label: true`), use that existing label to determine the owner
+
+      Do NOT add a component label if `needs_component_label` is false.
+      Do NOT assign an owner if `needs_owner` is false.
 
       Response quality requirements:
       - Summarize the issue in your own words without leaving template
         placeholders (never output text like "[fill in later]").
       - Justify the chosen label with a short explanation referencing the issue
         details.
-      - Mention the assigned owner when a label maps to one.
+      - Mention the assigned owner only when you actually assign one (i.e., when
+        the issue has the 'planned' label).
       - If no label is applied, clearly state why.
 
       Present the following in an easy to read format highlighting issue number and your label.
       - the issue summary in a few sentence
       - your label recommendation and justification
-      - the owner of the label if you assign the issue to an owner
+      - the owner of the label if you assign the issue to an owner (only for planned issues)
     """,
     tools=[
-        list_planned_untriaged_issues,
-        add_label_and_owner_to_issue,
+        list_untriaged_issues,
+        add_label_to_issue,
+        add_owner_to_issue,
         change_issue_type,
     ],
 )
