@@ -20,6 +20,7 @@ import logging
 from pathlib import Path
 from typing import Any
 from typing import AsyncGenerator
+from typing import Callable
 from typing import Optional
 from typing import Union
 from urllib.parse import urlparse
@@ -125,12 +126,16 @@ class RemoteA2aAgent(BaseAgent):
       self,
       name: str,
       agent_card: Union[AgentCard, str],
+      *,
       description: str = "",
       httpx_client: Optional[httpx.AsyncClient] = None,
       timeout: float = DEFAULT_TIMEOUT,
       genai_part_converter: GenAIPartToA2APartConverter = convert_genai_part_to_a2a_part,
       a2a_part_converter: A2APartToGenAIPartConverter = convert_a2a_part_to_genai_part,
       a2a_client_factory: Optional[A2AClientFactory] = None,
+      a2a_request_meta_provider: Optional[
+          Callable[[InvocationContext, A2AMessage], dict[str, Any]]
+      ] = None,
       **kwargs: Any,
   ) -> None:
     """Initialize RemoteA2aAgent.
@@ -144,6 +149,9 @@ class RemoteA2aAgent(BaseAgent):
       timeout: HTTP timeout in seconds
       a2a_client_factory: Optional A2AClientFactory object (will create own if
         not provided)
+      a2a_request_meta_provider: Optional callable that takes InvocationContext
+        and A2AMessage and returns a metadata object to attach to the A2A
+        request.
       **kwargs: Additional arguments passed to BaseAgent
 
     Raises:
@@ -169,6 +177,7 @@ class RemoteA2aAgent(BaseAgent):
     self._genai_part_converter = genai_part_converter
     self._a2a_part_converter = a2a_part_converter
     self._a2a_client_factory: Optional[A2AClientFactory] = a2a_client_factory
+    self._a2a_request_meta_provider = a2a_request_meta_provider
 
     # Validate and store agent card reference
     if isinstance(agent_card, AgentCard):
@@ -318,7 +327,7 @@ class RemoteA2aAgent(BaseAgent):
 
   def _create_a2a_request_for_user_function_response(
       self, ctx: InvocationContext
-  ) -> tuple[Optional[A2AMessage], Optional[dict[str, Any]]]:
+  ) -> Optional[A2AMessage]:
     """Create A2A request for user function response if applicable.
 
     Args:
@@ -328,26 +337,24 @@ class RemoteA2aAgent(BaseAgent):
       SendMessageRequest if function response found, None otherwise
     """
     if not ctx.session.events or ctx.session.events[-1].author != "user":
-      return None, None
+      return None
     function_call_event = find_matching_function_call(ctx.session.events)
     if not function_call_event:
-      return None, None
+      return None
 
     a2a_message = convert_event_to_a2a_message(
         ctx.session.events[-1], ctx, Role.user, self._genai_part_converter
     )
-    message_metadata = None
     if function_call_event.custom_metadata:
       metadata = function_call_event.custom_metadata
       a2a_message.task_id = metadata.get(A2A_METADATA_PREFIX + "task_id")
       a2a_message.context_id = metadata.get(A2A_METADATA_PREFIX + "context_id")
-      message_metadata = metadata.get(A2A_METADATA_PREFIX + "metadata")
 
-    return a2a_message, message_metadata
+    return a2a_message
 
   def _construct_message_parts_from_session(
       self, ctx: InvocationContext
-  ) -> tuple[list[A2APart], Optional[str], Optional[dict[str, Any]]]:
+  ) -> tuple[list[A2APart], Optional[str]]:
     """Construct A2A message parts from session events.
 
     Args:
@@ -359,7 +366,6 @@ class RemoteA2aAgent(BaseAgent):
     """
     message_parts: list[A2APart] = []
     context_id = None
-    request_metadata = None
 
     events_to_process = []
     for event in reversed(ctx.session.events):
@@ -369,7 +375,6 @@ class RemoteA2aAgent(BaseAgent):
         if event.custom_metadata:
           metadata = event.custom_metadata
           context_id = metadata.get(A2A_METADATA_PREFIX + "context_id")
-          request_metadata = metadata.get(A2A_METADATA_PREFIX + "metadata")
         break
       events_to_process.append(event)
 
@@ -390,7 +395,7 @@ class RemoteA2aAgent(BaseAgent):
         else:
           logger.warning("Failed to convert part to A2A format: %s", part)
 
-    return message_parts, context_id, request_metadata
+    return message_parts, context_id
 
   async def _handle_a2a_response(
       self, a2a_response: A2AClientEvent | A2AMessage, ctx: InvocationContext
@@ -412,7 +417,9 @@ class RemoteA2aAgent(BaseAgent):
           # This is the initial response for a streaming task or the complete
           # response for a non-streaming task, which is the full task state.
           # We process this to get the initial message.
-          event = convert_a2a_task_to_event(task, self.name, ctx)
+          event = convert_a2a_task_to_event(
+              task, self.name, ctx, self._a2a_part_converter
+          )
           # for streaming task, we update the event with the task status.
           # We update the event as Thought updates.
           if task and task.status and task.status.state == TaskState.submitted:
@@ -424,7 +431,7 @@ class RemoteA2aAgent(BaseAgent):
         ):
           # This is a streaming task status update with a message.
           event = convert_a2a_message_to_event(
-              update.status.message, self.name, ctx
+              update.status.message, self.name, ctx, self._a2a_part_converter
           )
           if event.content and update.status.state in [
               TaskState.submitted,
@@ -442,7 +449,9 @@ class RemoteA2aAgent(BaseAgent):
           # signals:
           # 1. append: True for partial updates, False for full updates.
           # 2. last_chunk: True for full updates, False for partial updates.
-          event = convert_a2a_task_to_event(task, self.name, ctx)
+          event = convert_a2a_task_to_event(
+              task, self.name, ctx, self._a2a_part_converter
+          )
         else:
           # This is a streaming update without a message (e.g. status change)
           # or a partial artifact update. We don't emit an event for these
@@ -458,7 +467,9 @@ class RemoteA2aAgent(BaseAgent):
 
       # Otherwise, it's a regular A2AMessage for non-streaming responses.
       elif isinstance(a2a_response, A2AMessage):
-        event = convert_a2a_message_to_event(a2a_response, self.name, ctx)
+        event = convert_a2a_message_to_event(
+            a2a_response, self.name, ctx, self._a2a_part_converter
+        )
         event.custom_metadata = event.custom_metadata or {}
 
         if a2a_response.context_id:
@@ -498,12 +509,10 @@ class RemoteA2aAgent(BaseAgent):
       return
 
     # Create A2A request for function response or regular message
-    a2a_request, request_metadata = (
-        self._create_a2a_request_for_user_function_response(ctx)
-    )
+    a2a_request = self._create_a2a_request_for_user_function_response(ctx)
     if not a2a_request:
-      message_parts, context_id, request_metadata = (
-          self._construct_message_parts_from_session(ctx)
+      message_parts, context_id = self._construct_message_parts_from_session(
+          ctx
       )
 
       if not message_parts:
@@ -528,6 +537,10 @@ class RemoteA2aAgent(BaseAgent):
     logger.debug(build_a2a_request_log(a2a_request))
 
     try:
+      request_metadata = None
+      if self._a2a_request_meta_provider:
+        request_metadata = self._a2a_request_meta_provider(ctx, a2a_request)
+
       async for a2a_response in self._a2a_client.send_message(
           request=a2a_request,
           request_metadata=request_metadata,

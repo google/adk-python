@@ -28,8 +28,11 @@ from ..agents.base_agent import BaseAgent
 from ..artifacts.base_artifact_service import BaseArtifactService
 from ..artifacts.in_memory_artifact_service import InMemoryArtifactService
 from ..errors.not_found_error import NotFoundError
+from ..memory.base_memory_service import BaseMemoryService
 from ..sessions.base_session_service import BaseSessionService
 from ..sessions.in_memory_session_service import InMemorySessionService
+from ..utils._client_labels_utils import client_label_context
+from ..utils._client_labels_utils import EVAL_CLIENT_LABEL
 from ..utils.feature_decorator import experimental
 from .base_eval_service import BaseEvalService
 from .base_eval_service import EvaluateConfig
@@ -52,7 +55,7 @@ from .evaluator import EvaluationResult
 from .evaluator import PerInvocationResult
 from .metric_evaluator_registry import DEFAULT_METRIC_EVALUATOR_REGISTRY
 from .metric_evaluator_registry import MetricEvaluatorRegistry
-from .user_simulator_provider import UserSimulatorProvider
+from .simulation.user_simulator_provider import UserSimulatorProvider
 
 logger = logging.getLogger('google_adk.' + __name__)
 
@@ -77,6 +80,7 @@ class LocalEvalService(BaseEvalService):
       eval_set_results_manager: Optional[EvalSetResultsManager] = None,
       session_id_supplier: Callable[[], str] = _get_session_id,
       user_simulator_provider: UserSimulatorProvider = UserSimulatorProvider(),
+      memory_service: Optional[BaseMemoryService] = None,
   ):
     self._root_agent = root_agent
     self._eval_sets_manager = eval_sets_manager
@@ -91,6 +95,7 @@ class LocalEvalService(BaseEvalService):
     self._eval_set_results_manager = eval_set_results_manager
     self._session_id_supplier = session_id_supplier
     self._user_simulator_provider = user_simulator_provider
+    self._memory_service = memory_service
 
   @override
   async def perform_inference(
@@ -246,11 +251,12 @@ class LocalEvalService(BaseEvalService):
     for eval_metric in evaluate_config.eval_metrics:
       # Perform evaluation of the metric.
       try:
-        evaluation_result = await self._evaluate_metric(
-            eval_metric=eval_metric,
-            actual_invocations=inference_result.inferences,
-            expected_invocations=eval_case.conversation,
-        )
+        with client_label_context(EVAL_CLIENT_LABEL):
+          evaluation_result = await self._evaluate_metric(
+              eval_metric=eval_metric,
+              actual_invocations=inference_result.inferences,
+              expected_invocations=eval_case.conversation,
+          )
       except Exception as e:
         # We intentionally catch the Exception as we don't want failures to
         # affect other metric evaluation.
@@ -400,16 +406,18 @@ class LocalEvalService(BaseEvalService):
     )
 
     try:
-      inferences = (
-          await EvaluationGenerator._generate_inferences_from_root_agent(
-              root_agent=root_agent,
-              user_simulator=self._user_simulator_provider.provide(eval_case),
-              initial_session=initial_session,
-              session_id=session_id,
-              session_service=self._session_service,
-              artifact_service=self._artifact_service,
-          )
-      )
+      with client_label_context(EVAL_CLIENT_LABEL):
+        inferences = (
+            await EvaluationGenerator._generate_inferences_from_root_agent(
+                root_agent=root_agent,
+                user_simulator=self._user_simulator_provider.provide(eval_case),
+                initial_session=initial_session,
+                session_id=session_id,
+                session_service=self._session_service,
+                artifact_service=self._artifact_service,
+                memory_service=self._memory_service,
+            )
+        )
 
       inference_result.inferences = inferences
       inference_result.status = InferenceStatus.SUCCESS

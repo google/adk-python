@@ -24,6 +24,9 @@ from typing import Optional
 import click
 from packaging.version import parse
 
+_IS_WINDOWS = os.name == 'nt'
+_GCLOUD_CMD = 'gcloud.cmd' if _IS_WINDOWS else 'gcloud'
+
 _DOCKERFILE_TEMPLATE: Final[str] = """
 FROM python:3.11-slim
 WORKDIR /app
@@ -64,6 +67,8 @@ CMD adk {command} --port={port} {host_option} {service_option} {trace_to_cloud_o
 """
 
 _AGENT_ENGINE_APP_TEMPLATE: Final[str] = """
+import os
+import vertexai
 from vertexai.agent_engines import AdkApp
 
 if {is_config_agent}:
@@ -78,9 +83,12 @@ else:
   from .agent import {adk_app_object}
 
 if {express_mode}: # Whether or not to use Express Mode
-  import os
-  import vertexai
   vertexai.init(api_key=os.environ.get("GOOGLE_API_KEY"))
+else:
+  vertexai.init(
+    project=os.environ.get("GOOGLE_CLOUD_PROJECT"),
+    location=os.environ.get("GOOGLE_CLOUD_LOCATION"),
+  )
 
 adk_app = AdkApp(
     {adk_app_type}={adk_app_object},
@@ -373,7 +381,7 @@ def _resolve_project(project_in_option: Optional[str]) -> str:
     return project_in_option
 
   result = subprocess.run(
-      ['gcloud', 'config', 'get-value', 'project'],
+      [_GCLOUD_CMD, 'config', 'get-value', 'project'],
       check=True,
       capture_output=True,
       text=True,
@@ -580,7 +588,7 @@ def to_cloud_run(
 
     # Build the command with extra gcloud args
     gcloud_cmd = [
-        'gcloud',
+        _GCLOUD_CMD,
         'run',
         'deploy',
         service_name,
@@ -768,11 +776,7 @@ def to_agent_engine(
       if not os.path.exists(requirements_txt_path):
         click.echo(f'Creating {requirements_txt_path}...')
         with open(requirements_txt_path, 'w', encoding='utf-8') as f:
-          f.write(
-              'google-cloud-aiplatform[adk,agent_engines] @ '
-              'git+https://github.com/googleapis/python-aiplatform.git@'
-              'bf1851e59cb34e63b509a2a610e72691e1c4ca28'
-          )
+          f.write('google-cloud-aiplatform[adk,agent_engines]')
         click.echo(f'Created {requirements_txt_path}')
       agent_config['requirements_file'] = agent_config.get(
           'requirements',
@@ -911,7 +915,7 @@ def to_agent_engine(
       )
     else:
       if project and region and not agent_engine_id.startswith('projects/'):
-        agent_engine_id = f'projects/{project}/locations/{region}/agentEngines/{agent_engine_id}'
+        agent_engine_id = f'projects/{project}/locations/{region}/reasoningEngines/{agent_engine_id}'
       client.agent_engines.update(name=agent_engine_id, config=agent_config)
       click.secho(f'✅ Updated agent engine: {agent_engine_id}', fg='green')
   finally:

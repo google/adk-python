@@ -126,15 +126,16 @@ Agent name: peer_agent
 Agent description: Peer agent
 
 
-If you are the best to answer the question according to your description, you
-can answer it.
+If you are the best to answer the question according to your description,
+you can answer it.
 
 If another agent is better for answering the question according to its
-description, call `transfer_to_agent` function to transfer the
-question to that agent. When transferring, do not generate any text other than
-the function call.
+description, call `transfer_to_agent` function to transfer the question to that
+agent. When transferring, do not generate any text other than the function
+call.
 
-**NOTE**: the only available agents for `transfer_to_agent` function are `a_agent`, `m_agent`, `parent_agent`, `peer_agent`, `z_agent`.
+**NOTE**: the only available agents for `transfer_to_agent` function are
+`a_agent`, `m_agent`, `parent_agent`, `peer_agent`, `z_agent`.
 
 If neither you nor the other agents are best for the question, transfer to your parent agent parent_agent."""
 
@@ -189,15 +190,16 @@ Agent name: agent2
 Agent description: Second sub-agent
 
 
-If you are the best to answer the question according to your description, you
-can answer it.
+If you are the best to answer the question according to your description,
+you can answer it.
 
 If another agent is better for answering the question according to its
-description, call `transfer_to_agent` function to transfer the
-question to that agent. When transferring, do not generate any text other than
-the function call.
+description, call `transfer_to_agent` function to transfer the question to that
+agent. When transferring, do not generate any text other than the function
+call.
 
-**NOTE**: the only available agents for `transfer_to_agent` function are `agent1`, `agent2`."""
+**NOTE**: the only available agents for `transfer_to_agent` function are
+`agent1`, `agent2`."""
 
   assert expected_content in instructions
 
@@ -248,15 +250,16 @@ Agent name: parent_agent
 Agent description: Parent agent
 
 
-If you are the best to answer the question according to your description, you
-can answer it.
+If you are the best to answer the question according to your description,
+you can answer it.
 
 If another agent is better for answering the question according to its
-description, call `transfer_to_agent` function to transfer the
-question to that agent. When transferring, do not generate any text other than
-the function call.
+description, call `transfer_to_agent` function to transfer the question to that
+agent. When transferring, do not generate any text other than the function
+call.
 
-**NOTE**: the only available agents for `transfer_to_agent` function are `parent_agent`, `sub_agent`.
+**NOTE**: the only available agents for `transfer_to_agent` function are
+`parent_agent`, `sub_agent`.
 
 If neither you nor the other agents are best for the question, transfer to your parent agent parent_agent."""
 

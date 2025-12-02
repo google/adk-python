@@ -46,7 +46,7 @@ def llm_request():
 
 
 @pytest.mark.asyncio
-@mock.patch('google.adk.models.apigee_llm.Client')
+@mock.patch('google.genai.Client')
 async def test_generate_content_async_non_streaming(
     mock_client_constructor, llm_request
 ):
@@ -96,7 +96,7 @@ async def test_generate_content_async_non_streaming(
 
 
 @pytest.mark.asyncio
-@mock.patch('google.adk.models.apigee_llm.Client')
+@mock.patch('google.genai.Client')
 async def test_generate_content_async_streaming(
     mock_client_constructor, llm_request
 ):
@@ -167,7 +167,7 @@ async def test_generate_content_async_streaming(
 
 
 @pytest.mark.asyncio
-@mock.patch('google.adk.models.apigee_llm.Client')
+@mock.patch('google.genai.Client')
 async def test_generate_content_async_with_custom_headers(
     mock_client_constructor, llm_request
 ):
@@ -207,7 +207,7 @@ async def test_generate_content_async_with_custom_headers(
 
 
 @pytest.mark.asyncio
-@mock.patch('google.adk.models.apigee_llm.Client')
+@mock.patch('google.genai.Client')
 async def test_vertex_model_path_parsing(mock_client_constructor):
   """Tests that Vertex AI model paths are parsed correctly."""
   apigee_llm = ApigeeLlm(model=APIGEE_VERTEX_MODEL_ID, proxy_url=PROXY_URL)
@@ -249,7 +249,7 @@ async def test_vertex_model_path_parsing(mock_client_constructor):
 
 
 @pytest.mark.asyncio
-@mock.patch('google.adk.models.apigee_llm.Client')
+@mock.patch('google.genai.Client')
 async def test_proxy_url_from_env_variable(mock_client_constructor):
   """Tests that proxy_url is read from environment variable."""
   with mock.patch.dict(
@@ -381,7 +381,7 @@ def test_vertex_model_missing_project_or_location_raises_error(
         ),
     ],
 )
-@mock.patch('google.adk.models.apigee_llm.Client')
+@mock.patch('google.genai.Client')
 async def test_model_string_parsing_and_client_initialization(
     mock_client_constructor,
     model_string,

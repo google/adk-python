@@ -61,9 +61,11 @@ from ..agents.live_request_queue import LiveRequestQueue
 from ..agents.run_config import RunConfig
 from ..agents.run_config import StreamingMode
 from ..apps.app import App
+from ..artifacts.base_artifact_service import ArtifactVersion
 from ..artifacts.base_artifact_service import BaseArtifactService
 from ..auth.credential_service.base_credential_service import BaseCredentialService
 from ..errors.already_exists_error import AlreadyExistsError
+from ..errors.input_validation_error import InputValidationError
 from ..errors.not_found_error import NotFoundError
 from ..evaluation.base_eval_service import InferenceConfig
 from ..evaluation.base_eval_service import InferenceRequest
@@ -194,6 +196,19 @@ class CreateSessionRequest(common.BaseModel):
   )
 
 
+class SaveArtifactRequest(common.BaseModel):
+  """Request payload for saving a new artifact."""
+
+  filename: str = Field(description="Artifact filename.")
+  artifact: types.Part = Field(
+      description="Artifact payload encoded as google.genai.types.Part."
+  )
+  custom_metadata: Optional[dict[str, Any]] = Field(
+      default=None,
+      description="Optional metadata to associate with the artifact version.",
+  )
+
+
 class AddSessionToEvalSetRequest(common.BaseModel):
   eval_id: str
   session_id: str
@@ -278,6 +293,17 @@ class ListEvalResultsResponse(common.BaseModel):
 
 class ListMetricsInfoResponse(common.BaseModel):
   metrics_info: list[MetricInfo]
+
+
+class AppInfo(common.BaseModel):
+  name: str
+  root_agent_name: str
+  description: str
+  language: Literal["yaml", "python"]
+
+
+class ListAppsResponse(common.BaseModel):
+  apps: list[AppInfo]
 
 
 def _setup_telemetry(
@@ -699,7 +725,14 @@ class AdkWebServer:
       )
 
     @app.get("/list-apps")
-    async def list_apps() -> list[str]:
+    async def list_apps(
+        detailed: bool = Query(
+            default=False, description="Return detailed app information"
+        )
+    ) -> list[str] | ListAppsResponse:
+      if detailed:
+        apps_info = self.agent_loader.list_agents_detailed()
+        return ListAppsResponse(apps=[AppInfo(**app) for app in apps_info])
       return self.agent_loader.list_agents()
 
     @app.get("/debug/trace/{event_id}", tags=[TAG_DEBUG])
@@ -1297,6 +1330,53 @@ class AdkWebServer:
       if not artifact:
         raise HTTPException(status_code=404, detail="Artifact not found")
       return artifact
+
+    @app.post(
+        "/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts",
+        response_model=ArtifactVersion,
+        response_model_exclude_none=True,
+    )
+    async def save_artifact(
+        app_name: str,
+        user_id: str,
+        session_id: str,
+        req: SaveArtifactRequest,
+    ) -> ArtifactVersion:
+      try:
+        version = await self.artifact_service.save_artifact(
+            app_name=app_name,
+            user_id=user_id,
+            session_id=session_id,
+            filename=req.filename,
+            artifact=req.artifact,
+            custom_metadata=req.custom_metadata,
+        )
+      except InputValidationError as ive:
+        raise HTTPException(status_code=400, detail=str(ive)) from ive
+      except Exception as exc:  # pylint: disable=broad-exception-caught
+        logger.error(
+            "Internal error while saving artifact %s for app=%s user=%s"
+            " session=%s: %s",
+            req.filename,
+            app_name,
+            user_id,
+            session_id,
+            exc,
+            exc_info=True,
+        )
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+      artifact_version = await self.artifact_service.get_artifact_version(
+          app_name=app_name,
+          user_id=user_id,
+          session_id=session_id,
+          filename=req.filename,
+          version=version,
+      )
+      if artifact_version is None:
+        raise HTTPException(
+            status_code=500, detail="Artifact metadata unavailable"
+        )
+      return artifact_version
 
     @app.get(
         "/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts",

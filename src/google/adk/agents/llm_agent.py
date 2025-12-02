@@ -910,7 +910,9 @@ class LlmAgent(BaseAgent):
     from .config_agent_utils import resolve_callbacks
     from .config_agent_utils import resolve_code_reference
 
-    if config.model:
+    if config.model_code:
+      kwargs['model'] = resolve_code_reference(config.model_code)
+    elif config.model:
       kwargs['model'] = config.model
     if config.instruction:
       kwargs['instruction'] = config.instruction
