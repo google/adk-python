@@ -144,7 +144,8 @@ async def main():
         f" most recent {issue_count} planned issues that haven't been"
         " triaged yet (i.e., issues with 'planned' label but no component"
         " labels like 'core', 'tools', etc.). Then triage each of them by"
-        " applying appropriate component labels."
+        " applying appropriate component labels. If you cannot find any planned"
+        " issues, please don't try to triage any issues."
     )
 
   response = await call_agent_async(runner, USER_ID, session.id, prompt)

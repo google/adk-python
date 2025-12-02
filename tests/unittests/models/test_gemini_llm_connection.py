@@ -15,6 +15,7 @@
 from unittest import mock
 
 from google.adk.models.gemini_llm_connection import GeminiLlmConnection
+from google.adk.utils.variant_utils import GoogleLLMVariant
 from google.genai import types
 import pytest
 
@@ -28,7 +29,17 @@ def mock_gemini_session():
 @pytest.fixture
 def gemini_connection(mock_gemini_session):
   """GeminiLlmConnection instance with mocked session."""
-  return GeminiLlmConnection(mock_gemini_session)
+  return GeminiLlmConnection(
+      mock_gemini_session, api_backend=GoogleLLMVariant.VERTEX_AI
+  )
+
+
+@pytest.fixture
+def gemini_api_connection(mock_gemini_session):
+  """GeminiLlmConnection instance with mocked session for Gemini API."""
+  return GeminiLlmConnection(
+      mock_gemini_session, api_backend=GoogleLLMVariant.GEMINI_API
+  )
 
 
 @pytest.fixture
@@ -226,6 +237,227 @@ async def test_receive_usage_metadata_and_server_content(
 
 
 @pytest.mark.asyncio
+async def test_receive_transcript_finished_on_interrupt(
+    gemini_api_connection,
+    mock_gemini_session,
+):
+  """Test receive finishes transcription on interrupt signal."""
+
+  message1 = mock.Mock()
+  message1.usage_metadata = None
+  message1.server_content = mock.Mock()
+  message1.server_content.model_turn = None
+  message1.server_content.interrupted = False
+  message1.server_content.input_transcription = types.Transcription(
+      text='Hello', finished=False
+  )
+  message1.server_content.output_transcription = None
+  message1.server_content.turn_complete = False
+  message1.server_content.generation_complete = False
+  message1.tool_call = None
+  message1.session_resumption_update = None
+
+  message2 = mock.Mock()
+  message2.usage_metadata = None
+  message2.server_content = mock.Mock()
+  message2.server_content.model_turn = None
+  message2.server_content.interrupted = False
+  message2.server_content.input_transcription = None
+  message2.server_content.output_transcription = types.Transcription(
+      text='How can', finished=False
+  )
+  message2.server_content.turn_complete = False
+  message2.server_content.generation_complete = False
+  message2.tool_call = None
+  message2.session_resumption_update = None
+
+  message3 = mock.Mock()
+  message3.usage_metadata = None
+  message3.server_content = mock.Mock()
+  message3.server_content.model_turn = None
+  message3.server_content.interrupted = True
+  message3.server_content.input_transcription = None
+  message3.server_content.output_transcription = None
+  message3.server_content.turn_complete = False
+  message3.server_content.generation_complete = False
+  message3.tool_call = None
+  message3.session_resumption_update = None
+
+  async def mock_receive_generator():
+    yield message1
+    yield message2
+    yield message3
+
+  receive_mock = mock.Mock(return_value=mock_receive_generator())
+  mock_gemini_session.receive = receive_mock
+
+  responses = [resp async for resp in gemini_api_connection.receive()]
+
+  assert len(responses) == 5
+  assert responses[4].interrupted is True
+
+  assert responses[0].input_transcription.text == 'Hello'
+  assert responses[0].input_transcription.finished is False
+  assert responses[0].partial is True
+  assert responses[1].output_transcription.text == 'How can'
+  assert responses[1].output_transcription.finished is False
+  assert responses[1].partial is True
+  assert responses[2].input_transcription.text == 'Hello'
+  assert responses[2].input_transcription.finished is True
+  assert responses[2].partial is False
+  assert responses[3].output_transcription.text == 'How can'
+  assert responses[3].output_transcription.finished is True
+  assert responses[3].partial is False
+
+
+@pytest.mark.asyncio
+async def test_receive_transcript_finished_on_generation_complete(
+    gemini_api_connection,
+    mock_gemini_session,
+):
+  """Test receive finishes transcription on generation_complete signal."""
+
+  message1 = mock.Mock()
+  message1.usage_metadata = None
+  message1.server_content = mock.Mock()
+  message1.server_content.model_turn = None
+  message1.server_content.interrupted = False
+  message1.server_content.input_transcription = types.Transcription(
+      text='Hello', finished=False
+  )
+  message1.server_content.output_transcription = None
+  message1.server_content.turn_complete = False
+  message1.server_content.generation_complete = False
+  message1.tool_call = None
+  message1.session_resumption_update = None
+
+  message2 = mock.Mock()
+  message2.usage_metadata = None
+  message2.server_content = mock.Mock()
+  message2.server_content.model_turn = None
+  message2.server_content.interrupted = False
+  message2.server_content.input_transcription = None
+  message2.server_content.output_transcription = types.Transcription(
+      text='How can', finished=False
+  )
+  message2.server_content.turn_complete = False
+  message2.server_content.generation_complete = False
+  message2.tool_call = None
+  message2.session_resumption_update = None
+
+  message3 = mock.Mock()
+  message3.usage_metadata = None
+  message3.server_content = mock.Mock()
+  message3.server_content.model_turn = None
+  message3.server_content.interrupted = False
+  message3.server_content.input_transcription = None
+  message3.server_content.output_transcription = None
+  message3.server_content.turn_complete = False
+  message3.server_content.generation_complete = True
+  message3.tool_call = None
+  message3.session_resumption_update = None
+
+  async def mock_receive_generator():
+    yield message1
+    yield message2
+    yield message3
+
+  receive_mock = mock.Mock(return_value=mock_receive_generator())
+  mock_gemini_session.receive = receive_mock
+
+  responses = [resp async for resp in gemini_api_connection.receive()]
+
+  assert len(responses) == 4
+
+  assert responses[0].input_transcription.text == 'Hello'
+  assert responses[0].input_transcription.finished is False
+  assert responses[0].partial is True
+  assert responses[1].output_transcription.text == 'How can'
+  assert responses[1].output_transcription.finished is False
+  assert responses[1].partial is True
+  assert responses[2].input_transcription.text == 'Hello'
+  assert responses[2].input_transcription.finished is True
+  assert responses[2].partial is False
+  assert responses[3].output_transcription.text == 'How can'
+  assert responses[3].output_transcription.finished is True
+  assert responses[3].partial is False
+
+
+@pytest.mark.asyncio
+async def test_receive_transcript_finished_on_turn_complete(
+    gemini_api_connection,
+    mock_gemini_session,
+):
+  """Test receive finishes transcription on interrupt or complete signals."""
+
+  message1 = mock.Mock()
+  message1.usage_metadata = None
+  message1.server_content = mock.Mock()
+  message1.server_content.model_turn = None
+  message1.server_content.interrupted = False
+  message1.server_content.input_transcription = types.Transcription(
+      text='Hello', finished=False
+  )
+  message1.server_content.output_transcription = None
+  message1.server_content.turn_complete = False
+  message1.server_content.generation_complete = False
+  message1.tool_call = None
+  message1.session_resumption_update = None
+
+  message2 = mock.Mock()
+  message2.usage_metadata = None
+  message2.server_content = mock.Mock()
+  message2.server_content.model_turn = None
+  message2.server_content.interrupted = False
+  message2.server_content.input_transcription = None
+  message2.server_content.output_transcription = types.Transcription(
+      text='How can', finished=False
+  )
+  message2.server_content.turn_complete = False
+  message2.server_content.generation_complete = False
+  message2.tool_call = None
+  message2.session_resumption_update = None
+
+  message3 = mock.Mock()
+  message3.usage_metadata = None
+  message3.server_content = mock.Mock()
+  message3.server_content.model_turn = None
+  message3.server_content.interrupted = False
+  message3.server_content.input_transcription = None
+  message3.server_content.output_transcription = None
+  message3.server_content.turn_complete = True
+  message3.server_content.generation_complete = False
+  message3.tool_call = None
+  message3.session_resumption_update = None
+
+  async def mock_receive_generator():
+    yield message1
+    yield message2
+    yield message3
+
+  receive_mock = mock.Mock(return_value=mock_receive_generator())
+  mock_gemini_session.receive = receive_mock
+
+  responses = [resp async for resp in gemini_api_connection.receive()]
+
+  assert len(responses) == 5
+  assert responses[4].turn_complete is True
+
+  assert responses[0].input_transcription.text == 'Hello'
+  assert responses[0].input_transcription.finished is False
+  assert responses[0].partial is True
+  assert responses[1].output_transcription.text == 'How can'
+  assert responses[1].output_transcription.finished is False
+  assert responses[1].partial is True
+  assert responses[2].input_transcription.text == 'Hello'
+  assert responses[2].input_transcription.finished is True
+  assert responses[2].partial is False
+  assert responses[3].output_transcription.text == 'How can'
+  assert responses[3].output_transcription.finished is True
+  assert responses[3].partial is False
+
+
+@pytest.mark.asyncio
 async def test_receive_handles_input_transcription_fragments(
     gemini_connection, mock_gemini_session
 ):
@@ -240,6 +472,7 @@ async def test_receive_handles_input_transcription_fragments(
   )
   message1.server_content.output_transcription = None
   message1.server_content.turn_complete = False
+  message1.server_content.generation_complete = False
   message1.tool_call = None
   message1.session_resumption_update = None
 
@@ -253,6 +486,7 @@ async def test_receive_handles_input_transcription_fragments(
   )
   message2.server_content.output_transcription = None
   message2.server_content.turn_complete = False
+  message2.server_content.generation_complete = False
   message2.tool_call = None
   message2.session_resumption_update = None
 
@@ -266,6 +500,7 @@ async def test_receive_handles_input_transcription_fragments(
   )
   message3.server_content.output_transcription = None
   message3.server_content.turn_complete = False
+  message3.server_content.generation_complete = False
   message3.tool_call = None
   message3.session_resumption_update = None
 
@@ -306,6 +541,7 @@ async def test_receive_handles_output_transcription_fragments(
       text='How can', finished=False
   )
   message1.server_content.turn_complete = False
+  message1.server_content.generation_complete = False
   message1.tool_call = None
   message1.session_resumption_update = None
 
@@ -319,6 +555,7 @@ async def test_receive_handles_output_transcription_fragments(
       text=' I help?', finished=False
   )
   message2.server_content.turn_complete = False
+  message2.server_content.generation_complete = False
   message2.tool_call = None
   message2.session_resumption_update = None
 
@@ -332,6 +569,7 @@ async def test_receive_handles_output_transcription_fragments(
       text=None, finished=True
   )
   message3.server_content.turn_complete = False
+  message3.server_content.generation_complete = False
   message3.tool_call = None
   message3.session_resumption_update = None
 

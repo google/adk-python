@@ -19,10 +19,10 @@ from typing import Optional
 
 from typing_extensions import override
 
-from ..events.event import Event
-from ..utils.feature_decorator import experimental
-from .eval_case import StaticConversation
-from .evaluator import Evaluator
+from ...events.event import Event
+from ...utils.feature_decorator import experimental
+from ..eval_case import StaticConversation
+from ..evaluator import Evaluator
 from .user_simulator import BaseUserSimulatorConfig
 from .user_simulator import NextUserMessage
 from .user_simulator import Status

@@ -16,8 +16,8 @@ from __future__ import annotations
 
 from typing import Optional
 
-from ..utils.feature_decorator import experimental
-from .eval_case import EvalCase
+from ...utils.feature_decorator import experimental
+from ..eval_case import EvalCase
 from .llm_backed_user_simulator import LlmBackedUserSimulator
 from .static_user_simulator import StaticUserSimulator
 from .user_simulator import BaseUserSimulatorConfig

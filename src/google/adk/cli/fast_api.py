@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import importlib
 import json
 import logging
 import os
@@ -50,6 +51,26 @@ from .utils.agent_change_handler import AgentChangeEventHandler
 from .utils.agent_loader import AgentLoader
 
 logger = logging.getLogger("google_adk." + __name__)
+
+_LAZY_SERVICE_IMPORTS: dict[str, str] = {
+    "AgentLoader": ".utils.agent_loader",
+    "InMemoryArtifactService": "..artifacts.in_memory_artifact_service",
+    "InMemoryMemoryService": "..memory.in_memory_memory_service",
+    "InMemorySessionService": "..sessions.in_memory_session_service",
+    "LocalEvalSetResultsManager": "..evaluation.local_eval_set_results_manager",
+    "LocalEvalSetsManager": "..evaluation.local_eval_sets_manager",
+}
+
+
+def __getattr__(name: str):
+  """Lazily import defaults so patching in tests keeps working."""
+  if name not in _LAZY_SERVICE_IMPORTS:
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+  module = importlib.import_module(_LAZY_SERVICE_IMPORTS[name], __package__)
+  attr = getattr(module, name)
+  globals()[name] = attr
+  return attr
 
 
 def get_fast_api_app(

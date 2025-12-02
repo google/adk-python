@@ -1195,7 +1195,7 @@ async def test_generate_content_async_with_system_instruction(
 
   _, kwargs = mock_acompletion.call_args
   assert kwargs["model"] == "test_model"
-  assert kwargs["messages"][0]["role"] == "developer"
+  assert kwargs["messages"][0]["role"] == "system"
   assert kwargs["messages"][0]["content"] == "Test system instruction"
   assert kwargs["messages"][1]["role"] == "user"
   assert kwargs["messages"][1]["content"] == "Test prompt"
