@@ -396,9 +396,10 @@ class MockAsyncClient:
     else:
       self.event_dict[session_id] = ([event_json], None)
 
+
 class MockAsyncClientWithPagination:
   """Mock client that simulates pagination requiring an open client connection.
-  
+
   This mock tracks whether the client context is active and raises RuntimeError
   if iteration occurs outside the context, simulating the real httpx behavior.
   """
@@ -455,7 +456,7 @@ def _generate_events_for_page(session_id: str, start_idx: int, count: int):
 @pytest.mark.asyncio
 async def test_get_session_pagination_keeps_client_open():
   """Regression test: event iteration must occur inside the api_client context.
-  
+
   This test verifies that get_session() keeps the API client open while
   iterating through paginated events. Before the fix, the events_iterator
   was consumed outside the async with block, causing RuntimeError when
