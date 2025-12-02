@@ -17,10 +17,16 @@ from datetime import timezone
 import logging
 import os
 from typing import Any
+from typing import Dict
+from typing import List
+from typing import Optional
+from typing import Tuple
 
 from adk_stale_agent.settings import CLOSE_HOURS_AFTER_STALE_THRESHOLD
 from adk_stale_agent.settings import GITHUB_BASE_URL
-from adk_stale_agent.settings import ISSUES_PER_RUN
+from adk_stale_agent.settings import GRAPHQL_COMMENT_LIMIT
+from adk_stale_agent.settings import GRAPHQL_EDIT_LIMIT
+from adk_stale_agent.settings import GRAPHQL_TIMELINE_LIMIT
 from adk_stale_agent.settings import LLM_MODEL_NAME
 from adk_stale_agent.settings import OWNER
 from adk_stale_agent.settings import REPO
@@ -38,20 +44,75 @@ from requests.exceptions import RequestException
 
 logger = logging.getLogger("google_adk." + __name__)
 
-# --- Primary Tools for the Agent ---
+# --- Constants ---
+# Used to detect if the bot has already posted an alert to avoid spamming.
+BOT_ALERT_SIGNATURE = (
+    "**Notification:** The author has updated the issue description"
+)
+
+# --- Global Cache ---
+_MAINTAINERS_CACHE: Optional[List[str]] = None
+
+
+def _get_cached_maintainers() -> List[str]:
+  """
+  Fetches the list of repository maintainers.
+
+  This function relies on `utils.get_request` for network resilience.
+  `get_request` is configured with an HTTPAdapter that automatically performs
+  exponential backoff retries (up to 6 times) for 5xx errors and rate limits.
+
+  If the retries are exhausted or the data format is invalid, this function
+  raises a RuntimeError to prevent the bot from running with incorrect permissions.
+
+  Returns:
+      List[str]: A list of GitHub usernames with push access.
+
+  Raises:
+      RuntimeError: If the API fails after all retries or returns invalid data.
+  """
+  global _MAINTAINERS_CACHE
+  if _MAINTAINERS_CACHE is not None:
+    return _MAINTAINERS_CACHE
+
+  logger.info("Initializing Maintainers Cache...")
+
+  try:
+    url = f"{GITHUB_BASE_URL}/repos/{OWNER}/{REPO}/collaborators"
+    params = {"permission": "push"}
+
+    data = get_request(url, params)
+
+    if isinstance(data, list):
+      _MAINTAINERS_CACHE = [u["login"] for u in data if "login" in u]
+      logger.info(f"Cached {len(_MAINTAINERS_CACHE)} maintainers.")
+      return _MAINTAINERS_CACHE
+    else:
+      logger.error(
+          f"Invalid API response format: Expected list, got {type(data)}"
+      )
+      raise ValueError(f"GitHub API returned non-list data: {data}")
+
+  except Exception as e:
+    logger.critical(
+        f"FATAL: Failed to verify repository maintainers. Error: {e}"
+    )
+    raise RuntimeError(
+        "Maintainer verification failed. processing aborted."
+    ) from e
 
 
 def load_prompt_template(filename: str) -> str:
-  """Loads the prompt text file from the same directory as this script.
+  """
+  Loads the raw text content of a prompt file.
 
   Args:
-      filename: The name of the prompt file to load.
+      filename (str): The name of the file (e.g., 'PROMPT_INSTRUCTION.txt').
 
   Returns:
-      The content of the file as a string.
+      str: The file content.
   """
   file_path = os.path.join(os.path.dirname(__file__), filename)
-
   with open(file_path, "r") as f:
     return f.read()
 
@@ -59,300 +120,399 @@ def load_prompt_template(filename: str) -> str:
 PROMPT_TEMPLATE = load_prompt_template("PROMPT_INSTRUCTION.txt")
 
 
-def get_repository_maintainers() -> dict[str, Any]:
+def _fetch_graphql_data(item_number: int) -> Dict[str, Any]:
   """
-  Fetches the list of repository collaborators with 'push' (write) access or higher.
-  This should only be called once per run.
-
-  Returns:
-      A dictionary with the status and a list of maintainer usernames, or an
-      error dictionary.
-  """
-  logger.debug("Fetching repository maintainers with push access...")
-  try:
-    url = f"{GITHUB_BASE_URL}/repos/{OWNER}/{REPO}/collaborators"
-    params = {"permission": "push"}
-    collaborators_data = get_request(url, params)
-
-    maintainers = [user["login"] for user in collaborators_data]
-    logger.info(f"Found {len(maintainers)} repository maintainers.")
-    logger.debug(f"Maintainer list: {maintainers}")
-
-    return {"status": "success", "maintainers": maintainers}
-  except RequestException as e:
-    logger.error(f"Failed to fetch repository maintainers: {e}", exc_info=True)
-    return error_response(f"Error fetching repository maintainers: {e}")
-
-
-def get_all_open_issues() -> dict[str, Any]:
-  """Fetches a batch of the oldest open issues for an audit.
-
-  Returns:
-      A dictionary containing the status and a list of open issues, or an error
-      dictionary.
-  """
-  logger.info(
-      f"Fetching a batch of {ISSUES_PER_RUN} oldest open issues for audit..."
-  )
-  url = f"{GITHUB_BASE_URL}/repos/{OWNER}/{REPO}/issues"
-  params = {
-      "state": "open",
-      "sort": "created",
-      "direction": "asc",
-      "per_page": ISSUES_PER_RUN,
-  }
-  try:
-    items = get_request(url, params)
-    logger.info(f"Found {len(items)} open issues to audit.")
-    return {"status": "success", "items": items}
-  except RequestException as e:
-    logger.error(f"Failed to fetch open issues: {e}", exc_info=True)
-    return error_response(f"Error fetching all open issues: {e}")
-
-
-def get_issue_state(item_number: int, maintainers: list[str]) -> dict[str, Any]:
-  """Analyzes an issue's complete history to create a comprehensive state summary.
-
-  This function acts as the primary "detective" for the agent. It performs the
-  complex, deterministic work of fetching and parsing an issue's full history,
-  allowing the LLM agent to focus on high-level semantic decision-making.
-
-  It is designed to be highly robust by fetching the complete, multi-page history
-  from the GitHub `/timeline` API. By handling pagination correctly, it ensures
-  that even issues with a very long history (more than 100 events) are analyzed
-  in their entirety, preventing incorrect decisions based on incomplete data.
+  Executes the GraphQL query to fetch raw issue data, including comments,
+  edits, and timeline events.
 
   Args:
-      item_number (int): The number of the GitHub issue or pull request to analyze.
-      maintainers (list[str]): A dynamically fetched list of GitHub usernames to be
-          considered maintainers. This is used to categorize actors found in
-          the issue's history.
+      item_number (int): The GitHub issue number.
 
   Returns:
-      A dictionary that serves as a clean, factual report summarizing the
-      issue's state. On failure, it returns a dictionary with an 'error' status.
+      Dict[str, Any]: The raw 'issue' object from the GraphQL response.
+
+  Raises:
+      RequestException: If the GraphQL query returns errors or the issue is not found.
+  """
+  query = """
+    query($owner: String!, $name: String!, $number: Int!, $commentLimit: Int!, $timelineLimit: Int!) {
+      repository(owner: $owner, name: $name) {
+        issue(number: $number) {
+          author { login }
+          createdAt
+          labels(first: 20) { nodes { name } }
+          
+          comments(last: $commentLimit) {
+            nodes {
+              author { login }
+              body
+              createdAt
+              lastEditedAt
+            }
+          }
+          
+          userContentEdits(last: $editLimit) {
+            nodes {
+              editor { login }
+              editedAt
+            }
+          }
+          
+          timelineItems(itemTypes: [LABELED_EVENT, RENAMED_TITLE_EVENT, REOPENED_EVENT], last: $timelineLimit) {
+            nodes {
+              __typename
+              ... on LabeledEvent {
+                createdAt
+                actor { login }
+                label { name }
+              }
+              ... on RenamedTitleEvent {
+                createdAt
+                actor { login }
+              }
+              ... on ReopenedEvent {
+                createdAt
+                actor { login }
+              }
+            }
+          }
+        }
+      }
+    }
+    """
+
+  variables = {
+      "owner": OWNER,
+      "name": REPO,
+      "number": item_number,
+      "commentLimit": GRAPHQL_COMMENT_LIMIT,
+      "editLimit": GRAPHQL_EDIT_LIMIT,
+      "timelineLimit": GRAPHQL_TIMELINE_LIMIT,
+  }
+
+  response = post_request(
+      f"{GITHUB_BASE_URL}/graphql", {"query": query, "variables": variables}
+  )
+
+  if "errors" in response:
+    raise RequestException(f"GraphQL Error: {response['errors'][0]['message']}")
+
+  data = response.get("data", {}).get("repository", {}).get("issue", {})
+  if not data:
+    raise RequestException(f"Issue #{item_number} not found.")
+
+  return data
+
+
+def _build_history_timeline(
+    data: Dict[str, Any],
+) -> Tuple[List[Dict[str, Any]], List[datetime], Optional[datetime]]:
+  """
+  Parses raw GraphQL data into a unified, chronologically sorted history list.
+  Also extracts specific event times needed for logic checks.
+
+  Args:
+      data (Dict[str, Any]): The raw issue data from `_fetch_graphql_data`.
+
+  Returns:
+      Tuple[List[Dict], List[datetime], Optional[datetime]]:
+          - history: A list of normalized event dictionaries sorted by time.
+          - label_events: A list of timestamps when the stale label was applied.
+          - last_bot_alert_time: Timestamp of the last bot silent-edit alert (if any).
+  """
+  issue_author = data.get("author", {}).get("login")
+  history = []
+  label_events = []
+  last_bot_alert_time = None
+
+  # 1. Baseline: Issue Creation
+  history.append({
+      "type": "created",
+      "actor": issue_author,
+      "time": dateutil.parser.isoparse(data["createdAt"]),
+      "data": None,
+  })
+
+  # 2. Process Comments
+  for c in data.get("comments", {}).get("nodes", []):
+    if not c:
+      continue
+
+    actor = c.get("author", {}).get("login")
+    c_body = c.get("body", "")
+    c_time = dateutil.parser.isoparse(c.get("createdAt"))
+
+    # Track bot alerts for spam prevention
+    if BOT_ALERT_SIGNATURE in c_body:
+      if last_bot_alert_time is None or c_time > last_bot_alert_time:
+        last_bot_alert_time = c_time
+
+    if actor and not actor.endswith("[bot]"):
+      # Use edit time if available, otherwise creation time
+      e_time = c.get("lastEditedAt")
+      actual_time = dateutil.parser.isoparse(e_time) if e_time else c_time
+      history.append({
+          "type": "commented",
+          "actor": actor,
+          "time": actual_time,
+          "data": c_body,
+      })
+
+  # 3. Process Body Edits ("Ghost Edits")
+  for e in data.get("userContentEdits", {}).get("nodes", []):
+    if not e:
+      continue
+    actor = e.get("editor", {}).get("login")
+    if actor and not actor.endswith("[bot]"):
+      history.append({
+          "type": "edited_description",
+          "actor": actor,
+          "time": dateutil.parser.isoparse(e.get("editedAt")),
+          "data": None,
+      })
+
+  # 4. Process Timeline Events
+  for t in data.get("timelineItems", {}).get("nodes", []):
+    if not t:
+      continue
+
+    etype = t.get("__typename")
+    actor = t.get("actor", {}).get("login")
+    time_val = dateutil.parser.isoparse(t.get("createdAt"))
+
+    if etype == "LabeledEvent":
+      if t.get("label", {}).get("name") == STALE_LABEL_NAME:
+        label_events.append(time_val)
+      continue
+
+    if actor and not actor.endswith("[bot]"):
+      pretty_type = (
+          "renamed_title" if etype == "RenamedTitleEvent" else "reopened"
+      )
+      history.append({
+          "type": pretty_type,
+          "actor": actor,
+          "time": time_val,
+          "data": None,
+      })
+
+  # Sort chronologically
+  history.sort(key=lambda x: x["time"])
+  return history, label_events, last_bot_alert_time
+
+
+def _replay_history_to_find_state(
+    history: List[Dict[str, Any]], maintainers: List[str], issue_author: str
+) -> Dict[str, Any]:
+  """
+  Replays the unified event history to determine the absolute last actor and their role.
+
+  Args:
+      history (List[Dict]): Chronologically sorted list of events.
+      maintainers (List[str]): List of maintainer usernames.
+      issue_author (str): Username of the issue author.
+
+  Returns:
+      Dict[str, Any]: A dictionary containing the last state of the issue:
+          - last_action_role (str): 'author', 'maintainer', or 'other_user'.
+          - last_activity_time (datetime): Timestamp of the last human action.
+          - last_action_type (str): The type of the last action (e.g., 'commented').
+          - last_comment_text (Optional[str]): The text of the last comment.
+  """
+  last_action_role = "author"
+  last_activity_time = history[0]["time"]
+  last_action_type = "created"
+  last_comment_text = None
+
+  for event in history:
+    actor = event["actor"]
+    etype = event["type"]
+
+    role = "other_user"
+    if actor == issue_author:
+      role = "author"
+    elif actor in maintainers:
+      role = "maintainer"
+
+    last_action_role = role
+    last_activity_time = event["time"]
+    last_action_type = etype
+
+    # Only store text if it was a comment (resets on other events like labels/edits)
+    if etype == "commented":
+      last_comment_text = event["data"]
+    else:
+      last_comment_text = None
+
+  return {
+      "last_action_role": last_action_role,
+      "last_activity_time": last_activity_time,
+      "last_action_type": last_action_type,
+      "last_comment_text": last_comment_text,
+  }
+
+
+def get_issue_state(item_number: int) -> Dict[str, Any]:
+  """
+  Retrieves the comprehensive state of a GitHub issue using GraphQL.
+
+  This function orchestrates the fetching, parsing, and analysis of the issue's
+  history to determine if it is stale, active, or pending maintainer review.
+
+  Args:
+      item_number (int): The GitHub issue number.
+
+  Returns:
+      Dict[str, Any]: A comprehensive state dictionary for the LLM agent.
+          Contains keys such as 'last_action_role', 'is_stale', 'days_since_activity',
+          and 'maintainer_alert_needed'.
   """
   try:
-    # Fetch core issue data and prepare for timeline fetching.
-    logger.debug(f"Fetching full timeline for issue #{item_number}...")
-    issue_url = f"{GITHUB_BASE_URL}/repos/{OWNER}/{REPO}/issues/{item_number}"
-    issue_data = get_request(issue_url)
+    maintainers = _get_cached_maintainers()
 
-    # Fetch All pages from the timeline API to build a complete history.
-    timeline_url_base = f"{issue_url}/timeline"
-    timeline_data = []
-    page = 1
+    # 1. Fetch
+    raw_data = _fetch_graphql_data(item_number)
 
-    while True:
-      paginated_url = f"{timeline_url_base}?per_page=100&page={page}"
-      logger.debug(f"Fetching timeline page {page} for issue #{item_number}...")
-      events_page = get_request(paginated_url)
-      if not events_page:
-        break
-      timeline_data.extend(events_page)
-      if len(events_page) < 100:
-        break
-      page += 1
+    issue_author = raw_data.get("author", {}).get("login")
+    labels_list = [
+        l["name"] for l in raw_data.get("labels", {}).get("nodes", [])
+    ]
+
+    # 2. Parse & Sort
+    history, label_events, last_bot_alert_time = _build_history_timeline(
+        raw_data
+    )
+
+    # 3. Analyze (Replay)
+    state = _replay_history_to_find_state(history, maintainers, issue_author)
+
+    # 4. Final Calculations & Alert Logic
+    current_time = datetime.now(timezone.utc)
+    days_since_activity = (
+        current_time - state["last_activity_time"]
+    ).total_seconds() / 86400
+
+    # Stale Checks
+    is_stale = STALE_LABEL_NAME in labels_list
+    days_since_stale_label = 0.0
+    if is_stale and label_events:
+      latest_label_time = max(label_events)
+      days_since_stale_label = (
+          current_time - latest_label_time
+      ).total_seconds() / 86400
+
+    # Silent Edit Alert Logic
+    maintainer_alert_needed = False
+    if (
+        state["last_action_role"] in ["author", "other_user"]
+        and state["last_action_type"] == "edited_description"
+    ):
+      if (
+          last_bot_alert_time
+          and last_bot_alert_time > state["last_activity_time"]
+      ):
+        logger.info(
+            f"#{item_number}: Silent edit detected, but Bot already alerted. No"
+            " spam."
+        )
+      else:
+        maintainer_alert_needed = True
+        logger.info(f"#{item_number}: Silent edit detected. Alert needed.")
 
     logger.debug(
-        f"Fetched a total of {len(timeline_data)} timeline events across"
-        f" {page-1} page(s) for issue #{item_number}."
-    )
-
-    # Initialize key variables for the analysis.
-    issue_author = issue_data.get("user", {}).get("login")
-    current_labels = [label["name"] for label in issue_data.get("labels", [])]
-
-    # Filter and sort all events into a clean, chronological history of human activity.
-    human_events = []
-    for event in timeline_data:
-      actor = event.get("actor", {}).get("login")
-      timestamp_str = event.get("created_at") or event.get("submitted_at")
-
-      if not actor or not timestamp_str or actor.endswith("[bot]"):
-        continue
-
-      event["parsed_time"] = dateutil.parser.isoparse(timestamp_str)
-      human_events.append(event)
-
-    human_events.sort(key=lambda e: e["parsed_time"])
-
-    # Find the most recent, relevant events by iterating backwards.
-    last_maintainer_comment = None
-    stale_label_event_time = None
-
-    for event in reversed(human_events):
-      if (
-          not last_maintainer_comment
-          and event.get("actor", {}).get("login") in maintainers
-          and event.get("event") == "commented"
-      ):
-        last_maintainer_comment = event
-
-      if (
-          not stale_label_event_time
-          and event.get("event") == "labeled"
-          and event.get("label", {}).get("name") == STALE_LABEL_NAME
-      ):
-        stale_label_event_time = event["parsed_time"]
-
-      if last_maintainer_comment and stale_label_event_time:
-        break
-
-    last_author_action = next(
-        (
-            e
-            for e in reversed(human_events)
-            if e.get("actor", {}).get("login") == issue_author
-        ),
-        None,
-    )
-
-    # Build and return the final summary report for the LLM agent.
-    last_human_event = human_events[-1] if human_events else None
-    last_human_actor = (
-        last_human_event.get("actor", {}).get("login")
-        if last_human_event
-        else None
+        f"#{item_number} VERDICT: Role={state['last_action_role']}, "
+        f"Idle={days_since_activity:.2f}d"
     )
 
     return {
         "status": "success",
-        "issue_author": issue_author,
-        "current_labels": current_labels,
-        "last_maintainer_comment_text": (
-            last_maintainer_comment.get("body")
-            if last_maintainer_comment
-            else None
-        ),
-        "last_maintainer_comment_time": (
-            last_maintainer_comment["parsed_time"].isoformat()
-            if last_maintainer_comment
-            else None
-        ),
-        "last_author_event_time": (
-            last_author_action["parsed_time"].isoformat()
-            if last_author_action
-            else None
-        ),
-        "last_author_action_type": (
-            last_author_action.get("event") if last_author_action else "unknown"
-        ),
-        "last_human_action_type": (
-            last_human_event.get("event") if last_human_event else "unknown"
-        ),
-        "last_human_commenter_is_maintainer": (
-            last_human_actor in maintainers if last_human_actor else False
-        ),
-        "stale_label_applied_at": (
-            stale_label_event_time.isoformat()
-            if stale_label_event_time
-            else None
-        ),
+        "last_action_role": state["last_action_role"],
+        "last_action_type": state["last_action_type"],
+        "maintainer_alert_needed": maintainer_alert_needed,
+        "is_stale": is_stale,
+        "days_since_activity": days_since_activity,
+        "days_since_stale_label": days_since_stale_label,
+        "last_comment_text": state["last_comment_text"],
+        "current_labels": labels_list,
+        "stale_threshold_days": STALE_HOURS_THRESHOLD / 24,
+        "close_threshold_days": CLOSE_HOURS_AFTER_STALE_THRESHOLD / 24,
     }
 
   except RequestException as e:
+    return error_response(f"Network Error: {e}")
+  except Exception as e:
     logger.error(
-        f"Failed to fetch comprehensive issue state for #{item_number}: {e}",
-        exc_info=True,
+        f"Unexpected error analyzing #{item_number}: {e}", exc_info=True
     )
-    return error_response(
-        f"Error getting comprehensive issue state for #{item_number}: {e}"
-    )
+    return error_response(f"Analysis Error: {e}")
 
 
-def calculate_time_difference(timestamp_str: str) -> dict[str, Any]:
-  """Calculates the difference in hours between a UTC timestamp string and now.
+# --- Tool Definitions ---
 
-  Args:
-      timestamp_str: An ISO 8601 formatted timestamp string.
 
-  Returns:
-      A dictionary with the status and the time difference in hours, or an error
-      dictionary.
+def _format_days(hours: float) -> str:
   """
-  try:
-    if not timestamp_str:
-      return error_response("Input timestamp is empty.")
-    event_time = dateutil.parser.isoparse(timestamp_str)
-    current_time_utc = datetime.now(timezone.utc)
-    time_difference = current_time_utc - event_time
-    hours_passed = time_difference.total_seconds() / 3600
-    return {"status": "success", "hours_passed": hours_passed}
-  except (dateutil.parser.ParserError, TypeError) as e:
-    logger.error(
-        "Error calculating time difference for timestamp"
-        f" '{timestamp_str}': {e}",
-        exc_info=True,
-    )
-    return error_response(f"Error calculating time difference: {e}")
+  Formats a duration in hours into a clean day string.
+
+  Example:
+      168.0 -> "7"
+      12.0  -> "0.5"
+  """
+  days = hours / 24
+  return f"{days:.1f}" if days % 1 != 0 else f"{int(days)}"
 
 
 def add_label_to_issue(item_number: int, label_name: str) -> dict[str, Any]:
-  """Adds a specific label to an issue.
+  """
+  Adds a label to the issue.
 
   Args:
-      item_number: The issue number.
-      label_name: The name of the label to add.
-
-  Returns:
-      A dictionary indicating the status of the operation.
+      item_number (int): The GitHub issue number.
+      label_name (str): The name of the label to add.
   """
   logger.debug(f"Adding label '{label_name}' to issue #{item_number}.")
   url = f"{GITHUB_BASE_URL}/repos/{OWNER}/{REPO}/issues/{item_number}/labels"
   try:
     post_request(url, [label_name])
-    logger.info(
-        f"Successfully added label '{label_name}' to issue #{item_number}."
-    )
     return {"status": "success"}
   except RequestException as e:
-    logger.error(f"Failed to add '{label_name}' to issue #{item_number}: {e}")
     return error_response(f"Error adding label: {e}")
 
 
 def remove_label_from_issue(
     item_number: int, label_name: str
 ) -> dict[str, Any]:
-  """Removes a specific label from an issue or PR.
+  """
+  Removes a label from the issue.
 
   Args:
-      item_number: The issue number.
-      label_name: The name of the label to remove.
-
-  Returns:
-      A dictionary indicating the status of the operation.
+      item_number (int): The GitHub issue number.
+      label_name (str): The name of the label to remove.
   """
   logger.debug(f"Removing label '{label_name}' from issue #{item_number}.")
   url = f"{GITHUB_BASE_URL}/repos/{OWNER}/{REPO}/issues/{item_number}/labels/{label_name}"
   try:
     delete_request(url)
-    logger.info(
-        f"Successfully removed label '{label_name}' from issue #{item_number}."
-    )
     return {"status": "success"}
   except RequestException as e:
-    logger.error(
-        f"Failed to remove '{label_name}' from issue #{item_number}: {e}"
-    )
     return error_response(f"Error removing label: {e}")
 
 
 def add_stale_label_and_comment(item_number: int) -> dict[str, Any]:
-  """Adds the 'stale' label to an issue and posts a comment explaining why.
+  """
+  Marks the issue as stale with a comment and label.
 
   Args:
-      item_number: The issue number.
-
-  Returns:
-      A dictionary indicating the status of the operation.
+      item_number (int): The GitHub issue number.
   """
-  logger.debug(f"Adding stale label and comment to issue #{item_number}.")
+  stale_days_str = _format_days(STALE_HOURS_THRESHOLD)
+  close_days_str = _format_days(CLOSE_HOURS_AFTER_STALE_THRESHOLD)
+
   comment = (
       "This issue has been automatically marked as stale because it has not"
-      " had recent activity after a maintainer requested clarification. It"
-      " will be closed if no further activity occurs within"
-      f" {CLOSE_HOURS_AFTER_STALE_THRESHOLD / 24:.0f} days."
+      f" had recent activity for {stale_days_str} days after a maintainer"
+      " requested clarification. It will be closed if no further activity"
+      f" occurs within {close_days_str} days."
   )
   try:
     post_request(
@@ -363,28 +523,42 @@ def add_stale_label_and_comment(item_number: int) -> dict[str, Any]:
         f"{GITHUB_BASE_URL}/repos/{OWNER}/{REPO}/issues/{item_number}/labels",
         [STALE_LABEL_NAME],
     )
-    logger.info(f"Successfully marked issue #{item_number} as stale.")
     return {"status": "success"}
   except RequestException as e:
-    logger.error(
-        f"Failed to mark issue #{item_number} as stale: {e}", exc_info=True
-    )
     return error_response(f"Error marking issue as stale: {e}")
 
 
-def close_as_stale(item_number: int) -> dict[str, Any]:
-  """Posts a final comment and closes an issue or PR as stale.
+def alert_maintainer_of_edit(item_number: int) -> dict[str, Any]:
+  """
+  Posts a comment alerting maintainers of a silent description update.
 
   Args:
-      item_number: The issue number.
-
-  Returns:
-      A dictionary indicating the status of the operation.
+      item_number (int): The GitHub issue number.
   """
-  logger.debug(f"Closing issue #{item_number} as stale.")
+  # Uses the constant signature to ensure detection logic in get_issue_state works.
+  comment = f"{BOT_ALERT_SIGNATURE}. Maintainers, please review."
+  try:
+    post_request(
+        f"{GITHUB_BASE_URL}/repos/{OWNER}/{REPO}/issues/{item_number}/comments",
+        {"body": comment},
+    )
+    return {"status": "success"}
+  except RequestException as e:
+    return error_response(f"Error posting alert: {e}")
+
+
+def close_as_stale(item_number: int) -> dict[str, Any]:
+  """
+  Closes the issue as not planned/stale.
+
+  Args:
+      item_number (int): The GitHub issue number.
+  """
+  days_str = _format_days(CLOSE_HOURS_AFTER_STALE_THRESHOLD)
+
   comment = (
       "This has been automatically closed because it has been marked as stale"
-      f" for over {CLOSE_HOURS_AFTER_STALE_THRESHOLD / 24:.0f} days."
+      f" for over {days_str} days."
   )
   try:
     post_request(
@@ -395,40 +569,29 @@ def close_as_stale(item_number: int) -> dict[str, Any]:
         f"{GITHUB_BASE_URL}/repos/{OWNER}/{REPO}/issues/{item_number}",
         {"state": "closed"},
     )
-    logger.info(f"Successfully closed issue #{item_number} as stale.")
     return {"status": "success"}
   except RequestException as e:
-    logger.error(
-        f"Failed to close issue #{item_number} as stale: {e}", exc_info=True
-    )
     return error_response(f"Error closing issue: {e}")
 
-
-# --- Agent Definition ---
 
 root_agent = Agent(
     model=LLM_MODEL_NAME,
     name="adk_repository_auditor_agent",
-    description=(
-        "Audits open issues to manage their state based on conversation"
-        " history."
-    ),
+    description="Audits open issues.",
     instruction=PROMPT_TEMPLATE.format(
         OWNER=OWNER,
         REPO=REPO,
         STALE_LABEL_NAME=STALE_LABEL_NAME,
         REQUEST_CLARIFICATION_LABEL=REQUEST_CLARIFICATION_LABEL,
-        STALE_HOURS_THRESHOLD=STALE_HOURS_THRESHOLD,
-        CLOSE_HOURS_AFTER_STALE_THRESHOLD=CLOSE_HOURS_AFTER_STALE_THRESHOLD,
+        stale_threshold_days=STALE_HOURS_THRESHOLD / 24,
+        close_threshold_days=CLOSE_HOURS_AFTER_STALE_THRESHOLD / 24,
     ),
     tools=[
         add_label_to_issue,
         add_stale_label_and_comment,
-        calculate_time_difference,
+        alert_maintainer_of_edit,
         close_as_stale,
-        get_all_open_issues,
         get_issue_state,
-        get_repository_maintainers,
         remove_label_from_issue,
     ],
 )

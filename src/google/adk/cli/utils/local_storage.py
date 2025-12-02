@@ -57,6 +57,32 @@ def create_local_database_session_service(
   return SqliteSessionService(db_path=str(session_db_path))
 
 
+def create_local_session_service(
+    *,
+    base_dir: Path | str,
+    per_agent: bool = False,
+) -> BaseSessionService:
+  """Creates a local SQLite-backed session service.
+
+  Args:
+    base_dir: The base directory for the agent(s).
+    per_agent: If True, creates a PerAgentDatabaseSessionService that stores
+      sessions in each agent's .adk folder. If False, creates a single
+      SqliteSessionService at base_dir/.adk/session.db.
+
+  Returns:
+    A BaseSessionService instance backed by SQLite.
+  """
+  if per_agent:
+    logger.info(
+        "Using per-agent session storage rooted at %s",
+        base_dir,
+    )
+    return PerAgentDatabaseSessionService(agents_root=base_dir)
+
+  return create_local_database_session_service(base_dir=base_dir)
+
+
 def create_local_artifact_service(
     *, base_dir: Path | str
 ) -> BaseArtifactService:
