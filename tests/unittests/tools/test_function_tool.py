@@ -22,6 +22,15 @@ from google.adk.tools.tool_context import ToolContext
 import pytest
 
 
+@pytest.fixture
+def mock_tool_context() -> ToolContext:
+  """Fixture that provides a mock ToolContext for testing."""
+  mock_invocation_context = MagicMock(spec=InvocationContext)
+  mock_invocation_context.session = MagicMock(spec=Session)
+  mock_invocation_context.session.state = MagicMock()
+  return ToolContext(invocation_context=mock_invocation_context)
+
+
 def function_for_testing_with_no_args():
   """Function for testing with no args."""
   pass
@@ -30,14 +39,14 @@ def function_for_testing_with_no_args():
 async def async_function_for_testing_with_1_arg_and_tool_context(
     arg1, tool_context
 ):
-  """Async function for testing with 1 arge and tool context."""
+  """Async function for testing with 1 arg and tool context."""
   assert arg1
   assert tool_context
   return arg1
 
 
 async def async_function_for_testing_with_2_arg_and_no_tool_context(arg1, arg2):
-  """Async function for testing with 2 arge and no tool context."""
+  """Async function for testing with 2 args and no tool context."""
   assert arg1
   assert arg2
   return arg1
@@ -56,7 +65,7 @@ class AsyncCallableWith2ArgsAndNoToolContext:
 
 
 def function_for_testing_with_1_arg_and_tool_context(arg1, tool_context):
-  """Function for testing with 1 arge and tool context."""
+  """Function for testing with 1 arg and tool context."""
   assert arg1
   assert tool_context
   return arg1
@@ -72,7 +81,7 @@ class AsyncCallableWith1ArgAndToolContext:
 
 
 def function_for_testing_with_2_arg_and_no_tool_context(arg1, arg2):
-  """Function for testing with 2 arge and no tool context."""
+  """Function for testing with 2 args and no tool context."""
   assert arg1
   assert arg2
   return arg1
@@ -274,7 +283,7 @@ You could retry calling this tool, but it is IMPORTANT for you to provide all th
 
 @pytest.mark.asyncio
 async def test_run_async_with_optional_args_not_set_sync_func():
-  """Test that run_async calls the function for sync funciton with optional args not set."""
+  """Test that run_async calls the function for sync function with optional args not set."""
 
   def func_with_optional_args(arg1, arg2=None, *, arg3, arg4=None, **kwargs):
     return f"{arg1},{arg3}"
@@ -287,7 +296,7 @@ async def test_run_async_with_optional_args_not_set_sync_func():
 
 @pytest.mark.asyncio
 async def test_run_async_with_optional_args_not_set_async_func():
-  """Test that run_async calls the function for async funciton with optional args not set."""
+  """Test that run_async calls the function for async function with optional args not set."""
 
   async def async_func_with_optional_args(
       arg1, arg2=None, *, arg3, arg4=None, **kwargs
@@ -394,3 +403,28 @@ async def test_run_async_with_require_confirmation():
       tool_context=tool_context_mock,
   )
   assert result == {"received_arg": "hello"}
+
+
+@pytest.mark.asyncio
+async def test_run_async_parameter_filtering(mock_tool_context):
+  """Test that parameter filtering works correctly for functions with explicit parameters."""
+
+  def explicit_params_func(arg1: str, arg2: int):
+    """Function with explicit parameters (no **kwargs)."""
+    return {"arg1": arg1, "arg2": arg2}
+
+  tool = FunctionTool(explicit_params_func)
+
+  # Test that unexpected parameters are still filtered out for non-kwargs functions
+  result = await tool.run_async(
+      args={
+          "arg1": "test",
+          "arg2": 42,
+          "unexpected_param": "should_be_filtered",
+      },
+      tool_context=mock_tool_context,
+  )
+
+  assert result == {"arg1": "test", "arg2": 42}
+  # Explicitly verify that unexpected_param was filtered out and not passed to the function
+  assert "unexpected_param" not in result

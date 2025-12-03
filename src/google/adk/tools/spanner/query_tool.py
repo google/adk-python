@@ -14,16 +14,11 @@
 
 from __future__ import annotations
 
-import json
-
 from google.auth.credentials import Credentials
-from google.cloud.spanner_admin_database_v1.types import DatabaseDialect
 
-from . import client
+from . import utils
 from ..tool_context import ToolContext
 from .settings import SpannerToolSettings
-
-DEFAULT_MAX_EXECUTED_QUERY_RESULT_ROWS = 50
 
 
 def execute_sql(
@@ -68,47 +63,12 @@ def execute_sql(
   Note:
     This is running with Read-Only Transaction for query that only read data.
   """
-
-  try:
-    # Get Spanner client
-    spanner_client = client.get_spanner_client(
-        project=project_id, credentials=credentials
-    )
-    instance = spanner_client.instance(instance_id)
-    database = instance.database(database_id)
-
-    if database.database_dialect == DatabaseDialect.POSTGRESQL:
-      return {
-          "status": "ERROR",
-          "error_details": "PostgreSQL dialect is not supported.",
-      }
-
-    with database.snapshot() as snapshot:
-      result_set = snapshot.execute_sql(query)
-      rows = []
-      counter = (
-          settings.max_executed_query_result_rows
-          if settings and settings.max_executed_query_result_rows > 0
-          else DEFAULT_MAX_EXECUTED_QUERY_RESULT_ROWS
-      )
-      for row in result_set:
-        try:
-          # if the json serialization of the row succeeds, use it as is
-          json.dumps(row)
-        except:
-          row = str(row)
-
-        rows.append(row)
-        counter -= 1
-        if counter <= 0:
-          break
-
-      result = {"status": "SUCCESS", "rows": rows}
-      if counter <= 0:
-        result["result_is_likely_truncated"] = True
-      return result
-  except Exception as ex:
-    return {
-        "status": "ERROR",
-        "error_details": str(ex),
-    }
+  return utils.execute_sql(
+      project_id,
+      instance_id,
+      database_id,
+      query,
+      credentials,
+      settings,
+      tool_context,
+  )

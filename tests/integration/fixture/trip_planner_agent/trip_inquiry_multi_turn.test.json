@@ -1,0 +1,116 @@
+{
+  "eval_set_id": "e7996ccc-16bc-46bf-9a24-0a3ecc3dacd7",
+  "name": "e7996ccc-16bc-46bf-9a24-0a3ecc3dacd7",
+  "description": null,
+  "eval_cases": [
+    {
+      "eval_id": "tests/integration/fixture/trip_planner_agent/trip_inquiry.test.json",
+      "conversation": [
+        {
+          "invocation_id": "d7ff8ec1-290b-48c5-b3aa-05cb8f27b8ae",
+          "user_content": {
+            "parts": [
+              {
+                "video_metadata": null,
+                "thought": null,
+                "inline_data": null,
+                "file_data": null,
+                "thought_signature": null,
+                "code_execution_result": null,
+                "executable_code": null,
+                "function_call": null,
+                "function_response": null,
+                "text": "Hi, who are you? What can you do?"
+              }
+            ],
+            "role": "user"
+          },
+          "final_response": {
+            "parts": [
+              {
+                "video_metadata": null,
+                "thought": null,
+                "inline_data": null,
+                "file_data": null,
+                "thought_signature": null,
+                "code_execution_result": null,
+                "executable_code": null,
+                "function_call": null,
+                "function_response": null,
+                "text": "I am trip_planner, and my goal is to plan the best trip ever. I can describe why a city was chosen, list its top attractions, and provide a detailed itinerary for each day of the trip.\n"
+              }
+            ],
+            "role": "model"
+          },
+          "intermediate_data": {
+            "tool_uses": [],
+            "intermediate_responses": []
+          },
+          "creation_timestamp": 1750190885.419684
+        },
+        {
+          "invocation_id": "f515ff57-ff21-488f-ab92-7d7de5bb76fe",
+          "user_content": {
+            "parts": [
+              {
+                "video_metadata": null,
+                "thought": null,
+                "inline_data": null,
+                "file_data": null,
+                "thought_signature": null,
+                "code_execution_result": null,
+                "executable_code": null,
+                "function_call": null,
+                "function_response": null,
+                "text": "I want to travel from San Francisco to an European country in fall next year. I am considering London and Paris. What is your advice?"
+              }
+            ],
+            "role": "user"
+          },
+          "final_response": {
+            "parts": [
+              {
+                "video_metadata": null,
+                "thought": null,
+                "inline_data": null,
+                "file_data": null,
+                "thought_signature": null,
+                "code_execution_result": null,
+                "executable_code": null,
+                "function_call": null,
+                "function_response": null,
+                "text": "Okay, I can help you analyze London and Paris to determine which city is better for your trip next fall. I will consider weather patterns, seasonal events, travel costs (including flights from San Francisco), and your interests (food, shopping, and museums). After gathering this information, I'll provide a detailed report on my chosen city.\n"
+              }
+            ],
+            "role": "model"
+          },
+          "intermediate_data": {
+            "tool_uses": [
+              {
+                "id": null,
+                "args": {
+                  "agent_name": "identify_agent"
+                },
+                "name": "transfer_to_agent"
+              }
+            ],
+            "intermediate_responses": []
+          },
+          "creation_timestamp": 1750190885.4197457
+        }
+      ],
+      "session_input": {
+        "app_name": "trip_planner_agent",
+        "user_id": "test_user",
+        "state": {
+          "origin": "San Francisco",
+          "interests": "Food, Shopping, Museums",
+          "range": "1000 miles",
+          "cities": ""
+        }
+      },
+      "creation_timestamp": 1750190885.4197533
+    }
+  ],
+  "creation_timestamp": 1750190885.4197605
+}

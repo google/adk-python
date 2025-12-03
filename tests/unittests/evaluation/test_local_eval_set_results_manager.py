@@ -19,7 +19,6 @@ import os
 import shutil
 import tempfile
 import time
-from unittest.mock import patch
 
 from google.adk.errors.not_found_error import NotFoundError
 from google.adk.evaluation._eval_set_results_manager_utils import _sanitize_eval_set_result_name
@@ -68,12 +67,11 @@ class TestLocalEvalSetResultsManager:
         eval_case_results=self.eval_case_results,
         creation_timestamp=self.timestamp,
     )
-
-  def teardown(self):
+    yield
     shutil.rmtree(self.temp_dir)
 
-  @patch("time.time")
-  def test_save_eval_set_result(self, mock_time):
+  def test_save_eval_set_result(self, mocker):
+    mock_time = mocker.patch("time.time")
     mock_time.return_value = self.timestamp
     self.manager.save_eval_set_result(
         self.app_name, self.eval_set_id, self.eval_case_results
@@ -93,8 +91,8 @@ class TestLocalEvalSetResultsManager:
     expected_eval_set_result_json = self.eval_set_result.model_dump_json()
     assert expected_eval_set_result_json == actual_eval_set_result_json
 
-  @patch("time.time")
-  def test_get_eval_set_result(self, mock_time):
+  def test_get_eval_set_result(self, mocker):
+    mock_time = mocker.patch("time.time")
     mock_time.return_value = self.timestamp
     self.manager.save_eval_set_result(
         self.app_name, self.eval_set_id, self.eval_case_results
@@ -104,15 +102,15 @@ class TestLocalEvalSetResultsManager:
     )
     assert retrieved_result == self.eval_set_result
 
-  @patch("time.time")
-  def test_get_eval_set_result_not_found(self, mock_time):
+  def test_get_eval_set_result_not_found(self, mocker):
+    mock_time = mocker.patch("time.time")
     mock_time.return_value = self.timestamp
 
     with pytest.raises(NotFoundError) as e:
       self.manager.get_eval_set_result(self.app_name, "non_existent_id")
 
-  @patch("time.time")
-  def test_list_eval_set_results(self, mock_time):
+  def test_list_eval_set_results(self, mocker):
+    mock_time = mocker.patch("time.time")
     mock_time.return_value = self.timestamp
     # Save two eval set results for the same app
     self.manager.save_eval_set_result(

@@ -57,7 +57,9 @@ information on using pull requests.
 ### Requirement for PRs
 
 -   All PRs, other than small documentation or typo fixes, should have a Issue
-    associated. If not, please create one.
+    associated. If a relevant issue doesn't exist, please create one first or
+    you may instead describe the bug or feature directly within the PR
+    description, following the structure of our issue templates.
 -   Small, focused PRs. Keep changes minimal—one concern per PR.
 -   For bug fixes or features, please provide logs or screenshot after the fix
     is applied to help reviewers better understand the fix.
@@ -143,7 +145,7 @@ part before or alongside your code PR.
 
 3.  **Create and activate a virtual environment:**
 
-    **NOTE**: ADK supports Python 3.9+. Python 3.11 and above is strongly
+    **NOTE**: ADK supports Python 3.10+. Python 3.11 and above is strongly
     recommended.
 
     Create a workspace venv using uv.
@@ -232,6 +234,6 @@ has resources that is helpful for contributors.
 
 ## Vibe Coding
 
-If you want to contribute by leveraging viber coding, the AGENTS.md
+If you want to contribute by leveraging vibe coding, the AGENTS.md
 (https://github.com/google/adk-python/tree/main/AGENTS.md) could be used as
 context to your LLM.

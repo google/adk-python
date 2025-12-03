@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 import abc
 from typing import Any
 from typing import Optional
@@ -81,9 +83,18 @@ class BaseSessionService(abc.ABC):
 
   @abc.abstractmethod
   async def list_sessions(
-      self, *, app_name: str, user_id: str
+      self, *, app_name: str, user_id: Optional[str] = None
   ) -> ListSessionsResponse:
-    """Lists all the sessions."""
+    """Lists all the sessions for a user.
+
+    Args:
+      app_name: The name of the app.
+      user_id: The ID of the user. If not provided, lists all sessions for all
+        users.
+
+    Returns:
+      A ListSessionsResponse containing the sessions.
+    """
 
   @abc.abstractmethod
   async def delete_session(
@@ -95,11 +106,24 @@ class BaseSessionService(abc.ABC):
     """Appends an event to a session object."""
     if event.partial:
       return event
-    self.__update_session_state(session, event)
+    event = self._trim_temp_delta_state(event)
+    self._update_session_state(session, event)
     session.events.append(event)
     return event
 
-  def __update_session_state(self, session: Session, event: Event) -> None:
+  def _trim_temp_delta_state(self, event: Event) -> Event:
+    """Removes temporary state delta keys from the event."""
+    if not event.actions or not event.actions.state_delta:
+      return event
+
+    event.actions.state_delta = {
+        key: value
+        for key, value in event.actions.state_delta.items()
+        if not key.startswith(State.TEMP_PREFIX)
+    }
+    return event
+
+  def _update_session_state(self, session: Session, event: Event) -> None:
     """Updates the session state based on the event."""
     if not event.actions or not event.actions.state_delta:
       return

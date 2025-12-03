@@ -1,0 +1,134 @@
+name: Copybara PR Handler
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR number to close (for testing)'
+        required: true
+        type: string
+      commit_sha:
+        description: 'Commit SHA reference (optional, for testing)'
+        required: false
+        type: string
+
+jobs:
+  close-imported-pr:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      issues: write
+      contents: read
+
+    steps:
+      - name: Check for Copybara commits and close PRs
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ secrets.ADK_TRIAGE_AGENT }}
+          script: |
+            // Check if this is a manual test run
+            const isManualRun = context.eventName === 'workflow_dispatch';
+
+            let prsToClose = [];
+
+            if (isManualRun) {
+              // Manual testing mode
+              const prNumber = parseInt(context.payload.inputs.pr_number);
+              const commitSha = context.payload.inputs.commit_sha || context.sha.substring(0, 7);
+
+              console.log('=== MANUAL TEST MODE ===');
+              console.log(`Testing with PR #${prNumber}, commit ${commitSha}`);
+
+              prsToClose.push({ prNumber, commitSha });
+            } else {
+              // Normal mode: process commits from push event
+              const commits = context.payload.commits || [];
+              console.log(`Found ${commits.length} commit(s) in this push`);
+
+              // Process each commit
+              for (const commit of commits) {
+                const sha = commit.id;
+                const committer = commit.committer.name;
+                const message = commit.message;
+
+                console.log(`\n--- Processing commit ${sha.substring(0, 7)} ---`);
+                console.log(`Committer: ${committer}`);
+
+                // Check if this is a Copybara commit
+                if (committer !== 'Copybara-Service') {
+                  console.log('Not a Copybara commit, skipping');
+                  continue;
+                }
+
+                // Extract PR number from commit message
+                // Pattern: "Merge https://github.com/google/adk-python/pull/3333"
+                const prMatch = message.match(/Merge https:\/\/github\.com\/google\/adk-python\/pull\/(\d+)/);
+
+                if (!prMatch) {
+                  console.log('No PR number found in Copybara commit message');
+                  continue;
+                }
+
+                const prNumber = parseInt(prMatch[1]);
+                const commitSha = sha.substring(0, 7);
+
+                prsToClose.push({ prNumber, commitSha });
+              }
+            }
+
+            // Process PRs to close
+            for (const { prNumber, commitSha } of prsToClose) {
+              console.log(`\n--- Processing PR #${prNumber} ---`);
+
+              // Get PR details to check if it's open
+              let pr;
+              try {
+                pr = await github.rest.pulls.get({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  pull_number: prNumber
+                });
+              } catch (error) {
+                console.log(`PR #${prNumber} not found or inaccessible:`, error.message);
+                continue;
+              }
+
+              // Only close if PR is still open
+              if (pr.data.state !== 'open') {
+                console.log(`PR #${prNumber} is already ${pr.data.state}, skipping`);
+                continue;
+              }
+
+              const author = pr.data.user.login;
+
+              try {
+                // Add comment with commit reference
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: prNumber,
+                  body: `Thank you @${author} for your contribution! 🎉\n\nYour changes have been successfully imported and merged via Copybara in commit ${commitSha}.\n\nClosing this PR as the changes are now in the main branch.`
+                });
+
+                // Close the PR
+                await github.rest.pulls.update({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  pull_number: prNumber,
+                  state: 'closed'
+                });
+
+                console.log(`Successfully closed PR #${prNumber}`);
+              } catch (error) {
+                console.log(`Error closing PR #${prNumber}:`, error.message);
+              }
+            }
+
+            if (isManualRun) {
+              console.log('\n=== TEST COMPLETED ===');
+            } else {
+              console.log('\n--- Finished processing all commits ---');
+            }

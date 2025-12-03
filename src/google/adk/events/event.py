@@ -84,7 +84,7 @@ class Event(LlmResponse):
 
     NOTE: This method is ONLY for use by Agent Development Kit.
 
-    Note that when multiple agents participage in one invocation, there could be
+    Note that when multiple agents participate in one invocation, there could be
     one event has `is_final_response()` as True for each participating agent.
     """
     if self.actions.skip_summarization or self.long_running_tool_ids:

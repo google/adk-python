@@ -58,6 +58,18 @@ async def test_branch_filtering_child_sees_parent():
           content=types.ModelContent("Child agent response"),
           branch="parent_agent.child_agent",  # Current branch - should be included
       ),
+      Event(
+          invocation_id="inv4",
+          author="child_agent",
+          content=types.ModelContent("Excluded response 1"),
+          branch="parent_agent.child_agent000",  # Prefix match BUT not itself/ancestor - should be excluded
+      ),
+      Event(
+          invocation_id="inv5",
+          author="child_agent",
+          content=types.ModelContent("Excluded response 2"),
+          branch="parent_agent.child",  # Prefix match BUT not itself/ancestor - should be excluded
+      ),
   ]
   invocation_context.session.events = events
 
