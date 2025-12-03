@@ -135,13 +135,13 @@ def _fetch_graphql_data(item_number: int) -> Dict[str, Any]:
       RequestException: If the GraphQL query returns errors or the issue is not found.
   """
   query = """
-    query($owner: String!, $name: String!, $number: Int!, $commentLimit: Int!, $timelineLimit: Int!) {
+    query($owner: String!, $name: String!, $number: Int!, $commentLimit: Int!, $timelineLimit: Int!, $editLimit: Int!) {
       repository(owner: $owner, name: $name) {
         issue(number: $number) {
           author { login }
           createdAt
           labels(first: 20) { nodes { name } }
-          
+
           comments(last: $commentLimit) {
             nodes {
               author { login }
@@ -150,14 +150,14 @@ def _fetch_graphql_data(item_number: int) -> Dict[str, Any]:
               lastEditedAt
             }
           }
-          
+
           userContentEdits(last: $editLimit) {
             nodes {
               editor { login }
               editedAt
             }
           }
-          
+
           timelineItems(itemTypes: [LABELED_EVENT, RENAMED_TITLE_EVENT, REOPENED_EVENT], last: $timelineLimit) {
             nodes {
               __typename
