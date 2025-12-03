@@ -215,8 +215,10 @@ class CredentialManager:
 
     if isinstance(exchanger, ServiceAccountCredentialExchanger):
       return (
-        exchanger.exchange_credential(self._auth_config.auth_scheme, credential),
-        True
+          exchanger.exchange_credential(
+              self._auth_config.auth_scheme, credential
+          ),
+          True,
       )
 
     return await exchanger.exchange(credential, self._auth_config.auth_scheme)

@@ -54,7 +54,9 @@ class TestOAuth2CredentialExchanger:
     )
 
     exchanger = OAuth2CredentialExchanger()
-    exchanged_credential, was_exchanged = await exchanger.exchange(credential, scheme)
+    exchanged_credential, was_exchanged = await exchanger.exchange(
+        credential, scheme
+    )
 
     # Should return the same credential since access token already exists
     assert exchanged_credential == credential
@@ -95,7 +97,9 @@ class TestOAuth2CredentialExchanger:
     )
 
     exchanger = OAuth2CredentialExchanger()
-    exchanged_credential, was_exchanged = await exchanger.exchange(credential, scheme)
+    exchanged_credential, was_exchanged = await exchanger.exchange(
+        credential, scheme
+    )
 
     # Verify token exchange was successful
     assert exchanged_credential.oauth2.access_token == "new_access_token"
@@ -144,7 +148,9 @@ class TestOAuth2CredentialExchanger:
     )
 
     exchanger = OAuth2CredentialExchanger()
-    exchanged_credential, was_exchanged = await exchanger.exchange(credential, scheme)
+    exchanged_credential, was_exchanged = await exchanger.exchange(
+        credential, scheme
+    )
 
     # Should return original credential when session creation fails
     assert exchanged_credential == credential
@@ -179,7 +185,9 @@ class TestOAuth2CredentialExchanger:
     )
 
     exchanger = OAuth2CredentialExchanger()
-    exchanged_credential, was_exchanged = await exchanger.exchange(credential, scheme)
+    exchanged_credential, was_exchanged = await exchanger.exchange(
+        credential, scheme
+    )
 
     # Should return original credential when fetch_token fails
     assert exchanged_credential == credential
@@ -215,7 +223,9 @@ class TestOAuth2CredentialExchanger:
         "google.adk.auth.exchanger.oauth2_credential_exchanger.AUTHLIB_AVAILABLE",
         False,
     ):
-      exchanged_credential, was_exchanged = await exchanger.exchange(credential, scheme)
+      exchanged_credential, was_exchanged = await exchanger.exchange(
+          credential, scheme
+      )
 
     # Should return original credential when authlib is not available
     assert exchanged_credential == credential
@@ -253,7 +263,9 @@ class TestOAuth2CredentialExchanger:
     )
 
     exchanger = OAuth2CredentialExchanger()
-    exchanged_credential, was_exchanged = await exchanger.exchange(credential, scheme)
+    exchanged_credential, was_exchanged = await exchanger.exchange(
+        credential, scheme
+    )
 
     # Verify client credentials exchange was successful
     assert exchanged_credential.oauth2.access_token == "client_access_token"
@@ -290,7 +302,9 @@ class TestOAuth2CredentialExchanger:
     )
 
     exchanger = OAuth2CredentialExchanger()
-    exchanged_credential, was_exchanged = await exchanger.exchange(credential, scheme)
+    exchanged_credential, was_exchanged = await exchanger.exchange(
+        credential, scheme
+    )
 
     # Should return original credential when client credentials exchange fails
     assert exchanged_credential == credential
