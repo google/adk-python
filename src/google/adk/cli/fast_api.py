@@ -342,25 +342,14 @@ def get_fast_api_app(
         )
 
   if a2a:
-    try:
-      from a2a.server.apps import A2AStarletteApplication
-      from a2a.server.request_handlers import DefaultRequestHandler
-      from a2a.server.tasks import InMemoryTaskStore
-      from a2a.types import AgentCard
-      from a2a.utils.constants import AGENT_CARD_WELL_KNOWN_PATH
+    from a2a.server.apps import A2AStarletteApplication
+    from a2a.server.request_handlers import DefaultRequestHandler
+    from a2a.server.tasks import InMemoryTaskStore
+    from a2a.types import AgentCard
+    from a2a.utils.constants import AGENT_CARD_WELL_KNOWN_PATH
 
-      from ..a2a.executor.a2a_agent_executor import A2aAgentExecutor
+    from ..a2a.executor.a2a_agent_executor import A2aAgentExecutor
 
-    except ImportError as e:
-      import sys
-
-      if sys.version_info < (3, 10):
-        raise ImportError(
-            "A2A requires Python 3.10 or above. Please upgrade your Python"
-            " version."
-        ) from e
-      else:
-        raise e
     # locate all a2a agent apps in the agents directory
     base_path = Path.cwd() / agents_dir
     # the root agents directory should be an existing folder
