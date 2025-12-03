@@ -36,7 +36,6 @@ from . import cli_create
 from . import cli_deploy
 from .. import version
 from ..evaluation.constants import MISSING_EVAL_DEPENDENCIES_MESSAGE
-from ..sessions.migration import migration_runner
 from .cli import run_cli
 from .fast_api import get_fast_api_app
 from .utils import envs
@@ -1498,41 +1497,6 @@ def cli_deploy_cloud_run(
     )
   except Exception as e:
     click.secho(f"Deploy failed: {e}", fg="red", err=True)
-
-
-@main.group()
-def migrate():
-  """Migrate ADK database schemas."""
-  pass
-
-
-@migrate.command("session", cls=HelpfulCommand)
-@click.option(
-    "--source_db_url",
-    required=True,
-    help="SQLAlchemy URL of source database.",
-)
-@click.option(
-    "--dest_db_url",
-    required=True,
-    help="SQLAlchemy URL of destination database.",
-)
-@click.option(
-    "--log_level",
-    type=LOG_LEVELS,
-    default="INFO",
-    help="Optional. Set the logging level",
-)
-def cli_migrate_session(
-    *, source_db_url: str, dest_db_url: str, log_level: str
-):
-  """Migrates a session database to the latest schema version."""
-  logs.setup_adk_logger(getattr(logging, log_level.upper()))
-  try:
-    migration_runner.upgrade(source_db_url, dest_db_url)
-    click.secho("Migration check and upgrade process finished.", fg="green")
-  except Exception as e:
-    click.secho(f"Migration failed: {e}", fg="red", err=True)
 
 
 @deploy.command("agent_engine")
