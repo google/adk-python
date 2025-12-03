@@ -19,16 +19,18 @@ from datetime import datetime
 from datetime import timezone
 import json
 import logging
+import pickle
 from typing import Any
 from typing import Optional
 import uuid
 
+from google.genai import types
+from sqlalchemy import Boolean
 from sqlalchemy import delete
 from sqlalchemy import Dialect
 from sqlalchemy import event
 from sqlalchemy import ForeignKeyConstraint
 from sqlalchemy import func
-from sqlalchemy import inspect
 from sqlalchemy import select
 from sqlalchemy import Text
 from sqlalchemy.dialects import mysql
@@ -39,11 +41,14 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from sqlalchemy.ext.asyncio import AsyncSession as DatabaseSessionFactory
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.ext.mutable import MutableDict
+from sqlalchemy.inspection import inspect
 from sqlalchemy.orm import DeclarativeBase
 from sqlalchemy.orm import Mapped
 from sqlalchemy.orm import mapped_column
 from sqlalchemy.orm import relationship
+from sqlalchemy.schema import MetaData
 from sqlalchemy.types import DateTime
+from sqlalchemy.types import PickleType
 from sqlalchemy.types import String
 from sqlalchemy.types import TypeDecorator
 from typing_extensions import override
@@ -52,10 +57,10 @@ from tzlocal import get_localzone
 from . import _session_util
 from ..errors.already_exists_error import AlreadyExistsError
 from ..events.event import Event
+from ..events.event_actions import EventActions
 from .base_session_service import BaseSessionService
 from .base_session_service import GetSessionConfig
 from .base_session_service import ListSessionsResponse
-from .migration import _schema_check
 from .session import Session
 from .state import State
 
@@ -106,20 +111,39 @@ class PreciseTimestamp(TypeDecorator):
     return self.impl
 
 
+class DynamicPickleType(TypeDecorator):
+  """Represents a type that can be pickled."""
+
+  impl = PickleType
+
+  def load_dialect_impl(self, dialect):
+    if dialect.name == "mysql":
+      return dialect.type_descriptor(mysql.LONGBLOB)
+    if dialect.name == "spanner+spanner":
+      from google.cloud.sqlalchemy_spanner.sqlalchemy_spanner import SpannerPickleType
+
+      return dialect.type_descriptor(SpannerPickleType)
+    return self.impl
+
+  def process_bind_param(self, value, dialect):
+    """Ensures the pickled value is a bytes object before passing it to the database dialect."""
+    if value is not None:
+      if dialect.name in ("spanner+spanner", "mysql"):
+        return pickle.dumps(value)
+    return value
+
+  def process_result_value(self, value, dialect):
+    """Ensures the raw bytes from the database are unpickled back into a Python object."""
+    if value is not None:
+      if dialect.name in ("spanner+spanner", "mysql"):
+        return pickle.loads(value)
+    return value
+
+
 class Base(DeclarativeBase):
   """Base class for database tables."""
 
   pass
-
-
-class StorageMetadata(Base):
-  """Represents internal metadata stored in the database."""
-
-  __tablename__ = "adk_internal_metadata"
-  key: Mapped[str] = mapped_column(
-      String(DEFAULT_MAX_KEY_LENGTH), primary_key=True
-  )
-  value: Mapped[str] = mapped_column(String(DEFAULT_MAX_VARCHAR_LENGTH))
 
 
 class StorageSession(Base):
@@ -213,10 +237,46 @@ class StorageEvent(Base):
   )
 
   invocation_id: Mapped[str] = mapped_column(String(DEFAULT_MAX_VARCHAR_LENGTH))
+  author: Mapped[str] = mapped_column(String(DEFAULT_MAX_VARCHAR_LENGTH))
+  actions: Mapped[MutableDict[str, Any]] = mapped_column(DynamicPickleType)
+  long_running_tool_ids_json: Mapped[Optional[str]] = mapped_column(
+      Text, nullable=True
+  )
+  branch: Mapped[str] = mapped_column(
+      String(DEFAULT_MAX_VARCHAR_LENGTH), nullable=True
+  )
   timestamp: Mapped[PreciseTimestamp] = mapped_column(
       PreciseTimestamp, default=func.now()
   )
-  event_data: Mapped[dict[str, Any]] = mapped_column(DynamicJSON)
+
+  # === Fields from llm_response.py ===
+  content: Mapped[dict[str, Any]] = mapped_column(DynamicJSON, nullable=True)
+  grounding_metadata: Mapped[dict[str, Any]] = mapped_column(
+      DynamicJSON, nullable=True
+  )
+  custom_metadata: Mapped[dict[str, Any]] = mapped_column(
+      DynamicJSON, nullable=True
+  )
+  usage_metadata: Mapped[dict[str, Any]] = mapped_column(
+      DynamicJSON, nullable=True
+  )
+  citation_metadata: Mapped[dict[str, Any]] = mapped_column(
+      DynamicJSON, nullable=True
+  )
+
+  partial: Mapped[bool] = mapped_column(Boolean, nullable=True)
+  turn_complete: Mapped[bool] = mapped_column(Boolean, nullable=True)
+  error_code: Mapped[str] = mapped_column(
+      String(DEFAULT_MAX_VARCHAR_LENGTH), nullable=True
+  )
+  error_message: Mapped[str] = mapped_column(String(1024), nullable=True)
+  interrupted: Mapped[bool] = mapped_column(Boolean, nullable=True)
+  input_transcription: Mapped[dict[str, Any]] = mapped_column(
+      DynamicJSON, nullable=True
+  )
+  output_transcription: Mapped[dict[str, Any]] = mapped_column(
+      DynamicJSON, nullable=True
+  )
 
   storage_session: Mapped[StorageSession] = relationship(
       "StorageSession",
@@ -231,27 +291,102 @@ class StorageEvent(Base):
       ),
   )
 
+  @property
+  def long_running_tool_ids(self) -> set[str]:
+    return (
+        set(json.loads(self.long_running_tool_ids_json))
+        if self.long_running_tool_ids_json
+        else set()
+    )
+
+  @long_running_tool_ids.setter
+  def long_running_tool_ids(self, value: set[str]):
+    if value is None:
+      self.long_running_tool_ids_json = None
+    else:
+      self.long_running_tool_ids_json = json.dumps(list(value))
+
   @classmethod
   def from_event(cls, session: Session, event: Event) -> StorageEvent:
-    """Creates a StorageEvent from an Event."""
-    return StorageEvent(
+    storage_event = StorageEvent(
         id=event.id,
         invocation_id=event.invocation_id,
+        author=event.author,
+        branch=event.branch,
+        actions=event.actions,
         session_id=session.id,
         app_name=session.app_name,
         user_id=session.user_id,
         timestamp=datetime.fromtimestamp(event.timestamp),
-        event_data=event.model_dump(exclude_none=True, mode="json"),
+        long_running_tool_ids=event.long_running_tool_ids,
+        partial=event.partial,
+        turn_complete=event.turn_complete,
+        error_code=event.error_code,
+        error_message=event.error_message,
+        interrupted=event.interrupted,
     )
+    if event.content:
+      storage_event.content = event.content.model_dump(
+          exclude_none=True, mode="json"
+      )
+    if event.grounding_metadata:
+      storage_event.grounding_metadata = event.grounding_metadata.model_dump(
+          exclude_none=True, mode="json"
+      )
+    if event.custom_metadata:
+      storage_event.custom_metadata = event.custom_metadata
+    if event.usage_metadata:
+      storage_event.usage_metadata = event.usage_metadata.model_dump(
+          exclude_none=True, mode="json"
+      )
+    if event.citation_metadata:
+      storage_event.citation_metadata = event.citation_metadata.model_dump(
+          exclude_none=True, mode="json"
+      )
+    if event.input_transcription:
+      storage_event.input_transcription = event.input_transcription.model_dump(
+          exclude_none=True, mode="json"
+      )
+    if event.output_transcription:
+      storage_event.output_transcription = (
+          event.output_transcription.model_dump(exclude_none=True, mode="json")
+      )
+    return storage_event
 
   def to_event(self) -> Event:
-    """Converts the StorageEvent to an Event."""
-    return Event.model_validate({
-        **self.event_data,
-        "id": self.id,
-        "invocation_id": self.invocation_id,
-        "timestamp": self.timestamp.timestamp(),
-    })
+    return Event(
+        id=self.id,
+        invocation_id=self.invocation_id,
+        author=self.author,
+        branch=self.branch,
+        # This is needed as previous ADK version pickled actions might not have
+        # value defined in the current version of the EventActions model.
+        actions=EventActions().model_copy(update=self.actions.model_dump()),
+        timestamp=self.timestamp.timestamp(),
+        long_running_tool_ids=self.long_running_tool_ids,
+        partial=self.partial,
+        turn_complete=self.turn_complete,
+        error_code=self.error_code,
+        error_message=self.error_message,
+        interrupted=self.interrupted,
+        custom_metadata=self.custom_metadata,
+        content=_session_util.decode_model(self.content, types.Content),
+        grounding_metadata=_session_util.decode_model(
+            self.grounding_metadata, types.GroundingMetadata
+        ),
+        usage_metadata=_session_util.decode_model(
+            self.usage_metadata, types.GenerateContentResponseUsageMetadata
+        ),
+        citation_metadata=_session_util.decode_model(
+            self.citation_metadata, types.CitationMetadata
+        ),
+        input_transcription=_session_util.decode_model(
+            self.input_transcription, types.Transcription
+        ),
+        output_transcription=_session_util.decode_model(
+            self.output_transcription, types.Transcription
+        ),
+    )
 
 
 class StorageAppState(Base):
@@ -328,6 +463,7 @@ class DatabaseSessionService(BaseSessionService):
     logger.info("Local timezone: %s", local_timezone)
 
     self.db_engine: AsyncEngine = db_engine
+    self.metadata: MetaData = MetaData()
 
     # DB session factory method
     self.database_session_factory: async_sessionmaker[
@@ -347,46 +483,10 @@ class DatabaseSessionService(BaseSessionService):
     async with self._table_creation_lock:
       # Double-check after acquiring the lock
       if not self._tables_created:
-        # Check schema version BEFORE creating tables.
-        # This prevents creating metadata table on a v0.1 DB.
-        async with self.database_session_factory() as sql_session:
-          version, is_v01 = await sql_session.run_sync(
-              _schema_check.get_version_and_v01_status_sync
-          )
-
-          if is_v01:
-            raise RuntimeError(
-                "Database schema appears to be v0.1, but"
-                f" {_schema_check.CURRENT_SCHEMA_VERSION} is required. Please"
-                " migrate the database using 'adk migrate session'."
-            )
-          elif version and version < _schema_check.CURRENT_SCHEMA_VERSION:
-            raise RuntimeError(
-                f"Database schema version is {version}, but current version is"
-                f" {_schema_check.CURRENT_SCHEMA_VERSION}. Please migrate"
-                " the database to the latest version using 'adk migrate"
-                " session'."
-            )
-
         async with self.db_engine.begin() as conn:
           # Uncomment to recreate DB every time
           # await conn.run_sync(Base.metadata.drop_all)
           await conn.run_sync(Base.metadata.create_all)
-
-        # If we are here, DB is either new or >= current version.
-        # If new or without metadata row, stamp it as current version.
-        async with self.database_session_factory() as sql_session:
-          metadata = await sql_session.get(
-              StorageMetadata, _schema_check.SCHEMA_VERSION_KEY
-          )
-          if not metadata:
-            sql_session.add(
-                StorageMetadata(
-                    key=_schema_check.SCHEMA_VERSION_KEY,
-                    value=_schema_check.CURRENT_SCHEMA_VERSION,
-                )
-            )
-            await sql_session.commit()
         self._tables_created = True
 
   @override
@@ -623,9 +723,7 @@ class DatabaseSessionService(BaseSessionService):
           storage_session.state = storage_session.state | session_state_delta
 
       if storage_session._dialect_name == "sqlite":
-        update_time = datetime.fromtimestamp(
-            event.timestamp, timezone.utc
-        ).replace(tzinfo=None)
+        update_time = datetime.utcfromtimestamp(event.timestamp)
       else:
         update_time = datetime.fromtimestamp(event.timestamp)
       storage_session.update_time = update_time

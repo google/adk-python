@@ -36,7 +36,6 @@ from . import cli_create
 from . import cli_deploy
 from .. import version
 from ..evaluation.constants import MISSING_EVAL_DEPENDENCIES_MESSAGE
-from ..sessions.migration import migration_runner
 from .cli import run_cli
 from .fast_api import get_fast_api_app
 from .utils import envs
@@ -108,6 +107,18 @@ class HelpfulCommand(click.Command):
 
 
 logger = logging.getLogger("google_adk." + __name__)
+
+
+_ADK_WEB_WARNING = (
+    "ADK Web is for development purposes. It has access to all data and"
+    " should not be used in production."
+)
+
+
+def _warn_if_with_ui(with_ui: bool) -> None:
+  """Warn when deploying with the developer UI enabled."""
+  if with_ui:
+    click.secho(f"WARNING: {_ADK_WEB_WARNING}", fg="yellow", err=True)
 
 
 @click.group(context_settings={"max_content_width": 240})
@@ -1429,6 +1440,8 @@ def cli_deploy_cloud_run(
         err=True,
     )
 
+  _warn_if_with_ui(with_ui)
+
   session_service_uri = session_service_uri or session_db_url
   artifact_service_uri = artifact_service_uri or artifact_storage_uri
 
@@ -1484,41 +1497,6 @@ def cli_deploy_cloud_run(
     )
   except Exception as e:
     click.secho(f"Deploy failed: {e}", fg="red", err=True)
-
-
-@main.group()
-def migrate():
-  """Migrate ADK database schemas."""
-  pass
-
-
-@migrate.command("session", cls=HelpfulCommand)
-@click.option(
-    "--source_db_url",
-    required=True,
-    help="SQLAlchemy URL of source database.",
-)
-@click.option(
-    "--dest_db_url",
-    required=True,
-    help="SQLAlchemy URL of destination database.",
-)
-@click.option(
-    "--log_level",
-    type=LOG_LEVELS,
-    default="INFO",
-    help="Optional. Set the logging level",
-)
-def cli_migrate_session(
-    *, source_db_url: str, dest_db_url: str, log_level: str
-):
-  """Migrates a session database to the latest schema version."""
-  logs.setup_adk_logger(getattr(logging, log_level.upper()))
-  try:
-    migration_runner.upgrade(source_db_url, dest_db_url)
-    click.secho("Migration check and upgrade process finished.", fg="green")
-  except Exception as e:
-    click.secho(f"Migration failed: {e}", fg="red", err=True)
 
 
 @deploy.command("agent_engine")
@@ -1848,6 +1826,7 @@ def cli_deploy_gke(
       --cluster_name=[cluster_name] path/to/my_agent
   """
   try:
+    _warn_if_with_ui(with_ui)
     cli_deploy.to_gke(
         agent_folder=agent,
         project=project,
