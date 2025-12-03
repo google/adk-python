@@ -110,6 +110,18 @@ class HelpfulCommand(click.Command):
 logger = logging.getLogger("google_adk." + __name__)
 
 
+_ADK_WEB_WARNING = (
+    "ADK Web is for development purposes. It has access to all data and"
+    " should not be used in production."
+)
+
+
+def _warn_if_with_ui(with_ui: bool) -> None:
+  """Warn when deploying with the developer UI enabled."""
+  if with_ui:
+    click.secho(f"WARNING: {_ADK_WEB_WARNING}", fg="yellow", err=True)
+
+
 @click.group(context_settings={"max_content_width": 240})
 @click.version_option(version.__version__)
 def main():
@@ -1429,6 +1441,8 @@ def cli_deploy_cloud_run(
         err=True,
     )
 
+  _warn_if_with_ui(with_ui)
+
   session_service_uri = session_service_uri or session_db_url
   artifact_service_uri = artifact_service_uri or artifact_storage_uri
 
@@ -1848,6 +1862,7 @@ def cli_deploy_gke(
       --cluster_name=[cluster_name] path/to/my_agent
   """
   try:
+    _warn_if_with_ui(with_ui)
     cli_deploy.to_gke(
         agent_folder=agent,
         project=project,
