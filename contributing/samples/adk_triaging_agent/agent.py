@@ -253,25 +253,6 @@ root_agent = Agent(
 
       {LABEL_GUIDELINES}
 
-      Here are the rules for labeling:
-      - If the user is asking about documentation-related questions, label it with "documentation".
-      - If it's about session, memory services, label it with "services".
-      - If it's about UI/web, label it with "web".
-      - If the user is asking about a question, label it with "question".
-      - If it's related to tools, label it with "tools".
-      - If it's about agent evaluation, then label it with "eval".
-      - If it's about streaming/live, label it with "live".
-      - If it's about model support (non-Gemini, like Litellm, Ollama, OpenAI models), label it with "models".
-      - If it's about tracing, label it with "tracing".
-      - If it's agent orchestration, agent definition, Runner behavior, planners, or performance, label it with "core".
-      - Use "agent engine" only when the issue clearly references Vertex AI Agent Engine deployment artifacts (for example `.agent_engine_config.json`, `ae_ignore`, `agent_engine_id`, or Agent Engine sandbox errors).
-      - If it's about Model Context Protocol (e.g. MCP tool, MCP toolset, MCP session management etc.), label it with both "mcp" and "tools".
-      - If it's about A2A integrations or workflows, label it with "a2a".
-      - If it's about BigQuery integrations, label it with "bq".
-      - If it's about workflow agents or workflow execution, label it with "workflow".
-      - If it's about authentication, label it with "auth".
-      - If you can't find an appropriate labels for the issue, follow the previous instruction that starts with "IMPORTANT:".
-
       ## Triaging Workflow
 
       Each issue will have flags indicating what actions are needed:
