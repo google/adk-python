@@ -35,6 +35,8 @@ from mcp import ClientSession
 from mcp import StdioServerParameters
 from mcp.client.sse import sse_client
 from mcp.client.stdio import stdio_client
+from mcp.client.streamable_http import create_mcp_http_client
+from mcp.client.streamable_http import McpHttpClientFactory
 from mcp.client.streamable_http import streamablehttp_client
 from pydantic import BaseModel
 from pydantic import ConfigDict
