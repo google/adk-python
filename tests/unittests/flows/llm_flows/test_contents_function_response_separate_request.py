@@ -69,6 +69,8 @@ async def test_function_response_in_separate_request():
           ),
       ),
   ]
+  # Simulate event cloning that happens during processing
+  events = [e.model_copy(deep=True) for e in events]
   invocation_context.session.events = events
 
   # Should not raise ValueError
