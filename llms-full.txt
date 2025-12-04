@@ -5620,7 +5620,7 @@ pip install google-cloud-aiplatform[adk,agent_engines]
 ```
 
 !!!info
-    Agent Engine only supported Python version >=3.9 and <=3.12.
+    Agent Engine only supported Python version >=3.10 and <=3.12.
 
 ### Initialization
 
@@ -8073,7 +8073,7 @@ setting up a basic agent with multiple tools, and running it locally either in t
 <!-- <img src="../../assets/quickstart.png" alt="Quickstart setup"> -->
 
 This quickstart assumes a local IDE (VS Code, PyCharm, IntelliJ IDEA, etc.)
-with Python 3.9+ or Java 17+ and terminal access. This method runs the
+with Python 3.10+ or Java 17+ and terminal access. This method runs the
 application entirely on your machine and is recommended for internal development.
 
 ## 1. Set up Environment & Install ADK {#venv-install}
@@ -16475,7 +16475,7 @@ This guide covers two primary integration patterns:
 Before you begin, ensure you have the following set up:
 
 * **Set up ADK:** Follow the standard ADK [setup instructions](../get-started/quickstart.md/#venv-install) in the quickstart.
-* **Install/update Python/Java:** MCP requires Python version of 3.9 or higher for Python or Java 17+.
+* **Install/update Python/Java:** MCP requires Python version of 3.10 or higher for Python or Java 17+.
 * **Setup Node.js and npx:** **(Python only)** Many community MCP servers are distributed as Node.js packages and run using `npx`. Install Node.js (which includes npx) if you haven't already. For details, see [https://nodejs.org/en](https://nodejs.org/en).
 * **Verify Installations:** **(Python only)** Confirm `adk` and `npx` are in your PATH within the activated virtual environment:
 

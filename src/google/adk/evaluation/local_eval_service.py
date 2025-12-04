@@ -55,7 +55,7 @@ from .evaluator import EvaluationResult
 from .evaluator import PerInvocationResult
 from .metric_evaluator_registry import DEFAULT_METRIC_EVALUATOR_REGISTRY
 from .metric_evaluator_registry import MetricEvaluatorRegistry
-from .user_simulator_provider import UserSimulatorProvider
+from .simulation.user_simulator_provider import UserSimulatorProvider
 
 logger = logging.getLogger('google_adk.' + __name__)
 

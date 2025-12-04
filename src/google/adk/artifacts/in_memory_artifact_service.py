@@ -18,12 +18,13 @@ import logging
 from typing import Any
 from typing import Optional
 
-from google.adk.artifacts import artifact_util
 from google.genai import types
 from pydantic import BaseModel
 from pydantic import Field
 from typing_extensions import override
 
+from . import artifact_util
+from ..errors.input_validation_error import InputValidationError
 from .base_artifact_service import ArtifactVersion
 from .base_artifact_service import BaseArtifactService
 
@@ -86,7 +87,7 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
       return f"{app_name}/{user_id}/user/{filename}"
 
     if session_id is None:
-      raise ValueError(
+      raise InputValidationError(
           "Session ID must be provided for session-scoped artifacts."
       )
     return f"{app_name}/{user_id}/{session_id}/{filename}"
@@ -125,7 +126,7 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
     elif artifact.file_data is not None:
       if artifact_util.is_artifact_ref(artifact):
         if not artifact_util.parse_artifact_uri(artifact.file_data.file_uri):
-          raise ValueError(
+          raise InputValidationError(
               f"Invalid artifact reference URI: {artifact.file_data.file_uri}"
           )
         # If it's a valid artifact URI, we store the artifact part as-is.
@@ -133,7 +134,7 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
       else:
         artifact_version.mime_type = artifact.file_data.mime_type
     else:
-      raise ValueError("Not supported artifact type.")
+      raise InputValidationError("Not supported artifact type.")
 
     self.artifacts[path].append(
         _ArtifactEntry(data=artifact, artifact_version=artifact_version)
@@ -172,7 +173,7 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
           artifact_data.file_data.file_uri
       )
       if not parsed_uri:
-        raise ValueError(
+        raise InputValidationError(
             "Invalid artifact reference URI:"
             f" {artifact_data.file_data.file_uri}"
         )
