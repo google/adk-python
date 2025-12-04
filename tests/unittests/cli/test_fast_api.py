@@ -416,15 +416,15 @@ def test_app(
   with (
       patch("signal.signal", return_value=None),
       patch(
-          "google.adk.cli.fast_api.InMemorySessionService",
+          "google.adk.cli.fast_api.create_session_service_from_options",
           return_value=mock_session_service,
       ),
       patch(
-          "google.adk.cli.fast_api.InMemoryArtifactService",
+          "google.adk.cli.fast_api.create_artifact_service_from_options",
           return_value=mock_artifact_service,
       ),
       patch(
-          "google.adk.cli.fast_api.InMemoryMemoryService",
+          "google.adk.cli.fast_api.create_memory_service_from_options",
           return_value=mock_memory_service,
       ),
       patch(
@@ -556,15 +556,15 @@ def test_app_with_a2a(
   with (
       patch("signal.signal", return_value=None),
       patch(
-          "google.adk.cli.fast_api.InMemorySessionService",
+          "google.adk.cli.fast_api.create_session_service_from_options",
           return_value=mock_session_service,
       ),
       patch(
-          "google.adk.cli.fast_api.InMemoryArtifactService",
+          "google.adk.cli.fast_api.create_artifact_service_from_options",
           return_value=mock_artifact_service,
       ),
       patch(
-          "google.adk.cli.fast_api.InMemoryMemoryService",
+          "google.adk.cli.fast_api.create_memory_service_from_options",
           return_value=mock_memory_service,
       ),
       patch(
