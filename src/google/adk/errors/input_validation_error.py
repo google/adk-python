@@ -12,5 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# version: major.minor.patch
-__version__ = "1.20.0"
+from __future__ import annotations
+
+
+class InputValidationError(ValueError):
+  """Represents an error raised when user input fails validation."""
+
+  def __init__(self, message="Invalid input."):
+    """Initializes the InputValidationError exception.
+
+    Args:
+        message (str): A message describing why the input is invalid.
+    """
+    self.message = message
+    super().__init__(self.message)

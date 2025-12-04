@@ -39,15 +39,7 @@ try:
 
 except ImportError as e:
   import logging
-  import sys
 
   logger = logging.getLogger('google_adk.' + __name__)
-
-  if sys.version_info < (3, 10):
-    logger.warning(
-        'MCP Tool requires Python 3.10 or above. Please upgrade your Python'
-        ' version.'
-    )
-  else:
-    logger.debug('MCP Tool is not installed')
-    logger.debug(e)
+  logger.debug('MCP Tool is not installed')
+  logger.debug(e)

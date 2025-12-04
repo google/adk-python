@@ -14,8 +14,8 @@
 
 from __future__ import annotations
 
-from google.adk.evaluation.user_simulator import NextUserMessage
-from google.adk.evaluation.user_simulator import Status
+from google.adk.evaluation.simulation.user_simulator import NextUserMessage
+from google.adk.evaluation.simulation.user_simulator import Status
 from google.genai.types import Content
 import pytest
 

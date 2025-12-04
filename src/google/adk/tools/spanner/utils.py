@@ -105,3 +105,27 @@ def execute_sql(
         "status": "ERROR",
         "error_details": str(ex),
     }
+
+
+def embed_contents(
+    vertex_ai_embedding_model_name: str,
+    contents: list[str],
+    output_dimensionality: Optional[int] = None,
+) -> list[list[float]]:
+  """Embed the given contents into list of vectors using the Vertex AI embedding model endpoint."""
+  try:
+    from google.genai import Client
+    from google.genai.types import EmbedContentConfig
+
+    client = Client()
+    config = EmbedContentConfig()
+    if output_dimensionality:
+      config.output_dimensionality = output_dimensionality
+    response = client.models.embed_content(
+        model=vertex_ai_embedding_model_name,
+        contents=contents,
+        config=config,
+    )
+    return [list(e.values) for e in response.embeddings]
+  except Exception as ex:
+    raise RuntimeError(f"Failed to embed content: {ex!r}") from ex

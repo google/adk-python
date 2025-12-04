@@ -32,6 +32,7 @@ from pydantic import Field
 from pydantic import ValidationError
 from typing_extensions import override
 
+from ..errors.input_validation_error import InputValidationError
 from .base_artifact_service import ArtifactVersion
 from .base_artifact_service import BaseArtifactService
 
@@ -100,14 +101,14 @@ def _resolve_scoped_artifact_path(
     to `scope_root`.
 
   Raises:
-    ValueError: If `filename` resolves outside of `scope_root`.
+    InputValidationError: If `filename` resolves outside of `scope_root`.
   """
   stripped = _strip_user_namespace(filename).strip()
   pure_path = _to_posix_path(stripped)
 
   scope_root_resolved = scope_root.resolve(strict=False)
   if pure_path.is_absolute():
-    raise ValueError(
+    raise InputValidationError(
         f"Absolute artifact filename {filename!r} is not permitted; "
         "provide a path relative to the storage scope."
     )
@@ -118,7 +119,7 @@ def _resolve_scoped_artifact_path(
   try:
     relative = candidate.relative_to(scope_root_resolved)
   except ValueError as exc:
-    raise ValueError(
+    raise InputValidationError(
         f"Artifact filename {filename!r} escapes storage directory "
         f"{scope_root_resolved}"
     ) from exc
@@ -230,7 +231,7 @@ class FileArtifactService(BaseArtifactService):
     if _is_user_scoped(session_id, filename):
       return _user_artifacts_dir(base)
     if not session_id:
-      raise ValueError(
+      raise InputValidationError(
           "Session ID must be provided for session-scoped artifacts."
       )
     return _session_artifacts_dir(base, session_id)
@@ -371,7 +372,9 @@ class FileArtifactService(BaseArtifactService):
       content_path.write_text(artifact.text, encoding="utf-8")
       mime_type = None
     else:
-      raise ValueError("Artifact must have either inline_data or text content.")
+      raise InputValidationError(
+          "Artifact must have either inline_data or text content."
+      )
 
     canonical_uri = self._canonical_uri(
         user_id=user_id,
