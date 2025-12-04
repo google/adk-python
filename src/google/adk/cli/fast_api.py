@@ -35,28 +35,24 @@ from opentelemetry.sdk.trace import TracerProvider
 from starlette.types import Lifespan
 from watchdog.observers import Observer
 
-from ..artifacts.in_memory_artifact_service import InMemoryArtifactService
 from ..auth.credential_service.in_memory_credential_service import InMemoryCredentialService
 from ..evaluation.local_eval_set_results_manager import LocalEvalSetResultsManager
 from ..evaluation.local_eval_sets_manager import LocalEvalSetsManager
-from ..memory.in_memory_memory_service import InMemoryMemoryService
 from ..runners import Runner
-from ..sessions.in_memory_session_service import InMemorySessionService
 from .adk_web_server import AdkWebServer
-from .service_registry import get_service_registry
 from .service_registry import load_services_module
 from .utils import envs
 from .utils import evals
 from .utils.agent_change_handler import AgentChangeEventHandler
 from .utils.agent_loader import AgentLoader
+from .utils.service_factory import create_artifact_service_from_options
+from .utils.service_factory import create_memory_service_from_options
+from .utils.service_factory import create_session_service_from_options
 
 logger = logging.getLogger("google_adk." + __name__)
 
 _LAZY_SERVICE_IMPORTS: dict[str, str] = {
     "AgentLoader": ".utils.agent_loader",
-    "InMemoryArtifactService": "..artifacts.in_memory_artifact_service",
-    "InMemoryMemoryService": "..memory.in_memory_memory_service",
-    "InMemorySessionService": "..sessions.in_memory_session_service",
     "LocalEvalSetResultsManager": "..evaluation.local_eval_set_results_manager",
     "LocalEvalSetsManager": "..evaluation.local_eval_sets_manager",
 }
@@ -112,48 +108,31 @@ def get_fast_api_app(
   # Load services.py from agents_dir for custom service registration.
   load_services_module(agents_dir)
 
-  service_registry = get_service_registry()
-
   # Build the Memory service
-  if memory_service_uri:
-    memory_service = service_registry.create_memory_service(
-        memory_service_uri, agents_dir=agents_dir
+  try:
+    memory_service = create_memory_service_from_options(
+        base_dir=agents_dir,
+        memory_service_uri=memory_service_uri,
     )
-    if not memory_service:
-      raise click.ClickException(
-          "Unsupported memory service URI: %s" % memory_service_uri
-      )
-  else:
-    memory_service = InMemoryMemoryService()
+  except ValueError as exc:
+    raise click.ClickException(str(exc)) from exc
 
   # Build the Session service
-  if session_service_uri:
-    session_kwargs = session_db_kwargs or {}
-    session_service = service_registry.create_session_service(
-        session_service_uri, agents_dir=agents_dir, **session_kwargs
-    )
-    if not session_service:
-      # Fallback to DatabaseSessionService if the service registry doesn't
-      # support the session service URI scheme.
-      from ..sessions.database_session_service import DatabaseSessionService
-
-      session_service = DatabaseSessionService(
-          db_url=session_service_uri, **session_kwargs
-      )
-  else:
-    session_service = InMemorySessionService()
+  session_service = create_session_service_from_options(
+      base_dir=agents_dir,
+      session_service_uri=session_service_uri,
+      session_db_kwargs=session_db_kwargs,
+  )
 
   # Build the Artifact service
-  if artifact_service_uri:
-    artifact_service = service_registry.create_artifact_service(
-        artifact_service_uri, agents_dir=agents_dir
+  try:
+    artifact_service = create_artifact_service_from_options(
+        base_dir=agents_dir,
+        artifact_service_uri=artifact_service_uri,
+        strict_uri=True,
     )
-    if not artifact_service:
-      raise click.ClickException(
-          "Unsupported artifact service URI: %s" % artifact_service_uri
-      )
-  else:
-    artifact_service = InMemoryArtifactService()
+  except ValueError as exc:
+    raise click.ClickException(str(exc)) from exc
 
   # Build  the Credential service
   credential_service = InMemoryCredentialService()
