@@ -18,7 +18,7 @@ The agent performs different actions based on the issue state:
 
 ### Component Labels
 The agent can assign the following component labels, each mapped to an owner:
-- `core`, `tools`, `mcp`, `eval`, `live`, `models`, `tracing`, `web`, `services`, `documentation`, `question`, `agent engine`, `a2a`, `bq`
+- `a2a`, `agent engine`, `auth`, `bq`, `core`, `documentation`, `eval`, `live`, `mcp`, `models`, `services`, `tools`, `tracing`, `web`, `workflow`
 
 ### Issue Types
 Based on the issue content, the agent will set the issue type to:
