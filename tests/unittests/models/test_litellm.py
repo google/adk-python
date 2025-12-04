@@ -1383,6 +1383,43 @@ async def test_content_to_message_param_multi_part_function_response():
 
 
 @pytest.mark.asyncio
+async def test_content_to_message_param_function_response_preserves_string():
+  """Tests that string responses are used directly without double-serialization.
+
+  The google.genai FunctionResponse.response field is typed as dict, but
+  _content_to_message_param defensively handles string responses to avoid
+  double-serialization. This test verifies that behavior by mocking a
+  function_response with a string response attribute.
+  """
+  response_payload = '{"type": "files", "count": 2}'
+
+  # Create a Part with a dict response, then mock the response to be a string
+  # to simulate edge cases where response might be set directly as a string
+  part = types.Part.from_function_response(
+      name="list_files",
+      response={"placeholder": "will be mocked"},
+  )
+
+  # Mock the response attribute to return a string
+  # Using Mock without spec_set to allow setting response to a string,
+  # which simulates the edge case we're testing
+  mock_function_response = Mock(spec=types.FunctionResponse)
+  mock_function_response.response = response_payload
+  mock_function_response.id = "tool_call_1"
+  part.function_response = mock_function_response
+
+  content = types.Content(
+      role="tool",
+      parts=[part],
+  )
+  message = await _content_to_message_param(content)
+
+  assert message["role"] == "tool"
+  assert message["tool_call_id"] == "tool_call_1"
+  assert message["content"] == response_payload
+
+
+@pytest.mark.asyncio
 async def test_content_to_message_param_assistant_message():
   content = types.Content(
       role="assistant", parts=[types.Part.from_text(text="Test response")]
