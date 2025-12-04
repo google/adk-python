@@ -53,3 +53,13 @@ try:
 except Exception:
   # LiteLLM support requires: pip install google-adk[extensions]
   pass
+
+# Optionally register Gemma3Ollama if litellm package is installed
+try:
+  from .gemma_llm import Gemma3Ollama
+
+  LLMRegistry.register(Gemma3Ollama)
+  __all__.append('Gemma3Ollama')
+except Exception:
+  # Gemma3Ollama requires LiteLLM: pip install google-adk[extensions]
+  pass
