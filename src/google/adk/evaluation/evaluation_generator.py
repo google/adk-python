@@ -184,7 +184,7 @@ class EvaluationGenerator:
       # Loop through user simulator messages (handles both static and dynamic)
       while True:
           next_user_message = await user_simulator.get_next_user_message(
-              events
+              copy.deepcopy(events)
           )
           if next_user_message.status == UserSimulatorStatus.SUCCESS:
               async for event in EvaluationGenerator._generate_inferences_for_single_user_invocation(
