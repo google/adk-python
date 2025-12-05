@@ -15,10 +15,35 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
+from typing import Optional
+from typing import TYPE_CHECKING
 from typing import Union
 
 from pydantic import BaseModel
 import yaml
+
+if TYPE_CHECKING:
+  from pydantic.main import IncEx
+
+
+def load_yaml_file(file_path: Union[str, Path]) -> Any:
+  """Loads a YAML file and returns its content.
+
+  Args:
+    file_path: Path to the YAML file.
+
+  Returns:
+    The content of the YAML file.
+
+  Raises:
+    FileNotFoundError: If the file_path does not exist.
+  """
+  file_path = Path(file_path)
+  if not file_path.is_file():
+    raise FileNotFoundError(f'YAML file not found: {file_path}')
+  with file_path.open('r', encoding='utf-8') as f:
+    return yaml.safe_load(f)
 
 
 def dump_pydantic_to_yaml(
@@ -28,6 +53,8 @@ def dump_pydantic_to_yaml(
     indent: int = 2,
     sort_keys: bool = True,
     exclude_none: bool = True,
+    exclude_defaults: bool = True,
+    exclude: Optional[IncEx] = None,
 ) -> None:
   """Dump a Pydantic model to a YAML file with multiline strings using | style.
 
@@ -37,8 +64,16 @@ def dump_pydantic_to_yaml(
     indent: Number of spaces for indentation (default: 2).
     sort_keys: Whether to sort dictionary keys (default: True).
     exclude_none: Exclude fields with None values (default: True).
+    exclude_defaults: Exclude fields with default values (default: True).
+    exclude: Fields to exclude from the output. Can be a set of field names or
+      a nested dict for fine-grained exclusion (default: None).
   """
-  model_dict = model.model_dump(exclude_none=exclude_none, mode='json')
+  model_dict = model.model_dump(
+      exclude_none=exclude_none,
+      exclude_defaults=exclude_defaults,
+      exclude=exclude,
+      mode='json',
+  )
 
   file_path = Path(file_path)
   file_path.parent.mkdir(parents=True, exist_ok=True)
@@ -55,7 +90,7 @@ def dump_pydantic_to_yaml(
       return super(_MultilineDumper, self).increase_indent(flow, False)
 
   def multiline_str_representer(dumper, data):
-    if '\n' in data:
+    if '\n' in data or '"' in data or "'" in data:
       return dumper.represent_scalar('tag:yaml.org,2002:str', data, style='|')
     return dumper.represent_scalar('tag:yaml.org,2002:str', data)
 
@@ -69,5 +104,6 @@ def dump_pydantic_to_yaml(
         Dumper=_MultilineDumper,
         indent=indent,
         sort_keys=sort_keys,
-        default_flow_style=False,
+        width=1000000,  # Essentially disable text wraps
+        allow_unicode=True,  # Do not escape non-ascii characters.
     )

@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import asyncio
+from contextlib import aclosing
 import os
 import time
 
@@ -46,19 +47,16 @@ async def main():
         role='user', parts=[types.Part.from_text(text=new_message)]
     )
     print('** User says:', content.model_dump(exclude_none=True))
-    # TODO - migrate try...finally to contextlib.aclosing after Python 3.9 is
-    # no longer supported.
-    agen = runner.run_async(
-        user_id=user_id_1,
-        session_id=session.id,
-        new_message=content,
-    )
-    try:
+    async with aclosing(
+        runner.run_async(
+            user_id=user_id_1,
+            session_id=session.id,
+            new_message=content,
+        )
+    ) as agen:
       async for event in agen:
         if event.content.parts and event.content.parts[0].text:
           print(f'** {event.author}: {event.content.parts[0].text}')
-    finally:
-      await agen.aclose()
 
   async def run_prompt_bytes(session: Session, new_message: str):
     content = types.Content(
@@ -70,20 +68,17 @@ async def main():
         ],
     )
     print('** User says:', content.model_dump(exclude_none=True))
-    # TODO - migrate try...finally to contextlib.aclosing after Python 3.9 is
-    # no longer supported.
-    agen = runner.run_async(
-        user_id=user_id_1,
-        session_id=session.id,
-        new_message=content,
-        run_config=RunConfig(save_input_blobs_as_artifacts=True),
-    )
-    try:
+    async with aclosing(
+        runner.run_async(
+            user_id=user_id_1,
+            session_id=session.id,
+            new_message=content,
+            run_config=RunConfig(save_input_blobs_as_artifacts=True),
+        )
+    ) as agen:
       async for event in agen:
         if event.content.parts and event.content.parts[0].text:
           print(f'** {event.author}: {event.content.parts[0].text}')
-    finally:
-      await agen.aclose()
 
   start_time = time.time()
   print('Start time:', start_time)

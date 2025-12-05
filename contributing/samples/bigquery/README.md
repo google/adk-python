@@ -9,23 +9,26 @@ distributed via the `google.adk.tools.bigquery` module. These tools include:
 
   Fetches BigQuery dataset ids present in a GCP project.
 
-1. `get_dataset_info`
+2. `get_dataset_info`
 
   Fetches metadata about a BigQuery dataset.
 
-1. `list_table_ids`
+3. `list_table_ids`
 
   Fetches table ids present in a BigQuery dataset.
 
-1. `get_table_info`
+4. `get_table_info`
 
   Fetches metadata about a BigQuery table.
 
-1. `execute_sql`
+5. `get_job_info`
+  Fetches metadata about a BigQuery job.
 
-  Runs a SQL query in BigQuery.
+5. `execute_sql`
 
-1. `ask_data_insights`
+  Runs or dry-runs a SQL query in BigQuery.
+
+6. `ask_data_insights`
 
   Natural language-in, natural language-out tool that answers questions
   about structured data in BigQuery. Provides a one-stop solution for generating
@@ -35,10 +38,22 @@ distributed via the `google.adk.tools.bigquery` module. These tools include:
   the official [Conversational Analytics API documentation](https://cloud.google.com/gemini/docs/conversational-analytics-api/overview)
   for instructions.
 
-1. `forecast`
+7. `forecast`
 
   Perform time series forecasting using BigQuery's `AI.FORECAST` function,
   leveraging the TimesFM 2.0 model.
+
+8. `analyze_contribution`
+
+  Perform contribution analysis in BigQuery by creating a temporary
+  `CONTRIBUTION_ANALYSIS` model and then querying it with
+  `ML.GET_INSIGHTS` to find top contributors for a given metric.
+
+9. `detect_anomalies`
+
+  Perform time series anomaly detection in BigQuery by creating a temporary
+  `ARIMA_PLUS` model and then querying it with
+  `ML.DETECT_ANOMALIES` to detect time series data anomalies.
 
 ## How to use
 

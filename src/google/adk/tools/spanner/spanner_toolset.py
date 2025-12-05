@@ -47,6 +47,8 @@ class SpannerToolset(BaseToolset):
     - spanner_list_named_schemas
     - spanner_get_table_schema
     - spanner_execute_sql
+    - spanner_similarity_search
+    - spanner_vector_store_similarity_search
   """
 
   def __init__(
@@ -121,6 +123,16 @@ class SpannerToolset(BaseToolset):
               tool_settings=self._tool_settings,
           )
       )
+      if self._tool_settings.vector_store_settings:
+        # Only add the vector store similarity search tool if the vector store
+        # settings are specified.
+        all_tools.append(
+            GoogleTool(
+                func=search_tool.vector_store_similarity_search,
+                credentials_config=self._credentials_config,
+                tool_settings=self._tool_settings,
+            )
+        )
 
     return [
         tool

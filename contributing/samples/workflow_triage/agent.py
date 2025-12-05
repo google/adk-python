@@ -40,15 +40,15 @@ You should do the following:
 
 1. Analyze the user input and decide any worker agents that are relevant;
 2. If none of the worker agents are relevant, you should explain to user that no relevant agents are available and ask for something else;
-2. Update the execution plan with the relevant worker agents using `update_execution_plan` tool.
-3. Transfer control to the plan_execution_agent for the actual plan execution.
+3. Update the execution plan with the relevant worker agents using `update_execution_plan` tool.
+4. Transfer control to the plan_execution_agent for the actual plan execution.
 
 When calling the `update_execution_plan` tool, you should pass the list of worker agents that are relevant to user's input.
 
 NOTE:
 
 * If you are not clear about user's intent, you should ask for clarification first;
-* Only after you're clear about user's intent, you can proceed to step #2.
+* Only after you're clear about user's intent, you can proceed to step #3.
 """,
     sub_agents=[
         execution_agent.plan_execution_agent,

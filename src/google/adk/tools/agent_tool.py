@@ -45,11 +45,22 @@ class AgentTool(BaseTool):
   Attributes:
     agent: The agent to wrap.
     skip_summarization: Whether to skip summarization of the agent output.
+    include_plugins: Whether to propagate plugins from the parent runner context
+      to the agent's runner. When True (default), the agent will inherit all
+      plugins from its parent. Set to False to run the agent with an isolated
+      plugin environment.
   """
 
-  def __init__(self, agent: BaseAgent, skip_summarization: bool = False):
+  def __init__(
+      self,
+      agent: BaseAgent,
+      skip_summarization: bool = False,
+      *,
+      include_plugins: bool = True,
+  ):
     self.agent = agent
     self.skip_summarization: bool = skip_summarization
+    self.include_plugins = include_plugins
 
     super().__init__(name=agent.name, description=agent.description)
 
@@ -68,6 +79,8 @@ class AgentTool(BaseTool):
       result = _automatic_function_calling_util.build_function_declaration(
           func=self.agent.input_schema, variant=self._api_variant
       )
+      # Override the description with the agent's description
+      result.description = self.agent.description
     else:
       result = types.FunctionDeclaration(
           parameters=types.Schema(
@@ -125,19 +138,35 @@ class AgentTool(BaseTool):
           role='user',
           parts=[types.Part.from_text(text=args['request'])],
       )
+    invocation_context = tool_context._invocation_context
+    parent_app_name = (
+        invocation_context.app_name if invocation_context else None
+    )
+    child_app_name = parent_app_name or self.agent.name
+    plugins = (
+        tool_context._invocation_context.plugin_manager.plugins
+        if self.include_plugins
+        else None
+    )
     runner = Runner(
-        app_name=self.agent.name,
+        app_name=child_app_name,
         agent=self.agent,
         artifact_service=ForwardingArtifactService(tool_context),
         session_service=InMemorySessionService(),
         memory_service=InMemoryMemoryService(),
         credential_service=tool_context._invocation_context.credential_service,
-        plugins=list(tool_context._invocation_context.plugin_manager.plugins),
+        plugins=plugins,
     )
+
+    state_dict = {
+        k: v
+        for k, v in tool_context.state.to_dict().items()
+        if not k.startswith('_adk')  # Filter out adk internal states
+    }
     session = await runner.session_service.create_session(
-        app_name=self.agent.name,
+        app_name=child_app_name,
         user_id=tool_context._invocation_context.user_id,
-        state=tool_context.state.to_dict(),
+        state=state_dict,
     )
 
     last_content = None
@@ -152,6 +181,10 @@ class AgentTool(BaseTool):
           tool_context.state.update(event.actions.state_delta)
         if event.content:
           last_content = event.content
+
+    # Clean up runner resources (especially MCP sessions)
+    # to avoid "Attempted to exit cancel scope in a different task" errors
+    await runner.close()
 
     if not last_content:
       return ''
@@ -177,7 +210,9 @@ class AgentTool(BaseTool):
         agent_tool_config.agent, config_abs_path
     )
     return cls(
-        agent=agent, skip_summarization=agent_tool_config.skip_summarization
+        agent=agent,
+        skip_summarization=agent_tool_config.skip_summarization,
+        include_plugins=agent_tool_config.include_plugins,
     )
 
 
@@ -189,3 +224,6 @@ class AgentToolConfig(BaseToolConfig):
 
   skip_summarization: bool = False
   """Whether to skip summarization of the agent output."""
+
+  include_plugins: bool = True
+  """Whether to include plugins from parent runner context."""
