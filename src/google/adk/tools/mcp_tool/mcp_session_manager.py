@@ -363,6 +363,25 @@ class MCPSessionManager:
         logger.debug('Created new session: %s', session_key)
         return session
 
+      except asyncio.CancelledError as e:
+        # CancelledError can occur when the MCP server returns an HTTP error
+        # (e.g., 401, 403). The MCP SDK uses anyio cancel scopes internally,
+        # which raise CancelledError. Since CancelledError is a BaseException
+        # (not Exception) in Python 3.8+, it must be caught explicitly.
+        logger.warning(
+            'MCP session creation cancelled (likely due to HTTP error): %s', e
+        )
+        try:
+          await exit_stack.aclose()
+        except Exception as exit_stack_error:
+          logger.warning(
+              'Error during cancelled session cleanup: %s', exit_stack_error
+          )
+        raise ConnectionError(
+            f'MCP session creation cancelled (server may have returned HTTP'
+            f' error): {e}'
+        ) from e
+
       except Exception as e:
         # If session creation fails, clean up the exit stack
         if exit_stack:

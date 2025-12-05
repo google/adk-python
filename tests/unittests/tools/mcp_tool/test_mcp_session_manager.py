@@ -291,6 +291,42 @@ class TestMCPSessionManager:
     mock_exit_stack.aclose.assert_called_once()
 
   @pytest.mark.asyncio
+  @patch("google.adk.tools.mcp_tool.mcp_session_manager.stdio_client")
+  @patch("google.adk.tools.mcp_tool.mcp_session_manager.AsyncExitStack")
+  async def test_create_session_cancelled_error(
+      self, mock_exit_stack_class, mock_stdio
+  ):
+    """Test session creation when CancelledError is raised (e.g., HTTP 403).
+
+    When an MCP server returns an HTTP error (e.g., 401, 403), the MCP SDK
+    uses anyio cancel scopes internally, which raise CancelledError. This
+    test verifies that CancelledError is caught and converted to a
+    ConnectionError with proper cleanup.
+    """
+    manager = MCPSessionManager(self.mock_stdio_connection_params)
+
+    mock_exit_stack = MockAsyncExitStack()
+
+    mock_exit_stack_class.return_value = mock_exit_stack
+    mock_stdio.return_value = AsyncMock()
+
+    # Simulate CancelledError during session creation (e.g., HTTP 403)
+    mock_exit_stack.enter_async_context.side_effect = asyncio.CancelledError(
+        "Cancelled by cancel scope"
+    )
+
+    # Expect ConnectionError due to CancelledError
+    with pytest.raises(
+        ConnectionError, match="MCP session creation cancelled"
+    ):
+      await manager.create_session()
+
+    # Verify session was not added to pool
+    assert not manager._sessions
+    # Verify cleanup was called
+    mock_exit_stack.aclose.assert_called_once()
+
+  @pytest.mark.asyncio
   async def test_close_success(self):
     """Test successful cleanup of all sessions."""
     manager = MCPSessionManager(self.mock_stdio_connection_params)
