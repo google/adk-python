@@ -26,23 +26,11 @@ from typing import List
 from typing import Optional
 from typing import Union
 
-from .utils import _get_adk_metadata_key
-
-try:
-  from a2a import types as a2a_types
-except ImportError as e:
-  import sys
-
-  if sys.version_info < (3, 10):
-    raise ImportError(
-        'A2A requires Python 3.10 or above. Please upgrade your Python version.'
-    ) from e
-  else:
-    raise e
-
+from a2a import types as a2a_types
 from google.genai import types as genai_types
 
 from ..experimental import a2a_experimental
+from .utils import _get_adk_metadata_key
 
 logger = logging.getLogger('google_adk.' + __name__)
 

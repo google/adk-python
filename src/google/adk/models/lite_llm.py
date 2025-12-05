@@ -39,8 +39,8 @@ import litellm
 from litellm import acompletion
 from litellm import ChatCompletionAssistantMessage
 from litellm import ChatCompletionAssistantToolCall
-from litellm import ChatCompletionDeveloperMessage
 from litellm import ChatCompletionMessageToolCall
+from litellm import ChatCompletionSystemMessage
 from litellm import ChatCompletionToolMessage
 from litellm import ChatCompletionUserMessage
 from litellm import completion
@@ -82,9 +82,49 @@ _FINISH_REASON_MAPPING = {
     "content_filter": types.FinishReason.SAFETY,
 }
 
-_SUPPORTED_FILE_CONTENT_MIME_TYPES = set(
-    ["application/pdf", "application/json"]
-)
+# File MIME types supported for upload as file content (not decoded as text).
+# Note: text/* types are handled separately and decoded as text content.
+# These types are uploaded as files to providers that support it.
+_SUPPORTED_FILE_CONTENT_MIME_TYPES = frozenset({
+    # Documents
+    "application/pdf",
+    "application/msword",  # .doc
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",  # .docx
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",  # .pptx
+    # Data formats
+    "application/json",
+    # Scripts (when not detected as text/*)
+    "application/x-sh",  # .sh (Python mimetypes returns this)
+})
+
+# Providers that require file_id instead of inline file_data
+_FILE_ID_REQUIRED_PROVIDERS = frozenset({"openai", "azure"})
+
+
+def _get_provider_from_model(model: str) -> str:
+  """Extracts the provider name from a LiteLLM model string.
+
+  Args:
+    model: The model string (e.g., "openai/gpt-4o", "azure/gpt-4").
+
+  Returns:
+    The provider name or empty string if not determinable.
+  """
+  if not model:
+    return ""
+  # LiteLLM uses "provider/model" format
+  if "/" in model:
+    provider, _ = model.split("/", 1)
+    return provider.lower()
+  # Fallback heuristics for common patterns
+  model_lower = model.lower()
+  if "azure" in model_lower:
+    return "azure"
+  # Note: The 'openai' check is based on current naming conventions (e.g., gpt-, o1).
+  # This might need updates if OpenAI introduces new model families with different prefixes.
+  if model_lower.startswith("gpt-") or model_lower.startswith("o1"):
+    return "openai"
+  return ""
 
 
 def _decode_inline_text_data(raw_bytes: bytes) -> str:
@@ -94,6 +134,64 @@ def _decode_inline_text_data(raw_bytes: bytes) -> str:
   except UnicodeDecodeError:
     logger.debug("Falling back to latin-1 decoding for inline file bytes.")
     return raw_bytes.decode("latin-1", errors="replace")
+
+
+def _iter_reasoning_texts(reasoning_value: Any) -> Iterable[str]:
+  """Yields textual fragments from provider specific reasoning payloads."""
+  if reasoning_value is None:
+    return
+
+  if isinstance(reasoning_value, types.Content):
+    if not reasoning_value.parts:
+      return
+    for part in reasoning_value.parts:
+      if part and part.text:
+        yield part.text
+    return
+
+  if isinstance(reasoning_value, str):
+    yield reasoning_value
+    return
+
+  if isinstance(reasoning_value, list):
+    for value in reasoning_value:
+      yield from _iter_reasoning_texts(value)
+    return
+
+  if isinstance(reasoning_value, dict):
+    # LiteLLM currently nests “reasoning” text under a few known keys.
+    # (Documented in https://docs.litellm.ai/docs/openai#reasoning-outputs)
+    for key in ("text", "content", "reasoning", "reasoning_content"):
+      text_value = reasoning_value.get(key)
+      if isinstance(text_value, str):
+        yield text_value
+    return
+
+  text_attr = getattr(reasoning_value, "text", None)
+  if isinstance(text_attr, str):
+    yield text_attr
+  elif isinstance(reasoning_value, (int, float, bool)):
+    yield str(reasoning_value)
+
+
+def _convert_reasoning_value_to_parts(reasoning_value: Any) -> List[types.Part]:
+  """Converts provider reasoning payloads into Gemini thought parts."""
+  return [
+      types.Part(text=text, thought=True)
+      for text in _iter_reasoning_texts(reasoning_value)
+      if text
+  ]
+
+
+def _extract_reasoning_value(message: Message | Dict[str, Any]) -> Any:
+  """Fetches the reasoning payload from a LiteLLM message or dict."""
+  if message is None:
+    return None
+  if hasattr(message, "reasoning_content"):
+    return getattr(message, "reasoning_content")
+  if isinstance(message, dict):
+    return message.get("reasoning_content")
+  return None
 
 
 class ChatCompletionFileUrlObject(TypedDict, total=False):
@@ -111,6 +209,10 @@ class FunctionChunk(BaseModel):
 
 class TextChunk(BaseModel):
   text: str
+
+
+class ReasoningChunk(BaseModel):
+  parts: List[types.Part]
 
 
 class UsageMetadataChunk(BaseModel):
@@ -287,8 +389,10 @@ def _extract_cached_prompt_tokens(usage: Any) -> int:
   return 0
 
 
-def _content_to_message_param(
+async def _content_to_message_param(
     content: types.Content,
+    *,
+    provider: str = "",
 ) -> Union[Message, list[Message]]:
   """Converts a types.Content to a litellm Message or list of Messages.
 
@@ -297,6 +401,7 @@ def _content_to_message_param(
 
   Args:
     content: The content to convert.
+    provider: The LLM provider name (e.g., "openai", "azure").
 
   Returns:
     A litellm Message, a list of litellm Messages.
@@ -305,11 +410,17 @@ def _content_to_message_param(
   tool_messages = []
   for part in content.parts:
     if part.function_response:
+      response = part.function_response.response
+      response_content = (
+          response
+          if isinstance(response, str)
+          else _safe_json_serialize(response)
+      )
       tool_messages.append(
           ChatCompletionToolMessage(
               role="tool",
               tool_call_id=part.function_response.id,
-              content=_safe_json_serialize(part.function_response.response),
+              content=response_content,
           )
       )
   if tool_messages:
@@ -317,7 +428,7 @@ def _content_to_message_param(
 
   # Handle user or assistant messages
   role = _to_litellm_role(content.role)
-  message_content = _get_content(content.parts) or None
+  message_content = await _get_content(content.parts, provider=provider) or None
 
   if role == "user":
     return ChatCompletionUserMessage(role="user", content=message_content)
@@ -356,13 +467,16 @@ def _content_to_message_param(
     )
 
 
-def _get_content(
+async def _get_content(
     parts: Iterable[types.Part],
+    *,
+    provider: str = "",
 ) -> Union[OpenAIMessageContent, str]:
   """Converts a list of parts to litellm content.
 
   Args:
     parts: The parts to convert.
+    provider: The LLM provider name (e.g., "openai", "azure").
 
   Returns:
     The litellm content.
@@ -412,10 +526,22 @@ def _get_content(
             "audio_url": {"url": data_uri},
         })
       elif part.inline_data.mime_type in _SUPPORTED_FILE_CONTENT_MIME_TYPES:
-        content_objects.append({
-            "type": "file",
-            "file": {"file_data": data_uri},
-        })
+        # OpenAI/Azure require file_id from uploaded file, not inline data
+        if provider in _FILE_ID_REQUIRED_PROVIDERS:
+          file_response = await litellm.acreate_file(
+              file=part.inline_data.data,
+              purpose="assistants",
+              custom_llm_provider=provider,
+          )
+          content_objects.append({
+              "type": "file",
+              "file": {"file_id": file_response.id},
+          })
+        else:
+          content_objects.append({
+              "type": "file",
+              "file": {"file_data": data_uri},
+          })
       else:
         raise ValueError(
             "LiteLlm(BaseLlm) does not support content part with MIME type "
@@ -570,10 +696,8 @@ TYPE_LABELS = {
 }
 
 
-def _schema_to_dict(schema: types.Schema) -> dict:
-  """Recursively converts a types.Schema to a pure-python dict
-
-  with all enum values written as lower-case strings.
+def _schema_to_dict(schema: types.Schema | dict[str, Any]) -> dict:
+  """Recursively converts a schema object or dict to a pure-python dict.
 
   Args:
     schema: The schema to convert.
@@ -581,38 +705,36 @@ def _schema_to_dict(schema: types.Schema) -> dict:
   Returns:
     The dictionary representation of the schema.
   """
-  # Dump without json encoding so we still get Enum members
-  schema_dict = schema.model_dump(exclude_none=True)
+  schema_dict = (
+      schema.model_dump(exclude_none=True)
+      if isinstance(schema, types.Schema)
+      else dict(schema)
+  )
+  enum_values = schema_dict.get("enum")
+  if isinstance(enum_values, (list, tuple)):
+    schema_dict["enum"] = [value for value in enum_values if value is not None]
 
-  # ---- normalise this level ------------------------------------------------
-  if "type" in schema_dict:
-    # schema_dict["type"] can be an Enum or a str
+  if "type" in schema_dict and schema_dict["type"] is not None:
     t = schema_dict["type"]
-    schema_dict["type"] = (t.value if isinstance(t, types.Type) else t).lower()
+    schema_dict["type"] = (
+        t.value if isinstance(t, types.Type) else str(t)
+    ).lower()
 
-  # ---- recurse into `items` -----------------------------------------------
   if "items" in schema_dict:
-    schema_dict["items"] = _schema_to_dict(
-        schema.items
-        if isinstance(schema.items, types.Schema)
-        else types.Schema.model_validate(schema_dict["items"])
+    items = schema_dict["items"]
+    schema_dict["items"] = (
+        _schema_to_dict(items)
+        if isinstance(items, (types.Schema, dict))
+        else items
     )
 
-  # ---- recurse into `properties` ------------------------------------------
   if "properties" in schema_dict:
     new_props = {}
     for key, value in schema_dict["properties"].items():
-      # value is a dict → rebuild a Schema object and recurse
-      if isinstance(value, dict):
-        new_props[key] = _schema_to_dict(types.Schema.model_validate(value))
-      # value is already a Schema instance
-      elif isinstance(value, types.Schema):
+      if isinstance(value, (types.Schema, dict)):
         new_props[key] = _schema_to_dict(value)
-      # plain dict without nested schemas
       else:
         new_props[key] = value
-        if "type" in new_props[key]:
-          new_props[key]["type"] = new_props[key]["type"].lower()
     schema_dict["properties"] = new_props
 
   return schema_dict
@@ -660,7 +782,6 @@ def _function_declaration_to_tool_param(
       },
   }
 
-  # Handle required field from parameters
   required_fields = (
       getattr(function_declaration.parameters, "required", None)
       if function_declaration.parameters
@@ -668,8 +789,6 @@ def _function_declaration_to_tool_param(
   )
   if required_fields:
     tool_params["function"]["parameters"]["required"] = required_fields
-  # parameters_json_schema already has required field in the json schema,
-  # no need to add it separately
 
   return tool_params
 
@@ -678,7 +797,14 @@ def _model_response_to_chunk(
     response: ModelResponse,
 ) -> Generator[
     Tuple[
-        Optional[Union[TextChunk, FunctionChunk, UsageMetadataChunk]],
+        Optional[
+            Union[
+                TextChunk,
+                FunctionChunk,
+                UsageMetadataChunk,
+                ReasoningChunk,
+            ]
+        ],
         Optional[str],
     ],
     None,
@@ -703,11 +829,18 @@ def _model_response_to_chunk(
 
     message_content: Optional[OpenAIMessageContent] = None
     tool_calls: list[ChatCompletionMessageToolCall] = []
+    reasoning_parts: List[types.Part] = []
     if message is not None:
       (
           message_content,
           tool_calls,
       ) = _split_message_content_and_tool_calls(message)
+      reasoning_value = _extract_reasoning_value(message)
+      if reasoning_value:
+        reasoning_parts = _convert_reasoning_value_to_parts(reasoning_value)
+
+    if reasoning_parts:
+      yield ReasoningChunk(parts=reasoning_parts), finish_reason
 
     if message_content:
       yield TextChunk(text=message_content), finish_reason
@@ -771,8 +904,13 @@ def _model_response_to_generate_content_response(
   if not message:
     raise ValueError("No message in response")
 
+  thought_parts = _convert_reasoning_value_to_parts(
+      _extract_reasoning_value(message)
+  )
   llm_response = _message_to_generate_content_response(
-      message, model_version=response.model
+      message,
+      model_version=response.model,
+      thought_parts=thought_parts or None,
   )
   if finish_reason:
     # If LiteLLM already provides a FinishReason enum (e.g., for Gemini), use
@@ -797,7 +935,11 @@ def _model_response_to_generate_content_response(
 
 
 def _message_to_generate_content_response(
-    message: Message, *, is_partial: bool = False, model_version: str = None
+    message: Message,
+    *,
+    is_partial: bool = False,
+    model_version: str = None,
+    thought_parts: Optional[List[types.Part]] = None,
 ) -> LlmResponse:
   """Converts a litellm message to LlmResponse.
 
@@ -810,7 +952,13 @@ def _message_to_generate_content_response(
     The LlmResponse.
   """
 
-  parts = []
+  parts: List[types.Part] = []
+  if not thought_parts:
+    thought_parts = _convert_reasoning_value_to_parts(
+        _extract_reasoning_value(message)
+    )
+  if thought_parts:
+    parts.extend(thought_parts)
   message_content, tool_calls = _split_message_content_and_tool_calls(message)
   if isinstance(message_content, str) and message_content:
     parts.append(types.Part.from_text(text=message_content))
@@ -870,7 +1018,7 @@ def _to_litellm_response_format(
   }
 
 
-def _get_completion_inputs(
+async def _get_completion_inputs(
     llm_request: LlmRequest,
 ) -> Tuple[
     List[Message],
@@ -887,10 +1035,15 @@ def _get_completion_inputs(
     The litellm inputs (message list, tool dictionary, response format and
     generation params).
   """
+  # Determine provider for file handling
+  provider = _get_provider_from_model(llm_request.model or "")
+
   # 1. Construct messages
   messages: List[Message] = []
   for content in llm_request.contents or []:
-    message_param_or_list = _content_to_message_param(content)
+    message_param_or_list = await _content_to_message_param(
+        content, provider=provider
+    )
     if isinstance(message_param_or_list, list):
       messages.extend(message_param_or_list)
     elif message_param_or_list:  # Ensure it's not None before appending
@@ -899,8 +1052,8 @@ def _get_completion_inputs(
   if llm_request.config.system_instruction:
     messages.insert(
         0,
-        ChatCompletionDeveloperMessage(
-            role="developer",
+        ChatCompletionSystemMessage(
+            role="system",
             content=llm_request.config.system_instruction,
         ),
     )
@@ -972,15 +1125,9 @@ def _build_function_declaration_log(
         k: v.model_dump(exclude_none=True)
         for k, v in func_decl.parameters.properties.items()
     })
-  elif func_decl.parameters_json_schema:
-    param_str = str(func_decl.parameters_json_schema)
-
   return_str = "None"
   if func_decl.response:
     return_str = str(func_decl.response.model_dump(exclude_none=True))
-  elif func_decl.response_json_schema:
-    return_str = str(func_decl.response_json_schema)
-
   return f"{func_decl.name}: {param_str} -> {return_str}"
 
 
@@ -1162,7 +1309,7 @@ class LiteLlm(BaseLlm):
     logger.debug(_build_request_log(llm_request))
 
     messages, tools, response_format, generation_params = (
-        _get_completion_inputs(llm_request)
+        await _get_completion_inputs(llm_request)
     )
 
     if "functions" in self._additional_args:
@@ -1182,6 +1329,7 @@ class LiteLlm(BaseLlm):
 
     if stream:
       text = ""
+      reasoning_parts: List[types.Part] = []
       # Track function calls by index
       function_calls = {}  # index -> {name, args, id}
       completion_args["stream"] = True
@@ -1223,6 +1371,14 @@ class LiteLlm(BaseLlm):
                 is_partial=True,
                 model_version=part.model,
             )
+          elif isinstance(chunk, ReasoningChunk):
+            if chunk.parts:
+              reasoning_parts.extend(chunk.parts)
+              yield LlmResponse(
+                  content=types.Content(role="model", parts=list(chunk.parts)),
+                  partial=True,
+                  model_version=part.model,
+              )
           elif isinstance(chunk, UsageMetadataChunk):
             usage_metadata = types.GenerateContentResponseUsageMetadata(
                 prompt_token_count=chunk.prompt_tokens,
@@ -1256,16 +1412,27 @@ class LiteLlm(BaseLlm):
                         tool_calls=tool_calls,
                     ),
                     model_version=part.model,
+                    thought_parts=list(reasoning_parts)
+                    if reasoning_parts
+                    else None,
                 )
             )
             text = ""
+            reasoning_parts = []
             function_calls.clear()
-          elif finish_reason == "stop" and text:
+          elif finish_reason == "stop" and (text or reasoning_parts):
+            message_content = text if text else None
             aggregated_llm_response = _message_to_generate_content_response(
-                ChatCompletionAssistantMessage(role="assistant", content=text),
+                ChatCompletionAssistantMessage(
+                    role="assistant", content=message_content
+                ),
                 model_version=part.model,
+                thought_parts=list(reasoning_parts)
+                if reasoning_parts
+                else None,
             )
             text = ""
+            reasoning_parts = []
 
       # waiting until streaming ends to yield the llm_response as litellm tends
       # to send chunk that contains usage_metadata after the chunk with
@@ -1290,11 +1457,19 @@ class LiteLlm(BaseLlm):
   def supported_models(cls) -> list[str]:
     """Provides the list of supported models.
 
-    LiteLlm supports all models supported by litellm. We do not keep track of
-    these models here. So we return an empty list.
+    This registers common provider prefixes. LiteLlm can handle many more,
+    but these patterns activate the integration for the most common use cases.
+    See https://docs.litellm.ai/docs/providers for a full list.
 
     Returns:
       A list of supported models.
     """
 
-    return []
+    return [
+        # For OpenAI models (e.g., "openai/gpt-4o")
+        r"openai/.*",
+        # For Groq models via Groq API (e.g., "groq/llama3-70b-8192")
+        r"groq/.*",
+        # For Anthropic models (e.g., "anthropic/claude-3-opus-20240229")
+        r"anthropic/.*",
+    ]

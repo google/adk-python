@@ -14,69 +14,37 @@
 
 import json
 from pathlib import Path
-import sys
 import tempfile
 from unittest.mock import AsyncMock
 from unittest.mock import create_autospec
 from unittest.mock import Mock
 from unittest.mock import patch
 
+from a2a.client.client import ClientConfig
+from a2a.client.client import Consumer
+from a2a.client.client_factory import ClientFactory
+from a2a.types import AgentCapabilities
+from a2a.types import AgentCard
+from a2a.types import AgentSkill
+from a2a.types import Artifact
+from a2a.types import Message as A2AMessage
+from a2a.types import Part as A2ATaskStatus
+from a2a.types import SendMessageSuccessResponse
+from a2a.types import Task as A2ATask
+from a2a.types import TaskArtifactUpdateEvent
+from a2a.types import TaskState
+from a2a.types import TaskStatus
+from a2a.types import TaskStatusUpdateEvent
+from a2a.types import TextPart
+from google.adk.agents.invocation_context import InvocationContext
+from google.adk.agents.remote_a2a_agent import A2A_METADATA_PREFIX
+from google.adk.agents.remote_a2a_agent import AgentCardResolutionError
+from google.adk.agents.remote_a2a_agent import RemoteA2aAgent
 from google.adk.events.event import Event
 from google.adk.sessions.session import Session
 from google.genai import types as genai_types
 import httpx
 import pytest
-
-# Skip all tests in this module if Python version is less than 3.10
-pytestmark = pytest.mark.skipif(
-    sys.version_info < (3, 10), reason="A2A requires Python 3.10+"
-)
-
-# Import dependencies with version checking
-try:
-  from a2a.client.client import ClientConfig
-  from a2a.client.client import Consumer
-  from a2a.client.client_factory import ClientFactory
-  from a2a.types import AgentCapabilities
-  from a2a.types import AgentCard
-  from a2a.types import AgentSkill
-  from a2a.types import Artifact
-  from a2a.types import Message as A2AMessage
-  from a2a.types import Part as A2ATaskStatus
-  from a2a.types import SendMessageSuccessResponse
-  from a2a.types import Task as A2ATask
-  from a2a.types import TaskArtifactUpdateEvent
-  from a2a.types import TaskState
-  from a2a.types import TaskStatus
-  from a2a.types import TaskStatusUpdateEvent
-  from a2a.types import TextPart
-  from google.adk.agents.invocation_context import InvocationContext
-  from google.adk.agents.remote_a2a_agent import A2A_METADATA_PREFIX
-  from google.adk.agents.remote_a2a_agent import AgentCardResolutionError
-  from google.adk.agents.remote_a2a_agent import RemoteA2aAgent
-except ImportError as e:
-  if sys.version_info < (3, 10):
-    # Create dummy classes to prevent NameError during module compilation.
-    # These are needed because the module has type annotations and module-level
-    # helper functions that reference imported types.
-    class DummyTypes:
-      pass
-
-    AgentCapabilities = DummyTypes()
-    AgentCard = DummyTypes()
-    AgentSkill = DummyTypes()
-    A2AMessage = DummyTypes()
-    SendMessageSuccessResponse = DummyTypes()
-    A2ATask = DummyTypes()
-    TaskStatusUpdateEvent = DummyTypes()
-    Artifact = DummyTypes()
-    TaskArtifactUpdateEvent = DummyTypes()
-    InvocationContext = DummyTypes()
-    RemoteA2aAgent = DummyTypes()
-    AgentCardResolutionError = Exception
-    A2A_METADATA_PREFIX = ""
-  else:
-    raise e
 
 
 # Helper function to create a proper AgentCard for testing
@@ -723,6 +691,7 @@ class TestRemoteA2aAgentMessageHandling:
           mock_a2a_message,
           self.agent.name,
           self.mock_context,
+          self.mock_a2a_part_converter,
       )
       # Check that metadata was added
       assert result.custom_metadata is not None
@@ -760,6 +729,7 @@ class TestRemoteA2aAgentMessageHandling:
           mock_a2a_task,
           self.agent.name,
           self.mock_context,
+          self.mock_a2a_part_converter,
       )
       # Check the parts are not updated as Thought
       assert result.content.parts[0].thought is None
@@ -864,6 +834,7 @@ class TestRemoteA2aAgentMessageHandling:
           mock_a2a_task,
           self.agent.name,
           self.mock_context,
+          self.mock_a2a_part_converter,
       )
       # Check the parts are updated as Thought
       assert result.content.parts[0].thought is True
@@ -909,6 +880,7 @@ class TestRemoteA2aAgentMessageHandling:
           mock_a2a_message,
           self.agent.name,
           self.mock_context,
+          self.mock_a2a_part_converter,
       )
       # Check that metadata was added
       assert result.custom_metadata is not None
@@ -954,6 +926,7 @@ class TestRemoteA2aAgentMessageHandling:
           mock_a2a_message,
           self.agent.name,
           self.mock_context,
+          self.mock_a2a_part_converter,
       )
       # Check that metadata was added
       assert result.custom_metadata is not None
@@ -1009,7 +982,10 @@ class TestRemoteA2aAgentMessageHandling:
 
       assert result == mock_event
       mock_convert.assert_called_once_with(
-          mock_a2a_task, self.agent.name, self.mock_context
+          mock_a2a_task,
+          self.agent.name,
+          self.mock_context,
+          self.agent._a2a_part_converter,
       )
       # Check that metadata was added
       assert result.custom_metadata is not None
@@ -1039,6 +1015,8 @@ class TestRemoteA2aAgentMessageHandlingFromFactory:
 
   def setup_method(self):
     """Setup test fixtures."""
+    self.mock_a2a_part_converter = Mock()
+
     self.agent_card = create_test_agent_card()
     self.agent = RemoteA2aAgent(
         name="test_agent",
@@ -1046,6 +1024,7 @@ class TestRemoteA2aAgentMessageHandlingFromFactory:
         a2a_client_factory=ClientFactory(
             config=ClientConfig(httpx_client=httpx.AsyncClient()),
         ),
+        a2a_part_converter=self.mock_a2a_part_converter,
     )
 
     # Mock session and context
@@ -1173,7 +1152,10 @@ class TestRemoteA2aAgentMessageHandlingFromFactory:
 
       assert result == mock_event
       mock_convert.assert_called_once_with(
-          mock_a2a_message, self.agent.name, self.mock_context
+          mock_a2a_message,
+          self.agent.name,
+          self.mock_context,
+          self.mock_a2a_part_converter,
       )
       # Check that metadata was added
       assert result.custom_metadata is not None
@@ -1211,6 +1193,7 @@ class TestRemoteA2aAgentMessageHandlingFromFactory:
           mock_a2a_task,
           self.agent.name,
           self.mock_context,
+          self.mock_a2a_part_converter,
       )
       # Check the parts are not updated as Thought
       assert result.content.parts[0].thought is None
@@ -1251,6 +1234,7 @@ class TestRemoteA2aAgentMessageHandlingFromFactory:
           mock_a2a_task,
           self.agent.name,
           self.mock_context,
+          self.agent._a2a_part_converter,
       )
       # Check the parts are updated as Thought
       assert result.content.parts[0].thought is True
@@ -1296,6 +1280,7 @@ class TestRemoteA2aAgentMessageHandlingFromFactory:
           mock_a2a_message,
           self.agent.name,
           self.mock_context,
+          self.agent._a2a_part_converter,
       )
       # Check that metadata was added
       assert result.custom_metadata is not None
@@ -1341,6 +1326,7 @@ class TestRemoteA2aAgentMessageHandlingFromFactory:
           mock_a2a_message,
           self.agent.name,
           self.mock_context,
+          self.agent._a2a_part_converter,
       )
       # Check that metadata was added
       assert result.custom_metadata is not None
@@ -1396,7 +1382,10 @@ class TestRemoteA2aAgentMessageHandlingFromFactory:
 
       assert result == mock_event
       mock_convert.assert_called_once_with(
-          mock_a2a_task, self.agent.name, self.mock_context
+          mock_a2a_task,
+          self.agent.name,
+          self.mock_context,
+          self.agent._a2a_part_converter,
       )
       # Check that metadata was added
       assert result.custom_metadata is not None

@@ -26,39 +26,28 @@ from typing import Union
 from urllib.parse import urlparse
 import uuid
 
-try:
-  from a2a.client import Client as A2AClient
-  from a2a.client import ClientEvent as A2AClientEvent
-  from a2a.client.card_resolver import A2ACardResolver
-  from a2a.client.client import ClientConfig as A2AClientConfig
-  from a2a.client.client_factory import ClientFactory as A2AClientFactory
-  from a2a.client.errors import A2AClientError
-  from a2a.types import AgentCard
-  from a2a.types import Message as A2AMessage
-  from a2a.types import Part as A2APart
-  from a2a.types import Role
-  from a2a.types import TaskArtifactUpdateEvent as A2ATaskArtifactUpdateEvent
-  from a2a.types import TaskState
-  from a2a.types import TaskStatusUpdateEvent as A2ATaskStatusUpdateEvent
-  from a2a.types import TransportProtocol as A2ATransport
-except ImportError as e:
-  import sys
-
-  if sys.version_info < (3, 10):
-    raise ImportError(
-        "A2A requires Python 3.10 or above. Please upgrade your Python version."
-    ) from e
-  else:
-    raise e
+from a2a.client import Client as A2AClient
+from a2a.client import ClientEvent as A2AClientEvent
+from a2a.client.card_resolver import A2ACardResolver
+from a2a.client.client import ClientConfig as A2AClientConfig
+from a2a.client.client_factory import ClientFactory as A2AClientFactory
+from a2a.client.errors import A2AClientError
+from a2a.types import AgentCard
+from a2a.types import Message as A2AMessage
+from a2a.types import Part as A2APart
+from a2a.types import Role
+from a2a.types import TaskArtifactUpdateEvent as A2ATaskArtifactUpdateEvent
+from a2a.types import TaskState
+from a2a.types import TaskStatusUpdateEvent as A2ATaskStatusUpdateEvent
+from a2a.types import TransportProtocol as A2ATransport
+from google.genai import types as genai_types
+import httpx
 
 try:
   from a2a.utils.constants import AGENT_CARD_WELL_KNOWN_PATH
 except ImportError:
   # Fallback for older versions of a2a-sdk.
   AGENT_CARD_WELL_KNOWN_PATH = "/.well-known/agent.json"
-
-from google.genai import types as genai_types
-import httpx
 
 from ..a2a.converters.event_converter import convert_a2a_message_to_event
 from ..a2a.converters.event_converter import convert_a2a_task_to_event
@@ -417,7 +406,9 @@ class RemoteA2aAgent(BaseAgent):
           # This is the initial response for a streaming task or the complete
           # response for a non-streaming task, which is the full task state.
           # We process this to get the initial message.
-          event = convert_a2a_task_to_event(task, self.name, ctx)
+          event = convert_a2a_task_to_event(
+              task, self.name, ctx, self._a2a_part_converter
+          )
           # for streaming task, we update the event with the task status.
           # We update the event as Thought updates.
           if task and task.status and task.status.state == TaskState.submitted:
@@ -429,7 +420,7 @@ class RemoteA2aAgent(BaseAgent):
         ):
           # This is a streaming task status update with a message.
           event = convert_a2a_message_to_event(
-              update.status.message, self.name, ctx
+              update.status.message, self.name, ctx, self._a2a_part_converter
           )
           if event.content and update.status.state in [
               TaskState.submitted,
@@ -447,7 +438,9 @@ class RemoteA2aAgent(BaseAgent):
           # signals:
           # 1. append: True for partial updates, False for full updates.
           # 2. last_chunk: True for full updates, False for partial updates.
-          event = convert_a2a_task_to_event(task, self.name, ctx)
+          event = convert_a2a_task_to_event(
+              task, self.name, ctx, self._a2a_part_converter
+          )
         else:
           # This is a streaming update without a message (e.g. status change)
           # or a partial artifact update. We don't emit an event for these
@@ -463,7 +456,9 @@ class RemoteA2aAgent(BaseAgent):
 
       # Otherwise, it's a regular A2AMessage for non-streaming responses.
       elif isinstance(a2a_response, A2AMessage):
-        event = convert_a2a_message_to_event(a2a_response, self.name, ctx)
+        event = convert_a2a_message_to_event(
+            a2a_response, self.name, ctx, self._a2a_part_converter
+        )
         event.custom_metadata = event.custom_metadata or {}
 
         if a2a_response.context_id:
