@@ -342,19 +342,16 @@ class EvaluationGenerator:
       """Generate inferences by invoking through App (preserving plugins)."""
       
       # Determine user_id consistently
-      user_id = 'test_user_id'
-      if initial_session and initial_session.user_id is not None:
-          user_id = initial_session.user_id
+      user_id = initial_session.user_id if initial_session else 'test_user_id'
       
-      # Initialize session if provided
-      if initial_session:
-          app_name = initial_session.app_name if initial_session.app_name else app.name
-          await session_service.create_session(
-              app_name=app_name,
-              user_id=user_id,
-              session_id=session_id,
-              state=initial_session.state if initial_session.state else {},
-          )
+      # Initialize session (always, not just when initial_session provided)
+      app_name = initial_session.app_name if initial_session else app.name
+      await session_service.create_session(
+          app_name=app_name,
+          user_id=user_id,
+          session_id=session_id,
+          state=initial_session.state if initial_session else {},
+      )
       
       # Create plugins to track requests (needed for app_details)
       request_intercepter_plugin = _RequestIntercepterPlugin(
@@ -401,6 +398,7 @@ class EvaluationGenerator:
           return EvaluationGenerator.convert_events_to_eval_invocations(
               events, app_details_by_invocation_id
           )
+
 
 
   @staticmethod
