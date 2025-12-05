@@ -155,7 +155,7 @@ adk eval \
 We welcome contributions from the community! Whether it's bug reports, feature requests, documentation improvements, or code contributions, please see our:
 
 - [General contribution guideline and flow](https://google.github.io/adk-docs/contributing-guide/)
-- Then if you want to contribute code, please read [Code Contributing Guidelines](./CONTRIBUTING.md) to get started
+- For code contributions, please read the [Code Contributing Guidelines](./CONTRIBUTING.md) to get started
 
 ## Community Repo
 
