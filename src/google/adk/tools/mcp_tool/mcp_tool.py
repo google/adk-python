@@ -19,40 +19,28 @@ import inspect
 import logging
 from typing import Any
 from typing import Callable
+from typing import Dict
 from typing import Optional
 from typing import Union
 import warnings
 
 from fastapi.openapi.models import APIKeyIn
 from google.genai.types import FunctionDeclaration
+from mcp.types import Tool as McpBaseTool
 from typing_extensions import override
 
-from .._gemini_schema_util import _to_gemini_schema
-from .mcp_session_manager import MCPSessionManager
-from .mcp_session_manager import retry_on_closed_resource
-
-# Attempt to import MCP Tool from the MCP library, and hints user to upgrade
-# their Python version to 3.10 if it fails.
-try:
-  from mcp.types import Tool as McpBaseTool
-except ImportError as e:
-  import sys
-
-  if sys.version_info < (3, 10):
-    raise ImportError(
-        "MCP Tool requires Python 3.10 or above. Please upgrade your Python"
-        " version."
-    ) from e
-  else:
-    raise e
-
-
+from ...agents.readonly_context import ReadonlyContext
 from ...auth.auth_credential import AuthCredential
 from ...auth.auth_schemes import AuthScheme
 from ...auth.auth_tool import AuthConfig
+from ...features import FeatureName
+from ...features import is_feature_enabled
+from .._gemini_schema_util import _to_gemini_schema
 from ..base_authenticated_tool import BaseAuthenticatedTool
 #  import
 from ..tool_context import ToolContext
+from .mcp_session_manager import MCPSessionManager
+from .mcp_session_manager import retry_on_errors
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -75,8 +63,11 @@ class McpTool(BaseAuthenticatedTool):
       auth_scheme: Optional[AuthScheme] = None,
       auth_credential: Optional[AuthCredential] = None,
       require_confirmation: Union[bool, Callable[..., bool]] = False,
+      header_provider: Optional[
+          Callable[[ReadonlyContext], Dict[str, str]]
+      ] = None,
   ):
-    """Initializes an MCPTool.
+    """Initializes an McpTool.
 
     This tool wraps an MCP Tool interface and uses a session manager to
     communicate with the MCP server.
@@ -106,6 +97,7 @@ class McpTool(BaseAuthenticatedTool):
     self._mcp_tool = mcp_tool
     self._mcp_session_manager = mcp_session_manager
     self._require_confirmation = require_confirmation
+    self._header_provider = header_provider
 
   @override
   def _get_declaration(self) -> FunctionDeclaration:
@@ -114,11 +106,22 @@ class McpTool(BaseAuthenticatedTool):
     Returns:
         FunctionDeclaration: The Gemini function declaration for the tool.
     """
-    schema_dict = self._mcp_tool.inputSchema
-    parameters = _to_gemini_schema(schema_dict)
-    function_decl = FunctionDeclaration(
-        name=self.name, description=self.description, parameters=parameters
-    )
+    input_schema = self._mcp_tool.inputSchema
+    output_schema = self._mcp_tool.outputSchema
+    if is_feature_enabled(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL):
+      function_decl = FunctionDeclaration(
+          name=self.name,
+          description=self.description,
+          parameters_json_schema=input_schema,
+          response_json_schema=output_schema,
+      )
+    else:
+      parameters = _to_gemini_schema(input_schema)
+      function_decl = FunctionDeclaration(
+          name=self.name,
+          description=self.description,
+          parameters=parameters,
+      )
     return function_decl
 
   @property
@@ -133,7 +136,7 @@ class McpTool(BaseAuthenticatedTool):
 
     # Functions are callable objects, but not all callable objects are functions
     # checking coroutine function is not enough. We also need to check whether
-    # Callable's __call__ function is a coroutine funciton
+    # Callable's __call__ function is a coroutine function
     is_async = inspect.iscoroutinefunction(target) or (
         hasattr(target, "__call__")
         and inspect.iscoroutinefunction(target.__call__)
@@ -177,11 +180,11 @@ class McpTool(BaseAuthenticatedTool):
         return {"error": "This tool call is rejected."}
     return await super().run_async(args=args, tool_context=tool_context)
 
-  @retry_on_closed_resource
+  @retry_on_errors
   @override
   async def _run_async_impl(
       self, *, args, tool_context: ToolContext, credential: AuthCredential
-  ):
+  ) -> Dict[str, Any]:
     """Runs the tool asynchronously.
 
     Args:
@@ -192,13 +195,27 @@ class McpTool(BaseAuthenticatedTool):
         Any: The response from the tool.
     """
     # Extract headers from credential for session pooling
-    headers = await self._get_headers(tool_context, credential)
+    auth_headers = await self._get_headers(tool_context, credential)
+    dynamic_headers = None
+    if self._header_provider:
+      dynamic_headers = self._header_provider(
+          ReadonlyContext(tool_context._invocation_context)
+      )
+
+    headers: Dict[str, str] = {}
+    if auth_headers:
+      headers.update(auth_headers)
+    if dynamic_headers:
+      headers.update(dynamic_headers)
+    final_headers = headers if headers else None
 
     # Get the session from the session manager
-    session = await self._mcp_session_manager.create_session(headers=headers)
+    session = await self._mcp_session_manager.create_session(
+        headers=final_headers
+    )
 
     response = await session.call_tool(self._mcp_tool.name, arguments=args)
-    return response
+    return response.model_dump(exclude_none=True, mode="json")
 
   async def _get_headers(
       self, tool_context: ToolContext, credential: AuthCredential
@@ -263,7 +280,7 @@ class McpTool(BaseAuthenticatedTool):
             != APIKeyIn.header
         ):
           error_msg = (
-              "MCPTool only supports header-based API key authentication."
+              "McpTool only supports header-based API key authentication."
               " Configured location:"
               f" {self._credentials_manager._auth_config.auth_scheme.in_}"
           )

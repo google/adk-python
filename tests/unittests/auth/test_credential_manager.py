@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from unittest.mock import ANY
 from unittest.mock import AsyncMock
 from unittest.mock import Mock
 from unittest.mock import patch
@@ -30,6 +31,7 @@ from google.adk.auth.auth_schemes import AuthSchemeType
 from google.adk.auth.auth_schemes import ExtendedOAuth2
 from google.adk.auth.auth_tool import AuthConfig
 from google.adk.auth.credential_manager import CredentialManager
+from google.adk.auth.credential_manager import ServiceAccountCredentialExchanger
 from google.adk.auth.oauth2_discovery import AuthorizationServerMetadata
 import pytest
 
@@ -422,36 +424,32 @@ class TestCredentialManager:
       await manager._validate_credential()
 
   @pytest.mark.asyncio
-  async def test_exchange_credentials_service_account(self):
+  async def test_exchange_credentials_service_account(
+      self, service_account_credential, oauth2_auth_scheme
+  ):
     """Test _exchange_credential with service account credential."""
-    mock_service_account = Mock(spec=ServiceAccount)
-    mock_credential = Mock(spec=AuthCredential)
-    mock_credential.auth_type = AuthCredentialTypes.SERVICE_ACCOUNT
-
     auth_config = Mock(spec=AuthConfig)
-    auth_config.auth_scheme = Mock()
+    auth_config.auth_scheme = oauth2_auth_scheme
 
-    # Mock exchanger
-    mock_exchanger = Mock()
-    mock_exchanger.exchange = AsyncMock(return_value=mock_credential)
+    exchanged_credential = Mock(spec=AuthCredential)
 
     manager = CredentialManager(auth_config)
 
-    # Mock the exchanger registry to return our mock exchanger
     with patch.object(
-        manager._exchanger_registry,
-        "get_exchanger",
-        return_value=mock_exchanger,
-    ):
+        ServiceAccountCredentialExchanger,
+        "exchange_credential",
+        return_value=exchanged_credential,
+        autospec=True,
+    ) as mock_exchange_credential:
       result, was_exchanged = await manager._exchange_credential(
-          mock_credential
+          service_account_credential
       )
 
-    mock_exchanger.exchange.assert_called_once_with(
-        mock_credential, auth_config.auth_scheme
-    )
-    assert result == mock_credential
-    assert was_exchanged is True
+      mock_exchange_credential.assert_called_once_with(
+          ANY, oauth2_auth_scheme, service_account_credential
+      )
+      assert result == exchanged_credential
+      assert was_exchanged is True
 
   @pytest.mark.asyncio
   async def test_exchange_credential_no_exchanger(self):

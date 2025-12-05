@@ -20,6 +20,7 @@ from typing import Union
 
 from google.genai import types as genai_types
 from pydantic import Field
+from pydantic import model_validator
 from typing_extensions import TypeAlias
 
 from .app_details import AppDetails
@@ -107,6 +108,10 @@ class Invocation(EvalBaseModel):
   """Details about the App that was used for this invocation."""
 
 
+SessionState: TypeAlias = dict[str, Any]
+"""The state of the session."""
+
+
 class SessionInput(EvalBaseModel):
   """Values that help initialize a Session."""
 
@@ -116,12 +121,12 @@ class SessionInput(EvalBaseModel):
   user_id: str
   """The user id."""
 
-  state: dict[str, Any] = Field(default_factory=dict)
+  state: SessionState = Field(default_factory=dict)
   """The state of the session."""
 
 
 StaticConversation: TypeAlias = list[Invocation]
-"""A conversation where user's query for each invocation is already specified."""
+"""A conversation where the user's queries for each invocation are already specified."""
 
 
 class EvalCase(EvalBaseModel):
@@ -157,6 +162,18 @@ class EvalCase(EvalBaseModel):
       default=None,
   )
   """A list of rubrics that are applicable to all the invocations in the conversation of this eval case."""
+
+  final_session_state: Optional[SessionState] = Field(default_factory=dict)
+  """The expected final session state at the end of the conversation."""
+
+  @model_validator(mode="after")
+  def ensure_conversation_xor_conversation_scenario(self) -> EvalCase:
+    if (self.conversation is None) == (self.conversation_scenario is None):
+      raise ValueError(
+          "Exactly one of conversation and conversation_scenario must be"
+          " provided in an EvalCase."
+      )
+    return self
 
 
 def get_all_tool_calls(

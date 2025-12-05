@@ -26,7 +26,7 @@ def empty_state() -> State:
 
 @pytest.fixture
 def context_with_data() -> CodeExecutorContext:
-  """Fixture for a CodeExecutorContext with some pre-populated data."""
+  """Fixture for a CodeExecutorContext with some prepopulated data."""
   state_data = {
       "_code_execution_context": {
           "execution_session_id": "session123",

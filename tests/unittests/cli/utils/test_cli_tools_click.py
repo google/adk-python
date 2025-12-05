@@ -76,8 +76,11 @@ class _Recorder(BaseModel):
 
 # Fixtures
 @pytest.fixture(autouse=True)
-def _mute_click(monkeypatch: pytest.MonkeyPatch) -> None:
+def _mute_click(request, monkeypatch: pytest.MonkeyPatch) -> None:
   """Suppress click output during tests."""
+  # Allow tests to opt-out of muting by using the 'unmute_click' marker
+  if "unmute_click" in request.keywords:
+    return
   monkeypatch.setattr(click, "echo", lambda *a, **k: None)
   # Keep secho for error messages
   # monkeypatch.setattr(click, "secho", lambda *a, **k: None)
@@ -121,32 +124,70 @@ def test_cli_create_cmd_invokes_run_cmd(
       cli_tools_click.main,
       ["create", "--model", "gemini", "--api_key", "key123", str(app_dir)],
   )
-  assert result.exit_code == 0
+  assert result.exit_code == 0, (result.output, repr(result.exception))
   assert rec.calls, "cli_create.run_cmd must be called"
 
 
 # cli run
-@pytest.mark.asyncio
-async def test_cli_run_invokes_run_cli(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    "cli_args,expected_session_uri,expected_artifact_uri",
+    [
+        pytest.param(
+            [
+                "--session_service_uri",
+                "memory://",
+                "--artifact_service_uri",
+                "memory://",
+            ],
+            "memory://",
+            "memory://",
+            id="memory_scheme_uris",
+        ),
+        pytest.param(
+            [],
+            None,
+            None,
+            id="default_uris_none",
+        ),
+    ],
+)
+def test_cli_run_service_uris(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    cli_args: list,
+    expected_session_uri: str,
+    expected_artifact_uri: str,
 ) -> None:
-  """`adk run` should call run_cli via asyncio.run with correct parameters."""
-  rec = _Recorder()
-  monkeypatch.setattr(cli_tools_click, "run_cli", lambda **kwargs: rec(kwargs))
-  monkeypatch.setattr(
-      cli_tools_click.asyncio, "run", lambda coro: coro
-  )  # pass-through
-
-  # create dummy agent directory
+  """`adk run` should forward service URIs correctly to run_cli."""
   agent_dir = tmp_path / "agent"
   agent_dir.mkdir()
   (agent_dir / "__init__.py").touch()
   (agent_dir / "agent.py").touch()
 
+  # Capture the coroutine's locals before closing it
+  captured_locals = []
+
+  def capture_asyncio_run(coro):
+    # Extract the locals before closing the coroutine
+    if coro.cr_frame is not None:
+      captured_locals.append(dict(coro.cr_frame.f_locals))
+    coro.close()  # Properly close the coroutine to avoid warnings
+
+  monkeypatch.setattr(cli_tools_click.asyncio, "run", capture_asyncio_run)
+
   runner = CliRunner()
-  result = runner.invoke(cli_tools_click.main, ["run", str(agent_dir)])
-  assert result.exit_code == 0
-  assert rec.calls and rec.calls[0][0][0]["agent_folder_name"] == "agent"
+  result = runner.invoke(
+      cli_tools_click.main,
+      ["run", *cli_args, str(agent_dir)],
+  )
+  assert result.exit_code == 0, (result.output, repr(result.exception))
+  assert len(captured_locals) == 1, "Expected asyncio.run to be called once"
+
+  # Verify the kwargs passed to run_cli
+  coro_locals = captured_locals[0]
+  assert coro_locals.get("session_service_uri") == expected_session_uri
+  assert coro_locals.get("artifact_service_uri") == expected_artifact_uri
+  assert coro_locals["agent_folder_name"] == "agent"
 
 
 # cli deploy cloud_run
@@ -520,10 +561,13 @@ def test_cli_web_passes_service_uris(
   assert called_kwargs.get("memory_service_uri") == "rag://mycorpus"
 
 
-def test_cli_web_passes_deprecated_uris(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _patch_uvicorn: _Recorder
+@pytest.mark.unmute_click
+def test_cli_web_warns_and_maps_deprecated_uris(
+    tmp_path: Path,
+    _patch_uvicorn: _Recorder,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-  """`adk web` should use deprecated URIs if new ones are not provided."""
+  """`adk web` should accept deprecated URI flags with warnings."""
   agents_dir = tmp_path / "agents"
   agents_dir.mkdir()
 
@@ -542,11 +586,14 @@ def test_cli_web_passes_deprecated_uris(
           "gs://deprecated",
       ],
   )
+
   assert result.exit_code == 0
-  assert mock_get_app.calls
   called_kwargs = mock_get_app.calls[0][1]
   assert called_kwargs.get("session_service_uri") == "sqlite:///deprecated.db"
   assert called_kwargs.get("artifact_service_uri") == "gs://deprecated"
+  # Check output for deprecation warnings (CliRunner captures both stdout and stderr)
+  assert "--session_db_url" in result.output
+  assert "--artifact_storage_uri" in result.output
 
 
 def test_cli_eval_with_eval_set_file_path(
@@ -643,50 +690,6 @@ def test_cli_create_eval_set(tmp_path: Path):
   assert eval_set_data["eval_cases"] == []
 
 
-def test_cli_add_eval_case_no_session(tmp_path: Path):
-  app_name = "test_app_add_1"
-  eval_set_id = "test_eval_set_add_1"
-  agent_path = tmp_path / app_name
-  agent_path.mkdir()
-  (agent_path / "__init__.py").touch()
-
-  scenarios_file = tmp_path / "scenarios1.json"
-  scenarios_file.write_text(
-      '{"scenarios": [{"starting_prompt": "hello", "conversation_plan":'
-      ' "world"}]}'
-  )
-
-  runner = CliRunner()
-  runner.invoke(
-      cli_tools_click.main,
-      ["eval_set", "create", str(agent_path), eval_set_id],
-      catch_exceptions=False,
-  )
-  result = runner.invoke(
-      cli_tools_click.main,
-      [
-          "eval_set",
-          "add_eval_case",
-          str(agent_path),
-          eval_set_id,
-          "--scenarios_file",
-          str(scenarios_file),
-      ],
-      catch_exceptions=False,
-  )
-
-  assert result.exit_code == 0
-  eval_set_file = agent_path / f"{eval_set_id}.evalset.json"
-  assert eval_set_file.exists()
-  with open(eval_set_file, "r") as f:
-    eval_set_data = json.load(f)
-  assert len(eval_set_data["eval_cases"]) == 1
-  eval_case = eval_set_data["eval_cases"][0]
-  assert eval_case["eval_id"] == "0a1a5048"
-  assert eval_case["conversation_scenario"]["starting_prompt"] == "hello"
-  assert "session_input" not in eval_case
-
-
 def test_cli_add_eval_case_with_session(tmp_path: Path):
   app_name = "test_app_add_2"
   eval_set_id = "test_eval_set_add_2"
@@ -748,6 +751,10 @@ def test_cli_add_eval_case_skip_existing(tmp_path: Path):
       '{"scenarios": [{"starting_prompt": "hello", "conversation_plan":'
       ' "world"}]}'
   )
+  session_file = tmp_path / "session3.json"
+  session_file.write_text(
+      '{"app_name": "test_app_add_3", "user_id": "test_user", "state": {}}'
+  )
 
   runner = CliRunner()
   runner.invoke(
@@ -764,6 +771,8 @@ def test_cli_add_eval_case_skip_existing(tmp_path: Path):
           eval_set_id,
           "--scenarios_file",
           str(scenarios_file),
+          "--session_input_file",
+          str(session_file),
       ],
       catch_exceptions=False,
   )
@@ -780,6 +789,8 @@ def test_cli_add_eval_case_skip_existing(tmp_path: Path):
           eval_set_id,
           "--scenarios_file",
           str(scenarios_file),
+          "--session_input_file",
+          str(session_file),
       ],
       catch_exceptions=False,
   )

@@ -16,6 +16,7 @@ import asyncio
 import time
 
 from adk_triaging_agent import agent
+from adk_triaging_agent.agent import LABEL_TO_OWNER
 from adk_triaging_agent.settings import EVENT_NAME
 from adk_triaging_agent.settings import GITHUB_BASE_URL
 from adk_triaging_agent.settings import ISSUE_BODY
@@ -37,21 +38,49 @@ USER_ID = "adk_triage_user"
 
 
 async def fetch_specific_issue_details(issue_number: int):
-  """Fetches details for a single issue if it's unlabelled."""
+  """Fetches details for a single issue if it needs triaging."""
   url = f"{GITHUB_BASE_URL}/repos/{OWNER}/{REPO}/issues/{issue_number}"
   print(f"Fetching details for specific issue: {url}")
 
   try:
     issue_data = get_request(url)
-    if not issue_data.get("labels", None):
-      print(f"Issue #{issue_number} is unlabelled. Proceeding.")
+    labels = issue_data.get("labels", [])
+    label_names = {label["name"] for label in labels}
+    assignees = issue_data.get("assignees", [])
+
+    # Check issue state
+    component_labels = set(LABEL_TO_OWNER.keys())
+    has_planned = "planned" in label_names
+    existing_component_labels = label_names & component_labels
+    has_component = bool(existing_component_labels)
+    has_assignee = len(assignees) > 0
+
+    # Determine what actions are needed
+    needs_component_label = not has_component
+    needs_owner = has_planned and not has_assignee
+
+    if needs_component_label or needs_owner:
+      print(
+          f"Issue #{issue_number} needs triaging. "
+          f"needs_component_label={needs_component_label}, "
+          f"needs_owner={needs_owner}"
+      )
       return {
           "number": issue_data["number"],
           "title": issue_data["title"],
           "body": issue_data.get("body", ""),
+          "has_planned_label": has_planned,
+          "has_component_label": has_component,
+          "existing_component_label": (
+              list(existing_component_labels)[0]
+              if existing_component_labels
+              else None
+          ),
+          "needs_component_label": needs_component_label,
+          "needs_owner": needs_owner,
       }
     else:
-      print(f"Issue #{issue_number} is already labelled. Skipping.")
+      print(f"Issue #{issue_number} is already fully triaged. Skipping.")
       return None
   except requests.exceptions.RequestException as e:
     print(f"Error fetching issue #{issue_number}: {e}")
@@ -108,26 +137,32 @@ async def main():
     specific_issue = await fetch_specific_issue_details(issue_number)
     if specific_issue is None:
       print(
-          f"No unlabelled issue details found for #{issue_number} or an error"
-          " occurred. Skipping agent interaction."
+          f"No issue details found for #{issue_number} that needs triaging,"
+          " or an error occurred. Skipping agent interaction."
       )
       return
 
     issue_title = ISSUE_TITLE or specific_issue["title"]
     issue_body = ISSUE_BODY or specific_issue["body"]
+    needs_component_label = specific_issue.get("needs_component_label", True)
+    needs_owner = specific_issue.get("needs_owner", False)
+    existing_component_label = specific_issue.get("existing_component_label")
+
     prompt = (
-        f"A new GitHub issue #{issue_number} has been opened or"
-        f' reopened. Title: "{issue_title}"\nBody:'
-        f' "{issue_body}"\n\nBased on the rules, recommend an'
-        " appropriate label and its justification."
-        " Then, use the 'add_label_to_issue' tool to apply the label "
-        "directly to this issue. Only label it, do not"
-        " process any other issues."
+        f"Triage GitHub issue #{issue_number}.\n\n"
+        f'Title: "{issue_title}"\n'
+        f'Body: "{issue_body}"\n\n'
+        f"Issue state: needs_component_label={needs_component_label}, "
+        f"needs_owner={needs_owner}, "
+        f"existing_component_label={existing_component_label}"
     )
   else:
     print(f"EVENT: Processing batch of issues (event: {EVENT_NAME}).")
     issue_count = parse_number_string(ISSUE_COUNT_TO_PROCESS, default_value=3)
-    prompt = f"Please triage the most recent {issue_count} issues."
+    prompt = (
+        f"Please use 'list_untriaged_issues' to find {issue_count} issues that"
+        " need triaging, then triage each one according to your instructions."
+    )
 
   response = await call_agent_async(runner, USER_ID, session.id, prompt)
   print(f"<<<< Agent Final Output: {response}\n")

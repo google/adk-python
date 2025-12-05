@@ -24,7 +24,6 @@ from typing import TYPE_CHECKING
 
 from google.genai import types
 from typing_extensions import override
-from vertexai.preview import rag
 
 from . import _utils
 from .base_memory_service import BaseMemoryService
@@ -93,6 +92,8 @@ class VertexAiRagMemoryService(BaseMemoryService):
     if not self._vertex_rag_store.rag_resources:
       raise ValueError("Rag resources must be set.")
 
+    from ..dependencies.vertexai import rag
+
     for rag_resource in self._vertex_rag_store.rag_resources:
       rag.upload_file(
           corpus_name=rag_resource.rag_corpus,
@@ -109,6 +110,7 @@ class VertexAiRagMemoryService(BaseMemoryService):
       self, *, app_name: str, user_id: str, query: str
   ) -> SearchMemoryResponse:
     """Searches for sessions that match the query using rag.retrieval_query."""
+    from ..dependencies.vertexai import rag
     from ..events.event import Event
 
     response = rag.retrieval_query(

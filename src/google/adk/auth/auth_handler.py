@@ -137,7 +137,7 @@ class AuthHandler:
   def generate_auth_uri(
       self,
   ) -> AuthCredential:
-    """Generates an response containing the auth uri for user to sign in.
+    """Generates a response containing the auth uri for user to sign in.
 
     Returns:
         An AuthCredential object containing the auth URI and state.

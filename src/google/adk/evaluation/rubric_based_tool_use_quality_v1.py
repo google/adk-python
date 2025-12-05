@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 from typing import ClassVar
+from typing import Optional
 
 from typing_extensions import override
 
@@ -134,9 +135,9 @@ class RubricBasedToolUseV1Evaluator(RubricBasedEvaluator):
 
   Example: Lets take an example of a Weather Agent that has access to two tools:
   1: GeoCoding Tool: Coverts a city name, address or zip code into geographic
-  cordinates.
+  coordinates.
   2: GetWeather Tool: Gets weather for the next 10 days for the given geographic
-  cordinates.
+  coordinates.
 
   For this agent, one can create following Rubrics that could focus on tool use
 
@@ -181,7 +182,7 @@ class RubricBasedToolUseV1Evaluator(RubricBasedEvaluator):
 
   @override
   def format_auto_rater_prompt(
-      self, actual_invocation: Invocation, _: Invocation
+      self, actual_invocation: Invocation, _: Optional[Invocation]
   ) -> str:
     """Returns the autorater prompt."""
 

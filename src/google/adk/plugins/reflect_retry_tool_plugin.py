@@ -142,8 +142,20 @@ class ReflectAndRetryToolPlugin(BasePlugin):
       tool_args: dict[str, Any],
       tool_context: ToolContext,
       result: Any,
-  ) -> Optional[dict]:
-    """Handles successful tool calls or extracts and processes errors."""
+  ) -> Optional[dict[str, Any]]:
+    """Handles successful tool calls or extracts and processes errors.
+
+    Args:
+      tool: The tool that was called.
+      tool_args: The arguments passed to the tool.
+      tool_context: The context of the tool call.
+      result: The result of the tool call.
+
+    Returns:
+      An optional dictionary containing reflection guidance if an error is
+      detected, or None if the tool call was successful or the
+      response is already a reflection message.
+    """
     if (
         isinstance(result, dict)
         and result.get("response_type") == REFLECT_AND_RETRY_RESPONSE_TYPE
@@ -157,7 +169,8 @@ class ReflectAndRetryToolPlugin(BasePlugin):
     if error:
       return await self._handle_tool_error(tool, tool_args, tool_context, error)
 
-    # On success, reset the failure count for this specific tool within its scope.
+    # On success, reset the failure count for this specific tool within
+    # its scope.
     await self._reset_failures_for_tool(tool_context, tool.name)
     return None
 
@@ -168,7 +181,7 @@ class ReflectAndRetryToolPlugin(BasePlugin):
       tool_args: dict[str, Any],
       tool_context: ToolContext,
       result: Any,
-  ) -> Optional[Any]:
+  ) -> Optional[dict[str, Any]]:
     """Extracts an error from a successful tool result and triggers retry logic.
 
     This is useful when tool call finishes successfully but the result contains
@@ -176,6 +189,15 @@ class ReflectAndRetryToolPlugin(BasePlugin):
 
     By overriding this method, you can trigger retry logic on these successful
     results that contain errors.
+
+    Args:
+      tool: The tool that was called.
+      tool_args: The arguments passed to the tool.
+      tool_context: The context of the tool call.
+      result: The result of the tool call.
+
+    Returns:
+      The extracted error if any, or None if no error was detected.
     """
     return None
 
@@ -186,8 +208,18 @@ class ReflectAndRetryToolPlugin(BasePlugin):
       tool_args: dict[str, Any],
       tool_context: ToolContext,
       error: Exception,
-  ) -> Optional[dict]:
-    """Handles tool exceptions by providing reflection guidance."""
+  ) -> Optional[dict[str, Any]]:
+    """Handles tool exceptions by providing reflection guidance.
+
+    Args:
+      tool: The tool that was called.
+      tool_args: The arguments passed to the tool.
+      tool_context: The context of the tool call.
+      error: The exception raised by the tool.
+
+    Returns:
+      An optional dictionary containing reflection guidance for the error.
+    """
     return await self._handle_tool_error(tool, tool_args, tool_context, error)
 
   async def _handle_tool_error(
@@ -196,8 +228,18 @@ class ReflectAndRetryToolPlugin(BasePlugin):
       tool_args: dict[str, Any],
       tool_context: ToolContext,
       error: Any,
-  ) -> Optional[dict]:
-    """Central, thread-safe logic for processing tool errors."""
+  ) -> Optional[dict[str, Any]]:
+    """Central, thread-safe logic for processing tool errors.
+
+    Args:
+      tool: The tool that was called.
+      tool_args: The arguments passed to the tool.
+      tool_context: The context of the tool call.
+      error: The error to be handled.
+
+    Returns:
+      An optional dictionary containing reflection guidance for the error.
+    """
     if self.max_retries == 0:
       if self.throw_exception_if_retry_exceeded:
         raise error
@@ -285,6 +327,7 @@ This is retry attempt **{retry_count} of {self.max_retries}**. Analyze the error
 2.  **State or Preconditions**: Did a previous step fail or not produce the necessary state/resource for this tool to succeed?
 3.  **Alternative Approach**: Is this the right tool for the job? Could another tool or a different sequence of steps achieve the goal?
 4.  **Simplify the Task**: Can you break the problem down into smaller, simpler steps?
+5.  **Wrong Function Name**: Does the error indicates the tool is not found? Please check again and only use available tools.
 
 Formulate a new plan based on your analysis and try a corrected or different approach.
 """

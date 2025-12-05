@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Optional
 from typing import TYPE_CHECKING
 
@@ -24,6 +25,8 @@ from ..utils.model_name_utils import is_gemini_1_model
 from ..utils.model_name_utils import is_gemini_model
 from .base_tool import BaseTool
 from .tool_context import ToolContext
+
+logger = logging.getLogger('google_adk.' + __name__)
 
 if TYPE_CHECKING:
   from ..models import LlmRequest
@@ -97,11 +100,35 @@ class VertexAiSearchTool(BaseTool):
     if is_gemini_model(llm_request.model):
       if is_gemini_1_model(llm_request.model) and llm_request.config.tools:
         raise ValueError(
-            'Vertex AI search tool can not be used with other tools in Gemini'
+            'Vertex AI search tool cannot be used with other tools in Gemini'
             ' 1.x.'
         )
       llm_request.config = llm_request.config or types.GenerateContentConfig()
       llm_request.config.tools = llm_request.config.tools or []
+
+      # Format data_store_specs concisely for logging
+      if self.data_store_specs:
+        spec_ids = [
+            spec.data_store.split('/')[-1] if spec.data_store else 'unnamed'
+            for spec in self.data_store_specs
+        ]
+        specs_info = (
+            f'{len(self.data_store_specs)} spec(s): [{", ".join(spec_ids)}]'
+        )
+      else:
+        specs_info = None
+
+      logger.debug(
+          'Adding Vertex AI Search tool config to LLM request: '
+          'datastore=%s, engine=%s, filter=%s, max_results=%s, '
+          'data_store_specs=%s',
+          self.data_store_id,
+          self.search_engine_id,
+          self.filter,
+          self.max_results,
+          specs_info,
+      )
+
       llm_request.config.tools.append(
           types.Tool(
               retrieval=types.Retrieval(

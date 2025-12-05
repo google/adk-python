@@ -12,42 +12,25 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import sys
 from unittest.mock import AsyncMock
 from unittest.mock import Mock
 from unittest.mock import patch
 
+from a2a.server.apps import A2AStarletteApplication
+from a2a.server.request_handlers import DefaultRequestHandler
+from a2a.server.tasks import InMemoryTaskStore
+from a2a.types import AgentCard
+from google.adk.a2a.executor.a2a_agent_executor import A2aAgentExecutor
+from google.adk.a2a.utils.agent_card_builder import AgentCardBuilder
+from google.adk.a2a.utils.agent_to_a2a import to_a2a
+from google.adk.agents.base_agent import BaseAgent
+from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
+from google.adk.auth.credential_service.in_memory_credential_service import InMemoryCredentialService
+from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
+from google.adk.runners import Runner
+from google.adk.sessions.in_memory_session_service import InMemorySessionService
 import pytest
-
-# Skip all tests in this module if Python version is less than 3.10
-pytestmark = pytest.mark.skipif(
-    sys.version_info < (3, 10), reason="A2A requires Python 3.10+"
-)
-
-# Import dependencies with version checking
-try:
-  from a2a.server.apps import A2AStarletteApplication
-  from a2a.server.request_handlers import DefaultRequestHandler
-  from a2a.server.tasks import InMemoryTaskStore
-  from a2a.types import AgentCard
-  from google.adk.a2a.executor.a2a_agent_executor import A2aAgentExecutor
-  from google.adk.a2a.utils.agent_card_builder import AgentCardBuilder
-  from google.adk.a2a.utils.agent_to_a2a import to_a2a
-  from google.adk.agents.base_agent import BaseAgent
-  from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
-  from google.adk.auth.credential_service.in_memory_credential_service import InMemoryCredentialService
-  from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
-  from google.adk.runners import Runner
-  from google.adk.sessions.in_memory_session_service import InMemorySessionService
-  from starlette.applications import Starlette
-except ImportError as e:
-  if sys.version_info < (3, 10):
-    # Imports are not needed since tests will be skipped due to pytestmark.
-    # The imported names are only used within test methods, not at module level,
-    # so no NameError occurs during module compilation.
-    pass
-  else:
-    raise e
+from starlette.applications import Starlette
 
 
 class TestToA2A:
@@ -93,6 +76,51 @@ class TestToA2A:
     mock_starlette_class.assert_called_once()
     mock_task_store_class.assert_called_once()
     mock_agent_executor_class.assert_called_once()
+    mock_request_handler_class.assert_called_once_with(
+        agent_executor=mock_agent_executor, task_store=mock_task_store
+    )
+    mock_card_builder_class.assert_called_once_with(
+        agent=self.mock_agent, rpc_url="http://localhost:8000/"
+    )
+    mock_app.add_event_handler.assert_called_once_with(
+        "startup", mock_app.add_event_handler.call_args[0][1]
+    )
+
+  @patch("google.adk.a2a.utils.agent_to_a2a.A2aAgentExecutor")
+  @patch("google.adk.a2a.utils.agent_to_a2a.DefaultRequestHandler")
+  @patch("google.adk.a2a.utils.agent_to_a2a.InMemoryTaskStore")
+  @patch("google.adk.a2a.utils.agent_to_a2a.AgentCardBuilder")
+  @patch("google.adk.a2a.utils.agent_to_a2a.Starlette")
+  def test_to_a2a_with_custom_runner(
+      self,
+      mock_starlette_class,
+      mock_card_builder_class,
+      mock_task_store_class,
+      mock_request_handler_class,
+      mock_agent_executor_class,
+  ):
+    """Test to_a2a with a custom runner."""
+    # Arrange
+    mock_app = Mock(spec=Starlette)
+    mock_starlette_class.return_value = mock_app
+    mock_task_store = Mock(spec=InMemoryTaskStore)
+    mock_task_store_class.return_value = mock_task_store
+    mock_agent_executor = Mock(spec=A2aAgentExecutor)
+    mock_agent_executor_class.return_value = mock_agent_executor
+    mock_request_handler = Mock(spec=DefaultRequestHandler)
+    mock_request_handler_class.return_value = mock_request_handler
+    mock_card_builder = Mock(spec=AgentCardBuilder)
+    mock_card_builder_class.return_value = mock_card_builder
+    custom_runner = Mock(spec=Runner)
+
+    # Act
+    result = to_a2a(self.mock_agent, runner=custom_runner)
+
+    # Assert
+    assert result == mock_app
+    mock_starlette_class.assert_called_once()
+    mock_task_store_class.assert_called_once()
+    mock_agent_executor_class.assert_called_once_with(runner=custom_runner)
     mock_request_handler_class.assert_called_once_with(
         agent_executor=mock_agent_executor, task_store=mock_task_store
     )

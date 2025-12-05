@@ -61,8 +61,11 @@ from ..agents.live_request_queue import LiveRequestQueue
 from ..agents.run_config import RunConfig
 from ..agents.run_config import StreamingMode
 from ..apps.app import App
+from ..artifacts.base_artifact_service import ArtifactVersion
 from ..artifacts.base_artifact_service import BaseArtifactService
 from ..auth.credential_service.base_credential_service import BaseCredentialService
+from ..errors.already_exists_error import AlreadyExistsError
+from ..errors.input_validation_error import InputValidationError
 from ..errors.not_found_error import NotFoundError
 from ..evaluation.base_eval_service import InferenceConfig
 from ..evaluation.base_eval_service import InferenceRequest
@@ -193,6 +196,19 @@ class CreateSessionRequest(common.BaseModel):
   )
 
 
+class SaveArtifactRequest(common.BaseModel):
+  """Request payload for saving a new artifact."""
+
+  filename: str = Field(description="Artifact filename.")
+  artifact: types.Part = Field(
+      description="Artifact payload encoded as google.genai.types.Part."
+  )
+  custom_metadata: Optional[dict[str, Any]] = Field(
+      default=None,
+      description="Optional metadata to associate with the artifact version.",
+  )
+
+
 class AddSessionToEvalSetRequest(common.BaseModel):
   eval_id: str
   session_id: str
@@ -277,6 +293,17 @@ class ListEvalResultsResponse(common.BaseModel):
 
 class ListMetricsInfoResponse(common.BaseModel):
   metrics_info: list[MetricInfo]
+
+
+class AppInfo(common.BaseModel):
+  name: str
+  root_agent_name: str
+  description: str
+  language: Literal["yaml", "python"]
+
+
+class ListAppsResponse(common.BaseModel):
+  apps: list[AppInfo]
 
 
 def _setup_telemetry(
@@ -395,7 +422,7 @@ class AdkWebServer:
   If you pass in a web_assets_dir, the static assets will be served under
   /dev-ui in addition to the API endpoints created by default.
 
-  You can add add additional API endpoints by modifying the FastAPI app
+  You can add additional API endpoints by modifying the FastAPI app
   instance returned by get_fast_api_app as this class exposes the agent runners
   and most other bits of state retained during the lifetime of the server.
 
@@ -435,6 +462,7 @@ class AdkWebServer:
       extra_plugins: Optional[list[str]] = None,
       logo_text: Optional[str] = None,
       logo_image_url: Optional[str] = None,
+      url_prefix: Optional[str] = None,
   ):
     self.agent_loader = agent_loader
     self.session_service = session_service
@@ -447,10 +475,11 @@ class AdkWebServer:
     self.extra_plugins = extra_plugins or []
     self.logo_text = logo_text
     self.logo_image_url = logo_image_url
-    # Internal propeties we want to allow being modified from callbacks.
+    # Internal properties we want to allow being modified from callbacks.
     self.runners_to_clean: set[str] = set()
     self.current_app_name_ref: SharedValue[str] = SharedValue(value="")
     self.runner_dict = {}
+    self.url_prefix = url_prefix
 
   async def get_runner_async(self, app_name: str) -> Runner:
     """Returns the cached runner for the given app."""
@@ -485,6 +514,12 @@ class AdkWebServer:
     runner = self._create_runner(agentic_app)
     self.runner_dict[app_name] = runner
     return runner
+
+  def _get_root_agent(self, agent_or_app: BaseAgent | App) -> BaseAgent:
+    """Extract root agent from either a BaseAgent or App object."""
+    if isinstance(agent_or_app, App):
+      return agent_or_app.root_agent
+    return agent_or_app
 
   def _create_runner(self, agentic_app: App) -> Runner:
     """Create a runner with common services."""
@@ -552,6 +587,7 @@ class AdkWebServer:
           " overwritten.",
           runtime_config_path,
       )
+    runtime_config["backendUrl"] = self.url_prefix if self.url_prefix else ""
 
     # Set custom logo config.
     if self.logo_text or self.logo_image_url:
@@ -576,6 +612,33 @@ class AdkWebServer:
       logger.error(
           "Failed to write runtime config file %s: %s", runtime_config_path, e
       )
+
+  async def _create_session(
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      session_id: Optional[str] = None,
+      state: Optional[dict[str, Any]] = None,
+  ) -> Session:
+    try:
+      session = await self.session_service.create_session(
+          app_name=app_name,
+          user_id=user_id,
+          state=state,
+          session_id=session_id,
+      )
+      logger.info("New session created: %s", session.id)
+      return session
+    except AlreadyExistsError as e:
+      raise HTTPException(
+          status_code=409, detail=f"Session already exists: {session_id}"
+      ) from e
+    except Exception as e:
+      logger.error(
+          "Internal server error during session creation: %s", e, exc_info=True
+      )
+      raise HTTPException(status_code=500, detail=str(e)) from e
 
   def get_fast_api_app(
       self,
@@ -662,7 +725,14 @@ class AdkWebServer:
       )
 
     @app.get("/list-apps")
-    async def list_apps() -> list[str]:
+    async def list_apps(
+        detailed: bool = Query(
+            default=False, description="Return detailed app information"
+        )
+    ) -> list[str] | ListAppsResponse:
+      if detailed:
+        apps_info = self.agent_loader.list_agents_detailed()
+        return ListAppsResponse(apps=[AppInfo(**app) for app in apps_info])
       return self.agent_loader.list_agents()
 
     @app.get("/debug/trace/{event_id}", tags=[TAG_DEBUG])
@@ -734,20 +804,12 @@ class AdkWebServer:
         session_id: str,
         state: Optional[dict[str, Any]] = None,
     ) -> Session:
-      if (
-          await self.session_service.get_session(
-              app_name=app_name, user_id=user_id, session_id=session_id
-          )
-          is not None
-      ):
-        raise HTTPException(
-            status_code=400, detail=f"Session already exists: {session_id}"
-        )
-      session = await self.session_service.create_session(
-          app_name=app_name, user_id=user_id, state=state, session_id=session_id
+      return await self._create_session(
+          app_name=app_name,
+          user_id=user_id,
+          state=state,
+          session_id=session_id,
       )
-      logger.info("New session created: %s", session_id)
-      return session
 
     @app.post(
         "/apps/{app_name}/users/{user_id}/sessions",
@@ -759,11 +821,9 @@ class AdkWebServer:
         req: Optional[CreateSessionRequest] = None,
     ) -> Session:
       if not req:
-        return await self.session_service.create_session(
-            app_name=app_name, user_id=user_id
-        )
+        return await self._create_session(app_name=app_name, user_id=user_id)
 
-      session = await self.session_service.create_session(
+      session = await self._create_session(
           app_name=app_name,
           user_id=user_id,
           state=req.state,
@@ -926,9 +986,8 @@ class AdkWebServer:
 
       # Populate the session with initial session state.
       agent_or_app = self.agent_loader.load_agent(app_name)
-      if isinstance(agent_or_app, App):
-        agent_or_app = agent_or_app.root_agent
-      initial_session_state = create_empty_state(agent_or_app)
+      root_agent = self._get_root_agent(agent_or_app)
+      initial_session_state = create_empty_state(root_agent)
 
       new_eval_case = EvalCase(
           eval_id=req.eval_id,
@@ -1089,7 +1148,8 @@ class AdkWebServer:
               status_code=400, detail=f"Eval set `{eval_set_id}` not found."
           )
 
-        root_agent = self.agent_loader.load_agent(app_name)
+        agent_or_app = self.agent_loader.load_agent(app_name)
+        root_agent = self._get_root_agent(agent_or_app)
 
         eval_case_results = []
 
@@ -1271,6 +1331,53 @@ class AdkWebServer:
         raise HTTPException(status_code=404, detail="Artifact not found")
       return artifact
 
+    @app.post(
+        "/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts",
+        response_model=ArtifactVersion,
+        response_model_exclude_none=True,
+    )
+    async def save_artifact(
+        app_name: str,
+        user_id: str,
+        session_id: str,
+        req: SaveArtifactRequest,
+    ) -> ArtifactVersion:
+      try:
+        version = await self.artifact_service.save_artifact(
+            app_name=app_name,
+            user_id=user_id,
+            session_id=session_id,
+            filename=req.filename,
+            artifact=req.artifact,
+            custom_metadata=req.custom_metadata,
+        )
+      except InputValidationError as ive:
+        raise HTTPException(status_code=400, detail=str(ive)) from ive
+      except Exception as exc:  # pylint: disable=broad-exception-caught
+        logger.error(
+            "Internal error while saving artifact %s for app=%s user=%s"
+            " session=%s: %s",
+            req.filename,
+            app_name,
+            user_id,
+            session_id,
+            exc,
+            exc_info=True,
+        )
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+      artifact_version = await self.artifact_service.get_artifact_version(
+          app_name=app_name,
+          user_id=user_id,
+          session_id=session_id,
+          filename=req.filename,
+          version=version,
+      )
+      if artifact_version is None:
+        raise HTTPException(
+            status_code=500, detail="Artifact metadata unavailable"
+        )
+      return artifact_version
+
     @app.get(
         "/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts",
         response_model_exclude_none=True,
@@ -1430,13 +1537,7 @@ class AdkWebServer:
       function_calls = event.get_function_calls()
       function_responses = event.get_function_responses()
       agent_or_app = self.agent_loader.load_agent(app_name)
-      # The loader may return an App; unwrap to its root agent so the graph builder
-      # receives a BaseAgent instance.
-      root_agent = (
-          agent_or_app.root_agent
-          if isinstance(agent_or_app, App)
-          else agent_or_app
-      )
+      root_agent = self._get_root_agent(agent_or_app)
       dot_graph = None
       if function_calls:
         function_call_highlights = []
@@ -1544,6 +1645,10 @@ class AdkWebServer:
       mimetypes.add_type("application/javascript", ".js", True)
       mimetypes.add_type("text/javascript", ".js", True)
 
+      redirect_dev_ui_url = (
+          self.url_prefix + "/dev-ui/" if self.url_prefix else "/dev-ui/"
+      )
+
       @app.get("/dev-ui/config")
       async def get_ui_config():
         return {
@@ -1553,11 +1658,11 @@ class AdkWebServer:
 
       @app.get("/")
       async def redirect_root_to_dev_ui():
-        return RedirectResponse("/dev-ui/")
+        return RedirectResponse(redirect_dev_ui_url)
 
       @app.get("/dev-ui")
       async def redirect_dev_ui_add_slash():
-        return RedirectResponse("/dev-ui/")
+        return RedirectResponse(redirect_dev_ui_url)
 
       app.mount(
           "/dev-ui/",

@@ -17,7 +17,6 @@ from __future__ import annotations
 from typing import Optional
 
 from typing_extensions import override
-from vertexai import types as vertexai_types
 
 from .eval_case import Invocation
 from .eval_metrics import EvalMetric
@@ -36,7 +35,7 @@ class ResponseEvaluator(Evaluator):
 
   This class supports two metrics:
   1) response_evaluation_score
-  This metric evaluates how coherent agent's resposne was.
+  This metric evaluates how coherent agent's response was.
 
   Value range of this metric is [1,5], with values closer to 5 more desirable.
 
@@ -66,7 +65,9 @@ class ResponseEvaluator(Evaluator):
       metric_name = eval_metric.metric_name
 
     if PrebuiltMetrics.RESPONSE_EVALUATION_SCORE.value == metric_name:
-      self._metric_name = vertexai_types.PrebuiltMetric.COHERENCE
+      from ..dependencies.vertexai import vertexai
+
+      self._metric_name = vertexai.types.PrebuiltMetric.COHERENCE
     elif PrebuiltMetrics.RESPONSE_MATCH_SCORE.value == metric_name:
       self._metric_name = metric_name
     else:
@@ -81,7 +82,7 @@ class ResponseEvaluator(Evaluator):
       return MetricInfo(
           metric_name=PrebuiltMetrics.RESPONSE_EVALUATION_SCORE.value,
           description=(
-              "This metric evaluates how coherent agent's resposne was. Value"
+              "This metric evaluates how coherent agent's response was. Value"
               " range of this metric is [1,5], with values closer to 5 more"
               " desirable."
           ),
@@ -98,7 +99,7 @@ class ResponseEvaluator(Evaluator):
   def evaluate_invocations(
       self,
       actual_invocations: list[Invocation],
-      expected_invocations: list[Invocation],
+      expected_invocations: Optional[list[Invocation]],
   ) -> EvaluationResult:
     # If the metric is response_match_score, just use the RougeEvaluator.
     if self._metric_name == PrebuiltMetrics.RESPONSE_MATCH_SCORE.value:
@@ -110,5 +111,7 @@ class ResponseEvaluator(Evaluator):
       )
 
     return _VertexAiEvalFacade(
-        threshold=self._threshold, metric_name=self._metric_name
+        threshold=self._threshold,
+        metric_name=self._metric_name,
+        expected_invocations_required=True,
     ).evaluate_invocations(actual_invocations, expected_invocations)

@@ -19,6 +19,7 @@ import inspect
 import logging
 from pathlib import Path
 import queue
+import sys
 from typing import Any
 from typing import AsyncGenerator
 from typing import Callable
@@ -28,6 +29,7 @@ from typing import Optional
 import warnings
 
 from google.adk.apps.compaction import _run_compaction_for_sliding_window
+from google.adk.artifacts import artifact_util
 from google.genai import types
 
 from .agents.active_streaming_tool import ActiveStreamingTool
@@ -59,9 +61,27 @@ from .sessions.in_memory_session_service import InMemorySessionService
 from .sessions.session import Session
 from .telemetry.tracing import tracer
 from .tools.base_toolset import BaseToolset
+from .utils._debug_output import print_event
 from .utils.context_utils import Aclosing
 
 logger = logging.getLogger('google_adk.' + __name__)
+
+
+def _is_tool_call_or_response(event: Event) -> bool:
+  return bool(event.get_function_calls() or event.get_function_responses())
+
+
+def _is_transcription(event: Event) -> bool:
+  return (
+      event.input_transcription is not None
+      or event.output_transcription is not None
+  )
+
+
+def _has_non_empty_transcription_text(transcription) -> bool:
+  return bool(
+      transcription and transcription.text and transcription.text.strip()
+  )
 
 
 class Runner:
@@ -113,6 +133,7 @@ class Runner:
       session_service: BaseSessionService,
       memory_service: Optional[BaseMemoryService] = None,
       credential_service: Optional[BaseCredentialService] = None,
+      plugin_close_timeout: float = 5.0,
   ):
     """Initializes the Runner.
 
@@ -132,6 +153,7 @@ class Runner:
         session_service: The session service for the runner.
         memory_service: The memory service for the runner.
         credential_service: The credential service for the runner.
+        plugin_close_timeout: The timeout in seconds for plugin close methods.
 
     Raises:
         ValueError: If `app` is provided along with `app_name` or `plugins`, or
@@ -149,11 +171,14 @@ class Runner:
     self.session_service = session_service
     self.memory_service = memory_service
     self.credential_service = credential_service
-    self.plugin_manager = PluginManager(plugins=plugins)
+    self.plugin_manager = PluginManager(
+        plugins=plugins, close_timeout=plugin_close_timeout
+    )
     (
         self._agent_origin_app_name,
         self._agent_origin_dir,
     ) = self._infer_agent_origin(self.agent)
+    self._app_name_alignment_hint: Optional[str] = None
     self._enforce_app_name_alignment()
 
   def _validate_runner_params(
@@ -229,35 +254,47 @@ class Runner:
     module_path = Path(module_file).resolve()
     project_root = Path.cwd()
     try:
-      module_path.relative_to(project_root)
+      relative_path = module_path.relative_to(project_root)
     except ValueError:
       return None, module_path.parent
-
-    current = module_path.parent
-    while current != project_root and current.parent != current:
-      parent = current.parent
-      if parent.name == 'agents':
-        return current.name, current
-      current = parent
-
-    return None, module_path.parent
+    origin_dir = module_path.parent
+    if 'agents' not in relative_path.parts:
+      return None, origin_dir
+    origin_name = origin_dir.name
+    if origin_name.startswith('.'):
+      return None, origin_dir
+    return origin_name, origin_dir
 
   def _enforce_app_name_alignment(self) -> None:
     origin_name = self._agent_origin_app_name
     origin_dir = self._agent_origin_dir
     if not origin_name or origin_name.startswith('__'):
+      self._app_name_alignment_hint = None
       return
     if origin_name == self.app_name:
+      self._app_name_alignment_hint = None
       return
     origin_location = str(origin_dir) if origin_dir else origin_name
-    message = (
-        'App name mismatch detected. The runner is configured with '
-        f'app name "{self.app_name}", but the root agent was loaded from '
-        f'"{origin_location}", which implies app name "{origin_name}". '
-        'Rename the App or its directory so the names match before running '
-        'the agent.'
+    mismatch_details = (
+        'The runner is configured with app name '
+        f'"{self.app_name}", but the root agent was loaded from '
+        f'"{origin_location}", which implies app name "{origin_name}".'
     )
-    raise ValueError(message)
+    resolution = (
+        'Ensure the runner app_name matches that directory or pass app_name '
+        'explicitly when constructing the runner.'
+    )
+    self._app_name_alignment_hint = f'{mismatch_details} {resolution}'
+    logger.warning('App name mismatch detected. %s', mismatch_details)
+
+  def _format_session_not_found_message(self, session_id: str) -> str:
+    message = f'Session not found: {session_id}'
+    if not self._app_name_alignment_hint:
+      return message
+    return (
+        f'{message}. {self._app_name_alignment_hint} '
+        'The mismatch prevents the runner from locating the session.'
+    )
 
   def run(
       self,
@@ -272,6 +309,11 @@ class Runner:
     NOTE:
       This sync interface is only for local testing and convenience purpose.
       Consider using `run_async` for production usage.
+
+    If event compaction is enabled in the App configuration, it will be
+    performed after all agent events for the current invocation have been
+    yielded. The generator will only finish iterating after event
+    compaction is complete.
 
     Args:
       user_id: The user ID of the session.
@@ -331,6 +373,12 @@ class Runner:
   ) -> AsyncGenerator[Event, None]:
     """Main entry method to run the agent in this runner.
 
+    If event compaction is enabled in the App configuration, it will be
+    performed after all agent events for the current invocation have been
+    yielded. The async generator will only finish iterating after event
+    compaction is complete. However, this does not block new `run_async`
+    calls for subsequent user queries, which can be started concurrently.
+
     Args:
       user_id: The user ID of the session.
       session_id: The session ID of the session.
@@ -361,7 +409,8 @@ class Runner:
             app_name=self.app_name, user_id=user_id, session_id=session_id
         )
         if not session:
-          raise ValueError(f'Session not found: {session_id}')
+          message = self._format_session_not_found_message(session_id)
+          raise ValueError(message)
         if not invocation_id and not new_message:
           raise ValueError('Both invocation_id and new_message are None.')
 
@@ -411,47 +460,173 @@ class Runner:
           async for event in agen:
             yield event
         # Run compaction after all events are yielded from the agent.
-        # (We don't compact in the middle of an invocation, we only compact at the end of an invocation.)
+        # (We don't compact in the middle of an invocation, we only compact at
+        # the end of an invocation.)
         if self.app and self.app.events_compaction_config:
-          logger.info('Running event compactor.')
-          # Run compaction in a separate task to avoid blocking the main thread.
-          # So the users can still finish the event loop from the agent while the
-          # compaction is running.
-          asyncio.create_task(
-              _run_compaction_for_sliding_window(
-                  self.app, session, self.session_service
-              )
+          logger.debug('Running event compactor.')
+          await _run_compaction_for_sliding_window(
+              self.app, session, self.session_service
           )
 
     async with Aclosing(_run_with_trace(new_message, invocation_id)) as agen:
       async for event in agen:
         yield event
 
-  async def _run_compaction_default(self, session: Session):
-    """Runs compaction for other types of compactors.
-
-    This method calls `maybe_compact_events` on the compactor with all
-    events in the session.
-
-    Args:
-      session: The session containing events to compact.
-    """
-    compaction_event = (
-        await self.app.events_compaction_config.compactor.maybe_compact_events(
-            events=session.events
-        )
+  async def rewind_async(
+      self,
+      *,
+      user_id: str,
+      session_id: str,
+      rewind_before_invocation_id: str,
+  ) -> None:
+    """Rewinds the session to before the specified invocation."""
+    session = await self.session_service.get_session(
+        app_name=self.app_name, user_id=user_id, session_id=session_id
     )
-    if compaction_event:
-      await self.session_service.append_event(
-          session=session, event=compaction_event
+    if not session:
+      raise ValueError(f'Session not found: {session_id}')
+
+    rewind_event_index = -1
+    for i, event in enumerate(session.events):
+      if event.invocation_id == rewind_before_invocation_id:
+        rewind_event_index = i
+        break
+
+    if rewind_event_index == -1:
+      raise ValueError(
+          f'Invocation ID not found: {rewind_before_invocation_id}'
       )
+
+    # Compute state delta to reverse changes
+    state_delta = await self._compute_state_delta_for_rewind(
+        session, rewind_event_index
+    )
+
+    # Compute artifact delta to reverse changes
+    artifact_delta = await self._compute_artifact_delta_for_rewind(
+        session, rewind_event_index
+    )
+
+    # Create rewind event
+    rewind_event = Event(
+        invocation_id=new_invocation_context_id(),
+        author='user',
+        actions=EventActions(
+            rewind_before_invocation_id=rewind_before_invocation_id,
+            state_delta=state_delta,
+            artifact_delta=artifact_delta,
+        ),
+    )
+
+    logger.info('Rewinding session to invocation: %s', rewind_event)
+
+    await self.session_service.append_event(session=session, event=rewind_event)
+
+  async def _compute_state_delta_for_rewind(
+      self, session: Session, rewind_event_index: int
+  ) -> dict[str, Any]:
+    """Computes the state delta to reverse changes."""
+    state_at_rewind_point: dict[str, Any] = {}
+    for i in range(rewind_event_index):
+      if session.events[i].actions.state_delta:
+        for k, v in session.events[i].actions.state_delta.items():
+          if k.startswith('app:') or k.startswith('user:'):
+            continue
+          if v is None:
+            state_at_rewind_point.pop(k, None)
+          else:
+            state_at_rewind_point[k] = v
+
+    current_state = session.state
+    rewind_state_delta = {}
+
+    # 1. Add/update keys in rewind_state_delta to match state_at_rewind_point.
+    for key, value_at_rewind in state_at_rewind_point.items():
+      if key not in current_state or current_state[key] != value_at_rewind:
+        rewind_state_delta[key] = value_at_rewind
+
+    # 2. Set keys to None in rewind_state_delta if they are in current_state
+    #    but not in state_at_rewind_point. These keys were added after the
+    #    rewind point and need to be removed.
+    for key in current_state:
+      if key.startswith('app:') or key.startswith('user:'):
+        continue
+      if key not in state_at_rewind_point:
+        rewind_state_delta[key] = None
+
+    return rewind_state_delta
+
+  async def _compute_artifact_delta_for_rewind(
+      self, session: Session, rewind_event_index: int
+  ) -> dict[str, int]:
+    """Computes the artifact delta to reverse changes."""
+    if not self.artifact_service:
+      return {}
+
+    versions_at_rewind_point: dict[str, int] = {}
+    for i in range(rewind_event_index):
+      event = session.events[i]
+      if event.actions.artifact_delta:
+        versions_at_rewind_point.update(event.actions.artifact_delta)
+
+    current_versions: dict[str, int] = {}
+    for event in session.events:
+      if event.actions.artifact_delta:
+        current_versions.update(event.actions.artifact_delta)
+
+    rewind_artifact_delta = {}
+    for filename, vn in current_versions.items():
+      if filename.startswith('user:'):
+        # User artifacts are not restored on rewind.
+        continue
+      vt = versions_at_rewind_point.get(filename)
+      if vt == vn:
+        continue
+
+      rewind_artifact_delta[filename] = vn + 1
+      if vt is None:
+        # Artifact did not exist at rewind point. Mark it as inaccessible.
+        artifact = types.Part(
+            inline_data=types.Blob(
+                mime_type='application/octet-stream', data=b''
+            )
+        )
+      else:
+        # Artifact version changed after rewind point. Restore to version at
+        # rewind point.
+        artifact_uri = artifact_util.get_artifact_uri(
+            app_name=self.app_name,
+            user_id=session.user_id,
+            session_id=session.id,
+            filename=filename,
+            version=vt,
+        )
+        artifact = types.Part(file_data=types.FileData(file_uri=artifact_uri))
+      await self.artifact_service.save_artifact(
+          app_name=self.app_name,
+          user_id=session.user_id,
+          session_id=session.id,
+          filename=filename,
+          artifact=artifact,
+      )
+
+    return rewind_artifact_delta
 
   def _should_append_event(self, event: Event, is_live_call: bool) -> bool:
     """Checks if an event should be appended to the session."""
     # Don't append audio response from model in live mode to session.
     # The data is appended to artifacts with a reference in file_data in the
     # event.
-    if is_live_call and contents._is_live_model_audio_event(event):
+    # We should append non-partial events only.For example, non-finished(partial)
+    # transcription events should not be appended.
+    # Function call and function response events should be appended.
+    # Other control events should be appended.
+    if is_live_call and contents._is_live_model_audio_event_with_inline_data(
+        event
+    ):
+      # We don't append live model audio events with inline data to avoid
+      # storing large blobs in the session. However, events with file_data
+      # (references to artifacts) should be appended.
       return False
     return True
 
@@ -468,6 +643,7 @@ class Runner:
       invocation_context: The invocation context
       session: The current session
       execute_fn: A callable that returns an AsyncGenerator of Events
+      is_live_call: Whether this is a live call
 
     Yields:
       Events from the execution, including any generated by plugins
@@ -493,13 +669,74 @@ class Runner:
       yield early_exit_event
     else:
       # Step 2: Otherwise continue with normal execution
+      # Note for live/bidi:
+      # the transcription may arrive later then the action(function call
+      # event and thus function response event). In this case, the order of
+      # transcription and function call event will be wrong if we just
+      # append as it arrives. To address this, we should check if there is
+      # transcription going on. If there is transcription going on, we
+      # should hold on appending the function call event until the
+      # transcription is finished. The transcription in progress can be
+      # identified by checking if the transcription event is partial. When
+      # the next transcription event is not partial, it means the previous
+      # transcription is finished. Then if there is any buffered function
+      # call event, we should append them after this finished(non-parital)
+      # transcription event.
+      buffered_events: list[Event] = []
+      is_transcribing: bool = False
+
       async with Aclosing(execute_fn(invocation_context)) as agen:
         async for event in agen:
-          if not event.partial:
-            if self._should_append_event(event, is_live_call):
+          if is_live_call:
+            if event.partial and _is_transcription(event):
+              is_transcribing = True
+            if is_transcribing and _is_tool_call_or_response(event):
+              # only buffer function call and function response event which is
+              # non-partial
+              buffered_events.append(event)
+              continue
+            # Note for live/bidi: for audio response, it's considered as
+            # non-paritla event(event.partial=None)
+            # event.partial=False and event.partial=None are considered as
+            # non-partial event; event.partial=True is considered as partial
+            # event.
+            if event.partial is not True:
+              if _is_transcription(event) and (
+                  _has_non_empty_transcription_text(event.input_transcription)
+                  or _has_non_empty_transcription_text(
+                      event.output_transcription
+                  )
+              ):
+                # transcription end signal, append buffered events
+                is_transcribing = False
+                logger.debug(
+                    'Appending transcription finished event: %s', event
+                )
+                if self._should_append_event(event, is_live_call):
+                  await self.session_service.append_event(
+                      session=session, event=event
+                  )
+
+                for buffered_event in buffered_events:
+                  logger.debug('Appending buffered event: %s', buffered_event)
+                  await self.session_service.append_event(
+                      session=session, event=buffered_event
+                  )
+                buffered_events = []
+              else:
+                # non-transcription event or empty transcription event, for
+                # example, event that stores blob reference, should be appended.
+                if self._should_append_event(event, is_live_call):
+                  logger.debug('Appending non-buffered event: %s', event)
+                  await self.session_service.append_event(
+                      session=session, event=event
+                  )
+          else:
+            if event.partial is not True:
               await self.session_service.append_event(
                   session=session, event=event
               )
+
           # Step 3: Run the on_event callbacks to optionally modify the event.
           modified_event = await plugin_manager.run_on_event_callback(
               invocation_context=invocation_context, event=event
@@ -592,6 +829,36 @@ class Runner:
       session: Optional[Session] = None,
   ) -> AsyncGenerator[Event, None]:
     """Runs the agent in live mode (experimental feature).
+
+    The `run_live` method yields a stream of `Event` objects, but not all
+    yielded events are saved to the session. Here's a breakdown:
+
+    **Events Yielded to Callers:**
+    *   **Live Model Audio Events with Inline Data:** Events containing raw
+        audio `Blob` data(`inline_data`).
+    *   **Live Model Audio Events with File Data:** Both input and ouput audio
+        data are aggregated into a audio file saved into artifacts. The
+        reference to the file is saved in the event as `file_data`.
+    *   **Usage Metadata:** Events containing token usage.
+    *   **Transcription Events:** Both partial and non-partial transcription
+        events are yielded.
+    *   **Function Call and Response Events:** Always saved.
+    *   **Other Control Events:** Most control events are saved.
+
+    **Events Saved to the Session:**
+    *   **Live Model Audio Events with File Data:** Both input and ouput audio
+        data are aggregated into a audio file saved into artifacts. The
+        reference to the file is saved as event in the `file_data` to session
+        if RunConfig.save_live_model_audio_to_session is True.
+    *   **Usage Metadata Events:** Saved to the session.
+    *   **Non-Partial Transcription Events:** Non-partial transcription events
+        are saved.
+    *   **Function Call and Response Events:** Always saved.
+    *   **Other Control Events:** Most control events are saved.
+
+    **Events Not Saved to the Session:**
+    *   **Live Model Audio Events with Inline Data:** Events containing raw
+        audio `Blob` data are **not** saved to the session.
 
     Args:
         user_id: The user ID for the session. Required if `session` is None.
@@ -722,7 +989,7 @@ class Runner:
       message)
     """
     # If the last event is a function response, should send this response to
-    # the agent that returned the corressponding function call regardless the
+    # the agent that returned the corresponding function call regardless the
     # type of the agent. e.g. a remote a2a agent may surface a credential
     # request as a special long running function tool call.
     event = find_matching_function_call(session.events)
@@ -776,6 +1043,108 @@ class Runner:
       agent = agent.parent_agent
     return True
 
+  async def run_debug(
+      self,
+      user_messages: str | list[str],
+      *,
+      user_id: str = 'debug_user_id',
+      session_id: str = 'debug_session_id',
+      run_config: RunConfig | None = None,
+      quiet: bool = False,
+      verbose: bool = False,
+  ) -> list[Event]:
+    """Debug helper for quick agent experimentation and testing.
+
+    This convenience method is designed for developers getting started with ADK
+    who want to quickly test agents without dealing with session management,
+    content formatting, or event streaming. It automatically handles common
+    boilerplate while hiding complexity.
+
+    IMPORTANT: This is for debugging and experimentation only. For production
+    use, please use the standard run_async() method which provides full control
+    over session management, event streaming, and error handling.
+
+    Args:
+        user_messages: Message(s) to send to the agent. Can be: - Single string:
+          "What is 2+2?" - List of strings: ["Hello!", "What's my name?"]
+        user_id: User identifier. Defaults to "debug_user_id".
+        session_id: Session identifier for conversation persistence. Defaults to
+          "debug_session_id". Reuse the same ID to continue a conversation.
+        run_config: Optional configuration for the agent execution.
+        quiet: If True, suppresses console output. Defaults to False (output
+          shown).
+        verbose: If True, shows detailed tool calls and responses. Defaults to
+          False for cleaner output showing only final agent responses.
+
+    Returns:
+        list[Event]: All events from all messages.
+
+    Raises:
+        ValueError: If session creation/retrieval fails.
+
+    Examples:
+        Quick debugging:
+        >>> runner = InMemoryRunner(agent=my_agent)
+        >>> await runner.run_debug("What is 2+2?")
+
+        Multiple queries in conversation:
+        >>> await runner.run_debug(["Hello!", "What's my name?"])
+
+        Continue a debug session:
+        >>> await runner.run_debug("What did we discuss?")  # Continues default
+        session
+
+        Separate debug sessions:
+        >>> await runner.run_debug("Hi", user_id="alice", session_id="debug1")
+        >>> await runner.run_debug("Hi", user_id="bob", session_id="debug2")
+
+        Capture events for inspection:
+        >>> events = await runner.run_debug("Analyze this")
+        >>> for event in events:
+        ...     inspect_event(event)
+
+    Note:
+        For production applications requiring:
+        - Custom session/memory services (Spanner, Cloud SQL, etc.)
+        - Fine-grained event processing and streaming
+        - Error recovery and resumability
+        - Performance optimization
+        Please use run_async() with proper configuration.
+    """
+    session = await self.session_service.get_session(
+        app_name=self.app_name, user_id=user_id, session_id=session_id
+    )
+    if not session:
+      session = await self.session_service.create_session(
+          app_name=self.app_name, user_id=user_id, session_id=session_id
+      )
+      if not quiet:
+        print(f'\n ### Created new session: {session_id}')
+    elif not quiet:
+      print(f'\n ### Continue session: {session_id}')
+
+    collected_events: list[Event] = []
+
+    if isinstance(user_messages, str):
+      user_messages = [user_messages]
+
+    for message in user_messages:
+      if not quiet:
+        print(f'\nUser > {message}')
+
+      async for event in self.run_async(
+          user_id=user_id,
+          session_id=session.id,
+          new_message=types.UserContent(parts=[types.Part(text=message)]),
+          run_config=run_config,
+      ):
+        if not quiet:
+          print_event(event, verbose=verbose)
+
+        collected_events.append(event)
+
+    return collected_events
+
   async def _setup_context_for_new_invocation(
       self,
       *,
@@ -787,7 +1156,7 @@ class Runner:
     """Sets up the context for a new invocation.
 
     Args:
-      session: The session to setup the invocation context for.
+      session: The session to set up the invocation context for.
       new_message: The new message to process and append to the session.
       run_config: The run config of the agent.
       state_delta: Optional state changes to apply to the session.
@@ -826,7 +1195,7 @@ class Runner:
     """Sets up the context for a resumed invocation.
 
     Args:
-      session: The session to setup the invocation context for.
+      session: The session to set up the invocation context for.
       new_message: The new message to process and append to the session.
       invocation_id: The invocation id to resume.
       run_config: The run config of the agent.
@@ -842,7 +1211,7 @@ class Runner:
     if not session.events:
       raise ValueError(f'Session {session.id} has no events to resume.')
 
-    # Step 1: Maybe retrive a previous user message for the invocation.
+    # Step 1: Maybe retrieve a previous user message for the invocation.
     user_message = new_message or self._find_user_message_for_invocation(
         session.events, invocation_id
     )
@@ -1002,6 +1371,7 @@ class Runner:
     )
     if modified_user_message is not None:
       new_message = modified_user_message
+      invocation_context.user_content = new_message
 
     if new_message:
       await self._append_new_message_to_session(
@@ -1054,9 +1424,22 @@ class Runner:
 
   async def close(self):
     """Closes the runner."""
+    logger.info('Closing runner...')
+    # Close Toolsets
     await self._cleanup_toolsets(self._collect_toolset(self.agent))
 
-  async def __aenter__(self):
+    # Close Plugins
+    if self.plugin_manager:
+      await self.plugin_manager.close()
+
+    logger.info('Runner closed.')
+
+  if sys.version_info < (3, 11):
+    Self = 'Runner'  # pylint: disable=invalid-name
+  else:
+    from typing import Self  # pylint: disable=g-import-not-at-top
+
+  async def __aenter__(self) -> Self:
     """Async context manager entry."""
     return self
 
@@ -1083,9 +1466,10 @@ class InMemoryRunner(Runner):
       self,
       agent: Optional[BaseAgent] = None,
       *,
-      app_name: Optional[str] = 'InMemoryRunner',
+      app_name: Optional[str] = None,
       plugins: Optional[list[BasePlugin]] = None,
       app: Optional[App] = None,
+      plugin_close_timeout: float = 5.0,
   ):
     """Initializes the InMemoryRunner.
 
@@ -1093,7 +1477,12 @@ class InMemoryRunner(Runner):
         agent: The root agent to run.
         app_name: The application name of the runner. Defaults to
           'InMemoryRunner'.
+        plugins: Optional list of plugins for the runner.
+        app: Optional App instance.
+        plugin_close_timeout: The timeout in seconds for plugin close methods.
     """
+    if app is None and app_name is None:
+      app_name = 'InMemoryRunner'
     super().__init__(
         app_name=app_name,
         agent=agent,
@@ -1102,4 +1491,5 @@ class InMemoryRunner(Runner):
         app=app,
         session_service=InMemorySessionService(),
         memory_service=InMemoryMemoryService(),
+        plugin_close_timeout=plugin_close_timeout,
     )

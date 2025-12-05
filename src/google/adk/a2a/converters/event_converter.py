@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime
 from datetime import timezone
 import logging
@@ -55,6 +56,34 @@ DEFAULT_ERROR_MESSAGE = "An error occurred during processing"
 
 # Logger
 logger = logging.getLogger("google_adk." + __name__)
+
+
+AdkEventToA2AEventsConverter = Callable[
+    [
+        Event,
+        InvocationContext,
+        Optional[str],
+        Optional[str],
+        GenAIPartToA2APartConverter,
+    ],
+    List[A2AEvent],
+]
+"""A callable that converts an ADK Event into a list of A2A events.
+
+This interface allows for custom logic to map ADK's event structure to the
+event structure expected by the A2A server.
+
+Args:
+    event: The source ADK Event to convert.
+    invocation_context: The context of the ADK agent invocation.
+    task_id: The ID of the A2A task being processed.
+    context_id: The context ID from the A2A request.
+    part_converter: A function to convert GenAI content parts to A2A
+      parts.
+
+Returns:
+    A list of A2A events.
+"""
 
 
 def _serialize_metadata_value(value: Any) -> str:
@@ -272,13 +301,15 @@ def convert_a2a_message_to_event(
     )
 
   try:
-    parts = []
+    output_parts = []
     long_running_tool_ids = set()
 
     for a2a_part in a2a_message.parts:
       try:
-        part = part_converter(a2a_part)
-        if part is None:
+        parts = part_converter(a2a_part)
+        if not isinstance(parts, list):
+          parts = [parts] if parts else []
+        if not parts:
           logger.warning("Failed to convert A2A part, skipping: %s", a2a_part)
           continue
 
@@ -292,16 +323,18 @@ def convert_a2a_message_to_event(
             )
             is True
         ):
-          long_running_tool_ids.add(part.function_call.id)
+          for part in parts:
+            if part.function_call:
+              long_running_tool_ids.add(part.function_call.id)
 
-        parts.append(part)
+        output_parts.extend(parts)
 
       except Exception as e:
         logger.error("Failed to convert A2A part: %s, error: %s", a2a_part, e)
         # Continue processing other parts instead of failing completely
         continue
 
-    if not parts:
+    if not output_parts:
       logger.warning(
           "No parts could be converted from A2A message %s", a2a_message
       )
@@ -319,7 +352,7 @@ def convert_a2a_message_to_event(
         else None,
         content=genai_types.Content(
             role="model",
-            parts=parts,
+            parts=output_parts,
         ),
     )
 
@@ -358,15 +391,19 @@ def convert_event_to_a2a_message(
     return None
 
   try:
-    a2a_parts = []
+    output_parts = []
     for part in event.content.parts:
-      a2a_part = part_converter(part)
-      if a2a_part:
-        a2a_parts.append(a2a_part)
+      a2a_parts = part_converter(part)
+      if not isinstance(a2a_parts, list):
+        a2a_parts = [a2a_parts] if a2a_parts else []
+      for a2a_part in a2a_parts:
+        output_parts.append(a2a_part)
         _process_long_running_tool(a2a_part, event)
 
-    if a2a_parts:
-      return Message(message_id=str(uuid.uuid4()), role=role, parts=a2a_parts)
+    if output_parts:
+      return Message(
+          message_id=str(uuid.uuid4()), role=role, parts=output_parts
+      )
 
   except Exception as e:
     logger.error("Failed to convert event to status message: %s", e)

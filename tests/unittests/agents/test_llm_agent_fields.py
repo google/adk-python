@@ -22,6 +22,9 @@ from google.adk.agents.callback_context import CallbackContext
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.readonly_context import ReadonlyContext
+from google.adk.models.anthropic_llm import Claude
+from google.adk.models.google_llm import Gemini
+from google.adk.models.lite_llm import LiteLlm
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.registry import LLMRegistry
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
@@ -167,27 +170,7 @@ async def test_async_canonical_global_instruction():
   assert bypass_state_injection
 
 
-def test_output_schema_will_disable_transfer(caplog: pytest.LogCaptureFixture):
-  with caplog.at_level('WARNING'):
-
-    class Schema(BaseModel):
-      pass
-
-    agent = LlmAgent(
-        name='test_agent',
-        output_schema=Schema,
-    )
-
-    # Transfer is automatically disabled
-    assert agent.disallow_transfer_to_parent
-    assert agent.disallow_transfer_to_peers
-    assert (
-        'output_schema cannot co-exist with agent transfer configurations.'
-        in caplog.text
-    )
-
-
-def test_output_schema_with_sub_agents_will_throw():
+def test_output_schema_with_sub_agents_will_not_throw():
   class Schema(BaseModel):
     pass
 
@@ -195,12 +178,18 @@ def test_output_schema_with_sub_agents_will_throw():
       name='sub_agent',
   )
 
-  with pytest.raises(ValueError):
-    _ = LlmAgent(
-        name='test_agent',
-        output_schema=Schema,
-        sub_agents=[sub_agent],
-    )
+  agent = LlmAgent(
+      name='test_agent',
+      output_schema=Schema,
+      sub_agents=[sub_agent],
+  )
+
+  # Transfer is not disabled
+  assert not agent.disallow_transfer_to_parent
+  assert not agent.disallow_transfer_to_peers
+
+  assert agent.output_schema == Schema
+  assert agent.sub_agents == [sub_agent]
 
 
 def test_output_schema_with_tools_will_not_throw():
@@ -425,3 +414,47 @@ class TestCanonicalTools:
     assert len(tools) == 1
     assert tools[0].name == 'vertex_ai_search'
     assert tools[0].__class__.__name__ == 'VertexAiSearchTool'
+
+
+# Tests for multi-provider model support via string model names
+@pytest.mark.parametrize(
+    'model_name',
+    [
+        'gemini-1.5-flash',
+        'gemini-2.0-flash-exp',
+    ],
+)
+def test_agent_with_gemini_string_model(model_name):
+  """Test that Agent accepts Gemini model strings and resolves to Gemini."""
+  agent = LlmAgent(name='test_agent', model=model_name)
+  assert isinstance(agent.canonical_model, Gemini)
+  assert agent.canonical_model.model == model_name
+
+
+@pytest.mark.parametrize(
+    'model_name',
+    [
+        'claude-3-5-sonnet-v2@20241022',
+        'claude-sonnet-4@20250514',
+    ],
+)
+def test_agent_with_claude_string_model(model_name):
+  """Test that Agent accepts Claude model strings and resolves to Claude."""
+  agent = LlmAgent(name='test_agent', model=model_name)
+  assert isinstance(agent.canonical_model, Claude)
+  assert agent.canonical_model.model == model_name
+
+
+@pytest.mark.parametrize(
+    'model_name',
+    [
+        'openai/gpt-4o',
+        'groq/llama3-70b-8192',
+        'anthropic/claude-3-opus-20240229',
+    ],
+)
+def test_agent_with_litellm_string_model(model_name):
+  """Test that Agent accepts LiteLLM provider strings."""
+  agent = LlmAgent(name='test_agent', model=model_name)
+  assert isinstance(agent.canonical_model, LiteLlm)
+  assert agent.canonical_model.model == model_name

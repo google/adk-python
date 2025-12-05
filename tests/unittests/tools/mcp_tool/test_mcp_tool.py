@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import sys
 from unittest.mock import AsyncMock
 from unittest.mock import Mock
 from unittest.mock import patch
@@ -23,39 +22,26 @@ from google.adk.auth.auth_credential import HttpAuth
 from google.adk.auth.auth_credential import HttpCredentials
 from google.adk.auth.auth_credential import OAuth2Auth
 from google.adk.auth.auth_credential import ServiceAccount
+from google.adk.tools.mcp_tool.mcp_session_manager import MCPSessionManager
+from google.adk.tools.mcp_tool.mcp_tool import MCPTool
+from google.adk.tools.tool_context import ToolContext
+from google.genai.types import FunctionDeclaration
+from google.genai.types import Type
+from mcp.types import CallToolResult
+from mcp.types import TextContent
 import pytest
-
-# Skip all tests in this module if Python version is less than 3.10
-pytestmark = pytest.mark.skipif(
-    sys.version_info < (3, 10), reason="MCP tool requires Python 3.10+"
-)
-
-# Import dependencies with version checking
-try:
-  from google.adk.tools.mcp_tool.mcp_session_manager import MCPSessionManager
-  from google.adk.tools.mcp_tool.mcp_tool import MCPTool
-  from google.adk.tools.tool_context import ToolContext
-  from google.genai.types import FunctionDeclaration
-except ImportError as e:
-  if sys.version_info < (3, 10):
-    # Create dummy classes to prevent NameError during test collection
-    # Tests will be skipped anyway due to pytestmark
-    class DummyClass:
-      pass
-
-    MCPSessionManager = DummyClass
-    MCPTool = DummyClass
-    ToolContext = DummyClass
-    FunctionDeclaration = DummyClass
-  else:
-    raise e
 
 
 # Mock MCP Tool from mcp.types
 class MockMCPTool:
   """Mock MCP Tool for testing."""
 
-  def __init__(self, name="test_tool", description="Test tool description"):
+  def __init__(
+      self,
+      name="test_tool",
+      description="Test tool description",
+      outputSchema=None,
+  ):
     self.name = name
     self.description = description
     self.inputSchema = {
@@ -66,6 +52,7 @@ class MockMCPTool:
         },
         "required": ["param1"],
     }
+    self.outputSchema = outputSchema
 
 
 class TestMCPTool:
@@ -142,6 +129,70 @@ class TestMCPTool:
     assert declaration.description == "Test tool description"
     assert declaration.parameters is not None
 
+  def test_get_declaration_with_json_schema_for_func_decl_enabled(
+      self, monkeypatch
+  ):
+    """Test function declaration generation with json schema for func decl enabled."""
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+    )
+
+    with monkeypatch.context() as m:
+      m.setenv("ADK_ENABLE_JSON_SCHEMA_FOR_FUNC_DECL", "true")
+      declaration = tool._get_declaration()
+
+    assert isinstance(declaration, FunctionDeclaration)
+    assert declaration.name == "test_tool"
+    assert declaration.description == "Test tool description"
+    assert declaration.parameters is None
+    assert declaration.parameters_json_schema is not None
+    assert declaration.response is None
+    assert declaration.response_json_schema is None
+
+  def test_get_declaration_with_output_schema_and_json_schema_for_func_decl_enabled(
+      self, monkeypatch
+  ):
+    """Test function declaration generation with an output schema and json schema for func decl enabled."""
+    output_schema = {
+        "type": "object",
+        "properties": {
+            "status": {
+                "type": "string",
+                "description": "The status of the operation",
+            },
+        },
+    }
+
+    tool = MCPTool(
+        mcp_tool=MockMCPTool(outputSchema=output_schema),
+        mcp_session_manager=self.mock_session_manager,
+    )
+
+    with monkeypatch.context() as m:
+      m.setenv("ADK_ENABLE_JSON_SCHEMA_FOR_FUNC_DECL", "true")
+      declaration = tool._get_declaration()
+
+    assert isinstance(declaration, FunctionDeclaration)
+    assert declaration.response is None
+    assert declaration.response_json_schema == output_schema
+
+  def test_get_declaration_with_empty_output_schema_and_json_schema_for_func_decl_enabled(
+      self, monkeypatch
+  ):
+    """Test function declaration with an empty output schema and json schema for func decl enabled."""
+    tool = MCPTool(
+        mcp_tool=MockMCPTool(outputSchema={}),
+        mcp_session_manager=self.mock_session_manager,
+    )
+
+    with monkeypatch.context() as m:
+      m.setenv("ADK_ENABLE_JSON_SCHEMA_FOR_FUNC_DECL", "true")
+      declaration = tool._get_declaration()
+
+    assert declaration.response is None
+    assert not declaration.response_json_schema
+
   @pytest.mark.asyncio
   async def test_run_async_impl_no_auth(self):
     """Test running tool without authentication."""
@@ -150,9 +201,11 @@ class TestMCPTool:
         mcp_session_manager=self.mock_session_manager,
     )
 
-    # Mock the session response
-    expected_response = {"result": "success"}
-    self.mock_session.call_tool = AsyncMock(return_value=expected_response)
+    # Mock the session response - must return CallToolResult
+    mcp_response = CallToolResult(
+        content=[TextContent(type="text", text="success")]
+    )
+    self.mock_session.call_tool = AsyncMock(return_value=mcp_response)
 
     tool_context = Mock(spec=ToolContext)
     args = {"param1": "test_value"}
@@ -161,7 +214,8 @@ class TestMCPTool:
         args=args, tool_context=tool_context, credential=None
     )
 
-    assert result == expected_response
+    # Verify the result matches the model_dump output
+    assert result == mcp_response.model_dump(exclude_none=True, mode="json")
     self.mock_session_manager.create_session.assert_called_once_with(
         headers=None
     )
@@ -184,9 +238,11 @@ class TestMCPTool:
         auth_type=AuthCredentialTypes.OAUTH2, oauth2=oauth2_auth
     )
 
-    # Mock the session response
-    expected_response = {"result": "success"}
-    self.mock_session.call_tool = AsyncMock(return_value=expected_response)
+    # Mock the session response - must return CallToolResult
+    mcp_response = CallToolResult(
+        content=[TextContent(type="text", text="success")]
+    )
+    self.mock_session.call_tool = AsyncMock(return_value=mcp_response)
 
     tool_context = Mock(spec=ToolContext)
     args = {"param1": "test_value"}
@@ -195,7 +251,7 @@ class TestMCPTool:
         args=args, tool_context=tool_context, credential=credential
     )
 
-    assert result == expected_response
+    assert result == mcp_response.model_dump(exclude_none=True, mode="json")
     # Check that headers were passed correctly
     self.mock_session_manager.create_session.assert_called_once()
     call_args = self.mock_session_manager.create_session.call_args
@@ -322,7 +378,7 @@ class TestMCPTool:
 
     with pytest.raises(
         ValueError,
-        match="MCPTool only supports header-based API key authentication",
+        match="McpTool only supports header-based API key authentication",
     ):
       await tool._get_headers(tool_context, auth_credential)
 
@@ -354,7 +410,7 @@ class TestMCPTool:
 
     with pytest.raises(
         ValueError,
-        match="MCPTool only supports header-based API key authentication",
+        match="McpTool only supports header-based API key authentication",
     ):
       await tool._get_headers(tool_context, auth_credential)
 
@@ -460,9 +516,11 @@ class TestMCPTool:
         auth_credential=auth_credential,
     )
 
-    # Mock the session response
-    expected_response = {"result": "authenticated_success"}
-    self.mock_session.call_tool = AsyncMock(return_value=expected_response)
+    # Mock the session response - must return CallToolResult
+    mcp_response = CallToolResult(
+        content=[TextContent(type="text", text="authenticated_success")]
+    )
+    self.mock_session.call_tool = AsyncMock(return_value=mcp_response)
 
     tool_context = Mock(spec=ToolContext)
     args = {"param1": "test_value"}
@@ -471,7 +529,7 @@ class TestMCPTool:
         args=args, tool_context=tool_context, credential=auth_credential
     )
 
-    assert result == expected_response
+    assert result == mcp_response.model_dump(exclude_none=True, mode="json")
     # Check that headers were passed correctly with custom API key header
     self.mock_session_manager.create_session.assert_called_once()
     call_args = self.mock_session_manager.create_session.call_args
@@ -545,7 +603,7 @@ class TestMCPTool:
       mock_logger.error.assert_called_once()
       logged_message = mock_logger.error.call_args[0][0]
       assert (
-          "MCPTool only supports header-based API key authentication"
+          "McpTool only supports header-based API key authentication"
           in logged_message
       )
 
@@ -640,3 +698,80 @@ class TestMCPTool:
 
     with pytest.raises(TypeError):
       MCPTool(mcp_tool=self.mock_mcp_tool)  # Missing session manager
+
+  @pytest.mark.asyncio
+  async def test_run_async_impl_with_header_provider_no_auth(self):
+    """Test running tool with header_provider but no auth."""
+    expected_headers = {"X-Tenant-ID": "test-tenant"}
+    header_provider = Mock(return_value=expected_headers)
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+        header_provider=header_provider,
+    )
+
+    # Mock the session response - must return CallToolResult
+    mcp_response = CallToolResult(
+        content=[TextContent(type="text", text="success")]
+    )
+    self.mock_session.call_tool = AsyncMock(return_value=mcp_response)
+
+    tool_context = Mock(spec=ToolContext)
+    tool_context._invocation_context = Mock()
+    args = {"param1": "test_value"}
+
+    result = await tool._run_async_impl(
+        args=args, tool_context=tool_context, credential=None
+    )
+
+    assert result == mcp_response.model_dump(exclude_none=True, mode="json")
+    header_provider.assert_called_once()
+    self.mock_session_manager.create_session.assert_called_once_with(
+        headers=expected_headers
+    )
+    self.mock_session.call_tool.assert_called_once_with(
+        "test_tool", arguments=args
+    )
+
+  @pytest.mark.asyncio
+  async def test_run_async_impl_with_header_provider_and_oauth2(self):
+    """Test running tool with header_provider and OAuth2 auth."""
+    dynamic_headers = {"X-Tenant-ID": "test-tenant"}
+    header_provider = Mock(return_value=dynamic_headers)
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+        header_provider=header_provider,
+    )
+
+    oauth2_auth = OAuth2Auth(access_token="test_access_token")
+    credential = AuthCredential(
+        auth_type=AuthCredentialTypes.OAUTH2, oauth2=oauth2_auth
+    )
+
+    # Mock the session response - must return CallToolResult
+    mcp_response = CallToolResult(
+        content=[TextContent(type="text", text="success")]
+    )
+    self.mock_session.call_tool = AsyncMock(return_value=mcp_response)
+
+    tool_context = Mock(spec=ToolContext)
+    tool_context._invocation_context = Mock()
+    args = {"param1": "test_value"}
+
+    result = await tool._run_async_impl(
+        args=args, tool_context=tool_context, credential=credential
+    )
+
+    assert result == mcp_response.model_dump(exclude_none=True, mode="json")
+    header_provider.assert_called_once()
+    self.mock_session_manager.create_session.assert_called_once()
+    call_args = self.mock_session_manager.create_session.call_args
+    headers = call_args[1]["headers"]
+    assert headers == {
+        "Authorization": "Bearer test_access_token",
+        "X-Tenant-ID": "test-tenant",
+    }
+    self.mock_session.call_tool.assert_called_once_with(
+        "test_tool", arguments=args
+    )

@@ -17,13 +17,16 @@ from __future__ import annotations
 from enum import Enum
 import logging
 import sys
+from typing import Any
 from typing import Optional
+import warnings
 
 from google.genai import types
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
 from pydantic import field_validator
+from pydantic import model_validator
 
 logger = logging.getLogger('google_adk.' + __name__)
 
@@ -35,7 +38,10 @@ class StreamingMode(Enum):
 
 
 class RunConfig(BaseModel):
-  """Configs for runtime behavior of agents."""
+  """Configs for runtime behavior of agents.
+
+  The configs here will be overridden by agent-specific configurations.
+  """
 
   model_config = ConfigDict(
       extra='forbid',
@@ -99,11 +105,17 @@ class RunConfig(BaseModel):
   )
   """Configuration for context window compression. If set, this will enable context window compression for LLM input."""
 
-  save_live_audio: bool = False
-  """Saves live video and audio data to session and artifact service.
+  save_live_blob: bool = False
+  """Saves live video and audio data to session and artifact service."""
 
-  Right now, only audio is supported.
-  """
+  save_live_audio: bool = Field(
+      default=False,
+      deprecated=True,
+      description=(
+          'DEPRECATED: Use save_live_blob instead. If set to True, it saves'
+          ' live video and audio data to session and artifact service.'
+      ),
+  )
 
   max_llm_calls: int = 500
   """
@@ -114,6 +126,24 @@ class RunConfig(BaseModel):
       calls is enforced, if the value is set in this range.
     - Less than or equal to 0: This allows for unbounded number of llm calls.
   """
+
+  custom_metadata: Optional[dict[str, Any]] = None
+  """Custom metadata for the current invocation."""
+
+  @model_validator(mode='before')
+  @classmethod
+  def check_for_deprecated_save_live_audio(cls, data: Any) -> Any:
+    """If save_live_audio is passed, use it to set save_live_blob."""
+    if isinstance(data, dict) and 'save_live_audio' in data:
+      warnings.warn(
+          'The `save_live_audio` config is deprecated and will be removed in a'
+          ' future release. Please use `save_live_blob` instead.',
+          DeprecationWarning,
+          stacklevel=2,
+      )
+      if data['save_live_audio']:
+        data['save_live_blob'] = True
+    return data
 
   @field_validator('max_llm_calls', mode='after')
   @classmethod

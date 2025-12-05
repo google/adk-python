@@ -14,11 +14,13 @@
 
 from __future__ import annotations
 
+import importlib
 import json
 import logging
 import os
 from pathlib import Path
 import shutil
+import sys
 from typing import Any
 from typing import Mapping
 from typing import Optional
@@ -33,24 +35,38 @@ from opentelemetry.sdk.trace import TracerProvider
 from starlette.types import Lifespan
 from watchdog.observers import Observer
 
-from ..artifacts.gcs_artifact_service import GcsArtifactService
-from ..artifacts.in_memory_artifact_service import InMemoryArtifactService
 from ..auth.credential_service.in_memory_credential_service import InMemoryCredentialService
 from ..evaluation.local_eval_set_results_manager import LocalEvalSetResultsManager
 from ..evaluation.local_eval_sets_manager import LocalEvalSetsManager
-from ..memory.in_memory_memory_service import InMemoryMemoryService
-from ..memory.vertex_ai_memory_bank_service import VertexAiMemoryBankService
 from ..runners import Runner
-from ..sessions.in_memory_session_service import InMemorySessionService
-from ..sessions.vertex_ai_session_service import VertexAiSessionService
-from ..utils.feature_decorator import working_in_progress
 from .adk_web_server import AdkWebServer
+from .service_registry import load_services_module
 from .utils import envs
 from .utils import evals
 from .utils.agent_change_handler import AgentChangeEventHandler
 from .utils.agent_loader import AgentLoader
+from .utils.service_factory import create_artifact_service_from_options
+from .utils.service_factory import create_memory_service_from_options
+from .utils.service_factory import create_session_service_from_options
 
 logger = logging.getLogger("google_adk." + __name__)
+
+_LAZY_SERVICE_IMPORTS: dict[str, str] = {
+    "AgentLoader": ".utils.agent_loader",
+    "LocalEvalSetResultsManager": "..evaluation.local_eval_set_results_manager",
+    "LocalEvalSetsManager": "..evaluation.local_eval_sets_manager",
+}
+
+
+def __getattr__(name: str):
+  """Lazily import defaults so patching in tests keeps working."""
+  if name not in _LAZY_SERVICE_IMPORTS:
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+  module = importlib.import_module(_LAZY_SERVICE_IMPORTS[name], __package__)
+  attr = getattr(module, name)
+  globals()[name] = attr
+  return attr
 
 
 def get_fast_api_app(
@@ -66,6 +82,7 @@ def get_fast_api_app(
     a2a: bool = False,
     host: str = "127.0.0.1",
     port: int = 8000,
+    url_prefix: Optional[str] = None,
     trace_to_cloud: bool = False,
     otel_to_cloud: bool = False,
     reload_agents: bool = False,
@@ -74,6 +91,7 @@ def get_fast_api_app(
     logo_text: Optional[str] = None,
     logo_image_url: Optional[str] = None,
 ) -> FastAPI:
+
   # Set up eval managers.
   if eval_storage_uri:
     gcs_eval_managers = evals.create_gcs_eval_managers_from_uri(
@@ -85,101 +103,39 @@ def get_fast_api_app(
     eval_sets_manager = LocalEvalSetsManager(agents_dir=agents_dir)
     eval_set_results_manager = LocalEvalSetResultsManager(agents_dir=agents_dir)
 
-  def _parse_agent_engine_resource_name(agent_engine_id_or_resource_name):
-    if not agent_engine_id_or_resource_name:
-      raise click.ClickException(
-          "Agent engine resource name or resource id can not be empty."
-      )
-
-    # "projects/my-project/locations/us-central1/reasoningEngines/1234567890",
-    if "/" in agent_engine_id_or_resource_name:
-      # Validate resource name.
-      if len(agent_engine_id_or_resource_name.split("/")) != 6:
-        raise click.ClickException(
-            "Agent engine resource name is mal-formatted. It should be of"
-            " format :"
-            " projects/{project_id}/locations/{location}/reasoningEngines/{resource_id}"
-        )
-      project = agent_engine_id_or_resource_name.split("/")[1]
-      location = agent_engine_id_or_resource_name.split("/")[3]
-      agent_engine_id = agent_engine_id_or_resource_name.split("/")[-1]
-    else:
-      envs.load_dotenv_for_agent("", agents_dir)
-      project = os.environ.get("GOOGLE_CLOUD_PROJECT", None)
-      location = os.environ.get("GOOGLE_CLOUD_LOCATION", None)
-      agent_engine_id = agent_engine_id_or_resource_name
-    return project, location, agent_engine_id
+  # initialize Agent Loader
+  agent_loader = AgentLoader(agents_dir)
+  # Load services.py from agents_dir for custom service registration.
+  load_services_module(agents_dir)
 
   # Build the Memory service
-  if memory_service_uri:
-    if memory_service_uri.startswith("rag://"):
-      from ..memory.vertex_ai_rag_memory_service import VertexAiRagMemoryService
-
-      rag_corpus = memory_service_uri.split("://")[1]
-      if not rag_corpus:
-        raise click.ClickException("Rag corpus can not be empty.")
-      envs.load_dotenv_for_agent("", agents_dir)
-      memory_service = VertexAiRagMemoryService(
-          rag_corpus=f'projects/{os.environ["GOOGLE_CLOUD_PROJECT"]}/locations/{os.environ["GOOGLE_CLOUD_LOCATION"]}/ragCorpora/{rag_corpus}'
-      )
-    elif memory_service_uri.startswith("agentengine://"):
-      agent_engine_id_or_resource_name = memory_service_uri.split("://")[1]
-      project, location, agent_engine_id = _parse_agent_engine_resource_name(
-          agent_engine_id_or_resource_name
-      )
-      memory_service = VertexAiMemoryBankService(
-          project=project,
-          location=location,
-          agent_engine_id=agent_engine_id,
-      )
-    else:
-      raise click.ClickException(
-          "Unsupported memory service URI: %s" % memory_service_uri
-      )
-  else:
-    memory_service = InMemoryMemoryService()
+  try:
+    memory_service = create_memory_service_from_options(
+        base_dir=agents_dir,
+        memory_service_uri=memory_service_uri,
+    )
+  except ValueError as exc:
+    raise click.ClickException(str(exc)) from exc
 
   # Build the Session service
-  if session_service_uri:
-    if session_service_uri.startswith("agentengine://"):
-      agent_engine_id_or_resource_name = session_service_uri.split("://")[1]
-      project, location, agent_engine_id = _parse_agent_engine_resource_name(
-          agent_engine_id_or_resource_name
-      )
-      session_service = VertexAiSessionService(
-          project=project,
-          location=location,
-          agent_engine_id=agent_engine_id,
-      )
-    else:
-      from ..sessions.database_session_service import DatabaseSessionService
-
-      # Database session additional settings
-      if session_db_kwargs is None:
-        session_db_kwargs = {}
-      session_service = DatabaseSessionService(
-          db_url=session_service_uri, **session_db_kwargs
-      )
-  else:
-    session_service = InMemorySessionService()
+  session_service = create_session_service_from_options(
+      base_dir=agents_dir,
+      session_service_uri=session_service_uri,
+      session_db_kwargs=session_db_kwargs,
+  )
 
   # Build the Artifact service
-  if artifact_service_uri:
-    if artifact_service_uri.startswith("gs://"):
-      gcs_bucket = artifact_service_uri.split("://")[1]
-      artifact_service = GcsArtifactService(bucket_name=gcs_bucket)
-    else:
-      raise click.ClickException(
-          "Unsupported artifact service URI: %s" % artifact_service_uri
-      )
-  else:
-    artifact_service = InMemoryArtifactService()
+  try:
+    artifact_service = create_artifact_service_from_options(
+        base_dir=agents_dir,
+        artifact_service_uri=artifact_service_uri,
+        strict_uri=True,
+    )
+  except ValueError as exc:
+    raise click.ClickException(str(exc)) from exc
 
   # Build  the Credential service
   credential_service = InMemoryCredentialService()
-
-  # initialize Agent Loader
-  agent_loader = AgentLoader(agents_dir)
 
   adk_web_server = AdkWebServer(
       agent_loader=agent_loader,
@@ -193,6 +149,7 @@ def get_fast_api_app(
       extra_plugins=extra_plugins,
       logo_text=logo_text,
       logo_image_url=logo_image_url,
+      url_prefix=url_prefix,
   )
 
   # Callbacks & other optional args for when constructing the FastAPI instance
@@ -254,7 +211,6 @@ def get_fast_api_app(
       **extra_fast_api_args,
   )
 
-  @working_in_progress("builder_save is not ready for use.")
   @app.post("/builder/save", response_model_exclude_none=True)
   async def builder_build(
       files: list[UploadFile], tmp: Optional[bool] = False
@@ -292,7 +248,6 @@ def get_fast_api_app(
 
     return True
 
-  @working_in_progress("builder_save is not ready for use.")
   @app.post("/builder/app/{app_name}/cancel", response_model_exclude_none=True)
   async def builder_cancel(app_name: str) -> bool:
     base_path = Path.cwd() / agents_dir
@@ -326,7 +281,6 @@ def get_fast_api_app(
       return False
     return True
 
-  @working_in_progress("builder_get is not ready for use.")
   @app.get(
       "/builder/app/{app_name}",
       response_model_exclude_none=True,
@@ -367,25 +321,14 @@ def get_fast_api_app(
         )
 
   if a2a:
-    try:
-      from a2a.server.apps import A2AStarletteApplication
-      from a2a.server.request_handlers import DefaultRequestHandler
-      from a2a.server.tasks import InMemoryTaskStore
-      from a2a.types import AgentCard
-      from a2a.utils.constants import AGENT_CARD_WELL_KNOWN_PATH
+    from a2a.server.apps import A2AStarletteApplication
+    from a2a.server.request_handlers import DefaultRequestHandler
+    from a2a.server.tasks import InMemoryTaskStore
+    from a2a.types import AgentCard
+    from a2a.utils.constants import AGENT_CARD_WELL_KNOWN_PATH
 
-      from ..a2a.executor.a2a_agent_executor import A2aAgentExecutor
+    from ..a2a.executor.a2a_agent_executor import A2aAgentExecutor
 
-    except ImportError as e:
-      import sys
-
-      if sys.version_info < (3, 10):
-        raise ImportError(
-            "A2A requires Python 3.10 or above. Please upgrade your Python"
-            " version."
-        ) from e
-      else:
-        raise e
     # locate all a2a agent apps in the agents directory
     base_path = Path.cwd() / agents_dir
     # the root agents directory should be an existing folder

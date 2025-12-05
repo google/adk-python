@@ -38,67 +38,21 @@ from typing_extensions import override
 logger = logging.getLogger('google_adk.' + __name__)
 
 
-class GemmaFunctionCallModel(BaseModel):
-  """Flexible Pydantic model for parsing inline Gemma function call responses."""
+class GemmaFunctionCallingMixin:
+  """Mixin providing function calling support for Gemma models.
 
-  name: str = Field(validation_alias=AliasChoices('name', 'function'))
-  parameters: dict[str, Any] = Field(
-      validation_alias=AliasChoices('parameters', 'args')
-  )
-
-
-class Gemma(Gemini):
-  """Integration for Gemma models exposed via the Gemini API.
-
-  Only Gemma 3 models are supported at this time. For agentic use cases,
-  use of gemma-3-27b-it and gemma-3-12b-it are strongly recommended.
-
-  For full documentation, see: https://ai.google.dev/gemma/docs/core/
-
-  NOTE: Gemma does **NOT** support system instructions. Any system instructions
-  will be replaced with an initial *user* prompt in the LLM request. If system
-  instructions change over the course of agent execution, the initial content
-  **SHOULD** be replaced. Special care is warranted here.
-  See: https://ai.google.dev/gemma/docs/core/prompt-structure#system-instructions
-
-  NOTE: Gemma's function calling support is limited. It does not have full access to the
-  same built-in tools as Gemini. It also does not have special API support for tools and
-  functions. Rather, tools must be passed in via a `user` prompt, and extracted from model
-  responses based on approximate shape.
-
-  NOTE: Vertex AI API support for Gemma is not currently included. This **ONLY** supports
-  usage via the Gemini API.
+  Gemma models don't have native function calling support, so this mixin
+  provides the logic to:
+  1. Convert function declarations to system instruction prompts
+  2. Convert function call/response parts to text in the conversation
+  3. Extract function calls from model text responses
   """
-
-  model: str = (
-      'gemma-3-27b-it'  # Others: [gemma-3-1b-it, gemma-3-4b-it, gemma-3-12b-it]
-  )
-
-  @classmethod
-  @override
-  def supported_models(cls) -> list[str]:
-    """Provides the list of supported models.
-
-    Returns:
-    A list of supported models.
-    """
-
-    return [
-        r'gemma-3.*',
-    ]
-
-  @cached_property
-  def _api_backend(self) -> GoogleLLMVariant:
-    return GoogleLLMVariant.GEMINI_API
 
   def _move_function_calls_into_system_instruction(
       self, llm_request: LlmRequest
-  ):
-    if llm_request.model is None or not llm_request.model.startswith('gemma-3'):
-      return
-
-    # Iterate through the existing contents to find and convert function calls and responses
-    # from text parts, as Gemma models don't directly support function calling.
+  ) -> None:
+    """Converts function declarations to system instructions for Gemma."""
+    # Convert function calls/responses in contents to text
     new_contents: list[Content] = []
     for content_item in llm_request.contents:
       (
@@ -136,7 +90,10 @@ class Gemma(Gemini):
 
     llm_request.config.tools = []
 
-  def _extract_function_calls_from_response(self, llm_response: LlmResponse):
+  def _extract_function_calls_from_response(
+      self, llm_response: LlmResponse
+  ) -> None:
+    """Extracts function calls from Gemma text responses."""
     if llm_response.partial or (llm_response.turn_complete is True):
       return
 
@@ -182,12 +139,78 @@ class Gemma(Gemini):
       llm_response.content.parts = [function_call_part]
     except (json.JSONDecodeError, ValidationError) as e:
       logger.debug(
-          f'Error attempting to parse JSON into function call. Leaving as text'
-          f' response. %s',
+          'Error attempting to parse JSON into function call. Leaving as text'
+          ' response. %s',
           e,
       )
     except Exception as e:
-      logger.warning('Error processing Gemma function call response: %s', e)
+      logger.warning(
+          'Error processing Gemma function call response: %s',
+          e,
+          exc_info=True,
+      )
+
+
+class GemmaFunctionCallModel(BaseModel):
+  """Flexible Pydantic model for parsing inline Gemma function call responses."""
+
+  name: str = Field(validation_alias=AliasChoices('name', 'function'))
+  parameters: dict[str, Any] = Field(
+      validation_alias=AliasChoices('parameters', 'args')
+  )
+
+
+class Gemma(GemmaFunctionCallingMixin, Gemini):
+  """Integration for Gemma models exposed via the Gemini API.
+
+  Only Gemma 3 models are supported at this time. For agentic use cases,
+  use of gemma-3-27b-it and gemma-3-12b-it are strongly recommended.
+
+  For full documentation, see: https://ai.google.dev/gemma/docs/core/
+
+  NOTE: Gemma does **NOT** support system instructions. Any system instructions
+  will be replaced with an initial *user* prompt in the LLM request. If system
+  instructions change over the course of agent execution, the initial content
+  **SHOULD** be replaced. Special care is warranted here.
+  See:
+  https://ai.google.dev/gemma/docs/core/prompt-structure#system-instructions
+
+  NOTE: Gemma's function calling support is limited. It does not have full
+  access to the
+  same built-in tools as Gemini. It also does not have special API support for
+  tools and
+  functions. Rather, tools must be passed in via a `user` prompt, and extracted
+  from model
+  responses based on approximate shape.
+
+  NOTE: Vertex AI API support for Gemma is not currently included. This **ONLY**
+  supports
+  usage via the Gemini API.
+  """
+
+  model: str = (
+      'gemma-3-27b-it'  # Others: [gemma-3-1b-it, gemma-3-4b-it, gemma-3-12b-it]
+  )
+
+  def __repr__(self) -> str:
+    return f'{self.__class__.__name__}(model="{self.model}")'
+
+  @classmethod
+  @override
+  def supported_models(cls) -> list[str]:
+    """Provides the list of supported models.
+
+    Returns:
+    A list of supported models.
+    """
+
+    return [
+        r'gemma-3.*',
+    ]
+
+  @cached_property
+  def _api_backend(self) -> GoogleLLMVariant:
+    return GoogleLLMVariant.GEMINI_API
 
   @override
   async def _preprocess_request(self, llm_request: LlmRequest) -> None:
@@ -329,3 +352,55 @@ def _get_last_valid_json_substring(text: str) -> tuple[bool, str | None]:
   if last_json_str:
     return True, last_json_str
   return False, None
+
+
+try:
+  from google.adk.models.lite_llm import LiteLlm  # noqa: F401
+except Exception:
+  # LiteLLM not available, Gemma3Ollama will not be defined
+  LiteLlm = None
+
+if LiteLlm is not None:
+
+  class Gemma3Ollama(GemmaFunctionCallingMixin, LiteLlm):
+    """Integration for Gemma 3 models running locally via Ollama.
+
+    This enables fully local agent workflows using Gemma 3 models.
+    Requires Ollama to be running with a Gemma 3 model pulled.
+
+    Example:
+      ollama pull gemma3:12b
+      model = Gemma3Ollama(model="ollama/gemma3:12b")
+    """
+
+    def __init__(self, model: str = 'ollama/gemma3:12b', **kwargs):
+      super().__init__(model=model, **kwargs)
+
+    def __repr__(self) -> str:
+      return f'{self.__class__.__name__}(model="{self.model}")'
+
+    @classmethod
+    @override
+    def supported_models(cls) -> list[str]:
+      return [
+          r'ollama/gemma3.*',
+      ]
+
+    @override
+    async def generate_content_async(
+        self, llm_request: LlmRequest, stream: bool = False
+    ) -> AsyncGenerator[LlmResponse, None]:
+      """Sends a request to Gemma via Ollama/LiteLLM.
+
+      Args:
+        llm_request: LlmRequest, the request to send.
+        stream: bool = False, whether to do streaming call.
+
+      Yields:
+        LlmResponse: The model response.
+      """
+      self._move_function_calls_into_system_instruction(llm_request)
+
+      async for response in super().generate_content_async(llm_request, stream):
+        self._extract_function_calls_from_response(response)
+        yield response

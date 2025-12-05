@@ -2,21 +2,32 @@ name: ADK Issue Triaging Agent
 
 on:
   issues:
-    types: [opened, reopened]
+    types: [opened, labeled]
+  schedule:
+    # Run every 6 hours to triage untriaged issues
+    - cron: '0 */6 * * *'
 
 jobs:
   agent-triage-issues:
     runs-on: ubuntu-latest
+    # Run for:
+    # - Scheduled runs (batch processing)
+    # - New issues (need component labeling)
+    # - Issues labeled with "planned" (need owner assignment)
+    if: >-
+      github.event_name == 'schedule' ||
+      github.event.action == 'opened' ||
+      github.event.label.name == 'planned'
     permissions:
       issues: write
       contents: read
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.11'
 
@@ -30,8 +41,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.ADK_TRIAGE_AGENT }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           GOOGLE_GENAI_USE_VERTEXAI: 0
-          OWNER: 'google'
-          REPO: 'adk-python'
+          OWNER: ${{ github.repository_owner }}
+          REPO: ${{ github.event.repository.name }}
           INTERACTIVE: 0
           EVENT_NAME: ${{ github.event_name }} # 'issues', 'schedule', etc.
           ISSUE_NUMBER: ${{ github.event.issue.number }}
