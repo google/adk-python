@@ -164,7 +164,12 @@ of the ADK.
 
 ## Vibe Coding
 
-If you are to develop agent via vibe coding the [llms.txt](./llms.txt) and the [llms-full.txt](./llms-full.txt) can be used as context to LLM. While the former one is a summarized one and the later one has the full information in case your LLM has big enough context window.
+Accelerate your ADK agent development workflow with AI-assisted coding. ADK provides optimized documentation context compatible with AI code editors:
+
+- **[llms.txt](https://google.github.io/adk-docs/llms.txt)**: A concise summary of ADK concepts and core APIs, optimized for low token usage.
+- **[llms-full.txt](https://google.github.io/adk-docs/llms-full.txt)**: The comprehensive documentation reference, ideal for complex implementations or models with large context windows.
+
+You can also visit our [Coding with AI Guide](https://google.github.io/adk-docs/tutorials/coding-with-ai/) for instructions on using these files with development tools like Gemini CLI and Antigravity.
 
 ## Community Events
 
