@@ -167,7 +167,7 @@ of ADK.
 
 Accelerate your ADK agent development workflow with AI-assisted coding. ADK provides optimized documentation context compatible with AI code editors:
 
-- **[llms.txt](https://google.github.io/adk-docs/llms.txt)**: A concise summary of ADK concepts and core APIs, optimized for low token usage.
+- **[llms.txt](https://google.github.io/adk-docs/llms.txt)**: A structured index of ADK documentation, designed to help LLMs navigate and locate specific topics and guides.
 - **[llms-full.txt](https://google.github.io/adk-docs/llms-full.txt)**: The comprehensive documentation reference, ideal for complex implementations or models with large context windows.
 
 You can also visit our [Coding with AI](https://google.github.io/adk-docs/tutorials/coding-with-ai/) guide for instructions on using these files with development tools like Gemini CLI and Antigravity.
