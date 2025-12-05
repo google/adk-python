@@ -866,7 +866,7 @@ def to_agent_engine(
 
     click.echo(f'Using adk_app: {adk_app}')
 
-    if not os.path.exists(os.path.join(agent_src_path,f"{adk_app}.py")):
+    if not os.path.exists(os.path.join(agent_src_path, f'{adk_app}.py')):
       adk_app_file = os.path.join(temp_folder, f'{adk_app}.py')
       with open(adk_app_file, 'w', encoding='utf-8') as f:
         f.write(
@@ -877,7 +877,7 @@ def to_agent_engine(
         )
       click.echo(f'Created {adk_app_file}')
     else:
-      shutil.copy(os.path.join(agent_src_path,f"{adk_app}.py"), temp_folder)
+      shutil.copy(os.path.join(agent_src_path, f'{adk_app}.py'), temp_folder)
       click.echo(f'Using existing {adk_app}.py')
 
     is_config_agent = False
