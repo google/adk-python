@@ -364,13 +364,16 @@ class EvaluationGenerator:
           name="ensure_retry_options"
       )
       
-      # Create Runner with App to preserve plugins
+      # Create a copy of the app to avoid mutating the original object and add eval-specific plugins.
+      app_for_runner = app.model_copy(deep=True)
+      app_for_runner.plugins.extend([request_intercepter_plugin, ensure_retry_options_plugin])
+
+      # Create Runner with the modified App to preserve plugins
       async with Runner(
-          app=app,
+          app=app_for_runner,
           session_service=session_service,
           artifact_service=artifact_service,
           memory_service=memory_service,
-          plugins=[request_intercepter_plugin, ensure_retry_options_plugin],
       ) as runner:
           events = []
           
