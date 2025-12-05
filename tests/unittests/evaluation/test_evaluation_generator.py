@@ -18,9 +18,9 @@ from google.adk.evaluation.app_details import AgentDetails
 from google.adk.evaluation.app_details import AppDetails
 from google.adk.evaluation.evaluation_generator import EvaluationGenerator
 from google.adk.evaluation.request_intercepter_plugin import _RequestIntercepterPlugin
-from google.adk.evaluation.user_simulator import NextUserMessage
-from google.adk.evaluation.user_simulator import Status as UserSimulatorStatus
-from google.adk.evaluation.user_simulator import UserSimulator
+from google.adk.evaluation.simulation.user_simulator import NextUserMessage
+from google.adk.evaluation.simulation.user_simulator import Status as UserSimulatorStatus
+from google.adk.evaluation.simulation.user_simulator import UserSimulator
 from google.adk.events.event import Event
 from google.adk.models.llm_request import LlmRequest
 from google.genai import types

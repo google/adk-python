@@ -103,7 +103,7 @@ async def test_tracer_start_as_current_span(
         isinstance(referrer, Aclosing)
         or isinstance(indirect_referrer, Aclosing)
         for referrer in gc.get_referrers(coro)
-        # Some coroutines have a layer of indirection in python 3.9 and 3.10
+        # Some coroutines have a layer of indirection in Python 3.10
         for indirect_referrer in gc.get_referrers(referrer)
     ), f'Coro `{coro.__name__}` is not wrapped with Aclosing'
     firstiter(coro)

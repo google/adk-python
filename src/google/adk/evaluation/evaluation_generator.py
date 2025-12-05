@@ -45,9 +45,9 @@ from .eval_case import InvocationEvents
 from .eval_case import SessionInput
 from .eval_set import EvalSet
 from .request_intercepter_plugin import _RequestIntercepterPlugin
-from .user_simulator import Status as UserSimulatorStatus
-from .user_simulator import UserSimulator
-from .user_simulator_provider import UserSimulatorProvider
+from .simulation.user_simulator import Status as UserSimulatorStatus
+from .simulation.user_simulator import UserSimulator
+from .simulation.user_simulator_provider import UserSimulatorProvider
 
 _USER_AUTHOR = "user"
 _DEFAULT_AUTHOR = "agent"

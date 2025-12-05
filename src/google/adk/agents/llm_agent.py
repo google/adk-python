@@ -469,7 +469,10 @@ class LlmAgent(BaseAgent):
 
     if ctx.is_resumable:
       events = ctx._get_events(current_invocation=True, current_branch=True)
-      if any(ctx.should_pause_invocation(e) for e in events[-2:]):
+      if events and (
+          ctx.should_pause_invocation(events[-1])
+          or ctx.should_pause_invocation(events[-2])
+      ):
         return
       # Only yield an end state if the last event is no longer a long running
       # tool call.
@@ -907,7 +910,9 @@ class LlmAgent(BaseAgent):
     from .config_agent_utils import resolve_callbacks
     from .config_agent_utils import resolve_code_reference
 
-    if config.model:
+    if config.model_code:
+      kwargs['model'] = resolve_code_reference(config.model_code)
+    elif config.model:
       kwargs['model'] = config.model
     if config.instruction:
       kwargs['instruction'] = config.instruction

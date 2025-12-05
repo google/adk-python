@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 from typing import List
 from typing import Literal
 from typing import Optional
@@ -22,6 +23,7 @@ from typing import Optional
 from google.genai import types
 from pydantic import ConfigDict
 from pydantic import Field
+from pydantic import model_validator
 
 from ..tools.tool_configs import ToolConfig
 from .base_agent_config import BaseAgentConfig
@@ -52,10 +54,47 @@ class LlmAgentConfig(BaseAgentConfig):
   model: Optional[str] = Field(
       default=None,
       description=(
-          'Optional. LlmAgent.model. If not set, the model will be inherited'
-          ' from the ancestor.'
+          'Optional. LlmAgent.model. Provide a model name string (e.g.'
+          ' "gemini-2.0-flash"). If not set, the model will be inherited from'
+          ' the ancestor. To construct a model instance from code, use'
+          ' model_code.'
       ),
   )
+
+  model_code: Optional[CodeConfig] = Field(
+      default=None,
+      description=(
+          'Optional. A CodeConfig that instantiates a BaseLlm implementation'
+          ' such as LiteLlm with custom arguments (API base, fallbacks,'
+          ' etc.). Cannot be set together with `model`.'
+      ),
+  )
+
+  @model_validator(mode='before')
+  @classmethod
+  def _normalize_model_code(cls, data: Any) -> dict[str, Any] | Any:
+    if not isinstance(data, dict):
+      return data
+
+    model_value = data.get('model')
+    model_code = data.get('model_code')
+    if isinstance(model_value, dict) and model_code is None:
+      logger.warning(
+          'Detected legacy `model` mapping. Use `model_code` to provide a'
+          ' CodeConfig for custom model construction.'
+      )
+      data = dict(data)
+      data['model_code'] = model_value
+      data['model'] = None
+
+    return data
+
+  @model_validator(mode='after')
+  def _validate_model_sources(self) -> LlmAgentConfig:
+    if self.model and self.model_code:
+      raise ValueError('Only one of `model` or `model_code` should be set.')
+
+    return self
 
   instruction: str = Field(
       description=(

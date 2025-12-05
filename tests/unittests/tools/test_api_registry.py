@@ -73,7 +73,7 @@ class TestApiRegistry(unittest.IsolatedAsyncioTestCase):
     self.assertIn("test-mcp-server-2", api_registry._mcp_servers)
     self.assertIn("test-mcp-server-no-url", api_registry._mcp_servers)
     mock_client_instance.get.assert_called_once_with(
-        f"https://staging-cloudapiregistry.sandbox.googleapis.com/v1beta/projects/{self.project_id}/locations/{self.location}/mcpServers",
+        f"https://cloudapiregistry.googleapis.com/v1beta/projects/{self.project_id}/locations/{self.location}/mcpServers",
         headers={
             "Authorization": "Bearer mock_token",
             "Content-Type": "application/json",

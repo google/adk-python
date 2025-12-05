@@ -57,10 +57,8 @@ class CustomErrorExtractionPlugin(ReflectAndRetryToolPlugin):
     return None
 
 
-# Inheriting from IsolatedAsyncioTestCase ensures these tests works in Python
-# 3.9. See https://github.com/pytest-dev/pytest-asyncio/issues/1039
-# Without this, the tests will fail with a "RuntimeError: There is no current
-# event loop in thread 'MainThread'."
+# Inheriting from IsolatedAsyncioTestCase ensures consistent behavior.
+# See https://github.com/pytest-dev/pytest-asyncio/issues/1039
 class TestReflectAndRetryToolPlugin(IsolatedAsyncioTestCase):
   """Comprehensive tests for ReflectAndRetryToolPlugin focusing on behavior."""
 

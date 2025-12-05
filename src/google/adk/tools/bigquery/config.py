@@ -101,6 +101,16 @@ class BigQueryToolConfig(BaseModel):
   locations, see https://cloud.google.com/bigquery/docs/locations.
   """
 
+  job_labels: Optional[dict[str, str]] = None
+  """Labels to apply to BigQuery jobs for tracking and monitoring.
+
+  These labels will be added to all BigQuery jobs executed by the tools.
+  Labels must be key-value pairs where both keys and values are strings.
+  Labels can be used for billing, monitoring, and resource organization.
+  For more information about labels, see 
+  https://cloud.google.com/bigquery/docs/labels-intro.
+  """
+
   @field_validator('maximum_bytes_billed')
   @classmethod
   def validate_maximum_bytes_billed(cls, v):
@@ -120,4 +130,14 @@ class BigQueryToolConfig(BaseModel):
     """Validate the application name."""
     if v and ' ' in v:
       raise ValueError('Application name should not contain spaces.')
+    return v
+
+  @field_validator('job_labels')
+  @classmethod
+  def validate_job_labels(cls, v):
+    """Validate that job_labels keys are not empty."""
+    if v is not None:
+      for key in v.keys():
+        if not key:
+          raise ValueError('Label keys cannot be empty.')
     return v

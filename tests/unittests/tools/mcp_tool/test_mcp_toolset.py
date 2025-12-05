@@ -20,46 +20,16 @@ from unittest.mock import AsyncMock
 from unittest.mock import Mock
 from unittest.mock import patch
 
+from google.adk.agents.readonly_context import ReadonlyContext
 from google.adk.auth.auth_credential import AuthCredential
+from google.adk.tools.mcp_tool.mcp_session_manager import MCPSessionManager
+from google.adk.tools.mcp_tool.mcp_session_manager import SseConnectionParams
+from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
+from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
+from google.adk.tools.mcp_tool.mcp_tool import MCPTool
+from google.adk.tools.mcp_tool.mcp_toolset import MCPToolset
+from mcp import StdioServerParameters
 import pytest
-
-# Skip all tests in this module if Python version is less than 3.10
-pytestmark = pytest.mark.skipif(
-    sys.version_info < (3, 10), reason="MCP tool requires Python 3.10+"
-)
-
-# Import dependencies with version checking
-try:
-  from google.adk.agents.readonly_context import ReadonlyContext
-  from google.adk.tools.mcp_tool.mcp_session_manager import MCPSessionManager
-  from google.adk.tools.mcp_tool.mcp_session_manager import SseConnectionParams
-  from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
-  from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
-  from google.adk.tools.mcp_tool.mcp_tool import MCPTool
-  from google.adk.tools.mcp_tool.mcp_toolset import MCPToolset
-  from mcp import StdioServerParameters
-except ImportError as e:
-  if sys.version_info < (3, 10):
-    # Create dummy classes to prevent NameError during test collection
-    # Tests will be skipped anyway due to pytestmark
-    class DummyClass:
-      pass
-
-    class StdioServerParameters:
-
-      def __init__(self, command="test_command", args=None):
-        self.command = command
-        self.args = args or []
-
-    MCPSessionManager = DummyClass
-    SseConnectionParams = DummyClass
-    StdioConnectionParams = DummyClass
-    StreamableHTTPConnectionParams = DummyClass
-    MCPTool = DummyClass
-    MCPToolset = DummyClass
-    ReadonlyContext = DummyClass
-  else:
-    raise e
 
 
 class MockMCPTool:
