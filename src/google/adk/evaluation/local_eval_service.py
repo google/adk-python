@@ -433,37 +433,33 @@ class LocalEvalService(BaseEvalService):
     try:
       # Use App if available (so plugins like ReflectAndRetryToolPlugin run)
       with client_label_context(EVAL_CLIENT_LABEL):
+        # Extract common arguments to reduce duplication
+        common_args = {
+            "user_simulator": self._user_simulator_provider.provide(eval_case),
+            "initial_session": initial_session,
+            "session_id": session_id,
+            "session_service": self._session_service,
+            "artifact_service": self._artifact_service,
+            "memory_service": self._memory_service,
+        }
+        
         if self._app is not None:
-            inferences = (
-                await EvaluationGenerator._generate_inferences_from_app(
-                    app=self._app,
-                    user_simulator=self._user_simulator_provider.provide(eval_case),
-                    initial_session=initial_session,
-                    session_id=session_id,
-                    session_service=self._session_service,
-                    artifact_service=self._artifact_service,
-                    memory_service=self._memory_service,
-                )
+            inferences = await EvaluationGenerator._generate_inferences_from_app(
+                app=self._app,
+                **common_args
             )
         else:
             # Fallback to direct root_agent usage (existing behavior)
-            inferences = (
-                await EvaluationGenerator._generate_inferences_from_root_agent(
-                    root_agent=root_agent,
-                    user_simulator=self._user_simulator_provider.provide(eval_case),
-                    initial_session=initial_session,
-                    session_id=session_id,
-                    session_service=self._session_service,
-                    artifact_service=self._artifact_service,
-                    memory_service=self._memory_service,
-                )
+            inferences = await EvaluationGenerator._generate_inferences_from_root_agent(
+                root_agent=root_agent,
+                **common_args
             )
-
 
       inference_result.inferences = inferences
       inference_result.status = InferenceStatus.SUCCESS
 
       return inference_result
+
     except Exception as e:
       # We intentionally catch the Exception as we don't want failures to affect
       # other inferences.
