@@ -208,6 +208,17 @@ class LocalEvalService(BaseEvalService):
         inference_result.status == InferenceStatus.FAILURE
         or inference_result.inferences is None
     ):
+      # We still need to fetch eval_case to get the correct user_id.
+      eval_case = self._eval_sets_manager.get_eval_case(
+          app_name=inference_result.app_name,
+          eval_set_id=inference_result.eval_set_id,
+          eval_case_id=inference_result.eval_case_id,
+      )
+      user_id = (
+          eval_case.session_input.user_id
+          if eval_case and eval_case.session_input and eval_case.session_input.user_id
+          else 'test_user_id'
+      )
       eval_case_result = EvalCaseResult(
           eval_set_file=inference_result.eval_set_id,
           eval_set_id=inference_result.eval_set_id,
@@ -217,7 +228,7 @@ class LocalEvalService(BaseEvalService):
           eval_metric_result_per_invocation=[],
           session_id=inference_result.session_id,
           session_details=None,
-          user_id='test_user_id',
+          user_id=user_id,
       )
       return (inference_result, eval_case_result)
     
