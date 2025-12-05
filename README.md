@@ -51,7 +51,7 @@ deployment-agnostic, and compatible with other frameworks.
 - **Agent Config**: Build agents without code. Check out the
   [Agent Config](https://google.github.io/adk-docs/agents/config/) feature.
 
-- **Tool Confirmation**: A [tool confirmation flow(HITL)](https://google.github.io/adk-docs/tools/confirmation/) that can guard tool execution with explicit confirmation and custom input.
+- **Tool Confirmation**: A [tool confirmation flow (HITL)](https://google.github.io/adk-docs/tools/confirmation/) that can guard tool execution with explicit confirmation and custom input.
 
 - **Modular Multi-Agent Systems**: Design scalable applications by composing
   multiple specialized agents into flexible hierarchies.
@@ -115,7 +115,7 @@ root_agent = Agent(
 
 ### Define a multi-agent system:
 
-Define a multi-agent system with coordinator agent, greeter agent, and task execution agent. Then ADK engine and the model will guide the agents works together to accomplish the task.
+Define a multi-agent system with a coordinator agent, greeter agent, and task execution agent. Then ADK and model will guide the agents to work together to accomplish the task.
 
 ```python
 from google.adk.agents import LlmAgent, BaseAgent
@@ -152,15 +152,16 @@ adk eval \
 
 ## 🤝 Contributing
 
-We welcome contributions from the community! Whether it's bug reports, feature requests, documentation improvements, or code contributions, please see our
-- [General contribution guideline and flow](https://google.github.io/adk-docs/contributing-guide/).
-- Then if you want to contribute code, please read [Code Contributing Guidelines](./CONTRIBUTING.md) to get started.
+We welcome contributions from the community! Whether it's bug reports, feature requests, documentation improvements, or code contributions, please see our:
+
+- [General contribution guideline and flow](https://google.github.io/adk-docs/contributing-guide/)
+- Then if you want to contribute code, please read [Code Contributing Guidelines](./CONTRIBUTING.md) to get started
 
 ## Community Repo
 
-We have [adk-python-community repo](https://github.com/google/adk-python-community)that is home to a growing ecosystem of community-contributed tools, third-party
+The [adk-python-community repo](https://github.com/google/adk-python-community) is home to a growing ecosystem of community-contributed tools, third-party
 service integrations, and deployment scripts that extend the core capabilities
-of the ADK.
+of ADK.
 
 ## Vibe Coding
 
@@ -173,7 +174,7 @@ You can also visit our [Coding with AI](https://google.github.io/adk-docs/tutori
 
 ## Community Events
 
-- [Completed] ADK's 1st community meeting on Wednesday, October 15, 2025. Remember to [join our group](https://groups.google.com/g/adk-community) to get access to the [recording](https://drive.google.com/file/d/1rpXDq5NSH8-MyMeYI6_5pZ3Lhn0X9BQf/view), and [deck](https://docs.google.com/presentation/d/1_b8LG4xaiadbUUDzyNiapSFyxanc9ZgFdw7JQ6zmZ9Q/edit?slide=id.g384e60cdaca_0_658&resourcekey=0-tjFFv0VBQhpXBPCkZr0NOg#slide=id.g384e60cdaca_0_658).
+- [Completed] ADK's 1st community meeting on Wednesday, October 15, 2025. Remember to [join our group](https://groups.google.com/g/adk-community) to get access to the [recording](https://drive.google.com/file/d/1rpXDq5NSH8-MyMeYI6_5pZ3Lhn0X9BQf/view) and [deck](https://docs.google.com/presentation/d/1_b8LG4xaiadbUUDzyNiapSFyxanc9ZgFdw7JQ6zmZ9Q/edit?slide=id.g384e60cdaca_0_658&resourcekey=0-tjFFv0VBQhpXBPCkZr0NOg#slide=id.g384e60cdaca_0_658).
 
 ## 📄 License
 
