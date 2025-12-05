@@ -193,8 +193,8 @@ class LocalEvalService(BaseEvalService):
       yield eval_case_result
 
   async def _evaluate_single_inference_result(
-      self, inference_result: InferenceResult, evaluate_config: EvaluateConfig
-  ) -> tuple[InferenceResult, EvalCaseResult]:
+    self, inference_result: InferenceResult, evaluate_config: EvaluateConfig
+) -> tuple[InferenceResult, EvalCaseResult]:
     """Returns the inference result and its corresponding EvalCaseResult.
 
     A single inference result can have multiple invocations. For each
@@ -203,6 +203,24 @@ class LocalEvalService(BaseEvalService):
     The EvalCaseResult contains scores for each metric per invocation and the
     overall score.
     """
+    # Handle failed inferences early - skip evaluation
+    if (
+        inference_result.status == InferenceStatus.FAILURE
+        or inference_result.inferences is None
+    ):
+      eval_case_result = EvalCaseResult(
+          eval_set_file=inference_result.eval_set_id,
+          eval_set_id=inference_result.eval_set_id,
+          eval_id=inference_result.eval_case_id,
+          final_eval_status=EvalStatus.NOT_EVALUATED,
+          overall_eval_metric_results=[],
+          eval_metric_result_per_invocation=[],
+          session_id=inference_result.session_id,
+          session_details=None,
+          user_id='test_user_id',
+      )
+      return (inference_result, eval_case_result)
+    
     eval_case = self._eval_sets_manager.get_eval_case(
         app_name=inference_result.app_name,
         eval_set_id=inference_result.eval_set_id,
@@ -415,17 +433,19 @@ class LocalEvalService(BaseEvalService):
     try:
       # Use App if available (so plugins like ReflectAndRetryToolPlugin run)
       if self._app is not None:
-          inferences = (
-              await EvaluationGenerator._generate_inferences_from_app(
-                  invocations=eval_case.conversation,
-                  app=self._app,
-                  initial_session=initial_session,
-                  session_id=session_id,
-                  session_service=self._session_service,
-                  artifact_service=self._artifact_service,
-                  memory_service=self._memory_service,
+          with client_label_context(EVAL_CLIENT_LABEL):  # ← ADD THIS
+              inferences = (
+                  await EvaluationGenerator._generate_inferences_from_app(
+                      app=self._app,
+                      root_agent=root_agent,
+                      user_simulator=self._user_simulator_provider.provide(eval_case),
+                      initial_session=initial_session,
+                      session_id=session_id,
+                      session_service=self._session_service,
+                      artifact_service=self._artifact_service,
+                      memory_service=self._memory_service,
+                  )
               )
-          )
       else:
         # Fallback to direct root_agent usage (existing behavior)
         with client_label_context(EVAL_CLIENT_LABEL):
@@ -440,6 +460,7 @@ class LocalEvalService(BaseEvalService):
                   memory_service=self._memory_service,
               )
           )
+
 
       inference_result.inferences = inferences
       inference_result.status = InferenceStatus.SUCCESS

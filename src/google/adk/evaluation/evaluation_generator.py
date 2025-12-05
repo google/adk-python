@@ -331,8 +331,9 @@ class EvaluationGenerator:
   
   @staticmethod
   async def _generate_inferences_from_app(
-      invocations: list['Invocation'],
       app: 'App',
+      root_agent: 'Agent',
+      user_simulator: 'UserSimulator',
       initial_session: Optional['SessionInput'],
       session_id: str,
       session_service: 'BaseSessionService',
@@ -340,9 +341,6 @@ class EvaluationGenerator:
       memory_service: 'BaseMemoryService',
   ) -> list['Invocation']:
       """Generate inferences by invoking through App (preserving plugins)."""
-      from ..runners import Runner
-      
-      actual_invocations = []
       
       # Determine user_id consistently
       user_id = 'test_user_id'
@@ -359,53 +357,48 @@ class EvaluationGenerator:
               state=initial_session.state if initial_session.state else {},
           )
       
+      # Create plugins to track requests (needed for app_details)
+      request_intercepter_plugin = _RequestIntercepterPlugin(
+          name="request_intercepter_plugin"
+      )
+      ensure_retry_options_plugin = EnsureRetryOptionsPlugin(
+          name="ensure_retry_options"
+      )
+      
       # Create Runner with App to preserve plugins
-      runner = Runner(
+      async with Runner(
           app=app,
           session_service=session_service,
           artifact_service=artifact_service,
           memory_service=memory_service,
-      )
-      
-      # Run each invocation through the app
-      for expected_invocation in invocations:
-          user_content = expected_invocation.user_content
+          plugins=[request_intercepter_plugin, ensure_retry_options_plugin],
+      ) as runner:
+          events = []
           
-          # Invoke through Runner (this applies all plugins)
-          response = runner.run_async(
-              user_id=user_id,
-              session_id=session_id,
-              new_message=user_content,
-          )
+          # Loop through user simulator messages (handles both static and dynamic)
+          while True:
+              next_user_message = await user_simulator.get_next_user_message(
+                  copy.deepcopy(events)
+              )
+              if next_user_message.status == UserSimulatorStatus.SUCCESS:
+                  async for event in EvaluationGenerator._generate_inferences_for_single_user_invocation(
+                      runner, user_id, session_id, next_user_message.user_message
+                  ):
+                      events.append(event)
+              else:  # no more messages
+                  break
           
-          # Extract response similar to existing implementation
-          final_response = None
-          tool_uses = []
-          tool_responses = []
-          invocation_id = ""
-          
-          async for event in response:
-              invocation_id = invocation_id or event.invocation_id
-              
-              if event.is_final_response() and event.content and event.content.parts:
-                  final_response = event.content
-              elif calls := event.get_function_calls():
-                  tool_uses.extend(calls)
-              elif responses := event.get_function_responses():
-                  tool_responses.extend(responses)
-          
-          actual_invocations.append(
-              Invocation(
-                  invocation_id=invocation_id,
-                  user_content=user_content,
-                  final_response=final_response,
-                  intermediate_data=IntermediateData(
-                      tool_uses=tool_uses, tool_responses=tool_responses
-                  ),
+          # Extract app details from intercepted requests
+          app_details_by_invocation_id = (
+              EvaluationGenerator._get_app_details_by_invocation_id(
+                  events, request_intercepter_plugin
               )
           )
-      
-      return actual_invocations
+          
+          # Convert events to invocations
+          return EvaluationGenerator.convert_events_to_eval_invocations(
+              events, app_details_by_invocation_id
+          )
 
 
   @staticmethod
