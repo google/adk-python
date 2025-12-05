@@ -411,8 +411,14 @@ class RemoteA2aAgent(BaseAgent):
           )
           # for streaming task, we update the event with the task status.
           # We update the event as Thought updates.
-          if task and task.status and task.status.state == TaskState.submitted:
-            event.content.parts[0].thought = True
+          if (
+              task
+              and task.status
+              and task.status.state == TaskState.submitted
+              and event.content.parts
+          ):
+            for part in event.content.parts:
+              part.thought = True
         elif (
             isinstance(update, A2ATaskStatusUpdateEvent)
             and update.status
