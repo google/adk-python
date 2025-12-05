@@ -169,7 +169,7 @@ Accelerate your ADK agent development workflow with AI-assisted coding. ADK prov
 - **[llms.txt](https://google.github.io/adk-docs/llms.txt)**: A concise summary of ADK concepts and core APIs, optimized for low token usage.
 - **[llms-full.txt](https://google.github.io/adk-docs/llms-full.txt)**: The comprehensive documentation reference, ideal for complex implementations or models with large context windows.
 
-You can also visit our [Coding with AI Guide](https://google.github.io/adk-docs/tutorials/coding-with-ai/) for instructions on using these files with development tools like Gemini CLI and Antigravity.
+You can also visit our [Coding with AI](https://google.github.io/adk-docs/tutorials/coding-with-ai/) guide for instructions on using these files with development tools like Gemini CLI and Antigravity.
 
 ## Community Events
 
