@@ -527,13 +527,14 @@ def _load_app_from_module(module_path: str) -> Optional['App']:
     Returns:
         App instance if found, None otherwise
     """
+    import importlib
+    from ..apps.app import App
+
     try:
-        import importlib
         module = importlib.import_module(module_path)
         
         # Check for 'app' attribute (most common convention)
         if hasattr(module, 'app'):
-            from ..apps.app import App
             candidate = getattr(module, 'app')
             if isinstance(candidate, App):
                 logger.info(f"Loaded App instance from {module_path}")
@@ -545,6 +546,7 @@ def _load_app_from_module(module_path: str) -> Optional['App']:
         logger.debug(f"Could not load App from module {module_path}: {e}")
     
     return None
+
 
 
 def eval_options():
