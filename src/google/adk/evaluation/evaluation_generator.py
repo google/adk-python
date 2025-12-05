@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import copy
 import importlib
-from typing import Any, Optional, TYPE_CHECKING
+from typing import Any, AsyncGenerator, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ..apps.app import App
@@ -41,6 +41,7 @@ from ._retry_options_utils import EnsureRetryOptionsPlugin
 from .app_details import AgentDetails
 from .app_details import AppDetails
 from .eval_case import EvalCase
+from .eval_case import IntermediateData
 from .eval_case import Invocation
 from .eval_case import InvocationEvent
 from .eval_case import InvocationEvents
@@ -326,7 +327,7 @@ class EvaluationGenerator:
           )
       )
 
-    return response_invocations
+    return invocations
   
   @staticmethod
   async def _generate_inferences_from_app(
@@ -336,8 +337,10 @@ class EvaluationGenerator:
       session_id: str,
       session_service: 'BaseSessionService',
       artifact_service: 'BaseArtifactService',
+      memory_service: 'BaseMemoryService',
   ) -> list['Invocation']:
       """Generate inferences by invoking through App (preserving plugins)."""
+      from ..runners import Runner
       
       actual_invocations = []
       
@@ -356,12 +359,20 @@ class EvaluationGenerator:
               state=initial_session.state if initial_session.state else {},
           )
       
+      # Create Runner with App to preserve plugins
+      runner = Runner(
+          app=app,
+          session_service=session_service,
+          artifact_service=artifact_service,
+          memory_service=memory_service,
+      )
+      
       # Run each invocation through the app
       for expected_invocation in invocations:
           user_content = expected_invocation.user_content
           
-          # Invoke through App (this applies all plugins)
-          response = await app.run(
+          # Invoke through Runner (this applies all plugins)
+          response = runner.run_async(
               user_id=user_id,
               session_id=session_id,
               new_message=user_content,
@@ -370,6 +381,7 @@ class EvaluationGenerator:
           # Extract response similar to existing implementation
           final_response = None
           tool_uses = []
+          tool_responses = []
           invocation_id = ""
           
           async for event in response:
@@ -377,22 +389,24 @@ class EvaluationGenerator:
               
               if event.is_final_response() and event.content and event.content.parts:
                   final_response = event.content
-              elif event.get_function_calls():
-                  for call in event.get_function_calls():
-                      tool_uses.append(call)
+              elif calls := event.get_function_calls():
+                  tool_uses.extend(calls)
+              elif responses := event.get_function_responses():
+                  tool_responses.extend(responses)
           
           actual_invocations.append(
               Invocation(
                   invocation_id=invocation_id,
                   user_content=user_content,
                   final_response=final_response,
-                  intermediate_data=IntermediateData(tool_uses=tool_uses),
+                  intermediate_data=IntermediateData(
+                      tool_uses=tool_uses, tool_responses=tool_responses
+                  ),
               )
           )
       
       return actual_invocations
 
-    return invocations
 
   @staticmethod
   def _get_app_details_by_invocation_id(

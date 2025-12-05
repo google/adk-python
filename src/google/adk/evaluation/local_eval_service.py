@@ -423,6 +423,7 @@ class LocalEvalService(BaseEvalService):
                   session_id=session_id,
                   session_service=self._session_service,
                   artifact_service=self._artifact_service,
+                  memory_service=self._memory_service,
               )
           )
       else:
