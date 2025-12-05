@@ -332,7 +332,6 @@ class EvaluationGenerator:
   @staticmethod
   async def _generate_inferences_from_app(
       app: 'App',
-      root_agent: 'Agent',
       user_simulator: 'UserSimulator',
       initial_session: Optional['SessionInput'],
       session_id: str,

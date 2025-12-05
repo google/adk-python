@@ -432,34 +432,32 @@ class LocalEvalService(BaseEvalService):
 
     try:
       # Use App if available (so plugins like ReflectAndRetryToolPlugin run)
-      if self._app is not None:
-          with client_label_context(EVAL_CLIENT_LABEL):  # ← ADD THIS
-              inferences = (
-                  await EvaluationGenerator._generate_inferences_from_app(
-                      app=self._app,
-                      root_agent=root_agent,
-                      user_simulator=self._user_simulator_provider.provide(eval_case),
-                      initial_session=initial_session,
-                      session_id=session_id,
-                      session_service=self._session_service,
-                      artifact_service=self._artifact_service,
-                      memory_service=self._memory_service,
-                  )
-              )
-      else:
-        # Fallback to direct root_agent usage (existing behavior)
-        with client_label_context(EVAL_CLIENT_LABEL):
-          inferences = (
-              await EvaluationGenerator._generate_inferences_from_root_agent(
-                  root_agent=root_agent,
-                  user_simulator=self._user_simulator_provider.provide(eval_case),
-                  initial_session=initial_session,
-                  session_id=session_id,
-                  session_service=self._session_service,
-                  artifact_service=self._artifact_service,
-                  memory_service=self._memory_service,
-              )
-          )
+      with client_label_context(EVAL_CLIENT_LABEL):
+        if self._app is not None:
+            inferences = (
+                await EvaluationGenerator._generate_inferences_from_app(
+                    app=self._app,
+                    user_simulator=self._user_simulator_provider.provide(eval_case),
+                    initial_session=initial_session,
+                    session_id=session_id,
+                    session_service=self._session_service,
+                    artifact_service=self._artifact_service,
+                    memory_service=self._memory_service,
+                )
+            )
+        else:
+            # Fallback to direct root_agent usage (existing behavior)
+            inferences = (
+                await EvaluationGenerator._generate_inferences_from_root_agent(
+                    root_agent=root_agent,
+                    user_simulator=self._user_simulator_provider.provide(eval_case),
+                    initial_session=initial_session,
+                    session_id=session_id,
+                    session_service=self._session_service,
+                    artifact_service=self._artifact_service,
+                    memory_service=self._memory_service,
+                )
+            )
 
 
       inference_result.inferences = inferences
