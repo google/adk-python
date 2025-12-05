@@ -15,8 +15,11 @@
 from __future__ import annotations
 
 import importlib
-from typing import Any
-from typing import Optional
+from typing import Any, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ..apps.app import App
+
 import uuid
 
 from pydantic import BaseModel
@@ -220,6 +223,71 @@ class EvaluationGenerator:
       )
 
     return response_invocations
+  
+  @staticmethod
+  async def _generate_inferences_from_app(
+      invocations: list['Invocation'],
+      app: 'App',
+      initial_session: Optional['SessionInput'],
+      session_id: str,
+      session_service: 'BaseSessionService',
+      artifact_service: 'BaseArtifactService',
+  ) -> list['Invocation']:
+      """Generate inferences by invoking through App (preserving plugins)."""
+      
+      actual_invocations = []
+      
+      # Determine user_id consistently
+      user_id = 'test_user_id'
+      if initial_session and initial_session.user_id is not None:
+          user_id = initial_session.user_id
+      
+      # Initialize session if provided
+      if initial_session:
+          app_name = initial_session.app_name if initial_session.app_name else app.name
+          await session_service.create_session(
+              app_name=app_name,
+              user_id=user_id,
+              session_id=session_id,
+              state=initial_session.state if initial_session.state else {},
+          )
+      
+      # Run each invocation through the app
+      for expected_invocation in invocations:
+          user_content = expected_invocation.user_content
+          
+          # Invoke through App (this applies all plugins)
+          response = await app.run(
+              user_id=user_id,
+              session_id=session_id,
+              new_message=user_content,
+          )
+          
+          # Extract response similar to existing implementation
+          final_response = None
+          tool_uses = []
+          invocation_id = ""
+          
+          async for event in response:
+              invocation_id = invocation_id or event.invocation_id
+              
+              if event.is_final_response() and event.content and event.content.parts:
+                  final_response = event.content
+              elif event.get_function_calls():
+                  for call in event.get_function_calls():
+                      tool_uses.append(call)
+          
+          actual_invocations.append(
+              Invocation(
+                  invocation_id=invocation_id,
+                  user_content=user_content,
+                  final_response=final_response,
+                  intermediate_data=IntermediateData(tool_uses=tool_uses),
+              )
+          )
+      
+      return actual_invocations
+
 
   @staticmethod
   def _process_query_with_session(session_data, data):
@@ -259,3 +327,4 @@ class EvaluationGenerator:
       responses[index]["actual_tool_use"] = actual_tool_uses
       responses[index]["response"] = response
     return responses
+

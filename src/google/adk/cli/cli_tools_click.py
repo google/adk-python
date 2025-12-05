@@ -22,7 +22,11 @@ import functools
 import logging
 import os
 import tempfile
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ..apps.app import App
+
 
 import click
 from click.core import ParameterSource
@@ -279,6 +283,34 @@ def cli_run(
       )
   )
 
+def _load_app_from_module(module_path: str) -> Optional['App']:
+    """Try to load an App instance from the agent module.
+    
+    Args:
+        module_path: Python module path (e.g., 'my_package.my_agent')
+        
+    Returns:
+        App instance if found, None otherwise
+    """
+    try:
+        import importlib
+        module = importlib.import_module(module_path)
+        
+        # Check for 'app' attribute (most common convention)
+        if hasattr(module, 'app'):
+            from ..apps.app import App
+            candidate = getattr(module, 'app')
+            if isinstance(candidate, App):
+                logger.info(f"Loaded App instance from {module_path}")
+                return candidate
+        
+        logger.debug(f"No App instance found in {module_path}")
+        
+    except (ImportError, AttributeError) as e:
+        logger.debug(f"Could not load App from module {module_path}: {e}")
+    
+    return None
+
 
 @main.command("eval", cls=HelpfulCommand)
 @click.argument(
@@ -471,10 +503,19 @@ def cli_eval(
       )
 
   try:
+    # Try to load App if available (for plugin support like ReflectAndRetryToolPlugin)
+    app = _load_app_from_module(agent_module_file_path)
+    
+    if app:
+        logger.info("Using App instance for evaluation (plugins will be applied)")
+    else:
+        logger.info("No App found, using root_agent directly")
+
     eval_service = LocalEvalService(
         root_agent=root_agent,
         eval_sets_manager=eval_sets_manager,
         eval_set_results_manager=eval_set_results_manager,
+        app=app, # NEW: Pass app if available
     )
 
     inference_results = asyncio.run(

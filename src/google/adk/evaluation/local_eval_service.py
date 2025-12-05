@@ -20,6 +20,10 @@ import logging
 from typing import AsyncGenerator
 from typing import Callable
 from typing import Optional
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ..apps.app import App
 import uuid
 
 from typing_extensions import override
@@ -38,6 +42,7 @@ from .base_eval_service import InferenceRequest
 from .base_eval_service import InferenceResult
 from .base_eval_service import InferenceStatus
 from .eval_case import Invocation
+from .eval_case import SessionInput
 from .eval_metrics import EvalMetric
 from .eval_metrics import EvalMetricResult
 from .eval_metrics import EvalMetricResultPerInvocation
@@ -73,9 +78,11 @@ class LocalEvalService(BaseEvalService):
       artifact_service: Optional[BaseArtifactService] = None,
       eval_set_results_manager: Optional[EvalSetResultsManager] = None,
       session_id_supplier: Callable[[], str] = _get_session_id,
+      app: Optional['App'] = None,
   ):
     self._root_agent = root_agent
     self._eval_sets_manager = eval_sets_manager
+    self._app = app
     metric_evaluator_registry = (
         metric_evaluator_registry or DEFAULT_METRIC_EVALUATOR_REGISTRY
     )
@@ -364,23 +371,37 @@ class LocalEvalService(BaseEvalService):
     )
 
     try:
-      inferences = (
-          await EvaluationGenerator._generate_inferences_from_root_agent(
-              invocations=eval_case.conversation,
-              root_agent=root_agent,
-              initial_session=initial_session,
-              session_id=session_id,
-              session_service=self._session_service,
-              artifact_service=self._artifact_service,
+      # Use App if available (so plugins like ReflectAndRetryToolPlugin run)
+      if self._app is not None:
+          inferences = (
+              await EvaluationGenerator._generate_inferences_from_app(
+                  invocations=eval_case.conversation,
+                  app=self._app,
+                  initial_session=initial_session,
+                  session_id=session_id,
+                  session_service=self._session_service,
+                  artifact_service=self._artifact_service,
+              )
           )
-      )
+      else:
+          # Fallback to direct root_agent usage (existing behavior)
+          inferences = (
+              await EvaluationGenerator._generate_inferences_from_root_agent(
+                  invocations=eval_case.conversation,
+                  root_agent=root_agent,
+                  initial_session=initial_session,
+                  session_id=session_id,
+                  session_service=self._session_service,
+                  artifact_service=self._artifact_service,
+              )
+          )
 
       inference_result.inferences = inferences
       inference_result.status = InferenceStatus.SUCCESS
 
       return inference_result
     except Exception as e:
-      # We intentionally catch the Exception as we don't failures to affect
+      # We intentionally catch the Exception as we don't want failures to affect
       # other inferences.
       logger.error(
           'Inference failed for eval case `%s` with error %s',
