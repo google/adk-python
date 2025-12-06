@@ -32,6 +32,7 @@ from a2a.client.card_resolver import A2ACardResolver
 from a2a.client.client import ClientConfig as A2AClientConfig
 from a2a.client.client_factory import ClientFactory as A2AClientFactory
 from a2a.client.errors import A2AClientHTTPError
+from a2a.client.middleware import ClientCallContext
 from a2a.types import AgentCard
 from a2a.types import Message as A2AMessage
 from a2a.types import Part as A2APart
@@ -533,6 +534,7 @@ class RemoteA2aAgent(BaseAgent):
       async for a2a_response in self._a2a_client.send_message(
           request=a2a_request,
           request_metadata=request_metadata,
+          context=ClientCallContext(state=ctx.session.state),
       ):
         logger.debug(build_a2a_response_log(a2a_response))
 
