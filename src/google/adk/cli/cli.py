@@ -26,12 +26,10 @@ from pydantic import BaseModel
 from ..agents.llm_agent import LlmAgent
 from ..apps.app import App
 from ..artifacts.base_artifact_service import BaseArtifactService
-from ..artifacts.in_memory_artifact_service import InMemoryArtifactService
 from ..auth.credential_service.base_credential_service import BaseCredentialService
 from ..auth.credential_service.in_memory_credential_service import InMemoryCredentialService
 from ..runners import Runner
 from ..sessions.base_session_service import BaseSessionService
-from ..sessions.in_memory_session_service import InMemorySessionService
 from ..sessions.session import Session
 from ..utils.context_utils import Aclosing
 from ..utils.env_utils import is_env_enabled
@@ -161,10 +159,22 @@ async def run_cli(
   load_services_module(str(agent_root))
   user_id = 'test_user'
 
+  agents_dir = str(agent_parent_path)
+  agent_loader = AgentLoader(agents_dir=agents_dir)
+  agent_or_app = agent_loader.load_agent(agent_folder_name)
+  session_app_name = (
+      agent_or_app.name if isinstance(agent_or_app, App) else agent_folder_name
+  )
+  app_name_to_dir = None
+  if isinstance(agent_or_app, App) and agent_or_app.name != agent_folder_name:
+    app_name_to_dir = {agent_or_app.name: agent_folder_name}
+
   # Create session and artifact services using factory functions
+  # Sessions persist under <agents_dir>/<agent>/.adk/session.db by default.
   session_service = create_session_service_from_options(
-      base_dir=agent_root,
+      base_dir=agent_parent_path,
       session_service_uri=session_service_uri,
+      app_name_to_dir=app_name_to_dir,
   )
 
   artifact_service = create_artifact_service_from_options(
@@ -173,13 +183,6 @@ async def run_cli(
   )
 
   credential_service = InMemoryCredentialService()
-  agents_dir = str(agent_parent_path)
-  agent_or_app = AgentLoader(agents_dir=agents_dir).load_agent(
-      agent_folder_name
-  )
-  session_app_name = (
-      agent_or_app.name if isinstance(agent_or_app, App) else agent_folder_name
-  )
   if not is_env_enabled('ADK_DISABLE_LOAD_DOTENV'):
     envs.load_dotenv_for_agent(agent_folder_name, agents_dir)
 

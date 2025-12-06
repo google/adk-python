@@ -196,6 +196,7 @@ class OAuth2CredentialExchanger(BaseCredentialExchanger):
           ),
           code=auth_credential.oauth2.auth_code,
           grant_type=OAuthGrantType.AUTHORIZATION_CODE,
+          client_id=auth_credential.oauth2.client_id,
       )
       update_credential_with_tokens(auth_credential, tokens)
       logger.debug("Successfully exchanged authorization code for access token")

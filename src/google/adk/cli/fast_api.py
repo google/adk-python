@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import importlib
 import json
 import logging
 import os
@@ -50,6 +51,23 @@ from .utils.service_factory import create_session_service_from_options
 
 logger = logging.getLogger("google_adk." + __name__)
 
+_LAZY_SERVICE_IMPORTS: dict[str, str] = {
+    "AgentLoader": ".utils.agent_loader",
+    "LocalEvalSetResultsManager": "..evaluation.local_eval_set_results_manager",
+    "LocalEvalSetsManager": "..evaluation.local_eval_sets_manager",
+}
+
+
+def __getattr__(name: str):
+  """Lazily import defaults so patching in tests keeps working."""
+  if name not in _LAZY_SERVICE_IMPORTS:
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+  module = importlib.import_module(_LAZY_SERVICE_IMPORTS[name], __package__)
+  attr = getattr(module, name)
+  globals()[name] = attr
+  return attr
+
 
 def get_fast_api_app(
     *,
@@ -73,8 +91,6 @@ def get_fast_api_app(
     logo_text: Optional[str] = None,
     logo_image_url: Optional[str] = None,
 ) -> FastAPI:
-  # Convert to absolute path for consistency
-  agents_dir = str(Path(agents_dir).resolve())
 
   # Set up eval managers.
   if eval_storage_uri:
@@ -113,6 +129,7 @@ def get_fast_api_app(
     artifact_service = create_artifact_service_from_options(
         base_dir=agents_dir,
         artifact_service_uri=artifact_service_uri,
+        strict_uri=True,
     )
   except ValueError as exc:
     raise click.ClickException(str(exc)) from exc
@@ -304,25 +321,14 @@ def get_fast_api_app(
         )
 
   if a2a:
-    try:
-      from a2a.server.apps import A2AStarletteApplication
-      from a2a.server.request_handlers import DefaultRequestHandler
-      from a2a.server.tasks import InMemoryTaskStore
-      from a2a.types import AgentCard
-      from a2a.utils.constants import AGENT_CARD_WELL_KNOWN_PATH
+    from a2a.server.apps import A2AStarletteApplication
+    from a2a.server.request_handlers import DefaultRequestHandler
+    from a2a.server.tasks import InMemoryTaskStore
+    from a2a.types import AgentCard
+    from a2a.utils.constants import AGENT_CARD_WELL_KNOWN_PATH
 
-      from ..a2a.executor.a2a_agent_executor import A2aAgentExecutor
+    from ..a2a.executor.a2a_agent_executor import A2aAgentExecutor
 
-    except ImportError as e:
-      import sys
-
-      if sys.version_info < (3, 10):
-        raise ImportError(
-            "A2A requires Python 3.10 or above. Please upgrade your Python"
-            " version."
-        ) from e
-      else:
-        raise e
     # locate all a2a agent apps in the agents directory
     base_path = Path.cwd() / agents_dir
     # the root agents directory should be an existing folder

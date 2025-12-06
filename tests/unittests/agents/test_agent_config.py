@@ -29,6 +29,7 @@ from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.loop_agent import LoopAgent
 from google.adk.agents.parallel_agent import ParallelAgent
 from google.adk.agents.sequential_agent import SequentialAgent
+from google.adk.models.lite_llm import LiteLlm
 import pytest
 import yaml
 
@@ -257,6 +258,53 @@ sub_agents:
 
   assert isinstance(agent, expected_agent_type)
   assert config.root.agent_class == agent_class_value
+
+
+def test_agent_config_litellm_model_with_custom_args(tmp_path: Path):
+  yaml_content = """\
+name: managed_api_agent
+description: Agent using LiteLLM managed endpoint
+instruction: Respond concisely.
+model_code:
+  name: google.adk.models.lite_llm.LiteLlm
+  args:
+    - name: model
+      value: kimi/k2
+    - name: api_base
+      value: https://proxy.litellm.ai/v1
+"""
+  config_file = tmp_path / "litellm_agent.yaml"
+  config_file.write_text(yaml_content)
+
+  agent = config_agent_utils.from_config(str(config_file))
+
+  assert isinstance(agent, LlmAgent)
+  assert isinstance(agent.model, LiteLlm)
+  assert agent.model.model == "kimi/k2"
+  assert agent.model._additional_args.get("api_base") == (
+      "https://proxy.litellm.ai/v1"
+  )
+
+
+def test_agent_config_legacy_model_mapping_still_supported(tmp_path: Path):
+  yaml_content = """\
+name: managed_api_agent
+description: Agent using LiteLLM managed endpoint
+instruction: Respond concisely.
+model:
+  name: google.adk.models.lite_llm.LiteLlm
+  args:
+    - name: model
+      value: kimi/k2
+"""
+  config_file = tmp_path / "legacy_litellm_agent.yaml"
+  config_file.write_text(yaml_content)
+
+  agent = config_agent_utils.from_config(str(config_file))
+
+  assert isinstance(agent, LlmAgent)
+  assert isinstance(agent.model, LiteLlm)
+  assert agent.model.model == "kimi/k2"
 
 
 def test_agent_config_discriminator_custom_agent():
