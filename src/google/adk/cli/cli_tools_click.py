@@ -533,11 +533,10 @@ def _load_app_from_module(module_path: str) -> Optional['App']:
     try:
         module = importlib.import_module(module_path)
         
-        # Check for 'app' attribute (most common convention)
-        if hasattr(module, 'app'):
-            candidate = getattr(module, 'app')
+        # Find the first attribute that is an instance of App
+        for name, candidate in inspect.getmembers(module):
             if isinstance(candidate, App):
-                logger.info(f"Loaded App instance from {module_path}")
+                logger.info(f"Loaded App instance '{name}' from {module_path}")
                 return candidate
         
         logger.debug(f"No App instance found in {module_path}")
