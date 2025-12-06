@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import os
+from typing import Any
 from typing import Dict
 
 from fastapi.openapi.models import APIKey
@@ -137,3 +138,34 @@ def test_openapi_toolset_configure_auth_on_init(openapi_spec: Dict):
   for tool in toolset._tools:
     assert tool.auth_scheme == auth_scheme
     assert tool.auth_credential == auth_credential
+
+
+@pytest.mark.parametrize(
+    "verify_value", ["/path/to/enterprise-ca-bundle.crt", False]
+)
+def test_openapi_toolset_verify_on_init(
+    openapi_spec: Dict[str, Any], verify_value: str | bool
+):
+  """Test configuring verify during initialization."""
+  toolset = OpenAPIToolset(
+      spec_dict=openapi_spec,
+      ssl_verify=verify_value,
+  )
+  for tool in toolset._tools:
+    assert tool._ssl_verify == verify_value
+
+
+def test_openapi_toolset_configure_verify_all(openapi_spec: Dict[str, Any]):
+  """Test configure_verify_all method."""
+  toolset = OpenAPIToolset(spec_dict=openapi_spec)
+
+  # Initially verify should be None
+  for tool in toolset._tools:
+    assert tool._ssl_verify is None
+
+  # Configure verify for all tools
+  ca_bundle_path = "/path/to/custom-ca.crt"
+  toolset.configure_ssl_verify_all(ca_bundle_path)
+
+  for tool in toolset._tools:
+    assert tool._ssl_verify == ca_bundle_path

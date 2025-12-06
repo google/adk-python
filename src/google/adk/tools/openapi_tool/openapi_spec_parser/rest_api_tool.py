@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import ssl
 from typing import Any
 from typing import Dict
 from typing import List
@@ -88,6 +89,7 @@ class RestApiTool(BaseTool):
       auth_scheme: Optional[Union[AuthScheme, str]] = None,
       auth_credential: Optional[Union[AuthCredential, str]] = None,
       should_parse_operation=True,
+      ssl_verify: Optional[Union[bool, str, ssl.SSLContext]] = None,
   ):
     """Initializes the RestApiTool with the given parameters.
 
@@ -114,6 +116,12 @@ class RestApiTool(BaseTool):
           (https://github.com/OAI/OpenAPI-Specification/blob/main/versions/3.1.0.md#security-scheme-object)
         auth_credential: The authentication credential of the tool.
         should_parse_operation: Whether to parse the operation.
+        ssl_verify: SSL certificate verification option. Can be:
+          - None: Use default verification
+          - True: Verify SSL certificates using system CA
+          - False: Disable SSL verification (insecure, not recommended)
+          - str: Path to a CA bundle file or directory for custom CA
+          - ssl.SSLContext: Custom SSL context for advanced configuration
     """
     # Gemini restrict the length of function name to be less than 64 characters
     self.name = name[:60]
@@ -136,15 +144,21 @@ class RestApiTool(BaseTool):
     # Private properties
     self.credential_exchanger = AutoAuthCredentialExchanger()
     self._default_headers: Dict[str, str] = {}
+    self._ssl_verify = ssl_verify
     if should_parse_operation:
       self._operation_parser = OperationParser(self.operation)
 
   @classmethod
-  def from_parsed_operation(cls, parsed: ParsedOperation) -> "RestApiTool":
+  def from_parsed_operation(
+      cls,
+      parsed: ParsedOperation,
+      ssl_verify: Optional[Union[bool, str, ssl.SSLContext]] = None,
+  ) -> "RestApiTool":
     """Initializes the RestApiTool from a ParsedOperation object.
 
     Args:
         parsed: A ParsedOperation object.
+        ssl_verify: SSL certificate verification option.
 
     Returns:
         A RestApiTool object.
@@ -163,6 +177,7 @@ class RestApiTool(BaseTool):
         operation=parsed.operation,
         auth_scheme=parsed.auth_scheme,
         auth_credential=parsed.auth_credential,
+        ssl_verify=ssl_verify,
     )
     generated._operation_parser = operation_parser
     return generated
@@ -217,6 +232,24 @@ class RestApiTool(BaseTool):
     if isinstance(auth_credential, str):
       auth_credential = AuthCredential.model_validate_json(auth_credential)
     self.auth_credential = auth_credential
+
+  def configure_ssl_verify(
+      self, ssl_verify: Optional[Union[bool, str, ssl.SSLContext]] = None
+  ):
+    """Configures SSL certificate verification for the API call.
+
+    This is useful for enterprise environments where requests go through a
+    TLS-intercepting proxy with a custom CA certificate.
+
+    Args:
+        ssl_verify: SSL certificate verification option. Can be:
+          - None: Use default verification (True)
+          - True: Verify SSL certificates using system CA
+          - False: Disable SSL verification (insecure, not recommended)
+          - str: Path to a CA bundle file or directory for custom CA
+          - ssl.SSLContext: Custom SSL context for advanced configuration
+    """
+    self._ssl_verify = ssl_verify
 
   def set_default_headers(self, headers: Dict[str, str]):
     """Sets default headers that are merged into every request."""
@@ -415,6 +448,8 @@ class RestApiTool(BaseTool):
 
     # Got all parameters. Call the API.
     request_params = self._prepare_request_params(api_params, api_args)
+    if self._ssl_verify is not None:
+      request_params["verify"] = self._ssl_verify
     response = requests.request(**request_params)
 
     # Parse API response
