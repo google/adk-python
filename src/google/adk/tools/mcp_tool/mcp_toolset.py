@@ -408,21 +408,6 @@ class McpToolset(BaseToolset):
         tools.append(mcp_tool)
     return tools
 
-  def _is_tool_selected(
-      self, tool: BaseTool, readonly_context: Optional[ReadonlyContext]
-  ) -> bool:
-    """Override to handle None readonly_context."""
-    if not self.tool_filter:
-      return True
-
-    if isinstance(self.tool_filter, ToolPredicate):
-      return self.tool_filter(tool, readonly_context)
-
-    if isinstance(self.tool_filter, list):
-      return tool.name in self.tool_filter
-
-    return False
-
   async def close(self) -> None:
     """Performs cleanup and releases resources held by the toolset.
 
