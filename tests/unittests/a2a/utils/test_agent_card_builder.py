@@ -12,83 +12,37 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import sys
 from unittest.mock import Mock
 from unittest.mock import patch
 
+from a2a.types import AgentCapabilities
+from a2a.types import AgentCard
+from a2a.types import AgentProvider
+from a2a.types import AgentSkill
+from a2a.types import SecurityScheme
+from google.adk.a2a.utils.agent_card_builder import _build_agent_description
+from google.adk.a2a.utils.agent_card_builder import _build_llm_agent_description_with_instructions
+from google.adk.a2a.utils.agent_card_builder import _build_loop_description
+from google.adk.a2a.utils.agent_card_builder import _build_orchestration_skill
+from google.adk.a2a.utils.agent_card_builder import _build_parallel_description
+from google.adk.a2a.utils.agent_card_builder import _build_sequential_description
+from google.adk.a2a.utils.agent_card_builder import _convert_example_tool_examples
+from google.adk.a2a.utils.agent_card_builder import _extract_examples_from_instruction
+from google.adk.a2a.utils.agent_card_builder import _get_agent_skill_name
+from google.adk.a2a.utils.agent_card_builder import _get_agent_type
+from google.adk.a2a.utils.agent_card_builder import _get_default_description
+from google.adk.a2a.utils.agent_card_builder import _get_input_modes
+from google.adk.a2a.utils.agent_card_builder import _get_output_modes
+from google.adk.a2a.utils.agent_card_builder import _get_workflow_description
+from google.adk.a2a.utils.agent_card_builder import _replace_pronouns
+from google.adk.a2a.utils.agent_card_builder import AgentCardBuilder
+from google.adk.agents.base_agent import BaseAgent
+from google.adk.agents.llm_agent import LlmAgent
+from google.adk.agents.loop_agent import LoopAgent
+from google.adk.agents.parallel_agent import ParallelAgent
+from google.adk.agents.sequential_agent import SequentialAgent
+from google.adk.tools.example_tool import ExampleTool
 import pytest
-
-# Skip all tests in this module if Python version is less than 3.10
-pytestmark = pytest.mark.skipif(
-    sys.version_info < (3, 10), reason="A2A requires Python 3.10+"
-)
-
-# Import dependencies with version checking
-try:
-  from a2a.types import AgentCapabilities
-  from a2a.types import AgentCard
-  from a2a.types import AgentProvider
-  from a2a.types import AgentSkill
-  from a2a.types import SecurityScheme
-  from google.adk.a2a.utils.agent_card_builder import _build_agent_description
-  from google.adk.a2a.utils.agent_card_builder import _build_llm_agent_description_with_instructions
-  from google.adk.a2a.utils.agent_card_builder import _build_loop_description
-  from google.adk.a2a.utils.agent_card_builder import _build_orchestration_skill
-  from google.adk.a2a.utils.agent_card_builder import _build_parallel_description
-  from google.adk.a2a.utils.agent_card_builder import _build_sequential_description
-  from google.adk.a2a.utils.agent_card_builder import _convert_example_tool_examples
-  from google.adk.a2a.utils.agent_card_builder import _extract_examples_from_instruction
-  from google.adk.a2a.utils.agent_card_builder import _get_agent_skill_name
-  from google.adk.a2a.utils.agent_card_builder import _get_agent_type
-  from google.adk.a2a.utils.agent_card_builder import _get_default_description
-  from google.adk.a2a.utils.agent_card_builder import _get_input_modes
-  from google.adk.a2a.utils.agent_card_builder import _get_output_modes
-  from google.adk.a2a.utils.agent_card_builder import _get_workflow_description
-  from google.adk.a2a.utils.agent_card_builder import _replace_pronouns
-  from google.adk.a2a.utils.agent_card_builder import AgentCardBuilder
-  from google.adk.agents.base_agent import BaseAgent
-  from google.adk.agents.llm_agent import LlmAgent
-  from google.adk.agents.loop_agent import LoopAgent
-  from google.adk.agents.parallel_agent import ParallelAgent
-  from google.adk.agents.sequential_agent import SequentialAgent
-  from google.adk.tools.example_tool import ExampleTool
-except ImportError as e:
-  if sys.version_info < (3, 10):
-    # Create dummy classes to prevent NameError during test collection
-    # Tests will be skipped anyway due to pytestmark
-    class DummyTypes:
-      pass
-
-    AgentCapabilities = DummyTypes()
-    AgentCard = DummyTypes()
-    AgentProvider = DummyTypes()
-    AgentSkill = DummyTypes()
-    SecurityScheme = DummyTypes()
-    AgentCardBuilder = DummyTypes()
-    BaseAgent = DummyTypes()
-    LlmAgent = DummyTypes()
-    LoopAgent = DummyTypes()
-    ParallelAgent = DummyTypes()
-    SequentialAgent = DummyTypes()
-    ExampleTool = DummyTypes()
-    # Dummy functions
-    _build_agent_description = lambda x: ""
-    _build_llm_agent_description_with_instructions = lambda x: ""
-    _build_orchestration_skill = lambda x, y: None
-    _build_parallel_description = lambda x: ""
-    _build_sequential_description = lambda x: ""
-    _build_loop_description = lambda x: ""
-    _convert_example_tool_examples = lambda x: []
-    _extract_examples_from_instruction = lambda x: None
-    _get_agent_skill_name = lambda x: ""
-    _get_agent_type = lambda x: ""
-    _get_default_description = lambda x: ""
-    _get_input_modes = lambda x: None
-    _get_output_modes = lambda x: None
-    _get_workflow_description = lambda x: None
-    _replace_pronouns = lambda x: ""
-  else:
-    raise e
 
 
 class TestAgentCardBuilder:
@@ -360,7 +314,7 @@ class TestHelperFunctions:
     assert result == "I should do my work and it will be mine."
 
   def test_replace_pronouns_case_insensitive(self):
-    """Test _replace_pronouns with case insensitive matching."""
+    """Test _replace_pronouns with case-insensitive matching."""
     # Arrange
     text = "YOU should do YOUR work and it will be YOURS."
 
@@ -402,6 +356,17 @@ class TestHelperFunctions:
 
     # Assert
     assert result == "youth, yourself, yourname"  # No changes
+
+  def test_replace_pronouns_phrases(self):
+    """Test _replace_pronouns with phrases that should be replaced."""
+    # Arrange
+    text = "You are a helpful chatbot"
+
+    # Act
+    result = _replace_pronouns(text)
+
+    # Assert
+    assert result == "I am a helpful chatbot"
 
   def test_get_default_description_llm_agent(self):
     """Test _get_default_description for LlmAgent."""
@@ -1091,7 +1056,7 @@ class TestExampleExtractionFunctions:
     assert result is None
 
   def test_extract_examples_from_instruction_case_insensitive(self):
-    """Test _extract_examples_from_instruction with case insensitive matching."""
+    """Test _extract_examples_from_instruction with case-insensitive matching."""
     # Arrange
     instruction = (
         'example query: "What is the weather?" example response: "The weather'

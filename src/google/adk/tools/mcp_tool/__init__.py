@@ -21,29 +21,25 @@ try:
   from .mcp_session_manager import StdioConnectionParams
   from .mcp_session_manager import StreamableHTTPConnectionParams
   from .mcp_tool import MCPTool
+  from .mcp_tool import McpTool
   from .mcp_toolset import MCPToolset
+  from .mcp_toolset import McpToolset
 
   __all__.extend([
       'adk_to_mcp_tool_type',
       'gemini_to_json_schema',
+      'McpTool',
       'MCPTool',
+      'McpToolset',
       'MCPToolset',
-      'StdioConnectionParams',
       'SseConnectionParams',
+      'StdioConnectionParams',
       'StreamableHTTPConnectionParams',
   ])
 
 except ImportError as e:
   import logging
-  import sys
 
   logger = logging.getLogger('google_adk.' + __name__)
-
-  if sys.version_info < (3, 10):
-    logger.warning(
-        'MCP Tool requires Python 3.10 or above. Please upgrade your Python'
-        ' version.'
-    )
-  else:
-    logger.debug('MCP Tool is not installed')
-    logger.debug(e)
+  logger.debug('MCP Tool is not installed')
+  logger.debug(e)

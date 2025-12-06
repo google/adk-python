@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+from typing import Any
 from typing import Optional
 from typing import TYPE_CHECKING
 
@@ -21,6 +22,7 @@ from ..agents.callback_context import CallbackContext
 from ..auth.auth_credential import AuthCredential
 from ..auth.auth_handler import AuthHandler
 from ..auth.auth_tool import AuthConfig
+from .tool_confirmation import ToolConfirmation
 
 if TYPE_CHECKING:
   from ..agents.invocation_context import InvocationContext
@@ -43,6 +45,7 @@ class ToolContext(CallbackContext):
       If LLM didn't return this id, ADK will assign one to it. This id is used
       to map function call response to the original function call.
     event_actions: The event actions of the current tool call.
+    tool_confirmation: The tool confirmation of the current tool call.
   """
 
   def __init__(
@@ -51,9 +54,11 @@ class ToolContext(CallbackContext):
       *,
       function_call_id: Optional[str] = None,
       event_actions: Optional[EventActions] = None,
+      tool_confirmation: Optional[ToolConfirmation] = None,
   ):
     super().__init__(invocation_context, event_actions=event_actions)
     self.function_call_id = function_call_id
+    self.tool_confirmation = tool_confirmation
 
   @property
   def actions(self) -> EventActions:
@@ -68,6 +73,27 @@ class ToolContext(CallbackContext):
 
   def get_auth_response(self, auth_config: AuthConfig) -> AuthCredential:
     return AuthHandler(auth_config).get_auth_response(self.state)
+
+  def request_confirmation(
+      self,
+      *,
+      hint: Optional[str] = None,
+      payload: Optional[Any] = None,
+  ) -> None:
+    """Requests confirmation for the given function call.
+
+    Args:
+      hint: A hint to the user on how to confirm the tool call.
+      payload: The payload used to confirm the tool call.
+    """
+    if not self.function_call_id:
+      raise ValueError('function_call_id is not set.')
+    self._event_actions.requested_tool_confirmations[self.function_call_id] = (
+        ToolConfirmation(
+            hint=hint,
+            payload=payload,
+        )
+    )
 
   async def search_memory(self, query: str) -> SearchMemoryResponse:
     """Searches the memory of the current user."""

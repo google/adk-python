@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import sys
 from typing import Any
@@ -25,6 +26,12 @@ from typing import Optional
 from typing import TextIO
 from typing import Tuple
 from typing import Union
+import warnings
+
+from mcp import StdioServerParameters
+from mcp.types import ListToolsResult
+from pydantic import model_validator
+from typing_extensions import override
 
 from ...agents.readonly_context import ReadonlyContext
 from ...auth.auth_credential import AuthCredential
@@ -32,28 +39,13 @@ from ...auth.auth_schemes import AuthScheme
 from ..base_tool import BaseTool
 from ..base_toolset import BaseToolset
 from ..base_toolset import ToolPredicate
+from ..tool_configs import BaseToolConfig
+from ..tool_configs import ToolArgsConfig
 from .mcp_session_manager import MCPSessionManager
-from .mcp_session_manager import retry_on_closed_resource
+from .mcp_session_manager import retry_on_errors
 from .mcp_session_manager import SseConnectionParams
 from .mcp_session_manager import StdioConnectionParams
 from .mcp_session_manager import StreamableHTTPConnectionParams
-
-# Attempt to import MCP Tool from the MCP library, and hints user to upgrade
-# their Python version to 3.10 if it fails.
-try:
-  from mcp import StdioServerParameters
-  from mcp.types import ListToolsResult
-except ImportError as e:
-  import sys
-
-  if sys.version_info < (3, 10):
-    raise ImportError(
-        "MCP Tool requires Python 3.10 or above. Please upgrade your Python"
-        " version."
-    ) from e
-  else:
-    raise e
-
 from .mcp_tool import MCPTool
 
 logger = logging.getLogger("google_adk." + __name__)
@@ -73,7 +65,7 @@ class AuthExtractionError(Exception):
   pass
 
 
-class MCPToolset(BaseToolset):
+class McpToolset(BaseToolset):
   """Connects to a MCP Server, and retrieves MCP Tools into ADK Tools.
 
   This toolset manages the connection to an MCP server and provides tools
@@ -82,7 +74,7 @@ class MCPToolset(BaseToolset):
 
   Usage::
 
-    toolset = MCPToolset(
+    toolset = McpToolset(
         connection_params=StdioServerParameters(
             command='npx',
             args=["-y", "@modelcontextprotocol/server-filesystem"],
@@ -113,13 +105,18 @@ class MCPToolset(BaseToolset):
           StreamableHTTPConnectionParams,
       ],
       tool_filter: Optional[Union[ToolPredicate, List[str]]] = None,
+      tool_name_prefix: Optional[str] = None,
       get_auth_from_context_fn: Optional[GetAuthFromContextCallback] = None,
       get_env_from_context_fn: Optional[GetEnvFromContextCallback] = None,
       errlog: TextIO = sys.stderr,
       auth_scheme: Optional[AuthScheme] = None,
       auth_credential: Optional[AuthCredential] = None,
+      require_confirmation: Union[bool, Callable[..., bool]] = False,
+      header_provider: Optional[
+          Callable[[ReadonlyContext], Dict[str, str]]
+      ] = None,
   ):
-    """Initializes the MCPToolset.
+    """Initializes the McpToolset.
 
     Args:
       connection_params: The connection parameters to the MCP server. Can be:
@@ -133,6 +130,8 @@ class MCPToolset(BaseToolset):
       tool_filter: Optional filter to select specific tools. Can be either: - A
         list of tool names to include - A ToolPredicate function for custom
         filtering logic
+      tool_name_prefix: A prefix to be added to the name of each tool in this
+        toolset.
       get_auth_from_context_fn: Optional callback function to extract auth data
         from ReadonlyContext.state into AuthScheme and AuthCredential. Must
         return a tuple of (AuthScheme, AuthCredential). If None, the toolset
@@ -146,16 +145,22 @@ class MCPToolset(BaseToolset):
       errlog: TextIO stream for error logging.
       auth_scheme: The auth scheme of the tool for tool calling
       auth_credential: The auth credential of the tool for tool calling
+      require_confirmation: Whether tools in this toolset require
+        confirmation. Can be a single boolean or a callable to apply to all
+        tools.
+      header_provider: A callable that takes a ReadonlyContext and returns a
+        dictionary of headers to be used for the MCP session.
     """
-    super().__init__(tool_filter=tool_filter)
+    super().__init__(tool_filter=tool_filter, tool_name_prefix=tool_name_prefix)
 
     if not connection_params:
-      raise ValueError("Missing connection params in MCPToolset.")
+      raise ValueError("Missing connection params in McpToolset.")
 
     self._connection_params = connection_params
     self._get_auth_from_context_fn = get_auth_from_context_fn
     self._get_env_from_context_fn = get_env_from_context_fn
     self._errlog = errlog
+    self._header_provider = header_provider
 
     # Create the session manager that will handle the MCP connection
     self._mcp_session_manager = MCPSessionManager(
@@ -164,6 +169,7 @@ class MCPToolset(BaseToolset):
     )
     self._auth_scheme = auth_scheme
     self._auth_credential = auth_credential
+    self._require_confirmation = require_confirmation
 
   def _extract_env_from_context(
       self, readonly_context: Optional[ReadonlyContext]
@@ -190,19 +196,21 @@ class MCPToolset(BaseToolset):
       logger.warning(f"Context to env mapper callback failed: {e}")
       return {}
 
-  def _inject_env_vars(self, env_vars: Dict[str, str]) -> Union[
+  def _create_updated_connection_params(
+      self, env_vars: Dict[str, str]
+  ) -> Union[
       StdioServerParameters,
       StdioConnectionParams,
       SseConnectionParams,
       StreamableHTTPConnectionParams,
   ]:
-    """Injects environment variables into StdioConnectionParams.
+    """Creates new connection params with injected environment variables.
 
     Args:
         env_vars: Dictionary of environment variables to inject.
 
     Returns:
-        Updated connection params with injected environment variables.
+        New connection params with injected environment variables.
     """
     if not env_vars or not isinstance(
         self._connection_params, StdioConnectionParams
@@ -218,8 +226,6 @@ class MCPToolset(BaseToolset):
     merged_env = {**existing_env, **env_vars}
 
     # Create new server params with merged environment variables
-    from mcp import StdioServerParameters
-
     new_server_params = StdioServerParameters(
         command=self._connection_params.server_params.command,
         args=self._connection_params.server_params.args,
@@ -329,7 +335,7 @@ class MCPToolset(BaseToolset):
 
     return auth_scheme, auth_credential
 
-  @retry_on_closed_resource
+  @retry_on_errors
   async def get_tools(
       self,
       readonly_context: Optional[ReadonlyContext] = None,
@@ -344,18 +350,29 @@ class MCPToolset(BaseToolset):
     Returns:
         List[BaseTool]: A list of tools available under the specified context.
     """
-    # Extract environment variables from context and inject them
+    # Extract environment variables from context for STDIO connections
     env_vars = self._extract_env_from_context(readonly_context)
-    if env_vars:
-      # Update connection params with environment variables
-      updated_connection_params = self._inject_env_vars(env_vars)
-      # Update the session manager with new connection params
-      self._mcp_session_manager.update_connection_params(
-          updated_connection_params
+    session_manager = self._mcp_session_manager
+
+    # If we have env vars to inject for STDIO, create a temporary session manager
+    if env_vars and isinstance(self._connection_params, StdioConnectionParams):
+      updated_connection_params = self._create_updated_connection_params(
+          env_vars
+      )
+      session_manager = MCPSessionManager(
+          connection_params=updated_connection_params,
+          errlog=self._errlog,
       )
 
+    # Get headers from header_provider for SSE/HTTP connections
+    headers = (
+        self._header_provider(readonly_context)
+        if self._header_provider and readonly_context
+        else None
+    )
+
     # Get session from session manager
-    session = await self._mcp_session_manager.create_session()
+    session = await session_manager.create_session(headers=headers)
 
     # Extract auth information from context
     auth_scheme, auth_credential = self._extract_auth_from_context(
@@ -363,16 +380,28 @@ class MCPToolset(BaseToolset):
     )
 
     # Fetch available tools from the MCP server
-    tools_response: ListToolsResult = await session.list_tools()
+    timeout_in_seconds = (
+        self._connection_params.timeout
+        if hasattr(self._connection_params, "timeout")
+        else None
+    )
+    try:
+      tools_response: ListToolsResult = await asyncio.wait_for(
+          session.list_tools(), timeout=timeout_in_seconds
+      )
+    except Exception as e:
+      raise ConnectionError("Failed to get tools from MCP server.") from e
 
     # Apply filtering based on context and tool_filter
     tools = []
     for tool in tools_response.tools:
       mcp_tool = MCPTool(
           mcp_tool=tool,
-          mcp_session_manager=self._mcp_session_manager,
+          mcp_session_manager=session_manager,
           auth_scheme=auth_scheme,
           auth_credential=auth_credential,
+          require_confirmation=self._require_confirmation,
+          header_provider=self._header_provider,
       )
 
       if self._is_tool_selected(mcp_tool, readonly_context):
@@ -405,4 +434,83 @@ class MCPToolset(BaseToolset):
       await self._mcp_session_manager.close()
     except Exception as e:
       # Log the error but don't re-raise to avoid blocking shutdown
-      print(f"Warning: Error during MCPToolset cleanup: {e}", file=self._errlog)
+      print(f"Warning: Error during McpToolset cleanup: {e}", file=self._errlog)
+
+  @override
+  @classmethod
+  def from_config(
+      cls: type[McpToolset], config: ToolArgsConfig, config_abs_path: str
+  ) -> McpToolset:
+    """Creates an McpToolset from a configuration object."""
+    mcp_toolset_config = McpToolsetConfig.model_validate(config.model_dump())
+
+    if mcp_toolset_config.stdio_server_params:
+      connection_params = mcp_toolset_config.stdio_server_params
+    elif mcp_toolset_config.stdio_connection_params:
+      connection_params = mcp_toolset_config.stdio_connection_params
+    elif mcp_toolset_config.sse_connection_params:
+      connection_params = mcp_toolset_config.sse_connection_params
+    elif mcp_toolset_config.streamable_http_connection_params:
+      connection_params = mcp_toolset_config.streamable_http_connection_params
+    else:
+      raise ValueError("No connection params found in McpToolsetConfig.")
+
+    return cls(
+        connection_params=connection_params,
+        tool_filter=mcp_toolset_config.tool_filter,
+        tool_name_prefix=mcp_toolset_config.tool_name_prefix,
+        auth_scheme=mcp_toolset_config.auth_scheme,
+        auth_credential=mcp_toolset_config.auth_credential,
+    )
+
+
+class MCPToolset(McpToolset):
+  """Deprecated name, use `McpToolset` instead."""
+
+  def __init__(self, *args, **kwargs):
+    warnings.warn(
+        "MCPToolset class is deprecated, use `McpToolset` instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    super().__init__(*args, **kwargs)
+
+
+class McpToolsetConfig(BaseToolConfig):
+  """The config for McpToolset."""
+
+  stdio_server_params: Optional[StdioServerParameters] = None
+
+  stdio_connection_params: Optional[StdioConnectionParams] = None
+
+  sse_connection_params: Optional[SseConnectionParams] = None
+
+  streamable_http_connection_params: Optional[
+      StreamableHTTPConnectionParams
+  ] = None
+
+  tool_filter: Optional[List[str]] = None
+
+  tool_name_prefix: Optional[str] = None
+
+  auth_scheme: Optional[AuthScheme] = None
+
+  auth_credential: Optional[AuthCredential] = None
+
+  @model_validator(mode="after")
+  def _check_only_one_params_field(self):
+    param_fields = [
+        self.stdio_server_params,
+        self.stdio_connection_params,
+        self.sse_connection_params,
+        self.streamable_http_connection_params,
+    ]
+    populated_fields = [f for f in param_fields if f is not None]
+
+    if len(populated_fields) != 1:
+      raise ValueError(
+          "Exactly one of stdio_server_params, stdio_connection_params,"
+          " sse_connection_params, streamable_http_connection_params must be"
+          " set."
+      )
+    return self

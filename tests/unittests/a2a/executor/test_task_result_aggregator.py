@@ -12,42 +12,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import sys
 from unittest.mock import Mock
 
+from a2a.types import Message
+from a2a.types import Part
+from a2a.types import Role
+from a2a.types import TaskState
+from a2a.types import TaskStatus
+from a2a.types import TaskStatusUpdateEvent
+from a2a.types import TextPart
+from google.adk.a2a.executor.task_result_aggregator import TaskResultAggregator
 import pytest
 
-# Skip all tests in this module if Python version is less than 3.10
-pytestmark = pytest.mark.skipif(
-    sys.version_info < (3, 10), reason="A2A requires Python 3.10+"
-)
 
-# Import dependencies with version checking
-try:
-  from a2a.types import Message
-  from a2a.types import Part
-  from a2a.types import Role
-  from a2a.types import TaskState
-  from a2a.types import TaskStatus
-  from a2a.types import TaskStatusUpdateEvent
-  from a2a.types import TextPart
-  from google.adk.a2a.executor.task_result_aggregator import TaskResultAggregator
-except ImportError as e:
-  if sys.version_info < (3, 10):
-    # Create dummy classes to prevent NameError during test collection
-    # Tests will be skipped anyway due to pytestmark
-    class DummyTypes:
-      pass
-
-    TaskState = DummyTypes()
-    TaskStatus = DummyTypes()
-    TaskStatusUpdateEvent = DummyTypes()
-    TaskResultAggregator = DummyTypes()
-  else:
-    raise e
-
-
-def create_test_message(text: str) -> Message:
+def create_test_message(text: str):
   """Helper function to create a test Message object."""
   return Message(
       message_id="test-msg",

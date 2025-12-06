@@ -12,15 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import sys
-
-import pytest
-
-# Skip all tests in this module if Python version is less than 3.10
-pytestmark = pytest.mark.skipif(
-    sys.version_info < (3, 10), reason="A2A requires Python 3.10+"
-)
-
 from google.adk.a2a.converters.utils import _from_a2a_context_id
 from google.adk.a2a.converters.utils import _get_adk_metadata_key
 from google.adk.a2a.converters.utils import _to_a2a_context_id

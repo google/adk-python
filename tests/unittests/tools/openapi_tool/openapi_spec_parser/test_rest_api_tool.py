@@ -14,6 +14,8 @@
 
 
 import json
+import ssl
+from unittest import mock
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import patch
@@ -34,6 +36,7 @@ from google.adk.tools.tool_context import ToolContext
 from google.genai.types import FunctionDeclaration
 from google.genai.types import Schema
 import pytest
+import requests
 
 
 class TestRestApiTool:
@@ -46,6 +49,11 @@ class TestRestApiTool:
     mock_context.get_auth_response.return_value = {}
     mock_context.request_credential.return_value = {}
     return mock_context
+
+  @pytest.fixture
+  def mock_ssl_context(self):
+    """Fixture for a mock ssl.SSLContext."""
+    return mock.create_autospec(ssl.SSLContext)
 
   @pytest.fixture
   def mock_operation_parser(self):
@@ -228,6 +236,49 @@ class TestRestApiTool:
       "google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool.requests.request"
   )
   @pytest.mark.asyncio
+  async def test_call_http_failure(
+      self,
+      mock_request,
+      mock_tool_context,
+      sample_endpoint,
+      sample_operation,
+      sample_auth_scheme,
+      sample_auth_credential,
+  ):
+    mock_response = MagicMock()
+    mock_response.status_code = 500
+    mock_response.content = b"Internal Server Error"
+    mock_response.raise_for_status.side_effect = requests.exceptions.HTTPError(
+        "500 Server Error"
+    )
+    mock_request.return_value = mock_response
+
+    tool = RestApiTool(
+        name="test_tool",
+        description="Test Tool",
+        endpoint=sample_endpoint,
+        operation=sample_operation,
+        auth_scheme=sample_auth_scheme,
+        auth_credential=sample_auth_credential,
+    )
+
+    # Call the method
+    result = await tool.call(args={}, tool_context=mock_tool_context)
+
+    # Check the result
+    assert result == {
+        "error": (
+            "Tool test_tool execution failed. Analyze this execution error"
+            " and your inputs. Retry with adjustments if applicable. But"
+            " make sure don't retry more than 3 times. Execution Error:"
+            " Status Code: 500, Internal Server Error"
+        )
+    }
+
+  @patch(
+      "google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool.requests.request"
+  )
+  @pytest.mark.asyncio
   async def test_call_auth_pending(
       self,
       mock_request,
@@ -261,6 +312,58 @@ class TestRestApiTool:
           "pending": True,
           "message": "Needs your authorization to access your data.",
       }
+
+  @patch(
+      "google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool.requests.request"
+  )
+  @pytest.mark.asyncio
+  async def test_call_with_required_param_defaults(
+      self,
+      mock_request,
+      mock_tool_context,
+      sample_endpoint,
+      sample_auth_scheme,
+      sample_auth_credential,
+  ):
+    """Test that required parameters with defaults are auto-filled."""
+    mock_response = MagicMock()
+    mock_response.json.return_value = {"result": "success"}
+    mock_request.return_value = mock_response
+
+    # Create operation with required parameter that has default
+    mock_operation = Operation(
+        operationId="test_op",
+        parameters=[
+            OpenAPIParameter(**{
+                "name": "userId",
+                "in": "path",
+                "required": True,
+                "schema": OpenAPISchema(type="string", default="me"),
+            })
+        ],
+    )
+
+    tool = RestApiTool(
+        name="test_tool",
+        description="Test Tool",
+        endpoint=OperationEndpoint(
+            base_url="https://example.com",
+            path="/users/{userId}/messages",
+            method="GET",
+        ),
+        operation=mock_operation,
+        auth_scheme=sample_auth_scheme,
+        auth_credential=sample_auth_credential,
+    )
+
+    # Call without providing userId - should use default "me"
+    result = await tool.call(args={}, tool_context=mock_tool_context)
+
+    # Verify the default was applied
+    assert mock_request.called
+    call_kwargs = mock_request.call_args[1]
+    assert call_kwargs["url"] == "https://example.com/users/me/messages"
+    assert result == {"result": "success"}
 
   def test_prepare_request_params_query_body(
       self, sample_endpoint, sample_auth_credential, sample_auth_scheme
@@ -686,6 +789,65 @@ class TestRestApiTool:
     # Make sure unknown parameters are ignored and do not raise errors.
     assert "unknown_param" not in request_params["params"]
 
+  def test_prepare_request_params_merges_default_headers(
+      self,
+      sample_endpoint,
+      sample_auth_credential,
+      sample_auth_scheme,
+      sample_operation,
+  ):
+    tool = RestApiTool(
+        name="test_tool",
+        description="Test Tool",
+        endpoint=sample_endpoint,
+        operation=sample_operation,
+        auth_credential=sample_auth_credential,
+        auth_scheme=sample_auth_scheme,
+    )
+    tool.set_default_headers({"developer-token": "token"})
+
+    request_params = tool._prepare_request_params([], {})
+
+    assert request_params["headers"]["developer-token"] == "token"
+
+  def test_prepare_request_params_preserves_existing_headers(
+      self,
+      sample_endpoint,
+      sample_auth_credential,
+      sample_auth_scheme,
+      sample_operation,
+      sample_api_parameters,
+  ):
+    tool = RestApiTool(
+        name="test_tool",
+        description="Test Tool",
+        endpoint=sample_endpoint,
+        operation=sample_operation,
+        auth_credential=sample_auth_credential,
+        auth_scheme=sample_auth_scheme,
+    )
+    tool.set_default_headers({
+        "Content-Type": "text/plain",
+        "developer-token": "token",
+        "User-Agent": "custom-default",
+    })
+
+    header_param = ApiParameter(
+        original_name="User-Agent",
+        py_name="user_agent",
+        param_location="header",
+        param_schema=OpenAPISchema(type="string"),
+    )
+
+    params = sample_api_parameters + [header_param]
+    kwargs = {"test_body_param": "value", "user_agent": "api-client"}
+
+    request_params = tool._prepare_request_params(params, kwargs)
+
+    assert request_params["headers"]["Content-Type"] == "application/json"
+    assert request_params["headers"]["developer-token"] == "token"
+    assert request_params["headers"]["User-Agent"] == "api-client"
+
   def test_prepare_request_params_base_url_handling(
       self, sample_auth_credential, sample_auth_scheme, sample_operation
   ):
@@ -778,6 +940,101 @@ class TestRestApiTool:
 
     assert "param_name" in request_params["params"]
     assert "empty_param" not in request_params["params"]
+
+  @pytest.mark.parametrize(
+      "verify_input, expected_verify_in_call",
+      [
+          (True, True),
+          (False, False),
+          (
+              "/path/to/enterprise-ca-bundle.crt",
+              "/path/to/enterprise-ca-bundle.crt",
+          ),
+          (
+              "USE_SSL_FIXTURE",
+              "USE_SSL_FIXTURE",
+          ),
+          (None, None),  # None means 'verify' should not be in call_kwargs
+      ],
+  )
+  async def test_call_with_verify_options(
+      self,
+      mock_tool_context,
+      sample_endpoint,
+      sample_operation,
+      sample_auth_scheme,
+      sample_auth_credential,
+      mock_ssl_context,
+      verify_input,
+      expected_verify_in_call,
+  ):
+    """Test different values for the 'verify' parameter."""
+    if verify_input == "USE_SSL_FIXTURE":
+      verify_input = mock_ssl_context
+    if expected_verify_in_call == "USE_SSL_FIXTURE":
+      expected_verify_in_call = mock_ssl_context
+
+    mock_response = mock.create_autospec(
+        requests.Response, instance=True, spec_set=True
+    )
+    mock_response.json.return_value = {"result": "success"}
+
+    tool = RestApiTool(
+        name="test_tool",
+        description="Test Tool",
+        endpoint=sample_endpoint,
+        operation=sample_operation,
+        auth_scheme=sample_auth_scheme,
+        auth_credential=sample_auth_credential,
+        ssl_verify=verify_input,
+    )
+
+    with patch.object(
+        requests, "request", return_value=mock_response, autospec=True
+    ) as mock_request:
+      await tool.call(args={}, tool_context=mock_tool_context)
+
+      assert mock_request.called
+      _, call_kwargs = mock_request.call_args
+      if expected_verify_in_call is None:
+        assert "verify" not in call_kwargs
+      else:
+        assert call_kwargs["verify"] == expected_verify_in_call
+
+  async def test_call_with_configure_verify(
+      self,
+      mock_tool_context,
+      sample_endpoint,
+      sample_operation,
+      sample_auth_scheme,
+      sample_auth_credential,
+  ):
+    """Test that configure_verify updates the verify setting."""
+    mock_response = mock.create_autospec(
+        requests.Response, instance=True, spec_set=True
+    )
+    mock_response.json.return_value = {"result": "success"}
+
+    tool = RestApiTool(
+        name="test_tool",
+        description="Test Tool",
+        endpoint=sample_endpoint,
+        operation=sample_operation,
+        auth_scheme=sample_auth_scheme,
+        auth_credential=sample_auth_credential,
+    )
+
+    ca_bundle_path = "/path/to/custom-ca.crt"
+    tool.configure_ssl_verify(ca_bundle_path)
+
+    with patch.object(
+        requests, "request", return_value=mock_response
+    ) as mock_request:
+      await tool.call(args={}, tool_context=mock_tool_context)
+
+      assert mock_request.called
+      call_kwargs = mock_request.call_args[1]
+      assert call_kwargs["verify"] == ca_bundle_path
 
 
 def test_snake_to_lower_camel():

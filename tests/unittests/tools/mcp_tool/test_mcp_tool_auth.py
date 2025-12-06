@@ -138,9 +138,11 @@ class TestMCPToolAuth:
       caplog,
   ):
     """Test that run_async logs auth information when available."""
-    # Create mock session
+    # Create mock session with proper response object
     mock_session = AsyncMock()
-    mock_session.call_tool.return_value = {"result": "success"}
+    mock_response = MagicMock()
+    mock_response.model_dump.return_value = {"result": "success"}
+    mock_session.call_tool.return_value = mock_response
     mock_session_manager.create_session = AsyncMock(return_value=mock_session)
 
     # Create tool with auth
@@ -174,9 +176,11 @@ class TestMCPToolAuth:
       self, mock_mcp_tool, mock_session_manager, caplog
   ):
     """Test that run_async doesn't log auth info when no auth is configured."""
-    # Create mock session
+    # Create mock session with proper response object
     mock_session = AsyncMock()
-    mock_session.call_tool.return_value = {"result": "success"}
+    mock_response = MagicMock()
+    mock_response.model_dump.return_value = {"result": "success"}
+    mock_session.call_tool.return_value = mock_response
     mock_session_manager.create_session = AsyncMock(return_value=mock_session)
 
     # Create tool without auth

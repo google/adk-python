@@ -88,6 +88,7 @@ def mock_connection_params():
   """Create mock connection parameters."""
   mock_params = MagicMock()
   mock_params.command = "test_command"
+  mock_params.timeout = 10.0  # Add timeout to avoid asyncio.wait_for issues
   return mock_params
 
 

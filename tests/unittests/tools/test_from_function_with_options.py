@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from collections.abc import Sequence
+from typing import Any
 from typing import Dict
 
 from google.adk.tools import _automatic_function_calling_util
@@ -51,9 +53,10 @@ def test_from_function_with_options_no_return_annotation_vertex():
   assert declaration.name == 'test_function'
   assert declaration.parameters.type == 'OBJECT'
   assert declaration.parameters.properties['param'].type == 'STRING'
-  # VERTEX_AI should have response schema for None return
+  # VERTEX_AI should have response schema for functions with no return annotation
+  # Changed: Now uses Any type instead of NULL for no return annotation
   assert declaration.response is not None
-  assert declaration.response.type == types.Type.NULL
+  assert declaration.response.type is None  # Any type maps to None in schema
 
 
 def test_from_function_with_options_explicit_none_return_vertex():
@@ -150,6 +153,26 @@ def test_from_function_with_options_int_return_vertex():
   assert declaration.response.type == types.Type.INTEGER
 
 
+def test_from_function_with_options_any_annotation_vertex():
+  """Test from_function_with_options with Any type annotation for VERTEX_AI."""
+
+  def test_function(param: Any) -> Any:
+    """A test function that uses Any type annotations."""
+    return param
+
+  declaration = _automatic_function_calling_util.from_function_with_options(
+      test_function, GoogleLLMVariant.VERTEX_AI
+  )
+
+  assert declaration.name == 'test_function'
+  assert declaration.parameters.type == 'OBJECT'
+  # Any type should map to None in schema (TYPE_UNSPECIFIED behavior)
+  assert declaration.parameters.properties['param'].type is None
+  # VERTEX_AI should have response schema for Any return
+  assert declaration.response is not None
+  assert declaration.response.type is None  # Any type maps to None in schema
+
+
 def test_from_function_with_options_no_params():
   """Test from_function_with_options with no parameters."""
 
@@ -170,3 +193,52 @@ def test_from_function_with_options_no_params():
   # VERTEX_AI should have response schema for None return
   assert declaration.response is not None
   assert declaration.response.type == types.Type.NULL
+
+
+def test_from_function_with_collections_type_parameter():
+  """Test from_function_with_options with collections type parameter."""
+
+  def test_function(
+      artifact_key: str,
+      input_edit_ids: Sequence[str],
+  ) -> str:
+    """Saves a sequence of edit IDs."""
+    return f'Saved {len(input_edit_ids)} edit IDs for artifact {artifact_key}'
+
+  declaration = _automatic_function_calling_util.from_function_with_options(
+      test_function, GoogleLLMVariant.VERTEX_AI
+  )
+
+  assert declaration.name == 'test_function'
+  assert declaration.parameters.type == types.Type.OBJECT
+  assert (
+      declaration.parameters.properties['artifact_key'].type
+      == types.Type.STRING
+  )
+  assert (
+      declaration.parameters.properties['input_edit_ids'].type
+      == types.Type.ARRAY
+  )
+  assert (
+      declaration.parameters.properties['input_edit_ids'].items.type
+      == types.Type.STRING
+  )
+  assert declaration.response.type == types.Type.STRING
+
+
+def test_from_function_with_collections_return_type():
+  """Test from_function_with_options with collections return type."""
+
+  def test_function(
+      names: list[str],
+  ) -> Sequence[str]:
+    """Returns a sequence of names."""
+    return names
+
+  declaration = _automatic_function_calling_util.from_function_with_options(
+      test_function, GoogleLLMVariant.VERTEX_AI
+  )
+
+  assert declaration.name == 'test_function'
+  assert declaration.response.type == types.Type.ARRAY
+  assert declaration.response.items.type == types.Type.STRING

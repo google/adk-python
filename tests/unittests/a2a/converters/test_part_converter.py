@@ -13,48 +13,20 @@
 # limitations under the License.
 
 import json
-import sys
 from unittest.mock import Mock
 from unittest.mock import patch
 
+from a2a import types as a2a_types
+from google.adk.a2a.converters.part_converter import A2A_DATA_PART_METADATA_TYPE_CODE_EXECUTION_RESULT
+from google.adk.a2a.converters.part_converter import A2A_DATA_PART_METADATA_TYPE_EXECUTABLE_CODE
+from google.adk.a2a.converters.part_converter import A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL
+from google.adk.a2a.converters.part_converter import A2A_DATA_PART_METADATA_TYPE_FUNCTION_RESPONSE
+from google.adk.a2a.converters.part_converter import A2A_DATA_PART_METADATA_TYPE_KEY
+from google.adk.a2a.converters.part_converter import convert_a2a_part_to_genai_part
+from google.adk.a2a.converters.part_converter import convert_genai_part_to_a2a_part
+from google.adk.a2a.converters.utils import _get_adk_metadata_key
+from google.genai import types as genai_types
 import pytest
-
-# Skip all tests in this module if Python version is less than 3.10
-pytestmark = pytest.mark.skipif(
-    sys.version_info < (3, 10), reason="A2A requires Python 3.10+"
-)
-
-# Import dependencies with version checking
-try:
-  from a2a import types as a2a_types
-  from google.adk.a2a.converters.part_converter import A2A_DATA_PART_METADATA_TYPE_CODE_EXECUTION_RESULT
-  from google.adk.a2a.converters.part_converter import A2A_DATA_PART_METADATA_TYPE_EXECUTABLE_CODE
-  from google.adk.a2a.converters.part_converter import A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL
-  from google.adk.a2a.converters.part_converter import A2A_DATA_PART_METADATA_TYPE_FUNCTION_RESPONSE
-  from google.adk.a2a.converters.part_converter import A2A_DATA_PART_METADATA_TYPE_KEY
-  from google.adk.a2a.converters.part_converter import convert_a2a_part_to_genai_part
-  from google.adk.a2a.converters.part_converter import convert_genai_part_to_a2a_part
-  from google.adk.a2a.converters.utils import _get_adk_metadata_key
-  from google.genai import types as genai_types
-except ImportError as e:
-  if sys.version_info < (3, 10):
-    # Create dummy classes to prevent NameError during test collection
-    # Tests will be skipped anyway due to pytestmark
-    class DummyTypes:
-      pass
-
-    a2a_types = DummyTypes()
-    genai_types = DummyTypes()
-    A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL = "function_call"
-    A2A_DATA_PART_METADATA_TYPE_FUNCTION_RESPONSE = "function_response"
-    A2A_DATA_PART_METADATA_TYPE_CODE_EXECUTION_RESULT = "code_execution_result"
-    A2A_DATA_PART_METADATA_TYPE_EXECUTABLE_CODE = "executable_code"
-    A2A_DATA_PART_METADATA_TYPE_KEY = "type"
-    convert_a2a_part_to_genai_part = lambda x: None
-    convert_genai_part_to_a2a_part = lambda x: None
-    _get_adk_metadata_key = lambda x: f"adk_{x}"
-  else:
-    raise e
 
 
 class TestConvertA2aPartToGenaiPart:
