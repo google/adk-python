@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from enum import Enum
 from typing import Dict
 from typing import List
 
@@ -22,6 +23,7 @@ from google.genai import types
 # TODO: crewai requires python 3.10 as minimum
 # from crewai_tools import FileReadTool
 from pydantic import BaseModel
+import pytest
 
 
 def test_string_input():
@@ -220,6 +222,34 @@ def test_list():
   assert function_decl.parameters.properties['input_dir'].items.type == 'OBJECT'
 
 
+def test_enums():
+
+  class InputEnum(Enum):
+    AGENT = 'agent'
+    TOOL = 'tool'
+
+  def simple_function(input: InputEnum = InputEnum.AGENT):
+    return input.value
+
+  function_decl = _automatic_function_calling_util.build_function_declaration(
+      func=simple_function
+  )
+
+  assert function_decl.name == 'simple_function'
+  assert function_decl.parameters.type == 'OBJECT'
+  assert function_decl.parameters.properties['input'].type == 'STRING'
+  assert function_decl.parameters.properties['input'].default == 'agent'
+  assert function_decl.parameters.properties['input'].enum == ['agent', 'tool']
+
+  def simple_function_with_wrong_enum(input: InputEnum = 'WRONG_ENUM'):
+    return input.value
+
+  with pytest.raises(ValueError):
+    _automatic_function_calling_util.build_function_declaration(
+        func=simple_function_with_wrong_enum
+    )
+
+
 def test_basemodel_list():
   class ChildInput(BaseModel):
     input_str: str
@@ -360,7 +390,7 @@ def test_function_regular_return_type_vertex_ai():
   assert function_decl.response.type == types.Type.STRING
 
 
-def test_fucntion_with_no_response_annotations():
+def test_function_with_no_response_annotations():
   """Test a function that has no response annotations."""
 
   def transfer_to_agent(agent_name: str, tool_context: ToolContext):
@@ -381,3 +411,19 @@ def test_fucntion_with_no_response_annotations():
   # Changed: Now uses Any type instead of NULL for no return annotation
   assert function_decl.response is not None
   assert function_decl.response.type is None  # Any type maps to None in schema
+
+
+def test_transfer_to_agent_tool_with_enum_constraint():
+  """Test TransferToAgentTool adds enum constraint to agent_name."""
+  from google.adk.tools.transfer_to_agent_tool import TransferToAgentTool
+
+  agent_names = ['agent_a', 'agent_b', 'agent_c']
+  tool = TransferToAgentTool(agent_names=agent_names)
+
+  function_decl = tool._get_declaration()
+
+  assert function_decl.name == 'transfer_to_agent'
+  assert function_decl.parameters.type == 'OBJECT'
+  assert function_decl.parameters.properties['agent_name'].type == 'STRING'
+  assert function_decl.parameters.properties['agent_name'].enum == agent_names
+  assert 'tool_context' not in function_decl.parameters.properties

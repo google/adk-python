@@ -25,14 +25,14 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
 
     steps:
     - name: Checkout code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v5
 
     - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v5
+      uses: actions/setup-python@v6
       with:
         python-version: ${{ matrix.python-version }}
 
@@ -48,14 +48,6 @@ jobs:
     - name: Run unit tests with pytest
       run: |
         source .venv/bin/activate
-        if [[ "${{ matrix.python-version }}" == "3.9" ]]; then
-          pytest tests/unittests \
-            --ignore=tests/unittests/a2a \
-            --ignore=tests/unittests/tools/mcp_tool \
-            --ignore=tests/unittests/artifacts/test_artifact_service.py \
-            --ignore=tests/unittests/tools/google_api_tool/test_googleapi_to_openapi_converter.py
-        else
-          pytest tests/unittests \
-            --ignore=tests/unittests/artifacts/test_artifact_service.py \
-            --ignore=tests/unittests/tools/google_api_tool/test_googleapi_to_openapi_converter.py
-        fi
+        pytest tests/unittests \
+          --ignore=tests/unittests/artifacts/test_artifact_service.py \
+          --ignore=tests/unittests/tools/google_api_tool/test_googleapi_to_openapi_converter.py

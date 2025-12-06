@@ -16,6 +16,7 @@
 
 from enum import Enum
 from functools import partial
+import logging
 from typing import AsyncGenerator
 from typing import List
 from typing import Optional
@@ -854,6 +855,112 @@ def test_set_parent_agent_for_sub_agent_twice(
     )
 
 
+def test_validate_sub_agents_unique_names_single_duplicate(
+    request: pytest.FixtureRequest,
+    caplog: pytest.LogCaptureFixture,
+):
+  """Test that duplicate sub-agent names logs a warning."""
+  duplicate_name = f'{request.function.__name__}_duplicate_agent'
+  sub_agent_1 = _TestingAgent(name=duplicate_name)
+  sub_agent_2 = _TestingAgent(name=duplicate_name)
+
+  with caplog.at_level(logging.WARNING):
+    _ = _TestingAgent(
+        name=f'{request.function.__name__}_parent',
+        sub_agents=[sub_agent_1, sub_agent_2],
+    )
+  assert f'Found duplicate sub-agent names: `{duplicate_name}`' in caplog.text
+
+
+def test_validate_sub_agents_unique_names_multiple_duplicates(
+    request: pytest.FixtureRequest,
+    caplog: pytest.LogCaptureFixture,
+):
+  """Test that multiple duplicate sub-agent names are all reported."""
+  duplicate_name_1 = f'{request.function.__name__}_duplicate_1'
+  duplicate_name_2 = f'{request.function.__name__}_duplicate_2'
+
+  sub_agents = [
+      _TestingAgent(name=duplicate_name_1),
+      _TestingAgent(name=f'{request.function.__name__}_unique'),
+      _TestingAgent(name=duplicate_name_1),  # First duplicate
+      _TestingAgent(name=duplicate_name_2),
+      _TestingAgent(name=duplicate_name_2),  # Second duplicate
+  ]
+
+  with caplog.at_level(logging.WARNING):
+    _ = _TestingAgent(
+        name=f'{request.function.__name__}_parent',
+        sub_agents=sub_agents,
+    )
+
+  # Verify each duplicate name appears exactly once in the error message
+  assert caplog.text.count(duplicate_name_1) == 1
+  assert caplog.text.count(duplicate_name_2) == 1
+  # Verify both duplicate names are present
+  assert duplicate_name_1 in caplog.text
+  assert duplicate_name_2 in caplog.text
+
+
+def test_validate_sub_agents_unique_names_triple_duplicate(
+    request: pytest.FixtureRequest,
+    caplog: pytest.LogCaptureFixture,
+):
+  """Test that a name appearing three times is reported only once."""
+  duplicate_name = f'{request.function.__name__}_triple_duplicate'
+
+  sub_agents = [
+      _TestingAgent(name=duplicate_name),
+      _TestingAgent(name=f'{request.function.__name__}_unique'),
+      _TestingAgent(name=duplicate_name),  # Second occurrence
+      _TestingAgent(name=duplicate_name),  # Third occurrence
+  ]
+
+  with caplog.at_level(logging.WARNING):
+    _ = _TestingAgent(
+        name=f'{request.function.__name__}_parent',
+        sub_agents=sub_agents,
+    )
+
+  # Verify the duplicate name appears exactly once in the error message
+  # (not three times even though it appears three times in the list)
+  assert caplog.text.count(duplicate_name) == 1
+  assert duplicate_name in caplog.text
+
+
+def test_validate_sub_agents_unique_names_no_duplicates(
+    request: pytest.FixtureRequest,
+):
+  """Test that unique sub-agent names pass validation."""
+  sub_agents = [
+      _TestingAgent(name=f'{request.function.__name__}_sub_agent_1'),
+      _TestingAgent(name=f'{request.function.__name__}_sub_agent_2'),
+      _TestingAgent(name=f'{request.function.__name__}_sub_agent_3'),
+  ]
+
+  parent = _TestingAgent(
+      name=f'{request.function.__name__}_parent',
+      sub_agents=sub_agents,
+  )
+
+  assert len(parent.sub_agents) == 3
+  assert parent.sub_agents[0].name == f'{request.function.__name__}_sub_agent_1'
+  assert parent.sub_agents[1].name == f'{request.function.__name__}_sub_agent_2'
+  assert parent.sub_agents[2].name == f'{request.function.__name__}_sub_agent_3'
+
+
+def test_validate_sub_agents_unique_names_empty_list(
+    request: pytest.FixtureRequest,
+):
+  """Test that empty sub-agents list passes validation."""
+  parent = _TestingAgent(
+      name=f'{request.function.__name__}_parent',
+      sub_agents=[],
+  )
+
+  assert len(parent.sub_agents) == 0
+
+
 if __name__ == '__main__':
   pytest.main([__file__])
 
@@ -929,9 +1036,10 @@ async def test_create_agent_state_event():
 
   ctx.branch = 'test_branch'
 
-  # Test case 1: with state
+  # Test case 1: set agent state in context
   state = _TestAgentState(test_field='checkpoint')
-  event = agent._create_agent_state_event(ctx, agent_state=state)
+  ctx.set_agent_state(agent.name, agent_state=state)
+  event = agent._create_agent_state_event(ctx)
   assert event is not None
   assert event.invocation_id == ctx.invocation_id
   assert event.author == agent.name
@@ -941,8 +1049,9 @@ async def test_create_agent_state_event():
   assert event.actions.agent_state == state.model_dump(mode='json')
   assert not event.actions.end_of_agent
 
-  # Test case 2: with end_of_agent
-  event = agent._create_agent_state_event(ctx, end_of_agent=True)
+  # Test case 2: set end_of_agent in context
+  ctx.set_agent_state(agent.name, end_of_agent=True)
+  event = agent._create_agent_state_event(ctx)
   assert event is not None
   assert event.invocation_id == ctx.invocation_id
   assert event.author == agent.name
@@ -951,16 +1060,8 @@ async def test_create_agent_state_event():
   assert event.actions.end_of_agent
   assert event.actions.agent_state is None
 
-  # Test case 3: with both state and end_of_agent
-  state = _TestAgentState(test_field='checkpoint')
-  event = agent._create_agent_state_event(
-      ctx, agent_state=state, end_of_agent=True
-  )
-  assert event is not None
-  assert event.actions.agent_state == state.model_dump(mode='json')
-  assert event.actions.end_of_agent
-
-  # Test case 4: with neither
+  # Test case 3: reset agent state and end_of_agent in context
+  ctx.set_agent_state(agent.name)
   event = agent._create_agent_state_event(ctx)
   assert event is not None
   assert event.actions.agent_state is None

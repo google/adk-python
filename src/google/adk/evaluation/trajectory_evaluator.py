@@ -14,13 +14,12 @@
 
 from __future__ import annotations
 
-from typing import Any
+import logging
+from typing import ClassVar
 from typing import Optional
 
 from google.genai import types as genai_types
-import pandas as pd
-from tabulate import tabulate
-from typing_extensions import deprecated
+from pydantic import ValidationError
 from typing_extensions import override
 
 from .eval_case import get_all_tool_calls
@@ -30,15 +29,43 @@ from .eval_metrics import Interval
 from .eval_metrics import MetricInfo
 from .eval_metrics import MetricValueInfo
 from .eval_metrics import PrebuiltMetrics
-from .evaluation_constants import EvalConstants
+from .eval_metrics import ToolTrajectoryCriterion
 from .evaluator import EvalStatus
 from .evaluator import EvaluationResult
 from .evaluator import Evaluator
 from .evaluator import PerInvocationResult
 
+logger = logging.getLogger("google_adk." + __name__)
+
 
 class TrajectoryEvaluator(Evaluator):
-  """Evaluates tool use trajectories for accuracy."""
+  """Evaluates tool use trajectories for accuracy.
+
+  This evaluator compares the sequence of tools called by the agent against a
+  list of expected calls and computes an average score based on one of the match
+  types: `EXACT`, `IN_ORDER`, or `ANY_ORDER`.
+
+  For each invocation being evaluated, this evaluator compares the list of
+  tool calls produced by the agent with the list of expected tool calls using
+  one of three match types. If the tool calls match based on the selected match
+  type, a score of 1.0 is awarded for that invocation, otherwise the score is
+  0.0. The final value is the average of these scores across all
+  invocations in the eval case.
+
+  The comparison can be done using one of following match types:
+    - `EXACT`: Requires a perfect match between the actual and expected tool
+      calls, with no extra or missing tool calls.
+    - `IN_ORDER`: Requires all tool calls from the expected list to be present
+      in the actual list, in the same order, but allows for other tool calls
+      to appear in between.
+    - `ANY_ORDER`: Requires all tool calls from the expected list to be
+      present in the actual list, in any order, and allows for other tool
+      calls to appear in between.
+  """
+
+  criterion_type: ClassVar[type[ToolTrajectoryCriterion]] = (
+      ToolTrajectoryCriterion
+  )
 
   def __init__(
       self,
@@ -51,10 +78,25 @@ class TrajectoryEvaluator(Evaluator):
           " specified."
       )
 
-    if eval_metric:
-      threshold = eval_metric.threshold
-
-    self._threshold = threshold
+    if eval_metric and eval_metric.criterion:
+      try:
+        criterion = TrajectoryEvaluator.criterion_type.model_validate(
+            eval_metric.criterion.model_dump()
+        )
+        self._threshold = criterion.threshold
+        self._match_type = criterion.match_type
+      except ValidationError as e:
+        expected_criterion_type_error = ValueError(
+            f"`{eval_metric.metric_name}` metric expects a criterion of type"
+            f" `{TrajectoryEvaluator.criterion_type}`."
+        )
+        raise expected_criterion_type_error from e
+    elif eval_metric:
+      self._threshold = eval_metric.threshold
+      self._match_type = ToolTrajectoryCriterion.MatchType.EXACT
+    else:
+      self._threshold = threshold
+      self._match_type = ToolTrajectoryCriterion.MatchType.EXACT
 
   @staticmethod
   def get_metric_info() -> MetricInfo:
@@ -76,22 +118,18 @@ class TrajectoryEvaluator(Evaluator):
   def evaluate_invocations(
       self,
       actual_invocations: list[Invocation],
-      expected_invocations: list[Invocation],
+      expected_invocations: Optional[list[Invocation]],
   ) -> EvaluationResult:
     """Returns EvaluationResult after performing evaluations using actual and expected invocations."""
+    if expected_invocations is None:
+      raise ValueError("expected_invocations is needed by this metric.")
+
     total_tool_use_accuracy = 0.0
     num_invocations = 0
     per_invocation_results = []
 
     for actual, expected in zip(actual_invocations, expected_invocations):
-      actual_tool_uses = get_all_tool_calls(actual.intermediate_data)
-      expected_tool_uses = get_all_tool_calls(expected.intermediate_data)
-
-      tool_use_accuracy = (
-          1.0
-          if self._are_tool_calls_equal(actual_tool_uses, expected_tool_uses)
-          else 0.0
-      )
+      tool_use_accuracy = self._calculate_tool_use_accuracy(actual, expected)
       per_invocation_results.append(
           PerInvocationResult(
               actual_invocation=actual,
@@ -113,11 +151,128 @@ class TrajectoryEvaluator(Evaluator):
 
     return EvaluationResult()
 
-  def _are_tool_calls_equal(
+  def _calculate_tool_use_accuracy(
+      self,
+      actual_invocation: Invocation,
+      expected_invocation: Invocation,
+  ) -> float:
+    """Calculates tool use accuracy for a single invocation."""
+    actual_tool_uses = get_all_tool_calls(actual_invocation.intermediate_data)
+    expected_tool_uses = get_all_tool_calls(
+        expected_invocation.intermediate_data
+    )
+
+    tool_use_match_status = False
+    if self._match_type == ToolTrajectoryCriterion.MatchType.EXACT:
+      tool_use_match_status = self._are_tool_calls_exact_match(
+          actual_tool_uses, expected_tool_uses
+      )
+    elif self._match_type == ToolTrajectoryCriterion.MatchType.IN_ORDER:
+      tool_use_match_status = self._are_tool_calls_in_order_match(
+          actual_tool_uses, expected_tool_uses
+      )
+    elif self._match_type == ToolTrajectoryCriterion.MatchType.ANY_ORDER:
+      tool_use_match_status = self._are_tool_calls_any_order_match(
+          actual_tool_uses, expected_tool_uses
+      )
+    else:
+      raise ValueError(f"Unsupported match type {self._match_type}")
+
+    return 1.0 if tool_use_match_status else 0.0
+
+  def _are_tool_calls_in_order_match(
       self,
       actual_tool_calls: list[genai_types.FunctionCall],
       expected_tool_calls: list[genai_types.FunctionCall],
   ) -> bool:
+    """Checks if expected tool calls appear in actual tool calls in order.
+
+    This method implements IN_ORDER match type. It allows for additional
+    tool calls in actual_tool_calls, as long as all expected tool calls are
+    present in the same order.
+
+    Args:
+      actual_tool_calls: A list of tool calls that actually happened.
+      expected_tool_calls: A list of tool calls that were expected to happen.
+
+    Returns:
+      True if actual tool calls match expected tool calls in order,
+      False otherwise.
+    """
+    if not expected_tool_calls:
+      return True
+    if not actual_tool_calls and expected_tool_calls:
+      return False
+
+    expected_it = iter(expected_tool_calls)
+    try:
+      current_expected = next(expected_it)
+      for actual in actual_tool_calls:
+        if (
+            actual.name == current_expected.name
+            and actual.args == current_expected.args
+        ):
+          current_expected = next(expected_it)
+    except StopIteration:
+      return True
+
+    return False
+
+  def _are_tool_calls_any_order_match(
+      self,
+      actual_tool_calls: list[genai_types.FunctionCall],
+      expected_tool_calls: list[genai_types.FunctionCall],
+  ) -> bool:
+    """Checks if expected tool calls appear in actual tool calls in any order.
+
+    This method implements ANY_ORDER match type. It allows for additional
+    tool calls in actual_tool_calls, as long as all expected tool calls are
+    present.
+
+    Args:
+      actual_tool_calls: A list of tool calls that actually happened.
+      expected_tool_calls: A list of tool calls that were expected to happen.
+
+    Returns:
+      True if actual tool calls contain all expected tool calls,
+      False otherwise.
+    """
+    if not expected_tool_calls:
+      return True
+    if not actual_tool_calls and expected_tool_calls:
+      return False
+
+    actual_tool_calls_copy = list(actual_tool_calls)
+    for expected in expected_tool_calls:
+      found = False
+      for i, actual in enumerate(actual_tool_calls_copy):
+        if actual.name == expected.name and actual.args == expected.args:
+          actual_tool_calls_copy.pop(i)
+          found = True
+          break
+      if not found:
+        return False
+    return True
+
+  def _are_tool_calls_exact_match(
+      self,
+      actual_tool_calls: list[genai_types.FunctionCall],
+      expected_tool_calls: list[genai_types.FunctionCall],
+  ) -> bool:
+    """Checks if actual tool calls exactly match expected tool calls.
+
+    This method implements EXACT match type. It requires that
+    actual_tool_calls and expected_tool_calls have the same tool calls in
+    the same order, with no extra or missing tool calls.
+
+    Args:
+      actual_tool_calls: A list of tool calls that actually happened.
+      expected_tool_calls: A list of tool calls that were expected to happen.
+
+    Returns:
+      True if actual tool calls exactly match expected tool calls,
+      False otherwise.
+    """
     if len(actual_tool_calls) != len(expected_tool_calls):
       return False
 
@@ -129,170 +284,3 @@ class TrajectoryEvaluator(Evaluator):
 
   def _get_eval_status(self, score: float):
     return EvalStatus.PASSED if score >= self._threshold else EvalStatus.FAILED
-
-  @staticmethod
-  @deprecated(
-      "This method has been deprecated and will be removed soon. Please use"
-      " evaluate_invocations instead."
-  )
-  def evaluate(
-      eval_dataset: list[list[dict[str, Any]]],
-      *,
-      print_detailed_results: bool = False,
-  ):
-    r"""Returns the mean tool use accuracy of the eval dataset.
-
-    Tool use accuracy is calculated by comparing the expected and the actual
-    tool use trajectories. An exact match scores a 1, 0 otherwise. The final
-    number is an average of these individual scores.
-
-    Value range: [0, 1], where 0 means none of the tool use entries aligned,
-    and 1 would mean all of them aligned. Higher value is good.
-
-    Args:
-      eval_dataset: The dataset that will be evaluated.
-      print_detailed_results: Prints detailed results on the console. This is
-        usually helpful during debugging.
-
-    A note on eval_dataset:
-      The dataset should be a list session, where each session is represented
-      as a list of interaction that need evaluation. Each evaluation is
-      represented as a dictionary that is expected to have values for the
-      following keys:
-        1) query
-        2) response
-        3) acutal_tool_use
-        4) expected_tool_use
-
-      Here is a sample eval_dataset value with one entry:
-
-      [
-        [
-          {
-            "query": "Roll a 16 sided dice for me",
-            "response": "I rolled a 16 sided die and got 13.\n",
-            "expected_tool_use": [
-              {
-                "tool_name": "roll_die",
-                "tool_input": {
-                  "sides": 16
-                }
-              }
-            ],
-            "acutal_tool_use": [
-              {
-                "tool_name": "roll_die",
-                "tool_input": {
-                  "sides": 16
-                }
-              }
-            ]
-          }
-        ]
-      ]
-    """
-    if not eval_dataset:
-      raise ValueError("The evaluation dataset is empty.")
-
-    results_df = pd.DataFrame(
-        columns=[
-            "query",
-            "response",
-            "actual_tool_use",
-            "expected_tool_use",
-            "tool_use_accuracy",
-        ]
-    )
-    failures = []
-
-    for conversation in eval_dataset:
-      for index, row in enumerate(conversation):
-        new_row, failure = TrajectoryEvaluator._evaluate_row(row)
-        results_df = pd.concat(
-            [results_df, pd.DataFrame([new_row])], ignore_index=True
-        )
-        if failure:
-          failure["turn"] = index + 1
-          failures.append(failure)
-
-    TrajectoryEvaluator._report_failures(failures)
-
-    if print_detailed_results:
-      TrajectoryEvaluator._print_results(results_df)
-
-    return results_df["tool_use_accuracy"].mean()
-
-  @staticmethod
-  def _evaluate_row(row):
-    # We don't evaluate the mock tool outputs.
-    expected = TrajectoryEvaluator._remove_tool_outputs(
-        row["expected_tool_use"]
-    )
-    actual = row["actual_tool_use"]
-    tool_use_accuracy = (
-        1.0 if TrajectoryEvaluator.are_tools_equal(actual, expected) else 0.0
-    )
-
-    new_row = {
-        "query": row["query"],
-        "response": row["response"],
-        "actual_tool_use": actual,
-        "expected_tool_use": expected,
-        "tool_use_accuracy": tool_use_accuracy,
-    }
-    failure = (
-        None
-        if tool_use_accuracy == 1.0
-        else {"query": row["query"], "actual": actual, "expected": expected}
-    )
-    return new_row, failure
-
-  @staticmethod
-  @deprecated(
-      "are_tools_equal is deprecated and will be removed soon. Please use"
-      " TrajectoryEvaluator._are_tool_calls_equal instead."
-  )
-  def are_tools_equal(list_a_original, list_b_original):
-    # Remove other entries that we don't want to evaluate
-    list_a = [
-        {"tool_name": tool["tool_name"], "tool_input": tool["tool_input"]}
-        for tool in list_a_original
-    ]
-
-    list_b = [
-        {"tool_name": tool["tool_name"], "tool_input": tool["tool_input"]}
-        for tool in list_b_original
-    ]
-
-    return list_a == list_b
-
-  @staticmethod
-  def _remove_tool_outputs(tool_use_list):
-    """Removes 'mock_tool_output' from each dictionary in the list."""
-    result = []
-    for tool_use in tool_use_list:
-      new_tool_use = (
-          tool_use.copy()
-      )  # Create a copy to avoid modifying the original
-      new_tool_use.pop(
-          EvalConstants.MOCK_TOOL_OUTPUT, None
-      )  # Remove 'tool_output' if it exists
-      result.append(new_tool_use)
-    return result
-
-  @staticmethod
-  def _report_failures(failures):
-    if failures:
-      print("Failures:")
-      for failure in failures:
-        print(f"""{{
-  "turn": {failure["turn"]},
-  "query": '{failure["query"]}',
-  "actual": {failure["actual"]},
-  "expected_tool_use": {failure["expected"]},
-}}
-""")
-
-  @staticmethod
-  def _print_results(results_df):
-    print(tabulate(results_df, headers="keys", tablefmt="grid"))

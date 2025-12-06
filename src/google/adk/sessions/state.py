@@ -12,11 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 from typing import Any
 
 
 class State:
-  """A state dict that maintain the current value and the pending-commit delta."""
+  """A state dict that maintains the current value and the pending-commit delta."""
 
   APP_PREFIX = "app:"
   USER_PREFIX = "user:"

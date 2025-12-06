@@ -13,6 +13,7 @@
 # limitations under the License.
 from __future__ import annotations
 
+import asyncio
 import copy
 from datetime import datetime
 from datetime import timezone
@@ -23,26 +24,28 @@ from typing import Any
 from typing import Optional
 import uuid
 
+from google.genai import types
 from sqlalchemy import Boolean
 from sqlalchemy import delete
 from sqlalchemy import Dialect
 from sqlalchemy import event
 from sqlalchemy import ForeignKeyConstraint
 from sqlalchemy import func
+from sqlalchemy import select
 from sqlalchemy import Text
 from sqlalchemy.dialects import mysql
 from sqlalchemy.dialects import postgresql
-from sqlalchemy.engine import create_engine
-from sqlalchemy.engine import Engine
 from sqlalchemy.exc import ArgumentError
+from sqlalchemy.ext.asyncio import async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy.ext.asyncio import AsyncSession as DatabaseSessionFactory
+from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.ext.mutable import MutableDict
 from sqlalchemy.inspection import inspect
 from sqlalchemy.orm import DeclarativeBase
 from sqlalchemy.orm import Mapped
 from sqlalchemy.orm import mapped_column
 from sqlalchemy.orm import relationship
-from sqlalchemy.orm import Session as DatabaseSessionFactory
-from sqlalchemy.orm import sessionmaker
 from sqlalchemy.schema import MetaData
 from sqlalchemy.types import DateTime
 from sqlalchemy.types import PickleType
@@ -52,7 +55,9 @@ from typing_extensions import override
 from tzlocal import get_localzone
 
 from . import _session_util
+from ..errors.already_exists_error import AlreadyExistsError
 from ..events.event import Event
+from ..events.event_actions import EventActions
 from .base_session_service import BaseSessionService
 from .base_session_service import GetSessionConfig
 from .base_session_service import ListSessionsResponse
@@ -112,6 +117,8 @@ class DynamicPickleType(TypeDecorator):
   impl = PickleType
 
   def load_dialect_impl(self, dialect):
+    if dialect.name == "mysql":
+      return dialect.type_descriptor(mysql.LONGBLOB)
     if dialect.name == "spanner+spanner":
       from google.cloud.sqlalchemy_spanner.sqlalchemy_spanner import SpannerPickleType
 
@@ -121,14 +128,14 @@ class DynamicPickleType(TypeDecorator):
   def process_bind_param(self, value, dialect):
     """Ensures the pickled value is a bytes object before passing it to the database dialect."""
     if value is not None:
-      if dialect.name == "spanner+spanner":
+      if dialect.name in ("spanner+spanner", "mysql"):
         return pickle.dumps(value)
     return value
 
   def process_result_value(self, value, dialect):
     """Ensures the raw bytes from the database are unpickled back into a Python object."""
     if value is not None:
-      if dialect.name == "spanner+spanner":
+      if dialect.name in ("spanner+spanner", "mysql"):
         return pickle.loads(value)
     return value
 
@@ -242,12 +249,18 @@ class StorageEvent(Base):
       PreciseTimestamp, default=func.now()
   )
 
-  # === Fileds from llm_response.py ===
+  # === Fields from llm_response.py ===
   content: Mapped[dict[str, Any]] = mapped_column(DynamicJSON, nullable=True)
   grounding_metadata: Mapped[dict[str, Any]] = mapped_column(
       DynamicJSON, nullable=True
   )
   custom_metadata: Mapped[dict[str, Any]] = mapped_column(
+      DynamicJSON, nullable=True
+  )
+  usage_metadata: Mapped[dict[str, Any]] = mapped_column(
+      DynamicJSON, nullable=True
+  )
+  citation_metadata: Mapped[dict[str, Any]] = mapped_column(
       DynamicJSON, nullable=True
   )
 
@@ -258,6 +271,12 @@ class StorageEvent(Base):
   )
   error_message: Mapped[str] = mapped_column(String(1024), nullable=True)
   interrupted: Mapped[bool] = mapped_column(Boolean, nullable=True)
+  input_transcription: Mapped[dict[str, Any]] = mapped_column(
+      DynamicJSON, nullable=True
+  )
+  output_transcription: Mapped[dict[str, Any]] = mapped_column(
+      DynamicJSON, nullable=True
+  )
 
   storage_session: Mapped[StorageSession] = relationship(
       "StorageSession",
@@ -316,6 +335,22 @@ class StorageEvent(Base):
       )
     if event.custom_metadata:
       storage_event.custom_metadata = event.custom_metadata
+    if event.usage_metadata:
+      storage_event.usage_metadata = event.usage_metadata.model_dump(
+          exclude_none=True, mode="json"
+      )
+    if event.citation_metadata:
+      storage_event.citation_metadata = event.citation_metadata.model_dump(
+          exclude_none=True, mode="json"
+      )
+    if event.input_transcription:
+      storage_event.input_transcription = event.input_transcription.model_dump(
+          exclude_none=True, mode="json"
+      )
+    if event.output_transcription:
+      storage_event.output_transcription = (
+          event.output_transcription.model_dump(exclude_none=True, mode="json")
+      )
     return storage_event
 
   def to_event(self) -> Event:
@@ -324,19 +359,33 @@ class StorageEvent(Base):
         invocation_id=self.invocation_id,
         author=self.author,
         branch=self.branch,
-        actions=self.actions,
+        # This is needed as previous ADK version pickled actions might not have
+        # value defined in the current version of the EventActions model.
+        actions=EventActions().model_copy(update=self.actions.model_dump()),
         timestamp=self.timestamp.timestamp(),
-        content=_session_util.decode_content(self.content),
         long_running_tool_ids=self.long_running_tool_ids,
         partial=self.partial,
         turn_complete=self.turn_complete,
         error_code=self.error_code,
         error_message=self.error_message,
         interrupted=self.interrupted,
-        grounding_metadata=_session_util.decode_grounding_metadata(
-            self.grounding_metadata
-        ),
         custom_metadata=self.custom_metadata,
+        content=_session_util.decode_model(self.content, types.Content),
+        grounding_metadata=_session_util.decode_model(
+            self.grounding_metadata, types.GroundingMetadata
+        ),
+        usage_metadata=_session_util.decode_model(
+            self.usage_metadata, types.GenerateContentResponseUsageMetadata
+        ),
+        citation_metadata=_session_util.decode_model(
+            self.citation_metadata, types.CitationMetadata
+        ),
+        input_transcription=_session_util.decode_model(
+            self.input_transcription, types.Transcription
+        ),
+        output_transcription=_session_util.decode_model(
+            self.output_transcription, types.Transcription
+        ),
     )
 
 
@@ -390,11 +439,11 @@ class DatabaseSessionService(BaseSessionService):
     # 2. Create all tables based on schema
     # 3. Initialize all properties
     try:
-      db_engine = create_engine(db_url, **kwargs)
+      db_engine = create_async_engine(db_url, **kwargs)
 
       if db_engine.dialect.name == "sqlite":
         # Set sqlite pragma to enable foreign keys constraints
-        event.listen(db_engine, "connect", set_sqlite_pragma)
+        event.listen(db_engine.sync_engine, "connect", set_sqlite_pragma)
 
     except Exception as e:
       if isinstance(e, ArgumentError):
@@ -413,18 +462,32 @@ class DatabaseSessionService(BaseSessionService):
     local_timezone = get_localzone()
     logger.info("Local timezone: %s", local_timezone)
 
-    self.db_engine: Engine = db_engine
+    self.db_engine: AsyncEngine = db_engine
     self.metadata: MetaData = MetaData()
-    self.inspector = inspect(self.db_engine)
 
     # DB session factory method
-    self.database_session_factory: sessionmaker[DatabaseSessionFactory] = (
-        sessionmaker(bind=self.db_engine)
-    )
+    self.database_session_factory: async_sessionmaker[
+        DatabaseSessionFactory
+    ] = async_sessionmaker(bind=self.db_engine, expire_on_commit=False)
 
-    # Uncomment to recreate DB every time
-    # Base.metadata.drop_all(self.db_engine)
-    Base.metadata.create_all(self.db_engine)
+    # Flag to indicate if tables are created
+    self._tables_created = False
+    # Lock to ensure thread-safe table creation
+    self._table_creation_lock = asyncio.Lock()
+
+  async def _ensure_tables_created(self):
+    """Ensure database tables are created. This is called lazily."""
+    if self._tables_created:
+      return
+
+    async with self._table_creation_lock:
+      # Double-check after acquiring the lock
+      if not self._tables_created:
+        async with self.db_engine.begin() as conn:
+          # Uncomment to recreate DB every time
+          # await conn.run_sync(Base.metadata.drop_all)
+          await conn.run_sync(Base.metadata.create_all)
+        self._tables_created = True
 
   @override
   async def create_session(
@@ -440,17 +503,20 @@ class DatabaseSessionService(BaseSessionService):
     # 3. Add the object to the table
     # 4. Build the session object with generated id
     # 5. Return the session
+    await self._ensure_tables_created()
+    async with self.database_session_factory() as sql_session:
 
-    with self.database_session_factory() as sql_session:
-
+      if session_id and await sql_session.get(
+          StorageSession, (app_name, user_id, session_id)
+      ):
+        raise AlreadyExistsError(
+            f"Session with id {session_id} already exists."
+        )
       # Fetch app and user states from storage
-      storage_app_state = sql_session.get(StorageAppState, (app_name))
-      storage_user_state = sql_session.get(
+      storage_app_state = await sql_session.get(StorageAppState, (app_name))
+      storage_user_state = await sql_session.get(
           StorageUserState, (app_name, user_id)
       )
-
-      app_state = storage_app_state.state if storage_app_state else {}
-      user_state = storage_user_state.state if storage_user_state else {}
 
       # Create state tables if not exist
       if not storage_app_state:
@@ -463,19 +529,16 @@ class DatabaseSessionService(BaseSessionService):
         sql_session.add(storage_user_state)
 
       # Extract state deltas
-      app_state_delta, user_state_delta, session_state = _extract_state_delta(
-          state
-      )
+      state_deltas = _session_util.extract_state_delta(state)
+      app_state_delta = state_deltas["app"]
+      user_state_delta = state_deltas["user"]
+      session_state = state_deltas["session"]
 
       # Apply state delta
-      app_state.update(app_state_delta)
-      user_state.update(user_state_delta)
-
-      # Store app and user state
       if app_state_delta:
-        storage_app_state.state = app_state
+        storage_app_state.state = storage_app_state.state | app_state_delta
       if user_state_delta:
-        storage_user_state.state = user_state
+        storage_user_state.state = storage_user_state.state | user_state_delta
 
       # Store the session
       storage_session = StorageSession(
@@ -485,12 +548,14 @@ class DatabaseSessionService(BaseSessionService):
           state=session_state,
       )
       sql_session.add(storage_session)
-      sql_session.commit()
+      await sql_session.commit()
 
-      sql_session.refresh(storage_session)
+      await sql_session.refresh(storage_session)
 
       # Merge states for response
-      merged_state = _merge_state(app_state, user_state, session_state)
+      merged_state = _merge_state(
+          storage_app_state.state, storage_user_state.state, session_state
+      )
       session = storage_session.to_session(state=merged_state)
     return session
 
@@ -503,40 +568,39 @@ class DatabaseSessionService(BaseSessionService):
       session_id: str,
       config: Optional[GetSessionConfig] = None,
   ) -> Optional[Session]:
+    await self._ensure_tables_created()
     # 1. Get the storage session entry from session table
     # 2. Get all the events based on session id and filtering config
     # 3. Convert and return the session
-    with self.database_session_factory() as sql_session:
-      storage_session = sql_session.get(
+    async with self.database_session_factory() as sql_session:
+      storage_session = await sql_session.get(
           StorageSession, (app_name, user_id, session_id)
       )
       if storage_session is None:
         return None
 
-      if config and config.after_timestamp:
-        after_dt = datetime.fromtimestamp(config.after_timestamp)
-        timestamp_filter = StorageEvent.timestamp >= after_dt
-      else:
-        timestamp_filter = True
-
-      storage_events = (
-          sql_session.query(StorageEvent)
+      stmt = (
+          select(StorageEvent)
           .filter(StorageEvent.app_name == app_name)
           .filter(StorageEvent.session_id == storage_session.id)
           .filter(StorageEvent.user_id == user_id)
-          .filter(timestamp_filter)
-          .order_by(StorageEvent.timestamp.desc())
-          .limit(
-              config.num_recent_events
-              if config and config.num_recent_events
-              else None
-          )
-          .all()
       )
 
+      if config and config.after_timestamp:
+        after_dt = datetime.fromtimestamp(config.after_timestamp)
+        stmt = stmt.filter(StorageEvent.timestamp >= after_dt)
+
+      stmt = stmt.order_by(StorageEvent.timestamp.desc())
+
+      if config and config.num_recent_events:
+        stmt = stmt.limit(config.num_recent_events)
+
+      result = await sql_session.execute(stmt)
+      storage_events = result.scalars().all()
+
       # Fetch states from storage
-      storage_app_state = sql_session.get(StorageAppState, (app_name))
-      storage_user_state = sql_session.get(
+      storage_app_state = await sql_session.get(StorageAppState, (app_name))
+      storage_user_state = await sql_session.get(
           StorageUserState, (app_name, user_id)
       )
 
@@ -554,30 +618,43 @@ class DatabaseSessionService(BaseSessionService):
 
   @override
   async def list_sessions(
-      self, *, app_name: str, user_id: str
+      self, *, app_name: str, user_id: Optional[str] = None
   ) -> ListSessionsResponse:
-    with self.database_session_factory() as sql_session:
-      results = (
-          sql_session.query(StorageSession)
-          .filter(StorageSession.app_name == app_name)
-          .filter(StorageSession.user_id == user_id)
-          .all()
-      )
+    await self._ensure_tables_created()
+    async with self.database_session_factory() as sql_session:
+      stmt = select(StorageSession).filter(StorageSession.app_name == app_name)
+      if user_id is not None:
+        stmt = stmt.filter(StorageSession.user_id == user_id)
 
-      # Fetch states from storage
-      storage_app_state = sql_session.get(StorageAppState, (app_name))
-      storage_user_state = sql_session.get(
-          StorageUserState, (app_name, user_id)
-      )
+      result = await sql_session.execute(stmt)
+      results = result.scalars().all()
 
+      # Fetch app state from storage
+      storage_app_state = await sql_session.get(StorageAppState, (app_name))
       app_state = storage_app_state.state if storage_app_state else {}
-      user_state = storage_user_state.state if storage_user_state else {}
+
+      # Fetch user state(s) from storage
+      user_states_map = {}
+      if user_id is not None:
+        storage_user_state = await sql_session.get(
+            StorageUserState, (app_name, user_id)
+        )
+        if storage_user_state:
+          user_states_map[user_id] = storage_user_state.state
+      else:
+        user_state_stmt = select(StorageUserState).filter(
+            StorageUserState.app_name == app_name
+        )
+        user_state_result = await sql_session.execute(user_state_stmt)
+        all_user_states_for_app = user_state_result.scalars().all()
+        for storage_user_state in all_user_states_for_app:
+          user_states_map[storage_user_state.user_id] = storage_user_state.state
 
       sessions = []
       for storage_session in results:
         session_state = storage_session.state
+        user_state = user_states_map.get(storage_session.user_id, {})
         merged_state = _merge_state(app_state, user_state, session_state)
-
         sessions.append(storage_session.to_session(state=merged_state))
       return ListSessionsResponse(sessions=sessions)
 
@@ -585,25 +662,30 @@ class DatabaseSessionService(BaseSessionService):
   async def delete_session(
       self, app_name: str, user_id: str, session_id: str
   ) -> None:
-    with self.database_session_factory() as sql_session:
+    await self._ensure_tables_created()
+    async with self.database_session_factory() as sql_session:
       stmt = delete(StorageSession).where(
           StorageSession.app_name == app_name,
           StorageSession.user_id == user_id,
           StorageSession.id == session_id,
       )
-      sql_session.execute(stmt)
-      sql_session.commit()
+      await sql_session.execute(stmt)
+      await sql_session.commit()
 
   @override
   async def append_event(self, session: Session, event: Event) -> Event:
+    await self._ensure_tables_created()
     if event.partial:
       return event
+
+    # Trim temp state before persisting
+    event = self._trim_temp_delta_state(event)
 
     # 1. Check if timestamp is stale
     # 2. Update session attributes based on event config
     # 3. Store event to table
-    with self.database_session_factory() as sql_session:
-      storage_session = sql_session.get(
+    async with self.database_session_factory() as sql_session:
+      storage_session = await sql_session.get(
           StorageSession, (session.app_name, session.user_id, session.id)
       )
 
@@ -617,40 +699,38 @@ class DatabaseSessionService(BaseSessionService):
         )
 
       # Fetch states from storage
-      storage_app_state = sql_session.get(StorageAppState, (session.app_name))
-      storage_user_state = sql_session.get(
+      storage_app_state = await sql_session.get(
+          StorageAppState, (session.app_name)
+      )
+      storage_user_state = await sql_session.get(
           StorageUserState, (session.app_name, session.user_id)
       )
 
-      app_state = storage_app_state.state if storage_app_state else {}
-      user_state = storage_user_state.state if storage_user_state else {}
-      session_state = storage_session.state
-
       # Extract state delta
-      app_state_delta = {}
-      user_state_delta = {}
-      session_state_delta = {}
-      if event.actions:
-        if event.actions.state_delta:
-          app_state_delta, user_state_delta, session_state_delta = (
-              _extract_state_delta(event.actions.state_delta)
-          )
+      if event.actions and event.actions.state_delta:
+        state_deltas = _session_util.extract_state_delta(
+            event.actions.state_delta
+        )
+        app_state_delta = state_deltas["app"]
+        user_state_delta = state_deltas["user"]
+        session_state_delta = state_deltas["session"]
+        # Merge state and update storage
+        if app_state_delta:
+          storage_app_state.state = storage_app_state.state | app_state_delta
+        if user_state_delta:
+          storage_user_state.state = storage_user_state.state | user_state_delta
+        if session_state_delta:
+          storage_session.state = storage_session.state | session_state_delta
 
-      # Merge state and update storage
-      if app_state_delta:
-        app_state.update(app_state_delta)
-        storage_app_state.state = app_state
-      if user_state_delta:
-        user_state.update(user_state_delta)
-        storage_user_state.state = user_state
-      if session_state_delta:
-        session_state.update(session_state_delta)
-        storage_session.state = session_state
-
+      if storage_session._dialect_name == "sqlite":
+        update_time = datetime.utcfromtimestamp(event.timestamp)
+      else:
+        update_time = datetime.fromtimestamp(event.timestamp)
+      storage_session.update_time = update_time
       sql_session.add(StorageEvent.from_event(session, event))
 
-      sql_session.commit()
-      sql_session.refresh(storage_session)
+      await sql_session.commit()
+      await sql_session.refresh(storage_session)
 
       # Update timestamp with commit time
       session.last_update_time = storage_session.update_timestamp_tz
@@ -660,23 +740,12 @@ class DatabaseSessionService(BaseSessionService):
     return event
 
 
-def _extract_state_delta(state: dict[str, Any]):
-  app_state_delta = {}
-  user_state_delta = {}
-  session_state_delta = {}
-  if state:
-    for key in state.keys():
-      if key.startswith(State.APP_PREFIX):
-        app_state_delta[key.removeprefix(State.APP_PREFIX)] = state[key]
-      elif key.startswith(State.USER_PREFIX):
-        user_state_delta[key.removeprefix(State.USER_PREFIX)] = state[key]
-      elif not key.startswith(State.TEMP_PREFIX):
-        session_state_delta[key] = state[key]
-  return app_state_delta, user_state_delta, session_state_delta
-
-
-def _merge_state(app_state, user_state, session_state):
-  # Merge states for response
+def _merge_state(
+    app_state: dict[str, Any],
+    user_state: dict[str, Any],
+    session_state: dict[str, Any],
+) -> dict[str, Any]:
+  """Merge app, user, and session states into a single state dictionary."""
   merged_state = copy.deepcopy(session_state)
   for key in app_state.keys():
     merged_state[State.APP_PREFIX + key] = app_state[key]

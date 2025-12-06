@@ -32,8 +32,10 @@ from ..memory.base_memory_service import BaseMemoryService
 from ..plugins.plugin_manager import PluginManager
 from ..sessions.base_session_service import BaseSessionService
 from ..sessions.session import Session
+from ..tools.base_tool import BaseTool
 from .active_streaming_tool import ActiveStreamingTool
 from .base_agent import BaseAgent
+from .base_agent import BaseAgentState
 from .context_cache_config import ContextCacheConfig
 from .live_request_queue import LiveRequestQueue
 from .run_config import RunConfig
@@ -201,6 +203,9 @@ class InvocationContext(BaseModel):
   plugin_manager: PluginManager = Field(default_factory=PluginManager)
   """The manager for keeping track of plugins in this invocation."""
 
+  canonical_tools_cache: Optional[list[BaseTool]] = None
+  """The cache of canonical tools for this invocation."""
+
   _invocation_cost_manager: _InvocationCostManager = PrivateAttr(
       default_factory=_InvocationCostManager
   )
@@ -216,10 +221,87 @@ class InvocationContext(BaseModel):
         and self.resumability_config.is_resumable
     )
 
-  def reset_agent_state(self, agent_name: str) -> None:
-    """Resets the state of an agent, allowing it to be re-run."""
-    self.agent_states.pop(agent_name, None)
-    self.end_of_agents.pop(agent_name, None)
+  def set_agent_state(
+      self,
+      agent_name: str,
+      *,
+      agent_state: Optional[BaseAgentState] = None,
+      end_of_agent: bool = False,
+  ) -> None:
+    """Sets the state of an agent in this invocation.
+
+    * If end_of_agent is True, will set the end_of_agent flag to True and
+      clear the agent_state.
+    * Otherwise, if agent_state is not None, will set the agent_state and
+      reset the end_of_agent flag to False.
+    * Otherwise, will clear the agent_state and end_of_agent flag, to allow the
+      agent to re-run.
+
+    Args:
+      agent_name: The name of the agent.
+      agent_state: The state of the agent. Will be ignored if end_of_agent is
+        True.
+      end_of_agent: Whether the agent has finished running.
+    """
+    if end_of_agent:
+      self.end_of_agents[agent_name] = True
+      self.agent_states.pop(agent_name, None)
+    elif agent_state is not None:
+      self.agent_states[agent_name] = agent_state.model_dump(mode="json")
+      self.end_of_agents[agent_name] = False
+    else:
+      self.end_of_agents.pop(agent_name, None)
+      self.agent_states.pop(agent_name, None)
+
+  def reset_sub_agent_states(
+      self,
+      agent_name: str,
+  ) -> None:
+    """Resets the state of all sub-agents of the given agent in this invocation.
+
+    Args:
+      agent_name: The name of the agent whose sub-agent states need to be reset.
+    """
+    agent = self.agent.find_agent(agent_name)
+    if not agent:
+      return
+
+    for sub_agent in agent.sub_agents:
+      # Reset the sub-agent's state in the context to ensure that each
+      # sub-agent starts fresh.
+      self.set_agent_state(sub_agent.name)
+      self.reset_sub_agent_states(sub_agent.name)
+
+  def populate_invocation_agent_states(self) -> None:
+    """Populates agent states for the current invocation if it is resumable.
+
+    For history events that contain agent state information, set the
+    agent_state and end_of_agent of the agent that generated the event.
+
+    For non-workflow agents, also set an initial agent_state if it has
+    already generated some contents.
+    """
+    if not self.is_resumable:
+      return
+    for event in self._get_events(current_invocation=True):
+      if event.actions.end_of_agent:
+        self.end_of_agents[event.author] = True
+        # Delete agent_state when it is end
+        self.agent_states.pop(event.author, None)
+      elif event.actions.agent_state is not None:
+        self.agent_states[event.author] = event.actions.agent_state
+        # Invalidate the end_of_agent flag
+        self.end_of_agents[event.author] = False
+      elif (
+          event.author != "user"
+          and event.content
+          and not self.agent_states.get(event.author)
+      ):
+        # If the agent has generated some contents but its agent_state is not
+        # set, set its agent_state to an empty agent_state.
+        self.agent_states[event.author] = BaseAgentState()
+        # Invalidate the end_of_agent flag
+        self.end_of_agents[event.author] = False
 
   def increment_llm_call_count(
       self,
@@ -242,8 +324,10 @@ class InvocationContext(BaseModel):
   def user_id(self) -> str:
     return self.session.user_id
 
-  def get_events(
+  # TODO: Move this method from invocation_context to a dedicated module.
+  def _get_events(
       self,
+      *,
       current_invocation: bool = False,
       current_branch: bool = False,
   ) -> list[Event]:
@@ -303,6 +387,25 @@ class InvocationContext(BaseModel):
         return True
 
     return False
+
+  # TODO: Move this method from invocation_context to a dedicated module.
+  # TODO: Converge this method with find_matching_function_call in llm_flows.
+  def _find_matching_function_call(
+      self, function_response_event: Event
+  ) -> Optional[Event]:
+    """Finds the function call event in the current invocation that matches the function response id."""
+    function_responses = function_response_event.get_function_responses()
+    if not function_responses:
+      return None
+    function_call_id = function_responses[0].id
+
+    events = self._get_events(current_invocation=True)
+    # The last event is function_response_event, so we search backwards from the
+    # one before it.
+    for event in reversed(events[:-1]):
+      if any(fc.id == function_call_id for fc in event.get_function_calls()):
+        return event
+    return None
 
 
 def new_invocation_context_id() -> str:

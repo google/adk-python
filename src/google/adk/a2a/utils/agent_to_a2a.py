@@ -15,30 +15,18 @@
 from __future__ import annotations
 
 import logging
-import sys
-
-try:
-  from a2a.server.apps import A2AStarletteApplication
-  from a2a.server.request_handlers import DefaultRequestHandler
-  from a2a.server.tasks import InMemoryTaskStore
-  from a2a.types import AgentCard
-except ImportError as e:
-  if sys.version_info < (3, 10):
-    raise ImportError(
-        "A2A requires Python 3.10 or above. Please upgrade your Python version."
-    ) from e
-  else:
-    raise e
-
 from typing import Optional
 from typing import Union
 
+from a2a.server.apps import A2AStarletteApplication
+from a2a.server.request_handlers import DefaultRequestHandler
+from a2a.server.tasks import InMemoryTaskStore
+from a2a.types import AgentCard
 from starlette.applications import Starlette
 
 from ...agents.base_agent import BaseAgent
 from ...artifacts.in_memory_artifact_service import InMemoryArtifactService
 from ...auth.credential_service.in_memory_credential_service import InMemoryCredentialService
-from ...cli.utils.logs import setup_adk_logger
 from ...memory.in_memory_memory_service import InMemoryMemoryService
 from ...runners import Runner
 from ...sessions.in_memory_session_service import InMemorySessionService
@@ -90,6 +78,7 @@ def to_a2a(
     port: int = 8000,
     protocol: str = "http",
     agent_card: Optional[Union[AgentCard, str]] = None,
+    runner: Optional[Runner] = None,
 ) -> Starlette:
   """Convert an ADK agent to a A2A Starlette application.
 
@@ -101,6 +90,8 @@ def to_a2a(
       agent_card: Optional pre-built AgentCard object or path to agent card
                   JSON. If not provided, will be built automatically from the
                   agent.
+      runner: Optional pre-built Runner object. If not provided, a default
+              runner will be created using in-memory services.
 
   Returns:
       A Starlette application that can be run with uvicorn
@@ -114,7 +105,8 @@ def to_a2a(
       app = to_a2a(agent, agent_card=my_custom_agent_card)
   """
   # Set up ADK logging to ensure logs are visible when using uvicorn directly
-  setup_adk_logger(logging.INFO)
+  adk_logger = logging.getLogger("google_adk")
+  adk_logger.setLevel(logging.INFO)
 
   async def create_runner() -> Runner:
     """Create a runner for the agent."""
@@ -132,7 +124,7 @@ def to_a2a(
   task_store = InMemoryTaskStore()
 
   agent_executor = A2aAgentExecutor(
-      runner=create_runner,
+      runner=runner or create_runner,
   )
 
   request_handler = DefaultRequestHandler(

@@ -12,12 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import ntpath
 import os
 from pathlib import Path
+from pathlib import PureWindowsPath
+import re
 import sys
 import tempfile
 from textwrap import dedent
 
+from google.adk.cli.utils import agent_loader as agent_loader_module
 from google.adk.cli.utils.agent_loader import AgentLoader
 from pydantic import ValidationError
 import pytest
@@ -280,13 +284,50 @@ class TestAgentLoader:
       assert agent2 is not agent3
       assert agent1.agent_id != agent2.agent_id != agent3.agent_id
 
+  def test_error_messages_use_os_sep_consistently(self):
+    """Verify error messages use os.sep instead of hardcoded '/'."""
+    del self
+    with tempfile.TemporaryDirectory() as temp_dir:
+      loader = AgentLoader(temp_dir)
+      agent_name = "missing_agent"
+
+      expected_path = os.path.join(temp_dir, agent_name)
+
+      with pytest.raises(ValueError) as exc_info:
+        loader.load_agent(agent_name)
+
+      exc_info.match(re.escape(expected_path))
+      exc_info.match(re.escape(f"{agent_name}{os.sep}root_agent.yaml"))
+      exc_info.match(re.escape(f"<agents_dir>{os.sep}"))
+
+  def test_agent_loader_with_mocked_windows_path(self, monkeypatch):
+    """Mock Path() to simulate Windows behavior and catch regressions.
+
+    REGRESSION TEST: Fails with rstrip('/'), passes with str(Path()).
+    """
+    del self
+    windows_path = "C:\\Users\\dev\\agents\\"
+
+    with monkeypatch.context() as m:
+      m.setattr(
+          agent_loader_module,
+          "Path",
+          lambda path_str: PureWindowsPath(path_str),
+      )
+      loader = AgentLoader(windows_path)
+
+      expected = str(PureWindowsPath(windows_path))
+      assert loader.agents_dir == expected
+      assert not loader.agents_dir.endswith("\\")
+      assert not loader.agents_dir.endswith("/")
+
   def test_agent_not_found_error(self):
     """Test that appropriate error is raised when agent is not found."""
     with tempfile.TemporaryDirectory() as temp_dir:
       loader = AgentLoader(temp_dir)
       agents_dir = temp_dir  # For use in the expected message string
 
-      # Try to load non-existent agent
+      # Try to load nonexistent agent
       with pytest.raises(ValueError) as exc_info:
         loader.load_agent("nonexistent_agent")
 
@@ -328,12 +369,12 @@ class TestAgentLoader:
       assert "No root_agent found for 'broken_agent'" in str(exc_info.value)
 
   def test_agent_internal_module_not_found_error(self):
-    """Test error when an agent tries to import a non-existent module."""
+    """Test error when an agent tries to import a nonexistent module."""
     with tempfile.TemporaryDirectory() as temp_dir:
       temp_path = Path(temp_dir)
       agent_name = "importer_agent"
 
-      # Create agent that imports a non-existent module
+      # Create agent that imports a nonexistent module
       agent_file = temp_path / f"{agent_name}.py"
       agent_file.write_text(dedent(f"""
                 from google.adk.agents.base_agent import BaseAgent
@@ -526,7 +567,7 @@ class TestAgentLoader:
       loader = AgentLoader(temp_dir)
       agents_dir = temp_dir  # For use in the expected message string
 
-      # Try to load non-existent YAML agent
+      # Try to load nonexistent YAML agent
       with pytest.raises(ValueError) as exc_info:
         loader.load_agent("nonexistent_yaml_agent")
 
@@ -731,7 +772,7 @@ class TestAgentLoader:
 
         loader = AgentLoader(str(regular_agents_dir))
 
-        # Try to load non-existent special agent
+        # Try to load nonexistent special agent
         with pytest.raises(ValueError) as exc_info:
           loader.load_agent("__nonexistent_special")
 

@@ -67,7 +67,8 @@ class _InstructionsLlmRequestProcessor(BaseLlmRequestProcessor):
 
     root_agent: BaseAgent = agent.root_agent
 
-    # Handle global instructions
+    # Handle global instructions (DEPRECATED - use GlobalInstructionPlugin instead)
+    # TODO: Remove this code block when global_instruction field is removed
     if isinstance(root_agent, LlmAgent) and root_agent.global_instruction:
       raw_si, bypass_state_injection = (
           await root_agent.canonical_global_instruction(
@@ -83,7 +84,11 @@ class _InstructionsLlmRequestProcessor(BaseLlmRequestProcessor):
 
     # Handle static_instruction - add via append_instructions
     if agent.static_instruction:
-      llm_request.append_instructions(agent.static_instruction)
+      from google.genai import _transformers
+
+      # Convert ContentUnion to Content using genai transformer
+      static_content = _transformers.t_content(agent.static_instruction)
+      llm_request.append_instructions(static_content)
 
     # Handle instruction based on whether static_instruction exists
     if agent.instruction and not agent.static_instruction:

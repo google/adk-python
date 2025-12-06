@@ -99,4 +99,26 @@ class LLMRegistry:
       if re.compile(regex).fullmatch(model):
         return llm_class
 
-    raise ValueError(f'Model {model} not found.')
+    # Provide helpful error messages for known patterns
+    error_msg = f'Model {model} not found.'
+
+    # Check if it matches known patterns that require optional dependencies
+    if re.match(r'^claude-', model):
+      error_msg += (
+          '\n\nClaude models require the anthropic package.'
+          '\nInstall it with: pip install google-adk[extensions]'
+          '\nOr: pip install anthropic>=0.43.0'
+      )
+    elif '/' in model:
+      # Any model with provider/model format likely needs LiteLLM
+      error_msg += (
+          '\n\nProvider-style models (e.g., "provider/model-name") require'
+          ' the litellm package.'
+          '\nInstall it with: pip install google-adk[extensions]'
+          '\nOr: pip install litellm>=1.75.5'
+          '\n\nSupported providers include: openai, groq, anthropic, and 100+'
+          ' others.'
+          '\nSee https://docs.litellm.ai/docs/providers for a full list.'
+      )
+
+    raise ValueError(error_msg)

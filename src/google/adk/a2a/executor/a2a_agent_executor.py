@@ -18,46 +18,36 @@ from datetime import datetime
 from datetime import timezone
 import inspect
 import logging
-from typing import Any
 from typing import Awaitable
 from typing import Callable
 from typing import Optional
 import uuid
 
-from ...utils.context_utils import Aclosing
-
-try:
-  from a2a.server.agent_execution import AgentExecutor
-  from a2a.server.agent_execution.context import RequestContext
-  from a2a.server.events.event_queue import EventQueue
-  from a2a.types import Artifact
-  from a2a.types import Message
-  from a2a.types import Role
-  from a2a.types import TaskArtifactUpdateEvent
-  from a2a.types import TaskState
-  from a2a.types import TaskStatus
-  from a2a.types import TaskStatusUpdateEvent
-  from a2a.types import TextPart
-
-except ImportError as e:
-  import sys
-
-  if sys.version_info < (3, 10):
-    raise ImportError(
-        'A2A requires Python 3.10 or above. Please upgrade your Python version.'
-    ) from e
-  else:
-    raise e
+from a2a.server.agent_execution import AgentExecutor
+from a2a.server.agent_execution.context import RequestContext
+from a2a.server.events.event_queue import EventQueue
+from a2a.types import Artifact
+from a2a.types import Message
+from a2a.types import Role
+from a2a.types import TaskArtifactUpdateEvent
+from a2a.types import TaskState
+from a2a.types import TaskStatus
+from a2a.types import TaskStatusUpdateEvent
+from a2a.types import TextPart
 from google.adk.runners import Runner
 from pydantic import BaseModel
 from typing_extensions import override
 
+from ...utils.context_utils import Aclosing
+from ..converters.event_converter import AdkEventToA2AEventsConverter
 from ..converters.event_converter import convert_event_to_a2a_events
 from ..converters.part_converter import A2APartToGenAIPartConverter
 from ..converters.part_converter import convert_a2a_part_to_genai_part
 from ..converters.part_converter import convert_genai_part_to_a2a_part
 from ..converters.part_converter import GenAIPartToA2APartConverter
-from ..converters.request_converter import convert_a2a_request_to_adk_run_args
+from ..converters.request_converter import A2ARequestToAgentRunRequestConverter
+from ..converters.request_converter import AgentRunRequest
+from ..converters.request_converter import convert_a2a_request_to_agent_run_request
 from ..converters.utils import _get_adk_metadata_key
 from ..experimental import a2a_experimental
 from .task_result_aggregator import TaskResultAggregator
@@ -75,6 +65,10 @@ class A2aAgentExecutorConfig(BaseModel):
   gen_ai_part_converter: GenAIPartToA2APartConverter = (
       convert_genai_part_to_a2a_part
   )
+  request_converter: A2ARequestToAgentRunRequestConverter = (
+      convert_a2a_request_to_agent_run_request
+  )
+  event_converter: AdkEventToA2AEventsConverter = convert_event_to_a2a_events
 
 
 @a2a_experimental
@@ -192,19 +186,20 @@ class A2aAgentExecutor(AgentExecutor):
     # Resolve the runner instance
     runner = await self._resolve_runner()
 
-    # Convert the a2a request to ADK run args
-    run_args = convert_a2a_request_to_adk_run_args(
-        context, self._config.a2a_part_converter
+    # Convert the a2a request to AgentRunRequest
+    run_request = self._config.request_converter(
+        context,
+        self._config.a2a_part_converter,
     )
 
     # ensure the session exists
-    session = await self._prepare_session(context, run_args, runner)
+    session = await self._prepare_session(context, run_request, runner)
 
     # create invocation context
     invocation_context = runner._new_invocation_context(
         session=session,
-        new_message=run_args['new_message'],
-        run_config=run_args['run_config'],
+        new_message=run_request.new_message,
+        run_config=run_request.run_config,
     )
 
     # publish the task working event
@@ -219,16 +214,16 @@ class A2aAgentExecutor(AgentExecutor):
             final=False,
             metadata={
                 _get_adk_metadata_key('app_name'): runner.app_name,
-                _get_adk_metadata_key('user_id'): run_args['user_id'],
-                _get_adk_metadata_key('session_id'): run_args['session_id'],
+                _get_adk_metadata_key('user_id'): run_request.user_id,
+                _get_adk_metadata_key('session_id'): run_request.session_id,
             },
         )
     )
 
     task_result_aggregator = TaskResultAggregator()
-    async with Aclosing(runner.run_async(**run_args)) as agen:
+    async with Aclosing(runner.run_async(**vars(run_request))) as agen:
       async for adk_event in agen:
-        for a2a_event in convert_event_to_a2a_events(
+        for a2a_event in self._config.event_converter(
             adk_event,
             invocation_context,
             context.task_id,
@@ -284,12 +279,15 @@ class A2aAgentExecutor(AgentExecutor):
       )
 
   async def _prepare_session(
-      self, context: RequestContext, run_args: dict[str, Any], runner: Runner
+      self,
+      context: RequestContext,
+      run_request: AgentRunRequest,
+      runner: Runner,
   ):
 
-    session_id = run_args['session_id']
+    session_id = run_request.session_id
     # create a new session if not exists
-    user_id = run_args['user_id']
+    user_id = run_request.user_id
     session = await runner.session_service.get_session(
         app_name=runner.app_name,
         user_id=user_id,
@@ -302,7 +300,7 @@ class A2aAgentExecutor(AgentExecutor):
           state={},
           session_id=session_id,
       )
-      # Update run_args with the new session_id
-      run_args['session_id'] = session.id
+      # Update run_request with the new session_id
+      run_request.session_id = session.id
 
     return session

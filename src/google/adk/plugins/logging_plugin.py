@@ -16,18 +16,21 @@ from __future__ import annotations
 
 from typing import Any
 from typing import Optional
+from typing import TYPE_CHECKING
 
 from google.genai import types
 
 from ..agents.base_agent import BaseAgent
 from ..agents.callback_context import CallbackContext
-from ..agents.invocation_context import InvocationContext
 from ..events.event import Event
 from ..models.llm_request import LlmRequest
 from ..models.llm_response import LlmResponse
 from ..tools.base_tool import BaseTool
 from ..tools.tool_context import ToolContext
 from .base_plugin import BasePlugin
+
+if TYPE_CHECKING:
+  from ..agents.invocation_context import InvocationContext
 
 
 class LoggingPlugin(BasePlugin):

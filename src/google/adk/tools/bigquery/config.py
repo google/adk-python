@@ -37,7 +37,7 @@ class WriteMode(Enum):
   """Only protected write operations are allowed in a BigQuery session.
 
   In this mode write operations in the anonymous dataset of a BigQuery session
-  are allowed. For example, a temporaray table can be created, manipulated and
+  are allowed. For example, a temporary table can be created, manipulated and
   deleted in the anonymous dataset during Agent interaction, while protecting
   permanent tables from being modified or deleted. To learn more about BigQuery
   sessions, see https://cloud.google.com/bigquery/docs/sessions-intro.
@@ -61,6 +61,14 @@ class BigQueryToolConfig(BaseModel):
   change in future versions.
   """
 
+  maximum_bytes_billed: Optional[int] = None
+  """Maximum number of bytes to bill for a query.
+
+  In BigQuery on-demand pricing, charges are rounded up to the nearest MB, with
+  a minimum 10 MB data processed per table referenced by the query, and with a
+  minimum 10 MB data processed per query. So this value must be set >=10485760.
+  """
+
   max_query_result_rows: int = 50
   """Maximum number of rows to return from a query.
 
@@ -71,8 +79,10 @@ class BigQueryToolConfig(BaseModel):
   """Name of the application using the BigQuery tools.
 
   By default, no particular application name will be set in the BigQuery
-  interaction. But if the the tool user (agent builder) wants to differentiate
-  their application/agent for tracking or support purpose, they can set this field.
+  interaction. But if the tool user (agent builder) wants to differentiate
+  their application/agent for tracking or support purpose, they can set this
+  field. If set, this value will be added to the user_agent in BigQuery API calls, and also to the BigQuery job labels with the key
+  "adk-bigquery-application-name".
   """
 
   compute_project_id: Optional[str] = None
@@ -91,10 +101,43 @@ class BigQueryToolConfig(BaseModel):
   locations, see https://cloud.google.com/bigquery/docs/locations.
   """
 
+  job_labels: Optional[dict[str, str]] = None
+  """Labels to apply to BigQuery jobs for tracking and monitoring.
+
+  These labels will be added to all BigQuery jobs executed by the tools.
+  Labels must be key-value pairs where both keys and values are strings.
+  Labels can be used for billing, monitoring, and resource organization.
+  For more information about labels, see 
+  https://cloud.google.com/bigquery/docs/labels-intro.
+  """
+
+  @field_validator('maximum_bytes_billed')
+  @classmethod
+  def validate_maximum_bytes_billed(cls, v):
+    """Validate the maximum bytes billed."""
+    if v and v < 10_485_760:
+      raise ValueError(
+          'In BigQuery on-demand pricing, charges are rounded up to the nearest'
+          ' MB, with a minimum 10 MB data processed per table referenced by the'
+          ' query, and with a minimum 10 MB data processed per query. So'
+          ' max_bytes_billed must be set >=10485760.'
+      )
+    return v
+
   @field_validator('application_name')
   @classmethod
   def validate_application_name(cls, v):
     """Validate the application name."""
     if v and ' ' in v:
       raise ValueError('Application name should not contain spaces.')
+    return v
+
+  @field_validator('job_labels')
+  @classmethod
+  def validate_job_labels(cls, v):
+    """Validate that job_labels keys are not empty."""
+    if v is not None:
+      for key in v.keys():
+        if not key:
+          raise ValueError('Label keys cannot be empty.')
     return v
