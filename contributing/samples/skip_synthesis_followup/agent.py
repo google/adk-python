@@ -15,7 +15,7 @@
 from google.adk import Agent
 from google.adk.tools import AgentTool
 from google.adk.agents import LlmAgent
-from .prompts import explaination_instruction, followup_instruction
+from .prompts import explanation_instruction, followup_instruction
 from google.genai import types as genai_types
 from pydantic import BaseModel, Field
 from typing import List
