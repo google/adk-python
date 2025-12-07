@@ -40,7 +40,7 @@ followup_agent = LlmAgent(
 
 # Convert agent to tool
 followup_agent_tool = AgentTool(
-    agent=followup_agent, 
+    agent=followup_agent,
     skip_synthesis=True
 )
 
