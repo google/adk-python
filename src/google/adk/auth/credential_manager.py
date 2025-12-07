@@ -21,7 +21,6 @@ from typing import Optional
 from fastapi.openapi.models import OAuth2
 
 from ..agents.callback_context import CallbackContext
-from ..tools.openapi_tool.auth.credential_exchangers.service_account_exchanger import ServiceAccountCredentialExchanger
 from ..utils.feature_decorator import experimental
 from .auth_credential import AuthCredential
 from .auth_credential import AuthCredentialTypes
@@ -110,6 +109,7 @@ class CredentialManager:
     )
 
     # TODO: Move ServiceAccountCredentialExchanger to the auth module
+    from ..tools.openapi_tool.auth.credential_exchangers.service_account_exchanger import ServiceAccountCredentialExchanger
     self._exchanger_registry.register(
         AuthCredentialTypes.SERVICE_ACCOUNT,
         ServiceAccountCredentialExchanger(),
@@ -293,6 +293,7 @@ class CredentialManager:
     if not exchanger:
       return credential, False
 
+    from ..tools.openapi_tool.auth.credential_exchangers.service_account_exchanger import ServiceAccountCredentialExchanger
     if isinstance(exchanger, ServiceAccountCredentialExchanger):
       exchanged_credential = exchanger.exchange_credential(
           self._auth_config.auth_scheme, credential
