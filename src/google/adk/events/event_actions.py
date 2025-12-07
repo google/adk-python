@@ -63,6 +63,9 @@ class EventActions(BaseModel):
   Only used for function_response event.
   """
 
+  skip_synthesis: Optional[bool] = None
+  """If true, skip LLM synthesis after tool execution."""
+
   state_delta: dict[str, object] = Field(default_factory=dict)
   """Indicates that the event is updating the state with the given delta."""
 

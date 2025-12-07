@@ -55,14 +55,16 @@ class AgentTool(BaseTool):
       self,
       agent: BaseAgent,
       skip_summarization: bool = False,
+      skip_synthesis: bool = False,
       *,
       include_plugins: bool = True,
   ):
     self.agent = agent
     self.skip_summarization: bool = skip_summarization
+    self.skip_synthesis: bool = skip_synthesis
     self.include_plugins = include_plugins
 
-    super().__init__(name=agent.name, description=agent.description)
+    super().__init__(name=agent.name, description=agent.description, skip_synthesis=skip_synthesis)
 
   @model_validator(mode='before')
   @classmethod
@@ -122,6 +124,9 @@ class AgentTool(BaseTool):
 
     if self.skip_summarization:
       tool_context.actions.skip_summarization = True
+
+    if self.skip_synthesis:
+      tool_context.actions.skip_synthesis = True
 
     if isinstance(self.agent, LlmAgent) and self.agent.input_schema:
       input_value = self.agent.input_schema.model_validate(args)

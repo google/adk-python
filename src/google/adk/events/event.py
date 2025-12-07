@@ -87,7 +87,7 @@ class Event(LlmResponse):
     Note that when multiple agents participate in one invocation, there could be
     one event has `is_final_response()` as True for each participating agent.
     """
-    if self.actions.skip_summarization or self.long_running_tool_ids:
+    if self.actions.skip_summarization or self.actions.skip_synthesis or self.long_running_tool_ids:
       return True
     return (
         not self.get_function_calls()

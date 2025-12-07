@@ -109,12 +109,20 @@ def function_returning_empty_dict() -> dict[str, str]:
   return {}
 
 
+
 def test_init():
   """Test that the FunctionTool is initialized correctly."""
   tool = FunctionTool(function_for_testing_with_no_args)
   assert tool.name == "function_for_testing_with_no_args"
   assert tool.description == "Function for testing with no args."
   assert tool.func == function_for_testing_with_no_args
+
+
+def test_init_with_skip_synthesis():
+  """Test that the FunctionTool is initialized correctly with skip_synthesis."""
+  tool = FunctionTool(function_for_testing_with_no_args, skip_synthesis=True)
+  assert tool.skip_synthesis is True
+
 
 
 @pytest.mark.asyncio

@@ -798,6 +798,10 @@ def __build_response_event(
   if not isinstance(function_result, dict):
     function_result = {'result': function_result}
 
+  # Check if tool has skip_synthesis flag set
+  if tool.skip_synthesis:
+    tool_context.actions.skip_synthesis = True
+
   part_function_response = types.Part.from_function_response(
       name=tool.name, response=function_result
   )

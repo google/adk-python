@@ -56,6 +56,17 @@ class BaseTool(ABC):
   """Whether the tool is a long running operation, which typically returns a
   resource id first and finishes the operation later."""
 
+  skip_synthesis: bool = False
+  """Whether to skip LLM synthesis after this tool executes.
+  
+  When True, the tool's response will be returned directly without calling
+  the LLM again to synthesize/format the results. This is useful for tools
+  that return data meant to be consumed programmatically or when the LLM
+  has already provided context before calling the tool.
+  
+  Default is False (LLM synthesis happens as normal).
+  """
+
   custom_metadata: Optional[dict[str, Any]] = None
   """The custom metadata of the BaseTool.
 
@@ -71,11 +82,13 @@ class BaseTool(ABC):
       name,
       description,
       is_long_running: bool = False,
+      skip_synthesis: bool = False,
       custom_metadata: Optional[dict[str, Any]] = None,
   ):
     self.name = name
     self.description = description
     self.is_long_running = is_long_running
+    self.skip_synthesis = skip_synthesis
     self.custom_metadata = custom_metadata
 
   def _get_declaration(self) -> Optional[types.FunctionDeclaration]:

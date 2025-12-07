@@ -47,6 +47,7 @@ class FunctionTool(BaseTool):
       func: Callable[..., Any],
       *,
       require_confirmation: Union[bool, Callable[..., bool]] = False,
+      skip_synthesis: bool = False,
   ):
     """Initializes the FunctionTool. Extracts metadata from a callable object.
 
@@ -78,7 +79,7 @@ class FunctionTool(BaseTool):
       # For callable objects, try to get docstring from __call__ method
       doc = inspect.cleandoc(func.__call__.__doc__)
 
-    super().__init__(name=name, description=doc)
+    super().__init__(name=name, description=doc, skip_synthesis=skip_synthesis)
     self.func = func
     self._ignore_params = ['tool_context', 'input_stream']
     self._require_confirmation = require_confirmation
