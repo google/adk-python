@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+from google.adk.tools.spanner.settings import Capabilities
+from google.adk.tools.spanner.settings import QueryResultMode
 from google.adk.tools.spanner.settings import SpannerToolSettings
 from google.adk.tools.spanner.settings import SpannerVectorStoreSettings
 from pydantic import ValidationError
@@ -70,3 +72,26 @@ def test_spanner_vector_store_settings_invalid_vector_length():
   assert "Invalid vector length in the Spanner vector store settings." in str(
       excinfo.value
   )
+
+
+@pytest.mark.parametrize(
+    "settings_args, expected_rows, expected_mode",
+    [
+        ({}, 50, QueryResultMode.DEFAULT),
+        (
+            {
+                "capabilities": [Capabilities.DATA_READ],
+                "max_executed_query_result_rows": 100,
+                "query_result_mode": QueryResultMode.DICT_LIST,
+            },
+            100,
+            QueryResultMode.DICT_LIST,
+        ),
+    ],
+)
+def test_spanner_tool_settings(settings_args, expected_rows, expected_mode):
+  """Test SpannerToolSettings with different values."""
+  settings = SpannerToolSettings(**settings_args)
+  assert settings.capabilities == [Capabilities.DATA_READ]
+  assert settings.max_executed_query_result_rows == expected_rows
+  assert settings.query_result_mode == expected_mode

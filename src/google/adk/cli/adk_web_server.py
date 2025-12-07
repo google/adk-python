@@ -313,11 +313,9 @@ def _setup_telemetry(
   # TODO - remove the else branch here once maybe_set_otel_providers is no
   # longer experimental.
   if otel_to_cloud:
-    _setup_gcp_telemetry_experimental(internal_exporters=internal_exporters)
+    _setup_gcp_telemetry(internal_exporters=internal_exporters)
   elif _otel_env_vars_enabled():
-    _setup_telemetry_from_env_experimental(
-        internal_exporters=internal_exporters
-    )
+    _setup_telemetry_from_env(internal_exporters=internal_exporters)
   else:
     # Old logic - to be removed when above leaves experimental.
     tracer_provider = TracerProvider()
@@ -339,7 +337,7 @@ def _otel_env_vars_enabled() -> bool:
   ])
 
 
-def _setup_gcp_telemetry_experimental(
+def _setup_gcp_telemetry(
     internal_exporters: list[SpanProcessor] = None,
 ):
   if typing.TYPE_CHECKING:
@@ -381,7 +379,7 @@ def _setup_gcp_telemetry_experimental(
   _setup_instrumentation_lib_if_installed()
 
 
-def _setup_telemetry_from_env_experimental(
+def _setup_telemetry_from_env(
     internal_exporters: list[SpanProcessor] = None,
 ):
   from ..telemetry.setup import maybe_set_otel_providers
@@ -669,8 +667,8 @@ class AdkWebServer:
       tear_down_observer: Callback for cleaning up the file system observer.
       register_processors: Callback for additional Span processors to be added
         to the TracerProvider.
-      otel_to_cloud: EXPERIMENTAL. Whether to enable Cloud Trace
-      and Cloud Logging integrations.
+      otel_to_cloud: Whether to enable Cloud Trace and Cloud Logging
+        integrations.
 
     Returns:
       A FastAPI app instance.

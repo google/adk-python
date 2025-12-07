@@ -14,6 +14,8 @@
 
 
 import json
+import ssl
+from unittest import mock
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import patch
@@ -47,6 +49,11 @@ class TestRestApiTool:
     mock_context.get_auth_response.return_value = {}
     mock_context.request_credential.return_value = {}
     return mock_context
+
+  @pytest.fixture
+  def mock_ssl_context(self):
+    """Fixture for a mock ssl.SSLContext."""
+    return mock.create_autospec(ssl.SSLContext)
 
   @pytest.fixture
   def mock_operation_parser(self):
@@ -933,6 +940,101 @@ class TestRestApiTool:
 
     assert "param_name" in request_params["params"]
     assert "empty_param" not in request_params["params"]
+
+  @pytest.mark.parametrize(
+      "verify_input, expected_verify_in_call",
+      [
+          (True, True),
+          (False, False),
+          (
+              "/path/to/enterprise-ca-bundle.crt",
+              "/path/to/enterprise-ca-bundle.crt",
+          ),
+          (
+              "USE_SSL_FIXTURE",
+              "USE_SSL_FIXTURE",
+          ),
+          (None, None),  # None means 'verify' should not be in call_kwargs
+      ],
+  )
+  async def test_call_with_verify_options(
+      self,
+      mock_tool_context,
+      sample_endpoint,
+      sample_operation,
+      sample_auth_scheme,
+      sample_auth_credential,
+      mock_ssl_context,
+      verify_input,
+      expected_verify_in_call,
+  ):
+    """Test different values for the 'verify' parameter."""
+    if verify_input == "USE_SSL_FIXTURE":
+      verify_input = mock_ssl_context
+    if expected_verify_in_call == "USE_SSL_FIXTURE":
+      expected_verify_in_call = mock_ssl_context
+
+    mock_response = mock.create_autospec(
+        requests.Response, instance=True, spec_set=True
+    )
+    mock_response.json.return_value = {"result": "success"}
+
+    tool = RestApiTool(
+        name="test_tool",
+        description="Test Tool",
+        endpoint=sample_endpoint,
+        operation=sample_operation,
+        auth_scheme=sample_auth_scheme,
+        auth_credential=sample_auth_credential,
+        ssl_verify=verify_input,
+    )
+
+    with patch.object(
+        requests, "request", return_value=mock_response, autospec=True
+    ) as mock_request:
+      await tool.call(args={}, tool_context=mock_tool_context)
+
+      assert mock_request.called
+      _, call_kwargs = mock_request.call_args
+      if expected_verify_in_call is None:
+        assert "verify" not in call_kwargs
+      else:
+        assert call_kwargs["verify"] == expected_verify_in_call
+
+  async def test_call_with_configure_verify(
+      self,
+      mock_tool_context,
+      sample_endpoint,
+      sample_operation,
+      sample_auth_scheme,
+      sample_auth_credential,
+  ):
+    """Test that configure_verify updates the verify setting."""
+    mock_response = mock.create_autospec(
+        requests.Response, instance=True, spec_set=True
+    )
+    mock_response.json.return_value = {"result": "success"}
+
+    tool = RestApiTool(
+        name="test_tool",
+        description="Test Tool",
+        endpoint=sample_endpoint,
+        operation=sample_operation,
+        auth_scheme=sample_auth_scheme,
+        auth_credential=sample_auth_credential,
+    )
+
+    ca_bundle_path = "/path/to/custom-ca.crt"
+    tool.configure_ssl_verify(ca_bundle_path)
+
+    with patch.object(
+        requests, "request", return_value=mock_response
+    ) as mock_request:
+      await tool.call(args={}, tool_context=mock_tool_context)
+
+      assert mock_request.called
+      call_kwargs = mock_request.call_args[1]
+      assert call_kwargs["verify"] == ca_bundle_path
 
 
 def test_snake_to_lower_camel():
