@@ -1,4 +1,4 @@
-explaination_instruction = """You are a helpful AI assistant.
+explanation_instruction = """You are a helpful AI assistant.
 
 For every user query:
 
