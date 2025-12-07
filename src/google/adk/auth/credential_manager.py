@@ -298,23 +298,7 @@ class CredentialManager:
           self._auth_config.auth_scheme, credential
       )
     else:
-      # Determine if we need to fallback/lookup secret from raw credential
-      secret_to_use = None
-      if (
-          credential.oauth2
-          and credential.oauth2.client_id
-          and credential.oauth2.client_id not in self._CLIENT_SECRETS
-          and self._auth_config.raw_auth_credential
-          and self._auth_config.raw_auth_credential.oauth2
-          and self._auth_config.raw_auth_credential.oauth2.client_id
-          in self._CLIENT_SECRETS
-      ):
-        # Fallback to look up using raw credential client id
-        secret_to_use = self._CLIENT_SECRETS[
-            self._auth_config.raw_auth_credential.oauth2.client_id
-        ]
-
-      with self.restore_client_secret(credential, secret=secret_to_use):
+      with self.restore_client_secret(credential):
         exchanged_credential = await exchanger.exchange(
             credential, self._auth_config.auth_scheme
         )
