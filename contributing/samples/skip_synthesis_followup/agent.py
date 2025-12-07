@@ -48,7 +48,7 @@ explainer_agent = Agent(
     name="explainer_agent",
     model="gemini-2.5-flash",
     description="An agent that explains topics.",
-    instruction=explaination_instruction,
+    instruction=explanation_instruction,
     tools=[followup_agent_tool]
 )
 
