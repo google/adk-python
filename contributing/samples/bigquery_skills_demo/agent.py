@@ -56,8 +56,14 @@ from google.adk.tools.bigquery.config import BigQueryToolConfig
 from google.adk.tools.bigquery.config import WriteMode
 import google.auth
 
-# Import the dynamic skill registry
-from .skill_registry import SkillRegistry, load_skill
+# Import the dynamic skill registry with ephemeral skill loading
+from .skill_registry import (
+    SkillRegistry,
+    create_skill_instruction_provider,
+    activate_skill,
+    deactivate_skill,
+    list_active_skills,
+)
 
 # Agent name
 AGENT_NAME = "bigquery_skills_demo_agent"
@@ -93,38 +99,45 @@ bigquery_toolset = BigQueryToolset(
 skill_registry = SkillRegistry()
 SKILLS_SUMMARY = skill_registry.get_skills_summary()
 
-# Create load_skill tool for the agent
-load_skill_tool = FunctionTool(load_skill)
+# Create instruction provider for ephemeral skill loading (Claude Code-style)
+# This injects active skills into the system prompt, not conversation history
+skill_instruction_provider = create_skill_instruction_provider(skill_registry)
 
-# Create the root agent with BigQuery tools and dynamic skill loading
-root_agent = LlmAgent(
-    model="gemini-2.5-pro",
-    name=AGENT_NAME,
-    description=(
-        "Data science agent with BigQuery ML and AI capabilities. "
-        "Uses dynamic skill discovery to load relevant capabilities on-demand."
-    ),
-    instruction=f"""\
+# Create skill management tools
+activate_skill_tool = FunctionTool(activate_skill)
+deactivate_skill_tool = FunctionTool(deactivate_skill)
+list_active_skills_tool = FunctionTool(list_active_skills)
+
+# Base instruction for the agent (static part)
+BASE_INSTRUCTION = f"""\
 You are a data science agent with BigQuery capabilities and dynamic skill loading.
 
-## How Skills Work (Anthropic Pattern)
+## How Skills Work (Claude Code-style Ephemeral Loading)
 
 You have access to specialized skills that provide detailed guidance for complex tasks.
-Skills are loaded on-demand to keep context focused and efficient.
+Skills are loaded on-demand and can be UNLOADED when no longer needed to free up context.
+
+**This is important**: Unlike traditional tool responses that persist in conversation history,
+activated skills are injected into the system prompt and can be truly removed when deactivated.
 
 **Current Available Skills:**
 
 {SKILLS_SUMMARY}
 
-**When to use load_skill:**
-1. When the user asks about ML model training, prediction, or evaluation → load "bqml"
-2. When the user asks about AI/text analysis, classification, or generation → load "bq_ai_operator"
-3. Load skills BEFORE attempting complex operations to get proper syntax and examples
+**Skill Management Tools:**
+- `activate_skill(skill_name)`: Load a skill's documentation into context
+- `deactivate_skill(skill_name)`: Remove a skill's documentation from context (frees up space!)
+- `list_active_skills()`: See which skills are currently loaded
 
-**Progressive Disclosure:**
-- You see skill names and descriptions above (Level 1)
-- Call `load_skill(skill_name)` to get full documentation with examples (Level 2)
-- Only load skills when they're relevant to the current task
+**When to activate skills:**
+1. When the user asks about ML model training, prediction, or evaluation → activate "bqml"
+2. When the user asks about AI/text analysis, classification, or scoring → activate "bq_ai_operator"
+3. Activate skills BEFORE attempting complex operations to get proper syntax and examples
+
+**When to deactivate skills:**
+- After completing a task that used a skill
+- When switching to a different type of task
+- When context is getting large and you no longer need the skill
 
 ## Available BigQuery Tools
 
@@ -132,7 +145,6 @@ Skills are loaded on-demand to keep context focused and efficient.
 - `get_table_info`: Get schema information for a table
 - `list_dataset_ids`: List datasets in a project
 - `list_table_ids`: List tables in a dataset
-- `load_skill`: Load full documentation for a skill
 
 ## Project Configuration
 
@@ -142,16 +154,18 @@ Skills are loaded on-demand to keep context focused and efficient.
 ## Workflow Example
 
 1. User asks: "Train a model to predict penguin weight"
-2. You call: `load_skill("bqml")` to get BQML documentation
+2. You call: `activate_skill("bqml")` to load BQML documentation
 3. You follow the skill's examples to CREATE MODEL, EVALUATE, and PREDICT
 4. You explain results to the user
+5. You call: `deactivate_skill("bqml")` to free up context for next task
 
 ## Guidelines
 
-1. **Load skills first**: Before complex ML or AI operations, load the relevant skill
+1. **Activate skills first**: Before complex ML or AI operations, activate the relevant skill
 2. **Explore data first**: Use `get_table_info` or `SELECT * LIMIT 5` before complex queries
 3. **Use LIMIT**: Prevent large result sets with `LIMIT 10-100`
 4. **Explain your steps**: Describe what each query does and interpret results
+5. **Deactivate when done**: Free up context by deactivating skills you no longer need
 
 ## Quick Reference (without loading skills)
 
@@ -164,12 +178,53 @@ Skills are loaded on-demand to keep context focused and efficient.
 
 **AI Operator Quick Start:**
 ```sql
--- Classify: AI.CLASSIFY(MODEL `...`, text, ['class1', 'class2'])
--- Generate: AI.GENERATE(MODEL `...`, 'prompt')
--- Extract: AI.EXTRACT(MODEL `...`, text, STRUCT(...))
+-- Classify: AI.CLASSIFY(text, categories => [...], connection_id => 'loc.conn')
+-- Filter: AI.IF(text, 'condition', connection_id => 'loc.conn')
+-- Score: AI.SCORE(text, 'criteria', connection_id => 'loc.conn')
 ```
 
-For detailed syntax and examples, use `load_skill("bqml")` or `load_skill("bq_ai_operator")`.
-""",
-    tools=[bigquery_toolset, load_skill_tool],
+For detailed syntax and examples, use `activate_skill("bqml")` or `activate_skill("bq_ai_operator")`.
+"""
+
+
+def create_combined_instruction_provider(base_instruction: str, skill_provider):
+    """Create an instruction provider that combines base instruction with active skills.
+
+    This follows the Claude Code pattern where skills are injected into the system prompt
+    (ephemeral) rather than conversation history (persistent).
+    """
+    from google.adk.agents.readonly_context import ReadonlyContext
+
+    def combined_provider(ctx: ReadonlyContext) -> str:
+        # Get dynamic skill content
+        skill_content = skill_provider(ctx)
+
+        if skill_content:
+            return f"{base_instruction}\n\n{skill_content}"
+        return base_instruction
+
+    return combined_provider
+
+
+# Create the combined instruction provider
+instruction_provider = create_combined_instruction_provider(
+    BASE_INSTRUCTION, skill_instruction_provider
+)
+
+# Create the root agent with BigQuery tools and ephemeral skill loading
+root_agent = LlmAgent(
+    model="gemini-2.5-pro",
+    name=AGENT_NAME,
+    description=(
+        "Data science agent with BigQuery ML and AI capabilities. "
+        "Uses Claude Code-style ephemeral skill loading - skills can be activated "
+        "and deactivated to manage context efficiently."
+    ),
+    instruction=instruction_provider,
+    tools=[
+        bigquery_toolset,
+        activate_skill_tool,
+        deactivate_skill_tool,
+        list_active_skills_tool,
+    ],
 )

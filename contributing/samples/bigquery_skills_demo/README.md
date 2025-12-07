@@ -1,13 +1,14 @@
 # BigQuery Skills Demo
 
-This sample demonstrates Anthropic's [Agent Skills Pattern](https://www.anthropic.com/engineering/equipping-agents-for-the-real-world-with-agent-skills) for dynamic skill discovery with BigQuery ML and AI capabilities.
+This sample demonstrates Anthropic's [Agent Skills Pattern](https://www.anthropic.com/engineering/equipping-agents-for-the-real-world-with-agent-skills) for dynamic skill discovery with BigQuery ML and AI capabilities, enhanced with **Claude Code-style ephemeral skill loading**.
 
 ## Overview
 
 This demo showcases:
 - **Dynamic Skill Discovery**: Skills are discovered at runtime from SKILL.md files
 - **Progressive Disclosure**: Only skill names/descriptions loaded initially; full content on-demand
-- **load_skill Tool**: Agent loads full skill documentation when relevant to the task
+- **Ephemeral Skill Loading**: Skills are injected into the system prompt (not conversation history) and can be truly unloaded when no longer needed
+- **Context Management**: Agent can activate/deactivate skills to manage context efficiently
 
 ### Available Skills
 
@@ -91,8 +92,32 @@ categories: tech, sport, business, politics, entertainment, other.
 2. **YAML Frontmatter**: Each SKILL.md has metadata (name, description) in YAML frontmatter
 3. **Progressive Loading**:
    - Level 1: Agent sees skill names and descriptions in its system prompt
-   - Level 2: Agent calls `load_skill(skill_name)` to get full documentation
-4. **On-Demand Loading**: Full skill content is only loaded when relevant to the task
+   - Level 2: Agent calls `activate_skill(skill_name)` to load full documentation
+4. **Ephemeral Loading (Claude Code-style)**:
+   - Active skills are injected into the **system prompt**, not conversation history
+   - Skills can be deactivated with `deactivate_skill(skill_name)` to free up context
+   - The system prompt is rebuilt fresh each LLM call, so deactivated skills truly disappear
+   - This prevents context accumulation unlike traditional tool responses
+
+### Key Difference from Traditional Approaches
+
+Traditional skill loading returns skill content as a tool response, which persists in conversation history forever. This demo uses ADK's **InstructionProvider** pattern:
+
+```python
+# Traditional (persistent) - skill content stays in history
+def load_skill(skill_name: str) -> str:
+    return skill_content  # This persists in conversation history
+
+# Ephemeral (this demo) - skill content injected into system prompt
+def instruction_provider(ctx: ReadonlyContext) -> str:
+    active_skills = ctx.state.get("active_skills", [])
+    return build_system_prompt_with_skills(active_skills)
+```
+
+Benefits:
+- **True unloading**: Deactivated skills are removed from context
+- **Better context management**: Agent can activate skills when needed, deactivate when done
+- **Mirrors Claude Code**: Similar to how Claude Code loads skills from filesystem on-demand
 
 ## Code Structure
 

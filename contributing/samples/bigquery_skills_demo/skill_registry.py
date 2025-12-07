@@ -20,19 +20,30 @@ https://www.anthropic.com/engineering/equipping-agents-for-the-real-world-with-a
 Key concepts:
 1. Skills are stored as SKILL.md files with YAML frontmatter
 2. At startup, only skill names and descriptions are loaded (progressive disclosure)
-3. Agent loads full skill content on-demand via load_skill tool
-4. This reduces context usage while providing rich capabilities when needed
+3. Agent activates/deactivates skills which inject content into system prompt
+4. Skill content is in system prompt (not conversation history) - ephemeral!
+
+This approach mirrors Claude Code's filesystem-based skill loading where:
+- Skills are loaded on-demand into the current context
+- Skills can be unloaded when no longer needed
+- Context doesn't accumulate skill content permanently
 """
 
 from __future__ import annotations
 
-import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+from google.adk.agents.readonly_context import ReadonlyContext
+from google.adk.tools import ToolContext
+
+
+# State key for tracking active skills (using temp: prefix so it's session-scoped)
+ACTIVE_SKILLS_KEY = "active_skills"
 
 
 @dataclass
@@ -57,7 +68,7 @@ class SkillRegistry:
 
     Following Anthropic's progressive disclosure pattern:
     - Level 1: Skill names and descriptions (loaded at startup)
-    - Level 2: Full skill content (loaded on-demand via load_skill)
+    - Level 2: Full skill content (injected into system prompt when activated)
 
     Skills are discovered from SKILL.md files in the skills directory.
     Each SKILL.md has YAML frontmatter with name and description.
@@ -158,8 +169,8 @@ class SkillRegistry:
         """Get metadata for all discovered skills."""
         return list(self._skills.values())
 
-    def load_skill(self, name: str) -> SkillContent | None:
-        """Load the full content of a skill (Level 2 disclosure).
+    def load_skill_content(self, name: str) -> SkillContent | None:
+        """Load the full content of a skill.
 
         Args:
             name: The skill name to load
@@ -212,51 +223,10 @@ class SkillRegistry:
             lines.append(f"- **{name}**: {metadata.description}")
 
         lines.append("")
-        lines.append("Use `load_skill(skill_name)` to load full documentation for a skill.")
+        lines.append("Use `activate_skill(skill_name)` to load a skill's full documentation.")
+        lines.append("Use `deactivate_skill(skill_name)` to unload a skill when done.")
 
         return "\n".join(lines)
-
-
-def create_load_skill_tool(registry: SkillRegistry) -> dict[str, Any]:
-    """Create a load_skill tool function for the agent.
-
-    This creates a callable tool that the agent can use to
-    load full skill content when it determines a skill is relevant.
-
-    Args:
-        registry: The skill registry to load from
-
-    Returns:
-        A tool function that can be added to the agent
-    """
-    def load_skill(skill_name: str) -> str:
-        """Load the full documentation for a skill.
-
-        Use this tool when you need detailed instructions, examples,
-        or patterns for a specific capability. Only load skills that
-        are relevant to the current task.
-
-        Args:
-            skill_name: Name of the skill to load (e.g., 'bqml', 'bq_ai_operator')
-
-        Returns:
-            Full skill documentation including examples and patterns
-        """
-        skill = registry.load_skill(skill_name)
-        if skill is None:
-            available = ", ".join(registry.get_skill_names())
-            return f"Skill '{skill_name}' not found. Available skills: {available}"
-
-        return f"""# Skill: {skill.name}
-
-{skill.description}
-
----
-
-{skill.content}
-"""
-
-    return load_skill
 
 
 # Module-level registry instance for convenience
@@ -276,9 +246,181 @@ def get_skills_summary() -> str:
     return get_default_registry().get_skills_summary()
 
 
-def load_skill(skill_name: str) -> str:
-    """Load a skill from the default registry.
+# =============================================================================
+# Dynamic Instruction Provider (Claude Code-style approach)
+# =============================================================================
 
-    This is the function that should be added as a tool to the agent.
+def create_skill_instruction_provider(registry: SkillRegistry):
+    """Create an instruction provider that injects active skills into system prompt.
+
+    This is the key to ephemeral skill loading! The instruction provider is called
+    on EVERY LLM request and returns content that goes into the system prompt.
+    Since it reads from session state, skills can be activated/deactivated and
+    the system prompt updates automatically.
+
+    Unlike tool responses which persist in conversation history, the system prompt
+    is rebuilt fresh each time - so deactivated skills truly disappear from context.
+
+    Args:
+        registry: The skill registry to load skills from
+
+    Returns:
+        An instruction provider function compatible with LlmAgent.instruction
     """
-    return create_load_skill_tool(get_default_registry())(skill_name)
+    def instruction_provider(ctx: ReadonlyContext) -> str:
+        """Generate dynamic instructions based on active skills."""
+        # Get active skills from session state
+        active_skills: list[str] = ctx.state.get(ACTIVE_SKILLS_KEY, [])
+
+        if not active_skills:
+            return ""  # No active skills, no additional instructions
+
+        # Build skill content section
+        skill_sections = []
+        for skill_name in active_skills:
+            skill = registry.load_skill_content(skill_name)
+            if skill:
+                skill_sections.append(f"""
+## Active Skill: {skill.name}
+
+{skill.description}
+
+---
+
+{skill.content}
+""")
+
+        if not skill_sections:
+            return ""
+
+        return f"""
+# Currently Active Skills
+
+The following skills have been loaded and are available for this task:
+
+{"".join(skill_sections)}
+
+---
+**Note**: Use `deactivate_skill(skill_name)` when you're done with a skill to free up context.
+"""
+
+    return instruction_provider
+
+
+# =============================================================================
+# Skill Activation/Deactivation Tools
+# =============================================================================
+
+def activate_skill(skill_name: str, tool_context: ToolContext) -> str:
+    """Activate a skill to load its full documentation into context.
+
+    When activated, the skill's content will be injected into the system prompt
+    for all subsequent LLM calls. This is ephemeral - the content is NOT stored
+    in conversation history and can be removed by calling deactivate_skill.
+
+    Args:
+        skill_name: Name of the skill to activate (e.g., 'bqml', 'bq_ai_operator')
+
+    Returns:
+        Confirmation message or error if skill not found
+    """
+    registry = get_default_registry()
+
+    # Verify skill exists
+    if skill_name not in registry.get_skill_names():
+        available = ", ".join(registry.get_skill_names())
+        return f"Skill '{skill_name}' not found. Available skills: {available}"
+
+    # Get current active skills from state
+    active_skills: list[str] = list(tool_context.state.get(ACTIVE_SKILLS_KEY, []))
+
+    # Add skill if not already active
+    if skill_name not in active_skills:
+        active_skills.append(skill_name)
+        tool_context.state[ACTIVE_SKILLS_KEY] = active_skills
+
+        # Get skill metadata for confirmation
+        metadata = registry.get_skill_metadata(skill_name)
+        return f"Activated skill '{skill_name}': {metadata.description}\n\nThe skill documentation is now available in your context. Use deactivate_skill('{skill_name}') when done."
+    else:
+        return f"Skill '{skill_name}' is already active."
+
+
+def deactivate_skill(skill_name: str, tool_context: ToolContext) -> str:
+    """Deactivate a skill to remove its documentation from context.
+
+    This removes the skill content from the system prompt, freeing up context
+    space for other information. The skill can be reactivated later if needed.
+
+    Args:
+        skill_name: Name of the skill to deactivate
+
+    Returns:
+        Confirmation message
+    """
+    # Get current active skills from state
+    active_skills: list[str] = list(tool_context.state.get(ACTIVE_SKILLS_KEY, []))
+
+    if skill_name in active_skills:
+        active_skills.remove(skill_name)
+        tool_context.state[ACTIVE_SKILLS_KEY] = active_skills
+        return f"Deactivated skill '{skill_name}'. Its documentation has been removed from context."
+    else:
+        return f"Skill '{skill_name}' is not currently active."
+
+
+def list_active_skills(tool_context: ToolContext) -> str:
+    """List all currently active skills.
+
+    Returns:
+        List of active skill names or message if none active
+    """
+    active_skills: list[str] = tool_context.state.get(ACTIVE_SKILLS_KEY, [])
+
+    if not active_skills:
+        return "No skills are currently active. Use activate_skill(skill_name) to load a skill."
+
+    registry = get_default_registry()
+    lines = ["Currently active skills:"]
+    for name in active_skills:
+        metadata = registry.get_skill_metadata(name)
+        if metadata:
+            lines.append(f"- **{name}**: {metadata.description}")
+        else:
+            lines.append(f"- **{name}**: (metadata not found)")
+
+    return "\n".join(lines)
+
+
+# =============================================================================
+# Legacy load_skill function (for backward compatibility)
+# =============================================================================
+
+def load_skill(skill_name: str) -> str:
+    """Load a skill's documentation (legacy function).
+
+    Note: This returns the skill content as a string which will persist in
+    conversation history. For ephemeral skill loading, use activate_skill()
+    instead with the dynamic instruction provider.
+
+    Args:
+        skill_name: Name of the skill to load
+
+    Returns:
+        Full skill documentation
+    """
+    registry = get_default_registry()
+    skill = registry.load_skill_content(skill_name)
+
+    if skill is None:
+        available = ", ".join(registry.get_skill_names())
+        return f"Skill '{skill_name}' not found. Available skills: {available}"
+
+    return f"""# Skill: {skill.name}
+
+{skill.description}
+
+---
+
+{skill.content}
+"""
