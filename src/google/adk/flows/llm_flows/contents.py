@@ -333,6 +333,132 @@ def _process_compaction_events(events: list[Event]) -> list[Event]:
   return events_to_process
 
 
+def _merge_interleaved_function_call_contents(
+    contents: list[types.Content],
+) -> list[types.Content]:
+  """Merge interleaved function call/response contents into grouped format.
+
+  Gemini 3 models with thinking enabled require function calls and responses
+  to be grouped rather than interleaved. This function transforms:
+    [model(fc1), user(fr1), model(fc2), user(fr2)]
+  into:
+    [model([fc1, fc2]), user([fr1, fr2])]
+
+  This fixes the "missing thought_signature" error (GitHub issue #3705).
+
+  Note: A single function call/response pair (model(fc1) -> user(fr1)) is NOT
+  merged since it's already in the correct format and doesn't cause issues.
+
+  Args:
+    contents: A list of Content objects that may have interleaved
+      function calls and responses.
+
+  Returns:
+    A list of Content objects with consecutive function call contents
+    merged and consecutive function response contents merged.
+  """
+  if not contents:
+    return contents
+
+  result: list[types.Content] = []
+  i = 0
+
+  while i < len(contents):
+    current = contents[i]
+
+    # Check if this is a model content with only function calls
+    if (
+        current.role == 'model'
+        and current.parts
+        and all(_is_function_call_part(p) for p in current.parts)
+    ):
+      # Start collecting consecutive function call/response pairs
+      function_call_parts: list[types.Part] = list(current.parts)
+      function_response_parts: list[types.Part] = []
+      j = i + 1
+      pairs_count = 0  # Track how many fc/fr pairs we've seen
+
+      # Look ahead for interleaved pattern: fr1 -> fc2 -> fr2 -> fc3 -> ...
+      while j + 1 < len(contents):
+        next_content = contents[j]
+        next_next_content = contents[j + 1]
+
+        # Check if next is user content with only function responses
+        is_response = (
+            next_content.role == 'user'
+            and next_content.parts
+            and all(_is_function_response_part(p) for p in next_content.parts)
+        )
+        # Check if the one after is model content with only function calls
+        is_next_call = (
+            next_next_content.role == 'model'
+            and next_next_content.parts
+            and all(_is_function_call_part(p) for p in next_next_content.parts)
+        )
+
+        if is_response and is_next_call:
+          # This is an interleaved pattern, collect the parts
+          function_response_parts.extend(next_content.parts)
+          function_call_parts.extend(next_next_content.parts)
+          pairs_count += 1
+          j += 2
+        else:
+          break
+
+      # Only merge if we found at least one interleaved pair (fc1->fr1->fc2)
+      # A single fc->fr pair should not be merged
+      if pairs_count > 0:
+        # Check if there's a trailing function response for the last fc
+        if j < len(contents):
+          trailing = contents[j]
+          if (
+              trailing.role == 'user'
+              and trailing.parts
+              and all(_is_function_response_part(p) for p in trailing.parts)
+          ):
+            function_response_parts.extend(trailing.parts)
+            j += 1
+
+        # Create merged model content with all function calls
+        merged_model = types.Content(role='model', parts=function_call_parts)
+        result.append(merged_model)
+
+        # Create merged user content with all function responses
+        merged_user = types.Content(role='user', parts=function_response_parts)
+        result.append(merged_user)
+
+        i = j
+        continue
+
+    # Not an interleaved pattern (or single fc/fr pair), keep as-is
+    result.append(current)
+    i += 1
+
+  return result
+
+
+def _is_function_call_part(part: types.Part) -> bool:
+  """Check if a part contains only a function call."""
+  return (
+      part.function_call is not None
+      and part.text is None
+      and part.inline_data is None
+      and part.file_data is None
+      and part.function_response is None
+  )
+
+
+def _is_function_response_part(part: types.Part) -> bool:
+  """Check if a part contains only a function response."""
+  return (
+      part.function_response is not None
+      and part.text is None
+      and part.inline_data is None
+      and part.file_data is None
+      and part.function_call is None
+  )
+
+
 def _get_contents(
     current_branch: Optional[str], events: list[Event], agent_name: str = ''
 ) -> list[types.Content]:
@@ -445,6 +571,12 @@ def _get_contents(
     if content:
       remove_client_function_call_id(content)
       contents.append(content)
+
+  # Merge interleaved function call/response contents to avoid thought_signature
+  # errors with Gemini 3 models that have thinking enabled.
+  # See: https://github.com/google/adk-python/issues/3705
+  contents = _merge_interleaved_function_call_contents(contents)
+
   return contents
 
 

@@ -590,3 +590,260 @@ async def test_error_when_function_response_without_matching_call():
         invocation_context, llm_request
     ):
       pass
+
+
+@pytest.mark.asyncio
+async def test_interleaved_function_calls_are_merged():
+  """Test that interleaved function call/response patterns are merged.
+
+  This tests the fix for GitHub issue #3705 where Gemini 3 models with
+  thinking enabled fail with "missing thought_signature" error when
+  function calls and responses are interleaved.
+
+  The pattern:
+    [model(fc1), user(fr1), model(fc2), user(fr2)]
+  should be merged to:
+    [model([fc1, fc2]), user([fr1, fr2])]
+  """
+  agent = Agent(model="gemini-2.5-flash", name="test_agent")
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  # Create interleaved function calls and responses
+  function_call_1 = types.FunctionCall(
+      id="call_1", name="search_tool", args={"query": "topic 1"}
+  )
+  function_response_1 = types.FunctionResponse(
+      id="call_1",
+      name="search_tool",
+      response={"results": ["result 1"]},
+  )
+  function_call_2 = types.FunctionCall(
+      id="call_2", name="search_tool", args={"query": "topic 2"}
+  )
+  function_response_2 = types.FunctionResponse(
+      id="call_2",
+      name="search_tool",
+      response={"results": ["result 2"]},
+  )
+
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("Research two topics"),
+      ),
+      # First function call
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.ModelContent([types.Part(function_call=function_call_1)]),
+      ),
+      # First function response
+      Event(
+          invocation_id="inv3",
+          author="user",
+          content=types.UserContent(
+              [types.Part(function_response=function_response_1)]
+          ),
+      ),
+      # Second function call (interleaved)
+      Event(
+          invocation_id="inv4",
+          author="test_agent",
+          content=types.ModelContent([types.Part(function_call=function_call_2)]),
+      ),
+      # Second function response
+      Event(
+          invocation_id="inv5",
+          author="user",
+          content=types.UserContent(
+              [types.Part(function_response=function_response_2)]
+          ),
+      ),
+  ]
+  invocation_context.session.events = events
+
+  # Process the request
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  # Verify interleaved pattern was merged:
+  # [model(fc1), user(fr1), model(fc2), user(fr2)]
+  # becomes:
+  # [user(query), model([fc1, fc2]), user([fr1, fr2])]
+  assert len(llm_request.contents) == 3
+  assert llm_request.contents[0] == types.UserContent("Research two topics")
+
+  # Check merged model content contains both function calls
+  merged_model = llm_request.contents[1]
+  assert merged_model.role == "model"
+  assert len(merged_model.parts) == 2
+  assert merged_model.parts[0].function_call == function_call_1
+  assert merged_model.parts[1].function_call == function_call_2
+
+  # Check merged user content contains both function responses
+  merged_user = llm_request.contents[2]
+  assert merged_user.role == "user"
+  assert len(merged_user.parts) == 2
+  assert merged_user.parts[0].function_response == function_response_1
+  assert merged_user.parts[1].function_response == function_response_2
+
+
+@pytest.mark.asyncio
+async def test_three_interleaved_function_calls_are_merged():
+  """Test that three or more interleaved function calls are properly merged."""
+  agent = Agent(model="gemini-2.5-flash", name="test_agent")
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  # Create three interleaved function calls
+  fc1 = types.FunctionCall(id="call_1", name="tool", args={"q": "1"})
+  fr1 = types.FunctionResponse(id="call_1", name="tool", response={"r": "1"})
+  fc2 = types.FunctionCall(id="call_2", name="tool", args={"q": "2"})
+  fr2 = types.FunctionResponse(id="call_2", name="tool", response={"r": "2"})
+  fc3 = types.FunctionCall(id="call_3", name="tool", args={"q": "3"})
+  fr3 = types.FunctionResponse(id="call_3", name="tool", response={"r": "3"})
+
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("Query"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.ModelContent([types.Part(function_call=fc1)]),
+      ),
+      Event(
+          invocation_id="inv3",
+          author="user",
+          content=types.UserContent([types.Part(function_response=fr1)]),
+      ),
+      Event(
+          invocation_id="inv4",
+          author="test_agent",
+          content=types.ModelContent([types.Part(function_call=fc2)]),
+      ),
+      Event(
+          invocation_id="inv5",
+          author="user",
+          content=types.UserContent([types.Part(function_response=fr2)]),
+      ),
+      Event(
+          invocation_id="inv6",
+          author="test_agent",
+          content=types.ModelContent([types.Part(function_call=fc3)]),
+      ),
+      Event(
+          invocation_id="inv7",
+          author="user",
+          content=types.UserContent([types.Part(function_response=fr3)]),
+      ),
+  ]
+  invocation_context.session.events = events
+
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  # Verify all three calls/responses are merged
+  assert len(llm_request.contents) == 3
+
+  merged_model = llm_request.contents[1]
+  assert merged_model.role == "model"
+  assert len(merged_model.parts) == 3
+  assert merged_model.parts[0].function_call == fc1
+  assert merged_model.parts[1].function_call == fc2
+  assert merged_model.parts[2].function_call == fc3
+
+  merged_user = llm_request.contents[2]
+  assert merged_user.role == "user"
+  assert len(merged_user.parts) == 3
+  assert merged_user.parts[0].function_response == fr1
+  assert merged_user.parts[1].function_response == fr2
+  assert merged_user.parts[2].function_response == fr3
+
+
+@pytest.mark.asyncio
+async def test_interleaved_merge_with_text_after():
+  """Test that interleaved merge works when followed by text content."""
+  agent = Agent(model="gemini-2.5-flash", name="test_agent")
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  fc1 = types.FunctionCall(id="call_1", name="tool", args={"q": "1"})
+  fr1 = types.FunctionResponse(id="call_1", name="tool", response={"r": "1"})
+  fc2 = types.FunctionCall(id="call_2", name="tool", args={"q": "2"})
+  fr2 = types.FunctionResponse(id="call_2", name="tool", response={"r": "2"})
+
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("Query"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.ModelContent([types.Part(function_call=fc1)]),
+      ),
+      Event(
+          invocation_id="inv3",
+          author="user",
+          content=types.UserContent([types.Part(function_response=fr1)]),
+      ),
+      Event(
+          invocation_id="inv4",
+          author="test_agent",
+          content=types.ModelContent([types.Part(function_call=fc2)]),
+      ),
+      Event(
+          invocation_id="inv5",
+          author="user",
+          content=types.UserContent([types.Part(function_response=fr2)]),
+      ),
+      # Text content after interleaved calls
+      Event(
+          invocation_id="inv6",
+          author="test_agent",
+          content=types.ModelContent("Here are the results"),
+      ),
+      Event(
+          invocation_id="inv7",
+          author="user",
+          content=types.UserContent("Thanks!"),
+      ),
+  ]
+  invocation_context.session.events = events
+
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  # Verify merge happened and text content is preserved
+  assert len(llm_request.contents) == 5
+  assert llm_request.contents[0] == types.UserContent("Query")
+
+  # Merged function calls
+  assert llm_request.contents[1].role == "model"
+  assert len(llm_request.contents[1].parts) == 2
+
+  # Merged function responses
+  assert llm_request.contents[2].role == "user"
+  assert len(llm_request.contents[2].parts) == 2
+
+  # Text content preserved
+  assert llm_request.contents[3] == types.ModelContent("Here are the results")
+  assert llm_request.contents[4] == types.UserContent("Thanks!")

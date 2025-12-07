@@ -59,34 +59,34 @@ def test_sequential_calls():
   ]
 
   # Asserts the requests.
+  # Note: Due to the fix for GitHub issue #3705, interleaved function
+  # call/response patterns are merged into grouped format to avoid
+  # "missing thought_signature" errors with Gemini 3 models.
   assert len(mockModel.requests) == 4
   # 1 item: user content
   assert testing_utils.simplify_contents(mockModel.requests[0].contents) == [
       ('user', 'test')
   ]
   # 3 items: user content, function call / response for the 1st call
+  # (single call/response pair is NOT merged)
   assert testing_utils.simplify_contents(mockModel.requests[1].contents) == [
       ('user', 'test'),
       ('model', function_call({'x': 1})),
       ('user', function_response({'result': 2})),
   ]
-  # 5 items: user content, function call / response for two calls
+  # 3 items: user content, merged function calls, merged function responses
+  # (interleaved pattern: fc1->fr1->fc2->fr2 is merged to [fc1,fc2]->[fr1,fr2])
   assert testing_utils.simplify_contents(mockModel.requests[2].contents) == [
       ('user', 'test'),
-      ('model', function_call({'x': 1})),
-      ('user', function_response({'result': 2})),
-      ('model', function_call({'x': 2})),
-      ('user', function_response({'result': 3})),
+      ('model', [function_call({'x': 1}), function_call({'x': 2})]),
+      ('user', [function_response({'result': 2}), function_response({'result': 3})]),
   ]
-  # 7 items: user content, function call / response for three calls
+  # 3 items: user content, merged function calls, merged function responses
+  # (interleaved pattern merged for all 3 calls)
   assert testing_utils.simplify_contents(mockModel.requests[3].contents) == [
       ('user', 'test'),
-      ('model', function_call({'x': 1})),
-      ('user', function_response({'result': 2})),
-      ('model', function_call({'x': 2})),
-      ('user', function_response({'result': 3})),
-      ('model', function_call({'x': 3})),
-      ('user', function_response({'result': 4})),
+      ('model', [function_call({'x': 1}), function_call({'x': 2}), function_call({'x': 3})]),
+      ('user', [function_response({'result': 2}), function_response({'result': 3}), function_response({'result': 4})]),
   ]
 
   # Asserts the function calls.
