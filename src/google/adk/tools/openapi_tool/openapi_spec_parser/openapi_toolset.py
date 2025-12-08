@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import ssl
 from typing import Any
 from typing import Dict
 from typing import Final
@@ -68,6 +69,7 @@ class OpenAPIToolset(BaseToolset):
       auth_scheme: Optional[AuthScheme] = None,
       auth_credential: Optional[AuthCredential] = None,
       tool_filter: Optional[Union[ToolPredicate, List[str]]] = None,
+      ssl_verify: Optional[Union[bool, str, ssl.SSLContext]] = None,
   ):
     """Initializes the OpenAPIToolset.
 
@@ -102,10 +104,19 @@ class OpenAPIToolset(BaseToolset):
         ``google.adk.tools.openapi_tool.auth.auth_helpers``
       tool_filter: The filter used to filter the tools in the toolset. It can be
         either a tool predicate or a list of tool names of the tools to expose.
+      ssl_verify: SSL certificate verification option for all tools. Can be:
+        - None: Use default verification (True)
+        - True: Verify SSL certificates using system CA
+        - False: Disable SSL verification (insecure, not recommended)
+        - str: Path to a CA bundle file or directory for custom CA
+        - ssl.SSLContext: Custom SSL context for advanced configuration
+        This is useful for enterprise environments where requests go through
+        a TLS-intercepting proxy with a custom CA certificate.
     """
     super().__init__(tool_filter=tool_filter)
     if not spec_dict:
       spec_dict = self._load_spec(spec_str, spec_str_type)
+    self._ssl_verify = ssl_verify
     self._tools: Final[List[RestApiTool]] = list(self._parse(spec_dict))
     if auth_scheme or auth_credential:
       self._configure_auth_all(auth_scheme, auth_credential)
@@ -120,6 +131,26 @@ class OpenAPIToolset(BaseToolset):
         tool.configure_auth_scheme(auth_scheme)
       if auth_credential:
         tool.configure_auth_credential(auth_credential)
+
+  def configure_ssl_verify_all(
+      self, ssl_verify: Optional[Union[bool, str, ssl.SSLContext]] = None
+  ):
+    """Configure SSL certificate verification for all tools.
+
+    This is useful for enterprise environments where requests go through a
+    TLS-intercepting proxy with a custom CA certificate.
+
+    Args:
+        ssl_verify: SSL certificate verification option. Can be:
+          - None: Use default verification (True)
+          - True: Verify SSL certificates using system CA
+          - False: Disable SSL verification (insecure, not recommended)
+          - str: Path to a CA bundle file or directory for custom CA
+          - ssl.SSLContext: Custom SSL context for advanced configuration
+    """
+    self._ssl_verify = ssl_verify
+    for tool in self._tools:
+      tool.configure_ssl_verify(ssl_verify)
 
   @override
   async def get_tools(
@@ -154,7 +185,7 @@ class OpenAPIToolset(BaseToolset):
 
     tools = []
     for o in operations:
-      tool = RestApiTool.from_parsed_operation(o)
+      tool = RestApiTool.from_parsed_operation(o, ssl_verify=self._ssl_verify)
       logger.info("Parsed tool: %s", tool.name)
       tools.append(tool)
     return tools

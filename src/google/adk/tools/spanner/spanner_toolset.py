@@ -111,7 +111,7 @@ class SpannerToolset(BaseToolset):
     ):
       all_tools.append(
           GoogleTool(
-              func=query_tool.execute_sql,
+              func=query_tool.get_execute_sql(self._tool_settings),
               credentials_config=self._credentials_config,
               tool_settings=self._tool_settings,
           )

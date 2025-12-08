@@ -412,7 +412,11 @@ class Runner:
           message = self._format_session_not_found_message(session_id)
           raise ValueError(message)
         if not invocation_id and not new_message:
-          raise ValueError('Both invocation_id and new_message are None.')
+          raise ValueError(
+              'Running an agent requires either a new_message or an '
+              'invocation_id to resume a previous invocation. '
+              f'Session: {session_id}, User: {user_id}'
+          )
 
         if invocation_id:
           if (
