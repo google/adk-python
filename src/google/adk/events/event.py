@@ -23,6 +23,7 @@ from pydantic import alias_generators
 from pydantic import ConfigDict
 from pydantic import Field
 
+from ..agents.branch_context import BranchContext
 from ..models.llm_response import LlmResponse
 from .event_actions import EventActions
 
@@ -56,14 +57,19 @@ class Event(LlmResponse):
   Agent client will know from this field about which function call is long running.
   only valid for function call event
   """
-  branch: Optional[str] = None
-  """The branch of the event.
+  branch: BranchContext = Field(default_factory=BranchContext)
+  """The branch context of the event.
 
-  The format is like agent_1.agent_2.agent_3, where agent_1 is the parent of
-  agent_2, and agent_2 is the parent of agent_3.
-
-  Branch is used when multiple sub-agent shouldn't see their peer agents'
-  conversation history.
+  Uses provenance-based token sets to track which events are visible to which
+  agents in parallel and sequential compositions. An event is visible to an
+  agent if all of the event's tokens are present in the agent's context.
+  
+  Defaults to an empty token set frozenset(), making the event visible to all
+  agents (since empty set is a subset of all sets). This is appropriate for
+  root-level events like user messages.
+  
+  This replaces the old string-based branch tracking which failed to correctly
+  handle parallel-to-sequential transitions.
   """
 
   # The following are computed fields.

@@ -23,6 +23,7 @@ from unittest import mock
 
 from dateutil.parser import isoparse
 from fastapi.openapi import models as openapi_models
+from google.adk.agents.branch_context import BranchContext
 from google.adk.auth import auth_schemes
 from google.adk.auth.auth_tool import AuthConfig
 from google.adk.events.event import Event
@@ -182,7 +183,6 @@ MOCK_SESSION = Session(
             partial=False,
             turn_complete=True,
             interrupted=False,
-            branch='',
             long_running_tool_ids={'tool1'},
         ),
     ],
@@ -689,7 +689,7 @@ async def test_append_event():
       ),
       error_code='1',
       error_message='test_error',
-      branch='test_branch',
+      branch=BranchContext(),
       custom_metadata={'custom': 'data'},
       long_running_tool_ids={'tool2'},
   )

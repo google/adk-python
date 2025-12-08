@@ -185,6 +185,7 @@ class AudioCacheManager:
           id=Event.new_id(),
           invocation_id=invocation_context.invocation_id,
           author=audio_cache[0].role,
+          branch=invocation_context.branch,
           content=types.Content(
               role=audio_cache[0].role,
               parts=[

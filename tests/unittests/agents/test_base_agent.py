@@ -25,6 +25,7 @@ from unittest import mock
 
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.base_agent import BaseAgentState
+from google.adk.agents.branch_context import BranchContext
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.apps.app import ResumabilityConfig
@@ -149,21 +150,23 @@ class _TestingAgent(BaseAgent):
 async def _create_parent_invocation_context(
     test_name: str,
     agent: BaseAgent,
-    branch: Optional[str] = None,
+    branch: Optional[BranchContext] = None,
     plugins: list[BasePlugin] = [],
 ) -> InvocationContext:
   session_service = InMemorySessionService()
   session = await session_service.create_session(
       app_name='test_app', user_id='test_user'
   )
-  return InvocationContext(
-      invocation_id=f'{test_name}_invocation_id',
-      branch=branch,
-      agent=agent,
-      session=session,
-      session_service=session_service,
-      plugin_manager=PluginManager(plugins=plugins),
-  )
+  context_kwargs = {
+      'invocation_id': f'{test_name}_invocation_id',
+      'agent': agent,
+      'session': session,
+      'session_service': session_service,
+      'plugin_manager': PluginManager(plugins=plugins),
+  }
+  if branch is not None:
+    context_kwargs['branch'] = branch
+  return InvocationContext(**context_kwargs)
 
 
 def test_invalid_agent_name():
@@ -189,7 +192,7 @@ async def test_run_async(request: pytest.FixtureRequest):
 async def test_run_async_with_branch(request: pytest.FixtureRequest):
   agent = _TestingAgent(name=f'{request.function.__name__}_test_agent')
   parent_ctx = await _create_parent_invocation_context(
-      request.function.__name__, agent, branch='parent_branch'
+      request.function.__name__, agent, branch=BranchContext()
   )
 
   events = [e async for e in agent.run_async(parent_ctx)]
@@ -197,7 +200,7 @@ async def test_run_async_with_branch(request: pytest.FixtureRequest):
   assert len(events) == 1
   assert events[0].author == agent.name
   assert events[0].content.parts[0].text == 'Hello, world!'
-  assert events[0].branch == 'parent_branch'
+  assert events[0].branch == parent_ctx.branch
 
 
 @pytest.mark.asyncio
@@ -713,7 +716,7 @@ async def test_run_live(request: pytest.FixtureRequest):
 async def test_run_live_with_branch(request: pytest.FixtureRequest):
   agent = _TestingAgent(name=f'{request.function.__name__}_test_agent')
   parent_ctx = await _create_parent_invocation_context(
-      request.function.__name__, agent, branch='parent_branch'
+      request.function.__name__, agent, branch=BranchContext()
   )
 
   events = [e async for e in agent.run_live(parent_ctx)]
@@ -721,7 +724,7 @@ async def test_run_live_with_branch(request: pytest.FixtureRequest):
   assert len(events) == 1
   assert events[0].author == agent.name
   assert events[0].content.parts[0].text == 'Hello, live!'
-  assert events[0].branch == 'parent_branch'
+  assert events[0].branch == parent_ctx.branch
 
 
 @pytest.mark.asyncio
@@ -1034,7 +1037,7 @@ async def test_create_agent_state_event():
       session_service=session_service,
   )
 
-  ctx.branch = 'test_branch'
+  ctx.branch = BranchContext()
 
   # Test case 1: set agent state in context
   state = _TestAgentState(test_field='checkpoint')
@@ -1043,7 +1046,7 @@ async def test_create_agent_state_event():
   assert event is not None
   assert event.invocation_id == ctx.invocation_id
   assert event.author == agent.name
-  assert event.branch == 'test_branch'
+  assert event.branch == ctx.branch
   assert event.actions is not None
   assert event.actions.agent_state is not None
   assert event.actions.agent_state == state.model_dump(mode='json')
@@ -1055,7 +1058,7 @@ async def test_create_agent_state_event():
   assert event is not None
   assert event.invocation_id == ctx.invocation_id
   assert event.author == agent.name
-  assert event.branch == 'test_branch'
+  assert event.branch == ctx.branch
   assert event.actions is not None
   assert event.actions.end_of_agent
   assert event.actions.agent_state is None

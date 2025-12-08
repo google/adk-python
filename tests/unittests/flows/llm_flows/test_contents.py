@@ -207,7 +207,6 @@ async def test_include_contents_none_multi_branch_current_turn():
   invocation_context = await testing_utils.create_invocation_context(
       agent=agent
   )
-  invocation_context.branch = "root.parent_agent"
 
   # Create multi-branch conversation where current turn starts from user
   # This can arise from having a Parallel Agent with two or more Sequential
@@ -215,19 +214,16 @@ async def test_include_contents_none_multi_branch_current_turn():
   events = [
       Event(
           invocation_id="inv1",
-          branch="root",
           author="user",
           content=types.UserContent("First user message"),
       ),
       Event(
           invocation_id="inv1",
-          branch="root.parent_agent",
           author="sibling_agent",
           content=types.ModelContent("Sibling agent response"),
       ),
       Event(
           invocation_id="inv1",
-          branch="root.uncle_agent",
           author="cousin_agent",
           content=types.ModelContent("Cousin agent response"),
       ),

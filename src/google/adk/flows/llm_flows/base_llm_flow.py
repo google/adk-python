@@ -324,6 +324,7 @@ class BaseLlmFlow(ABC):
                 id=Event.new_id(),
                 invocation_id=invocation_context.invocation_id,
                 author=get_author_for_event(llm_response),
+                branch=invocation_context.branch,
             )
 
             async with Aclosing(

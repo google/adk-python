@@ -1031,7 +1031,6 @@ def test_merge_parallel_function_response_events_preserves_other_attributes():
   event2 = Event(
       invocation_id='different_invocation_456',
       author='different_agent',  # Different author
-      branch='different_branch',  # Different branch
       content=types.Content(
           role='user', parts=[types.Part(function_response=function_response2)]
       ),

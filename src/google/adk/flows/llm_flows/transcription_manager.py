@@ -87,6 +87,7 @@ class TranscriptionManager:
           id=Event.new_id(),
           invocation_id=invocation_context.invocation_id,
           author=author,
+          branch=invocation_context.branch,
           input_transcription=transcription if is_input else None,
           output_transcription=transcription if not is_input else None,
           timestamp=time.time(),

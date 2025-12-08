@@ -36,6 +36,7 @@ from ..tools.base_tool import BaseTool
 from .active_streaming_tool import ActiveStreamingTool
 from .base_agent import BaseAgent
 from .base_agent import BaseAgentState
+from .branch_context import BranchContext
 from .context_cache_config import ContextCacheConfig
 from .live_request_queue import LiveRequestQueue
 from .run_config import RunConfig
@@ -149,14 +150,29 @@ class InvocationContext(BaseModel):
 
   invocation_id: str
   """The id of this invocation context. Readonly."""
-  branch: Optional[str] = None
-  """The branch of the invocation context.
+  branch: BranchContext = Field(default_factory=BranchContext)
+  """The branch context tracking event provenance for visibility filtering.
 
-  The format is like agent_1.agent_2.agent_3, where agent_1 is the parent of
-  agent_2, and agent_2 is the parent of agent_3.
+  Uses a token-set approach to determine which events an agent can see within
+  the current invocation. When agents fork (parallel execution), each child 
+  receives a unique token. When they join, tokens are unioned. Events are 
+  visible if their branch tokens are a subset of the current context's tokens.
 
-  Branch is used when multiple sub-agents shouldn't see their peer agents'
-  conversation history.
+  IMPORTANT: Branch filtering only applies WITHIN a single invocation. Events
+  from previous invocations are always visible. This is because branch tracking
+  is for parallel execution isolation, not historical context filtering.
+
+  Resets to empty frozenset() at the start of each invocation, ensuring:
+  - Parallel agents within an invocation can't see each other's outputs
+  - Sequential agents after parallel groups CAN see all parallel outputs
+  - All events from previous invocations remain visible
+
+  Example within one invocation:
+    - Root agent has tokens frozenset() (empty set)
+    - ParallelAgent forks to 2 children: {1}, {2}
+    - After join: {1,2}
+    - Events from {1} are visible to {1,2} because {1} ⊆ {1,2}
+    - Root events {} are visible to everyone because {} ⊆ any set
   """
   agent: BaseAgent
   """The current agent of this invocation context. Readonly."""
@@ -349,7 +365,14 @@ class InvocationContext(BaseModel):
           if event.invocation_id == self.invocation_id
       ]
     if current_branch:
-      results = [event for event in results if event.branch == self.branch]
+      # Use token-set visibility check: event is visible if its branch tokens
+      # are a subset of current branch tokens (event.branch ⊆ self.branch).
+      results = [
+          event
+          for event in results
+          if isinstance(event.branch, BranchContext)
+          and self.branch.can_see(event.branch)
+      ]
     return results
 
   def should_pause_invocation(self, event: Event) -> bool:

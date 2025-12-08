@@ -19,6 +19,7 @@ import pytest
 # Skip all tests in this module if LangGraph dependencies are not available
 LANGGRAPH_AVAILABLE = True
 try:
+  from google.adk.agents.branch_context import BranchContext
   from google.adk.agents.invocation_context import InvocationContext
   from google.adk.agents.langgraph_agent import LangGraphAgent
   from google.adk.events.event import Event
@@ -76,6 +77,7 @@ except ImportError:
     def __call__(self, *args, **kwargs):
       return DummyTypes()
 
+  BranchContext = DummyTypes()
   InvocationContext = DummyTypes()
   LangGraphAgent = DummyTypes()
   Event = DummyTypes()
@@ -232,7 +234,7 @@ async def test_langgraph_agent(
   mock_parent_context = MagicMock(spec=InvocationContext)
   mock_session = MagicMock()
   mock_parent_context.session = mock_session
-  mock_parent_context.branch = "parent_agent"
+  mock_parent_context.branch = BranchContext()
   mock_parent_context.end_invocation = False
   mock_session.events = events_list
   mock_parent_context.invocation_id = "test_invocation_id"

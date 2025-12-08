@@ -294,6 +294,9 @@ class BaseAgent(BaseModel):
         async for event in agen:
           yield event
 
+      if ctx.branch != parent_context.branch:
+        parent_context.branch = ctx.branch
+
       if ctx.end_invocation:
         return
 

@@ -16,6 +16,7 @@ from unittest.mock import Mock
 
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.base_agent import BaseAgentState
+from google.adk.agents.branch_context import BranchContext
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.apps import ResumabilityConfig
 from google.adk.events.event import Event
@@ -36,32 +37,39 @@ class TestInvocationContext:
   @pytest.fixture
   def mock_events(self):
     """Create mock events for testing."""
+    # Create a parent branch and fork it to create two children
+    parent_branch = BranchContext()
+    children = parent_branch.fork(2)
+    agent1_branch = children[0]  # Has unique token for agent1
+    agent2_branch = children[1]  # Has unique token for agent2
+    
     event1 = Mock(spec=Event)
     event1.invocation_id = 'inv_1'
-    event1.branch = 'agent_1'
+    event1.branch = agent1_branch
 
     event2 = Mock(spec=Event)
     event2.invocation_id = 'inv_1'
-    event2.branch = 'agent_2'
+    event2.branch = agent2_branch
 
     event3 = Mock(spec=Event)
     event3.invocation_id = 'inv_2'
-    event3.branch = 'agent_1'
+    event3.branch = agent1_branch  # Same as event1
 
     event4 = Mock(spec=Event)
     event4.invocation_id = 'inv_2'
-    event4.branch = 'agent_2'
+    event4.branch = agent2_branch  # Same as event2
 
     return [event1, event2, event3, event4]
 
   @pytest.fixture
   def mock_invocation_context(self, mock_events):
     """Create a mock invocation context for testing."""
+    # Use agent1_branch so it can see event1 and event3 but not event2 and event4
     ctx = InvocationContext(
         session_service=Mock(spec=BaseSessionService),
         agent=Mock(spec=BaseAgent),
         invocation_id='inv_1',
-        branch='agent_1',
+        branch=mock_events[0].branch,  # Use agent1_branch
         session=Mock(spec=Session, events=mock_events),
     )
     return ctx
@@ -109,7 +117,7 @@ class TestInvocationContext:
   def test_get_events_with_no_matching_events(self, mock_invocation_context):
     """Tests get_events when no events match the filters."""
     mock_invocation_context.invocation_id = 'inv_3'
-    mock_invocation_context.branch = 'branch_C'
+    mock_invocation_context.branch = BranchContext()  # Different branch from events
 
     # Filter by invocation
     events = mock_invocation_context._get_events(current_invocation=True)
