@@ -21,7 +21,7 @@ from dotenv import load_dotenv
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.adk.cli.utils import logs
 from google.adk.runners import Runner
-from google.adk.sessions.database_session_service import DatabaseSessionService
+from google.adk.sessions.sqlite_session_service import SqliteSessionService
 from google.adk.sessions.session import Session
 from google.genai import types
 
@@ -32,7 +32,7 @@ logs.log_to_tmp_folder()
 async def main():
   app_name = 'migrate_session_db_app'
   user_id_1 = 'user1'
-  session_service = DatabaseSessionService('sqlite:///./sessions.db')
+  session_service = SqliteSessionService('./sessions.db')
   artifact_service = InMemoryArtifactService()
   runner = Runner(
       app_name=app_name,
