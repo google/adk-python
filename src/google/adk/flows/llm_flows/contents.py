@@ -459,6 +459,24 @@ def _is_function_response_part(part: types.Part) -> bool:
   )
 
 
+def _is_pure_function_call_content(content: types.Content) -> bool:
+  """Checks if a content object contains only function calls."""
+  return (
+      content.role == 'model'
+      and content.parts
+      and all(_is_function_call_part(p) for p in content.parts)
+  )
+
+
+def _is_pure_function_response_content(content: types.Content) -> bool:
+  """Checks if a content object contains only function responses."""
+  return (
+      content.role == 'user'
+      and content.parts
+      and all(_is_function_response_part(p) for p in content.parts)
+  )
+
+
 def _get_contents(
     current_branch: Optional[str], events: list[Event], agent_name: str = ''
 ) -> list[types.Content]:
