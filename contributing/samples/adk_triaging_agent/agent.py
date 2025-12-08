@@ -26,20 +26,21 @@ from google.adk.agents.llm_agent import Agent
 import requests
 
 LABEL_TO_OWNER = {
-    "agent engine": "yeesian",
-    "documentation": "polong-lin",
-    "services": "DeanChensj",
-    "question": "",
-    "mcp": "seanzhou1023",
-    "tools": "seanzhou1023",
-    "eval": "ankursharmas",
-    "live": "hangfei",
-    "models": "genquan9",
-    "tracing": "jawoszek",
-    "core": "Jacksunwei",
-    "web": "wyf7107",
     "a2a": "seanzhou1023",
+    "agent engine": "yeesian",
+    "auth": "seanzhou1023",
     "bq": "shobsi",
+    "core": "Jacksunwei",
+    "documentation": "joefernandez",
+    "eval": "ankursharmas",
+    "live": "seanzhou1023",
+    "mcp": "seanzhou1023",
+    "models": "xuanyang15",
+    "services": "DeanChensj",
+    "tools": "xuanyang15",
+    "tracing": "jawoszek",
+    "web": "wyf7107",
+    "workflow": "DeanChensj",
 }
 
 LABEL_GUIDELINES = """
@@ -65,6 +66,8 @@ LABEL_GUIDELINES = """
         Agent Engine concepts, do not use this label—choose "core" instead.
       - "a2a": Agent-to-agent workflows, coordination logic, or A2A protocol.
       - "bq": BigQuery integration or general issues related to BigQuery.
+      - "workflow": Workflow agents and workflow execution.
+      - "auth": Authentication or authorization issues.
 
       When unsure between labels, prefer the most specific match. If a label
       cannot be assigned confidently, do not call the labeling tool.
@@ -249,23 +252,6 @@ root_agent = Agent(
       IMPORTANT: {APPROVAL_INSTRUCTION}
 
       {LABEL_GUIDELINES}
-
-      Here are the rules for labeling:
-      - If the user is asking about documentation-related questions, label it with "documentation".
-      - If it's about session, memory services, label it with "services".
-      - If it's about UI/web, label it with "web".
-      - If the user is asking about a question, label it with "question".
-      - If it's related to tools, label it with "tools".
-      - If it's about agent evaluation, then label it with "eval".
-      - If it's about streaming/live, label it with "live".
-      - If it's about model support (non-Gemini, like Litellm, Ollama, OpenAI models), label it with "models".
-      - If it's about tracing, label it with "tracing".
-      - If it's agent orchestration, agent definition, Runner behavior, planners, or performance, label it with "core".
-      - Use "agent engine" only when the issue clearly references Vertex AI Agent Engine deployment artifacts (for example `.agent_engine_config.json`, `ae_ignore`, `agent_engine_id`, or Agent Engine sandbox errors).
-      - If it's about Model Context Protocol (e.g. MCP tool, MCP toolset, MCP session management etc.), label it with both "mcp" and "tools".
-      - If it's about A2A integrations or workflows, label it with "a2a".
-      - If it's about BigQuery integrations, label it with "bq".
-      - If you can't find an appropriate labels for the issue, follow the previous instruction that starts with "IMPORTANT:".
 
       ## Triaging Workflow
 

@@ -40,6 +40,20 @@ class Capabilities(Enum):
   """Read only data operations tools are allowed."""
 
 
+class QueryResultMode(Enum):
+  """Settings for Spanner execute sql query result."""
+
+  DEFAULT = "default"
+  """Return the result of a query as a list of rows data."""
+
+  DICT_LIST = "dict_list"
+  """Return the result of a query as a list of dictionaries.
+
+  In each dictionary the key is the column name and the value is the value of
+  the that column in a given row.
+  """
+
+
 class SpannerVectorStoreSettings(BaseModel):
   """Settings for Spanner Vector Store.
 
@@ -139,6 +153,9 @@ class SpannerToolSettings(BaseModel):
 
   max_executed_query_result_rows: int = 50
   """Maximum number of rows to return from a query result."""
+
+  query_result_mode: QueryResultMode = QueryResultMode.DEFAULT
+  """Mode for Spanner execute sql query result."""
 
   vector_store_settings: Optional[SpannerVectorStoreSettings] = None
   """Settings for Spanner vector store and vector similarity search."""
