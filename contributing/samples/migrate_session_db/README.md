@@ -27,10 +27,13 @@ ADK provides a migration script to update the database schema. Run the following
 
 ```bash
 # Clean up the previous run before executing the migration
-cp dnd_sessions.db sessions.db
+cp dnd_sessions.db sessions.db.old
 
 # Download and run the migration script
-curl -fsSL https://raw.githubusercontent.com/google/adk-python/main/scripts/db_migration.sh | sh -s -- "sqlite:///%(here)s/sessions.db" "google.adk.sessions.database_session_service"
+curl -fsSL https://raw.githubusercontent.com/google/adk-python/main/scripts/db_migration.sh | sh -s -- "sqlite:///%(here)s/sessions.db.old" "google.adk.sessions.database_session_service"
+
+python -m google.adk.sessions.migrate_from_sqlalchemy_sqlite --source_db_path ./sessions.db.old --dest_db_path ./sessions.db
+rm sessions.db.old
 ```
 
 This script uses `alembic` to compare the existing schema against the current model definition and automatically generates and applies the necessary migrations.
