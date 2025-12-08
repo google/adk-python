@@ -53,6 +53,7 @@ from litellm import Function
 from litellm import Message
 from litellm import ModelResponse
 from litellm import OpenAIMessageContent
+from opentelemetry import trace
 from pydantic import BaseModel
 from pydantic import Field
 from typing_extensions import override
@@ -274,6 +275,39 @@ class UsageMetadataChunk(BaseModel):
 class LiteLLMClient:
   """Provides acompletion method (for better testability)."""
 
+  @staticmethod
+  def _build_traceparent() -> Optional[str]:
+    span_context = trace.get_current_span().get_span_context()
+    if not span_context.is_valid:
+      return None
+
+    trace_id = f"{span_context.trace_id:032x}"
+    span_id = f"{span_context.span_id:016x}"
+    trace_flags = f"{int(span_context.trace_flags):02x}"
+    return f"00-{trace_id}-{span_id}-{trace_flags}"
+
+  @classmethod
+  def _maybe_add_traceparent_header(
+      cls, extra_headers: Optional[dict[str, str]]
+  ) -> Optional[dict[str, str]]:
+    traceparent = cls._build_traceparent()
+    if not traceparent:
+      return extra_headers
+
+    headers_with_trace = dict(extra_headers) if extra_headers else {}
+    headers_with_trace["traceparent"] = traceparent
+    return headers_with_trace
+
+  @classmethod
+  def _attach_traceparent_header(cls, kwargs: Dict[str, Any]) -> None:
+    updated_headers = cls._maybe_add_traceparent_header(
+        kwargs.get("extra_headers")
+    )
+    if updated_headers is None:
+      kwargs.pop("extra_headers", None)
+    else:
+      kwargs["extra_headers"] = updated_headers
+
   async def acompletion(
       self, model, messages, tools, **kwargs
   ) -> Union[ModelResponse, CustomStreamWrapper]:
@@ -288,6 +322,8 @@ class LiteLLMClient:
     Returns:
       The model response as a message.
     """
+
+    self._attach_traceparent_header(kwargs)
 
     return await acompletion(
         model=model,
@@ -311,6 +347,8 @@ class LiteLLMClient:
     Returns:
       The response from the model.
     """
+
+    self._attach_traceparent_header(kwargs)
 
     return completion(
         model=model,

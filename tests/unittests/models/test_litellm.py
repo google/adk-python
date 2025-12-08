@@ -45,6 +45,7 @@ from google.adk.models.lite_llm import LiteLlm
 from google.adk.models.lite_llm import LiteLLMClient
 from google.adk.models.lite_llm import TextChunk
 from google.adk.models.lite_llm import UsageMetadataChunk
+import google.adk.models.lite_llm as lite_llm_module
 from google.adk.models.llm_request import LlmRequest
 from google.genai import types
 import litellm
@@ -56,6 +57,9 @@ from litellm.types.utils import Choices
 from litellm.types.utils import Delta
 from litellm.types.utils import ModelResponse
 from litellm.types.utils import StreamingChoices
+from opentelemetry.trace import SpanContext
+from opentelemetry.trace import TraceFlags
+from opentelemetry.trace import TraceState
 from pydantic import BaseModel
 from pydantic import Field
 import pytest
@@ -216,6 +220,139 @@ STREAMING_MODEL_RESPONSE = [
         ],
     ),
 ]
+
+
+class _StubSpan:
+
+  def __init__(self, span_context):
+    self._span_context = span_context
+
+  def get_span_context(self):
+    return self._span_context
+
+
+def _build_valid_span_context():
+  return SpanContext(
+      trace_id=int("0123456789abcdef0123456789abcdef", 16),
+      span_id=int("abcdef0123456789", 16),
+      is_remote=False,
+      trace_flags=TraceFlags(1),
+      trace_state=TraceState(),
+  )
+
+
+def _build_invalid_span_context():
+  return SpanContext(
+      trace_id=0,
+      span_id=0,
+      is_remote=False,
+      trace_flags=TraceFlags(0),
+      trace_state=TraceState(),
+  )
+
+
+def test_maybe_add_traceparent_header_with_existing_headers(monkeypatch):
+  span_context = _build_valid_span_context()
+  monkeypatch.setattr(
+      lite_llm_module.trace,
+      "get_current_span",
+      lambda: _StubSpan(span_context),
+  )
+
+  headers = {"custom": "header"}
+  result = LiteLLMClient._maybe_add_traceparent_header(headers)
+
+  assert result is not headers
+  assert result["custom"] == "header"
+  assert result["traceparent"] == (
+      "00-0123456789abcdef0123456789abcdef-abcdef0123456789-01"
+  )
+
+
+def test_maybe_add_traceparent_header_without_existing_headers(monkeypatch):
+  span_context = _build_valid_span_context()
+  monkeypatch.setattr(
+      lite_llm_module.trace,
+      "get_current_span",
+      lambda: _StubSpan(span_context),
+  )
+
+  result = LiteLLMClient._maybe_add_traceparent_header(None)
+
+  assert result == {
+      "traceparent": "00-0123456789abcdef0123456789abcdef-abcdef0123456789-01"
+  }
+
+
+def test_maybe_add_traceparent_header_without_active_span(monkeypatch):
+  span_context = _build_invalid_span_context()
+  monkeypatch.setattr(
+      lite_llm_module.trace,
+      "get_current_span",
+      lambda: _StubSpan(span_context),
+  )
+
+  headers = {"custom": "value"}
+  result = LiteLLMClient._maybe_add_traceparent_header(headers)
+
+  assert result is headers
+
+
+@pytest.mark.asyncio
+async def test_litellmclient_acompletion_sets_traceparent_header(monkeypatch):
+  async_mock = AsyncMock(return_value="response")
+  monkeypatch.setattr(lite_llm_module, "acompletion", async_mock)
+
+  def fake_helper(headers):
+    assert headers == {"existing": "header"}
+    return {"existing": "header", "traceparent": "tp"}
+
+  monkeypatch.setattr(
+      LiteLLMClient, "_maybe_add_traceparent_header", fake_helper
+  )
+
+  client = LiteLLMClient()
+  await client.acompletion(
+      model="test",
+      messages=[],
+      tools=None,
+      extra_headers={"existing": "header"},
+      custom="value",
+  )
+
+  async_mock.assert_awaited_once()
+  _, kwargs = async_mock.call_args
+  assert kwargs["extra_headers"] == {
+      "existing": "header",
+      "traceparent": "tp",
+  }
+  assert kwargs["custom"] == "value"
+
+
+def test_litellmclient_completion_sets_traceparent_header(monkeypatch):
+  sync_mock = Mock(return_value="response")
+  monkeypatch.setattr(lite_llm_module, "completion", sync_mock)
+
+  def fake_helper(headers):
+    assert headers is None
+    return {"traceparent": "tp"}
+
+  monkeypatch.setattr(
+      LiteLLMClient, "_maybe_add_traceparent_header", fake_helper
+  )
+
+  client = LiteLLMClient()
+  client.completion(
+      model="test",
+      messages=[],
+      tools=None,
+      stream=True,
+  )
+
+  sync_mock.assert_called_once()
+  _, kwargs = sync_mock.call_args
+  assert kwargs["extra_headers"] == {"traceparent": "tp"}
+  assert kwargs["stream"]
 
 
 class _StructuredOutput(BaseModel):
