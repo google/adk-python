@@ -48,10 +48,11 @@ ACTIVE_SKILLS_KEY = "active_skills"
 
 @dataclass
 class SkillMetadata:
-    """Metadata for a skill (name + description only)."""
+    """Metadata for a skill (name, description, and keywords)."""
     name: str
     description: str
     path: Path
+    keywords: list[str] | None = None  # Keywords for dynamic pattern matching
 
 
 @dataclass
@@ -153,6 +154,7 @@ class SkillRegistry:
                 name=frontmatter['name'],
                 description=frontmatter.get('description', ''),
                 path=skill_path,
+                keywords=frontmatter.get('keywords'),  # Parse keywords from frontmatter
             )
         except Exception:
             return None
@@ -168,6 +170,21 @@ class SkillRegistry:
     def get_all_metadata(self) -> list[SkillMetadata]:
         """Get metadata for all discovered skills."""
         return list(self._skills.values())
+
+    def get_all_keywords(self) -> dict[str, list[str]]:
+        """Get all keywords for all skills.
+
+        Returns a mapping of skill name to list of keywords.
+        This is used for dynamic keyword pattern matching.
+
+        Returns:
+            Dict mapping skill names to their keyword lists.
+        """
+        return {
+            name: metadata.keywords or []
+            for name, metadata in self._skills.items()
+            if metadata.keywords
+        }
 
     def load_skill_content(self, name: str) -> SkillContent | None:
         """Load the full content of a skill.

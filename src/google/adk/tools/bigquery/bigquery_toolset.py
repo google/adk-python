@@ -81,6 +81,8 @@ class BigQueryToolset(BaseToolset):
             metadata_tool.list_dataset_ids,
             metadata_tool.list_table_ids,
             metadata_tool.get_job_info,
+            metadata_tool.list_connections,
+            metadata_tool.create_connection,
             query_tool.get_execute_sql(self._tool_settings),
             query_tool.forecast,
             query_tool.analyze_contribution,

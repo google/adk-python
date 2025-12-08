@@ -299,6 +299,262 @@ def get_table_info(
     }
 
 
+def list_connections(
+    project_id: str,
+    location: str,
+    credentials: Credentials,
+    settings: BigQueryToolConfig,
+) -> list[dict]:
+  """List BigQuery connections in a Google Cloud project and location.
+
+  BigQuery connections are used to connect to external data sources like
+  Vertex AI for AI functions (AI.CLASSIFY, AI.IF, AI.SCORE) and remote
+  models (AI.GENERATE_TEXT, AI.GENERATE_EMBEDDING).
+
+  Args:
+      project_id (str): The Google Cloud project id.
+      location (str): The location/region (e.g., 'us', 'eu', 'us-central1').
+      credentials (Credentials): The credentials to use for the request.
+      settings (BigQueryToolConfig): The BigQuery tool settings.
+
+  Returns:
+      list[dict]: List of connections with their properties.
+
+  Examples:
+      >>> list_connections("my-project", "us")
+      [
+        {
+          "name": "projects/my-project/locations/us/connections/my_ai_connection",
+          "connection_id": "my_ai_connection",
+          "location": "us",
+          "connection_type": "CLOUD_RESOURCE",
+          "friendly_name": "My AI Connection",
+          "description": "Connection for Vertex AI"
+        }
+      ]
+  """
+  try:
+    from google.cloud import bigquery_connection_v1
+
+    connection_client = bigquery_connection_v1.ConnectionServiceClient(
+        credentials=credentials
+    )
+    parent = f"projects/{project_id}/locations/{location}"
+
+    connections = []
+    for conn in connection_client.list_connections(parent=parent):
+      # Extract connection_id from the full name
+      # Format: projects/{project}/locations/{location}/connections/{connection_id}
+      parts = conn.name.split("/")
+      connection_id = parts[-1] if parts else conn.name
+
+      conn_info = {
+          "name": conn.name,
+          "connection_id": connection_id,
+          "location": location,
+          "friendly_name": conn.friendly_name or "",
+          "description": conn.description or "",
+      }
+
+      # Add connection type based on which field is set
+      if conn.cloud_resource:
+        conn_info["connection_type"] = "CLOUD_RESOURCE"
+        if conn.cloud_resource.service_account_id:
+          conn_info["service_account"] = conn.cloud_resource.service_account_id
+      elif conn.cloud_sql:
+        conn_info["connection_type"] = "CLOUD_SQL"
+      elif conn.spark:
+        conn_info["connection_type"] = "SPARK"
+      else:
+        conn_info["connection_type"] = "UNKNOWN"
+
+      connections.append(conn_info)
+
+    return connections
+  except Exception as ex:
+    return {
+        "status": "ERROR",
+        "error_details": str(ex),
+    }
+
+
+def _grant_vertex_ai_role(
+    project_id: str,
+    service_account: str,
+    credentials: Credentials,
+) -> dict:
+  """Grant the Vertex AI User role to a service account.
+
+  Args:
+      project_id (str): The Google Cloud project id.
+      service_account (str): The service account email to grant the role to.
+      credentials (Credentials): The credentials to use for the request.
+
+  Returns:
+      dict: Status of the IAM operation.
+  """
+  try:
+    from google.cloud import resourcemanager_v3
+    from google.iam.v1 import iam_policy_pb2, policy_pb2
+
+    # Create the Resource Manager client
+    client = resourcemanager_v3.ProjectsClient(credentials=credentials)
+
+    # Get the current IAM policy
+    resource = f"projects/{project_id}"
+    request = iam_policy_pb2.GetIamPolicyRequest(resource=resource)
+    policy = client.get_iam_policy(request=request)
+
+    # Check if the binding already exists
+    role = "roles/aiplatform.user"
+    member = f"serviceAccount:{service_account}"
+
+    binding_exists = False
+    for binding in policy.bindings:
+      if binding.role == role:
+        if member in binding.members:
+          binding_exists = True
+          break
+        else:
+          # Add member to existing role binding
+          binding.members.append(member)
+          binding_exists = True
+          break
+
+    # If role binding doesn't exist, create a new one
+    if not binding_exists:
+      new_binding = policy_pb2.Binding(role=role, members=[member])
+      policy.bindings.append(new_binding)
+
+    # Set the updated IAM policy
+    set_request = iam_policy_pb2.SetIamPolicyRequest(
+        resource=resource, policy=policy
+    )
+    client.set_iam_policy(request=set_request)
+
+    return {
+        "status": "SUCCESS",
+        "message": f"Granted {role} to {service_account}",
+    }
+  except Exception as ex:
+    return {
+        "status": "ERROR",
+        "error_details": f"Failed to grant IAM role: {str(ex)}",
+    }
+
+
+def create_connection(
+    project_id: str,
+    location: str,
+    connection_id: str,
+    credentials: Credentials,
+    settings: BigQueryToolConfig,
+    friendly_name: str = "",
+    description: str = "",
+    grant_vertex_ai_role: bool = True,
+) -> dict:
+  """Create a BigQuery Cloud Resource connection for Vertex AI.
+
+  This creates a connection that can be used with AI functions like
+  AI.CLASSIFY, AI.IF, AI.SCORE and remote models for AI.GENERATE_TEXT,
+  AI.GENERATE_EMBEDDING.
+
+  By default, this function also grants the connection's service account
+  the "Vertex AI User" role, which is required to use AI functions.
+
+  Args:
+      project_id (str): The Google Cloud project id.
+      location (str): The location/region (e.g., 'us', 'eu', 'us-central1').
+      connection_id (str): The connection id to create (e.g., 'my_ai_connection').
+      credentials (Credentials): The credentials to use for the request.
+      settings (BigQueryToolConfig): The BigQuery tool settings.
+      friendly_name (str): Optional friendly name for the connection.
+      description (str): Optional description for the connection.
+      grant_vertex_ai_role (bool): If True (default), automatically grants the
+          Vertex AI User role to the connection's service account.
+
+  Returns:
+      dict: The created connection details including the service account.
+
+  Examples:
+      >>> create_connection("my-project", "us", "my_ai_connection")
+      {
+        "status": "SUCCESS",
+        "connection_id": "my_ai_connection",
+        "location": "us",
+        "full_connection_path": "us.my_ai_connection",
+        "service_account": "bqcx-123456789-xxxx@gcp-sa-bigquery-condel.iam.gserviceaccount.com",
+        "iam_status": "Granted roles/aiplatform.user to service account"
+      }
+  """
+  try:
+    from google.cloud import bigquery_connection_v1
+
+    connection_client = bigquery_connection_v1.ConnectionServiceClient(
+        credentials=credentials
+    )
+    parent = f"projects/{project_id}/locations/{location}"
+
+    # Create a Cloud Resource connection (for Vertex AI)
+    connection = bigquery_connection_v1.Connection(
+        friendly_name=friendly_name or connection_id,
+        description=description or "BigQuery connection for Vertex AI",
+        cloud_resource=bigquery_connection_v1.CloudResourceProperties(),
+    )
+
+    created_conn = connection_client.create_connection(
+        parent=parent,
+        connection_id=connection_id,
+        connection=connection,
+    )
+
+    service_account = ""
+    if created_conn.cloud_resource and created_conn.cloud_resource.service_account_id:
+      service_account = created_conn.cloud_resource.service_account_id
+
+    result = {
+        "status": "SUCCESS",
+        "connection_id": connection_id,
+        "location": location,
+        "full_connection_path": f"{location}.{connection_id}",
+        "service_account": service_account,
+    }
+
+    # Automatically grant Vertex AI User role if requested
+    if grant_vertex_ai_role and service_account:
+      iam_result = _grant_vertex_ai_role(project_id, service_account, credentials)
+      if iam_result["status"] == "SUCCESS":
+        result["iam_status"] = f"Granted roles/aiplatform.user to {service_account}"
+      else:
+        result["iam_status"] = "FAILED"
+        result["iam_error"] = iam_result["error_details"]
+        result["manual_command"] = (
+            f"gcloud projects add-iam-policy-binding {project_id} "
+            f"--member='serviceAccount:{service_account}' "
+            f"--role='roles/aiplatform.user'"
+        )
+    elif not grant_vertex_ai_role:
+      result["note"] = (
+          "IAM role not granted. To use AI functions, grant the Vertex AI User role: "
+          f"gcloud projects add-iam-policy-binding {project_id} "
+          f"--member='serviceAccount:{service_account}' "
+          f"--role='roles/aiplatform.user'"
+      )
+
+    return result
+  except Exception as ex:
+    error_msg = str(ex)
+    if "already exists" in error_msg.lower():
+      return {
+          "status": "ERROR",
+          "error_details": f"Connection '{connection_id}' already exists in {location}. Use list_connections to see existing connections.",
+      }
+    return {
+        "status": "ERROR",
+        "error_details": error_msg,
+    }
+
+
 def get_job_info(
     project_id: str,
     job_id: str,

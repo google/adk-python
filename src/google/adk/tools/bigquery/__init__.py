@@ -25,12 +25,20 @@ definition. The rationales to have customized tool are:
    etc.
 4. We want to provide extra access guardrails in those tools. For example,
    execute_sql can't arbitrarily mutate existing data.
+
+Skills are also provided for programmatic tool calling (PTC):
+- BQMLSkill: Machine learning with BigQuery ML
+- BQAIOperatorSkill: AI functions (AI.GENERATE, AI.CLASSIFY, etc.)
 """
 
 from .bigquery_credentials import BigQueryCredentialsConfig
 from .bigquery_toolset import BigQueryToolset
+from .skills import BQAIOperatorSkill
+from .skills import BQMLSkill
 
 __all__ = [
     "BigQueryToolset",
     "BigQueryCredentialsConfig",
+    "BQMLSkill",
+    "BQAIOperatorSkill",
 ]

@@ -1,6 +1,23 @@
 ---
 name: bqml
 description: BigQuery ML - Train, evaluate, and deploy machine learning models using SQL. Supports regression, classification, clustering, time series forecasting, and deep learning.
+keywords:
+  - ml
+  - machine learning
+  - train
+  - model
+  - predict
+  - cluster
+  - kmeans
+  - regression
+  - classification
+  - forecast
+  - arima
+  - xgboost
+  - boosted
+  - random forest
+  - feature importance
+  - evaluate
 ---
 
 # BQML Skill (BigQuery Machine Learning)

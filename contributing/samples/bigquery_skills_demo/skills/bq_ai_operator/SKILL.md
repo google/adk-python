@@ -1,6 +1,31 @@
 ---
 name: bq_ai_operator
 description: BigQuery AI Operator - Use managed AI functions (AI.CLASSIFY, AI.IF, AI.SCORE) directly in SQL for text classification, filtering, and scoring. Requires a BigQuery connection to Vertex AI.
+keywords:
+  - ai.classify
+  - ai.if
+  - ai.score
+  - ai function
+  - ai operator
+  - text classification
+  - sentiment
+  - categorize
+  - categories
+  - natural language
+  - filter text
+  - score text
+  - score
+  - rate content
+  - rank content
+  - rate
+  - rank
+  - classify
+  - positive
+  - negative
+  - vertex ai
+  - managed ai
+  - list connections
+  - connection_id
 ---
 
 # BQ AI Operator Skill (Managed AI Functions in SQL)
@@ -11,14 +36,82 @@ Use managed AI functions directly in BigQuery SQL queries for text classificatio
 
 ## Prerequisites
 
-1. **Create a BigQuery connection to Vertex AI** (required for all AI functions):
-```sql
--- Create a connection (run once)
-CREATE CLOUD RESOURCE CONNECTION `us.my_ai_connection`
-OPTIONS(location='us');
-```
+1. **A BigQuery connection to Vertex AI is required** for all AI functions.
 
 2. **Grant the connection service account access to Vertex AI**
+
+## Connection Workflow (ALWAYS Follow This)
+
+**CRITICAL**: AI functions require a `connection_id` to a BigQuery connection to Vertex AI.
+
+### ⚠️ IMPORTANT: Location Matching Rule
+
+**The connection location MUST match your dataset location!**
+
+| Dataset Location | Connection Location | Example |
+|------------------|---------------------|---------|
+| `US` (multi-region) | `us` | `us.my_ai_connection` |
+| `EU` (multi-region) | `eu` | `eu.my_ai_connection` |
+| `us-central1` (regional) | `us-central1` | `us-central1.my_ai_connection` |
+
+**Common Error**: Using `us-central1.my_connection` with a dataset in `US` multi-region will fail with "Dataset not found in location us-central1".
+
+**How to check dataset location**:
+```sql
+SELECT option_value FROM `project.dataset.INFORMATION_SCHEMA.SCHEMATA_OPTIONS` WHERE option_name = 'location'
+```
+
+### Step 1: Determine Your Dataset Location
+
+Before listing connections, identify where your target dataset is located:
+- Most BigQuery public datasets are in `US` multi-region
+- Your own datasets might be in `US`, `EU`, or a specific region like `us-central1`
+
+### Step 2: List Connections in the SAME Location
+
+Use the `list_connections` tool with the **same location as your dataset**:
+
+```
+# For datasets in US multi-region:
+list_connections(project_id="your-project", location="us")
+
+# For datasets in us-central1:
+list_connections(project_id="your-project", location="us-central1")
+```
+
+This returns all available connections with their `connection_id` and `service_account`.
+
+### Step 3: Use an Existing Connection If Available
+
+If `list_connections` returns connections, **use one of them**. Pick a connection that:
+- Has `connection_type: "CLOUD_RESOURCE"` (required for Vertex AI)
+- Is in the **SAME location as your dataset**
+
+Use the `connection_id` from the result, formatted as `location.connection_id`:
+- Example: If connection_id is `my_ai_connection` in location `us`, use `us.my_ai_connection`
+
+### Step 4: Only Create a New Connection If None Exist
+
+**Only if `list_connections` returns empty or no suitable connections**, create a new one in the **same location as your dataset**:
+
+```
+# For US multi-region datasets:
+create_connection(project_id="your-project", location="us", connection_id="my_ai_connection")
+
+# For us-central1 datasets:
+create_connection(project_id="your-project", location="us-central1", connection_id="my_ai_connection")
+```
+
+This automatically:
+1. Creates the connection
+2. Grants the Vertex AI User role to the service account (required for AI functions)
+
+### Connection ID Formats
+
+When using connections in SQL:
+- `us.my_connection` (location.connection_name) - **Preferred for US multi-region**
+- `us-central1.my_connection` - **For regional datasets**
+- `project_id.us.my_connection` (fully qualified)
 
 ## Available Managed AI Functions
 
@@ -123,16 +216,19 @@ LIMIT 10;
 
 ## AI.SCORE - Quality Scoring
 
-Returns a score between 0.0 and 1.0 based on criteria.
+Returns a FLOAT64 score based on your scoring criteria. Commonly used with ORDER BY for ranking.
 
 ### Syntax
 ```sql
 AI.SCORE(
-  input,                    -- STRING: the text to score
-  criteria,                 -- STRING: scoring criteria
+  (prompt_with_criteria, column_to_score),  -- TUPLE: (STRING literal, column reference)
   connection_id => 'LOCATION.CONNECTION_NAME'
 )
 ```
+
+**CRITICAL**: The first argument is a **TUPLE** with parentheses containing:
+1. A STRING literal describing the scoring criteria
+2. A column reference to the text being scored
 
 ### Examples
 
@@ -143,13 +239,41 @@ SELECT
     review_text,
     star_rating,
     AI.SCORE(
-        review_text,
-        'Rate this review helpfulness based on: detail level, specific examples, balanced perspective',
+        ('Rate the helpfulness of this review based on detail level and examples. Review: ', review_text),
         connection_id => 'us.my_ai_connection'  -- Replace with your connection
     ) AS helpfulness_score
 FROM `project.reviews.product_reviews`
 ORDER BY helpfulness_score DESC
 LIMIT 10;
+```
+
+**Movie review rating (from official docs):**
+```sql
+SELECT
+    AI.SCORE((
+        'On a scale from 1 to 10, rate how much the reviewer liked the movie. Review: ',
+        review),
+        connection_id => 'us.my_ai_connection'  -- Replace with your connection
+    ) AS ai_rating,
+    reviewer_rating AS human_rating,
+    review
+FROM `bigquery-public-data.imdb.reviews`
+WHERE title = 'The English Patient'
+ORDER BY ai_rating DESC
+LIMIT 10;
+```
+
+**Negativity scoring:**
+```sql
+SELECT
+    review,
+    AI.SCORE(
+        ('Rate negativity from 1-10: ', review),
+        connection_id => 'us.my_ai_connection'  -- Replace with your connection
+    ) AS negativity_score
+FROM product_reviews
+ORDER BY negativity_score DESC
+LIMIT 5;
 ```
 
 **Relevance scoring:**
@@ -158,8 +282,7 @@ SELECT
     document_id,
     title,
     AI.SCORE(
-        content,
-        'How relevant is this document to machine learning and AI topics',
+        ('How relevant is this document to machine learning and AI topics? Document: ', content),
         connection_id => 'us.my_ai_connection'  -- Replace with your connection
     ) AS ml_relevance
 FROM `project.docs.articles`
@@ -186,8 +309,7 @@ WITH classified AS (
             connection_id => 'us.my_ai_connection'  -- Replace with your connection
         ) AS sentiment,
         AI.SCORE(
-            review_text,
-            'Review quality based on detail and helpfulness',
+            ('Rate review quality based on detail and helpfulness. Review: ', review_text),
             connection_id => 'us.my_ai_connection'  -- Replace with your connection
         ) AS quality_score
     FROM `project.reviews.raw_reviews`
@@ -221,6 +343,9 @@ ORDER BY quality_score DESC;
 3. **Region Support**: Works in all Gemini regions plus US/EU multi-regions
 4. **Use LIMIT**: Always use LIMIT to control costs when testing
 5. **String Return**: AI.CLASSIFY returns STRING, AI.IF returns BOOL, AI.SCORE returns FLOAT64
+6. **Escape Single Quotes**: When using string literals with apostrophes, escape them by doubling:
+   - WRONG: `'The surgeon who 'sees' inside patients'`
+   - CORRECT: `'The surgeon who ''sees'' inside patients'`
 
 ## Troubleshooting
 
