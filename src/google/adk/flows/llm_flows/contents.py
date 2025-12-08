@@ -366,12 +366,7 @@ def _merge_interleaved_function_call_contents(
   while i < len(contents):
     current = contents[i]
 
-    # Check if this is a model content with only function calls
-    if (
-        current.role == 'model'
-        and current.parts
-        and all(_is_function_call_part(p) for p in current.parts)
-    ):
+    if _is_pure_function_call_content(current):
       # Start collecting consecutive function call/response pairs
       function_call_parts: list[types.Part] = list(current.parts)
       function_response_parts: list[types.Part] = []
@@ -383,20 +378,9 @@ def _merge_interleaved_function_call_contents(
         next_content = contents[j]
         next_next_content = contents[j + 1]
 
-        # Check if next is user content with only function responses
-        is_response = (
-            next_content.role == 'user'
-            and next_content.parts
-            and all(_is_function_response_part(p) for p in next_content.parts)
-        )
-        # Check if the one after is model content with only function calls
-        is_next_call = (
-            next_next_content.role == 'model'
-            and next_next_content.parts
-            and all(_is_function_call_part(p) for p in next_next_content.parts)
-        )
-
-        if is_response and is_next_call:
+        if _is_pure_function_response_content(
+            next_content
+        ) and _is_pure_function_call_content(next_next_content):
           # This is an interleaved pattern, collect the parts
           function_response_parts.extend(next_content.parts)
           function_call_parts.extend(next_next_content.parts)
@@ -409,15 +393,11 @@ def _merge_interleaved_function_call_contents(
       # A single fc->fr pair should not be merged
       if pairs_count > 0:
         # Check if there's a trailing function response for the last fc
-        if j < len(contents):
-          trailing = contents[j]
-          if (
-              trailing.role == 'user'
-              and trailing.parts
-              and all(_is_function_response_part(p) for p in trailing.parts)
-          ):
-            function_response_parts.extend(trailing.parts)
-            j += 1
+        if j < len(contents) and _is_pure_function_response_content(
+            contents[j]
+        ):
+          function_response_parts.extend(contents[j].parts)
+          j += 1
 
         # Create merged model content with all function calls
         merged_model = types.Content(role='model', parts=function_call_parts)
