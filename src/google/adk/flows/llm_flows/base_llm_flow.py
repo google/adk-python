@@ -723,6 +723,15 @@ class BaseLlmFlow(ABC):
     agent_to_run = root_agent.find_agent(agent_name)
     if not agent_to_run:
       raise ValueError(f'Agent {agent_name} not found in the agent tree.')
+
+    from ...agents.llm_agent import LlmAgent
+
+    if all([
+        isinstance(invocation_context.agent, LlmAgent),
+        invocation_context.agent.disallow_transfer_to_peers,
+        agent_to_run.parent_agent == invocation_context.agent.parent_agent,
+    ]):
+      raise ValueError(f'Transfer to sibling agent {agent_name} is disallowed.')
     return agent_to_run
 
   async def _call_llm_async(
