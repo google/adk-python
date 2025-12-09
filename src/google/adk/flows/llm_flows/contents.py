@@ -644,14 +644,8 @@ def _is_event_belongs_to_branch(
   This is for event context segregation between agents within the same
   invocation. E.g. parallel agent A shouldn't see output of parallel agent B.
 
-  CRITICAL: Branch filtering ONLY applies to events from the SAME invocation.
-  Events from previous invocations are ALWAYS visible (return True) because:
-  1. Branch tracking is for parallel execution isolation within ONE invocation
-  2. Multi-turn conversations need full history across all invocations
-  3. Token reuse across invocations is safe due to invocation-id isolation
-
   Within the current invocation, uses Branch's token-set visibility:
-  event is visible if its tokens are a subset of the current branch's tokens
+  An Event is visible if its branch tokens are a subset of the current branch's tokens
   (event.tokens ⊆ current.tokens).
 
   Args:
@@ -666,12 +660,8 @@ def _is_event_belongs_to_branch(
   if event.invocation_id != current_invocation_id:
     return True
 
-  # Events without Branch are from old code or don't use branch filtering
+  # Events without Branch are from old code - considered visible
   if not isinstance(event.branch, Branch):
-    return True
-
-  # Events with empty branch (root) are visible to all
-  if not event.branch.tokens:
     return True
 
   # Check token-set visibility: event.tokens ⊆ invocation_branch.tokens

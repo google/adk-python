@@ -286,7 +286,9 @@ class TestGitHubIssue3470Scenarios:
     agent_c_ctx = root.fork()  # tokens={3}
 
     # After parallel execution, join the branches for sequential continuation
-    after_parallel1 = root.join([agent_a_ctx, agent_b_ctx, agent_c_ctx])  # tokens={1,2,3}
+    after_parallel1 = root.join(
+        [agent_a_ctx, agent_b_ctx, agent_c_ctx]
+    )  # tokens={1,2,3}
 
     # Reducer1 runs in sequential after parallel, uses joined context
     reducer1_ctx = after_parallel1
@@ -328,7 +330,9 @@ class TestGitHubIssue3470Scenarios:
     agent_c_ctx = seq1_ctx.fork()  # tokens={1,5}
 
     # After parallel1, join for R1
-    after_parallel1 = seq1_ctx.join([agent_a_ctx, agent_b_ctx, agent_c_ctx])  # tokens={1,3,4,5}
+    after_parallel1 = seq1_ctx.join(
+        [agent_a_ctx, agent_b_ctx, agent_c_ctx]
+    )  # tokens={1,3,4,5}
     reducer1_ctx = after_parallel1
 
     # R1 should see A, B, C
@@ -343,7 +347,9 @@ class TestGitHubIssue3470Scenarios:
     agent_f_ctx = seq2_ctx.fork()  # tokens={2,8}
 
     # After parallel2, join for R2
-    after_parallel2 = seq2_ctx.join([agent_d_ctx, agent_e_ctx, agent_f_ctx])  # tokens={2,6,7,8}
+    after_parallel2 = seq2_ctx.join(
+        [agent_d_ctx, agent_e_ctx, agent_f_ctx]
+    )  # tokens={2,6,7,8}
     reducer2_ctx = after_parallel2
 
     # R2 should see D, E, F
@@ -405,7 +411,9 @@ class TestGitHubIssue3470Scenarios:
     agent_c_ctx = root.fork()  # tokens={3}
 
     # After parallel1, join for sequential continuation
-    after_parallel1 = root.join([agent_a_ctx, agent_b_ctx, agent_c_ctx])  # tokens={1,2,3}
+    after_parallel1 = root.join(
+        [agent_a_ctx, agent_b_ctx, agent_c_ctx]
+    )  # tokens={1,2,3}
 
     # === PARALLEL GROUP 2: D, E, F ===
     # Fork from joined context, so inherits all previous tokens

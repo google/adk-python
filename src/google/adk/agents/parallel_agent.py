@@ -182,7 +182,9 @@ class ParallelAgent(BaseAgent):
       yield self._create_agent_state_event(ctx)
 
     agent_runs = []
-    sub_agent_contexts = []  # Track contexts to get final branches after execution
+    sub_agent_contexts = (
+        []
+    )  # Track contexts to get final branches after execution
     # Prepare and collect async generators for each sub-agent.
     for sub_agent in self.sub_agents:
       sub_agent_ctx = _create_branch_ctx_for_sub_agent(self, sub_agent, ctx)
