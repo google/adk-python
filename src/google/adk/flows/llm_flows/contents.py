@@ -255,7 +255,9 @@ def _contains_empty_content(event: Event) -> bool:
 
 
 def _should_include_event_in_context(
-    current_branch: Optional[str], event: Event, current_invocation_id: str = ''
+    current_branch: Optional[Branch],
+    event: Event,
+    current_invocation_id: str = '',
 ) -> bool:
   """Determines if an event should be included in the LLM context.
 
@@ -340,7 +342,7 @@ def _process_compaction_events(events: list[Event]) -> list[Event]:
 
 
 def _get_contents(
-    current_branch: Optional[str],
+    current_branch: Optional[Branch],
     events: list[Event],
     agent_name: str = '',
     current_invocation_id: str = '',
@@ -461,7 +463,7 @@ def _get_contents(
 
 
 def _get_current_turn_contents(
-    current_branch: Optional[str],
+    current_branch: Optional[Branch],
     events: list[Event],
     agent_name: str = '',
     current_invocation_id: str = '',
@@ -656,6 +658,9 @@ def _is_event_belongs_to_branch(
   Returns:
     True if the event should be visible, False otherwise.
   """
+  if not invocation_branch:
+    return True
+
   # Events from different invocations are ALWAYS visible (multi-turn history)
   if event.invocation_id != current_invocation_id:
     return True

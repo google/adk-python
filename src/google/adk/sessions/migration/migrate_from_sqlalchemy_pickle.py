@@ -258,11 +258,17 @@ def _row_to_event(row: dict) -> Event:
   if not timestamp:
     raise ValueError(f"Event {event_id} must have a timestamp.")
 
+  # Preserve old string-based branch in custom_metadata for reference
+  old_branch = row.get("branch")
+  if custom_metadata_dict is None:
+    custom_metadata_dict = {}
+  if old_branch:
+    custom_metadata_dict["legacy_branch"] = old_branch
+
   return Event(
       id=event_id,
       invocation_id=row.get("invocation_id", ""),
       author=row.get("author", "agent"),
-      branch=row.get("branch"),
       actions=actions,
       timestamp=timestamp.replace(tzinfo=timezone.utc).timestamp(),
       long_running_tool_ids=long_running_tool_ids,
