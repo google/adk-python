@@ -48,7 +48,7 @@ def test_nested_parallel_reduce_architecture():
   - Reducer2 couldn't see outputs from D, E, F
   - Reducer3 couldn't see outputs from Reducer1 and Reducer2
 
-  With BranchContext fix:
+  With Branch fix:
   - A, B, C get tokens {1}, {2}, {3}
   - Parallel1 joins to {1,2,3}
   - Reducer1 gets {1,2,3} and can see all events from {1}, {2}, {3}
@@ -347,7 +347,7 @@ def test_sequence_of_parallel_agents():
   The bug was that agents in Parallel2 and Parallel3 couldn't see outputs
   from previous parallel groups.
 
-  With BranchContext fix:
+  With Branch fix:
   - Parallel1: A={1}, B={2}, C={3}, joins to {1,2,3}
   - Parallel2 forks from {1,2,3}: D={1,2,3,4}, E={1,2,3,5}, F={1,2,3,6}
   - D, E, F can all see A, B, C because {1}⊆{1,2,3,4}

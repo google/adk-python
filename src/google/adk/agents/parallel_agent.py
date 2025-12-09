@@ -38,10 +38,10 @@ def _create_branch_ctx_for_sub_agent(
     sub_agent: BaseAgent,
     invocation_context: InvocationContext,
 ) -> InvocationContext:
-  """Create isolated branch for every sub-agent using BranchContext fork."""
+  """Create isolated branch for every sub-agent using Branch fork."""
   invocation_context = invocation_context.model_copy()
-  # Note: This function is called for each sub-agent, but we need coordinated
-  # forking. The actual fork logic is now in ParallelAgent._run_async_impl
+  parent_branch = invocation_context.branch or Branch()
+  invocation_context.branch = parent_branch.fork()
   return invocation_context
 
 
@@ -181,19 +181,11 @@ class ParallelAgent(BaseAgent):
       ctx.set_agent_state(self.name, agent_state=BaseAgentState())
       yield self._create_agent_state_event(ctx)
 
-    # Fork branch context for parallel execution - each sub-agent gets unique token
-    parent_branch = ctx.branch or Branch()
-    child_branches = parent_branch.fork(len(self.sub_agents))
-
     agent_runs = []
-    sub_agent_contexts = (
-        []
-    )  # Track contexts to get final branches after execution
+    sub_agent_contexts = []  # Track contexts to get final branches after execution
     # Prepare and collect async generators for each sub-agent.
-    for i, sub_agent in enumerate(self.sub_agents):
-      # Create isolated branch context for this sub-agent
-      sub_agent_ctx = ctx.model_copy()
-      sub_agent_ctx.branch = child_branches[i]
+    for sub_agent in self.sub_agents:
+      sub_agent_ctx = _create_branch_ctx_for_sub_agent(self, sub_agent, ctx)
       sub_agent_contexts.append(sub_agent_ctx)
 
       # Only include sub-agents that haven't finished in a previous run.
@@ -220,6 +212,7 @@ class ParallelAgent(BaseAgent):
 
       # Join all child branches back together after parallel execution completes
       # Use the final branch contexts from sub-agents (they may have been modified)
+      parent_branch = ctx.branch or Branch()
       final_child_branches = [sac.branch for sac in sub_agent_contexts]
       joined_branch = parent_branch.join(final_child_branches)
       ctx.branch = joined_branch

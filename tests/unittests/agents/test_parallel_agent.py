@@ -102,7 +102,7 @@ async def test_run_async(request: pytest.FixtureRequest, is_resumable: bool):
     # and agent1 has a delay.
     assert events[1].author == agent2.name
     assert events[2].author == agent1.name
-    # Branches are now BranchContext objects with unique tokens
+    # Branches are now Branch objects with unique tokens
     assert events[1].branch is not None
     assert events[2].branch is not None
     # Parallel siblings should have different branches (different tokens)
@@ -117,7 +117,7 @@ async def test_run_async(request: pytest.FixtureRequest, is_resumable: bool):
 
     assert events[0].author == agent2.name
     assert events[1].author == agent1.name
-    # Branches are now BranchContext objects with unique tokens
+    # Branches are now Branch objects with unique tokens
     assert events[0].branch is not None
     assert events[1].branch is not None
     # Parallel siblings should have different branches

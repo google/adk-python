@@ -365,14 +365,7 @@ class InvocationContext(BaseModel):
           if event.invocation_id == self.invocation_id
       ]
     if current_branch:
-      # Use token-set visibility check: event is visible if its branch tokens
-      # are a subset of current branch tokens (event.branch ⊆ self.branch).
-      results = [
-          event
-          for event in results
-          if isinstance(event.branch, Branch)
-          and self.branch.can_see(event.branch)
-      ]
+      results = [event for event in results if event.branch == self.branch]
     return results
 
   def should_pause_invocation(self, event: Event) -> bool:

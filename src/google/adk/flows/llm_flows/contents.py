@@ -650,7 +650,7 @@ def _is_event_belongs_to_branch(
   2. Multi-turn conversations need full history across all invocations
   3. Token reuse across invocations is safe due to invocation-id isolation
 
-  Within the current invocation, uses BranchContext's token-set visibility:
+  Within the current invocation, uses Branch's token-set visibility:
   event is visible if its tokens are a subset of the current branch's tokens
   (event.tokens ⊆ current.tokens).
 
@@ -666,7 +666,7 @@ def _is_event_belongs_to_branch(
   if event.invocation_id != current_invocation_id:
     return True
 
-  # Events without BranchContext are from old code or don't use branch filtering
+  # Events without Branch are from old code or don't use branch filtering
   if not isinstance(event.branch, Branch):
     return True
 

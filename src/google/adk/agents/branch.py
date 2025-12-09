@@ -105,22 +105,19 @@ class Branch(BaseModel):
     """Custom serializer to convert frozenset to list for JSON serialization."""
     return {'tokens': list(self.tokens)}
 
-  def fork(self, n: int) -> list[Branch]:
-    """Create n child contexts for parallel execution.
+  def fork(self) -> Branch:
+    """Create a child context for parallel execution.
 
-    Each child gets a unique new token added to the parent's token set.
+    The child gets a unique new token added to the parent's token set.
     This ensures:
-    1. Children can see parent's events (parent tokens ⊆ child tokens)
-    2. Children cannot see each other's events (sibling tokens are disjoint)
-
-    Args:
-      n: Number of child contexts to create.
+    1. Child can see parent's events (parent tokens ⊆ child tokens)
+    2. Siblings cannot see each other's events (sibling tokens are disjoint)
 
     Returns:
-      List of n new BranchContexts, each with parent.tokens ∪ {new_token}.
+      A new Branch with parent.tokens ∪ {new_token}.
     """
-    new_tokens = [TokenFactory.new_token() for _ in range(n)]
-    return [Branch(tokens=self.tokens | {t}) for t in new_tokens]
+    new_token = TokenFactory.new_token()
+    return Branch(tokens=self.tokens | {new_token})
 
   def join(self, others: list[Branch]) -> Branch:
     """Merge token sets from parallel branches.
@@ -130,10 +127,10 @@ class Branch(BaseModel):
     token sets, ensuring subsequent agents can see events from all branches.
 
     Args:
-      others: List of other BranchContexts to join with self.
+      others: List of other Branches to join with self.
 
     Returns:
-      New BranchContext with union of all token sets.
+      New Branch with union of all token sets.
     """
     combined = set(self.tokens)
     for ctx in others:
@@ -147,7 +144,7 @@ class Branch(BaseModel):
     context's token set (subset relationship).
 
     Args:
-      event_ctx: The BranchContext of the event to check.
+      event_ctx: The Branch of the event to check.
 
     Returns:
       True if the event is visible, False otherwise.
@@ -158,7 +155,7 @@ class Branch(BaseModel):
     """Create a deep copy of this context.
 
     Returns:
-      New BranchContext with a copy of the token set.
+      New Branch with a copy of the token set.
     """
     # Since tokens is frozenset and model is frozen, we can just return self
     # But for API compatibility, create a new instance
@@ -171,8 +168,8 @@ class Branch(BaseModel):
       String showing token set or "root" if empty.
     """
     if not self.tokens:
-      return 'BranchContext(root)'
-    return f'BranchContext({sorted(self.tokens)})'
+      return 'Branch(root)'
+    return f'Branch({sorted(self.tokens)})'
 
   def __repr__(self) -> str:
     """Developer representation.

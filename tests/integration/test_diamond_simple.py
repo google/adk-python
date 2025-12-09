@@ -149,7 +149,7 @@ def test_diamond_simple():
   print(
       '\n✅ SUCCESS! The reducer CAN see outputs from Alice, Bob, and Charlie!'
   )
-  print('This proves the BranchContext fix works correctly.')
+  print('This proves the Branch fix works correctly.')
   print('*****' * 10)
 
 

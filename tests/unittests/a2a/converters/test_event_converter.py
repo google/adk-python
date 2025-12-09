@@ -170,7 +170,7 @@ class TestEventConverter:
     assert result is not None
     assert f"{ADK_METADATA_KEY_PREFIX}branch" in result
     assert f"{ADK_METADATA_KEY_PREFIX}grounding_metadata" in result
-    # BranchContext will be serialized, check it exists rather than exact value
+    # Branch will be serialized, check it exists rather than exact value
     assert f"{ADK_METADATA_KEY_PREFIX}branch" in result
 
     # Check if error_code is in the result - it should be there since we set it

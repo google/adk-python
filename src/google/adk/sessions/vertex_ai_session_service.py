@@ -361,7 +361,7 @@ def _from_api_event(api_event_obj: vertexai.types.SessionEvent) -> Event:
     turn_complete = getattr(event_metadata, 'turn_complete', None)
     interrupted = getattr(event_metadata, 'interrupted', None)
     branch_str = getattr(event_metadata, 'branch', None)
-    # Convert string branch to BranchContext (legacy format, not used in token-based approach)
+    # Convert string branch to Branch (legacy format, not used in token-based approach)
     # Empty string or None becomes root context
     branch = Branch() if not branch_str else Branch()
     custom_metadata = getattr(event_metadata, 'custom_metadata', None)
