@@ -294,6 +294,7 @@ class BaseAgent(BaseModel):
         async for event in agen:
           yield event
 
+      # Propagate branch changes back to parent context.
       if ctx.branch != parent_context.branch:
         parent_context.branch = ctx.branch
 
