@@ -150,7 +150,7 @@ class InvocationContext(BaseModel):
 
   invocation_id: str
   """The id of this invocation context. Readonly."""
-  branch: Branch = Field(default_factory=Branch)
+  branch: Optional[Branch] = None
   """The branch context tracking event provenance for visibility filtering."""
   agent: BaseAgent
   """The current agent of this invocation context. Readonly."""

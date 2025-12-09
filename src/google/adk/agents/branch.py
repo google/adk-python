@@ -151,16 +151,6 @@ class Branch(BaseModel):
     """
     return event_ctx.tokens.issubset(self.tokens)
 
-  def copy(self) -> Branch:
-    """Create a deep copy of this context.
-
-    Returns:
-      New Branch with a copy of the token set.
-    """
-    # Since tokens is frozenset and model is frozen, we can just return self
-    # But for API compatibility, create a new instance
-    return Branch(tokens=self.tokens)
-
   def __str__(self) -> str:
     """Human-readable string representation.
 

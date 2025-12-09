@@ -157,15 +157,6 @@ class TestBranchContext:
     # Root cannot see child
     assert not root.can_see(child)
 
-  def test_copy_creates_independent_instance(self):
-    """Test that copy creates a new independent instance."""
-    original = Branch(tokens=frozenset({1, 2, 3}))
-    copied = original.copy()
-
-    assert original.tokens == copied.tokens
-    # Since model is frozen, this is actually the same test
-    assert original == copied
-
   def test_equality(self):
     """Test equality based on token sets."""
     ctx1 = Branch(tokens=frozenset({1, 2, 3}))

@@ -237,12 +237,11 @@ async def test_include_contents_none_multi_branch_current_turn():
     pass
 
   # Verify current turn starts from the most recent other agent message of the current branch
-  # Since both sibling and cousin have no branch restrictions, the most recent (cousin) is selected
   assert len(llm_request.contents) == 1
   assert llm_request.contents[0].role == "user"
   assert llm_request.contents[0].parts == [
       types.Part(text="For context:"),
-      types.Part(text="[cousin_agent] said: Cousin agent response"),
+      types.Part(text="[sibling_agent] said: Sibling agent response"),
   ]
 
 
