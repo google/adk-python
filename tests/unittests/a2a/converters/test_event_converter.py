@@ -28,8 +28,6 @@ try:
   from a2a.types import DataPart
   from a2a.types import Message
   from a2a.types import Role
-
-  from google.adk.agents.branch import Branch
   from a2a.types import Task
   from a2a.types import TaskState
   from a2a.types import TaskStatusUpdateEvent

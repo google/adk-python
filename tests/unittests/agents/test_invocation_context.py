@@ -42,7 +42,7 @@ class TestInvocationContext:
     children = parent_branch.fork(2)
     agent1_branch = children[0]  # Has unique token for agent1
     agent2_branch = children[1]  # Has unique token for agent2
-    
+
     event1 = Mock(spec=Event)
     event1.invocation_id = 'inv_1'
     event1.branch = agent1_branch

@@ -27,11 +27,10 @@ from parallel agents:
 
 from __future__ import annotations
 
-import pytest
-
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.parallel_agent import ParallelAgent
 from google.adk.agents.sequential_agent import SequentialAgent
+import pytest
 
 from tests.unittests import testing_utils
 
@@ -215,9 +214,10 @@ def test_nested_parallel_reduce_architecture():
     for reducer1_event in reducer1_events:
       if reducer1_event.branch:
         # Reducer1's tokens should be a superset of ABC tokens
-        assert reducer1_event.branch.can_see(
-            abc_event.branch
-        ), f"Reducer1 (tokens={reducer1_event.branch.tokens}) should see {abc_event.author} (tokens={abc_event.branch.tokens})"
+        assert reducer1_event.branch.can_see(abc_event.branch), (
+            f"Reducer1 (tokens={reducer1_event.branch.tokens}) should see"
+            f" {abc_event.author} (tokens={abc_event.branch.tokens})"
+        )
 
   # Reducer2 should see D, E, F
   def_events = [
@@ -229,9 +229,10 @@ def test_nested_parallel_reduce_architecture():
     for reducer2_event in reducer2_events:
       if reducer2_event.branch:
         # Reducer2's tokens should be a superset of DEF tokens
-        assert reducer2_event.branch.can_see(
-            def_event.branch
-        ), f"Reducer2 (tokens={reducer2_event.branch.tokens}) should see {def_event.author} (tokens={def_event.branch.tokens})"
+        assert reducer2_event.branch.can_see(def_event.branch), (
+            f"Reducer2 (tokens={reducer2_event.branch.tokens}) should see"
+            f" {def_event.author} (tokens={def_event.branch.tokens})"
+        )
 
   # Final reducer should see all reducers
   all_reducer_events = reducer1_events + reducer2_events
@@ -239,9 +240,10 @@ def test_nested_parallel_reduce_architecture():
     if reducer_event.branch:
       for final_event in final_reducer_events:
         if final_event.branch:
-          assert final_event.branch.can_see(
-              reducer_event.branch
-          ), f"Final_Reducer (tokens={final_event.branch.tokens}) should see {reducer_event.author} (tokens={reducer_event.branch.tokens})"
+          assert final_event.branch.can_see(reducer_event.branch), (
+              f"Final_Reducer (tokens={final_event.branch.tokens}) should see"
+              f" {reducer_event.author} (tokens={reducer_event.branch.tokens})"
+          )
 
   # Verify LLM request contents - the actual text sent to the model
   # This is the critical test: does the reducer actually receive the parallel agents' outputs?
@@ -255,53 +257,85 @@ def test_nested_parallel_reduce_architecture():
         texts.append(content)
       elif isinstance(content, list):
         for part in content:
-          if hasattr(part, 'text') and part.text:
+          if hasattr(part, "text") and part.text:
             texts.append(part.text)
-      elif hasattr(content, 'text') and content.text:
+      elif hasattr(content, "text") and content.text:
         texts.append(content.text)
     return " ".join(texts)
 
   # Reducer1 should receive outputs from A, B, C in its LLM request
-  assert len(reducer1_model.requests) > 0, "Reducer1 should have made LLM requests"
-  reducer1_contents = testing_utils.simplify_contents(reducer1_model.requests[0].contents)
+  assert (
+      len(reducer1_model.requests) > 0
+  ), "Reducer1 should have made LLM requests"
+  reducer1_contents = testing_utils.simplify_contents(
+      reducer1_model.requests[0].contents
+  )
   reducer1_text = extract_text(reducer1_contents)
-  
+
   # Check that A, B, C outputs are in the context
-  assert "Alice" in reducer1_text or "I am Alice" in reducer1_text, \
-      f"Reducer1 should see Alice's output in LLM request. Got: {reducer1_text[:200]}"
-  assert "Bob" in reducer1_text or "I am Bob" in reducer1_text, \
-      f"Reducer1 should see Bob's output in LLM request. Got: {reducer1_text[:200]}"
-  assert "Charlie" in reducer1_text or "I am Charlie" in reducer1_text, \
-      f"Reducer1 should see Charlie's output in LLM request. Got: {reducer1_text[:200]}"
+  assert "Alice" in reducer1_text or "I am Alice" in reducer1_text, (
+      "Reducer1 should see Alice's output in LLM request. Got:"
+      f" {reducer1_text[:200]}"
+  )
+  assert "Bob" in reducer1_text or "I am Bob" in reducer1_text, (
+      "Reducer1 should see Bob's output in LLM request. Got:"
+      f" {reducer1_text[:200]}"
+  )
+  assert "Charlie" in reducer1_text or "I am Charlie" in reducer1_text, (
+      "Reducer1 should see Charlie's output in LLM request. Got:"
+      f" {reducer1_text[:200]}"
+  )
 
   # Reducer2 should receive outputs from D, E, F in its LLM request
-  assert len(reducer2_model.requests) > 0, "Reducer2 should have made LLM requests"
-  reducer2_contents = testing_utils.simplify_contents(reducer2_model.requests[0].contents)
+  assert (
+      len(reducer2_model.requests) > 0
+  ), "Reducer2 should have made LLM requests"
+  reducer2_contents = testing_utils.simplify_contents(
+      reducer2_model.requests[0].contents
+  )
   reducer2_text = extract_text(reducer2_contents)
-  
-  assert "David" in reducer2_text or "I am David" in reducer2_text, \
-      f"Reducer2 should see David's output in LLM request. Got: {reducer2_text[:200]}"
-  assert "Eve" in reducer2_text or "I am Eve" in reducer2_text, \
-      f"Reducer2 should see Eve's output in LLM request. Got: {reducer2_text[:200]}"
-  assert "Frank" in reducer2_text or "I am Frank" in reducer2_text, \
-      f"Reducer2 should see Frank's output in LLM request. Got: {reducer2_text[:200]}"
+
+  assert "David" in reducer2_text or "I am David" in reducer2_text, (
+      "Reducer2 should see David's output in LLM request. Got:"
+      f" {reducer2_text[:200]}"
+  )
+  assert "Eve" in reducer2_text or "I am Eve" in reducer2_text, (
+      "Reducer2 should see Eve's output in LLM request. Got:"
+      f" {reducer2_text[:200]}"
+  )
+  assert "Frank" in reducer2_text or "I am Frank" in reducer2_text, (
+      "Reducer2 should see Frank's output in LLM request. Got:"
+      f" {reducer2_text[:200]}"
+  )
 
   # Final reducer should receive outputs from both reducers AND nested agents
-  assert len(final_reducer_model.requests) > 0, "Final_Reducer should have made LLM requests"
-  final_contents = testing_utils.simplify_contents(final_reducer_model.requests[0].contents)
+  assert (
+      len(final_reducer_model.requests) > 0
+  ), "Final_Reducer should have made LLM requests"
+  final_contents = testing_utils.simplify_contents(
+      final_reducer_model.requests[0].contents
+  )
   final_text = extract_text(final_contents)
-  
+
   # Should see the reducer summaries
-  assert "Summary of ABC" in final_text, \
-      f"Final_Reducer should see Reducer1's summary in LLM request. Got: {final_text[:200]}"
-  assert "Summary of DEF" in final_text, \
-      f"Final_Reducer should see Reducer2's summary in LLM request. Got: {final_text[:200]}"
-  
+  assert "Summary of ABC" in final_text, (
+      "Final_Reducer should see Reducer1's summary in LLM request. Got:"
+      f" {final_text[:200]}"
+  )
+  assert "Summary of DEF" in final_text, (
+      "Final_Reducer should see Reducer2's summary in LLM request. Got:"
+      f" {final_text[:200]}"
+  )
+
   # Should also see the original agent outputs (nested visibility)
-  assert "Alice" in final_text or "I am Alice" in final_text, \
-      f"Final_Reducer should see Alice's output in LLM request. Got: {final_text[:200]}"
-  assert "David" in final_text or "I am David" in final_text, \
-      f"Final_Reducer should see David's output in LLM request. Got: {final_text[:200]}"
+  assert "Alice" in final_text or "I am Alice" in final_text, (
+      "Final_Reducer should see Alice's output in LLM request. Got:"
+      f" {final_text[:200]}"
+  )
+  assert "David" in final_text or "I am David" in final_text, (
+      "Final_Reducer should see David's output in LLM request. Got:"
+      f" {final_text[:200]}"
+  )
 
 
 def test_sequence_of_parallel_agents():
@@ -455,30 +489,31 @@ def test_sequence_of_parallel_agents():
   for p1_event in parallel1_events:
     for p2_event in parallel2_events:
       # Parallel2 tokens should be superset of Parallel1 tokens
-      assert p2_event.branch.can_see(
-          p1_event.branch
-      ), f"{p2_event.author} (tokens={p2_event.branch.tokens}) should see {p1_event.author} (tokens={p1_event.branch.tokens})"
+      assert p2_event.branch.can_see(p1_event.branch), (
+          f"{p2_event.author} (tokens={p2_event.branch.tokens}) should see"
+          f" {p1_event.author} (tokens={p1_event.branch.tokens})"
+      )
 
   # Verify visibility: Parallel3 should see Parallel1 and Parallel2
   for p1_event in parallel1_events:
     for p3_event in parallel3_events:
-      assert p3_event.branch.can_see(
-          p1_event.branch
-      ), f"{p3_event.author} (tokens={p3_event.branch.tokens}) should see {p1_event.author} (tokens={p1_event.branch.tokens})"
+      assert p3_event.branch.can_see(p1_event.branch), (
+          f"{p3_event.author} (tokens={p3_event.branch.tokens}) should see"
+          f" {p1_event.author} (tokens={p1_event.branch.tokens})"
+      )
 
   for p2_event in parallel2_events:
     for p3_event in parallel3_events:
-      assert p3_event.branch.can_see(
-          p2_event.branch
-      ), f"{p3_event.author} (tokens={p3_event.branch.tokens}) should see {p2_event.author} (tokens={p2_event.branch.tokens})"
+      assert p3_event.branch.can_see(p2_event.branch), (
+          f"{p3_event.author} (tokens={p3_event.branch.tokens}) should see"
+          f" {p2_event.author} (tokens={p2_event.branch.tokens})"
+      )
 
   # Print token sets for verification
   print("\n=== Token Distribution ===")
   for event in session.events:
     if event.author and event.branch:
-      print(
-          f"{event.author:15} | tokens={event.branch.tokens}"
-      )
+      print(f"{event.author:15} | tokens={event.branch.tokens}")
 
   # Verify LLM request contents - the actual text sent to the models
   # This is the critical test from the GitHub issue: does each parallel group
@@ -493,37 +528,55 @@ def test_sequence_of_parallel_agents():
         texts.append(content)
       elif isinstance(content, list):
         for part in content:
-          if hasattr(part, 'text') and part.text:
+          if hasattr(part, "text") and part.text:
             texts.append(part.text)
-      elif hasattr(content, 'text') and content.text:
+      elif hasattr(content, "text") and content.text:
         texts.append(content.text)
     return " ".join(texts)
 
   # David (in Parallel2) should see Alice, Bob, Charlie from Parallel1
   assert len(agent_d_model.requests) > 0, "David should have made LLM requests"
-  david_contents = testing_utils.simplify_contents(agent_d_model.requests[0].contents)
+  david_contents = testing_utils.simplify_contents(
+      agent_d_model.requests[0].contents
+  )
   david_text = extract_text(david_contents)
-  
-  assert "Alice" in david_text or "I am Alice" in david_text, \
-      f"David should see Alice's output in LLM request (Parallel2 seeing Parallel1). Got: {david_text[:200]}"
-  assert "Bob" in david_text or "I am Bob" in david_text, \
-      f"David should see Bob's output in LLM request (Parallel2 seeing Parallel1). Got: {david_text[:200]}"
-  assert "Charlie" in david_text or "I am Charlie" in david_text, \
-      f"David should see Charlie's output in LLM request (Parallel2 seeing Parallel1). Got: {david_text[:200]}"
+
+  assert "Alice" in david_text or "I am Alice" in david_text, (
+      "David should see Alice's output in LLM request (Parallel2 seeing"
+      f" Parallel1). Got: {david_text[:200]}"
+  )
+  assert "Bob" in david_text or "I am Bob" in david_text, (
+      "David should see Bob's output in LLM request (Parallel2 seeing"
+      f" Parallel1). Got: {david_text[:200]}"
+  )
+  assert "Charlie" in david_text or "I am Charlie" in david_text, (
+      "David should see Charlie's output in LLM request (Parallel2 seeing"
+      f" Parallel1). Got: {david_text[:200]}"
+  )
 
   # Grace (in Parallel3) should see all previous agents
   assert len(agent_g_model.requests) > 0, "Grace should have made LLM requests"
-  grace_contents = testing_utils.simplify_contents(agent_g_model.requests[0].contents)
+  grace_contents = testing_utils.simplify_contents(
+      agent_g_model.requests[0].contents
+  )
   grace_text = extract_text(grace_contents)
-  
+
   # Should see Parallel1 agents
-  assert "Alice" in grace_text or "I am Alice" in grace_text, \
-      f"Grace should see Alice's output in LLM request (Parallel3 seeing Parallel1). Got: {grace_text[:200]}"
-  assert "Bob" in grace_text or "I am Bob" in grace_text, \
-      f"Grace should see Bob's output in LLM request (Parallel3 seeing Parallel1). Got: {grace_text[:200]}"
-  
+  assert "Alice" in grace_text or "I am Alice" in grace_text, (
+      "Grace should see Alice's output in LLM request (Parallel3 seeing"
+      f" Parallel1). Got: {grace_text[:200]}"
+  )
+  assert "Bob" in grace_text or "I am Bob" in grace_text, (
+      "Grace should see Bob's output in LLM request (Parallel3 seeing"
+      f" Parallel1). Got: {grace_text[:200]}"
+  )
+
   # Should see Parallel2 agents
-  assert "David" in grace_text or "I am David" in grace_text, \
-      f"Grace should see David's output in LLM request (Parallel3 seeing Parallel2). Got: {grace_text[:200]}"
-  assert "Eve" in grace_text or "I am Eve" in grace_text, \
-      f"Grace should see Eve's output in LLM request (Parallel3 seeing Parallel2). Got: {grace_text[:200]}"
+  assert "David" in grace_text or "I am David" in grace_text, (
+      "Grace should see David's output in LLM request (Parallel3 seeing"
+      f" Parallel2). Got: {grace_text[:200]}"
+  )
+  assert "Eve" in grace_text or "I am Eve" in grace_text, (
+      "Grace should see Eve's output in LLM request (Parallel3 seeing"
+      f" Parallel2). Got: {grace_text[:200]}"
+  )

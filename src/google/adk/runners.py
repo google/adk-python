@@ -1212,6 +1212,7 @@ class Runner:
     # across invocations is safe because branch filtering only applies within
     # the current invocation (events from other invocations are always visible).
     from .agents.branch import TokenFactory
+
     TokenFactory.reset()
 
     if run_config.support_cfc and isinstance(self.agent, LlmAgent):

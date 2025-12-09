@@ -48,7 +48,7 @@ def convert_timestamp_to_float(timestamp_value: Any) -> float:
   elif isinstance(timestamp_value, str):
     # Try parsing as ISO format
     try:
-      dt = datetime.fromisoformat(timestamp_value.replace('Z', '+00:00'))
+      dt = datetime.fromisoformat(timestamp_value.replace("Z", "+00:00"))
       return dt.timestamp()
     except ValueError:
       # Try as timestamp string
@@ -88,21 +88,21 @@ def build_event_json(row: dict[str, Any], available_columns: set[str]) -> str:
       "author": row["author"],
       "timestamp": convert_timestamp_to_float(row["timestamp"]),
   }
-  
+
   # Optional fields - only include if they exist and are not None
   optional_fields = {
       "branch": "branch",
-      "partial": "partial", 
+      "partial": "partial",
       "turn_complete": "turn_complete",
       "error_code": "error_code",
       "error_message": "error_message",
       "interrupted": "interrupted",
   }
-  
+
   for json_key, col_name in optional_fields.items():
     if col_name in available_columns and row.get(col_name) is not None:
       event_dict[json_key] = row[col_name]
-  
+
   # Handle actions (might be pickled)
   if "actions" in available_columns and row.get("actions") is not None:
     actions_value = unpickle_if_needed(row["actions"])
@@ -112,42 +112,44 @@ def build_event_json(row: dict[str, Any], available_columns: set[str]) -> str:
         event_dict["actions"] = actions_value.model_dump(exclude_none=True)
       elif isinstance(actions_value, dict):
         event_dict["actions"] = actions_value
-  
+
   # Handle long_running_tool_ids
   if "long_running_tool_ids_json" in available_columns:
     lrt_json = row.get("long_running_tool_ids_json")
     if lrt_json:
       try:
-        lrt_list = json.loads(lrt_json) if isinstance(lrt_json, str) else lrt_json
+        lrt_list = (
+            json.loads(lrt_json) if isinstance(lrt_json, str) else lrt_json
+        )
         if lrt_list:
           event_dict["long_running_tool_ids"] = lrt_list
       except Exception:
         pass
-  
+
   # Handle JSON/JSONB fields (content, grounding_metadata, etc.)
   json_fields = [
       "content",
-      "grounding_metadata", 
+      "grounding_metadata",
       "custom_metadata",
       "usage_metadata",
       "citation_metadata",
       "input_transcription",
       "output_transcription",
   ]
-  
+
   for field_name in json_fields:
     if field_name in available_columns and row.get(field_name) is not None:
       field_value = parse_json_if_needed(row[field_name])
       if field_value:
         event_dict[field_name] = field_value
-  
+
   return json.dumps(event_dict)
 
 
 def migrate(source_db_path: str, dest_db_path: str):
   """Migrates data from a SQLAlchemy-based SQLite DB to the new schema."""
   logger.info(f"Connecting to source database: {source_db_path}")
-  
+
   try:
     source_conn = sqlite3.connect(source_db_path)
     source_conn.row_factory = sqlite3.Row
@@ -155,7 +157,7 @@ def migrate(source_db_path: str, dest_db_path: str):
   except Exception as e:
     logger.error(f"Failed to connect to source database: {e}")
     sys.exit(1)
-  
+
   logger.info(f"Connecting to destination database: {dest_db_path}")
   try:
     dest_conn = sqlite3.connect(dest_db_path)
@@ -165,58 +167,61 @@ def migrate(source_db_path: str, dest_db_path: str):
   except Exception as e:
     logger.error(f"Failed to connect to destination database: {e}")
     sys.exit(1)
-  
+
   try:
     # Get available columns for each table
     app_states_cols = get_table_columns(source_cursor, "app_states")
     user_states_cols = get_table_columns(source_cursor, "user_states")
     sessions_cols = get_table_columns(source_cursor, "sessions")
     events_cols = get_table_columns(source_cursor, "events")
-    
+
     logger.info(f"Source database events table has {len(events_cols)} columns")
-    
+
     # Migrate app_states
     logger.info("Migrating app_states...")
     source_cursor.execute("SELECT * FROM app_states")
     app_states = source_cursor.fetchall()
-    
+
     for row in app_states:
       state = parse_json_if_needed(row["state"])
       update_time = convert_timestamp_to_float(row["update_time"])
-      
+
       dest_cursor.execute(
-          "INSERT INTO app_states (app_name, state, update_time) VALUES (?, ?, ?)",
+          "INSERT INTO app_states (app_name, state, update_time) VALUES (?,"
+          " ?, ?)",
           (row["app_name"], json.dumps(state), update_time),
       )
     logger.info(f"Migrated {len(app_states)} app_states.")
-    
+
     # Migrate user_states
     logger.info("Migrating user_states...")
     source_cursor.execute("SELECT * FROM user_states")
     user_states = source_cursor.fetchall()
-    
+
     for row in user_states:
       state = parse_json_if_needed(row["state"])
       update_time = convert_timestamp_to_float(row["update_time"])
-      
+
       dest_cursor.execute(
-          "INSERT INTO user_states (app_name, user_id, state, update_time) VALUES (?, ?, ?, ?)",
+          "INSERT INTO user_states (app_name, user_id, state, update_time)"
+          " VALUES (?, ?, ?, ?)",
           (row["app_name"], row["user_id"], json.dumps(state), update_time),
       )
     logger.info(f"Migrated {len(user_states)} user_states.")
-    
+
     # Migrate sessions
     logger.info("Migrating sessions...")
     source_cursor.execute("SELECT * FROM sessions")
     sessions = source_cursor.fetchall()
-    
+
     for row in sessions:
       state = parse_json_if_needed(row["state"])
       create_time = convert_timestamp_to_float(row["create_time"])
       update_time = convert_timestamp_to_float(row["update_time"])
-      
+
       dest_cursor.execute(
-          "INSERT INTO sessions (app_name, user_id, id, state, create_time, update_time) VALUES (?, ?, ?, ?, ?, ?)",
+          "INSERT INTO sessions (app_name, user_id, id, state, create_time,"
+          " update_time) VALUES (?, ?, ?, ?, ?, ?)",
           (
               row["app_name"],
               row["user_id"],
@@ -227,28 +232,30 @@ def migrate(source_db_path: str, dest_db_path: str):
           ),
       )
     logger.info(f"Migrated {len(sessions)} sessions.")
-    
+
     # Migrate events
     logger.info("Migrating events...")
     source_cursor.execute("SELECT * FROM events")
     events = source_cursor.fetchall()
-    
+
     migrated_count = 0
     failed_count = 0
-    
+
     for row in events:
       try:
         # Convert row to dict for easier access
         row_dict = dict(row)
-        
+
         # Build event JSON handling missing columns
         event_data = build_event_json(row_dict, events_cols)
-        
+
         # Parse to validate and get values
         event_json = json.loads(event_data)
-        
+
         dest_cursor.execute(
-            "INSERT INTO events (id, app_name, user_id, session_id, invocation_id, timestamp, event_data) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO events (id, app_name, user_id, session_id,"
+            " invocation_id, timestamp, event_data) VALUES (?, ?, ?, ?, ?,"
+            " ?, ?)",
             (
                 event_json["id"],
                 row_dict["app_name"],
@@ -260,16 +267,18 @@ def migrate(source_db_path: str, dest_db_path: str):
             ),
         )
         migrated_count += 1
-        
+
       except Exception as e:
-        logger.warning(f"Failed to migrate event {row_dict.get('id', 'unknown')}: {e}")
+        logger.warning(
+            f"Failed to migrate event {row_dict.get('id', 'unknown')}: {e}"
+        )
         failed_count += 1
-    
+
     logger.info(f"Migrated {migrated_count} events ({failed_count} failed).")
-    
+
     dest_conn.commit()
     logger.info("Migration completed successfully.")
-    
+
   except Exception as e:
     logger.error(f"An error occurred during migration: {e}", exc_info=True)
     dest_conn.rollback()
@@ -295,14 +304,16 @@ if __name__ == "__main__":
   parser.add_argument(
       "--dest_db_path",
       required=True,
-      help="Path to the destination SQLite database file (e.g., /path/to/new.db)",
+      help=(
+          "Path to the destination SQLite database file (e.g., /path/to/new.db)"
+      ),
   )
   args = parser.parse_args()
-  
+
   # Set up logging
   logging.basicConfig(
       level=logging.INFO,
-      format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+      format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
   )
-  
+
   migrate(args.source_db_path, args.dest_db_path)

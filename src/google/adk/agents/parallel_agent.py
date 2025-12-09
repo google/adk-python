@@ -23,12 +23,12 @@ from typing import ClassVar
 
 from typing_extensions import override
 
-from .branch import Branch
 from ..events.event import Event
 from ..utils.context_utils import Aclosing
 from .base_agent import BaseAgent
 from .base_agent import BaseAgentState
 from .base_agent_config import BaseAgentConfig
+from .branch import Branch
 from .invocation_context import InvocationContext
 from .parallel_agent_config import ParallelAgentConfig
 
@@ -186,7 +186,9 @@ class ParallelAgent(BaseAgent):
     child_branches = parent_branch.fork(len(self.sub_agents))
 
     agent_runs = []
-    sub_agent_contexts = []  # Track contexts to get final branches after execution
+    sub_agent_contexts = (
+        []
+    )  # Track contexts to get final branches after execution
     # Prepare and collect async generators for each sub-agent.
     for i, sub_agent in enumerate(self.sub_agents):
       # Create isolated branch context for this sub-agent

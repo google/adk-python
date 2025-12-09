@@ -29,37 +29,51 @@ from tests.unittests import testing_utils
 @pytest.mark.asyncio
 async def test_sequence_of_parallels():
   """Test: Sequential[Parallel1[A,B,C], Parallel2[D,E,F]].
-  
+
   KEY test from GitHub issue #3470. D,E,F should see A,B,C outputs.
   """
-  agent_a = LlmAgent(name="AgentA", model=testing_utils.MockModel.create(responses=["A"]))
-  agent_d = LlmAgent(name="AgentD", model=testing_utils.MockModel.create(responses=["D"]))
-  
+  agent_a = LlmAgent(
+      name="AgentA", model=testing_utils.MockModel.create(responses=["A"])
+  )
+  agent_d = LlmAgent(
+      name="AgentD", model=testing_utils.MockModel.create(responses=["D"])
+  )
+
   parallel1 = ParallelAgent(name="P1", sub_agents=[agent_a])
   parallel2 = ParallelAgent(name="P2", sub_agents=[agent_d])
   root = SequentialAgent(name="Root", sub_agents=[parallel1, parallel2])
-  
-  runner = InMemoryRunner(agent=root, app_name='test')
-  session = await runner.session_service.create_session(app_name='test', user_id='user')
-  
+
+  runner = InMemoryRunner(agent=root, app_name="test")
+  session = await runner.session_service.create_session(
+      app_name="test", user_id="user"
+  )
+
   async for event in runner.run_async(
-      user_id='user',
+      user_id="user",
       session_id=session.id,
-      new_message=types.Content(role="user", parts=[types.Part(text="go")])
+      new_message=types.Content(role="user", parts=[types.Part(text="go")]),
   ):
     pass
-  
-  final_session = await runner.session_service.get_session(app_name='test', user_id='user', session_id=session.id)
-  
+
+  final_session = await runner.session_service.get_session(
+      app_name="test", user_id="user", session_id=session.id
+  )
+
   # Debug: print all events and their branches
   print("\n=== All Events in Session ===")
   for event in final_session.events:
     branch_tokens = event.branch.tokens if event.branch else frozenset()
     print(f"{event.author:15} | tokens={branch_tokens}")
-  
-  agent_a_branch = next(e.branch for e in final_session.events if e.author == "AgentA")
-  agent_d_branch = next(e.branch for e in final_session.events if e.author == "AgentD")
-  
+
+  agent_a_branch = next(
+      e.branch for e in final_session.events if e.author == "AgentA"
+  )
+  agent_d_branch = next(
+      e.branch for e in final_session.events if e.author == "AgentD"
+  )
+
   # KEY: D's tokens should be superset of A's tokens
-  assert agent_a_branch.tokens.issubset(agent_d_branch.tokens), \
-      f"AgentD should see AgentA. A={agent_a_branch.tokens}, D={agent_d_branch.tokens}"
+  assert agent_a_branch.tokens.issubset(agent_d_branch.tokens), (
+      f"AgentD should see AgentA. A={agent_a_branch.tokens},"
+      f" D={agent_d_branch.tokens}"
+  )

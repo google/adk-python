@@ -54,25 +54,33 @@ async def test_branch_filtering_child_sees_parent():
           invocation_id=inv_id,
           author="parent_agent",
           content=types.ModelContent("Parent agent response"),
-          branch=Branch(tokens=frozenset({1})),  # Parent branch - should be included ({1} ⊆ {1,2})
+          branch=Branch(
+              tokens=frozenset({1})
+          ),  # Parent branch - should be included ({1} ⊆ {1,2})
       ),
       Event(
           invocation_id=inv_id,
           author="child_agent",
           content=types.ModelContent("Child agent response"),
-          branch=Branch(tokens=frozenset({1, 2})),  # Current branch - should be included
+          branch=Branch(
+              tokens=frozenset({1, 2})
+          ),  # Current branch - should be included
       ),
       Event(
           invocation_id=inv_id,
           author="child_agent",
           content=types.ModelContent("Excluded response 1"),
-          branch=Branch(tokens=frozenset({1, 3})),  # Sibling branch - should be excluded ({1,3} ⊄ {1,2})
+          branch=Branch(
+              tokens=frozenset({1, 3})
+          ),  # Sibling branch - should be excluded ({1,3} ⊄ {1,2})
       ),
       Event(
           invocation_id=inv_id,
           author="child_agent",
           content=types.ModelContent("Excluded response 2"),
-          branch=Branch(tokens=frozenset({3})),  # Different branch - should be excluded ({3} ⊄ {1,2})
+          branch=Branch(
+              tokens=frozenset({3})
+          ),  # Different branch - should be excluded ({3} ⊄ {1,2})
       ),
   ]
   invocation_context.session.events = events
@@ -116,19 +124,25 @@ async def test_branch_filtering_excludes_sibling_agents():
           invocation_id=inv_id,
           author="parent_agent",
           content=types.ModelContent("Parent response"),
-          branch=Branch(tokens=frozenset({1})),  # Parent - should be included ({1} ⊆ {1,2})
+          branch=Branch(
+              tokens=frozenset({1})
+          ),  # Parent - should be included ({1} ⊆ {1,2})
       ),
       Event(
           invocation_id=inv_id,
           author="child_agent1",
           content=types.ModelContent("Child1 response"),
-          branch=Branch(tokens=frozenset({1, 2})),  # Current - should be included
+          branch=Branch(
+              tokens=frozenset({1, 2})
+          ),  # Current - should be included
       ),
       Event(
           invocation_id=inv_id,
           author="child_agent2",
           content=types.ModelContent("Sibling response"),
-          branch=Branch(tokens=frozenset({1, 3})),  # Sibling - should be excluded ({1,3} ⊄ {1,2})
+          branch=Branch(
+              tokens=frozenset({1, 3})
+          ),  # Sibling - should be excluded ({1,3} ⊄ {1,2})
       ),
   ]
   invocation_context.session.events = events
@@ -212,25 +226,33 @@ async def test_branch_filtering_grandchild_sees_grandparent():
           invocation_id=inv_id,
           author="grandparent_agent",
           content=types.ModelContent("Grandparent response"),
-          branch=Branch(tokens=frozenset({1})),  # Should be visible ({1} ⊆ {1,2,3})
+          branch=Branch(
+              tokens=frozenset({1})
+          ),  # Should be visible ({1} ⊆ {1,2,3})
       ),
       Event(
           invocation_id=inv_id,
           author="parent_agent",
           content=types.ModelContent("Parent response"),
-          branch=Branch(tokens=frozenset({1, 2})),  # Should be visible ({1,2} ⊆ {1,2,3})
+          branch=Branch(
+              tokens=frozenset({1, 2})
+          ),  # Should be visible ({1,2} ⊆ {1,2,3})
       ),
       Event(
           invocation_id=inv_id,
           author="grandchild_agent",
           content=types.ModelContent("Grandchild response"),
-          branch=Branch(tokens=frozenset({1, 2, 3})),  # Should be visible (same)
+          branch=Branch(
+              tokens=frozenset({1, 2, 3})
+          ),  # Should be visible (same)
       ),
       Event(
           invocation_id=inv_id,
           author="sibling_agent",
           content=types.ModelContent("Sibling response"),
-          branch=Branch(tokens=frozenset({1, 2, 4})),  # Should be excluded ({1,2,4} ⊄ {1,2,3})
+          branch=Branch(
+              tokens=frozenset({1, 2, 4})
+          ),  # Should be excluded ({1,2,4} ⊄ {1,2,3})
       ),
   ]
   invocation_context.session.events = events
@@ -284,13 +306,17 @@ async def test_branch_filtering_parent_cannot_see_child():
           invocation_id=inv_id,
           author="child_agent",
           content=types.ModelContent("Child response"),
-          branch=Branch(tokens=frozenset({1, 2})),  # Should be excluded ({1,2} ⊄ {1})
+          branch=Branch(
+              tokens=frozenset({1, 2})
+          ),  # Should be excluded ({1,2} ⊄ {1})
       ),
       Event(
           invocation_id=inv_id,
           author="grandchild_agent",
           content=types.ModelContent("Grandchild response"),
-          branch=Branch(tokens=frozenset({1, 2, 3})),  # Should be excluded ({1,2,3} ⊄ {1})
+          branch=Branch(
+              tokens=frozenset({1, 2, 3})
+          ),  # Should be excluded ({1,2,3} ⊄ {1})
       ),
   ]
   invocation_context.session.events = events
