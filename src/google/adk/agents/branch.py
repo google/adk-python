@@ -65,22 +65,15 @@ class BranchTokenFactory:
 
 
 class Branch(BaseModel):
-  """Provenance-based branch tracking using token sets.
+  """Branch tracking using token sets for parallel agent execution.
 
-  This class replaces the brittle string-prefix based branch tracking with
-  a robust token-set approach that correctly handles:
-  - Parallel agent forks
-  - Sequential agent compositions
-  - Nested parallel agents
-  - Event visibility across branch boundaries
-
-  The key insight is that event visibility is determined by subset relationships:
-  An event is visible to a context if all the event's tokens are present in
-  the context's token set.
+  Tracks event provenance across parallel and sequential agent execution.
+  Event visibility is determined by subset relationships: an event is visible
+  to a context if all the event's tokens are present in the context's token set.
 
   Example:
     Root context: {}
-    After fork(2): child_0 has {1}, child_1 has {2}
+    After fork(): child_0 has {1}, child_1 has {2}
     After join: parent has {1, 2}
 
     Events from child_0 (tokens={1}) are visible to parent (tokens={1,2})

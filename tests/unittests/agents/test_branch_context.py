@@ -390,7 +390,7 @@ class TestGitHubIssue3470Scenarios:
     and G/H/I can't see anyone before them.
 
     With token-sets: Each subsequent parallel group inherits tokens from
-    previous groups via join, so visibility works correctly.
+    previous groups via join, enabling proper visibility.
     """
     BranchTokenFactory.reset()
 
@@ -477,10 +477,9 @@ class TestGitHubIssue3470Scenarios:
     # Neither direction works with prefix matching for sibling parallel groups!
     # This is why the bug exists in the original implementation.
 
-    # With token-sets (NEW APPROACH - CORRECT):
+    # With token-sets:
     # After parallel1, context has tokens {1,2,3}
     # Parallel2 forks from {1,2,3}, so D gets {1,2,3,4}
     # Agent A has tokens {1}
     # Check: {1} ⊆ {1,2,3,4} = TRUE ✓
 
-    # Token-set approach correctly handles this case!
