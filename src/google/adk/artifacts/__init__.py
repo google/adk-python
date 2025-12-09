@@ -16,10 +16,12 @@ from .base_artifact_service import BaseArtifactService
 from .file_artifact_service import FileArtifactService
 from .gcs_artifact_service import GcsArtifactService
 from .in_memory_artifact_service import InMemoryArtifactService
+from .s3_artifact_service import S3ArtifactService
 
 __all__ = [
     'BaseArtifactService',
     'FileArtifactService',
     'GcsArtifactService',
     'InMemoryArtifactService',
+    'S3ArtifactService',
 ]

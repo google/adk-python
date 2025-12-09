@@ -146,6 +146,7 @@ docs = [
 extensions = [
   "anthropic>=0.43.0",                          # For anthropic model support
   "beautifulsoup4>=3.2.2",                      # For load_web_page tool.
+  "boto3>=1.28.0",                              # For S3ArtifactService
   "crewai[tools];python_version>='3.10' and python_version<'3.12'",       # For CrewaiTool; chromadb/pypika fail on 3.12+
   "docker>=7.0.0",                              # For ContainerCodeExecutor
   "kubernetes>=29.0.0",                         # For GkeCodeExecutor

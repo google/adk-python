@@ -289,8 +289,19 @@ def _register_builtin_services(registry: ServiceRegistry) -> None:
     artifact_path = Path(unquote(parsed_uri.path))
     return FileArtifactService(root_dir=artifact_path)
 
+  def s3_artifact_factory(uri: str, **kwargs):
+    from ..artifacts.s3_artifact_service import S3ArtifactService
+
+    kwargs_copy = kwargs.copy()
+    kwargs_copy.pop("agents_dir", None)
+    kwargs_copy.pop("per_agent", None)
+    parsed_uri = urlparse(uri)
+    bucket_name = parsed_uri.netloc
+    return S3ArtifactService(bucket_name=bucket_name, **kwargs_copy)
+
   registry.register_artifact_service("memory", memory_artifact_factory)
   registry.register_artifact_service("gs", gcs_artifact_factory)
+  registry.register_artifact_service("s3", s3_artifact_factory)
   registry.register_artifact_service("file", file_artifact_factory)
 
   # -- Memory Services --
