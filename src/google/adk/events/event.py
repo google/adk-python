@@ -57,7 +57,7 @@ class Event(LlmResponse):
   Agent client will know from this field about which function call is long running.
   only valid for function call event
   """
-  branch: Branch = Field(default_factory=Branch)
+  branch: Optional[Branch] = None
   """The branch context of the event. Used for provenance-based event filtering in parallel agents."""
 
   # The following are computed fields.

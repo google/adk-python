@@ -637,7 +637,7 @@ def _merge_function_response_events(
 
 
 def _is_event_belongs_to_branch(
-    invocation_branch: Branch,
+    invocation_branch: Optional[Branch],
     event: Event,
     current_invocation_id: str = '',
 ) -> bool:
@@ -666,7 +666,7 @@ def _is_event_belongs_to_branch(
     return True
 
   # Events without Branch are from old code - considered visible
-  if not isinstance(event.branch, Branch):
+  if not event.branch:
     return True
 
   # Check token-set visibility: event.tokens ⊆ invocation_branch.tokens
