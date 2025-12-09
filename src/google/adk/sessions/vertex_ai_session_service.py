@@ -30,7 +30,6 @@ if TYPE_CHECKING:
   import vertexai
 
 from . import _session_util
-from ..agents.branch import Branch
 from ..events.event import Event
 from ..events.event_actions import EventActions
 from ..utils.vertex_ai_utils import get_express_mode_api_key
