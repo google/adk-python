@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import time
+from typing import Optional
 from unittest.mock import Mock
 
 from authlib.oauth2.rfc6749 import OAuth2Token
@@ -29,7 +30,7 @@ import pytest
 
 
 @pytest.fixture
-def openid_connect_scheme():
+def openid_connect_scheme() -> OpenIdConnectWithConfig:
   """Fixture providing a standard OpenIdConnectWithConfig scheme."""
   return OpenIdConnectWithConfig(
       type_="openIdConnect",
@@ -40,7 +41,10 @@ def openid_connect_scheme():
   )
 
 
-def create_oauth2_auth_credential(token_endpoint_auth_method=None):
+def create_oauth2_auth_credential(
+    auth_type=AuthCredentialTypes.OPEN_ID_CONNECT,
+    token_endpoint_auth_method: Optional[str] = None,
+):
   """Helper function to create OAuth2Auth credential with optional token_endpoint_auth_method."""
   oauth2_auth = OAuth2Auth(
       client_id="test_client_id",
@@ -52,7 +56,7 @@ def create_oauth2_auth_credential(token_endpoint_auth_method=None):
     oauth2_auth.token_endpoint_auth_method = token_endpoint_auth_method
 
   return AuthCredential(
-      auth_type=AuthCredentialTypes.OPEN_ID_CONNECT,
+      auth_type=auth_type,
       oauth2=oauth2_auth,
   )
 
@@ -71,14 +75,9 @@ class TestOAuth2CredentialUtil:
         token_endpoint="https://example.com/token",
         scopes=["openid", "profile"],
     )
-    credential = AuthCredential(
-        auth_type=AuthCredentialTypes.OPEN_ID_CONNECT,
-        oauth2=OAuth2Auth(
-            client_id="test_client_id",
-            client_secret="test_client_secret",
-            redirect_uri="https://example.com/callback",
-            state="test_state",
-        ),
+    credential = create_oauth2_auth_credential(
+        auth_type=AuthCredentialTypes.OAUTH2,
+        token_endpoint_auth_method="client_secret_jwt",
     )
 
     client, token_endpoint = create_oauth2_session(scheme, credential)
@@ -152,12 +151,24 @@ class TestOAuth2CredentialUtil:
     assert client is None
     assert token_endpoint is None
 
+  # def test_create_oauth2_session_with_token_endpoint_auth_method(
+  #    self, openid_connect_scheme
+  @pytest.mark.parametrize(
+      "token_endpoint_auth_method, expected_auth_method",
+      [
+          ("client_secret_post", "client_secret_post"),
+          (None, "client_secret_basic"),
+      ],
+  )
   def test_create_oauth2_session_with_token_endpoint_auth_method(
-      self, openid_connect_scheme
+      self,
+      openid_connect_scheme,
+      token_endpoint_auth_method,
+      expected_auth_method,
   ):
-    """Test create_oauth2_session with token_endpoint_auth_method specified."""
+    """Test create_oauth2_session with various token_endpoint_auth_method settings."""
     credential = create_oauth2_auth_credential(
-        token_endpoint_auth_method="client_secret_post"
+        token_endpoint_auth_method=token_endpoint_auth_method
     )
 
     client, token_endpoint = create_oauth2_session(
@@ -168,23 +179,7 @@ class TestOAuth2CredentialUtil:
     assert token_endpoint == "https://example.com/token"
     assert client.client_id == "test_client_id"
     assert client.client_secret == "test_client_secret"
-    assert client.token_endpoint_auth_method == "client_secret_post"
-
-  def test_create_oauth2_session_with_default_token_endpoint_auth_method(
-      self, openid_connect_scheme
-  ):
-    """Test create_oauth2_session with default token_endpoint_auth_method."""
-    credential = create_oauth2_auth_credential()
-
-    client, token_endpoint = create_oauth2_session(
-        openid_connect_scheme, credential
-    )
-
-    assert client is not None
-    assert token_endpoint == "https://example.com/token"
-    assert client.client_id == "test_client_id"
-    assert client.client_secret == "test_client_secret"
-    assert client.token_endpoint_auth_method == "client_secret_basic"
+    assert client.token_endpoint_auth_method == expected_auth_method
 
   def test_create_oauth2_session_oauth2_scheme_with_token_endpoint_auth_method(
       self,
