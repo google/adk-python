@@ -1023,8 +1023,12 @@ async def handle_function_calls_async_with_streaming(
     else:
       yield event
 
-  # Wait for all tasks to complete (in case of errors)
-  await asyncio.gather(*active_tasks, return_exceptions=True)
+  # Wait for all tasks to complete and check for exceptions
+  results = await asyncio.gather(*active_tasks, return_exceptions=True)
+  for result in results:
+    if isinstance(result, Exception):
+      # Re-raise the first exception encountered to signal failure
+      raise result
 
 
 def __build_response_event(
