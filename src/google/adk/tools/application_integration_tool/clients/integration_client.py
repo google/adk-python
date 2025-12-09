@@ -38,6 +38,7 @@ class IntegrationClient:
       self,
       project: str,
       location: str,
+      connection_template_override: Optional[str] = None,
       integration: Optional[str] = None,
       triggers: Optional[List[str]] = None,
       connection: Optional[str] = None,
@@ -50,6 +51,8 @@ class IntegrationClient:
     Args:
         project: The Google Cloud project ID.
         location: The Google Cloud location (e.g., us-central1).
+        connection_template_override: Overrides `ExecuteConnection` default
+          integration name.
         integration: The integration name.
         triggers: The list of trigger IDs for the integration.
         connection: The connection name.
@@ -62,6 +65,7 @@ class IntegrationClient:
     """
     self.project = project
     self.location = location
+    self.connection_template_override = connection_template_override
     self.integration = integration
     self.triggers = triggers
     self.connection = connection
@@ -130,7 +134,7 @@ class IntegrationClient:
         Exception: For any other unexpected errors.
     """
     # Application Integration needs to be provisioned in the same region as connection and an integration with name "ExecuteConnection" and trigger "api_trigger/ExecuteConnection" should be created as per the documentation.
-    integration_name = "ExecuteConnection"
+    integration_name = self.connection_template_override or "ExecuteConnection"
     connections_client = ConnectionsClient(
         self.project,
         self.location,

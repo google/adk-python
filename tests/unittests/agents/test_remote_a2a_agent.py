@@ -23,6 +23,7 @@ from unittest.mock import patch
 from a2a.client.client import ClientConfig
 from a2a.client.client import Consumer
 from a2a.client.client_factory import ClientFactory
+from a2a.client.middleware import ClientCallContext
 from a2a.types import AgentCapabilities
 from a2a.types import AgentCard
 from a2a.types import AgentSkill
@@ -1429,6 +1430,7 @@ class TestRemoteA2aAgentExecution:
     self.mock_session = Mock(spec=Session)
     self.mock_session.id = "session-123"
     self.mock_session.events = []
+    self.mock_session.state = {}
 
     self.mock_context = Mock(spec=InvocationContext)
     self.mock_context.session = self.mock_session
@@ -1682,6 +1684,7 @@ class TestRemoteA2aAgentExecution:
                   mock_a2a_client.send_message.assert_called_once_with(
                       request=mock_message,
                       request_metadata=request_metadata,
+                      context=ClientCallContext(state=self.mock_session.state),
                   )
 
 
@@ -1703,6 +1706,7 @@ class TestRemoteA2aAgentExecutionFromFactory:
     self.mock_session = Mock(spec=Session)
     self.mock_session.id = "session-123"
     self.mock_session.events = []
+    self.mock_session.state = {}
 
     self.mock_context = Mock(spec=InvocationContext)
     self.mock_context.session = self.mock_session
@@ -1989,6 +1993,7 @@ class TestRemoteA2aAgentIntegration:
     mock_session = Mock(spec=Session)
     mock_session.id = "session-123"
     mock_session.events = [mock_event]
+    mock_session.state = {}
 
     mock_context = Mock(spec=InvocationContext)
     mock_context.session = mock_session
@@ -2084,6 +2089,7 @@ class TestRemoteA2aAgentIntegration:
     mock_session = Mock(spec=Session)
     mock_session.id = "session-123"
     mock_session.events = [mock_event]
+    mock_session.state = {}
 
     mock_context = Mock(spec=InvocationContext)
     mock_context.session = mock_session

@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import os
+from typing import Any
 from typing import Dict
 
 from fastapi.openapi.models import APIKey
@@ -137,3 +138,55 @@ def test_openapi_toolset_configure_auth_on_init(openapi_spec: Dict):
   for tool in toolset._tools:
     assert tool.auth_scheme == auth_scheme
     assert tool.auth_credential == auth_credential
+
+
+@pytest.mark.parametrize(
+    "verify_value", ["/path/to/enterprise-ca-bundle.crt", False]
+)
+def test_openapi_toolset_verify_on_init(
+    openapi_spec: Dict[str, Any], verify_value: str | bool
+):
+  """Test configuring verify during initialization."""
+  toolset = OpenAPIToolset(
+      spec_dict=openapi_spec,
+      ssl_verify=verify_value,
+  )
+  for tool in toolset._tools:
+    assert tool._ssl_verify == verify_value
+
+
+def test_openapi_toolset_configure_verify_all(openapi_spec: Dict[str, Any]):
+  """Test configure_verify_all method."""
+  toolset = OpenAPIToolset(spec_dict=openapi_spec)
+
+  # Initially verify should be None
+  for tool in toolset._tools:
+    assert tool._ssl_verify is None
+
+  # Configure verify for all tools
+  ca_bundle_path = "/path/to/custom-ca.crt"
+  toolset.configure_ssl_verify_all(ca_bundle_path)
+
+  for tool in toolset._tools:
+    assert tool._ssl_verify == ca_bundle_path
+
+
+async def test_openapi_toolset_tool_name_prefix(openapi_spec: Dict[str, Any]):
+  """Test tool_name_prefix parameter prefixes tool names."""
+  prefix = "my_api"
+  toolset = OpenAPIToolset(spec_dict=openapi_spec, tool_name_prefix=prefix)
+
+  # Verify the toolset has the prefix set
+  assert toolset.tool_name_prefix == prefix
+
+  prefixed_tools = await toolset.get_tools_with_prefix()
+  assert len(prefixed_tools) == 5
+
+  # Verify all tool names are prefixed
+  for tool in prefixed_tools:
+    assert tool.name.startswith(f"{prefix}_")
+
+  # Verify specific tool name is prefixed
+  expected_prefixed_name = "my_api_calendar_calendars_insert"
+  prefixed_tool_names = [t.name for t in prefixed_tools]
+  assert expected_prefixed_name in prefixed_tool_names
