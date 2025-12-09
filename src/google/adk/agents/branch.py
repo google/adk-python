@@ -26,7 +26,7 @@ from pydantic import model_serializer
 from pydantic import PrivateAttr
 
 
-class TokenFactory:
+class BranchTokenFactory:
   """Thread-safe global counter for branch tokens.
 
   Each fork operation in a parallel agent execution creates new unique tokens
@@ -116,7 +116,7 @@ class Branch(BaseModel):
     Returns:
       A new Branch with parent.tokens ∪ {new_token}.
     """
-    new_token = TokenFactory.new_token()
+    new_token = BranchTokenFactory.new_token()
     return Branch(tokens=self.tokens | {new_token})
 
   def join(self, others: list[Branch]) -> Branch:

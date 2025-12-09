@@ -17,7 +17,7 @@
 from __future__ import annotations
 
 from google.adk.agents.branch import Branch
-from google.adk.agents.branch import TokenFactory
+from google.adk.agents.branch import BranchTokenFactory
 import pytest
 
 
@@ -27,11 +27,11 @@ class TestTokenFactory:
   def test_new_token_increments(self):
     """Test that new_token generates unique incrementing tokens."""
     # Reset the factory
-    TokenFactory._next = 0
+    BranchTokenFactory.reset()
 
-    token1 = TokenFactory.new_token()
-    token2 = TokenFactory.new_token()
-    token3 = TokenFactory.new_token()
+    token1 = BranchTokenFactory.new_token()
+    token2 = BranchTokenFactory.new_token()
+    token3 = BranchTokenFactory.new_token()
 
     assert token1 < token2 < token3
     assert token2 == token1 + 1
@@ -42,12 +42,12 @@ class TestTokenFactory:
     import threading
 
     # Reset the factory
-    TokenFactory._next = 0
+    BranchTokenFactory.reset()
     tokens = []
 
     def generate_tokens():
       for _ in range(100):
-        tokens.append(TokenFactory.new_token())
+        tokens.append(BranchTokenFactory.new_token())
 
     threads = [threading.Thread(target=generate_tokens) for _ in range(10)]
     for t in threads:
@@ -76,7 +76,7 @@ class TestBranchContext:
 
   def test_fork_creates_children(self):
     """Test that fork creates child contexts."""
-    TokenFactory._next = 0
+    BranchTokenFactory.reset()
     parent = Branch()
     child1 = parent.fork()
     child2 = parent.fork()
@@ -88,7 +88,7 @@ class TestBranchContext:
 
   def test_fork_children_have_unique_tokens(self):
     """Test that each forked child has a unique token."""
-    TokenFactory._next = 0
+    BranchTokenFactory.reset()
     parent = Branch(tokens=frozenset({0}))
     child1 = parent.fork()
     child2 = parent.fork()
@@ -109,7 +109,7 @@ class TestBranchContext:
 
   def test_fork_children_inherit_parent_tokens(self):
     """Test that forked children inherit all parent tokens."""
-    TokenFactory._next = 0
+    BranchTokenFactory.reset()
     parent = Branch(tokens=frozenset({10, 20, 30}))
     child1 = parent.fork()
     child2 = parent.fork()
@@ -119,7 +119,7 @@ class TestBranchContext:
 
   def test_join_unions_all_tokens(self):
     """Test that join creates union of all token sets."""
-    TokenFactory._next = 0
+    BranchTokenFactory.reset()
     parent = Branch(tokens=frozenset({0}))
     child1 = Branch(tokens=frozenset({0, 1}))
     child2 = Branch(tokens=frozenset({0, 2}))
@@ -202,7 +202,7 @@ class TestBranchContext:
 
   def test_parallel_to_sequential_scenario(self):
     """Test the actual bug scenario: parallel → sequential → parallel."""
-    TokenFactory._next = 0
+    BranchTokenFactory.reset()
 
     # Root context
     root = Branch()
@@ -274,7 +274,7 @@ class TestGitHubIssue3470Scenarios:
     The reducer R1 should be able to see outputs from A, B, and C.
     This is the basic reducer pattern that should work.
     """
-    TokenFactory._next = 0
+    BranchTokenFactory.reset()
 
     # Root context
     root = Branch()
@@ -315,7 +315,7 @@ class TestGitHubIssue3470Scenarios:
     - R2 should see D, E, F
     - R3 should see R1, R2 (and transitively A-F)
     """
-    TokenFactory._next = 0
+    BranchTokenFactory.reset()
 
     root = Branch()
 
@@ -401,7 +401,7 @@ class TestGitHubIssue3470Scenarios:
     With token-sets: Each subsequent parallel group inherits tokens from
     previous groups via join, so visibility works correctly.
     """
-    TokenFactory._next = 0
+    BranchTokenFactory.reset()
 
     root = Branch()
 
