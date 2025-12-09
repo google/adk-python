@@ -886,7 +886,7 @@ async def _execute_streaming_tool_async(
       task.cancel()
       try:
         await task
-      except (asyncio.CancelledError, Exception):
+      except asyncio.CancelledError:
         pass
     raise
   except Exception as e:

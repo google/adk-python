@@ -224,7 +224,7 @@ async def test_handle_function_calls_async_with_streaming_separates_tools():
     events.append(event)
 
   # Should have 1 event from regular tool + 2 events from streaming tool
-  assert len(events) >= 3
+  assert len(events) == 3
 
 
 @pytest.mark.asyncio
