@@ -343,7 +343,12 @@ class InvocationContext(BaseModel):
           if event.invocation_id == self.invocation_id
       ]
     if current_branch:
-      results = [event for event in results if event.branch == self.branch]
+      # Events with None branch are visible to all branches (legacy/untracked)
+      results = [
+          event
+          for event in results
+          if event.branch is None or event.branch == self.branch
+      ]
     return results
 
   def should_pause_invocation(self, event: Event) -> bool:
