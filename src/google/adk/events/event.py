@@ -58,19 +58,7 @@ class Event(LlmResponse):
   only valid for function call event
   """
   branch: Branch = Field(default_factory=Branch)
-  """The branch context of the event.
-
-  Uses provenance-based token sets to track which events are visible to which
-  agents in parallel and sequential compositions. An event is visible to an
-  agent if all of the event's tokens are present in the agent's context.
-  
-  Defaults to an empty token set frozenset(), making the event visible to all
-  agents (since empty set is a subset of all sets). This is appropriate for
-  root-level events like user messages.
-  
-  This replaces the old string-based branch tracking which failed to correctly
-  handle parallel-to-sequential transitions.
-  """
+  """The branch context of the event. Used for provenance-based event filtering in parallel agents."""
 
   # The following are computed fields.
   # Do not assign the ID. It will be assigned by the session.
