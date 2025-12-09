@@ -82,9 +82,49 @@ _FINISH_REASON_MAPPING = {
     "content_filter": types.FinishReason.SAFETY,
 }
 
-_SUPPORTED_FILE_CONTENT_MIME_TYPES = set(
-    ["application/pdf", "application/json"]
-)
+# File MIME types supported for upload as file content (not decoded as text).
+# Note: text/* types are handled separately and decoded as text content.
+# These types are uploaded as files to providers that support it.
+_SUPPORTED_FILE_CONTENT_MIME_TYPES = frozenset({
+    # Documents
+    "application/pdf",
+    "application/msword",  # .doc
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",  # .docx
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",  # .pptx
+    # Data formats
+    "application/json",
+    # Scripts (when not detected as text/*)
+    "application/x-sh",  # .sh (Python mimetypes returns this)
+})
+
+# Providers that require file_id instead of inline file_data
+_FILE_ID_REQUIRED_PROVIDERS = frozenset({"openai", "azure"})
+
+
+def _get_provider_from_model(model: str) -> str:
+  """Extracts the provider name from a LiteLLM model string.
+
+  Args:
+    model: The model string (e.g., "openai/gpt-4o", "azure/gpt-4").
+
+  Returns:
+    The provider name or empty string if not determinable.
+  """
+  if not model:
+    return ""
+  # LiteLLM uses "provider/model" format
+  if "/" in model:
+    provider, _ = model.split("/", 1)
+    return provider.lower()
+  # Fallback heuristics for common patterns
+  model_lower = model.lower()
+  if "azure" in model_lower:
+    return "azure"
+  # Note: The 'openai' check is based on current naming conventions (e.g., gpt-, o1).
+  # This might need updates if OpenAI introduces new model families with different prefixes.
+  if model_lower.startswith("gpt-") or model_lower.startswith("o1"):
+    return "openai"
+  return ""
 
 
 def _decode_inline_text_data(raw_bytes: bytes) -> str:
@@ -349,8 +389,10 @@ def _extract_cached_prompt_tokens(usage: Any) -> int:
   return 0
 
 
-def _content_to_message_param(
+async def _content_to_message_param(
     content: types.Content,
+    *,
+    provider: str = "",
 ) -> Union[Message, list[Message]]:
   """Converts a types.Content to a litellm Message or list of Messages.
 
@@ -359,6 +401,7 @@ def _content_to_message_param(
 
   Args:
     content: The content to convert.
+    provider: The LLM provider name (e.g., "openai", "azure").
 
   Returns:
     A litellm Message, a list of litellm Messages.
@@ -367,11 +410,17 @@ def _content_to_message_param(
   tool_messages = []
   for part in content.parts:
     if part.function_response:
+      response = part.function_response.response
+      response_content = (
+          response
+          if isinstance(response, str)
+          else _safe_json_serialize(response)
+      )
       tool_messages.append(
           ChatCompletionToolMessage(
               role="tool",
               tool_call_id=part.function_response.id,
-              content=_safe_json_serialize(part.function_response.response),
+              content=response_content,
           )
       )
   if tool_messages:
@@ -379,7 +428,7 @@ def _content_to_message_param(
 
   # Handle user or assistant messages
   role = _to_litellm_role(content.role)
-  message_content = _get_content(content.parts) or None
+  message_content = await _get_content(content.parts, provider=provider) or None
 
   if role == "user":
     return ChatCompletionUserMessage(role="user", content=message_content)
@@ -418,13 +467,16 @@ def _content_to_message_param(
     )
 
 
-def _get_content(
+async def _get_content(
     parts: Iterable[types.Part],
+    *,
+    provider: str = "",
 ) -> Union[OpenAIMessageContent, str]:
   """Converts a list of parts to litellm content.
 
   Args:
     parts: The parts to convert.
+    provider: The LLM provider name (e.g., "openai", "azure").
 
   Returns:
     The litellm content.
@@ -474,10 +526,22 @@ def _get_content(
             "audio_url": {"url": data_uri},
         })
       elif part.inline_data.mime_type in _SUPPORTED_FILE_CONTENT_MIME_TYPES:
-        content_objects.append({
-            "type": "file",
-            "file": {"file_data": data_uri},
-        })
+        # OpenAI/Azure require file_id from uploaded file, not inline data
+        if provider in _FILE_ID_REQUIRED_PROVIDERS:
+          file_response = await litellm.acreate_file(
+              file=part.inline_data.data,
+              purpose="assistants",
+              custom_llm_provider=provider,
+          )
+          content_objects.append({
+              "type": "file",
+              "file": {"file_id": file_response.id},
+          })
+        else:
+          content_objects.append({
+              "type": "file",
+              "file": {"file_data": data_uri},
+          })
       else:
         raise ValueError(
             "LiteLlm(BaseLlm) does not support content part with MIME type "
@@ -954,7 +1018,7 @@ def _to_litellm_response_format(
   }
 
 
-def _get_completion_inputs(
+async def _get_completion_inputs(
     llm_request: LlmRequest,
 ) -> Tuple[
     List[Message],
@@ -971,10 +1035,15 @@ def _get_completion_inputs(
     The litellm inputs (message list, tool dictionary, response format and
     generation params).
   """
+  # Determine provider for file handling
+  provider = _get_provider_from_model(llm_request.model or "")
+
   # 1. Construct messages
   messages: List[Message] = []
   for content in llm_request.contents or []:
-    message_param_or_list = _content_to_message_param(content)
+    message_param_or_list = await _content_to_message_param(
+        content, provider=provider
+    )
     if isinstance(message_param_or_list, list):
       messages.extend(message_param_or_list)
     elif message_param_or_list:  # Ensure it's not None before appending
@@ -1240,7 +1309,7 @@ class LiteLlm(BaseLlm):
     logger.debug(_build_request_log(llm_request))
 
     messages, tools, response_format, generation_params = (
-        _get_completion_inputs(llm_request)
+        await _get_completion_inputs(llm_request)
     )
 
     if "functions" in self._additional_args:
