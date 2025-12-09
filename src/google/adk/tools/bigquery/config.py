@@ -21,7 +21,8 @@ from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import field_validator
 
-from ...utils.feature_decorator import experimental
+from ...features import experimental
+from ...features import FeatureName
 
 
 class WriteMode(Enum):
@@ -47,7 +48,7 @@ class WriteMode(Enum):
   """All write operations are allowed."""
 
 
-@experimental('Config defaults may have breaking change in the future.')
+@experimental(FeatureName.BIG_QUERY_TOOL_CONFIG)
 class BigQueryToolConfig(BaseModel):
   """Configuration for BigQuery tools."""
 
