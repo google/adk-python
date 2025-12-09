@@ -256,7 +256,7 @@ class Gemini(BaseLlm):
         http_options=types.HttpOptions(
             headers=self._tracking_headers(),
             retry_options=self.retry_options,
-        )
+        ),
     )
 
   @cached_property
@@ -297,7 +297,7 @@ class Gemini(BaseLlm):
         location=self.location,
         http_options=types.HttpOptions(
             headers=self._tracking_headers(), api_version=self._live_api_version
-        )
+        ),
     )
 
   @contextlib.asynccontextmanager
