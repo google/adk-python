@@ -153,6 +153,80 @@ class SkillCallbacks:
 
         return patterns
 
+    def _build_skill_content(self, skill_names: list[str]) -> str:
+        """Build skill content string from activated skills.
+
+        This loads the full skill documentation from the registry and formats
+        it for injection into the system instruction.
+
+        Args:
+            skill_names: List of skill names to load.
+
+        Returns:
+            Formatted string containing all skill documentation.
+        """
+        if not skill_names:
+            return ""
+
+        skill_sections = []
+        for skill_name in skill_names:
+            skill = self._registry.load_skill_content(skill_name)
+            if skill:
+                skill_sections.append(f"""
+## Active Skill: {skill.name}
+
+{skill.description}
+
+---
+
+{skill.content}
+""")
+
+        if not skill_sections:
+            return ""
+
+        return f"""
+# Currently Active Skills
+
+The following skills have been loaded and are available for this task:
+
+{"".join(skill_sections)}
+
+---
+**Note**: Use `deactivate_skill(skill_name)` when you're done with a skill to free up context.
+"""
+
+    def _inject_skills_into_request(
+        self,
+        llm_request: "LlmRequest",
+        skill_names: list[str],
+    ) -> None:
+        """Inject skill content directly into the LLM request's system instruction.
+
+        This is the key fix for the timing issue: by modifying llm_request.config.system_instruction
+        directly in the before_model_callback, the skills are available in the FIRST LLM call,
+        not just subsequent calls.
+
+        The LlmRequest has a config.system_instruction field that can be a string.
+        We use the append_instructions() method which handles string concatenation properly.
+
+        Args:
+            llm_request: The LLM request to modify.
+            skill_names: List of skill names to inject.
+        """
+        if not skill_names:
+            return
+
+        skill_content = self._build_skill_content(skill_names)
+        if not skill_content:
+            return
+
+        # Use append_instructions which properly handles string system_instruction
+        # This concatenates to config.system_instruction using "\n\n"
+        llm_request.append_instructions([skill_content])
+
+        print(f"[SkillCallbacks] Injected skill content into system instruction: {skill_names}")
+
     def _get_classifier(self):
         """Lazy initialization of the skill classifier."""
         if self._classifier is None and self._detection_mode in ("llm", "hybrid"):
@@ -286,14 +360,16 @@ class SkillCallbacks:
         """Auto-activate skills based on user input before LLM processes it.
 
         This callback analyzes the user message and automatically activates
-        relevant skills, injecting their documentation into context via the
-        instruction provider.
+        relevant skills, then DIRECTLY injects their documentation into the
+        llm_request.system_instruction. This ensures skills are available in
+        the FIRST LLM call, not just subsequent calls.
 
         Strategy:
         - If NO skills are currently active: Detect from the LATEST user message
           (this handles new user requests after skills were cleared)
         - If skills ARE already active: Use the ORIGINAL user message to avoid
           re-detecting on subsequent LLM calls in the same tool-use flow
+        - ALWAYS inject skills directly into llm_request.system_instruction
 
         Args:
             callback_context: Context for accessing/modifying state.
@@ -326,11 +402,17 @@ class SkillCallbacks:
             callback_context.state[ACTIVE_SKILLS_KEY] = skills_to_activate
             print(f"[SkillCallbacks] Detecting skills from: {user_text[:100]}...")
             print(f"[SkillCallbacks] Auto-activated skills: {skills_to_activate}")
+
+            # KEY FIX: Inject skills directly into the llm_request
+            # This ensures skills are available in the FIRST LLM call
+            self._inject_skills_into_request(llm_request, skills_to_activate)
         else:
             # Skills already active: This is a subsequent LLM call in the same flow
             # Use the ORIGINAL user message to ensure consistency
             user_text = self._get_original_user_message_text(llm_request)
             if not user_text:
+                # Even if no user text, still inject active skills
+                self._inject_skills_into_request(llm_request, active_skills)
                 return None
 
             # Detect which skills should be activated from the original user message
@@ -348,8 +430,10 @@ class SkillCallbacks:
                 callback_context.state[ACTIVE_SKILLS_KEY] = active_skills
                 print(f"[SkillCallbacks] Additional skills detected: {newly_activated}")
 
+            # KEY FIX: Always inject skills into the llm_request for subsequent calls too
+            self._inject_skills_into_request(llm_request, active_skills)
+
         # Return None to proceed with LLM call
-        # The instruction provider will pick up the activated skills
         return None
 
     def after_agent_callback(

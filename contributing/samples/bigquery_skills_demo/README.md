@@ -117,7 +117,8 @@ This demo uses ADK callbacks instead of LLM tool calls for skill management:
 │   1. Extract keywords from user message                             │
 │   2. Match against skill keywords (from SKILL.md frontmatter)       │
 │   3. Activate matching skills: ["bqml"]                             │
-│   4. Skills injected into system prompt via instruction provider    │
+│   4. DIRECTLY INJECT skill content into llm_request.system_instruction│
+│      (This ensures skills are available in the FIRST LLM call!)     │
 └─────────────────────────────────────────────────────────────────────┘
                                    │
                                    ▼
@@ -126,6 +127,7 @@ This demo uses ADK callbacks instead of LLM tool calls for skill management:
 │   System prompt now includes:                                        │
 │   - Base instruction                                                 │
 │   - Active skill documentation (BQML syntax, examples)              │
+│   Skills are available IMMEDIATELY - no need to wait for tool call! │
 └─────────────────────────────────────────────────────────────────────┘
                                    │
                                    ▼
@@ -135,6 +137,17 @@ This demo uses ADK callbacks instead of LLM tool calls for skill management:
 │   2. Context freed for next interaction                             │
 └─────────────────────────────────────────────────────────────────────┘
 ```
+
+### Direct Injection vs Instruction Provider
+
+The callback directly injects skill content into `llm_request.system_instruction`, bypassing the instruction provider timing issue:
+
+| Approach | When Skills Appear | How It Works |
+|----------|-------------------|--------------|
+| **Direct Injection** (current) | First LLM call | Callback modifies `llm_request.system_instruction` directly |
+| Instruction Provider | Second LLM call | Provider reads from state, but state updated after instruction built |
+
+This direct injection ensures the LLM has skill documentation from the very first response, enabling it to follow skill examples immediately.
 
 ### Key Components
 
