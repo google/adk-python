@@ -343,7 +343,6 @@ class InvocationContext(BaseModel):
           if event.invocation_id == self.invocation_id
       ]
     if current_branch:
-      # Events with None branch are visible to all branches (legacy/untracked)
       results = [
           event
           for event in results

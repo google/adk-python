@@ -38,7 +38,7 @@ def _create_branch_ctx_for_sub_agent(
     sub_agent: BaseAgent,
     invocation_context: InvocationContext,
 ) -> InvocationContext:
-  """Create isolated branch for every sub-agent using Branch fork."""
+  """Create isolated branch for every sub-agent."""
   invocation_context = invocation_context.model_copy()
   parent_branch = invocation_context.branch or Branch()
   invocation_context.branch = parent_branch.fork()
@@ -183,7 +183,6 @@ class ParallelAgent(BaseAgent):
 
     agent_runs = []
     sub_agent_contexts = []
-
     # Prepare and collect async generators for each sub-agent.
     for sub_agent in self.sub_agents:
       sub_agent_ctx = _create_branch_ctx_for_sub_agent(self, sub_agent, ctx)
@@ -212,10 +211,8 @@ class ParallelAgent(BaseAgent):
         return
 
       # Join all child branches back together after parallel execution completes
-      # Use the final branch contexts from sub-agents (they may have been modified)
       parent_branch = ctx.branch or Branch()
-      final_child_branches = [sac.branch for sac in sub_agent_contexts]
-      joined_branch = parent_branch.join(final_child_branches)
+      joined_branch = parent_branch.join([c.branch for c in sub_agent_contexts])
       ctx.branch = joined_branch
 
       # Once all sub-agents are done, mark the ParallelAgent as final.
