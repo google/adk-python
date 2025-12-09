@@ -23,7 +23,7 @@ from typing import ClassVar
 
 from typing_extensions import override
 
-from ..agents.branch_context import BranchContext
+from .branch import Branch
 from ..events.event import Event
 from ..utils.context_utils import Aclosing
 from .base_agent import BaseAgent
@@ -182,7 +182,7 @@ class ParallelAgent(BaseAgent):
       yield self._create_agent_state_event(ctx)
 
     # Fork branch context for parallel execution - each sub-agent gets unique token
-    parent_branch = ctx.branch or BranchContext()
+    parent_branch = ctx.branch or Branch()
     child_branches = parent_branch.fork(len(self.sub_agents))
 
     agent_runs = []

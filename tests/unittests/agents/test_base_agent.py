@@ -25,7 +25,7 @@ from unittest import mock
 
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.base_agent import BaseAgentState
-from google.adk.agents.branch_context import BranchContext
+from google.adk.agents.branch import Branch
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.apps.app import ResumabilityConfig
@@ -150,7 +150,7 @@ class _TestingAgent(BaseAgent):
 async def _create_parent_invocation_context(
     test_name: str,
     agent: BaseAgent,
-    branch: Optional[BranchContext] = None,
+    branch: Optional[Branch] = None,
     plugins: list[BasePlugin] = [],
 ) -> InvocationContext:
   session_service = InMemorySessionService()
@@ -192,7 +192,7 @@ async def test_run_async(request: pytest.FixtureRequest):
 async def test_run_async_with_branch(request: pytest.FixtureRequest):
   agent = _TestingAgent(name=f'{request.function.__name__}_test_agent')
   parent_ctx = await _create_parent_invocation_context(
-      request.function.__name__, agent, branch=BranchContext()
+      request.function.__name__, agent, branch=Branch()
   )
 
   events = [e async for e in agent.run_async(parent_ctx)]
@@ -716,7 +716,7 @@ async def test_run_live(request: pytest.FixtureRequest):
 async def test_run_live_with_branch(request: pytest.FixtureRequest):
   agent = _TestingAgent(name=f'{request.function.__name__}_test_agent')
   parent_ctx = await _create_parent_invocation_context(
-      request.function.__name__, agent, branch=BranchContext()
+      request.function.__name__, agent, branch=Branch()
   )
 
   events = [e async for e in agent.run_live(parent_ctx)]
@@ -1037,7 +1037,7 @@ async def test_create_agent_state_event():
       session_service=session_service,
   )
 
-  ctx.branch = BranchContext()
+  ctx.branch = Branch()
 
   # Test case 1: set agent state in context
   state = _TestAgentState(test_field='checkpoint')

@@ -36,7 +36,7 @@ from a2a.types import TaskStatusUpdateEvent
 from a2a.types import TextPart
 from google.genai import types as genai_types
 
-from ...agents.branch_context import BranchContext
+from ...agents.branch import Branch
 from ...agents.invocation_context import InvocationContext
 from ...events.event import Event
 from ...flows.llm_flows.functions import REQUEST_EUC_FUNCTION_CALL_NAME
@@ -255,7 +255,7 @@ def convert_a2a_task_to_event(
         branch=(
             invocation_context.branch
             if invocation_context and invocation_context.branch
-            else BranchContext()
+            else Branch()
         ),
     )
 
@@ -304,7 +304,7 @@ def convert_a2a_message_to_event(
         branch=(
             invocation_context.branch
             if invocation_context and invocation_context.branch
-            else BranchContext()
+            else Branch()
         ),
         content=genai_types.Content(role="model", parts=[]),
     )
@@ -358,7 +358,7 @@ def convert_a2a_message_to_event(
         branch=(
             invocation_context.branch
             if invocation_context and invocation_context.branch
-            else BranchContext()
+            else Branch()
         ),
         long_running_tool_ids=long_running_tool_ids
         if long_running_tool_ids

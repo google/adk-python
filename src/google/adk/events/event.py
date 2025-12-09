@@ -23,7 +23,7 @@ from pydantic import alias_generators
 from pydantic import ConfigDict
 from pydantic import Field
 
-from ..agents.branch_context import BranchContext
+from ..agents.branch import Branch
 from ..models.llm_response import LlmResponse
 from .event_actions import EventActions
 
@@ -57,7 +57,7 @@ class Event(LlmResponse):
   Agent client will know from this field about which function call is long running.
   only valid for function call event
   """
-  branch: BranchContext = Field(default_factory=BranchContext)
+  branch: Branch = Field(default_factory=Branch)
   """The branch context of the event.
 
   Uses provenance-based token sets to track which events are visible to which

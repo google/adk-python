@@ -16,7 +16,7 @@ from unittest.mock import Mock
 
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.base_agent import BaseAgentState
-from google.adk.agents.branch_context import BranchContext
+from google.adk.agents.branch import Branch
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.apps import ResumabilityConfig
 from google.adk.events.event import Event
@@ -38,7 +38,7 @@ class TestInvocationContext:
   def mock_events(self):
     """Create mock events for testing."""
     # Create a parent branch and fork it to create two children
-    parent_branch = BranchContext()
+    parent_branch = Branch()
     children = parent_branch.fork(2)
     agent1_branch = children[0]  # Has unique token for agent1
     agent2_branch = children[1]  # Has unique token for agent2
@@ -117,7 +117,7 @@ class TestInvocationContext:
   def test_get_events_with_no_matching_events(self, mock_invocation_context):
     """Tests get_events when no events match the filters."""
     mock_invocation_context.invocation_id = 'inv_3'
-    mock_invocation_context.branch = BranchContext()  # Different branch from events
+    mock_invocation_context.branch = Branch()  # Different branch from events
 
     # Filter by invocation
     events = mock_invocation_context._get_events(current_invocation=True)

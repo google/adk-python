@@ -1,6 +1,6 @@
 """Test BranchContext serialization with SQLite session service."""
 import asyncio
-from google.adk.agents.branch_context import BranchContext
+from google.adk.agents.branch import Branch
 from google.adk.events.event import Event
 from google.adk.sessions.sqlite_session_service import SqliteSessionService
 from google.genai.types import Content, Part
@@ -23,8 +23,8 @@ async def test_serialization():
     )
     
     # Create events with BranchContext
-    branch1 = BranchContext(tokens=frozenset([1, 2, 3]))
-    branch2 = BranchContext(tokens=frozenset([4, 5]))
+    branch1 = Branch(tokens=frozenset([1, 2, 3]))
+    branch2 = Branch(tokens=frozenset([4, 5]))
     
     event1 = Event(
         author="agent1",
@@ -60,7 +60,7 @@ async def test_serialization():
         print(f"  Author: {event.author}")
         print(f"  Branch type: {type(event.branch)}")
         print(f"  Branch value: {event.branch}")
-        if isinstance(event.branch, BranchContext):
+        if isinstance(event.branch, Branch):
             print(f"  Tokens: {event.branch.tokens}")
             print(f"  Tokens type: {type(event.branch.tokens)}")
         else:

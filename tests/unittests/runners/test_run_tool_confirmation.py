@@ -19,6 +19,7 @@ from unittest import mock
 
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.base_agent import BaseAgentState
+from google.adk.agents.branch import Branch
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.parallel_agent import ParallelAgent
 from google.adk.agents.sequential_agent import SequentialAgent
@@ -753,16 +754,18 @@ class TestHITLConfirmationFlowWithParallelAgentAndResumableApp:
 
     # Verify that each branch is paused after the long running tool call.
     # So that no intermediate llm response is generated.
-    root_agent_events = [event for event in events if event.branch is None]
+    # Root events have empty token set (root branch)
+    root_agent_events = [event for event in events if event.branch == Branch()]
+    # Sub-agent events have specific branch tokens
     sub_agent1_branch_events = [
         event
         for event in events
-        if event.branch == f"{agent.name}.{sub_agent1.name}"
+        if event.branch != Branch() and event.author == sub_agent1.name
     ]
     sub_agent2_branch_events = [
         event
         for event in events
-        if event.branch == f"{agent.name}.{sub_agent2.name}"
+        if event.branch != Branch() and event.author == sub_agent2.name
     ]
     assert testing_utils.simplify_resumable_app_events(
         copy.deepcopy(root_agent_events)
@@ -883,16 +886,16 @@ class TestHITLConfirmationFlowWithParallelAgentAndResumableApp:
     for event in events:
       assert event.invocation_id == invocation_id
 
-    root_agent_events = [event for event in events if event.branch is None]
+    root_agent_events = [event for event in events if event.branch == Branch()]
     sub_agent1_branch_events = [
         event
         for event in events
-        if event.branch == f"{agent.name}.{sub_agent1.name}"
+        if event.branch != Branch() and event.author == sub_agent1.name
     ]
     sub_agent2_branch_events = [
         event
         for event in events
-        if event.branch == f"{agent.name}.{sub_agent2.name}"
+        if event.branch != Branch() and event.author == sub_agent2.name
     ]
 
     # Verify that sub_agent1 is resumed and final; sub_agent2 is still paused;

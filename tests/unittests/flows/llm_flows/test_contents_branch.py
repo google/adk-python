@@ -18,6 +18,7 @@ Branch format: agent_1.agent_2.agent_3 (parent.child.grandchild)
 Child agents can see parent agents' events, but not sibling agents' events.
 """
 
+from google.adk.agents.branch import Branch
 from google.adk.agents.llm_agent import Agent
 from google.adk.events.event import Event
 from google.adk.flows.llm_flows.contents import request_processor
@@ -36,39 +37,42 @@ async def test_branch_filtering_child_sees_parent():
   invocation_context = await testing_utils.create_invocation_context(
       agent=agent
   )
-  # Set current branch as child of "parent_agent"
-  invocation_context.branch = "parent_agent.child_agent"
+  # Set current branch as child - child has tokens {1, 2} (inherited 1 from parent, got 2 from fork)
+  invocation_context.branch = Branch(tokens=frozenset({1, 2}))
 
   # Add events from parent and child levels
+  # Using same invocation_id for all events to test branch filtering within invocation
+  inv_id = invocation_context.invocation_id
   events = [
       Event(
-          invocation_id="inv1",
+          invocation_id=inv_id,
           author="user",
           content=types.UserContent("User message"),
+          branch=Branch(),  # Root branch - visible to all
       ),
       Event(
-          invocation_id="inv2",
+          invocation_id=inv_id,
           author="parent_agent",
           content=types.ModelContent("Parent agent response"),
-          branch="parent_agent",  # Parent branch - should be included
+          branch=Branch(tokens=frozenset({1})),  # Parent branch - should be included ({1} ⊆ {1,2})
       ),
       Event(
-          invocation_id="inv3",
+          invocation_id=inv_id,
           author="child_agent",
           content=types.ModelContent("Child agent response"),
-          branch="parent_agent.child_agent",  # Current branch - should be included
+          branch=Branch(tokens=frozenset({1, 2})),  # Current branch - should be included
       ),
       Event(
-          invocation_id="inv4",
+          invocation_id=inv_id,
           author="child_agent",
           content=types.ModelContent("Excluded response 1"),
-          branch="parent_agent.child_agent000",  # Prefix match BUT not itself/ancestor - should be excluded
+          branch=Branch(tokens=frozenset({1, 3})),  # Sibling branch - should be excluded ({1,3} ⊄ {1,2})
       ),
       Event(
-          invocation_id="inv5",
+          invocation_id=inv_id,
           author="child_agent",
           content=types.ModelContent("Excluded response 2"),
-          branch="parent_agent.child",  # Prefix match BUT not itself/ancestor - should be excluded
+          branch=Branch(tokens=frozenset({3})),  # Different branch - should be excluded ({3} ⊄ {1,2})
       ),
   ]
   invocation_context.session.events = events
@@ -96,33 +100,35 @@ async def test_branch_filtering_excludes_sibling_agents():
   invocation_context = await testing_utils.create_invocation_context(
       agent=agent
   )
-  # Set current branch as first child
-  invocation_context.branch = "parent_agent.child_agent1"
+  # Set current branch as first child - has tokens {1, 2} (inherited 1 from parent, got 2 from fork)
+  invocation_context.branch = Branch(tokens=frozenset({1, 2}))
 
   # Add events from parent, current child, and sibling child
+  inv_id = invocation_context.invocation_id
   events = [
       Event(
-          invocation_id="inv1",
+          invocation_id=inv_id,
           author="user",
           content=types.UserContent("User message"),
+          branch=Branch(),  # Root - visible to all
       ),
       Event(
-          invocation_id="inv2",
+          invocation_id=inv_id,
           author="parent_agent",
           content=types.ModelContent("Parent response"),
-          branch="parent_agent",  # Parent - should be included
+          branch=Branch(tokens=frozenset({1})),  # Parent - should be included ({1} ⊆ {1,2})
       ),
       Event(
-          invocation_id="inv3",
+          invocation_id=inv_id,
           author="child_agent1",
           content=types.ModelContent("Child1 response"),
-          branch="parent_agent.child_agent1",  # Current - should be included
+          branch=Branch(tokens=frozenset({1, 2})),  # Current - should be included
       ),
       Event(
-          invocation_id="inv4",
+          invocation_id=inv_id,
           author="child_agent2",
           content=types.ModelContent("Sibling response"),
-          branch="parent_agent.child_agent2",  # Sibling - should be excluded
+          branch=Branch(tokens=frozenset({1, 3})),  # Sibling - should be excluded ({1,3} ⊄ {1,2})
       ),
   ]
   invocation_context.session.events = events
@@ -150,28 +156,29 @@ async def test_branch_filtering_no_branch_allows_all():
   invocation_context = await testing_utils.create_invocation_context(
       agent=agent
   )
-  # No current branch set (None)
-  invocation_context.branch = None
+  # Root branch (empty tokens) - can see all events
+  invocation_context.branch = Branch()
 
-  # Add events with and without branches
+  # Add events with various branches
+  inv_id = invocation_context.invocation_id
   events = [
       Event(
-          invocation_id="inv1",
+          invocation_id=inv_id,
           author="user",
           content=types.UserContent("No branch message"),
-          branch=None,
+          branch=Branch(),  # Root - visible
       ),
       Event(
-          invocation_id="inv2",
+          invocation_id=inv_id,
           author="agent1",
           content=types.ModelContent("Agent with branch"),
-          branch="agent1",
+          branch=Branch(tokens=frozenset({1})),  # Not visible ({1} ⊄ {})
       ),
       Event(
-          invocation_id="inv3",
+          invocation_id=inv_id,
           author="user",
           content=types.UserContent("Another no branch"),
-          branch=None,
+          branch=Branch(),  # Root - visible
       ),
   ]
   invocation_context.session.events = events
@@ -180,15 +187,10 @@ async def test_branch_filtering_no_branch_allows_all():
   async for _ in request_processor.run_async(invocation_context, llm_request):
     pass
 
-  # Verify all events are included when no current branch
-  assert len(llm_request.contents) == 3
+  # Verify only root events are visible (root can't see events with tokens)
+  assert len(llm_request.contents) == 2
   assert llm_request.contents[0] == types.UserContent("No branch message")
-  assert llm_request.contents[1].role == "user"
-  assert llm_request.contents[1].parts == [
-      types.Part(text="For context:"),
-      types.Part(text="[agent1] said: Agent with branch"),
-  ]
-  assert llm_request.contents[2] == types.UserContent("Another no branch")
+  assert llm_request.contents[1] == types.UserContent("Another no branch")
 
 
 @pytest.mark.asyncio
@@ -199,34 +201,36 @@ async def test_branch_filtering_grandchild_sees_grandparent():
   invocation_context = await testing_utils.create_invocation_context(
       agent=agent
   )
-  # Set deeply nested branch: grandparent.parent.grandchild
-  invocation_context.branch = "grandparent_agent.parent_agent.grandchild_agent"
+  # Set deeply nested branch: grandchild has tokens {1, 2, 3}
+  # (inherited 1 from grandparent, 2 from parent, got 3 from its own fork)
+  invocation_context.branch = Branch(tokens=frozenset({1, 2, 3}))
 
   # Add events from all levels of hierarchy
+  inv_id = invocation_context.invocation_id
   events = [
       Event(
-          invocation_id="inv1",
+          invocation_id=inv_id,
           author="grandparent_agent",
           content=types.ModelContent("Grandparent response"),
-          branch="grandparent_agent",
+          branch=Branch(tokens=frozenset({1})),  # Should be visible ({1} ⊆ {1,2,3})
       ),
       Event(
-          invocation_id="inv2",
+          invocation_id=inv_id,
           author="parent_agent",
           content=types.ModelContent("Parent response"),
-          branch="grandparent_agent.parent_agent",
+          branch=Branch(tokens=frozenset({1, 2})),  # Should be visible ({1,2} ⊆ {1,2,3})
       ),
       Event(
-          invocation_id="inv3",
+          invocation_id=inv_id,
           author="grandchild_agent",
           content=types.ModelContent("Grandchild response"),
-          branch="grandparent_agent.parent_agent.grandchild_agent",
+          branch=Branch(tokens=frozenset({1, 2, 3})),  # Should be visible (same)
       ),
       Event(
-          invocation_id="inv4",
+          invocation_id=inv_id,
           author="sibling_agent",
           content=types.ModelContent("Sibling response"),
-          branch="grandparent_agent.parent_agent.sibling_agent",
+          branch=Branch(tokens=frozenset({1, 2, 4})),  # Should be excluded ({1,2,4} ⊄ {1,2,3})
       ),
   ]
   invocation_context.session.events = events
@@ -258,33 +262,35 @@ async def test_branch_filtering_parent_cannot_see_child():
   invocation_context = await testing_utils.create_invocation_context(
       agent=agent
   )
-  # Set current branch as parent
-  invocation_context.branch = "parent_agent"
+  # Set current branch as parent with token {1}
+  invocation_context.branch = Branch(tokens=frozenset({1}))
 
   # Add events from parent and its children
+  inv_id = invocation_context.invocation_id
   events = [
       Event(
-          invocation_id="inv1",
+          invocation_id=inv_id,
           author="user",
           content=types.UserContent("User message"),
+          branch=Branch(),  # Root - visible to all
       ),
       Event(
-          invocation_id="inv2",
+          invocation_id=inv_id,
           author="parent_agent",
           content=types.ModelContent("Parent response"),
-          branch="parent_agent",
+          branch=Branch(tokens=frozenset({1})),  # Should be visible (same)
       ),
       Event(
-          invocation_id="inv3",
+          invocation_id=inv_id,
           author="child_agent",
           content=types.ModelContent("Child response"),
-          branch="parent_agent.child_agent",
+          branch=Branch(tokens=frozenset({1, 2})),  # Should be excluded ({1,2} ⊄ {1})
       ),
       Event(
-          invocation_id="inv4",
+          invocation_id=inv_id,
           author="grandchild_agent",
           content=types.ModelContent("Grandchild response"),
-          branch="parent_agent.child_agent.grandchild_agent",
+          branch=Branch(tokens=frozenset({1, 2, 3})),  # Should be excluded ({1,2,3} ⊄ {1})
       ),
   ]
   invocation_context.session.events = events

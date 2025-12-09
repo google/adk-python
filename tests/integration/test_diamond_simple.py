@@ -26,7 +26,7 @@ from google.adk.agents.llm_agent import Agent
 from google.adk.agents.parallel_agent import ParallelAgent
 from google.adk.agents.sequential_agent import SequentialAgent
 from google.adk.agents.loop_agent import LoopAgent
-from google.adk.agents.branch_context import TokenFactory
+from google.adk.agents.branch import TokenFactory
 
 
 def test_diamond_simple():

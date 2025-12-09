@@ -28,6 +28,8 @@ try:
   from a2a.types import DataPart
   from a2a.types import Message
   from a2a.types import Role
+
+  from google.adk.agents.branch import Branch
   from a2a.types import Task
   from a2a.types import TaskState
   from a2a.types import TaskStatusUpdateEvent
@@ -44,7 +46,7 @@ try:
   from google.adk.a2a.converters.event_converter import convert_event_to_a2a_message
   from google.adk.a2a.converters.event_converter import DEFAULT_ERROR_MESSAGE
   from google.adk.a2a.converters.utils import ADK_METADATA_KEY_PREFIX
-  from google.adk.agents.branch_context import BranchContext
+  from google.adk.agents.branch import Branch
   from google.adk.agents.invocation_context import InvocationContext
   from google.adk.events.event import Event
   from google.adk.events.event_actions import EventActions
@@ -156,7 +158,7 @@ class TestEventConverter:
 
   def test_get_context_metadata_with_optional_fields(self):
     """Test context metadata creation with optional fields."""
-    self.mock_event.branch = BranchContext()
+    self.mock_event.branch = Branch()
     self.mock_event.error_code = "ERROR_001"
 
     mock_metadata = Mock()
@@ -617,7 +619,7 @@ class TestA2AToEventConverters:
     """Set up test fixtures."""
     self.mock_invocation_context = Mock(spec=InvocationContext)
     self.mock_invocation_context.invocation_id = "test-invocation-id"
-    self.mock_invocation_context.branch = BranchContext()
+    self.mock_invocation_context.branch = Branch()
 
   def test_convert_a2a_task_to_event_with_artifacts_priority(self):
     """Test convert_a2a_task_to_event prioritizes artifacts over status/history."""
@@ -751,7 +753,7 @@ class TestA2AToEventConverters:
 
     # Verify minimal event was created with correct invocation_id
     assert result.author == "test-author"
-    assert isinstance(result.branch, BranchContext)
+    assert isinstance(result.branch, Branch)
     assert result.invocation_id == "test-invocation-id"
 
   @patch("google.adk.a2a.converters.event_converter.uuid.uuid4")
@@ -772,7 +774,7 @@ class TestA2AToEventConverters:
 
     # Verify default author was used and UUID was generated for invocation_id
     assert result.author == "a2a agent"
-    assert isinstance(result.branch, BranchContext)
+    assert isinstance(result.branch, Branch)
     assert result.invocation_id == "generated-uuid"
 
   def test_convert_a2a_task_to_event_none_task(self):
@@ -827,7 +829,7 @@ class TestA2AToEventConverters:
 
     # Verify conversion was successful
     assert result.author == "test-author"
-    assert isinstance(result.branch, BranchContext)
+    assert isinstance(result.branch, Branch)
     assert result.invocation_id == "test-invocation-id"
     assert result.content.role == "model"
     assert len(result.content.parts) == 1
@@ -1018,5 +1020,5 @@ class TestA2AToEventConverters:
 
     # Verify default author was used and UUID was generated for invocation_id
     assert result.author == "a2a agent"
-    assert result.branch is None
+    assert result.branch == Branch()  # Default is root branch (empty tokens)
     assert result.invocation_id == "generated-uuid"

@@ -16,6 +16,7 @@ import asyncio
 from typing import Any
 from typing import Callable
 
+from google.adk.agents.branch import Branch
 from google.adk.agents.llm_agent import Agent
 from google.adk.events.event import Event
 from google.adk.flows.llm_flows.functions import find_matching_function_call
@@ -1009,7 +1010,7 @@ def test_merge_parallel_function_response_events_preserves_other_attributes():
   """Test that merge_parallel_function_response_events preserves other attributes from base event."""
   invocation_id = 'base_invocation_123'
   base_author = 'base_agent'
-  base_branch = 'main_branch'
+  base_branch = Branch(tokens=frozenset({1}))
 
   function_response1 = types.FunctionResponse(
       id='func_123', name='test_function1', response={'result': 'success1'}

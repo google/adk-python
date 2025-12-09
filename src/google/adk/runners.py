@@ -1211,7 +1211,7 @@ class Runner:
     # easier and preventing token values from growing unbounded. Token reuse
     # across invocations is safe because branch filtering only applies within
     # the current invocation (events from other invocations are always visible).
-    from .agents.branch_context import TokenFactory
+    from .agents.branch import TokenFactory
     TokenFactory.reset()
 
     if run_config.support_cfc and isinstance(self.agent, LlmAgent):

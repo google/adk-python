@@ -22,7 +22,7 @@ from typing import Optional
 from google.genai import types
 from typing_extensions import override
 
-from ...agents.branch_context import BranchContext
+from ...agents.branch import Branch
 from ...agents.invocation_context import InvocationContext
 from ...events.event import Event
 from ...models.llm_request import LlmRequest
@@ -631,7 +631,7 @@ def _merge_function_response_events(
 
 
 def _is_event_belongs_to_branch(
-    invocation_branch: BranchContext,
+    invocation_branch: Branch,
     event: Event,
     current_invocation_id: str = '',
 ) -> bool:
@@ -663,7 +663,7 @@ def _is_event_belongs_to_branch(
     return True
   
   # Events without BranchContext are from old code or don't use branch filtering
-  if not isinstance(event.branch, BranchContext):
+  if not isinstance(event.branch, Branch):
     return True
   
   # Events with empty branch (root) are visible to all

@@ -18,8 +18,8 @@ from __future__ import annotations
 
 import pytest
 
-from google.adk.agents.branch_context import BranchContext
-from google.adk.agents.branch_context import TokenFactory
+from google.adk.agents.branch import Branch
+from google.adk.agents.branch import TokenFactory
 
 
 class TestTokenFactory:
@@ -67,27 +67,27 @@ class TestBranchContext:
 
   def test_initialization_default(self):
     """Test that default initialization creates root context."""
-    ctx = BranchContext()
+    ctx = Branch()
     assert ctx.tokens == frozenset()
 
   def test_initialization_with_tokens(self):
     """Test initialization with specific tokens."""
-    ctx = BranchContext(tokens=frozenset({1, 2, 3}))
+    ctx = Branch(tokens=frozenset({1, 2, 3}))
     assert ctx.tokens == frozenset({1, 2, 3})
 
   def test_fork_creates_n_children(self):
     """Test that fork creates the correct number of child contexts."""
     TokenFactory._next = 0
-    parent = BranchContext()
+    parent = Branch()
     children = parent.fork(3)
     
     assert len(children) == 3
-    assert all(isinstance(c, BranchContext) for c in children)
+    assert all(isinstance(c, Branch) for c in children)
 
   def test_fork_children_have_unique_tokens(self):
     """Test that each forked child has a unique token."""
     TokenFactory._next = 0
-    parent = BranchContext(tokens=frozenset({0}))
+    parent = Branch(tokens=frozenset({0}))
     children = parent.fork(3)
     
     # Each child should have parent tokens plus one new unique token
@@ -106,7 +106,7 @@ class TestBranchContext:
   def test_fork_children_inherit_parent_tokens(self):
     """Test that forked children inherit all parent tokens."""
     TokenFactory._next = 0
-    parent = BranchContext(tokens=frozenset({10, 20, 30}))
+    parent = Branch(tokens=frozenset({10, 20, 30}))
     children = parent.fork(2)
     
     for child in children:
@@ -115,10 +115,10 @@ class TestBranchContext:
   def test_join_unions_all_tokens(self):
     """Test that join creates union of all token sets."""
     TokenFactory._next = 0
-    parent = BranchContext(tokens=frozenset({0}))
-    child1 = BranchContext(tokens=frozenset({0, 1}))
-    child2 = BranchContext(tokens=frozenset({0, 2}))
-    child3 = BranchContext(tokens=frozenset({0, 3}))
+    parent = Branch(tokens=frozenset({0}))
+    child1 = Branch(tokens=frozenset({0, 1}))
+    child2 = Branch(tokens=frozenset({0, 2}))
+    child3 = Branch(tokens=frozenset({0, 3}))
     
     joined = parent.join([child1, child2, child3])
     
@@ -126,10 +126,10 @@ class TestBranchContext:
 
   def test_can_see_subset_relationship(self):
     """Test that can_see implements correct subset logic."""
-    parent = BranchContext(tokens=frozenset({1, 2, 3, 4}))
-    event1 = BranchContext(tokens=frozenset({1, 2}))
-    event2 = BranchContext(tokens=frozenset({1, 2, 3}))
-    event3 = BranchContext(tokens=frozenset({1, 2, 3, 4, 5}))
+    parent = Branch(tokens=frozenset({1, 2, 3, 4}))
+    event1 = Branch(tokens=frozenset({1, 2}))
+    event2 = Branch(tokens=frozenset({1, 2, 3}))
+    event3 = Branch(tokens=frozenset({1, 2, 3, 4, 5}))
     
     # Parent can see events whose tokens are subsets
     assert parent.can_see(event1)  # {1,2} ⊆ {1,2,3,4}
@@ -140,8 +140,8 @@ class TestBranchContext:
 
   def test_can_see_empty_context(self):
     """Test visibility with empty (root) contexts."""
-    root = BranchContext()
-    child = BranchContext(tokens=frozenset({1}))
+    root = Branch()
+    child = Branch(tokens=frozenset({1}))
     
     # Root can see itself
     assert root.can_see(root)
@@ -154,7 +154,7 @@ class TestBranchContext:
 
   def test_copy_creates_independent_instance(self):
     """Test that copy creates a new independent instance."""
-    original = BranchContext(tokens=frozenset({1, 2, 3}))
+    original = Branch(tokens=frozenset({1, 2, 3}))
     copied = original.copy()
     
     assert original.tokens == copied.tokens
@@ -163,9 +163,9 @@ class TestBranchContext:
 
   def test_equality(self):
     """Test equality based on token sets."""
-    ctx1 = BranchContext(tokens=frozenset({1, 2, 3}))
-    ctx2 = BranchContext(tokens=frozenset({1, 2, 3}))
-    ctx3 = BranchContext(tokens=frozenset({1, 2}))
+    ctx1 = Branch(tokens=frozenset({1, 2, 3}))
+    ctx2 = Branch(tokens=frozenset({1, 2, 3}))
+    ctx3 = Branch(tokens=frozenset({1, 2}))
     
     assert ctx1 == ctx2
     assert ctx1 != ctx3
@@ -173,9 +173,9 @@ class TestBranchContext:
 
   def test_hashable(self):
     """Test that BranchContext can be used in sets and dicts."""
-    ctx1 = BranchContext(tokens=frozenset({1, 2}))
-    ctx2 = BranchContext(tokens=frozenset({1, 2}))
-    ctx3 = BranchContext(tokens=frozenset({3, 4}))
+    ctx1 = Branch(tokens=frozenset({1, 2}))
+    ctx2 = Branch(tokens=frozenset({1, 2}))
+    ctx3 = Branch(tokens=frozenset({3, 4}))
     
     # Should be able to add to set
     context_set = {ctx1, ctx2, ctx3}
@@ -188,10 +188,10 @@ class TestBranchContext:
 
   def test_str_representation(self):
     """Test string representation."""
-    root = BranchContext()
+    root = Branch()
     assert str(root) == "BranchContext(root)"
     
-    ctx = BranchContext(tokens=frozenset({3, 1, 2}))
+    ctx = Branch(tokens=frozenset({3, 1, 2}))
     # Should show sorted tokens
     assert str(ctx) == "BranchContext([1, 2, 3])"
 
@@ -200,7 +200,7 @@ class TestBranchContext:
     TokenFactory._next = 0
     
     # Root context
-    root = BranchContext()
+    root = Branch()
     
     # First parallel agent forks to 2 children
     parallel1_children = root.fork(2)
@@ -233,7 +233,7 @@ class TestBranchContext:
 
   def test_pydantic_serialization(self):
     """Test that BranchContext can be serialized by Pydantic."""
-    ctx = BranchContext(tokens=frozenset({1, 2, 3}))
+    ctx = Branch(tokens=frozenset({1, 2, 3}))
     
     # Test model_dump (Pydantic serialization)
     dumped = ctx.model_dump()
@@ -242,12 +242,12 @@ class TestBranchContext:
     assert set(dumped['tokens']) == {1, 2, 3}
     
     # Test round-trip
-    restored = BranchContext(**dumped)
+    restored = Branch(**dumped)
     assert restored.tokens == ctx.tokens
 
   def test_immutability(self):
     """Test that BranchContext is immutable (frozen)."""
-    ctx = BranchContext(tokens=frozenset({1, 2, 3}))
+    ctx = Branch(tokens=frozenset({1, 2, 3}))
     
     # Should not be able to modify tokens
     with pytest.raises(Exception):  # Pydantic raises ValidationError or AttributeError
@@ -272,7 +272,7 @@ class TestGitHubIssue3470Scenarios:
     TokenFactory._next = 0
     
     # Root context
-    root = BranchContext()
+    root = Branch()
     
     # Sequential agent S1 has sub-agents: [Parallel1, Reducer1]
     # Parallel1 forks into A, B, C
@@ -311,7 +311,7 @@ class TestGitHubIssue3470Scenarios:
     """
     TokenFactory._next = 0
     
-    root = BranchContext()
+    root = Branch()
     
     # Top-level parallel splits into two sequential branches
     top_parallel_children = root.fork(2)
@@ -394,7 +394,7 @@ class TestGitHubIssue3470Scenarios:
     """
     TokenFactory._next = 0
     
-    root = BranchContext()
+    root = Branch()
     
     # === PARALLEL GROUP 1: A, B, C ===
     parallel1_children = root.fork(3)

@@ -36,7 +36,7 @@ from ..tools.base_tool import BaseTool
 from .active_streaming_tool import ActiveStreamingTool
 from .base_agent import BaseAgent
 from .base_agent import BaseAgentState
-from .branch_context import BranchContext
+from .branch import Branch
 from .context_cache_config import ContextCacheConfig
 from .live_request_queue import LiveRequestQueue
 from .run_config import RunConfig
@@ -150,7 +150,7 @@ class InvocationContext(BaseModel):
 
   invocation_id: str
   """The id of this invocation context. Readonly."""
-  branch: BranchContext = Field(default_factory=BranchContext)
+  branch: Branch = Field(default_factory=Branch)
   """The branch context tracking event provenance for visibility filtering.
 
   Uses a token-set approach to determine which events an agent can see within
@@ -370,7 +370,7 @@ class InvocationContext(BaseModel):
       results = [
           event
           for event in results
-          if isinstance(event.branch, BranchContext)
+          if isinstance(event.branch, Branch)
           and self.branch.can_see(event.branch)
       ]
     return results

@@ -25,6 +25,7 @@ import sys
 from typing import Any
 from typing import Optional
 
+from google.adk.agents.branch import Branch
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
 from google.adk.sessions import _session_util
@@ -258,11 +259,15 @@ def _row_to_event(row: dict) -> Event:
   if not timestamp:
     raise ValueError(f"Event {event_id} must have a timestamp.")
 
+  # Convert string branch to BranchContext (legacy format)
+  branch_str = row.get("branch")
+  branch = Branch() if not branch_str else Branch()
+
   return Event(
       id=event_id,
       invocation_id=row.get("invocation_id", ""),
       author=row.get("author", "agent"),
-      branch=row.get("branch"),
+      branch=branch,
       actions=actions,
       timestamp=timestamp.replace(tzinfo=timezone.utc).timestamp(),
       long_running_tool_ids=long_running_tool_ids,
