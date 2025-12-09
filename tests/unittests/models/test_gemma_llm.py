@@ -504,3 +504,28 @@ def test_process_response_last_json_object():
   assert part.function_call.name == "second_call"
   assert part.function_call.args == {"b": 2}
   assert part.text is None
+
+
+# Tests for Gemma3Ollama (only run when LiteLLM is installed)
+try:
+  from google.adk.models.gemma_llm import Gemma3Ollama
+
+  def test_gemma3_ollama_supported_models():
+    assert Gemma3Ollama.supported_models() == [r"ollama/gemma3.*"]
+
+  @pytest.mark.parametrize(
+      "model_arg,expected_model",
+      [
+          (None, "ollama/gemma3:12b"),
+          ("ollama/gemma3:27b", "ollama/gemma3:27b"),
+      ],
+  )
+  def test_gemma3_ollama_model(model_arg, expected_model):
+    model = (
+        Gemma3Ollama() if model_arg is None else Gemma3Ollama(model=model_arg)
+    )
+    assert model.model == expected_model
+
+except ImportError:
+  # LiteLLM not installed, skip Gemma3Ollama tests
+  pass

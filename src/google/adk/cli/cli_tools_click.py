@@ -1032,7 +1032,7 @@ def fast_api_common_options():
         show_default=True,
         default=False,
         help=(
-            "EXPERIMENTAL Optional. Whether to write OTel data to Google Cloud"
+            "Optional. Whether to write OTel data to Google Cloud"
             " Observability services - Cloud Trace and Cloud Logging."
         ),
     )
