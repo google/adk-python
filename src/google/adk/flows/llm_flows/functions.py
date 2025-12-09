@@ -834,7 +834,8 @@ async def _execute_streaming_tool_async(
       return
 
     # Create a queue to buffer results from the async generator
-    result_queue: asyncio.Queue[Optional[dict[str, Any]]] = asyncio.Queue()
+    # Queue can contain: dict results, non-dict types (e.g., strings), Exception objects, or None
+    result_queue: asyncio.Queue[Optional[Any]] = asyncio.Queue()
 
     # Background task to run the generator and put results in queue
     async def _run_generator():
