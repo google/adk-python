@@ -151,29 +151,7 @@ class InvocationContext(BaseModel):
   invocation_id: str
   """The id of this invocation context. Readonly."""
   branch: Branch = Field(default_factory=Branch)
-  """The branch context tracking event provenance for visibility filtering.
-
-  Uses a token-set approach to determine which events an agent can see within
-  the current invocation. When agents fork (parallel execution), each child 
-  receives a unique token. When they join, tokens are unioned. Events are 
-  visible if their branch tokens are a subset of the current context's tokens.
-
-  IMPORTANT: Branch filtering only applies WITHIN a single invocation. Events
-  from previous invocations are always visible. This is because branch tracking
-  is for parallel execution isolation, not historical context filtering.
-
-  Resets to empty frozenset() at the start of each invocation, ensuring:
-  - Parallel agents within an invocation can't see each other's outputs
-  - Sequential agents after parallel groups CAN see all parallel outputs
-  - All events from previous invocations remain visible
-
-  Example within one invocation:
-    - Root agent has tokens frozenset() (empty set)
-    - ParallelAgent forks to 2 children: {1}, {2}
-    - After join: {1,2}
-    - Events from {1} are visible to {1,2} because {1} ⊆ {1,2}
-    - Root events {} are visible to everyone because {} ⊆ any set
-  """
+  """The branch context tracking event provenance for visibility filtering."""
   agent: BaseAgent
   """The current agent of this invocation context. Readonly."""
   user_content: Optional[types.Content] = None
