@@ -733,10 +733,8 @@ class BaseLlmFlow(ABC):
 
     if has_streaming_tools:
       # Use streaming handler
-      tool_confirmation_dict = (
-          invocation_context.tool_confirmation_dict
-          if hasattr(invocation_context, 'tool_confirmation_dict')
-          else None
+      tool_confirmation_dict = getattr(
+          invocation_context, 'tool_confirmation_dict', None
       )
       async for event in functions.handle_function_calls_async_with_streaming(
           invocation_context,
