@@ -1,10 +1,7 @@
 # ADK Skills Plugin: First-Class Dynamic Knowledge Injection Framework
 
-**Author:** Agent Development Kit Team
 **Status:** Proposal
 **Created:** December 2025
-**Version:** 2.0
-**Target Audience:** L6+ Tech Leads, ADK Core Team
 
 ---
 
@@ -1136,7 +1133,7 @@ class ConditionalSkillCallbacks(SkillCallbacks):
 
 ## 10. Rollout and Migration
 
-### 10.1 Phase 1: Core Framework (Q1 2026)
+### 10.1 Phase 1: Core Framework 
 
 **Deliverables:**
 - `google.adk.skills` module in ADK core
@@ -1155,7 +1152,7 @@ from google.adk.skills import (
 )
 ```
 
-### 10.2 Phase 2: Builtin Skills (Q2 2026)
+### 10.2 Phase 2: Builtin Skills 
 
 **Deliverables:**
 - BigQuery skills (BQML, AI Functions, Remote Models)
@@ -1176,14 +1173,14 @@ registry = SkillRegistry(
 )
 ```
 
-### 10.3 Phase 3: Toolset Integration (Q3 2026)
+### 10.3 Phase 3: Toolset Integration 
 
 **Deliverables:**
 - BigQueryToolset with enable_skills parameter
 - KubernetesToolset with enable_skills parameter
 - Auto-configuration patterns
 
-### 10.4 Phase 4: Skill Ecosystem (Q4 2026)
+### 10.4 Phase 4: Skill Ecosystem
 
 **Deliverables:**
 - Skill marketplace/registry
@@ -1411,7 +1408,3 @@ class SkillMetrics:
 3. [LlmAgent Callbacks Reference](https://cloud.google.com/docs/adk/callbacks)
 4. [BigQuery ML Documentation](https://cloud.google.com/bigquery/docs/bqml-introduction)
 5. [BigQuery AI Functions](https://cloud.google.com/bigquery/docs/ai-functions)
-
----
-
-*Document Version: 2.0 | Last Updated: December 2025 | Status: Proposal*
