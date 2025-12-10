@@ -48,19 +48,54 @@ def _create_branch_ctx_for_sub_agent(
   return invocation_context
 
 
+async def _merge_agent_run(
+    agent_runs: list[AsyncGenerator[Event, None]],
+) -> AsyncGenerator[Event, None]:
+  """Merges agent runs using asyncio.TaskGroup on Python 3.11+."""
+  sentinel = object()
+  queue = asyncio.Queue()
+
+  # Agents are processed in parallel.
+  # Events for each agent are put on queue sequentially.
+  async def process_an_agent(events_for_one_agent):
+    try:
+      async for event in events_for_one_agent:
+        resume_signal = asyncio.Event()
+        await queue.put((event, resume_signal))
+        # Wait for upstream to consume event before generating new events.
+        await resume_signal.wait()
+    finally:
+      # Mark agent as finished.
+      await queue.put((sentinel, None))
+
+  async with asyncio.TaskGroup() as tg:
+    for events_for_one_agent in agent_runs:
+      tg.create_task(process_an_agent(events_for_one_agent))
+
+    sentinel_count = 0
+    # Run until all agents finished processing.
+    while sentinel_count < len(agent_runs):
+      event, resume_signal = await queue.get()
+      # Agent finished processing.
+      if event is sentinel:
+        sentinel_count += 1
+      else:
+        yield event
+        # Signal to agent that it should generate next event.
+        resume_signal.set()
+
+
 # TODO - remove once Python <3.11 is no longer supported.
 async def _merge_agent_run_pre_3_11(
     agent_runs: list[AsyncGenerator[Event, None]],
 ) -> AsyncGenerator[Event, None]:
-  """Merges the agent run event generator.
-  This version works in Python 3.9 and 3.10 and uses custom replacement for
-  asyncio.TaskGroup for tasks cancellation and exception handling.
+  """Merges agent runs for Python 3.10 without asyncio.TaskGroup.
 
-  This implementation guarantees for each agent, it won't move on until the
-  generated event is processed by upstream runner.
+  Uses custom cancellation and exception handling to mirror TaskGroup
+  semantics. Each agent waits until the runner processes emitted events.
 
   Args:
-      agent_runs: A list of async generators that yield events from each agent.
+      agent_runs: Async generators that yield events from each agent.
 
   Yields:
       Event: The next event from the merged generator.
@@ -112,53 +147,6 @@ async def _merge_agent_run_pre_3_11(
       task.cancel()
 
 
-async def _merge_agent_run(
-    agent_runs: list[AsyncGenerator[Event, None]],
-) -> AsyncGenerator[Event, None]:
-  """Merges the agent run event generator.
-
-  This implementation guarantees for each agent, it won't move on until the
-  generated event is processed by upstream runner.
-
-  Args:
-      agent_runs: A list of async generators that yield events from each agent.
-
-  Yields:
-      Event: The next event from the merged generator.
-  """
-  sentinel = object()
-  queue = asyncio.Queue()
-
-  # Agents are processed in parallel.
-  # Events for each agent are put on queue sequentially.
-  async def process_an_agent(events_for_one_agent):
-    try:
-      async for event in events_for_one_agent:
-        resume_signal = asyncio.Event()
-        await queue.put((event, resume_signal))
-        # Wait for upstream to consume event before generating new events.
-        await resume_signal.wait()
-    finally:
-      # Mark agent as finished.
-      await queue.put((sentinel, None))
-
-  async with asyncio.TaskGroup() as tg:
-    for events_for_one_agent in agent_runs:
-      tg.create_task(process_an_agent(events_for_one_agent))
-
-    sentinel_count = 0
-    # Run until all agents finished processing.
-    while sentinel_count < len(agent_runs):
-      event, resume_signal = await queue.get()
-      # Agent finished processing.
-      if event is sentinel:
-        sentinel_count += 1
-      else:
-        yield event
-        # Signal to agent that it should generate next event.
-        resume_signal.set()
-
-
 class ParallelAgent(BaseAgent):
   """A shell agent that runs its sub-agents in parallel in an isolated manner.
 
@@ -195,13 +183,11 @@ class ParallelAgent(BaseAgent):
 
     pause_invocation = False
     try:
-      # TODO remove if once Python <3.11 is no longer supported.
       merge_func = (
           _merge_agent_run
           if sys.version_info >= (3, 11)
           else _merge_agent_run_pre_3_11
       )
-
       async with Aclosing(merge_func(agent_runs)) as agen:
         async for event in agen:
           yield event

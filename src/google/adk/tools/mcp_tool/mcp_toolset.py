@@ -25,6 +25,8 @@ from typing import TextIO
 from typing import Union
 import warnings
 
+from mcp import StdioServerParameters
+from mcp.types import ListToolsResult
 from pydantic import model_validator
 from typing_extensions import override
 
@@ -41,23 +43,6 @@ from .mcp_session_manager import retry_on_errors
 from .mcp_session_manager import SseConnectionParams
 from .mcp_session_manager import StdioConnectionParams
 from .mcp_session_manager import StreamableHTTPConnectionParams
-
-# Attempt to import MCP Tool from the MCP library, and hints user to upgrade
-# their Python version to 3.10 if it fails.
-try:
-  from mcp import StdioServerParameters
-  from mcp.types import ListToolsResult
-except ImportError as e:
-  import sys
-
-  if sys.version_info < (3, 10):
-    raise ImportError(
-        "MCP Tool requires Python 3.10 or above. Please upgrade your Python"
-        " version."
-    ) from e
-  else:
-    raise e
-
 from .mcp_tool import MCPTool
 
 logger = logging.getLogger("google_adk." + __name__)

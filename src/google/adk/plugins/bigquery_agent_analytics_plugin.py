@@ -321,6 +321,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       dataset_id: str,
       table_id: str = "agent_events",
       config: Optional[BigQueryLoggerConfig] = None,
+      location: str = "US",
       **kwargs,
   ):
     """Initializes the BigQueryAgentAnalyticsPlugin.
@@ -338,6 +339,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         dataset_id,
         table_id,
     )
+    self._location = location
     self._config = config if config else BigQueryLoggerConfig()
     self._bq_client: bigquery.Client | None = None
     self._write_client: BigQueryWriteAsyncClient | None = None
@@ -458,7 +460,10 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
             user_agent=f"google-adk-bq-logger/{version.__version__}"
         )
         self._bq_client = bigquery.Client(
-            project=self._project_id, credentials=creds, client_info=client_info
+            project=self._project_id,
+            credentials=creds,
+            client_info=client_info,
+            location=self._location,
         )
 
         # Ensure table exists (sync call in thread)

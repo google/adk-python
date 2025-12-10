@@ -24,6 +24,7 @@ import logging
 import os
 from pathlib import Path
 import tempfile
+import textwrap
 from typing import Optional
 
 import click
@@ -106,6 +107,18 @@ class HelpfulCommand(click.Command):
 
 
 logger = logging.getLogger("google_adk." + __name__)
+
+
+_ADK_WEB_WARNING = (
+    "ADK Web is for development purposes. It has access to all data and"
+    " should not be used in production."
+)
+
+
+def _warn_if_with_ui(with_ui: bool) -> None:
+  """Warn when deploying with the developer UI enabled."""
+  if with_ui:
+    click.secho(f"WARNING: {_ADK_WEB_WARNING}", fg="yellow", err=True)
 
 
 @click.group(context_settings={"max_content_width": 240})
@@ -354,7 +367,62 @@ def validate_exclusive(ctx, param, value):
   return value
 
 
+def adk_services_options():
+  """Decorator to add ADK services options to click commands."""
+
+  def decorator(func):
+    @click.option(
+        "--session_service_uri",
+        help=textwrap.dedent(
+            """\
+            Optional. The URI of the session service.
+            - Leave unset to use the in-memory session service (default).
+            - Use 'agentengine://<agent_engine>' to connect to Agent Engine
+              sessions. <agent_engine> can either be the full qualified resource
+              name 'projects/abc/locations/us-central1/reasoningEngines/123' or
+              the resource id '123'.
+            - Use 'memory://' to run with the in-memory session service.
+            - Use 'sqlite://<path_to_sqlite_file>' to connect to a SQLite DB.
+            - See https://docs.sqlalchemy.org/en/20/core/engines.html#backend-specific-urls for more details on supported database URIs."""
+        ),
+    )
+    @click.option(
+        "--artifact_service_uri",
+        type=str,
+        help=textwrap.dedent(
+            """\
+            Optional. The URI of the artifact service.
+            - Leave unset to store artifacts under '.adk/artifacts' locally.
+            - Use 'gs://<bucket_name>' to connect to the GCS artifact service.
+            - Use 'memory://' to force the in-memory artifact service.
+            - Use 'file://<path>' to store artifacts in a custom local directory."""
+        ),
+        default=None,
+    )
+    @click.option(
+        "--memory_service_uri",
+        type=str,
+        help=textwrap.dedent("""\
+            Optional. The URI of the memory service.
+            - Use 'rag://<rag_corpus_id>' to connect to Vertex AI Rag Memory Service.
+            - Use 'agentengine://<agent_engine>' to connect to Agent Engine
+              sessions. <agent_engine> can either be the full qualified resource
+              name 'projects/abc/locations/us-central1/reasoningEngines/123' or
+              the resource id '123'.
+            - Use 'memory://' to force the in-memory memory service."""),
+        default=None,
+    )
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+      return func(*args, **kwargs)
+
+    return wrapper
+
+  return decorator
+
+
 @main.command("run", cls=HelpfulCommand)
+@adk_services_options()
 @click.option(
     "--save_session",
     type=bool,
@@ -409,6 +477,9 @@ def cli_run(
     session_id: Optional[str],
     replay: Optional[str],
     resume: Optional[str],
+    session_service_uri: Optional[str] = None,
+    artifact_service_uri: Optional[str] = None,
+    memory_service_uri: Optional[str] = None,
 ):
   """Runs an interactive CLI for a certain agent.
 
@@ -419,6 +490,14 @@ def cli_run(
     adk run path/to/my_agent
   """
   logs.log_to_tmp_folder()
+
+  # Validation warning for memory_service_uri (not supported for adk run)
+  if memory_service_uri:
+    click.secho(
+        "WARNING: --memory_service_uri is not supported for adk run.",
+        fg="yellow",
+        err=True,
+    )
 
   agent_parent_folder = os.path.dirname(agent)
   agent_folder_name = os.path.basename(agent)
@@ -431,6 +510,8 @@ def cli_run(
           saved_session_file=resume,
           save_session=save_session,
           session_id=session_id,
+          session_service_uri=session_service_uri,
+          artifact_service_uri=artifact_service_uri,
       )
   )
 
@@ -557,7 +638,7 @@ def cli_eval(
     from ..evaluation.local_eval_set_results_manager import LocalEvalSetResultsManager
     from ..evaluation.local_eval_sets_manager import load_eval_set_from_file
     from ..evaluation.local_eval_sets_manager import LocalEvalSetsManager
-    from ..evaluation.user_simulator_provider import UserSimulatorProvider
+    from ..evaluation.simulation.user_simulator_provider import UserSimulatorProvider
     from .cli_eval import _collect_eval_results
     from .cli_eval import _collect_inferences
     from .cli_eval import get_root_agent
@@ -865,55 +946,6 @@ def web_options():
   return decorator
 
 
-def adk_services_options():
-  """Decorator to add ADK services options to click commands."""
-
-  def decorator(func):
-    @click.option(
-        "--session_service_uri",
-        help=(
-            """Optional. The URI of the session service.
-          - Use 'agentengine://<agent_engine>' to connect to Agent Engine
-            sessions. <agent_engine> can either be the full qualified resource
-            name 'projects/abc/locations/us-central1/reasoningEngines/123' or
-            the resource id '123'.
-          - Use 'sqlite://<path_to_sqlite_file>' to connect to an aio-sqlite
-            based session service, which is good for local development.
-          - Use 'postgresql://<user>:<password>@<host>:<port>/<database_name>'
-            to connect to a PostgreSQL DB.
-          - See https://docs.sqlalchemy.org/en/20/core/engines.html#backend-specific-urls
-            for more details on other database URIs supported by SQLAlchemy."""
-        ),
-    )
-    @click.option(
-        "--artifact_service_uri",
-        type=str,
-        help=(
-            "Optional. The URI of the artifact service,"
-            " supported URIs: gs://<bucket name> for GCS artifact service."
-        ),
-        default=None,
-    )
-    @click.option(
-        "--memory_service_uri",
-        type=str,
-        help=("""Optional. The URI of the memory service.
-            - Use 'rag://<rag_corpus_id>' to connect to Vertex AI Rag Memory Service.
-            - Use 'agentengine://<agent_engine>' to connect to Agent Engine
-              sessions. <agent_engine> can either be the full qualified resource
-              name 'projects/abc/locations/us-central1/reasoningEngines/123' or
-              the resource id '123'."""),
-        default=None,
-    )
-    @functools.wraps(func)
-    def wrapper(*args, **kwargs):
-      return func(*args, **kwargs)
-
-    return wrapper
-
-  return decorator
-
-
 def deprecated_adk_services_options():
   """Deprecated ADK services options."""
 
@@ -921,7 +953,7 @@ def deprecated_adk_services_options():
     if value:
       click.echo(
           click.style(
-              f"WARNING: Deprecated option {param.name} is used. Please use"
+              f"WARNING: Deprecated option --{param.name} is used. Please use"
               f" {alternative_param} instead.",
               fg="yellow",
           ),
@@ -1000,7 +1032,7 @@ def fast_api_common_options():
         show_default=True,
         default=False,
         help=(
-            "EXPERIMENTAL Optional. Whether to write OTel data to Google Cloud"
+            "Optional. Whether to write OTel data to Google Cloud"
             " Observability services - Cloud Trace and Cloud Logging."
         ),
     )
@@ -1116,6 +1148,8 @@ def cli_web(
 
     adk web --session_service_uri=[uri] --port=[port] path/to/agents_dir
   """
+  session_service_uri = session_service_uri or session_db_url
+  artifact_service_uri = artifact_service_uri or artifact_storage_uri
   logs.setup_adk_logger(getattr(logging, log_level.upper()))
 
   @asynccontextmanager
@@ -1140,8 +1174,6 @@ def cli_web(
         fg="green",
     )
 
-  session_service_uri = session_service_uri or session_db_url
-  artifact_service_uri = artifact_service_uri or artifact_storage_uri
   app = get_fast_api_app(
       agents_dir=agents_dir,
       session_service_uri=session_service_uri,
@@ -1215,10 +1247,10 @@ def cli_api_server(
 
     adk api_server --session_service_uri=[uri] --port=[port] path/to/agents_dir
   """
-  logs.setup_adk_logger(getattr(logging, log_level.upper()))
-
   session_service_uri = session_service_uri or session_db_url
   artifact_service_uri = artifact_service_uri or artifact_storage_uri
+  logs.setup_adk_logger(getattr(logging, log_level.upper()))
+
   config = uvicorn.Config(
       get_fast_api_app(
           agents_dir=agents_dir,
@@ -1407,6 +1439,8 @@ def cli_deploy_cloud_run(
         fg="yellow",
         err=True,
     )
+
+  _warn_if_with_ui(with_ui)
 
   session_service_uri = session_service_uri or session_db_url
   artifact_service_uri = artifact_service_uri or artifact_storage_uri
@@ -1792,6 +1826,7 @@ def cli_deploy_gke(
       --cluster_name=[cluster_name] path/to/my_agent
   """
   try:
+    _warn_if_with_ui(with_ui)
     cli_deploy.to_gke(
         agent_folder=agent,
         project=project,
