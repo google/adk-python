@@ -113,6 +113,7 @@ class AgentEvaluator:
       num_runs: int = NUM_RUNS,
       agent_name: Optional[str] = None,
       print_detailed_results: bool = True,
+      print_detailed_results_on_success: bool = False,
   ):
     """Evaluates an agent using the given EvalSet.
 
@@ -178,6 +179,7 @@ class AgentEvaluator:
       failures_per_eval_case = AgentEvaluator._process_metrics_and_get_failures(
           eval_metric_results=eval_metric_results,
           print_detailed_results=print_detailed_results,
+          print_detailed_results_on_success=print_detailed_results_on_success,
           agent_module=agent_name,
       )
 
@@ -200,6 +202,7 @@ class AgentEvaluator:
       agent_name: Optional[str] = None,
       initial_session_file: Optional[str] = None,
       print_detailed_results: bool = True,
+      print_detailed_results_on_success: bool = False,
   ):
     """Evaluates an Agent given eval data.
 
@@ -245,6 +248,7 @@ class AgentEvaluator:
           num_runs=num_runs,
           agent_name=agent_name,
           print_detailed_results=print_detailed_results,
+          print_detailed_results_on_success=print_detailed_results_on_success,
       )
 
   @staticmethod
@@ -648,6 +652,7 @@ class AgentEvaluator:
   def _process_metrics_and_get_failures(
       eval_metric_results: dict[str, list[_EvalMetricResultWithInvocation]],
       print_detailed_results: bool,
+      print_detailed_results_on_success: bool,
       agent_module: str,
   ) -> list[str]:
     """Returns a list of failures based on the score for each invocation."""
@@ -678,17 +683,25 @@ class AgentEvaluator:
 
       # Gather all the failures.
       if overall_eval_status != EvalStatus.PASSED:
-        if print_detailed_results:
-          AgentEvaluator._print_details(
-              eval_metric_result_with_invocations=eval_metric_results_with_invocations,
-              overall_eval_status=overall_eval_status,
-              overall_score=overall_score,
-              metric_name=metric_name,
-              threshold=threshold,
-          )
+        should_print = print_detailed_results
         failures.append(
             f"{metric_name} for {agent_module} Failed. Expected {threshold},"
             f" but got {overall_score}."
+        )
+      else:
+        should_print = (
+            print_detailed_results and print_detailed_results_on_success
+        )
+
+      if should_print:
+        AgentEvaluator._print_details(
+            eval_metric_result_with_invocations=(
+                eval_metric_results_with_invocations
+            ),
+            overall_eval_status=overall_eval_status,
+            overall_score=overall_score,
+            metric_name=metric_name,
+            threshold=threshold,
         )
 
     return failures
