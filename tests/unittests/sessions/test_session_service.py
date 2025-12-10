@@ -513,13 +513,13 @@ async def test_append_event_complete(service_type, tmp_path):
           prompt_token_count=1, candidates_token_count=1, total_token_count=2
       ),
       citation_metadata=types.CitationMetadata(),
-      custom_metadata={'custom_key': 'custom_value'},
+      custom_metadata={"custom_key": "custom_value"},
       input_transcription=types.Transcription(
-          text='input transcription',
+          text="input transcription",
           finished=True,
       ),
       output_transcription=types.Transcription(
-          text='output transcription',
+          text="output transcription",
           finished=True,
       ),
   )
@@ -546,8 +546,8 @@ async def test_session_last_update_time_updates_on_event(
     service_type, tmp_path
 ):
   session_service = get_session_service(service_type, tmp_path)
-  app_name = 'my_app'
-  user_id = 'user'
+  app_name = "my_app"
+  user_id = "user"
 
   session = await session_service.create_session(
       app_name=app_name, user_id=user_id
@@ -556,8 +556,8 @@ async def test_session_last_update_time_updates_on_event(
 
   event_timestamp = original_update_time + 10
   event = Event(
-      invocation_id='invocation',
-      author='user',
+      invocation_id="invocation",
+      author="user",
       timestamp=event_timestamp,
   )
   await session_service.append_event(session=session, event=event)
@@ -576,7 +576,7 @@ async def test_session_last_update_time_updates_on_event(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    'service_type',
+    "service_type",
     [
         SessionServiceType.IN_MEMORY,
         SessionServiceType.DATABASE,
@@ -585,15 +585,15 @@ async def test_session_last_update_time_updates_on_event(
 )
 async def test_get_session_with_config(service_type):
   session_service = get_session_service(service_type)
-  app_name = 'my_app'
-  user_id = 'user'
+  app_name = "my_app"
+  user_id = "user"
 
   session = await session_service.create_session(
       app_name=app_name, user_id=user_id
   )
   original_update_time = session.last_update_time
 
-  event = Event(invocation_id='invocation', author='user')
+  event = Event(invocation_id="invocation", author="user")
   await session_service.append_event(session=session, event=event)
 
   assert session.last_update_time >= event.timestamp
@@ -608,7 +608,7 @@ async def test_get_session_with_config(service_type):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    'service_type',
+    "service_type",
     [
         SessionServiceType.IN_MEMORY,
         SessionServiceType.DATABASE,
