@@ -561,11 +561,22 @@ def eval_options():
     help="Optional. Whether to print detailed results on console or not.",
 )
 @eval_options()
+@click.option(
+    "--print_detailed_results_on_success",
+    is_flag=True,
+    show_default=True,
+    default=False,
+    help=(
+        "Optional. Whether to print detailed results on console or not even if"
+        " the evaluation passed."
+    ),
+)
 def cli_eval(
     agent_module_file_path: str,
     eval_set_file_path_or_id: list[str],
     config_file_path: str,
     print_detailed_results: bool,
+    print_detailed_results_on_success: bool,
     eval_storage_uri: Optional[str] = None,
     log_level: str = "INFO",
 ):
@@ -780,10 +791,17 @@ def cli_eval(
   if print_detailed_results:
     for eval_result in eval_results:
       eval_result: EvalCaseResult
-      click.echo(
-          "********************************************************************"
+      
+      should_print = (
+          eval_result.final_eval_status != EvalStatus.PASSED
+          or print_detailed_results_on_success
       )
-      pretty_print_eval_result(eval_result)
+      
+      if should_print:
+        click.echo(
+            "********************************************************************"
+        )
+        pretty_print_eval_result(eval_result)
 
 
 @main.group("eval_set")
