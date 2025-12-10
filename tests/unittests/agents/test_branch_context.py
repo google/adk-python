@@ -482,4 +482,3 @@ class TestGitHubIssue3470Scenarios:
     # Parallel2 forks from {1,2,3}, so D gets {1,2,3,4}
     # Agent A has tokens {1}
     # Check: {1} ⊆ {1,2,3,4} = TRUE ✓
-

@@ -233,7 +233,9 @@ async def test_include_contents_none_multi_branch_current_turn():
           invocation_id=inv_id,
           author="cousin_agent",
           content=types.ModelContent("Cousin agent response"),
-          branch=Branch(tokens=frozenset({2})),  # Different branch - not visible
+          branch=Branch(
+              tokens=frozenset({2})
+          ),  # Different branch - not visible
       ),
   ]
   invocation_context.session.events = events

@@ -12,17 +12,28 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Integration tests for GitHub issue #3470.
+"""Integration tests for branch visibility in nested agent architectures.
 
-Tests two problematic architectures where reducers couldn't see outputs
-from parallel agents:
+Tests that agents in complex multi-agent orchestrations can correctly see
+events from previous agents using token-based branch tracking.
+
+Two key architectures tested:
 
 1. Nested Parallel + Reduce:
    Sequential[Parallel[A,B,C], Reducer1] in parallel with
    Sequential[Parallel[D,E,F], Reducer2], followed by Reducer3
 
-2. Simple Sequence of Parallels:
+   Tests that reducers can see outputs from their parallel groups, and
+   that a final reducer can see all nested outputs.
+
+2. Sequence of Parallels:
    Sequential[Parallel1[A,B,C], Parallel2[D,E,F], Parallel3[G,H,I]]
+
+   Tests that each subsequent parallel group can see outputs from all
+   previous parallel groups.
+
+Note: These tests validate the fix for GitHub issue #3470, where string-based
+branch prefixes failed to provide proper visibility across parallel groups.
 """
 
 from __future__ import annotations
@@ -55,6 +66,19 @@ def test_nested_parallel_reduce_architecture():
   - Same for D, E, F in Sequential2
   - Final reducer can see all previous events
   """
+  print("\n" + "=" * 70)
+  print("INTEGRATION TEST: Nested Parallel + Reduce (GitHub Issue #3470)")
+  print("=" * 70)
+  print("\nArchitecture:")
+  print("  Sequential[")
+  print("    Parallel[")
+  print("      Sequential[Parallel[Alice,Bob,Charlie], Reducer1],  ← Group 1")
+  print("      Sequential[Parallel[David,Eve,Frank], Reducer2]     ← Group 2")
+  print("    ],")
+  print("    Final_Reducer  ← Sees all outputs")
+  print("  ]")
+  print()
+
   # Group 1 agents
   agent_a = LlmAgent(
       name="Alice",
@@ -170,9 +194,13 @@ def test_nested_parallel_reduce_architecture():
 
   # Debug: print all events and their branches
   print("\n=== Token Distribution (Nested Parallel) ===")
+  print(f"  {'Agent':<15} {'Tokens':<30}")
+  print(f"  {'-'*15} {'-'*30}")
   for event in session.events:
     if event.author and event.branch:
-      print(f"{event.author:15} | tokens={event.branch.tokens}")
+      tokens_sorted = sorted(event.branch.tokens)
+      print(f"  {event.author:15} | tokens={tokens_sorted}")
+  print("=" * 70 + "\n")
 
   # Verify all agents ran
   agent_names = {event.author for event in session.events if event.author}
@@ -353,6 +381,17 @@ def test_sequence_of_parallel_agents():
   - D, E, F can all see A, B, C because {1}⊆{1,2,3,4}
   - Parallel3 forks from joined tokens and can see all previous events
   """
+  print("\n" + "=" * 70)
+  print("INTEGRATION TEST: Sequence of Parallels (GitHub Issue #3470)")
+  print("=" * 70)
+  print("\nArchitecture:")
+  print("  Sequential[")
+  print("    Parallel1[Alice, Bob, Charlie],    ← Group 1")
+  print("    Parallel2[David, Eve, Frank],      ← Group 2 (sees Group 1)")
+  print("    Parallel3[Grace, Henry, Iris]      ← Group 3 (sees Groups 1 & 2)")
+  print("  ]")
+  print()
+
   # Group 1
   agent_a_model = testing_utils.MockModel.create(responses=["I am Alice"])
   agent_a = LlmAgent(
@@ -511,9 +550,46 @@ def test_sequence_of_parallel_agents():
 
   # Print token sets for verification
   print("\n=== Token Distribution ===")
+  print(f"  {'Agent':<15} {'Tokens':<30} {'Can See'}")
+  print(f"  {'-'*15} {'-'*30} {'-'*40}")
+
+  # Organize events by group for clearer display
+  group1_agents = ["Alice", "Bob", "Charlie"]
+  group2_agents = ["David", "Eve", "Frank"]
+  group3_agents = ["Grace", "Henry", "Iris"]
+
+  print(f"  {'--- Group 1 ---':<15}")
   for event in session.events:
-    if event.author and event.branch:
-      print(f"{event.author:15} | tokens={event.branch.tokens}")
+    if event.author in group1_agents and event.branch:
+      tokens_sorted = str(sorted(event.branch.tokens))
+      print(f"  {event.author:15} | tokens={tokens_sorted:<28} {'Root'}")
+
+  print(f"  {'--- Group 2 ---':<15}")
+  for event in session.events:
+    if event.author in group2_agents and event.branch:
+      tokens_sorted = str(sorted(event.branch.tokens))
+      print(
+          f"  {event.author:15} |"
+          f" tokens={tokens_sorted:<28} {'Root, Group 1 (A,B,C)'}"
+      )
+
+  print(f"  {'--- Group 3 ---':<15}")
+  for event in session.events:
+    if event.author in group3_agents and event.branch:
+      tokens_sorted = str(sorted(event.branch.tokens))
+      print(
+          f"  {event.author:15} |"
+          f" tokens={tokens_sorted:<28} {'Root, Groups 1 & 2 (A-F)'}"
+      )
+
+  print("\nKey Observations:")
+  print("  ✓ Group 2 agents have tokens {1,2,3,...} - inherit from Group 1")
+  print(
+      "  ✓ Group 3 agents have tokens {1,2,3,4,5,6,...} - inherit from Groups"
+      " 1 & 2"
+  )
+  print("  ✓ Each agent can see all events with token subsets")
+  print("=" * 70 + "\n")
 
   # Verify LLM request contents - the actual text sent to the models
   # This is the critical test from the GitHub issue: does each parallel group
