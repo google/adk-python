@@ -383,17 +383,17 @@ async def test_evaluate_skips_failed_inference_results(
   assert len(results) == 3
   results_by_case = {result.eval_id: result for result in results}
 
-  failure_result = results_by_case['case_failure']
+  failure_result = results_by_case["case_failure"]
   assert failure_result.final_eval_status == EvalStatus.NOT_EVALUATED
   assert failure_result.overall_eval_metric_results == []
   assert failure_result.eval_metric_result_per_invocation == []
 
-  for case_id in ['case_success', 'case_unknown']:
+  for case_id in ["case_success", "case_unknown"]:
     case_result = results_by_case[case_id]
     assert case_result.final_eval_status == EvalStatus.PASSED
     assert len(case_result.overall_eval_metric_results) == 1
     assert (
-        case_result.overall_eval_metric_results[0].metric_name == 'fake_metric'
+        case_result.overall_eval_metric_results[0].metric_name == "fake_metric"
     )
     assert case_result.overall_eval_metric_results[0].score == 0.9
 

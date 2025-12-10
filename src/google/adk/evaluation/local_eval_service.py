@@ -268,13 +268,15 @@ class LocalEvalService(BaseEvalService):
         else 'test_user_id'
     )
 
-    if inference_result.status == InferenceStatus.FAILURE or \
-      inference_result.inferences is None:
+    if (
+        inference_result.status == InferenceStatus.FAILURE
+        or inference_result.inferences is None
+    ):
       logger.error(
           'Evaluation attempted on failed inference for eval case `%s`.'
           ' Error: %s',
           inference_result.eval_case_id,
-          inference_result.error_message
+          inference_result.error_message,
       )
       eval_case_result = await self._build_not_evaluated_eval_case_result(
           inference_result=inference_result,
