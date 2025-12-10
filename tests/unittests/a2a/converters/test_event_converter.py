@@ -772,7 +772,7 @@ class TestA2AToEventConverters:
 
     # Verify default author was used and UUID was generated for invocation_id
     assert result.author == "a2a agent"
-    assert isinstance(result.branch, Branch)
+    assert result.branch is None  # No invocation context means no branch
     assert result.invocation_id == "generated-uuid"
 
   def test_convert_a2a_task_to_event_none_task(self):
@@ -1018,5 +1018,5 @@ class TestA2AToEventConverters:
 
     # Verify default author was used and UUID was generated for invocation_id
     assert result.author == "a2a agent"
-    assert result.branch == Branch()  # Default is root branch (empty tokens)
+    assert result.branch is None  # No invocation context means no branch
     assert result.invocation_id == "generated-uuid"

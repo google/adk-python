@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from google.adk.agents.branch import Branch
 from google.adk.agents.llm_agent import Agent
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
@@ -207,25 +208,32 @@ async def test_include_contents_none_multi_branch_current_turn():
   invocation_context = await testing_utils.create_invocation_context(
       agent=agent
   )
+  # Set current branch - agent is in branch with token 1
+  invocation_context.branch = Branch(tokens=frozenset({1}))
 
   # Create multi-branch conversation where current turn starts from user
   # This can arise from having a Parallel Agent with two or more Sequential
   # Agents as sub agents, each with two Llm Agents as sub agents
+  # Use same invocation_id as context for branch filtering to work
+  inv_id = invocation_context.invocation_id
   events = [
       Event(
-          invocation_id="inv1",
+          invocation_id=inv_id,
           author="user",
           content=types.UserContent("First user message"),
+          branch=Branch(),  # Root branch - visible to all
       ),
       Event(
-          invocation_id="inv1",
+          invocation_id=inv_id,
           author="sibling_agent",
           content=types.ModelContent("Sibling agent response"),
+          branch=Branch(tokens=frozenset({1})),  # Same branch - visible
       ),
       Event(
-          invocation_id="inv1",
+          invocation_id=inv_id,
           author="cousin_agent",
           content=types.ModelContent("Cousin agent response"),
+          branch=Branch(tokens=frozenset({2})),  # Different branch - not visible
       ),
   ]
   invocation_context.session.events = events
