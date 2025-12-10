@@ -17,6 +17,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from google.adk.cli.utils.local_storage import create_local_database_session_service
+from google.adk.cli.utils.local_storage import create_local_session_service
 from google.adk.cli.utils.local_storage import PerAgentDatabaseSessionService
 from google.adk.sessions.sqlite_session_service import SqliteSessionService
 import pytest
@@ -46,6 +47,29 @@ async def test_per_agent_session_service_creates_scoped_dot_adk(
   assert agent_a_sessions.sessions[0].app_name == "agent_a"
   assert len(agent_b_sessions.sessions) == 1
   assert agent_b_sessions.sessions[0].app_name == "agent_b"
+
+
+@pytest.mark.asyncio
+async def test_per_agent_session_service_respects_app_name_alias(
+    tmp_path: Path,
+) -> None:
+  folder_name = "agent_folder"
+  logical_name = "custom_app"
+  (tmp_path / folder_name).mkdir()
+
+  service = create_local_session_service(
+      base_dir=tmp_path,
+      per_agent=True,
+      app_name_to_dir={logical_name: folder_name},
+  )
+
+  session = await service.create_session(
+      app_name=logical_name,
+      user_id="user",
+  )
+
+  assert session.app_name == logical_name
+  assert (tmp_path / folder_name / ".adk" / "session.db").exists()
 
 
 def test_create_local_database_session_service_returns_sqlite(

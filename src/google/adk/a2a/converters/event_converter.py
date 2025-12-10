@@ -140,6 +140,7 @@ def _get_context_metadata(
         ("custom_metadata", event.custom_metadata),
         ("usage_metadata", event.usage_metadata),
         ("error_code", event.error_code),
+        ("actions", event.actions),
     ]
 
     for field_name, field_value in optional_fields:

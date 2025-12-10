@@ -18,6 +18,7 @@ from google.adk.tools.google_tool import GoogleTool
 from google.adk.tools.spanner import SpannerCredentialsConfig
 from google.adk.tools.spanner import SpannerToolset
 from google.adk.tools.spanner.settings import SpannerToolSettings
+from google.adk.tools.spanner.settings import SpannerVectorStoreSettings
 import pytest
 
 
@@ -182,5 +183,52 @@ async def test_spanner_toolset_without_read_capability(
   assert all([isinstance(tool, GoogleTool) for tool in tools])
 
   expected_tool_names = set(returned_tools)
+  actual_tool_names = set([tool.name for tool in tools])
+  assert actual_tool_names == expected_tool_names
+
+
+@pytest.mark.asyncio
+async def test_spanner_toolset_with_vector_store_search():
+  """Test Spanner toolset with vector store search.
+
+  This test verifies the behavior of the Spanner toolset when vector store
+  settings is provided.
+  """
+  credentials_config = SpannerCredentialsConfig(
+      client_id="abc", client_secret="def"
+  )
+
+  spanner_tool_settings = SpannerToolSettings(
+      vector_store_settings=SpannerVectorStoreSettings(
+          project_id="test-project",
+          instance_id="test-instance",
+          database_id="test-database",
+          table_name="test-table",
+          content_column="test-content-column",
+          embedding_column="test-embedding-column",
+          vector_length=128,
+          vertex_ai_embedding_model_name="test-embedding-model",
+      )
+  )
+  toolset = SpannerToolset(
+      credentials_config=credentials_config,
+      spanner_tool_settings=spanner_tool_settings,
+  )
+  tools = await toolset.get_tools()
+  assert tools is not None
+
+  assert len(tools) == 8
+  assert all([isinstance(tool, GoogleTool) for tool in tools])
+
+  expected_tool_names = set([
+      "list_table_names",
+      "list_table_indexes",
+      "list_table_index_columns",
+      "list_named_schemas",
+      "get_table_schema",
+      "execute_sql",
+      "similarity_search",
+      "vector_store_similarity_search",
+  ])
   actual_tool_names = set([tool.name for tool in tools])
   assert actual_tool_names == expected_tool_names

@@ -20,30 +20,7 @@ Please do not rely on the implementation details.
 
 from __future__ import annotations
 
-from contextlib import AbstractAsyncContextManager
-from typing import Any
-from typing import AsyncGenerator
+from contextlib import aclosing
 
-
-class Aclosing(AbstractAsyncContextManager):
-  """Async context manager for safely finalizing an asynchronously cleaned-up
-  resource such as an async generator, calling its ``aclose()`` method.
-  Needed to correctly close contexts for OTel spans.
-  See https://github.com/google/adk-python/issues/1670#issuecomment-3115891100.
-
-  Based on
-  https://docs.python.org/3/library/contextlib.html#contextlib.aclosing
-  which is available in Python 3.10+.
-
-  TODO: replace all occurrences with contextlib.aclosing once Python 3.9 is no
-  longer supported.
-  """
-
-  def __init__(self, async_generator: AsyncGenerator[Any, None]):
-    self.async_generator = async_generator
-
-  async def __aenter__(self):
-    return self.async_generator
-
-  async def __aexit__(self, *exc_info):
-    await self.async_generator.aclose()
+# Re-export aclosing for backward compatibility
+Aclosing = aclosing

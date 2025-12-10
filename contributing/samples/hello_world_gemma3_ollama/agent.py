@@ -12,14 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import logging
 import random
 
 from google.adk.agents.llm_agent import Agent
-from google.adk.tools.tool_context import ToolContext
-from google.genai import types
+from google.adk.models import Gemma3Ollama
+
+litellm_logger = logging.getLogger("LiteLLM")
+litellm_logger.setLevel(logging.WARNING)
 
 
-def roll_die(sides: int, tool_context: ToolContext) -> int:
+def roll_die(sides: int) -> int:
   """Roll a die and return the rolled result.
 
   Args:
@@ -28,12 +31,7 @@ def roll_die(sides: int, tool_context: ToolContext) -> int:
   Returns:
     An integer of the result of rolling the die.
   """
-  result = random.randint(1, sides)
-  if not 'rolls' in tool_context.state:
-    tool_context.state['rolls'] = []
-
-  tool_context.state['rolls'] = tool_context.state['rolls'] + [result]
-  return result
+  return random.randint(1, sides)
 
 
 async def check_prime(nums: list[int]) -> str:
@@ -58,26 +56,24 @@ async def check_prime(nums: list[int]) -> str:
     if is_prime:
       primes.add(number)
   return (
-      'No prime numbers found.'
+      "No prime numbers found."
       if not primes
       else f"{', '.join(str(num) for num in primes)} are prime numbers."
   )
 
 
 root_agent = Agent(
-    model='gemini-live-2.5-flash-preview-native-audio-09-2025',  # vertex
-    # model='gemini-2.5-flash-native-audio-preview-09-2025',  # for AI studio
-    # key
-    name='roll_dice_agent',
+    model=Gemma3Ollama(),
+    name="data_processing_agent",
     description=(
-        'hello world agent that can roll a dice of 6 sides and check prime'
-        ' numbers.'
+        "hello world agent that can roll a dice of 8 sides and check prime"
+        " numbers."
     ),
     instruction="""
       You roll dice and answer questions about the outcome of the dice rolls.
-      You can roll dice of different sizes. When the user doesn't specify the number of sides, you should assume 6 sides.
-      You can use multiple tools in parallel by calling functions in parallel(in one request and in one round).
-      It is ok to discuss previous dice roles, and comment on the dice rolls.
+      You can roll dice of different sizes.
+      You can use multiple tools in parallel by calling functions in parallel (in one request and in one round).
+      It is ok to discuss previous dice rolls, and comment on the dice rolls.
       When you are asked to roll a die, you must call the roll_die tool with the number of sides. Be sure to pass in an integer. Do not pass in a string.
       You should never roll a die on your own.
       When checking prime numbers, call the check_prime tool with a list of integers. Be sure to pass in a list of integers. You should never pass in a string.
@@ -94,12 +90,4 @@ root_agent = Agent(
         roll_die,
         check_prime,
     ],
-    generate_content_config=types.GenerateContentConfig(
-        safety_settings=[
-            types.SafetySetting(  # avoid false alarm about rolling dice.
-                category=types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
-                threshold=types.HarmBlockThreshold.OFF,
-            ),
-        ]
-    ),
 )

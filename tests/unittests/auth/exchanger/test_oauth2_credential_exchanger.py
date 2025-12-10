@@ -341,6 +341,7 @@ class TestOAuth2CredentialExchanger:
         authorization_response="https://example.com/callback?code=auth_code",  # Normalized URI
         code="auth_code",
         grant_type=OAuthGrantType.AUTHORIZATION_CODE,
+        client_id="test_client_id",
     )
 
   @pytest.mark.asyncio
