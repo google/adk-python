@@ -58,13 +58,16 @@ LABEL_GUIDELINES = """
       - "tracing": Telemetry, observability, structured logs, or spans.
       - "core": Core ADK runtime (Agent definitions, Runner, planners,
         thinking config, CLI commands, GlobalInstructionPlugin, CPU usage, or
-        general orchestration). Default to "core" when the topic is about ADK
-        behavior and no other label is a better fit.
+        general orchestration including agent transfer for multi-agents system).
+        Default to "core" when the topic is about ADK behavior and no other
+        label is a better fit.
       - "agent engine": Vertex AI Agent Engine deployment or sandbox topics
         only (e.g., `.agent_engine_config.json`, `ae_ignore`, Agent Engine
         sandbox, `agent_engine_id`). If the issue does not explicitly mention
         Agent Engine concepts, do not use this label—choose "core" instead.
-      - "a2a": Agent-to-agent workflows, coordination logic, or A2A protocol.
+      - "a2a": A2A protocol, running agent as a2a agent with "--a2a" option for
+        remote agent to talk with. Talking to remote agent via RemoteA2aAgent.
+        NOT including those local multi-agent systems.
       - "bq": BigQuery integration or general issues related to BigQuery.
       - "workflow": Workflow agents and workflow execution.
       - "auth": Authentication or authorization issues.
