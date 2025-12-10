@@ -114,7 +114,7 @@ async def _build_llm_agent_skills(agent: LlmAgent) -> List[AgentSkill]:
           id=agent.name,
           name='model',
           description=agent_description,
-          examples=agent_examples,
+          examples=_extract_inputs_from_examples(agent_examples),
           input_modes=_get_input_modes(agent),
           output_modes=_get_output_modes(agent),
           tags=['llm'],
@@ -239,7 +239,7 @@ async def _build_non_llm_agent_skills(agent: BaseAgent) -> List[AgentSkill]:
           id=agent.name,
           name=agent_name,
           description=agent_description,
-          examples=agent_examples,
+          examples=_extract_inputs_from_examples(agent_examples),
           input_modes=_get_input_modes(agent),
           output_modes=_get_output_modes(agent),
           tags=[agent_type],
@@ -350,6 +350,7 @@ def _build_llm_agent_description_with_instructions(agent: LlmAgent) -> str:
 
 def _replace_pronouns(text: str) -> str:
   """Replace pronouns and conjugate common verbs for agent description.
+
   (e.g., "You are" -> "I am", "your" -> "my").
   """
   pronoun_map = {
@@ -458,6 +459,30 @@ def _get_default_description(agent: BaseAgent) -> str:
       return description
 
   return 'A custom agent'
+
+
+def _extract_inputs_from_examples(examples: Optional[list[dict]]) -> list[str]:
+  """Extracts only the input strings so they can be added to an AgentSkill."""
+  if not examples:
+    return []
+
+  example_strs = []
+
+  for example in examples:
+    if 'input' in example:
+      example_input = example['input']
+
+      if 'parts' in example_input and example_input['parts'] is not None:
+        example_input_strs = []
+        for part in example_input['parts']:
+          if 'text' in part and part['text'] is not None:
+            example_input_strs.append(part['text'])
+        example_strs.append('\n'.join(example_input_strs))
+
+      elif 'text' in example_input:
+        example_strs.append(example_input['text'])
+
+  return example_strs
 
 
 async def _extract_examples_from_agent(
