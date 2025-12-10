@@ -36,10 +36,14 @@ from opentelemetry.sdk.trace import TracerProvider
 from starlette.types import Lifespan
 from watchdog.observers import Observer
 
+from ..artifacts.in_memory_artifact_service import InMemoryArtifactService
 from ..auth.credential_service.in_memory_credential_service import InMemoryCredentialService
 from ..evaluation.local_eval_set_results_manager import LocalEvalSetResultsManager
 from ..evaluation.local_eval_sets_manager import LocalEvalSetsManager
+from ..memory.in_memory_memory_service import InMemoryMemoryService
 from ..runners import Runner
+from ..sessions.in_memory_session_service import InMemorySessionService
+from ..sessions.vertex_ai_session_service import VertexAiSessionService
 from .adk_web_server import AdkWebServer
 from .service_registry import load_services_module
 from .utils import envs
@@ -343,21 +347,28 @@ def get_fast_api_app(
           original_runner = await adk_web_server.get_runner_async(
               captured_app_name
           )
-          kwargs = {}
-          if original_runner.app:
-            kwargs["app"] = original_runner.app
-          else:
-            kwargs["app_name"] = original_runner.app_name
-            kwargs["agent"] = original_runner.agent
+          # Check if the session service is Agent Engine session Service
+          if isinstance(
+              original_runner.session_service, VertexAiSessionService
+          ):
+            # VertexAiSessionService is not compliant with A2A (impossible to create session on the fly with contextID)
+            # So, change it to InMemorySessionService. Put the other service in memory because persistence do not make sense
+            kwargs = {}
+            if original_runner.app:
+              kwargs["app"] = original_runner.app
+            else:
+              kwargs["app_name"] = original_runner.app_name
+              kwargs["agent"] = original_runner.agent
 
-          runner = Runner(
-              session_service=InMemorySessionService(),
-              artifact_service=InMemoryArtifactService(),
-              memory_service=InMemoryMemoryService(),
-              credential_service=InMemoryCredentialService(),
-              **kwargs,
-          )
-          return runner
+            runner = Runner(
+                session_service=InMemorySessionService(),
+                artifact_service=InMemoryArtifactService(),
+                memory_service=InMemoryMemoryService(),
+                credential_service=InMemoryCredentialService(),
+                **kwargs,
+            )
+            return runner
+          return original_runner
 
         return _get_a2a_runner_async
 

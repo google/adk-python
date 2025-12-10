@@ -30,9 +30,9 @@ from fastapi.testclient import TestClient
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.run_config import RunConfig
 from google.adk.apps.app import App
+from google.adk.artifacts.base_artifact_service import ArtifactVersion
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.adk.auth.credential_service.in_memory_credential_service import InMemoryCredentialService
-from google.adk.artifacts.base_artifact_service import ArtifactVersion
 from google.adk.cli.fast_api import get_fast_api_app
 from google.adk.errors.input_validation_error import InputValidationError
 from google.adk.evaluation.eval_case import EvalCase
@@ -47,6 +47,7 @@ from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.sessions.session import Session
 from google.adk.sessions.state import State
+from google.adk.sessions.vertex_ai_session_service import VertexAiSessionService
 from google.genai import types
 from pydantic import BaseModel
 import pytest
@@ -1165,7 +1166,7 @@ def test_a2a_runner_factory_creates_isolated_runner(temp_agents_dir_with_a2a):
   original_runner = Runner(
       agent=MagicMock(),
       app_name="test_app",
-      session_service=MagicMock(),
+      session_service=VertexAiSessionService(),
   )
   original_runner.memory_service = MagicMock()
   original_runner.artifact_service = MagicMock()
@@ -1228,6 +1229,7 @@ def test_a2a_runner_factory_creates_isolated_runner(temp_agents_dir_with_a2a):
     # Since runner_factory is an async function, we need to run it.
     # We run it in a separate thread to avoid event loop conflicts if an event loop is already running.
     from concurrent.futures import ThreadPoolExecutor
+
     with ThreadPoolExecutor(max_workers=1) as executor:
       a2a_runner = executor.submit(asyncio.run, runner_factory()).result()
 
