@@ -12,7 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import importlib
 from pathlib import Path
+import sys
 import textwrap
 from typing import Optional
 from unittest.mock import AsyncMock
@@ -896,6 +898,144 @@ class TestRunnerShouldAppendEvent:
         content=types.Content(parts=[types.Part(text="text")]),
     )
     assert self.runner._should_append_event(event, is_live_call=True) is True
+
+
+@pytest.fixture
+def user_agent_module(tmp_path, monkeypatch):
+  """Fixture that creates a temporary user agent module for testing.
+
+  Yields a callable that creates an agent module with the given name and
+  returns the loaded agent.
+  """
+  created_modules = []
+  original_path = None
+
+  def _create_agent(agent_dir_name: str):
+    nonlocal original_path
+    agent_dir = tmp_path / "agents" / agent_dir_name
+    agent_dir.mkdir(parents=True, exist_ok=True)
+    (tmp_path / "agents" / "__init__.py").write_text("", encoding="utf-8")
+    (agent_dir / "__init__.py").write_text("", encoding="utf-8")
+
+    agent_source = f"""\
+from google.adk.agents.llm_agent import LlmAgent
+
+class MyAgent(LlmAgent):
+    pass
+
+root_agent = MyAgent(name="{agent_dir_name}", model="gemini-2.0-flash")
+"""
+    (agent_dir / "agent.py").write_text(agent_source, encoding="utf-8")
+
+    monkeypatch.chdir(tmp_path)
+    if original_path is None:
+      original_path = str(tmp_path)
+      sys.path.insert(0, original_path)
+
+    module_name = f"agents.{agent_dir_name}.agent"
+    module = importlib.import_module(module_name)
+    created_modules.append(module_name)
+    return module.root_agent
+
+  yield _create_agent
+
+  # Cleanup
+  if original_path and original_path in sys.path:
+    sys.path.remove(original_path)
+  for mod_name in list(sys.modules.keys()):
+    if mod_name.startswith("agents"):
+      del sys.modules[mod_name]
+
+
+class TestRunnerInferAgentOrigin:
+  """Tests for Runner._infer_agent_origin method."""
+
+  def setup_method(self):
+    """Set up test fixtures."""
+    self.session_service = InMemorySessionService()
+    self.artifact_service = InMemoryArtifactService()
+
+  def test_infer_agent_origin_uses_adk_metadata_when_available(self):
+    """Test that _infer_agent_origin uses _adk_origin_* metadata when set."""
+    agent = MockLlmAgent("test_agent")
+    # Simulate metadata set by AgentLoader
+    agent._adk_origin_app_name = "my_app"
+    agent._adk_origin_path = Path("/workspace/agents/my_app")
+
+    runner = Runner(
+        app_name="my_app",
+        agent=agent,
+        session_service=self.session_service,
+        artifact_service=self.artifact_service,
+    )
+
+    origin_name, origin_path = runner._infer_agent_origin(agent)
+    assert origin_name == "my_app"
+    assert origin_path == Path("/workspace/agents/my_app")
+
+  def test_infer_agent_origin_no_false_positive_for_direct_llm_agent(self):
+    """Test that using LlmAgent directly doesn't trigger mismatch warning.
+
+    Regression test for GitHub issue #3143: Users who instantiate LlmAgent
+    directly and run from a directory that is a parent of the ADK installation
+    were getting false positive 'App name mismatch' warnings.
+
+    This also verifies that _infer_agent_origin returns None for ADK internal
+    modules (google.adk.*).
+    """
+    agent = LlmAgent(
+        name="my_custom_agent",
+        model="gemini-2.0-flash",
+    )
+
+    runner = Runner(
+        app_name="my_custom_agent",
+        agent=agent,
+        session_service=self.session_service,
+        artifact_service=self.artifact_service,
+    )
+
+    # Should return None for ADK internal modules
+    origin_name, _ = runner._infer_agent_origin(agent)
+    assert origin_name is None
+    # No mismatch warning should be generated
+    assert runner._app_name_alignment_hint is None
+
+  def test_infer_agent_origin_with_subclassed_agent_in_user_code(
+      self, user_agent_module
+  ):
+    """Test that subclassed agents in user code still trigger origin inference."""
+    agent = user_agent_module("my_agent")
+
+    runner = Runner(
+        app_name="my_agent",
+        agent=agent,
+        session_service=self.session_service,
+        artifact_service=self.artifact_service,
+    )
+
+    # Should infer origin correctly from user's code
+    origin_name, origin_path = runner._infer_agent_origin(agent)
+    assert origin_name == "my_agent"
+    assert runner._app_name_alignment_hint is None
+
+  def test_infer_agent_origin_detects_mismatch_for_user_agent(
+      self, user_agent_module
+  ):
+    """Test that mismatched app_name is detected for user-defined agents."""
+    agent = user_agent_module("actual_name")
+
+    runner = Runner(
+        app_name="wrong_name",  # Intentionally wrong
+        agent=agent,
+        session_service=self.session_service,
+        artifact_service=self.artifact_service,
+    )
+
+    # Should detect the mismatch
+    assert runner._app_name_alignment_hint is not None
+    assert "wrong_name" in runner._app_name_alignment_hint
+    assert "actual_name" in runner._app_name_alignment_hint
 
 
 if __name__ == "__main__":
