@@ -683,15 +683,15 @@ class AgentEvaluator:
 
       # Gather all the failures.
       if overall_eval_status != EvalStatus.PASSED:
-        should_print = print_detailed_results
         failures.append(
             f"{metric_name} for {agent_module} Failed. Expected {threshold},"
             f" but got {overall_score}."
         )
-      else:
-        should_print = (
-            print_detailed_results and print_detailed_results_on_success
-        )
+
+      should_print = print_detailed_results and (
+          overall_eval_status != EvalStatus.PASSED
+          or print_detailed_results_on_success
+      )
 
       if should_print:
         AgentEvaluator._print_details(

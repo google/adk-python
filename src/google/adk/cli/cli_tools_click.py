@@ -792,12 +792,7 @@ def cli_eval(
     for eval_result in eval_results:
       eval_result: EvalCaseResult
       
-      should_print = (
-          eval_result.final_eval_status != EvalStatus.PASSED
-          or print_detailed_results_on_success
-      )
-      
-      if should_print:
+    if eval_result.final_eval_status != EvalStatus.PASSED or print_detailed_results_on_success:
         click.echo(
             "********************************************************************"
         )
