@@ -316,9 +316,7 @@ class TestMCPSessionManager:
     )
 
     # Expect ConnectionError due to CancelledError
-    with pytest.raises(
-        ConnectionError, match="MCP session creation cancelled"
-    ):
+    with pytest.raises(ConnectionError, match="MCP session creation cancelled"):
       await manager.create_session()
 
     # Verify session was not added to pool

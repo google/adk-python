@@ -378,7 +378,7 @@ class MCPSessionManager:
               'Error during cancelled session cleanup: %s', exit_stack_error
           )
         raise ConnectionError(
-            f'MCP session creation cancelled (server may have returned HTTP'
+            'MCP session creation cancelled (server may have returned HTTP'
             f' error): {e}'
         ) from e
 
