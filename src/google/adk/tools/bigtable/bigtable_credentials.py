@@ -14,7 +14,8 @@
 
 from __future__ import annotations
 
-from ...utils.feature_decorator import experimental
+from ...features import experimental
+from ...features import FeatureName
 from .._google_credentials import BaseGoogleCredentialsConfig
 
 BIGTABLE_TOKEN_CACHE_KEY = "bigtable_token_cache"
@@ -24,7 +25,7 @@ BIGTABLE_DEFAULT_SCOPE = [
 ]
 
 
-@experimental
+@experimental(FeatureName.GOOGLE_CREDENTIALS_CONFIG)
 class BigtableCredentialsConfig(BaseGoogleCredentialsConfig):
   """Bigtable Credentials Configuration for Google API tools (Experimental).
 
