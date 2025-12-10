@@ -30,6 +30,7 @@ if TYPE_CHECKING:
   import vertexai
 
 from . import _session_util
+from ..agents.branch import Branch
 from ..events.event import Event
 from ..events.event_actions import EventActions
 from ..utils.vertex_ai_utils import get_express_mode_api_key
@@ -359,7 +360,12 @@ def _from_api_event(api_event_obj: vertexai.types.SessionEvent) -> Event:
     partial = getattr(event_metadata, 'partial', None)
     turn_complete = getattr(event_metadata, 'turn_complete', None)
     interrupted = getattr(event_metadata, 'interrupted', None)
-    branch = getattr(event_metadata, 'branch', None) or None
+
+    branch_raw = getattr(event_metadata, 'branch', None)
+    branch: Optional[Branch] = None
+    if isinstance(branch_raw, dict):
+      branch = Branch.model_validate(branch_raw)
+
     custom_metadata = getattr(event_metadata, 'custom_metadata', None)
     grounding_metadata = _session_util.decode_model(
         getattr(event_metadata, 'grounding_metadata', None),
