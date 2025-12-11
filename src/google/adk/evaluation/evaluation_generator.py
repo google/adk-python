@@ -16,10 +16,13 @@ from __future__ import annotations
 
 import copy
 import importlib
-from typing import Any, AsyncGenerator, Optional, TYPE_CHECKING
+from typing import Any
+from typing import AsyncGenerator
+from typing import Optional
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from ..apps.app import App
+  from ..apps.app import App
 
 import uuid
 
@@ -158,7 +161,7 @@ class EvaluationGenerator:
         reset_func=reset_func,
         initial_session=initial_session,
     )
-  
+
   @staticmethod
   async def _run_user_simulation_loop(
       runner: Runner,
@@ -167,45 +170,46 @@ class EvaluationGenerator:
       user_simulator: UserSimulator,
       request_intercepter_plugin: _RequestIntercepterPlugin,
   ) -> list[Invocation]:
-      """Run the user simulation loop and return invocations.
-      
-      Args:
-          runner: Configured Runner instance
-          user_id: User identifier
-          session_id: Session identifier
-          user_simulator: User simulator to generate messages
-          request_intercepter_plugin: Plugin to intercept requests for app_details
-          
-      Returns:
-          List of Invocation objects from the simulation
-      """
-      events = []
-      
-      # Loop through user simulator messages (handles both static and dynamic)
-      while True:
-          next_user_message = await user_simulator.get_next_user_message(
-              copy.deepcopy(events)
-          )
-          if next_user_message.status == UserSimulatorStatus.SUCCESS:
-              async for event in EvaluationGenerator._generate_inferences_for_single_user_invocation(
-                  runner, user_id, session_id, next_user_message.user_message
-              ):
-                  events.append(event)
-          else:  # no more messages
-              break
-      
-      # Extract app details from intercepted requests
-      app_details_by_invocation_id = (
-          EvaluationGenerator._get_app_details_by_invocation_id(
-              events, request_intercepter_plugin
-          )
-      )
-      
-      # Convert events to invocations
-      return EvaluationGenerator.convert_events_to_eval_invocations(
-          events, app_details_by_invocation_id
-      )
+    """Run the user simulation loop and return invocations.
 
+    Args:
+        runner: Configured Runner instance
+        user_id: User identifier
+        session_id: Session identifier
+        user_simulator: User simulator to generate messages
+        request_intercepter_plugin: Plugin to intercept requests for app_details
+
+    Returns:
+        List of Invocation objects from the simulation
+    """
+    events = []
+
+    # Loop through user simulator messages (handles both static and dynamic)
+    while True:
+      next_user_message = await user_simulator.get_next_user_message(
+          copy.deepcopy(events)
+      )
+      if next_user_message.status == UserSimulatorStatus.SUCCESS:
+        async for (
+            event
+        ) in EvaluationGenerator._generate_inferences_for_single_user_invocation(
+            runner, user_id, session_id, next_user_message.user_message
+        ):
+          events.append(event)
+      else:  # no more messages
+        break
+
+    # Extract app details from intercepted requests
+    app_details_by_invocation_id = (
+        EvaluationGenerator._get_app_details_by_invocation_id(
+            events, request_intercepter_plugin
+        )
+    )
+
+    # Convert events to invocations
+    return EvaluationGenerator.convert_events_to_eval_invocations(
+        events, app_details_by_invocation_id
+    )
 
   @staticmethod
   async def _generate_inferences_for_single_user_invocation(
@@ -246,59 +250,58 @@ class EvaluationGenerator:
       artifact_service: Optional[BaseArtifactService] = None,
       memory_service: Optional[BaseMemoryService] = None,
   ) -> list[Invocation]:
-      """Scrapes the root agent in coordination with the user simulator."""
+    """Scrapes the root agent in coordination with the user simulator."""
 
-      if not session_service:
-          session_service = InMemorySessionService()
+    if not session_service:
+      session_service = InMemorySessionService()
 
-      if not memory_service:
-          memory_service = InMemoryMemoryService()
+    if not memory_service:
+      memory_service = InMemoryMemoryService()
 
-      app_name = (
-          initial_session.app_name if initial_session else "EvaluationGenerator"
-      )
-      user_id = initial_session.user_id if initial_session else "test_user_id"
-      session_id = session_id if session_id else str(uuid.uuid4())
+    app_name = (
+        initial_session.app_name if initial_session else "EvaluationGenerator"
+    )
+    user_id = initial_session.user_id if initial_session else "test_user_id"
+    session_id = session_id if session_id else str(uuid.uuid4())
 
-      _ = await session_service.create_session(
-          app_name=app_name,
+    _ = await session_service.create_session(
+        app_name=app_name,
+        user_id=user_id,
+        state=initial_session.state if initial_session else {},
+        session_id=session_id,
+    )
+
+    if not artifact_service:
+      artifact_service = InMemoryArtifactService()
+
+    # Reset agent state for each query
+    if callable(reset_func):
+      reset_func()
+
+    request_intercepter_plugin = _RequestIntercepterPlugin(
+        name="request_intercepter_plugin"
+    )
+    # We ensure that there is some kind of retries on the llm_requests that are
+    # generated from the Agent. This is done to make inferencing step of evals
+    # more resilient to temporary model failures.
+    ensure_retry_options_plugin = EnsureRetryOptionsPlugin(
+        name="ensure_retry_options"
+    )
+    async with Runner(
+        app_name=app_name,
+        agent=root_agent,
+        artifact_service=artifact_service,
+        session_service=session_service,
+        memory_service=memory_service,
+        plugins=[request_intercepter_plugin, ensure_retry_options_plugin],
+    ) as runner:
+      return await EvaluationGenerator._run_user_simulation_loop(
+          runner=runner,
           user_id=user_id,
-          state=initial_session.state if initial_session else {},
           session_id=session_id,
+          user_simulator=user_simulator,
+          request_intercepter_plugin=request_intercepter_plugin,
       )
-
-      if not artifact_service:
-          artifact_service = InMemoryArtifactService()
-
-      # Reset agent state for each query
-      if callable(reset_func):
-          reset_func()
-
-      request_intercepter_plugin = _RequestIntercepterPlugin(
-          name="request_intercepter_plugin"
-      )
-      # We ensure that there is some kind of retries on the llm_requests that are
-      # generated from the Agent. This is done to make inferencing step of evals
-      # more resilient to temporary model failures.
-      ensure_retry_options_plugin = EnsureRetryOptionsPlugin(
-          name="ensure_retry_options"
-      )
-      async with Runner(
-          app_name=app_name,
-          agent=root_agent,
-          artifact_service=artifact_service,
-          session_service=session_service,
-          memory_service=memory_service,
-          plugins=[request_intercepter_plugin, ensure_retry_options_plugin],
-      ) as runner:
-          return await EvaluationGenerator._run_user_simulation_loop(
-              runner=runner,
-              user_id=user_id,
-              session_id=session_id,
-              user_simulator=user_simulator,
-              request_intercepter_plugin=request_intercepter_plugin,
-          )
-
 
   @staticmethod
   def convert_events_to_eval_invocations(
@@ -361,65 +364,62 @@ class EvaluationGenerator:
       )
 
     return invocations
-  
+
   @staticmethod
   async def _generate_inferences_from_app(
-      app: 'App',
-      user_simulator: 'UserSimulator',
-      initial_session: Optional['SessionInput'],
+      app: "App",
+      user_simulator: "UserSimulator",
+      initial_session: Optional["SessionInput"],
       session_id: str,
-      session_service: 'BaseSessionService',
-      artifact_service: 'BaseArtifactService',
-      memory_service: 'BaseMemoryService',
-  ) -> list['Invocation']:
-      """Generate inferences by invoking through App (preserving plugins)."""
-      
-      # Determine user_id consistently
-      user_id = initial_session.user_id if initial_session else 'test_user_id'
-      
-      # Initialize session
-      app_name = initial_session.app_name if initial_session else app.name
-      await session_service.create_session(
-          app_name=app_name,
+      session_service: "BaseSessionService",
+      artifact_service: "BaseArtifactService",
+      memory_service: "BaseMemoryService",
+  ) -> list["Invocation"]:
+    """Generate inferences by invoking through App (preserving plugins)."""
+
+    # Determine user_id consistently
+    user_id = initial_session.user_id if initial_session else "test_user_id"
+
+    # Initialize session
+    app_name = initial_session.app_name if initial_session else app.name
+    await session_service.create_session(
+        app_name=app_name,
+        user_id=user_id,
+        session_id=session_id,
+        state=initial_session.state if initial_session else {},
+    )
+
+    # Create plugins to track requests (needed for app_details)
+    request_intercepter_plugin = _RequestIntercepterPlugin(
+        name="request_intercepter_plugin"
+    )
+    ensure_retry_options_plugin = EnsureRetryOptionsPlugin(
+        name="ensure_retry_options"
+    )
+
+    # Create a copy of the app to avoid mutating the original object and add eval-specific plugins.
+    app_for_runner = app.model_copy(deep=True)
+    # Add eval-specific plugins, ensuring no duplicates.
+    existing_plugin_names = {p.name for p in app_for_runner.plugins}
+    if request_intercepter_plugin.name not in existing_plugin_names:
+      app_for_runner.plugins.append(request_intercepter_plugin)
+    if ensure_retry_options_plugin.name not in existing_plugin_names:
+      app_for_runner.plugins.append(ensure_retry_options_plugin)
+
+    # Create Runner with the modified App to preserve plugins
+    async with Runner(
+        app=app_for_runner,
+        session_service=session_service,
+        artifact_service=artifact_service,
+        memory_service=memory_service,
+    ) as runner:
+      return await EvaluationGenerator._run_user_simulation_loop(
+          runner=runner,
           user_id=user_id,
           session_id=session_id,
-          state=initial_session.state if initial_session else {},
+          user_simulator=user_simulator,
+          request_intercepter_plugin=request_intercepter_plugin,
       )
-      
-      # Create plugins to track requests (needed for app_details)
-      request_intercepter_plugin = _RequestIntercepterPlugin(
-          name="request_intercepter_plugin"
-      )
-      ensure_retry_options_plugin = EnsureRetryOptionsPlugin(
-          name="ensure_retry_options"
-      )
-      
-      # Create a copy of the app to avoid mutating the original object and add eval-specific plugins.
-      app_for_runner = app.model_copy(deep=True)
-      # Add eval-specific plugins, ensuring no duplicates.
-      existing_plugin_names = {p.name for p in app_for_runner.plugins}
-      if request_intercepter_plugin.name not in existing_plugin_names:
-          app_for_runner.plugins.append(request_intercepter_plugin)
-      if ensure_retry_options_plugin.name not in existing_plugin_names:
-          app_for_runner.plugins.append(ensure_retry_options_plugin)
-
-      # Create Runner with the modified App to preserve plugins
-      async with Runner(
-          app=app_for_runner,
-          session_service=session_service,
-          artifact_service=artifact_service,
-          memory_service=memory_service,
-      ) as runner:
-          return await EvaluationGenerator._run_user_simulation_loop(
-              runner=runner,
-              user_id=user_id,
-              session_id=session_id,
-              user_simulator=user_simulator,
-              request_intercepter_plugin=request_intercepter_plugin,
-          )
-
-
-
 
   @staticmethod
   def _get_app_details_by_invocation_id(
@@ -508,4 +508,3 @@ class EvaluationGenerator:
       responses[index]["actual_tool_use"] = actual_tool_uses
       responses[index]["response"] = response
     return responses
-

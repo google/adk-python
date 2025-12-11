@@ -23,7 +23,8 @@ from typing import Optional
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from ..apps.app import App
+  from ..apps.app import App
+
 import uuid
 
 from typing_extensions import override
@@ -193,8 +194,8 @@ class LocalEvalService(BaseEvalService):
       yield eval_case_result
 
   async def _evaluate_single_inference_result(
-    self, inference_result: InferenceResult, evaluate_config: EvaluateConfig
-) -> tuple[InferenceResult, EvalCaseResult]:
+      self, inference_result: InferenceResult, evaluate_config: EvaluateConfig
+  ) -> tuple[InferenceResult, EvalCaseResult]:
     """Returns the inference result and its corresponding EvalCaseResult.
 
     A single inference result can have multiple invocations. For each
@@ -216,7 +217,9 @@ class LocalEvalService(BaseEvalService):
       )
       user_id = (
           eval_case.session_input.user_id
-          if eval_case and eval_case.session_input and eval_case.session_input.user_id
+          if eval_case
+          and eval_case.session_input
+          and eval_case.session_input.user_id
           else 'test_user_id'
       )
       eval_case_result = EvalCaseResult(
@@ -231,7 +234,7 @@ class LocalEvalService(BaseEvalService):
           user_id=user_id,
       )
       return (inference_result, eval_case_result)
-    
+
     eval_case = self._eval_sets_manager.get_eval_case(
         app_name=inference_result.app_name,
         eval_set_id=inference_result.eval_set_id,
@@ -446,25 +449,25 @@ class LocalEvalService(BaseEvalService):
       with client_label_context(EVAL_CLIENT_LABEL):
         # Extract common arguments to reduce duplication
         common_args = {
-            "user_simulator": self._user_simulator_provider.provide(eval_case),
-            "initial_session": initial_session,
-            "session_id": session_id,
-            "session_service": self._session_service,
-            "artifact_service": self._artifact_service,
-            "memory_service": self._memory_service,
+            'user_simulator': self._user_simulator_provider.provide(eval_case),
+            'initial_session': initial_session,
+            'session_id': session_id,
+            'session_service': self._session_service,
+            'artifact_service': self._artifact_service,
+            'memory_service': self._memory_service,
         }
-        
+
         if self._app is not None:
-            inferences = await EvaluationGenerator._generate_inferences_from_app(
-                app=self._app,
-                **common_args
-            )
+          inferences = await EvaluationGenerator._generate_inferences_from_app(
+              app=self._app, **common_args
+          )
         else:
-            # Fallback to direct root_agent usage (existing behavior)
-            inferences = await EvaluationGenerator._generate_inferences_from_root_agent(
-                root_agent=root_agent,
-                **common_args
-            )
+          # Fallback to direct root_agent usage (existing behavior)
+          inferences = (
+              await EvaluationGenerator._generate_inferences_from_root_agent(
+                  root_agent=root_agent, **common_args
+              )
+          )
 
       inference_result.inferences = inferences
       inference_result.status = InferenceStatus.SUCCESS

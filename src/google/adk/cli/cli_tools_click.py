@@ -24,12 +24,14 @@ import logging
 import os
 from pathlib import Path
 import tempfile
-from typing import Optional, TYPE_CHECKING
+from typing import Optional
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from ..apps.app import App
+  from ..apps.app import App
 
 import textwrap
+
 import click
 from click.core import ParameterSource
 from fastapi import FastAPI
@@ -518,34 +520,35 @@ def cli_run(
       )
   )
 
-def _load_app_from_module(module_path: str) -> Optional['App']:
-    """Try to load an App instance from the agent module.
-    
-    Args:
-        module_path: Python module path (e.g., 'my_package.my_agent')
-        
-    Returns:
-        App instance if found, None otherwise
-    """
-    import importlib
-    from ..apps.app import App
 
-    try:
-        module = importlib.import_module(module_path)
-        
-        # Find the first attribute that is an instance of App
-        for name, candidate in inspect.getmembers(module):
-            if isinstance(candidate, App):
-                logger.info(f"Loaded App instance '{name}' from {module_path}")
-                return candidate
-        
-        logger.debug(f"No App instance found in {module_path}")
-        
-    except (ImportError, AttributeError) as e:
-        logger.debug(f"Could not load App from module {module_path}: {e}")
-    
-    return None
+def _load_app_from_module(module_path: str) -> Optional["App"]:
+  """Try to load an App instance from the agent module.
 
+  Args:
+      module_path: Python module path (e.g., 'my_package.my_agent')
+
+  Returns:
+      App instance if found, None otherwise
+  """
+  import importlib
+
+  from ..apps.app import App
+
+  try:
+    module = importlib.import_module(module_path)
+
+    # Find the first attribute that is an instance of App
+    for name, candidate in inspect.getmembers(module):
+      if isinstance(candidate, App):
+        logger.info(f"Loaded App instance '{name}' from {module_path}")
+        return candidate
+
+    logger.debug(f"No App instance found in {module_path}")
+
+  except (ImportError, AttributeError) as e:
+    logger.debug(f"Could not load App from module {module_path}: {e}")
+
+  return None
 
 
 def eval_options():
@@ -767,17 +770,17 @@ def cli_eval(
   try:
     # Try to load App if available (for plugin support like ReflectAndRetryToolPlugin)
     app = _load_app_from_module(agent_module_file_path)
-    
+
     if app:
-        logger.info("Using App instance for evaluation (plugins will be applied)")
+      logger.info("Using App instance for evaluation (plugins will be applied)")
     else:
-        logger.info("No App found, using root_agent directly")
+      logger.info("No App found, using root_agent directly")
 
     eval_service = LocalEvalService(
         root_agent=root_agent,
         eval_sets_manager=eval_sets_manager,
         eval_set_results_manager=eval_set_results_manager,
-        app=app, # NEW: Pass app if available
+        app=app,  # NEW: Pass app if available
         user_simulator_provider=user_simulator_provider,
     )
 
