@@ -36,7 +36,6 @@ class TestAuthHandlerSecrets:
     yield
     CredentialManager._CLIENT_SECRETS = {}
 
-
   @pytest.mark.asyncio
   async def test_exchange_auth_token_restores_and_reredacts_secret(self):
     client_id = "test_client_id"

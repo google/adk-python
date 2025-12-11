@@ -78,7 +78,9 @@ class AuthConfig(BaseModelWithConfig):
     )
 
     auth_credential = self.raw_auth_credential
-    if auth_credential and (auth_credential.model_extra or auth_credential.oauth2):
+    if auth_credential and (
+        auth_credential.model_extra or auth_credential.oauth2
+    ):
       auth_credential = auth_credential.model_copy(deep=True)
       if auth_credential.model_extra:
         auth_credential.model_extra.clear()

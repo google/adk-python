@@ -84,10 +84,13 @@ class TestMCPTool:
     # Create real auth scheme instances instead of mocks
     from fastapi.openapi.models import OAuth2
 
+    test_client_secret = "test_secret"
     auth_scheme = OAuth2(flows={})
     auth_credential = AuthCredential(
         auth_type=AuthCredentialTypes.OAUTH2,
-        oauth2=OAuth2Auth(client_id="test_id", client_secret="test_secret"),
+        oauth2=OAuth2Auth(
+            client_id="test_id", client_secret=test_client_secret
+        ),
     )
 
     tool = MCPTool(
@@ -100,6 +103,15 @@ class TestMCPTool:
     # The auth config is stored in the parent class _credentials_manager
     assert tool._credentials_manager is not None
     assert tool._credentials_manager._auth_config.auth_scheme == auth_scheme
+    assert (
+        tool._credentials_manager._auth_config.raw_auth_credential.oauth2.client_secret
+        == "<redacted>"
+    )
+
+    # Restore the client secret and validate it's the same credential in the end.
+    tool._credentials_manager._auth_config.raw_auth_credential.oauth2.client_secret = (
+        test_client_secret
+    )
     assert (
         tool._credentials_manager._auth_config.raw_auth_credential
         == auth_credential

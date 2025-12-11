@@ -17,8 +17,8 @@ from .auth_credential import AuthCredential
 from .auth_schemes import AuthSchemeType
 from .auth_schemes import OpenIdConnectWithConfig
 from .auth_tool import AuthConfig
-from .exchanger.oauth2_credential_exchanger import OAuth2CredentialExchanger
 from .credential_manager import CredentialManager
+from .exchanger.oauth2_credential_exchanger import OAuth2CredentialExchanger
 
 if TYPE_CHECKING:
   from ..sessions.state import State
@@ -183,7 +183,6 @@ class AuthHandler:
       scopes = list(scopes.keys())
 
     client_id = auth_credential.oauth2.client_id
-
 
     with CredentialManager.restore_client_secret(auth_credential):
       client_secret = auth_credential.oauth2.client_secret

@@ -110,6 +110,7 @@ class CredentialManager:
 
     # TODO: Move ServiceAccountCredentialExchanger to the auth module
     from ..tools.openapi_tool.auth.credential_exchangers.service_account_exchanger import ServiceAccountCredentialExchanger
+
     self._exchanger_registry.register(
         AuthCredentialTypes.SERVICE_ACCOUNT,
         ServiceAccountCredentialExchanger(),
@@ -294,6 +295,7 @@ class CredentialManager:
       return credential, False
 
     from ..tools.openapi_tool.auth.credential_exchangers.service_account_exchanger import ServiceAccountCredentialExchanger
+
     if isinstance(exchanger, ServiceAccountCredentialExchanger):
       exchanged_credential = exchanger.exchange_credential(
           self._auth_config.auth_scheme, credential
