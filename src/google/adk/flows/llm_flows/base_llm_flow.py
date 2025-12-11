@@ -753,14 +753,10 @@ class BaseLlmFlow(ABC):
         # Check for agent transfer after each streaming event
         transfer_to_agent = event.actions.transfer_to_agent
         if transfer_to_agent:
-          agent_to_run = self._get_agent_to_run(
+          async for transfer_event in self._handle_agent_transfer(
               invocation_context, transfer_to_agent
-          )
-          async with Aclosing(
-              agent_to_run.run_async(invocation_context)
-          ) as agen:
-            async for transfer_event in agen:
-              yield transfer_event
+          ):
+            yield transfer_event
           # Agent transfer handled, exit the streaming loop
           return
     else:
@@ -778,14 +774,10 @@ class BaseLlmFlow(ABC):
 
         transfer_to_agent = function_response_event.actions.transfer_to_agent
         if transfer_to_agent:
-          agent_to_run = self._get_agent_to_run(
+          async for event in self._handle_agent_transfer(
               invocation_context, transfer_to_agent
-          )
-          async with Aclosing(
-              agent_to_run.run_async(invocation_context)
-          ) as agen:
-            async for event in agen:
-              yield event
+          ):
+            yield event
 
   def _get_agent_to_run(
       self, invocation_context: InvocationContext, agent_name: str
@@ -795,6 +787,23 @@ class BaseLlmFlow(ABC):
     if not agent_to_run:
       raise ValueError(f'Agent {agent_name} not found in the agent tree.')
     return agent_to_run
+
+  async def _handle_agent_transfer(
+      self, invocation_context: InvocationContext, agent_name: str
+  ) -> AsyncGenerator[Event, None]:
+    """Handles agent transfer by running the specified agent and yielding its events.
+
+    Args:
+      invocation_context: The invocation context.
+      agent_name: The name of the agent to transfer to.
+
+    Yields:
+      Events from the transferred agent's execution.
+    """
+    agent_to_run = self._get_agent_to_run(invocation_context, agent_name)
+    async with Aclosing(agent_to_run.run_async(invocation_context)) as agen:
+      async for event in agen:
+        yield event
 
   async def _call_llm_async(
       self,
