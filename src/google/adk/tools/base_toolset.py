@@ -79,8 +79,7 @@ class BaseToolset(ABC):
     """
     self.tool_filter = tool_filter
     self.tool_name_prefix = tool_name_prefix
-    self._tools_cache: Optional[list[BaseTool]] = None
-    self._cache_context_id: Optional[int] = None
+    self._tools_cache: dict[Optional[int], list[BaseTool]] = {}
 
   @abstractmethod
   async def get_tools(
@@ -118,13 +117,12 @@ class BaseToolset(ABC):
     context_id = id(readonly_context) if readonly_context else None
 
     # Check if we have cached tools for this context
-    if self._tools_cache is not None and self._cache_context_id == context_id:
-      tools = self._tools_cache
+    if context_id in self._tools_cache:
+      tools = self._tools_cache[context_id]
     else:
       # Fetch tools and cache them
       tools = await self.get_tools(readonly_context)
-      self._tools_cache = tools
-      self._cache_context_id = context_id
+      self._tools_cache[context_id] = tools
 
     if not self.tool_name_prefix:
       return tools
