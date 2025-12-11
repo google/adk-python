@@ -66,8 +66,7 @@ class TestEventConverter:
     self.mock_event.error_message = None
     self.mock_event.content = None
     self.mock_event.long_running_tool_ids = None
-    self.mock_event.actions = Mock(spec=EventActions)
-    self.mock_event.actions.artifact_delta = None
+    self.mock_event.actions = None
 
   def test_get_adk_event_metadata_key_success(self):
     """Test successful metadata key generation."""
@@ -144,6 +143,8 @@ class TestEventConverter:
     mock_metadata = Mock()
     mock_metadata.model_dump.return_value = {"test": "value"}
     self.mock_event.grounding_metadata = mock_metadata
+    self.mock_event.actions = Mock()
+    self.mock_event.actions.model_dump.return_value = {"test_actions": "value"}
 
     result = _get_context_metadata(
         self.mock_event, self.mock_invocation_context
@@ -152,7 +153,11 @@ class TestEventConverter:
     assert result is not None
     assert f"{ADK_METADATA_KEY_PREFIX}branch" in result
     assert f"{ADK_METADATA_KEY_PREFIX}grounding_metadata" in result
+    assert f"{ADK_METADATA_KEY_PREFIX}actions" in result
     assert result[f"{ADK_METADATA_KEY_PREFIX}branch"] == "test-branch"
+    assert result[f"{ADK_METADATA_KEY_PREFIX}actions"] == {
+        "test_actions": "value"
+    }
 
     # Check if error_code is in the result - it should be there since we set it
     if f"{ADK_METADATA_KEY_PREFIX}error_code" in result:
