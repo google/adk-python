@@ -236,7 +236,9 @@ async def test_get_completion_inputs_formats_pydantic_schema_for_litellm():
       config=types.GenerateContentConfig(response_schema=_StructuredOutput)
   )
 
-  _, _, response_format, _ = await _get_completion_inputs(llm_request)
+  _, _, response_format, _ = await _get_completion_inputs(
+      llm_request, model="gemini/gemini-2.0-flash"
+  )
 
   assert response_format == {
       "type": "json_object",
@@ -253,7 +255,12 @@ def test_to_litellm_response_format_passes_preformatted_dict():
       },
   }
 
-  assert _to_litellm_response_format(response_format) == response_format
+  assert (
+      _to_litellm_response_format(
+          response_format, model="gemini/gemini-2.0-flash"
+      )
+      == response_format
+  )
 
 
 def test_to_litellm_response_format_wraps_json_schema_dict():
@@ -262,7 +269,9 @@ def test_to_litellm_response_format_wraps_json_schema_dict():
       "properties": {"foo": {"type": "string"}},
   }
 
-  formatted = _to_litellm_response_format(schema)
+  formatted = _to_litellm_response_format(
+      schema, model="gemini/gemini-2.0-flash"
+  )
   assert formatted["type"] == "json_object"
   assert formatted["response_schema"] == schema
 
@@ -270,7 +279,9 @@ def test_to_litellm_response_format_wraps_json_schema_dict():
 def test_to_litellm_response_format_handles_model_dump_object():
   schema_obj = _ModelDumpOnly()
 
-  formatted = _to_litellm_response_format(schema_obj)
+  formatted = _to_litellm_response_format(
+      schema_obj, model="gemini/gemini-2.0-flash"
+  )
 
   assert formatted["type"] == "json_object"
   assert formatted["response_schema"] == schema_obj.model_dump()
@@ -283,11 +294,172 @@ def test_to_litellm_response_format_handles_genai_schema_instance():
       required=["foo"],
   )
 
-  formatted = _to_litellm_response_format(schema_instance)
+  formatted = _to_litellm_response_format(
+      schema_instance, model="gemini/gemini-2.0-flash"
+  )
   assert formatted["type"] == "json_object"
   assert formatted["response_schema"] == schema_instance.model_dump(
       exclude_none=True, mode="json"
   )
+
+
+def test_to_litellm_response_format_uses_json_schema_for_openai_model():
+  """Test that OpenAI models use json_schema format instead of response_schema."""
+  formatted = _to_litellm_response_format(
+      _StructuredOutput, model="gpt-4o-mini"
+  )
+
+  assert formatted["type"] == "json_schema"
+  assert "json_schema" in formatted
+  assert formatted["json_schema"]["name"] == "_StructuredOutput"
+  assert formatted["json_schema"]["strict"] is True
+  assert formatted["json_schema"]["schema"]["additionalProperties"] is False
+  assert "additionalProperties" in formatted["json_schema"]["schema"]
+
+
+def test_to_litellm_response_format_uses_response_schema_for_gemini_model():
+  """Test that Gemini models continue to use response_schema format."""
+  formatted = _to_litellm_response_format(
+      _StructuredOutput, model="gemini/gemini-2.0-flash"
+  )
+
+  assert formatted["type"] == "json_object"
+  assert "response_schema" in formatted
+  assert formatted["response_schema"] == _StructuredOutput.model_json_schema()
+
+
+def test_to_litellm_response_format_uses_response_schema_for_vertex_gemini():
+  """Test that Vertex AI Gemini models use response_schema format."""
+  formatted = _to_litellm_response_format(
+      _StructuredOutput, model="vertex_ai/gemini-2.0-flash"
+  )
+
+  assert formatted["type"] == "json_object"
+  assert "response_schema" in formatted
+  assert formatted["response_schema"] == _StructuredOutput.model_json_schema()
+
+
+def test_to_litellm_response_format_uses_json_schema_for_azure_openai():
+  """Test that Azure OpenAI models use json_schema format."""
+  formatted = _to_litellm_response_format(
+      _StructuredOutput, model="azure/gpt-4o"
+  )
+
+  assert formatted["type"] == "json_schema"
+  assert "json_schema" in formatted
+  assert formatted["json_schema"]["name"] == "_StructuredOutput"
+  assert formatted["json_schema"]["strict"] is True
+  assert formatted["json_schema"]["schema"]["additionalProperties"] is False
+  assert "additionalProperties" in formatted["json_schema"]["schema"]
+
+
+def test_to_litellm_response_format_uses_json_schema_for_anthropic():
+  """Test that Anthropic models use json_schema format."""
+  formatted = _to_litellm_response_format(
+      _StructuredOutput, model="anthropic/claude-3-5-sonnet"
+  )
+
+  assert formatted["type"] == "json_schema"
+  assert "json_schema" in formatted
+  assert formatted["json_schema"]["name"] == "_StructuredOutput"
+  assert formatted["json_schema"]["strict"] is True
+  assert formatted["json_schema"]["schema"]["additionalProperties"] is False
+  assert "additionalProperties" in formatted["json_schema"]["schema"]
+
+
+def test_to_litellm_response_format_with_dict_schema_for_openai():
+  """Test dict schema with OpenAI model uses json_schema format."""
+  schema = {
+      "type": "object",
+      "properties": {"foo": {"type": "string"}},
+  }
+
+  formatted = _to_litellm_response_format(schema, model="gpt-4o")
+
+  assert formatted["type"] == "json_schema"
+  assert formatted["json_schema"]["name"] == "response"
+  assert formatted["json_schema"]["strict"] is True
+  assert formatted["json_schema"]["schema"]["additionalProperties"] is False
+
+
+async def test_get_completion_inputs_uses_openai_format_for_openai_model():
+  """Test that _get_completion_inputs produces OpenAI-compatible format."""
+  llm_request = LlmRequest(
+      model="gpt-4o-mini",
+      config=types.GenerateContentConfig(response_schema=_StructuredOutput),
+  )
+
+  _, _, response_format, _ = await _get_completion_inputs(
+      llm_request, model="gpt-4o-mini"
+  )
+
+  assert response_format["type"] == "json_schema"
+  assert "json_schema" in response_format
+  assert response_format["json_schema"]["name"] == "_StructuredOutput"
+  assert response_format["json_schema"]["strict"] is True
+  assert (
+      response_format["json_schema"]["schema"]["additionalProperties"] is False
+  )
+
+
+async def test_get_completion_inputs_uses_gemini_format_for_gemini_model():
+  """Test that _get_completion_inputs produces Gemini-compatible format."""
+  llm_request = LlmRequest(
+      model="gemini/gemini-2.0-flash",
+      config=types.GenerateContentConfig(response_schema=_StructuredOutput),
+  )
+
+  _, _, response_format, _ = await _get_completion_inputs(
+      llm_request, model="gemini/gemini-2.0-flash"
+  )
+
+  assert response_format["type"] == "json_object"
+  assert "response_schema" in response_format
+
+
+async def test_get_completion_inputs_uses_passed_model_for_response_format():
+  """Test that _get_completion_inputs uses the passed model parameter for response format.
+
+  This verifies that when llm_request.model is None, the explicit model parameter
+  is used to determine the correct response format (Gemini vs OpenAI).
+  """
+  llm_request = LlmRequest(
+      model=None,  # No model in request
+      config=types.GenerateContentConfig(response_schema=_StructuredOutput),
+  )
+
+  # Pass OpenAI model explicitly - should use json_schema format
+  _, _, response_format, _ = await _get_completion_inputs(
+      llm_request, model="gpt-4o-mini"
+  )
+
+  assert response_format["type"] == "json_schema"
+  assert "json_schema" in response_format
+  assert response_format["json_schema"]["name"] == "_StructuredOutput"
+  assert response_format["json_schema"]["strict"] is True
+  assert (
+      response_format["json_schema"]["schema"]["additionalProperties"] is False
+  )
+
+
+async def test_get_completion_inputs_uses_passed_model_for_gemini_format():
+  """Test that _get_completion_inputs uses passed model for Gemini response format.
+
+  This verifies that when self.model is a Gemini model and passed explicitly,
+  the response format uses the Gemini-specific format.
+  """
+  llm_request = LlmRequest(
+      model=None,  # No model in request
+      config=types.GenerateContentConfig(response_schema=_StructuredOutput),
+  )
+
+  # Pass Gemini model explicitly - should use response_schema format
+  _, _, response_format, _ = await _get_completion_inputs(
+      llm_request, model="gemini/gemini-2.0-flash"
+  )
+
+  assert response_format["type"] == "json_object"
+  assert "response_schema" in response_format
 
 
 def test_schema_to_dict_filters_none_enum_values():
@@ -2421,7 +2593,9 @@ async def test_get_completion_inputs_generation_params():
       ),
   )
 
-  _, _, _, generation_params = await _get_completion_inputs(req)
+  _, _, _, generation_params = await _get_completion_inputs(
+      req, model="gpt-4o-mini"
+  )
   assert generation_params["temperature"] == 0.33
   assert generation_params["max_completion_tokens"] == 123
   assert generation_params["top_p"] == 0.88
@@ -2444,7 +2618,9 @@ async def test_get_completion_inputs_empty_generation_params():
       config=types.GenerateContentConfig(),
   )
 
-  _, _, _, generation_params = await _get_completion_inputs(req)
+  _, _, _, generation_params = await _get_completion_inputs(
+      req, model="gpt-4o-mini"
+  )
   assert generation_params is None
 
 
@@ -2460,7 +2636,9 @@ async def test_get_completion_inputs_minimal_config():
       ),
   )
 
-  _, _, _, generation_params = await _get_completion_inputs(req)
+  _, _, _, generation_params = await _get_completion_inputs(
+      req, model="gpt-4o-mini"
+  )
   assert generation_params is None
 
 
@@ -2477,7 +2655,9 @@ async def test_get_completion_inputs_partial_generation_params():
       ),
   )
 
-  _, _, _, generation_params = await _get_completion_inputs(req)
+  _, _, _, generation_params = await _get_completion_inputs(
+      req, model="gpt-4o-mini"
+  )
   assert generation_params is not None
   assert generation_params["temperature"] == 0.7
   # Should only contain the temperature parameter
@@ -2830,7 +3010,7 @@ async def test_get_completion_inputs_openai_file_upload(mocker):
   )
 
   messages, tools, response_format, generation_params = (
-      await _get_completion_inputs(llm_request)
+      await _get_completion_inputs(llm_request, model="openai/gpt-4o")
   )
 
   assert len(messages) == 1
@@ -2869,7 +3049,7 @@ async def test_get_completion_inputs_non_openai_no_file_upload(mocker):
   )
 
   messages, tools, response_format, generation_params = (
-      await _get_completion_inputs(llm_request)
+      await _get_completion_inputs(llm_request, model="anthropic/claude-3-opus")
   )
 
   assert len(messages) == 1

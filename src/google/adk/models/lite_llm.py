@@ -982,8 +982,20 @@ def _message_to_generate_content_response(
 
 def _to_litellm_response_format(
     response_schema: types.SchemaUnion,
-) -> Optional[Dict[str, Any]]:
-  """Converts ADK response schema objects into LiteLLM-compatible payloads."""
+    model: str,
+) -> dict[str, Any] | None:
+  """Converts ADK response schema objects into LiteLLM-compatible payloads.
+
+  Args:
+    response_schema: The response schema to convert.
+    model: The model string to determine the appropriate format. Gemini models
+      use 'response_schema' key, while OpenAI-compatible models use
+      'json_schema' key.
+
+  Returns:
+    A dictionary with the appropriate response format for LiteLLM.
+  """
+  schema_name = "response"
 
   if isinstance(response_schema, dict):
     schema_type = response_schema.get("type")
@@ -993,18 +1005,25 @@ def _to_litellm_response_format(
     ):
       return response_schema
     schema_dict = dict(response_schema)
+    if "title" in schema_dict:
+      schema_name = str(schema_dict["title"])
   elif isinstance(response_schema, type) and issubclass(
       response_schema, BaseModel
   ):
     schema_dict = response_schema.model_json_schema()
+    schema_name = response_schema.__name__
   elif isinstance(response_schema, BaseModel):
     if isinstance(response_schema, types.Schema):
       # GenAI Schema instances already represent JSON schema definitions.
       schema_dict = response_schema.model_dump(exclude_none=True, mode="json")
+      if "title" in schema_dict:
+        schema_name = str(schema_dict["title"])
     else:
       schema_dict = response_schema.__class__.model_json_schema()
+      schema_name = response_schema.__class__.__name__
   elif hasattr(response_schema, "model_dump"):
     schema_dict = response_schema.model_dump(exclude_none=True, mode="json")
+    schema_name = response_schema.__class__.__name__
   else:
     logger.warning(
         "Unsupported response_schema type %s for LiteLLM structured outputs.",
@@ -1012,14 +1031,37 @@ def _to_litellm_response_format(
     )
     return None
 
+  # Gemini models use a special response format with 'response_schema' key
+  if _is_litellm_gemini_model(model):
+    return {
+        "type": "json_object",
+        "response_schema": schema_dict,
+    }
+
+  # OpenAI-compatible format (default) per LiteLLM docs:
+  # https://docs.litellm.ai/docs/completion/json_mode
+  if (
+      isinstance(schema_dict, dict)
+      and schema_dict.get("type") == "object"
+      and "additionalProperties" not in schema_dict
+  ):
+    # OpenAI structured outputs require explicit additionalProperties: false.
+    schema_dict = dict(schema_dict)
+    schema_dict["additionalProperties"] = False
+
   return {
-      "type": "json_object",
-      "response_schema": schema_dict,
+      "type": "json_schema",
+      "json_schema": {
+          "name": schema_name,
+          "strict": True,
+          "schema": schema_dict,
+      },
   }
 
 
 async def _get_completion_inputs(
     llm_request: LlmRequest,
+    model: str,
 ) -> Tuple[
     List[Message],
     Optional[List[Dict]],
@@ -1030,13 +1072,14 @@ async def _get_completion_inputs(
 
   Args:
     llm_request: The LlmRequest to convert.
+    model: The model string to use for determining provider-specific behavior.
 
   Returns:
     The litellm inputs (message list, tool dictionary, response format and
     generation params).
   """
   # Determine provider for file handling
-  provider = _get_provider_from_model(llm_request.model or "")
+  provider = _get_provider_from_model(model)
 
   # 1. Construct messages
   messages: List[Message] = []
@@ -1071,14 +1114,15 @@ async def _get_completion_inputs(
     ]
 
   # 3. Handle response format
-  response_format: Optional[Dict[str, Any]] = None
+  response_format: dict[str, Any] | None = None
   if llm_request.config and llm_request.config.response_schema:
     response_format = _to_litellm_response_format(
-        llm_request.config.response_schema
+        llm_request.config.response_schema,
+        model=model,
     )
 
   # 4. Extract generation parameters
-  generation_params: Optional[Dict] = None
+  generation_params: dict | None = None
   if llm_request.config:
     config_dict = llm_request.config.model_dump(exclude_none=True)
     # Generate LiteLlm parameters here,
@@ -1190,9 +1234,7 @@ def _is_litellm_gemini_model(model_string: str) -> bool:
   Returns:
     True if it's a Gemini model accessed via LiteLLM, False otherwise
   """
-  # Matches "gemini/gemini-*" (Google AI Studio) or "vertex_ai/gemini-*" (Vertex AI).
-  pattern = r"^(gemini|vertex_ai)/gemini-"
-  return bool(re.match(pattern, model_string))
+  return model_string.startswith(("gemini/gemini-", "vertex_ai/gemini-"))
 
 
 def _extract_gemini_model_from_litellm(litellm_model: str) -> str:
@@ -1308,8 +1350,9 @@ class LiteLlm(BaseLlm):
     _append_fallback_user_content_if_missing(llm_request)
     logger.debug(_build_request_log(llm_request))
 
+    model = llm_request.model or self.model
     messages, tools, response_format, generation_params = (
-        await _get_completion_inputs(llm_request)
+        await _get_completion_inputs(llm_request, model)
     )
 
     if "functions" in self._additional_args:
@@ -1317,7 +1360,7 @@ class LiteLlm(BaseLlm):
       tools = None
 
     completion_args = {
-        "model": llm_request.model or self.model,
+        "model": model,
         "messages": messages,
         "tools": tools,
         "response_format": response_format,
