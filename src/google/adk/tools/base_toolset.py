@@ -79,6 +79,8 @@ class BaseToolset(ABC):
     """
     self.tool_filter = tool_filter
     self.tool_name_prefix = tool_name_prefix
+    self._tools_cache: Optional[list[BaseTool]] = None
+    self._cache_context_id: Optional[int] = None
 
   @abstractmethod
   async def get_tools(
@@ -103,6 +105,7 @@ class BaseToolset(ABC):
     """Return all tools with optional prefix applied to tool names.
 
     This method calls get_tools() and applies prefixing if tool_name_prefix is provided.
+    Tools are cached per readonly_context to avoid redundant calls to get_tools().
 
     Args:
       readonly_context (ReadonlyContext, optional): Context used to filter tools
@@ -111,7 +114,17 @@ class BaseToolset(ABC):
     Returns:
       list[BaseTool]: A list of tools with prefixed names if tool_name_prefix is provided.
     """
-    tools = await self.get_tools(readonly_context)
+    # Create a cache key based on the readonly_context identity
+    context_id = id(readonly_context) if readonly_context else None
+
+    # Check if we have cached tools for this context
+    if self._tools_cache is not None and self._cache_context_id == context_id:
+      tools = self._tools_cache
+    else:
+      # Fetch tools and cache them
+      tools = await self.get_tools(readonly_context)
+      self._tools_cache = tools
+      self._cache_context_id = context_id
 
     if not self.tool_name_prefix:
       return tools
