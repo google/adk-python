@@ -13,6 +13,7 @@
 # limitations under the Licens
 
 import json
+from unittest.mock import ANY
 from unittest.mock import AsyncMock
 from unittest.mock import Mock
 import warnings
@@ -1466,6 +1467,79 @@ async def test_generate_content_async_with_usage_metadata(
     assert response.usage_metadata.cached_content_token_count == 8
 
   mock_acompletion.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_ollama_chat_flattens_content(
+    mock_acompletion, mock_completion
+):
+  llm_client = MockLLMClient(mock_acompletion, mock_completion)
+  lite_llm_instance = LiteLlm(
+      model="ollama_chat/qwen2.5:7b", llm_client=llm_client
+  )
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role="user",
+              parts=[
+                  types.Part.from_text(text="Describe this image."),
+                  types.Part.from_bytes(
+                      data=b"test_image", mime_type="image/png"
+                  ),
+              ],
+          )
+      ]
+  )
+
+  async for _ in lite_llm_instance.generate_content_async(llm_request):
+    pass
+
+  mock_acompletion.assert_called_once_with(
+      model="ollama_chat/qwen2.5:7b",
+      messages=ANY,
+      tools=ANY,
+      response_format=ANY,
+  )
+  _, kwargs = mock_acompletion.call_args
+  message_content = kwargs["messages"][0]["content"]
+  assert isinstance(message_content, str)
+  assert "Describe this image." in message_content
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_custom_provider_flattens_content(
+    mock_acompletion, mock_completion
+):
+  llm_client = MockLLMClient(mock_acompletion, mock_completion)
+  lite_llm_instance = LiteLlm(
+      model="qwen2.5:7b",
+      llm_client=llm_client,
+      custom_llm_provider="ollama_chat",
+  )
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role="user",
+              parts=[
+                  types.Part.from_text(text="Describe this image."),
+                  types.Part.from_bytes(
+                      data=b"test_image", mime_type="image/png"
+                  ),
+              ],
+          )
+      ]
+  )
+
+  async for _ in lite_llm_instance.generate_content_async(llm_request):
+    pass
+
+  mock_acompletion.assert_called_once()
+  _, kwargs = mock_acompletion.call_args
+  assert kwargs["custom_llm_provider"] == "ollama_chat"
+  assert kwargs["model"] == "qwen2.5:7b"
+  message_content = kwargs["messages"][0]["content"]
+  assert isinstance(message_content, str)
+  assert "Describe this image." in message_content
 
 
 @pytest.mark.asyncio
