@@ -20,6 +20,7 @@ import json
 import logging
 import os
 import re
+import sys
 from typing import Any
 from typing import AsyncGenerator
 from typing import cast
@@ -1367,6 +1368,30 @@ def _warn_gemini_via_litellm(model_string: str) -> None:
       category=UserWarning,
       stacklevel=3,
   )
+
+
+def _redirect_litellm_loggers_to_stdout() -> None:
+  """Redirects LiteLLM loggers from stderr to stdout.
+
+  LiteLLM creates StreamHandlers that output to stderr by default. In cloud
+  environments like GCP, stderr output is treated as ERROR severity regardless
+  of the actual log level. This function redirects LiteLLM loggers to stdout
+  so that INFO-level logs are not incorrectly classified as errors.
+  """
+  litellm_logger_names = ["LiteLLM", "LiteLLM Proxy", "LiteLLM Router"]
+  for logger_name in litellm_logger_names:
+    litellm_logger = logging.getLogger(logger_name)
+    for handler in litellm_logger.handlers:
+      if (
+          isinstance(handler, logging.StreamHandler)
+          and handler.stream is sys.stderr
+      ):
+        handler.stream = sys.stdout
+
+
+# Redirect LiteLLM loggers to stdout immediately after import to ensure
+# INFO-level logs are not incorrectly treated as errors in cloud environments.
+_redirect_litellm_loggers_to_stdout()
 
 
 class LiteLlm(BaseLlm):
