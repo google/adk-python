@@ -677,7 +677,7 @@ class BaseLlmFlow(ABC):
       invocation_context: InvocationContext,
       function_call_event: Event,
       function_response_event: Event,
-      ) -> AsyncGenerator[Event, None]:
+  ) -> AsyncGenerator[Event, None]:
     """Yields auth, confirmation, and set_model_response events for a function response.
 
     Args:
