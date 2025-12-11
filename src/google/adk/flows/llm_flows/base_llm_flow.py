@@ -677,7 +677,7 @@ class BaseLlmFlow(ABC):
       invocation_context: InvocationContext,
       function_call_event: Event,
       function_response_event: Event,
-  ) -> AsyncGenerator[Event, None]:
+      ) -> AsyncGenerator[Event, None]:
     """Yields auth, confirmation, and set_model_response events for a function response.
 
     Args:
@@ -742,10 +742,13 @@ class BaseLlmFlow(ABC):
           llm_request.tools_dict,
           tool_confirmation_dict,
       ):
-        async for secondary_event in self._yield_function_response_events(
-            invocation_context, function_call_event, event
-        ):
-          yield secondary_event
+        async with Aclosing(
+            self._yield_function_response_events(
+                invocation_context, function_call_event, event
+            )
+        ) as agen:
+          async for secondary_event in agen:
+            yield secondary_event
 
         # Check for agent transfer after each streaming event
         transfer_to_agent = event.actions.transfer_to_agent
@@ -765,10 +768,13 @@ class BaseLlmFlow(ABC):
       if function_response_event := await functions.handle_function_calls_async(
           invocation_context, function_call_event, llm_request.tools_dict
       ):
-        async for secondary_event in self._yield_function_response_events(
-            invocation_context, function_call_event, function_response_event
-        ):
-          yield secondary_event
+        async with Aclosing(
+            self._yield_function_response_events(
+                invocation_context, function_call_event, function_response_event
+            )
+        ) as agen:
+          async for secondary_event in agen:
+            yield secondary_event
 
         transfer_to_agent = function_response_event.actions.transfer_to_agent
         if transfer_to_agent:
