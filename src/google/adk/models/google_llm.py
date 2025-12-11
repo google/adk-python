@@ -19,6 +19,7 @@ import contextlib
 import copy
 from functools import cached_property
 import logging
+from typing import Any
 from typing import AsyncGenerator
 from typing import cast
 from typing import Optional
@@ -83,11 +84,31 @@ class Gemini(BaseLlm):
 
   Attributes:
     model: The name of the Gemini model.
+    use_interactions_api: Whether to use the interactions API for model
+      invocation.
   """
 
   model: str = 'gemini-2.5-flash'
 
   speech_config: Optional[types.SpeechConfig] = None
+
+  use_interactions_api: bool = False
+  """Whether to use the interactions API for model invocation.
+
+  When enabled, uses the interactions API (client.aio.interactions.create())
+  instead of the traditional generate_content API. The interactions API
+  provides stateful conversation capabilities, allowing you to chain
+  interactions using previous_interaction_id instead of sending full history.
+  The response format will be converted to match the existing LlmResponse
+  structure for compatibility.
+
+  Sample:
+  ```python
+  agent = Agent(
+    model=Gemini(use_interactions_api=True)
+  )
+  ```
+  """
 
   retry_options: Optional[types.HttpRetryOptions] = None
   """Allow Gemini to retry failed responses.
@@ -163,7 +184,6 @@ class Gemini(BaseLlm):
         self._api_backend,
         stream,
     )
-    logger.debug(_build_request_log(llm_request))
 
     # Always add tracking headers to custom headers given it will override
     # the headers set in the api client constructor to avoid tracking headers
@@ -176,6 +196,16 @@ class Gemini(BaseLlm):
       )
 
     try:
+      # Use interactions API if enabled
+      if self.use_interactions_api:
+        async for llm_response in self._generate_content_via_interactions(
+            llm_request, stream
+        ):
+          yield llm_response
+        return
+
+      logger.debug(_build_request_log(llm_request))
+
       if stream:
         responses = await self.api_client.aio.models.generate_content_stream(
             model=llm_request.model,
@@ -230,6 +260,36 @@ class Gemini(BaseLlm):
         raise _ResourceExhaustedError(ce) from ce
 
       raise ce
+
+  async def _generate_content_via_interactions(
+      self,
+      llm_request: LlmRequest,
+      stream: bool,
+  ) -> AsyncGenerator[LlmResponse, None]:
+    """Generate content using the interactions API.
+
+    The interactions API provides stateful conversation capabilities. When
+    previous_interaction_id is set in the request, the API chains interactions
+    instead of requiring full conversation history.
+
+    Note: Context caching is not used with the Interactions API since it
+    maintains conversation state via previous_interaction_id.
+
+    Args:
+      llm_request: The LLM request to send.
+      stream: Whether to stream the response.
+
+    Yields:
+      LlmResponse objects converted from interaction responses.
+    """
+    from .interactions_utils import generate_content_via_interactions
+
+    async for llm_response in generate_content_via_interactions(
+        api_client=self.api_client,
+        llm_request=llm_request,
+        stream=stream,
+    ):
+      yield llm_response
 
   @cached_property
   def api_client(self) -> Client:
