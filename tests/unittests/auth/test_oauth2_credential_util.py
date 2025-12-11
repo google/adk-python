@@ -151,8 +151,6 @@ class TestOAuth2CredentialUtil:
     assert client is None
     assert token_endpoint is None
 
-  # def test_create_oauth2_session_with_token_endpoint_auth_method(
-  #    self, openid_connect_scheme
   @pytest.mark.parametrize(
       "token_endpoint_auth_method, expected_auth_method",
       [
