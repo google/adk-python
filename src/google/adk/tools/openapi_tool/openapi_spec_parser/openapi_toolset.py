@@ -69,6 +69,7 @@ class OpenAPIToolset(BaseToolset):
       auth_scheme: Optional[AuthScheme] = None,
       auth_credential: Optional[AuthCredential] = None,
       tool_filter: Optional[Union[ToolPredicate, List[str]]] = None,
+      tool_name_prefix: Optional[str] = None,
       ssl_verify: Optional[Union[bool, str, ssl.SSLContext]] = None,
   ):
     """Initializes the OpenAPIToolset.
@@ -104,6 +105,9 @@ class OpenAPIToolset(BaseToolset):
         ``google.adk.tools.openapi_tool.auth.auth_helpers``
       tool_filter: The filter used to filter the tools in the toolset. It can be
         either a tool predicate or a list of tool names of the tools to expose.
+      tool_name_prefix: The prefix to prepend to the names of the tools returned
+        by the toolset. Useful when multiple OpenAPI specs have tools with
+        similar names.
       ssl_verify: SSL certificate verification option for all tools. Can be:
         - None: Use default verification (True)
         - True: Verify SSL certificates using system CA
@@ -113,7 +117,7 @@ class OpenAPIToolset(BaseToolset):
         This is useful for enterprise environments where requests go through
         a TLS-intercepting proxy with a custom CA certificate.
     """
-    super().__init__(tool_filter=tool_filter)
+    super().__init__(tool_filter=tool_filter, tool_name_prefix=tool_name_prefix)
     if not spec_dict:
       spec_dict = self._load_spec(spec_str, spec_str_type)
     self._ssl_verify = ssl_verify

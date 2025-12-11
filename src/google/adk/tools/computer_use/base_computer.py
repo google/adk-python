@@ -21,10 +21,11 @@ from typing import Optional
 
 import pydantic
 
-from ...utils.feature_decorator import experimental
+from ...features import experimental
+from ...features import FeatureName
 
 
-@experimental
+@experimental(FeatureName.COMPUTER_USE)
 class ComputerEnvironment(str, Enum):
   """Case insensitive enum for computer environments."""
 
@@ -34,7 +35,7 @@ class ComputerEnvironment(str, Enum):
   """Operates in a web browser."""
 
 
-@experimental
+@experimental(FeatureName.COMPUTER_USE)
 class ComputerState(pydantic.BaseModel):
   """Represents the current state of the computer environment.
 
@@ -51,7 +52,7 @@ class ComputerState(pydantic.BaseModel):
   )
 
 
-@experimental
+@experimental(FeatureName.COMPUTER_USE)
 class BaseComputer(abc.ABC):
   """async defines an interface for computer environments.
 
