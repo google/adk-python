@@ -39,6 +39,7 @@ from ...telemetry.tracing import trace_merged_tool_calls
 from ...telemetry.tracing import trace_tool_call
 from ...telemetry.tracing import tracer
 from ...tools.base_tool import BaseTool
+from ...tools.function_tool import FunctionTool
 from ...tools.tool_confirmation import ToolConfirmation
 from ...tools.tool_context import ToolContext
 from ...utils.context_utils import Aclosing
@@ -833,6 +834,24 @@ async def _execute_streaming_tool_async(
       yield event
       return
 
+    # For FunctionTool, prepare arguments using the same logic as run_async
+    # This ensures argument preprocessing, tool_context injection, confirmation
+    # handling, and mandatory args validation are applied consistently.
+    if isinstance(tool, FunctionTool):
+      prepared_args, error_response = (
+          await tool._prepare_args_and_check_confirmation(
+              args=function_args, tool_context=tool_context
+          )
+      )
+      if error_response is not None:
+        # Confirmation required/rejected or missing mandatory args
+        event = __build_response_event(
+            tool, error_response, tool_context, invocation_context
+        )
+        yield event
+        return
+      function_args = prepared_args
+
     # Create a queue to buffer results from the async generator
     # Queue can contain: dict results, non-dict types (e.g., strings), Exception objects, or None
     result_queue: asyncio.Queue[Optional[Any]] = asyncio.Queue()
@@ -841,6 +860,8 @@ async def _execute_streaming_tool_async(
     async def _run_generator():
       try:
         # Get the async generator from the tool
+        # For FunctionTool, function_args now includes preprocessed args and tool_context
+        # For other tools, use the original function_args
         agen = tool.func(**function_args)
         async with Aclosing(agen) as gen:
           async for result in gen:

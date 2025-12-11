@@ -153,6 +153,87 @@ class FunctionTool(BaseTool):
 
     return converted_args
 
+  async def _prepare_args_and_check_confirmation(
+      self, *, args: dict[str, Any], tool_context: ToolContext
+  ) -> tuple[dict[str, Any], Optional[dict[str, Any]]]:
+    """Prepares arguments and checks confirmation for function invocation.
+
+    This method extracts the argument preparation and confirmation logic from
+    run_async so it can be reused by streaming tools and other callers.
+
+    Args:
+      args: Raw arguments from the LLM tool call.
+      tool_context: The tool context.
+
+    Returns:
+      A tuple of (prepared_args, error_response). If error_response is not None,
+      it indicates that the tool call should not proceed (e.g., missing args or
+      confirmation required/rejected). Otherwise, prepared_args contains the
+      processed arguments ready for function invocation.
+    """
+    # Preprocess arguments (includes Pydantic model conversion)
+    args_to_call = self._preprocess_args(args)
+
+    signature = inspect.signature(self.func)
+    valid_params = {param for param in signature.parameters}
+    if 'tool_context' in valid_params:
+      args_to_call['tool_context'] = tool_context
+
+    # Filter args_to_call to only include valid parameters for the function
+    args_to_call = {k: v for k, v in args_to_call.items() if k in valid_params}
+
+    # Before invoking the function, we check for if the list of args passed in
+    # has all the mandatory arguments or not.
+    # If the check fails, then we don't invoke the tool and let the Agent know
+    # that there was a missing input parameter. This will basically help
+    # the underlying model fix the issue and retry.
+    mandatory_args = self._get_mandatory_args()
+    missing_mandatory_args = [
+        arg for arg in mandatory_args if arg not in args_to_call
+    ]
+
+    if missing_mandatory_args:
+      missing_mandatory_args_str = '\n'.join(missing_mandatory_args)
+      error_str = f"""Invoking `{self.name}()` failed as the following mandatory input parameters are not present:
+{missing_mandatory_args_str}
+You could retry calling this tool, but it is IMPORTANT for you to provide all the mandatory parameters."""
+      return (args_to_call, {'error': error_str})
+
+    if isinstance(self._require_confirmation, Callable):
+      require_confirmation = await self._invoke_callable(
+          self._require_confirmation, args_to_call
+      )
+    else:
+      require_confirmation = bool(self._require_confirmation)
+
+    if require_confirmation:
+      if not tool_context.tool_confirmation:
+        args_to_show = args_to_call.copy()
+        if 'tool_context' in args_to_show:
+          args_to_show.pop('tool_context')
+
+        tool_context.request_confirmation(
+            hint=(
+                f'Please approve or reject the tool call {self.name}() by'
+                ' responding with a FunctionResponse with an expected'
+                ' ToolConfirmation payload.'
+            ),
+        )
+        tool_context.actions.skip_summarization = True
+        return (
+            args_to_call,
+            {
+                'error': (
+                    'This tool call requires confirmation, please approve or'
+                    ' reject.'
+                )
+            },
+        )
+      elif not tool_context.tool_confirmation.confirmed:
+        return (args_to_call, {'error': 'This tool call is rejected.'})
+
+    return (args_to_call, None)
+
   @override
   async def run_async(
       self, *, args: dict[str, Any], tool_context: ToolContext
