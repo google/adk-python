@@ -39,6 +39,7 @@ from ..sessions.in_memory_session_service import InMemorySessionService
 from ..utils._client_labels_utils import client_label_context
 from ..utils._client_labels_utils import EVAL_CLIENT_LABEL
 from ..utils.feature_decorator import experimental
+from .app_inference_adapter import AppInferenceAdapter
 from .base_eval_service import BaseEvalService
 from .base_eval_service import EvaluateConfig
 from .base_eval_service import EvaluateRequest
@@ -458,7 +459,7 @@ class LocalEvalService(BaseEvalService):
         }
 
         if self._app is not None:
-          inferences = await EvaluationGenerator._generate_inferences_from_app(
+          inferences = await AppInferenceAdapter.generate_inferences_from_app(
               app=self._app, **common_args
           )
         else:
