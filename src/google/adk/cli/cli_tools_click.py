@@ -41,6 +41,7 @@ from . import cli_create
 from . import cli_deploy
 from .. import version
 from ..evaluation.constants import MISSING_EVAL_DEPENDENCIES_MESSAGE
+from ..utils.app_loader import load_app_from_module
 from .cli import run_cli
 from .fast_api import get_fast_api_app
 from .utils import envs
@@ -521,36 +522,6 @@ def cli_run(
   )
 
 
-def _load_app_from_module(module_path: str) -> Optional["App"]:
-  """Try to load an App instance from the agent module.
-
-  Args:
-      module_path: Python module path (e.g., 'my_package.my_agent')
-
-  Returns:
-      App instance if found, None otherwise
-  """
-  import importlib
-
-  from ..apps.app import App
-
-  try:
-    module = importlib.import_module(module_path)
-
-    # Find the first attribute that is an instance of App
-    for name, candidate in inspect.getmembers(module):
-      if isinstance(candidate, App):
-        logger.info(f"Loaded App instance '{name}' from {module_path}")
-        return candidate
-
-    logger.debug(f"No App instance found in {module_path}")
-
-  except (ImportError, AttributeError) as e:
-    logger.debug(f"Could not load App from module {module_path}: {e}")
-
-  return None
-
-
 def eval_options():
   """Decorator to add common eval options to click commands."""
 
@@ -769,7 +740,7 @@ def cli_eval(
 
   try:
     # Try to load App if available (for plugin support like ReflectAndRetryToolPlugin)
-    app = _load_app_from_module(agent_module_file_path)
+    app = load_app_from_module(agent_module_file_path)
 
     if app:
       logger.info("Using App instance for evaluation (plugins will be applied)")
