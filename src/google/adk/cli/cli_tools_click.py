@@ -791,12 +791,15 @@ def cli_eval(
   if print_detailed_results:
     for eval_result in eval_results:
       eval_result: EvalCaseResult
-      
-    if eval_result.final_eval_status != EvalStatus.PASSED or print_detailed_results_on_success:
-        click.echo(
-            "********************************************************************"
-        )
-        pretty_print_eval_result(eval_result)
+
+    if (
+        eval_result.final_eval_status != EvalStatus.PASSED
+        or print_detailed_results_on_success
+    ):
+      click.echo(
+          "********************************************************************"
+      )
+      pretty_print_eval_result(eval_result)
 
 
 @main.group("eval_set")
