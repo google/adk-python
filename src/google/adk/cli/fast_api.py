@@ -78,6 +78,7 @@ def get_fast_api_app(
     memory_service_uri: Optional[str] = None,
     eval_storage_uri: Optional[str] = None,
     allow_origins: Optional[list[str]] = None,
+    allow_origins_regex: Optional[str] = None,
     web: bool,
     a2a: bool = False,
     host: str = "127.0.0.1",
@@ -207,6 +208,7 @@ def get_fast_api_app(
   app = adk_web_server.get_fast_api_app(
       lifespan=lifespan,
       allow_origins=allow_origins,
+      allow_origin_regex=allow_origins_regex,
       otel_to_cloud=otel_to_cloud,
       **extra_fast_api_args,
   )
