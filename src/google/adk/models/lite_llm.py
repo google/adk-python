@@ -18,6 +18,7 @@ import base64
 import copy
 import json
 import logging
+import mimetypes
 import os
 import re
 import sys
@@ -33,6 +34,7 @@ from typing import Optional
 from typing import Tuple
 from typing import TypedDict
 from typing import Union
+from urllib.parse import urlparse
 import uuid
 import warnings
 
@@ -127,6 +129,51 @@ def _get_provider_from_model(model: str) -> str:
   if model_lower.startswith("gpt-") or model_lower.startswith("o1"):
     return "openai"
   return ""
+
+
+# Default MIME type when none can be inferred
+_DEFAULT_MIME_TYPE = "application/octet-stream"
+
+
+def _infer_mime_type_from_uri(uri: str) -> Optional[str]:
+  """Attempts to infer MIME type from a URI's path extension.
+
+  Args:
+    uri: A URI string (e.g., 'gs://bucket/file.pdf' or
+      'https://example.com/doc.json')
+
+  Returns:
+    The inferred MIME type, or None if it cannot be determined.
+  """
+  try:
+    parsed = urlparse(uri)
+    # Get the path component and extract filename
+    path = parsed.path
+    if not path:
+      return None
+
+    # Many artifact URIs are versioned (for example, ".../filename/0" or
+    # ".../filename/versions/0"). If the last path segment looks like a numeric
+    # version, infer from the preceding filename instead.
+    segments = [segment for segment in path.split("/") if segment]
+    if not segments:
+      return None
+
+    candidate = segments[-1]
+    if candidate.isdigit():
+      segments = segments[:-1]
+      if segments and segments[-1].lower() in ("versions", "version"):
+        segments = segments[:-1]
+
+    if not segments:
+      return None
+
+    candidate = segments[-1]
+    mime_type, _ = mimetypes.guess_type(candidate)
+    return mime_type
+  except (ValueError, AttributeError) as e:
+    logger.debug("Could not infer MIME type from URI %s: %s", uri, e)
+    return None
 
 
 def _decode_inline_text_data(raw_bytes: bytes) -> str:
@@ -553,6 +600,22 @@ async def _get_content(
       file_object: ChatCompletionFileUrlObject = {
           "file_id": part.file_data.file_uri,
       }
+      # Determine MIME type: use explicit value, infer from URI, or use default
+      mime_type = part.file_data.mime_type
+      if not mime_type:
+        mime_type = _infer_mime_type_from_uri(part.file_data.file_uri)
+      if not mime_type and part.file_data.display_name:
+        guessed_mime_type, _ = mimetypes.guess_type(part.file_data.display_name)
+        mime_type = guessed_mime_type
+      if not mime_type:
+        # LiteLLM's Vertex AI backend requires format for GCS URIs
+        mime_type = _DEFAULT_MIME_TYPE
+        logger.debug(
+            "Could not determine MIME type for file_uri %s, using default: %s",
+            part.file_data.file_uri,
+            mime_type,
+        )
+      file_object["format"] = mime_type
       content_objects.append({
           "type": "file",
           "file": file_object,
