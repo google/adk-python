@@ -31,7 +31,8 @@ from a2a.client import ClientEvent as A2AClientEvent
 from a2a.client.card_resolver import A2ACardResolver
 from a2a.client.client import ClientConfig as A2AClientConfig
 from a2a.client.client_factory import ClientFactory as A2AClientFactory
-from a2a.client.errors import A2AClientError
+from a2a.client.errors import A2AClientHTTPError
+from a2a.client.middleware import ClientCallContext
 from a2a.types import AgentCard
 from a2a.types import Message as A2AMessage
 from a2a.types import Part as A2APart
@@ -343,18 +344,18 @@ class RemoteA2aAgent(BaseAgent):
 
   def _construct_message_parts_from_session(
       self, ctx: InvocationContext
-  ) -> tuple[list[A2APart], Optional[str], Optional[str]]:
+  ) -> tuple[list[A2APart], Optional[str]]:
     """Construct A2A message parts from session events.
 
     Args:
       ctx: The invocation context
 
     Returns:
-      List of A2A parts extracted from session events, context ID, task ID
+      List of A2A parts extracted from session events, context ID,
+      request metadata
     """
     message_parts: list[A2APart] = []
     context_id = None
-    task_id = None
 
     events_to_process = []
     for event in reversed(ctx.session.events):
@@ -364,7 +365,6 @@ class RemoteA2aAgent(BaseAgent):
         if event.custom_metadata:
           metadata = event.custom_metadata
           context_id = metadata.get(A2A_METADATA_PREFIX + "context_id")
-          task_id = metadata.get(A2A_METADATA_PREFIX + "task_id")
         break
       events_to_process.append(event)
 
@@ -385,7 +385,7 @@ class RemoteA2aAgent(BaseAgent):
         else:
           logger.warning("Failed to convert part to A2A format: %s", part)
 
-    return message_parts, context_id, task_id
+    return message_parts, context_id
 
   async def _handle_a2a_response(
       self, a2a_response: A2AClientEvent | A2AMessage, ctx: InvocationContext
@@ -501,8 +501,8 @@ class RemoteA2aAgent(BaseAgent):
     # Create A2A request for function response or regular message
     a2a_request = self._create_a2a_request_for_user_function_response(ctx)
     if not a2a_request:
-      message_parts, context_id, task_id = (
-          self._construct_message_parts_from_session(ctx)
+      message_parts, context_id = self._construct_message_parts_from_session(
+          ctx
       )
 
       if not message_parts:
@@ -522,7 +522,6 @@ class RemoteA2aAgent(BaseAgent):
           parts=message_parts,
           role="user",
           context_id=context_id,
-          task_id=task_id,
       )
 
     logger.debug(build_a2a_request_log(a2a_request))
@@ -535,6 +534,7 @@ class RemoteA2aAgent(BaseAgent):
       async for a2a_response in self._a2a_client.send_message(
           request=a2a_request,
           request_metadata=request_metadata,
+          context=ClientCallContext(state=ctx.session.state),
       ):
         logger.debug(build_a2a_response_log(a2a_response))
 
@@ -559,6 +559,24 @@ class RemoteA2aAgent(BaseAgent):
           )
 
         yield event
+
+    except A2AClientHTTPError as e:
+      error_message = f"A2A request failed: {e}"
+      logger.error(error_message)
+      yield Event(
+          author=self.name,
+          error_message=error_message,
+          invocation_id=ctx.invocation_id,
+          branch=ctx.branch,
+          custom_metadata={
+              A2A_METADATA_PREFIX
+              + "request": a2a_request.model_dump(
+                  exclude_none=True, by_alias=True
+              ),
+              A2A_METADATA_PREFIX + "error": error_message,
+              A2A_METADATA_PREFIX + "status_code": str(e.status_code),
+          },
+      )
 
     except Exception as e:
       error_message = f"A2A request failed: {e}"

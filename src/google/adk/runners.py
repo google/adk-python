@@ -245,9 +245,38 @@ class Runner:
   def _infer_agent_origin(
       self, agent: BaseAgent
   ) -> tuple[Optional[str], Optional[Path]]:
+    """Infer the origin app name and directory from an agent's module location.
+
+    Returns:
+      A tuple of (origin_app_name, origin_path):
+        - origin_app_name: The inferred app name (directory name containing the
+          agent), or None if inference is not possible/applicable.
+        - origin_path: The directory path where the agent is defined, or None
+          if the path cannot be determined.
+
+      Both values are None when:
+        - The agent has no associated module
+        - The agent is defined in google.adk.* (ADK internal modules)
+        - The module has no __file__ attribute
+    """
+    # First, check for metadata set by AgentLoader (most reliable source).
+    # AgentLoader sets these attributes when loading agents.
+    origin_app_name = getattr(agent, '_adk_origin_app_name', None)
+    origin_path = getattr(agent, '_adk_origin_path', None)
+    if origin_app_name is not None and origin_path is not None:
+      return origin_app_name, origin_path
+
+    # Fall back to heuristic inference for programmatic usage.
     module = inspect.getmodule(agent.__class__)
     if not module:
       return None, None
+
+    # Skip ADK internal modules. When users instantiate LlmAgent directly
+    # (not subclassed), inspect.getmodule() returns the ADK module. This
+    # could falsely match 'agents' in 'google/adk/agents/' path.
+    if module.__name__.startswith('google.adk.'):
+      return None, None
+
     module_file = getattr(module, '__file__', None)
     if not module_file:
       return None, None
@@ -412,7 +441,11 @@ class Runner:
           message = self._format_session_not_found_message(session_id)
           raise ValueError(message)
         if not invocation_id and not new_message:
-          raise ValueError('Both invocation_id and new_message are None.')
+          raise ValueError(
+              'Running an agent requires either a new_message or an '
+              'invocation_id to resume a previous invocation. '
+              f'Session: {session_id}, User: {user_id}'
+          )
 
         if invocation_id:
           if (
