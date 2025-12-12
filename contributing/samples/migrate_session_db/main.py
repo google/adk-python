@@ -21,8 +21,8 @@ from dotenv import load_dotenv
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.adk.cli.utils import logs
 from google.adk.runners import Runner
-from google.adk.sessions.sqlite_session_service import SqliteSessionService
 from google.adk.sessions.session import Session
+from google.adk.sessions.sqlite_session_service import SqliteSessionService
 from google.genai import types
 
 load_dotenv(override=True)
