@@ -18,6 +18,7 @@ import json
 import logging
 import ssl
 from typing import Any
+from typing import Callable
 from typing import Dict
 from typing import Final
 from typing import List
@@ -71,6 +72,9 @@ class OpenAPIToolset(BaseToolset):
       tool_filter: Optional[Union[ToolPredicate, List[str]]] = None,
       tool_name_prefix: Optional[str] = None,
       ssl_verify: Optional[Union[bool, str, ssl.SSLContext]] = None,
+      header_provider: Optional[
+          Callable[[ReadonlyContext], Dict[str, str]]
+      ] = None,
   ):
     """Initializes the OpenAPIToolset.
 
@@ -116,8 +120,14 @@ class OpenAPIToolset(BaseToolset):
         - ssl.SSLContext: Custom SSL context for advanced configuration
         This is useful for enterprise environments where requests go through
         a TLS-intercepting proxy with a custom CA certificate.
+      header_provider: A callable that returns a dictionary of headers to be
+        included in API requests. The callable receives the ReadonlyContext as
+        an argument, allowing dynamic header generation based on the current
+        context. Useful for adding custom headers like correlation IDs,
+        authentication tokens, or other request metadata.
     """
     super().__init__(tool_filter=tool_filter, tool_name_prefix=tool_name_prefix)
+    self._header_provider = header_provider
     if not spec_dict:
       spec_dict = self._load_spec(spec_str, spec_str_type)
     self._ssl_verify = ssl_verify
@@ -189,7 +199,11 @@ class OpenAPIToolset(BaseToolset):
 
     tools = []
     for o in operations:
-      tool = RestApiTool.from_parsed_operation(o, ssl_verify=self._ssl_verify)
+      tool = RestApiTool.from_parsed_operation(
+          o,
+          ssl_verify=self._ssl_verify,
+          header_provider=self._header_provider,
+      )
       logger.info("Parsed tool: %s", tool.name)
       tools.append(tool)
     return tools

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import ssl
 from typing import Any
+from typing import Callable
 from typing import Dict
 from typing import List
 from typing import Literal
@@ -29,6 +30,7 @@ from google.genai.types import FunctionDeclaration
 import requests
 from typing_extensions import override
 
+from ....agents.readonly_context import ReadonlyContext
 from ....auth.auth_credential import AuthCredential
 from ....auth.auth_schemes import AuthScheme
 from ..._gemini_schema_util import _to_gemini_schema
@@ -90,6 +92,9 @@ class RestApiTool(BaseTool):
       auth_credential: Optional[Union[AuthCredential, str]] = None,
       should_parse_operation=True,
       ssl_verify: Optional[Union[bool, str, ssl.SSLContext]] = None,
+      header_provider: Optional[
+          Callable[[ReadonlyContext], Dict[str, str]]
+      ] = None,
   ):
     """Initializes the RestApiTool with the given parameters.
 
@@ -122,6 +127,11 @@ class RestApiTool(BaseTool):
           - False: Disable SSL verification (insecure, not recommended)
           - str: Path to a CA bundle file or directory for custom CA
           - ssl.SSLContext: Custom SSL context for advanced configuration
+        header_provider: A callable that returns a dictionary of headers to be
+          included in API requests. The callable receives the ReadonlyContext as
+          an argument, allowing dynamic header generation based on the current
+          context. Useful for adding custom headers like correlation IDs,
+          authentication tokens, or other request metadata.
     """
     # Gemini restrict the length of function name to be less than 64 characters
     self.name = name[:60]
@@ -145,6 +155,7 @@ class RestApiTool(BaseTool):
     self.credential_exchanger = AutoAuthCredentialExchanger()
     self._default_headers: Dict[str, str] = {}
     self._ssl_verify = ssl_verify
+    self._header_provider = header_provider
     if should_parse_operation:
       self._operation_parser = OperationParser(self.operation)
 
@@ -153,12 +164,20 @@ class RestApiTool(BaseTool):
       cls,
       parsed: ParsedOperation,
       ssl_verify: Optional[Union[bool, str, ssl.SSLContext]] = None,
+      header_provider: Optional[
+          Callable[[ReadonlyContext], Dict[str, str]]
+      ] = None,
   ) -> "RestApiTool":
     """Initializes the RestApiTool from a ParsedOperation object.
 
     Args:
         parsed: A ParsedOperation object.
         ssl_verify: SSL certificate verification option.
+        header_provider: A callable that returns a dictionary of headers to be
+          included in API requests. The callable receives the ReadonlyContext as
+          an argument, allowing dynamic header generation based on the current
+          context. Useful for adding custom headers like correlation IDs,
+          authentication tokens, or other request metadata.
 
     Returns:
         A RestApiTool object.
@@ -178,6 +197,7 @@ class RestApiTool(BaseTool):
         auth_scheme=parsed.auth_scheme,
         auth_credential=parsed.auth_credential,
         ssl_verify=ssl_verify,
+        header_provider=header_provider,
     )
     generated._operation_parser = operation_parser
     return generated
@@ -450,6 +470,13 @@ class RestApiTool(BaseTool):
     request_params = self._prepare_request_params(api_params, api_args)
     if self._ssl_verify is not None:
       request_params["verify"] = self._ssl_verify
+
+    # Add headers from header_provider if configured
+    if self._header_provider is not None and tool_context is not None:
+      provider_headers = self._header_provider(tool_context)
+      if provider_headers:
+        request_params.setdefault("headers", {}).update(provider_headers)
+
     response = requests.request(**request_params)
 
     # Parse API response
