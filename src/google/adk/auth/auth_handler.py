@@ -48,9 +48,10 @@ class AuthHandler:
       self,
   ) -> AuthCredential:
     exchanger = OAuth2CredentialExchanger()
-    return await exchanger.exchange(
+    exchange_result = await exchanger.exchange(
         self.auth_config.exchanged_auth_credential, self.auth_config.auth_scheme
     )
+    return exchange_result.credential
 
   async def parse_and_store_auth_response(self, state: State) -> None:
 
