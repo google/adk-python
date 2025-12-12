@@ -24,13 +24,14 @@ from adk_documentation.settings import DOC_OWNER
 from adk_documentation.settings import DOC_REPO
 from adk_documentation.tools import get_issue
 from adk_documentation.utils import call_agent_async
+from adk_documentation.utils import parse_suggestions
 from google.adk.cli.utils import logs
 from google.adk.runners import InMemoryRunner
 
 APP_NAME = "adk_docs_updater"
 USER_ID = "adk_docs_updater_user"
 
-logs.setup_adk_logger(level=logging.DEBUG)
+logs.setup_adk_logger(level=logging.INFO)
 
 
 def process_arguments():
@@ -68,23 +69,84 @@ async def main():
     print(f"Failed to get issue {issue_number}: {get_issue_response}\n")
     return
   issue = get_issue_response["issue"]
+  issue_title = issue.get("title", "")
+  issue_body = issue.get("body", "")
+
+  # Parse numbered suggestions from issue body
+  suggestions = parse_suggestions(issue_body)
+
+  if not suggestions:
+    print(f"No numbered suggestions found in issue #{issue_number}.")
+    print("Falling back to processing the entire issue as a single task.")
+    suggestions = [(1, issue_body)]
+
+  print(f"Found {len(suggestions)} suggestion(s) in issue #{issue_number}.")
+  print("=" * 80)
 
   runner = InMemoryRunner(
       agent=agent.root_agent,
       app_name=APP_NAME,
   )
-  session = await runner.session_service.create_session(
-      app_name=APP_NAME,
-      user_id=USER_ID,
-  )
 
-  response = await call_agent_async(
-      runner,
-      USER_ID,
-      session.id,
-      f"Please update the ADK docs according to the following issue:\n{issue}",
+  results = []
+  for suggestion_num, suggestion_text in suggestions:
+    print(f"\n>>> Processing suggestion #{suggestion_num}...")
+    print("-" * 80)
+
+    # Create a new session for each suggestion to avoid context interference
+    session = await runner.session_service.create_session(
+        app_name=APP_NAME,
+        user_id=USER_ID,
+    )
+
+    prompt = f"""
+      Please update the ADK docs according to suggestion #{suggestion_num} from issue #{issue_number}.
+
+      Issue title: {issue_title}
+
+      Suggestion to process:
+      {suggestion_text}
+
+      Note: Focus only on this specific suggestion. Create exactly one pull request for this suggestion.
+    """
+
+    try:
+      response = await call_agent_async(
+          runner,
+          USER_ID,
+          session.id,
+          prompt,
+      )
+      results.append({
+          "suggestion_num": suggestion_num,
+          "status": "success",
+          "response": response,
+      })
+      print(f"<<<< Suggestion #{suggestion_num} completed.")
+    except Exception as e:
+      results.append({
+          "suggestion_num": suggestion_num,
+          "status": "error",
+          "error": str(e),
+      })
+      print(f"<<<< Suggestion #{suggestion_num} failed: {e}")
+
+    print("-" * 80)
+
+  # Print summary
+  print("\n" + "=" * 80)
+  print("SUMMARY")
+  print("=" * 80)
+  successful = [r for r in results if r["status"] == "success"]
+  failed = [r for r in results if r["status"] == "error"]
+  print(
+      f"Total: {len(results)}, Success: {len(successful)}, Failed:"
+      f" {len(failed)}"
   )
-  print(f"<<<< Agent Final Output: {response}\n")
+  if failed:
+    print("\nFailed suggestions:")
+    for r in failed:
+      print(f"  - Suggestion #{r['suggestion_num']}: {r['error']}")
 
 
 if __name__ == "__main__":
