@@ -32,7 +32,7 @@ logs.log_to_tmp_folder()
 async def main():
   app_name = 'migrate_session_db_app'
   user_id_1 = 'user1'
-  session_service = DatabaseSessionService('sqlite:///./sessions.db')
+  session_service = DatabaseSessionService('sqlite+aiosqlite:///./sessions.db')
   artifact_service = InMemoryArtifactService()
   runner = Runner(
       app_name=app_name,

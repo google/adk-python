@@ -13,9 +13,9 @@
 # limitations under the License.
 
 from enum import Enum
-from typing import Dict
-from typing import List
+from unittest import mock
 
+from google.adk.features import FeatureName
 from google.adk.tools import _automatic_function_calling_util
 from google.adk.tools.tool_context import ToolContext
 from google.adk.utils.variant_utils import GoogleLLMVariant
@@ -79,7 +79,7 @@ def test_bool_input():
 
 
 def test_array_input():
-  def simple_function(input_str: List[str]) -> str:
+  def simple_function(input_str: list[str]) -> str:
     return {'result': input_str}
 
   function_decl = _automatic_function_calling_util.build_function_declaration(
@@ -92,7 +92,7 @@ def test_array_input():
 
 
 def test_dict_input():
-  def simple_function(input_str: Dict[str, str]) -> str:
+  def simple_function(input_str: dict[str, str]) -> str:
     return {'result': input_str}
 
   function_decl = _automatic_function_calling_util.build_function_declaration(
@@ -206,7 +206,7 @@ def test_basemodel_with_nested_basemodel():
 
 def test_list():
   def simple_function(
-      input_str: List[str], input_dir: List[Dict[str, str]]
+      input_str: list[str], input_dir: list[dict[str, str]]
   ) -> str:
     return {'result': input_str}
 
@@ -257,7 +257,7 @@ def test_basemodel_list():
   class CustomInput(BaseModel):
     child: ChildInput
 
-  def simple_function(input_str: List[CustomInput]) -> str:
+  def simple_function(input_str: list[CustomInput]) -> str:
     return {'result': input_str}
 
   function_decl = _automatic_function_calling_util.build_function_declaration(
@@ -427,3 +427,240 @@ def test_transfer_to_agent_tool_with_enum_constraint():
   assert function_decl.parameters.properties['agent_name'].type == 'STRING'
   assert function_decl.parameters.properties['agent_name'].enum == agent_names
   assert 'tool_context' not in function_decl.parameters.properties
+
+
+class TestJsonSchemaFeatureFlagEnabled:
+  """Tests for build_function_declaration when JSON_SCHEMA_FOR_FUNC_DECL is enabled."""
+
+  @pytest.fixture(autouse=True)
+  def enable_feature_flag(self):
+    """Enable the JSON_SCHEMA_FOR_FUNC_DECL feature flag for all tests."""
+    with mock.patch.object(
+        _automatic_function_calling_util,
+        'is_feature_enabled',
+        autospec=True,
+        side_effect=lambda f: f == FeatureName.JSON_SCHEMA_FOR_FUNC_DECL,
+    ):
+      yield
+
+  def test_basic_string_parameter(self):
+    """Test basic string parameter with feature flag enabled."""
+
+    def greet(name: str) -> str:
+      """Greet someone."""
+      return f'Hello, {name}!'
+
+    decl = _automatic_function_calling_util.build_function_declaration(greet)
+
+    assert decl.name == 'greet'
+    assert decl.description == 'Greet someone.'
+    assert decl.parameters_json_schema == {
+        'properties': {'name': {'title': 'Name', 'type': 'string'}},
+        'required': ['name'],
+        'title': 'greetParams',
+        'type': 'object',
+    }
+
+  def test_multiple_parameter_types(self):
+    """Test multiple parameter types with feature flag enabled."""
+
+    def create_user(name: str, age: int, active: bool) -> str:
+      """Create a new user."""
+      return f'Created {name}'
+
+    decl = _automatic_function_calling_util.build_function_declaration(
+        create_user
+    )
+
+    schema = decl.parameters_json_schema
+    assert schema['properties'] == {
+        'name': {'title': 'Name', 'type': 'string'},
+        'age': {'title': 'Age', 'type': 'integer'},
+        'active': {'title': 'Active', 'type': 'boolean'},
+    }
+    assert set(schema['required']) == {'name', 'age', 'active'}
+
+  def test_list_parameter(self):
+    """Test list parameter with feature flag enabled."""
+
+    def sum_numbers(numbers: list[int]) -> int:
+      """Sum a list of numbers."""
+      return sum(numbers)
+
+    decl = _automatic_function_calling_util.build_function_declaration(
+        sum_numbers
+    )
+
+    schema = decl.parameters_json_schema
+    assert schema['properties']['numbers'] == {
+        'items': {'type': 'integer'},
+        'title': 'Numbers',
+        'type': 'array',
+    }
+
+  def test_dict_parameter(self):
+    """Test dict parameter with feature flag enabled."""
+
+    def process_data(data: dict[str, str]) -> str:
+      """Process a dictionary."""
+      return str(data)
+
+    decl = _automatic_function_calling_util.build_function_declaration(
+        process_data
+    )
+
+    schema = decl.parameters_json_schema
+    assert schema['properties']['data'] == {
+        'additionalProperties': {'type': 'string'},
+        'title': 'Data',
+        'type': 'object',
+    }
+
+  def test_optional_parameter(self):
+    """Test optional parameter with feature flag enabled."""
+
+    def search(query: str, limit: int | None = None) -> str:
+      """Search for something."""
+      return query
+
+    decl = _automatic_function_calling_util.build_function_declaration(search)
+
+    schema = decl.parameters_json_schema
+    assert schema['required'] == ['query']
+    assert 'query' in schema['properties']
+    assert 'limit' in schema['properties']
+
+  def test_enum_parameter(self):
+    """Test enum parameter with feature flag enabled."""
+
+    class Color(Enum):
+      RED = 'red'
+      GREEN = 'green'
+      BLUE = 'blue'
+
+    def set_color(color: Color) -> str:
+      """Set the color."""
+      return color.value
+
+    decl = _automatic_function_calling_util.build_function_declaration(
+        set_color
+    )
+
+    schema = decl.parameters_json_schema
+    assert schema['properties']['color'] == {
+        '$ref': '#/$defs/Color',
+    }
+    assert schema['$defs']['Color'] == {
+        'enum': ['red', 'green', 'blue'],
+        'title': 'Color',
+        'type': 'string',
+    }
+
+  def test_tool_context_ignored(self):
+    """Test that tool_context is ignored."""
+
+    def my_tool(query: str, tool_context: ToolContext) -> str:
+      """A tool that uses context."""
+      return query
+
+    decl = _automatic_function_calling_util.build_function_declaration(
+        my_tool, ignore_params=['tool_context']
+    )
+
+    schema = decl.parameters_json_schema
+    assert set(schema['properties'].keys()) == {'query'}
+    assert 'tool_context' not in schema['properties']
+
+  def test_gemini_api_no_response_schema(self):
+    """Test that GEMINI_API variant does not include response schema."""
+
+    def get_data() -> dict[str, int]:
+      """Get some data."""
+      return {'count': 42}
+
+    decl = _automatic_function_calling_util.build_function_declaration(
+        get_data, variant=GoogleLLMVariant.GEMINI_API
+    )
+
+    # GEMINI_API should not have response_json_schema due to bug b/421991354
+    assert decl.response_json_schema is None
+
+  @pytest.mark.parametrize(
+      'variant, expect_response_schema',
+      [
+          (GoogleLLMVariant.GEMINI_API, False),
+          (GoogleLLMVariant.VERTEX_AI, True),
+      ],
+  )
+  def test_response_schema_by_variant(self, variant, expect_response_schema):
+    """Test response schema generation based on the LLM variant."""
+
+    def get_data() -> dict[str, int]:
+      """Get some data."""
+      return {'count': 42}
+
+    decl = _automatic_function_calling_util.build_function_declaration(
+        get_data, variant=variant
+    )
+
+    assert (decl.response_json_schema is not None) == expect_response_schema
+
+  def test_pydantic_model_parameter(self):
+    """Test Pydantic model parameter with feature flag enabled."""
+
+    class Address(BaseModel):
+      street: str
+      city: str
+
+    def save_address(address: Address) -> str:
+      """Save an address."""
+      return f'Saved address in {address.city}'
+
+    decl = _automatic_function_calling_util.build_function_declaration(
+        save_address
+    )
+
+    assert decl.parameters_json_schema is not None
+    assert 'address' in decl.parameters_json_schema['properties']
+
+  def test_no_parameters(self):
+    """Test function with no parameters."""
+
+    def get_time() -> str:
+      """Get current time."""
+      return '12:00'
+
+    decl = _automatic_function_calling_util.build_function_declaration(get_time)
+
+    assert decl.name == 'get_time'
+    assert decl.parameters_json_schema is None
+
+  def test_docstring_preserved(self):
+    """Test that docstring is preserved as description."""
+
+    def well_documented(x: int) -> int:
+      """This is a well-documented function.
+
+      It does something useful.
+      """
+      return x
+
+    decl = _automatic_function_calling_util.build_function_declaration(
+        well_documented
+    )
+
+    assert 'well-documented function' in decl.description
+    assert 'something useful' in decl.description
+
+  def test_default_values(self):
+    """Test parameters with default values."""
+
+    def greet(name: str = 'World') -> str:
+      """Greet someone."""
+      return f'Hello, {name}!'
+
+    decl = _automatic_function_calling_util.build_function_declaration(greet)
+
+    schema = decl.parameters_json_schema
+    assert schema['properties']['name']['default'] == 'World'
+    assert 'name' not in schema.get('required', [])

@@ -141,7 +141,8 @@ class LlmAsJudge(Evaluator):
                   role="user",
               )
           ],
-          config=self._judge_model_options.judge_model_config,
+          config=self._judge_model_options.judge_model_config
+          or genai_types.GenerateContentConfig(),
       )
       add_default_retry_options_if_not_present(llm_request)
       num_samples = self._judge_model_options.num_samples

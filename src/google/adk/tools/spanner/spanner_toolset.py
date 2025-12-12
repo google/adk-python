@@ -24,11 +24,12 @@ from google.adk.tools.spanner import query_tool
 from google.adk.tools.spanner import search_tool
 from typing_extensions import override
 
+from ...features import experimental
+from ...features import FeatureName
 from ...tools.base_tool import BaseTool
 from ...tools.base_toolset import BaseToolset
 from ...tools.base_toolset import ToolPredicate
 from ...tools.google_tool import GoogleTool
-from ...utils.feature_decorator import experimental
 from .settings import Capabilities
 from .settings import SpannerToolSettings
 from .spanner_credentials import SpannerCredentialsConfig
@@ -36,7 +37,7 @@ from .spanner_credentials import SpannerCredentialsConfig
 DEFAULT_SPANNER_TOOL_NAME_PREFIX = "spanner"
 
 
-@experimental
+@experimental(FeatureName.SPANNER_TOOLSET)
 class SpannerToolset(BaseToolset):
   """Spanner Toolset contains tools for interacting with Spanner data, database and table information.
 

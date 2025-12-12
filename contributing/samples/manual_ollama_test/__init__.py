@@ -12,17 +12,4 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from __future__ import annotations
-
-from pydantic import BaseModel
-
-from ...features import experimental
-from ...features import FeatureName
-
-
-@experimental(FeatureName.BIGTABLE_TOOL_SETTINGS)
-class BigtableToolSettings(BaseModel):
-  """Settings for Bigtable tools."""
-
-  max_query_result_rows: int = 50
-  """Maximum number of rows to return from a query result."""
+from . import agent

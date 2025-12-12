@@ -23,6 +23,7 @@ from pydantic import alias_generators
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
+from pydantic.json_schema import SkipJsonSchema
 from typing_extensions import TypeAlias
 
 from .common import EvalBaseModel
@@ -71,8 +72,10 @@ class JudgeModelOptions(EvalBaseModel):
       ),
   )
 
-  judge_model_config: Optional[genai_types.GenerateContentConfig] = Field(
-      default=genai_types.GenerateContentConfig,
+  judge_model_config: SkipJsonSchema[
+      Optional[genai_types.GenerateContentConfig]
+  ] = Field(
+      default=None,
       description="The configuration for the judge model.",
   )
 

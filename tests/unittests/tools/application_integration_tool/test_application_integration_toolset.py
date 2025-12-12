@@ -192,7 +192,15 @@ async def test_initialization_with_integration_and_trigger(
       project, location, integration=integration_name, triggers=triggers
   )
   mock_integration_client.assert_called_once_with(
-      project, location, integration_name, triggers, None, None, None, None
+      project,
+      location,
+      None,
+      integration_name,
+      triggers,
+      None,
+      None,
+      None,
+      None,
   )
   mock_integration_client.return_value.get_openapi_spec_for_integration.assert_called_once()
   mock_connections_client.assert_not_called()
@@ -218,6 +226,7 @@ async def test_initialization_with_integration_and_list_of_triggers(
   mock_integration_client.assert_called_once_with(
       project,
       location,
+      None,
       integration_name,
       triggers,
       None,
@@ -247,7 +256,7 @@ async def test_initialization_with_integration_and_empty_trigger_list(
       project, location, integration=integration_name
   )
   mock_integration_client.assert_called_once_with(
-      project, location, integration_name, None, None, None, None, None
+      project, location, None, integration_name, None, None, None, None, None
   )
   mock_integration_client.return_value.get_openapi_spec_for_integration.assert_called_once()
   mock_connections_client.assert_not_called()
@@ -285,6 +294,7 @@ async def test_initialization_with_connection_and_entity_operations(
   mock_integration_client.assert_called_once_with(
       project,
       location,
+      None,
       None,
       None,
       connection_name,
@@ -335,7 +345,15 @@ async def test_initialization_with_connection_and_actions(
       tool_instructions=tool_instructions,
   )
   mock_integration_client.assert_called_once_with(
-      project, location, None, None, connection_name, None, actions_list, None
+      project,
+      location,
+      None,
+      None,
+      None,
+      connection_name,
+      None,
+      actions_list,
+      None,
   )
   mock_connections_client.assert_called_once_with(
       project, location, connection_name, None
@@ -414,6 +432,7 @@ def test_initialization_with_service_account_credentials(
   mock_integration_client.assert_called_once_with(
       project,
       location,
+      None,
       integration_name,
       triggers,
       None,
@@ -441,7 +460,15 @@ def test_initialization_without_explicit_service_account_credentials(
       project, location, integration=integration_name, triggers=triggers
   )
   mock_integration_client.assert_called_once_with(
-      project, location, integration_name, triggers, None, None, None, None
+      project,
+      location,
+      None,
+      integration_name,
+      triggers,
+      None,
+      None,
+      None,
+      None,
   )
   mock_openapi_toolset.assert_called_once()
   _, kwargs = mock_openapi_toolset.call_args
@@ -542,7 +569,15 @@ async def test_init_with_connection_and_custom_auth(
       auth_credential=auth_credential,
   )
   mock_integration_client.assert_called_once_with(
-      project, location, None, None, connection_name, None, actions_list, None
+      project,
+      location,
+      None,
+      None,
+      None,
+      connection_name,
+      None,
+      actions_list,
+      None,
   )
   mock_connections_client.assert_called_once_with(
       project, location, connection_name, None
@@ -611,7 +646,15 @@ async def test_init_with_connection_with_auth_override_disabled_and_custom_auth(
       auth_credential=auth_credential,
   )
   mock_integration_client.assert_called_once_with(
-      project, location, None, None, connection_name, None, actions_list, None
+      project,
+      location,
+      None,
+      None,
+      None,
+      connection_name,
+      None,
+      actions_list,
+      None,
   )
   mock_connections_client.assert_called_once_with(
       project, location, connection_name, None
