@@ -195,8 +195,10 @@ def _rearrange_events_for_latest_function_response(
   # Find the index of the function_call_event in the events list
   if function_call_event:
     for idx, event in enumerate(events):
-      if (event.invocation_id == function_call_event.invocation_id and
-          event.timestamp == function_call_event.timestamp):
+      if (
+          event.invocation_id == function_call_event.invocation_id
+          and event.timestamp == function_call_event.timestamp
+      ):
         function_call_event_idx = idx
         break
 
