@@ -1006,6 +1006,10 @@ def fast_api_common_options():
         multiple=True,
     )
     @click.option(
+        "--allow_origin_regex",
+        help="Optional. A regex pattern for additional origins to allow for CORS.",
+    )
+    @click.option(
         "-v",
         "--verbose",
         is_flag=True,
@@ -1223,6 +1227,7 @@ def cli_api_server(
     eval_storage_uri: Optional[str] = None,
     log_level: str = "INFO",
     allow_origins: Optional[list[str]] = None,
+    allow_origin_regex: Optional[str] = None,
     host: str = "127.0.0.1",
     port: int = 8000,
     url_prefix: Optional[str] = None,
@@ -1259,6 +1264,7 @@ def cli_api_server(
           memory_service_uri=memory_service_uri,
           eval_storage_uri=eval_storage_uri,
           allow_origins=allow_origins,
+          allow_origin_regex=allow_origin_regex,
           web=False,
           trace_to_cloud=trace_to_cloud,
           otel_to_cloud=otel_to_cloud,
