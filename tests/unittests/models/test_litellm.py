@@ -12,7 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the Licens
 
+import contextlib
 import json
+import logging
+import os
+import sys
+import tempfile
+import unittest
+from unittest.mock import ANY
 from unittest.mock import AsyncMock
 from unittest.mock import Mock
 import warnings
@@ -28,6 +35,7 @@ from google.adk.models.lite_llm import _message_to_generate_content_response
 from google.adk.models.lite_llm import _model_response_to_chunk
 from google.adk.models.lite_llm import _model_response_to_generate_content_response
 from google.adk.models.lite_llm import _parse_tool_calls_from_text
+from google.adk.models.lite_llm import _redirect_litellm_loggers_to_stdout
 from google.adk.models.lite_llm import _schema_to_dict
 from google.adk.models.lite_llm import _split_message_content_and_tool_calls
 from google.adk.models.lite_llm import _to_litellm_response_format
@@ -1466,6 +1474,79 @@ async def test_generate_content_async_with_usage_metadata(
     assert response.usage_metadata.cached_content_token_count == 8
 
   mock_acompletion.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_ollama_chat_flattens_content(
+    mock_acompletion, mock_completion
+):
+  llm_client = MockLLMClient(mock_acompletion, mock_completion)
+  lite_llm_instance = LiteLlm(
+      model="ollama_chat/qwen2.5:7b", llm_client=llm_client
+  )
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role="user",
+              parts=[
+                  types.Part.from_text(text="Describe this image."),
+                  types.Part.from_bytes(
+                      data=b"test_image", mime_type="image/png"
+                  ),
+              ],
+          )
+      ]
+  )
+
+  async for _ in lite_llm_instance.generate_content_async(llm_request):
+    pass
+
+  mock_acompletion.assert_called_once_with(
+      model="ollama_chat/qwen2.5:7b",
+      messages=ANY,
+      tools=ANY,
+      response_format=ANY,
+  )
+  _, kwargs = mock_acompletion.call_args
+  message_content = kwargs["messages"][0]["content"]
+  assert isinstance(message_content, str)
+  assert "Describe this image." in message_content
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_custom_provider_flattens_content(
+    mock_acompletion, mock_completion
+):
+  llm_client = MockLLMClient(mock_acompletion, mock_completion)
+  lite_llm_instance = LiteLlm(
+      model="qwen2.5:7b",
+      llm_client=llm_client,
+      custom_llm_provider="ollama_chat",
+  )
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role="user",
+              parts=[
+                  types.Part.from_text(text="Describe this image."),
+                  types.Part.from_bytes(
+                      data=b"test_image", mime_type="image/png"
+                  ),
+              ],
+          )
+      ]
+  )
+
+  async for _ in lite_llm_instance.generate_content_async(llm_request):
+    pass
+
+  mock_acompletion.assert_called_once()
+  _, kwargs = mock_acompletion.call_args
+  assert kwargs["custom_llm_provider"] == "ollama_chat"
+  assert kwargs["model"] == "qwen2.5:7b"
+  message_content = kwargs["messages"][0]["content"]
+  assert isinstance(message_content, str)
+  assert "Describe this image." in message_content
 
 
 @pytest.mark.asyncio
@@ -3059,3 +3140,79 @@ async def test_get_completion_inputs_non_openai_no_file_upload(mocker):
   assert "file_id" not in content[1]["file"]
 
   mock_acreate_file.assert_not_called()
+
+
+class TestRedirectLitellmLoggersToStdout(unittest.TestCase):
+  """Tests for _redirect_litellm_loggers_to_stdout function."""
+
+  def test_redirects_stderr_handler_to_stdout(self):
+    """Test that handlers pointing to stderr are redirected to stdout."""
+    test_logger = logging.getLogger("LiteLLM")
+    # Create a handler pointing to stderr
+    handler = logging.StreamHandler(sys.stderr)
+    test_logger.addHandler(handler)
+
+    try:
+      self.assertIs(handler.stream, sys.stderr)
+
+      _redirect_litellm_loggers_to_stdout()
+
+      self.assertIs(handler.stream, sys.stdout)
+    finally:
+      # Clean up
+      test_logger.removeHandler(handler)
+
+  def test_preserves_stdout_handler(self):
+    """Test that handlers already pointing to stdout are not modified."""
+    test_logger = logging.getLogger("LiteLLM Proxy")
+    # Create a handler already pointing to stdout
+    handler = logging.StreamHandler(sys.stdout)
+    test_logger.addHandler(handler)
+
+    try:
+      _redirect_litellm_loggers_to_stdout()
+
+      self.assertIs(handler.stream, sys.stdout)
+    finally:
+      # Clean up
+      test_logger.removeHandler(handler)
+
+  def test_does_not_affect_non_stream_handlers(self):
+    """Test that non-StreamHandler handlers are not affected."""
+    test_logger = logging.getLogger("LiteLLM Router")
+    # Create a FileHandler (not a StreamHandler)
+    with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+      temp_file_name = temp_file.name
+    with contextlib.closing(
+        logging.FileHandler(temp_file_name)
+    ) as file_handler:
+      test_logger.addHandler(file_handler)
+
+      try:
+        _redirect_litellm_loggers_to_stdout()
+        # FileHandler should not be modified (it doesn't point to stderr or stdout)
+        self.assertEqual(file_handler.baseFilename, temp_file_name)
+      finally:
+        # Clean up
+        test_logger.removeHandler(file_handler)
+    os.unlink(temp_file_name)
+
+
+@pytest.mark.parametrize(
+    "logger_name",
+    ["LiteLLM", "LiteLLM Proxy", "LiteLLM Router"],
+    ids=["LiteLLM", "LiteLLM Proxy", "LiteLLM Router"],
+)
+def test_handles_litellm_logger_names(logger_name):
+  """Test that LiteLLM logger names are processed."""
+  test_logger = logging.getLogger(logger_name)
+  handler = logging.StreamHandler(sys.stderr)
+  test_logger.addHandler(handler)
+
+  try:
+    _redirect_litellm_loggers_to_stdout()
+
+    assert handler.stream is sys.stdout
+  finally:
+    # Clean up
+    test_logger.removeHandler(handler)

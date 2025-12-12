@@ -15,10 +15,12 @@
 from __future__ import annotations
 
 import base64
+import copy
 import json
 import logging
 import os
 import re
+import sys
 from typing import Any
 from typing import AsyncGenerator
 from typing import cast
@@ -557,6 +559,91 @@ async def _get_content(
       })
 
   return content_objects
+
+
+def _is_ollama_chat_provider(
+    model: Optional[str], custom_llm_provider: Optional[str]
+) -> bool:
+  """Returns True when requests should be normalized for ollama_chat."""
+  if custom_llm_provider and custom_llm_provider.lower() == "ollama_chat":
+    return True
+  if model and model.lower().startswith("ollama_chat"):
+    return True
+  return False
+
+
+def _flatten_ollama_content(
+    content: OpenAIMessageContent | str | None,
+) -> str | OpenAIMessageContent | None:
+  """Flattens multipart content to text for ollama_chat compatibility.
+
+  Ollama's chat endpoint rejects arrays for `content`. We keep textual parts,
+  join them with newlines, and fall back to a JSON string for non-text content.
+  If both text and non-text parts are present, only the text parts are kept.
+  """
+  if not isinstance(content, list):
+    return content
+
+  text_parts = []
+  for block in content:
+    if isinstance(block, dict) and block.get("type") == "text":
+      text_value = block.get("text")
+      if text_value:
+        text_parts.append(text_value)
+
+  if text_parts:
+    return _NEW_LINE.join(text_parts)
+
+  try:
+    return json.dumps(content)
+  except TypeError:
+    return str(content)
+
+
+def _normalize_ollama_chat_messages(
+    messages: list[Message],
+    *,
+    model: Optional[str] = None,
+    custom_llm_provider: Optional[str] = None,
+) -> list[Message]:
+  """Normalizes message payloads for ollama_chat provider.
+
+  The provider expects string content. Convert multipart content to text while
+  leaving other providers untouched.
+  """
+  if not _is_ollama_chat_provider(model, custom_llm_provider):
+    return messages
+
+  normalized_messages: list[Message] = []
+  for message in messages:
+    if isinstance(message, dict):
+      message_copy = dict(message)
+      message_copy["content"] = _flatten_ollama_content(
+          message_copy.get("content")
+      )
+      normalized_messages.append(message_copy)
+      continue
+
+    message_copy = (
+        message.model_copy()
+        if hasattr(message, "model_copy")
+        else copy.copy(message)
+    )
+    if hasattr(message_copy, "content"):
+      flattened_content = _flatten_ollama_content(
+          getattr(message_copy, "content")
+      )
+      try:
+        setattr(message_copy, "content", flattened_content)
+      except AttributeError as e:
+        logger.debug(
+            "Failed to set 'content' attribute on message of type %s: %s",
+            type(message_copy).__name__,
+            e,
+        )
+    normalized_messages.append(message_copy)
+
+  return normalized_messages
 
 
 def _build_tool_call_from_json_dict(
@@ -1283,6 +1370,30 @@ def _warn_gemini_via_litellm(model_string: str) -> None:
   )
 
 
+def _redirect_litellm_loggers_to_stdout() -> None:
+  """Redirects LiteLLM loggers from stderr to stdout.
+
+  LiteLLM creates StreamHandlers that output to stderr by default. In cloud
+  environments like GCP, stderr output is treated as ERROR severity regardless
+  of the actual log level. This function redirects LiteLLM loggers to stdout
+  so that INFO-level logs are not incorrectly classified as errors.
+  """
+  litellm_logger_names = ["LiteLLM", "LiteLLM Proxy", "LiteLLM Router"]
+  for logger_name in litellm_logger_names:
+    litellm_logger = logging.getLogger(logger_name)
+    for handler in litellm_logger.handlers:
+      if (
+          isinstance(handler, logging.StreamHandler)
+          and handler.stream is sys.stderr
+      ):
+        handler.stream = sys.stdout
+
+
+# Redirect LiteLLM loggers to stdout immediately after import to ensure
+# INFO-level logs are not incorrectly treated as errors in cloud environments.
+_redirect_litellm_loggers_to_stdout()
+
+
 class LiteLlm(BaseLlm):
   """Wrapper around litellm.
 
@@ -1350,9 +1461,14 @@ class LiteLlm(BaseLlm):
     _append_fallback_user_content_if_missing(llm_request)
     logger.debug(_build_request_log(llm_request))
 
-    model = llm_request.model or self.model
+    effective_model = llm_request.model or self.model
     messages, tools, response_format, generation_params = (
-        await _get_completion_inputs(llm_request, model)
+        await _get_completion_inputs(llm_request, effective_model)
+    )
+    normalized_messages = _normalize_ollama_chat_messages(
+        messages,
+        model=effective_model,
+        custom_llm_provider=self._additional_args.get("custom_llm_provider"),
     )
 
     if "functions" in self._additional_args:
@@ -1360,8 +1476,8 @@ class LiteLlm(BaseLlm):
       tools = None
 
     completion_args = {
-        "model": model,
-        "messages": messages,
+        "model": effective_model,
+        "messages": normalized_messages,
         "tools": tools,
         "response_format": response_format,
     }
