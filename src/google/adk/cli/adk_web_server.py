@@ -642,6 +642,7 @@ class AdkWebServer:
       self,
       lifespan: Optional[Lifespan[FastAPI]] = None,
       allow_origins: Optional[list[str]] = None,
+      allow_origin_regex: Optional[str] = None,
       web_assets_dir: Optional[str] = None,
       setup_observer: Callable[
           [Observer, "AdkWebServer"], None
@@ -713,14 +714,20 @@ class AdkWebServer:
     # Run the FastAPI server.
     app = FastAPI(lifespan=internal_lifespan)
 
-    if allow_origins:
-      app.add_middleware(
-          CORSMiddleware,
-          allow_origins=allow_origins,
-          allow_credentials=True,
-          allow_methods=["*"],
-          allow_headers=["*"],
-      )
+    if allow_origins or allow_origin_regex:
+      cors_kwargs = {
+          "allow_credentials": True,
+          "allow_methods": ["*"],
+          "allow_headers": ["*"],
+      }
+
+      if allow_origins:
+        cors_kwargs["allow_origins"] = allow_origins
+
+      if allow_origin_regex:
+        cors_kwargs["allow_origin_regex"] = allow_origin_regex
+
+      app.add_middleware(CORSMiddleware, **cors_kwargs)
 
     @app.get("/list-apps")
     async def list_apps(
