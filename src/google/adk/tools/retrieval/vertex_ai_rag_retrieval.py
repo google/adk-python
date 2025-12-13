@@ -23,7 +23,6 @@ from typing import TYPE_CHECKING
 from google.genai import types
 from typing_extensions import override
 
-from ...utils.model_name_utils import is_gemini_2_or_above
 from ..tool_context import ToolContext
 from .base_retrieval_tool import BaseRetrievalTool
 
@@ -62,26 +61,10 @@ class VertexAiRagRetrieval(BaseRetrievalTool):
       tool_context: ToolContext,
       llm_request: LlmRequest,
   ) -> None:
-    # Use Gemini built-in Vertex AI RAG tool for Gemini 2 models.
-    if is_gemini_2_or_above(llm_request.model):
-      llm_request.config = (
-          types.GenerateContentConfig()
-          if not llm_request.config
-          else llm_request.config
-      )
-      llm_request.config.tools = (
-          [] if not llm_request.config.tools else llm_request.config.tools
-      )
-      llm_request.config.tools.append(
-          types.Tool(
-              retrieval=types.Retrieval(vertex_rag_store=self.vertex_rag_store)
-          )
-      )
-    else:
-      # Add the function declaration to the tools
-      await super().process_llm_request(
-          tool_context=tool_context, llm_request=llm_request
-      )
+    # Add the function declaration to the tools
+    await super().process_llm_request(
+        tool_context=tool_context, llm_request=llm_request
+    )
 
   @override
   async def run_async(

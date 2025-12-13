@@ -133,15 +133,8 @@ def test_vertex_rag_retrieval_for_gemini_2_x():
       ('user', 'test1'),
   ]
   assert len(mockModel.requests[0].config.tools) == 1
-  assert mockModel.requests[0].config.tools == [
-      types.Tool(
-          retrieval=types.Retrieval(
-              vertex_rag_store=types.VertexRagStore(
-                  rag_corpora=[
-                      'projects/123456789/locations/us-central1/ragCorpora/1234567890'
-                  ]
-              )
-          )
-      )
-  ]
-  assert 'rag_retrieval' not in mockModel.requests[0].tools_dict
+  assert (
+      mockModel.requests[0].config.tools[0].function_declarations[0].name
+      == 'rag_retrieval'
+  )
+  assert mockModel.requests[0].tools_dict['rag_retrieval'] is not None
