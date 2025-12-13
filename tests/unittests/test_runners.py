@@ -31,6 +31,8 @@ from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactServ
 from google.adk.cli.utils.agent_loader import AgentLoader
 from google.adk.errors.session_not_found_error import SessionNotFoundError
 from google.adk.events.event import Event
+from google.adk.models.llm_request import LlmRequest
+from google.adk.models.llm_response import LlmResponse
 from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
@@ -1538,6 +1540,143 @@ async def test_get_session_config_limits_events():
       config=GetSessionConfig(num_recent_events=3),
   )
   assert len(limited_session.events) == 3
+
+
+class TestRunnerMetadata:
+  """Tests for Runner metadata parameter functionality."""
+
+  def setup_method(self):
+    """Set up test fixtures."""
+    self.session_service = InMemorySessionService()
+    self.artifact_service = InMemoryArtifactService()
+    self.root_agent = MockLlmAgent("root_agent")
+    self.runner = Runner(
+        app_name="test_app",
+        agent=self.root_agent,
+        session_service=self.session_service,
+        artifact_service=self.artifact_service,
+    )
+
+  def test_new_invocation_context_with_metadata(self):
+    """Test that _new_invocation_context correctly passes metadata."""
+    mock_session = Session(
+        id=TEST_SESSION_ID,
+        app_name=TEST_APP_ID,
+        user_id=TEST_USER_ID,
+        events=[],
+    )
+
+    test_metadata = {"user_id": "test123", "trace_id": "trace456"}
+    invocation_context = self.runner._new_invocation_context(
+        mock_session, metadata=test_metadata
+    )
+
+    assert invocation_context.metadata == test_metadata
+    assert invocation_context.metadata["user_id"] == "test123"
+    assert invocation_context.metadata["trace_id"] == "trace456"
+
+  def test_new_invocation_context_without_metadata(self):
+    """Test that _new_invocation_context works without metadata."""
+    mock_session = Session(
+        id=TEST_SESSION_ID,
+        app_name=TEST_APP_ID,
+        user_id=TEST_USER_ID,
+        events=[],
+    )
+
+    invocation_context = self.runner._new_invocation_context(mock_session)
+
+    assert invocation_context.metadata is None
+
+  @pytest.mark.asyncio
+  async def test_run_async_passes_metadata_to_invocation_context(self):
+    """Test that run_async correctly passes metadata to before_model_callback."""
+    # Capture metadata received in callback
+    captured_metadata = None
+
+    def before_model_callback(callback_context, llm_request):
+      nonlocal captured_metadata
+      captured_metadata = llm_request.metadata
+      # Return a response to skip actual LLM call
+      return LlmResponse(
+          content=types.Content(
+              role="model", parts=[types.Part(text="Test response")]
+          )
+      )
+
+    # Create agent with before_model_callback
+    agent_with_callback = LlmAgent(
+        name="callback_agent",
+        model="gemini-2.0-flash",
+        before_model_callback=before_model_callback,
+    )
+
+    runner_with_callback = Runner(
+        app_name="test_app",
+        agent=agent_with_callback,
+        session_service=self.session_service,
+        artifact_service=self.artifact_service,
+    )
+
+    session = await self.session_service.create_session(
+        app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+    )
+
+    test_metadata = {"experiment_id": "exp-001", "variant": "B"}
+
+    async for event in runner_with_callback.run_async(
+        user_id=TEST_USER_ID,
+        session_id=TEST_SESSION_ID,
+        new_message=types.Content(
+            role="user", parts=[types.Part(text="Hello")]
+        ),
+        metadata=test_metadata,
+    ):
+      pass
+
+    # Verify metadata was passed to before_model_callback
+    assert captured_metadata is not None
+    assert captured_metadata == test_metadata
+    assert captured_metadata["experiment_id"] == "exp-001"
+    assert captured_metadata["variant"] == "B"
+
+  def test_metadata_field_in_invocation_context(self):
+    """Test that InvocationContext model accepts metadata field."""
+    mock_session = Session(
+        id=TEST_SESSION_ID,
+        app_name=TEST_APP_ID,
+        user_id=TEST_USER_ID,
+        events=[],
+    )
+
+    test_metadata = {"key1": "value1", "key2": 123}
+
+    # This should not raise a validation error
+    invocation_context = InvocationContext(
+        session_service=self.session_service,
+        invocation_id="test_inv_id",
+        agent=self.root_agent,
+        session=mock_session,
+        metadata=test_metadata,
+    )
+
+    assert invocation_context.metadata == test_metadata
+
+  def test_metadata_field_in_llm_request(self):
+    """Test that LlmRequest model accepts metadata field."""
+    test_metadata = {"context_key": "ctx123", "user_info": {"name": "test"}}
+
+    llm_request = LlmRequest(metadata=test_metadata)
+
+    assert llm_request.metadata == test_metadata
+    assert llm_request.metadata["context_key"] == "ctx123"
+    assert llm_request.metadata["user_info"]["name"] == "test"
+
+  def test_llm_request_without_metadata(self):
+    """Test that LlmRequest works without metadata."""
+    llm_request = LlmRequest()
+
+    assert llm_request.metadata is None
 
 
 if __name__ == "__main__":

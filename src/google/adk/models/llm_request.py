@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 from typing import Optional
 from typing import Union
 
@@ -98,6 +99,15 @@ class LlmRequest(BaseModel):
   When using the interactions API, this ID is used to chain interactions
   together, allowing the API to maintain conversation state without sending
   the full history.
+  """
+
+  metadata: Optional[dict[str, Any]] = None
+  """Per-request metadata for callbacks and custom processing.
+
+  This field allows passing arbitrary metadata from the Runner.run_async()
+  call to callbacks like before_model_callback. This is useful for passing
+  request-specific context such as user_id, trace_id, or memory context keys
+  that need to be available during model invocation.
   """
 
   def append_instructions(

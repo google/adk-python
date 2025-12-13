@@ -479,7 +479,7 @@ class BaseLlmFlow(ABC):
     """Runs the flow using live api."""
     from google.genai import errors
 
-    llm_request = LlmRequest()
+    llm_request = LlmRequest(metadata=invocation_context.metadata)
     event_id = Event.new_id()
 
     # Preprocess before calling the LLM.
@@ -820,7 +820,7 @@ class BaseLlmFlow(ABC):
       invocation_context: InvocationContext,
   ) -> AsyncGenerator[Event, None]:
     """One step means one LLM call."""
-    llm_request = LlmRequest()
+    llm_request = LlmRequest(metadata=invocation_context.metadata)
 
     # Preprocess before calling the LLM.
     async with Aclosing(
