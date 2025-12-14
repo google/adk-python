@@ -33,11 +33,12 @@ from ..auth.auth_credential import AuthCredential
 from ..auth.auth_credential import AuthCredentialTypes
 from ..auth.auth_credential import OAuth2Auth
 from ..auth.auth_tool import AuthConfig
-from ..utils.feature_decorator import experimental
+from ..features import experimental
+from ..features import FeatureName
 from .tool_context import ToolContext
 
 
-@experimental
+@experimental(FeatureName.GOOGLE_CREDENTIALS_CONFIG)
 class BaseGoogleCredentialsConfig(BaseModel):
   """Base Google Credentials Configuration for Google API tools (Experimental).
 
