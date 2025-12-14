@@ -12,49 +12,32 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import sys
 from unittest.mock import Mock
 from unittest.mock import patch
 
+from a2a.types import DataPart
+from a2a.types import Message
+from a2a.types import Role
+from a2a.types import Task
+from a2a.types import TaskState
+from a2a.types import TaskStatusUpdateEvent
+from google.adk.a2a.converters.event_converter import _create_artifact_id
+from google.adk.a2a.converters.event_converter import _create_error_status_event
+from google.adk.a2a.converters.event_converter import _create_status_update_event
+from google.adk.a2a.converters.event_converter import _get_adk_metadata_key
+from google.adk.a2a.converters.event_converter import _get_context_metadata
+from google.adk.a2a.converters.event_converter import _process_long_running_tool
+from google.adk.a2a.converters.event_converter import _serialize_metadata_value
+from google.adk.a2a.converters.event_converter import ARTIFACT_ID_SEPARATOR
+from google.adk.a2a.converters.event_converter import convert_a2a_task_to_event
+from google.adk.a2a.converters.event_converter import convert_event_to_a2a_events
+from google.adk.a2a.converters.event_converter import convert_event_to_a2a_message
+from google.adk.a2a.converters.event_converter import DEFAULT_ERROR_MESSAGE
+from google.adk.a2a.converters.utils import ADK_METADATA_KEY_PREFIX
+from google.adk.agents.invocation_context import InvocationContext
+from google.adk.events.event import Event
+from google.adk.events.event_actions import EventActions
 import pytest
-
-# Skip all tests in this module if Python version is less than 3.10
-pytestmark = pytest.mark.skipif(
-    sys.version_info < (3, 10), reason="A2A requires Python 3.10+"
-)
-
-# Import dependencies with version checking
-try:
-  from a2a.types import DataPart
-  from a2a.types import Message
-  from a2a.types import Role
-  from a2a.types import Task
-  from a2a.types import TaskState
-  from a2a.types import TaskStatusUpdateEvent
-  from google.adk.a2a.converters.event_converter import _create_artifact_id
-  from google.adk.a2a.converters.event_converter import _create_error_status_event
-  from google.adk.a2a.converters.event_converter import _create_status_update_event
-  from google.adk.a2a.converters.event_converter import _get_adk_metadata_key
-  from google.adk.a2a.converters.event_converter import _get_context_metadata
-  from google.adk.a2a.converters.event_converter import _process_long_running_tool
-  from google.adk.a2a.converters.event_converter import _serialize_metadata_value
-  from google.adk.a2a.converters.event_converter import ARTIFACT_ID_SEPARATOR
-  from google.adk.a2a.converters.event_converter import convert_a2a_task_to_event
-  from google.adk.a2a.converters.event_converter import convert_event_to_a2a_events
-  from google.adk.a2a.converters.event_converter import convert_event_to_a2a_message
-  from google.adk.a2a.converters.event_converter import DEFAULT_ERROR_MESSAGE
-  from google.adk.a2a.converters.utils import ADK_METADATA_KEY_PREFIX
-  from google.adk.agents.invocation_context import InvocationContext
-  from google.adk.events.event import Event
-  from google.adk.events.event_actions import EventActions
-except ImportError as e:
-  if sys.version_info < (3, 10):
-    # Imports are not needed since tests will be skipped due to pytestmark.
-    # The imported names are only used within test methods, not at module level,
-    # so no NameError occurs during module compilation.
-    pass
-  else:
-    raise e
 
 
 class TestEventConverter:
@@ -83,8 +66,7 @@ class TestEventConverter:
     self.mock_event.error_message = None
     self.mock_event.content = None
     self.mock_event.long_running_tool_ids = None
-    self.mock_event.actions = Mock(spec=EventActions)
-    self.mock_event.actions.artifact_delta = None
+    self.mock_event.actions = None
 
   def test_get_adk_event_metadata_key_success(self):
     """Test successful metadata key generation."""
@@ -161,6 +143,8 @@ class TestEventConverter:
     mock_metadata = Mock()
     mock_metadata.model_dump.return_value = {"test": "value"}
     self.mock_event.grounding_metadata = mock_metadata
+    self.mock_event.actions = Mock()
+    self.mock_event.actions.model_dump.return_value = {"test_actions": "value"}
 
     result = _get_context_metadata(
         self.mock_event, self.mock_invocation_context
@@ -169,7 +153,11 @@ class TestEventConverter:
     assert result is not None
     assert f"{ADK_METADATA_KEY_PREFIX}branch" in result
     assert f"{ADK_METADATA_KEY_PREFIX}grounding_metadata" in result
+    assert f"{ADK_METADATA_KEY_PREFIX}actions" in result
     assert result[f"{ADK_METADATA_KEY_PREFIX}branch"] == "test-branch"
+    assert result[f"{ADK_METADATA_KEY_PREFIX}actions"] == {
+        "test_actions": "value"
+    }
 
     # Check if error_code is in the result - it should be there since we set it
     if f"{ADK_METADATA_KEY_PREFIX}error_code" in result:

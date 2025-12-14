@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from pathlib import Path
+from typing import Mapping
 from typing import Optional
 
 from typing_extensions import override
@@ -57,14 +58,45 @@ def create_local_database_session_service(
   return SqliteSessionService(db_path=str(session_db_path))
 
 
+def create_local_session_service(
+    *,
+    base_dir: Path | str,
+    per_agent: bool = False,
+    app_name_to_dir: Optional[Mapping[str, str]] = None,
+) -> BaseSessionService:
+  """Creates a local SQLite-backed session service.
+
+  Args:
+    base_dir: The base directory for the agent(s).
+    per_agent: If True, creates a PerAgentDatabaseSessionService that stores
+      sessions in each agent's .adk folder. If False, creates a single
+      SqliteSessionService at base_dir/.adk/session.db.
+    app_name_to_dir: Optional mapping from logical app name to on-disk agent
+      folder name. Only used when per_agent is True; defaults to identity.
+
+  Returns:
+    A BaseSessionService instance backed by SQLite.
+  """
+  if per_agent:
+    logger.info(
+        "Using per-agent session storage rooted at %s",
+        base_dir,
+    )
+    return PerAgentDatabaseSessionService(
+        agents_root=base_dir,
+        app_name_to_dir=app_name_to_dir,
+    )
+
+  return create_local_database_session_service(base_dir=base_dir)
+
+
 def create_local_artifact_service(
-    *, base_dir: Path | str, per_agent: bool = False
+    *, base_dir: Path | str
 ) -> BaseArtifactService:
   """Creates a file-backed artifact service rooted in `.adk/artifacts`.
 
   Args:
     base_dir: Directory whose `.adk` folder will store artifacts.
-    per_agent: Indicates whether the service is being used in multi-agent mode.
 
   Returns:
     A `FileArtifactService` scoped to the derived root directory.
@@ -72,13 +104,7 @@ def create_local_artifact_service(
   manager = DotAdkFolder(base_dir)
   artifact_root = manager.artifacts_dir
   artifact_root.mkdir(parents=True, exist_ok=True)
-  if per_agent:
-    logger.info(
-        "Using shared file artifact service rooted at %s for multi-agent mode",
-        artifact_root,
-    )
-  else:
-    logger.info("Using file artifact service at %s", artifact_root)
+  logger.info("Using file artifact service at %s", artifact_root)
   return FileArtifactService(root_dir=artifact_root)
 
 
@@ -89,23 +115,26 @@ class PerAgentDatabaseSessionService(BaseSessionService):
       self,
       *,
       agents_root: Path | str,
+      app_name_to_dir: Optional[Mapping[str, str]] = None,
   ):
     self._agents_root = Path(agents_root).resolve()
+    self._app_name_to_dir = dict(app_name_to_dir or {})
     self._services: dict[str, BaseSessionService] = {}
     self._service_lock = asyncio.Lock()
 
   async def _get_service(self, app_name: str) -> BaseSessionService:
     async with self._service_lock:
-      service = self._services.get(app_name)
+      storage_name = self._app_name_to_dir.get(app_name, app_name)
+      service = self._services.get(storage_name)
       if service is not None:
         return service
       folder = dot_adk_folder_for_agent(
-          agents_root=self._agents_root, app_name=app_name
+          agents_root=self._agents_root, app_name=storage_name
       )
       service = create_local_database_session_service(
           base_dir=folder.agent_dir,
       )
-      self._services[app_name] = service
+      self._services[storage_name] = service
       return service
 
   @override

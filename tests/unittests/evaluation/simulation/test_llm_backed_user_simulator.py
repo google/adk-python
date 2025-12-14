@@ -15,9 +15,9 @@
 from __future__ import annotations
 
 from google.adk.evaluation import conversation_scenarios
-from google.adk.evaluation.llm_backed_user_simulator import LlmBackedUserSimulator
-from google.adk.evaluation.llm_backed_user_simulator import LlmBackedUserSimulatorConfig
-from google.adk.evaluation.user_simulator import Status
+from google.adk.evaluation.simulation.llm_backed_user_simulator import LlmBackedUserSimulator
+from google.adk.evaluation.simulation.llm_backed_user_simulator import LlmBackedUserSimulatorConfig
+from google.adk.evaluation.simulation.user_simulator import Status
 from google.adk.events.event import Event
 from google.genai import types
 import pytest
@@ -112,7 +112,7 @@ async def to_async_iter(items):
 def mock_llm_agent(mocker):
   """Provides a mock LLM agent."""
   mock_llm_registry_cls = mocker.patch(
-      "google.adk.evaluation.llm_backed_user_simulator.LLMRegistry"
+      "google.adk.evaluation.simulation.llm_backed_user_simulator.LLMRegistry"
   )
   mock_llm_registry = mocker.MagicMock()
   mock_llm_registry_cls.return_value = mock_llm_registry

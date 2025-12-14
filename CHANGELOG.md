@@ -1,5 +1,116 @@
 # Changelog
 
+## [1.21.0](https://github.com/google/adk-python/compare/v1.20.0...v1.21.0) (2025-12-11)
+
+### Features
+* **[Interactions API Support]**
+  * The newly released Gemini [Interactions API](https://ai.google.dev/gemini-api/docs/interactions) is supported in ADK Now. To use it:
+  ```Python
+  Agent(
+    model=Gemini(
+        model="gemini-3-pro-preview",
+        use_interactions_api=True,
+    ),
+    name="...",
+    description="...",
+    instruction="...",
+  )
+  ```
+  see [samples](https://github.com/google/adk-python/tree/main/contributing/samples/interactions_api) for details
+
+
+* **[Services]**
+  * Add `add_session_to_memory` to `CallbackContext` and `ToolContext` to explicitly save the current session to memory ([7b356dd](https://github.com/google/adk-python/commit/7b356ddc1b1694d2c8a9eee538f3a41cf5518e42))
+
+* **[Plugins]**
+  * Add location for table in agent events in plugin BigQueryAgentAnalytics ([507424a](https://github.com/google/adk-python/commit/507424acb9aabc697fc64ef2e9a57875f25f0a21))
+  * Upgrade BigQueryAgentAnalyticsPlugin to v2.0 with improved performance, multimodal support, and reliability ([7b2fe14](https://github.com/google/adk-python/commit/7b2fe14dab96440ee25b66dae9e66eadba629a56))
+
+
+* **[A2A]**
+  * Adds ADK EventActions to A2A response ([32e87f6](https://github.com/google/adk-python/commit/32e87f6381ff8905a06a9a43a0207d758a74299d))
+
+* **[Tools]**
+  * Add `header_provider` to `OpenAPIToolset` and `RestApiTool` ([e1a7593](https://github.com/google/adk-python/commit/e1a7593ae8455d51cdde46f5165410217400d3c9))
+  * Allow overriding connection template ([cde7f7c](https://github.com/google/adk-python/commit/cde7f7c243a7cdc8c7b886f68be55fd59b1f6d5a))
+  * Add SSL certificate verification configuration to OpenAPI tools using the `verify` parameter ([9d2388a](https://github.com/google/adk-python/commit/9d2388a46f7a481ea1ec522f33641a06c64394ed))
+  * Use json schema for function tool declaration when feature enabled ([cb3244b](https://github.com/google/adk-python/commit/cb3244bb58904ab508f77069b436f85b442d3299))
+
+* **[Models]**
+  * Add Gemma3Ollama model integration and a sample ([e9182e5](https://github.com/google/adk-python/commit/e9182e5eb4a37fb5219fc607cd8f06d7e6982e83))
+
+
+### Bug Fixes
+
+* Install dependencies for py 3.10 ([9cccab4](https://github.com/google/adk-python/commit/9cccab453706138826f313c47118812133e099c4))
+* Refactor LiteLLM response schema formatting for different models ([894d8c6](https://github.com/google/adk-python/commit/894d8c6c2652492324c428e8dae68a8646b17485))
+* Resolve project and credentials before creating Spanner client ([99f893a](https://github.com/google/adk-python/commit/99f893ae282a04c67cce5f80e87d3bfadd3943e6))
+* Avoid false positive "App name mismatch" warnings in Runner ([6388ba3](https://github.com/google/adk-python/commit/6388ba3b2054e60d218eae6ec8abc621ed0a1139))
+* Update the code to work with either 1 event or more than 1 events ([4f54660](https://github.com/google/adk-python/commit/4f54660d6de54ddde0fec6e09fdd68890ce657ca))
+* OpenAPI schema generation by skipping JSON schema for judge_model_config ([56775af](https://github.com/google/adk-python/commit/56775afc48ee54e9cbea441a6e0fa6c8a12891b9))
+* Add tool_name_prefix support to OpenAPIToolset ([82e6623](https://github.com/google/adk-python/commit/82e6623fa97fb9cbc6893b44e228f4da098498da))
+* Pass context to client interceptors ([143ad44](https://github.com/google/adk-python/commit/143ad44f8c5d1c56fc92dd691589aaa0b788e485))
+* Yield event with error code when agent run raised A2AClientHTTPError ([b7ce5e1](https://github.com/google/adk-python/commit/b7ce5e17b6653074c5b41d08b2027b5e9970a671))
+* Handle string function responses in LiteLLM conversion ([2b64715](https://github.com/google/adk-python/commit/2b6471550591ee7fc5f70f79e66a6e4080df442b))
+* ApigeeLLM support for Built-in tools like GoogleSearch, BuiltInCodeExecutor when calling Gemini models through Apigee ([a9b853f](https://github.com/google/adk-python/commit/a9b853fe364d08703b37914a89cf02293b5c553b))
+* Extract and propagate task_id in RemoteA2aAgent ([82bd4f3](https://github.com/google/adk-python/commit/82bd4f380bd8b4822191ea16e6140fe2613023ad))
+* Update FastAPI and Starlette to fix CVE-2025-62727 (ReDoS vulnerability) ([c557b0a](https://github.com/google/adk-python/commit/c557b0a1f2aac9f0ef7f1e0f65e3884007407e30))
+* Add client id to token exchange ([f273517](https://github.com/google/adk-python/commit/f2735177f195b8d7745dba6360688ddfebfed31a))
+
+### Improvements
+
+* Normalize multipart content for LiteLLM's ollama_chat provider ([055dfc7](https://github.com/google/adk-python/commit/055dfc79747aa365db8441908d4994f795e94a68))
+* Update adk web, fixes image not rendering, state not updating, update drop down box width and trace icons ([df86847](https://github.com/google/adk-python/commit/df8684734bbfd5a8afe3b4362574fe93dcb43048))
+* Add sample agent for interaction api integration ([68d7048](https://github.com/google/adk-python/commit/68d70488b9340251a9d37e8ae3a9166870f26aa1))
+* Update genAI SDK version ([f0bdcab](https://github.com/google/adk-python/commit/f0bdcaba449f21bd8c27cde7dbedc03bf5ec5349))
+* Introduce `build_function_declaration_with_json_schema` to use pydantic to generate json schema for FunctionTool ([51a638b](https://github.com/google/adk-python/commit/51a638b6b85943d4aaec4ee37c95a55386ebac90))
+* Update component definition for triaging agent ([ee743bd](https://github.com/google/adk-python/commit/ee743bd19a8134129111fc4769ec24e40a611982))
+* Migrate Google tools to use the new feature decorator ([bab5729](https://github.com/google/adk-python/commit/bab57296d553cb211106ece9ee2c226c64a60c57))
+* Migrate computer to use the new feature decorator ([1ae944b](https://github.com/google/adk-python/commit/1ae944b39d9cf263e15b36c76480975fe4291d22))
+* Add Spanner execute sql query result mode using list of dictionaries ([f22bac0](https://github.com/google/adk-python/commit/f22bac0b202cd8f273bf2dee9fff57be1b40730d))
+* Improve error message for missing `invocation_id` and `new_message` in `run_async` ([de841a4](https://github.com/google/adk-python/commit/de841a4a0982d98ade4478f10481c817a923faa2))
+
+## [1.20.0](https://github.com/google/adk-python/compare/v1.19.0...v1.20.0) (2025-12-01)
+
+
+### Features
+* **[Core]**
+  * Add enum constraint to `agent_name` for `transfer_to_agent` ([4a42d0d](https://github.com/google/adk-python/commit/4a42d0d9d81b7aab98371427f70a7707dbfb8bc4))
+  * Add validation for unique sub-agent names ([#3557](https://github.com/google/adk-python/issues/3557)) ([2247a45](https://github.com/google/adk-python/commit/2247a45922afdf0a733239b619f45601d9b325ec))
+  * Support streaming function call arguments in progressive SSE streaming feature ([786aaed](https://github.com/google/adk-python/commit/786aaed335e1ce64b7e92dff2f4af8316b2ef593))
+
+* **[Models]**
+  * Enable multi-provider support for Claude and LiteLLM ([d29261a](https://github.com/google/adk-python/commit/d29261a3dc9c5a603feef27ea657c4a03bb8a089))
+
+* **[Tools]**
+  * Create APIRegistryToolset to add tools from Cloud API registry to agent ([ec4ccd7](https://github.com/google/adk-python/commit/ec4ccd718feeadeb6b2b59fcc0e9ff29a4fd0bac))
+  * Add an option to disallow propagating runner plugins to AgentTool runner ([777dba3](https://github.com/google/adk-python/commit/777dba3033a9a14667fb009ba017f648177be41d))
+
+* **[Web]**
+  * Added an endpoint to list apps with details ([b57fe5f](https://github.com/google/adk-python/commit/b57fe5f4598925ec7592917bb32c7f0d6eca287a))
+
+
+### Bug Fixes
+
+* Allow image parts in user messages for Anthropic Claude ([5453b5b](https://github.com/google/adk-python/commit/5453b5bfdedc91d9d668c9eac39e3bb009a7bbbf))
+* Mark the Content as non-empty if its first part contains text or inline_data or file_data or func call/response ([631b583](https://github.com/google/adk-python/commit/631b58336d36bfd93e190582be34069613d38559))
+* Fixes double response processing issue in `base_llm_flow.py` where, in Bidi-streaming (live) mode, the multi-agent structure causes duplicated responses after tool calling. ([cf21ca3](https://github.com/google/adk-python/commit/cf21ca358478919207049695ba6b31dc6e0b2673))
+* Fix out of bounds error in _run_async_impl ([8fc6128](https://github.com/google/adk-python/commit/8fc6128b62ba576480d196d4a2597564fd0a7006))
+* Fix paths for public docs ([cd54f48](https://github.com/google/adk-python/commit/cd54f48fed0c87b54fb19743c9c75e790c5d9135))
+* Ensure request bodies without explicit names are named 'body' ([084c2de](https://github.com/google/adk-python/commit/084c2de0dac84697906e2b4beebf008bbd9ae8e1)), closes [#2213](https://github.com/google/adk-python/issues/2213)
+* Optimize Stale Agent with GraphQL and Search API to resolve 429 Quota errors ([cb19d07](https://github.com/google/adk-python/commit/cb19d0714c90cd578551753680f39d8d6076c79b))
+* Update AgentTool to use Agent's description when input_schema is provided in FunctionDeclaration ([52674e7](https://github.com/google/adk-python/commit/52674e7fac6b7689f0e3871d41c4523e13471a7e))
+* Update LiteLLM system instruction role from "developer" to "system" ([2e1f730](https://github.com/google/adk-python/commit/2e1f730c3bc0eb454b76d7f36b7b9f1da7304cfe)), closes [#3657](https://github.com/google/adk-python/issues/3657)
+* Update session last update time when appending events ([a3e4ad3](https://github.com/google/adk-python/commit/a3e4ad3cd130714affcaa880f696aeb498cd93af)), closes [#2721](https://github.com/google/adk-python/issues/2721)
+* Update the retry_on_closed_resource decorator to retry on all errors ([a3aa077](https://github.com/google/adk-python/commit/a3aa07722a7de3e08807e86fd10f28938f0b267d))
+* Windows Path Handling and Normalize Cross-Platform Path Resolution in AgentLoader ([a1c09b7](https://github.com/google/adk-python/commit/a1c09b724bb37513eaabaff9643eeaa68014f14d))
+
+
+### Documentation
+
+* Add Code Wiki badge to README ([caf23ac](https://github.com/google/adk-python/commit/caf23ac49fe08bc7f625c61eed4635c26852c3ba))
+
+
 ## [1.19.0](https://github.com/google/adk-python/compare/v1.18.0...v1.19.0) (2025-11-19)
 
 ### Features
