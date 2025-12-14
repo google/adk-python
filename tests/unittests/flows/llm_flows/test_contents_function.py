@@ -639,7 +639,9 @@ async def test_interleaved_function_calls_are_merged():
       Event(
           invocation_id="inv2",
           author="test_agent",
-          content=types.ModelContent([types.Part(function_call=function_call_1)]),
+          content=types.ModelContent(
+              [types.Part(function_call=function_call_1)]
+          ),
       ),
       # First function response
       Event(
@@ -653,7 +655,9 @@ async def test_interleaved_function_calls_are_merged():
       Event(
           invocation_id="inv4",
           author="test_agent",
-          content=types.ModelContent([types.Part(function_call=function_call_2)]),
+          content=types.ModelContent(
+              [types.Part(function_call=function_call_2)]
+          ),
       ),
       # Second function response
       Event(

@@ -79,14 +79,31 @@ def test_sequential_calls():
   assert testing_utils.simplify_contents(mockModel.requests[2].contents) == [
       ('user', 'test'),
       ('model', [function_call({'x': 1}), function_call({'x': 2})]),
-      ('user', [function_response({'result': 2}), function_response({'result': 3})]),
+      (
+          'user',
+          [function_response({'result': 2}), function_response({'result': 3})],
+      ),
   ]
   # 3 items: user content, merged function calls, merged function responses
   # (interleaved pattern merged for all 3 calls)
   assert testing_utils.simplify_contents(mockModel.requests[3].contents) == [
       ('user', 'test'),
-      ('model', [function_call({'x': 1}), function_call({'x': 2}), function_call({'x': 3})]),
-      ('user', [function_response({'result': 2}), function_response({'result': 3}), function_response({'result': 4})]),
+      (
+          'model',
+          [
+              function_call({'x': 1}),
+              function_call({'x': 2}),
+              function_call({'x': 3}),
+          ],
+      ),
+      (
+          'user',
+          [
+              function_response({'result': 2}),
+              function_response({'result': 3}),
+              function_response({'result': 4}),
+          ],
+      ),
   ]
 
   # Asserts the function calls.
