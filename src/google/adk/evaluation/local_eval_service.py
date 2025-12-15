@@ -40,6 +40,7 @@ from .base_eval_service import EvaluateRequest
 from .base_eval_service import InferenceRequest
 from .base_eval_service import InferenceResult
 from .base_eval_service import InferenceStatus
+from .eval_case import ConversationScenario
 from .eval_case import Invocation
 from .eval_metrics import EvalMetric
 from .eval_metrics import EvalMetricResult
@@ -256,6 +257,7 @@ class LocalEvalService(BaseEvalService):
               eval_metric=eval_metric,
               actual_invocations=inference_result.inferences,
               expected_invocations=eval_case.conversation,
+              conversation_scenario=eval_case.conversation_scenario,
           )
       except Exception as e:
         # We intentionally catch the Exception as we don't want failures to
@@ -345,6 +347,7 @@ class LocalEvalService(BaseEvalService):
       eval_metric: EvalMetric,
       actual_invocations: list[Invocation],
       expected_invocations: Optional[list[Invocation]],
+      conversation_scenario: Optional[ConversationScenario],
   ) -> EvaluationResult:
     """Returns EvaluationResult obtained from evaluating a metric using an Evaluator."""
 
@@ -359,6 +362,7 @@ class LocalEvalService(BaseEvalService):
       return await metric_evaluator.evaluate_invocations(
           actual_invocations=actual_invocations,
           expected_invocations=expected_invocations,
+          conversation_scenario=conversation_scenario,
       )
     else:
       # Metrics that perform computation synchronously, mostly these don't
