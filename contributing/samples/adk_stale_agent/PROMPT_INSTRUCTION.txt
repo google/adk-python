@@ -53,16 +53,21 @@ Your job is to analyze a specific issue and report findings before taking action
 
 **STEP 3: ANALYZE MAINTAINER INTENT**
 - **Context**: The last person to act was a Maintainer.
-- **Action**: Read the text in `last_comment_text`.
-    - **Question Check**: Does the text ask a question, request clarification, ask for logs, or suggest trying a fix?
+- **Action**: Analyze `last_comment_text` using `maintainers` list and `last_actor_name`.
+
+    - **Internal Discussion Check**: Does the comment mention or address any username found in the `maintainers` list (other than the speaker `last_actor_name`)?
+        - **Verdict**: **ACTIVE** (Internal Team Discussion).
+        - **Report**: "Analysis for Issue #[number]: ACTIVE. Maintainer is discussing with another maintainer. No action."
+
+    - **Question Check**: Does the text ask a question, request clarification, or ask for logs?
     - **Time Check**: Is `days_since_activity` > {stale_threshold_days}?
 
     - **DECISION**:
         - **IF (Question == YES) AND (Time == YES)**:
             - **Action**: Call `add_stale_label_and_comment`.
-            - **Check**: If '{REQUEST_CLARIFICATION_LABEL}' is not in `current_labels`, call `add_label_to_issue` for it.
+            - **Check**: If '{REQUEST_CLARIFICATION_LABEL}' is not in `current_labels`, call `add_label_to_issue`.
             - **Report**: "Analysis for Issue #[number]: STALE. Maintainer asked question [days_since_activity] days ago. Marking stale."
         - **IF (Question == YES) BUT (Time == NO)**:
             - **Report**: "Analysis for Issue #[number]: PENDING. Maintainer asked question, but threshold not met yet. No action."
-        - **IF (Question == NO)** (e.g., "I am working on this"):
-            - **Report**: "Analysis for Issue #[number]: ACTIVE. Maintainer gave status update (not a question). No action."
+        - **IF (Question == NO)**:
+            - **Report**: "Analysis for Issue #[number]: ACTIVE. Maintainer gave status update. No action."
