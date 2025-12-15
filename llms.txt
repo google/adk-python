@@ -1,4 +1,4 @@
-# Agent Development Kit (Python) - Moved
+# Agent Development Kit (ADK) - New llms.txt location
 
 > The machine-readable documentation for the Agent Development Kit (ADK) is no
 > longer hosted statically in this repository. It is now automatically generated
