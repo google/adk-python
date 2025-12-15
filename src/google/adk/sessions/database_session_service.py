@@ -269,7 +269,7 @@ class StorageEvent(Base):
   error_code: Mapped[str] = mapped_column(
       String(DEFAULT_MAX_VARCHAR_LENGTH), nullable=True
   )
-  error_message: Mapped[str] = mapped_column(String(1024), nullable=True)
+  error_message: Mapped[str] = mapped_column(Text, nullable=True)
   interrupted: Mapped[bool] = mapped_column(Boolean, nullable=True)
   input_transcription: Mapped[dict[str, Any]] = mapped_column(
       DynamicJSON, nullable=True
