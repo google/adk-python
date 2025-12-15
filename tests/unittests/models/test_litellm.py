@@ -1574,13 +1574,13 @@ async def test_content_to_message_param_user_message_with_file_uri(
   )
 
   message = await _content_to_message_param(content)
-  assert message["role"] == "user"
-  assert isinstance(message["content"], list)
-  assert message["content"][0]["type"] == "text"
-  assert message["content"][0]["text"] == "Summarize this file."
-  assert message["content"][1]["type"] == "file"
-  assert message["content"][1]["file"]["file_id"] == file_uri
-  assert "format" not in message["content"][1]["file"]
+  assert message == {
+      "role": "user",
+      "content": [
+          {"type": "text", "text": "Summarize this file."},
+          {"type": "file", "file": {"file_id": file_uri, "format": mime_type}},
+      ],
+  }
 
 
 @pytest.mark.asyncio
@@ -1597,11 +1597,88 @@ async def test_content_to_message_param_user_message_file_uri_only(
   )
 
   message = await _content_to_message_param(content)
-  assert message["role"] == "user"
-  assert isinstance(message["content"], list)
-  assert message["content"][0]["type"] == "file"
-  assert message["content"][0]["file"]["file_id"] == file_uri
-  assert "format" not in message["content"][0]["file"]
+  assert message == {
+      "role": "user",
+      "content": [
+          {"type": "file", "file": {"file_id": file_uri, "format": mime_type}},
+      ],
+  }
+
+
+@pytest.mark.asyncio
+async def test_content_to_message_param_user_message_file_uri_without_mime_type():
+  """Test handling of file_data without mime_type (GcsArtifactService scenario).
+
+  When using GcsArtifactService, artifacts may have file_uri (gs://...) but
+  without mime_type set. LiteLLM's Vertex AI backend requires the format
+  field to be present, so we infer MIME type from the URI extension or use
+  a default fallback to ensure compatibility.
+
+  See: https://github.com/google/adk-python/issues/3787
+  """
+  file_part = types.Part(
+      file_data=types.FileData(
+          file_uri="gs://agent-artifact-bucket/app/user/session/artifact/0"
+      )
+  )
+  content = types.Content(
+      role="user",
+      parts=[
+          types.Part.from_text(text="Analyze this file."),
+          file_part,
+      ],
+  )
+
+  message = await _content_to_message_param(content)
+  assert message == {
+      "role": "user",
+      "content": [
+          {"type": "text", "text": "Analyze this file."},
+          {
+              "type": "file",
+              "file": {
+                  "file_id": (
+                      "gs://agent-artifact-bucket/app/user/session/artifact/0"
+                  ),
+                  "format": "application/octet-stream",
+              },
+          },
+      ],
+  }
+
+
+@pytest.mark.asyncio
+async def test_content_to_message_param_user_message_file_uri_infer_mime_type():
+  """Test MIME type inference from file_uri extension.
+
+  When file_data has a file_uri with a recognizable extension but no explicit
+  mime_type, the MIME type should be inferred from the extension.
+
+  See: https://github.com/google/adk-python/issues/3787
+  """
+  file_part = types.Part(
+      file_data=types.FileData(
+          file_uri="gs://bucket/path/to/document.pdf",
+      )
+  )
+  content = types.Content(
+      role="user",
+      parts=[file_part],
+  )
+
+  message = await _content_to_message_param(content)
+  assert message == {
+      "role": "user",
+      "content": [
+          {
+              "type": "file",
+              "file": {
+                  "file_id": "gs://bucket/path/to/document.pdf",
+                  "format": "application/pdf",
+              },
+          },
+      ],
+  }
 
 
 @pytest.mark.asyncio
@@ -1995,9 +2072,112 @@ async def test_get_content_file_bytes(file_data, mime_type, expected_base64):
 async def test_get_content_file_uri(file_uri, mime_type):
   parts = [types.Part.from_uri(file_uri=file_uri, mime_type=mime_type)]
   content = await _get_content(parts)
-  assert content[0]["type"] == "file"
-  assert content[0]["file"]["file_id"] == file_uri
-  assert "format" not in content[0]["file"]
+  assert content[0] == {
+      "type": "file",
+      "file": {"file_id": file_uri, "format": mime_type},
+  }
+
+
+@pytest.mark.asyncio
+async def test_get_content_file_uri_infer_mime_type():
+  """Test MIME type inference from file_uri extension.
+
+  When file_data has a file_uri with a recognizable extension but no explicit
+  mime_type, the MIME type should be inferred from the extension.
+
+  See: https://github.com/google/adk-python/issues/3787
+  """
+  # Use Part constructor directly to test MIME type inference in _get_content
+  # (types.Part.from_uri does its own inference, so we bypass it)
+  parts = [
+      types.Part(
+          file_data=types.FileData(file_uri="gs://bucket/path/to/document.pdf")
+      )
+  ]
+  content = await _get_content(parts)
+  assert content[0] == {
+      "type": "file",
+      "file": {
+          "file_id": "gs://bucket/path/to/document.pdf",
+          "format": "application/pdf",
+      },
+  }
+
+
+@pytest.mark.asyncio
+async def test_get_content_file_uri_versioned_infer_mime_type():
+  """Test MIME type inference from versioned artifact URIs."""
+  parts = [
+      types.Part(
+          file_data=types.FileData(
+              file_uri="gs://bucket/path/to/document.pdf/0"
+          )
+      )
+  ]
+  content = await _get_content(parts)
+  assert content[0]["file"]["format"] == "application/pdf"
+
+
+@pytest.mark.asyncio
+async def test_get_content_file_uri_infers_from_display_name():
+  """Test MIME type inference from display_name when URI lacks extension."""
+  parts = [
+      types.Part(
+          file_data=types.FileData(
+              file_uri="gs://bucket/artifact/0",
+              display_name="document.pdf",
+          )
+      )
+  ]
+  content = await _get_content(parts)
+  assert content[0]["file"]["format"] == "application/pdf"
+
+
+@pytest.mark.asyncio
+async def test_get_content_file_uri_default_mime_type():
+  """Test that file_uri without extension uses default MIME type.
+
+  When file_data has a file_uri without a recognizable extension and no explicit
+  mime_type, a default MIME type should be used to ensure compatibility with
+  LiteLLM backends.
+
+  See: https://github.com/google/adk-python/issues/3787
+  """
+  # Use Part constructor directly to create file_data without mime_type
+  # (types.Part.from_uri requires a valid mime_type when it can't infer)
+  parts = [
+      types.Part(file_data=types.FileData(file_uri="gs://bucket/artifact/0"))
+  ]
+  content = await _get_content(parts)
+  assert content[0] == {
+      "type": "file",
+      "file": {
+          "file_id": "gs://bucket/artifact/0",
+          "format": "application/octet-stream",
+      },
+  }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "uri,expected_mime_type",
+    [
+        ("gs://bucket/file.pdf", "application/pdf"),
+        ("gs://bucket/path/to/document.json", "application/json"),
+        ("gs://bucket/image.png", "image/png"),
+        ("gs://bucket/image.jpg", "image/jpeg"),
+        ("gs://bucket/audio.mp3", "audio/mpeg"),
+        ("gs://bucket/video.mp4", "video/mp4"),
+    ],
+)
+async def test_get_content_file_uri_mime_type_inference(
+    uri, expected_mime_type
+):
+  """Test MIME type inference from various file extensions."""
+  # Use Part constructor directly to test MIME type inference in _get_content
+  parts = [types.Part(file_data=types.FileData(file_uri=uri))]
+  content = await _get_content(parts)
+  assert content[0]["file"]["format"] == expected_mime_type
 
 
 @pytest.mark.asyncio

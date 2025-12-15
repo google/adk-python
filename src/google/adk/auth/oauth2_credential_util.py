@@ -91,6 +91,7 @@ def create_oauth2_session(
           scope=" ".join(scopes),
           redirect_uri=auth_credential.oauth2.redirect_uri,
           state=auth_credential.oauth2.state,
+          token_endpoint_auth_method=auth_credential.oauth2.token_endpoint_auth_method,
       ),
       token_endpoint,
   )
