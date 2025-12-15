@@ -34,6 +34,7 @@ from ..utils.context_utils import Aclosing
 from ..utils.feature_decorator import experimental
 from ._retry_options_utils import add_default_retry_options_if_not_present
 from .app_details import AppDetails
+from .eval_case import ConversationScenario
 from .eval_case import Invocation
 from .eval_case import InvocationEvent
 from .eval_case import InvocationEvents
@@ -720,6 +721,7 @@ class HallucinationsV1Evaluator(Evaluator):
       self,
       actual_invocations: list[Invocation],
       expected_invocations: Optional[list[Invocation]],
+      _: Optional[ConversationScenario] = None,
   ) -> EvaluationResult:
     # expected_invocations are not required by the metric and if they are not
     # supplied, we provide a list of None to rest of the code.

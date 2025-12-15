@@ -28,6 +28,7 @@ from .response_evaluator import ResponseEvaluator
 from .rubric_based_final_response_quality_v1 import RubricBasedFinalResponseQualityV1Evaluator
 from .rubric_based_tool_use_quality_v1 import RubricBasedToolUseV1Evaluator
 from .safety_evaluator import SafetyEvaluatorV1
+from .simulation.per_turn_user_simulator_quality_v1 import PerTurnUserSimulatorQualityV1
 from .trajectory_evaluator import TrajectoryEvaluator
 
 logger = logging.getLogger("google_adk." + __name__)
@@ -125,6 +126,10 @@ def _get_default_metric_evaluator_registry() -> MetricEvaluatorRegistry:
   metric_evaluator_registry.register_evaluator(
       metric_info=RubricBasedToolUseV1Evaluator.get_metric_info(),
       evaluator=RubricBasedToolUseV1Evaluator,
+  )
+  metric_evaluator_registry.register_evaluator(
+      metric_info=PerTurnUserSimulatorQualityV1.get_metric_info(),
+      evaluator=PerTurnUserSimulatorQualityV1,
   )
 
   return metric_evaluator_registry
