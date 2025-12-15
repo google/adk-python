@@ -1,9 +1,9 @@
 # Agent Development Kit (ADK) - New llms.txt location
 
-> The machine-readable documentation for Agent Development Kit (ADK) is no
-> longer hosted statically in this repository. It is now automatically generated
-> and hosted on the ADK documentation site. Please use the links below to access
-> the source of truth.
+> The machine-readable llms.txt documentation for Agent Development Kit (ADK) is
+> no longer hosted statically in this repository. It is now automatically
+> generated and hosted on the ADK documentation site. Please use the links below
+> to access the source of truth.
 
 - [llms.txt](https://google.github.io/adk-docs/llms.txt)
 - [llms-full.txt](https://google.github.io/adk-docs/llms-full.txt)
