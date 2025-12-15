@@ -38,7 +38,7 @@ class AgentChangeEventHandler(FileSystemEventHandler):
     self.current_app_name_ref = current_app_name_ref
 
   def on_modified(self, event):
-    if not (event.src_path.endswith(".py") or event.src_path.endswith(".yaml")):
+    if not event.src_path.endswith((".py", ".yaml", ".yml")):
       return
     logger.info("Change detected in agents directory: %s", event.src_path)
     self.agent_loader.remove_agent_from_cache(self.current_app_name_ref.value)

@@ -298,7 +298,10 @@ class HallucinationsV1Evaluator(Evaluator):
     self.segmenter_prompt = _HALLUCINATIONS_V1_SEGMENTER_PROMPT
     self.sentence_validator_prompt = _HALLUCINATIONS_V1_VALIDATOR_PROMPT
     self._model = self._judge_model_options.judge_model
-    self._model_config = self._judge_model_options.judge_model_config
+    self._model_config = (
+        self._judge_model_options.judge_model_config
+        or genai_types.GenerateContentConfig()
+    )
 
   def _setup_auto_rater(self) -> BaseLlm:
     model_id = self._judge_model_options.judge_model
