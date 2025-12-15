@@ -17,6 +17,7 @@ from __future__ import annotations
 import os
 import warnings
 
+from google.adk.features._feature_registry import _FEATURE_OVERRIDES
 from google.adk.features._feature_registry import _FEATURE_REGISTRY
 from google.adk.features._feature_registry import _get_feature_config
 from google.adk.features._feature_registry import _register_feature
@@ -24,6 +25,7 @@ from google.adk.features._feature_registry import _WARNED_FEATURES
 from google.adk.features._feature_registry import FeatureConfig
 from google.adk.features._feature_registry import FeatureStage
 from google.adk.features._feature_registry import is_feature_enabled
+from google.adk.features._feature_registry import override_feature_enabled
 import pytest
 
 FEATURE_CONFIG_WIP = FeatureConfig(FeatureStage.WIP, default_on=False)
@@ -38,7 +40,7 @@ FEATURE_CONFIG_STABLE = FeatureConfig(FeatureStage.STABLE, default_on=True)
 
 @pytest.fixture(autouse=True)
 def reset_env_and_registry(monkeypatch):
-  """Reset environment variables and registry before each test."""
+  """Reset environment variables, registry and overrides before each test."""
   # Clean up environment variables
   for key in list(os.environ.keys()):
     if key.startswith("ADK_ENABLE_") or key.startswith("ADK_DISABLE_"):
@@ -47,10 +49,16 @@ def reset_env_and_registry(monkeypatch):
   # Reset warned features set
   _WARNED_FEATURES.clear()
 
+  # Reset feature overrides
+  _FEATURE_OVERRIDES.clear()
+
   yield
 
   # Reset warned features set
   _WARNED_FEATURES.clear()
+
+  # Reset feature overrides
+  _FEATURE_OVERRIDES.clear()
 
 
 class TestGetFeatureConfig:
@@ -159,3 +167,76 @@ class TestIsFeatureEnabled:
       assert "[EXPERIMENTAL] feature DISABLED_FEATURE is enabled." in str(
           w[0].message
       )
+
+
+class TestOverrideFeatureEnabled:
+  """Tests for override_feature_enabled() function."""
+
+  def test_override_not_in_registry_raises_value_error(self):
+    """Overriding features not in registry raises ValueError."""
+    with pytest.raises(ValueError):
+      override_feature_enabled("UNKNOWN_FEATURE", True)
+
+  def test_override_enables_disabled_feature(self):
+    """Programmatic override can enable a disabled feature."""
+    _register_feature("OVERRIDE_TEST", FEATURE_CONFIG_EXPERIMENTAL_DISABLED)
+    assert not is_feature_enabled("OVERRIDE_TEST")
+
+    override_feature_enabled("OVERRIDE_TEST", True)
+    with warnings.catch_warnings(record=True) as w:
+      assert is_feature_enabled("OVERRIDE_TEST")
+      assert len(w) == 1
+      assert "[EXPERIMENTAL] feature OVERRIDE_TEST is enabled." in str(
+          w[0].message
+      )
+
+  def test_override_disables_enabled_feature(self):
+    """Programmatic override can disable an enabled feature."""
+    _register_feature("OVERRIDE_TEST", FEATURE_CONFIG_EXPERIMENTAL_ENABLED)
+
+    override_feature_enabled("OVERRIDE_TEST", False)
+    with warnings.catch_warnings(record=True) as w:
+      assert not is_feature_enabled("OVERRIDE_TEST")
+      assert not w
+
+  def test_override_takes_precedence_over_env_enable(self, monkeypatch):
+    """Programmatic override takes precedence over ADK_ENABLE_* env var."""
+    _register_feature("PRIORITY_TEST", FEATURE_CONFIG_EXPERIMENTAL_DISABLED)
+
+    # Set env var to enable
+    monkeypatch.setenv("ADK_ENABLE_PRIORITY_TEST", "true")
+    assert is_feature_enabled("PRIORITY_TEST")
+
+    # But override to disable
+    override_feature_enabled("PRIORITY_TEST", False)
+
+    with warnings.catch_warnings(record=True) as w:
+      assert not is_feature_enabled("PRIORITY_TEST")
+      assert not w
+
+  def test_override_takes_precedence_over_env_disable(self, monkeypatch):
+    """Programmatic override takes precedence over ADK_DISABLE_* env var."""
+    _register_feature("PRIORITY_TEST", FEATURE_CONFIG_EXPERIMENTAL_ENABLED)
+
+    # Set env var to disable
+    monkeypatch.setenv("ADK_DISABLE_PRIORITY_TEST", "true")
+    assert not is_feature_enabled("PRIORITY_TEST")
+
+    # But override to enable
+    override_feature_enabled("PRIORITY_TEST", True)
+
+    with warnings.catch_warnings(record=True) as w:
+      assert is_feature_enabled("PRIORITY_TEST")
+      assert len(w) == 1
+      assert "[EXPERIMENTAL] feature PRIORITY_TEST is enabled." in str(
+          w[0].message
+      )
+
+  def test_override_stable_feature_no_warning(self):
+    """Overriding stable features does not emit warnings."""
+    _register_feature("STABLE_OVERRIDE", FEATURE_CONFIG_STABLE)
+
+    override_feature_enabled("STABLE_OVERRIDE", True)
+    with warnings.catch_warnings(record=True) as w:
+      assert is_feature_enabled("STABLE_OVERRIDE")
+      assert not w
