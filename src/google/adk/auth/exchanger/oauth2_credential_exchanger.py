@@ -31,6 +31,7 @@ from typing_extensions import override
 
 from .base_credential_exchanger import BaseCredentialExchanger
 from .base_credential_exchanger import CredentialExchangeError
+from .base_credential_exchanger import ExchangeResult
 
 try:
   from authlib.integrations.requests_client import OAuth2Session
@@ -51,7 +52,7 @@ class OAuth2CredentialExchanger(BaseCredentialExchanger):
       self,
       auth_credential: AuthCredential,
       auth_scheme: Optional[AuthScheme] = None,
-  ) -> AuthCredential:
+  ) -> ExchangeResult:
     """Exchange OAuth2 credential from authorization response.
 
     if credential exchange failed, the original credential will be returned.
@@ -61,7 +62,8 @@ class OAuth2CredentialExchanger(BaseCredentialExchanger):
         auth_scheme: The OAuth2 authentication scheme.
 
     Returns:
-        The exchanged credential with access token.
+        An ExchangeResult object containing the exchanged credential and a
+        boolean indicating whether the credential was exchanged.
 
     Raises:
         CredentialExchangeError: If auth_scheme is missing.
@@ -79,10 +81,10 @@ class OAuth2CredentialExchanger(BaseCredentialExchanger):
       logger.warning(
           "authlib is not available, skipping OAuth2 credential exchange."
       )
-      return auth_credential
+      return ExchangeResult(auth_credential, False)
 
     if auth_credential.oauth2 and auth_credential.oauth2.access_token:
-      return auth_credential
+      return ExchangeResult(auth_credential, False)
 
     # Determine grant type from auth_scheme
     grant_type = self._determine_grant_type(auth_scheme)
@@ -97,7 +99,7 @@ class OAuth2CredentialExchanger(BaseCredentialExchanger):
       )
     else:
       logger.warning("Unsupported OAuth2 grant type: %s", grant_type)
-      return auth_credential
+      return ExchangeResult(auth_credential, False)
 
   def _determine_grant_type(
       self, auth_scheme: AuthScheme
@@ -129,7 +131,7 @@ class OAuth2CredentialExchanger(BaseCredentialExchanger):
       self,
       auth_credential: AuthCredential,
       auth_scheme: AuthScheme,
-  ) -> AuthCredential:
+  ) -> ExchangeResult:
     """Exchange client credentials for access token.
 
     Args:
@@ -137,14 +139,15 @@ class OAuth2CredentialExchanger(BaseCredentialExchanger):
         auth_scheme: The OAuth2 authentication scheme.
 
     Returns:
-        The credential with access token.
+        An ExchangeResult object containing the exchanged credential and a
+        boolean indicating whether the credential was exchanged.
     """
     client, token_endpoint = create_oauth2_session(auth_scheme, auth_credential)
     if not client:
       logger.warning(
           "Could not create OAuth2 session for client credentials exchange"
       )
-      return auth_credential
+      return ExchangeResult(auth_credential, False)
 
     try:
       tokens = client.fetch_token(
@@ -155,13 +158,13 @@ class OAuth2CredentialExchanger(BaseCredentialExchanger):
       logger.debug("Successfully exchanged client credentials for access token")
     except Exception as e:
       logger.error("Failed to exchange client credentials: %s", e)
-      return auth_credential
+      return ExchangeResult(auth_credential, False)
 
-    return auth_credential
+    return ExchangeResult(auth_credential, True)
 
   def _normalize_auth_uri(self, auth_uri: str | None) -> str | None:
-    # Authlib currently used a simplified token check by simply scanning hash existence,
-    # yet itself might sometimes add extraneous hashes.
+    # Authlib currently used a simplified token check by simply scanning hash
+    # existence, yet itself might sometimes add extraneous hashes.
     # Drop trailing empty hash if seen.
     if auth_uri and auth_uri.endswith("#"):
       return auth_uri[:-1]
@@ -171,7 +174,7 @@ class OAuth2CredentialExchanger(BaseCredentialExchanger):
       self,
       auth_credential: AuthCredential,
       auth_scheme: AuthScheme,
-  ) -> AuthCredential:
+  ) -> ExchangeResult:
     """Exchange authorization code for access token.
 
     Args:
@@ -179,14 +182,15 @@ class OAuth2CredentialExchanger(BaseCredentialExchanger):
         auth_scheme: The OAuth2 authentication scheme.
 
     Returns:
-        The credential with access token.
+        An ExchangeResult object containing the exchanged credential and a
+        boolean indicating whether the credential was exchanged.
     """
     client, token_endpoint = create_oauth2_session(auth_scheme, auth_credential)
     if not client:
       logger.warning(
           "Could not create OAuth2 session for authorization code exchange"
       )
-      return auth_credential
+      return ExchangeResult(auth_credential, False)
 
     try:
       tokens = client.fetch_token(
@@ -196,11 +200,12 @@ class OAuth2CredentialExchanger(BaseCredentialExchanger):
           ),
           code=auth_credential.oauth2.auth_code,
           grant_type=OAuthGrantType.AUTHORIZATION_CODE,
+          client_id=auth_credential.oauth2.client_id,
       )
       update_credential_with_tokens(auth_credential, tokens)
       logger.debug("Successfully exchanged authorization code for access token")
     except Exception as e:
       logger.error("Failed to exchange authorization code: %s", e)
-      return auth_credential
+      return ExchangeResult(auth_credential, False)
 
-    return auth_credential
+    return ExchangeResult(auth_credential, True)

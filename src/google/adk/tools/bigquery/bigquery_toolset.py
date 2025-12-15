@@ -24,16 +24,17 @@ from typing_extensions import override
 from . import data_insights_tool
 from . import metadata_tool
 from . import query_tool
+from ...features import experimental
+from ...features import FeatureName
 from ...tools.base_tool import BaseTool
 from ...tools.base_toolset import BaseToolset
 from ...tools.base_toolset import ToolPredicate
 from ...tools.google_tool import GoogleTool
-from ...utils.feature_decorator import experimental
 from .bigquery_credentials import BigQueryCredentialsConfig
 from .config import BigQueryToolConfig
 
 
-@experimental
+@experimental(FeatureName.BIG_QUERY_TOOLSET)
 class BigQueryToolset(BaseToolset):
   """BigQuery Toolset contains tools for interacting with BigQuery data and metadata."""
 
