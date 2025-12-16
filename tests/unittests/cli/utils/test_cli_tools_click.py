@@ -31,6 +31,7 @@ import click
 from click.testing import CliRunner
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.cli import cli_tools_click
+from google.adk.cli.deployers.cloud_run_deployer import CloudRunDeployer
 from google.adk.evaluation.eval_case import EvalCase
 from google.adk.evaluation.eval_set import EvalSet
 from google.adk.evaluation.local_eval_set_results_manager import LocalEvalSetResultsManager
@@ -194,9 +195,9 @@ def test_cli_run_service_uris(
 def test_cli_deploy_cloud_run_success(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-  """Successful path should call cli_deploy.to_cloud_run once."""
+  """Successful path should call cli_deploy.run once."""
   rec = _Recorder()
-  monkeypatch.setattr(cli_tools_click.cli_deploy, "to_cloud_run", rec)
+  monkeypatch.setattr(cli_tools_click.cli_deploy, "run", rec)
 
   agent_dir = tmp_path / "agent2"
   agent_dir.mkdir()
@@ -214,18 +215,41 @@ def test_cli_deploy_cloud_run_success(
       ],
   )
   assert result.exit_code == 0
-  assert rec.calls, "cli_deploy.to_cloud_run must be invoked"
+  assert rec.calls, "cli_deploy.run must be invoked"
+
+
+# cli deploy docker
+def test_cli_deploy_docker_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """Successful path should call cli_deploy.run once."""
+  rec = _Recorder()
+  monkeypatch.setattr(cli_tools_click.cli_deploy, "run", rec)
+
+  agent_dir = tmp_path / "agent2"
+  agent_dir.mkdir()
+  runner = CliRunner()
+  result = runner.invoke(
+      cli_tools_click.main,
+      [
+          "deploy",
+          "docker",
+          str(agent_dir),
+      ],
+  )
+  assert result.exit_code == 0
+  assert rec.calls, "cli_deploy.run must be invoked"
 
 
 def test_cli_deploy_cloud_run_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-  """Exception from to_cloud_run should be caught and surfaced via click.secho."""
+  """Exception from run should be caught and surfaced via click.secho."""
 
   def _boom(*_a: Any, **_k: Any) -> None:  # noqa: D401
     raise RuntimeError("boom")
 
-  monkeypatch.setattr(cli_tools_click.cli_deploy, "to_cloud_run", _boom)
+  monkeypatch.setattr(cli_tools_click.cli_deploy, "run", _boom)
 
   agent_dir = tmp_path / "agent3"
   agent_dir.mkdir()
@@ -243,7 +267,7 @@ def test_cli_deploy_cloud_run_passthrough_args(
 ) -> None:
   """Extra args after '--' should be passed through to the gcloud command."""
   rec = _Recorder()
-  monkeypatch.setattr(cli_tools_click.cli_deploy, "to_cloud_run", rec)
+  monkeypatch.setattr(cli_tools_click.cli_deploy, "run", rec)
 
   agent_dir = tmp_path / "agent_passthrough"
   agent_dir.mkdir()
@@ -271,7 +295,7 @@ def test_cli_deploy_cloud_run_passthrough_args(
     print(f"Exception: {result.exception}")
 
   assert result.exit_code == 0
-  assert rec.calls, "cli_deploy.to_cloud_run must be invoked"
+  assert rec.calls, "cli_deploy.run must be invoked"
 
   # Check that extra_gcloud_args were passed correctly
   called_kwargs = rec.calls[0][1]
@@ -287,7 +311,7 @@ def test_cli_deploy_cloud_run_rejects_args_without_separator(
 ) -> None:
   """Args without '--' separator should be rejected with helpful error message."""
   rec = _Recorder()
-  monkeypatch.setattr(cli_tools_click.cli_deploy, "to_cloud_run", rec)
+  monkeypatch.setattr(cli_tools_click.cli_deploy, "run", rec)
 
   agent_dir = tmp_path / "agent_no_sep"
   agent_dir.mkdir()
@@ -309,7 +333,7 @@ def test_cli_deploy_cloud_run_rejects_args_without_separator(
   assert result.exit_code == 2
   assert "Unexpected arguments:" in result.output
   assert "Use '--' to separate gcloud arguments" in result.output
-  assert not rec.calls, "cli_deploy.to_cloud_run should not be called"
+  assert not rec.calls, "cli_deploy.run should not be called"
 
 
 def test_cli_deploy_cloud_run_rejects_args_before_separator(
@@ -317,7 +341,7 @@ def test_cli_deploy_cloud_run_rejects_args_before_separator(
 ) -> None:
   """Args before '--' separator should be rejected."""
   rec = _Recorder()
-  monkeypatch.setattr(cli_tools_click.cli_deploy, "to_cloud_run", rec)
+  monkeypatch.setattr(cli_tools_click.cli_deploy, "run", rec)
 
   agent_dir = tmp_path / "agent_before_sep"
   agent_dir.mkdir()
@@ -343,7 +367,7 @@ def test_cli_deploy_cloud_run_rejects_args_before_separator(
       "Unexpected arguments after agent path and before '--':" in result.output
   )
   assert "unexpected_arg" in result.output
-  assert not rec.calls, "cli_deploy.to_cloud_run should not be called"
+  assert not rec.calls, "cli_deploy.run should not be called"
 
 
 def test_cli_deploy_cloud_run_allows_empty_gcloud_args(
@@ -351,7 +375,7 @@ def test_cli_deploy_cloud_run_allows_empty_gcloud_args(
 ) -> None:
   """No gcloud args after '--' should be allowed."""
   rec = _Recorder()
-  monkeypatch.setattr(cli_tools_click.cli_deploy, "to_cloud_run", rec)
+  monkeypatch.setattr(cli_tools_click.cli_deploy, "run", rec)
 
   agent_dir = tmp_path / "agent_empty_gcloud"
   agent_dir.mkdir()
@@ -372,7 +396,7 @@ def test_cli_deploy_cloud_run_allows_empty_gcloud_args(
   )
 
   assert result.exit_code == 0
-  assert rec.calls, "cli_deploy.to_cloud_run must be invoked"
+  assert rec.calls, "cli_deploy.run must be invoked"
 
   # Check that extra_gcloud_args is empty
   called_kwargs = rec.calls[0][1]
@@ -808,21 +832,19 @@ def test_cli_deploy_cloud_run_gcloud_arg_conflict(
 ) -> None:
   """Extra gcloud args that conflict with ADK deploy args should raise ClickException."""
 
-  def _mock_to_cloud_run(*_a, **kwargs):
+  def _mock_run(*_a, **kwargs):
     # Import and call the validation function
-    from google.adk.cli.cli_deploy import _validate_gcloud_extra_args
+    deployer = CloudRunDeployer()
 
     # Build the same set of managed args as the real function would
     adk_managed_args = {"--source", "--project", "--port", "--verbosity"}
     if kwargs.get("region"):
       adk_managed_args.add("--region")
-    _validate_gcloud_extra_args(
+    deployer._validate_gcloud_extra_args(
         kwargs.get("extra_gcloud_args"), adk_managed_args
     )
 
-  monkeypatch.setattr(
-      cli_tools_click.cli_deploy, "to_cloud_run", _mock_to_cloud_run
-  )
+  monkeypatch.setattr(cli_tools_click.cli_deploy, "run", _mock_run)
 
   agent_dir = tmp_path / "agent_conflict"
   agent_dir.mkdir()

@@ -22,8 +22,8 @@ import click
 from google.adk.cli.cli_tools_click import cli_api_server
 from google.adk.cli.cli_tools_click import cli_create_cmd
 from google.adk.cli.cli_tools_click import cli_deploy_agent_engine
-from google.adk.cli.cli_tools_click import cli_deploy_cloud_run
 from google.adk.cli.cli_tools_click import cli_deploy_gke
+from google.adk.cli.cli_tools_click import cli_deploy_to_cloud_run
 from google.adk.cli.cli_tools_click import cli_eval
 from google.adk.cli.cli_tools_click import cli_run
 from google.adk.cli.cli_tools_click import cli_web
@@ -129,13 +129,13 @@ def test_adk_api_server():
 
 
 def test_adk_deploy_cloud_run():
-  """Test that cli_deploy_cloud_run has all required parameters."""
+  """Test that cli_deploy_to_cloud_run has all required parameters."""
   cloud_run_command = _get_command_by_name(deploy.commands, "cloud_run")
 
   assert cloud_run_command is not None, "Cloud Run deploy command not found"
   _check_options_in_parameters(
       cloud_run_command,
-      cli_deploy_cloud_run.callback,
+      cli_deploy_to_cloud_run.callback,
       "deploy cloud_run",
       ignore_params={"verbose", "ctx"},
   )

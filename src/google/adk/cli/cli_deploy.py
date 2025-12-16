@@ -20,6 +20,7 @@ import shutil
 import subprocess
 from typing import Final
 from typing import Optional
+from typing import Tuple
 
 import click
 from packaging.version import parse
@@ -27,44 +28,8 @@ from packaging.version import parse
 _IS_WINDOWS = os.name == 'nt'
 _GCLOUD_CMD = 'gcloud.cmd' if _IS_WINDOWS else 'gcloud'
 
-_DOCKERFILE_TEMPLATE: Final[str] = """
-FROM python:3.11-slim
-WORKDIR /app
-
-# Create a non-root user
-RUN adduser --disabled-password --gecos "" myuser
-
-# Switch to the non-root user
-USER myuser
-
-# Set up environment variables - Start
-ENV PATH="/home/myuser/.local/bin:$PATH"
-
-ENV GOOGLE_GENAI_USE_VERTEXAI=1
-ENV GOOGLE_CLOUD_PROJECT={gcp_project_id}
-ENV GOOGLE_CLOUD_LOCATION={gcp_region}
-
-# Set up environment variables - End
-
-# Install ADK - Start
-RUN pip install google-adk=={adk_version}
-# Install ADK - End
-
-# Copy agent - Start
-
-# Set permission
-COPY --chown=myuser:myuser "agents/{app_name}/" "/app/agents/{app_name}/"
-
-# Copy agent - End
-
-# Install Agent Deps - Start
-{install_agent_deps}
-# Install Agent Deps - End
-
-EXPOSE {port}
-
-CMD adk {command} --port={port} {host_option} {service_option} {trace_to_cloud_option} {allow_origins_option} {a2a_option} "/app/agents"
-"""
+from .config.dockerfile_template import _DOCKERFILE_TEMPLATE
+from .deployers.deployer_factory import DeployerFactory
 
 _AGENT_ENGINE_APP_TEMPLATE: Final[str] = """
 import os
@@ -391,52 +356,6 @@ def _resolve_project(project_in_option: Optional[str]) -> str:
   return project
 
 
-def _validate_gcloud_extra_args(
-    extra_gcloud_args: Optional[tuple[str, ...]], adk_managed_args: set[str]
-) -> None:
-  """Validates that extra gcloud args don't conflict with ADK-managed args.
-
-  This function dynamically checks for conflicts based on the actual args
-  that ADK will set, rather than using a hardcoded list.
-
-  Args:
-    extra_gcloud_args: User-provided extra arguments for gcloud.
-    adk_managed_args: Set of argument names that ADK will set automatically.
-                     Should include '--' prefix (e.g., '--project').
-
-  Raises:
-    click.ClickException: If any conflicts are found.
-  """
-  if not extra_gcloud_args:
-    return
-
-  # Parse user arguments into a set of argument names for faster lookup
-  user_arg_names = set()
-  for arg in extra_gcloud_args:
-    if arg.startswith('--'):
-      # Handle both '--arg=value' and '--arg value' formats
-      arg_name = arg.split('=')[0]
-      user_arg_names.add(arg_name)
-
-  # Check for conflicts with ADK-managed args
-  conflicts = user_arg_names.intersection(adk_managed_args)
-
-  if conflicts:
-    conflict_list = ', '.join(f"'{arg}'" for arg in sorted(conflicts))
-    if len(conflicts) == 1:
-      raise click.ClickException(
-          f"The argument {conflict_list} conflicts with ADK's automatic"
-          ' configuration. ADK will set this argument automatically, so please'
-          ' remove it from your command.'
-      )
-    else:
-      raise click.ClickException(
-          f"The arguments {conflict_list} conflict with ADK's automatic"
-          ' configuration. ADK will set these arguments automatically, so'
-          ' please remove them from your command.'
-      )
-
-
 def _get_service_option_by_adk_version(
     adk_version: str,
     session_uri: Optional[str],
@@ -464,9 +383,10 @@ def _get_service_option_by_adk_version(
     return f'--session_db_url={session_uri}' if session_uri else ''
 
 
-def to_cloud_run(
+def run(
     *,
     agent_folder: str,
+    provider: str,
     project: Optional[str],
     region: Optional[str],
     service_name: str,
@@ -483,6 +403,8 @@ def to_cloud_run(
     artifact_service_uri: Optional[str] = None,
     memory_service_uri: Optional[str] = None,
     a2a: bool = False,
+    provider_args: Tuple[str],
+    env: Tuple[str],
     extra_gcloud_args: Optional[tuple[str, ...]] = None,
 ):
   """Deploys an agent to Google Cloud Run.
@@ -502,6 +424,7 @@ def to_cloud_run(
 
   Args:
     agent_folder: The folder (absolute path) containing the agent source code.
+    provider: Target deployment platform (cloud_run, docker, etc).
     project: Google Cloud project id.
     region: Google Cloud region.
     service_name: The service name in Cloud Run.
@@ -516,10 +439,14 @@ def to_cloud_run(
     session_service_uri: The URI of the session service.
     artifact_service_uri: The URI of the artifact service.
     memory_service_uri: The URI of the memory service.
+    provider_args: The arguments specific to cloud provider
+    env: The environment variables provided
   """
   app_name = app_name or os.path.basename(agent_folder)
+  mode = 'web' if with_ui else 'api_server'
+  trace_to_cloud_option = '--trace_to_cloud' if trace_to_cloud else ''
 
-  click.echo(f'Start generating Cloud Run source files in {temp_folder}')
+  click.echo(f'Start generating deployment files in {temp_folder}')
 
   # remove temp_folder if exists
   if os.path.exists(temp_folder):
@@ -551,7 +478,7 @@ def to_cloud_run(
         gcp_region=region,
         app_name=app_name,
         port=port,
-        command='web' if with_ui else 'api_server',
+        command=mode,
         install_agent_deps=install_agent_deps,
         service_option=_get_service_option_by_adk_version(
             adk_version,
@@ -559,7 +486,7 @@ def to_cloud_run(
             artifact_service_uri,
             memory_service_uri,
         ),
-        trace_to_cloud_option='--trace_to_cloud' if trace_to_cloud else '',
+        trace_to_cloud_option=trace_to_cloud_option,
         allow_origins_option=allow_origins_option,
         adk_version=adk_version,
         host_option=host_option,
@@ -572,61 +499,24 @@ def to_cloud_run(
           dockerfile_content,
       )
     click.echo(f'Creating Dockerfile complete: {dockerfile_path}')
+    click.echo(f'Deploying to {provider}...')
 
-    # Deploy to Cloud Run
-    click.echo('Deploying to Cloud Run...')
-    region_options = ['--region', region] if region else []
-    project = _resolve_project(project)
+    deployer = DeployerFactory.get_deployer(provider)
+    deployer.deploy(
+        agent_folder=agent_folder,
+        temp_folder=temp_folder,
+        service_name=service_name,
+        provider_args=provider_args,
+        env_vars=env,
+        project=project,
+        region=region,
+        port=port,
+        verbosity=verbosity,
+        extra_gcloud_args=extra_gcloud_args,
+        log_level=log_level,
+    )
 
-    # Build the set of args that ADK will manage
-    adk_managed_args = {'--source', '--project', '--port', '--verbosity'}
-    if region:
-      adk_managed_args.add('--region')
-
-    # Validate that extra gcloud args don't conflict with ADK-managed args
-    _validate_gcloud_extra_args(extra_gcloud_args, adk_managed_args)
-
-    # Build the command with extra gcloud args
-    gcloud_cmd = [
-        _GCLOUD_CMD,
-        'run',
-        'deploy',
-        service_name,
-        '--source',
-        temp_folder,
-        '--project',
-        project,
-        *region_options,
-        '--port',
-        str(port),
-        '--verbosity',
-        log_level.lower() if log_level else verbosity,
-    ]
-
-    # Handle labels specially - merge user labels with ADK label
-    user_labels = []
-    extra_args_without_labels = []
-
-    if extra_gcloud_args:
-      for arg in extra_gcloud_args:
-        if arg.startswith('--labels='):
-          # Extract user-provided labels
-          user_labels_value = arg[9:]  # Remove '--labels=' prefix
-          user_labels.append(user_labels_value)
-        else:
-          extra_args_without_labels.append(arg)
-
-    # Combine ADK label with user labels
-    all_labels = ['created-by=adk']
-    all_labels.extend(user_labels)
-    labels_arg = ','.join(all_labels)
-
-    gcloud_cmd.extend(['--labels', labels_arg])
-
-    # Add any remaining extra passthrough args
-    gcloud_cmd.extend(extra_args_without_labels)
-
-    subprocess.run(gcloud_cmd, check=True)
+    click.echo(f'Deployment to {provider} complete.')
   finally:
     click.echo(f'Cleaning up the temp folder: {temp_folder}')
     shutil.rmtree(temp_folder)

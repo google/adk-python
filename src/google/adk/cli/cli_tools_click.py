@@ -26,6 +26,7 @@ from pathlib import Path
 import tempfile
 import textwrap
 from typing import Optional
+from typing import Tuple
 
 import click
 from click.core import ParameterSource
@@ -126,6 +127,120 @@ def _warn_if_with_ui(with_ui: bool) -> None:
 def main():
   """Agent Development Kit CLI tools."""
   pass
+
+
+def deploy_options(command):
+  """Add common options to deploy subcommands."""
+  options = [
+      click.option(
+          "--service_name",
+          type=str,
+          default="adk-default-service-name",
+          help=(
+              "Optional. The service name to use in target environment"
+              " (default: 'adk-default-service-name')."
+          ),
+      ),
+      click.option(
+          "--env",
+          multiple=True,
+          help=(
+              "Optional. Environment variables as multiple --env key=value"
+              " pairs."
+              " --env GOOGLE_GENAI_USE_VERTEXAI=1"
+          ),
+      ),
+      click.option(
+          "--provider-args",
+          multiple=True,
+          help=(
+              "Optional. Provider-specific arguments as multiple"
+              " --provider-args key=value pairs."
+          ),
+      ),
+      click.option(
+          "--app_name",
+          type=str,
+          default="",
+          help=(
+              "Optional. App name of the ADK API server (default: the folder"
+              " name of the AGENT source code)."
+          ),
+      ),
+      click.option(
+          "--port",
+          type=int,
+          default=8000,
+          help="Optional. The port of the ADK API server (default: 8000).",
+      ),
+      click.option(
+          "--trace_to_cloud",
+          is_flag=True,
+          show_default=True,
+          default=False,
+          help="Optional. Whether to enable cloud tracing for deployment.",
+      ),
+      click.option(
+          "--with_ui",
+          is_flag=True,
+          show_default=True,
+          default=False,
+          help=(
+              "Optional. Deploy ADK Web UI if set. (default: deploy ADK API"
+              " server only)"
+          ),
+      ),
+      click.option(
+          "--temp_folder",
+          type=str,
+          default=os.path.join(
+              tempfile.gettempdir(),
+              "deploy_src",
+              datetime.now().strftime("%Y%m%d_%H%M%S"),
+          ),
+          help=(
+              "Optional. Temp folder for the generated source files"
+              " (default: a timestamped folder in the system temp directory)."
+          ),
+      ),
+      click.option(
+          "--log_level",
+          type=LOG_LEVELS,
+          default="INFO",
+          help="Optional. Set the logging level",
+      ),
+      click.option(
+          "--adk_version",
+          type=str,
+          default=version.__version__,
+          show_default=True,
+          help=(
+              "Optional. The ADK version used in deployment. (default: the"
+              " version in the dev environment)"
+          ),
+      ),
+      click.argument(
+          "agent",
+          type=click.Path(
+              exists=True, dir_okay=True, file_okay=False, resolve_path=True
+          ),
+      ),
+      click.option(
+          "--a2a",
+          is_flag=True,
+          show_default=True,
+          default=False,
+          help="Optional. Whether to enable A2A endpoint.",
+      ),
+      click.option(
+          "--allow_origins",
+          help="Optional. Any additional origins to allow for CORS.",
+          multiple=True,
+      ),
+  ]
+  for option in options:
+    command = option(command)
+  return command
 
 
 @main.group()
@@ -1301,103 +1416,16 @@ def cli_api_server(
     ),
 )
 @click.option(
-    "--service_name",
-    type=str,
-    default="adk-default-service-name",
-    help=(
-        "Optional. The service name to use in Cloud Run (default:"
-        " 'adk-default-service-name')."
-    ),
-)
-@click.option(
-    "--app_name",
-    type=str,
-    default="",
-    help=(
-        "Optional. App name of the ADK API server (default: the folder name"
-        " of the AGENT source code)."
-    ),
-)
-@click.option(
-    "--port",
-    type=int,
-    default=8000,
-    help="Optional. The port of the ADK API server (default: 8000).",
-)
-@click.option(
-    "--trace_to_cloud",
-    is_flag=True,
-    show_default=True,
-    default=False,
-    help="Optional. Whether to enable Cloud Trace for cloud run.",
-)
-@click.option(
-    "--with_ui",
-    is_flag=True,
-    show_default=True,
-    default=False,
-    help=(
-        "Optional. Deploy ADK Web UI if set. (default: deploy ADK API server"
-        " only)"
-    ),
-)
-@click.option(
-    "--temp_folder",
-    type=str,
-    default=os.path.join(
-        tempfile.gettempdir(),
-        "cloud_run_deploy_src",
-        datetime.now().strftime("%Y%m%d_%H%M%S"),
-    ),
-    help=(
-        "Optional. Temp folder for the generated Cloud Run source files"
-        " (default: a timestamped folder in the system temp directory)."
-    ),
-)
-@click.option(
-    "--log_level",
-    type=LOG_LEVELS,
-    default="INFO",
-    help="Optional. Set the logging level",
-)
-@click.option(
     "--verbosity",
     type=LOG_LEVELS,
     help="Deprecated. Use --log_level instead.",
 )
-@click.argument(
-    "agent",
-    type=click.Path(
-        exists=True, dir_okay=True, file_okay=False, resolve_path=True
-    ),
-)
-@click.option(
-    "--adk_version",
-    type=str,
-    default=version.__version__,
-    show_default=True,
-    help=(
-        "Optional. The ADK version used in Cloud Run deployment. (default: the"
-        " version in the dev environment)"
-    ),
-)
-@click.option(
-    "--a2a",
-    is_flag=True,
-    show_default=True,
-    default=False,
-    help="Optional. Whether to enable A2A endpoint.",
-)
-@click.option(
-    "--allow_origins",
-    help="Optional. Any additional origins to allow for CORS.",
-    multiple=True,
-)
+@deploy_options
 # TODO: Add eval_storage_uri option back when evals are supported in Cloud Run.
 @adk_services_options()
 @deprecated_adk_services_options()
 @click.pass_context
-def cli_deploy_cloud_run(
+def cli_deploy_to_cloud_run(
     ctx,
     agent: str,
     project: Optional[str],
@@ -1411,6 +1439,8 @@ def cli_deploy_cloud_run(
     adk_version: str,
     log_level: str,
     verbosity: Optional[str],
+    provider_args: Tuple[str],
+    env: Tuple[str],
     allow_origins: Optional[list[str]] = None,
     session_service_uri: Optional[str] = None,
     artifact_service_uri: Optional[str] = None,
@@ -1475,8 +1505,9 @@ def cli_deploy_cloud_run(
       ctx.exit(2)
 
   try:
-    cli_deploy.to_cloud_run(
+    cli_deploy.run(
         agent_folder=agent,
+        provider="cloud_run",
         project=project,
         region=region,
         service_name=service_name,
@@ -1493,7 +1524,70 @@ def cli_deploy_cloud_run(
         artifact_service_uri=artifact_service_uri,
         memory_service_uri=memory_service_uri,
         a2a=a2a,
+        provider_args=provider_args,
+        env=env,
         extra_gcloud_args=tuple(gcloud_args),
+    )
+  except Exception as e:
+    click.secho(f"Deploy failed: {e}", fg="red", err=True)
+
+
+@deploy.command("docker", cls=HelpfulCommand)
+@deploy_options
+@adk_services_options()
+@click.pass_context
+def cli_deploy_docker(
+    ctx,
+    agent: str,
+    service_name: str,
+    app_name: str,
+    temp_folder: str,
+    port: int,
+    trace_to_cloud: bool,
+    with_ui: bool,
+    adk_version: str,
+    log_level: str,
+    provider_args: Tuple[str],
+    env: Tuple[str],
+    allow_origins: Optional[list[str]] = None,
+    session_service_uri: Optional[str] = None,
+    artifact_service_uri: Optional[str] = None,
+    memory_service_uri: Optional[str] = None,
+    session_db_url: Optional[str] = None,  # Deprecated
+    artifact_storage_uri: Optional[str] = None,  # Deprecated
+    a2a: bool = False,
+):
+  """Deploys an agent to Docker container.
+  AGENT: The path to the agent source code folder.
+  Example:
+      adk deploy docker path/to/my_agent
+  """
+
+  session_service_uri = session_service_uri or session_db_url
+  artifact_service_uri = artifact_service_uri or artifact_storage_uri
+
+  try:
+    cli_deploy.run(
+        agent_folder=agent,
+        provider="docker",
+        project=None,
+        region=None,
+        service_name=service_name,
+        app_name=app_name,
+        temp_folder=temp_folder,
+        port=port,
+        trace_to_cloud=trace_to_cloud,
+        allow_origins=allow_origins,
+        with_ui=with_ui,
+        log_level=log_level,
+        verbosity=None,
+        adk_version=adk_version,
+        session_service_uri=session_service_uri,
+        artifact_service_uri=artifact_service_uri,
+        memory_service_uri=memory_service_uri,
+        a2a=a2a,
+        provider_args=provider_args,
+        env=env,
     )
   except Exception as e:
     click.secho(f"Deploy failed: {e}", fg="red", err=True)
