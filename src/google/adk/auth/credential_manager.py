@@ -29,6 +29,7 @@ from .auth_schemes import ExtendedOAuth2
 from .auth_schemes import OpenIdConnectWithConfig
 from .auth_tool import AuthConfig
 from .exchanger.base_credential_exchanger import BaseCredentialExchanger
+from .exchanger.base_credential_exchanger import ExchangeResult
 from .exchanger.credential_exchanger_registry import CredentialExchangerRegistry
 from .oauth2_discovery import OAuth2DiscoveryManager
 from .refresher.credential_refresher_registry import CredentialRefresherRegistry
@@ -297,16 +298,18 @@ class CredentialManager:
     from ..tools.openapi_tool.auth.credential_exchangers.service_account_exchanger import ServiceAccountCredentialExchanger
 
     if isinstance(exchanger, ServiceAccountCredentialExchanger):
-      exchanged_credential = exchanger.exchange_credential(
-          self._auth_config.auth_scheme, credential
+      return (
+          exchanger.exchange_credential(
+              self._auth_config.auth_scheme, credential
+          ),
+          True,
       )
     else:
       with self.restore_client_secret(credential):
         exchanged_credential = await exchanger.exchange(
             credential, self._auth_config.auth_scheme
         )
-
-    return exchanged_credential, True
+        return exchanged_credential, exchanged_credential.was_exchanged        
 
   async def _refresh_credential(
       self, credential: AuthCredential

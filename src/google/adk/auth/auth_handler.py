@@ -50,7 +50,8 @@ class AuthHandler:
 
     with CredentialManager.restore_client_secret(credential):
       res = await exchanger.exchange(credential, self.auth_config.auth_scheme)
-      return res
+      return res.credential
+
 
   async def parse_and_store_auth_response(self, state: State) -> None:
 

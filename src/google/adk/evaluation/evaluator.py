@@ -20,6 +20,7 @@ from typing import Optional
 from pydantic import BaseModel
 from typing_extensions import TypeAlias
 
+from .eval_case import ConversationScenario
 from .eval_case import Invocation
 from .eval_metrics import BaseCriterion
 from .eval_metrics import EvalStatus
@@ -62,6 +63,7 @@ class Evaluator(ABC):
       self,
       actual_invocations: list[Invocation],
       expected_invocations: Optional[list[Invocation]],
+      conversation_scenario: Optional[ConversationScenario],
   ) -> EvaluationResult:
     """Returns EvaluationResult after performing evaluations using actual and expected invocations.
 
@@ -72,5 +74,7 @@ class Evaluator(ABC):
         usually act as a benchmark/golden response. If these are specified
         usually the expectation is that the length of this list and actual
         invocation is the same.
+      conversation_scenario: An optional conversation scenario for multi-turn
+        conversations.
     """
     raise NotImplementedError()
