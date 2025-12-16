@@ -309,7 +309,7 @@ class CredentialManager:
         exchanged_credential = await exchanger.exchange(
             credential, self._auth_config.auth_scheme
         )
-        return exchanged_credential, exchanged_credential.was_exchanged        
+        return exchanged_credential, True
 
   async def _refresh_credential(
       self, credential: AuthCredential

@@ -24,6 +24,7 @@ from google.adk.auth.auth_credential import OAuth2Auth
 from google.adk.auth.auth_handler import AuthHandler
 from google.adk.auth.auth_tool import AuthConfig
 from google.adk.auth.credential_manager import CredentialManager
+from google.adk.auth.exchanger.base_credential_exchanger import ExchangeResult
 import pytest
 
 
@@ -62,7 +63,7 @@ class TestAuthHandlerSecrets:
     # Check secret inside exchange
     def check_secret(cred, scheme):
       assert cred.oauth2.client_secret == secret
-      return cred
+      return ExchangeResult(cred, True)
 
     mock_exchanger.exchange.side_effect = check_secret
 
