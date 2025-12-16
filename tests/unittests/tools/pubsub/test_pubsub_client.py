@@ -20,6 +20,14 @@ from google.oauth2.credentials import Credentials
 import pytest
 
 
+# Save original Pub/Sub classes before patching.
+# This is necessary because create_autospec cannot be used on a mock object,
+# and mock.patch.object(..., autospec=True) replaces the class with a mock.
+# We need the original class to create spec'd mocks in side_effect.
+ORIG_PUBLISHER = pubsub_v1.PublisherClient
+ORIG_SUBSCRIBER = pubsub_v1.SubscriberClient
+
+
 @pytest.fixture(autouse=True)
 def cleanup_pubsub_clients():
   """Automatically clean up Pub/Sub client caches after each test.
@@ -69,10 +77,11 @@ def test_get_publisher_client_with_options(mock_publisher_client):
 @mock.patch.object(pubsub_v1, "PublisherClient", autospec=True)
 def test_get_publisher_client_caching(mock_publisher_client):
   """Test get_publisher_client caching behavior."""
-  # Configure mock to return different instances
-  mock_publisher_client.side_effect = [mock.Mock(), mock.Mock()]
-
   mock_creds = mock.create_autospec(Credentials, instance=True, spec_set=True)
+  mock_publisher_client.side_effect = [
+      mock.create_autospec(ORIG_PUBLISHER, instance=True, spec_set=True),
+      mock.create_autospec(ORIG_PUBLISHER, instance=True, spec_set=True),
+  ]
 
   # First call - should create client
   client1 = client.get_publisher_client(credentials=mock_creds)
@@ -105,10 +114,11 @@ def test_get_subscriber_client(mock_subscriber_client):
 @mock.patch.object(pubsub_v1, "SubscriberClient", autospec=True)
 def test_get_subscriber_client_caching(mock_subscriber_client):
   """Test get_subscriber_client caching behavior."""
-  # Configure mock to return different instances
-  mock_subscriber_client.side_effect = [mock.Mock(), mock.Mock()]
-
   mock_creds = mock.create_autospec(Credentials, instance=True, spec_set=True)
+  mock_subscriber_client.side_effect = [
+      mock.create_autospec(ORIG_SUBSCRIBER, instance=True, spec_set=True),
+      mock.create_autospec(ORIG_SUBSCRIBER, instance=True, spec_set=True),
+  ]
 
   # First call - should create client
   client1 = client.get_subscriber_client(credentials=mock_creds)

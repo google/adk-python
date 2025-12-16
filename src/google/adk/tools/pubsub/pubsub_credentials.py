@@ -21,7 +21,7 @@ from ...features import FeatureName
 from .._google_credentials import BaseGoogleCredentialsConfig
 
 PUBSUB_TOKEN_CACHE_KEY = "pubsub_token_cache"
-PUBSUB_DEFAULT_SCOPE = ["https://www.googleapis.com/auth/pubsub"]
+PUBSUB_DEFAULT_SCOPE = ("https://www.googleapis.com/auth/pubsub",)
 
 
 @experimental(FeatureName.GOOGLE_CREDENTIALS_CONFIG)

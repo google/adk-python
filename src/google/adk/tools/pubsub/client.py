@@ -155,6 +155,8 @@ def cleanup_clients():
   global _publisher_client_cache, _subscriber_client_cache
 
   with _publisher_client_lock:
+    for client, _ in _publisher_client_cache.values():
+      client.transport.close()
     _publisher_client_cache.clear()
 
   with _subscriber_client_lock:

@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+import base64
+
 from google.auth.credentials import Credentials
 from google.cloud import pubsub_v1
 
@@ -77,10 +79,20 @@ def publish_message(
     }
 
 
+def _decode_message_data(data: bytes) -> str:
+  """Decodes message data, trying UTF-8 and falling back to base64."""
+  try:
+    return data.decode("utf-8")
+  except UnicodeDecodeError:
+    # If UTF-8 decoding fails, encode as base64 string
+    return base64.b64encode(data).decode("ascii")
+
+
 def pull_messages(
     subscription_name: str,
     credentials: Credentials,
     settings: PubSubToolConfig,
+    *,
     max_messages: int = 1,
     auto_ack: bool = False,
 ) -> dict:
@@ -112,15 +124,7 @@ def pull_messages(
     messages = []
     ack_ids = []
     for received_message in response.received_messages:
-      # Try to decode as UTF-8, fall back to base64 for binary data
-      try:
-        message_data = received_message.message.data.decode("utf-8")
-      except UnicodeDecodeError:
-        # If UTF-8 decoding fails, encode as base64 string
-        message_data = base64.b64encode(received_message.message.data).decode(
-            "ascii"
-        )
-
+      message_data = _decode_message_data(received_message.message.data)
       messages.append({
           "message_id": received_message.message.message_id,
           "data": message_data,

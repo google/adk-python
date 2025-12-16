@@ -40,6 +40,15 @@ class PubSubToolset(BaseToolset):
       credentials_config: PubSubCredentialsConfig | None = None,
       pubsub_tool_config: PubSubToolConfig | None = None,
   ):
+    """Initializes the PubSubToolset.
+
+    Args:
+        tool_filter: A predicate or list of tool names to filter the tools in
+          the toolset. If None, all tools are included.
+        credentials_config: The credentials configuration to use for
+          authenticating with Google Cloud.
+        pubsub_tool_config: The configuration for the Pub/Sub tools.
+    """
     super().__init__(tool_filter=tool_filter)
     self._credentials_config = credentials_config
     self._tool_settings = (
