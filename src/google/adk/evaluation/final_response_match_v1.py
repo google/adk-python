@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import unicodedata
 from typing import Optional
 
 from google.genai import types as genai_types
@@ -92,6 +93,42 @@ def _get_eval_status(score: float, threshold: float):
   return EvalStatus.PASSED if score >= threshold else EvalStatus.FAILED
 
 
+def _is_latin_script(text: str) -> bool:
+  """Checks if text is primarily Latin script.
+
+  This is used to determine whether to apply English-specific stemming.
+  Latin script includes English, Portuguese, Spanish, French, German, etc.
+  Non-Latin scripts include Thai, Chinese, Arabic, Japanese, Korean, etc.
+
+  Args:
+      text: The text to analyze.
+
+  Returns:
+      True if the text is primarily Latin script, False otherwise.
+  """
+  if not text:
+    return True
+
+  latin_chars = 0
+  letter_chars = 0
+
+  for char in text:
+    # Check if character is a letter (category starts with 'L')
+    if unicodedata.category(char).startswith("L"):
+      letter_chars += 1
+      # Check if it's a Latin character by looking at its Unicode name
+      char_name = unicodedata.name(char, "")
+      if "LATIN" in char_name:
+        latin_chars += 1
+
+  # If no letters found, default to Latin (likely punctuation/numbers only)
+  if letter_chars == 0:
+    return True
+
+  # Consider text as Latin if more than 50% of letters are Latin
+  return latin_chars / letter_chars > 0.5
+
+
 def _calculate_rouge_1_scores(candidate: str, reference: str):
   """Calculates the ROUGE-1 score between a candidate and reference text.
 
@@ -103,6 +140,11 @@ def _calculate_rouge_1_scores(candidate: str, reference: str):
   candidate.
   - F-measure: The harmonic mean of precision and recall.
 
+  Stemming is only applied for Latin script text (English, Portuguese, etc.)
+  since the Porter stemmer only works correctly for English. For non-Latin
+  scripts (Thai, Chinese, Arabic, etc.), stemming is disabled to ensure
+  accurate matching.
+
   Args:
       candidate: The generated text to be evaluated.
       reference: The ground-truth text to compare against.
@@ -110,7 +152,10 @@ def _calculate_rouge_1_scores(candidate: str, reference: str):
   Returns:
       A dictionary containing the ROUGE-1 precision, recall, and f-measure.
   """
-  scorer = rouge_scorer.RougeScorer(["rouge1"], use_stemmer=True)
+  # Use stemmer only for Latin script text (English, Portuguese, Spanish, etc.)
+  # Porter stemmer doesn't work for non-Latin scripts (Thai, Chinese, Arabic)
+  use_stemmer = _is_latin_script(candidate) and _is_latin_script(reference)
+  scorer = rouge_scorer.RougeScorer(["rouge1"], use_stemmer=use_stemmer)
 
   # The score method returns a dictionary where keys are the ROUGE types
   # and values are Score objects (tuples) with precision, recall, and fmeasure.
