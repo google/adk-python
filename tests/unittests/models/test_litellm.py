@@ -1549,6 +1549,17 @@ async def test_generate_content_async_custom_provider_flattens_content(
   assert "Describe this image." in message_content
 
 
+def test_flatten_ollama_content_accepts_tuple_blocks():
+  from google.adk.models.lite_llm import _flatten_ollama_content
+
+  content = (
+      {"type": "text", "text": "first"},
+      {"type": "text", "text": "second"},
+  )
+  flattened = _flatten_ollama_content(content)
+  assert flattened == "first\nsecond"
+
+
 @pytest.mark.asyncio
 async def test_content_to_message_param_user_message():
   content = types.Content(
