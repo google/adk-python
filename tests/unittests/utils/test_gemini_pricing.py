@@ -14,10 +14,21 @@
 
 from __future__ import annotations
 
+from google.adk.utils import gemini_pricing
 from google.adk.utils.gemini_pricing import calculate_token_cost
 from google.adk.utils.gemini_pricing import GeminiPricingService
 from google.adk.utils.gemini_pricing import ModelPricing
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def disable_pricing_fetch():
+  """Disable live pricing fetch for all tests."""
+  # Reset the global pricing service before each test
+  gemini_pricing._pricing_service = GeminiPricingService(enable_fetch=False)
+  yield
+  # Clean up after test
+  gemini_pricing._pricing_service = None
 
 
 class TestModelPricing:
@@ -101,7 +112,7 @@ class TestGeminiPricingService:
   @pytest.mark.asyncio
   async def test_get_pricing_exact_match(self):
     """Test getting pricing for an exact model name match."""
-    service = GeminiPricingService()
+    service = GeminiPricingService(enable_fetch=False)
     pricing = await service.get_pricing("gemini-2.5-pro")
     assert pricing is not None
     assert pricing.input_price_low == 1.25
@@ -109,7 +120,7 @@ class TestGeminiPricingService:
   @pytest.mark.asyncio
   async def test_get_pricing_fuzzy_match(self):
     """Test getting pricing for a model with version suffix."""
-    service = GeminiPricingService()
+    service = GeminiPricingService(enable_fetch=False)
     pricing = await service.get_pricing("gemini-2.5-flash-001")
     assert pricing is not None
     assert pricing.input_price_low == 0.30
@@ -117,7 +128,7 @@ class TestGeminiPricingService:
   @pytest.mark.asyncio
   async def test_get_pricing_with_prefix(self):
     """Test getting pricing for a model with 'models/' prefix."""
-    service = GeminiPricingService()
+    service = GeminiPricingService(enable_fetch=False)
     pricing = await service.get_pricing("models/gemini-2.0-flash")
     assert pricing is not None
     assert pricing.input_price_low == 0.15
@@ -125,7 +136,7 @@ class TestGeminiPricingService:
   @pytest.mark.asyncio
   async def test_get_pricing_unknown_model(self):
     """Test getting pricing for an unknown model."""
-    service = GeminiPricingService()
+    service = GeminiPricingService(enable_fetch=False)
     pricing = await service.get_pricing("unknown-model-xyz")
     assert pricing is None
 
