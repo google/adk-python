@@ -47,7 +47,7 @@ class TestComputerUseTool:
   @pytest.fixture
   def mock_computer_function(self):
     """Fixture providing a mock computer function."""
-    # Create a real async function instead of AsyncMock for Python 3.9 compatibility
+    # Create a real async function instead of AsyncMock for better test control
     calls = []
 
     async def mock_func(*args, **kwargs):

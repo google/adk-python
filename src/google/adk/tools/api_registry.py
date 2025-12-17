@@ -29,8 +29,7 @@ from .base_toolset import ToolPredicate
 from .mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
 from .mcp_tool.mcp_toolset import McpToolset
 
-# TODO(wukathy): Update to prod URL once it is available.
-API_REGISTRY_URL = "https://staging-cloudapiregistry.sandbox.googleapis.com"
+API_REGISTRY_URL = "https://cloudapiregistry.googleapis.com"
 
 
 class ApiRegistry:

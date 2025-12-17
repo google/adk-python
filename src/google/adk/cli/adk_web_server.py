@@ -104,6 +104,36 @@ _EVAL_SET_FILE_EXTENSION = ".evalset.json"
 TAG_DEBUG = "Debug"
 TAG_EVALUATION = "Evaluation"
 
+_REGEX_PREFIX = "regex:"
+
+
+def _parse_cors_origins(
+    allow_origins: list[str],
+) -> tuple[list[str], Optional[str]]:
+  """Parse allow_origins into literal origins and a combined regex pattern.
+
+  Args:
+    allow_origins: List of origin strings. Entries prefixed with 'regex:' are
+      treated as regex patterns; all others are treated as literal origins.
+
+  Returns:
+    A tuple of (literal_origins, combined_regex) where combined_regex is None
+    if no regex patterns were provided, or a single pattern joining all regex
+    patterns with '|'.
+  """
+  literal_origins = []
+  regex_patterns = []
+  for origin in allow_origins:
+    if origin.startswith(_REGEX_PREFIX):
+      pattern = origin[len(_REGEX_PREFIX) :]
+      if pattern:
+        regex_patterns.append(pattern)
+    else:
+      literal_origins.append(origin)
+
+  combined_regex = "|".join(regex_patterns) if regex_patterns else None
+  return literal_origins, combined_regex
+
 
 class ApiServerSpanExporter(export_lib.SpanExporter):
 
@@ -313,11 +343,9 @@ def _setup_telemetry(
   # TODO - remove the else branch here once maybe_set_otel_providers is no
   # longer experimental.
   if otel_to_cloud:
-    _setup_gcp_telemetry_experimental(internal_exporters=internal_exporters)
+    _setup_gcp_telemetry(internal_exporters=internal_exporters)
   elif _otel_env_vars_enabled():
-    _setup_telemetry_from_env_experimental(
-        internal_exporters=internal_exporters
-    )
+    _setup_telemetry_from_env(internal_exporters=internal_exporters)
   else:
     # Old logic - to be removed when above leaves experimental.
     tracer_provider = TracerProvider()
@@ -339,7 +367,7 @@ def _otel_env_vars_enabled() -> bool:
   ])
 
 
-def _setup_gcp_telemetry_experimental(
+def _setup_gcp_telemetry(
     internal_exporters: list[SpanProcessor] = None,
 ):
   if typing.TYPE_CHECKING:
@@ -381,7 +409,7 @@ def _setup_gcp_telemetry_experimental(
   _setup_instrumentation_lib_if_installed()
 
 
-def _setup_telemetry_from_env_experimental(
+def _setup_telemetry_from_env(
     internal_exporters: list[SpanProcessor] = None,
 ):
   from ..telemetry.setup import maybe_set_otel_providers
@@ -664,13 +692,15 @@ class AdkWebServer:
     Args:
       lifespan: The lifespan of the FastAPI app.
       allow_origins: The origins that are allowed to make cross-origin requests.
+        Entries can be literal origins (e.g., 'https://example.com') or regex
+        patterns prefixed with 'regex:' (e.g., 'regex:https://.*\\.example\\.com').
       web_assets_dir: The directory containing the web assets to serve.
       setup_observer: Callback for setting up the file system observer.
       tear_down_observer: Callback for cleaning up the file system observer.
       register_processors: Callback for additional Span processors to be added
         to the TracerProvider.
-      otel_to_cloud: EXPERIMENTAL. Whether to enable Cloud Trace
-      and Cloud Logging integrations.
+      otel_to_cloud: Whether to enable Cloud Trace and Cloud Logging
+        integrations.
 
     Returns:
       A FastAPI app instance.
@@ -716,9 +746,11 @@ class AdkWebServer:
     app = FastAPI(lifespan=internal_lifespan)
 
     if allow_origins:
+      literal_origins, combined_regex = _parse_cors_origins(allow_origins)
       app.add_middleware(
           CORSMiddleware,
-          allow_origins=allow_origins,
+          allow_origins=literal_origins,
+          allow_origin_regex=combined_regex,
           allow_credentials=True,
           allow_methods=["*"],
           allow_headers=["*"],

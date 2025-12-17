@@ -30,16 +30,9 @@ from .tool_context import ToolContext
 try:
   from crewai.tools import BaseTool as CrewaiBaseTool
 except ImportError as e:
-  import sys
-
-  if sys.version_info < (3, 10):
-    raise ImportError(
-        'Crewai Tools require Python 3.10+. Please upgrade your Python version.'
-    ) from e
-  else:
-    raise ImportError(
-        "Crewai Tools require pip install 'google-adk[extensions]'."
-    ) from e
+  raise ImportError(
+      "Crewai Tools require pip install 'google-adk[extensions]'."
+  ) from e
 
 
 class CrewaiTool(FunctionTool):

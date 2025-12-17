@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import os
+from typing import Any
 from typing import Dict
 
 from fastapi.openapi.models import APIKey
@@ -134,6 +135,86 @@ def test_openapi_toolset_configure_auth_on_init(openapi_spec: Dict):
       auth_scheme=auth_scheme,
       auth_credential=auth_credential,
   )
-  for tool in toolset._tools:
-    assert tool.auth_scheme == auth_scheme
-    assert tool.auth_credential == auth_credential
+  assert all(tool.auth_scheme == auth_scheme for tool in toolset._tools)
+  assert all(tool.auth_credential == auth_credential for tool in toolset._tools)
+
+
+@pytest.mark.parametrize(
+    "verify_value", ["/path/to/enterprise-ca-bundle.crt", False]
+)
+def test_openapi_toolset_verify_on_init(
+    openapi_spec: Dict[str, Any], verify_value: str | bool
+):
+  """Test configuring verify during initialization."""
+  toolset = OpenAPIToolset(
+      spec_dict=openapi_spec,
+      ssl_verify=verify_value,
+  )
+  assert all(tool._ssl_verify == verify_value for tool in toolset._tools)
+
+
+def test_openapi_toolset_configure_verify_all(openapi_spec: Dict[str, Any]):
+  """Test configure_verify_all method."""
+  toolset = OpenAPIToolset(spec_dict=openapi_spec)
+
+  # Initially verify should be None
+  assert all(tool._ssl_verify is None for tool in toolset._tools)
+
+  # Configure verify for all tools
+  ca_bundle_path = "/path/to/custom-ca.crt"
+  toolset.configure_ssl_verify_all(ca_bundle_path)
+
+  assert all(tool._ssl_verify == ca_bundle_path for tool in toolset._tools)
+
+
+async def test_openapi_toolset_tool_name_prefix(openapi_spec: Dict[str, Any]):
+  """Test tool_name_prefix parameter prefixes tool names."""
+  prefix = "my_api"
+  toolset = OpenAPIToolset(spec_dict=openapi_spec, tool_name_prefix=prefix)
+
+  # Verify the toolset has the prefix set
+  assert toolset.tool_name_prefix == prefix
+
+  prefixed_tools = await toolset.get_tools_with_prefix()
+  assert len(prefixed_tools) == 5
+
+  # Verify all tool names are prefixed
+  assert all(tool.name.startswith(f"{prefix}_") for tool in prefixed_tools)
+
+  # Verify specific tool name is prefixed
+  expected_prefixed_name = "my_api_calendar_calendars_insert"
+  prefixed_tool_names = [t.name for t in prefixed_tools]
+  assert expected_prefixed_name in prefixed_tool_names
+
+
+def test_openapi_toolset_header_provider(openapi_spec: Dict[str, Any]):
+  """Test header_provider parameter is passed to tools."""
+
+  def my_header_provider(context):
+    return {"X-Custom-Header": "custom-value", "X-Request-ID": "12345"}
+
+  toolset = OpenAPIToolset(
+      spec_dict=openapi_spec,
+      header_provider=my_header_provider,
+  )
+
+  # Verify the toolset has the header_provider set
+  assert toolset._header_provider is my_header_provider
+
+  # Verify all tools have the header_provider
+  assert all(
+      tool._header_provider is my_header_provider for tool in toolset._tools
+  )
+
+
+def test_openapi_toolset_header_provider_none_by_default(
+    openapi_spec: Dict[str, Any],
+):
+  """Test that header_provider is None by default."""
+  toolset = OpenAPIToolset(spec_dict=openapi_spec)
+
+  # Verify the toolset has no header_provider by default
+  assert toolset._header_provider is None
+
+  # Verify all tools have no header_provider
+  assert all(tool._header_provider is None for tool in toolset._tools)

@@ -20,6 +20,7 @@ from google.genai import types as genai_types
 from typing_extensions import override
 
 from ..dependencies.rouge_scorer import rouge_scorer
+from .eval_case import ConversationScenario
 from .eval_case import Invocation
 from .eval_metrics import EvalMetric
 from .eval_metrics import Interval
@@ -60,6 +61,7 @@ class RougeEvaluator(Evaluator):
       self,
       actual_invocations: list[Invocation],
       expected_invocations: Optional[list[Invocation]],
+      _: Optional[ConversationScenario] = None,
   ) -> EvaluationResult:
     if expected_invocations is None:
       raise ValueError("expected_invocations is required for this metric.")

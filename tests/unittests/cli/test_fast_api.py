@@ -416,15 +416,15 @@ def test_app(
   with (
       patch("signal.signal", return_value=None),
       patch(
-          "google.adk.cli.fast_api.InMemorySessionService",
+          "google.adk.cli.fast_api.create_session_service_from_options",
           return_value=mock_session_service,
       ),
       patch(
-          "google.adk.cli.fast_api.InMemoryArtifactService",
+          "google.adk.cli.fast_api.create_artifact_service_from_options",
           return_value=mock_artifact_service,
       ),
       patch(
-          "google.adk.cli.fast_api.InMemoryMemoryService",
+          "google.adk.cli.fast_api.create_memory_service_from_options",
           return_value=mock_memory_service,
       ),
       patch(
@@ -509,8 +509,6 @@ async def create_test_eval_set(
 @pytest.fixture
 def temp_agents_dir_with_a2a():
   """Create a temporary agents directory with A2A agent configurations for testing."""
-  if sys.version_info < (3, 10):
-    pytest.skip("A2A requires Python 3.10+")
   with tempfile.TemporaryDirectory() as temp_dir:
     # Create test agent directory
     agent_dir = Path(temp_dir) / "test_a2a_agent"
@@ -554,22 +552,19 @@ def test_app_with_a2a(
     temp_agents_dir_with_a2a,
 ):
   """Create a TestClient for the FastAPI app with A2A enabled."""
-  if sys.version_info < (3, 10):
-    pytest.skip("A2A requires Python 3.10+")
-
   # Mock A2A related classes
   with (
       patch("signal.signal", return_value=None),
       patch(
-          "google.adk.cli.fast_api.InMemorySessionService",
+          "google.adk.cli.fast_api.create_session_service_from_options",
           return_value=mock_session_service,
       ),
       patch(
-          "google.adk.cli.fast_api.InMemoryArtifactService",
+          "google.adk.cli.fast_api.create_artifact_service_from_options",
           return_value=mock_artifact_service,
       ),
       patch(
-          "google.adk.cli.fast_api.InMemoryMemoryService",
+          "google.adk.cli.fast_api.create_memory_service_from_options",
           return_value=mock_memory_service,
       ),
       patch(
@@ -1150,9 +1145,6 @@ def test_get_event_graph_returns_dot_src_for_app_agent():
   assert "dotSrc" in response.json()
 
 
-@pytest.mark.skipif(
-    sys.version_info < (3, 10), reason="A2A requires Python 3.10+"
-)
 def test_a2a_agent_discovery(test_app_with_a2a):
   """Test that A2A agents are properly discovered and configured."""
   # This test mainly verifies that the A2A setup doesn't break the app
@@ -1161,9 +1153,6 @@ def test_a2a_agent_discovery(test_app_with_a2a):
   logger.info("A2A agent discovery test passed")
 
 
-@pytest.mark.skipif(
-    sys.version_info < (3, 10), reason="A2A requires Python 3.10+"
-)
 def test_a2a_disabled_by_default(test_app):
   """Test that A2A functionality is disabled by default."""
   # The regular test_app fixture has a2a=False

@@ -29,23 +29,12 @@ from typing import TextIO
 from typing import Union
 
 import anyio
+from mcp import ClientSession
+from mcp import StdioServerParameters
+from mcp.client.sse import sse_client
+from mcp.client.stdio import stdio_client
+from mcp.client.streamable_http import streamablehttp_client
 from pydantic import BaseModel
-
-try:
-  from mcp import ClientSession
-  from mcp import StdioServerParameters
-  from mcp.client.sse import sse_client
-  from mcp.client.stdio import stdio_client
-  from mcp.client.streamable_http import streamablehttp_client
-except ImportError as e:
-
-  if sys.version_info < (3, 10):
-    raise ImportError(
-        'MCP Tool requires Python 3.10 or above. Please upgrade your Python'
-        ' version.'
-    ) from e
-  else:
-    raise e
 
 logger = logging.getLogger('google_adk.' + __name__)
 
