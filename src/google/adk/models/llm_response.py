@@ -135,6 +135,13 @@ class LlmResponse(BaseModel):
   This field is automatically populated when citation is enabled.
   """
 
+  cost_usd: Optional[float] = None
+  """The estimated cost in USD for this LLM response.
+
+  This field is calculated based on the usage_metadata and the model's pricing.
+  Only populated when pricing information is available.
+  """
+
   @staticmethod
   def create(
       generate_content_response: types.GenerateContentResponse,

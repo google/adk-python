@@ -1664,6 +1664,40 @@ class AdkWebServer:
       async def redirect_dev_ui_add_slash():
         return RedirectResponse(redirect_dev_ui_url)
 
+      @app.get("/dev-ui/index.html")
+      @app.get("/dev-ui/")
+      async def serve_index_with_token_display():
+        """Serve index.html with token usage display script injected."""
+        from pathlib import Path
+
+        from fastapi.responses import HTMLResponse
+
+        index_path = Path(web_assets_dir) / "index.html"
+        script_path = Path(web_assets_dir) / "token-usage-display.js"
+
+        if not index_path.exists():
+          return HTMLResponse("Index not found", status_code=404)
+
+        # Read the index.html content
+        with open(index_path, "r", encoding="utf-8") as f:
+          html_content = f.read()
+
+        # Read the token usage script
+        script_content = ""
+        if script_path.exists():
+          with open(script_path, "r", encoding="utf-8") as f:
+            script_content = f.read()
+
+        # Inject the token usage display script inline before </body>
+        script_tag = f"<script>{script_content}</script>"
+        if "</body>" in html_content:
+          html_content = html_content.replace("</body>", f"{script_tag}</body>")
+        else:
+          # Fallback: append at the end
+          html_content += script_tag
+
+        return HTMLResponse(content=html_content)
+
       app.mount(
           "/dev-ui/",
           StaticFiles(directory=web_assets_dir, html=True, follow_symlink=True),

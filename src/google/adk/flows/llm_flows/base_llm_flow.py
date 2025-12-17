@@ -544,8 +544,8 @@ class BaseLlmFlow(ABC):
       return
 
     # Builds the event.
-    model_response_event = self._finalize_model_response_event(
-        llm_request, llm_response, model_response_event
+    model_response_event = await self._finalize_model_response_event(
+        invocation_context, llm_request, llm_response, model_response_event
     )
     yield model_response_event
 
@@ -637,8 +637,8 @@ class BaseLlmFlow(ABC):
         return
 
     # Builds the event.
-    model_response_event = self._finalize_model_response_event(
-        llm_request, llm_response, model_response_event
+    model_response_event = await self._finalize_model_response_event(
+        invocation_context, llm_request, llm_response, model_response_event
     )
     yield model_response_event
 
@@ -914,8 +914,9 @@ class BaseLlmFlow(ABC):
         return await _maybe_add_grounding_metadata(callback_response)
     return await _maybe_add_grounding_metadata()
 
-  def _finalize_model_response_event(
+  async def _finalize_model_response_event(
       self,
+      invocation_context: InvocationContext,
       llm_request: LlmRequest,
       llm_response: LlmResponse,
       model_response_event: Event,
@@ -924,6 +925,46 @@ class BaseLlmFlow(ABC):
         **model_response_event.model_dump(exclude_none=True),
         **llm_response.model_dump(exclude_none=True),
     })
+
+    # Calculate cost if usage metadata is available
+    if model_response_event.usage_metadata:
+      from ...utils.gemini_pricing import calculate_token_cost
+
+      try:
+        llm = self.__get_llm(invocation_context)
+        model_name = llm.model
+
+        prompt_tokens = (
+            model_response_event.usage_metadata.prompt_token_count or 0
+        )
+        output_tokens = (
+            model_response_event.usage_metadata.candidates_token_count or 0
+        )
+        cached_tokens = (
+            model_response_event.usage_metadata.cached_content_token_count or 0
+        )
+
+        # Subtract cached tokens from prompt tokens to avoid double counting
+        prompt_tokens = max(0, prompt_tokens - cached_tokens)
+
+        logger.debug(
+            'Calculating token cost: model=%s, prompt=%d, output=%d, cached=%d',
+            model_name,
+            prompt_tokens,
+            output_tokens,
+            cached_tokens,
+        )
+
+        cost = await calculate_token_cost(
+            model_name, prompt_tokens, output_tokens, cached_tokens
+        )
+        if cost is not None:
+          model_response_event.cost_usd = cost
+          logger.debug('Token cost calculated: $%.6f', cost)
+        else:
+          logger.warning('Token cost is None for model: %s', model_name)
+      except Exception as e:
+        logger.warning('Failed to calculate token cost: %s', e)
 
     if model_response_event.content:
       function_calls = model_response_event.get_function_calls()
