@@ -36,6 +36,7 @@ from google.genai import types
 from google.genai.types import Part
 from pydantic import BaseModel
 import pytest
+from pytest import fixture
 from pytest import mark
 
 from .. import testing_utils
@@ -62,112 +63,147 @@ def change_state_callback(callback_context: CallbackContext):
   print('change_state_callback: ', callback_context.state)
 
 
-@mark.asyncio
-async def test_agent_tool_inherits_parent_app_name(monkeypatch):
-  parent_app_name = 'parent_app'
-  captured: dict[str, str] = {}
-
-  class RecordingSessionService(InMemorySessionService):
-
-    async def create_session(
-        self,
-        *,
-        app_name: str,
-        user_id: str,
-        state: Optional[dict[str, Any]] = None,
-        session_id: Optional[str] = None,
-    ):
-      captured['session_app_name'] = app_name
-      return await super().create_session(
-          app_name=app_name,
-          user_id=user_id,
-          state=state,
-          session_id=session_id,
-      )
-
-  monkeypatch.setattr(
-      'google.adk.sessions.in_memory_session_service.InMemorySessionService',
-      RecordingSessionService,
-  )
-
+@fixture
+def agent_tool_setup_factory(monkeypatch):
   async def _empty_async_generator():
     if False:
       yield None
 
-  class StubRunner:
+  async def _create_setup(
+      *,
+      parent_app_name: str,
+      parent_session_id: Optional[str] | None = None,
+      capture_runner_app_name: bool = False,
+      capture_session_app_name: bool = False,
+      capture_child_session_id: bool = False,
+  ):
+    captured: dict[str, Any] = {}
 
-    def __init__(
-        self,
-        *,
-        app_name: str,
-        agent: Agent,
-        artifact_service,
-        session_service,
-        memory_service,
-        credential_service,
-        plugins,
-    ):
-      del artifact_service, memory_service, credential_service
-      captured['runner_app_name'] = app_name
-      self.agent = agent
-      self.session_service = session_service
-      self.plugin_manager = PluginManager(plugins=plugins)
-      self.app_name = app_name
+    class RecordingSessionService(InMemorySessionService):
 
-    def run_async(
-        self,
-        *,
-        user_id: str,
-        session_id: str,
-        invocation_id: Optional[str] = None,
-        new_message: Optional[types.Content] = None,
-        state_delta: Optional[dict[str, Any]] = None,
-        run_config: Optional[RunConfig] = None,
-    ):
-      del (
-          user_id,
-          session_id,
-          invocation_id,
-          new_message,
-          state_delta,
-          run_config,
-      )
-      return _empty_async_generator()
+      async def create_session(
+          self,
+          *,
+          app_name: str,
+          user_id: str,
+          state: Optional[dict[str, Any]] = None,
+          session_id: Optional[str] = None,
+      ):
+        if capture_session_app_name:
+          captured['session_app_name'] = app_name
+        if capture_child_session_id:
+          captured['child_session_id'] = session_id
+        return await super().create_session(
+            app_name=app_name,
+            user_id=user_id,
+            state=state,
+            session_id=session_id,
+        )
 
-    async def close(self):
-      """Mock close method."""
-      pass
+    monkeypatch.setattr(
+        'google.adk.sessions.in_memory_session_service.InMemorySessionService',
+        RecordingSessionService,
+    )
 
-  monkeypatch.setattr('google.adk.runners.Runner', StubRunner)
+    class StubRunner:
 
-  tool_agent = Agent(
-      name='tool_agent',
-      model='test-model',
+      def __init__(
+          self,
+          *,
+          app_name: str,
+          agent: Agent,
+          artifact_service,
+          session_service,
+          memory_service,
+          credential_service,
+          plugins,
+      ):
+        del artifact_service, memory_service, credential_service
+        if capture_runner_app_name:
+          captured['runner_app_name'] = app_name
+        self.agent = agent
+        self.session_service = session_service
+        self.plugin_manager = PluginManager(plugins=plugins)
+        self.app_name = app_name
+
+      def run_async(
+          self,
+          *,
+          user_id: str,
+          session_id: str,
+          invocation_id: Optional[str] = None,
+          new_message: Optional[types.Content] = None,
+          state_delta: Optional[dict[str, Any]] = None,
+          run_config: Optional[RunConfig] = None,
+      ):
+        del (
+            user_id,
+            session_id,
+            invocation_id,
+            new_message,
+            state_delta,
+            run_config,
+        )
+        return _empty_async_generator()
+
+      async def close(self):
+        """Mock close method."""
+        pass
+
+    monkeypatch.setattr('google.adk.runners.Runner', StubRunner)
+
+    tool_agent = Agent(
+        name='tool_agent',
+        model='test-model',
+    )
+    agent_tool = AgentTool(agent=tool_agent)
+    root_agent = Agent(
+        name='root_agent',
+        model='test-model',
+        tools=[agent_tool],
+    )
+
+    artifact_service = InMemoryArtifactService()
+    parent_session_service = InMemorySessionService()
+    parent_session = await parent_session_service.create_session(
+        app_name=parent_app_name,
+        user_id='user',
+        session_id=parent_session_id,
+    )
+    invocation_context = InvocationContext(
+        artifact_service=artifact_service,
+        session_service=parent_session_service,
+        memory_service=InMemoryMemoryService(),
+        plugin_manager=PluginManager(),
+        invocation_id='invocation-id',
+        agent=root_agent,
+        session=parent_session,
+        run_config=RunConfig(),
+    )
+    tool_context = ToolContext(invocation_context)
+
+    return {
+        'agent_tool': agent_tool,
+        'tool_context': tool_context,
+        'captured': captured,
+    }
+
+  return _create_setup
+
+
+@mark.asyncio
+async def test_agent_tool_inherits_parent_app_name(agent_tool_setup_factory):
+  parent_app_name = 'parent_app'
+
+  setup = await agent_tool_setup_factory(
+      parent_app_name=parent_app_name,
+      capture_runner_app_name=True,
+      capture_session_app_name=True,
   )
-  agent_tool = AgentTool(agent=tool_agent)
-  root_agent = Agent(
-      name='root_agent',
-      model='test-model',
-      tools=[agent_tool],
-  )
 
-  artifact_service = InMemoryArtifactService()
-  parent_session_service = InMemorySessionService()
-  parent_session = await parent_session_service.create_session(
-      app_name=parent_app_name,
-      user_id='user',
-  )
-  invocation_context = InvocationContext(
-      artifact_service=artifact_service,
-      session_service=parent_session_service,
-      memory_service=InMemoryMemoryService(),
-      plugin_manager=PluginManager(),
-      invocation_id='invocation-id',
-      agent=root_agent,
-      session=parent_session,
-      run_config=RunConfig(),
-  )
-  tool_context = ToolContext(invocation_context)
+  agent_tool = setup['agent_tool']
+  tool_context = setup['tool_context']
+  captured = setup['captured']
 
   assert tool_context._invocation_context.app_name == parent_app_name
 
@@ -178,6 +214,32 @@ async def test_agent_tool_inherits_parent_app_name(monkeypatch):
 
   assert captured['runner_app_name'] == parent_app_name
   assert captured['session_app_name'] == parent_app_name
+
+
+@mark.asyncio
+async def test_agent_tool_passes_parent_session_id(agent_tool_setup_factory):
+  """Test that the parent session ID is passed to the child session."""
+  parent_app_name = 'parent_app'
+  parent_session_id = 'parent-session-123'
+  setup = await agent_tool_setup_factory(
+      parent_app_name=parent_app_name,
+      parent_session_id=parent_session_id,
+      capture_child_session_id=True,
+  )
+
+  agent_tool = setup['agent_tool']
+  tool_context = setup['tool_context']
+  captured = setup['captured']
+
+  assert tool_context._invocation_context.session.id == parent_session_id
+
+  await agent_tool.run_async(
+      args={'request': 'hello'},
+      tool_context=tool_context,
+  )
+
+  # Verify that the parent session ID was passed to the child session
+  assert captured['child_session_id'] == parent_session_id
 
 
 def test_no_schema():

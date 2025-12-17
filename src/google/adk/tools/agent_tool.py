@@ -242,6 +242,7 @@ class AgentTool(BaseTool):
         app_name=child_app_name,
         user_id=tool_context._invocation_context.user_id,
         state=state_dict,
+        session_id=tool_context._invocation_context.session.id,
     )
 
     last_content = None
