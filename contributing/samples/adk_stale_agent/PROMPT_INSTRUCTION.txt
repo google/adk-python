@@ -59,13 +59,13 @@ Your job is to analyze a specific issue and report findings before taking action
         - **Verdict**: **ACTIVE** (Internal Team Discussion).
         - **Report**: "Analysis for Issue #[number]: ACTIVE. Maintainer is discussing with another maintainer. No action."
 
-    - **Question Check**: Does the text ask a question, request clarification, or ask for logs?
+    - **Question Check**: Does the text ask a question, request clarification, ask for logs, or give suggestions?
     - **Time Check**: Is `days_since_activity` > {stale_threshold_days}?
 
     - **DECISION**:
         - **IF (Question == YES) AND (Time == YES)**:
             - **Action**: Call `add_stale_label_and_comment`.
-            - **Check**: If '{REQUEST_CLARIFICATION_LABEL}' is not in `current_labels`, call `add_label_to_issue`.
+            - **Check**: If '{REQUEST_CLARIFICATION_LABEL}' is not in `current_labels`, call `add_label_to_issue` with '{REQUEST_CLARIFICATION_LABEL}'.
             - **Report**: "Analysis for Issue #[number]: STALE. Maintainer asked question [days_since_activity] days ago. Marking stale."
         - **IF (Question == YES) BUT (Time == NO)**:
             - **Report**: "Analysis for Issue #[number]: PENDING. Maintainer asked question, but threshold not met yet. No action."
