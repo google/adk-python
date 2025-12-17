@@ -107,7 +107,7 @@ class SqliteSessionService(BaseSessionService):
           f"Database {db_path} seems to use an old schema."
           " Please run the migration command to"
           " migrate it to the new schema. Example: `python -m"
-          " google.adk.sessions.migrate_from_sqlalchemy_sqlite"
+          " google.adk.sessions.migration.migrate_from_sqlalchemy_sqlite"
           f" --source_db_path {db_path} --dest_db_path"
           f" {db_path}.new` then backup {db_path} and rename"
           f" {db_path}.new to {db_path}."
