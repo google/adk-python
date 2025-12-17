@@ -17,6 +17,7 @@ from ._feature_decorator import stable
 from ._feature_decorator import working_in_progress
 from ._feature_registry import FeatureName
 from ._feature_registry import is_feature_enabled
+from ._feature_registry import override_feature_enabled
 
 __all__ = [
     "experimental",
@@ -24,4 +25,5 @@ __all__ = [
     "working_in_progress",
     "FeatureName",
     "is_feature_enabled",
+    "override_feature_enabled",
 ]

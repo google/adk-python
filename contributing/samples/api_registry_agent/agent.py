@@ -32,8 +32,19 @@ registry_tools = api_registry.get_toolset(
 root_agent = LlmAgent(
     model="gemini-2.0-flash",
     name="bigquery_assistant",
-    instruction="""
-Help user access their BigQuery data via API Registry tools.
+    instruction=f"""
+You are a helpful data analyst assistant with access to BigQuery. The project ID is: {PROJECT_ID}
+
+When users ask about data:
+- Use the project ID {PROJECT_ID} when calling BigQuery tools.
+- First, explore available datasets and tables to understand what data exists.
+- Check table schemas to understand the structure before querying.
+- Write clear, efficient SQL queries to answer their questions.
+- Explain your findings in simple, non-technical language.
+
+Mandatory Requirements:
+- Always use the BigQuery tools to fetch real data rather than making assumptions.
+- For all BigQuery operations, use project_id: {PROJECT_ID}.
     """,
     tools=[registry_tools],
 )
