@@ -323,7 +323,7 @@ class GeminiPricingService:
           # Extract all prices in this section
           prices = re.findall(price_pattern, section)
 
-          if len(prices) >= 4:
+          if len(prices) >= 2:
             # Typically: input_low, input_high, output_low, output_high
             # or just: input, output (if no tiering)
             try:
