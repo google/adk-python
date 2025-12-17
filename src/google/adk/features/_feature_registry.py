@@ -32,6 +32,7 @@ class FeatureName(str, Enum):
   GOOGLE_TOOL = "GOOGLE_TOOL"
   JSON_SCHEMA_FOR_FUNC_DECL = "JSON_SCHEMA_FOR_FUNC_DECL"
   PROGRESSIVE_SSE_STREAMING = "PROGRESSIVE_SSE_STREAMING"
+  PUBSUB_TOOLSET = "PUBSUB_TOOLSET"
   SPANNER_TOOLSET = "SPANNER_TOOLSET"
   SPANNER_TOOL_SETTINGS = "SPANNER_TOOL_SETTINGS"
 
@@ -89,6 +90,9 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
     ),
     FeatureName.PROGRESSIVE_SSE_STREAMING: FeatureConfig(
         FeatureStage.WIP, default_on=False
+    ),
+    FeatureName.PUBSUB_TOOLSET: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
     ),
     FeatureName.SPANNER_TOOLSET: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
