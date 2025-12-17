@@ -14,8 +14,9 @@
 
 from __future__ import annotations
 
-import unicodedata
+import re
 from typing import Optional
+import unicodedata
 
 from google.genai import types as genai_types
 from typing_extensions import override
@@ -93,6 +94,27 @@ def _get_eval_status(score: float, threshold: float):
   return EvalStatus.PASSED if score >= threshold else EvalStatus.FAILED
 
 
+class _UnicodeTokenizer:
+  """A tokenizer that handles Unicode text for non-Latin scripts.
+
+  The default rouge_scorer tokenizer only works with ASCII characters,
+  returning empty token lists for non-Latin scripts like Thai, Chinese,
+  Arabic, etc. This tokenizer uses Unicode-aware regex to properly
+  tokenize text in any script.
+  """
+
+  def tokenize(self, text: str) -> list[str]:
+    """Tokenizes text using Unicode-aware word boundaries.
+
+    Args:
+        text: The text to tokenize.
+
+    Returns:
+        A list of tokens (words) from the text.
+    """
+    return re.findall(r"\w+", text, re.UNICODE)
+
+
 def _is_latin_script(text: str) -> bool:
   """Checks if text is primarily Latin script.
 
@@ -152,10 +174,20 @@ def _calculate_rouge_1_scores(candidate: str, reference: str):
   Returns:
       A dictionary containing the ROUGE-1 precision, recall, and f-measure.
   """
-  # Use stemmer only for Latin script text (English, Portuguese, Spanish, etc.)
-  # Porter stemmer doesn't work for non-Latin scripts (Thai, Chinese, Arabic)
-  use_stemmer = _is_latin_script(candidate) and _is_latin_script(reference)
-  scorer = rouge_scorer.RougeScorer(["rouge1"], use_stemmer=use_stemmer)
+  # Check if both texts are Latin script
+  is_latin = _is_latin_script(candidate) and _is_latin_script(reference)
+
+  # For Latin scripts (English, Portuguese, etc.): use default tokenizer with
+  # stemmer. For non-Latin scripts (Thai, Chinese, Arabic, etc.): use custom
+  # Unicode tokenizer without stemmer, since:
+  # 1. Porter stemmer only works for English
+  # 2. Default tokenizer doesn't handle Unicode characters properly
+  if is_latin:
+    scorer = rouge_scorer.RougeScorer(["rouge1"], use_stemmer=True)
+  else:
+    scorer = rouge_scorer.RougeScorer(
+        ["rouge1"], use_stemmer=False, tokenizer=_UnicodeTokenizer()
+    )
 
   # The score method returns a dictionary where keys are the ROUGE types
   # and values are Score objects (tuples) with precision, recall, and fmeasure.
