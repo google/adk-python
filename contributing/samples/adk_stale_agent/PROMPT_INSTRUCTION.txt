@@ -63,11 +63,11 @@ Your job is to analyze a specific issue and report findings before taking action
     - **Time Check**: Is `days_since_activity` > {stale_threshold_days}?
 
     - **DECISION**:
-        - **IF (Question == YES) AND (Time == YES)**:
+        - **IF (Question == YES) AND (Time == YES) AND (Internal Discussion Check == FALSE):**
             - **Action**: Call `add_stale_label_and_comment`.
             - **Check**: If '{REQUEST_CLARIFICATION_LABEL}' is not in `current_labels`, call `add_label_to_issue` with '{REQUEST_CLARIFICATION_LABEL}'.
             - **Report**: "Analysis for Issue #[number]: STALE. Maintainer asked question [days_since_activity] days ago. Marking stale."
         - **IF (Question == YES) BUT (Time == NO)**:
             - **Report**: "Analysis for Issue #[number]: PENDING. Maintainer asked question, but threshold not met yet. No action."
-        - **IF (Question == NO)**:
-            - **Report**: "Analysis for Issue #[number]: ACTIVE. Maintainer gave status update. No action."
+        - **IF (Question == NO) OR (Internal Discussion Check == TRUE):**
+            - **Report**: "Analysis for Issue #[number]: ACTIVE. Maintainer gave status update or internal discussion detected. No action."
