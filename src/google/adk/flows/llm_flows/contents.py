@@ -270,6 +270,7 @@ def _should_include_event_in_context(
   return not (
       _contains_empty_content(event)
       or not _is_event_belongs_to_branch(current_branch, event)
+      or _is_adk_framework_event(event)
       or _is_auth_event(event)
       or _is_request_confirmation_event(event)
   )
@@ -654,6 +655,11 @@ def _is_auth_event(event: Event) -> bool:
 def _is_request_confirmation_event(event: Event) -> bool:
   """Checks if the event is a request confirmation event."""
   return _is_function_call_event(event, REQUEST_CONFIRMATION_FUNCTION_CALL_NAME)
+
+
+def _is_adk_framework_event(event: Event) -> bool:
+  """Checks if the event is an ADK framework event."""
+  return _is_function_call_event(event, 'adk_framework')
 
 
 def _is_live_model_audio_event_with_inline_data(event: Event) -> bool:
