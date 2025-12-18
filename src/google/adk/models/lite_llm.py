@@ -533,6 +533,8 @@ async def _get_content(
 
   content_objects = []
   for part in parts:
+    if part.thought:
+      continue
     if part.text:
       if len(parts) == 1:
         return part.text
