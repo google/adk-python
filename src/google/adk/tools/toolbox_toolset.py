@@ -19,6 +19,7 @@ from typing import Callable
 from typing import List
 from typing import Mapping
 from typing import Optional
+from typing import TYPE_CHECKING
 from typing import Union
 
 from typing_extensions import override
@@ -26,6 +27,9 @@ from typing_extensions import override
 from ..agents.readonly_context import ReadonlyContext
 from .base_tool import BaseTool
 from .base_toolset import BaseToolset
+
+if TYPE_CHECKING:
+  from toolbox_adk import CredentialConfig
 
 
 class ToolboxToolset(BaseToolset):
@@ -55,7 +59,7 @@ class ToolboxToolset(BaseToolset):
       bound_params: Optional[
           Mapping[str, Union[Callable[[], Any], Any]]
       ] = None,
-      credentials: Optional[Any] = None,
+      credentials: Optional[CredentialConfig] = None,
       additional_headers: Optional[Mapping[str, str]] = None,
       **kwargs,
   ):
