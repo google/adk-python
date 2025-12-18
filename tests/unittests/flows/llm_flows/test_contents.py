@@ -16,6 +16,7 @@ from google.adk.agents.llm_agent import Agent
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
 from google.adk.flows.llm_flows import contents
+from google.adk.flows.llm_flows.contents import request_processor
 from google.adk.flows.llm_flows.functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
 from google.adk.flows.llm_flows.functions import REQUEST_EUC_FUNCTION_CALL_NAME
 from google.adk.models.llm_request import LlmRequest
@@ -434,6 +435,58 @@ async def test_rewind_events_are_filtered_out():
 
 
 @pytest.mark.asyncio
+async def test_other_agent_empty_content():
+  """Test that other agent messages with only thoughts or empty content are filtered out."""
+  agent = Agent(model="gemini-2.5-flash", name="current_agent")
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  # Add events: user message, other agents with empty content, user message
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("Hello"),
+      ),
+      # Other agent with only thoughts
+      Event(
+          invocation_id="inv2",
+          author="other_agent1",
+          content=types.ModelContent([
+              types.Part(text="This is a private thought", thought=True),
+              types.Part(text="Another private thought", thought=True),
+          ]),
+      ),
+      # Other agent with empty text and thoughts
+      Event(
+          invocation_id="inv3",
+          author="other_agent2",
+          content=types.ModelContent([
+              types.Part(text="", thought=False),
+              types.Part(text="Secret thought", thought=True),
+          ]),
+      ),
+      Event(
+          invocation_id="inv4",
+          author="user",
+          content=types.UserContent("World"),
+      ),
+  ]
+  invocation_context.session.events = events
+
+  # Process the request
+  async for _ in request_processor.run_async(invocation_context, llm_request):
+    pass
+
+  # Verify empty content events are completely filtered out
+  assert llm_request.contents == [
+      types.UserContent("Hello"),
+      types.UserContent("World"),
+  ]
+
+
+@pytest.mark.asyncio
 async def test_events_with_empty_content_are_skipped():
   """Test that events with empty content (state-only changes) are skipped."""
   agent = Agent(model="gemini-2.5-flash", name="test_agent")
@@ -471,6 +524,14 @@ async def test_events_with_empty_content_are_skipped():
           author="user",
           content=types.Content(parts=[types.Part(text="")], role="model"),
       ),
+      # Event with content that has multiple empty text parts
+      Event(
+          invocation_id="inv6_2",
+          author="user",
+          content=types.Content(
+              parts=[types.Part(text=""), types.Part(text="")], role="model"
+          ),
+      ),
       # Event with content that has only inline data part
       Event(
           invocation_id="inv7",
@@ -499,6 +560,15 @@ async def test_events_with_empty_content_are_skipped():
                       )
                   )
               ],
+              role="user",
+          ),
+      ),
+      # Event with mixed empty and non-empty text parts
+      Event(
+          invocation_id="inv9",
+          author="user",
+          content=types.Content(
+              parts=[types.Part(text=""), types.Part(text="Mixed content")],
               role="user",
           ),
       ),
@@ -532,6 +602,10 @@ async def test_events_with_empty_content_are_skipped():
                   )
               )
           ],
+          role="user",
+      ),
+      types.Content(
+          parts=[types.Part(text=""), types.Part(text="Mixed content")],
           role="user",
       ),
   ]

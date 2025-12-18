@@ -14,6 +14,7 @@
 
 import sys
 import unittest
+from unittest.mock import create_autospec
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
@@ -47,6 +48,7 @@ class TestApiRegistry(unittest.IsolatedAsyncioTestCase):
     self.mock_credentials = MagicMock()
     self.mock_credentials.token = "mock_token"
     self.mock_credentials.refresh = MagicMock()
+    self.mock_credentials.quota_project_id = None
     mock_auth_patcher = patch(
         "google.auth.default",
         return_value=(self.mock_credentials, None),
@@ -77,6 +79,32 @@ class TestApiRegistry(unittest.IsolatedAsyncioTestCase):
         headers={
             "Authorization": "Bearer mock_token",
             "Content-Type": "application/json",
+        },
+    )
+
+  @patch("httpx.Client", autospec=True)
+  def test_init_with_quota_project_id_success(self, MockHttpClient):
+    self.mock_credentials.quota_project_id = "quota-project"
+    mock_response = create_autospec(httpx.Response, instance=True)
+    mock_response.json.return_value = MOCK_MCP_SERVERS_LIST
+    mock_client_instance = MockHttpClient.return_value
+    mock_client_instance.__enter__.return_value = mock_client_instance
+    mock_client_instance.get.return_value = mock_response
+
+    api_registry = ApiRegistry(
+        api_registry_project_id=self.project_id, location=self.location
+    )
+
+    self.assertEqual(len(api_registry._mcp_servers), 3)
+    self.assertIn("test-mcp-server-1", api_registry._mcp_servers)
+    self.assertIn("test-mcp-server-2", api_registry._mcp_servers)
+    self.assertIn("test-mcp-server-no-url", api_registry._mcp_servers)
+    mock_client_instance.get.assert_called_once_with(
+        f"https://cloudapiregistry.googleapis.com/v1beta/projects/{self.project_id}/locations/{self.location}/mcpServers",
+        headers={
+            "Authorization": "Bearer mock_token",
+            "Content-Type": "application/json",
+            "x-goog-user-project": "quota-project",
         },
     )
 
@@ -131,6 +159,38 @@ class TestApiRegistry(unittest.IsolatedAsyncioTestCase):
         connection_params=StreamableHTTPConnectionParams(
             url="https://mcp.server1.com",
             headers={"Authorization": "Bearer mock_token"},
+        ),
+        tool_filter=None,
+        tool_name_prefix=None,
+        header_provider=None,
+    )
+    self.assertEqual(toolset, MockMcpToolset.return_value)
+
+  @patch("google.adk.tools.api_registry.McpToolset", autospec=True)
+  @patch("httpx.Client", autospec=True)
+  async def test_get_toolset_with_quota_project_id_success(
+      self, MockHttpClient, MockMcpToolset
+  ):
+    self.mock_credentials.quota_project_id = "quota-project"
+    mock_response = create_autospec(httpx.Response, instance=True)
+    mock_response.json.return_value = MOCK_MCP_SERVERS_LIST
+    mock_client_instance = MockHttpClient.return_value
+    mock_client_instance.__enter__.return_value = mock_client_instance
+    mock_client_instance.get.return_value = mock_response
+
+    api_registry = ApiRegistry(
+        api_registry_project_id=self.project_id, location=self.location
+    )
+
+    toolset = api_registry.get_toolset("test-mcp-server-1")
+
+    MockMcpToolset.assert_called_once_with(
+        connection_params=StreamableHTTPConnectionParams(
+            url="https://mcp.server1.com",
+            headers={
+                "Authorization": "Bearer mock_token",
+                "x-goog-user-project": "quota-project",
+            },
         ),
         tool_filter=None,
         tool_name_prefix=None,

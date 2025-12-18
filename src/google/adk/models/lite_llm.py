@@ -628,27 +628,43 @@ def _is_ollama_chat_provider(
     model: Optional[str], custom_llm_provider: Optional[str]
 ) -> bool:
   """Returns True when requests should be normalized for ollama_chat."""
-  if custom_llm_provider and custom_llm_provider.lower() == "ollama_chat":
+  if (
+      custom_llm_provider
+      and custom_llm_provider.strip().lower() == "ollama_chat"
+  ):
     return True
-  if model and model.lower().startswith("ollama_chat"):
+  if model and model.strip().lower().startswith("ollama_chat"):
     return True
   return False
 
 
 def _flatten_ollama_content(
     content: OpenAIMessageContent | str | None,
-) -> str | OpenAIMessageContent | None:
+) -> str | None:
   """Flattens multipart content to text for ollama_chat compatibility.
 
   Ollama's chat endpoint rejects arrays for `content`. We keep textual parts,
   join them with newlines, and fall back to a JSON string for non-text content.
   If both text and non-text parts are present, only the text parts are kept.
   """
-  if not isinstance(content, list):
+  if content is None or isinstance(content, str):
     return content
 
+  # `OpenAIMessageContent` is typed as `Iterable[...]` in LiteLLM. Some
+  # providers or LiteLLM versions may hand back tuples or other iterables.
+  if isinstance(content, dict):
+    try:
+      return json.dumps(content)
+    except TypeError:
+      return str(content)
+
+  try:
+    blocks = list(content)
+  except TypeError:
+    return str(content)
+
   text_parts = []
-  for block in content:
+  for block in blocks:
     if isinstance(block, dict) and block.get("type") == "text":
       text_value = block.get("text")
       if text_value:
@@ -658,9 +674,9 @@ def _flatten_ollama_content(
     return _NEW_LINE.join(text_parts)
 
   try:
-    return json.dumps(content)
+    return json.dumps(blocks)
   except TypeError:
-    return str(content)
+    return str(blocks)
 
 
 def _normalize_ollama_chat_messages(

@@ -16,11 +16,9 @@ from __future__ import annotations
 
 import sys
 from typing import Any
-from typing import Dict
-from typing import List
-from typing import Optional
-from typing import Union
+from typing import Callable
 
+from google.adk.agents.readonly_context import ReadonlyContext
 import google.auth
 import google.auth.transport.requests
 import httpx
@@ -39,9 +37,9 @@ class ApiRegistry:
       self,
       api_registry_project_id: str,
       location: str = "global",
-      header_provider: Optional[
-          Callable[[ReadonlyContext], Dict[str, str]]
-      ] = None,
+      header_provider: (
+          Callable[[ReadonlyContext], dict[str, str]] | None
+      ) = None,
   ):
     """Initialize the API Registry.
 
@@ -54,17 +52,13 @@ class ApiRegistry:
     self.api_registry_project_id = api_registry_project_id
     self.location = location
     self._credentials, _ = google.auth.default()
-    self._mcp_servers: Dict[str, Dict[str, Any]] = {}
+    self._mcp_servers: dict[str, dict[str, Any]] = {}
     self._header_provider = header_provider
 
     url = f"{API_REGISTRY_URL}/v1beta/projects/{self.api_registry_project_id}/locations/{self.location}/mcpServers"
     try:
-      request = google.auth.transport.requests.Request()
-      self._credentials.refresh(request)
-      headers = {
-          "Authorization": f"Bearer {self._credentials.token}",
-          "Content-Type": "application/json",
-      }
+      headers = self._get_auth_headers()
+      headers["Content-Type"] = "application/json"
       with httpx.Client() as client:
         response = client.get(url, headers=headers)
         response.raise_for_status()
@@ -82,14 +76,13 @@ class ApiRegistry:
   def get_toolset(
       self,
       mcp_server_name: str,
-      tool_filter: Optional[Union[ToolPredicate, List[str]]] = None,
-      tool_name_prefix: Optional[str] = None,
+      tool_filter: ToolPredicate | list[str] | None = None,
+      tool_name_prefix: str | None = None,
   ) -> McpToolset:
     """Return the MCP Toolset based on the params.
 
     Args:
-      mcp_server_name: Filter to select the MCP server name to get tools
-        from.
+      mcp_server_name: Filter to select the MCP server name to get tools from.
       tool_filter: Optional filter to select specific tools. Can be a list of
         tool names or a ToolPredicate function.
       tool_name_prefix: Optional prefix to prepend to the names of the tools
@@ -107,11 +100,8 @@ class ApiRegistry:
       raise ValueError(f"MCP server {mcp_server_name} has no URLs.")
 
     mcp_server_url = server["urls"][0]
-    request = google.auth.transport.requests.Request()
-    self._credentials.refresh(request)
-    headers = {
-        "Authorization": f"Bearer {self._credentials.token}",
-    }
+    headers = self._get_auth_headers()
+
     return McpToolset(
         connection_params=StreamableHTTPConnectionParams(
             url="https://" + mcp_server_url,
@@ -121,3 +111,16 @@ class ApiRegistry:
         tool_name_prefix=tool_name_prefix,
         header_provider=self._header_provider,
     )
+
+  def _get_auth_headers(self) -> dict[str, str]:
+    """Refreshes credentials and returns authorization headers."""
+    request = google.auth.transport.requests.Request()
+    self._credentials.refresh(request)
+    headers = {
+        "Authorization": f"Bearer {self._credentials.token}",
+    }
+    # Add quota project header if available in ADC
+    quota_project_id = getattr(self._credentials, "quota_project_id", None)
+    if quota_project_id:
+      headers["x-goog-user-project"] = quota_project_id
+    return headers

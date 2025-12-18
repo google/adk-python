@@ -219,13 +219,26 @@ def _rearrange_events_for_latest_function_response(
   return result_events
 
 
+def _is_part_invisible(p: types.Part) -> bool:
+  """A part is considered invisble if it's a thought, or has no visible content."""
+  return getattr(p, 'thought', False) or not (
+      p.text
+      or p.inline_data
+      or p.file_data
+      or p.function_call
+      or p.function_response
+  )
+
+
 def _contains_empty_content(event: Event) -> bool:
   """Check if an event should be skipped due to missing or empty content.
 
   This can happen to the events that only changed session state.
   When both content and transcriptions are empty, the event will be considered
   as empty. The content is considered empty if none of its parts contain text,
-  inline data, file data, function call, or function response.
+  inline data, file data, function call, or function response. Parts with
+  only thoughts are also considered empty.
+
 
   Args:
     event: The event to check.
@@ -240,14 +253,7 @@ def _contains_empty_content(event: Event) -> bool:
       not event.content
       or not event.content.role
       or not event.content.parts
-      or all(
-          not p.text
-          and not p.inline_data
-          and not p.file_data
-          and not p.function_call
-          and not p.function_response
-          for p in [event.content.parts[0]]
-      )
+      or all(_is_part_invisible(p) for p in event.content.parts)
   ) and (not event.output_transcription and not event.input_transcription)
 
 
@@ -270,6 +276,7 @@ def _should_include_event_in_context(
   return not (
       _contains_empty_content(event)
       or not _is_event_belongs_to_branch(current_branch, event)
+      or _is_adk_framework_event(event)
       or _is_auth_event(event)
       or _is_request_confirmation_event(event)
   )
@@ -654,6 +661,11 @@ def _is_auth_event(event: Event) -> bool:
 def _is_request_confirmation_event(event: Event) -> bool:
   """Checks if the event is a request confirmation event."""
   return _is_function_call_event(event, REQUEST_CONFIRMATION_FUNCTION_CALL_NAME)
+
+
+def _is_adk_framework_event(event: Event) -> bool:
+  """Checks if the event is an ADK framework event."""
+  return _is_function_call_event(event, 'adk_framework')
 
 
 def _is_live_model_audio_event_with_inline_data(event: Event) -> bool:
