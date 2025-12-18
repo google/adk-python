@@ -34,7 +34,7 @@ my_adk_project/
     └── my_app/
         ├── agents/
         │   ├── my_agent/
-        │   │   ├── __init__.py   # Must contain: from. import agent \
+        │   │   ├── __init__.py   # Must contain: from . import agent \
         │   │   └── agent.py      # Must contain: root_agent = Agent(...) \
         │   └── another_agent/
         │       ├── __init__.py
@@ -43,7 +43,7 @@ my_adk_project/
 
 agent.py: Must define the agent and assign it to a variable named root_agent. This is how ADK's tools find it.
 
-`__init__.py`: In each agent directory, it must contain from. import agent to make the agent discoverable.
+`__init__.py`: In each agent directory, it must contain `from . import agent` to make the agent discoverable.
 
 ## Local Development & Debugging
 
@@ -69,7 +69,7 @@ We expose agents as production APIs using FastAPI.
 
 - Custom Endpoints: We can add our own routes (e.g., /health) to the app object returned by the helper.
 
-Python
+```Python
 
 from google.adk.cli.fast_api import get_fast_api_app
 app = get_fast_api_app(agent_dir="./agents")
@@ -77,6 +77,7 @@ app = get_fast_api_app(agent_dir="./agents")
 @app.get("/health")
 async def health_check():
     return {"status": "ok"}
+```
 
 
 ## Deployment to Production
