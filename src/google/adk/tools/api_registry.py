@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import sys
 from typing import Any
+from typing import Callable
 from typing import Dict
 from typing import List
 from typing import Optional
@@ -59,12 +60,8 @@ class ApiRegistry:
 
     url = f"{API_REGISTRY_URL}/v1beta/projects/{self.api_registry_project_id}/locations/{self.location}/mcpServers"
     try:
-      request = google.auth.transport.requests.Request()
-      self._credentials.refresh(request)
-      headers = {
-          "Authorization": f"Bearer {self._credentials.token}",
-          "Content-Type": "application/json",
-      }
+      headers = self._get_auth_headers()
+      headers["Content-Type"] = "application/json"
       with httpx.Client() as client:
         response = client.get(url, headers=headers)
         response.raise_for_status()
@@ -107,11 +104,8 @@ class ApiRegistry:
       raise ValueError(f"MCP server {mcp_server_name} has no URLs.")
 
     mcp_server_url = server["urls"][0]
-    request = google.auth.transport.requests.Request()
-    self._credentials.refresh(request)
-    headers = {
-        "Authorization": f"Bearer {self._credentials.token}",
-    }
+    headers = self._get_auth_headers()
+
     return McpToolset(
         connection_params=StreamableHTTPConnectionParams(
             url="https://" + mcp_server_url,
@@ -121,3 +115,15 @@ class ApiRegistry:
         tool_name_prefix=tool_name_prefix,
         header_provider=self._header_provider,
     )
+
+  def _get_auth_headers(self) -> Dict[str, str]:
+    """Refreshes credentials and returns authorization headers."""
+    request = google.auth.transport.requests.Request()
+    self._credentials.refresh(request)
+    headers = {
+        "Authorization": f"Bearer {self._credentials.token}",
+    }
+    # Add quota project header if available in ADC
+    if self._credentials.quota_project_id:
+      headers["x-goog-user-project"] = self._credentials.quota_project_id
+    return headers
