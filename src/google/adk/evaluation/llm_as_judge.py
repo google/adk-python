@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from abc import abstractmethod
 from typing import Optional
 
@@ -33,7 +34,7 @@ from .eval_case import ConversationScenario
 from .eval_case import Invocation
 from .eval_metrics import BaseCriterion
 from .eval_metrics import EvalMetric
-from .eval_metrics import RubricScore
+from .eval_rubrics import RubricScore
 from .evaluator import EvaluationResult
 from .evaluator import Evaluator
 from .evaluator import PerInvocationResult
@@ -114,6 +115,46 @@ class LlmAsJudge(Evaluator):
   ) -> EvaluationResult:
     """Aggregates the per invocation results to get the overall score."""
 
+  async def _evaluate_single_sample(
+      self,
+      llm_request: LlmRequest,
+      actual: Invocation,
+      expected: Optional[Invocation],
+  ) -> PerInvocationResult:
+    """Evaluates a single sample for an invocation.
+
+    Args:
+      llm_request: The LLM request to execute.
+      actual: The actual invocation to evaluate.
+      expected: The expected invocation (optional).
+
+    Returns:
+      A PerInvocationResult containing the evaluation score and status.
+    """
+    async with Aclosing(
+        self._judge_model.generate_content_async(llm_request)
+    ) as agen:
+      async for llm_response in agen:
+        # Non-streaming call, so there is only one response content.
+        auto_rater_score = self.convert_auto_rater_response_to_score(
+            llm_response
+        )
+        return PerInvocationResult(
+            actual_invocation=actual,
+            expected_invocation=expected,
+            score=auto_rater_score.score,
+            eval_status=get_eval_status(
+                auto_rater_score.score, self._eval_metric.threshold
+            ),
+            rubric_scores=auto_rater_score.rubric_scores,
+        )
+    # This should not be reached for non-streaming calls, but added for safety
+    return PerInvocationResult(
+        actual_invocation=actual,
+        expected_invocation=expected,
+        eval_status=get_eval_status(None, self._eval_metric.threshold),
+    )
+
   @override
   async def evaluate_invocations(
       self,
@@ -132,8 +173,13 @@ class LlmAsJudge(Evaluator):
         else expected_invocations
     )
 
-    per_invocation_results = []
-    for actual, expected in zip(actual_invocations, expected_invocations):
+    # Build all LLM evaluation tasks for parallel execution
+    tasks = []
+    invocation_indices = []  # Track which invocation each task belongs to
+
+    for invocation_idx, (actual, expected) in enumerate(
+        zip(actual_invocations, expected_invocations)
+    ):
       auto_rater_prompt = self.format_auto_rater_prompt(actual, expected)
       llm_request = LlmRequest(
           model=self._judge_model_options.judge_model,
@@ -148,32 +194,30 @@ class LlmAsJudge(Evaluator):
       )
       add_default_retry_options_if_not_present(llm_request)
       num_samples = self._judge_model_options.num_samples
-      invocation_result_samples = []
+
+      # Create tasks for all samples of this invocation
       for _ in range(num_samples):
-        async with Aclosing(
-            self._judge_model.generate_content_async(llm_request)
-        ) as agen:
-          async for llm_response in agen:
-            # Non-streaming call, so there is only one response content.
-            auto_rater_score = self.convert_auto_rater_response_to_score(
-                llm_response
-            )
-            invocation_result_samples.append(
-                PerInvocationResult(
-                    actual_invocation=actual,
-                    expected_invocation=expected,
-                    score=auto_rater_score.score,
-                    eval_status=get_eval_status(
-                        auto_rater_score.score, self._eval_metric.threshold
-                    ),
-                    rubric_scores=auto_rater_score.rubric_scores,
-                )
-            )
-      if not invocation_result_samples:
-        continue
-      per_invocation_results.append(
-          self.aggregate_per_invocation_samples(invocation_result_samples)
-      )
+        tasks.append(self._evaluate_single_sample(llm_request, actual, expected))
+        invocation_indices.append(invocation_idx)
+
+    # Execute all tasks in parallel
+    all_results = await asyncio.gather(*tasks)
+
+    # Group results by invocation
+    results_by_invocation = {}
+    for invocation_idx, result in zip(invocation_indices, all_results):
+      if invocation_idx not in results_by_invocation:
+        results_by_invocation[invocation_idx] = []
+      results_by_invocation[invocation_idx].append(result)
+
+    # Aggregate samples for each invocation
+    per_invocation_results = []
+    for invocation_idx in sorted(results_by_invocation.keys()):
+      invocation_result_samples = results_by_invocation[invocation_idx]
+      if invocation_result_samples:
+        per_invocation_results.append(
+            self.aggregate_per_invocation_samples(invocation_result_samples)
+        )
 
     if per_invocation_results:
       return self.aggregate_invocation_results(per_invocation_results)
