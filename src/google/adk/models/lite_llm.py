@@ -640,7 +640,7 @@ def _is_ollama_chat_provider(
 
 def _flatten_ollama_content(
     content: OpenAIMessageContent | str | None,
-) -> str | OpenAIMessageContent | None:
+) -> str | None:
   """Flattens multipart content to text for ollama_chat compatibility.
 
   Ollama's chat endpoint rejects arrays for `content`. We keep textual parts,
