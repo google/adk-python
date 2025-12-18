@@ -49,13 +49,12 @@ class ToolboxToolset(BaseToolset):
       server_url: str,
       toolset_name: Optional[str] = None,
       tool_names: Optional[List[str]] = None,
-      auth_token_getters: Optional[dict[str, Callable[[], str]]] = None,
+      auth_token_getters: Optional[Mapping[str, Callable[[], str]]] = None,
       bound_params: Optional[
           Mapping[str, Union[Callable[[], Any], Any]]
       ] = None,
-      # New args mapping to toolbox-adk
       credentials: Optional[Any] = None,
-      additional_headers: Optional[dict[str, str]] = None,
+      additional_headers: Optional[Mapping[str, str]] = None,
       **kwargs,
   ):
     """Args:
@@ -68,6 +67,9 @@ class ToolboxToolset(BaseToolset):
       additional_headers: (Optional) Static headers dictionary.
       **kwargs: Additional arguments passed to the underlying toolbox_adk.ToolboxToolset.
     """
+    if not toolset_name and not tool_names:
+      raise ValueError("Either 'toolset_name' or 'tool_names' must be provided.")
+
     try:
       from toolbox_adk import ToolboxToolset as RealToolboxToolset  # pylint: disable=import-outside-toplevel
     except ImportError as exc:
@@ -75,11 +77,9 @@ class ToolboxToolset(BaseToolset):
           "ToolboxToolset requires the 'toolbox-adk' package. "
           "Please install it using `pip install toolbox-adk`."
       ) from exc
-      
+
     super().__init__()
-    
-    # Delegate to the real implementation in toolbox-adk.
-    
+
     self._delegate = RealToolboxToolset(
         server_url=server_url,
         toolset_name=toolset_name,
@@ -87,8 +87,7 @@ class ToolboxToolset(BaseToolset):
         credentials=credentials,
         additional_headers=additional_headers,
         bound_params=bound_params,
-        # Backward compatibility: Pass legacy args via kwargs.
-        auth_token_getters=auth_token_getters, 
+        auth_token_getters=auth_token_getters,
         **kwargs
     )
 
