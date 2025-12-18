@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 from typing import Any
 from typing import Callable
 from typing import List
@@ -58,17 +60,19 @@ class ToolboxToolset(BaseToolset):
       **kwargs,
   ):
     """Args:
-      server_url: The URL of the toolbox server.
-      toolset_name: The name of the toolbox toolset to load.
-      tool_names: The names of the tools to load.
-      auth_token_getters: (Deprecated) Map of auth token getters.
-      bound_params: Parameters to bind to the tools.
-      credentials: (Optional) toolbox_adk.CredentialConfig object.
-      additional_headers: (Optional) Static headers dictionary.
-      **kwargs: Additional arguments passed to the underlying toolbox_adk.ToolboxToolset.
+    server_url: The URL of the toolbox server.
+    toolset_name: The name of the toolbox toolset to load.
+    tool_names: The names of the tools to load.
+    auth_token_getters: (Deprecated) Map of auth token getters.
+    bound_params: Parameters to bind to the tools.
+    credentials: (Optional) toolbox_adk.CredentialConfig object.
+    additional_headers: (Optional) Static headers dictionary.
+    **kwargs: Additional arguments passed to the underlying toolbox_adk.ToolboxToolset.
     """
     if not toolset_name and not tool_names:
-      raise ValueError("Either 'toolset_name' or 'tool_names' must be provided.")
+      raise ValueError(
+          "Either 'toolset_name' or 'tool_names' must be provided."
+      )
 
     try:
       from toolbox_adk import ToolboxToolset as RealToolboxToolset  # pylint: disable=import-outside-toplevel
@@ -88,7 +92,7 @@ class ToolboxToolset(BaseToolset):
         additional_headers=additional_headers,
         bound_params=bound_params,
         auth_token_getters=auth_token_getters,
-        **kwargs
+        **kwargs,
     )
 
   @override
