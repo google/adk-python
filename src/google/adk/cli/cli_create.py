@@ -21,6 +21,8 @@ from typing import Tuple
 
 import click
 
+from ..apps.app import validate_app_name
+
 _INIT_PY_TEMPLATE = """\
 from . import agent
 """
@@ -294,6 +296,12 @@ def run_cmd(
       VertexAI as backend.
     type: Optional[str], Whether to define agent with config file or code.
   """
+  # Validate agent name is a valid Python identifier
+  try:
+    validate_app_name(agent_name)
+  except ValueError as e:
+    raise click.UsageError(str(e)) from e
+
   agent_folder = os.path.join(os.getcwd(), agent_name)
   # check folder doesn't exist or it's empty. Otherwise, throw
   if os.path.exists(agent_folder) and os.listdir(agent_folder):
