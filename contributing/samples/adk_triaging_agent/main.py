@@ -46,24 +46,41 @@ async def fetch_specific_issue_details(issue_number: int):
     issue_data = get_request(url)
     labels = issue_data.get("labels", [])
     label_names = {label["name"] for label in labels}
+    assignees = issue_data.get("assignees", [])
 
-    # Check if issue has "planned" label but no component labels
+    # Check issue state
     component_labels = set(LABEL_TO_OWNER.keys())
     has_planned = "planned" in label_names
-    has_component = bool(label_names & component_labels)
+    existing_component_labels = label_names & component_labels
+    has_component = bool(existing_component_labels)
+    has_assignee = len(assignees) > 0
 
-    if has_planned and not has_component:
-      print(f"Issue #{issue_number} is planned but not triaged. Proceeding.")
+    # Determine what actions are needed
+    needs_component_label = not has_component
+    needs_owner = has_planned and not has_assignee
+
+    if needs_component_label or needs_owner:
+      print(
+          f"Issue #{issue_number} needs triaging. "
+          f"needs_component_label={needs_component_label}, "
+          f"needs_owner={needs_owner}"
+      )
       return {
           "number": issue_data["number"],
           "title": issue_data["title"],
           "body": issue_data.get("body", ""),
+          "has_planned_label": has_planned,
+          "has_component_label": has_component,
+          "existing_component_label": (
+              list(existing_component_labels)[0]
+              if existing_component_labels
+              else None
+          ),
+          "needs_component_label": needs_component_label,
+          "needs_owner": needs_owner,
       }
     else:
-      print(
-          f"Issue #{issue_number} is already triaged or doesn't have"
-          " 'planned' label. Skipping."
-      )
+      print(f"Issue #{issue_number} is already fully triaged. Skipping.")
       return None
   except requests.exceptions.RequestException as e:
     print(f"Error fetching issue #{issue_number}: {e}")
@@ -127,25 +144,24 @@ async def main():
 
     issue_title = ISSUE_TITLE or specific_issue["title"]
     issue_body = ISSUE_BODY or specific_issue["body"]
+    needs_component_label = specific_issue.get("needs_component_label", True)
+    needs_owner = specific_issue.get("needs_owner", False)
+    existing_component_label = specific_issue.get("existing_component_label")
+
     prompt = (
-        f"A GitHub issue #{issue_number} has been labeled as 'planned'."
-        f' Title: "{issue_title}"\nBody:'
-        f' "{issue_body}"\n\nBased on the rules, recommend an'
-        " appropriate component label and its justification."
-        " Then, use the 'add_label_and_owner_to_issue' tool to apply the"
-        " label directly to this issue. Only label it, do not"
-        " process any other issues."
+        f"Triage GitHub issue #{issue_number}.\n\n"
+        f'Title: "{issue_title}"\n'
+        f'Body: "{issue_body}"\n\n'
+        f"Issue state: needs_component_label={needs_component_label}, "
+        f"needs_owner={needs_owner}, "
+        f"existing_component_label={existing_component_label}"
     )
   else:
     print(f"EVENT: Processing batch of issues (event: {EVENT_NAME}).")
     issue_count = parse_number_string(ISSUE_COUNT_TO_PROCESS, default_value=3)
     prompt = (
-        "Please use the 'list_planned_untriaged_issues' tool to find the"
-        f" most recent {issue_count} planned issues that haven't been"
-        " triaged yet (i.e., issues with 'planned' label but no component"
-        " labels like 'core', 'tools', etc.). Then triage each of them by"
-        " applying appropriate component labels. If you cannot find any planned"
-        " issues, please don't try to triage any issues."
+        f"Please use 'list_untriaged_issues' to find {issue_count} issues that"
+        " need triaging, then triage each one according to your instructions."
     )
 
   response = await call_agent_async(runner, USER_ID, session.id, prompt)

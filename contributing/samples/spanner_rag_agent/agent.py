@@ -13,32 +13,21 @@
 # limitations under the License.
 
 import os
-from typing import Any
-from typing import Dict
-from typing import Optional
 
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.auth.auth_credential import AuthCredentialTypes
-from google.adk.tools.base_tool import BaseTool
-from google.adk.tools.google_tool import GoogleTool
-from google.adk.tools.spanner import query_tool
-from google.adk.tools.spanner import search_tool
 from google.adk.tools.spanner.settings import Capabilities
 from google.adk.tools.spanner.settings import SpannerToolSettings
+from google.adk.tools.spanner.settings import SpannerVectorStoreSettings
 from google.adk.tools.spanner.spanner_credentials import SpannerCredentialsConfig
-from google.adk.tools.tool_context import ToolContext
+from google.adk.tools.spanner.spanner_toolset import SpannerToolset
 import google.auth
-from google.auth.credentials import Credentials
-from pydantic import BaseModel
 
 # Define an appropriate credential type
 # Set to None to use the application default credentials (ADC) for a quick
 # development.
 CREDENTIALS_TYPE = None
 
-
-# Define Spanner tool config with read capability set to allowed.
-tool_settings = SpannerToolSettings(capabilities=[Capabilities.DATA_READ])
 
 if CREDENTIALS_TYPE == AuthCredentialTypes.OAUTH2:
   # Initialize the tools to do interactive OAuth
@@ -67,172 +56,46 @@ else:
       credentials=application_default_credentials
   )
 
+# Follow the instructions in README.md to set up the example Spanner database.
+# Replace the following settings with your specific Spanner database.
 
-### Section 1: Extending the built-in Spanner Toolset for Custom Use Cases ###
-# This example illustrates how to extend the built-in Spanner toolset to create
-# a customized Spanner tool. This method is advantageous when you need to deal
-# with a specific use case:
-#
-# 1.  Streamline the end user experience by pre-configuring the tool with fixed
-#     parameters (such as a specific database, instance, or project) and a
-#     dedicated SQL query, making it perfect for a single, focused use case
-#     like vector search on a specific table.
-# 2.  Enhance functionality by adding custom logic to manage tool inputs,
-#     execution, and result processing, providing greater control over the
-#     tool's behavior.
-class SpannerRagSetting(BaseModel):
-  """Customized Spanner RAG settings for an example use case."""
+# Define Spanner vector store settings.
+vector_store_settings = SpannerVectorStoreSettings(
+    project_id="<PROJECT_ID>",
+    instance_id="<INSTANCE_ID>",
+    database_id="<DATABASE_ID>",
+    table_name="products",
+    content_column="productDescription",
+    embedding_column="productDescriptionEmbedding",
+    vector_length=768,
+    vertex_ai_embedding_model_name="text-embedding-005",
+    selected_columns=[
+        "productId",
+        "productName",
+        "productDescription",
+    ],
+    nearest_neighbors_algorithm="EXACT_NEAREST_NEIGHBORS",
+    top_k=3,
+    distance_type="COSINE",
+    additional_filter="inventoryCount > 0",
+)
 
-  # Replace the following settings for your Spanner database used in the sample.
-  project_id: str = "<PROJECT_ID>"
-  instance_id: str = "<INSTANCE_ID>"
-  database_id: str = "<DATABASE_ID>"
+# Define Spanner tool config with the vector store settings.
+tool_settings = SpannerToolSettings(
+    capabilities=[Capabilities.DATA_READ],
+    vector_store_settings=vector_store_settings,
+)
 
-  # Follow the instructions in README.md, the table name is "products" and the
-  # Spanner embedding model name is "EmbeddingsModel" in this sample.
-  table_name: str = "products"
-  # Learn more about Spanner Vertex AI integration for embedding and Spanner
-  # vector search.
-  # https://cloud.google.com/spanner/docs/ml-tutorial-embeddings
-  # https://cloud.google.com/spanner/docs/vector-search/overview
-  embedding_model_name: str = "EmbeddingsModel"
-
-  selected_columns: list[str] = [
-      "productId",
-      "productName",
-      "productDescription",
-  ]
-  embedding_column_name: str = "productDescriptionEmbedding"
-
-  additional_filter_expression: str = "inventoryCount > 0"
-  vector_distance_function: str = "EUCLIDEAN_DISTANCE"
-  top_k: int = 3
+# Get the Spanner toolset with the Spanner tool settings and credentials config.
+# Filter the tools to only include the `vector_store_similarity_search` tool.
+spanner_toolset = SpannerToolset(
+    credentials_config=credentials_config,
+    spanner_tool_settings=tool_settings,
+    # Comment to include all allowed tools.
+    tool_filter=["vector_store_similarity_search"],
+)
 
 
-RAG_SETTINGS = SpannerRagSetting()
-
-
-### (Option 1) Use the built-in similarity_search tool ###
-# Create a wrapped function tool for the agent on top of the built-in
-# similarity_search tool in the Spanner toolset.
-# This customized tool is used to perform a Spanner KNN vector search on a
-# embedded knowledge base stored in a Spanner database table.
-def wrapped_spanner_similarity_search(
-    search_query: str,
-    credentials: Credentials,  # GoogleTool handles `credentials` automatically
-    settings: SpannerToolSettings,  # GoogleTool handles `settings` automatically
-    tool_context: ToolContext,  # GoogleTool handles `tool_context` automatically
-) -> str:
-  """Perform a similarity search on the product catalog.
-
-  Args:
-    search_query: The search query to find relevant content.
-
-  Returns:
-      Relevant product catalog content with sources
-  """
-  columns = RAG_SETTINGS.selected_columns.copy()
-
-  # Instead of fixing all parameters, you can also expose some of them for
-  # the LLM to decide.
-  return search_tool.similarity_search(
-      RAG_SETTINGS.project_id,
-      RAG_SETTINGS.instance_id,
-      RAG_SETTINGS.database_id,
-      RAG_SETTINGS.table_name,
-      search_query,
-      RAG_SETTINGS.embedding_column_name,
-      columns,
-      {
-          "spanner_embedding_model_name": RAG_SETTINGS.embedding_model_name,
-      },
-      credentials,
-      settings,
-      tool_context,
-      RAG_SETTINGS.additional_filter_expression,
-      {
-          "top_k": RAG_SETTINGS.top_k,
-          "distance_type": RAG_SETTINGS.vector_distance_function,
-      },
-  )
-
-
-### (Option 2) Use the built-in execute_sql tool ###
-# Create a wrapped function tool for the agent on top of the built-in
-# execute_sql tool in the Spanner toolset.
-# This customized tool is used to perform a Spanner KNN vector search on a
-# embedded knowledge base stored in a Spanner database table.
-#
-# Compared with similarity_search, using execute_sql (a lower level tool) means
-# that you have more control, but you also need to do more work (e.g. to write
-# the SQL query from scratch). Consider using this option if your scenario is
-# more complicated than a plain similarity search.
-def wrapped_spanner_execute_sql_tool(
-    search_query: str,
-    credentials: Credentials,  # GoogleTool handles `credentials` automatically
-    settings: SpannerToolSettings,  # GoogleTool handles `settings` automatically
-    tool_context: ToolContext,  # GoogleTool handles `tool_context` automatically
-) -> str:
-  """Perform a similarity search on the product catalog.
-
-  Args:
-    search_query: The search query to find relevant content.
-
-  Returns:
-      Relevant product catalog content with sources
-  """
-
-  embedding_query = f"""SELECT embeddings.values
-      FROM ML.PREDICT(
-        MODEL {RAG_SETTINGS.embedding_model_name},
-        (SELECT "{search_query}" as content)
-      )
-    """
-
-  distance_alias = "distance"
-  columns = [f"{column}" for column in RAG_SETTINGS.selected_columns]
-  columns += [f"""{RAG_SETTINGS.vector_distance_function}(
-        {RAG_SETTINGS.embedding_column_name},
-        ({embedding_query})) AS {distance_alias}
-    """]
-  columns = ", ".join(columns)
-
-  knn_query = f"""
-      SELECT {columns}
-      FROM {RAG_SETTINGS.table_name}
-      WHERE {RAG_SETTINGS.additional_filter_expression}
-      ORDER BY {distance_alias}
-      LIMIT {RAG_SETTINGS.top_k}
-    """
-
-  # Customized tool based on the built-in Spanner toolset.
-  return query_tool.execute_sql(
-      project_id=RAG_SETTINGS.project_id,
-      instance_id=RAG_SETTINGS.instance_id,
-      database_id=RAG_SETTINGS.database_id,
-      query=knn_query,
-      credentials=credentials,
-      settings=settings,
-      tool_context=tool_context,
-  )
-
-
-def inspect_tool_params(
-    tool: BaseTool,
-    args: Dict[str, Any],
-    tool_context: ToolContext,
-) -> Optional[Dict]:
-  """A callback function to inspect tool parameters before execution."""
-  print("Inspect for tool: " + tool.name)
-
-  actual_search_query_in_args = args.get("search_query")
-  # Inspect the `search_query` when calling the tool for tutorial purposes.
-  print(f"Tool args `search_query`: {actual_search_query_in_args}")
-
-  pass
-
-
-### Section 2: Create the root agent ###
 root_agent = LlmAgent(
     model="gemini-2.5-flash",
     name="spanner_knowledge_base_agent",
@@ -241,27 +104,10 @@ root_agent = LlmAgent(
     ),
     instruction="""
     You are a helpful assistant that answers user questions about product-specific recommendations.
-    1. Always use the `wrapped_spanner_similarity_search` tool to find relevant information.
-    2. If no relevant information is found, say you don't know.
-    3. Present all the relevant information naturally and well formatted in your response.
+    1. Always use the `vector_store_similarity_search` tool to find information.
+    2. Directly present all the information results from the `vector_store_similarity_search` tool naturally and well formatted in your response.
+    3. If no information result is returned by the `vector_store_similarity_search` tool, say you don't know.
     """,
-    tools=[
-        # # (Option 1)
-        # # Add customized Spanner tool based on the built-in similarity_search
-        # # in the Spanner toolset.
-        GoogleTool(
-            func=wrapped_spanner_similarity_search,
-            credentials_config=credentials_config,
-            tool_settings=tool_settings,
-        ),
-        # # (Option 2)
-        # # Add customized Spanner tool based on the built-in execute_sql in
-        # # the Spanner toolset.
-        # GoogleTool(
-        #     func=wrapped_spanner_execute_sql_tool,
-        #     credentials_config=credentials_config,
-        #     tool_settings=tool_settings,
-        # ),
-    ],
-    before_tool_callback=inspect_tool_params,
+    # Use the Spanner toolset for vector similarity search.
+    tools=[spanner_toolset],
 )
