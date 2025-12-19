@@ -304,73 +304,48 @@ def test_get_gcp_region_from_gcloud_fail(
 
 
 # run_cmd validation
+@pytest.mark.parametrize(
+    "invalid_name, error_substring",
+    [
+        ("my-agent", "must be a valid identifier"),
+        ("my agent", "must be a valid identifier"),
+        ("user", "reserved for end-user input"),
+    ],
+)
 def test_run_cmd_rejects_invalid_agent_names(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    invalid_name: str,
+    error_substring: str,
 ) -> None:
-  """run_cmd should reject agent names with hyphens or other invalid chars."""
+  """run_cmd should reject invalid agent names."""
   monkeypatch.setattr(os, "getcwd", lambda: str(tmp_path))
-
-  # Test hyphen rejection
   with pytest.raises(click.UsageError) as exc_info:
     cli_create.run_cmd(
-        "my-agent",
+        invalid_name,
         model="gemini-2.5-flash",
         google_api_key="test-key",
         google_cloud_project=None,
         google_cloud_region=None,
         type="code",
     )
-  assert "must be a valid identifier" in str(exc_info.value)
-
-  # Test other invalid characters
-  with pytest.raises(click.UsageError) as exc_info:
-    cli_create.run_cmd(
-        "my agent",  # space
-        model="gemini-2.5-flash",
-        google_api_key="test-key",
-        google_cloud_project=None,
-        google_cloud_region=None,
-        type="code",
-    )
-  assert "must be a valid identifier" in str(exc_info.value)
-
-  # Test reserved name
-  with pytest.raises(click.UsageError) as exc_info:
-    cli_create.run_cmd(
-        "user",
-        model="gemini-2.5-flash",
-        google_api_key="test-key",
-        google_cloud_project=None,
-        google_cloud_region=None,
-        type="code",
-    )
-  assert "reserved for end-user input" in str(exc_info.value)
+  assert error_substring in str(exc_info.value)
 
 
+@pytest.mark.parametrize("valid_name", ["my_agent", "agent123"])
 def test_run_cmd_accepts_valid_agent_names(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, valid_name: str
 ) -> None:
   """run_cmd should accept valid Python identifiers."""
   monkeypatch.setattr(os, "getcwd", lambda: str(tmp_path))
   monkeypatch.setattr(click, "prompt", lambda *a, **k: "1")  # Choose type
 
-  # Valid names should work
   cli_create.run_cmd(
-      "my_agent",
+      valid_name,
       model="gemini-2.5-flash",
       google_api_key="test-key",
       google_cloud_project=None,
       google_cloud_region=None,
       type="code",
   )
-  assert (tmp_path / "my_agent").exists()
-
-  cli_create.run_cmd(
-      "agent123",
-      model="gemini-2.5-flash",
-      google_api_key="test-key",
-      google_cloud_project=None,
-      google_cloud_region=None,
-      type="code",
-  )
-  assert (tmp_path / "agent123").exists()
+  assert (tmp_path / valid_name).exists()

@@ -234,8 +234,8 @@ class ToolTrajectoryCriterion(BaseCriterion):
         return cls.MatchType[v]
       except KeyError:
         raise ValueError(
-            f"Invalid match_type: '{v}'. Must be one of: EXACT, IN_ORDER,"
-            " ANY_ORDER"
+            f"Invalid match_type: '{v}'. Must be one of: "
+            f"{', '.join(cls.MatchType.__members__)}"
         )
     return v
 
