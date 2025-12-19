@@ -64,14 +64,15 @@ class ToolboxToolset(BaseToolset):
       **kwargs,
   ):
     """Args:
-    server_url: The URL of the toolbox server.
-    toolset_name: The name of the toolbox toolset to load.
-    tool_names: The names of the tools to load.
-    auth_token_getters: (Deprecated) Map of auth token getters.
-    bound_params: Parameters to bind to the tools.
-    credentials: (Optional) toolbox_adk.CredentialConfig object.
-    additional_headers: (Optional) Static headers dictionary.
-    **kwargs: Additional arguments passed to the underlying toolbox_adk.ToolboxToolset.
+      server_url: The URL of the toolbox server.
+      toolset_name: The name of the toolbox toolset to load.
+      tool_names: The names of the tools to load.
+      auth_token_getters: (Deprecated) Map of auth token getters.
+      bound_params: Parameters to bind to the tools.
+      credentials: (Optional) toolbox_adk.CredentialConfig object.
+      additional_headers: (Optional) Static headers dictionary.
+      **kwargs: Additional arguments passed to the underlying
+        toolbox_adk.ToolboxToolset.
     """
 
     try:
