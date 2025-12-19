@@ -12,40 +12,23 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import sys
 from unittest.mock import AsyncMock
 from unittest.mock import Mock
 from unittest.mock import patch
 
+from a2a.server.agent_execution.context import RequestContext
+from a2a.server.events.event_queue import EventQueue
+from a2a.types import Message
+from a2a.types import TaskState
+from a2a.types import TextPart
+from google.adk.a2a.converters.request_converter import AgentRunRequest
+from google.adk.a2a.executor.a2a_agent_executor import A2aAgentExecutor
+from google.adk.a2a.executor.a2a_agent_executor import A2aAgentExecutorConfig
+from google.adk.events.event import Event
+from google.adk.runners import RunConfig
+from google.adk.runners import Runner
+from google.genai.types import Content
 import pytest
-
-# Skip all tests in this module if Python version is less than 3.10
-pytestmark = pytest.mark.skipif(
-    sys.version_info < (3, 10), reason="A2A requires Python 3.10+"
-)
-
-# Import dependencies with version checking
-try:
-  from a2a.server.agent_execution.context import RequestContext
-  from a2a.server.events.event_queue import EventQueue
-  from a2a.types import Message
-  from a2a.types import TaskState
-  from a2a.types import TextPart
-  from google.adk.a2a.converters.request_converter import AgentRunRequest
-  from google.adk.a2a.executor.a2a_agent_executor import A2aAgentExecutor
-  from google.adk.a2a.executor.a2a_agent_executor import A2aAgentExecutorConfig
-  from google.adk.events.event import Event
-  from google.adk.runners import RunConfig
-  from google.adk.runners import Runner
-  from google.genai.types import Content
-except ImportError as e:
-  if sys.version_info < (3, 10):
-    # Imports are not needed since tests will be skipped due to pytestmark.
-    # The imported names are only used within test methods, not at module level,
-    # so no NameError occurs during module compilation.
-    pass
-  else:
-    raise e
 
 
 class TestA2aAgentExecutor:

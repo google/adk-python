@@ -58,7 +58,7 @@ class AgentLoader(BaseAgentLoader):
   """
 
   def __init__(self, agents_dir: str):
-    self.agents_dir = agents_dir.rstrip("/")
+    self.agents_dir = str(Path(agents_dir))
     self._original_sys_path = None
     self._agent_cache: dict[str, Union[BaseAgent, App]] = {}
 
@@ -272,12 +272,13 @@ class AgentLoader(BaseAgentLoader):
         f"No root_agent found for '{agent_name}'. Searched in"
         f" '{actual_agent_name}.agent.root_agent',"
         f" '{actual_agent_name}.root_agent' and"
-        f" '{actual_agent_name}/root_agent.yaml'.\n\nExpected directory"
-        f" structure:\n  <agents_dir>/\n    {actual_agent_name}/\n     "
-        " agent.py (with root_agent) OR\n      root_agent.yaml\n\nThen run:"
-        f" adk web <agents_dir>\n\nEnsure '{agents_dir}/{actual_agent_name}' is"
-        " structured correctly, an .env file can be loaded if present, and a"
-        f" root_agent is exposed.{hint}"
+        f" '{actual_agent_name}{os.sep}root_agent.yaml'.\n\nExpected directory"
+        f" structure:\n  <agents_dir>{os.sep}\n   "
+        f" {actual_agent_name}{os.sep}\n      agent.py (with root_agent) OR\n  "
+        "    root_agent.yaml\n\nThen run: adk web <agents_dir>\n\nEnsure"
+        f" '{os.path.join(agents_dir, actual_agent_name)}' is structured"
+        " correctly, an .env file can be loaded if present, and a root_agent"
+        f" is exposed.{hint}"
     )
 
   def _record_origin_metadata(

@@ -12,20 +12,30 @@
 # See the License for the specific language governing permissions and
 # limitations under the Licens
 
+import contextlib
 import json
+import logging
+import os
+import sys
+import tempfile
+import unittest
+from unittest.mock import ANY
 from unittest.mock import AsyncMock
 from unittest.mock import Mock
 import warnings
 
 from google.adk.models.lite_llm import _content_to_message_param
+from google.adk.models.lite_llm import _FILE_ID_REQUIRED_PROVIDERS
 from google.adk.models.lite_llm import _FINISH_REASON_MAPPING
 from google.adk.models.lite_llm import _function_declaration_to_tool_param
 from google.adk.models.lite_llm import _get_completion_inputs
 from google.adk.models.lite_llm import _get_content
+from google.adk.models.lite_llm import _get_provider_from_model
 from google.adk.models.lite_llm import _message_to_generate_content_response
 from google.adk.models.lite_llm import _model_response_to_chunk
 from google.adk.models.lite_llm import _model_response_to_generate_content_response
 from google.adk.models.lite_llm import _parse_tool_calls_from_text
+from google.adk.models.lite_llm import _redirect_litellm_loggers_to_stdout
 from google.adk.models.lite_llm import _schema_to_dict
 from google.adk.models.lite_llm import _split_message_content_and_tool_calls
 from google.adk.models.lite_llm import _to_litellm_response_format
@@ -37,6 +47,7 @@ from google.adk.models.lite_llm import TextChunk
 from google.adk.models.lite_llm import UsageMetadataChunk
 from google.adk.models.llm_request import LlmRequest
 from google.genai import types
+import litellm
 from litellm import ChatCompletionAssistantMessage
 from litellm import ChatCompletionMessageToolCall
 from litellm import Function
@@ -228,12 +239,14 @@ class _ModelDumpOnly:
     return self._schema
 
 
-def test_get_completion_inputs_formats_pydantic_schema_for_litellm():
+async def test_get_completion_inputs_formats_pydantic_schema_for_litellm():
   llm_request = LlmRequest(
       config=types.GenerateContentConfig(response_schema=_StructuredOutput)
   )
 
-  _, _, response_format, _ = _get_completion_inputs(llm_request)
+  _, _, response_format, _ = await _get_completion_inputs(
+      llm_request, model="gemini/gemini-2.0-flash"
+  )
 
   assert response_format == {
       "type": "json_object",
@@ -250,7 +263,12 @@ def test_to_litellm_response_format_passes_preformatted_dict():
       },
   }
 
-  assert _to_litellm_response_format(response_format) == response_format
+  assert (
+      _to_litellm_response_format(
+          response_format, model="gemini/gemini-2.0-flash"
+      )
+      == response_format
+  )
 
 
 def test_to_litellm_response_format_wraps_json_schema_dict():
@@ -259,7 +277,9 @@ def test_to_litellm_response_format_wraps_json_schema_dict():
       "properties": {"foo": {"type": "string"}},
   }
 
-  formatted = _to_litellm_response_format(schema)
+  formatted = _to_litellm_response_format(
+      schema, model="gemini/gemini-2.0-flash"
+  )
   assert formatted["type"] == "json_object"
   assert formatted["response_schema"] == schema
 
@@ -267,7 +287,9 @@ def test_to_litellm_response_format_wraps_json_schema_dict():
 def test_to_litellm_response_format_handles_model_dump_object():
   schema_obj = _ModelDumpOnly()
 
-  formatted = _to_litellm_response_format(schema_obj)
+  formatted = _to_litellm_response_format(
+      schema_obj, model="gemini/gemini-2.0-flash"
+  )
 
   assert formatted["type"] == "json_object"
   assert formatted["response_schema"] == schema_obj.model_dump()
@@ -280,11 +302,172 @@ def test_to_litellm_response_format_handles_genai_schema_instance():
       required=["foo"],
   )
 
-  formatted = _to_litellm_response_format(schema_instance)
+  formatted = _to_litellm_response_format(
+      schema_instance, model="gemini/gemini-2.0-flash"
+  )
   assert formatted["type"] == "json_object"
   assert formatted["response_schema"] == schema_instance.model_dump(
       exclude_none=True, mode="json"
   )
+
+
+def test_to_litellm_response_format_uses_json_schema_for_openai_model():
+  """Test that OpenAI models use json_schema format instead of response_schema."""
+  formatted = _to_litellm_response_format(
+      _StructuredOutput, model="gpt-4o-mini"
+  )
+
+  assert formatted["type"] == "json_schema"
+  assert "json_schema" in formatted
+  assert formatted["json_schema"]["name"] == "_StructuredOutput"
+  assert formatted["json_schema"]["strict"] is True
+  assert formatted["json_schema"]["schema"]["additionalProperties"] is False
+  assert "additionalProperties" in formatted["json_schema"]["schema"]
+
+
+def test_to_litellm_response_format_uses_response_schema_for_gemini_model():
+  """Test that Gemini models continue to use response_schema format."""
+  formatted = _to_litellm_response_format(
+      _StructuredOutput, model="gemini/gemini-2.0-flash"
+  )
+
+  assert formatted["type"] == "json_object"
+  assert "response_schema" in formatted
+  assert formatted["response_schema"] == _StructuredOutput.model_json_schema()
+
+
+def test_to_litellm_response_format_uses_response_schema_for_vertex_gemini():
+  """Test that Vertex AI Gemini models use response_schema format."""
+  formatted = _to_litellm_response_format(
+      _StructuredOutput, model="vertex_ai/gemini-2.0-flash"
+  )
+
+  assert formatted["type"] == "json_object"
+  assert "response_schema" in formatted
+  assert formatted["response_schema"] == _StructuredOutput.model_json_schema()
+
+
+def test_to_litellm_response_format_uses_json_schema_for_azure_openai():
+  """Test that Azure OpenAI models use json_schema format."""
+  formatted = _to_litellm_response_format(
+      _StructuredOutput, model="azure/gpt-4o"
+  )
+
+  assert formatted["type"] == "json_schema"
+  assert "json_schema" in formatted
+  assert formatted["json_schema"]["name"] == "_StructuredOutput"
+  assert formatted["json_schema"]["strict"] is True
+  assert formatted["json_schema"]["schema"]["additionalProperties"] is False
+  assert "additionalProperties" in formatted["json_schema"]["schema"]
+
+
+def test_to_litellm_response_format_uses_json_schema_for_anthropic():
+  """Test that Anthropic models use json_schema format."""
+  formatted = _to_litellm_response_format(
+      _StructuredOutput, model="anthropic/claude-3-5-sonnet"
+  )
+
+  assert formatted["type"] == "json_schema"
+  assert "json_schema" in formatted
+  assert formatted["json_schema"]["name"] == "_StructuredOutput"
+  assert formatted["json_schema"]["strict"] is True
+  assert formatted["json_schema"]["schema"]["additionalProperties"] is False
+  assert "additionalProperties" in formatted["json_schema"]["schema"]
+
+
+def test_to_litellm_response_format_with_dict_schema_for_openai():
+  """Test dict schema with OpenAI model uses json_schema format."""
+  schema = {
+      "type": "object",
+      "properties": {"foo": {"type": "string"}},
+  }
+
+  formatted = _to_litellm_response_format(schema, model="gpt-4o")
+
+  assert formatted["type"] == "json_schema"
+  assert formatted["json_schema"]["name"] == "response"
+  assert formatted["json_schema"]["strict"] is True
+  assert formatted["json_schema"]["schema"]["additionalProperties"] is False
+
+
+async def test_get_completion_inputs_uses_openai_format_for_openai_model():
+  """Test that _get_completion_inputs produces OpenAI-compatible format."""
+  llm_request = LlmRequest(
+      model="gpt-4o-mini",
+      config=types.GenerateContentConfig(response_schema=_StructuredOutput),
+  )
+
+  _, _, response_format, _ = await _get_completion_inputs(
+      llm_request, model="gpt-4o-mini"
+  )
+
+  assert response_format["type"] == "json_schema"
+  assert "json_schema" in response_format
+  assert response_format["json_schema"]["name"] == "_StructuredOutput"
+  assert response_format["json_schema"]["strict"] is True
+  assert (
+      response_format["json_schema"]["schema"]["additionalProperties"] is False
+  )
+
+
+async def test_get_completion_inputs_uses_gemini_format_for_gemini_model():
+  """Test that _get_completion_inputs produces Gemini-compatible format."""
+  llm_request = LlmRequest(
+      model="gemini/gemini-2.0-flash",
+      config=types.GenerateContentConfig(response_schema=_StructuredOutput),
+  )
+
+  _, _, response_format, _ = await _get_completion_inputs(
+      llm_request, model="gemini/gemini-2.0-flash"
+  )
+
+  assert response_format["type"] == "json_object"
+  assert "response_schema" in response_format
+
+
+async def test_get_completion_inputs_uses_passed_model_for_response_format():
+  """Test that _get_completion_inputs uses the passed model parameter for response format.
+
+  This verifies that when llm_request.model is None, the explicit model parameter
+  is used to determine the correct response format (Gemini vs OpenAI).
+  """
+  llm_request = LlmRequest(
+      model=None,  # No model in request
+      config=types.GenerateContentConfig(response_schema=_StructuredOutput),
+  )
+
+  # Pass OpenAI model explicitly - should use json_schema format
+  _, _, response_format, _ = await _get_completion_inputs(
+      llm_request, model="gpt-4o-mini"
+  )
+
+  assert response_format["type"] == "json_schema"
+  assert "json_schema" in response_format
+  assert response_format["json_schema"]["name"] == "_StructuredOutput"
+  assert response_format["json_schema"]["strict"] is True
+  assert (
+      response_format["json_schema"]["schema"]["additionalProperties"] is False
+  )
+
+
+async def test_get_completion_inputs_uses_passed_model_for_gemini_format():
+  """Test that _get_completion_inputs uses passed model for Gemini response format.
+
+  This verifies that when self.model is a Gemini model and passed explicitly,
+  the response format uses the Gemini-specific format.
+  """
+  llm_request = LlmRequest(
+      model=None,  # No model in request
+      config=types.GenerateContentConfig(response_schema=_StructuredOutput),
+  )
+
+  # Pass Gemini model explicitly - should use response_schema format
+  _, _, response_format, _ = await _get_completion_inputs(
+      llm_request, model="gemini/gemini-2.0-flash"
+  )
+
+  assert response_format["type"] == "json_object"
+  assert "response_schema" in response_format
 
 
 def test_schema_to_dict_filters_none_enum_values():
@@ -1293,17 +1476,155 @@ async def test_generate_content_async_with_usage_metadata(
   mock_acompletion.assert_called_once()
 
 
-def test_content_to_message_param_user_message():
+@pytest.mark.asyncio
+async def test_generate_content_async_ollama_chat_flattens_content(
+    mock_acompletion, mock_completion
+):
+  llm_client = MockLLMClient(mock_acompletion, mock_completion)
+  lite_llm_instance = LiteLlm(
+      model="ollama_chat/qwen2.5:7b", llm_client=llm_client
+  )
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role="user",
+              parts=[
+                  types.Part.from_text(text="Describe this image."),
+                  types.Part.from_bytes(
+                      data=b"test_image", mime_type="image/png"
+                  ),
+              ],
+          )
+      ]
+  )
+
+  async for _ in lite_llm_instance.generate_content_async(llm_request):
+    pass
+
+  mock_acompletion.assert_called_once_with(
+      model="ollama_chat/qwen2.5:7b",
+      messages=ANY,
+      tools=ANY,
+      response_format=ANY,
+  )
+  _, kwargs = mock_acompletion.call_args
+  message_content = kwargs["messages"][0]["content"]
+  assert isinstance(message_content, str)
+  assert "Describe this image." in message_content
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_custom_provider_flattens_content(
+    mock_acompletion, mock_completion
+):
+  llm_client = MockLLMClient(mock_acompletion, mock_completion)
+  lite_llm_instance = LiteLlm(
+      model="qwen2.5:7b",
+      llm_client=llm_client,
+      custom_llm_provider="ollama_chat",
+  )
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role="user",
+              parts=[
+                  types.Part.from_text(text="Describe this image."),
+                  types.Part.from_bytes(
+                      data=b"test_image", mime_type="image/png"
+                  ),
+              ],
+          )
+      ]
+  )
+
+  async for _ in lite_llm_instance.generate_content_async(llm_request):
+    pass
+
+  mock_acompletion.assert_called_once()
+  _, kwargs = mock_acompletion.call_args
+  assert kwargs["custom_llm_provider"] == "ollama_chat"
+  assert kwargs["model"] == "qwen2.5:7b"
+  message_content = kwargs["messages"][0]["content"]
+  assert isinstance(message_content, str)
+  assert "Describe this image." in message_content
+
+
+def test_flatten_ollama_content_accepts_tuple_blocks():
+  from google.adk.models.lite_llm import _flatten_ollama_content
+
+  content = (
+      {"type": "text", "text": "first"},
+      {"type": "text", "text": "second"},
+  )
+  flattened = _flatten_ollama_content(content)
+  assert flattened == "first\nsecond"
+
+
+@pytest.mark.parametrize(
+    "content, expected",
+    [
+        (None, None),
+        ("hello", "hello"),
+        (
+            [
+                {"type": "text", "text": "first"},
+                {"type": "text", "text": "second"},
+            ],
+            "first\nsecond",
+        ),
+        (
+            [
+                {"type": "text", "text": "Describe this image."},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "http://example.com"},
+                },
+            ],
+            "Describe this image.",
+        ),
+    ],
+)
+def test_flatten_ollama_content_returns_str_or_none(content, expected):
+  from google.adk.models.lite_llm import _flatten_ollama_content
+
+  flattened = _flatten_ollama_content(content)
+  assert flattened == expected
+  assert flattened is None or isinstance(flattened, str)
+
+
+def test_flatten_ollama_content_serializes_non_text_blocks_to_json():
+  from google.adk.models.lite_llm import _flatten_ollama_content
+
+  blocks = [
+      {"type": "image_url", "image_url": {"url": "http://example.com"}},
+  ]
+  flattened = _flatten_ollama_content(blocks)
+  assert isinstance(flattened, str)
+  assert json.loads(flattened) == blocks
+
+
+def test_flatten_ollama_content_serializes_dict_to_json():
+  from google.adk.models.lite_llm import _flatten_ollama_content
+
+  content = {"type": "image_url", "image_url": {"url": "http://example.com"}}
+  flattened = _flatten_ollama_content(content)
+  assert isinstance(flattened, str)
+  assert json.loads(flattened) == content
+
+
+@pytest.mark.asyncio
+async def test_content_to_message_param_user_message():
   content = types.Content(
       role="user", parts=[types.Part.from_text(text="Test prompt")]
   )
-  message = _content_to_message_param(content)
+  message = await _content_to_message_param(content)
   assert message["role"] == "user"
   assert message["content"] == "Test prompt"
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize("file_uri,mime_type", FILE_URI_TEST_CASES)
-def test_content_to_message_param_user_message_with_file_uri(
+async def test_content_to_message_param_user_message_with_file_uri(
     file_uri, mime_type
 ):
   file_part = types.Part.from_uri(file_uri=file_uri, mime_type=mime_type)
@@ -1315,18 +1636,19 @@ def test_content_to_message_param_user_message_with_file_uri(
       ],
   )
 
-  message = _content_to_message_param(content)
-  assert message["role"] == "user"
-  assert isinstance(message["content"], list)
-  assert message["content"][0]["type"] == "text"
-  assert message["content"][0]["text"] == "Summarize this file."
-  assert message["content"][1]["type"] == "file"
-  assert message["content"][1]["file"]["file_id"] == file_uri
-  assert "format" not in message["content"][1]["file"]
+  message = await _content_to_message_param(content)
+  assert message == {
+      "role": "user",
+      "content": [
+          {"type": "text", "text": "Summarize this file."},
+          {"type": "file", "file": {"file_id": file_uri, "format": mime_type}},
+      ],
+  }
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize("file_uri,mime_type", FILE_URI_TEST_CASES)
-def test_content_to_message_param_user_message_file_uri_only(
+async def test_content_to_message_param_user_message_file_uri_only(
     file_uri, mime_type
 ):
   file_part = types.Part.from_uri(file_uri=file_uri, mime_type=mime_type)
@@ -1337,15 +1659,93 @@ def test_content_to_message_param_user_message_file_uri_only(
       ],
   )
 
-  message = _content_to_message_param(content)
-  assert message["role"] == "user"
-  assert isinstance(message["content"], list)
-  assert message["content"][0]["type"] == "file"
-  assert message["content"][0]["file"]["file_id"] == file_uri
-  assert "format" not in message["content"][0]["file"]
+  message = await _content_to_message_param(content)
+  assert message == {
+      "role": "user",
+      "content": [
+          {"type": "file", "file": {"file_id": file_uri, "format": mime_type}},
+      ],
+  }
 
 
-def test_content_to_message_param_multi_part_function_response():
+@pytest.mark.asyncio
+async def test_content_to_message_param_user_message_file_uri_without_mime_type():
+  """Test handling of file_data without mime_type (GcsArtifactService scenario).
+
+  When using GcsArtifactService, artifacts may have file_uri (gs://...) but
+  without mime_type set. LiteLLM's Vertex AI backend requires the format
+  field to be present, so we infer MIME type from the URI extension or use
+  a default fallback to ensure compatibility.
+
+  See: https://github.com/google/adk-python/issues/3787
+  """
+  file_part = types.Part(
+      file_data=types.FileData(
+          file_uri="gs://agent-artifact-bucket/app/user/session/artifact/0"
+      )
+  )
+  content = types.Content(
+      role="user",
+      parts=[
+          types.Part.from_text(text="Analyze this file."),
+          file_part,
+      ],
+  )
+
+  message = await _content_to_message_param(content)
+  assert message == {
+      "role": "user",
+      "content": [
+          {"type": "text", "text": "Analyze this file."},
+          {
+              "type": "file",
+              "file": {
+                  "file_id": (
+                      "gs://agent-artifact-bucket/app/user/session/artifact/0"
+                  ),
+                  "format": "application/octet-stream",
+              },
+          },
+      ],
+  }
+
+
+@pytest.mark.asyncio
+async def test_content_to_message_param_user_message_file_uri_infer_mime_type():
+  """Test MIME type inference from file_uri extension.
+
+  When file_data has a file_uri with a recognizable extension but no explicit
+  mime_type, the MIME type should be inferred from the extension.
+
+  See: https://github.com/google/adk-python/issues/3787
+  """
+  file_part = types.Part(
+      file_data=types.FileData(
+          file_uri="gs://bucket/path/to/document.pdf",
+      )
+  )
+  content = types.Content(
+      role="user",
+      parts=[file_part],
+  )
+
+  message = await _content_to_message_param(content)
+  assert message == {
+      "role": "user",
+      "content": [
+          {
+              "type": "file",
+              "file": {
+                  "file_id": "gs://bucket/path/to/document.pdf",
+                  "format": "application/pdf",
+              },
+          },
+      ],
+  }
+
+
+@pytest.mark.asyncio
+async def test_content_to_message_param_multi_part_function_response():
   part1 = types.Part.from_function_response(
       name="function_one",
       response={"result": "result_one"},
@@ -1362,7 +1762,7 @@ def test_content_to_message_param_multi_part_function_response():
       role="tool",
       parts=[part1, part2],
   )
-  messages = _content_to_message_param(content)
+  messages = await _content_to_message_param(content)
   assert isinstance(messages, list)
   assert len(messages) == 2
 
@@ -1375,16 +1775,55 @@ def test_content_to_message_param_multi_part_function_response():
   assert messages[1]["content"] == '{"value": 123}'
 
 
-def test_content_to_message_param_assistant_message():
+@pytest.mark.asyncio
+async def test_content_to_message_param_function_response_preserves_string():
+  """Tests that string responses are used directly without double-serialization.
+
+  The google.genai FunctionResponse.response field is typed as dict, but
+  _content_to_message_param defensively handles string responses to avoid
+  double-serialization. This test verifies that behavior by mocking a
+  function_response with a string response attribute.
+  """
+  response_payload = '{"type": "files", "count": 2}'
+
+  # Create a Part with a dict response, then mock the response to be a string
+  # to simulate edge cases where response might be set directly as a string
+  part = types.Part.from_function_response(
+      name="list_files",
+      response={"placeholder": "will be mocked"},
+  )
+
+  # Mock the response attribute to return a string
+  # Using Mock without spec_set to allow setting response to a string,
+  # which simulates the edge case we're testing
+  mock_function_response = Mock(spec=types.FunctionResponse)
+  mock_function_response.response = response_payload
+  mock_function_response.id = "tool_call_1"
+  part.function_response = mock_function_response
+
+  content = types.Content(
+      role="tool",
+      parts=[part],
+  )
+  message = await _content_to_message_param(content)
+
+  assert message["role"] == "tool"
+  assert message["tool_call_id"] == "tool_call_1"
+  assert message["content"] == response_payload
+
+
+@pytest.mark.asyncio
+async def test_content_to_message_param_assistant_message():
   content = types.Content(
       role="assistant", parts=[types.Part.from_text(text="Test response")]
   )
-  message = _content_to_message_param(content)
+  message = await _content_to_message_param(content)
   assert message["role"] == "assistant"
   assert message["content"] == "Test response"
 
 
-def test_content_to_message_param_function_call():
+@pytest.mark.asyncio
+async def test_content_to_message_param_function_call():
   content = types.Content(
       role="assistant",
       parts=[
@@ -1395,7 +1834,7 @@ def test_content_to_message_param_function_call():
       ],
   )
   content.parts[1].function_call.id = "test_tool_call_id"
-  message = _content_to_message_param(content)
+  message = await _content_to_message_param(content)
   assert message["role"] == "assistant"
   assert message["content"] == "test response"
 
@@ -1406,7 +1845,8 @@ def test_content_to_message_param_function_call():
   assert tool_call["function"]["arguments"] == '{"test_arg": "test_value"}'
 
 
-def test_content_to_message_param_multipart_content():
+@pytest.mark.asyncio
+async def test_content_to_message_param_multipart_content():
   """Test handling of multipart content where final_content is a list with text objects."""
   content = types.Content(
       role="assistant",
@@ -1415,7 +1855,7 @@ def test_content_to_message_param_multipart_content():
           types.Part.from_bytes(data=b"test_image_data", mime_type="image/png"),
       ],
   )
-  message = _content_to_message_param(content)
+  message = await _content_to_message_param(content)
   assert message["role"] == "assistant"
   # When content is a list and the first element is a text object with type "text",
   # it should extract the text (for providers like ollama_chat that don't handle lists well)
@@ -1424,23 +1864,26 @@ def test_content_to_message_param_multipart_content():
   assert message["tool_calls"] is None
 
 
-def test_content_to_message_param_single_text_object_in_list():
+@pytest.mark.asyncio
+async def test_content_to_message_param_single_text_object_in_list(mocker):
   """Test extraction of text from single text object in list (for ollama_chat compatibility)."""
-  from unittest.mock import patch
+  from google.adk.models import lite_llm
 
   # Mock _get_content to return a list with single text object
-  with patch("google.adk.models.lite_llm._get_content") as mock_get_content:
-    mock_get_content.return_value = [{"type": "text", "text": "single text"}]
+  async def mock_get_content(*args, **kwargs):
+    return [{"type": "text", "text": "single text"}]
 
-    content = types.Content(
-        role="assistant",
-        parts=[types.Part.from_text(text="single text")],
-    )
-    message = _content_to_message_param(content)
-    assert message["role"] == "assistant"
-    # Should extract the text from the single text object
-    assert message["content"] == "single text"
-    assert message["tool_calls"] is None
+  mocker.patch.object(lite_llm, "_get_content", side_effect=mock_get_content)
+
+  content = types.Content(
+      role="assistant",
+      parts=[types.Part.from_text(text="single text")],
+  )
+  message = await _content_to_message_param(content)
+  assert message["role"] == "assistant"
+  # Should extract the text from the single text object
+  assert message["content"] == "single text"
+  assert message["tool_calls"] is None
 
 
 def test_message_to_generate_content_response_text():
@@ -1605,49 +2048,54 @@ def test_split_message_content_prefers_existing_structured_calls():
   assert tool_calls == [tool_call]
 
 
-def test_get_content_text():
+@pytest.mark.asyncio
+async def test_get_content_text():
   parts = [types.Part.from_text(text="Test text")]
-  content = _get_content(parts)
+  content = await _get_content(parts)
   assert content == "Test text"
 
 
-def test_get_content_text_inline_data_single_part():
+@pytest.mark.asyncio
+async def test_get_content_text_inline_data_single_part():
   parts = [
       types.Part.from_bytes(
           data="Inline text".encode("utf-8"), mime_type="text/plain"
       )
   ]
-  content = _get_content(parts)
+  content = await _get_content(parts)
   assert content == "Inline text"
 
 
-def test_get_content_text_inline_data_multiple_parts():
+@pytest.mark.asyncio
+async def test_get_content_text_inline_data_multiple_parts():
   parts = [
       types.Part.from_bytes(
           data="First part".encode("utf-8"), mime_type="text/plain"
       ),
       types.Part.from_text(text="Second part"),
   ]
-  content = _get_content(parts)
+  content = await _get_content(parts)
   assert content[0]["type"] == "text"
   assert content[0]["text"] == "First part"
   assert content[1]["type"] == "text"
   assert content[1]["text"] == "Second part"
 
 
-def test_get_content_text_inline_data_fallback_decoding():
+@pytest.mark.asyncio
+async def test_get_content_text_inline_data_fallback_decoding():
   parts = [
       types.Part.from_bytes(data=b"\xff", mime_type="text/plain"),
   ]
-  content = _get_content(parts)
+  content = await _get_content(parts)
   assert content == "ÿ"
 
 
-def test_get_content_image():
+@pytest.mark.asyncio
+async def test_get_content_image():
   parts = [
       types.Part.from_bytes(data=b"test_image_data", mime_type="image/png")
   ]
-  content = _get_content(parts)
+  content = await _get_content(parts)
   assert content[0]["type"] == "image_url"
   assert (
       content[0]["image_url"]["url"]
@@ -1656,11 +2104,12 @@ def test_get_content_image():
   assert "format" not in content[0]["image_url"]
 
 
-def test_get_content_video():
+@pytest.mark.asyncio
+async def test_get_content_video():
   parts = [
       types.Part.from_bytes(data=b"test_video_data", mime_type="video/mp4")
   ]
-  content = _get_content(parts)
+  content = await _get_content(parts)
   assert content[0]["type"] == "video_url"
   assert (
       content[0]["video_url"]["url"]
@@ -1669,31 +2118,137 @@ def test_get_content_video():
   assert "format" not in content[0]["video_url"]
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "file_data,mime_type,expected_base64", FILE_BYTES_TEST_CASES
 )
-def test_get_content_file_bytes(file_data, mime_type, expected_base64):
+async def test_get_content_file_bytes(file_data, mime_type, expected_base64):
   parts = [types.Part.from_bytes(data=file_data, mime_type=mime_type)]
-  content = _get_content(parts)
+  content = await _get_content(parts)
   assert content[0]["type"] == "file"
   assert content[0]["file"]["file_data"] == expected_base64
   assert "format" not in content[0]["file"]
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize("file_uri,mime_type", FILE_URI_TEST_CASES)
-def test_get_content_file_uri(file_uri, mime_type):
+async def test_get_content_file_uri(file_uri, mime_type):
   parts = [types.Part.from_uri(file_uri=file_uri, mime_type=mime_type)]
-  content = _get_content(parts)
-  assert content[0]["type"] == "file"
-  assert content[0]["file"]["file_id"] == file_uri
-  assert "format" not in content[0]["file"]
+  content = await _get_content(parts)
+  assert content[0] == {
+      "type": "file",
+      "file": {"file_id": file_uri, "format": mime_type},
+  }
 
 
-def test_get_content_audio():
+@pytest.mark.asyncio
+async def test_get_content_file_uri_infer_mime_type():
+  """Test MIME type inference from file_uri extension.
+
+  When file_data has a file_uri with a recognizable extension but no explicit
+  mime_type, the MIME type should be inferred from the extension.
+
+  See: https://github.com/google/adk-python/issues/3787
+  """
+  # Use Part constructor directly to test MIME type inference in _get_content
+  # (types.Part.from_uri does its own inference, so we bypass it)
+  parts = [
+      types.Part(
+          file_data=types.FileData(file_uri="gs://bucket/path/to/document.pdf")
+      )
+  ]
+  content = await _get_content(parts)
+  assert content[0] == {
+      "type": "file",
+      "file": {
+          "file_id": "gs://bucket/path/to/document.pdf",
+          "format": "application/pdf",
+      },
+  }
+
+
+@pytest.mark.asyncio
+async def test_get_content_file_uri_versioned_infer_mime_type():
+  """Test MIME type inference from versioned artifact URIs."""
+  parts = [
+      types.Part(
+          file_data=types.FileData(
+              file_uri="gs://bucket/path/to/document.pdf/0"
+          )
+      )
+  ]
+  content = await _get_content(parts)
+  assert content[0]["file"]["format"] == "application/pdf"
+
+
+@pytest.mark.asyncio
+async def test_get_content_file_uri_infers_from_display_name():
+  """Test MIME type inference from display_name when URI lacks extension."""
+  parts = [
+      types.Part(
+          file_data=types.FileData(
+              file_uri="gs://bucket/artifact/0",
+              display_name="document.pdf",
+          )
+      )
+  ]
+  content = await _get_content(parts)
+  assert content[0]["file"]["format"] == "application/pdf"
+
+
+@pytest.mark.asyncio
+async def test_get_content_file_uri_default_mime_type():
+  """Test that file_uri without extension uses default MIME type.
+
+  When file_data has a file_uri without a recognizable extension and no explicit
+  mime_type, a default MIME type should be used to ensure compatibility with
+  LiteLLM backends.
+
+  See: https://github.com/google/adk-python/issues/3787
+  """
+  # Use Part constructor directly to create file_data without mime_type
+  # (types.Part.from_uri requires a valid mime_type when it can't infer)
+  parts = [
+      types.Part(file_data=types.FileData(file_uri="gs://bucket/artifact/0"))
+  ]
+  content = await _get_content(parts)
+  assert content[0] == {
+      "type": "file",
+      "file": {
+          "file_id": "gs://bucket/artifact/0",
+          "format": "application/octet-stream",
+      },
+  }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "uri,expected_mime_type",
+    [
+        ("gs://bucket/file.pdf", "application/pdf"),
+        ("gs://bucket/path/to/document.json", "application/json"),
+        ("gs://bucket/image.png", "image/png"),
+        ("gs://bucket/image.jpg", "image/jpeg"),
+        ("gs://bucket/audio.mp3", "audio/mpeg"),
+        ("gs://bucket/video.mp4", "video/mp4"),
+    ],
+)
+async def test_get_content_file_uri_mime_type_inference(
+    uri, expected_mime_type
+):
+  """Test MIME type inference from various file extensions."""
+  # Use Part constructor directly to test MIME type inference in _get_content
+  parts = [types.Part(file_data=types.FileData(file_uri=uri))]
+  content = await _get_content(parts)
+  assert content[0]["file"]["format"] == expected_mime_type
+
+
+@pytest.mark.asyncio
+async def test_get_content_audio():
   parts = [
       types.Part.from_bytes(data=b"test_audio_data", mime_type="audio/mpeg")
   ]
-  content = _get_content(parts)
+  content = await _get_content(parts)
   assert content[0]["type"] == "audio_url"
   assert (
       content[0]["audio_url"]["url"]
@@ -2345,7 +2900,7 @@ async def test_generate_content_async_stream_with_empty_chunk(
 
 
 @pytest.mark.asyncio
-def test_get_completion_inputs_generation_params():
+async def test_get_completion_inputs_generation_params():
   # Test that generation_params are extracted and mapped correctly
   req = LlmRequest(
       contents=[
@@ -2361,9 +2916,10 @@ def test_get_completion_inputs_generation_params():
           frequency_penalty=0.2,
       ),
   )
-  from google.adk.models.lite_llm import _get_completion_inputs
 
-  _, _, _, generation_params = _get_completion_inputs(req)
+  _, _, _, generation_params = await _get_completion_inputs(
+      req, model="gpt-4o-mini"
+  )
   assert generation_params["temperature"] == 0.33
   assert generation_params["max_completion_tokens"] == 123
   assert generation_params["top_p"] == 0.88
@@ -2377,7 +2933,7 @@ def test_get_completion_inputs_generation_params():
 
 
 @pytest.mark.asyncio
-def test_get_completion_inputs_empty_generation_params():
+async def test_get_completion_inputs_empty_generation_params():
   # Test that generation_params is None when no generation parameters are set
   req = LlmRequest(
       contents=[
@@ -2385,14 +2941,15 @@ def test_get_completion_inputs_empty_generation_params():
       ],
       config=types.GenerateContentConfig(),
   )
-  from google.adk.models.lite_llm import _get_completion_inputs
 
-  _, _, _, generation_params = _get_completion_inputs(req)
+  _, _, _, generation_params = await _get_completion_inputs(
+      req, model="gpt-4o-mini"
+  )
   assert generation_params is None
 
 
 @pytest.mark.asyncio
-def test_get_completion_inputs_minimal_config():
+async def test_get_completion_inputs_minimal_config():
   # Test that generation_params is None when config has no generation parameters
   req = LlmRequest(
       contents=[
@@ -2402,14 +2959,15 @@ def test_get_completion_inputs_minimal_config():
           system_instruction="test instruction"  # Non-generation parameter
       ),
   )
-  from google.adk.models.lite_llm import _get_completion_inputs
 
-  _, _, _, generation_params = _get_completion_inputs(req)
+  _, _, _, generation_params = await _get_completion_inputs(
+      req, model="gpt-4o-mini"
+  )
   assert generation_params is None
 
 
 @pytest.mark.asyncio
-def test_get_completion_inputs_partial_generation_params():
+async def test_get_completion_inputs_partial_generation_params():
   # Test that generation_params is correctly built even with only some parameters
   req = LlmRequest(
       contents=[
@@ -2420,9 +2978,10 @@ def test_get_completion_inputs_partial_generation_params():
           # Only temperature is set, others are None/default
       ),
   )
-  from google.adk.models.lite_llm import _get_completion_inputs
 
-  _, _, _, generation_params = _get_completion_inputs(req)
+  _, _, _, generation_params = await _get_completion_inputs(
+      req, model="gpt-4o-mini"
+  )
   assert generation_params is not None
   assert generation_params["temperature"] == 0.7
   # Should only contain the temperature parameter
@@ -2643,3 +3202,260 @@ async def test_finish_reason_unknown_maps_to_other(
     assert response.finish_reason == types.FinishReason.OTHER
 
   mock_acompletion.assert_called_once()
+
+
+# Tests for provider detection and file_id support
+
+
+@pytest.mark.parametrize(
+    "model_string, expected_provider",
+    [
+        # Standard provider/model format
+        ("openai/gpt-4o", "openai"),
+        ("azure/gpt-4", "azure"),
+        ("groq/llama3-70b", "groq"),
+        ("anthropic/claude-3", "anthropic"),
+        ("vertex_ai/gemini-pro", "vertex_ai"),
+        # Fallback heuristics
+        ("gpt-4o", "openai"),
+        ("o1-preview", "openai"),
+        ("azure-gpt-4", "azure"),
+        # Unknown models
+        ("custom-model", ""),
+        ("", ""),
+        (None, ""),
+    ],
+)
+def test_get_provider_from_model(model_string, expected_provider):
+  """Test provider extraction from model strings."""
+  assert _get_provider_from_model(model_string) == expected_provider
+
+
+@pytest.mark.parametrize(
+    "provider, expected_in_list",
+    [
+        ("openai", True),
+        ("azure", True),
+        ("anthropic", False),
+        ("vertex_ai", False),
+    ],
+)
+def test_file_id_required_providers(provider, expected_in_list):
+  """Test that the correct providers require file_id."""
+  assert (provider in _FILE_ID_REQUIRED_PROVIDERS) == expected_in_list
+
+
+@pytest.mark.asyncio
+async def test_get_content_pdf_openai_uses_file_id(mocker):
+  """Test that PDF files use file_id for OpenAI provider."""
+  mock_file_response = mocker.create_autospec(litellm.FileObject)
+  mock_file_response.id = "file-abc123"
+  mock_acreate_file = AsyncMock(return_value=mock_file_response)
+  mocker.patch.object(litellm, "acreate_file", new=mock_acreate_file)
+
+  parts = [
+      types.Part.from_bytes(data=b"test_pdf_data", mime_type="application/pdf")
+  ]
+  content = await _get_content(parts, provider="openai")
+
+  assert content[0]["type"] == "file"
+  assert content[0]["file"]["file_id"] == "file-abc123"
+  assert "file_data" not in content[0]["file"]
+
+  mock_acreate_file.assert_called_once_with(
+      file=b"test_pdf_data",
+      purpose="assistants",
+      custom_llm_provider="openai",
+  )
+
+
+@pytest.mark.asyncio
+async def test_get_content_pdf_non_openai_uses_file_data():
+  """Test that PDF files use file_data for non-OpenAI providers."""
+  parts = [
+      types.Part.from_bytes(data=b"test_pdf_data", mime_type="application/pdf")
+  ]
+  content = await _get_content(parts, provider="anthropic")
+
+  assert content[0]["type"] == "file"
+  assert "file_data" in content[0]["file"]
+  assert content[0]["file"]["file_data"].startswith(
+      "data:application/pdf;base64,"
+  )
+  assert "file_id" not in content[0]["file"]
+
+
+@pytest.mark.asyncio
+async def test_get_content_pdf_azure_uses_file_id(mocker):
+  """Test that PDF files use file_id for Azure provider."""
+  mock_file_response = mocker.create_autospec(litellm.FileObject)
+  mock_file_response.id = "file-xyz789"
+  mock_acreate_file = AsyncMock(return_value=mock_file_response)
+  mocker.patch.object(litellm, "acreate_file", new=mock_acreate_file)
+
+  parts = [
+      types.Part.from_bytes(data=b"test_pdf_data", mime_type="application/pdf")
+  ]
+  content = await _get_content(parts, provider="azure")
+
+  assert content[0]["type"] == "file"
+  assert content[0]["file"]["file_id"] == "file-xyz789"
+
+  mock_acreate_file.assert_called_once_with(
+      file=b"test_pdf_data",
+      purpose="assistants",
+      custom_llm_provider="azure",
+  )
+
+
+@pytest.mark.asyncio
+async def test_get_completion_inputs_openai_file_upload(mocker):
+  """Test that _get_completion_inputs uploads files for OpenAI models."""
+  mock_file_response = mocker.create_autospec(litellm.FileObject)
+  mock_file_response.id = "file-uploaded123"
+  mock_acreate_file = AsyncMock(return_value=mock_file_response)
+  mocker.patch.object(litellm, "acreate_file", new=mock_acreate_file)
+
+  pdf_part = types.Part.from_bytes(
+      data=b"test_pdf_content", mime_type="application/pdf"
+  )
+  llm_request = LlmRequest(
+      model="openai/gpt-4o",
+      contents=[
+          types.Content(
+              role="user",
+              parts=[
+                  types.Part.from_text(text="Analyze this PDF"),
+                  pdf_part,
+              ],
+          )
+      ],
+      config=types.GenerateContentConfig(tools=[]),
+  )
+
+  messages, tools, response_format, generation_params = (
+      await _get_completion_inputs(llm_request, model="openai/gpt-4o")
+  )
+
+  assert len(messages) == 1
+  assert messages[0]["role"] == "user"
+  content = messages[0]["content"]
+  assert len(content) == 2
+  assert content[0]["type"] == "text"
+  assert content[0]["text"] == "Analyze this PDF"
+  assert content[1]["type"] == "file"
+  assert content[1]["file"]["file_id"] == "file-uploaded123"
+
+  mock_acreate_file.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_get_completion_inputs_non_openai_no_file_upload(mocker):
+  """Test that _get_completion_inputs does not upload files for non-OpenAI models."""
+  mock_acreate_file = AsyncMock()
+  mocker.patch.object(litellm, "acreate_file", new=mock_acreate_file)
+
+  pdf_part = types.Part.from_bytes(
+      data=b"test_pdf_content", mime_type="application/pdf"
+  )
+  llm_request = LlmRequest(
+      model="anthropic/claude-3-opus",
+      contents=[
+          types.Content(
+              role="user",
+              parts=[
+                  types.Part.from_text(text="Analyze this PDF"),
+                  pdf_part,
+              ],
+          )
+      ],
+      config=types.GenerateContentConfig(tools=[]),
+  )
+
+  messages, tools, response_format, generation_params = (
+      await _get_completion_inputs(llm_request, model="anthropic/claude-3-opus")
+  )
+
+  assert len(messages) == 1
+  content = messages[0]["content"]
+  assert content[1]["type"] == "file"
+  assert "file_data" in content[1]["file"]
+  assert "file_id" not in content[1]["file"]
+
+  mock_acreate_file.assert_not_called()
+
+
+class TestRedirectLitellmLoggersToStdout(unittest.TestCase):
+  """Tests for _redirect_litellm_loggers_to_stdout function."""
+
+  def test_redirects_stderr_handler_to_stdout(self):
+    """Test that handlers pointing to stderr are redirected to stdout."""
+    test_logger = logging.getLogger("LiteLLM")
+    # Create a handler pointing to stderr
+    handler = logging.StreamHandler(sys.stderr)
+    test_logger.addHandler(handler)
+
+    try:
+      self.assertIs(handler.stream, sys.stderr)
+
+      _redirect_litellm_loggers_to_stdout()
+
+      self.assertIs(handler.stream, sys.stdout)
+    finally:
+      # Clean up
+      test_logger.removeHandler(handler)
+
+  def test_preserves_stdout_handler(self):
+    """Test that handlers already pointing to stdout are not modified."""
+    test_logger = logging.getLogger("LiteLLM Proxy")
+    # Create a handler already pointing to stdout
+    handler = logging.StreamHandler(sys.stdout)
+    test_logger.addHandler(handler)
+
+    try:
+      _redirect_litellm_loggers_to_stdout()
+
+      self.assertIs(handler.stream, sys.stdout)
+    finally:
+      # Clean up
+      test_logger.removeHandler(handler)
+
+  def test_does_not_affect_non_stream_handlers(self):
+    """Test that non-StreamHandler handlers are not affected."""
+    test_logger = logging.getLogger("LiteLLM Router")
+    # Create a FileHandler (not a StreamHandler)
+    with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+      temp_file_name = temp_file.name
+    with contextlib.closing(
+        logging.FileHandler(temp_file_name)
+    ) as file_handler:
+      test_logger.addHandler(file_handler)
+
+      try:
+        _redirect_litellm_loggers_to_stdout()
+        # FileHandler should not be modified (it doesn't point to stderr or stdout)
+        self.assertEqual(file_handler.baseFilename, temp_file_name)
+      finally:
+        # Clean up
+        test_logger.removeHandler(file_handler)
+    os.unlink(temp_file_name)
+
+
+@pytest.mark.parametrize(
+    "logger_name",
+    ["LiteLLM", "LiteLLM Proxy", "LiteLLM Router"],
+    ids=["LiteLLM", "LiteLLM Proxy", "LiteLLM Router"],
+)
+def test_handles_litellm_logger_names(logger_name):
+  """Test that LiteLLM logger names are processed."""
+  test_logger = logging.getLogger(logger_name)
+  handler = logging.StreamHandler(sys.stderr)
+  test_logger.addHandler(handler)
+
+  try:
+    _redirect_litellm_loggers_to_stdout()
+
+    assert handler.stream is sys.stdout
+  finally:
+    # Clean up
+    test_logger.removeHandler(handler)

@@ -23,6 +23,7 @@ from pydantic import alias_generators
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
+from pydantic.json_schema import SkipJsonSchema
 from typing_extensions import TypeAlias
 
 from .common import EvalBaseModel
@@ -56,6 +57,8 @@ class PrebuiltMetrics(Enum):
 
   RUBRIC_BASED_TOOL_USE_QUALITY_V1 = "rubric_based_tool_use_quality_v1"
 
+  PER_TURN_USER_SIMULATOR_QUALITY_V1 = "per_turn_user_simulator_quality_v1"
+
 
 MetricName: TypeAlias = Union[str, PrebuiltMetrics]
 Threshold: TypeAlias = float
@@ -71,8 +74,10 @@ class JudgeModelOptions(EvalBaseModel):
       ),
   )
 
-  judge_model_config: Optional[genai_types.GenerateContentConfig] = Field(
-      default=genai_types.GenerateContentConfig,
+  judge_model_config: SkipJsonSchema[
+      Optional[genai_types.GenerateContentConfig]
+  ] = Field(
+      default=None,
       description="The configuration for the judge model.",
   )
 
@@ -216,6 +221,19 @@ class ToolTrajectoryCriterion(BaseCriterion):
       description=(
           "The type of Match between actual and expected tool call"
           " trajectories."
+      ),
+  )
+
+
+class LlmBackedUserSimulatorCriterion(LlmAsAJudgeCriterion):
+  """Criterion for LLM-backed User Simulator Evaluators."""
+
+  stop_signal: str = Field(
+      default="</finished>",
+      description=(
+          "Stop signal to validate the successful completion of a conversation."
+          " For optimal performance, this should match the one in the User"
+          " Simulator."
       ),
   )
 

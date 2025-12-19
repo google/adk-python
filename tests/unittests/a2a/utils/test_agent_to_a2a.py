@@ -12,42 +12,25 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import sys
 from unittest.mock import AsyncMock
 from unittest.mock import Mock
 from unittest.mock import patch
 
+from a2a.server.apps import A2AStarletteApplication
+from a2a.server.request_handlers import DefaultRequestHandler
+from a2a.server.tasks import InMemoryTaskStore
+from a2a.types import AgentCard
+from google.adk.a2a.executor.a2a_agent_executor import A2aAgentExecutor
+from google.adk.a2a.utils.agent_card_builder import AgentCardBuilder
+from google.adk.a2a.utils.agent_to_a2a import to_a2a
+from google.adk.agents.base_agent import BaseAgent
+from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
+from google.adk.auth.credential_service.in_memory_credential_service import InMemoryCredentialService
+from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
+from google.adk.runners import Runner
+from google.adk.sessions.in_memory_session_service import InMemorySessionService
 import pytest
-
-# Skip all tests in this module if Python version is less than 3.10
-pytestmark = pytest.mark.skipif(
-    sys.version_info < (3, 10), reason="A2A requires Python 3.10+"
-)
-
-# Import dependencies with version checking
-try:
-  from a2a.server.apps import A2AStarletteApplication
-  from a2a.server.request_handlers import DefaultRequestHandler
-  from a2a.server.tasks import InMemoryTaskStore
-  from a2a.types import AgentCard
-  from google.adk.a2a.executor.a2a_agent_executor import A2aAgentExecutor
-  from google.adk.a2a.utils.agent_card_builder import AgentCardBuilder
-  from google.adk.a2a.utils.agent_to_a2a import to_a2a
-  from google.adk.agents.base_agent import BaseAgent
-  from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
-  from google.adk.auth.credential_service.in_memory_credential_service import InMemoryCredentialService
-  from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
-  from google.adk.runners import Runner
-  from google.adk.sessions.in_memory_session_service import InMemorySessionService
-  from starlette.applications import Starlette
-except ImportError as e:
-  if sys.version_info < (3, 10):
-    # Imports are not needed since tests will be skipped due to pytestmark.
-    # The imported names are only used within test methods, not at module level,
-    # so no NameError occurs during module compilation.
-    pass
-  else:
-    raise e
+from starlette.applications import Starlette
 
 
 class TestToA2A:
