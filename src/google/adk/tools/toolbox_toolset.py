@@ -73,10 +73,6 @@ class ToolboxToolset(BaseToolset):
     additional_headers: (Optional) Static headers dictionary.
     **kwargs: Additional arguments passed to the underlying toolbox_adk.ToolboxToolset.
     """
-    if not toolset_name and not tool_names:
-      raise ValueError(
-          "Either 'toolset_name' or 'tool_names' must be provided."
-      )
 
     try:
       from toolbox_adk import ToolboxToolset as RealToolboxToolset  # pylint: disable=import-outside-toplevel
