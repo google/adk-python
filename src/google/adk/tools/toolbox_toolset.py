@@ -63,7 +63,9 @@ class ToolboxToolset(BaseToolset):
       additional_headers: Optional[Mapping[str, str]] = None,
       **kwargs,
   ):
-    """Args:
+    """Initializes the ToolboxToolset.
+
+    Args:
       server_url: The URL of the toolbox server.
       toolset_name: The name of the toolbox toolset to load.
       tool_names: The names of the tools to load.
