@@ -651,7 +651,7 @@ class Runner:
     # Don't append audio response from model in live mode to session.
     # The data is appended to artifacts with a reference in file_data in the
     # event.
-    # We should append non-partial events only.For example, non-finished(partial)
+    # We should append non-partial events only. For example, non-finished(partial)
     # transcription events should not be appended.
     # Function call and function response events should be appended.
     # Other control events should be appended.
@@ -730,7 +730,7 @@ class Runner:
               buffered_events.append(event)
               continue
             # Note for live/bidi: for audio response, it's considered as
-            # non-paritla event(event.partial=None)
+            # non-partial event(event.partial=None)
             # event.partial=False and event.partial=None are considered as
             # non-partial event; event.partial=True is considered as partial
             # event.
@@ -870,7 +870,7 @@ class Runner:
     **Events Yielded to Callers:**
     *   **Live Model Audio Events with Inline Data:** Events containing raw
         audio `Blob` data(`inline_data`).
-    *   **Live Model Audio Events with File Data:** Both input and ouput audio
+    *   **Live Model Audio Events with File Data:** Both input and output audio
         data are aggregated into a audio file saved into artifacts. The
         reference to the file is saved in the event as `file_data`.
     *   **Usage Metadata:** Events containing token usage.
@@ -880,7 +880,7 @@ class Runner:
     *   **Other Control Events:** Most control events are saved.
 
     **Events Saved to the Session:**
-    *   **Live Model Audio Events with File Data:** Both input and ouput audio
+    *   **Live Model Audio Events with File Data:** Both input and output audio
         data are aggregated into a audio file saved into artifacts. The
         reference to the file is saved as event in the `file_data` to session
         if RunConfig.save_live_model_audio_to_session is True.
