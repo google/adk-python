@@ -24,6 +24,7 @@ from typing import Sequence
 from typing import Union
 import urllib.error
 import urllib.request
+import os
 
 from google.genai import types
 from pydantic import Field
@@ -57,7 +58,7 @@ class Ollama(BaseLlm):
   model: str = "ollama/llama3.1"
 
   host: str = Field(
-      default="http://localhost:11434",
+      default=os.environ.get("OLLAMA_API_BASE", "http://localhost:11434"),
       description="Base URL of the Ollama server.",
   )
   request_timeout: float = Field(
@@ -302,7 +303,13 @@ class Ollama(BaseLlm):
   # ---------------------------------------------------------------------------
 
   def _post_chat(self, payload: dict[str, Any]) -> dict[str, Any]:
-    """Perform a blocking POST /api/chat call to Ollama."""
+    """Perform a blocking POST /api/chat call to Ollama.
+    Note: This method is intentionally blocking and is executed via
+    asyncio.to_thread() to avoid introducing additional async HTTP
+    dependencies. This keeps the backend consistent with existing ADK
+    providers.
+    """
+
     url = self.host.rstrip("/") + _CHAT_ENDPOINT
     data = json.dumps(payload).encode("utf-8")
     request = urllib.request.Request(

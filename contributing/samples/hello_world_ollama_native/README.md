@@ -44,23 +44,41 @@ No LiteLLM provider, API keys, or OpenAI proxy endpoints are needed.
 ```python
 import random
 from google.adk.agents.llm_agent import Agent
-from google.adk.models.ollama import Ollama
+from google.adk.models.ollama_llm import Ollama
+
 
 def roll_die(sides: int) -> int:
     return random.randint(1, sides)
 
-def check_prime(numbers: list[int]) -> str:
-    primes = []
+
+def check_prime(numbers: list) -> str:
+    """Check if a given list of values contains prime numbers.
+
+    The input may include non-integer values produced by the LLM.
+    """
+    primes = set()
+
     for number in numbers:
-        number = int(number)
+        try:
+            number = int(number)
+        except (ValueError, TypeError):
+            continue
+
         if number <= 1:
             continue
-        for i in range(2, int(number ** 0.5) + 1):
+
+        for i in range(2, int(number**0.5) + 1):
             if number % i == 0:
                 break
         else:
-            primes.append(number)
-    return "No prime numbers found." if not primes else f"{', '.join(map(str, primes))} are prime numbers."
+            primes.add(number)
+
+    return (
+        "No prime numbers found."
+        if not primes
+        else f"{', '.join(str(n) for n in sorted(primes))} are prime numbers."
+    )
+
 
 root_agent = Agent(
     model=Ollama(model="llama3.1"),
