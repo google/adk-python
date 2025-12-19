@@ -102,9 +102,13 @@ class ApiRegistry:
     mcp_server_url = server["urls"][0]
     headers = self._get_auth_headers()
 
+    # Only prepend "https://" if the URL doesn't already have a scheme
+    if not mcp_server_url.startswith(("http://", "https://")):
+      mcp_server_url = "https://" + mcp_server_url
+
     return McpToolset(
         connection_params=StreamableHTTPConnectionParams(
-            url="https://" + mcp_server_url,
+            url=mcp_server_url,
             headers=headers,
         ),
         tool_filter=tool_filter,
