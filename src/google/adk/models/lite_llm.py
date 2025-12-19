@@ -1356,11 +1356,15 @@ class LiteLlm(BaseLlm):
             # Without this, Claude and other models via LiteLLM would hit stop conditions
             # that the agent couldn't properly handle.
             if isinstance(finish_reason, types.FinishReason):
-              aggregated_llm_response_with_tool_call.finish_reason = finish_reason
+              aggregated_llm_response_with_tool_call.finish_reason = (
+                  finish_reason
+              )
             else:
               finish_reason_str = str(finish_reason).lower()
-              aggregated_llm_response_with_tool_call.finish_reason = _FINISH_REASON_MAPPING.get(
-                  finish_reason_str, types.FinishReason.OTHER
+              aggregated_llm_response_with_tool_call.finish_reason = (
+                  _FINISH_REASON_MAPPING.get(
+                      finish_reason_str, types.FinishReason.OTHER
+                  )
               )
             text = ""
             reasoning_parts = []
@@ -1387,8 +1391,10 @@ class LiteLlm(BaseLlm):
               aggregated_llm_response.finish_reason = finish_reason
             else:
               finish_reason_str = str(finish_reason).lower()
-              aggregated_llm_response.finish_reason = _FINISH_REASON_MAPPING.get(
-                  finish_reason_str, types.FinishReason.OTHER
+              aggregated_llm_response.finish_reason = (
+                  _FINISH_REASON_MAPPING.get(
+                      finish_reason_str, types.FinishReason.OTHER
+                  )
               )
             text = ""
             reasoning_parts = []
