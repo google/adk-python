@@ -407,3 +407,56 @@ def test_evaluate_invocations_no_invocations(evaluator: TrajectoryEvaluator):
   assert result.overall_score is None
   assert result.overall_eval_status == EvalStatus.NOT_EVALUATED
   assert not result.per_invocation_results
+
+
+def test_tool_trajectory_criterion_accepts_string_match_type():
+  """Tests that ToolTrajectoryCriterion accepts string enum values."""
+  # Test string values (as documented)
+  criterion_exact = ToolTrajectoryCriterion(threshold=0.5, match_type="EXACT")
+  assert criterion_exact.match_type == ToolTrajectoryCriterion.MatchType.EXACT
+
+  criterion_in_order = ToolTrajectoryCriterion(
+      threshold=0.5, match_type="IN_ORDER"
+  )
+  assert (
+      criterion_in_order.match_type
+      == ToolTrajectoryCriterion.MatchType.IN_ORDER
+  )
+
+  criterion_any_order = ToolTrajectoryCriterion(
+      threshold=0.5, match_type="ANY_ORDER"
+  )
+  assert (
+      criterion_any_order.match_type
+      == ToolTrajectoryCriterion.MatchType.ANY_ORDER
+  )
+
+
+def test_tool_trajectory_criterion_accepts_enum_match_type():
+  """Tests that ToolTrajectoryCriterion still accepts enum values."""
+  # Test enum values (for backward compatibility)
+  criterion = ToolTrajectoryCriterion(
+      threshold=0.5, match_type=ToolTrajectoryCriterion.MatchType.IN_ORDER
+  )
+  assert criterion.match_type == ToolTrajectoryCriterion.MatchType.IN_ORDER
+
+
+def test_tool_trajectory_criterion_accepts_int_match_type():
+  """Tests that ToolTrajectoryCriterion still accepts integer values."""
+  # Test integer values (0, 1, 2)
+  criterion_0 = ToolTrajectoryCriterion(threshold=0.5, match_type=0)
+  assert criterion_0.match_type == ToolTrajectoryCriterion.MatchType.EXACT
+
+  criterion_1 = ToolTrajectoryCriterion(threshold=0.5, match_type=1)
+  assert criterion_1.match_type == ToolTrajectoryCriterion.MatchType.IN_ORDER
+
+  criterion_2 = ToolTrajectoryCriterion(threshold=0.5, match_type=2)
+  assert criterion_2.match_type == ToolTrajectoryCriterion.MatchType.ANY_ORDER
+
+
+def test_tool_trajectory_criterion_rejects_invalid_string():
+  """Tests that ToolTrajectoryCriterion rejects invalid string values."""
+  with pytest.raises(ValueError) as exc_info:
+    ToolTrajectoryCriterion(threshold=0.5, match_type="INVALID")
+  assert "Invalid match_type" in str(exc_info.value)
+  assert "EXACT, IN_ORDER, ANY_ORDER" in str(exc_info.value)

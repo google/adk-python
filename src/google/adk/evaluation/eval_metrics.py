@@ -23,6 +23,7 @@ from pydantic import alias_generators
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
+from pydantic import field_validator
 from pydantic.json_schema import SkipJsonSchema
 from typing_extensions import TypeAlias
 
@@ -223,6 +224,20 @@ class ToolTrajectoryCriterion(BaseCriterion):
           " trajectories."
       ),
   )
+
+  @field_validator("match_type", mode="before")
+  @classmethod
+  def _validate_match_type(cls, v):
+    """Convert string enum names to enum values for backward compatibility."""
+    if isinstance(v, str):
+      try:
+        return cls.MatchType[v]
+      except KeyError:
+        raise ValueError(
+            f"Invalid match_type: '{v}'. Must be one of: EXACT, IN_ORDER,"
+            " ANY_ORDER"
+        )
+    return v
 
 
 class LlmBackedUserSimulatorCriterion(LlmAsAJudgeCriterion):
