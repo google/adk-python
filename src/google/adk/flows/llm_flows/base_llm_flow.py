@@ -324,7 +324,9 @@ class BaseLlmFlow(ABC):
                 id=Event.new_id(),
                 invocation_id=invocation_context.invocation_id,
                 author=get_author_for_event(llm_response),
-                custom_metadata=getattr(invocation_context.run_config, 'custom_metadata', None),
+                custom_metadata=getattr(
+                    invocation_context.run_config, 'custom_metadata', None
+                ),
             )
 
             async with Aclosing(
@@ -439,7 +441,9 @@ class BaseLlmFlow(ABC):
         invocation_id=invocation_context.invocation_id,
         author=invocation_context.agent.name,
         branch=invocation_context.branch,
-        custom_metadata=getattr(invocation_context.run_config, 'custom_metadata', None),
+        custom_metadata=getattr(
+            invocation_context.run_config, 'custom_metadata', None
+        ),
     )
     async with Aclosing(
         self._call_llm_async(

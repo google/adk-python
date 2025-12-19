@@ -535,7 +535,7 @@ async def _get_content(
   for part in parts:
     # Skip thought parts - these are model reasoning and should not be
     # fed back as input in subsequent turns
-    if getattr(part, 'thought', False):
+    if getattr(part, "thought", False):
       continue
     if part.text:
       if len(parts) == 1:
