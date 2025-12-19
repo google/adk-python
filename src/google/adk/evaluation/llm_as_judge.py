@@ -13,9 +13,8 @@
 # limitations under the License.
 
 from __future__ import annotations
-
-import asyncio
 from abc import abstractmethod
+import asyncio
 from typing import Optional
 
 from google.genai import types as genai_types
@@ -197,7 +196,9 @@ class LlmAsJudge(Evaluator):
 
       # Create tasks for all samples of this invocation
       for _ in range(num_samples):
-        tasks.append(self._evaluate_single_sample(llm_request, actual, expected))
+        tasks.append(
+            self._evaluate_single_sample(llm_request, actual, expected)
+        )
         invocation_indices.append(invocation_idx)
 
     # Execute all tasks in parallel
