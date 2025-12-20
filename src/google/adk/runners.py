@@ -543,7 +543,7 @@ class Runner:
     """
     run_config = run_config or RunConfig()
     # Create a shallow copy to isolate from caller's modifications
-    metadata = metadata.copy() if metadata else None
+    metadata = metadata.copy() if metadata is not None else None
 
     if new_message and not new_message.role:
       new_message.role = 'user'

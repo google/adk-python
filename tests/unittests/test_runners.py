@@ -1679,6 +1679,53 @@ class TestRunnerMetadata:
     assert llm_request.metadata is None
 
   @pytest.mark.asyncio
+  async def test_empty_metadata_dict_not_converted_to_none(self):
+    """Test that empty dict {} is preserved and not converted to None."""
+    captured_metadata = None
+
+    def before_model_callback(callback_context, llm_request):
+      nonlocal captured_metadata
+      captured_metadata = llm_request.metadata
+      return LlmResponse(
+          content=types.Content(
+              role="model", parts=[types.Part(text="Test response")]
+          )
+      )
+
+    agent_with_callback = LlmAgent(
+        name="callback_agent",
+        model="gemini-2.0-flash",
+        before_model_callback=before_model_callback,
+    )
+
+    runner_with_callback = Runner(
+        app_name="test_app",
+        agent=agent_with_callback,
+        session_service=self.session_service,
+        artifact_service=self.artifact_service,
+    )
+
+    await self.session_service.create_session(
+        app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+    )
+
+    # Pass empty dict - should NOT become None
+    async for event in runner_with_callback.run_async(
+        user_id=TEST_USER_ID,
+        session_id=TEST_SESSION_ID,
+        new_message=types.Content(
+            role="user", parts=[types.Part(text="Hello")]
+        ),
+        metadata={},
+    ):
+      pass
+
+    # Empty dict should be preserved, not converted to None
+    assert captured_metadata is not None
+    assert captured_metadata == {}
+    assert isinstance(captured_metadata, dict)
+
+  @pytest.mark.asyncio
   async def test_metadata_shallow_copy_isolation(self):
     """Test that shallow copy isolates top-level changes but shares nested objects."""
     # Track modifications made in callback
