@@ -1678,6 +1678,67 @@ class TestRunnerMetadata:
 
     assert llm_request.metadata is None
 
+  @pytest.mark.asyncio
+  async def test_metadata_shallow_copy_isolation(self):
+    """Test that shallow copy isolates top-level changes but shares nested objects."""
+    # Track modifications made in callback
+    callback_received_metadata = None
+
+    def before_model_callback(callback_context, llm_request):
+      nonlocal callback_received_metadata
+      callback_received_metadata = llm_request.metadata
+      # Modify top-level key (should NOT affect original due to shallow copy)
+      llm_request.metadata["top_level_key"] = "modified_in_callback"
+      # Modify nested object (WILL affect original due to shallow copy)
+      llm_request.metadata["nested"]["inner_key"] = "modified_nested"
+      return LlmResponse(
+          content=types.Content(
+              role="model", parts=[types.Part(text="Test response")]
+          )
+      )
+
+    agent_with_callback = LlmAgent(
+        name="callback_agent",
+        model="gemini-2.0-flash",
+        before_model_callback=before_model_callback,
+    )
+
+    runner_with_callback = Runner(
+        app_name="test_app",
+        agent=agent_with_callback,
+        session_service=self.session_service,
+        artifact_service=self.artifact_service,
+    )
+
+    await self.session_service.create_session(
+        app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+    )
+
+    # Original metadata with nested mutable object
+    original_metadata = {
+        "top_level_key": "original_value",
+        "nested": {"inner_key": "original_nested"},
+    }
+
+    async for event in runner_with_callback.run_async(
+        user_id=TEST_USER_ID,
+        session_id=TEST_SESSION_ID,
+        new_message=types.Content(
+            role="user", parts=[types.Part(text="Hello")]
+        ),
+        metadata=original_metadata,
+    ):
+      pass
+
+    # Verify callback received metadata
+    assert callback_received_metadata is not None
+
+    # Top-level changes in callback should NOT affect original (shallow copy)
+    assert original_metadata["top_level_key"] == "original_value"
+
+    # Nested object changes in callback WILL affect original (shallow copy behavior)
+    assert original_metadata["nested"]["inner_key"] == "modified_nested"
+
 
 if __name__ == "__main__":
   pytest.main([__file__])
