@@ -678,24 +678,27 @@ class BaseLlmFlow(ABC):
       function_call_event: Event,
       llm_request: LlmRequest,
   ) -> AsyncGenerator[Event, None]:
-    if function_response_event := await functions.handle_function_calls_async(
+    # Handle function calls with AgentTool event streaming (handles both AgentTool and regular calls)
+    function_response_event = None
+    async for (
+        event
+    ) in functions.handle_function_calls_async_with_agent_tool_streaming(
         invocation_context, function_call_event, llm_request.tools_dict
     ):
-      auth_event = functions.generate_auth_event(
-          invocation_context, function_response_event
-      )
-      if auth_event:
-        yield auth_event
+      # Track the function response event for post-processing
+      if (
+          event.content
+          and event.content.parts
+          and any(
+              part.function_response
+              for part in event.content.parts
+              if part.function_response
+          )
+      ):
+        function_response_event = event
+      yield event
 
-      tool_confirmation_event = functions.generate_request_confirmation_event(
-          invocation_context, function_call_event, function_response_event
-      )
-      if tool_confirmation_event:
-        yield tool_confirmation_event
-
-      # Always yield the function response event first
-      yield function_response_event
-
+    if function_response_event:
       # Check if this is a set_model_response function response
       if json_response := _output_schema_processor.get_structured_model_response(
           function_response_event

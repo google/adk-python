@@ -186,6 +186,146 @@ def generate_request_confirmation_event(
   )
 
 
+async def handle_function_calls_async_with_agent_tool_streaming(
+    invocation_context: InvocationContext,
+    function_call_event: Event,
+    tools_dict: dict[str, BaseTool],
+) -> AsyncGenerator[Event, None]:
+  """Handles function calls with event streaming for AgentTool.
+
+  Yields events from AgentTool sub-agents as they are generated, then
+  yields the final function response event.
+  """
+  from ...agents.llm_agent import LlmAgent
+  from ...tools.agent_tool import AgentTool
+
+  function_calls = function_call_event.get_function_calls()
+  if not function_calls:
+    return
+
+  agent_tool_calls = []
+  regular_calls = []
+
+  # Separate AgentTool calls from regular calls
+  for function_call in function_calls:
+    tool = tools_dict.get(function_call.name)
+    if isinstance(tool, AgentTool):
+      agent_tool_calls.append((function_call, tool))
+    else:
+      regular_calls.append(function_call)
+
+  # If no AgentTool calls, use normal flow
+  if not agent_tool_calls:
+    function_response_event = await handle_function_calls_async(
+        invocation_context, function_call_event, tools_dict
+    )
+    if function_response_event:
+      auth_event = generate_auth_event(
+          invocation_context, function_response_event
+      )
+      if auth_event:
+        yield auth_event
+      tool_confirmation_event = generate_request_confirmation_event(
+          invocation_context, function_call_event, function_response_event
+      )
+      if tool_confirmation_event:
+        yield tool_confirmation_event
+      yield function_response_event
+    return
+
+  # Stream events from AgentTool sub-agents
+  agent_tool_results = {}
+  for function_call, agent_tool in agent_tool_calls:
+    tool_context = _create_tool_context(invocation_context, function_call, None)
+    last_content = None
+
+    async for event in agent_tool.run_async_with_events(
+        args=function_call.args or {}, tool_context=tool_context
+    ):
+      yield event
+      if event.content:
+        last_content = event.content
+
+    # Build final result from last content
+    if last_content:
+      merged_text = '\n'.join(p.text for p in last_content.parts if p.text)
+      if (
+          isinstance(agent_tool.agent, LlmAgent)
+          and agent_tool.agent.output_schema
+      ):
+        tool_result = agent_tool.agent.output_schema.model_validate_json(
+            merged_text
+        ).model_dump(exclude_none=True)
+      else:
+        tool_result = merged_text
+      if not isinstance(tool_result, dict):
+        tool_result = {'result': tool_result}
+      agent_tool_results[function_call.id] = tool_result
+
+  # Handle regular calls if any
+  regular_response_event = None
+  if regular_calls:
+    regular_call_event = Event(
+        invocation_id=function_call_event.invocation_id,
+        author=function_call_event.author,
+        content=types.Content(
+            role='user',
+            parts=[
+                part
+                for part in (function_call_event.content.parts or [])
+                if part.function_call
+                and part.function_call.name
+                not in [fc.name for fc, _ in agent_tool_calls]
+            ],
+        ),
+        branch=function_call_event.branch,
+    )
+    regular_response_event = await handle_function_calls_async(
+        invocation_context, regular_call_event, tools_dict
+    )
+
+  # Build AgentTool response events
+  agent_tool_response_events = []
+  for function_call, agent_tool in agent_tool_calls:
+    if function_call.id in agent_tool_results:
+      tool_context = _create_tool_context(
+          invocation_context, function_call, None
+      )
+      response_event = __build_response_event(
+          agent_tool,
+          agent_tool_results[function_call.id],
+          tool_context,
+          invocation_context,
+      )
+      agent_tool_response_events.append(response_event)
+
+  # Merge all response events
+  all_events = []
+  if regular_response_event:
+    all_events.append(regular_response_event)
+  all_events.extend(agent_tool_response_events)
+
+  if all_events:
+    if len(all_events) == 1:
+      final_response_event = all_events[0]
+    else:
+      final_response_event = merge_parallel_function_response_events(all_events)
+
+    # Yield auth and confirmation events
+    auth_event = generate_auth_event(invocation_context, final_response_event)
+    if auth_event:
+      yield auth_event
+
+    tool_confirmation_event = generate_request_confirmation_event(
+        invocation_context, function_call_event, final_response_event
+    )
+    if tool_confirmation_event:
+      yield tool_confirmation_event
+
+    # Yield the final function response event
+    yield final_response_event
+
+
 async def handle_function_calls_async(
     invocation_context: InvocationContext,
     function_call_event: Event,

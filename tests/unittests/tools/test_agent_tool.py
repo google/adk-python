@@ -199,8 +199,10 @@ def test_no_schema():
 
   runner = testing_utils.InMemoryRunner(root_agent)
 
+  # With event streaming, sub-agent events are now streamed in real-time
   assert testing_utils.simplify_events(runner.run('test1')) == [
       ('root_agent', function_call_no_schema),
+      ('tool_agent', 'response1'),  # Streamed event from sub-agent
       ('root_agent', function_response_no_schema),
       ('root_agent', 'response2'),
   ]
@@ -257,8 +259,10 @@ def test_use_plugins():
       root_agent, plugins=[model_response_capture]
   )
 
+  # With event streaming, sub-agent events are now streamed in real-time
   assert testing_utils.simplify_events(runner.run('test1')) == [
       ('root_agent', function_call_no_schema),
+      ('tool_agent', 'response1'),  # Streamed event from sub-agent
       ('root_agent', function_response_no_schema),
       ('root_agent', 'response2'),
   ]
@@ -404,8 +408,10 @@ def test_custom_schema(env_variables):
   runner = testing_utils.InMemoryRunner(root_agent)
   runner.session.state['state_1'] = 'state1_value'
 
+  # With event streaming, sub-agent events are now streamed in real-time
   assert testing_utils.simplify_events(runner.run('test1')) == [
       ('root_agent', function_call_custom),
+      ('tool_agent', '{"custom_output": "response1"}'),  # Streamed event from sub-agent
       ('root_agent', function_response_custom),
       ('root_agent', 'response2'),
   ]
