@@ -88,7 +88,7 @@ class TestLocalEvalSetResultsManager:
       actual_eval_set_result_json = json.load(f)
 
     # need to convert eval_set_result to json
-    expected_eval_set_result_json = self.eval_set_result.model_dump_json()
+    expected_eval_set_result_json = self.eval_set_result.model_dump(mode="json")
     assert expected_eval_set_result_json == actual_eval_set_result_json
 
   def test_get_eval_set_result(self, mocker):
