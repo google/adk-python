@@ -80,7 +80,7 @@ class LocalEvalSetResultsManager(EvalSetResultsManager):
       raise NotFoundError(f"Eval set result `{eval_set_result_id}` not found.")
     with open(maybe_eval_result_file_path, "r", encoding="utf-8") as file:
       eval_result_data = json.load(file)
-    return EvalSetResult.model_validate_json(eval_result_data)
+    return EvalSetResult.model_validate(eval_result_data)
 
   @override
   def list_eval_set_results(self, app_name: str) -> list[str]:
