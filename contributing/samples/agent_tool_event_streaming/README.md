@@ -18,7 +18,7 @@ This sample demonstrates the AgentTool event streaming feature (Issue #3984).
 ## Running the Demo
 
 ```bash
-cd contributing/samples
+cd contributing/samples/agent_tool_event_streaming
 adk web .
 
 ```
