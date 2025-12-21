@@ -99,11 +99,18 @@ async def test_agent_tool_run_async_with_events_yields_sub_agent_events():
 @mark.asyncio
 async def test_agent_tool_run_async_with_events_forwards_state_delta():
   """Test that run_async_with_events forwards state deltas to parent."""
+  from google.adk.agents.callback_context import CallbackContext
+
   mock_model = testing_utils.MockModel.create(responses=['Response'])
+
+  def sub_agent_callback(callback_context: CallbackContext):
+    """A callback to modify the sub-agent's state."""
+    callback_context.state['sub_agent_key'] = 'sub_agent_value'
 
   sub_agent = Agent(
       name='sub_agent',
       model=mock_model,
+      before_agent_callback=sub_agent_callback,
   )
 
   agent_tool = AgentTool(agent=sub_agent)
@@ -133,19 +140,17 @@ async def test_agent_tool_run_async_with_events_forwards_state_delta():
   # Set initial state
   tool_context.state['initial_key'] = 'initial_value'
 
-  # Run and collect events
-  events = []
-  async for event in agent_tool.run_async_with_events(
+  # Run and collect events, allowing run_async_with_events to update state
+  async for _ in agent_tool.run_async_with_events(
       args={'request': 'test'}, tool_context=tool_context
   ):
-    events.append(event)
-    # Simulate state delta in event
-    if event.actions and event.actions.state_delta:
-      tool_context.state.update(event.actions.state_delta)
+    pass
 
-  # Verify state is accessible
+  # Verify state was updated by run_async_with_events
   assert 'initial_key' in tool_context.state
   assert tool_context.state['initial_key'] == 'initial_value'
+  assert 'sub_agent_key' in tool_context.state
+  assert tool_context.state['sub_agent_key'] == 'sub_agent_value'
 
 
 def test_agent_tool_event_streaming_in_runner():

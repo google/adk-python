@@ -411,7 +411,10 @@ def test_custom_schema(env_variables):
   # With event streaming, sub-agent events are now streamed in real-time
   assert testing_utils.simplify_events(runner.run('test1')) == [
       ('root_agent', function_call_custom),
-      ('tool_agent', '{"custom_output": "response1"}'),  # Streamed event from sub-agent
+      (
+          'tool_agent',
+          '{"custom_output": "response1"}',
+      ),  # Streamed event from sub-agent
       ('root_agent', function_response_custom),
       ('root_agent', 'response2'),
   ]
