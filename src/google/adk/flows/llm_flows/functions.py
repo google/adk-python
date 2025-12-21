@@ -246,21 +246,12 @@ async def handle_function_calls_async_with_agent_tool_streaming(
       if event.content:
         last_content = event.content
 
-    # Build final result from last content
-    if last_content:
-      merged_text = '\n'.join(p.text for p in last_content.parts if p.text)
-      if (
-          isinstance(agent_tool.agent, LlmAgent)
-          and agent_tool.agent.output_schema
-      ):
-        tool_result = agent_tool.agent.output_schema.model_validate_json(
-            merged_text
-        ).model_dump(exclude_none=True)
-      else:
-        tool_result = merged_text
-      if not isinstance(tool_result, dict):
-        tool_result = {'result': tool_result}
-      agent_tool_results[function_call.id] = tool_result
+    # Build final result from last content using AgentTool helper method
+    tool_result = agent_tool._build_tool_result_from_content(last_content)
+    # Wrap non-dict results for function response format
+    if not isinstance(tool_result, dict):
+      tool_result = {'result': tool_result}
+    agent_tool_results[function_call.id] = tool_result
 
   # Handle regular calls if any
   regular_response_event = None

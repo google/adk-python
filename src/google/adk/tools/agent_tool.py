@@ -35,6 +35,8 @@ from .tool_context import ToolContext
 if TYPE_CHECKING:
   from ..agents.base_agent import BaseAgent
   from ..events.event import Event
+  from ..runners import Runner
+  from ..sessions.session import Session
 
 
 class AgentTool(BaseTool):
@@ -111,85 +113,26 @@ class AgentTool(BaseTool):
     result.name = self.name
     return result
 
-  @override
-  async def run_async(
-      self,
-      *,
-      args: dict[str, Any],
-      tool_context: ToolContext,
+  def _build_tool_result_from_content(
+      self, last_content: types.Content | None
   ) -> Any:
+    """Builds the tool result from the last content event.
+
+    This method extracts text from content parts, validates against output_schema
+    if present, and returns the appropriate result type.
+
+    Args:
+      last_content: The last content event from the sub-agent, or None.
+
+    Returns:
+      The tool result. If output_schema is defined, returns a dict. Otherwise,
+      returns a string. Returns empty string if last_content is None.
+    """
     from ..agents.llm_agent import LlmAgent
-    from ..runners import Runner
-    from ..sessions.in_memory_session_service import InMemorySessionService
-
-    if self.skip_summarization:
-      tool_context.actions.skip_summarization = True
-
-    if isinstance(self.agent, LlmAgent) and self.agent.input_schema:
-      input_value = self.agent.input_schema.model_validate(args)
-      content = types.Content(
-          role='user',
-          parts=[
-              types.Part.from_text(
-                  text=input_value.model_dump_json(exclude_none=True)
-              )
-          ],
-      )
-    else:
-      content = types.Content(
-          role='user',
-          parts=[types.Part.from_text(text=args['request'])],
-      )
-    invocation_context = tool_context._invocation_context
-    parent_app_name = (
-        invocation_context.app_name if invocation_context else None
-    )
-    child_app_name = parent_app_name or self.agent.name
-    plugins = (
-        tool_context._invocation_context.plugin_manager.plugins
-        if self.include_plugins
-        else None
-    )
-    runner = Runner(
-        app_name=child_app_name,
-        agent=self.agent,
-        artifact_service=ForwardingArtifactService(tool_context),
-        session_service=InMemorySessionService(),
-        memory_service=InMemoryMemoryService(),
-        credential_service=tool_context._invocation_context.credential_service,
-        plugins=plugins,
-    )
-
-    state_dict = {
-        k: v
-        for k, v in tool_context.state.to_dict().items()
-        if not k.startswith('_adk')  # Filter out adk internal states
-    }
-    session = await runner.session_service.create_session(
-        app_name=child_app_name,
-        user_id=tool_context._invocation_context.user_id,
-        state=state_dict,
-    )
-
-    last_content = None
-    async with Aclosing(
-        runner.run_async(
-            user_id=session.user_id, session_id=session.id, new_message=content
-        )
-    ) as agen:
-      async for event in agen:
-        # Forward state delta to parent session.
-        if event.actions.state_delta:
-          tool_context.state.update(event.actions.state_delta)
-        if event.content:
-          last_content = event.content
-
-    # Clean up runner resources (especially MCP sessions)
-    # to avoid "Attempted to exit cancel scope in a different task" errors
-    await runner.close()
 
     if not last_content:
       return ''
+
     merged_text = '\n'.join(p.text for p in last_content.parts if p.text)
     if isinstance(self.agent, LlmAgent) and self.agent.output_schema:
       tool_result = self.agent.output_schema.model_validate_json(
@@ -199,24 +142,23 @@ class AgentTool(BaseTool):
       tool_result = merged_text
     return tool_result
 
-  async def run_async_with_events(
+  async def _setup_runner_and_session(
       self,
       *,
       args: dict[str, Any],
       tool_context: ToolContext,
-  ) -> AsyncGenerator['Event', None]:
-    """Runs the tool and yields events from the sub-agent in real-time.
+  ) -> tuple[Runner, types.Content, Session]:
+    """Sets up the Runner and Session for sub-agent execution.
 
-    This method yields events from the sub-agent as they are generated,
-    allowing the parent Runner to stream events to the caller. This enables
-    real-time visibility into sub-agent execution progress.
+    This helper method extracts the common setup logic used by both
+    run_async and run_async_with_events.
 
     Args:
       args: The function call arguments.
       tool_context: The tool context.
 
-    Yields:
-      Events from the sub-agent as they are generated.
+    Returns:
+      A tuple of (runner, content, session) ready for execution.
     """
     from ..agents.llm_agent import LlmAgent
     from ..runners import Runner
@@ -269,6 +211,61 @@ class AgentTool(BaseTool):
         app_name=child_app_name,
         user_id=tool_context._invocation_context.user_id,
         state=state_dict,
+    )
+
+    return runner, content, session
+
+  @override
+  async def run_async(
+      self,
+      *,
+      args: dict[str, Any],
+      tool_context: ToolContext,
+  ) -> Any:
+    runner, content, session = await self._setup_runner_and_session(
+        args=args, tool_context=tool_context
+    )
+
+    last_content = None
+    async with Aclosing(
+        runner.run_async(
+            user_id=session.user_id, session_id=session.id, new_message=content
+        )
+    ) as agen:
+      async for event in agen:
+        # Forward state delta to parent session.
+        if event.actions.state_delta:
+          tool_context.state.update(event.actions.state_delta)
+        if event.content:
+          last_content = event.content
+
+    # Clean up runner resources (especially MCP sessions)
+    # to avoid "Attempted to exit cancel scope in a different task" errors
+    await runner.close()
+
+    return self._build_tool_result_from_content(last_content)
+
+  async def run_async_with_events(
+      self,
+      *,
+      args: dict[str, Any],
+      tool_context: ToolContext,
+  ) -> AsyncGenerator['Event', None]:
+    """Runs the tool and yields events from the sub-agent in real-time.
+
+    This method yields events from the sub-agent as they are generated,
+    allowing the parent Runner to stream events to the caller. This enables
+    real-time visibility into sub-agent execution progress.
+
+    Args:
+      args: The function call arguments.
+      tool_context: The tool context.
+
+    Yields:
+      Events from the sub-agent as they are generated.
+    """
+    runner, content, session = await self._setup_runner_and_session(
+        args=args, tool_context=tool_context
     )
 
     # Yield events from the sub-agent as they are generated
