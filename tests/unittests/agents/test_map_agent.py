@@ -177,20 +177,7 @@ async def test_map_agent_with_map_agent():
 
   events = await runner.run_async_with_new_session(input_data)
 
-  res = [e for e in events if e.author.startswith("nested_mock")]
-  res = sorted(
-      res,
-      key=lambda e: (
-          e.author,
-          ((e.content or types.Content()).parts or [types.Part()])[0].text
-          or "",
-      ),
-  )
-  res = [
-      ((e.content or types.Content()).parts or [types.Part()])[0].text or ""
-      for e in res
-  ]
-  assert len(res) == 6
+  res = extract_event_text(events, "nested_mock")
   assert res == expected_output
 
 

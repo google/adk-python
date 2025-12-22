@@ -83,10 +83,9 @@ class MapAgent(BaseAgent):
         (event.content or types.Content()).parts or [types.Part()]
     )[0].text or ""
 
-    """ 
-        Remove the event which has the prompt list, so that a sub agent does not see the prompts of its siblings, which may confuse it.
-        The event is removed only for this invocation.
-        """
+    # Remove the event which has the prompt list, so that a sub agent does not
+    # see the prompts of its siblings, which may confuse it.
+    # The event is removed only for this invocation.
     ctx.session.events.pop(i)
 
     agent_input = RootModel[list[str]].model_validate_json(input_message).root
