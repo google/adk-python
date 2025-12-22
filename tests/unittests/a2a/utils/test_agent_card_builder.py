@@ -1104,7 +1104,7 @@ class TestExampleExtractionFunctions:
     assert result[0]["output"] == [{"text": "What time is it?"}]
 
   def test_extract_inputs_from_examples_from_plain_text_input(self):
-    """Test _extract_inputs_from_examples on None as input."""
+    """Test _extract_inputs_from_examples on plain text as input."""
     # Arrange
     examples = [
         {
@@ -1121,7 +1121,7 @@ class TestExampleExtractionFunctions:
     result = _extract_inputs_from_examples(examples)
 
     # Assert
-    assert len(result) is 2
+    assert len(result) == 2
     assert result[0] == "What is the weather?"
     assert result[1] == "The weather is sunny."
 
@@ -1161,20 +1161,14 @@ class TestExampleExtractionFunctions:
     result = _extract_inputs_from_examples(examples)
 
     # Assert
-    assert len(result) is 2
+    assert len(result) == 2
     assert result[0] == "What is the weather?"
     assert result[1] == "The weather is sunny."
 
   def test_extract_inputs_from_examples_none_input(self):
     """Test _extract_inputs_from_examples on None as input."""
-    # Arrange
-    instruction = (
-        'Example Query: "What is the weather?" Example Response: "The weather'
-        ' is sunny."'
-    )
-
     # Act
     result = _extract_inputs_from_examples(None)
 
     # Assert
-    assert len(result) is 0
+    assert len(result) == 0

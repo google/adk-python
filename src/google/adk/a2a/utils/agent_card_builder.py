@@ -463,26 +463,29 @@ def _get_default_description(agent: BaseAgent) -> str:
 
 def _extract_inputs_from_examples(examples: Optional[list[dict]]) -> list[str]:
   """Extracts only the input strings so they can be added to an AgentSkill."""
-  if not examples:
+  if examples is None:
     return []
 
-  example_strs = []
-
+  extracted_inputs = []
   for example in examples:
-    if 'input' in example:
-      example_input = example['input']
+    example_input = example.get('input')
+    if not example_input:
+      continue
 
-      if 'parts' in example_input and example_input['parts'] is not None:
-        example_input_strs = []
-        for part in example_input['parts']:
-          if 'text' in part and part['text'] is not None:
-            example_input_strs.append(part['text'])
-        example_strs.append('\n'.join(example_input_strs))
+    parts = example_input.get('parts')
+    if parts is not None:
+      part_texts = []
+      for part in parts:
+        text = part.get('text')
+        if text is not None:
+          part_texts.append(text)
+      extracted_inputs.append('\n'.join(part_texts))
+    else:
+      text = example_input.get('text')
+      if text is not None:
+        extracted_inputs.append(text)
 
-      elif 'text' in example_input:
-        example_strs.append(example_input['text'])
-
-  return example_strs
+  return extracted_inputs
 
 
 async def _extract_examples_from_agent(
