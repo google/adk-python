@@ -52,12 +52,12 @@ def extract_event_text(events: list[Event], agent_prefix: str) -> list[str]:
 
 
 @pytest.mark.asyncio
-async def test_gather_agent_empty_input():
+async def test_map_agent_empty_input():
   def delete_events(callback_context: CallbackContext) -> None:
     callback_context._invocation_context.session.events.clear()
 
-  gather = MapAgent(
-      name="gather_agent",
+  map = MapAgent(
+      name="map_agent",
       sub_agents=[
           LlmAgent(
               name="test", model=MockModel.create([], error=RuntimeError())
@@ -66,18 +66,18 @@ async def test_gather_agent_empty_input():
       before_agent_callback=delete_events,
   )
 
-  runner = TestInMemoryRunner(gather)
+  runner = TestInMemoryRunner(map)
   await runner.run_async_with_new_session("")
 
 
 @pytest.mark.asyncio
-async def test_gather_agent_text_input():
-  gather = MapAgent(
-      name="gather_agent",
+async def test_map_agent_text_input():
+  map = MapAgent(
+      name="map_agent",
       sub_agents=[LlmAgent(name="mock_agent", model=OneTwoThreeModel())],
   )
 
-  runner = TestInMemoryRunner(gather)
+  runner = TestInMemoryRunner(map)
 
   n_runs = 100
 
@@ -93,15 +93,15 @@ async def test_gather_agent_text_input():
 
 
 @pytest.mark.asyncio
-async def test_gather_agent_with_loop_agent_parent():
-  gather_agent = MapAgent(
-      name="gather_agent",
+async def test_map_agent_with_loop_agent_parent():
+  map_agent = MapAgent(
+      name="map_agent",
       sub_agents=[LlmAgent(name="mock_agent", model=OneTwoThreeModel())],
   )
 
   loop_agent = LoopAgent(
       name="test_loop",
-      sub_agents=[gather_agent],
+      sub_agents=[map_agent],
       max_iterations=2,
   )
 
@@ -119,8 +119,8 @@ async def test_gather_agent_with_loop_agent_parent():
 
 @pytest.mark.parametrize("SubagentClass", [ParallelAgent, SequentialAgent])
 @pytest.mark.asyncio
-async def test_gather_agent_with_sequential_or_parallel_agent(SubagentClass):
-  """test gather agent with a parallel / sequential sub-agent whose sub-agents don't communicate"""
+async def test_map_agent_with_sequential_or_parallel_agent(SubagentClass):
+  """test map agent with a parallel / sequential sub-agent whose sub-agents don't communicate"""
 
   # A lone parallel agent wrapper hides mock_1's output from its 'cousin' mock_2
   mock1 = ParallelAgent(
@@ -134,12 +134,12 @@ async def test_gather_agent_with_sequential_or_parallel_agent(SubagentClass):
       sub_agents=[mock1, mock2],
   )
 
-  gather = MapAgent(
-      name="gather_agent",
+  map = MapAgent(
+      name="map_agent",
       sub_agents=[subagent],
   )
 
-  runner = TestInMemoryRunner(gather)
+  runner = TestInMemoryRunner(map)
 
   input_data = json.dumps(["0", "1"])
   expected_output = [
@@ -152,20 +152,20 @@ async def test_gather_agent_with_sequential_or_parallel_agent(SubagentClass):
 
 
 @pytest.mark.asyncio
-async def test_gather_agent_with_gather_agent():
+async def test_map_agent_with_map_agent():
   mock_leaf = LlmAgent(name="nested_mock", model=OneTwoThreeModel())
 
-  inner_gather = MapAgent(
-      name="inner_gather",
+  inner_map = MapAgent(
+      name="inner_map",
       sub_agents=[mock_leaf],
   )
 
-  outer_gather = MapAgent(
-      name="outer_gather",
-      sub_agents=[inner_gather],
+  outer_map = MapAgent(
+      name="outer_map",
+      sub_agents=[inner_map],
   )
 
-  runner = TestInMemoryRunner(outer_gather)
+  runner = TestInMemoryRunner(outer_map)
 
   input_data = json.dumps(
       [json.dumps([str(i), str(i + 1)]) for i in [10, 20, 30]]
@@ -195,9 +195,9 @@ async def test_gather_agent_with_gather_agent():
 
 
 @pytest.mark.asyncio
-async def test_gather_agent_tree():
-  inner_gather = MapAgent(
-      name="gather_inner",
+async def test_map_agent_tree():
+  inner_map = MapAgent(
+      name="map_inner",
       sub_agents=[LlmAgent(name="mock_1", model=OneTwoThreeModel())],
   )
 
@@ -205,17 +205,17 @@ async def test_gather_agent_tree():
       name="main_sequential",
       sub_agents=[
           LlmAgent(name="mock_0", model=OneTwoThreeModel()),
-          inner_gather,
+          inner_map,
       ],
       max_iterations=1,
   )
 
-  outer_gather = MapAgent(
-      name="gather_outer",
+  outer_map = MapAgent(
+      name="map_outer",
       sub_agents=[main_loop],
   )
 
-  runner = TestInMemoryRunner(outer_gather)
+  runner = TestInMemoryRunner(outer_map)
 
   input_data = json.dumps(["0", "1"])
   expected_output = [

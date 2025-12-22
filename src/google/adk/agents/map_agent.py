@@ -64,7 +64,7 @@ class MapAgent(BaseAgent):
       self, ctx: InvocationContext
   ) -> tuple[list[str], str]:
     """
-    The input to the gather agent is a list of strings.
+    The input to the map agent is a list of strings.
     We extract the text content from the latest event, and assume it is a list of strings serialized as a json string.
     """
     invoker = "user"
@@ -110,9 +110,9 @@ class MapAgent(BaseAgent):
     """Creates a numbered copy of the sub-agent that sees a single prompt, and can run separately from its siblings.
 
     Args:
-        ctx: The current invocation context of the gather agent. To be copied and edited for the sub-agent copy.
+        ctx: The current invocation context of the map agent. To be copied and edited for the sub-agent copy.
         prompt: the prompt on which the sub-agent copy should be invoked
-        invoker: the invoker of the gather agent in this invocation.
+        invoker: the invoker of the map agent in this invocation.
         idx: index of the prompt in the input prompts, serves as a unique postfix to the agent name
         width: number of digits in the total number of prompts, to ensure naming is consistent in field width
             (e.g. 001, 002, ... 010, 011, ... 100, 101; and not 1, 2, ... 10, 11, ... 100, 101)
