@@ -67,8 +67,6 @@ class MapAgent(BaseAgent):
     The input to the map agent is a list of strings.
     We extract the text content from the latest event, and assume it is a list of strings serialized as a json string.
     """
-    invoker = "user"
-
     for i in range(len(ctx.session.events) - 1, -1, -1):
       event = ctx.session.events[i]
       if _should_include_event_in_context(ctx.branch, event):
