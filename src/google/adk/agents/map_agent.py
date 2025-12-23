@@ -1,6 +1,5 @@
 from typing import Annotated
 from typing import AsyncGenerator
-from typing import Optional
 
 from annotated_types import Len
 from google.adk.agents import BaseAgent
