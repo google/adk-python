@@ -2447,11 +2447,12 @@ def test_model_response_to_chunk(
 async def test_acompletion_additional_args(mock_acompletion, mock_client):
   lite_llm_instance = LiteLlm(
       # valid args
-      model="test_model",
+      model="vertex_ai/test_model",
       llm_client=mock_client,
       api_key="test_key",
       api_base="some://url",
       api_version="2024-09-12",
+      headers={"custom": "header"},  # Add custom header to test merge
       # invalid args (ignored)
       stream=True,
       messages=[{"role": "invalid", "content": "invalid"}],
@@ -2478,13 +2479,43 @@ async def test_acompletion_additional_args(mock_acompletion, mock_client):
 
   _, kwargs = mock_acompletion.call_args
 
-  assert kwargs["model"] == "test_model"
+  assert kwargs["model"] == "vertex_ai/test_model"
   assert kwargs["messages"][0]["role"] == "user"
   assert kwargs["messages"][0]["content"] == "Test prompt"
   assert kwargs["tools"][0]["function"]["name"] == "test_function"
   assert "stream" not in kwargs
   assert "llm_client" not in kwargs
   assert kwargs["api_base"] == "some://url"
+  assert "headers" in kwargs
+  assert kwargs["headers"]["custom"] == "header"
+  assert "x-goog-api-client" in kwargs["headers"]
+  assert "user-agent" in kwargs["headers"]
+
+
+@pytest.mark.asyncio
+async def test_acompletion_additional_args_non_vertex(
+    mock_acompletion, mock_client
+):
+  """Test that tracking headers are not added for non-Vertex AI models."""
+  lite_llm_instance = LiteLlm(
+      model="openai/gpt-4o",
+      llm_client=mock_client,
+      api_key="test_key",
+      headers={"custom": "header"},
+  )
+
+  async for _ in lite_llm_instance.generate_content_async(
+      LLM_REQUEST_WITH_FUNCTION_DECLARATION
+  ):
+    pass
+
+  mock_acompletion.assert_called_once()
+  _, kwargs = mock_acompletion.call_args
+  assert kwargs["model"] == "openai/gpt-4o"
+  assert "headers" in kwargs
+  assert kwargs["headers"]["custom"] == "header"
+  assert "x-goog-api-client" not in kwargs["headers"]
+  assert "user-agent" not in kwargs["headers"]
 
 
 @pytest.mark.asyncio

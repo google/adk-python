@@ -25,6 +25,7 @@ from google.adk import version as adk_version
 from google.genai import types
 from typing_extensions import override
 
+from ..utils._google_client_headers import merge_tracking_headers
 from ..utils.env_utils import is_env_enabled
 from .google_llm import Gemini
 
@@ -145,7 +146,7 @@ class ApigeeLlm(Gemini):
       kwargs_for_http_options['api_version'] = self._api_version
     http_options = types.HttpOptions(
         base_url=self._proxy_url,
-        headers=self._merge_tracking_headers(self._custom_headers),
+        headers=merge_tracking_headers(self._custom_headers),
         retry_options=self.retry_options,
         **kwargs_for_http_options,
     )
