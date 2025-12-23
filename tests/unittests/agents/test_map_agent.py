@@ -12,14 +12,13 @@ from google.adk.events import Event
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.genai import types
+from pydantic import ValidationError
 import pytest
 
-from ..testing_utils import MockModel
-from ..testing_utils import ModelContent
-from ..testing_utils import TestInMemoryRunner
+from .. import testing_utils
 
 
-class OneTwoThreeModel(MockModel):
+class OneTwoThreeModel(testing_utils.MockModel):
   """Maps an input of 'i' to output of "['i', 'i+1', 'i+2']", e.g. '5' -> "['5', '6', '7']" """
 
   responses: list[LlmResponse] = []
@@ -34,7 +33,9 @@ class OneTwoThreeModel(MockModel):
     agent_input = re.sub(r"\[\w+\] said: ", "", agent_input)
     assert agent_input.isnumeric()
     res = json.dumps([str(int(agent_input) + i) for i in range(3)])
-    yield LlmResponse(content=ModelContent([types.Part(text=res)]))
+    yield LlmResponse(
+        content=testing_utils.ModelContent([types.Part(text=res)])
+    )
 
 
 def extract_event_text(events: list[Event], agent_prefix: str) -> list[str]:
@@ -60,13 +61,14 @@ async def test_map_agent_empty_input():
       name="map_agent",
       sub_agents=[
           LlmAgent(
-              name="test", model=MockModel.create([], error=RuntimeError())
+              name="test",
+              model=testing_utils.MockModel.create([], error=RuntimeError()),
           )
       ],
       before_agent_callback=delete_events,
   )
 
-  runner = TestInMemoryRunner(map)
+  runner = testing_utils.TestInMemoryRunner(map)
   await runner.run_async_with_new_session("")
 
 
@@ -77,7 +79,7 @@ async def test_map_agent_text_input():
       sub_agents=[LlmAgent(name="mock_agent", model=OneTwoThreeModel())],
   )
 
-  runner = TestInMemoryRunner(map)
+  runner = testing_utils.TestInMemoryRunner(map)
 
   n_runs = 100
 
@@ -105,7 +107,7 @@ async def test_map_agent_with_loop_agent_parent():
       max_iterations=2,
   )
 
-  runner = TestInMemoryRunner(loop_agent)
+  runner = testing_utils.TestInMemoryRunner(loop_agent)
 
   input_data = json.dumps(["0"])
   expected_output = [json.dumps(["0", "1", "2"])] + [
@@ -139,7 +141,7 @@ async def test_map_agent_with_sequential_or_parallel_agent(SubagentClass):
       sub_agents=[subagent],
   )
 
-  runner = TestInMemoryRunner(map)
+  runner = testing_utils.TestInMemoryRunner(map)
 
   input_data = json.dumps(["0", "1"])
   expected_output = [
@@ -165,7 +167,7 @@ async def test_map_agent_with_map_agent():
       sub_agents=[inner_map],
   )
 
-  runner = TestInMemoryRunner(outer_map)
+  runner = testing_utils.TestInMemoryRunner(outer_map)
 
   input_data = json.dumps(
       [json.dumps([str(i), str(i + 1)]) for i in [10, 20, 30]]
@@ -202,7 +204,7 @@ async def test_map_agent_tree():
       sub_agents=[main_loop],
   )
 
-  runner = TestInMemoryRunner(outer_map)
+  runner = testing_utils.TestInMemoryRunner(outer_map)
 
   input_data = json.dumps(["0", "1"])
   expected_output = [
@@ -219,7 +221,7 @@ async def test_map_agent_tree():
 @pytest.mark.asyncio
 async def test_map_agent_callback_event_branch():
   def callback(callback_context: CallbackContext) -> types.Content:
-    return ModelContent([types.Part(text="OK")])
+    return testing_utils.ModelContent([types.Part(text="OK")])
 
   agent = MapAgent(
       name="map_agent",
@@ -227,13 +229,13 @@ async def test_map_agent_callback_event_branch():
       after_agent_callback=callback,
   )
 
-  runner = TestInMemoryRunner(agent)
+  runner = testing_utils.TestInMemoryRunner(agent)
   events = await runner.run_async_with_new_session(json.dumps(["0"]))
 
   event = events[-1]
   assert event.branch is None
   assert event.author == agent.name
-  assert event.content == ModelContent([types.Part(text="OK")])
+  assert event.content == testing_utils.ModelContent([types.Part(text="OK")])
 
 
 @pytest.mark.asyncio
@@ -257,5 +259,29 @@ async def test_map_agent_sub_agent_cloned_with_correct_parent():
       sub_agents=[sub_agent],
   )
 
-  runner = TestInMemoryRunner(map_agent)
+  runner = testing_utils.TestInMemoryRunner(map_agent)
   await runner.run_async_with_new_session(json.dumps(["0"]))
+
+
+@pytest.mark.asyncio
+async def test_map_agent_errors():
+  """Map agent can only operate on a list input. Should crash on Dev Error"""
+  with pytest.raises(ValidationError):
+    MapAgent(
+        name="map_agent",
+        sub_agents=[],
+    )
+  with pytest.raises(ValidationError):
+    MapAgent(
+        name="map_agent",
+        sub_agents=[LlmAgent(name="mock_0"), LlmAgent(name="mock_1")],
+    )
+
+  map_agent = MapAgent(
+      name="map_agent",
+      sub_agents=[LlmAgent(name="mock", model=OneTwoThreeModel())],
+  )
+  runner = testing_utils.TestInMemoryRunner(map_agent)
+
+  with pytest.raises(ValidationError):
+    await runner.run_async_with_new_session("Not a list")
