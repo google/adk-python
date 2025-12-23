@@ -1,5 +1,6 @@
 from typing import Annotated
 from typing import AsyncGenerator
+from typing import Optional
 
 from annotated_types import Len
 from google.adk.agents import BaseAgent
@@ -43,16 +44,24 @@ class MapAgent(BaseAgent):
     # for agent naming - e.g. if there are 100-999 prompts, sub-agent copies are named 001, 002, 003 and so on
     number_field_width = len(str(len(prompts)))
 
+    # Clone the sub-agent's tree for each prompt
+    sub_agents = [
+        self._branch_agent_tree(self.sub_agents[0], i, number_field_width)
+        for i, _ in enumerate(prompts)
+    ]
+
+    # Set the map agent as the parent of the clones
+    self.clone(update={"sub_agents": sub_agents})
+
     # Create a separate invocation context for each prompt, each with a numbered copy of the sub-agent.
     contexts = [
         self._branch_context(
             invocation_context,
-            idx=i,
-            prompt=prompt,
+            agent=agent,
             invoker=invoker,
-            width=number_field_width,
+            prompt=prompt,
         )
-        for i, prompt in enumerate(prompts)
+        for prompt, agent in zip(prompts, sub_agents)
     ]
 
     async for event in _merge_agent_run(
@@ -97,27 +106,21 @@ class MapAgent(BaseAgent):
       self,
       ctx: InvocationContext,
       *,
-      prompt: str,
+      agent: BaseAgent,
       invoker: str,
-      idx: int,
-      width: int,
+      prompt: str,
   ) -> InvocationContext:
-    """Creates a numbered copy of the sub-agent that sees a single prompt, and can run separately from its siblings.
+    """Creates a an invocation context for invoking a sub-agent clone with a single prompt.
 
     Args:
         ctx: The current invocation context of the map agent. To be copied and edited for the sub-agent copy.
-        prompt: the prompt on which the sub-agent copy should be invoked
+        agent: the sub-agent clone to be invoked in the returned context.
         invoker: the invoker of the map agent in this invocation.
-        idx: index of the prompt in the input prompts, serves as a unique postfix to the agent name
-        width: number of digits in the total number of prompts, to ensure naming is consistent in field width
-            (e.g. 001, 002, ... 010, 011, ... 100, 101; and not 1, 2, ... 10, 11, ... 100, 101)
+        prompt: the prompt on which the sub-agent copy should be invoked
 
     Returns:
         InvocationContext: A new invocation context ready to run with the unique sub-agent copy and the prompt
     """
-
-    agent = self._branch_agent_tree(self.sub_agents[0], idx, width)
-
     prompt_part = [types.Part(text=prompt)]
 
     # Add the prompt to the user_content of this branch to easily access agent input in callbacks
@@ -145,12 +148,17 @@ class MapAgent(BaseAgent):
   ) -> BaseAgent:
     """
     Clone and rename an agent and its sub-tree to create a thread-safe branch.
+    Args:
+        agent: the root of the current sub-agent tree - in the first call it is the main sub-agent of the map agent
+        idx: index of the prompt in the input prompts, serves as a unique postfix to the agent name
+        width: number of digits in the total number of prompts, to ensure naming is consistent in field width
+            (e.g. 001, 002, ... 010, 011, ... 100, 101; and not 1, 2, ... 10, 11, ... 100, 101)
     """
-    new_agent = agent.model_copy(
-        update={"name": self._get_unique_name(agent.name, idx=idx, width=width)}
-    )
-
-    new_agent.sub_agents = [
+    new_name = self._get_unique_name(agent.name, idx=idx, width=width)
+    new_sub_agents = [
         self._branch_agent_tree(a, idx, width) for a in agent.sub_agents
     ]
+    new_agent = agent.clone(
+        update={"name": new_name, "sub_agents": new_sub_agents}
+    )
     return new_agent

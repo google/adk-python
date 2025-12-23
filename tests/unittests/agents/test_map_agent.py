@@ -218,20 +218,44 @@ async def test_map_agent_tree():
 
 @pytest.mark.asyncio
 async def test_map_agent_callback_event_branch():
-    def callback(callback_context: CallbackContext) -> types.Content:
-        return ModelContent([types.Part(text="OK")])
+  def callback(callback_context: CallbackContext) -> types.Content:
+    return ModelContent([types.Part(text="OK")])
 
-    agent = MapAgent(
-        name="map_agent",
-        sub_agents=[LlmAgent(name="mock", model=OneTwoThreeModel())],
-        after_agent_callback=callback
-    )
+  agent = MapAgent(
+      name="map_agent",
+      sub_agents=[LlmAgent(name="mock", model=OneTwoThreeModel())],
+      after_agent_callback=callback,
+  )
 
-    runner = TestInMemoryRunner(agent)
-    events = await runner.run_async_with_new_session(json.dumps(["0"]))
+  runner = TestInMemoryRunner(agent)
+  events = await runner.run_async_with_new_session(json.dumps(["0"]))
 
-    event = events[-1]
-    assert event.branch is None
-    assert event.author == agent.name
-    assert event.content == ModelContent([types.Part(text="OK")])
+  event = events[-1]
+  assert event.branch is None
+  assert event.author == agent.name
+  assert event.content == ModelContent([types.Part(text="OK")])
 
+
+@pytest.mark.asyncio
+async def test_map_agent_sub_agent_cloned_with_correct_parent():
+  def callback(callback_context: CallbackContext) -> None:
+    current = callback_context._invocation_context.agent
+    parent = current.parent_agent
+    assert parent is not None
+    assert parent.sub_agents[0] == current
+    assert current.name == "sub_agent_0"
+    assert current.sub_agents[0].name == "mock_0"
+
+  sub_agent = SequentialAgent(
+      name="sub_agent",
+      sub_agents=[LlmAgent(name="mock", model=OneTwoThreeModel())],
+      after_agent_callback=callback,
+  )
+
+  map_agent = MapAgent(
+      name="map_agent",
+      sub_agents=[sub_agent],
+  )
+
+  runner = TestInMemoryRunner(map_agent)
+  await runner.run_async_with_new_session(json.dumps(["0"]))
