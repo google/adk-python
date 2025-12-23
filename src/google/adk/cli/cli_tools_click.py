@@ -1685,6 +1685,7 @@ def cli_deploy_agent_engine(
       --staging_bucket=[staging_bucket] --display_name=[app_name]
       my_agent
   """
+  logging.getLogger("vertexai_genai.agentengines").setLevel(logging.INFO)
   try:
     cli_deploy.to_agent_engine(
         agent_folder=agent,
