@@ -4,8 +4,10 @@ from typing import AsyncGenerator
 from annotated_types import Len
 from google.adk.agents import BaseAgent
 from google.adk.agents.invocation_context import InvocationContext
+from google.adk.agents.parallel_agent import _create_branch_ctx_for_sub_agent
 from google.adk.agents.parallel_agent import _merge_agent_run
 from google.adk.events import Event
+from google.adk.flows.llm_flows.contents import _should_include_event_in_context
 from google.genai import types
 from pydantic import Field
 from pydantic import RootModel
@@ -36,8 +38,6 @@ class MapAgent(BaseAgent):
     """
 
     # Create a branch string if it doesn't exist, to ensure parallel invocations don't interfere with each other
-    invocation_context.branch = invocation_context.branch or self.name
-
     prompts, invoker = self._extract_input_prompts(invocation_context)
 
     # for agent naming - e.g. if there are 100-999 prompts, sub-agent copies are named 001, 002, 003 and so on
@@ -71,9 +71,7 @@ class MapAgent(BaseAgent):
 
     for i in range(len(ctx.session.events) - 1, -1, -1):
       event = ctx.session.events[i]
-      if event.branch is None or (
-          ctx.branch is not None and event.branch.startswith(ctx.branch)
-      ):
+      if _should_include_event_in_context(ctx.branch, event):
         break
     else:
       return [], "user"
@@ -122,7 +120,6 @@ class MapAgent(BaseAgent):
 
     agent = self._branch_agent_tree(self.sub_agents[0], idx, width)
 
-    branch = f"{ctx.branch}.{agent.name}"
     prompt_part = [types.Part(text=prompt)]
 
     # Add the prompt to the user_content of this branch to easily access agent input in callbacks
@@ -130,8 +127,9 @@ class MapAgent(BaseAgent):
         role="user",
         parts=((ctx.user_content or types.Content()).parts or []) + prompt_part,
     )
-    new_ctx = ctx.model_copy(
-        update=dict(branch=branch, agent=agent, user_content=user_content)
+
+    new_ctx = _create_branch_ctx_for_sub_agent(self, agent, ctx).model_copy(
+        update=dict(agent=agent, user_content=user_content)
     )
 
     # Add the prompt as a temporary event of this branch in place of the prompt list as the natural input of the sub-agent.
@@ -139,7 +137,7 @@ class MapAgent(BaseAgent):
         role="user" if invoker == "user" else "model", parts=prompt_part
     )
     new_ctx.session.events.append(
-        Event(author=invoker, branch=branch, content=prompt_content)
+        Event(author=invoker, branch=new_ctx.branch, content=prompt_content)
     )
 
     return new_ctx

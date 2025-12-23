@@ -214,3 +214,24 @@ async def test_map_agent_tree():
   res = extract_event_text(events, "mock_")
 
   assert res == expected_output
+
+
+@pytest.mark.asyncio
+async def test_map_agent_callback_event_branch():
+    def callback(callback_context: CallbackContext) -> types.Content:
+        return ModelContent([types.Part(text="OK")])
+
+    agent = MapAgent(
+        name="map_agent",
+        sub_agents=[LlmAgent(name="mock", model=OneTwoThreeModel())],
+        after_agent_callback=callback
+    )
+
+    runner = TestInMemoryRunner(agent)
+    events = await runner.run_async_with_new_session(json.dumps(["0"]))
+
+    event = events[-1]
+    assert event.branch is None
+    assert event.author == agent.name
+    assert event.content == ModelContent([types.Part(text="OK")])
+
