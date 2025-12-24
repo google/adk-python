@@ -1,3 +1,4 @@
+import sys
 from typing import Annotated
 from typing import AsyncGenerator
 
@@ -6,12 +7,15 @@ from google.adk.agents import BaseAgent
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.parallel_agent import _create_branch_ctx_for_sub_agent
 from google.adk.agents.parallel_agent import _merge_agent_run
+from google.adk.agents.parallel_agent import _merge_agent_run_pre_3_11
 from google.adk.events import Event
 from google.adk.flows.llm_flows.contents import _should_include_event_in_context
 from google.genai import types
 from pydantic import Field
 from pydantic import RootModel
 from typing_extensions import override
+
+from ..utils.context_utils import Aclosing
 
 
 class MapAgent(BaseAgent):
@@ -63,10 +67,16 @@ class MapAgent(BaseAgent):
         for prompt, agent in zip(prompts, sub_agents)
     ]
 
-    async for event in _merge_agent_run(
-        [ctx.agent.run_async(ctx) for ctx in contexts]
-    ):
-      yield event
+    agent_runs = [ctx.agent.run_async(ctx) for ctx in contexts]
+
+    merge_func = (
+        _merge_agent_run
+        if sys.version_info >= (3, 11)
+        else _merge_agent_run_pre_3_11
+    )
+    async with Aclosing(merge_func(agent_runs)) as agen:
+      async for event in agen:
+        yield event
 
   def _extract_input_prompts(
       self, ctx: InvocationContext
