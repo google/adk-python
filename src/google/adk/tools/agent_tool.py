@@ -188,8 +188,7 @@ class AgentTool(BaseTool):
 
     if not last_content:
       return ''
-    parts = last_content.parts or []
-    merged_text = '\n'.join(p.text for p in parts if p.text)
+    merged_text = '\n'.join(p.text for p in (last_content.parts or []) if p.text)
     if isinstance(self.agent, LlmAgent) and self.agent.output_schema:
       tool_result = self.agent.output_schema.model_validate_json(
           merged_text
