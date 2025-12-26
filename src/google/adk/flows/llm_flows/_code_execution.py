@@ -205,8 +205,9 @@ async def _run_pre_processor(
   # [Step 1] Extract data files from the session_history and store them in
   # memory. Meanwhile, mutate the inline data file to text part in session
   # history from all turns.
+  # CRITICAL FIX: Also pass the invocation_context to access session.events
   all_input_files = _extract_and_replace_inline_files(
-      code_executor_context, llm_request
+      code_executor_context, llm_request, invocation_context
   )
 
   # [Step 2] Run Explore_Df code on the data files from the current turn. We
@@ -375,20 +376,33 @@ async def _run_post_processor(
 def _extract_and_replace_inline_files(
     code_executor_context: CodeExecutorContext,
     llm_request: LlmRequest,
+    invocation_context: InvocationContext,
 ) -> list[File]:
-  """Extracts and replaces inline files with file names in the LLM request."""
+  """Extracts and replaces inline files with file names in the LLM request.
+
+  FIX: This function now modifies BOTH llm_request.contents AND
+  session.events to ensure inline_data replacement persists across turns.
+  """
   all_input_files = code_executor_context.get_input_files()
   saved_file_names = set(f.name for f in all_input_files)
 
-  # [Step 1] Process input files from LlmRequest and cache them in CodeExecutor.
+  # Track which session events need to be updated
+  events_to_update = {}
+
+  # Process input files from LlmRequest and cache them in CodeExecutor.
   for i in range(len(llm_request.contents)):
     content = llm_request.contents[i]
     # Only process the user message.
-    if content.role != 'user' and not content.parts:
+    if content.role != 'user' or not content.parts:
       continue
 
     for j in range(len(content.parts)):
       part = content.parts[j]
+
+      # Skip if already processed (already a placeholder)
+      if part.text and 'Available file:' in part.text:
+        continue
+
       # Skip if the inline data is not supported.
       if (
           not part.inline_data
@@ -399,21 +413,74 @@ def _extract_and_replace_inline_files(
       # Replace the inline data file with a file name placeholder.
       mime_type = part.inline_data.mime_type
       file_name = f'data_{i+1}_{j+1}' + _DATA_FILE_UTIL_MAP[mime_type].extension
-      llm_request.contents[i].parts[j] = types.Part(
-          text='\nAvailable file: `%s`\n' % file_name
-      )
+      placeholder_text = '\nAvailable file: `%s`\n' % file_name
+
+      # Store inline_data before replacing
+      inline_data_copy = part.inline_data
+
+      # Replace in llm_request
+      llm_request.contents[i].parts[j] = types.Part(text=placeholder_text)
+
+      # Find and update the corresponding session event
+      # to persist the replacement across turns
+      session = invocation_context.session
+      for event_idx, event in enumerate(session.events):
+        if (
+            event.content
+            and event.content.role == 'user'
+            and len(event.content.parts) > j
+        ):
+          event_part = event.content.parts[j]
+          # Match by inline_data content (comparing mime_type and data)
+          if (
+              event_part.inline_data
+              and event_part.inline_data.mime_type == mime_type
+              and event_part.inline_data.data == inline_data_copy.data
+          ):
+            # Mark this event/part for update
+            if event_idx not in events_to_update:
+              events_to_update[event_idx] = {}
+            events_to_update[event_idx][j] = placeholder_text
+            break
 
       # Add the inline data as input file to the code executor context.
       file = File(
           name=file_name,
           content=CodeExecutionUtils.get_encoded_file_content(
-              part.inline_data.data
+              inline_data_copy.data
           ).decode(),
           mime_type=mime_type,
       )
       if file_name not in saved_file_names:
         code_executor_context.add_input_files([file])
         all_input_files.append(file)
+        saved_file_names.add(file_name)
+
+  # Apply updates to session.events to persist across turns
+  session = invocation_context.session
+  for event_idx, parts_to_update in events_to_update.items():
+    event = session.events[event_idx]
+    # Create new parts list with replacements
+    updated_parts = list(event.content.parts)
+    for part_idx, placeholder_text in parts_to_update.items():
+      updated_parts[part_idx] = types.Part(text=placeholder_text)
+
+    # Create new content with updated parts
+    updated_content = types.Content(
+        role=event.content.role, parts=updated_parts
+    )
+
+    # Update the event in session (modify in place)
+    # Event is a Pydantic model, use model_copy() instead of dataclasses.replace()
+    session.events[event_idx] = event.model_copy(
+        update={'content': updated_content}
+    )
+
+    logger.debug(
+        'Replaced inline_data in session.events[%d] with placeholder: %s',
+        event_idx,
+        placeholder_text.strip(),
+    )
 
   return all_input_files
 
