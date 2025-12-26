@@ -209,6 +209,13 @@ class Runner:
     Raises:
         ValueError: If parameters are invalid.
     """
+    if plugins is not None:
+      warnings.warn(
+          'The `plugins` argument is deprecated. Please use the `app` argument'
+          ' to provide plugins instead.',
+          DeprecationWarning,
+      )
+
     if app:
       if app_name:
         raise ValueError(
@@ -234,12 +241,6 @@ class Runner:
       context_cache_config = None
       resumability_config = None
 
-    if plugins:
-      warnings.warn(
-          'The `plugins` argument is deprecated. Please use the `app` argument'
-          ' to provide plugins instead.',
-          DeprecationWarning,
-      )
     return app_name, agent, context_cache_config, resumability_config, plugins
 
   def _infer_agent_origin(
