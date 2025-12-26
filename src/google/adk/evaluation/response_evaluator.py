@@ -18,6 +18,7 @@ from typing import Optional
 
 from typing_extensions import override
 
+from .eval_case import ConversationScenario
 from .eval_case import Invocation
 from .eval_metrics import EvalMetric
 from .eval_metrics import Interval
@@ -100,6 +101,7 @@ class ResponseEvaluator(Evaluator):
       self,
       actual_invocations: list[Invocation],
       expected_invocations: Optional[list[Invocation]],
+      _: Optional[ConversationScenario] = None,
   ) -> EvaluationResult:
     # If the metric is response_match_score, just use the RougeEvaluator.
     if self._metric_name == PrebuiltMetrics.RESPONSE_MATCH_SCORE.value:

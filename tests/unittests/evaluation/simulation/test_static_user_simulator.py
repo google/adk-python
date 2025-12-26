@@ -14,9 +14,9 @@
 
 from __future__ import annotations
 
-from google.adk.evaluation import static_user_simulator
-from google.adk.evaluation import user_simulator
 from google.adk.evaluation.eval_case import Invocation
+from google.adk.evaluation.simulation import static_user_simulator
+from google.adk.evaluation.simulation import user_simulator
 from google.genai import types
 import pytest
 

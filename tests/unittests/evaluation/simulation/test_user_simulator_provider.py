@@ -16,10 +16,10 @@ from __future__ import annotations
 
 from google.adk.evaluation import conversation_scenarios
 from google.adk.evaluation import eval_case
-from google.adk.evaluation import user_simulator_provider
-from google.adk.evaluation.llm_backed_user_simulator import LlmBackedUserSimulator
-from google.adk.evaluation.llm_backed_user_simulator import LlmBackedUserSimulatorConfig
-from google.adk.evaluation.static_user_simulator import StaticUserSimulator
+from google.adk.evaluation.simulation import user_simulator_provider
+from google.adk.evaluation.simulation.llm_backed_user_simulator import LlmBackedUserSimulator
+from google.adk.evaluation.simulation.llm_backed_user_simulator import LlmBackedUserSimulatorConfig
+from google.adk.evaluation.simulation.static_user_simulator import StaticUserSimulator
 from google.genai import types
 import pytest
 
@@ -52,7 +52,7 @@ class TestUserSimulatorProvider:
   def test_provide_llm_backed_user_simulator(self, mocker):
     """Tests the case when a LlmBackedUserSimulator should be provided."""
     mock_llm_registry = mocker.patch(
-        'google.adk.evaluation.llm_backed_user_simulator.LLMRegistry',
+        'google.adk.evaluation.simulation.llm_backed_user_simulator.LLMRegistry',
         autospec=True,
     )
     mock_llm_registry.return_value.resolve.return_value = mocker.Mock()

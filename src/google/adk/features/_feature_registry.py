@@ -24,9 +24,17 @@ from ..utils.env_utils import is_env_enabled
 class FeatureName(str, Enum):
   """Feature names."""
 
+  BIG_QUERY_TOOLSET = "BIG_QUERY_TOOLSET"
+  BIG_QUERY_TOOL_CONFIG = "BIG_QUERY_TOOL_CONFIG"
+  BIGTABLE_TOOL_SETTINGS = "BIGTABLE_TOOL_SETTINGS"
   COMPUTER_USE = "COMPUTER_USE"
+  GOOGLE_CREDENTIALS_CONFIG = "GOOGLE_CREDENTIALS_CONFIG"
+  GOOGLE_TOOL = "GOOGLE_TOOL"
   JSON_SCHEMA_FOR_FUNC_DECL = "JSON_SCHEMA_FOR_FUNC_DECL"
   PROGRESSIVE_SSE_STREAMING = "PROGRESSIVE_SSE_STREAMING"
+  PUBSUB_TOOLSET = "PUBSUB_TOOLSET"
+  SPANNER_TOOLSET = "SPANNER_TOOLSET"
+  SPANNER_TOOL_SETTINGS = "SPANNER_TOOL_SETTINGS"
 
 
 class FeatureStage(Enum):
@@ -59,19 +67,46 @@ class FeatureConfig:
 
 # Central registry: FeatureName -> FeatureConfig
 _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
+    FeatureName.BIG_QUERY_TOOLSET: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
+    FeatureName.BIG_QUERY_TOOL_CONFIG: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
+    FeatureName.BIGTABLE_TOOL_SETTINGS: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
     FeatureName.COMPUTER_USE: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
+    FeatureName.GOOGLE_CREDENTIALS_CONFIG: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
+    FeatureName.GOOGLE_TOOL: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
     FeatureName.JSON_SCHEMA_FOR_FUNC_DECL: FeatureConfig(
         FeatureStage.WIP, default_on=False
     ),
     FeatureName.PROGRESSIVE_SSE_STREAMING: FeatureConfig(
-        FeatureStage.WIP, default_on=False
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
+    FeatureName.PUBSUB_TOOLSET: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
+    FeatureName.SPANNER_TOOLSET: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
+    FeatureName.SPANNER_TOOL_SETTINGS: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
     ),
 }
 
 # Track which experimental features have already warned (warn only once)
 _WARNED_FEATURES: set[FeatureName] = set()
+
+# Programmatic overrides (highest priority, checked before env vars)
+_FEATURE_OVERRIDES: dict[FeatureName, bool] = {}
 
 
 def _get_feature_config(
@@ -101,11 +136,44 @@ def _register_feature(
   _FEATURE_REGISTRY[feature_name] = config
 
 
+def override_feature_enabled(
+    feature_name: FeatureName,
+    enabled: bool,
+) -> None:
+  """Programmatically override a feature's enabled state.
+
+  This override takes highest priority, superseding environment variables
+  and registry defaults. Use this when environment variables are not
+  available or practical in your deployment environment.
+
+  Args:
+    feature_name: The feature name to override.
+    enabled: Whether the feature should be enabled.
+
+  Example:
+    ```python
+    from google.adk.features import FeatureName, override_feature_enabled
+
+    # Enable a feature programmatically
+    override_feature_enabled(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL, True)
+    ```
+  """
+  config = _get_feature_config(feature_name)
+  if config is None:
+    raise ValueError(f"Feature {feature_name} is not registered.")
+  _FEATURE_OVERRIDES[feature_name] = enabled
+
+
 def is_feature_enabled(feature_name: FeatureName) -> bool:
   """Check if a feature is enabled at runtime.
 
   This function is used for runtime behavior gating within stable features.
   It allows you to conditionally enable new behavior based on feature flags.
+
+  Priority order (highest to lowest):
+    1. Programmatic overrides (via override_feature_enabled)
+    2. Environment variables (ADK_ENABLE_* / ADK_DISABLE_*)
+    3. Registry defaults
 
   Args:
     feature_name: The feature name (e.g., FeatureName.RESUMABILITY).
@@ -128,7 +196,14 @@ def is_feature_enabled(feature_name: FeatureName) -> bool:
   if config is None:
     raise ValueError(f"Feature {feature_name} is not registered.")
 
-  # Check environment variables first (highest priority)
+  # Check programmatic overrides first (highest priority)
+  if feature_name in _FEATURE_OVERRIDES:
+    enabled = _FEATURE_OVERRIDES[feature_name]
+    if enabled and config.stage != FeatureStage.STABLE:
+      _emit_non_stable_warning_once(feature_name, config.stage)
+    return enabled
+
+  # Check environment variables second
   feature_name_str = (
       feature_name.value
       if isinstance(feature_name, FeatureName)

@@ -16,6 +16,7 @@
 
 from enum import Enum
 from functools import partial
+import logging
 from typing import AsyncGenerator
 from typing import List
 from typing import Optional
@@ -852,6 +853,112 @@ def test_set_parent_agent_for_sub_agent_twice(
         name=f'{request.function.__name__}_parent_2',
         sub_agents=[sub_agent],
     )
+
+
+def test_validate_sub_agents_unique_names_single_duplicate(
+    request: pytest.FixtureRequest,
+    caplog: pytest.LogCaptureFixture,
+):
+  """Test that duplicate sub-agent names logs a warning."""
+  duplicate_name = f'{request.function.__name__}_duplicate_agent'
+  sub_agent_1 = _TestingAgent(name=duplicate_name)
+  sub_agent_2 = _TestingAgent(name=duplicate_name)
+
+  with caplog.at_level(logging.WARNING):
+    _ = _TestingAgent(
+        name=f'{request.function.__name__}_parent',
+        sub_agents=[sub_agent_1, sub_agent_2],
+    )
+  assert f'Found duplicate sub-agent names: `{duplicate_name}`' in caplog.text
+
+
+def test_validate_sub_agents_unique_names_multiple_duplicates(
+    request: pytest.FixtureRequest,
+    caplog: pytest.LogCaptureFixture,
+):
+  """Test that multiple duplicate sub-agent names are all reported."""
+  duplicate_name_1 = f'{request.function.__name__}_duplicate_1'
+  duplicate_name_2 = f'{request.function.__name__}_duplicate_2'
+
+  sub_agents = [
+      _TestingAgent(name=duplicate_name_1),
+      _TestingAgent(name=f'{request.function.__name__}_unique'),
+      _TestingAgent(name=duplicate_name_1),  # First duplicate
+      _TestingAgent(name=duplicate_name_2),
+      _TestingAgent(name=duplicate_name_2),  # Second duplicate
+  ]
+
+  with caplog.at_level(logging.WARNING):
+    _ = _TestingAgent(
+        name=f'{request.function.__name__}_parent',
+        sub_agents=sub_agents,
+    )
+
+  # Verify each duplicate name appears exactly once in the error message
+  assert caplog.text.count(duplicate_name_1) == 1
+  assert caplog.text.count(duplicate_name_2) == 1
+  # Verify both duplicate names are present
+  assert duplicate_name_1 in caplog.text
+  assert duplicate_name_2 in caplog.text
+
+
+def test_validate_sub_agents_unique_names_triple_duplicate(
+    request: pytest.FixtureRequest,
+    caplog: pytest.LogCaptureFixture,
+):
+  """Test that a name appearing three times is reported only once."""
+  duplicate_name = f'{request.function.__name__}_triple_duplicate'
+
+  sub_agents = [
+      _TestingAgent(name=duplicate_name),
+      _TestingAgent(name=f'{request.function.__name__}_unique'),
+      _TestingAgent(name=duplicate_name),  # Second occurrence
+      _TestingAgent(name=duplicate_name),  # Third occurrence
+  ]
+
+  with caplog.at_level(logging.WARNING):
+    _ = _TestingAgent(
+        name=f'{request.function.__name__}_parent',
+        sub_agents=sub_agents,
+    )
+
+  # Verify the duplicate name appears exactly once in the error message
+  # (not three times even though it appears three times in the list)
+  assert caplog.text.count(duplicate_name) == 1
+  assert duplicate_name in caplog.text
+
+
+def test_validate_sub_agents_unique_names_no_duplicates(
+    request: pytest.FixtureRequest,
+):
+  """Test that unique sub-agent names pass validation."""
+  sub_agents = [
+      _TestingAgent(name=f'{request.function.__name__}_sub_agent_1'),
+      _TestingAgent(name=f'{request.function.__name__}_sub_agent_2'),
+      _TestingAgent(name=f'{request.function.__name__}_sub_agent_3'),
+  ]
+
+  parent = _TestingAgent(
+      name=f'{request.function.__name__}_parent',
+      sub_agents=sub_agents,
+  )
+
+  assert len(parent.sub_agents) == 3
+  assert parent.sub_agents[0].name == f'{request.function.__name__}_sub_agent_1'
+  assert parent.sub_agents[1].name == f'{request.function.__name__}_sub_agent_2'
+  assert parent.sub_agents[2].name == f'{request.function.__name__}_sub_agent_3'
+
+
+def test_validate_sub_agents_unique_names_empty_list(
+    request: pytest.FixtureRequest,
+):
+  """Test that empty sub-agents list passes validation."""
+  parent = _TestingAgent(
+      name=f'{request.function.__name__}_parent',
+      sub_agents=[],
+  )
+
+  assert len(parent.sub_agents) == 0
 
 
 if __name__ == '__main__':

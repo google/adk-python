@@ -34,12 +34,17 @@ def extract_model_name(model_string: str) -> str:
     The extracted model name (e.g., "gemini-2.5-pro")
   """
   # Pattern for path-based model names
-  path_pattern = (
-      r'^projects/[^/]+/locations/[^/]+/publishers/[^/]+/models/(.+)$'
+  # Need to support both Vertex/Gemini and Apigee model paths.
+  path_patterns = (
+      r'^projects/[^/]+/locations/[^/]+/publishers/[^/]+/models/(.+)$',
+      r'^apigee/(?:[^/]+/)?(?:[^/]+/)?(.+)$',
   )
-  match = re.match(path_pattern, model_string)
-  if match:
-    return match.group(1)
+  # Check against all path-based patterns
+  for pattern in path_patterns:
+    match = re.match(pattern, model_string)
+    if match:
+      # Return the captured group (the model name)
+      return match.group(1)
 
   # Handle 'models/' prefixed names like "models/gemini-2.5-pro"
   if model_string.startswith('models/'):

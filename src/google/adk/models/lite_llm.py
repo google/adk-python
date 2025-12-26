@@ -15,10 +15,13 @@
 from __future__ import annotations
 
 import base64
+import copy
 import json
 import logging
+import mimetypes
 import os
 import re
+import sys
 from typing import Any
 from typing import AsyncGenerator
 from typing import cast
@@ -31,6 +34,7 @@ from typing import Optional
 from typing import Tuple
 from typing import TypedDict
 from typing import Union
+from urllib.parse import urlparse
 import uuid
 import warnings
 
@@ -82,9 +86,94 @@ _FINISH_REASON_MAPPING = {
     "content_filter": types.FinishReason.SAFETY,
 }
 
-_SUPPORTED_FILE_CONTENT_MIME_TYPES = set(
-    ["application/pdf", "application/json"]
-)
+# File MIME types supported for upload as file content (not decoded as text).
+# Note: text/* types are handled separately and decoded as text content.
+# These types are uploaded as files to providers that support it.
+_SUPPORTED_FILE_CONTENT_MIME_TYPES = frozenset({
+    # Documents
+    "application/pdf",
+    "application/msword",  # .doc
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",  # .docx
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",  # .pptx
+    # Data formats
+    "application/json",
+    # Scripts (when not detected as text/*)
+    "application/x-sh",  # .sh (Python mimetypes returns this)
+})
+
+# Providers that require file_id instead of inline file_data
+_FILE_ID_REQUIRED_PROVIDERS = frozenset({"openai", "azure"})
+
+
+def _get_provider_from_model(model: str) -> str:
+  """Extracts the provider name from a LiteLLM model string.
+
+  Args:
+    model: The model string (e.g., "openai/gpt-4o", "azure/gpt-4").
+
+  Returns:
+    The provider name or empty string if not determinable.
+  """
+  if not model:
+    return ""
+  # LiteLLM uses "provider/model" format
+  if "/" in model:
+    provider, _ = model.split("/", 1)
+    return provider.lower()
+  # Fallback heuristics for common patterns
+  model_lower = model.lower()
+  if "azure" in model_lower:
+    return "azure"
+  # Note: The 'openai' check is based on current naming conventions (e.g., gpt-, o1).
+  # This might need updates if OpenAI introduces new model families with different prefixes.
+  if model_lower.startswith("gpt-") or model_lower.startswith("o1"):
+    return "openai"
+  return ""
+
+
+# Default MIME type when none can be inferred
+_DEFAULT_MIME_TYPE = "application/octet-stream"
+
+
+def _infer_mime_type_from_uri(uri: str) -> Optional[str]:
+  """Attempts to infer MIME type from a URI's path extension.
+
+  Args:
+    uri: A URI string (e.g., 'gs://bucket/file.pdf' or
+      'https://example.com/doc.json')
+
+  Returns:
+    The inferred MIME type, or None if it cannot be determined.
+  """
+  try:
+    parsed = urlparse(uri)
+    # Get the path component and extract filename
+    path = parsed.path
+    if not path:
+      return None
+
+    # Many artifact URIs are versioned (for example, ".../filename/0" or
+    # ".../filename/versions/0"). If the last path segment looks like a numeric
+    # version, infer from the preceding filename instead.
+    segments = [segment for segment in path.split("/") if segment]
+    if not segments:
+      return None
+
+    candidate = segments[-1]
+    if candidate.isdigit():
+      segments = segments[:-1]
+      if segments and segments[-1].lower() in ("versions", "version"):
+        segments = segments[:-1]
+
+    if not segments:
+      return None
+
+    candidate = segments[-1]
+    mime_type, _ = mimetypes.guess_type(candidate)
+    return mime_type
+  except (ValueError, AttributeError) as e:
+    logger.debug("Could not infer MIME type from URI %s: %s", uri, e)
+    return None
 
 
 def _decode_inline_text_data(raw_bytes: bytes) -> str:
@@ -349,8 +438,10 @@ def _extract_cached_prompt_tokens(usage: Any) -> int:
   return 0
 
 
-def _content_to_message_param(
+async def _content_to_message_param(
     content: types.Content,
+    *,
+    provider: str = "",
 ) -> Union[Message, list[Message]]:
   """Converts a types.Content to a litellm Message or list of Messages.
 
@@ -359,6 +450,7 @@ def _content_to_message_param(
 
   Args:
     content: The content to convert.
+    provider: The LLM provider name (e.g., "openai", "azure").
 
   Returns:
     A litellm Message, a list of litellm Messages.
@@ -367,11 +459,17 @@ def _content_to_message_param(
   tool_messages = []
   for part in content.parts:
     if part.function_response:
+      response = part.function_response.response
+      response_content = (
+          response
+          if isinstance(response, str)
+          else _safe_json_serialize(response)
+      )
       tool_messages.append(
           ChatCompletionToolMessage(
               role="tool",
               tool_call_id=part.function_response.id,
-              content=_safe_json_serialize(part.function_response.response),
+              content=response_content,
           )
       )
   if tool_messages:
@@ -379,7 +477,7 @@ def _content_to_message_param(
 
   # Handle user or assistant messages
   role = _to_litellm_role(content.role)
-  message_content = _get_content(content.parts) or None
+  message_content = await _get_content(content.parts, provider=provider) or None
 
   if role == "user":
     return ChatCompletionUserMessage(role="user", content=message_content)
@@ -418,13 +516,16 @@ def _content_to_message_param(
     )
 
 
-def _get_content(
+async def _get_content(
     parts: Iterable[types.Part],
+    *,
+    provider: str = "",
 ) -> Union[OpenAIMessageContent, str]:
   """Converts a list of parts to litellm content.
 
   Args:
     parts: The parts to convert.
+    provider: The LLM provider name (e.g., "openai", "azure").
 
   Returns:
     The litellm content.
@@ -474,10 +575,22 @@ def _get_content(
             "audio_url": {"url": data_uri},
         })
       elif part.inline_data.mime_type in _SUPPORTED_FILE_CONTENT_MIME_TYPES:
-        content_objects.append({
-            "type": "file",
-            "file": {"file_data": data_uri},
-        })
+        # OpenAI/Azure require file_id from uploaded file, not inline data
+        if provider in _FILE_ID_REQUIRED_PROVIDERS:
+          file_response = await litellm.acreate_file(
+              file=part.inline_data.data,
+              purpose="assistants",
+              custom_llm_provider=provider,
+          )
+          content_objects.append({
+              "type": "file",
+              "file": {"file_id": file_response.id},
+          })
+        else:
+          content_objects.append({
+              "type": "file",
+              "file": {"file_data": data_uri},
+          })
       else:
         raise ValueError(
             "LiteLlm(BaseLlm) does not support content part with MIME type "
@@ -487,12 +600,129 @@ def _get_content(
       file_object: ChatCompletionFileUrlObject = {
           "file_id": part.file_data.file_uri,
       }
+      # Determine MIME type: use explicit value, infer from URI, or use default
+      mime_type = part.file_data.mime_type
+      if not mime_type:
+        mime_type = _infer_mime_type_from_uri(part.file_data.file_uri)
+      if not mime_type and part.file_data.display_name:
+        guessed_mime_type, _ = mimetypes.guess_type(part.file_data.display_name)
+        mime_type = guessed_mime_type
+      if not mime_type:
+        # LiteLLM's Vertex AI backend requires format for GCS URIs
+        mime_type = _DEFAULT_MIME_TYPE
+        logger.debug(
+            "Could not determine MIME type for file_uri %s, using default: %s",
+            part.file_data.file_uri,
+            mime_type,
+        )
+      file_object["format"] = mime_type
       content_objects.append({
           "type": "file",
           "file": file_object,
       })
 
   return content_objects
+
+
+def _is_ollama_chat_provider(
+    model: Optional[str], custom_llm_provider: Optional[str]
+) -> bool:
+  """Returns True when requests should be normalized for ollama_chat."""
+  if (
+      custom_llm_provider
+      and custom_llm_provider.strip().lower() == "ollama_chat"
+  ):
+    return True
+  if model and model.strip().lower().startswith("ollama_chat"):
+    return True
+  return False
+
+
+def _flatten_ollama_content(
+    content: OpenAIMessageContent | str | None,
+) -> str | None:
+  """Flattens multipart content to text for ollama_chat compatibility.
+
+  Ollama's chat endpoint rejects arrays for `content`. We keep textual parts,
+  join them with newlines, and fall back to a JSON string for non-text content.
+  If both text and non-text parts are present, only the text parts are kept.
+  """
+  if content is None or isinstance(content, str):
+    return content
+
+  # `OpenAIMessageContent` is typed as `Iterable[...]` in LiteLLM. Some
+  # providers or LiteLLM versions may hand back tuples or other iterables.
+  if isinstance(content, dict):
+    try:
+      return json.dumps(content)
+    except TypeError:
+      return str(content)
+
+  try:
+    blocks = list(content)
+  except TypeError:
+    return str(content)
+
+  text_parts = []
+  for block in blocks:
+    if isinstance(block, dict) and block.get("type") == "text":
+      text_value = block.get("text")
+      if text_value:
+        text_parts.append(text_value)
+
+  if text_parts:
+    return _NEW_LINE.join(text_parts)
+
+  try:
+    return json.dumps(blocks)
+  except TypeError:
+    return str(blocks)
+
+
+def _normalize_ollama_chat_messages(
+    messages: list[Message],
+    *,
+    model: Optional[str] = None,
+    custom_llm_provider: Optional[str] = None,
+) -> list[Message]:
+  """Normalizes message payloads for ollama_chat provider.
+
+  The provider expects string content. Convert multipart content to text while
+  leaving other providers untouched.
+  """
+  if not _is_ollama_chat_provider(model, custom_llm_provider):
+    return messages
+
+  normalized_messages: list[Message] = []
+  for message in messages:
+    if isinstance(message, dict):
+      message_copy = dict(message)
+      message_copy["content"] = _flatten_ollama_content(
+          message_copy.get("content")
+      )
+      normalized_messages.append(message_copy)
+      continue
+
+    message_copy = (
+        message.model_copy()
+        if hasattr(message, "model_copy")
+        else copy.copy(message)
+    )
+    if hasattr(message_copy, "content"):
+      flattened_content = _flatten_ollama_content(
+          getattr(message_copy, "content")
+      )
+      try:
+        setattr(message_copy, "content", flattened_content)
+      except AttributeError as e:
+        logger.debug(
+            "Failed to set 'content' attribute on message of type %s: %s",
+            type(message_copy).__name__,
+            e,
+        )
+    normalized_messages.append(message_copy)
+
+  return normalized_messages
 
 
 def _build_tool_call_from_json_dict(
@@ -918,8 +1148,20 @@ def _message_to_generate_content_response(
 
 def _to_litellm_response_format(
     response_schema: types.SchemaUnion,
-) -> Optional[Dict[str, Any]]:
-  """Converts ADK response schema objects into LiteLLM-compatible payloads."""
+    model: str,
+) -> dict[str, Any] | None:
+  """Converts ADK response schema objects into LiteLLM-compatible payloads.
+
+  Args:
+    response_schema: The response schema to convert.
+    model: The model string to determine the appropriate format. Gemini models
+      use 'response_schema' key, while OpenAI-compatible models use
+      'json_schema' key.
+
+  Returns:
+    A dictionary with the appropriate response format for LiteLLM.
+  """
+  schema_name = "response"
 
   if isinstance(response_schema, dict):
     schema_type = response_schema.get("type")
@@ -929,18 +1171,25 @@ def _to_litellm_response_format(
     ):
       return response_schema
     schema_dict = dict(response_schema)
+    if "title" in schema_dict:
+      schema_name = str(schema_dict["title"])
   elif isinstance(response_schema, type) and issubclass(
       response_schema, BaseModel
   ):
     schema_dict = response_schema.model_json_schema()
+    schema_name = response_schema.__name__
   elif isinstance(response_schema, BaseModel):
     if isinstance(response_schema, types.Schema):
       # GenAI Schema instances already represent JSON schema definitions.
       schema_dict = response_schema.model_dump(exclude_none=True, mode="json")
+      if "title" in schema_dict:
+        schema_name = str(schema_dict["title"])
     else:
       schema_dict = response_schema.__class__.model_json_schema()
+      schema_name = response_schema.__class__.__name__
   elif hasattr(response_schema, "model_dump"):
     schema_dict = response_schema.model_dump(exclude_none=True, mode="json")
+    schema_name = response_schema.__class__.__name__
   else:
     logger.warning(
         "Unsupported response_schema type %s for LiteLLM structured outputs.",
@@ -948,14 +1197,37 @@ def _to_litellm_response_format(
     )
     return None
 
+  # Gemini models use a special response format with 'response_schema' key
+  if _is_litellm_gemini_model(model):
+    return {
+        "type": "json_object",
+        "response_schema": schema_dict,
+    }
+
+  # OpenAI-compatible format (default) per LiteLLM docs:
+  # https://docs.litellm.ai/docs/completion/json_mode
+  if (
+      isinstance(schema_dict, dict)
+      and schema_dict.get("type") == "object"
+      and "additionalProperties" not in schema_dict
+  ):
+    # OpenAI structured outputs require explicit additionalProperties: false.
+    schema_dict = dict(schema_dict)
+    schema_dict["additionalProperties"] = False
+
   return {
-      "type": "json_object",
-      "response_schema": schema_dict,
+      "type": "json_schema",
+      "json_schema": {
+          "name": schema_name,
+          "strict": True,
+          "schema": schema_dict,
+      },
   }
 
 
-def _get_completion_inputs(
+async def _get_completion_inputs(
     llm_request: LlmRequest,
+    model: str,
 ) -> Tuple[
     List[Message],
     Optional[List[Dict]],
@@ -966,15 +1238,21 @@ def _get_completion_inputs(
 
   Args:
     llm_request: The LlmRequest to convert.
+    model: The model string to use for determining provider-specific behavior.
 
   Returns:
     The litellm inputs (message list, tool dictionary, response format and
     generation params).
   """
+  # Determine provider for file handling
+  provider = _get_provider_from_model(model)
+
   # 1. Construct messages
   messages: List[Message] = []
   for content in llm_request.contents or []:
-    message_param_or_list = _content_to_message_param(content)
+    message_param_or_list = await _content_to_message_param(
+        content, provider=provider
+    )
     if isinstance(message_param_or_list, list):
       messages.extend(message_param_or_list)
     elif message_param_or_list:  # Ensure it's not None before appending
@@ -1002,14 +1280,15 @@ def _get_completion_inputs(
     ]
 
   # 3. Handle response format
-  response_format: Optional[Dict[str, Any]] = None
+  response_format: dict[str, Any] | None = None
   if llm_request.config and llm_request.config.response_schema:
     response_format = _to_litellm_response_format(
-        llm_request.config.response_schema
+        llm_request.config.response_schema,
+        model=model,
     )
 
   # 4. Extract generation parameters
-  generation_params: Optional[Dict] = None
+  generation_params: dict | None = None
   if llm_request.config:
     config_dict = llm_request.config.model_dump(exclude_none=True)
     # Generate LiteLlm parameters here,
@@ -1121,9 +1400,7 @@ def _is_litellm_gemini_model(model_string: str) -> bool:
   Returns:
     True if it's a Gemini model accessed via LiteLLM, False otherwise
   """
-  # Matches "gemini/gemini-*" (Google AI Studio) or "vertex_ai/gemini-*" (Vertex AI).
-  pattern = r"^(gemini|vertex_ai)/gemini-"
-  return bool(re.match(pattern, model_string))
+  return model_string.startswith(("gemini/gemini-", "vertex_ai/gemini-"))
 
 
 def _extract_gemini_model_from_litellm(litellm_model: str) -> str:
@@ -1170,6 +1447,30 @@ def _warn_gemini_via_litellm(model_string: str) -> None:
       category=UserWarning,
       stacklevel=3,
   )
+
+
+def _redirect_litellm_loggers_to_stdout() -> None:
+  """Redirects LiteLLM loggers from stderr to stdout.
+
+  LiteLLM creates StreamHandlers that output to stderr by default. In cloud
+  environments like GCP, stderr output is treated as ERROR severity regardless
+  of the actual log level. This function redirects LiteLLM loggers to stdout
+  so that INFO-level logs are not incorrectly classified as errors.
+  """
+  litellm_logger_names = ["LiteLLM", "LiteLLM Proxy", "LiteLLM Router"]
+  for logger_name in litellm_logger_names:
+    litellm_logger = logging.getLogger(logger_name)
+    for handler in litellm_logger.handlers:
+      if (
+          isinstance(handler, logging.StreamHandler)
+          and handler.stream is sys.stderr
+      ):
+        handler.stream = sys.stdout
+
+
+# Redirect LiteLLM loggers to stdout immediately after import to ensure
+# INFO-level logs are not incorrectly treated as errors in cloud environments.
+_redirect_litellm_loggers_to_stdout()
 
 
 class LiteLlm(BaseLlm):
@@ -1239,8 +1540,14 @@ class LiteLlm(BaseLlm):
     _append_fallback_user_content_if_missing(llm_request)
     logger.debug(_build_request_log(llm_request))
 
+    effective_model = llm_request.model or self.model
     messages, tools, response_format, generation_params = (
-        _get_completion_inputs(llm_request)
+        await _get_completion_inputs(llm_request, effective_model)
+    )
+    normalized_messages = _normalize_ollama_chat_messages(
+        messages,
+        model=effective_model,
+        custom_llm_provider=self._additional_args.get("custom_llm_provider"),
     )
 
     if "functions" in self._additional_args:
@@ -1248,8 +1555,8 @@ class LiteLlm(BaseLlm):
       tools = None
 
     completion_args = {
-        "model": llm_request.model or self.model,
-        "messages": messages,
+        "model": effective_model,
+        "messages": normalized_messages,
         "tools": tools,
         "response_format": response_format,
     }
@@ -1388,11 +1695,19 @@ class LiteLlm(BaseLlm):
   def supported_models(cls) -> list[str]:
     """Provides the list of supported models.
 
-    LiteLlm supports all models supported by litellm. We do not keep track of
-    these models here. So we return an empty list.
+    This registers common provider prefixes. LiteLlm can handle many more,
+    but these patterns activate the integration for the most common use cases.
+    See https://docs.litellm.ai/docs/providers for a full list.
 
     Returns:
       A list of supported models.
     """
 
-    return []
+    return [
+        # For OpenAI models (e.g., "openai/gpt-4o")
+        r"openai/.*",
+        # For Groq models via Groq API (e.g., "groq/llama3-70b-8192")
+        r"groq/.*",
+        # For Anthropic models (e.g., "anthropic/claude-3-opus-20240229")
+        r"anthropic/.*",
+    ]

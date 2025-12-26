@@ -512,7 +512,8 @@ def to_cloud_run(
     with_ui: Whether to deploy with UI.
     verbosity: The verbosity level of the CLI.
     adk_version: The ADK version to use in Cloud Run.
-    allow_origins: The list of allowed origins for the ADK api server.
+    allow_origins: Origins to allow for CORS. Can be literal origins or regex
+      patterns prefixed with 'regex:'.
     session_service_uri: The URI of the session service.
     artifact_service_uri: The URI of the artifact service.
     memory_service_uri: The URI of the memory service.
@@ -961,7 +962,8 @@ def to_gke(
     with_ui: Whether to deploy with UI.
     log_level: The logging level.
     adk_version: The ADK version to use in GKE.
-    allow_origins: The list of allowed origins for the ADK api server.
+    allow_origins: Origins to allow for CORS. Can be literal origins or regex
+      patterns prefixed with 'regex:'.
     session_service_uri: The URI of the session service.
     artifact_service_uri: The URI of the artifact service.
     memory_service_uri: The URI of the memory service.
