@@ -25,6 +25,7 @@ from google.adk.models.llm_request import LlmRequest
 from google.genai.types import Content
 from google.genai.types import FunctionCall
 from google.genai.types import FunctionResponse
+from google.genai.types import GenerateContentResponseUsageMetadata
 from google.genai.types import Part
 import pytest
 
@@ -57,7 +58,9 @@ class TestLlmEventSummarizer(unittest.IsolatedAsyncioTestCase):
     expected_prompt = self.compactor._DEFAULT_PROMPT_TEMPLATE.format(
         conversation_history=expected_conversation_history
     )
-    mock_llm_response = Mock(content=Content(parts=[Part(text='Summary')]))
+    mock_llm_response = Mock(
+        content=Content(parts=[Part(text='Summary')]), usage_metadata=None
+    )
 
     async def async_gen():
       yield mock_llm_response
@@ -90,11 +93,39 @@ class TestLlmEventSummarizer(unittest.IsolatedAsyncioTestCase):
     self.assertEqual(llm_request.contents[0].parts[0].text, expected_prompt)
     self.assertFalse(kwargs['stream'])
 
+  async def test_maybe_compact_events_includes_usage_metadata(self):
+    events = [
+        self._create_event(1.0, 'Hello', 'user'),
+        self._create_event(2.0, 'Hi there!', 'model'),
+    ]
+    usage_metadata = GenerateContentResponseUsageMetadata(
+        prompt_token_count=10,
+        candidates_token_count=5,
+        total_token_count=15,
+    )
+    mock_llm_response = Mock(
+        content=Content(parts=[Part(text='Summary')]),
+        usage_metadata=usage_metadata,
+    )
+
+    async def async_gen():
+      yield mock_llm_response
+
+    self.mock_llm.generate_content_async.return_value = async_gen()
+
+    compacted_event = await self.compactor.maybe_summarize_events(events=events)
+
+    self.assertIsNotNone(compacted_event)
+    self.assertIsNotNone(compacted_event.usage_metadata)
+    self.assertEqual(compacted_event.usage_metadata.prompt_token_count, 10)
+    self.assertEqual(compacted_event.usage_metadata.candidates_token_count, 5)
+    self.assertEqual(compacted_event.usage_metadata.total_token_count, 15)
+
   async def test_maybe_compact_events_empty_llm_response(self):
     events = [
         self._create_event(1.0, 'Hello', 'user'),
     ]
-    mock_llm_response = Mock(content=None)
+    mock_llm_response = Mock(content=None, usage_metadata=None)
 
     async def async_gen():
       yield mock_llm_response

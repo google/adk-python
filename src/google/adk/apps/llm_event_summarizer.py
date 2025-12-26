@@ -104,9 +104,12 @@ class LlmEventSummarizer(BaseEventsSummarizer):
         contents=[Content(role='user', parts=[Part(text=prompt)])],
     )
     summary_content = None
+    usage_metadata = None
     async for llm_response in self._llm.generate_content_async(
         llm_request, stream=False
     ):
+      if llm_response.usage_metadata is not None:
+        usage_metadata = llm_response.usage_metadata
       if llm_response.content:
         summary_content = llm_response.content
         break
@@ -132,4 +135,5 @@ class LlmEventSummarizer(BaseEventsSummarizer):
         author='user',
         actions=actions,
         invocation_id=Event.new_id(),
+        usage_metadata=usage_metadata,
     )
