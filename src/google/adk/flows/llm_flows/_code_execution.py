@@ -50,6 +50,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger('google_adk.' + __name__)
 
+_AVAILABLE_FILE_PREFIX = 'Available file:'
+
 
 @dataclasses.dataclass
 class DataFileUtil:
@@ -205,7 +207,6 @@ async def _run_pre_processor(
   # [Step 1] Extract data files from the session_history and store them in
   # memory. Meanwhile, mutate the inline data file to text part in session
   # history from all turns.
-  # CRITICAL FIX: Also pass the invocation_context to access session.events
   all_input_files = _extract_and_replace_inline_files(
       code_executor_context, llm_request, invocation_context
   )
@@ -380,8 +381,17 @@ def _extract_and_replace_inline_files(
 ) -> list[File]:
   """Extracts and replaces inline files with file names in the LLM request.
 
-  FIX: This function now modifies BOTH llm_request.contents AND
-  session.events to ensure inline_data replacement persists across turns.
+  This function modifies both `llm_request.contents` for the current request
+  and `invocation_context.session.events` to ensure the replacement of inline
+  data with placeholders persists across conversation turns.
+
+  Args:
+    code_executor_context: Context containing code executor state.
+    llm_request: The LLM request to process.
+    invocation_context: Context containing session information.
+
+  Returns:
+    List of extracted File objects.
   """
   all_input_files = code_executor_context.get_input_files()
   saved_file_names = set(f.name for f in all_input_files)
@@ -400,7 +410,7 @@ def _extract_and_replace_inline_files(
       part = content.parts[j]
 
       # Skip if already processed (already a placeholder)
-      if part.text and 'Available file:' in part.text:
+      if part.text and _AVAILABLE_FILE_PREFIX in part.text:
         continue
 
       # Skip if the inline data is not supported.
@@ -413,7 +423,7 @@ def _extract_and_replace_inline_files(
       # Replace the inline data file with a file name placeholder.
       mime_type = part.inline_data.mime_type
       file_name = f'data_{i+1}_{j+1}' + _DATA_FILE_UTIL_MAP[mime_type].extension
-      placeholder_text = '\nAvailable file: `%s`\n' % file_name
+      placeholder_text = f'\n{_AVAILABLE_FILE_PREFIX} `{file_name}`\n'
 
       # Store inline_data before replacing
       inline_data_copy = part.inline_data
@@ -431,10 +441,12 @@ def _extract_and_replace_inline_files(
             and len(event.content.parts) > j
         ):
           event_part = event.content.parts[j]
-          # Match by inline_data content (comparing mime_type and data)
+          # Match by inline_data content (comparing mime_type, length, and data)
+          # Length check first for performance optimization
           if (
               event_part.inline_data
               and event_part.inline_data.mime_type == mime_type
+              and len(event_part.inline_data.data) == len(inline_data_copy.data)
               and event_part.inline_data.data == inline_data_copy.data
           ):
             # Mark this event/part for update

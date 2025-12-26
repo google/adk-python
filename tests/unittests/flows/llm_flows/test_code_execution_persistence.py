@@ -79,7 +79,7 @@ async def test_inline_data_replacement_in_extract_function():
         ]
     )
     
-    # Add to session events (simulating what happens in real flow)
+    # Add to session events
     from google.adk.events.event import Event
     user_event = Event(
         invocation_id='test_inv',
@@ -100,20 +100,11 @@ async def test_inline_data_replacement_in_extract_function():
     invocation_context.session = session
     
     # Call the function we're testing
-    print("\n=== BEFORE _extract_and_replace_inline_files ===")
-    print(f"LLM Request parts: {[type(p).__name__ for content in llm_request.contents for p in content.parts]}")
-    print(f"Session event parts: {[type(p).__name__ for e in session.events if e.content for p in e.content.parts]}")
-    
     result_files = _extract_and_replace_inline_files(
         code_executor_context, 
         llm_request,
         invocation_context
     )
-    
-    print("\n=== AFTER _extract_and_replace_inline_files ===")
-    print(f"Files extracted: {len(result_files)}")
-    print(f"LLM Request parts: {[type(p).__name__ for content in llm_request.contents for p in content.parts]}")
-    print(f"Session event parts: {[type(p).__name__ for e in session.events if e.content for p in e.content.parts]}")
     
     # Check LLM request was modified
     has_inline_in_request = any(
@@ -127,16 +118,7 @@ async def test_inline_data_replacement_in_extract_function():
         for p in content.parts
     )
     
-    print(f"\nLLM Request:")
-    print(f"  - Has inline_data: {has_inline_in_request}")
-    print(f"  - Has placeholder: {has_placeholder_in_request}")
-    
-    for content in llm_request.contents:
-        for i, part in enumerate(content.parts):
-            if part.text:
-                print(f"  - Part {i} text: {part.text[:50]}")
-    
-    # Check session events were modified (THIS IS THE KEY FIX)
+    # Check session events were modified
     user_events = [e for e in session.events if e.content and e.content.role == 'user']
     assert len(user_events) > 0, "Should have user events"
     
@@ -147,28 +129,16 @@ async def test_inline_data_replacement_in_extract_function():
         for p in first_user_event.content.parts
     )
     
-    print(f"\nSession Events:")
-    print(f"  - Has inline_data: {has_inline_in_session}")
-    print(f"  - Has placeholder: {has_placeholder_in_session}")
-    
-    for i, part in enumerate(first_user_event.content.parts):
-        if part.text:
-            print(f"  - Part {i} text: {part.text[:50]}")
-        if part.inline_data:
-            print(f"  - Part {i} has inline_data of size: {len(part.inline_data.data)}")
-    
     # Assertions for LLM request
     assert not has_inline_in_request, "inline_data should be replaced in LLM request"
     assert has_placeholder_in_request, "Placeholder should be present in LLM request"
     
-    # Critical assertions for session events (THE FIX)
-    assert not has_inline_in_session, "inline_data should be replaced in session.events (FIX REQUIRED)"
-    assert has_placeholder_in_session, "Placeholder should be present in session.events (FIX REQUIRED)"
+    # Critical assertions for session events
+    assert not has_inline_in_session, "inline_data should be replaced in session.events"
+    assert has_placeholder_in_session, "Placeholder should be present in session.events"
     
     # Test that files were extracted
     assert len(result_files) >= 1, "At least one file should be extracted"
-    
-    print("\n=== TEST PASSED ===")
 
 
 @pytest.mark.asyncio
@@ -222,7 +192,6 @@ async def test_persistence_across_simulated_turns():
     )
     
     initial_file_count = len(files_1)
-    print(f"\nTurn 1: Extracted {initial_file_count} files")
     
     # Verify session was modified
     user_events = [e for e in session.events if e.content and e.content.role == 'user']
@@ -231,9 +200,8 @@ async def test_persistence_across_simulated_turns():
         for e in user_events 
         for p in e.content.parts
     )
-    print(f"Turn 1: Session has inline_data after processing: {has_inline_after_turn1}")
     
-    # Turn 2: User sends follow-up (simulating new LLM request from session history)
+    # Turn 2: User sends follow-up
     user_content_2 = types.Content(
         role='user',
         parts=[types.Part(text="What is the sum?")]
@@ -246,8 +214,7 @@ async def test_persistence_across_simulated_turns():
     )
     session.events.append(user_event_2)
     
-    # Create new LLM request with ALL session events (this is what happens in real flow)
-    # Deep copy to simulate what base_llm_flow.py does
+    # Create new LLM request with ALL session events (simulating real flow)
     all_contents = []
     for event in session.events:
         if event.content:
@@ -255,15 +222,12 @@ async def test_persistence_across_simulated_turns():
     
     llm_request_2 = LlmRequest(contents=all_contents)
     
-    print(f"\nTurn 2: LLM request has {len(llm_request_2.contents)} contents")
-    
-    # Check if inline_data reappeared in the request
+    # Check if inline_data reappeared
     has_inline_before_process = any(
         p.inline_data 
         for content in llm_request_2.contents 
         for p in content.parts
     )
-    print(f"Turn 2: LLM request has inline_data BEFORE processing: {has_inline_before_process}")
     
     # Process turn 2
     files_2 = _extract_and_replace_inline_files(
@@ -273,16 +237,8 @@ async def test_persistence_across_simulated_turns():
     )
     
     final_file_count = len(code_executor_context.get_input_files())
-    print(f"Turn 2: Total files in context: {final_file_count}")
     
-    # Critical assertion: if session.events were properly modified in turn 1,
-    # then turn 2 should NOT see inline_data (it should already be replaced)
-    if has_inline_before_process:
-        print("\n⚠️  FAIL: inline_data reappeared in turn 2 (FIX NOT WORKING)")
-        print("This means session.events were not properly modified in turn 1")
-    else:
-        print("\n✓ PASS: inline_data did not reappear in turn 2 (FIX WORKING)")
-    
+    # Critical assertion
     assert not has_inline_before_process, \
         "inline_data should NOT reappear in turn 2 if session.events were properly modified"
 
