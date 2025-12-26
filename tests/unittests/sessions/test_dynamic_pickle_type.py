@@ -17,7 +17,7 @@ from __future__ import annotations
 import pickle
 from unittest import mock
 
-from google.adk.sessions.database_session_service import DynamicPickleType
+from google.adk.sessions.schemas.v0 import DynamicPickleType
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.dialects import mysql

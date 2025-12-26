@@ -1549,6 +1549,69 @@ async def test_generate_content_async_custom_provider_flattens_content(
   assert "Describe this image." in message_content
 
 
+def test_flatten_ollama_content_accepts_tuple_blocks():
+  from google.adk.models.lite_llm import _flatten_ollama_content
+
+  content = (
+      {"type": "text", "text": "first"},
+      {"type": "text", "text": "second"},
+  )
+  flattened = _flatten_ollama_content(content)
+  assert flattened == "first\nsecond"
+
+
+@pytest.mark.parametrize(
+    "content, expected",
+    [
+        (None, None),
+        ("hello", "hello"),
+        (
+            [
+                {"type": "text", "text": "first"},
+                {"type": "text", "text": "second"},
+            ],
+            "first\nsecond",
+        ),
+        (
+            [
+                {"type": "text", "text": "Describe this image."},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "http://example.com"},
+                },
+            ],
+            "Describe this image.",
+        ),
+    ],
+)
+def test_flatten_ollama_content_returns_str_or_none(content, expected):
+  from google.adk.models.lite_llm import _flatten_ollama_content
+
+  flattened = _flatten_ollama_content(content)
+  assert flattened == expected
+  assert flattened is None or isinstance(flattened, str)
+
+
+def test_flatten_ollama_content_serializes_non_text_blocks_to_json():
+  from google.adk.models.lite_llm import _flatten_ollama_content
+
+  blocks = [
+      {"type": "image_url", "image_url": {"url": "http://example.com"}},
+  ]
+  flattened = _flatten_ollama_content(blocks)
+  assert isinstance(flattened, str)
+  assert json.loads(flattened) == blocks
+
+
+def test_flatten_ollama_content_serializes_dict_to_json():
+  from google.adk.models.lite_llm import _flatten_ollama_content
+
+  content = {"type": "image_url", "image_url": {"url": "http://example.com"}}
+  flattened = _flatten_ollama_content(content)
+  assert isinstance(flattened, str)
+  assert json.loads(flattened) == content
+
+
 @pytest.mark.asyncio
 async def test_content_to_message_param_user_message():
   content = types.Content(

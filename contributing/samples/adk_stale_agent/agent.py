@@ -318,11 +318,13 @@ def _replay_history_to_find_state(
           - last_activity_time (datetime): Timestamp of the last human action.
           - last_action_type (str): The type of the last action (e.g., 'commented').
           - last_comment_text (Optional[str]): The text of the last comment.
+          - last_actor_name (str): The specific username of the last actor.
   """
   last_action_role = "author"
   last_activity_time = history[0]["time"]
   last_action_type = "created"
   last_comment_text = None
+  last_actor_name = issue_author
 
   for event in history:
     actor = event["actor"]
@@ -337,6 +339,7 @@ def _replay_history_to_find_state(
     last_action_role = role
     last_activity_time = event["time"]
     last_action_type = etype
+    last_actor_name = actor
 
     # Only store text if it was a comment (resets on other events like labels/edits)
     if etype == "commented":
@@ -349,6 +352,7 @@ def _replay_history_to_find_state(
       "last_activity_time": last_activity_time,
       "last_action_type": last_action_type,
       "last_comment_text": last_comment_text,
+      "last_actor_name": last_actor_name,
   }
 
 
@@ -428,6 +432,7 @@ def get_issue_state(item_number: int) -> Dict[str, Any]:
         "status": "success",
         "last_action_role": state["last_action_role"],
         "last_action_type": state["last_action_type"],
+        "last_actor_name": state["last_actor_name"],
         "maintainer_alert_needed": maintainer_alert_needed,
         "is_stale": is_stale,
         "days_since_activity": days_since_activity,
@@ -436,6 +441,8 @@ def get_issue_state(item_number: int) -> Dict[str, Any]:
         "current_labels": labels_list,
         "stale_threshold_days": STALE_HOURS_THRESHOLD / 24,
         "close_threshold_days": CLOSE_HOURS_AFTER_STALE_THRESHOLD / 24,
+        "maintainers": maintainers,
+        "issue_author": issue_author,
     }
 
   except RequestException as e:
