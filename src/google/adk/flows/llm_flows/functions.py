@@ -239,12 +239,15 @@ async def handle_function_calls_async_with_agent_tool_streaming(
     tool_context = _create_tool_context(invocation_context, function_call, None)
     last_content = None
 
-    async for event in agent_tool.run_async_with_events(
-        args=function_call.args or {}, tool_context=tool_context
-    ):
-      yield event
-      if event.content:
-        last_content = event.content
+    async with Aclosing(
+        agent_tool.run_async_with_events(
+            args=function_call.args or {}, tool_context=tool_context
+        )
+    ) as agen:
+      async for event in agen:
+        yield event
+        if event.content:
+          last_content = event.content
 
     # Build final result from last content using AgentTool helper method
     tool_result = agent_tool._build_tool_result_from_content(last_content)

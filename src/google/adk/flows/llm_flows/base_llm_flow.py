@@ -680,23 +680,24 @@ class BaseLlmFlow(ABC):
   ) -> AsyncGenerator[Event, None]:
     # Handle function calls with AgentTool event streaming (handles both AgentTool and regular calls)
     function_response_event = None
-    async for (
-        event
-    ) in functions.handle_function_calls_async_with_agent_tool_streaming(
-        invocation_context, function_call_event, llm_request.tools_dict
-    ):
-      # Track the function response event for post-processing
-      if (
-          event.content
-          and event.content.parts
-          and any(
-              part.function_response
-              for part in event.content.parts
-              if part.function_response
-          )
-      ):
-        function_response_event = event
-      yield event
+    async with Aclosing(
+        functions.handle_function_calls_async_with_agent_tool_streaming(
+            invocation_context, function_call_event, llm_request.tools_dict
+        )
+    ) as agen:
+      async for event in agen:
+        # Track the function response event for post-processing
+        if (
+            event.content
+            and event.content.parts
+            and any(
+                part.function_response
+                for part in event.content.parts
+                if part.function_response
+            )
+        ):
+          function_response_event = event
+        yield event
 
     if function_response_event:
       # Check if this is a set_model_response function response
