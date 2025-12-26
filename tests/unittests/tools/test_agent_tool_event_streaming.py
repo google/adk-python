@@ -55,9 +55,6 @@ async def test_agent_tool_run_async_with_events_yields_sub_agent_events():
       app_name='test_app', user_id='test_user'
   )
 
-  from google.adk.agents.invocation_context import InvocationContext
-  from google.adk.agents.run_config import RunConfig
-  from google.adk.plugins.plugin_manager import PluginManager
 
   invocation_context = InvocationContext(
       artifact_service=InMemoryArtifactService(),

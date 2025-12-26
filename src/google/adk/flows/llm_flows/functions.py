@@ -196,7 +196,6 @@ async def handle_function_calls_async_with_agent_tool_streaming(
   Yields events from AgentTool sub-agents as they are generated, then
   yields the final function response event.
   """
-  from ...agents.llm_agent import LlmAgent
   from ...tools.agent_tool import AgentTool
 
   function_calls = function_call_event.get_function_calls()
