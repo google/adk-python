@@ -55,7 +55,6 @@ async def test_agent_tool_run_async_with_events_yields_sub_agent_events():
       app_name='test_app', user_id='test_user'
   )
 
-
   invocation_context = InvocationContext(
       artifact_service=InMemoryArtifactService(),
       session_service=session_service,
