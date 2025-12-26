@@ -89,7 +89,7 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
         FeatureStage.WIP, default_on=False
     ),
     FeatureName.PROGRESSIVE_SSE_STREAMING: FeatureConfig(
-        FeatureStage.WIP, default_on=False
+        FeatureStage.EXPERIMENTAL, default_on=True
     ),
     FeatureName.PUBSUB_TOOLSET: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
