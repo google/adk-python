@@ -108,10 +108,9 @@ class LlmEventSummarizer(BaseEventsSummarizer):
     async for llm_response in self._llm.generate_content_async(
         llm_request, stream=False
     ):
-      if llm_response.usage_metadata is not None:
-        usage_metadata = llm_response.usage_metadata
       if llm_response.content:
         summary_content = llm_response.content
+        usage_metadata = llm_response.usage_metadata
         break
 
     if summary_content is None:
