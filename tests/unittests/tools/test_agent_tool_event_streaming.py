@@ -14,10 +14,14 @@
 
 """Unit tests for AgentTool event streaming."""
 
+from google.adk.agents.callback_context import CallbackContext
+from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import Agent
+from google.adk.agents.run_config import RunConfig
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.adk.events.event import Event
 from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
+from google.adk.plugins.plugin_manager import PluginManager
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.tools.agent_tool import AgentTool
 from google.adk.tools.tool_context import ToolContext
@@ -99,7 +103,6 @@ async def test_agent_tool_run_async_with_events_yields_sub_agent_events():
 @mark.asyncio
 async def test_agent_tool_run_async_with_events_forwards_state_delta():
   """Test that run_async_with_events forwards state deltas to parent."""
-  from google.adk.agents.callback_context import CallbackContext
 
   mock_model = testing_utils.MockModel.create(responses=['Response'])
 
@@ -119,10 +122,6 @@ async def test_agent_tool_run_async_with_events_forwards_state_delta():
   session = await session_service.create_session(
       app_name='test_app', user_id='test_user'
   )
-
-  from google.adk.agents.invocation_context import InvocationContext
-  from google.adk.agents.run_config import RunConfig
-  from google.adk.plugins.plugin_manager import PluginManager
 
   invocation_context = InvocationContext(
       artifact_service=InMemoryArtifactService(),

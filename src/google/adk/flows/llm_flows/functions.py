@@ -259,6 +259,8 @@ async def handle_function_calls_async_with_agent_tool_streaming(
   # Handle regular calls if any
   regular_response_event = None
   if regular_calls:
+    # Use set for efficient membership testing
+    agent_tool_names = {fc.name for fc, _ in agent_tool_calls}
     regular_call_event = Event(
         invocation_id=function_call_event.invocation_id,
         author=function_call_event.author,
@@ -268,8 +270,7 @@ async def handle_function_calls_async_with_agent_tool_streaming(
                 part
                 for part in (function_call_event.content.parts or [])
                 if part.function_call
-                and part.function_call.name
-                not in [fc.name for fc, _ in agent_tool_calls]
+                and part.function_call.name not in agent_tool_names
             ],
         ),
         branch=function_call_event.branch,
