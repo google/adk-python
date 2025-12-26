@@ -4,7 +4,7 @@
 
 ### Features
 * **[Interactions API Support]**
-  * The newly released Gemini [Interactions API](https://ai.google.dev/gemini-api/docs/interactions) is supported in ADK Now. To use it:
+  * The newly released Gemini [Interactions API](https://ai.google.dev/gemini-api/docs/interactions) is supported in ADK now. To use it:
   ```Python
   Agent(
     model=Gemini(
@@ -352,7 +352,7 @@
 
 * Returns dict as result from McpTool to comply with BaseTool expectations ([4df9263](https://github.com/google/adk-python/commit/4df926388b6e9ebcf517fbacf2f5532fd73b0f71))
 * Fixes the identity prompt to be one line ([7d5c6b9](https://github.com/google/adk-python/commit/7d5c6b9acf0721dd230f08df919c7409eed2b7d0))
-* Fix the broken langchain importing caused their 1.0.0 release ([c850da3](https://github.com/google/adk-python/commit/c850da3a07ec1441037ced1b654d8aacacd277ab))
+* Fix the broken langchain importing caused by their 1.0.0 release ([c850da3](https://github.com/google/adk-python/commit/c850da3a07ec1441037ced1b654d8aacacd277ab))
 * Fix BuiltInCodeExecutor to support visualizations ([ce3418a](https://github.com/google/adk-python/commit/ce3418a69de56570847d45f56ffe7139ab0a47aa))
 * Relax runner app-name enforcement and improve agent origin inference ([dc4975d](https://github.com/google/adk-python/commit/dc4975dea9fb79ad887460659f8f397a537ee38f))
 * Improve error message when adk web is run in wrong directory ([4a842c5](https://github.com/google/adk-python/commit/4a842c5a1334c3ee01406f796651299589fe12ab))
@@ -629,7 +629,7 @@
 ### Documentation
 
 * Clean up docs in sample [a360bc2](https://github.com/google/adk-python/commit/a360bc25429bf4bef6a80da59afe30d6933a844b)
-* Fixes root_agent.yaml in tool_mcp_stdio_notion_config for Agent Config sample and add README.md [2c088ac](https://github.com/google/adk-python/commit/2c088acc9b34f030537b02b45a4afd458445d15b)
+* Fixes root_agent.yaml in tool_mcp_stdio_notion_config for Agent Config sample and adds README.md [2c088ac](https://github.com/google/adk-python/commit/2c088acc9b34f030537b02b45a4afd458445d15b)
 * Add What's new section to README.md [ccab076](https://github.com/google/adk-python/commit/ccab076aceff917591eb3a3cc89a9f85226b832a)
 
 ## 1.12.0 (2025-08-21)

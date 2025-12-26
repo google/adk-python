@@ -1004,7 +1004,11 @@ def fast_api_common_options():
     )
     @click.option(
         "--allow_origins",
-        help="Optional. Any additional origins to allow for CORS.",
+        help=(
+            "Optional. Origins to allow for CORS. Can be literal origins"
+            " (e.g., 'https://example.com') or regex patterns prefixed with"
+            " 'regex:' (e.g., 'regex:https://.*\\.example\\.com')."
+        ),
         multiple=True,
     )
     @click.option(
@@ -1392,7 +1396,11 @@ def cli_api_server(
 )
 @click.option(
     "--allow_origins",
-    help="Optional. Any additional origins to allow for CORS.",
+    help=(
+        "Optional. Origins to allow for CORS. Can be literal origins"
+        " (e.g., 'https://example.com') or regex patterns prefixed with"
+        " 'regex:' (e.g., 'regex:https://.*\\.example\\.com')."
+    ),
     multiple=True,
 )
 # TODO: Add eval_storage_uri option back when evals are supported in Cloud Run.
@@ -1679,6 +1687,7 @@ def cli_deploy_agent_engine(
       --staging_bucket=[staging_bucket] --display_name=[app_name]
       my_agent
   """
+  logging.getLogger("vertexai_genai.agentengines").setLevel(logging.INFO)
   try:
     cli_deploy.to_agent_engine(
         agent_folder=agent,

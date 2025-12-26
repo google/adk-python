@@ -26,14 +26,6 @@ from google.adk.models.llm_response import LlmResponse
 from google.adk.runners import InMemoryRunner
 from google.adk.utils.streaming_utils import StreamingResponseAggregator
 from google.genai import types
-import pytest
-
-
-@pytest.fixture(autouse=True)
-def reset_env(monkeypatch):
-  monkeypatch.setenv("ADK_ENABLE_PROGRESSIVE_SSE_STREAMING", "1")
-  yield
-  monkeypatch.delenv("ADK_ENABLE_PROGRESSIVE_SSE_STREAMING")
 
 
 def get_weather(location: str) -> dict[str, Any]:
