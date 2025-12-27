@@ -57,6 +57,8 @@ class PrebuiltMetrics(Enum):
 
   RUBRIC_BASED_TOOL_USE_QUALITY_V1 = "rubric_based_tool_use_quality_v1"
 
+  PER_TURN_USER_SIMULATOR_QUALITY_V1 = "per_turn_user_simulator_quality_v1"
+
 
 MetricName: TypeAlias = Union[str, PrebuiltMetrics]
 Threshold: TypeAlias = float
@@ -219,6 +221,19 @@ class ToolTrajectoryCriterion(BaseCriterion):
       description=(
           "The type of Match between actual and expected tool call"
           " trajectories."
+      ),
+  )
+
+
+class LlmBackedUserSimulatorCriterion(LlmAsAJudgeCriterion):
+  """Criterion for LLM-backed User Simulator Evaluators."""
+
+  stop_signal: str = Field(
+      default="</finished>",
+      description=(
+          "Stop signal to validate the successful completion of a conversation."
+          " For optimal performance, this should match the one in the User"
+          " Simulator."
       ),
   )
 
