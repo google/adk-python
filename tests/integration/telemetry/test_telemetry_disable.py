@@ -64,7 +64,7 @@ async def test_telemetry_enabled_records_spans(monkeypatch, span_exporter):
 
 
 @pytest.mark.asyncio
-async def test_env_var_disables_telemetry(monkeypatch, span_exporter):
+async def test_adk_telemetry_disabled_env_var_disables(monkeypatch, span_exporter):
     monkeypatch.setenv("ADK_TELEMETRY_DISABLED", "true")
     monkeypatch.delenv("OTEL_SDK_DISABLED", raising=False)
 
@@ -72,6 +72,46 @@ async def test_env_var_disables_telemetry(monkeypatch, span_exporter):
         name="test_agent",
         model=MockModel.create(responses=[Part.from_text(text="ok")]),
         disable_telemetry=False,
+    )
+    runner = TestInMemoryRunner(agent)
+
+    async with Aclosing(runner.run_async_with_new_session_agen("")) as agen:
+        async for _ in agen:
+            pass
+
+    spans = span_exporter.get_finished_spans()
+    assert not spans
+
+
+@pytest.mark.asyncio
+async def test_otel_sdk_env_var_disables_telemetry(monkeypatch, span_exporter):
+    monkeypatch.setenv("OTEL_SDK_DISABLED", "true")
+    monkeypatch.delenv("ADK_TELEMETRY_DISABLED", raising=False)
+
+    agent = Agent(
+        name="test_agent",
+        model=MockModel.create(responses=[Part.from_text(text="ok")]),
+        disable_telemetry=False,
+    )
+    runner = TestInMemoryRunner(agent)
+
+    async with Aclosing(runner.run_async_with_new_session_agen("")) as agen:
+        async for _ in agen:
+            pass
+
+    spans = span_exporter.get_finished_spans()
+    assert not spans
+
+
+@pytest.mark.asyncio
+async def test_agent_flag_disables_telemetry(monkeypatch, span_exporter):
+    monkeypatch.delenv("OTEL_SDK_DISABLED", raising=False)
+    monkeypatch.delenv("ADK_TELEMETRY_DISABLED", raising=False)
+
+    agent = Agent(
+        name="test_agent",
+        model=MockModel.create(responses=[Part.from_text(text="ok")]),
+        disable_telemetry=True,
     )
     runner = TestInMemoryRunner(agent)
 
