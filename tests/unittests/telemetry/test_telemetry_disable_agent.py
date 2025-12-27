@@ -12,70 +12,70 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import pytest
 from unittest import mock
 
 from google.adk.agents.llm_agent import Agent
 from google.adk.telemetry import tracing
 from google.adk.utils.context_utils import Aclosing
 from google.genai.types import Part
+import pytest
 
-
-from ..testing_utils import MockModel, TestInMemoryRunner
+from ..testing_utils import MockModel
+from ..testing_utils import TestInMemoryRunner
 
 
 @pytest.mark.asyncio
 async def test_disable_telemetry_prevents_span_creation(monkeypatch):
-    monkeypatch.delenv("OTEL_SDK_DISABLED", raising=False)
-    monkeypatch.delenv("ADK_TELEMETRY_DISABLED", raising=False)
-    span = mock.MagicMock()
-    context_manager = mock.MagicMock()
-    context_manager.__enter__.return_value = span
-    context_manager.__exit__.return_value = False
+  monkeypatch.delenv("OTEL_SDK_DISABLED", raising=False)
+  monkeypatch.delenv("ADK_TELEMETRY_DISABLED", raising=False)
+  span = mock.MagicMock()
+  context_manager = mock.MagicMock()
+  context_manager.__enter__.return_value = span
+  context_manager.__exit__.return_value = False
 
-    mock_start = mock.Mock(return_value=context_manager)
-    monkeypatch.setattr(tracing.tracer, "start_as_current_span", mock_start)
+  mock_start = mock.Mock(return_value=context_manager)
+  monkeypatch.setattr(tracing.tracer, "start_as_current_span", mock_start)
 
-    agent = Agent(
-        name="agent",
-        model=MockModel.create(responses=[Part.from_text(text="ok")]),
-        disable_telemetry=True,
-    )
+  agent = Agent(
+      name="agent",
+      model=MockModel.create(responses=[Part.from_text(text="ok")]),
+      disable_telemetry=True,
+  )
 
-    runner = TestInMemoryRunner(agent)
+  runner = TestInMemoryRunner(agent)
 
-    async with Aclosing(runner.run_async_with_new_session_agen("")) as agen:
-        async for _ in agen:
-            pass
+  async with Aclosing(runner.run_async_with_new_session_agen("")) as agen:
+    async for _ in agen:
+      pass
 
-    assert mock_start.call_count == 0
+  assert mock_start.call_count == 0
 
 
 @pytest.mark.asyncio
 async def test_enabled_telemetry_causes_span_creation(monkeypatch):
-    monkeypatch.setenv("OTEL_SDK_DISABLED", "false")
-    monkeypatch.setenv("ADK_TELEMETRY_DISABLED", "false")
-    span = mock.MagicMock()
-    context_manager = mock.MagicMock()
-    context_manager.__enter__.return_value = span
-    context_manager.__exit__.return_value = False
+  monkeypatch.setenv("OTEL_SDK_DISABLED", "false")
+  monkeypatch.setenv("ADK_TELEMETRY_DISABLED", "false")
+  span = mock.MagicMock()
+  context_manager = mock.MagicMock()
+  context_manager.__enter__.return_value = span
+  context_manager.__exit__.return_value = False
 
-    mock_start = mock.Mock(return_value=context_manager)
-    monkeypatch.setattr(tracing.tracer, "start_as_current_span", mock_start)
+  mock_start = mock.Mock(return_value=context_manager)
+  monkeypatch.setattr(tracing.tracer, "start_as_current_span", mock_start)
 
-    agent = Agent(
-        name="agent",
-        model=MockModel.create(responses=[Part.from_text(text="ok")]),
-        disable_telemetry=False,
-    )
+  agent = Agent(
+      name="agent",
+      model=MockModel.create(responses=[Part.from_text(text="ok")]),
+      disable_telemetry=False,
+  )
 
-    runner = TestInMemoryRunner(agent)
+  runner = TestInMemoryRunner(agent)
 
-    async with Aclosing(runner.run_async_with_new_session_agen("")) as agen:
-        async for _ in agen:
-            pass
+  async with Aclosing(runner.run_async_with_new_session_agen("")) as agen:
+    async for _ in agen:
+      pass
 
-    assert mock_start.call_count > 0
+  assert mock_start.call_count > 0
 
 
 @pytest.mark.asyncio
@@ -89,29 +89,31 @@ async def test_enabled_telemetry_causes_span_creation(monkeypatch):
     ],
 )
 async def test_env_flag_disables_telemetry(monkeypatch, env_var, env_value):
-    monkeypatch.setenv(env_var, env_value)
-    monkeypatch.delenv(
-        "ADK_TELEMETRY_DISABLED" if env_var == "OTEL_SDK_DISABLED" else "OTEL_SDK_DISABLED",
-        raising=False,
-    )
-    span = mock.MagicMock()
-    context_manager = mock.MagicMock()
-    context_manager.__enter__.return_value = span
-    context_manager.__exit__.return_value = False
+  monkeypatch.setenv(env_var, env_value)
+  monkeypatch.delenv(
+      "ADK_TELEMETRY_DISABLED"
+      if env_var == "OTEL_SDK_DISABLED"
+      else "OTEL_SDK_DISABLED",
+      raising=False,
+  )
+  span = mock.MagicMock()
+  context_manager = mock.MagicMock()
+  context_manager.__enter__.return_value = span
+  context_manager.__exit__.return_value = False
 
-    mock_start = mock.Mock(return_value=context_manager)
-    monkeypatch.setattr(tracing.tracer, "start_as_current_span", mock_start)
+  mock_start = mock.Mock(return_value=context_manager)
+  monkeypatch.setattr(tracing.tracer, "start_as_current_span", mock_start)
 
-    agent = Agent(
-        name="agent",
-        model=MockModel.create(responses=[Part.from_text(text="ok")]),
-        disable_telemetry=False,
-    )
+  agent = Agent(
+      name="agent",
+      model=MockModel.create(responses=[Part.from_text(text="ok")]),
+      disable_telemetry=False,
+  )
 
-    runner = TestInMemoryRunner(agent)
+  runner = TestInMemoryRunner(agent)
 
-    async with Aclosing(runner.run_async_with_new_session_agen("")) as agen:
-        async for _ in agen:
-            pass
+  async with Aclosing(runner.run_async_with_new_session_agen("")) as agen:
+    async for _ in agen:
+      pass
 
-    assert mock_start.call_count == 0
+  assert mock_start.call_count == 0

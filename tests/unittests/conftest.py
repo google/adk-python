@@ -12,7 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import contextlib
 import os
+from unittest import mock
 
 from pytest import fixture
 from pytest import FixtureRequest
@@ -20,19 +22,19 @@ from pytest import hookimpl
 from pytest import Metafunc
 
 _ENV_VARS = {
-    'GOOGLE_API_KEY': 'fake_google_api_key',
-    'GOOGLE_CLOUD_PROJECT': 'fake_google_cloud_project',
-    'GOOGLE_CLOUD_LOCATION': 'fake_google_cloud_location',
-    'ADK_ALLOW_WIP_FEATURES': 'true',
+    "GOOGLE_API_KEY": "fake_google_api_key",
+    "GOOGLE_CLOUD_PROJECT": "fake_google_cloud_project",
+    "GOOGLE_CLOUD_LOCATION": "fake_google_cloud_location",
+    "ADK_ALLOW_WIP_FEATURES": "true",
 }
 
 ENV_SETUPS = {
-    'GOOGLE_AI': {
-        'GOOGLE_GENAI_USE_VERTEXAI': '0',
+    "GOOGLE_AI": {
+        "GOOGLE_GENAI_USE_VERTEXAI": "0",
         **_ENV_VARS,
     },
-    'VERTEX': {
-        'GOOGLE_GENAI_USE_VERTEXAI': '1',
+    "VERTEX": {
+        "GOOGLE_GENAI_USE_VERTEXAI": "1",
         **_ENV_VARS,
     },
 }
@@ -96,8 +98,19 @@ def pytest_generate_tests(metafunc: Metafunc):
 
 
 def _is_explicitly_marked(mark_name: str, metafunc: Metafunc) -> bool:
-  if hasattr(metafunc.function, 'pytestmark'):
+  if hasattr(metafunc.function, "pytestmark"):
     for mark in metafunc.function.pytestmark:
-      if mark.name == 'parametrize' and mark.args[0] == mark_name:
+      if mark.name == "parametrize" and mark.args[0] == mark_name:
         return True
   return False
+
+
+@fixture
+def context_manager_with_span(span=None):
+  span = span or mock.MagicMock()
+
+  @contextlib.contextmanager
+  def _cm():
+    yield span
+
+  return _cm()

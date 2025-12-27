@@ -479,7 +479,9 @@ class TestGeminiContextCacheManager:
     with patch.object(
         self.manager, "_generate_cache_fingerprint", return_value="test_fp"
     ):
-      await self.manager._create_gemini_cache(llm_request, cache_contents_count)
+      await self.manager._create_gemini_cache_with_optional_tracing(
+          llm_request, cache_contents_count
+      )
 
     # Verify cache creation call includes TTL
     create_call = self.manager.genai_client.aio.caches.create.call_args
