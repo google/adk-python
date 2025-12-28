@@ -309,7 +309,7 @@ class GeminiContextCacheManager:
 
     try:
       # Create cache using Gemini API directly
-      return await self._create_gemini_cache_with_optional_tracing(
+      return await self._create_gemini_cache(
           llm_request, cache_contents_count
       )
     except Exception as e:
@@ -349,7 +349,7 @@ class GeminiContextCacheManager:
     # Rough estimate: 4 characters per token
     return total_chars // 4
 
-  async def _create_gemini_cache_with_optional_tracing(
+  async def _create_gemini_cache(
       self, llm_request: LlmRequest, cache_contents_count: int
   ) -> CacheMetadata:
     """Create cache using Gemini API.
