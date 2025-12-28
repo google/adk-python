@@ -44,10 +44,10 @@ if TYPE_CHECKING:
 
   from .llm_request import LlmRequest
 
-logger = logging.getLogger("google_adk." + __name__)
+logger = logging.getLogger('google_adk.' + __name__)
 
-_NEW_LINE = "\n"
-_EXCLUDED_PART_FIELD = {"inline_data": {"data"}}
+_NEW_LINE = '\n'
+_EXCLUDED_PART_FIELD = {'inline_data': {'data'}}
 
 
 _RESOURCE_EXHAUSTED_POSSIBLE_FIX_MESSAGE = """
@@ -76,7 +76,7 @@ class _ResourceExhaustedError(ClientError):
     # stringified (for either publishing the exception on console or to logs)
     # we put in the required details for the developer.
     base_message = super().__str__()
-    return f"{_RESOURCE_EXHAUSTED_POSSIBLE_FIX_MESSAGE}\n\n{base_message}"
+    return f'{_RESOURCE_EXHAUSTED_POSSIBLE_FIX_MESSAGE}\n\n{base_message}'
 
 
 class Gemini(BaseLlm):
@@ -88,48 +88,49 @@ class Gemini(BaseLlm):
       invocation.
   """
 
-  model: str = "gemini-2.5-flash"
+  model: str = 'gemini-2.5-flash'
 
   speech_config: Optional[types.SpeechConfig] = None
 
   use_interactions_api: bool = False
   """Whether to use the interactions API for model invocation.
 
-    When enabled, uses the interactions API (client.aio.interactions.create())
-    instead of the traditional generate_content API. The interactions API
-    provides stateful conversation capabilities, allowing you to chain
-    interactions using previous_interaction_id instead of sending full history.
-    The response format will be converted to match the existing LlmResponse
-    structure for compatibility.
+  When enabled, uses the interactions API (client.aio.interactions.create())
+  instead of the traditional generate_content API. The interactions API
+  provides stateful conversation capabilities, allowing you to chain
+  interactions using previous_interaction_id instead of sending full history.
+  The response format will be converted to match the existing LlmResponse
+  structure for compatibility.
 
-    Sample:
-    ```python
-    agent = Agent(
-      model=Gemini(use_interactions_api=True)
-    )
-    ```
-    """
+  Sample:
+  ```python
+  agent = Agent(
+    model=Gemini(use_interactions_api=True)
+  )
+  ```
+  """
 
   retry_options: Optional[types.HttpRetryOptions] = None
   """Allow Gemini to retry failed responses.
 
-    Sample:
-    ```python
-    from google.genai import types
+  Sample:
+  ```python
+  from google.genai import types
 
-    # ...
+  # ...
 
-    agent = Agent(
-      model=Gemini(
-        retry_options=types.HttpRetryOptions(initial_delay=1, attempts=2),
-      )
+  agent = Agent(
+    model=Gemini(
+      retry_options=types.HttpRetryOptions(initial_delay=1, attempts=2),
     )
-    ```
-    """
+  )
+  ```
+  """
 
   disable_telemetry: bool = False
-  """A bool to flag whether or not telemetry should be being disabled for Gemini LLM interactions. 
-    """
+  """A bool to flag whether or not telemetry should be being disabled for
+  Gemini LLM interactions.
+  """
 
   @classmethod
   @override
@@ -141,13 +142,13 @@ class Gemini(BaseLlm):
     """
 
     return [
-        r"gemini-.*",
+        r'gemini-.*',
         # model optimizer pattern
-        r"model-optimizer-.*",
+        r'model-optimizer-.*',
         # fine-tuned vertex endpoint pattern
-        r"projects\/.+\/locations\/.+\/endpoints\/.+",
+        r'projects\/.+\/locations\/.+\/endpoints\/.+',
         # vertex gemini long name
-        r"projects\/.+\/locations\/.+\/publishers\/google\/models\/gemini.+",
+        r'projects\/.+\/locations\/.+\/publishers\/google\/models\/gemini.+',
     ]
 
   async def generate_content_async(
@@ -174,7 +175,7 @@ class Gemini(BaseLlm):
       if not self.disable_telemetry:
         from ..telemetry.tracing import tracer
 
-        with tracer.start_as_current_span("handle_context_caching") as span:
+        with tracer.start_as_current_span('handle_context_caching') as span:
           cache_manager = GeminiContextCacheManager(
               self.api_client, disable_telemetry=self.disable_telemetry
           )
@@ -183,10 +184,10 @@ class Gemini(BaseLlm):
           )
           if cache_metadata:
             if cache_metadata.cache_name:
-              span.set_attribute("cache_action", "active_cache")
-              span.set_attribute("cache_name", cache_metadata.cache_name)
+              span.set_attribute('cache_action', 'active_cache')
+              span.set_attribute('cache_name', cache_metadata.cache_name)
             else:
-              span.set_attribute("cache_action", "fingerprint_only")
+              span.set_attribute('cache_action', 'fingerprint_only')
       else:
         cache_manager = GeminiContextCacheManager(
             self.api_client, disable_telemetry=self.disable_telemetry
@@ -194,7 +195,7 @@ class Gemini(BaseLlm):
         cache_metadata = await cache_manager.handle_context_caching(llm_request)
 
     logger.info(
-        "Sending out request, model: %s, backend: %s, stream: %s",
+        'Sending out request, model: %s, backend: %s, stream: %s',
         llm_request.model,
         self._api_backend,
         stream,
@@ -258,7 +259,7 @@ class Gemini(BaseLlm):
             contents=llm_request.contents,
             config=llm_request.config,
         )
-        logger.info("Response received from the model.")
+        logger.info('Response received from the model.')
         logger.debug(_build_response_log(response))
 
         llm_response = LlmResponse.create(response)
@@ -332,10 +333,10 @@ class Gemini(BaseLlm):
 
   def _tracking_headers(self) -> dict[str, str]:
     labels = get_client_labels()
-    header_value = " ".join(labels)
+    header_value = ' '.join(labels)
     tracking_headers = {
-        "x-goog-api-client": header_value,
-        "user-agent": header_value,
+        'x-goog-api-client': header_value,
+        'user-agent': header_value,
     }
     return tracking_headers
 
@@ -343,10 +344,10 @@ class Gemini(BaseLlm):
   def _live_api_version(self) -> str:
     if self._api_backend == GoogleLLMVariant.VERTEX_AI:
       # use beta version for vertex api
-      return "v1beta1"
+      return 'v1beta1'
     else:
       # use v1alpha for using API KEY from Google AI Studio
-      return "v1alpha"
+      return 'v1alpha'
 
   @cached_property
   def _live_api_client(self) -> Client:
@@ -388,7 +389,7 @@ class Gemini(BaseLlm):
       llm_request.live_connect_config.speech_config = self.speech_config
 
     llm_request.live_connect_config.system_instruction = types.Content(
-        role="system",
+        role='system',
         parts=[
             types.Part.from_text(text=llm_request.config.system_instruction)
         ],
@@ -398,22 +399,22 @@ class Gemini(BaseLlm):
         and llm_request.live_connect_config.session_resumption.transparent
     ):
       logger.debug(
-          "session resumption config: %s",
+          'session resumption config: %s',
           llm_request.live_connect_config.session_resumption,
       )
       logger.debug(
-          "self._api_backend: %s",
+          'self._api_backend: %s',
           self._api_backend,
       )
       if self._api_backend == GoogleLLMVariant.GEMINI_API:
         raise ValueError(
-            "Transparent session resumption is only supported for Vertex AI"
-            " backend. Please use Vertex AI backend."
+            'Transparent session resumption is only supported for Vertex AI'
+            ' backend. Please use Vertex AI backend.'
         )
     llm_request.live_connect_config.tools = llm_request.config.tools
-    logger.info("Connecting to live for model: %s", llm_request.model)
-    logger.debug("Connecting to live with llm_request:%s", llm_request)
-    logger.debug("Live connect config: %s", llm_request.live_connect_config)
+    logger.info('Connecting to live for model: %s', llm_request.model)
+    logger.debug('Connecting to live with llm_request:%s', llm_request)
+    logger.debug('Live connect config: %s', llm_request.live_connect_config)
     async with self._live_api_client.aio.live.connect(
         model=llm_request.model, config=llm_request.live_connect_config
     ) as live_session:
@@ -431,7 +432,7 @@ class Gemini(BaseLlm):
       return wait_5_seconds
 
     await ComputerUseToolset.adapt_computer_use_tool(
-        "wait", convert_wait_to_wait_5_seconds, llm_request
+        'wait', convert_wait_to_wait_5_seconds, llm_request
     )
 
   async def _preprocess_request(self, llm_request: LlmRequest) -> None:
@@ -472,18 +473,18 @@ class Gemini(BaseLlm):
         continue
 
       # Merge tracking headers with existing headers and avoid duplicates.
-      value_parts = tracking_header_value.split(" ")
-      for custom_value_part in custom_value.split(" "):
+      value_parts = tracking_header_value.split(' ')
+      for custom_value_part in custom_value.split(' '):
         if custom_value_part not in value_parts:
           value_parts.append(custom_value_part)
-      headers[key] = " ".join(value_parts)
+      headers[key] = ' '.join(value_parts)
     return headers
 
 
 def _build_function_declaration_log(
     func_decl: types.FunctionDeclaration,
 ) -> str:
-  param_str = "{}"
+  param_str = '{}'
   if func_decl.parameters and func_decl.parameters.properties:
     param_str = str({
         k: v.model_dump(exclude_none=True)
@@ -492,13 +493,13 @@ def _build_function_declaration_log(
   elif func_decl.parameters_json_schema:
     param_str = str(func_decl.parameters_json_schema)
 
-  return_str = ""
+  return_str = ''
   if func_decl.response:
-    return_str = "-> " + str(func_decl.response.model_dump(exclude_none=True))
+    return_str = '-> ' + str(func_decl.response.model_dump(exclude_none=True))
   elif func_decl.response_json_schema:
-    return_str = "-> " + str(func_decl.response_json_schema)
+    return_str = '-> ' + str(func_decl.response_json_schema)
 
-  return f"{func_decl.name}: {param_str} {return_str}"
+  return f'{func_decl.name}: {param_str} {return_str}'
 
 
 def _build_request_log(req: LlmRequest) -> str:
@@ -527,7 +528,7 @@ def _build_request_log(req: LlmRequest) -> str:
       content.model_dump_json(
           exclude_none=True,
           exclude={
-              "parts": {
+              'parts': {
                   i: _EXCLUDED_PART_FIELD for i in range(len(content.parts))
               }
           },
@@ -537,7 +538,7 @@ def _build_request_log(req: LlmRequest) -> str:
 
   # Build exclusion dict for config logging
   tools_exclusion = (
-      {function_decl_tool_index: {"function_declarations"}}
+      {function_decl_tool_index: {'function_declarations'}}
       if function_decl_tool_index is not None
       else True
   )
@@ -547,8 +548,8 @@ def _build_request_log(req: LlmRequest) -> str:
         req.config.model_dump(
             exclude_none=True,
             exclude={
-                "system_instruction": True,
-                "tools": tools_exclusion if req.config.tools else True,
+                'system_instruction': True,
+                'tools': tools_exclusion if req.config.tools else True,
             },
         )
     )
@@ -578,7 +579,7 @@ def _build_response_log(resp: types.GenerateContentResponse) -> str:
   if function_calls := resp.function_calls:
     for func_call in function_calls:
       function_calls_text.append(
-          f"name: {func_call.name}, args: {func_call.args}"
+          f'name: {func_call.name}, args: {func_call.args}'
       )
   return f"""
 LLM Response:

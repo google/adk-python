@@ -65,7 +65,7 @@ from .utils._debug_output import print_event
 from .utils.context_utils import Aclosing
 from .utils.telemetry_utils import is_telemetry_enabled
 
-logger = logging.getLogger("google_adk." + __name__)
+logger = logging.getLogger('google_adk.' + __name__)
 
 
 def _is_tool_call_or_response(event: Event) -> bool:
@@ -212,22 +212,22 @@ class Runner:
     """
     if plugins is not None:
       warnings.warn(
-          "The `plugins` argument is deprecated. Please use the `app` argument"
-          " to provide plugins instead.",
+          'The `plugins` argument is deprecated. Please use the `app` argument'
+          ' to provide plugins instead.',
           DeprecationWarning,
       )
 
     if app:
       if app_name:
         raise ValueError(
-            "When app is provided, app_name should not be provided."
+            'When app is provided, app_name should not be provided.'
         )
       if agent:
-        raise ValueError("When app is provided, agent should not be provided.")
+        raise ValueError('When app is provided, agent should not be provided.')
       if plugins:
         raise ValueError(
-            "When app is provided, plugins should not be provided and should be"
-            " provided in the app instead."
+            'When app is provided, plugins should not be provided and should be'
+            ' provided in the app instead.'
         )
       app_name = app.name
       agent = app.root_agent
@@ -236,7 +236,7 @@ class Runner:
       resumability_config = app.resumability_config
     elif not app_name or not agent:
       raise ValueError(
-          "Either app or both app_name and agent must be provided."
+          'Either app or both app_name and agent must be provided.'
       )
     else:
       context_cache_config = None
@@ -263,8 +263,8 @@ class Runner:
     """
     # First, check for metadata set by AgentLoader (most reliable source).
     # AgentLoader sets these attributes when loading agents.
-    origin_app_name = getattr(agent, "_adk_origin_app_name", None)
-    origin_path = getattr(agent, "_adk_origin_path", None)
+    origin_app_name = getattr(agent, '_adk_origin_app_name', None)
+    origin_path = getattr(agent, '_adk_origin_path', None)
     if origin_app_name is not None and origin_path is not None:
       return origin_app_name, origin_path
 
@@ -276,10 +276,10 @@ class Runner:
     # Skip ADK internal modules. When users instantiate LlmAgent directly
     # (not subclassed), inspect.getmodule() returns the ADK module. This
     # could falsely match 'agents' in 'google/adk/agents/' path.
-    if module.__name__.startswith("google.adk."):
+    if module.__name__.startswith('google.adk.'):
       return None, None
 
-    module_file = getattr(module, "__file__", None)
+    module_file = getattr(module, '__file__', None)
     if not module_file:
       return None, None
     module_path = Path(module_file).resolve()
@@ -289,17 +289,17 @@ class Runner:
     except ValueError:
       return None, module_path.parent
     origin_dir = module_path.parent
-    if "agents" not in relative_path.parts:
+    if 'agents' not in relative_path.parts:
       return None, origin_dir
     origin_name = origin_dir.name
-    if origin_name.startswith("."):
+    if origin_name.startswith('.'):
       return None, origin_dir
     return origin_name, origin_dir
 
   def _enforce_app_name_alignment(self) -> None:
     origin_name = self._agent_origin_app_name
     origin_dir = self._agent_origin_dir
-    if not origin_name or origin_name.startswith("__"):
+    if not origin_name or origin_name.startswith('__'):
       self._app_name_alignment_hint = None
       return
     if origin_name == self.app_name:
@@ -307,24 +307,24 @@ class Runner:
       return
     origin_location = str(origin_dir) if origin_dir else origin_name
     mismatch_details = (
-        "The runner is configured with app name "
+        'The runner is configured with app name '
         f'"{self.app_name}", but the root agent was loaded from '
         f'"{origin_location}", which implies app name "{origin_name}".'
     )
     resolution = (
-        "Ensure the runner app_name matches that directory or pass app_name "
-        "explicitly when constructing the runner."
+        'Ensure the runner app_name matches that directory or pass app_name '
+        'explicitly when constructing the runner.'
     )
-    self._app_name_alignment_hint = f"{mismatch_details} {resolution}"
-    logger.warning("App name mismatch detected. %s", mismatch_details)
+    self._app_name_alignment_hint = f'{mismatch_details} {resolution}'
+    logger.warning('App name mismatch detected. %s', mismatch_details)
 
   def _format_session_not_found_message(self, session_id: str) -> str:
-    message = f"Session not found: {session_id}"
+    message = f'Session not found: {session_id}'
     if not self._app_name_alignment_hint:
       return message
     return (
-        f"{message}. {self._app_name_alignment_hint} "
-        "The mismatch prevents the runner from locating the session."
+        f'{message}. {self._app_name_alignment_hint} '
+        'The mismatch prevents the runner from locating the session.'
     )
 
   def run(
@@ -429,7 +429,7 @@ class Runner:
     run_config = run_config or RunConfig()
 
     if new_message and not new_message.role:
-      new_message.role = "user"
+      new_message.role = 'user'
 
     async def _run_body(
         new_message: Optional[types.Content] = None,
@@ -443,9 +443,9 @@ class Runner:
         raise ValueError(message)
       if not invocation_id and not new_message:
         raise ValueError(
-            "Running an agent requires either a new_message or an "
-            "invocation_id to resume a previous invocation. "
-            f"Session: {session_id}, User: {user_id}"
+            'Running an agent requires either a new_message or an '
+            'invocation_id to resume a previous invocation. '
+            f'Session: {session_id}, User: {user_id}'
         )
 
       if invocation_id:
@@ -454,8 +454,8 @@ class Runner:
             or not self.resumability_config.is_resumable
         ):
           raise ValueError(
-              f"invocation_id: {invocation_id} is provided but the app is not"
-              " resumable."
+              f'invocation_id: {invocation_id} is provided but the app is not'
+              ' resumable.'
           )
         invocation_context = await self._setup_context_for_resumed_invocation(
             session=session,
@@ -495,7 +495,7 @@ class Runner:
       # (We don't compact in the middle of an invocation, we only compact at
       # the end of an invocation.)
       if self.app and self.app.events_compaction_config:
-        logger.debug("Running event compactor.")
+        logger.debug('Running event compactor.')
         await _run_compaction_for_sliding_window(
             self.app, session, self.session_service
         )
@@ -506,7 +506,7 @@ class Runner:
         invocation_id: Optional[str] = None,
     ) -> AsyncGenerator[Event, None]:
       if is_telemetry_enabled(agent):
-        with tracer.start_as_current_span("invocation"):
+        with tracer.start_as_current_span('invocation'):
           async with Aclosing(
               _run_body(new_message=new_message, invocation_id=invocation_id)
           ) as agen:
@@ -537,7 +537,7 @@ class Runner:
         app_name=self.app_name, user_id=user_id, session_id=session_id
     )
     if not session:
-      raise ValueError(f"Session not found: {session_id}")
+      raise ValueError(f'Session not found: {session_id}')
 
     rewind_event_index = -1
     for i, event in enumerate(session.events):
@@ -547,7 +547,7 @@ class Runner:
 
     if rewind_event_index == -1:
       raise ValueError(
-          f"Invocation ID not found: {rewind_before_invocation_id}"
+          f'Invocation ID not found: {rewind_before_invocation_id}'
       )
 
     # Compute state delta to reverse changes
@@ -563,7 +563,7 @@ class Runner:
     # Create rewind event
     rewind_event = Event(
         invocation_id=new_invocation_context_id(),
-        author="user",
+        author='user',
         actions=EventActions(
             rewind_before_invocation_id=rewind_before_invocation_id,
             state_delta=state_delta,
@@ -571,7 +571,7 @@ class Runner:
         ),
     )
 
-    logger.info("Rewinding session to invocation: %s", rewind_event)
+    logger.info('Rewinding session to invocation: %s', rewind_event)
 
     await self.session_service.append_event(session=session, event=rewind_event)
 
@@ -583,7 +583,7 @@ class Runner:
     for i in range(rewind_event_index):
       if session.events[i].actions.state_delta:
         for k, v in session.events[i].actions.state_delta.items():
-          if k.startswith("app:") or k.startswith("user:"):
+          if k.startswith('app:') or k.startswith('user:'):
             continue
           if v is None:
             state_at_rewind_point.pop(k, None)
@@ -602,7 +602,7 @@ class Runner:
     #    but not in state_at_rewind_point. These keys were added after the
     #    rewind point and need to be removed.
     for key in current_state:
-      if key.startswith("app:") or key.startswith("user:"):
+      if key.startswith('app:') or key.startswith('user:'):
         continue
       if key not in state_at_rewind_point:
         rewind_state_delta[key] = None
@@ -629,7 +629,7 @@ class Runner:
 
     rewind_artifact_delta = {}
     for filename, vn in current_versions.items():
-      if filename.startswith("user:"):
+      if filename.startswith('user:'):
         # User artifacts are not restored on rewind.
         continue
       vt = versions_at_rewind_point.get(filename)
@@ -641,7 +641,7 @@ class Runner:
         # Artifact did not exist at rewind point. Mark it as inaccessible.
         artifact = types.Part(
             inline_data=types.Blob(
-                mime_type="application/octet-stream", data=b""
+                mime_type='application/octet-stream', data=b''
             )
         )
       else:
@@ -711,7 +711,7 @@ class Runner:
     if isinstance(early_exit_result, types.Content):
       early_exit_event = Event(
           invocation_id=invocation_context.invocation_id,
-          author="model",
+          author='model',
           content=early_exit_result,
       )
       if self._should_append_event(early_exit_event, is_live_call):
@@ -763,7 +763,7 @@ class Runner:
                 # transcription end signal, append buffered events
                 is_transcribing = False
                 logger.debug(
-                    "Appending transcription finished event: %s", event
+                    'Appending transcription finished event: %s', event
                 )
                 if self._should_append_event(event, is_live_call):
                   await self.session_service.append_event(
@@ -771,7 +771,7 @@ class Runner:
                   )
 
                 for buffered_event in buffered_events:
-                  logger.debug("Appending buffered event: %s", buffered_event)
+                  logger.debug('Appending buffered event: %s', buffered_event)
                   await self.session_service.append_event(
                       session=session, event=buffered_event
                   )
@@ -780,7 +780,7 @@ class Runner:
                 # non-transcription event or empty transcription event, for
                 # example, event that stores blob reference, should be appended.
                 if self._should_append_event(event, is_live_call):
-                  logger.debug("Appending non-buffered event: %s", event)
+                  logger.debug('Appending non-buffered event: %s', event)
                   await self.session_service.append_event(
                       session=session, event=event
                   )
@@ -822,15 +822,15 @@ class Runner:
         state_delta: Optional state changes to apply to the session.
     """
     if not new_message.parts:
-      raise ValueError("No parts in the new_message.")
+      raise ValueError('No parts in the new_message.')
 
     if self.artifact_service and save_input_blobs_as_artifacts:
       # Issue deprecation warning
       warnings.warn(
           "The 'save_input_blobs_as_artifacts' parameter is deprecated. Use"
-          " SaveFilesAsArtifactsPlugin instead for better control and"
-          " flexibility. See google.adk.plugins.SaveFilesAsArtifactsPlugin for"
-          " migration guidance.",
+          ' SaveFilesAsArtifactsPlugin instead for better control and'
+          ' flexibility. See google.adk.plugins.SaveFilesAsArtifactsPlugin for'
+          ' migration guidance.',
           DeprecationWarning,
           stacklevel=3,
       )
@@ -840,7 +840,7 @@ class Runner:
       for i, part in enumerate(new_message.parts):
         if part.inline_data is None:
           continue
-        file_name = f"artifact_{invocation_context.invocation_id}_{i}"
+        file_name = f'artifact_{invocation_context.invocation_id}_{i}'
         await self.artifact_service.save_artifact(
             app_name=self.app_name,
             user_id=session.user_id,
@@ -849,20 +849,20 @@ class Runner:
             artifact=part,
         )
         new_message.parts[i] = types.Part(
-            text=f"Uploaded file: {file_name}. It is saved into artifacts"
+            text=f'Uploaded file: {file_name}. It is saved into artifacts'
         )
     # Appends only. We do not yield the event because it's not from the model.
     if state_delta:
       event = Event(
           invocation_id=invocation_context.invocation_id,
-          author="user",
+          author='user',
           actions=EventActions(state_delta=state_delta),
           content=new_message,
       )
     else:
       event = Event(
           invocation_id=invocation_context.invocation_id,
-          author="user",
+          author='user',
           content=new_message,
       )
     # If new_message is a function response, find the matching function call
@@ -938,15 +938,15 @@ class Runner:
     # Some native audio models requires the modality to be set. So we set it to
     # AUDIO by default.
     if run_config.response_modalities is None:
-      run_config.response_modalities = ["AUDIO"]
+      run_config.response_modalities = ['AUDIO']
     if session is None and (user_id is None or session_id is None):
       raise ValueError(
-          "Either session or user_id and session_id must be provided."
+          'Either session or user_id and session_id must be provided.'
       )
     if session is not None:
       warnings.warn(
-          "The `session` parameter is deprecated. Please use `user_id` and"
-          " `session_id` instead.",
+          'The `session` parameter is deprecated. Please use `user_id` and'
+          ' `session_id` instead.',
           DeprecationWarning,
           stacklevel=2,
       )
@@ -955,7 +955,7 @@ class Runner:
           app_name=self.app_name, user_id=user_id, session_id=session_id
       )
       if not session:
-        raise ValueError(f"Session not found: {session_id}")
+        raise ValueError(f'Session not found: {session_id}')
     invocation_context = self._new_invocation_context_for_live(
         session,
         live_request_queue=live_request_queue,
@@ -970,7 +970,7 @@ class Runner:
     invocation_context.active_streaming_tools = {}
     # TODO(hangfei): switch to use canonical_tools.
     # for shell agents, there is no tools associated with it so we should skip.
-    if hasattr(invocation_context.agent, "tools"):
+    if hasattr(invocation_context.agent, 'tools'):
       import inspect
 
       for tool in invocation_context.agent.tools:
@@ -989,7 +989,7 @@ class Runner:
         # annotation object as it was defined on the function. This allows us to
         # perform a direct and reliable identity check (`param.annotation is LiveRequestQueue`)
         # without risking a `NameError`.
-        callable_to_inspect = tool.func if hasattr(tool, "func") else tool
+        callable_to_inspect = tool.func if hasattr(tool, 'func') else tool
         # Ensure the target is actually callable before inspecting to avoid errors.
         if not callable(callable_to_inspect):
           continue
@@ -1051,7 +1051,7 @@ class Runner:
 
     def _event_filter(event: Event) -> bool:
       """Filters out user-authored events and agent state change events."""
-      if event.author == "user":
+      if event.author == 'user':
         return False
       if event.actions.agent_state is not None or event.actions.end_of_agent:
         return False
@@ -1064,7 +1064,7 @@ class Runner:
       if not (agent := root_agent.find_sub_agent(event.author)):
         # Agent not found, continue looking.
         logger.warning(
-            "Event from an unknown agent: %s, event id: %s",
+            'Event from an unknown agent: %s, event id: %s',
             event.author,
             event.id,
         )
@@ -1100,8 +1100,8 @@ class Runner:
       self,
       user_messages: str | list[str],
       *,
-      user_id: str = "debug_user_id",
-      session_id: str = "debug_session_id",
+      user_id: str = 'debug_user_id',
+      session_id: str = 'debug_session_id',
       run_config: RunConfig | None = None,
       quiet: bool = False,
       verbose: bool = False,
@@ -1172,9 +1172,9 @@ class Runner:
           app_name=self.app_name, user_id=user_id, session_id=session_id
       )
       if not quiet:
-        print(f"\n ### Created new session: {session_id}")
+        print(f'\n ### Created new session: {session_id}')
     elif not quiet:
-      print(f"\n ### Continue session: {session_id}")
+      print(f'\n ### Continue session: {session_id}')
 
     collected_events: list[Event] = []
 
@@ -1183,7 +1183,7 @@ class Runner:
 
     for message in user_messages:
       if not quiet:
-        print(f"\nUser > {message}")
+        print(f'\nUser > {message}')
 
       async for event in self.run_async(
           user_id=user_id,
@@ -1262,7 +1262,7 @@ class Runner:
         available for resuming the invocation; Or if the app is not resumable.
     """
     if not session.events:
-      raise ValueError(f"Session {session.id} has no events to resume.")
+      raise ValueError(f'Session {session.id} has no events to resume.')
 
     # Step 1: Maybe retrieve a previous user message for the invocation.
     user_message = new_message or self._find_user_message_for_invocation(
@@ -1270,7 +1270,7 @@ class Runner:
     )
     if not user_message:
       raise ValueError(
-          f"No user message available for resuming invocation: {invocation_id}"
+          f'No user message available for resuming invocation: {invocation_id}'
       )
     # Step 2: Create invocation context.
     invocation_context = self._new_invocation_context(
@@ -1306,7 +1306,7 @@ class Runner:
     for event in events:
       if (
           event.invocation_id == invocation_id
-          and event.author == "user"
+          and event.author == 'user'
           and event.content
           and event.content.parts
           and event.content.parts[0].text
@@ -1340,10 +1340,10 @@ class Runner:
 
     if run_config.support_cfc and isinstance(self.agent, LlmAgent):
       model_name = self.agent.canonical_model.model
-      if not model_name.startswith("gemini-2"):
+      if not model_name.startswith('gemini-2'):
         raise ValueError(
-            f"CFC is not supported for model: {model_name} in agent:"
-            f" {self.agent.name}"
+            f'CFC is not supported for model: {model_name} in agent:'
+            f' {self.agent.name}'
         )
       if not isinstance(self.agent.code_executor, BuiltInCodeExecutor):
         self.agent.code_executor = BuiltInCodeExecutor()
@@ -1379,12 +1379,12 @@ class Runner:
     if self.agent.sub_agents and live_request_queue:
       if not run_config.response_modalities:
         # default
-        run_config.response_modalities = ["AUDIO"]
+        run_config.response_modalities = ['AUDIO']
         if not run_config.output_audio_transcription:
           run_config.output_audio_transcription = (
               types.AudioTranscriptionConfig()
           )
-      elif "TEXT" not in run_config.response_modalities:
+      elif 'TEXT' not in run_config.response_modalities:
         if not run_config.output_audio_transcription:
           run_config.output_audio_transcription = (
               types.AudioTranscriptionConfig()
@@ -1453,12 +1453,12 @@ class Runner:
     # This maintains the same task context throughout cleanup
     for toolset in toolsets_to_close:
       try:
-        logger.info("Closing toolset: %s", type(toolset).__name__)
+        logger.info('Closing toolset: %s', type(toolset).__name__)
         # Use asyncio.wait_for to add timeout protection
         await asyncio.wait_for(toolset.close(), timeout=10.0)
-        logger.info("Successfully closed toolset: %s", type(toolset).__name__)
+        logger.info('Successfully closed toolset: %s', type(toolset).__name__)
       except asyncio.TimeoutError:
-        logger.warning("Toolset %s cleanup timed out", type(toolset).__name__)
+        logger.warning('Toolset %s cleanup timed out', type(toolset).__name__)
       except asyncio.CancelledError as e:
         # Handle cancel scope issues in Python 3.10 and 3.11 with anyio
         #
@@ -1470,14 +1470,14 @@ class Runner:
         # improved context propagation across task boundaries, and better cancellation
         # handling prevent the cross-task cancel scope violation.
         logger.warning(
-            "Toolset %s cleanup cancelled: %s", type(toolset).__name__, e
+            'Toolset %s cleanup cancelled: %s', type(toolset).__name__, e
         )
       except Exception as e:
-        logger.error("Error closing toolset %s: %s", type(toolset).__name__, e)
+        logger.error('Error closing toolset %s: %s', type(toolset).__name__, e)
 
   async def close(self):
     """Closes the runner."""
-    logger.info("Closing runner...")
+    logger.info('Closing runner...')
     # Close Toolsets
     await self._cleanup_toolsets(self._collect_toolset(self.agent))
 
@@ -1485,10 +1485,10 @@ class Runner:
     if self.plugin_manager:
       await self.plugin_manager.close()
 
-    logger.info("Runner closed.")
+    logger.info('Runner closed.')
 
   if sys.version_info < (3, 11):
-    Self = "Runner"  # pylint: disable=invalid-name
+    Self = 'Runner'  # pylint: disable=invalid-name
   else:
     from typing import Self  # pylint: disable=g-import-not-at-top
 
@@ -1535,7 +1535,7 @@ class InMemoryRunner(Runner):
         plugin_close_timeout: The timeout in seconds for plugin close methods.
     """
     if app is None and app_name is None:
-      app_name = "InMemoryRunner"
+      app_name = 'InMemoryRunner'
     super().__init__(
         app_name=app_name,
         agent=agent,
