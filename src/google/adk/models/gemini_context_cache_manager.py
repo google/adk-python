@@ -15,7 +15,7 @@
 """Manages context cache lifecycle for Gemini models."""
 
 from __future__ import annotations
-
+import contextlib
 import hashlib
 import json
 import logging
@@ -362,18 +362,16 @@ class GeminiContextCacheManager:
         Cache metadata with precise creation timestamp
     """
 
+    span_context = contextlib.nullcontext()
     if not self.disable_telemetry:
       from ..telemetry.tracing import tracer
+      span_context = tracer.start_as_current_span("create_cache")
 
-      with tracer.start_as_current_span("create_cache") as span:
-        return await self._create_gemini_cache_body(
-            llm_request=llm_request,
-            cache_contents_count=cache_contents_count,
-            span=span,
-        )
-    else:
+    with span_context as span:
       return await self._create_gemini_cache_body(
-          llm_request=llm_request, cache_contents_count=cache_contents_count
+          llm_request=llm_request,
+          cache_contents_count=cache_contents_count,
+          span=span,
       )
 
   async def _create_gemini_cache_body(
