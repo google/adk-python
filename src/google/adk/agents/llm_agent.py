@@ -64,7 +64,7 @@ from .invocation_context import InvocationContext
 from .llm_agent_config import LlmAgentConfig
 from .readonly_context import ReadonlyContext
 
-logger = logging.getLogger("google_adk." + __name__)
+logger = logging.getLogger('google_adk.' + __name__)
 
 _SingleBeforeModelCallback: TypeAlias = Callable[
     [CallbackContext, LlmRequest],
@@ -184,7 +184,7 @@ async def _convert_tool_union_to_tools(
 class LlmAgent(BaseAgent):
   """LLM-based Agent."""
 
-  model: Union[str, BaseLlm] = ""
+  model: Union[str, BaseLlm] = ''
   """The model to use for the agent.
 
   When not set, the agent will inherit the model from its ancestor.
@@ -193,7 +193,7 @@ class LlmAgent(BaseAgent):
   config_type: ClassVar[Type[BaseAgentConfig]] = LlmAgentConfig
   """The config type for this agent."""
 
-  instruction: Union[str, InstructionProvider] = ""
+  instruction: Union[str, InstructionProvider] = ''
   """Dynamic instructions for the LLM model, guiding the agent's behavior.
 
   These instructions can contain placeholders like {variable_name} that will be
@@ -207,7 +207,7 @@ class LlmAgent(BaseAgent):
   comes first in the prompt, followed by dynamic content (instruction).
   """
 
-  global_instruction: Union[str, InstructionProvider] = ""
+  global_instruction: Union[str, InstructionProvider] = ''
   """Instructions for all the agents in the entire agent tree.
 
   DEPRECATED: This field is deprecated and will be removed in a future version.
@@ -297,7 +297,7 @@ class LlmAgent(BaseAgent):
   """Disallows LLM-controlled transferring to the peer agents."""
   # LLM-based agent transfer configs - End
 
-  include_contents: Literal["default", "none"] = "default"
+  include_contents: Literal['default', 'none'] = 'default'
   """Controls content inclusion in model requests.
 
   Options:
@@ -504,7 +504,7 @@ class LlmAgent(BaseAgent):
         if isinstance(ancestor_agent, LlmAgent):
           return ancestor_agent.canonical_model
         ancestor_agent = ancestor_agent.parent_agent
-      raise ValueError(f"No model found for {self.name}.")
+      raise ValueError(f'No model found for {self.name}.')
 
   async def canonical_instruction(
       self, ctx: ReadonlyContext
@@ -549,9 +549,9 @@ class LlmAgent(BaseAgent):
     # Issue deprecation warning if global_instruction is being used
     if self.global_instruction:
       warnings.warn(
-          "global_instruction field is deprecated and will be removed in a"
-          " future version. Use GlobalInstructionPlugin instead for the same"
-          " functionality at the App level. See migration guide for details.",
+          'global_instruction field is deprecated and will be removed in a'
+          ' future version. Use GlobalInstructionPlugin instead for the same'
+          ' functionality at the App level. See migration guide for details.',
           DeprecationWarning,
           stacklevel=2,
       )
@@ -702,12 +702,12 @@ class LlmAgent(BaseAgent):
       return self.__get_transfer_to_agent_or_none(last_event, self.name)
 
     # Last event is from user or another agent.
-    if last_event.author == "user":
+    if last_event.author == 'user':
       function_call_event = ctx._find_matching_function_call(last_event)
       if not function_call_event:
         raise ValueError(
-            "No agent to transfer to for resuming agent from function response"
-            f" {self.name}"
+            'No agent to transfer to for resuming agent from function response'
+            f' {self.name}'
         )
       if function_call_event.author == self.name:
         # User is responding to a tool call from the current agent.
@@ -730,14 +730,14 @@ class LlmAgent(BaseAgent):
       error_msg = (
           f"Agent '{agent_name}' not found.\n"
           f"Available agents: {', '.join(available)}\n\n"
-          "Possible causes:\n"
-          "  1. Agent not registered before being referenced\n"
-          "  2. Agent name mismatch (typo or case sensitivity)\n"
-          "  3. Timing issue (agent referenced before creation)\n\n"
-          "Suggested fixes:\n"
-          "  - Verify agent is registered with root agent\n"
-          "  - Check agent name spelling and case\n"
-          "  - Ensure agents are created before being referenced"
+          'Possible causes:\n'
+          '  1. Agent not registered before being referenced\n'
+          '  2. Agent name mismatch (typo or case sensitivity)\n'
+          '  3. Timing issue (agent referenced before creation)\n\n'
+          'Suggested fixes:\n'
+          '  - Verify agent is registered with root agent\n'
+          '  - Check agent name spelling and case\n'
+          '  - Ensure agents are created before being referenced'
       )
       raise ValueError(error_msg)
     return agent_to_run
@@ -756,7 +756,7 @@ class LlmAgent(BaseAgent):
 
     def collect_agents(agent):
       agents.append(agent.name)
-      if hasattr(agent, "sub_agents") and agent.sub_agents:
+      if hasattr(agent, 'sub_agents') and agent.sub_agents:
         for sub_agent in agent.sub_agents:
           collect_agents(sub_agent)
 
@@ -772,7 +772,7 @@ class LlmAgent(BaseAgent):
       return None
     for function_response in function_responses:
       if (
-          function_response.name == "transfer_to_agent"
+          function_response.name == 'transfer_to_agent'
           and event.author == from_agent
           and event.actions.transfer_to_agent != from_agent
       ):
@@ -785,7 +785,7 @@ class LlmAgent(BaseAgent):
     # transferred to another agent)
     if event.author != self.name:
       logger.debug(
-          "Skipping output save for agent %s: event authored by %s",
+          'Skipping output save for agent %s: event authored by %s',
           self.name,
           event.author,
       )
@@ -797,7 +797,7 @@ class LlmAgent(BaseAgent):
         and event.content.parts
     ):
 
-      result = "".join(
+      result = ''.join(
           part.text
           for part in event.content.parts
           if part.text and not part.thought
@@ -813,15 +813,15 @@ class LlmAgent(BaseAgent):
         )
       event.actions.state_delta[self.output_key] = result
 
-  @model_validator(mode="after")
+  @model_validator(mode='after')
   def __model_validator_after(self) -> LlmAgent:
-    root_agent = getattr(self, "root_agent", None) or self
+    root_agent = getattr(self, 'root_agent', None) or self
     disable_telemetry: bool = not is_telemetry_enabled(root_agent)
-    if hasattr(self.model, "disable_telemetry"):
+    if hasattr(self.model, 'disable_telemetry'):
       self.model.disable_telemetry = disable_telemetry
     return self
 
-  @field_validator("generate_content_config", mode="after")
+  @field_validator('generate_content_config', mode='after')
   @classmethod
   def validate_generate_content_config(
       cls, generate_content_config: Optional[types.GenerateContentConfig]
@@ -829,16 +829,16 @@ class LlmAgent(BaseAgent):
     if not generate_content_config:
       return types.GenerateContentConfig()
     if generate_content_config.thinking_config:
-      raise ValueError("Thinking config should be set via LlmAgent.planner.")
+      raise ValueError('Thinking config should be set via LlmAgent.planner.')
     if generate_content_config.tools:
-      raise ValueError("All tools must be set via LlmAgent.tools.")
+      raise ValueError('All tools must be set via LlmAgent.tools.')
     if generate_content_config.system_instruction:
       raise ValueError(
-          "System instruction must be set via LlmAgent.instruction."
+          'System instruction must be set via LlmAgent.instruction.'
       )
     if generate_content_config.response_schema:
       raise ValueError(
-          "Response schema must be set via LlmAgent.output_schema."
+          'Response schema must be set via LlmAgent.output_schema.'
       )
     return generate_content_config
 
@@ -859,26 +859,26 @@ class LlmAgent(BaseAgent):
 
     resolved_tools = []
     for tool_config in tool_configs:
-      if "." not in tool_config.name:
+      if '.' not in tool_config.name:
         # ADK built-in tools
-        module = importlib.import_module("google.adk.tools")
+        module = importlib.import_module('google.adk.tools')
         obj = getattr(module, tool_config.name)
       else:
         # User-defined tools
-        module_path, obj_name = tool_config.name.rsplit(".", 1)
+        module_path, obj_name = tool_config.name.rsplit('.', 1)
         module = importlib.import_module(module_path)
         obj = getattr(module, obj_name)
 
       if isinstance(obj, BaseTool) or isinstance(obj, BaseToolset):
         logger.debug(
-            "Tool %s is an instance of BaseTool/BaseToolset.", tool_config.name
+            'Tool %s is an instance of BaseTool/BaseToolset.', tool_config.name
         )
         resolved_tools.append(obj)
       elif inspect.isclass(obj) and (
           issubclass(obj, BaseTool) or issubclass(obj, BaseToolset)
       ):
         logger.debug(
-            "Tool %s is a sub-class of BaseTool/BaseToolset.", tool_config.name
+            'Tool %s is a sub-class of BaseTool/BaseToolset.', tool_config.name
         )
         resolved_tools.append(
             obj.from_config(tool_config.args, config_abs_path)
@@ -886,17 +886,17 @@ class LlmAgent(BaseAgent):
       elif callable(obj):
         if tool_config.args:
           logger.debug(
-              "Tool %s is a user-defined tool-generating function.",
+              'Tool %s is a user-defined tool-generating function.',
               tool_config.name,
           )
           resolved_tools.append(obj(tool_config.args))
         else:
           logger.debug(
-              "Tool %s is a user-defined function tool.", tool_config.name
+              'Tool %s is a user-defined function tool.', tool_config.name
           )
           resolved_tools.append(obj)
       else:
-        raise ValueError(f"Invalid tool YAML config: {tool_config}.")
+        raise ValueError(f'Invalid tool YAML config: {tool_config}.')
 
     return resolved_tools
 
@@ -913,45 +913,45 @@ class LlmAgent(BaseAgent):
     from .config_agent_utils import resolve_code_reference
 
     if config.model_code:
-      kwargs["model"] = resolve_code_reference(config.model_code)
+      kwargs['model'] = resolve_code_reference(config.model_code)
     elif config.model:
-      kwargs["model"] = config.model
+      kwargs['model'] = config.model
     if config.instruction:
-      kwargs["instruction"] = config.instruction
+      kwargs['instruction'] = config.instruction
     if config.static_instruction:
-      kwargs["static_instruction"] = config.static_instruction
+      kwargs['static_instruction'] = config.static_instruction
     if config.disallow_transfer_to_parent:
-      kwargs["disallow_transfer_to_parent"] = config.disallow_transfer_to_parent
+      kwargs['disallow_transfer_to_parent'] = config.disallow_transfer_to_parent
     if config.disallow_transfer_to_peers:
-      kwargs["disallow_transfer_to_peers"] = config.disallow_transfer_to_peers
-    if config.include_contents != "default":
-      kwargs["include_contents"] = config.include_contents
+      kwargs['disallow_transfer_to_peers'] = config.disallow_transfer_to_peers
+    if config.include_contents != 'default':
+      kwargs['include_contents'] = config.include_contents
     if config.input_schema:
-      kwargs["input_schema"] = resolve_code_reference(config.input_schema)
+      kwargs['input_schema'] = resolve_code_reference(config.input_schema)
     if config.output_schema:
-      kwargs["output_schema"] = resolve_code_reference(config.output_schema)
+      kwargs['output_schema'] = resolve_code_reference(config.output_schema)
     if config.output_key:
-      kwargs["output_key"] = config.output_key
+      kwargs['output_key'] = config.output_key
     if config.tools:
-      kwargs["tools"] = cls._resolve_tools(config.tools, config_abs_path)
+      kwargs['tools'] = cls._resolve_tools(config.tools, config_abs_path)
     if config.before_model_callbacks:
-      kwargs["before_model_callback"] = resolve_callbacks(
+      kwargs['before_model_callback'] = resolve_callbacks(
           config.before_model_callbacks
       )
     if config.after_model_callbacks:
-      kwargs["after_model_callback"] = resolve_callbacks(
+      kwargs['after_model_callback'] = resolve_callbacks(
           config.after_model_callbacks
       )
     if config.before_tool_callbacks:
-      kwargs["before_tool_callback"] = resolve_callbacks(
+      kwargs['before_tool_callback'] = resolve_callbacks(
           config.before_tool_callbacks
       )
     if config.after_tool_callbacks:
-      kwargs["after_tool_callback"] = resolve_callbacks(
+      kwargs['after_tool_callback'] = resolve_callbacks(
           config.after_tool_callbacks
       )
     if config.generate_content_config:
-      kwargs["generate_content_config"] = config.generate_content_config
+      kwargs['generate_content_config'] = config.generate_content_config
 
     return kwargs
 
