@@ -309,9 +309,7 @@ class GeminiContextCacheManager:
 
     try:
       # Create cache using Gemini API directly
-      return await self._create_gemini_cache(
-          llm_request, cache_contents_count
-      )
+      return await self._create_gemini_cache(llm_request, cache_contents_count)
     except Exception as e:
       logger.warning("Failed to create cache: %s", e)
       return None
