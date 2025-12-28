@@ -16,7 +16,7 @@ from .in_memory_session_service import InMemorySessionService
 from .session import Session
 from .state import State
 from .vertex_ai_session_service import VertexAiSessionService
-
+from .sqlite_session_service import SqliteSessionService
 __all__ = [
     'BaseSessionService',
     'DatabaseSessionService',
@@ -24,6 +24,7 @@ __all__ = [
     'Session',
     'State',
     'VertexAiSessionService',
+    'SqliteSessionService',
 ]
 
 
