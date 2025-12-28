@@ -52,7 +52,7 @@ from .callback_context import CallbackContext
 if TYPE_CHECKING:
   from .invocation_context import InvocationContext
 
-logger = logging.getLogger("google_adk." + __name__)
+logger = logging.getLogger('google_adk.' + __name__)
 
 _SingleAgentCallback: TypeAlias = Callable[
     [CallbackContext],
@@ -69,7 +69,7 @@ AfterAgentCallback: TypeAlias = Union[
     list[_SingleAgentCallback],
 ]
 
-SelfAgent = TypeVar("SelfAgent", bound="BaseAgent")
+SelfAgent = TypeVar('SelfAgent', bound='BaseAgent')
 
 
 @experimental
@@ -77,11 +77,11 @@ class BaseAgentState(BaseModel):
   """Base class for all agent states."""
 
   model_config = ConfigDict(
-      extra="forbid",
+      extra='forbid',
   )
 
 
-AgentState = TypeVar("AgentState", bound=BaseAgentState)
+AgentState = TypeVar('AgentState', bound=BaseAgentState)
 
 
 class BaseAgent(BaseModel):
@@ -89,7 +89,7 @@ class BaseAgent(BaseModel):
 
   model_config = ConfigDict(
       arbitrary_types_allowed=True,
-      extra="forbid",
+      extra='forbid',
   )
   """The pydantic model config."""
 
@@ -116,7 +116,7 @@ class BaseAgent(BaseModel):
   Agent name cannot be "user", since it's reserved for end-user's input.
   """
 
-  description: str = ""
+  description: str = ''
   """Description about the agent's capability.
 
   The model uses this to determine whether to delegate control to the agent.
@@ -136,6 +136,7 @@ class BaseAgent(BaseModel):
   """The sub-agents of this agent."""
   disable_telemetry: bool = False
   """Whether to disable telemetry for this agent."""
+
   before_agent_callback: Optional[BeforeAgentCallback] = None
   """Callback or list of callbacks to be invoked before the agent run.
 
@@ -223,10 +224,10 @@ class BaseAgent(BaseModel):
       A new agent instance with identical configuration as the original
       agent except for the fields specified in the update.
     """
-    if update is not None and "parent_agent" in update:
+    if update is not None and 'parent_agent' in update:
       raise ValueError(
-          "Cannot update `parent_agent` field in clone. Parent agent is set"
-          " only when the parent agent is instantiated with the sub-agents."
+          'Cannot update `parent_agent` field in clone. Parent agent is set'
+          ' only when the parent agent is instantiated with the sub-agents.'
       )
 
     # Only allow updating fields that are defined in the agent class.
@@ -235,8 +236,8 @@ class BaseAgent(BaseModel):
       invalid_fields = set(update) - allowed_fields
       if invalid_fields:
         raise ValueError(
-            f"Cannot update nonexistent fields in {self.__class__.__name__}:"
-            f" {invalid_fields}"
+            f'Cannot update nonexistent fields in {self.__class__.__name__}:'
+            f' {invalid_fields}'
         )
 
     cloned_agent = self.model_copy(update=update)
@@ -245,7 +246,7 @@ class BaseAgent(BaseModel):
     # shallow copy it for the cloned agent to avoid sharing the same list object
     # with the original agent.
     for field_name in cloned_agent.__class__.model_fields:
-      if field_name == "sub_agents":
+      if field_name == 'sub_agents':
         continue
       if update is not None and field_name in update:
         continue
@@ -253,7 +254,7 @@ class BaseAgent(BaseModel):
       if isinstance(field, list):
         setattr(cloned_agent, field_name, field.copy())
 
-    if update is None or "sub_agents" not in update:
+    if update is None or 'sub_agents' not in update:
       # If `sub_agents` is not provided in the update, need to recursively clone
       # the sub-agents to avoid sharing the sub-agents with the original agent.
       cloned_agent.sub_agents = []
@@ -288,13 +289,13 @@ class BaseAgent(BaseModel):
     ctx = self._create_invocation_context(parent_context)
     span_context = contextlib.nullcontext()
     if is_telemetry_enabled(self):
-      span_context = tracer.start_as_current_span(f"invoke_agent {self.name}")
+      span_context = tracer.start_as_current_span(f'invoke_agent {self.name}')
 
     with span_context as span:
       if span:
         tracing.trace_agent_invocation(span, self, ctx)
       async with Aclosing(
-          self._run_callbacks_and_impl(ctx, mode="async")
+          self._run_callbacks_and_impl(ctx, mode='async')
       ) as agen:
         async for event in agen:
           yield event
@@ -317,12 +318,12 @@ class BaseAgent(BaseModel):
     ctx = self._create_invocation_context(parent_context)
     span_context = contextlib.nullcontext()
     if is_telemetry_enabled(self):
-      span_context = tracer.start_as_current_span(f"invoke_agent {self.name}")
+      span_context = tracer.start_as_current_span(f'invoke_agent {self.name}')
 
     with span_context as span:
       if span:
         tracing.trace_agent_invocation(span, self, ctx)
-      async for event in self._run_callbacks_and_impl(ctx, mode="live"):
+      async for event in self._run_callbacks_and_impl(ctx, mode='live'):
         yield event
 
   async def _run_async_impl(
@@ -337,7 +338,7 @@ class BaseAgent(BaseModel):
       Event: the events generated by the agent.
     """
     raise NotImplementedError(
-        f"_run_async_impl for {type(self)} is not implemented."
+        f'_run_async_impl for {type(self)} is not implemented.'
     )
     yield  # AsyncGenerator requires having at least one yield statement
 
@@ -353,12 +354,12 @@ class BaseAgent(BaseModel):
       Event: the events generated by the agent.
     """
     raise NotImplementedError(
-        f"_run_live_impl for {type(self)} is not implemented."
+        f'_run_live_impl for {type(self)} is not implemented.'
     )
     yield  # AsyncGenerator requires having at least one yield statement
 
   async def _run_callbacks_and_impl(
-      self, ctx: InvocationContext, mode: str = "async"
+      self, ctx: InvocationContext, mode: str = 'async'
   ) -> AsyncGenerator[Event, None]:
     """Runs the before and after agent callbacks around the core agent logic.
     Args:
@@ -371,11 +372,11 @@ class BaseAgent(BaseModel):
       yield event
     if ctx.end_invocation:
       return
-    if mode.lower() == "async":
+    if mode.lower() == 'async':
       async with Aclosing(self._run_async_impl(ctx)) as agen:
         async for event in agen:
           yield event
-    elif mode.lower() == "live":
+    elif mode.lower() == 'live':
       async with Aclosing(self._run_live_impl(ctx)) as agen:
         async for event in agen:
           yield event
@@ -429,7 +430,7 @@ class BaseAgent(BaseModel):
       self, parent_context: InvocationContext
   ) -> InvocationContext:
     """Creates a new invocation context for this agent."""
-    invocation_context = parent_context.model_copy(update={"agent": self})
+    invocation_context = parent_context.model_copy(update={'agent': self})
     return invocation_context
 
   @property
@@ -577,24 +578,24 @@ class BaseAgent(BaseModel):
   def model_post_init(self, __context: Any) -> None:
     self.__set_parent_agent_for_sub_agents()
 
-  @field_validator("name", mode="after")
+  @field_validator('name', mode='after')
   @classmethod
   def validate_name(cls, value: str):
     if not value.isidentifier():
       raise ValueError(
-          f"Found invalid agent name: `{value}`."
-          " Agent name must be a valid identifier. It should start with a"
-          " letter (a-z, A-Z) or an underscore (_), and can only contain"
-          " letters, digits (0-9), and underscores."
+          f'Found invalid agent name: `{value}`.'
+          ' Agent name must be a valid identifier. It should start with a'
+          ' letter (a-z, A-Z) or an underscore (_), and can only contain'
+          ' letters, digits (0-9), and underscores.'
       )
-    if value == "user":
+    if value == 'user':
       raise ValueError(
           "Agent name cannot be `user`. `user` is reserved for end-user's"
-          " input."
+          ' input.'
       )
     return value
 
-  @field_validator("sub_agents", mode="after")
+  @field_validator('sub_agents', mode='after')
   @classmethod
   def validate_sub_agents_unique_names(
       cls, value: list[BaseAgent]
@@ -622,12 +623,12 @@ class BaseAgent(BaseModel):
         seen_names.add(name)
 
     if duplicates:
-      duplicate_names_str = ", ".join(
-          f"`{name}`" for name in sorted(duplicates)
+      duplicate_names_str = ', '.join(
+          f'`{name}`' for name in sorted(duplicates)
       )
       logger.warning(
-          "Found duplicate sub-agent names: %s. "
-          "All sub-agents must have unique names.",
+          'Found duplicate sub-agent names: %s. '
+          'All sub-agents must have unique names.',
           duplicate_names_str,
       )
 
@@ -637,9 +638,9 @@ class BaseAgent(BaseModel):
     for sub_agent in self.sub_agents:
       if sub_agent.parent_agent is not None:
         raise ValueError(
-            f"Agent `{sub_agent.name}` already has a parent agent, current"
-            f" parent: `{sub_agent.parent_agent.name}`, trying to add:"
-            f" `{self.name}`"
+            f'Agent `{sub_agent.name}` already has a parent agent, current'
+            f' parent: `{sub_agent.parent_agent.name}`, trying to add:'
+            f' `{self.name}`'
         )
       sub_agent.parent_agent = self
     return self
@@ -704,22 +705,22 @@ class BaseAgent(BaseModel):
     from .config_agent_utils import resolve_callbacks
 
     kwargs: Dict[str, Any] = {
-        "name": config.name,
-        "description": config.description,
+        'name': config.name,
+        'description': config.description,
     }
     if config.sub_agents:
       sub_agents = []
       for sub_agent_config in config.sub_agents:
         sub_agent = resolve_agent_reference(sub_agent_config, config_abs_path)
         sub_agents.append(sub_agent)
-      kwargs["sub_agents"] = sub_agents
+      kwargs['sub_agents'] = sub_agents
 
     if config.before_agent_callbacks:
-      kwargs["before_agent_callback"] = resolve_callbacks(
+      kwargs['before_agent_callback'] = resolve_callbacks(
           config.before_agent_callbacks
       )
     if config.after_agent_callbacks:
-      kwargs["after_agent_callback"] = resolve_callbacks(
+      kwargs['after_agent_callback'] = resolve_callbacks(
           config.after_agent_callbacks
       )
     return kwargs
