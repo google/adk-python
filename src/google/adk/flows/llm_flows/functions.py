@@ -428,23 +428,22 @@ async def _execute_single_function_call_async(
     )
     return function_response_event
 
-  if is_telemetry_enabled(agent):
-    with tracer.start_as_current_span(f"execute_tool {tool.name}"):
-      try:
-        function_response_event = await _run_with_trace()
-        trace_tool_call(
-            tool=tool,
-            args=function_args,
-            function_response_event=function_response_event,
-        )
-        return function_response_event
-      except:
-        trace_tool_call(
-            tool=tool, args=function_args, function_response_event=None
-        )
-        raise
-  else:
+  if not is_telemetry_enabled(agent):
     return await _run_with_trace()
+  with tracer.start_as_current_span(f"execute_tool {tool.name}"):
+    try:
+      function_response_event = await _run_with_trace()
+      trace_tool_call(
+          tool=tool,
+          args=function_args,
+          function_response_event=function_response_event,
+      )
+      return function_response_event
+    except:
+      trace_tool_call(
+          tool=tool, args=function_args, function_response_event=None
+      )
+      raise
 
 
 async def handle_function_calls_live(
@@ -582,23 +581,22 @@ async def _execute_single_function_call_live(
     )
     return function_response_event
 
-  if is_telemetry_enabled(agent):
-    with tracer.start_as_current_span(f"execute_tool {tool.name}"):
-      try:
-        function_response_event = await _run_with_trace()
-        trace_tool_call(
-            tool=tool,
-            args=function_args,
-            function_response_event=function_response_event,
-        )
-        return function_response_event
-      except:
-        trace_tool_call(
-            tool=tool, args=function_args, function_response_event=None
-        )
-        raise
-  else:
+  if not is_telemetry_enabled(agent):
     return await _run_with_trace()
+  with tracer.start_as_current_span(f"execute_tool {tool.name}"):
+    try:
+      function_response_event = await _run_with_trace()
+      trace_tool_call(
+          tool=tool,
+          args=function_args,
+          function_response_event=function_response_event,
+      )
+      return function_response_event
+    except:
+      trace_tool_call(
+          tool=tool, args=function_args, function_response_event=None
+      )
+      raise
 
 
 async def _process_function_live_helper(
