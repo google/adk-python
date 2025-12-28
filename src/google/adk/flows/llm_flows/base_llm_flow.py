@@ -825,12 +825,10 @@ class BaseLlmFlow(ABC):
     async def _call_llm_with_optional_tracing() -> (
         AsyncGenerator[LlmResponse, None]
     ):
+      span_context = contextlib.nullcontext()
       if is_telemetry_enabled(invocation_context.agent):
-        with tracer.start_as_current_span("call_llm"):
-          async with Aclosing(_call_llm_body()) as agen:
-            async for r in agen:
-              yield r
-      else:
+        span_context = tracer.start_as_current_span("call_llm")
+      with span_context:
         async with Aclosing(_call_llm_body()) as agen:
           async for r in agen:
             yield r
