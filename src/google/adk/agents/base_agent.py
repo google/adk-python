@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import inspect
 import logging
 from typing import Any
@@ -283,15 +284,13 @@ class BaseAgent(BaseModel):
         """
 
         ctx = self._create_invocation_context(parent_context)
+        span_context = contextlib.nullcontext()
         if is_telemetry_enabled(self):
-            with tracer.start_as_current_span(f"invoke_agent {self.name}") as span:
+            span_context = tracer.start_as_current_span(f"invoke_agent {self.name}")
+
+        with span_context as span:
+            if span:
                 tracing.trace_agent_invocation(span, self, ctx)
-                async with Aclosing(
-                    self._run_callbacks_and_impl(ctx, mode="async")
-                ) as agen:
-                    async for event in agen:
-                        yield event
-        else:
             async with Aclosing(
                 self._run_callbacks_and_impl(ctx, mode="async")
             ) as agen:
