@@ -131,11 +131,11 @@ class BaseLlmFlow(ABC):
         async with llm.connect(llm_request) as llm_connection:
           if llm_request.contents:
             # Sends the conversation history to the model.
-            logger.debug('Sending history to model: %s', llm_request.contents)
             span_context = contextlib.nullcontext()
             if is_telemetry_enabled(invocation_context.agent):
               span_context = tracer.start_as_current_span('send_data')
             with span_context as span:
+              logger.debug('Sending history to model: %s', llm_request.contents)
               await llm_connection.send_history(llm_request.contents)
               if span:
                 trace_send_data(
