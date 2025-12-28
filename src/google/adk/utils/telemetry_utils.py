@@ -23,42 +23,42 @@ from typing import TYPE_CHECKING
 from .env_utils import is_env_enabled
 
 if TYPE_CHECKING:
-    from ..agents.base_agent import BaseAgent
+  from ..agents.base_agent import BaseAgent
 
 
 def is_telemetry_enabled(agent: "BaseAgent") -> bool:
-    """Check if telemetry is enabled for the given agent.
+  """Check if telemetry is enabled for the given agent.
 
-      By default telemetry is enabled for an agent unless any of the variables to disable telemetry are set to true.
+    By default telemetry is enabled for an agent unless any of the variables to disable telemetry are set to true.
 
-    Args:
-      agent: The agent to check if telemetry is enabled for.
+  Args:
+    agent: The agent to check if telemetry is enabled for.
 
-    Returns:
-        False if any of the environment variables or attributes to disable telemetryare set to True, 'true' or 1, False otherwise.
+  Returns:
+      False if any of the environment variables or attributes to disable telemetryare set to True, 'true' or 1, False otherwise.
 
-    Examples:
-        >>> os.environ['OTEL_SDK_DISABLED'] = 'true'
-        >>> is_telemetry_enabled(my_agent)
-        True
+  Examples:
+      >>> os.environ['OTEL_SDK_DISABLED'] = 'true'
+      >>> is_telemetry_enabled(my_agent)
+      True
 
-        >>> os.environ['ADK_TELEMETRY_DISABLED'] = 1
-        >>> is_telemetry_enabled(my_agent)
-        True
+      >>> os.environ['ADK_TELEMETRY_DISABLED'] = 1
+      >>> is_telemetry_enabled(my_agent)
+      True
 
-        >>> my_agent.disable_telemetry = True
-        >>> is_telemetry_enabled(my_agent)
-        True
+      >>> my_agent.disable_telemetry = True
+      >>> is_telemetry_enabled(my_agent)
+      True
 
-        >>> os.environ['OTEL_SDK_DISABLED'] = 1
-        >>> os.environ['ADK_TELEMETRY_DISABLED'] = 'false'
-        >>> my_agent.disable_telemetry = False
-        >>> is_telemetry_enabled(my_agent)
-        False
-    """
-    telemetry_disabled = (
-        is_env_enabled("OTEL_SDK_DISABLED")
-        or is_env_enabled("ADK_TELEMETRY_DISABLED")
-        or getattr(agent, "disable_telemetry", False)
-    )
-    return not telemetry_disabled
+      >>> os.environ['OTEL_SDK_DISABLED'] = 1
+      >>> os.environ['ADK_TELEMETRY_DISABLED'] = 'false'
+      >>> my_agent.disable_telemetry = False
+      >>> is_telemetry_enabled(my_agent)
+      False
+  """
+  telemetry_disabled = (
+      is_env_enabled("OTEL_SDK_DISABLED")
+      or is_env_enabled("ADK_TELEMETRY_DISABLED")
+      or getattr(agent, "disable_telemetry", False)
+  )
+  return not telemetry_disabled

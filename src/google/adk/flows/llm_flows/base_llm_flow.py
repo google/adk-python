@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from abc import ABC
 import asyncio
+import contextlib
 import datetime
 import inspect
 import logging
@@ -130,19 +131,16 @@ class BaseLlmFlow(ABC):
         async with llm.connect(llm_request) as llm_connection:
           if llm_request.contents:
             # Sends the conversation history to the model.
+            logger.debug("Sending history to model: %s", llm_request.contents)
+            span_context = contextlib.nullcontext()
             if is_telemetry_enabled(invocation_context.agent):
-              with tracer.start_as_current_span("send_data"):
-                # Combine regular contents with audio/transcription from session
-                logger.debug(
-                    "Sending history to model: %s", llm_request.contents
-                )
-                await llm_connection.send_history(llm_request.contents)
+              span_context = tracer.start_as_current_span("send_data")
+            with span_context as span:
+              await llm_connection.send_history(llm_request.contents)
+              if span:
                 trace_send_data(
                     invocation_context, event_id, llm_request.contents
                 )
-            else:
-              logger.debug("Sending history to model: %s", llm_request.contents)
-              await llm_connection.send_history(llm_request.contents)
 
           send_task = asyncio.create_task(
               self._send_to_model(llm_connection, invocation_context)
