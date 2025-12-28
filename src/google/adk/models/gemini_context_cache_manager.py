@@ -366,87 +366,65 @@ class GeminiContextCacheManager:
       span_context = tracer.start_as_current_span("create_cache")
 
     with span_context as span:
-      return await self._create_gemini_cache_body(
-          llm_request=llm_request,
-          cache_contents_count=cache_contents_count,
-          span=span,
+      # Prepare cache contents (first N contents + system instruction + tools)
+      cache_contents = llm_request.contents[:cache_contents_count]
+
+      cache_config = types.CreateCachedContentConfig(
+          contents=cache_contents,
+          ttl=llm_request.cache_config.ttl_string,
+          display_name=(
+              f"adk-cache-{int(time.time())}-{cache_contents_count}contents"
+          ),
       )
 
-  async def _create_gemini_cache_body(
-      self,
-      llm_request: LlmRequest,
-      cache_contents_count: int,
-      span: Optional[Span] = None,
-  ) -> CacheMetadata:
-    """Create cache using Gemini API.
+      # Add system instruction if present
+      if llm_request.config and llm_request.config.system_instruction:
+        cache_config.system_instruction = llm_request.config.system_instruction
+        logger.debug(
+            "Added system instruction to cache config (length=%d)",
+            len(llm_request.config.system_instruction),
+        )
 
-    Args:
-        llm_request: Request to create cache for
-        cache_contents_count: Number of contents to cache
+      # Add tools if present
+      if llm_request.config and llm_request.config.tools:
+        cache_config.tools = llm_request.config.tools
 
-    Returns:
-        Cache metadata with precise creation timestamp
-    """
+      # Add tool config if present
+      if llm_request.config and llm_request.config.tool_config:
+        cache_config.tool_config = llm_request.config.tool_config
 
-    # Prepare cache contents (first N contents + system instruction + tools)
-    cache_contents = llm_request.contents[:cache_contents_count]
+      if span is not None:
+        span.set_attribute("cache_contents_count", cache_contents_count)
+        span.set_attribute("model", llm_request.model)
+        span.set_attribute("ttl_seconds", llm_request.cache_config.ttl_seconds)
 
-    cache_config = types.CreateCachedContentConfig(
-        contents=cache_contents,
-        ttl=llm_request.cache_config.ttl_string,
-        display_name=(
-            f"adk-cache-{int(time.time())}-{cache_contents_count}contents"
-        ),
-    )
-
-    # Add system instruction if present
-    if llm_request.config and llm_request.config.system_instruction:
-      cache_config.system_instruction = llm_request.config.system_instruction
       logger.debug(
-          "Added system instruction to cache config (length=%d)",
-          len(llm_request.config.system_instruction),
+          "Creating cache with model %s and config: %s",
+          llm_request.model,
+          cache_config,
       )
+      cached_content = await self.genai_client.aio.caches.create(
+          model=llm_request.model,
+          config=cache_config,
+      )
+      # Set precise creation timestamp right after cache creation
+      created_at = time.time()
+      logger.info("Cache created successfully: %s", cached_content.name)
 
-    # Add tools if present
-    if llm_request.config and llm_request.config.tools:
-      cache_config.tools = llm_request.config.tools
+      if span is not None:
+        span.set_attribute("cache_name", cached_content.name)
 
-    # Add tool config if present
-    if llm_request.config and llm_request.config.tool_config:
-      cache_config.tool_config = llm_request.config.tool_config
-
-    if span is not None:
-      span.set_attribute("cache_contents_count", cache_contents_count)
-      span.set_attribute("model", llm_request.model)
-      span.set_attribute("ttl_seconds", llm_request.cache_config.ttl_seconds)
-
-    logger.debug(
-        "Creating cache with model %s and config: %s",
-        llm_request.model,
-        cache_config,
-    )
-    cached_content = await self.genai_client.aio.caches.create(
-        model=llm_request.model,
-        config=cache_config,
-    )
-    # Set precise creation timestamp right after cache creation
-    created_at = time.time()
-    logger.info("Cache created successfully: %s", cached_content.name)
-
-    if span is not None:
-      span.set_attribute("cache_name", cached_content.name)
-
-    # Return complete cache metadata with precise timing
-    return CacheMetadata(
-        cache_name=cached_content.name,
-        expire_time=created_at + llm_request.cache_config.ttl_seconds,
-        fingerprint=self._generate_cache_fingerprint(
-            llm_request, cache_contents_count
-        ),
-        invocations_used=1,
-        contents_count=cache_contents_count,
-        created_at=created_at,
-    )
+      # Return complete cache metadata with precise timing
+      return CacheMetadata(
+          cache_name=cached_content.name,
+          expire_time=created_at + llm_request.cache_config.ttl_seconds,
+          fingerprint=self._generate_cache_fingerprint(
+              llm_request, cache_contents_count
+          ),
+          invocations_used=1,
+          contents_count=cache_contents_count,
+          created_at=created_at,
+      )
 
   async def cleanup_cache(self, cache_name: str) -> None:
     """Clean up cache by deleting it.
