@@ -313,12 +313,13 @@ class BaseAgent(BaseModel):
         """
 
         ctx = self._create_invocation_context(parent_context)
+        span_context = contextlib.nullcontext()
         if is_telemetry_enabled(self):
-            with tracer.start_as_current_span(f"invoke_agent {self.name}") as span:
+            span_context = tracer.start_as_current_span(f"invoke_agent {self.name}")
+
+        with span_context as span:
+            if span:
                 tracing.trace_agent_invocation(span, self, ctx)
-                async for event in self._run_callbacks_and_impl(ctx, mode="live"):
-                    yield event
-        else:
             async for event in self._run_callbacks_and_impl(ctx, mode="live"):
                 yield event
 
