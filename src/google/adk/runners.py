@@ -471,7 +471,9 @@ class Runner:
               run_config=run_config,
               state_delta=state_delta,
           )
-          if invocation_context.end_of_agents.get(invocation_context.agent.name):
+          if invocation_context.end_of_agents.get(
+            invocation_context.agent.name
+          ):
             # Directly return if the current agent in invocation context is
             # already final.
             return
