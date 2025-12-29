@@ -520,7 +520,7 @@ class Runner:
   ) -> None:
     """Rewinds the session to before the specified invocation."""
     session = await self.session_service.get_session(
-        app_name=self.app_name, user_id=user_id, session_id=session_id
+          app_name=self.app_name, user_id=user_id, session_id=session_id
     )
     if not session:
       raise ValueError(f'Session not found: {session_id}')
