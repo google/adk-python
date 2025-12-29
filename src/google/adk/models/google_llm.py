@@ -180,9 +180,7 @@ class Gemini(BaseLlm):
 
       with span_context as span:
         cache_manager = GeminiContextCacheManager(self.api_client, disable_telemetry=self.disable_telemetry)
-        cache_metadata = await cache_manager.handle_context_caching(
-            llm_request
-        )
+        cache_metadata = await cache_manager.handle_context_caching(llm_request)
         if cache_metadata:
           if cache_metadata.cache_name:
             span.set_attribute('cache_action', 'active_cache')
