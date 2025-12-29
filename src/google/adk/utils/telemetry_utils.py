@@ -35,7 +35,7 @@ def is_telemetry_enabled(agent: "BaseAgent") -> bool:
     agent: The agent to check if telemetry is enabled for.
 
   Returns:
-      False if any of the environment variables or attributes to disable telemetryare set to True, 'true' or 1, False otherwise.
+      False if any of the environment variables or attributes to disable telemetry are set to True, 'true' or 1, False otherwise.
 
   Examples:
       >>> os.environ['OTEL_SDK_DISABLED'] = 'true'
