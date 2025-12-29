@@ -336,11 +336,11 @@ class BaseAgent(BaseModel):
         yield event
       if ctx.end_invocation:
         return
-      
+
       async with Aclosing(self._run_live_impl(ctx)) as agen:
         async for event in agen:
           yield event
-      
+
       if event := await self._handle_after_agent_callback(ctx):
         yield event
 
