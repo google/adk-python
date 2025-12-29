@@ -485,29 +485,29 @@ class Runner:
               state_delta=state_delta,
           )
 
-      async def execute(ctx: InvocationContext) -> AsyncGenerator[Event]:
-        async with Aclosing(ctx.agent.run_async(ctx)) as agen:
+        async def execute(ctx: InvocationContext) -> AsyncGenerator[Event]:
+          async with Aclosing(ctx.agent.run_async(ctx)) as agen:
+            async for event in agen:
+              yield event
+
+        async with Aclosing(
+            self._exec_with_plugin(
+                invocation_context=invocation_context,
+                session=session,
+                execute_fn=execute,
+                is_live_call=False,
+            )
+        ) as agen:
           async for event in agen:
             yield event
-
-      async with Aclosing(
-          self._exec_with_plugin(
-              invocation_context=invocation_context,
-              session=session,
-              execute_fn=execute,
-              is_live_call=False,
+        # Run compaction after all events are yielded from the agent.
+        # (We don't compact in the middle of an invocation, we only compact at
+        # the end of an invocation.)
+        if self.app and self.app.events_compaction_config:
+          logger.debug('Running event compactor.')
+          await _run_compaction_for_sliding_window(
+              self.app, session, self.session_service
           )
-      ) as agen:
-        async for event in agen:
-          yield event
-      # Run compaction after all events are yielded from the agent.
-      # (We don't compact in the middle of an invocation, we only compact at
-      # the end of an invocation.)
-      if self.app and self.app.events_compaction_config:
-        logger.debug('Running event compactor.')
-        await _run_compaction_for_sliding_window(
-            self.app, session, self.session_service
-        )
 
     async with Aclosing(_run_with_trace(new_message, invocation_id)) as agen:
       async for event in agen:
