@@ -38,6 +38,7 @@ from .base_llm import BaseLlm
 from .base_llm_connection import BaseLlmConnection
 from .gemini_llm_connection import GeminiLlmConnection
 from .llm_response import LlmResponse
+from ..utils.telemetry_utils import is_telemetry_enabled
 
 if TYPE_CHECKING:
   from google.genai import Client
@@ -172,27 +173,22 @@ class Gemini(BaseLlm):
     if llm_request.cache_config:
       from .gemini_context_cache_manager import GeminiContextCacheManager
 
-      if not self.disable_telemetry:
+      span_context = contextlib.nullcontext()
+      if is_telemetry_enabled(self):
         from ..telemetry.tracing import tracer
+        span_context = tracer.start_as_current_span(f'handle_context_caching')
 
-        with tracer.start_as_current_span('handle_context_caching') as span:
-          cache_manager = GeminiContextCacheManager(
-              self.api_client, disable_telemetry=self.disable_telemetry
-          )
-          cache_metadata = await cache_manager.handle_context_caching(
-              llm_request
-          )
-          if cache_metadata:
-            if cache_metadata.cache_name:
-              span.set_attribute('cache_action', 'active_cache')
-              span.set_attribute('cache_name', cache_metadata.cache_name)
-            else:
-              span.set_attribute('cache_action', 'fingerprint_only')
-      else:
-        cache_manager = GeminiContextCacheManager(
-            self.api_client, disable_telemetry=self.disable_telemetry
+      with span_context as span:
+        cache_manager = GeminiContextCacheManager(self.api_client, disable_telemetry=self.disable_telemetry)
+        cache_metadata = await cache_manager.handle_context_caching(
+            llm_request
         )
-        cache_metadata = await cache_manager.handle_context_caching(llm_request)
+        if cache_metadata:
+          if cache_metadata.cache_name:
+            span.set_attribute('cache_action', 'active_cache')
+            span.set_attribute('cache_name', cache_metadata.cache_name)
+          else:
+            span.set_attribute('cache_action', 'fingerprint_only')
 
     logger.info(
         'Sending out request, model: %s, backend: %s, stream: %s',
