@@ -33,12 +33,12 @@ from typing_extensions import override
 from ..utils._client_labels_utils import get_client_labels
 from ..utils.context_utils import Aclosing
 from ..utils.streaming_utils import StreamingResponseAggregator
+from ..utils.telemetry_utils import is_telemetry_enabled
 from ..utils.variant_utils import GoogleLLMVariant
 from .base_llm import BaseLlm
 from .base_llm_connection import BaseLlmConnection
 from .gemini_llm_connection import GeminiLlmConnection
 from .llm_response import LlmResponse
-from ..utils.telemetry_utils import is_telemetry_enabled
 
 if TYPE_CHECKING:
   from google.genai import Client
@@ -176,10 +176,13 @@ class Gemini(BaseLlm):
       span_context = contextlib.nullcontext()
       if is_telemetry_enabled(self):
         from ..telemetry.tracing import tracer
+
         span_context = tracer.start_as_current_span(f'handle_context_caching')
 
       with span_context as span:
-        cache_manager = GeminiContextCacheManager(self.api_client, disable_telemetry=self.disable_telemetry)
+        cache_manager = GeminiContextCacheManager(
+            self.api_client, disable_telemetry=self.disable_telemetry
+        )
         cache_metadata = await cache_manager.handle_context_caching(llm_request)
         if cache_metadata:
           if cache_metadata.cache_name:

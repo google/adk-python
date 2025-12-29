@@ -15,6 +15,7 @@
 """Manages context cache lifecycle for Gemini models."""
 
 from __future__ import annotations
+
 import contextlib
 import hashlib
 import json
@@ -363,6 +364,7 @@ class GeminiContextCacheManager:
     span_context = contextlib.nullcontext()
     if not self.disable_telemetry:
       from ..telemetry.tracing import tracer
+
       span_context = tracer.start_as_current_span("create_cache")
 
     with span_context as span:

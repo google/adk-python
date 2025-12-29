@@ -439,6 +439,7 @@ class Runner:
       span_context = contextlib.nullcontext()
       if is_telemetry_enabled(self.agent):
         from .telemetry.tracing import tracer
+
         span_context = tracer.start_as_current_span(f'invocation')
 
       with span_context as span:
