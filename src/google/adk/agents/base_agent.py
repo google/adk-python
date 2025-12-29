@@ -296,8 +296,9 @@ class BaseAgent(BaseModel):
         tracing.trace_agent_invocation(span, self, ctx)
       if event := await self._handle_before_agent_callback(ctx):
         yield event
+      if ctx.end_invocation:
         return
-      
+
       async with Aclosing(self._run_async_impl(ctx)) as agen:
         async for event in agen:
           yield event
