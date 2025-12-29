@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import inspect
 import logging
 from pathlib import Path
@@ -431,50 +432,56 @@ class Runner:
     if new_message and not new_message.role:
       new_message.role = 'user'
 
-    async def _run_body(
+    async def _run_with_trace(
         new_message: Optional[types.Content] = None,
         invocation_id: Optional[str] = None,
     ) -> AsyncGenerator[Event, None]:
-      session = await self.session_service.get_session(
-          app_name=self.app_name, user_id=user_id, session_id=session_id
-      )
-      if not session:
-        message = self._format_session_not_found_message(session_id)
-        raise ValueError(message)
-      if not invocation_id and not new_message:
-        raise ValueError(
-            'Running an agent requires either a new_message or an '
-            'invocation_id to resume a previous invocation. '
-            f'Session: {session_id}, User: {user_id}'
-        )
+      span_context = contextlib.nullcontext()
+      if is_telemetry_enabled(self.agent):
+        from .telemetry.tracing import tracer
+        span_context = tracer.start_as_current_span(f'invocation')
 
-      if invocation_id:
-        if (
-            not self.resumability_config
-            or not self.resumability_config.is_resumable
-        ):
+      with span_context as span:
+        session = await self.session_service.get_session(
+          app_name=self.app_name, user_id=user_id, session_id=session_id
+        )
+        if not session:
+          message = self._format_session_not_found_message(session_id)
+          raise ValueError(message)
+        if not invocation_id and not new_message:
           raise ValueError(
-              f'invocation_id: {invocation_id} is provided but the app is not'
-              ' resumable.'
+              'Running an agent requires either a new_message or an '
+              'invocation_id to resume a previous invocation. '
+              f'Session: {session_id}, User: {user_id}'
           )
-        invocation_context = await self._setup_context_for_resumed_invocation(
-            session=session,
-            new_message=new_message,
-            invocation_id=invocation_id,
-            run_config=run_config,
-            state_delta=state_delta,
-        )
-        if invocation_context.end_of_agents.get(invocation_context.agent.name):
-          # Directly return if the current agent in invocation context is
-          # already final.
-          return
-      else:
-        invocation_context = await self._setup_context_for_new_invocation(
-            session=session,
-            new_message=new_message,  # new_message is not None.
-            run_config=run_config,
-            state_delta=state_delta,
-        )
+
+        if invocation_id:
+          if (
+              not self.resumability_config
+              or not self.resumability_config.is_resumable
+          ):
+            raise ValueError(
+                f'invocation_id: {invocation_id} is provided but the app is not'
+                ' resumable.'
+            )
+          invocation_context = await self._setup_context_for_resumed_invocation(
+              session=session,
+              new_message=new_message,
+              invocation_id=invocation_id,
+              run_config=run_config,
+              state_delta=state_delta,
+          )
+          if invocation_context.end_of_agents.get(invocation_context.agent.name):
+            # Directly return if the current agent in invocation context is
+            # already final.
+            return
+        else:
+          invocation_context = await self._setup_context_for_new_invocation(
+              session=session,
+              new_message=new_message,  # new_message is not None.
+              run_config=run_config,
+              state_delta=state_delta,
+          )
 
       async def execute(ctx: InvocationContext) -> AsyncGenerator[Event]:
         async with Aclosing(ctx.agent.run_async(ctx)) as agen:
@@ -500,28 +507,7 @@ class Runner:
             self.app, session, self.session_service
         )
 
-    async def _run_with_optional_trace(
-        agent: BaseAgent,
-        new_message: Optional[types.Content] = None,
-        invocation_id: Optional[str] = None,
-    ) -> AsyncGenerator[Event, None]:
-      if is_telemetry_enabled(agent):
-        with tracer.start_as_current_span('invocation'):
-          async with Aclosing(
-              _run_body(new_message=new_message, invocation_id=invocation_id)
-          ) as agen:
-            async for e in agen:
-              yield e
-      else:
-        async with Aclosing(
-            _run_body(new_message=new_message, invocation_id=invocation_id)
-        ) as agen:
-          async for e in agen:
-            yield e
-
-    async with Aclosing(
-        _run_with_optional_trace(self.agent, new_message, invocation_id)
-    ) as agen:
+    async with Aclosing(_run_with_trace(new_message, invocation_id)) as agen:
       async for event in agen:
         yield event
 
