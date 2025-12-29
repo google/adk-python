@@ -40,21 +40,27 @@ def is_telemetry_enabled(agent: "BaseAgent") -> bool:
   Examples:
       >>> os.environ['OTEL_SDK_DISABLED'] = 'true'
       >>> is_telemetry_enabled(my_agent)
-      True
+      False
 
       >>> os.environ['ADK_TELEMETRY_DISABLED'] = 1
       >>> is_telemetry_enabled(my_agent)
-      True
+      False
 
       >>> my_agent.disable_telemetry = True
       >>> is_telemetry_enabled(my_agent)
-      True
+      False
 
       >>> os.environ['OTEL_SDK_DISABLED'] = 1
       >>> os.environ['ADK_TELEMETRY_DISABLED'] = 'false'
       >>> my_agent.disable_telemetry = False
       >>> is_telemetry_enabled(my_agent)
       False
+
+      >>> os.environ['OTEL_SDK_DISABLED'] = 'false'
+      >>> os.environ['ADK_TELEMETRY_DISABLED'] = 0
+      >>> my_agent.disable_telemetry = False
+      >>> is_telemetry_enabled(my_agent)
+      True
   """
   telemetry_disabled = (
       is_env_enabled("OTEL_SDK_DISABLED")
