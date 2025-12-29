@@ -18,7 +18,7 @@ This module is for ADK internal use only.
 Please do not rely on the implementation details.
 """
 
-from typing import TYPE_CHECKING
+from typing import Any
 
 from .env_utils import is_env_enabled
 
