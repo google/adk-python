@@ -22,49 +22,49 @@ from typing import TYPE_CHECKING
 
 from .env_utils import is_env_enabled
 
-if TYPE_CHECKING:
-  from ..agents.base_agent import BaseAgent
 
+def is_telemetry_enabled(obj: Any) -> bool:
+  """Checks if telemetry is enabled.
 
-def is_telemetry_enabled(agent: "BaseAgent") -> bool:
-  """Check if telemetry is enabled for the given agent.
-
-    By default telemetry is enabled for an agent unless any of the variables to disable telemetry are set to true.
+  By default, telemetry is enabled unless any of an object's telemetry disabling
+  variables are set to true.
 
   Args:
-    agent: The agent to check if telemetry is enabled for.
+    obj: The object to check if telemetry is enabled for. It is expected
+      to have a `disable_telemetry` boolean attribute.
 
   Returns:
-      False if any of the environment variables or attributes to disable telemetry are set to True, 'true' or 1, False otherwise.
+      `False` if `OTEL_SDK_DISABLED` or `ADK_TELEMETRY_DISABLED` environment
+      variables are set to a truthy value (e.g. 'true', '1'), or if
+      `obj.disable_telemetry` is `True`. Otherwise, returns `True`.
 
   Examples:
+      >>> import os
+      >>> class MyObject:
+      ...     disable_telemetry = False
+      >>> my_obj = MyObject()
+      >>> # Telemetry disabled by environment variable
       >>> os.environ['OTEL_SDK_DISABLED'] = 'true'
-      >>> is_telemetry_enabled(my_agent)
+      >>> is_telemetry_enabled(my_obj)
       False
-
-      >>> os.environ['ADK_TELEMETRY_DISABLED'] = 1
-      >>> is_telemetry_enabled(my_agent)
+      >>> del os.environ['OTEL_SDK_DISABLED']
+      >>> # Telemetry disabled by another environment variable
+      >>> os.environ['ADK_TELEMETRY_DISABLED'] = '1'
+      >>> is_telemetry_enabled(my_obj)
       False
-
-      >>> my_agent.disable_telemetry = True
-      >>> is_telemetry_enabled(my_agent)
+      >>> del os.environ['ADK_TELEMETRY_DISABLED']
+      >>> # Telemetry disabled by attribute
+      >>> my_obj.disable_telemetry = True
+      >>> is_telemetry_enabled(my_obj)
       False
-
-      >>> os.environ['OTEL_SDK_DISABLED'] = 1
-      >>> os.environ['ADK_TELEMETRY_DISABLED'] = 'false'
-      >>> my_agent.disable_telemetry = False
-      >>> is_telemetry_enabled(my_agent)
-      False
-
-      >>> os.environ['OTEL_SDK_DISABLED'] = 'false'
-      >>> os.environ['ADK_TELEMETRY_DISABLED'] = 0
-      >>> my_agent.disable_telemetry = False
-      >>> is_telemetry_enabled(my_agent)
+      >>> # Telemetry enabled
+      >>> my_obj.disable_telemetry = False
+      >>> is_telemetry_enabled(my_obj)
       True
   """
   telemetry_disabled = (
       is_env_enabled("OTEL_SDK_DISABLED")
       or is_env_enabled("ADK_TELEMETRY_DISABLED")
-      or getattr(agent, "disable_telemetry", False)
+      or getattr(obj, "disable_telemetry", False)
   )
   return not telemetry_disabled
