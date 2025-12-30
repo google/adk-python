@@ -247,7 +247,7 @@ def _build_history_timeline(
     if BOT_ALERT_SIGNATURE in c_body:
       if last_bot_alert_time is None or c_time > last_bot_alert_time:
         last_bot_alert_time = c_time
-      continue  
+      continue
 
     if actor and not actor.endswith("[bot]") and actor != BOT_NAME:
       # Use edit time if available, otherwise creation time
