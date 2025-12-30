@@ -29,6 +29,7 @@ from ..features import FeatureName
 from ..features import is_feature_enabled
 from ..memory.in_memory_memory_service import InMemoryMemoryService
 from ..utils.context_utils import Aclosing
+from ._agent_tool_manager import get_agent_tool_manager
 from ._forwarding_artifact_service import ForwardingArtifactService
 from .base_tool import BaseTool
 from .tool_configs import BaseToolConfig
@@ -115,6 +116,7 @@ class AgentTool(BaseTool):
     self.agent = agent
     self.skip_summarization: bool = skip_summarization
     self.include_plugins = include_plugins
+    self._agent_tool_manager = get_agent_tool_manager()
 
     super().__init__(name=agent.name, description=agent.description)
 
@@ -233,6 +235,8 @@ class AgentTool(BaseTool):
         plugins=plugins,
     )
 
+    await self._agent_tool_manager.register_runner(self.agent, runner)
+
     state_dict = {
         k: v
         for k, v in tool_context.state.to_dict().items()
@@ -259,7 +263,8 @@ class AgentTool(BaseTool):
 
     # Clean up runner resources (especially MCP sessions)
     # to avoid "Attempted to exit cancel scope in a different task" errors
-    await runner.close()
+    async with self._agent_tool_manager.unregister_runner(self.agent, runner) as should_cleanup_toolsets:
+      await runner.close(cleanup_toolsets=should_cleanup_toolsets)
 
     if last_content is None or last_content.parts is None:
       return ''
