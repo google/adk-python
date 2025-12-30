@@ -79,6 +79,18 @@ class TestDiscoveryEngineSearchTool:
   @mock.patch(
       "google.cloud.discoveryengine_v1beta.SearchServiceClient",
   )
+  def test_init_with_location(self, mock_search_client):
+    """Test initialization with location extracted from data_store_id."""
+    data_store_id = "projects/test-project/locations/us/collections/default_collection/dataStores/test-datastore"
+    DiscoveryEngineSearchTool(data_store_id=data_store_id)
+
+    # Check if SearchServiceClient was called with correct client_options
+    args, kwargs = mock_search_client.call_args
+    assert kwargs["client_options"].api_endpoint == "us-discoveryengine.googleapis.com"
+
+  @mock.patch(
+      "google.cloud.discoveryengine_v1beta.SearchServiceClient",
+  )
   def test_discovery_engine_search_success(self, mock_search_client):
     """Test successful discovery engine search."""
     mock_response = discoveryengine.SearchResponse()

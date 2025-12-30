@@ -17,6 +17,7 @@ from __future__ import annotations
 from typing import Any
 from typing import Optional
 
+from google.api_core.client_options import ClientOptions
 from google.api_core.exceptions import GoogleAPICallError
 import google.auth
 from google.cloud import discoveryengine_v1beta as discoveryengine
@@ -71,9 +72,29 @@ class DiscoveryEngineSearchTool(FunctionTool):
     self._filter = filter
     self._max_results = max_results
 
+    # Extract location from data_store_id or search_engine_id
+    # Format: projects/{project}/locations/{location}/...
+    resource_id = data_store_id or search_engine_id
+    location = "global"
+    if resource_id:
+      parts = resource_id.split("/")
+      if "locations" in parts:
+        try:
+          loc_index = parts.index("locations") + 1
+          if loc_index < len(parts):
+            location = parts[loc_index]
+        except ValueError:
+          pass
+
+    client_options = None
+    if location != "global":
+      api_endpoint = f"{location}-discoveryengine.googleapis.com"
+      client_options = ClientOptions(api_endpoint=api_endpoint)
+
     credentials, _ = google.auth.default()
     self._discovery_engine_client = discoveryengine.SearchServiceClient(
-        credentials=credentials
+        credentials=credentials,
+        client_options=client_options,
     )
 
   def discovery_engine_search(
