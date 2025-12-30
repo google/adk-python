@@ -39,7 +39,10 @@ When asked to use the mcp_tool, you should call it.
 sub_agent = Agent(
     model="gemini-2.5-flash",
     name="sub_agent",
-    description="A sub-agent that uses a MCP toolset for testing parallel AgentTool calls.",
+    description=(
+        "A sub-agent that uses a MCP toolset for testing parallel AgentTool"
+        " calls."
+    ),
     instruction=sub_agent_system_prompt,
     tools=[sub_agent_mcp_toolset],
 )
@@ -54,8 +57,10 @@ You can call multiple sub_agent tools in parallel if needed.
 root_agent = Agent(
     model="gemini-2.5-flash",
     name="root_agent",
-    description="A root agent that calls sub-agents via AgentTool for testing parallel execution.",
+    description=(
+        "A root agent that calls sub-agents via AgentTool for testing parallel"
+        " execution."
+    ),
     instruction=root_agent_system_prompt,
     tools=[AgentTool(agent=sub_agent)],
 )
-

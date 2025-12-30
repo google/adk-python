@@ -101,6 +101,7 @@ async def main():
   functions.__call_tool_async = patched_call_tool_async
 
   try:
+
     async def run_agent_prompt(
         runner: InMemoryRunner, session: Session, prompt_text: str
     ):
@@ -120,16 +121,18 @@ async def main():
           for part in event.content.parts:
             if part.text:
               print(
-                  f"Runner {runner.__hash__()} Session {session.id}: {event.author}: {part.text}"
+                  f"Runner {runner.__hash__()} Session {session.id}:"
+                  f" {event.author}: {part.text}"
               )
             if part.function_call:
               print(
-                  f"Runner {runner.__hash__()} Session {session.id}: {event.author}: function_call"
-                  f" {part.function_call.name}"
+                  f"Runner {runner.__hash__()} Session {session.id}:"
+                  f" {event.author}: function_call {part.function_call.name}"
               )
             if part.function_response:
               print(
-                  f"Runner {runner.__hash__()} Session {session.id}: {event.author}: function_response"
+                  f"Runner {runner.__hash__()} Session {session.id}:"
+                  f" {event.author}: function_response"
                   f" {part.function_response.name}"
               )
       return events
@@ -204,7 +207,9 @@ async def main():
     if has_error:
       print("Runner2's tool was interrupted by toolset close")
     else:
-      print("Runner2's tool completed normally (may have finished before close) ✓")
+      print(
+          "Runner2's tool completed normally (may have finished before close) ✓"
+      )
 
     # Clean up runner2
     await runner2.close()
@@ -233,4 +238,3 @@ if __name__ == "__main__":
       time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(end_time)),
   )
   print("Total script execution time:", f"{end_time - start_time:.2f} seconds")
-

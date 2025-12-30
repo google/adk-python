@@ -263,7 +263,9 @@ class AgentTool(BaseTool):
 
     # Clean up runner resources (especially MCP sessions)
     # to avoid "Attempted to exit cancel scope in a different task" errors
-    async with self._agent_tool_manager.unregister_runner(self.agent, runner) as should_cleanup_toolsets:
+    async with self._agent_tool_manager.unregister_runner(
+        self.agent, runner
+    ) as should_cleanup_toolsets:
       await runner.close(cleanup_toolsets=should_cleanup_toolsets)
 
     if last_content is None or last_content.parts is None:

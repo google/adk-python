@@ -37,8 +37,9 @@ When asked to use the mcp_tool, you should call it.
 root_agent = Agent(
     model="gemini-2.5-flash",
     name="parallel_agent",
-    description="An agent that uses a MCP toolset for testing runner close behavior.",
+    description=(
+        "An agent that uses a MCP toolset for testing runner close behavior."
+    ),
     instruction=system_prompt,
     tools=[mcp_toolset],
 )
-

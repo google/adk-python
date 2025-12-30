@@ -92,4 +92,3 @@ class MockMcpToolset(BaseToolset):
     """Closes the toolset by setting the closed event."""
     print(f"Closing toolset {self.__hash__()}")
     self.closed_event.set()
-

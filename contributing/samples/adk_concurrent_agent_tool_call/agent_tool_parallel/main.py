@@ -42,6 +42,7 @@ running_tools: dict[str, MockMcpTool] = {}
 # Track running tasks using monkey patch
 running_tasks: dict[str, asyncio.Task[Any]] = {}
 
+
 async def main():
   """Tests parallel AgentTool call behavior with shared agents.
 
@@ -82,13 +83,15 @@ async def main():
 
   # Monkey patch __call_tool_async to track running tools
   from google.adk.flows.llm_flows import functions
+
   original_call_tool_async = functions.__call_tool_async
+
   async def patched_call_tool_async(
       tool: BaseTool, args: dict[str, Any], tool_context: ToolContext
   ) -> Any:
     """Patched version that tracks running tools."""
     if isinstance(tool, MockMcpTool):
-      running_tools[tool_context.state['task_id']] = tool
+      running_tools[tool_context.state["task_id"]] = tool
       print(f"Tool {tool.name} started for session {tool_context.session.id}")
       trigger_tool_call_request()
     return await original_call_tool_async(tool, args, tool_context)
@@ -97,13 +100,19 @@ async def main():
 
   # Monkey patch AgentTool.run_async to track running task
   from google.adk.tools.agent_tool import AgentTool
+
   original_run_async = AgentTool.run_async
-  async def patched_run_async(self: AgentTool, *, args: dict[str, Any], tool_context: ToolContext) -> Any:
+
+  async def patched_run_async(
+      self: AgentTool, *, args: dict[str, Any], tool_context: ToolContext
+  ) -> Any:
     """Patched version that tracks running task."""
-    task = asyncio.create_task(original_run_async(self, args=args, tool_context=tool_context))
-    
+    task = asyncio.create_task(
+        original_run_async(self, args=args, tool_context=tool_context)
+    )
+
     task_id = task.__hash__()
-    tool_context.state['task_id'] = task_id
+    tool_context.state["task_id"] = task_id
     running_tasks[task_id] = task
     return await task
 
@@ -111,6 +120,7 @@ async def main():
 
   events: list[Event] = []
   try:
+
     async def run_agent():
       nonlocal events
       # Run agent with a prompt that triggers parallel AgentTool calls
@@ -119,7 +129,10 @@ async def main():
           role="user",
           parts=[
               types.Part.from_text(
-                  text="Please call the sub_agent tool twice in parallel to help me."
+                  text=(
+                      "Please call the sub_agent tool twice in parallel to"
+                      " help me."
+                  )
               )
           ],
       )
@@ -146,7 +159,7 @@ async def main():
                   f" {part.function_response.name}"
               )
       return events
-  
+
     runner_task = asyncio.create_task(run_agent())
 
     # Wait for both tools to start if they haven't already
@@ -169,7 +182,7 @@ async def main():
     print("Tool1 completed ✓")
 
     await asyncio.sleep(0.1)
-    
+
     print("Waiting for agent tool 2 to complete...")
     tool2_tuple[1].done_event.set()
     await tool2_task
@@ -219,4 +232,3 @@ if __name__ == "__main__":
       time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(end_time)),
   )
   print("Total script execution time:", f"{end_time - start_time:.2f} seconds")
-

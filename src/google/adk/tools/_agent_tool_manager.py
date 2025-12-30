@@ -16,11 +16,13 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING, AsyncGenerator
+from typing import AsyncGenerator
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
   from ..agents.base_agent import BaseAgent
   from ..runners import Runner
+
 
 class AgentToolManager:
   """Manages the relationship between runners and agents used by AgentTool.
@@ -43,9 +45,7 @@ class AgentToolManager:
     # Lock to ensure thread-safe access to _runners_by_agent
     self._lock = asyncio.Lock()
 
-  async def register_runner(
-      self, agent: BaseAgent, runner: Runner
-  ) -> None:
+  async def register_runner(self, agent: BaseAgent, runner: Runner) -> None:
     """Registers a runner for the given agent.
 
     This method should be called at the start of AgentTool.run_async()
@@ -63,9 +63,7 @@ class AgentToolManager:
       self._runners_by_agent[id(agent)].add(runner)
 
   @asynccontextmanager
-  async def unregister_runner(
-      self, agent: BaseAgent, runner: Runner
-  ):
+  async def unregister_runner(self, agent: BaseAgent, runner: Runner):
     """Unregisters a runner for the given agent.
 
     This method should be called before cleaning up a runner at the end
@@ -121,7 +119,9 @@ class AgentToolManager:
     # Other runners still using this agent, skip cleanup
     return False
 
+
 _agent_tool_manager_instance: AgentToolManager | None = None
+
 
 def get_agent_tool_manager() -> AgentToolManager:
   """Gets the singleton AgentToolManager instance, initializing it if needed."""
