@@ -25,7 +25,7 @@ import asyncio
 import time
 from typing import Any
 
-from adk_concurrent_agent_tool_call.agent_tool_parallel import agent
+from adk_concurrent_agent_tool_call.runner_shared_toolset import agent
 from adk_concurrent_agent_tool_call.mock_tools import MockMcpTool
 from google.adk.agents.run_config import RunConfig
 from google.adk.runners import InMemoryRunner
