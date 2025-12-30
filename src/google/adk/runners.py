@@ -1525,11 +1525,17 @@ class Runner:
       except Exception as e:
         logger.error('Error closing toolset %s: %s', type(toolset).__name__, e)
 
-  async def close(self):
-    """Closes the runner."""
+  async def close(self, cleanup_toolsets: bool = True):
+    """Closes the runner.
+
+    Args:
+      cleanup_toolsets: Whether to cleanup toolsets.
+        Default is True.
+    """
     logger.info('Closing runner...')
-    # Close Toolsets
-    await self._cleanup_toolsets(self._collect_toolset(self.agent))
+    if cleanup_toolsets:
+      # Close Toolsets
+      await self._cleanup_toolsets(self._collect_toolset(self.agent))
 
     # Close Plugins
     if self.plugin_manager:
