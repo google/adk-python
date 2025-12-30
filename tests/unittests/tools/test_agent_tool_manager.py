@@ -17,12 +17,11 @@ from __future__ import annotations
 import asyncio
 from unittest import mock
 
-import pytest
-
 from google.adk.agents.llm_agent import Agent
 from google.adk.runners import Runner
 from google.adk.tools._agent_tool_manager import AgentToolManager
 from google.adk.tools._agent_tool_manager import get_agent_tool_manager
+import pytest
 
 from .. import testing_utils
 
@@ -37,7 +36,8 @@ def manager():
 def agent():
   """Creates a test agent."""
   return Agent(
-      name='test_agent', model=testing_utils.MockModel.create(responses=['test'])
+      name='test_agent',
+      model=testing_utils.MockModel.create(responses=['test']),
   )
 
 
@@ -163,9 +163,7 @@ async def test_multiple_agents(manager):
 async def test_concurrent_registration(manager, agent):
   """Test concurrent registration of multiple runners."""
   num_runners = 10
-  runners = [
-      testing_utils.InMemoryRunner(agent) for _ in range(num_runners)
-  ]
+  runners = [testing_utils.InMemoryRunner(agent) for _ in range(num_runners)]
 
   # Register all runners concurrently
   await asyncio.gather(
@@ -184,9 +182,7 @@ async def test_concurrent_registration(manager, agent):
 async def test_concurrent_unregistration(manager, agent):
   """Test concurrent unregistration of multiple runners."""
   num_runners = 10
-  runners = [
-      testing_utils.InMemoryRunner(agent) for _ in range(num_runners)
-  ]
+  runners = [testing_utils.InMemoryRunner(agent) for _ in range(num_runners)]
 
   # Register all runners
   await asyncio.gather(
@@ -215,9 +211,7 @@ async def test_concurrent_unregistration(manager, agent):
 async def test_concurrent_register_and_unregister(manager, agent):
   """Test concurrent registration and unregistration."""
   num_operations = 20
-  runners = [
-      testing_utils.InMemoryRunner(agent) for _ in range(num_operations)
-  ]
+  runners = [testing_utils.InMemoryRunner(agent) for _ in range(num_operations)]
 
   async def register_and_unregister(runner):
     await manager.register_runner(agent, runner)
@@ -337,4 +331,3 @@ async def test_unregister_same_runner_twice(manager, agent, runner):
   # Verify agent is removed
   async with manager._lock:
     assert id(agent) not in manager._runners_by_agent
-
