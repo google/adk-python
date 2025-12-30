@@ -12,13 +12,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# pylint: disable=g-importing-member
+import os
+import sys
+
+SAMPLES_DIR = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "..")
+)
+if SAMPLES_DIR not in sys.path:
+  sys.path.append(SAMPLES_DIR)
 
 import asyncio
 import time
 from typing import Any
 
-import agent
+from adk_concurrent_agent_tool_call.agent_tool_parallel import agent
+from adk_concurrent_agent_tool_call.mock_tools import MockMcpTool
 from google.adk.agents.run_config import RunConfig
 from google.adk.runners import InMemoryRunner
 from google.adk.sessions.session import Session
@@ -27,7 +35,8 @@ from google.adk.tools.tool_context import ToolContext
 from google.genai import types
 
 # Track running tools using monkey patch
-running_tools: dict[str, agent.MockTool] = {}
+running_tools: dict[str, MockMcpTool] = {}
+
 
 async def main():
   """Tests runner close behavior with shared toolsets.
@@ -83,7 +92,7 @@ async def main():
       tool: BaseTool, args: dict[str, Any], tool_context: ToolContext
   ) -> Any:
     """Patched version that tracks running tools."""
-    if isinstance(tool, agent.MockTool):
+    if isinstance(tool, MockMcpTool):
       running_tools[tool_context.session.id] = tool
       print(f"Tool {tool.name} started for session {tool_context.session.id}")
       trigger_tool_call_request()
@@ -110,7 +119,9 @@ async def main():
         if event.content and event.content.parts:
           for part in event.content.parts:
             if part.text:
-              print(f"Runner {runner.__hash__()} Session {session.id}: {event.author}: {part.text}")
+              print(
+                  f"Runner {runner.__hash__()} Session {session.id}: {event.author}: {part.text}"
+              )
             if part.function_call:
               print(
                   f"Runner {runner.__hash__()} Session {session.id}: {event.author}: function_call"
@@ -204,6 +215,7 @@ async def main():
     functions.__call_tool_async = original_call_tool_async
     print("Monkey patch restored ✓")
 
+
 if __name__ == "__main__":
   start_time = time.time()
   print(
@@ -221,3 +233,4 @@ if __name__ == "__main__":
       time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(end_time)),
   )
   print("Total script execution time:", f"{end_time - start_time:.2f} seconds")
+

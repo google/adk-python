@@ -17,15 +17,14 @@
 import asyncio
 from typing import Any
 
-from google.adk import Agent
 from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.base_toolset import BaseToolset
 from google.adk.tools.tool_context import ToolContext
 from google.genai.types import FunctionDeclaration
 
 
-class MockTool(BaseTool):
-  """A mock tool that waits for a closed event before completing."""
+class MockMcpTool(BaseTool):
+  """A mock tool that waits for a done event before completing."""
 
   def __init__(
       self,
@@ -70,7 +69,7 @@ class MockTool(BaseTool):
 
 class MockMcpToolset(BaseToolset):
   """A mock MCP toolset with a closed event.
-  This toolset is used to test the runner close behavior when a MCP toolset is used.
+  This toolset is used to test concurrency scenarios with shared toolsets.
   """
 
   def __init__(self):
@@ -82,29 +81,15 @@ class MockMcpToolset(BaseToolset):
     # Note that if you cache the tool, there is no such issue since the tool is reused.
     # e.g. `return [self._tool]`
     # However, MCP is a stateful protocol, so the tool should not be reused.
-    return [MockTool(
-        name="mcp_tool",
-        closed_event=self.closed_event,
-    )]
+    return [
+        MockMcpTool(
+            name="mcp_tool",
+            closed_event=self.closed_event,
+        )
+    ]
 
   async def close(self) -> None:
     """Closes the toolset by setting the closed event."""
     print(f"Closing toolset {self.__hash__()}")
     self.closed_event.set()
 
-
-# Create a MCP toolset
-mcp_toolset = MockMcpToolset()
-
-system_prompt = """
-You are a helpful assistant that can use tools to help users.
-When asked to use the mcp_tool, you should call it.
-"""
-
-root_agent = Agent(
-    model="gemini-2.5-flash",
-    name="parallel_agent",
-    description="An agent that uses a MCP toolset for testing runner close behavior.",
-    instruction=system_prompt,
-    tools=[mcp_toolset],
-)
