@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from typing import Optional
 from typing import Tuple
@@ -273,6 +274,20 @@ Choose type""",
     return "CODE"
 
 
+def _sanitize_to_python_identifier(name: str) -> str:
+  """Sanitizes a string to be a valid Python identifier.
+
+  Replaces non-alphanumeric characters with underscores.
+  If the name starts with a digit, prepends an underscore.
+  """
+  # Replace all non-alphanumeric characters with an underscore.
+  sanitized_name = re.sub(r"[^\w]", "_", name)
+  # Ensure the name does not start with a digit.
+  if sanitized_name and sanitized_name[0].isdigit():
+    sanitized_name = "_" + sanitized_name
+  return sanitized_name
+
+
 def run_cmd(
     agent_name: str,
     *,
@@ -294,14 +309,14 @@ def run_cmd(
       VertexAI as backend.
     type: Optional[str], Whether to define agent with config file or code.
   """
-  if "-" in agent_name:
-    normalized_name = agent_name.replace("-", "_")
+  sanitized_name = _sanitize_to_python_identifier(agent_name)
+  if sanitized_name != agent_name:
     click.secho(
-        f"Warning: Agent name '{agent_name}' contains hyphens, which are not"
-        f" allowed in Python package names. Renaming to '{normalized_name}'.",
+        f"Warning: Agent name '{agent_name}' contains characters that are not "
+        f"allowed in Python package names. Renaming to '{sanitized_name}'.",
         fg="yellow",
     )
-    agent_name = normalized_name
+    agent_name = sanitized_name
 
   agent_folder = os.path.join(os.getcwd(), agent_name)
   # check folder doesn't exist or it's empty. Otherwise, throw
