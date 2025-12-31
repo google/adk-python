@@ -294,6 +294,15 @@ def run_cmd(
       VertexAI as backend.
     type: Optional[str], Whether to define agent with config file or code.
   """
+  if "-" in agent_name:
+    normalized_name = agent_name.replace("-", "_")
+    click.secho(
+        f"Warning: Agent name '{agent_name}' contains hyphens, which are not"
+        f" allowed in Python package names. Renaming to '{normalized_name}'.",
+        fg="yellow",
+    )
+    agent_name = normalized_name
+
   agent_folder = os.path.join(os.getcwd(), agent_name)
   # check folder doesn't exist or it's empty. Otherwise, throw
   if os.path.exists(agent_folder) and os.listdir(agent_folder):
