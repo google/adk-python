@@ -32,6 +32,9 @@ from .functions import REQUEST_EUC_FUNCTION_CALL_NAME
 
 logger = logging.getLogger('google_adk.' + __name__)
 
+# Error response for orphaned function calls (issue #3971)
+_ORPHANED_CALL_ERROR_RESPONSE = {'error': 'Tool execution was interrupted.'}
+
 
 class _ContentLlmRequestProcessor(BaseLlmRequestProcessor):
   """Builds the contents for the LLM request."""
@@ -76,8 +79,39 @@ class _ContentLlmRequestProcessor(BaseLlmRequestProcessor):
 request_processor = _ContentLlmRequestProcessor()
 
 
+
+def _create_synthetic_response_for_orphaned_calls(
+    event: Event,
+    orphaned_calls: list[types.FunctionCall],
+) -> Event:
+  """Create synthetic error responses for orphaned function calls."""
+  error_response = _ORPHANED_CALL_ERROR_RESPONSE
+  parts: list[types.Part] = []
+
+  for func_call in orphaned_calls:
+    logger.warning(
+        'Auto-healing orphaned function_call (id=%s, name=%s). '
+        'This indicates execution was interrupted before tool completion.',
+        func_call.id,
+        func_call.name,
+    )
+    part = types.Part.from_function_response(
+        name=func_call.name,
+        response=error_response,
+    )
+    part.function_response.id = func_call.id
+    parts.append(part)
+
+  return Event(
+      invocation_id=event.invocation_id,
+      author=event.author,
+      content=types.Content(role='user', parts=parts),
+      branch=event.branch,
+  )
+
 def _rearrange_events_for_async_function_responses_in_history(
     events: list[Event],
+    heal_orphaned_calls: bool = False,
 ) -> list[Event]:
   """Rearrange the async function_response events in the history."""
 
@@ -95,26 +129,34 @@ def _rearrange_events_for_async_function_responses_in_history(
       # function_response should be handled together with function_call below.
       continue
     elif event.get_function_calls():
-
       function_response_events_indices = set()
+      orphaned_calls: list[types.FunctionCall] = []
       for function_call in event.get_function_calls():
         function_call_id = function_call.id
         if function_call_id in function_call_id_to_response_events_index:
           function_response_events_indices.add(
               function_call_id_to_response_events_index[function_call_id]
           )
+        elif heal_orphaned_calls and function_call_id:
+          orphaned_calls.append(function_call)
       result_events.append(event)
-      if not function_response_events_indices:
+      if not function_response_events_indices and not orphaned_calls:
         continue
-      if len(function_response_events_indices) == 1:
+      if function_response_events_indices:
+        if len(function_response_events_indices) == 1:
+          result_events.append(
+              events[next(iter(function_response_events_indices))]
+          )
+        else:  # Merge all async function_response as one response event
+          result_events.append(
+              _merge_function_response_events(
+                  [events[i] for i in sorted(function_response_events_indices)]
+              )
+          )
+      # Inject synthetic responses for orphaned calls (issue #3971)
+      if orphaned_calls:
         result_events.append(
-            events[next(iter(function_response_events_indices))]
-        )
-      else:  # Merge all async function_response as one response event
-        result_events.append(
-            _merge_function_response_events(
-                [events[i] for i in sorted(function_response_events_indices)]
-            )
+            _create_synthetic_response_for_orphaned_calls(event, orphaned_calls)
         )
       continue
     else:
@@ -441,8 +483,9 @@ def _get_contents(
   result_events = _rearrange_events_for_latest_function_response(
       filtered_events
   )
+  # Auto-heal orphaned function_calls to prevent crash loop (issue #3971)
   result_events = _rearrange_events_for_async_function_responses_in_history(
-      result_events
+      result_events, heal_orphaned_calls=True
   )
 
   # Convert events to contents
