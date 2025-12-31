@@ -22,6 +22,7 @@ from google.genai import types as genai_types
 from pydantic import ValidationError
 from typing_extensions import override
 
+from .eval_case import ConversationScenario
 from .eval_case import get_all_tool_calls
 from .eval_case import Invocation
 from .eval_metrics import EvalMetric
@@ -118,11 +119,13 @@ class TrajectoryEvaluator(Evaluator):
   def evaluate_invocations(
       self,
       actual_invocations: list[Invocation],
-      expected_invocations: Optional[list[Invocation]],
+      expected_invocations: Optional[list[Invocation]] = None,
+      conversation_scenario: Optional[ConversationScenario] = None,
   ) -> EvaluationResult:
     """Returns EvaluationResult after performing evaluations using actual and expected invocations."""
     if expected_invocations is None:
       raise ValueError("expected_invocations is needed by this metric.")
+    del conversation_scenario  # not supported for per-invocation evaluation.
 
     total_tool_use_accuracy = 0.0
     num_invocations = 0
