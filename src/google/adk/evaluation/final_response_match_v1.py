@@ -60,11 +60,12 @@ class RougeEvaluator(Evaluator):
   def evaluate_invocations(
       self,
       actual_invocations: list[Invocation],
-      expected_invocations: Optional[list[Invocation]],
-      _: Optional[ConversationScenario] = None,
+      expected_invocations: Optional[list[Invocation]] = None,
+      conversation_scenario: Optional[ConversationScenario] = None,
   ) -> EvaluationResult:
     if expected_invocations is None:
       raise ValueError("expected_invocations is required for this metric.")
+    del conversation_scenario  # not used by this metric.
 
     total_score = 0.0
     num_invocations = 0
