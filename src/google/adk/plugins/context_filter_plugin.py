@@ -19,8 +19,9 @@ from typing import Callable
 from typing import List
 from typing import Optional
 
+from google.genai import types
+
 from ..agents.callback_context import CallbackContext
-from ..events.event import Event
 from ..models.llm_request import LlmRequest
 from ..models.llm_response import LlmResponse
 from .base_plugin import BasePlugin
@@ -34,7 +35,9 @@ class ContextFilterPlugin(BasePlugin):
   def __init__(
       self,
       num_invocations_to_keep: Optional[int] = None,
-      custom_filter: Optional[Callable[[List[Event]], List[Event]]] = None,
+      custom_filter: Optional[
+          Callable[[List[types.Content]], List[types.Content]]
+      ] = None,
       name: str = "context_filter_plugin",
   ):
     """Initializes the context management plugin.
