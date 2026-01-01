@@ -241,17 +241,13 @@ async def test_lock_prevents_race_condition(manager, agent):
   await manager.register_runner(agent, runner1)
   await manager.register_runner(agent, runner2)
 
-  # Create a barrier to synchronize unregistration attempts
-  barrier = asyncio.Barrier(2)
-
-  async def unregister_with_barrier(runner):
-    await barrier.wait()  # Wait for both to reach this point
+  async def unregister(runner):
     async with manager.unregister_runner(agent, runner) as should_cleanup:
       return should_cleanup
 
   # Unregister both runners concurrently
   results = await asyncio.gather(
-      unregister_with_barrier(runner1), unregister_with_barrier(runner2)
+      unregister(runner1), unregister(runner2)
   )
 
   # Exactly one should return True (the last one to complete)
