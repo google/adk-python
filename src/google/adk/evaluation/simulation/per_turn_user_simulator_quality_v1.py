@@ -290,10 +290,12 @@ class PerTurnUserSimulatorQualityV1(Evaluator):
   async def evaluate_invocations(
       self,
       actual_invocations: list[Invocation],
-      expected_invocations: Optional[list[Invocation]],
-      conversation_scenario: Optional[ConversationScenario],
+      expected_invocations: Optional[list[Invocation]] = None,
+      conversation_scenario: Optional[ConversationScenario] = None,
   ) -> EvaluationResult:
-    del expected_invocations
+    del expected_invocations  # not used by this metric.
+    if conversation_scenario is None:
+      raise ValueError("conversation_scenario is needed by this metric.")
 
     # Evaluate the first invocation contains the given starting prompt.
     results = [

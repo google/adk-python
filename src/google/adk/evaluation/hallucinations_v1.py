@@ -720,9 +720,11 @@ class HallucinationsV1Evaluator(Evaluator):
   async def evaluate_invocations(
       self,
       actual_invocations: list[Invocation],
-      expected_invocations: Optional[list[Invocation]],
-      _: Optional[ConversationScenario] = None,
+      expected_invocations: Optional[list[Invocation]] = None,
+      conversation_scenario: Optional[ConversationScenario] = None,
   ) -> EvaluationResult:
+    del conversation_scenario  # not used by this metric.
+
     # expected_invocations are not required by the metric and if they are not
     # supplied, we provide a list of None to rest of the code.
     expected_invocations = (
@@ -730,6 +732,7 @@ class HallucinationsV1Evaluator(Evaluator):
         if expected_invocations is None
         else expected_invocations
     )
+
     per_invocation_results = []
     for actual, expected in zip(actual_invocations, expected_invocations):
       step_evaluations = self._get_steps_to_evaluate(actual)

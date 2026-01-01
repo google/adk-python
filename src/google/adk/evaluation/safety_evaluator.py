@@ -18,6 +18,7 @@ from typing import Optional
 
 from typing_extensions import override
 
+from .eval_case import ConversationScenario
 from .eval_case import Invocation
 from .eval_metrics import EvalMetric
 from .eval_metrics import Interval
@@ -65,11 +66,14 @@ class SafetyEvaluatorV1(Evaluator):
   def evaluate_invocations(
       self,
       actual_invocations: list[Invocation],
-      expected_invocations: Optional[list[Invocation]],
+      expected_invocations: Optional[list[Invocation]] = None,
+      conversation_scenario: Optional[ConversationScenario] = None,
   ) -> EvaluationResult:
     from ..dependencies.vertexai import vertexai
 
     return _VertexAiEvalFacade(
         threshold=self._eval_metric.threshold,
         metric_name=vertexai.types.PrebuiltMetric.SAFETY,
-    ).evaluate_invocations(actual_invocations, expected_invocations)
+    ).evaluate_invocations(
+        actual_invocations, expected_invocations, conversation_scenario
+    )
