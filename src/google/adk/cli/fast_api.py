@@ -344,12 +344,12 @@ def get_fast_api_app(
         return _get_a2a_runner_async
 
       for p in base_path.iterdir():
-        # only folders with an agent.json file representing agent card are valid
+        # only folders with an agent-card.json file representing agent card are valid
         # a2a agents
         if (
             p.is_file()
             or p.name.startswith((".", "__pycache__"))
-            or not (p / "agent.json").is_file()
+            or not (p / "agent-card.json").is_file()
         ):
           continue
 
@@ -365,7 +365,7 @@ def get_fast_api_app(
               agent_executor=agent_executor, task_store=a2a_task_store
           )
 
-          with (p / "agent.json").open("r", encoding="utf-8") as f:
+          with (p / "agent-card.json").open("r", encoding="utf-8") as f:
             data = json.load(f)
             agent_card = AgentCard(**data)
 
