@@ -14,6 +14,8 @@
 
 """Tests for function call/response rearrangement in contents module."""
 
+import logging
+
 from google.adk.agents.llm_agent import Agent
 from google.adk.events.event import Event
 from google.adk.flows.llm_flows import contents
@@ -590,3 +592,278 @@ async def test_error_when_function_response_without_matching_call():
         invocation_context, llm_request
     ):
       pass
+
+
+@pytest.mark.asyncio
+async def test_auto_healing_single_orphaned_function_call():
+  """Test auto-healing injects synthetic response for orphaned function call.
+
+  When a session is interrupted after a function call but before the response
+  is saved, the function call becomes orphaned. Auto-healing should inject a
+  synthetic error response to prevent crash loops when the session resumes.
+
+  This test verifies:
+  - Orphaned function calls are detected
+  - Synthetic error responses are injected with correct format
+  - Session can continue without crashing
+  """
+  agent = Agent(model="gemini-2.5-flash", name="test_agent")
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  orphaned_call = types.FunctionCall(
+      id="orphaned_123", name="get_weather", args={"location": "Seoul"}
+  )
+
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("What is the weather in Seoul?"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.ModelContent([types.Part(function_call=orphaned_call)]),
+      ),
+      # No function_response - execution was interrupted
+  ]
+  invocation_context.session.events = events
+
+  # Process the request - should not crash
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  # Verify synthetic response was injected
+  assert len(llm_request.contents) == 3
+
+  synthetic_content = llm_request.contents[2]
+  assert synthetic_content.role == "user"
+  assert len(synthetic_content.parts) == 1
+
+  synthetic_response = synthetic_content.parts[0].function_response
+  assert synthetic_response.id == "orphaned_123"
+  assert synthetic_response.name == "get_weather"
+  assert synthetic_response.response == contents._ORPHANED_CALL_ERROR_RESPONSE
+
+
+@pytest.mark.asyncio
+async def test_auto_healing_multiple_orphaned_function_calls():
+  """Test auto-healing handles multiple orphaned function calls in one event."""
+  agent = Agent(model="gemini-2.5-flash", name="test_agent")
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  orphaned_call_1 = types.FunctionCall(
+      id="orphaned_1", name="tool_a", args={"arg": "value1"}
+  )
+  orphaned_call_2 = types.FunctionCall(
+      id="orphaned_2", name="tool_b", args={"arg": "value2"}
+  )
+
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("Run multiple tools"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.ModelContent([
+              types.Part(function_call=orphaned_call_1),
+              types.Part(function_call=orphaned_call_2),
+          ]),
+      ),
+      # No function_responses - execution was interrupted
+  ]
+  invocation_context.session.events = events
+
+  # Process the request - should not crash
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  # Verify synthetic responses were injected for both calls
+  assert len(llm_request.contents) == 3
+
+  synthetic_content = llm_request.contents[2]
+  assert synthetic_content.role == "user"
+  assert len(synthetic_content.parts) == 2
+
+  response_ids = {part.function_response.id for part in synthetic_content.parts}
+  assert response_ids == {"orphaned_1", "orphaned_2"}
+
+
+@pytest.mark.asyncio
+async def test_auto_healing_partial_orphaned_function_calls():
+  """Test auto-healing only heals calls without responses.
+
+  When some function calls have responses and others don't, only the orphaned
+  ones should receive synthetic responses.
+  """
+  agent = Agent(model="gemini-2.5-flash", name="test_agent")
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  completed_call = types.FunctionCall(
+      id="completed_123", name="tool_complete", args={}
+  )
+  orphaned_call = types.FunctionCall(
+      id="orphaned_456", name="tool_orphaned", args={}
+  )
+  completed_response = types.FunctionResponse(
+      id="completed_123",
+      name="tool_complete",
+      response={"result": "success"},
+  )
+
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("Run two tools"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.ModelContent([
+              types.Part(function_call=completed_call),
+              types.Part(function_call=orphaned_call),
+          ]),
+      ),
+      # Only completed_call has a response
+      Event(
+          invocation_id="inv3",
+          author="user",
+          content=types.UserContent(
+              [types.Part(function_response=completed_response)]
+          ),
+      ),
+  ]
+  invocation_context.session.events = events
+
+  # Process the request
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  # Verify: completed response + synthetic response for orphaned call
+  assert len(llm_request.contents) == 4
+
+  # Third content should be the completed response
+  completed_content = llm_request.contents[2]
+  assert completed_content.parts[0].function_response.id == "completed_123"
+
+  # Fourth content should be the synthetic response for orphaned call
+  synthetic_content = llm_request.contents[3]
+  assert synthetic_content.parts[0].function_response.id == "orphaned_456"
+  assert (
+      synthetic_content.parts[0].function_response.response
+      == contents._ORPHANED_CALL_ERROR_RESPONSE
+  )
+
+
+@pytest.mark.asyncio
+async def test_auto_healing_no_healing_when_responses_exist():
+  """Test that no healing occurs when all function calls have responses."""
+  agent = Agent(model="gemini-2.5-flash", name="test_agent")
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  function_call = types.FunctionCall(
+      id="complete_call", name="search_tool", args={"query": "test"}
+  )
+  function_response = types.FunctionResponse(
+      id="complete_call",
+      name="search_tool",
+      response={"results": ["item1"]},
+  )
+
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("Search for test"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.ModelContent([types.Part(function_call=function_call)]),
+      ),
+      Event(
+          invocation_id="inv3",
+          author="user",
+          content=types.UserContent(
+              [types.Part(function_response=function_response)]
+          ),
+      ),
+  ]
+  invocation_context.session.events = events
+
+  # Process the request
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  # Verify no synthetic response was added (only 3 contents)
+  assert len(llm_request.contents) == 3
+  # Verify the real response is present, not a synthetic one
+  assert llm_request.contents[2].parts[0].function_response.response == {
+      "results": ["item1"]
+  }
+
+
+@pytest.mark.asyncio
+async def test_auto_healing_logs_warning(caplog):
+  """Test that auto-healing logs a warning for each orphaned call."""
+  agent = Agent(model="gemini-2.5-flash", name="test_agent")
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  orphaned_call = types.FunctionCall(
+      id="log_test_123", name="test_tool", args={}
+  )
+
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("Test logging"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.ModelContent([types.Part(function_call=orphaned_call)]),
+      ),
+  ]
+  invocation_context.session.events = events
+
+  with caplog.at_level(logging.WARNING):
+    async for _ in contents.request_processor.run_async(
+        invocation_context, llm_request
+    ):
+      pass
+
+  # Verify warning was logged
+  assert any(
+      "Auto-healing orphaned function_call" in record.message
+      and "log_test_123" in record.message
+      and "test_tool" in record.message
+      for record in caplog.records
+  )
