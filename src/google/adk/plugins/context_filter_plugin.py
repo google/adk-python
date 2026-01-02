@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import logging
 from typing import Callable
-from typing import List
 from typing import Optional
 
 from google.genai import types
@@ -36,7 +35,7 @@ class ContextFilterPlugin(BasePlugin):
       self,
       num_invocations_to_keep: Optional[int] = None,
       custom_filter: Optional[
-          Callable[[List[types.Content]], List[types.Content]]
+          Callable[[list[types.Content]], list[types.Content]]
       ] = None,
       name: str = "context_filter_plugin",
   ):
