@@ -150,7 +150,10 @@ def _rearrange_events_for_async_function_responses_in_history(
           function_response_events_indices.add(
               function_call_id_to_response_events_index[function_call_id]
           )
-        elif function_call_id:
+        elif function_call_id and not (
+            event.long_running_tool_ids
+            and function_call_id in event.long_running_tool_ids
+        ):
           orphaned_calls.append(function_call)
       result_events.append(event)
       if not function_response_events_indices and not orphaned_calls:

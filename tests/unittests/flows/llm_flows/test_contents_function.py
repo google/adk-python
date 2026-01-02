@@ -867,3 +867,118 @@ async def test_auto_healing_logs_warning(caplog):
       and "test_tool" in record.message
       for record in caplog.records
   )
+
+
+@pytest.mark.asyncio
+async def test_long_running_tool_not_detected_as_orphaned():
+  """Test that long-running tool calls are NOT treated as orphaned.
+
+  Long-running tools (e.g., human-in-the-loop) intentionally don't produce
+  immediate function_response events. They should be excluded from orphaned
+  call detection.
+  """
+  agent = Agent(model="gemini-2.5-flash", name="test_agent")
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  long_running_call = types.FunctionCall(
+      id="long_running_123", name="request_human_approval", args={}
+  )
+
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("Please approve this action"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.ModelContent(
+              [types.Part(function_call=long_running_call)]
+          ),
+          long_running_tool_ids={"long_running_123"},
+      ),
+  ]
+  invocation_context.session.events = events
+
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  # Verify NO synthetic error response was injected
+  # Should only have 2 contents: user message + function call
+  assert len(llm_request.contents) == 2
+
+  # Verify no synthetic error in any content
+  for content in llm_request.contents:
+    for part in content.parts:
+      if part.function_response:
+        assert part.function_response.response != contents._ORPHANED_CALL_ERROR_RESPONSE, (
+            "Long-running tool should not be treated as orphaned"
+        )
+
+
+@pytest.mark.asyncio
+async def test_mixed_long_running_and_orphaned_calls():
+  """Test with both long-running and genuine orphaned calls.
+
+  Only the genuine orphaned call should receive synthetic error response.
+  """
+  agent = Agent(model="gemini-2.5-flash", name="test_agent")
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  long_running_call = types.FunctionCall(
+      id="long_running_call", name="request_approval", args={}
+  )
+  orphaned_call = types.FunctionCall(
+      id="orphaned_call", name="quick_calc", args={}
+  )
+
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("Do multiple things"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.ModelContent([
+              types.Part(function_call=long_running_call),
+              types.Part(function_call=orphaned_call),
+          ]),
+          long_running_tool_ids={"long_running_call"},
+      ),
+  ]
+  invocation_context.session.events = events
+
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  # Should have 3 contents: user message + function calls + synthetic response
+  assert len(llm_request.contents) == 3
+
+  # Find the synthetic response
+  response_content = llm_request.contents[2]
+  response_ids = {
+      part.function_response.id
+      for part in response_content.parts
+      if part.function_response
+  }
+
+  # Only orphaned_call should have synthetic response
+  assert "orphaned_call" in response_ids, (
+      "Genuine orphaned call should be healed"
+  )
+  assert "long_running_call" not in response_ids, (
+      "Long-running call should NOT be healed"
+  )
