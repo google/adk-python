@@ -78,7 +78,7 @@ class ToolboxToolset(BaseToolset):
     """
 
     try:
-      from toolbox_adk import ToolboxToolset as RealToolboxToolset  # pylint: disable=import-outside-toplevel
+      from toolbox_adk import ToolboxToolset as NativeToolboxToolset  # pylint: disable=import-outside-toplevel
     except ImportError as exc:
       raise ImportError(
           "ToolboxToolset requires the 'toolbox-adk' package. "
@@ -87,7 +87,7 @@ class ToolboxToolset(BaseToolset):
 
     super().__init__()
 
-    self._delegate = RealToolboxToolset(
+    self._delegate = NativeToolboxToolset(
         server_url=server_url,
         toolset_name=toolset_name,
         tool_names=tool_names,
