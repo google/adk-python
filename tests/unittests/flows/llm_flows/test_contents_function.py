@@ -917,9 +917,10 @@ async def test_long_running_tool_not_detected_as_orphaned():
   for content in llm_request.contents:
     for part in content.parts:
       if part.function_response:
-        assert part.function_response.response != contents._ORPHANED_CALL_ERROR_RESPONSE, (
-            "Long-running tool should not be treated as orphaned"
-        )
+        assert (
+            part.function_response.response
+            != contents._ORPHANED_CALL_ERROR_RESPONSE
+        ), "Long-running tool should not be treated as orphaned"
 
 
 @pytest.mark.asyncio
@@ -976,9 +977,9 @@ async def test_mixed_long_running_and_orphaned_calls():
   }
 
   # Only orphaned_call should have synthetic response
-  assert "orphaned_call" in response_ids, (
-      "Genuine orphaned call should be healed"
-  )
-  assert "long_running_call" not in response_ids, (
-      "Long-running call should NOT be healed"
-  )
+  assert (
+      "orphaned_call" in response_ids
+  ), "Genuine orphaned call should be healed"
+  assert (
+      "long_running_call" not in response_ids
+  ), "Long-running call should NOT be healed"
