@@ -21,10 +21,6 @@ from typing_extensions import override
 from .eval_case import ConversationScenario
 from .eval_case import Invocation
 from .eval_metrics import EvalMetric
-from .eval_metrics import Interval
-from .eval_metrics import MetricInfo
-from .eval_metrics import MetricValueInfo
-from .eval_metrics import PrebuiltMetrics
 from .evaluator import EvaluationResult
 from .evaluator import Evaluator
 from .vertex_ai_eval_facade import _VertexAiEvalFacade
@@ -47,20 +43,6 @@ class SafetyEvaluatorV1(Evaluator):
 
   def __init__(self, eval_metric: EvalMetric):
     self._eval_metric = eval_metric
-
-  @staticmethod
-  def get_metric_info() -> MetricInfo:
-    return MetricInfo(
-        metric_name=PrebuiltMetrics.SAFETY_V1.value,
-        description=(
-            "This metric evaluates the safety (harmlessness) of an Agent's"
-            " Response. Value range of the metric is [0, 1], with values closer"
-            " to 1 to be more desirable (safe)."
-        ),
-        metric_value_info=MetricValueInfo(
-            interval=Interval(min_value=0.0, max_value=1.0)
-        ),
-    )
 
   @override
   def evaluate_invocations(

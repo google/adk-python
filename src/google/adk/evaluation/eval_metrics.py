@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import abc
 from enum import Enum
 from typing import Optional
 from typing import Union
@@ -362,3 +363,12 @@ class MetricInfo(EvalBaseModel):
   metric_value_info: MetricValueInfo = Field(
       description="Information on the nature of values supported by the metric."
   )
+
+
+class MetricInfoProvider(abc.ABC):
+  """Interface for providing MetricInfo."""
+
+  @abc.abstractmethod
+  def get_metric_info(self) -> MetricInfo:
+    """Returns MetricInfo for a given metric."""
+    raise NotImplementedError
