@@ -20,6 +20,7 @@ from google.adk.evaluation.simulation.llm_backed_user_simulator import LlmBacked
 from google.adk.evaluation.simulation.user_simulator import Status
 from google.adk.events.event import Event
 from google.genai import types
+from pydantic import ValidationError
 import pytest
 
 _INPUT_EVENTS = [
@@ -86,6 +87,20 @@ _EXPECTED_REWRITTEN_DIALOGUE_LONG = _EXPECTED_REWRITTEN_DIALOGUE + """
 user: I need to book a flight.
 
 helpful_assistant: Sure, what is your departure date and destination?"""
+
+
+def test_llm_backed_user_simulator_config_validation():
+  """Tests for LlmBackedUserSimulatorConfig."""
+  config = LlmBackedUserSimulatorConfig(custom_instructions=None)
+  assert config.custom_instructions is None
+  valid_instructions = (
+      "{stop_signal} {conversation_plan} {conversation_history}"
+  )
+  config = LlmBackedUserSimulatorConfig(custom_instructions=valid_instructions)
+  assert config.custom_instructions == valid_instructions
+  invalid_instructions = "Instructions with missing formatting placeholders"
+  with pytest.raises(ValidationError):
+    LlmBackedUserSimulatorConfig(custom_instructions=invalid_instructions)
 
 
 class TestHelperMethods:
