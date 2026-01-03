@@ -15,7 +15,7 @@
 """
 Research Orchestration Agent
 
-A multi-agent pipeline that searches the internet, curates information, 
+A multi-agent pipeline that searches the internet, curates information,
 and synthesizes reports using a mix of Gemini and DeepSeek models.
 
 Model Configuration:
@@ -25,44 +25,45 @@ Model Configuration:
 - WriterAgent: DeepSeek (for final report synthesis)
 """
 
-import requests
 from bs4 import BeautifulSoup
-
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.sequential_agent import SequentialAgent
-from google.adk.tools import google_search
 from google.adk.models.lite_llm import LiteLlm
+from google.adk.tools import google_search
+import requests
 
 
 # --- Custom Tool: Web Page Scraper ---
 def load_web_page(url: str) -> str:
-    """Fetches the content from a URL and returns the text.
+  """Fetches the content from a URL and returns the text.
 
-    Args:
-        url (str): The URL to fetch content from.
+  Args:
+      url (str): The URL to fetch content from.
 
-    Returns:
-        str: The extracted text content from the web page.
-    """
-    try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        }
-        response = requests.get(url, headers=headers, timeout=10)
-        
-        if response.status_code == 200:
-            soup = BeautifulSoup(response.content, 'lxml')
-            # Remove script and style elements
-            for script in soup(["script", "style"]):
-                script.decompose()
-            text = soup.get_text(separator='\n', strip=True)
-            # Filter out very short lines
-            lines = [line for line in text.splitlines() if len(line.split()) > 3]
-            return '\n'.join(lines[:100])  # Limit to first 100 meaningful lines
-        else:
-            return f"Failed to fetch URL: {url} (Status: {response.status_code})"
-    except Exception as e:
-        return f"Error fetching URL {url}: {str(e)}"
+  Returns:
+      str: The extracted text content from the web page.
+  """
+  try:
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        )
+    }
+    response = requests.get(url, headers=headers, timeout=10)
+
+    if response.status_code == 200:
+      soup = BeautifulSoup(response.content, "lxml")
+      # Remove script and style elements
+      for script in soup(["script", "style"]):
+        script.decompose()
+      text = soup.get_text(separator="\n", strip=True)
+      # Filter out very short lines
+      lines = [line for line in text.splitlines() if len(line.split()) > 3]
+      return "\n".join(lines[:100])  # Limit to first 100 meaningful lines
+    else:
+      return f"Failed to fetch URL: {url} (Status: {response.status_code})"
+  except Exception as e:
+    return f"Error fetching URL {url}: {str(e)}"
 
 
 # --- Model Configuration ---
@@ -78,7 +79,9 @@ DEEPSEEK_MODEL = LiteLlm(model="deepseek/deepseek-chat")
 search_agent = LlmAgent(
     name="SearchAgent",
     model=GEMINI_MODEL,
-    description="Searches the internet for relevant information using Google Search",
+    description=(
+        "Searches the internet for relevant information using Google Search"
+    ),
     instruction="""
     You are a research assistant specialized in finding information online.
     
@@ -123,7 +126,7 @@ scraper_agent = LlmAgent(
 # --- Agent 3: Curator Agent (Gemini) ---
 # Filters, organizes, and validates the gathered information
 curator_agent = LlmAgent(
-    name="CuratorAgent", 
+    name="CuratorAgent",
     model=GEMINI_MODEL,
     description="Curates, filters, and organizes research information",
     instruction="""
@@ -183,10 +186,10 @@ writer_agent = LlmAgent(
 root_agent = SequentialAgent(
     name="ResearchOrchestration",
     sub_agents=[
-        search_agent,    # Step 1: Find sources (Gemini + Google Search)
-        scraper_agent,   # Step 2: Extract content (DeepSeek)
-        curator_agent,   # Step 3: Organize & filter (Gemini)
-        writer_agent,    # Step 4: Write report (DeepSeek)
+        search_agent,  # Step 1: Find sources (Gemini + Google Search)
+        scraper_agent,  # Step 2: Extract content (DeepSeek)
+        curator_agent,  # Step 3: Organize & filter (Gemini)
+        writer_agent,  # Step 4: Write report (DeepSeek)
     ],
     description=(
         "A research pipeline that searches the internet, extracts content, "

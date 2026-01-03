@@ -1,30 +1,27 @@
 # Research Orchestration Agent
 
-A multi-agent research pipeline that combines **Gemini** and **DeepSeek** models to search, curate, and synthesize information from the internet.
+A multi-agent research pipeline demonstrating SequentialAgent orchestration
+with multi-model support via LiteLLM.
 
 ## Architecture
 
 ```
-User Query → SearchAgent (Gemini) → ScraperAgent (DeepSeek) → CuratorAgent (Gemini) → WriterAgent (DeepSeek) → Final Report
+User Query → SearchAgent → ScraperAgent → CuratorAgent → WriterAgent → Report
 ```
 
-## Agent Configuration
+## Features Demonstrated
 
-| Agent | Model | Purpose |
-|-------|-------|---------|
-| SearchAgent | gemini-2.5-flash | Google Search grounding for finding sources |
-| ScraperAgent | deepseek-chat | Extract content from web pages |
-| CuratorAgent | gemini-2.5-flash | Filter and organize information |
-| WriterAgent | deepseek-chat | Synthesize final report |
+* **SequentialAgent** - Pipeline orchestration pattern
+* **LiteLLM integration** - Multi-model support
+* **Google Search grounding** - Built-in search tool
+* **Custom tools** - Web scraping with BeautifulSoup
 
-## Requirements
+## Sample Query
 
-- `GOOGLE_API_KEY` - For Gemini models
-- `DEEPSEEK_API_KEY` - For DeepSeek models
-- LiteLLM installed (`pip install litellm`)
-- BeautifulSoup installed (`pip install beautifulsoup4 lxml`)
+* What are the latest developments in AI agent frameworks?
+* Research the current state of autonomous agents.
 
-## Usage
+## To Run
 
 ```bash
 # CLI
@@ -34,6 +31,8 @@ adk run contributing/samples/research_orchestration
 adk web contributing/samples
 ```
 
-## Example Query
+## Requirements
 
-"What are the latest developments in AI agent frameworks in 2025?"
+* `google-adk` with LiteLLM extension: `pip install google-adk[extensions]`
+* BeautifulSoup: `pip install beautifulsoup4 lxml`
+* Configure API keys in `.env` for your chosen models
