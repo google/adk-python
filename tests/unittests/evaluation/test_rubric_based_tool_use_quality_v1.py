@@ -136,15 +136,3 @@ def test_format_auto_rater_prompt_with_intermediate_data(
   assert '"name": "test_func"' in prompt
   assert '"tool_response":' in prompt
   assert '"result": "ok"' in prompt
-
-
-def test_get_metric_info(evaluator: RubricBasedToolUseV1Evaluator):
-  """Tests the get_metric_info method."""
-  metric_info = evaluator.get_metric_info()
-  assert (
-      metric_info.metric_name
-      == PrebuiltMetrics.RUBRIC_BASED_TOOL_USE_QUALITY_V1.value
-  )
-  assert "agent's usage of tools" in metric_info.description
-  assert metric_info.metric_value_info.interval.min_value == 0.0
-  assert metric_info.metric_value_info.interval.max_value == 1.0

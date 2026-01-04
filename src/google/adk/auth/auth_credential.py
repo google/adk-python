@@ -18,6 +18,7 @@ from enum import Enum
 from typing import Any
 from typing import Dict
 from typing import List
+from typing import Literal
 from typing import Optional
 
 from pydantic import alias_generators
@@ -80,6 +81,14 @@ class OAuth2Auth(BaseModelWithConfig):
   expires_at: Optional[int] = None
   expires_in: Optional[int] = None
   audience: Optional[str] = None
+  token_endpoint_auth_method: Optional[
+      Literal[
+          "client_secret_basic",
+          "client_secret_post",
+          "client_secret_jwt",
+          "private_key_jwt",
+      ]
+  ] = "client_secret_basic"
 
 
 class ServiceAccountCredential(BaseModelWithConfig):

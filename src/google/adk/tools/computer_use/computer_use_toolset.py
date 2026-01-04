@@ -25,8 +25,9 @@ from google.genai import types
 from typing_extensions import override
 
 from ...agents.readonly_context import ReadonlyContext
+from ...features import experimental
+from ...features import FeatureName
 from ...models.llm_request import LlmRequest
-from ...utils.feature_decorator import experimental
 from ..base_toolset import BaseToolset
 from ..tool_context import ToolContext
 from .base_computer import BaseComputer
@@ -38,7 +39,7 @@ EXCLUDED_METHODS = {"screen_size", "environment", "close"}
 logger = logging.getLogger("google_adk." + __name__)
 
 
-@experimental
+@experimental(FeatureName.COMPUTER_USE)
 class ComputerUseToolset(BaseToolset):
 
   def __init__(
@@ -68,9 +69,12 @@ class ComputerUseToolset(BaseToolset):
     """Adapt a computer use tool by replacing it with a modified version.
 
     Args:
-      method_name: The name of the method (of BaseComputer class) to adapt (e.g. 'wait').
-      adapter_func: A function that accepts existing computer use async function and returns a new computer use async function.
-        Can be either sync or async function. The name of the returned function will be used as the new tool name.
+      method_name: The name of the method (of BaseComputer class) to adapt (e.g.
+        'wait').
+      adapter_func: A function that accepts existing computer use async function
+        and returns a new computer use async function. Can be either sync or
+        async function. The name of the returned function will be used as the
+        new tool name.
       llm_request: The LLM request containing the tools dictionary.
     """
     # Validate that the method is a valid BaseComputer method
@@ -173,8 +177,7 @@ class ComputerUseToolset(BaseToolset):
   async def process_llm_request(
       self, *, tool_context: ToolContext, llm_request: LlmRequest
   ) -> None:
-    """Add its tools to the LLM request and add computer
-    use configuration to the LLM request."""
+    """Add its tools to the LLM request and add computer use configuration to the LLM request."""
     try:
 
       # Add this tool to the tools dictionary

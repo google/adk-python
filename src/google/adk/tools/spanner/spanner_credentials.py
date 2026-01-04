@@ -14,7 +14,8 @@
 
 from __future__ import annotations
 
-from ...utils.feature_decorator import experimental
+from ...features import experimental
+from ...features import FeatureName
 from .._google_credentials import BaseGoogleCredentialsConfig
 
 SPANNER_TOKEN_CACHE_KEY = "spanner_token_cache"
@@ -24,7 +25,7 @@ SPANNER_DEFAULT_SCOPE = [
 ]
 
 
-@experimental
+@experimental(FeatureName.GOOGLE_CREDENTIALS_CONFIG)
 class SpannerCredentialsConfig(BaseGoogleCredentialsConfig):
   """Spanner Credentials Configuration for Google API tools (Experimental).
 

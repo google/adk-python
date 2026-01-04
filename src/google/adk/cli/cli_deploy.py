@@ -512,7 +512,8 @@ def to_cloud_run(
     with_ui: Whether to deploy with UI.
     verbosity: The verbosity level of the CLI.
     adk_version: The ADK version to use in Cloud Run.
-    allow_origins: The list of allowed origins for the ADK api server.
+    allow_origins: Origins to allow for CORS. Can be literal origins or regex
+      patterns prefixed with 'regex:'.
     session_service_uri: The URI of the session service.
     artifact_service_uri: The URI of the artifact service.
     memory_service_uri: The URI of the memory service.
@@ -770,25 +771,27 @@ def to_agent_engine(
         )
       agent_config['description'] = description
 
-    if not requirements_file:
+    requirements_txt_path = os.path.join(agent_src_path, 'requirements.txt')
+    if requirements_file:
+      if os.path.exists(requirements_txt_path):
+        click.echo(
+            f'Overwriting {requirements_txt_path} with {requirements_file}'
+        )
+      shutil.copyfile(requirements_file, requirements_txt_path)
+    elif 'requirements_file' in agent_config:
+      if os.path.exists(requirements_txt_path):
+        click.echo(
+            f'Overwriting {requirements_txt_path} with'
+            f' {agent_config["requirements_file"]}'
+        )
+      shutil.copyfile(agent_config['requirements_file'], requirements_txt_path)
+    else:
       # Attempt to read requirements from requirements.txt in the dir (if any).
-      requirements_txt_path = os.path.join(agent_src_path, 'requirements.txt')
       if not os.path.exists(requirements_txt_path):
         click.echo(f'Creating {requirements_txt_path}...')
         with open(requirements_txt_path, 'w', encoding='utf-8') as f:
           f.write('google-cloud-aiplatform[adk,agent_engines]')
         click.echo(f'Created {requirements_txt_path}')
-      agent_config['requirements_file'] = agent_config.get(
-          'requirements',
-          requirements_txt_path,
-      )
-    else:
-      if 'requirements_file' in agent_config:
-        click.echo(
-            'Overriding requirements in agent engine config with '
-            f'{requirements_file}'
-        )
-      agent_config['requirements_file'] = requirements_file
     agent_config['requirements_file'] = f'{temp_folder}/requirements.txt'
 
     env_vars = {}
@@ -961,7 +964,8 @@ def to_gke(
     with_ui: Whether to deploy with UI.
     log_level: The logging level.
     adk_version: The ADK version to use in GKE.
-    allow_origins: The list of allowed origins for the ADK api server.
+    allow_origins: Origins to allow for CORS. Can be literal origins or regex
+      patterns prefixed with 'regex:'.
     session_service_uri: The URI of the session service.
     artifact_service_uri: The URI of the artifact service.
     memory_service_uri: The URI of the memory service.
