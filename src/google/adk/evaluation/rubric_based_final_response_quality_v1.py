@@ -24,10 +24,6 @@ from ..utils.feature_decorator import experimental
 from .eval_case import Invocation
 from .eval_case import InvocationEvents
 from .eval_metrics import EvalMetric
-from .eval_metrics import Interval
-from .eval_metrics import MetricInfo
-from .eval_metrics import MetricValueInfo
-from .eval_metrics import PrebuiltMetrics
 from .eval_metrics import RubricsBasedCriterion
 from .llm_as_judge_utils import get_text_from_content
 from .llm_as_judge_utils import get_tool_calls_and_responses_as_json_str
@@ -264,20 +260,6 @@ class RubricBasedFinalResponseQualityV1Evaluator(RubricBasedEvaluator):
     )
     self._auto_rater_prompt_template = (
         _RUBRIC_BASED_FINAL_RESPONSE_QUALITY_V1_PROMPT
-    )
-
-  @staticmethod
-  def get_metric_info() -> MetricInfo:
-    return MetricInfo(
-        metric_name=PrebuiltMetrics.RUBRIC_BASED_FINAL_RESPONSE_QUALITY_V1.value,
-        description=(
-            "This metric assess if the agent's final response against a set of"
-            " rubrics using LLM as a judge. Value range for this metric is"
-            " [0,1], with values closer to 1 more desirable."
-        ),
-        metric_value_info=MetricValueInfo(
-            interval=Interval(min_value=0.0, max_value=1.0)
-        ),
     )
 
   @override

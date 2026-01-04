@@ -370,6 +370,7 @@ class LocalEvalService(BaseEvalService):
       return metric_evaluator.evaluate_invocations(
           actual_invocations=actual_invocations,
           expected_invocations=expected_invocations,
+          conversation_scenario=conversation_scenario,
       )
 
   def _generate_final_eval_status(
