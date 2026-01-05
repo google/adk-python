@@ -1657,7 +1657,8 @@ class AdkWebServer:
         for task in done:
           task.result()
       except WebSocketDisconnect:
-        logger.info("Client disconnected during process_messages.")
+        # Disconnection could happen when receive or send text via websocket
+        logger.info("Client disconnected during live session.")
       except Exception as e:
         logger.exception("Error during live websocket communication: %s", e)
         traceback.print_exc()
