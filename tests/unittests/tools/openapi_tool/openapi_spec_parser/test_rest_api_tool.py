@@ -1036,6 +1036,149 @@ class TestRestApiTool:
       call_kwargs = mock_request.call_args[1]
       assert call_kwargs["verify"] == ca_bundle_path
 
+  def test_init_with_header_provider(
+      self,
+      sample_endpoint,
+      sample_operation,
+  ):
+    """Test that header_provider is stored correctly."""
+
+    def my_header_provider(context):
+      return {"X-Custom": "value"}
+
+    tool = RestApiTool(
+        name="test_tool",
+        description="Test Tool",
+        endpoint=sample_endpoint,
+        operation=sample_operation,
+        header_provider=my_header_provider,
+    )
+    assert tool._header_provider is my_header_provider
+
+  def test_init_header_provider_none_by_default(
+      self,
+      sample_endpoint,
+      sample_operation,
+  ):
+    """Test that header_provider is None by default."""
+    tool = RestApiTool(
+        name="test_tool",
+        description="Test Tool",
+        endpoint=sample_endpoint,
+        operation=sample_operation,
+    )
+    assert tool._header_provider is None
+
+  @pytest.mark.asyncio
+  async def test_call_with_header_provider(
+      self,
+      mock_tool_context,
+      sample_endpoint,
+      sample_operation,
+      sample_auth_scheme,
+      sample_auth_credential,
+  ):
+    """Test that header_provider adds headers to the request."""
+    mock_response = mock.create_autospec(
+        requests.Response, instance=True, spec_set=True
+    )
+    mock_response.json.return_value = {"result": "success"}
+
+    def my_header_provider(context):
+      return {"X-Custom-Header": "custom-value", "X-Request-ID": "12345"}
+
+    tool = RestApiTool(
+        name="test_tool",
+        description="Test Tool",
+        endpoint=sample_endpoint,
+        operation=sample_operation,
+        auth_scheme=sample_auth_scheme,
+        auth_credential=sample_auth_credential,
+        header_provider=my_header_provider,
+    )
+
+    with patch.object(
+        requests, "request", return_value=mock_response, autospec=True
+    ) as mock_request:
+      await tool.call(args={}, tool_context=mock_tool_context)
+
+      # Verify the headers were added to the request
+      assert mock_request.called
+      _, call_kwargs = mock_request.call_args
+      assert call_kwargs["headers"]["X-Custom-Header"] == "custom-value"
+      assert call_kwargs["headers"]["X-Request-ID"] == "12345"
+
+  @pytest.mark.asyncio
+  async def test_call_header_provider_receives_tool_context(
+      self,
+      mock_tool_context,
+      sample_endpoint,
+      sample_operation,
+      sample_auth_scheme,
+      sample_auth_credential,
+  ):
+    """Test that header_provider receives the tool_context."""
+    mock_response = mock.create_autospec(
+        requests.Response, instance=True, spec_set=True
+    )
+    mock_response.json.return_value = {"result": "success"}
+
+    received_context = []
+
+    def my_header_provider(context):
+      received_context.append(context)
+      return {"X-Test": "test"}
+
+    tool = RestApiTool(
+        name="test_tool",
+        description="Test Tool",
+        endpoint=sample_endpoint,
+        operation=sample_operation,
+        auth_scheme=sample_auth_scheme,
+        auth_credential=sample_auth_credential,
+        header_provider=my_header_provider,
+    )
+
+    with patch.object(
+        requests, "request", return_value=mock_response, autospec=True
+    ):
+      await tool.call(args={}, tool_context=mock_tool_context)
+
+      # Verify header_provider was called with the tool_context
+      assert len(received_context) == 1
+      assert received_context[0] is mock_tool_context
+
+  @pytest.mark.asyncio
+  async def test_call_without_header_provider(
+      self,
+      mock_tool_context,
+      sample_endpoint,
+      sample_operation,
+      sample_auth_scheme,
+      sample_auth_credential,
+  ):
+    """Test that call works without header_provider."""
+    mock_response = mock.create_autospec(
+        requests.Response, instance=True, spec_set=True
+    )
+    mock_response.json.return_value = {"result": "success"}
+
+    tool = RestApiTool(
+        name="test_tool",
+        description="Test Tool",
+        endpoint=sample_endpoint,
+        operation=sample_operation,
+        auth_scheme=sample_auth_scheme,
+        auth_credential=sample_auth_credential,
+    )
+
+    with patch.object(
+        requests, "request", return_value=mock_response, autospec=True
+    ):
+      result = await tool.call(args={}, tool_context=mock_tool_context)
+
+      assert result == {"result": "success"}
+
 
 def test_snake_to_lower_camel():
   assert snake_to_lower_camel("single") == "single"

@@ -30,6 +30,9 @@ from pydantic import create_model
 from pydantic import fields as pydantic_fields
 
 from . import _function_parameter_parse_util
+from . import _function_tool_declarations
+from ..features import FeatureName
+from ..features import is_feature_enabled
 from ..utils.variant_utils import GoogleLLMVariant
 
 _py_type_2_schema_type = {
@@ -196,6 +199,20 @@ def build_function_declaration(
     ignore_params: Optional[list[str]] = None,
     variant: GoogleLLMVariant = GoogleLLMVariant.GEMINI_API,
 ) -> types.FunctionDeclaration:
+  # ========== Pydantic-based function tool declaration (new feature) ==========
+  if is_feature_enabled(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL):
+    declaration = (
+        _function_tool_declarations.build_function_declaration_with_json_schema(
+            func, ignore_params=ignore_params
+        )
+    )
+    # Add response schema only for VERTEX_AI
+    # TODO(b/421991354): Remove this check once the bug is fixed.
+    if variant != GoogleLLMVariant.VERTEX_AI:
+      declaration.response_json_schema = None
+    return declaration
+
+  # ========== ADK defined function tool declaration (old behavior) ==========
   signature = inspect.signature(func)
   should_update_signature = False
   new_func = None

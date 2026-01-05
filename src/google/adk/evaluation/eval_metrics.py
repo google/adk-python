@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import abc
 from enum import Enum
 from typing import Optional
 from typing import Union
@@ -56,6 +57,8 @@ class PrebuiltMetrics(Enum):
   HALLUCINATIONS_V1 = "hallucinations_v1"
 
   RUBRIC_BASED_TOOL_USE_QUALITY_V1 = "rubric_based_tool_use_quality_v1"
+
+  PER_TURN_USER_SIMULATOR_QUALITY_V1 = "per_turn_user_simulator_quality_v1"
 
 
 MetricName: TypeAlias = Union[str, PrebuiltMetrics]
@@ -223,6 +226,19 @@ class ToolTrajectoryCriterion(BaseCriterion):
   )
 
 
+class LlmBackedUserSimulatorCriterion(LlmAsAJudgeCriterion):
+  """Criterion for LLM-backed User Simulator Evaluators."""
+
+  stop_signal: str = Field(
+      default="</finished>",
+      description=(
+          "Stop signal to validate the successful completion of a conversation."
+          " For optimal performance, this should match the one in the User"
+          " Simulator."
+      ),
+  )
+
+
 class EvalMetric(EvalBaseModel):
   """A metric used to evaluate a particular aspect of an eval case."""
 
@@ -347,3 +363,12 @@ class MetricInfo(EvalBaseModel):
   metric_value_info: MetricValueInfo = Field(
       description="Information on the nature of values supported by the metric."
   )
+
+
+class MetricInfoProvider(abc.ABC):
+  """Interface for providing MetricInfo."""
+
+  @abc.abstractmethod
+  def get_metric_info(self) -> MetricInfo:
+    """Returns MetricInfo for a given metric."""
+    raise NotImplementedError

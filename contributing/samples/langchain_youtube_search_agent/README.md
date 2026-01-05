@@ -1,7 +1,7 @@
 # Langchain YouTube Search Agent
 
-This agent utilize the Langchain YoutubeSearchTool to search youtubes.
-You need to install below dependencies:
+This agent utilizes the Langchain YoutubeSearchTool to search Youtube Videos.
+You need to install the following dependencies:
 
 ```python
 uv pip install youtube_search
