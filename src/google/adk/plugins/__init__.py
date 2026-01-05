@@ -16,10 +16,12 @@ from .base_plugin import BasePlugin
 from .logging_plugin import LoggingPlugin
 from .plugin_manager import PluginManager
 from .reflect_retry_tool_plugin import ReflectAndRetryToolPlugin
+from .tool_aware_context_filter_plugin import ToolAwareContextFilterPlugin
 
 __all__ = [
     'BasePlugin',
     'LoggingPlugin',
     'PluginManager',
     'ReflectAndRetryToolPlugin',
+    'ToolAwareContextFilterPlugin'
 ]
