@@ -81,7 +81,8 @@ class ToolAwareContextFilterPlugin(BasePlugin):
     self._num_invocations_to_keep = num_invocations_to_keep
     self._custom_filter = custom_filter
 
-  def _has_function_call(self, content) -> bool:
+  @staticmethod
+  def _has_function_call(content) -> bool:
     """Check if a content has a function_call part."""
     if not content.parts:
       return False
@@ -90,7 +91,8 @@ class ToolAwareContextFilterPlugin(BasePlugin):
         for part in content.parts
     )
 
-  def _has_function_response(self, content) -> bool:
+  @staticmethod
+  def _has_function_response(content) -> bool:
     """Check if a content has a function_response part."""
     if not content.parts:
       return False
@@ -243,7 +245,7 @@ class ToolAwareContextFilterPlugin(BasePlugin):
             indices_to_keep.extend(invocation)
 
           # Filter contents based on indices
-          filtered_contents = [contents[i] for i in sorted(indices_to_keep)]
+          filtered_contents = [contents[i] for i in indices_to_keep]
 
           logger.info(
               "ToolAwareContextFilter: Reduced from %d messages to %d messages"

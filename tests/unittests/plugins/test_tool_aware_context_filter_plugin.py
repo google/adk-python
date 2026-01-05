@@ -32,7 +32,8 @@ class TestToolAwareContextFilterPlugin:
     assert plugin._num_invocations_to_keep == 2
     assert plugin._custom_filter is None
 
-  def test_no_filtering_when_disabled(self):
+  @pytest.mark.asyncio
+  async def test_no_filtering_when_disabled(self):
     """Test that no filtering occurs when num_invocations_to_keep is None."""
     plugin = ToolAwareContextFilterPlugin(num_invocations_to_keep=None)
 
@@ -47,16 +48,15 @@ class TestToolAwareContextFilterPlugin:
     context = CallbackContext(invocation_id="test", agent_name="test")
 
     # Run the plugin
-    result = pytest.mark.asyncio(
-        plugin.before_model_callback(
-            callback_context=context, llm_request=request
-        )
+    await plugin.before_model_callback(
+        callback_context=context, llm_request=request
     )
 
     # No filtering should occur
     assert len(request.contents) == 4
 
-  def test_simple_invocations_no_tool_calls(self):
+  @pytest.mark.asyncio
+  async def test_simple_invocations_no_tool_calls(self):
     """Test filtering simple Q&A without tool calls."""
     plugin = ToolAwareContextFilterPlugin(num_invocations_to_keep=2)
 
@@ -77,10 +77,8 @@ class TestToolAwareContextFilterPlugin:
     context = CallbackContext(invocation_id="test", agent_name="test")
 
     # Run the plugin
-    result = pytest.mark.asyncio(
-        plugin.before_model_callback(
-            callback_context=context, llm_request=request
-        )
+    await plugin.before_model_callback(
+        callback_context=context, llm_request=request
     )
 
     # Should keep last 2 invocations (indices 2-5)
@@ -88,7 +86,8 @@ class TestToolAwareContextFilterPlugin:
     assert request.contents[0].parts[0].text == "How are you?"
     assert request.contents[-1].parts[0].text == "I'm Claude"
 
-  def test_tool_call_sequence_kept_together(self):
+  @pytest.mark.asyncio
+  async def test_tool_call_sequence_kept_together(self):
     """Test that function_call and function_response stay together."""
     plugin = ToolAwareContextFilterPlugin(num_invocations_to_keep=1)
 
@@ -126,10 +125,8 @@ class TestToolAwareContextFilterPlugin:
     context = CallbackContext(invocation_id="test", agent_name="test")
 
     # Run the plugin
-    result = pytest.mark.asyncio(
-        plugin.before_model_callback(
-            callback_context=context, llm_request=request
-        )
+    await plugin.before_model_callback(
+        callback_context=context, llm_request=request
     )
 
     # Should keep entire tool call sequence (4 messages)
@@ -139,7 +136,8 @@ class TestToolAwareContextFilterPlugin:
     assert hasattr(request.contents[2].parts[0], "function_response")
     assert request.contents[3].parts[0].text == "It's 72°F"
 
-  def test_orphaned_function_response_prevented(self):
+  @pytest.mark.asyncio
+  async def test_orphaned_function_response_prevented(self):
     """Test that function_response is never orphaned without function_call."""
     plugin = ToolAwareContextFilterPlugin(num_invocations_to_keep=2)
 
@@ -199,10 +197,8 @@ class TestToolAwareContextFilterPlugin:
     context = CallbackContext(invocation_id="test", agent_name="test")
 
     # Run the plugin
-    result = pytest.mark.asyncio(
-        plugin.before_model_callback(
-            callback_context=context, llm_request=request
-        )
+    await plugin.before_model_callback(
+        callback_context=context, llm_request=request
     )
 
     # Should keep invocations 2 and 3 (indices 2-9)
@@ -223,7 +219,8 @@ class TestToolAwareContextFilterPlugin:
             for p in prev_content.parts
         )
 
-  def test_consecutive_user_messages_grouped(self):
+  @pytest.mark.asyncio
+  async def test_consecutive_user_messages_grouped(self):
     """Test that consecutive user messages are grouped together."""
     plugin = ToolAwareContextFilterPlugin(num_invocations_to_keep=1)
 
@@ -241,10 +238,8 @@ class TestToolAwareContextFilterPlugin:
     context = CallbackContext(invocation_id="test", agent_name="test")
 
     # Run the plugin
-    result = pytest.mark.asyncio(
-        plugin.before_model_callback(
-            callback_context=context, llm_request=request
-        )
+    await plugin.before_model_callback(
+        callback_context=context, llm_request=request
     )
 
     # Should keep the last invocation with both user messages
@@ -253,7 +248,8 @@ class TestToolAwareContextFilterPlugin:
     assert request.contents[1].parts[0].text == "Tell me about X"
     assert request.contents[2].parts[0].text == "Here's about X"
 
-  def test_custom_filter_applied(self):
+  @pytest.mark.asyncio
+  async def test_custom_filter_applied(self):
     """Test that custom filter is applied after invocation filtering."""
     # Custom filter that removes all model messages
     def custom_filter(contents):
@@ -274,17 +270,16 @@ class TestToolAwareContextFilterPlugin:
     context = CallbackContext(invocation_id="test", agent_name="test")
 
     # Run the plugin
-    result = pytest.mark.asyncio(
-        plugin.before_model_callback(
-            callback_context=context, llm_request=request
-        )
+    await plugin.before_model_callback(
+        callback_context=context, llm_request=request
     )
 
     # Should have only user messages
     assert len(request.contents) == 2
     assert all(c.role == "user" for c in request.contents)
 
-  def test_empty_contents(self):
+  @pytest.mark.asyncio
+  async def test_empty_contents(self):
     """Test handling of empty contents list."""
     plugin = ToolAwareContextFilterPlugin(num_invocations_to_keep=2)
 
@@ -292,28 +287,26 @@ class TestToolAwareContextFilterPlugin:
     context = CallbackContext(invocation_id="test", agent_name="test")
 
     # Run the plugin
-    result = pytest.mark.asyncio(
-        plugin.before_model_callback(
-            callback_context=context, llm_request=request
-        )
+    await plugin.before_model_callback(
+        callback_context=context, llm_request=request
     )
 
     # Should handle empty contents gracefully
     assert len(request.contents) == 0
 
-  def test_error_handling(self):
+  @pytest.mark.asyncio
+  async def test_error_handling(self):
     """Test that errors are caught and logged without crashing."""
     plugin = ToolAwareContextFilterPlugin(num_invocations_to_keep=2)
 
-    # Create a malformed request that might cause errors
-    request = LlmRequest(model="test", contents=None)
+    # Create a valid request first, then set contents to None
+    request = LlmRequest(model="test", contents=[])
     context = CallbackContext(invocation_id="test", agent_name="test")
+    request.contents = None
 
     # Should not raise an exception
-    result = pytest.mark.asyncio(
-        plugin.before_model_callback(
-            callback_context=context, llm_request=request
-        )
+    result = await plugin.before_model_callback(
+        callback_context=context, llm_request=request
     )
 
     # Should return None without crashing
