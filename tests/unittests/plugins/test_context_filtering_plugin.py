@@ -183,3 +183,111 @@ async def test_filter_function_raises_exception():
   )
 
   assert llm_request.contents == original_contents
+
+
+def _create_function_call_content(name: str, call_id: str) -> types.Content:
+  """Creates a model content with a function call."""
+  return types.Content(
+      parts=[
+          types.Part(
+              function_call=types.FunctionCall(id=call_id, name=name, args={})
+          )
+      ],
+      role="model",
+  )
+
+
+def _create_function_response_content(name: str, call_id: str) -> types.Content:
+  """Creates a user content with a function response."""
+  return types.Content(
+      parts=[
+          types.Part(
+              function_response=types.FunctionResponse(
+                  id=call_id, name=name, response={"result": "ok"}
+              )
+          )
+      ],
+      role="user",
+  )
+
+
+@pytest.mark.asyncio
+async def test_filter_preserves_function_call_response_pairs():
+  """Tests that function_call and function_response pairs are kept together.
+
+  This tests the fix for issue #4027 where filtering could create orphaned
+  function_response messages without their corresponding function_call.
+  """
+  plugin = ContextFilterPlugin(num_invocations_to_keep=2)
+
+  # Simulate conversation from issue #4027:
+  # user -> model -> user -> model(function_call) -> user(function_response)
+  # -> model -> user -> model(function_call) -> user(function_response)
+  contents = [
+      _create_content("user", "Hello"),
+      _create_content("model", "Hi there!"),
+      _create_content("user", "I want to know about X"),
+      _create_function_call_content("knowledge_base", "call_1"),
+      _create_function_response_content("knowledge_base", "call_1"),
+      _create_content("model", "I found some information..."),
+      _create_content("user", "can you explain more about Y"),
+      _create_function_call_content("knowledge_base", "call_2"),
+      _create_function_response_content("knowledge_base", "call_2"),
+  ]
+  llm_request = LlmRequest(contents=contents)
+
+  await plugin.before_model_callback(
+      callback_context=Mock(spec=CallbackContext), llm_request=llm_request
+  )
+
+  # Verify function_call for call_1 is included (not orphaned function_response)
+  call_ids_present = set()
+  response_ids_present = set()
+  for content in llm_request.contents:
+    if content.parts:
+      for part in content.parts:
+        if part.function_call and part.function_call.id:
+          call_ids_present.add(part.function_call.id)
+        if part.function_response and part.function_response.id:
+          response_ids_present.add(part.function_response.id)
+
+  # Every function_response should have a matching function_call
+  assert response_ids_present.issubset(call_ids_present), (
+      "Orphaned function_responses found. "
+      f"Responses: {response_ids_present}, Calls: {call_ids_present}"
+  )
+
+
+@pytest.mark.asyncio
+async def test_filter_with_nested_function_calls():
+  """Tests filtering with multiple nested function call sequences."""
+  plugin = ContextFilterPlugin(num_invocations_to_keep=1)
+
+  contents = [
+      _create_content("user", "Hello"),
+      _create_content("model", "Hi!"),
+      _create_content("user", "Do task"),
+      _create_function_call_content("tool_a", "call_a"),
+      _create_function_response_content("tool_a", "call_a"),
+      _create_function_call_content("tool_b", "call_b"),
+      _create_function_response_content("tool_b", "call_b"),
+      _create_content("model", "Done with tasks"),
+  ]
+  llm_request = LlmRequest(contents=contents)
+
+  await plugin.before_model_callback(
+      callback_context=Mock(spec=CallbackContext), llm_request=llm_request
+  )
+
+  # Verify no orphaned function_responses
+  call_ids = set()
+  response_ids = set()
+  for content in llm_request.contents:
+    if content.parts:
+      for part in content.parts:
+        if part.function_call and part.function_call.id:
+          call_ids.add(part.function_call.id)
+        if part.function_response and part.function_response.id:
+          response_ids.add(part.function_response.id)
+
+  assert response_ids.issubset(call_ids)
