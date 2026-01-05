@@ -229,7 +229,7 @@ def execute_sql(
 
           >>> execute_sql("my_project",
           ... "SELECT island, COUNT(*) AS population "
-          ... "FROM bigquery-public-data.ml_datasets.penguins GROUP BY island")
+          ... "FROM `bigquery-public-data`.`ml_datasets`.`penguins` GROUP BY island")
           {
             "status": "SUCCESS",
             "rows": [
@@ -253,7 +253,7 @@ def execute_sql(
           >>> execute_sql(
           ...     "my_project",
           ...     "SELECT island FROM "
-          ...     "bigquery-public-data.ml_datasets.penguins",
+          ...     "`bigquery-public-data`.`ml_datasets`.`penguins`",
           ...     dry_run=True
           ... )
           {
@@ -269,7 +269,7 @@ def execute_sql(
                     "tableId": "anon..."
                   },
                   "priority": "INTERACTIVE",
-                  "query": "SELECT island FROM bigquery-public-data.ml_datasets.penguins",
+                  "query": "SELECT island FROM `bigquery-public-data`.`ml_datasets`.`penguins`",
                   "useLegacySql": False,
                   "writeDisposition": "WRITE_TRUNCATE"
                 }
@@ -319,7 +319,7 @@ def _execute_sql_write_mode(*args, **kwargs) -> dict:
 
           >>> execute_sql("my_project",
           ... "SELECT island, COUNT(*) AS population "
-          ... "FROM bigquery-public-data.ml_datasets.penguins GROUP BY island")
+          ... "FROM `bigquery-public-data`.`ml_datasets`.`penguins` GROUP BY island")
           {
             "status": "SUCCESS",
             "rows": [
@@ -343,7 +343,7 @@ def _execute_sql_write_mode(*args, **kwargs) -> dict:
           >>> execute_sql(
           ...     "my_project",
           ...     "SELECT island FROM "
-          ...     "bigquery-public-data.ml_datasets.penguins",
+          ...     "`bigquery-public-data`.`ml_datasets`.`penguins`",
           ...     dry_run=True
           ... )
           {
@@ -359,7 +359,7 @@ def _execute_sql_write_mode(*args, **kwargs) -> dict:
                     "tableId": "anon..."
                   },
                   "priority": "INTERACTIVE",
-                  "query": "SELECT island FROM bigquery-public-data.ml_datasets.penguins",
+                  "query": "SELECT island FROM `bigquery-public-data`.`ml_datasets`.`penguins`",
                   "useLegacySql": False,
                   "writeDisposition": "WRITE_TRUNCATE"
                 }
@@ -374,7 +374,7 @@ def _execute_sql_write_mode(*args, **kwargs) -> dict:
       Create a table with schema prescribed:
 
           >>> execute_sql("my_project",
-          ... "CREATE TABLE my_project.my_dataset.my_table "
+          ... "CREATE TABLE `my_project`.`my_dataset`.`my_table` "
           ... "(island STRING, population INT64)")
           {
             "status": "SUCCESS",
@@ -384,7 +384,7 @@ def _execute_sql_write_mode(*args, **kwargs) -> dict:
       Insert data into an existing table:
 
           >>> execute_sql("my_project",
-          ... "INSERT INTO my_project.my_dataset.my_table (island, population) "
+          ... "INSERT INTO `my_project`.`my_dataset`.`my_table` (island, population) "
           ... "VALUES ('Dream', 124), ('Biscoe', 168)")
           {
             "status": "SUCCESS",
@@ -394,9 +394,9 @@ def _execute_sql_write_mode(*args, **kwargs) -> dict:
       Create a table from the result of a query:
 
           >>> execute_sql("my_project",
-          ... "CREATE TABLE my_project.my_dataset.my_table AS "
+          ... "CREATE TABLE `my_project`.`my_dataset`.`my_table` AS "
           ... "SELECT island, COUNT(*) AS population "
-          ... "FROM bigquery-public-data.ml_datasets.penguins GROUP BY island")
+          ... "FROM `bigquery-public-data`.`ml_datasets`.`penguins` GROUP BY island")
           {
             "status": "SUCCESS",
             "rows": []
@@ -405,7 +405,7 @@ def _execute_sql_write_mode(*args, **kwargs) -> dict:
       Delete a table:
 
           >>> execute_sql("my_project",
-          ... "DROP TABLE my_project.my_dataset.my_table")
+          ... "DROP TABLE `my_project`.`my_dataset`.`my_table`")
           {
             "status": "SUCCESS",
             "rows": []
@@ -414,8 +414,8 @@ def _execute_sql_write_mode(*args, **kwargs) -> dict:
       Copy a table to another table:
 
           >>> execute_sql("my_project",
-          ... "CREATE TABLE my_project.my_dataset.my_table_clone "
-          ... "CLONE my_project.my_dataset.my_table")
+          ... "CREATE TABLE `my_project`.`my_dataset`.`my_table_clone` "
+          ... "CLONE `my_project`.`my_dataset`.`my_table`")
           {
             "status": "SUCCESS",
             "rows": []
@@ -425,8 +425,8 @@ def _execute_sql_write_mode(*args, **kwargs) -> dict:
       table:
 
           >>> execute_sql("my_project",
-          ... "CREATE SNAPSHOT TABLE my_project.my_dataset.my_table_snapshot "
-          ... "CLONE my_project.my_dataset.my_table")
+          ... "CREATE SNAPSHOT TABLE `my_project`.`my_dataset`.`my_table_snapshot` "
+          ... "CLONE `my_project`.`my_dataset`.`my_table`")
           {
             "status": "SUCCESS",
             "rows": []
@@ -435,9 +435,9 @@ def _execute_sql_write_mode(*args, **kwargs) -> dict:
       Create a BigQuery ML linear regression model:
 
           >>> execute_sql("my_project",
-          ... "CREATE MODEL `my_dataset.my_model` "
+          ... "CREATE MODEL `my_dataset`.`my_model` "
           ... "OPTIONS (model_type='linear_reg', input_label_cols=['body_mass_g']) AS "
-          ... "SELECT * FROM `bigquery-public-data.ml_datasets.penguins` "
+          ... "SELECT * FROM `bigquery-public-data`.`ml_datasets`.`penguins` "
           ... "WHERE body_mass_g IS NOT NULL")
           {
             "status": "SUCCESS",
@@ -447,7 +447,7 @@ def _execute_sql_write_mode(*args, **kwargs) -> dict:
       Evaluate BigQuery ML model:
 
           >>> execute_sql("my_project",
-          ... "SELECT * FROM ML.EVALUATE(MODEL `my_dataset.my_model`)")
+          ... "SELECT * FROM ML.EVALUATE(MODEL `my_dataset`.`my_model`)")
           {
             "status": "SUCCESS",
             "rows": [{'mean_absolute_error': 227.01223667447218,
@@ -461,8 +461,8 @@ def _execute_sql_write_mode(*args, **kwargs) -> dict:
       Evaluate BigQuery ML model on custom data:
 
           >>> execute_sql("my_project",
-          ... "SELECT * FROM ML.EVALUATE(MODEL `my_dataset.my_model`, "
-          ... "(SELECT * FROM `my_dataset.my_table`))")
+          ... "SELECT * FROM ML.EVALUATE(MODEL `my_dataset`.`my_model`, "
+          ... "(SELECT * FROM `my_dataset`.`my_table`))")
           {
             "status": "SUCCESS",
             "rows": [{'mean_absolute_error': 227.01223667447218,
@@ -476,8 +476,8 @@ def _execute_sql_write_mode(*args, **kwargs) -> dict:
       Predict using BigQuery ML model:
 
           >>> execute_sql("my_project",
-          ... "SELECT * FROM ML.PREDICT(MODEL `my_dataset.my_model`, "
-          ... "(SELECT * FROM `my_dataset.my_table`))")
+          ... "SELECT * FROM ML.PREDICT(MODEL `my_dataset`.`my_model`, "
+          ... "(SELECT * FROM `my_dataset`.`my_table`))")
           {
             "status": "SUCCESS",
             "rows": [
@@ -494,7 +494,7 @@ def _execute_sql_write_mode(*args, **kwargs) -> dict:
 
       Delete a BigQuery ML model:
 
-          >>> execute_sql("my_project", "DROP MODEL `my_dataset.my_model`")
+          >>> execute_sql("my_project", "DROP MODEL `my_dataset`.`my_model`")
           {
             "status": "SUCCESS",
             "rows": []
@@ -539,7 +539,7 @@ def _execute_sql_protected_write_mode(*args, **kwargs) -> dict:
 
           >>> execute_sql("my_project",
           ... "SELECT island, COUNT(*) AS population "
-          ... "FROM bigquery-public-data.ml_datasets.penguins GROUP BY island")
+          ... "FROM `bigquery-public-data`.`ml_datasets`.`penguins` GROUP BY island")
           {
             "status": "SUCCESS",
             "rows": [
@@ -563,7 +563,7 @@ def _execute_sql_protected_write_mode(*args, **kwargs) -> dict:
           >>> execute_sql(
           ...     "my_project",
           ...     "SELECT island FROM "
-          ...     "bigquery-public-data.ml_datasets.penguins",
+          ...     "`bigquery-public-data`.`ml_datasets`.`penguins`",
           ...     dry_run=True
           ... )
           {
@@ -579,7 +579,7 @@ def _execute_sql_protected_write_mode(*args, **kwargs) -> dict:
                     "tableId": "anon..."
                   },
                   "priority": "INTERACTIVE",
-                  "query": "SELECT island FROM bigquery-public-data.ml_datasets.penguins",
+                  "query": "SELECT island FROM `bigquery-public-data`.`ml_datasets`.`penguins`",
                   "useLegacySql": False,
                   "writeDisposition": "WRITE_TRUNCATE"
                 }
@@ -594,7 +594,7 @@ def _execute_sql_protected_write_mode(*args, **kwargs) -> dict:
       Create a temporary table with schema prescribed:
 
           >>> execute_sql("my_project",
-          ... "CREATE TEMP TABLE my_table (island STRING, population INT64)")
+          ... "CREATE TEMP TABLE `my_table` (island STRING, population INT64)")
           {
             "status": "SUCCESS",
             "rows": []
@@ -603,7 +603,7 @@ def _execute_sql_protected_write_mode(*args, **kwargs) -> dict:
       Insert data into an existing temporary table:
 
           >>> execute_sql("my_project",
-          ... "INSERT INTO my_table (island, population) "
+          ... "INSERT INTO `my_table` (island, population) "
           ... "VALUES ('Dream', 124), ('Biscoe', 168)")
           {
             "status": "SUCCESS",
@@ -613,9 +613,9 @@ def _execute_sql_protected_write_mode(*args, **kwargs) -> dict:
       Create a temporary table from the result of a query:
 
           >>> execute_sql("my_project",
-          ... "CREATE TEMP TABLE my_table AS "
+          ... "CREATE TEMP TABLE `my_table` AS "
           ... "SELECT island, COUNT(*) AS population "
-          ... "FROM bigquery-public-data.ml_datasets.penguins GROUP BY island")
+          ... "FROM `bigquery-public-data`.`ml_datasets`.`penguins` GROUP BY island")
           {
             "status": "SUCCESS",
             "rows": []
@@ -623,7 +623,7 @@ def _execute_sql_protected_write_mode(*args, **kwargs) -> dict:
 
       Delete a temporary table:
 
-          >>> execute_sql("my_project", "DROP TABLE my_table")
+          >>> execute_sql("my_project", "DROP TABLE `my_table`")
           {
             "status": "SUCCESS",
             "rows": []
@@ -632,7 +632,7 @@ def _execute_sql_protected_write_mode(*args, **kwargs) -> dict:
       Copy a temporary table to another temporary table:
 
           >>> execute_sql("my_project",
-          ... "CREATE TEMP TABLE my_table_clone CLONE my_table")
+          ... "CREATE TEMP TABLE `my_table_clone` CLONE `my_table`")
           {
             "status": "SUCCESS",
             "rows": []
@@ -641,9 +641,9 @@ def _execute_sql_protected_write_mode(*args, **kwargs) -> dict:
       Create a temporary BigQuery ML linear regression model:
 
           >>> execute_sql("my_project",
-          ... "CREATE TEMP MODEL my_model "
+          ... "CREATE TEMP MODEL `my_model` "
           ... "OPTIONS (model_type='linear_reg', input_label_cols=['body_mass_g']) AS"
-          ... "SELECT * FROM `bigquery-public-data.ml_datasets.penguins` "
+          ... "SELECT * FROM `bigquery-public-data`.`ml_datasets`.`penguins` "
           ... "WHERE body_mass_g IS NOT NULL")
           {
             "status": "SUCCESS",
@@ -652,7 +652,7 @@ def _execute_sql_protected_write_mode(*args, **kwargs) -> dict:
 
       Evaluate BigQuery ML model:
 
-          >>> execute_sql("my_project", "SELECT * FROM ML.EVALUATE(MODEL my_model)")
+          >>> execute_sql("my_project", "SELECT * FROM ML.EVALUATE(MODEL `my_model`)")
           {
             "status": "SUCCESS",
             "rows": [{'mean_absolute_error': 227.01223667447218,
@@ -666,8 +666,8 @@ def _execute_sql_protected_write_mode(*args, **kwargs) -> dict:
       Evaluate BigQuery ML model on custom data:
 
           >>> execute_sql("my_project",
-          ... "SELECT * FROM ML.EVALUATE(MODEL my_model, "
-          ... "(SELECT * FROM `my_dataset.my_table`))")
+          ... "SELECT * FROM ML.EVALUATE(MODEL `my_model`, "
+          ... "(SELECT * FROM `my_dataset`.`my_table`))")
           {
             "status": "SUCCESS",
             "rows": [{'mean_absolute_error': 227.01223667447218,
@@ -681,8 +681,8 @@ def _execute_sql_protected_write_mode(*args, **kwargs) -> dict:
       Predict using BigQuery ML model:
 
           >>> execute_sql("my_project",
-          ... "SELECT * FROM ML.PREDICT(MODEL my_model, "
-          ... "(SELECT * FROM `my_dataset.my_table`))")
+          ... "SELECT * FROM ML.PREDICT(MODEL `my_model`, "
+          ... "(SELECT * FROM `my_dataset`.`my_table`))")
           {
             "status": "SUCCESS",
             "rows": [
@@ -699,7 +699,7 @@ def _execute_sql_protected_write_mode(*args, **kwargs) -> dict:
 
       Delete a BigQuery ML model:
 
-          >>> execute_sql("my_project", "DROP MODEL my_model")
+          >>> execute_sql("my_project", "DROP MODEL `my_model`")
           {
             "status": "SUCCESS",
             "rows": []
