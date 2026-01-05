@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 from contextlib import AsyncExitStack
 from datetime import timedelta
 import functools
@@ -30,7 +31,6 @@ from typing import runtime_checkable
 from typing import TextIO
 from typing import Union
 
-import anyio
 from mcp import ClientSession
 from mcp import StdioServerParameters
 from mcp.client.sse import sse_client
@@ -42,6 +42,30 @@ from pydantic import BaseModel
 from pydantic import ConfigDict
 
 logger = logging.getLogger('google_adk.' + __name__)
+
+
+def _has_cancelled_error_context(exc: BaseException) -> bool:
+  """Returns True if `exc` is/was caused by `asyncio.CancelledError`.
+
+  Cancellation can be translated into other exceptions during teardown (e.g.
+  connection errors) while still retaining the original cancellation in an
+  exception's context chain.
+  """
+
+  seen: set[int] = set()
+  queue = deque([exc])
+  while queue:
+    current = queue.popleft()
+    if id(current) in seen:
+      continue
+    seen.add(id(current))
+    if isinstance(current, asyncio.CancelledError):
+      return True
+    if current.__cause__ is not None:
+      queue.append(current.__cause__)
+    if current.__context__ is not None:
+      queue.append(current.__context__)
+  return False
 
 
 class StdioConnectionParams(BaseModel):
@@ -119,6 +143,10 @@ def retry_on_errors(func):
   action once. The create_session method will handle creating a new session
   if the old one was disconnected.
 
+  Cancellation is not retried and must be allowed to propagate. In async
+  runtimes, cancellation may surface as `asyncio.CancelledError` or as another
+  exception while the task is cancelling.
+
   Args:
       func: The function to decorate.
 
@@ -131,6 +159,13 @@ def retry_on_errors(func):
     try:
       return await func(self, *args, **kwargs)
     except Exception as e:
+      task = asyncio.current_task()
+      if task is not None:
+        cancelling = getattr(task, 'cancelling', None)
+        if cancelling is not None and cancelling() > 0:
+          raise
+      if _has_cancelled_error_context(e):
+        raise
       # If an error is thrown, we will retry the function to reconnect to the
       # server. create_session will handle detecting and replacing disconnected
       # sessions.
