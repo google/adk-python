@@ -310,7 +310,9 @@ class StorageEvent(Base):
         branch=self.branch,
         # This is needed as previous ADK version pickled actions might not have
         # value defined in the current version of the EventActions model.
-        actions=EventActions().model_copy(update=self.actions.model_dump()),
+        # Fixed: Use model_validate instead of model_copy to properly deserialize
+        # nested Pydantic models (like EventCompaction) from dicts
+        actions=EventActions.model_validate(self.actions.model_dump()),
         timestamp=self.timestamp.timestamp(),
         long_running_tool_ids=self.long_running_tool_ids,
         partial=self.partial,
