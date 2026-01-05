@@ -47,10 +47,10 @@ import logging
 from typing import Callable, List, Optional
 
 from google.adk.agents.callback_context import CallbackContext
-from google.adk.events.event import Event
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.adk.plugins.base_plugin import BasePlugin
+from google.genai import types
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -65,7 +65,9 @@ class ToolAwareContextFilterPlugin(BasePlugin):
   def __init__(
       self,
       num_invocations_to_keep: Optional[int] = None,
-      custom_filter: Optional[Callable[[List[Event]], List[Event]]] = None,
+      custom_filter: Optional[
+          Callable[[List[types.Content]], List[types.Content]]
+      ] = None,
       name: str = "tool_aware_context_filter_plugin",
   ):
     """Initializes the tool-aware context filter plugin.
@@ -101,7 +103,145 @@ class ToolAwareContextFilterPlugin(BasePlugin):
         for part in content.parts
     )
 
-  def _group_into_invocations(self, contents: List) -> List[List[int]]:
+  def _finalize_invocation_if_complete(
+      self,
+      current_invocation: List[int],
+      invocations: List[List[int]],
+      contents: List[types.Content],
+  ) -> List[int]:
+    """Finalize current invocation if it has a model response.
+
+    Args:
+      current_invocation: Current invocation being built.
+      invocations: List of completed invocations.
+      contents: List of message contents.
+
+    Returns:
+      Empty list if invocation was finalized, otherwise current_invocation.
+    """
+    if current_invocation:
+      has_model = any(
+          contents[idx].role == "model" for idx in current_invocation
+      )
+      if has_model:
+        invocations.append(current_invocation)
+        return []
+    return current_invocation
+
+  def _process_user_message(
+      self,
+      i: int,
+      contents: List[types.Content],
+      current_invocation: List[int],
+      invocations: List[List[int]],
+  ) -> tuple[int, List[int]]:
+    """Process a user message and update invocation tracking.
+
+    Args:
+      i: Current index in contents.
+      contents: List of message contents.
+      current_invocation: Current invocation being built.
+      invocations: List of completed invocations.
+
+    Returns:
+      Tuple of (next_index, updated_current_invocation).
+    """
+    content = contents[i]
+
+    # Check if this is a function_response (part of ongoing tool cycle)
+    if self._has_function_response(content):
+      # This is a tool response - must be part of current invocation
+      current_invocation.append(i)
+      return i + 1, current_invocation
+
+    # Regular user message (not a function_response)
+    # Only start a NEW invocation if we've completed a previous one
+    current_invocation = self._finalize_invocation_if_complete(
+        current_invocation, invocations, contents
+    )
+
+    # Add this user message to current invocation
+    current_invocation.append(i)
+    return i + 1, current_invocation
+
+  def _process_model_message_with_tool_call(
+      self,
+      i: int,
+      contents: List[types.Content],
+      current_invocation: List[int],
+      invocations: List[List[int]],
+  ) -> tuple[int, List[int]]:
+    """Process a model message with tool call and collect the full cycle.
+
+    Args:
+      i: Current index in contents (at model message with function_call).
+      contents: List of message contents.
+      current_invocation: Current invocation being built.
+      invocations: List of completed invocations.
+
+    Returns:
+      Tuple of (next_index, empty_invocation_list).
+    """
+    # Model made a tool call - keep following messages together:
+    # 1. This model message (function_call) - already added
+    # 2. User message(s) with function_response - collect next
+    # 3. Model's final response - collect after tool responses
+
+    i += 1  # Move to next message
+
+    # Collect all function_response messages (usually 1, but could be multiple)
+    while (
+        i < len(contents)
+        and contents[i].role == "user"
+        and self._has_function_response(contents[i])
+    ):
+      current_invocation.append(i)
+      i += 1
+
+    # Now collect the model's final response after processing tool results
+    if i < len(contents) and contents[i].role == "model":
+      current_invocation.append(i)
+      i += 1
+
+    # Complete tool cycle collected - this is ONE complete invocation
+    invocations.append(current_invocation)
+    return i, []
+
+  def _process_model_message(
+      self,
+      i: int,
+      contents: List[types.Content],
+      current_invocation: List[int],
+      invocations: List[List[int]],
+  ) -> tuple[int, List[int]]:
+    """Process a model message and update invocation tracking.
+
+    Args:
+      i: Current index in contents.
+      contents: List of message contents.
+      current_invocation: Current invocation being built.
+      invocations: List of completed invocations.
+
+    Returns:
+      Tuple of (next_index, updated_current_invocation).
+    """
+    content = contents[i]
+    current_invocation.append(i)
+
+    # Check if model is making a tool call
+    if self._has_function_call(content):
+      return self._process_model_message_with_tool_call(
+          i, contents, current_invocation, invocations
+      )
+
+    # Model response WITHOUT function call - simple case
+    # The invocation is complete (user query → model answer)
+    invocations.append(current_invocation)
+    return i + 1, []
+
+  def _group_into_invocations(
+      self, contents: List[types.Content]
+  ) -> List[List[int]]:
     """Group message indices into complete invocations.
 
     An invocation pattern:
@@ -129,66 +269,14 @@ class ToolAwareContextFilterPlugin(BasePlugin):
     while i < len(contents):
       content = contents[i]
 
-      # CASE 1: User message
       if content.role == "user":
-        # Check if this is a function_response (part of ongoing tool cycle)
-        if self._has_function_response(content):
-          # This is a tool response - must be part of current invocation
-          current_invocation.append(i)
-          i += 1
-        else:
-          # Regular user message (not a function_response)
-          # Only start a NEW invocation if we've completed a previous one
-          if current_invocation:
-            # Check if previous invocation has a model response
-            has_model = any(
-                contents[idx].role == "model" for idx in current_invocation
-            )
-            if has_model:
-              invocations.append(current_invocation)
-              current_invocation = []
-
-          # Add this user message to current invocation
-          current_invocation.append(i)
-          i += 1
-
-      # CASE 2: Model message
+        i, current_invocation = self._process_user_message(
+            i, contents, current_invocation, invocations
+        )
       elif content.role == "model":
-        current_invocation.append(i)
-
-        # Check if model is making a tool call
-        if self._has_function_call(content):
-          # Model made a tool call - keep following messages together:
-          # 1. This model message (function_call) - already added
-          # 2. User message(s) with function_response - collect next
-          # 3. Model's final response - collect after tool responses
-
-          i += 1  # Move to next message
-
-          # Collect all function_response messages (usually 1, but could be
-          # multiple)
-          while (
-              i < len(contents)
-              and contents[i].role == "user"
-              and self._has_function_response(contents[i])
-          ):
-            current_invocation.append(i)
-            i += 1
-
-          # Now collect the model's final response after processing tool results
-          if i < len(contents) and contents[i].role == "model":
-            current_invocation.append(i)
-            i += 1
-
-          # Complete tool cycle collected - this is ONE complete invocation
-          invocations.append(current_invocation)
-          current_invocation = []
-        else:
-          # Model response WITHOUT function call - simple case
-          # The invocation is complete (user query → model answer)
-          i += 1
-          invocations.append(current_invocation)
-          current_invocation = []
+        i, current_invocation = self._process_model_message(
+            i, contents, current_invocation, invocations
+        )
       else:
         # Unknown role - just add to current invocation
         current_invocation.append(i)
