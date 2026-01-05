@@ -1736,7 +1736,9 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     TraceManager.init_trace(callback_context)
     TraceManager.push_span(callback_context)
     await self._log_event(
-        "AGENT_STARTING", callback_context, raw_content=agent.instruction
+        "AGENT_STARTING",
+        callback_context,
+        raw_content=getattr(agent, "instruction", ""),
     )
 
   async def after_agent_callback(
