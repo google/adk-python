@@ -74,6 +74,35 @@ def _to_snake_case(text: str) -> str:
   return text
 
 
+def _sanitize_schema_type(
+    schema: dict[str, Any], preserve_null_type: bool = False
+) -> dict[str, Any]:
+  if not schema:
+    schema["type"] = "object"
+  if isinstance(schema.get("type"), list):
+    types_no_null = [t for t in schema["type"] if t != "null"]
+    nullable = len(types_no_null) != len(schema["type"])
+    if "array" in types_no_null:
+      non_null_type = "array"
+    else:
+      non_null_type = types_no_null[0] if types_no_null else "object"
+    if nullable:
+      schema["type"] = [non_null_type, "null"]
+    else:
+      schema["type"] = non_null_type
+  elif schema.get("type") == "null" and not preserve_null_type:
+    schema["type"] = ["object", "null"]
+
+  schema_type = schema.get("type")
+  is_array = schema_type == "array" or (
+      isinstance(schema_type, list) and "array" in schema_type
+  )
+  if is_array:
+    schema.setdefault("items", {"type": "string"})
+
+  return schema
+
+
 def _dereference_schema(schema: dict[str, Any]) -> dict[str, Any]:
   """Resolves $ref pointers in a JSON schema."""
 
@@ -113,7 +142,7 @@ def _dereference_schema(schema: dict[str, Any]) -> dict[str, Any]:
 
 
 def _sanitize_schema_formats_for_gemini(
-    schema: dict[str, Any],
+    schema: dict[str, Any], preserve_null_type: bool = False
 ) -> dict[str, Any]:
   """Filters the schema to only include fields that are supported by JSONSchema."""
   supported_fields: set[str] = set(_ExtendedJSONSchema.model_fields.keys())
@@ -135,8 +164,12 @@ def _sanitize_schema_formats_for_gemini(
           field_value
       )
     elif field_name in list_schema_field_names:
+      should_preserve = field_name in ("any_of", "one_of")
       snake_case_schema[field_name] = [
-          _sanitize_schema_formats_for_gemini(value) for value in field_value
+          _sanitize_schema_formats_for_gemini(
+              value, preserve_null_type=should_preserve
+          )
+          for value in field_value
       ]
     elif field_name in dict_schema_field_names and field_value is not None:
       snake_case_schema[field_name] = {
@@ -158,11 +191,7 @@ def _sanitize_schema_formats_for_gemini(
     elif field_name in supported_fields and field_value is not None:
       snake_case_schema[field_name] = field_value
 
-  # If the schema is empty, assume it has the type of object
-  if not snake_case_schema:
-    snake_case_schema["type"] = "object"
-
-  return snake_case_schema
+  return _sanitize_schema_type(snake_case_schema, preserve_null_type)
 
 
 def _to_gemini_schema(openapi_schema: dict[str, Any]) -> Schema:
