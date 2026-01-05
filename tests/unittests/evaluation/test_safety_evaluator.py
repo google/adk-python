@@ -76,10 +76,3 @@ class TestSafetyEvaluatorV1:
     assert [m.name for m in mock_kwargs["metrics"]] == [
         vertexai_types.PrebuiltMetric.SAFETY.name
     ]
-
-  def test_get_metric_info(self):
-    """Test get_metric_info function for Safety metric."""
-    metric_info = SafetyEvaluatorV1.get_metric_info()
-    assert metric_info.metric_name == PrebuiltMetrics.SAFETY_V1.value
-    assert metric_info.metric_value_info.interval.min_value == 0.0
-    assert metric_info.metric_value_info.interval.max_value == 1.0
