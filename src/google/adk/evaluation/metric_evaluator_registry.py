@@ -24,6 +24,14 @@ from .eval_metrics import PrebuiltMetrics
 from .evaluator import Evaluator
 from .final_response_match_v2 import FinalResponseMatchV2Evaluator
 from .hallucinations_v1 import HallucinationsV1Evaluator
+from .metric_info_providers import FinalResponseMatchV2EvaluatorMetricInfoProvider
+from .metric_info_providers import HallucinationsV1EvaluatorMetricInfoProvider
+from .metric_info_providers import PerTurnUserSimulatorQualityV1MetricInfoProvider
+from .metric_info_providers import ResponseEvaluatorMetricInfoProvider
+from .metric_info_providers import RubricBasedFinalResponseQualityV1EvaluatorMetricInfoProvider
+from .metric_info_providers import RubricBasedToolUseV1EvaluatorMetricInfoProvider
+from .metric_info_providers import SafetyEvaluatorV1MetricInfoProvider
+from .metric_info_providers import TrajectoryEvaluatorMetricInfoProvider
 from .response_evaluator import ResponseEvaluator
 from .rubric_based_final_response_quality_v1 import RubricBasedFinalResponseQualityV1Evaluator
 from .rubric_based_tool_use_quality_v1 import RubricBasedToolUseV1Evaluator
@@ -91,44 +99,44 @@ def _get_default_metric_evaluator_registry() -> MetricEvaluatorRegistry:
   metric_evaluator_registry = MetricEvaluatorRegistry()
 
   metric_evaluator_registry.register_evaluator(
-      metric_info=TrajectoryEvaluator.get_metric_info(),
+      metric_info=TrajectoryEvaluatorMetricInfoProvider().get_metric_info(),
       evaluator=TrajectoryEvaluator,
   )
 
   metric_evaluator_registry.register_evaluator(
-      metric_info=ResponseEvaluator.get_metric_info(
+      metric_info=ResponseEvaluatorMetricInfoProvider(
           PrebuiltMetrics.RESPONSE_EVALUATION_SCORE.value
-      ),
+      ).get_metric_info(),
       evaluator=ResponseEvaluator,
   )
   metric_evaluator_registry.register_evaluator(
-      metric_info=ResponseEvaluator.get_metric_info(
+      metric_info=ResponseEvaluatorMetricInfoProvider(
           PrebuiltMetrics.RESPONSE_MATCH_SCORE.value
-      ),
+      ).get_metric_info(),
       evaluator=ResponseEvaluator,
   )
   metric_evaluator_registry.register_evaluator(
-      metric_info=SafetyEvaluatorV1.get_metric_info(),
+      metric_info=SafetyEvaluatorV1MetricInfoProvider().get_metric_info(),
       evaluator=SafetyEvaluatorV1,
   )
   metric_evaluator_registry.register_evaluator(
-      metric_info=FinalResponseMatchV2Evaluator.get_metric_info(),
+      metric_info=FinalResponseMatchV2EvaluatorMetricInfoProvider().get_metric_info(),
       evaluator=FinalResponseMatchV2Evaluator,
   )
   metric_evaluator_registry.register_evaluator(
-      metric_info=RubricBasedFinalResponseQualityV1Evaluator.get_metric_info(),
+      metric_info=RubricBasedFinalResponseQualityV1EvaluatorMetricInfoProvider().get_metric_info(),
       evaluator=RubricBasedFinalResponseQualityV1Evaluator,
   )
   metric_evaluator_registry.register_evaluator(
-      metric_info=HallucinationsV1Evaluator.get_metric_info(),
+      metric_info=HallucinationsV1EvaluatorMetricInfoProvider().get_metric_info(),
       evaluator=HallucinationsV1Evaluator,
   )
   metric_evaluator_registry.register_evaluator(
-      metric_info=RubricBasedToolUseV1Evaluator.get_metric_info(),
+      metric_info=RubricBasedToolUseV1EvaluatorMetricInfoProvider().get_metric_info(),
       evaluator=RubricBasedToolUseV1Evaluator,
   )
   metric_evaluator_registry.register_evaluator(
-      metric_info=PerTurnUserSimulatorQualityV1.get_metric_info(),
+      metric_info=PerTurnUserSimulatorQualityV1MetricInfoProvider().get_metric_info(),
       evaluator=PerTurnUserSimulatorQualityV1,
   )
 

@@ -30,16 +30,6 @@ _USER_CONTENT = genai_types.Content(
 )
 
 
-def test_get_metric_info():
-  """Test get_metric_info function for tool trajectory avg metric."""
-  metric_info = TrajectoryEvaluator.get_metric_info()
-  assert (
-      metric_info.metric_name == PrebuiltMetrics.TOOL_TRAJECTORY_AVG_SCORE.value
-  )
-  assert metric_info.metric_value_info.interval.min_value == 0.0
-  assert metric_info.metric_value_info.interval.max_value == 1.0
-
-
 @pytest.fixture
 def evaluator() -> TrajectoryEvaluator:
   """Returns a TrajectoryEvaluator."""
