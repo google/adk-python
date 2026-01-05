@@ -19,11 +19,52 @@ from google.adk.evaluation.eval_metrics import EvalMetric
 from google.adk.evaluation.eval_metrics import Interval
 from google.adk.evaluation.eval_metrics import MetricInfo
 from google.adk.evaluation.eval_metrics import MetricValueInfo
+from google.adk.evaluation.eval_metrics import PrebuiltMetrics
 from google.adk.evaluation.evaluator import Evaluator
+from google.adk.evaluation.metric_evaluator_registry import FinalResponseMatchV2EvaluatorMetricInfoProvider
+from google.adk.evaluation.metric_evaluator_registry import HallucinationsV1EvaluatorMetricInfoProvider
 from google.adk.evaluation.metric_evaluator_registry import MetricEvaluatorRegistry
+from google.adk.evaluation.metric_evaluator_registry import PerTurnUserSimulatorQualityV1MetricInfoProvider
+from google.adk.evaluation.metric_evaluator_registry import ResponseEvaluatorMetricInfoProvider
+from google.adk.evaluation.metric_evaluator_registry import RubricBasedFinalResponseQualityV1EvaluatorMetricInfoProvider
+from google.adk.evaluation.metric_evaluator_registry import RubricBasedToolUseV1EvaluatorMetricInfoProvider
+from google.adk.evaluation.metric_evaluator_registry import SafetyEvaluatorV1MetricInfoProvider
+from google.adk.evaluation.metric_evaluator_registry import TrajectoryEvaluatorMetricInfoProvider
 import pytest
 
 _DUMMY_METRIC_NAME = "dummy_metric_name"
+_DUMMY_METRIC_INFO = MetricInfo(
+    metric_name=_DUMMY_METRIC_NAME,
+    description="Dummy metric description",
+    metric_value_info=MetricValueInfo(
+        interval=Interval(min_value=0.0, max_value=1.0)
+    ),
+)
+_ANOTHER_DUMMY_METRIC_INFO = MetricInfo(
+    metric_name=_DUMMY_METRIC_NAME,
+    description="Another dummy metric description",
+    metric_value_info=MetricValueInfo(
+        interval=Interval(min_value=0.0, max_value=1.0)
+    ),
+)
+
+
+class DummyEvaluator(Evaluator):
+
+  def __init__(self, eval_metric: EvalMetric):
+    self._eval_metric = eval_metric
+
+  def evaluate_invocations(self, actual_invocations, expected_invocations):
+    return "dummy_result"
+
+
+class AnotherDummyEvaluator(Evaluator):
+
+  def __init__(self, eval_metric: EvalMetric):
+    self._eval_metric = eval_metric
+
+  def evaluate_invocations(self, actual_invocations, expected_invocations):
+    return "another_dummy_result"
 
 
 class TestMetricEvaluatorRegistry:
@@ -33,88 +74,137 @@ class TestMetricEvaluatorRegistry:
   def registry(self):
     return MetricEvaluatorRegistry()
 
-  class DummyEvaluator(Evaluator):
-
-    def __init__(self, eval_metric: EvalMetric):
-      self._eval_metric = eval_metric
-
-    def evaluate_invocations(self, actual_invocations, expected_invocations):
-      return "dummy_result"
-
-    @staticmethod
-    def get_metric_info() -> MetricInfo:
-      return MetricInfo(
-          metric_name=_DUMMY_METRIC_NAME,
-          description="Dummy metric description",
-          metric_value_info=MetricValueInfo(
-              interval=Interval(min_value=0.0, max_value=1.0)
-          ),
-      )
-
-  class AnotherDummyEvaluator(Evaluator):
-
-    def __init__(self, eval_metric: EvalMetric):
-      self._eval_metric = eval_metric
-
-    def evaluate_invocations(self, actual_invocations, expected_invocations):
-      return "another_dummy_result"
-
-    @staticmethod
-    def get_metric_info() -> MetricInfo:
-      return MetricInfo(
-          metric_name=_DUMMY_METRIC_NAME,
-          description="Another dummy metric description",
-          metric_value_info=MetricValueInfo(
-              interval=Interval(min_value=0.0, max_value=1.0)
-          ),
-      )
-
   def test_register_evaluator(self, registry):
-    metric_info = TestMetricEvaluatorRegistry.DummyEvaluator.get_metric_info()
     registry.register_evaluator(
-        metric_info,
-        TestMetricEvaluatorRegistry.DummyEvaluator,
+        _DUMMY_METRIC_INFO,
+        DummyEvaluator,
     )
     assert _DUMMY_METRIC_NAME in registry._registry
     assert registry._registry[_DUMMY_METRIC_NAME] == (
-        TestMetricEvaluatorRegistry.DummyEvaluator,
-        metric_info,
+        DummyEvaluator,
+        _DUMMY_METRIC_INFO,
     )
 
   def test_register_evaluator_updates_existing(self, registry):
-    metric_info = TestMetricEvaluatorRegistry.DummyEvaluator.get_metric_info()
     registry.register_evaluator(
-        metric_info,
-        TestMetricEvaluatorRegistry.DummyEvaluator,
+        _DUMMY_METRIC_INFO,
+        DummyEvaluator,
     )
 
     assert registry._registry[_DUMMY_METRIC_NAME] == (
-        TestMetricEvaluatorRegistry.DummyEvaluator,
-        metric_info,
+        DummyEvaluator,
+        _DUMMY_METRIC_INFO,
     )
 
-    metric_info = (
-        TestMetricEvaluatorRegistry.AnotherDummyEvaluator.get_metric_info()
-    )
     registry.register_evaluator(
-        metric_info, TestMetricEvaluatorRegistry.AnotherDummyEvaluator
+        _ANOTHER_DUMMY_METRIC_INFO, AnotherDummyEvaluator
     )
     assert registry._registry[_DUMMY_METRIC_NAME] == (
-        TestMetricEvaluatorRegistry.AnotherDummyEvaluator,
-        metric_info,
+        AnotherDummyEvaluator,
+        _ANOTHER_DUMMY_METRIC_INFO,
     )
 
   def test_get_evaluator(self, registry):
-    metric_info = TestMetricEvaluatorRegistry.DummyEvaluator.get_metric_info()
     registry.register_evaluator(
-        metric_info,
-        TestMetricEvaluatorRegistry.DummyEvaluator,
+        _DUMMY_METRIC_INFO,
+        DummyEvaluator,
     )
     eval_metric = EvalMetric(metric_name=_DUMMY_METRIC_NAME, threshold=0.5)
     evaluator = registry.get_evaluator(eval_metric)
-    assert isinstance(evaluator, TestMetricEvaluatorRegistry.DummyEvaluator)
+    assert isinstance(evaluator, DummyEvaluator)
 
   def test_get_evaluator_not_found(self, registry):
     eval_metric = EvalMetric(metric_name="non_existent_metric", threshold=0.5)
     with pytest.raises(NotFoundError):
       registry.get_evaluator(eval_metric)
+
+
+class TestMetricInfoProviders:
+  """Test cases for MetricInfoProviders."""
+
+  def test_trajectory_evaluator_metric_info_provider(self):
+    metric_info = TrajectoryEvaluatorMetricInfoProvider().get_metric_info()
+    assert (
+        metric_info.metric_name
+        == PrebuiltMetrics.TOOL_TRAJECTORY_AVG_SCORE.value
+    )
+    assert metric_info.metric_value_info.interval.min_value == 0.0
+    assert metric_info.metric_value_info.interval.max_value == 1.0
+
+  def test_response_evaluator_metric_info_provider_eval_score(self):
+    metric_info = ResponseEvaluatorMetricInfoProvider(
+        PrebuiltMetrics.RESPONSE_EVALUATION_SCORE.value
+    ).get_metric_info()
+    assert (
+        metric_info.metric_name
+        == PrebuiltMetrics.RESPONSE_EVALUATION_SCORE.value
+    )
+    assert metric_info.metric_value_info.interval.min_value == 1.0
+    assert metric_info.metric_value_info.interval.max_value == 5.0
+
+  def test_response_evaluator_metric_info_provider_match_score(self):
+    metric_info = ResponseEvaluatorMetricInfoProvider(
+        PrebuiltMetrics.RESPONSE_MATCH_SCORE.value
+    ).get_metric_info()
+    assert metric_info.metric_name == PrebuiltMetrics.RESPONSE_MATCH_SCORE.value
+    assert metric_info.metric_value_info.interval.min_value == 0.0
+    assert metric_info.metric_value_info.interval.max_value == 1.0
+
+  def test_safety_evaluator_v1_metric_info_provider(self):
+    metric_info = SafetyEvaluatorV1MetricInfoProvider().get_metric_info()
+    assert metric_info.metric_name == PrebuiltMetrics.SAFETY_V1.value
+    assert metric_info.metric_value_info.interval.min_value == 0.0
+    assert metric_info.metric_value_info.interval.max_value == 1.0
+
+  def test_final_response_match_v2_evaluator_metric_info_provider(self):
+    metric_info = (
+        FinalResponseMatchV2EvaluatorMetricInfoProvider().get_metric_info()
+    )
+    assert (
+        metric_info.metric_name == PrebuiltMetrics.FINAL_RESPONSE_MATCH_V2.value
+    )
+    assert metric_info.metric_value_info.interval.min_value == 0.0
+    assert metric_info.metric_value_info.interval.max_value == 1.0
+
+  def test_rubric_based_final_response_quality_v1_evaluator_metric_info_provider(
+      self,
+  ):
+    metric_info = (
+        RubricBasedFinalResponseQualityV1EvaluatorMetricInfoProvider().get_metric_info()
+    )
+    assert (
+        metric_info.metric_name
+        == PrebuiltMetrics.RUBRIC_BASED_FINAL_RESPONSE_QUALITY_V1.value
+    )
+    assert metric_info.metric_value_info.interval.min_value == 0.0
+    assert metric_info.metric_value_info.interval.max_value == 1.0
+
+  def test_hallucinations_v1_evaluator_metric_info_provider(self):
+    metric_info = (
+        HallucinationsV1EvaluatorMetricInfoProvider().get_metric_info()
+    )
+    assert metric_info.metric_name == PrebuiltMetrics.HALLUCINATIONS_V1.value
+    assert metric_info.metric_value_info.interval.min_value == 0.0
+    assert metric_info.metric_value_info.interval.max_value == 1.0
+
+  def test_rubric_based_tool_use_v1_evaluator_metric_info_provider(self):
+    metric_info = (
+        RubricBasedToolUseV1EvaluatorMetricInfoProvider().get_metric_info()
+    )
+    assert (
+        metric_info.metric_name
+        == PrebuiltMetrics.RUBRIC_BASED_TOOL_USE_QUALITY_V1.value
+    )
+    assert metric_info.metric_value_info.interval.min_value == 0.0
+    assert metric_info.metric_value_info.interval.max_value == 1.0
+
+  def test_per_turn_user_simulator_quality_v1_metric_info_provider(self):
+    metric_info = (
+        PerTurnUserSimulatorQualityV1MetricInfoProvider().get_metric_info()
+    )
+    assert (
+        metric_info.metric_name
+        == PrebuiltMetrics.PER_TURN_USER_SIMULATOR_QUALITY_V1.value
+    )
+    assert metric_info.metric_value_info.interval.min_value == 0.0
+    assert metric_info.metric_value_info.interval.max_value == 1.0
