@@ -49,6 +49,7 @@ logger = logging.getLogger("google_adk." + __name__)
 BOT_ALERT_SIGNATURE = (
     "**Notification:** The author has updated the issue description"
 )
+BOT_NAME = "adk-bot"
 
 # --- Global Cache ---
 _MAINTAINERS_CACHE: Optional[List[str]] = None
@@ -246,8 +247,9 @@ def _build_history_timeline(
     if BOT_ALERT_SIGNATURE in c_body:
       if last_bot_alert_time is None or c_time > last_bot_alert_time:
         last_bot_alert_time = c_time
+      continue
 
-    if actor and not actor.endswith("[bot]"):
+    if actor and not actor.endswith("[bot]") and actor != BOT_NAME:
       # Use edit time if available, otherwise creation time
       e_time = c.get("lastEditedAt")
       actual_time = dateutil.parser.isoparse(e_time) if e_time else c_time
@@ -263,7 +265,7 @@ def _build_history_timeline(
     if not e:
       continue
     actor = e.get("editor", {}).get("login")
-    if actor and not actor.endswith("[bot]"):
+    if actor and not actor.endswith("[bot]") and actor != BOT_NAME:
       history.append({
           "type": "edited_description",
           "actor": actor,
@@ -285,7 +287,7 @@ def _build_history_timeline(
         label_events.append(time_val)
       continue
 
-    if actor and not actor.endswith("[bot]"):
+    if actor and not actor.endswith("[bot]") and actor != BOT_NAME:
       pretty_type = (
           "renamed_title" if etype == "RenamedTitleEvent" else "reopened"
       )
@@ -318,11 +320,13 @@ def _replay_history_to_find_state(
           - last_activity_time (datetime): Timestamp of the last human action.
           - last_action_type (str): The type of the last action (e.g., 'commented').
           - last_comment_text (Optional[str]): The text of the last comment.
+          - last_actor_name (str): The specific username of the last actor.
   """
   last_action_role = "author"
   last_activity_time = history[0]["time"]
   last_action_type = "created"
   last_comment_text = None
+  last_actor_name = issue_author
 
   for event in history:
     actor = event["actor"]
@@ -337,6 +341,7 @@ def _replay_history_to_find_state(
     last_action_role = role
     last_activity_time = event["time"]
     last_action_type = etype
+    last_actor_name = actor
 
     # Only store text if it was a comment (resets on other events like labels/edits)
     if etype == "commented":
@@ -349,6 +354,7 @@ def _replay_history_to_find_state(
       "last_activity_time": last_activity_time,
       "last_action_type": last_action_type,
       "last_comment_text": last_comment_text,
+      "last_actor_name": last_actor_name,
   }
 
 
@@ -428,6 +434,7 @@ def get_issue_state(item_number: int) -> Dict[str, Any]:
         "status": "success",
         "last_action_role": state["last_action_role"],
         "last_action_type": state["last_action_type"],
+        "last_actor_name": state["last_actor_name"],
         "maintainer_alert_needed": maintainer_alert_needed,
         "is_stale": is_stale,
         "days_since_activity": days_since_activity,
@@ -436,6 +443,8 @@ def get_issue_state(item_number: int) -> Dict[str, Any]:
         "current_labels": labels_list,
         "stale_threshold_days": STALE_HOURS_THRESHOLD / 24,
         "close_threshold_days": CLOSE_HOURS_AFTER_STALE_THRESHOLD / 24,
+        "maintainers": maintainers,
+        "issue_author": issue_author,
     }
 
   except RequestException as e:

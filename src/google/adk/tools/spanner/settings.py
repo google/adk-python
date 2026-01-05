@@ -22,7 +22,8 @@ from typing import Optional
 from pydantic import BaseModel
 from pydantic import model_validator
 
-from ...utils.feature_decorator import experimental
+from ...features import experimental
+from ...features import FeatureName
 
 # Vector similarity search nearest neighbors search algorithms.
 EXACT_NEAREST_NEIGHBORS = "EXACT_NEAREST_NEIGHBORS"
@@ -38,6 +39,20 @@ class Capabilities(Enum):
 
   DATA_READ = "data_read"
   """Read only data operations tools are allowed."""
+
+
+class QueryResultMode(Enum):
+  """Settings for Spanner execute sql query result."""
+
+  DEFAULT = "default"
+  """Return the result of a query as a list of rows data."""
+
+  DICT_LIST = "dict_list"
+  """Return the result of a query as a list of dictionaries.
+
+  In each dictionary the key is the column name and the value is the value of
+  the that column in a given row.
+  """
 
 
 class SpannerVectorStoreSettings(BaseModel):
@@ -124,7 +139,7 @@ class SpannerVectorStoreSettings(BaseModel):
     return self
 
 
-@experimental("Tool settings defaults may have breaking change in the future.")
+@experimental(FeatureName.SPANNER_TOOL_SETTINGS)
 class SpannerToolSettings(BaseModel):
   """Settings for Spanner tools."""
 
@@ -139,6 +154,9 @@ class SpannerToolSettings(BaseModel):
 
   max_executed_query_result_rows: int = 50
   """Maximum number of rows to return from a query result."""
+
+  query_result_mode: QueryResultMode = QueryResultMode.DEFAULT
+  """Mode for Spanner execute sql query result."""
 
   vector_store_settings: Optional[SpannerVectorStoreSettings] = None
   """Settings for Spanner vector store and vector similarity search."""

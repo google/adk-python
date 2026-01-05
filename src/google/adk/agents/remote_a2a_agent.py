@@ -31,7 +31,8 @@ from a2a.client import ClientEvent as A2AClientEvent
 from a2a.client.card_resolver import A2ACardResolver
 from a2a.client.client import ClientConfig as A2AClientConfig
 from a2a.client.client_factory import ClientFactory as A2AClientFactory
-from a2a.client.errors import A2AClientError
+from a2a.client.errors import A2AClientHTTPError
+from a2a.client.middleware import ClientCallContext
 from a2a.types import AgentCard
 from a2a.types import Message as A2AMessage
 from a2a.types import Part as A2APart
@@ -411,7 +412,15 @@ class RemoteA2aAgent(BaseAgent):
           )
           # for streaming task, we update the event with the task status.
           # We update the event as Thought updates.
-          if task and task.status and task.status.state == TaskState.submitted:
+          if (
+              task
+              and task.status
+              and task.status.state
+              in (
+                  TaskState.submitted,
+                  TaskState.working,
+              )
+          ):
             event.content.parts[0].thought = True
         elif (
             isinstance(update, A2ATaskStatusUpdateEvent)
@@ -422,10 +431,10 @@ class RemoteA2aAgent(BaseAgent):
           event = convert_a2a_message_to_event(
               update.status.message, self.name, ctx, self._a2a_part_converter
           )
-          if event.content and update.status.state in [
+          if event.content and update.status.state in (
               TaskState.submitted,
               TaskState.working,
-          ]:
+          ):
             for part in event.content.parts:
               part.thought = True
         elif isinstance(update, A2ATaskArtifactUpdateEvent) and (
@@ -533,6 +542,7 @@ class RemoteA2aAgent(BaseAgent):
       async for a2a_response in self._a2a_client.send_message(
           request=a2a_request,
           request_metadata=request_metadata,
+          context=ClientCallContext(state=ctx.session.state),
       ):
         logger.debug(build_a2a_response_log(a2a_response))
 
@@ -557,6 +567,24 @@ class RemoteA2aAgent(BaseAgent):
           )
 
         yield event
+
+    except A2AClientHTTPError as e:
+      error_message = f"A2A request failed: {e}"
+      logger.error(error_message)
+      yield Event(
+          author=self.name,
+          error_message=error_message,
+          invocation_id=ctx.invocation_id,
+          branch=ctx.branch,
+          custom_metadata={
+              A2A_METADATA_PREFIX
+              + "request": a2a_request.model_dump(
+                  exclude_none=True, by_alias=True
+              ),
+              A2A_METADATA_PREFIX + "error": error_message,
+              A2A_METADATA_PREFIX + "status_code": str(e.status_code),
+          },
+      )
 
     except Exception as e:
       error_message = f"A2A request failed: {e}"

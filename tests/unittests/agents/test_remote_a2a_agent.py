@@ -23,6 +23,7 @@ from unittest.mock import patch
 from a2a.client.client import ClientConfig
 from a2a.client.client import Consumer
 from a2a.client.client_factory import ClientFactory
+from a2a.client.middleware import ClientCallContext
 from a2a.types import AgentCapabilities
 from a2a.types import AgentCard
 from a2a.types import AgentSkill
@@ -845,6 +846,48 @@ class TestRemoteA2aAgentMessageHandling:
       assert A2A_METADATA_PREFIX + "context_id" in result.custom_metadata
 
   @pytest.mark.asyncio
+  async def test_handle_a2a_response_with_task_working_and_no_update(self):
+    """Test successful A2A response handling with streaming task and no update."""
+    mock_a2a_task = Mock(spec=A2ATask)
+    mock_a2a_task.id = "task-123"
+    mock_a2a_task.context_id = "context-123"
+    mock_a2a_task.status = Mock(spec=A2ATaskStatus)
+    mock_a2a_task.status.state = TaskState.working
+
+    # Create a proper Event mock that can handle custom_metadata
+    mock_a2a_part = Mock(spec=TextPart)
+    mock_event = Event(
+        author=self.agent.name,
+        invocation_id=self.mock_context.invocation_id,
+        branch=self.mock_context.branch,
+        content=genai_types.Content(role="model", parts=[mock_a2a_part]),
+    )
+
+    with patch(
+        "google.adk.agents.remote_a2a_agent.convert_a2a_task_to_event"
+    ) as mock_convert:
+      mock_convert.return_value = mock_event
+
+      result = await self.agent._handle_a2a_response(
+          (mock_a2a_task, None), self.mock_context
+      )
+
+      assert result == mock_event
+      mock_convert.assert_called_once_with(
+          mock_a2a_task,
+          self.agent.name,
+          self.mock_context,
+          self.mock_a2a_part_converter,
+      )
+      # Check the parts are updated as Thought
+      assert result.content.parts[0].thought is True
+      assert result.content.parts[0].thought_signature is None
+      # Check that metadata was added
+      assert result.custom_metadata is not None
+      assert A2A_METADATA_PREFIX + "task_id" in result.custom_metadata
+      assert A2A_METADATA_PREFIX + "context_id" in result.custom_metadata
+
+  @pytest.mark.asyncio
   async def test_handle_a2a_response_with_task_status_update_with_message(self):
     """Test handling of a task status update with a message."""
     mock_a2a_task = Mock(spec=A2ATask)
@@ -1429,6 +1472,7 @@ class TestRemoteA2aAgentExecution:
     self.mock_session = Mock(spec=Session)
     self.mock_session.id = "session-123"
     self.mock_session.events = []
+    self.mock_session.state = {}
 
     self.mock_context = Mock(spec=InvocationContext)
     self.mock_context.session = self.mock_session
@@ -1682,6 +1726,7 @@ class TestRemoteA2aAgentExecution:
                   mock_a2a_client.send_message.assert_called_once_with(
                       request=mock_message,
                       request_metadata=request_metadata,
+                      context=ClientCallContext(state=self.mock_session.state),
                   )
 
 
@@ -1703,6 +1748,7 @@ class TestRemoteA2aAgentExecutionFromFactory:
     self.mock_session = Mock(spec=Session)
     self.mock_session.id = "session-123"
     self.mock_session.events = []
+    self.mock_session.state = {}
 
     self.mock_context = Mock(spec=InvocationContext)
     self.mock_context.session = self.mock_session
@@ -1989,6 +2035,7 @@ class TestRemoteA2aAgentIntegration:
     mock_session = Mock(spec=Session)
     mock_session.id = "session-123"
     mock_session.events = [mock_event]
+    mock_session.state = {}
 
     mock_context = Mock(spec=InvocationContext)
     mock_context.session = mock_session
@@ -2084,6 +2131,7 @@ class TestRemoteA2aAgentIntegration:
     mock_session = Mock(spec=Session)
     mock_session.id = "session-123"
     mock_session.events = [mock_event]
+    mock_session.state = {}
 
     mock_context = Mock(spec=InvocationContext)
     mock_context.session = mock_session

@@ -18,6 +18,7 @@ from google.adk.agents.llm_agent import LlmAgent
 from google.adk.auth.auth_credential import AuthCredentialTypes
 from google.adk.tools.google_tool import GoogleTool
 from google.adk.tools.spanner.settings import Capabilities
+from google.adk.tools.spanner.settings import QueryResultMode
 from google.adk.tools.spanner.settings import SpannerToolSettings
 from google.adk.tools.spanner.spanner_credentials import SpannerCredentialsConfig
 from google.adk.tools.spanner.spanner_toolset import SpannerToolset
@@ -34,7 +35,10 @@ CREDENTIALS_TYPE = None
 
 
 # Define Spanner tool config with read capability set to allowed.
-tool_settings = SpannerToolSettings(capabilities=[Capabilities.DATA_READ])
+tool_settings = SpannerToolSettings(
+    capabilities=[Capabilities.DATA_READ],
+    query_result_mode=QueryResultMode.DICT_LIST,
+)
 
 if CREDENTIALS_TYPE == AuthCredentialTypes.OAUTH2:
   # Initialize the tools to do interactive OAuth

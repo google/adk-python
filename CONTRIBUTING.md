@@ -56,14 +56,14 @@ information on using pull requests.
 
 ### Requirement for PRs
 
--   All PRs, other than small documentation or typo fixes, should have a Issue
+-   All PRs, other than small documentation or typo fixes, should have an Issue
     associated. If a relevant issue doesn't exist, please create one first or
     you may instead describe the bug or feature directly within the PR
     description, following the structure of our issue templates.
 -   Small, focused PRs. Keep changes minimal—one concern per PR.
 -   For bug fixes or features, please provide logs or screenshot after the fix
     is applied to help reviewers better understand the fix.
--   Please include a `testing plan` section in your PR to talk about how you
+-   Please include a `testing plan` section in your PR to describe how you
     will test. This will save time for PR review. See `Testing Requirements`
     section for more details.
 
@@ -126,7 +126,7 @@ Depending on your change:
 
 For any changes that impact user-facing documentation (guides, API reference,
 tutorials), please open a PR in the
-[adk-docs](https://github.com/google/adk-docs) repository to update relevant
+[adk-docs](https://github.com/google/adk-docs) repository to update the relevant
 part before or alongside your code PR.
 
 ## Development Setup
@@ -160,7 +160,11 @@ part before or alongside your code PR.
     source .venv/bin/activate
     ```
 
-    **windows** `shell source .\.venv\Scripts\activate`
+    **Windows**
+
+    ```shell
+    source .\.venv\Scripts\activate
+    ```
 
 4.  **Install dependencies:**
 
@@ -230,7 +234,7 @@ part before or alongside your code PR.
 ## Contributing Resources
 
 [Contributing folder](https://github.com/google/adk-python/tree/main/contributing)
-has resources that is helpful for contributors.
+has resources that are helpful for contributors.
 
 ## Vibe Coding
 

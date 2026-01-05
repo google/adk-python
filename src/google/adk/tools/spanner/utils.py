@@ -22,6 +22,7 @@ from google.cloud.spanner_admin_database_v1.types import DatabaseDialect
 
 from . import client
 from ..tool_context import ToolContext
+from .settings import QueryResultMode
 from .settings import SpannerToolSettings
 
 DEFAULT_MAX_EXECUTED_QUERY_RESULT_ROWS = 50
@@ -84,6 +85,9 @@ def execute_sql(
           if settings and settings.max_executed_query_result_rows > 0
           else DEFAULT_MAX_EXECUTED_QUERY_RESULT_ROWS
       )
+      if settings and settings.query_result_mode is QueryResultMode.DICT_LIST:
+        result_set = result_set.to_dict_list()
+
       for row in result_set:
         try:
           # if the json serialization of the row succeeds, use it as is
