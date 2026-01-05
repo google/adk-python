@@ -25,20 +25,45 @@ from ... import version
 USER_AGENT = f"adk-bigquery-tool google-adk/{version.__version__}"
 
 
+from typing import List
+from typing import Union
+
+
 def get_bigquery_client(
     *,
     project: Optional[str],
     credentials: Credentials,
-    user_agent: Optional[str] = None,
+    location: Optional[str] = None,
+    user_agent: Optional[Union[str, List[str]]] = None,
 ) -> bigquery.Client:
-  """Get a BigQuery client."""
+  """Get a BigQuery client.
 
-  user_agent = f"{USER_AGENT} {user_agent}" if user_agent else USER_AGENT
+  Args:
+    project: The GCP project ID.
+    credentials: The credentials to use for the request.
+    location: The location of the BigQuery client.
+    user_agent: The user agent to use for the request.
 
-  client_info = google.api_core.client_info.ClientInfo(user_agent=user_agent)
+  Returns:
+    A BigQuery client.
+  """
+
+  user_agents = [USER_AGENT]
+  if user_agent:
+    if isinstance(user_agent, str):
+      user_agents.append(user_agent)
+    else:
+      user_agents.extend([ua for ua in user_agent if ua])
+
+  client_info = google.api_core.client_info.ClientInfo(
+      user_agent=" ".join(user_agents)
+  )
 
   bigquery_client = bigquery.Client(
-      project=project, credentials=credentials, client_info=client_info
+      project=project,
+      credentials=credentials,
+      location=location,
+      client_info=client_info,
   )
 
   return bigquery_client

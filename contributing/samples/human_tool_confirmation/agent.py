@@ -13,6 +13,8 @@
 # limitations under the License.
 
 from google.adk import Agent
+from google.adk.apps import App
+from google.adk.apps import ResumabilityConfig
 from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.tool_confirmation import ToolConfirmation
 from google.adk.tools.tool_context import ToolContext
@@ -22,6 +24,13 @@ from google.genai import types
 def reimburse(amount: int, tool_context: ToolContext) -> str:
   """Reimburse the employee for the given amount."""
   return {'status': 'ok'}
+
+
+async def confirmation_threshold(
+    amount: int, tool_context: ToolContext
+) -> bool:
+  """Returns true if the amount is greater than 1000."""
+  return amount > 1000
 
 
 def request_time_off(days: int, tool_context: ToolContext):
@@ -70,11 +79,23 @@ root_agent = Agent(
     - Always respond to the user with the tool results.
     """,
     tools=[
-        # Set require_confirmation to True to require user confirmation for the
-        # tool call. This is an easier way to get user confirmation if the tool
-        # just need a boolean confirmation.
-        FunctionTool(reimburse, require_confirmation=True),
+        # Set require_confirmation to True or a callable to require user
+        # confirmation for the tool call. This is an easier way to get user
+        # confirmation if the tool just need a boolean confirmation.
+        FunctionTool(
+            reimburse,
+            require_confirmation=confirmation_threshold,
+        ),
         request_time_off,
     ],
     generate_content_config=types.GenerateContentConfig(temperature=0.1),
+)
+
+app = App(
+    name='human_tool_confirmation',
+    root_agent=root_agent,
+    # Set the resumability config to enable resumability.
+    resumability_config=ResumabilityConfig(
+        is_resumable=True,
+    ),
 )

@@ -1,0 +1,47 @@
+name: Analyze New Release for ADK Docs Updates
+
+on:
+  # Runs on every new release.
+  release:
+    types: [published]
+  # Manual trigger for testing and retrying.
+  workflow_dispatch:
+
+jobs:
+  analyze-new-release-for-adk-docs-updates:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Load adk-bot SSH Private Key
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.ADK_BOT_SSH_PRIVATE_KEY }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests google-adk
+
+      - name: Run Analyzing Script
+        env:
+          GITHUB_TOKEN: ${{ secrets.ADK_TRIAGE_AGENT }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          GOOGLE_GENAI_USE_VERTEXAI: 0
+          DOC_OWNER: 'google'
+          CODE_OWNER: 'google'
+          DOC_REPO: 'adk-docs'
+          CODE_REPO: 'adk-python'
+          INTERACTIVE: 0
+          PYTHONPATH: contributing/samples/adk_documentation
+        run: python -m adk_release_analyzer.main

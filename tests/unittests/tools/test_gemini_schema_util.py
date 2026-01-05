@@ -65,9 +65,16 @@ class TestToGeminiSchema:
             "nonnullable_string": {"type": ["string"]},
             "nullable_string": {"type": ["string", "null"]},
             "nullable_number": {"type": ["null", "integer"]},
+            "nullable_object": {"type": ["object", "null"]},
             "object_nullable": {"type": "null"},
             "multi_types_nullable": {"type": ["string", "null", "integer"]},
+            "only_null": {"type": "null"},
             "empty_default_object": {},
+            "empty_list_type": {"type": []},
+            "multi_type_with_array_nullable": {
+                "type": ["string", "array", "null"]
+            },
+            "multi_type_with_array_nonnullable": {"type": ["integer", "array"]},
         },
     }
     gemini_schema = _to_gemini_schema(openapi_schema)
@@ -84,14 +91,40 @@ class TestToGeminiSchema:
     assert gemini_schema.properties["nullable_number"].type == Type.INTEGER
     assert gemini_schema.properties["nullable_number"].nullable
 
+    assert gemini_schema.properties["nullable_object"].type == Type.OBJECT
+    assert gemini_schema.properties["nullable_object"].nullable
+
     assert gemini_schema.properties["object_nullable"].type == Type.OBJECT
     assert gemini_schema.properties["object_nullable"].nullable
 
     assert gemini_schema.properties["multi_types_nullable"].type == Type.STRING
     assert gemini_schema.properties["multi_types_nullable"].nullable
 
+    assert gemini_schema.properties["only_null"].type == Type.OBJECT
+    assert gemini_schema.properties["only_null"].nullable
+
+    assert gemini_schema.properties["multi_types_nullable"].type == Type.STRING
+    assert gemini_schema.properties["multi_types_nullable"].nullable
+
     assert gemini_schema.properties["empty_default_object"].type == Type.OBJECT
     assert gemini_schema.properties["empty_default_object"].nullable is None
+
+    assert gemini_schema.properties["empty_list_type"].type == Type.OBJECT
+    assert not gemini_schema.properties["empty_list_type"].nullable
+
+    assert (
+        gemini_schema.properties["multi_type_with_array_nullable"].type
+        == Type.ARRAY
+    )
+    assert gemini_schema.properties["multi_type_with_array_nullable"].nullable
+
+    assert (
+        gemini_schema.properties["multi_type_with_array_nonnullable"].type
+        == Type.ARRAY
+    )
+    assert not gemini_schema.properties[
+        "multi_type_with_array_nonnullable"
+    ].nullable
 
   def test_to_gemini_schema_nested_objects(self):
     openapi_schema = {
@@ -137,6 +170,20 @@ class TestToGeminiSchema:
     gemini_schema = _to_gemini_schema(openapi_schema)
     assert gemini_schema.items.properties["name"].type == Type.STRING
 
+  def test_to_gemini_schema_array_without_items_gets_default(self):
+    openapi_schema = {"type": "array"}
+    gemini_schema = _to_gemini_schema(openapi_schema)
+    assert gemini_schema.type == Type.ARRAY
+    assert not gemini_schema.nullable
+    assert gemini_schema.items.type == Type.STRING
+
+  def test_to_gemini_schema_nullable_array_without_items_gets_default(self):
+    openapi_schema = {"type": ["array", "null"]}
+    gemini_schema = _to_gemini_schema(openapi_schema)
+    assert gemini_schema.type == Type.ARRAY
+    assert gemini_schema.nullable
+    assert gemini_schema.items.type == Type.STRING
+
   def test_to_gemini_schema_any_of(self):
     openapi_schema = {
         "anyOf": [{"type": "string"}, {"type": "integer"}],
@@ -145,6 +192,14 @@ class TestToGeminiSchema:
     assert len(gemini_schema.any_of) == 2
     assert gemini_schema.any_of[0].type == Type.STRING
     assert gemini_schema.any_of[1].type == Type.INTEGER
+
+  def test_to_gemini_schema_any_of_nullable(self):
+    openapi_schema = {
+        "anyOf": [{"type": "string"}, {"type": "null"}],
+    }
+    gemini_schema = _to_gemini_schema(openapi_schema)
+    assert gemini_schema.type == Type.STRING
+    assert gemini_schema.nullable
 
   def test_to_gemini_schema_general_list(self):
     openapi_schema = {
@@ -223,6 +278,64 @@ class TestToGeminiSchema:
     gemini_schema = _to_gemini_schema(openapi_schema)
     assert gemini_schema.type == Type.STRING
     assert not gemini_schema.format
+
+  def test_to_gemini_schema_nested_dict_with_defs_and_ref(self):
+    """Test that nested dict with $defs and $refs is converted correctly."""
+    openapi_schema = {
+        "$defs": {
+            "DeviceEnum": {
+                "enum": ["GLOBAL", "desktop", "mobile"],
+                "title": "DeviceEnum",
+                "type": "string",
+            },
+            "DomainPayload": {
+                "properties": {
+                    "adDomain": {
+                        "description": "List of one or many domains.",
+                        "items": {"type": "string"},
+                        "title": "Addomain",
+                        "type": "array",
+                    },
+                    "device": {
+                        "$ref": "#/$defs/DeviceEnum",
+                        "default": "GLOBAL",
+                        "description": (
+                            "Filter by device. All devices are returned by"
+                            " default."
+                        ),
+                    },
+                },
+                "required": ["adDomain"],
+                "title": "DomainPayload",
+                "type": "object",
+            },
+        },
+        "properties": {"payload": {"$ref": "#/$defs/DomainPayload"}},
+        "required": ["payload"],
+        "title": "query_domainsArguments",
+        "type": "object",
+    }
+    gemini_schema = _to_gemini_schema(openapi_schema)
+    assert gemini_schema.type == Type.OBJECT
+    assert gemini_schema.properties["payload"].type == Type.OBJECT
+    assert (
+        gemini_schema.properties["payload"].properties["adDomain"].type
+        == Type.ARRAY
+    )
+    assert (
+        gemini_schema.properties["payload"].properties["adDomain"].items.type
+        == Type.STRING
+    )
+    assert (
+        gemini_schema.properties["payload"].properties["device"].type
+        == Type.STRING
+    )
+    assert gemini_schema.properties["payload"].properties["device"].enum == [
+        "GLOBAL",
+        "desktop",
+        "mobile",
+    ]
+    assert gemini_schema.properties["payload"].required == ["adDomain"]
 
   def test_sanitize_integer_formats(self):
     """Test that int32 and int64 formats are preserved for integer types"""
@@ -475,8 +588,10 @@ class TestToGeminiSchema:
                 "type": "string",
             },
             "next_page_token": {
-                "anyOf": [{"type": "string"}, {"type": "null"}],
-                "default": None,
+                "any_of": [
+                    {"type": "string"},
+                    {"type": ["object", "null"]},
+                ],
                 "description": (
                     "The nextPageToken to fetch the next page of results."
                 ),

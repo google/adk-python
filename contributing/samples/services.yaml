@@ -1,0 +1,7 @@
+# Example of YAML-based service registration.
+# The BarMemoryService is registered here with scheme "bar".
+# To use this memory service, set --memory_service_uri=bar:// in the ADK CLI.
+services:
+  - scheme: bar
+    type: memory
+    class: dummy_services.BarMemoryService

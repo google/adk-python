@@ -1,8 +1,6 @@
 # Simplistic Live (Bidi-Streaming) Agent
-This project provides a basic example of a live, bidirectional streaming agent 
+This project provides a basic example of a live, [bidirectional streaming](https://google.github.io/adk-docs/streaming/) agent 
 designed for testing and experimentation.
-
-You can see full documentation [here](https://google.github.io/adk-docs/streaming/).
 
 ## Getting Started
 
@@ -10,7 +8,7 @@ Follow these steps to get the agent up and running:
 
 1.  **Start the ADK Web Server**
     Open your terminal, navigate to the root directory that contains the 
-    `live_bidi_streaming_agent` folder, and execute the following command:
+    `live_bidi_streaming_single_agent` folder, and execute the following command:
     ```bash
     adk web
     ```

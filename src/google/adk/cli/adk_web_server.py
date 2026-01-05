@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+import importlib
+import json
 import logging
 import os
 import time
@@ -30,6 +32,7 @@ from typing import Optional
 from fastapi import FastAPI
 from fastapi import HTTPException
 from fastapi import Query
+from fastapi import Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from fastapi.responses import StreamingResponse
@@ -39,8 +42,10 @@ from fastapi.websockets import WebSocketDisconnect
 from google.genai import types
 import graphviz
 from opentelemetry import trace
+import opentelemetry.sdk.environment_variables as otel_env
 from opentelemetry.sdk.trace import export as export_lib
 from opentelemetry.sdk.trace import ReadableSpan
+from opentelemetry.sdk.trace import SpanProcessor
 from opentelemetry.sdk.trace import TracerProvider
 from pydantic import Field
 from pydantic import ValidationError
@@ -56,8 +61,11 @@ from ..agents.live_request_queue import LiveRequestQueue
 from ..agents.run_config import RunConfig
 from ..agents.run_config import StreamingMode
 from ..apps.app import App
+from ..artifacts.base_artifact_service import ArtifactVersion
 from ..artifacts.base_artifact_service import BaseArtifactService
 from ..auth.credential_service.base_credential_service import BaseCredentialService
+from ..errors.already_exists_error import AlreadyExistsError
+from ..errors.input_validation_error import InputValidationError
 from ..errors.not_found_error import NotFoundError
 from ..evaluation.base_eval_service import InferenceConfig
 from ..evaluation.base_eval_service import InferenceRequest
@@ -67,6 +75,7 @@ from ..evaluation.eval_case import SessionInput
 from ..evaluation.eval_metrics import EvalMetric
 from ..evaluation.eval_metrics import EvalMetricResult
 from ..evaluation.eval_metrics import EvalMetricResultPerInvocation
+from ..evaluation.eval_metrics import EvalStatus
 from ..evaluation.eval_metrics import MetricInfo
 from ..evaluation.eval_result import EvalSetResult
 from ..evaluation.eval_set import EvalSet
@@ -74,12 +83,12 @@ from ..evaluation.eval_set_results_manager import EvalSetResultsManager
 from ..evaluation.eval_sets_manager import EvalSetsManager
 from ..events.event import Event
 from ..memory.base_memory_service import BaseMemoryService
+from ..plugins.base_plugin import BasePlugin
 from ..runners import Runner
 from ..sessions.base_session_service import BaseSessionService
 from ..sessions.session import Session
 from ..utils.context_utils import Aclosing
 from .cli_eval import EVAL_SESSION_ID_PREFIX
-from .cli_eval import EvalStatus
 from .utils import cleanup
 from .utils import common
 from .utils import envs
@@ -94,6 +103,36 @@ _EVAL_SET_FILE_EXTENSION = ".evalset.json"
 
 TAG_DEBUG = "Debug"
 TAG_EVALUATION = "Evaluation"
+
+_REGEX_PREFIX = "regex:"
+
+
+def _parse_cors_origins(
+    allow_origins: list[str],
+) -> tuple[list[str], Optional[str]]:
+  """Parse allow_origins into literal origins and a combined regex pattern.
+
+  Args:
+    allow_origins: List of origin strings. Entries prefixed with 'regex:' are
+      treated as regex patterns; all others are treated as literal origins.
+
+  Returns:
+    A tuple of (literal_origins, combined_regex) where combined_regex is None
+    if no regex patterns were provided, or a single pattern joining all regex
+    patterns with '|'.
+  """
+  literal_origins = []
+  regex_patterns = []
+  for origin in allow_origins:
+    if origin.startswith(_REGEX_PREFIX):
+      pattern = origin[len(_REGEX_PREFIX) :]
+      if pattern:
+        regex_patterns.append(pattern)
+    else:
+      literal_origins.append(origin)
+
+  combined_regex = "|".join(regex_patterns) if regex_patterns else None
+  return literal_origins, combined_regex
 
 
 class ApiServerSpanExporter(export_lib.SpanExporter):
@@ -166,6 +205,8 @@ class RunAgentRequest(common.BaseModel):
   new_message: types.Content
   streaming: bool = False
   state_delta: Optional[dict[str, Any]] = None
+  # for resume long running functions
+  invocation_id: Optional[str] = None
 
 
 class CreateSessionRequest(common.BaseModel):
@@ -182,6 +223,19 @@ class CreateSessionRequest(common.BaseModel):
   events: Optional[list[Event]] = Field(
       default=None,
       description="A list of events to initialize the session with.",
+  )
+
+
+class SaveArtifactRequest(common.BaseModel):
+  """Request payload for saving a new artifact."""
+
+  filename: str = Field(description="Artifact filename.")
+  artifact: types.Part = Field(
+      description="Artifact payload encoded as google.genai.types.Part."
+  )
+  custom_metadata: Optional[dict[str, Any]] = Field(
+      default=None,
+      description="Optional metadata to associate with the artifact version.",
   )
 
 
@@ -205,6 +259,20 @@ class RunEvalRequest(common.BaseModel):
       ),
   )
   eval_metrics: list[EvalMetric]
+
+
+class UpdateMemoryRequest(common.BaseModel):
+  """Request to add a session to the memory service."""
+
+  session_id: str
+  """The ID of the session to add to memory."""
+
+
+class UpdateSessionRequest(common.BaseModel):
+  """Request to update session state without running the agent."""
+
+  state_delta: dict[str, Any]
+  """The state changes to apply to the session."""
 
 
 class RunEvalResult(common.BaseModel):
@@ -257,6 +325,122 @@ class ListMetricsInfoResponse(common.BaseModel):
   metrics_info: list[MetricInfo]
 
 
+class AppInfo(common.BaseModel):
+  name: str
+  root_agent_name: str
+  description: str
+  language: Literal["yaml", "python"]
+
+
+class ListAppsResponse(common.BaseModel):
+  apps: list[AppInfo]
+
+
+def _setup_telemetry(
+    otel_to_cloud: bool = False,
+    internal_exporters: Optional[list[SpanProcessor]] = None,
+):
+  # TODO - remove the else branch here once maybe_set_otel_providers is no
+  # longer experimental.
+  if otel_to_cloud:
+    _setup_gcp_telemetry(internal_exporters=internal_exporters)
+  elif _otel_env_vars_enabled():
+    _setup_telemetry_from_env(internal_exporters=internal_exporters)
+  else:
+    # Old logic - to be removed when above leaves experimental.
+    tracer_provider = TracerProvider()
+    if internal_exporters is not None:
+      for exporter in internal_exporters:
+        tracer_provider.add_span_processor(exporter)
+    trace.set_tracer_provider(tracer_provider=tracer_provider)
+
+
+def _otel_env_vars_enabled() -> bool:
+  return any([
+      os.getenv(endpoint_var)
+      for endpoint_var in [
+          otel_env.OTEL_EXPORTER_OTLP_ENDPOINT,
+          otel_env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT,
+          otel_env.OTEL_EXPORTER_OTLP_METRICS_ENDPOINT,
+          otel_env.OTEL_EXPORTER_OTLP_LOGS_ENDPOINT,
+      ]
+  ])
+
+
+def _setup_gcp_telemetry(
+    internal_exporters: list[SpanProcessor] = None,
+):
+  if typing.TYPE_CHECKING:
+    from ..telemetry.setup import OTelHooks
+
+  otel_hooks_to_add: list[OTelHooks] = []
+
+  if internal_exporters:
+    from ..telemetry.setup import OTelHooks
+
+    # Register ADK-specific exporters in trace provider.
+    otel_hooks_to_add.append(OTelHooks(span_processors=internal_exporters))
+
+  import google.auth
+
+  from ..telemetry.google_cloud import get_gcp_exporters
+  from ..telemetry.google_cloud import get_gcp_resource
+  from ..telemetry.setup import maybe_set_otel_providers
+
+  credentials, project_id = google.auth.default()
+
+  otel_hooks_to_add.append(
+      get_gcp_exporters(
+          # TODO - use trace_to_cloud here as well once otel_to_cloud is no
+          # longer experimental.
+          enable_cloud_tracing=True,
+          # TODO - reenable metrics once errors during shutdown are fixed.
+          enable_cloud_metrics=False,
+          enable_cloud_logging=True,
+          google_auth=(credentials, project_id),
+      )
+  )
+  otel_resource = get_gcp_resource(project_id)
+
+  maybe_set_otel_providers(
+      otel_hooks_to_setup=otel_hooks_to_add,
+      otel_resource=otel_resource,
+  )
+  _setup_instrumentation_lib_if_installed()
+
+
+def _setup_telemetry_from_env(
+    internal_exporters: list[SpanProcessor] = None,
+):
+  from ..telemetry.setup import maybe_set_otel_providers
+
+  otel_hooks_to_add = []
+
+  if internal_exporters:
+    from ..telemetry.setup import OTelHooks
+
+    # Register ADK-specific exporters in trace provider.
+    otel_hooks_to_add.append(OTelHooks(span_processors=internal_exporters))
+
+  maybe_set_otel_providers(otel_hooks_to_setup=otel_hooks_to_add)
+  _setup_instrumentation_lib_if_installed()
+
+
+def _setup_instrumentation_lib_if_installed():
+  # Set instrumentation to enable emitting OTel data from GenAISDK
+  # Currently the instrumentation lib is in extras dependencies, make sure to
+  # warn the user if it's not installed.
+  try:
+    from opentelemetry.instrumentation.google_genai import GoogleGenAiSdkInstrumentor
+
+    GoogleGenAiSdkInstrumentor().instrument()
+  except ImportError:
+    logger.warning(
+        "Unable to import GoogleGenAiSdkInstrumentor - some"
+        " telemetry will be disabled. Make sure to install google-adk[otel-gcp]"
+    )
+
+
 class AdkWebServer:
   """Helper class for setting up and running the ADK web server on FastAPI.
 
@@ -266,7 +450,7 @@ class AdkWebServer:
   If you pass in a web_assets_dir, the static assets will be served under
   /dev-ui in addition to the API endpoints created by default.
 
-  You can add add additional API endpoints by modifying the FastAPI app
+  You can add additional API endpoints by modifying the FastAPI app
   instance returned by get_fast_api_app as this class exposes the agent runners
   and most other bits of state retained during the lifetime of the server.
 
@@ -284,6 +468,9 @@ class AdkWebServer:
         managing evaluation set results.
       agents_dir: Root directory containing subdirs for agents with those
         containing resources (e.g. .env files, eval sets, etc.) for the agents.
+      extra_plugins: A list of fully qualified names of extra plugins to load.
+      logo_text: Text to display in the logo of the UI.
+      logo_image_url: URL of an image to display as logo of the UI.
       runners_to_clean: Set of runner names marked for cleanup.
       current_app_name_ref: A shared reference to the latest ran app name.
       runner_dict: A dict of instantiated runners for each app.
@@ -300,6 +487,10 @@ class AdkWebServer:
       eval_sets_manager: EvalSetsManager,
       eval_set_results_manager: EvalSetResultsManager,
       agents_dir: str,
+      extra_plugins: Optional[list[str]] = None,
+      logo_text: Optional[str] = None,
+      logo_image_url: Optional[str] = None,
+      url_prefix: Optional[str] = None,
   ):
     self.agent_loader = agent_loader
     self.session_service = session_service
@@ -309,39 +500,173 @@ class AdkWebServer:
     self.eval_sets_manager = eval_sets_manager
     self.eval_set_results_manager = eval_set_results_manager
     self.agents_dir = agents_dir
-    # Internal propeties we want to allow being modified from callbacks.
+    self.extra_plugins = extra_plugins or []
+    self.logo_text = logo_text
+    self.logo_image_url = logo_image_url
+    # Internal properties we want to allow being modified from callbacks.
     self.runners_to_clean: set[str] = set()
     self.current_app_name_ref: SharedValue[str] = SharedValue(value="")
     self.runner_dict = {}
+    self.url_prefix = url_prefix
 
   async def get_runner_async(self, app_name: str) -> Runner:
-    """Returns the runner for the given app."""
+    """Returns the cached runner for the given app."""
+    # Handle cleanup
     if app_name in self.runners_to_clean:
       self.runners_to_clean.remove(app_name)
       runner = self.runner_dict.pop(app_name, None)
       await cleanup.close_runners(list([runner]))
 
-    envs.load_dotenv_for_agent(os.path.basename(app_name), self.agents_dir)
+    # Return cached runner if exists
     if app_name in self.runner_dict:
       return self.runner_dict[app_name]
+
+    # Create new runner
+    envs.load_dotenv_for_agent(os.path.basename(app_name), self.agents_dir)
     agent_or_app = self.agent_loader.load_agent(app_name)
-    agentic_app = None
+
+    # Instantiate extra plugins if configured
+    extra_plugins_instances = self._instantiate_extra_plugins()
+
     if isinstance(agent_or_app, BaseAgent):
       agentic_app = App(
           name=app_name,
           root_agent=agent_or_app,
+          plugins=extra_plugins_instances,
       )
     else:
+      # Combine existing plugins with extra plugins
+      agent_or_app.plugins = agent_or_app.plugins + extra_plugins_instances
       agentic_app = agent_or_app
-    runner = Runner(
+
+    runner = self._create_runner(agentic_app)
+    self.runner_dict[app_name] = runner
+    return runner
+
+  def _get_root_agent(self, agent_or_app: BaseAgent | App) -> BaseAgent:
+    """Extract root agent from either a BaseAgent or App object."""
+    if isinstance(agent_or_app, App):
+      return agent_or_app.root_agent
+    return agent_or_app
+
+  def _create_runner(self, agentic_app: App) -> Runner:
+    """Create a runner with common services."""
+    return Runner(
         app=agentic_app,
         artifact_service=self.artifact_service,
         session_service=self.session_service,
         memory_service=self.memory_service,
         credential_service=self.credential_service,
     )
-    self.runner_dict[app_name] = runner
-    return runner
+
+  def _instantiate_extra_plugins(self) -> list[BasePlugin]:
+    """Instantiate extra plugins from the configured list.
+
+    Returns:
+      List of instantiated BasePlugin objects.
+    """
+    extra_plugins_instances = []
+    for qualified_name in self.extra_plugins:
+      try:
+        plugin_obj = self._import_plugin_object(qualified_name)
+        if isinstance(plugin_obj, BasePlugin):
+          extra_plugins_instances.append(plugin_obj)
+        elif issubclass(plugin_obj, BasePlugin):
+          extra_plugins_instances.append(plugin_obj(name=qualified_name))
+      except Exception as e:
+        logger.error("Failed to load plugin %s: %s", qualified_name, e)
+    return extra_plugins_instances
+
+  def _import_plugin_object(self, qualified_name: str) -> Any:
+    """Import a plugin object (class or instance) from a fully qualified name.
+
+    Args:
+      qualified_name: Fully qualified name (e.g., 'my_package.my_plugin.MyPlugin')
+
+    Returns:
+      The imported object, which can be either a class or an instance.
+
+    Raises:
+      ImportError: If the module cannot be imported.
+      AttributeError: If the object doesn't exist in the module.
+    """
+    module_name, obj_name = qualified_name.rsplit(".", 1)
+    module = importlib.import_module(module_name)
+    return getattr(module, obj_name)
+
+  def _setup_runtime_config(self, web_assets_dir: str):
+    """Sets up the runtime config for the web server."""
+    # Read existing runtime config file.
+    runtime_config_path = os.path.join(
+        web_assets_dir, "assets", "config", "runtime-config.json"
+    )
+    runtime_config = {}
+    try:
+      with open(runtime_config_path, "r") as f:
+        runtime_config = json.load(f)
+    except FileNotFoundError:
+      logger.info(
+          "File not found: %s. A new runtime config file will be created.",
+          runtime_config_path,
+      )
+    except json.JSONDecodeError:
+      logger.warning(
+          "Failed to decode JSON from %s. The file content will be"
+          " overwritten.",
+          runtime_config_path,
+      )
+    runtime_config["backendUrl"] = self.url_prefix if self.url_prefix else ""
+
+    # Set custom logo config.
+    if self.logo_text or self.logo_image_url:
+      if not self.logo_text or not self.logo_image_url:
+        raise ValueError(
+            "Both --logo-text and --logo-image-url must be defined when using"
+            " logo config."
+        )
+      runtime_config["logo"] = {
+          "text": self.logo_text,
+          "imageUrl": self.logo_image_url,
+      }
+    elif "logo" in runtime_config:
+      del runtime_config["logo"]
+
+    # Write the runtime config file.
+    try:
+      os.makedirs(os.path.dirname(runtime_config_path), exist_ok=True)
+      with open(runtime_config_path, "w") as f:
+        json.dump(runtime_config, f, indent=2)
+    except IOError as e:
+      logger.error(
+          "Failed to write runtime config file %s: %s", runtime_config_path, e
+      )
+
+  async def _create_session(
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      session_id: Optional[str] = None,
+      state: Optional[dict[str, Any]] = None,
+  ) -> Session:
+    try:
+      session = await self.session_service.create_session(
+          app_name=app_name,
+          user_id=user_id,
+          state=state,
+          session_id=session_id,
+      )
+      logger.info("New session created: %s", session.id)
+      return session
+    except AlreadyExistsError as e:
+      raise HTTPException(
+          status_code=409, detail=f"Session already exists: {session_id}"
+      ) from e
+    except Exception as e:
+      logger.error(
+          "Internal server error during session creation: %s", e, exc_info=True
+      )
+      raise HTTPException(status_code=500, detail=str(e)) from e
 
   def get_fast_api_app(
       self,
@@ -355,6 +680,7 @@ class AdkWebServer:
           [Observer, "AdkWebServer"], None
       ] = lambda o, s: None,
       register_processors: Callable[[TracerProvider], None] = lambda o: None,
+      otel_to_cloud: bool = False,
   ):
     """Creates a FastAPI app for the ADK web server.
 
@@ -366,11 +692,15 @@ class AdkWebServer:
     Args:
       lifespan: The lifespan of the FastAPI app.
       allow_origins: The origins that are allowed to make cross-origin requests.
+        Entries can be literal origins (e.g., 'https://example.com') or regex
+        patterns prefixed with 'regex:' (e.g., 'regex:https://.*\\.example\\.com').
       web_assets_dir: The directory containing the web assets to serve.
       setup_observer: Callback for setting up the file system observer.
       tear_down_observer: Callback for cleaning up the file system observer.
       register_processors: Callback for additional Span processors to be added
         to the TracerProvider.
+      otel_to_cloud: Whether to enable Cloud Trace and Cloud Logging
+        integrations.
 
     Returns:
       A FastAPI app instance.
@@ -395,32 +725,46 @@ class AdkWebServer:
         # Create tasks for all runner closures to run concurrently
         await cleanup.close_runners(list(self.runner_dict.values()))
 
-    # Set up tracing in the FastAPI server.
-    provider = TracerProvider()
-    provider.add_span_processor(
-        export_lib.SimpleSpanProcessor(ApiServerSpanExporter(trace_dict))
-    )
     memory_exporter = InMemoryExporter(session_trace_dict)
-    provider.add_span_processor(export_lib.SimpleSpanProcessor(memory_exporter))
 
-    register_processors(provider)
+    _setup_telemetry(
+        otel_to_cloud=otel_to_cloud,
+        internal_exporters=[
+            export_lib.SimpleSpanProcessor(ApiServerSpanExporter(trace_dict)),
+            export_lib.SimpleSpanProcessor(memory_exporter),
+        ],
+    )
+    if web_assets_dir:
+      self._setup_runtime_config(web_assets_dir)
 
-    trace.set_tracer_provider(provider)
+    # TODO - register_processors to be removed once --otel_to_cloud is no
+    # longer experimental.
+    tracer_provider = trace.get_tracer_provider()
+    register_processors(tracer_provider)
 
     # Run the FastAPI server.
     app = FastAPI(lifespan=internal_lifespan)
 
     if allow_origins:
+      literal_origins, combined_regex = _parse_cors_origins(allow_origins)
       app.add_middleware(
           CORSMiddleware,
-          allow_origins=allow_origins,
+          allow_origins=literal_origins,
+          allow_origin_regex=combined_regex,
           allow_credentials=True,
           allow_methods=["*"],
           allow_headers=["*"],
       )
 
     @app.get("/list-apps")
-    async def list_apps() -> list[str]:
+    async def list_apps(
+        detailed: bool = Query(
+            default=False, description="Return detailed app information"
+        )
+    ) -> list[str] | ListAppsResponse:
+      if detailed:
+        apps_info = self.agent_loader.list_agents_detailed()
+        return ListAppsResponse(apps=[AppInfo(**app) for app in apps_info])
       return self.agent_loader.list_agents()
 
     @app.get("/debug/trace/{event_id}", tags=[TAG_DEBUG])
@@ -492,20 +836,12 @@ class AdkWebServer:
         session_id: str,
         state: Optional[dict[str, Any]] = None,
     ) -> Session:
-      if (
-          await self.session_service.get_session(
-              app_name=app_name, user_id=user_id, session_id=session_id
-          )
-          is not None
-      ):
-        raise HTTPException(
-            status_code=400, detail=f"Session already exists: {session_id}"
-        )
-      session = await self.session_service.create_session(
-          app_name=app_name, user_id=user_id, state=state, session_id=session_id
+      return await self._create_session(
+          app_name=app_name,
+          user_id=user_id,
+          state=state,
+          session_id=session_id,
       )
-      logger.info("New session created: %s", session_id)
-      return session
 
     @app.post(
         "/apps/{app_name}/users/{user_id}/sessions",
@@ -517,11 +853,9 @@ class AdkWebServer:
         req: Optional[CreateSessionRequest] = None,
     ) -> Session:
       if not req:
-        return await self.session_service.create_session(
-            app_name=app_name, user_id=user_id
-        )
+        return await self._create_session(app_name=app_name, user_id=user_id)
 
-      session = await self.session_service.create_session(
+      session = await self._create_session(
           app_name=app_name,
           user_id=user_id,
           state=req.state,
@@ -541,6 +875,56 @@ class AdkWebServer:
       await self.session_service.delete_session(
           app_name=app_name, user_id=user_id, session_id=session_id
       )
+
+    @app.patch(
+        "/apps/{app_name}/users/{user_id}/sessions/{session_id}",
+        response_model_exclude_none=True,
+    )
+    async def update_session(
+        app_name: str,
+        user_id: str,
+        session_id: str,
+        req: UpdateSessionRequest,
+    ) -> Session:
+      """Updates session state without running the agent.
+
+      Args:
+          app_name: The name of the application.
+          user_id: The ID of the user.
+          session_id: The ID of the session to update.
+          req: The patch request containing state changes.
+
+      Returns:
+          The updated session.
+
+      Raises:
+          HTTPException: If the session is not found.
+      """
+      session = await self.session_service.get_session(
+          app_name=app_name, user_id=user_id, session_id=session_id
+      )
+      if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+      # Create an event to record the state change
+      import uuid
+
+      from ..events.event import Event
+      from ..events.event import EventActions
+
+      state_update_event = Event(
+          invocation_id="p-" + str(uuid.uuid4()),
+          author="user",
+          actions=EventActions(state_delta=req.state_delta),
+      )
+
+      # Append the event to the session
+      # This will automatically update the session state through __update_session_state
+      await self.session_service.append_event(
+          session=session, event=state_update_event
+      )
+
+      return session
 
     @app.post(
         "/apps/{app_name}/eval-sets",
@@ -634,9 +1018,8 @@ class AdkWebServer:
 
       # Populate the session with initial session state.
       agent_or_app = self.agent_loader.load_agent(app_name)
-      if isinstance(agent_or_app, App):
-        agent_or_app = agent_or_app.root_agent
-      initial_session_state = create_empty_state(agent_or_app)
+      root_agent = self._get_root_agent(agent_or_app)
+      initial_session_state = create_empty_state(root_agent)
 
       new_eval_case = EvalCase(
           eval_id=req.eval_id,
@@ -797,7 +1180,8 @@ class AdkWebServer:
               status_code=400, detail=f"Eval set `{eval_set_id}` not found."
           )
 
-        root_agent = self.agent_loader.load_agent(app_name)
+        agent_or_app = self.agent_loader.load_agent(app_name)
+        root_agent = self._get_root_agent(agent_or_app)
 
         eval_case_results = []
 
@@ -979,6 +1363,53 @@ class AdkWebServer:
         raise HTTPException(status_code=404, detail="Artifact not found")
       return artifact
 
+    @app.post(
+        "/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts",
+        response_model=ArtifactVersion,
+        response_model_exclude_none=True,
+    )
+    async def save_artifact(
+        app_name: str,
+        user_id: str,
+        session_id: str,
+        req: SaveArtifactRequest,
+    ) -> ArtifactVersion:
+      try:
+        version = await self.artifact_service.save_artifact(
+            app_name=app_name,
+            user_id=user_id,
+            session_id=session_id,
+            filename=req.filename,
+            artifact=req.artifact,
+            custom_metadata=req.custom_metadata,
+        )
+      except InputValidationError as ive:
+        raise HTTPException(status_code=400, detail=str(ive)) from ive
+      except Exception as exc:  # pylint: disable=broad-exception-caught
+        logger.error(
+            "Internal error while saving artifact %s for app=%s user=%s"
+            " session=%s: %s",
+            req.filename,
+            app_name,
+            user_id,
+            session_id,
+            exc,
+            exc_info=True,
+        )
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+      artifact_version = await self.artifact_service.get_artifact_version(
+          app_name=app_name,
+          user_id=user_id,
+          session_id=session_id,
+          filename=req.filename,
+          version=version,
+      )
+      if artifact_version is None:
+        raise HTTPException(
+            status_code=500, detail="Artifact metadata unavailable"
+        )
+      return artifact_version
+
     @app.get(
         "/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts",
         response_model_exclude_none=True,
@@ -1016,6 +1447,41 @@ class AdkWebServer:
           session_id=session_id,
           filename=artifact_name,
       )
+
+    @app.patch("/apps/{app_name}/users/{user_id}/memory")
+    async def patch_memory(
+        app_name: str, user_id: str, update_memory_request: UpdateMemoryRequest
+    ) -> None:
+      """Adds all events from a given session to the memory service.
+
+      Args:
+          app_name: The name of the application.
+          user_id: The ID of the user.
+          update_memory_request: The memory request for the update
+
+      Raises:
+          HTTPException: If the memory service is not configured or the request is invalid.
+      """
+      if not self.memory_service:
+        raise HTTPException(
+            status_code=400, detail="Memory service is not configured."
+        )
+      if (
+          update_memory_request is None
+          or update_memory_request.session_id is None
+      ):
+        raise HTTPException(
+            status_code=400, detail="Update memory request is invalid."
+        )
+
+      session = await self.session_service.get_session(
+          app_name=app_name,
+          user_id=user_id,
+          session_id=update_memory_request.session_id,
+      )
+      if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+      await self.memory_service.add_session_to_memory(session)
 
     @app.post("/run", response_model_exclude_none=True)
     async def run_agent(req: RunAgentRequest) -> list[Event]:
@@ -1061,6 +1527,7 @@ class AdkWebServer:
                   new_message=req.new_message,
                   state_delta=req.state_delta,
                   run_config=RunConfig(streaming_mode=stream_mode),
+                  invocation_id=req.invocation_id,
               )
           ) as agen:
             async for event in agen:
@@ -1101,7 +1568,8 @@ class AdkWebServer:
 
       function_calls = event.get_function_calls()
       function_responses = event.get_function_responses()
-      root_agent = self.agent_loader.load_agent(app_name)
+      agent_or_app = self.agent_loader.load_agent(app_name)
+      root_agent = self._get_root_agent(agent_or_app)
       dot_graph = None
       if function_calls:
         function_call_highlights = []
@@ -1209,13 +1677,24 @@ class AdkWebServer:
       mimetypes.add_type("application/javascript", ".js", True)
       mimetypes.add_type("text/javascript", ".js", True)
 
+      redirect_dev_ui_url = (
+          self.url_prefix + "/dev-ui/" if self.url_prefix else "/dev-ui/"
+      )
+
+      @app.get("/dev-ui/config")
+      async def get_ui_config():
+        return {
+            "logo_text": self.logo_text,
+            "logo_image_url": self.logo_image_url,
+        }
+
       @app.get("/")
       async def redirect_root_to_dev_ui():
-        return RedirectResponse("/dev-ui/")
+        return RedirectResponse(redirect_dev_ui_url)
 
       @app.get("/dev-ui")
       async def redirect_dev_ui_add_slash():
-        return RedirectResponse("/dev-ui/")
+        return RedirectResponse(redirect_dev_ui_url)
 
       app.mount(
           "/dev-ui/",

@@ -19,14 +19,21 @@ from unittest import mock
 from unittest.mock import AsyncMock
 
 from google.adk import version as adk_version
+from google.adk.agents.context_cache_config import ContextCacheConfig
+from google.adk.models.cache_metadata import CacheMetadata
 from google.adk.models.gemini_llm_connection import GeminiLlmConnection
-from google.adk.models.google_llm import _AGENT_ENGINE_TELEMETRY_ENV_VARIABLE_NAME
-from google.adk.models.google_llm import _AGENT_ENGINE_TELEMETRY_TAG
+from google.adk.models.google_llm import _build_function_declaration_log
+from google.adk.models.google_llm import _build_request_log
+from google.adk.models.google_llm import _RESOURCE_EXHAUSTED_POSSIBLE_FIX_MESSAGE
+from google.adk.models.google_llm import _ResourceExhaustedError
 from google.adk.models.google_llm import Gemini
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
+from google.adk.utils._client_labels_utils import _AGENT_ENGINE_TELEMETRY_ENV_VARIABLE_NAME
+from google.adk.utils._client_labels_utils import _AGENT_ENGINE_TELEMETRY_TAG
 from google.adk.utils.variant_utils import GoogleLLMVariant
 from google.genai import types
+from google.genai.errors import ClientError
 from google.genai.types import Content
 from google.genai.types import Part
 import pytest
@@ -85,6 +92,37 @@ def llm_request():
 
 
 @pytest.fixture
+def cache_metadata():
+  import time
+
+  return CacheMetadata(
+      cache_name="projects/test/locations/us-central1/cachedContents/test123",
+      expire_time=time.time() + 3600,
+      fingerprint="test_fingerprint",
+      invocations_used=2,
+      contents_count=3,
+      created_at=time.time() - 600,
+  )
+
+
+@pytest.fixture
+def llm_request_with_cache(cache_metadata):
+  return LlmRequest(
+      model="gemini-1.5-flash",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hello")])],
+      config=types.GenerateContentConfig(
+          temperature=0.1,
+          response_modalities=[types.Modality.TEXT],
+          system_instruction="You are a helpful assistant",
+      ),
+      cache_config=ContextCacheConfig(
+          cache_intervals=10, ttl_seconds=3600, min_tokens=100
+      ),
+      cache_metadata=cache_metadata,
+  )
+
+
+@pytest.fixture
 def llm_request_with_computer_use():
   return LlmRequest(
       model="gemini-1.5-flash",
@@ -95,20 +133,13 @@ def llm_request_with_computer_use():
           system_instruction="You are a helpful assistant",
           tools=[
               types.Tool(
-                  computer_use=types.ToolComputerUse(
+                  computer_use=types.ComputerUse(
                       environment=types.Environment.ENVIRONMENT_BROWSER
                   )
               )
           ],
       ),
   )
-
-
-@pytest.fixture
-def mock_os_environ():
-  initial_env = os.environ.copy()
-  with mock.patch.dict(os.environ, initial_env, clear=False) as m:
-    yield m
 
 
 def test_supported_models():
@@ -155,12 +186,15 @@ def test_client_version_header():
   )
 
 
-def test_client_version_header_with_agent_engine(mock_os_environ):
-  os.environ[_AGENT_ENGINE_TELEMETRY_ENV_VARIABLE_NAME] = "my_test_project"
+def test_client_version_header_with_agent_engine(monkeypatch):
+  monkeypatch.setenv(
+      _AGENT_ENGINE_TELEMETRY_ENV_VARIABLE_NAME, "my_test_project"
+  )
   model = Gemini(model="gemini-1.5-flash")
   client = model.api_client
 
-  # Check that ADK version with telemetry tag and Python version are present in headers
+  # Check that ADK version with telemetry tag and Python version are present in
+  # headers
   adk_version_with_telemetry = (
       f"google-adk/{adk_version.__version__}+{_AGENT_ENGINE_TELEMETRY_TAG}"
   )
@@ -351,6 +385,60 @@ async def test_generate_content_async_stream_preserves_thinking_and_text_parts(
     mock_client.aio.models.generate_content_stream.assert_called_once()
 
 
+@pytest.mark.parametrize("stream", [True, False])
+@pytest.mark.asyncio
+async def test_generate_content_async_resource_exhausted_error(
+    stream, gemini_llm, llm_request
+):
+  with mock.patch.object(gemini_llm, "api_client") as mock_client:
+    err = ClientError(code=429, response_json={})
+    err.code = 429
+    if stream:
+      mock_client.aio.models.generate_content_stream.side_effect = err
+    else:
+      mock_client.aio.models.generate_content.side_effect = err
+
+    with pytest.raises(_ResourceExhaustedError) as excinfo:
+      responses = []
+      async for resp in gemini_llm.generate_content_async(
+          llm_request, stream=stream
+      ):
+        responses.append(resp)
+    assert _RESOURCE_EXHAUSTED_POSSIBLE_FIX_MESSAGE in str(excinfo.value)
+    assert excinfo.value.code == 429
+    if stream:
+      mock_client.aio.models.generate_content_stream.assert_called_once()
+    else:
+      mock_client.aio.models.generate_content.assert_called_once()
+
+
+@pytest.mark.parametrize("stream", [True, False])
+@pytest.mark.asyncio
+async def test_generate_content_async_other_client_error(
+    stream, gemini_llm, llm_request
+):
+  with mock.patch.object(gemini_llm, "api_client") as mock_client:
+    err = ClientError(code=500, response_json={})
+    err.code = 500
+    if stream:
+      mock_client.aio.models.generate_content_stream.side_effect = err
+    else:
+      mock_client.aio.models.generate_content.side_effect = err
+
+    with pytest.raises(ClientError) as excinfo:
+      responses = []
+      async for resp in gemini_llm.generate_content_async(
+          llm_request, stream=stream
+      ):
+        responses.append(resp)
+    assert excinfo.value.code == 500
+    assert not isinstance(excinfo.value, _ResourceExhaustedError)
+    if stream:
+      mock_client.aio.models.generate_content_stream.assert_called_once()
+    else:
+      mock_client.aio.models.generate_content.assert_called_once()
+
+
 @pytest.mark.asyncio
 async def test_connect(gemini_llm, llm_request):
   # Create a mock connection
@@ -381,8 +469,9 @@ async def test_generate_content_async_with_custom_headers(
   """Test that tracking headers are updated when custom headers are provided."""
   # Add custom headers to the request config
   custom_headers = {"custom-header": "custom-value"}
-  for key in gemini_llm._tracking_headers:
-    custom_headers[key] = "custom " + gemini_llm._tracking_headers[key]
+  tracking_headers = gemini_llm._tracking_headers()
+  for key in tracking_headers:
+    custom_headers[key] = "custom " + tracking_headers[key]
   llm_request.config.http_options = types.HttpOptions(headers=custom_headers)
 
   with mock.patch.object(gemini_llm, "api_client") as mock_client:
@@ -405,8 +494,9 @@ async def test_generate_content_async_with_custom_headers(
     config_arg = call_args.kwargs["config"]
 
     for key, value in config_arg.http_options.headers.items():
-      if key in gemini_llm._tracking_headers:
-        assert value == gemini_llm._tracking_headers[key] + " custom"
+      tracking_headers = gemini_llm._tracking_headers()
+      if key in tracking_headers:
+        assert value == tracking_headers[key] + " custom"
       else:
         assert value == custom_headers[key]
 
@@ -455,7 +545,7 @@ async def test_generate_content_async_stream_with_custom_headers(
     config_arg = call_args.kwargs["config"]
 
     expected_headers = custom_headers.copy()
-    expected_headers.update(gemini_llm._tracking_headers)
+    expected_headers.update(gemini_llm._tracking_headers())
     assert config_arg.http_options.headers == expected_headers
 
     assert len(responses) == 2
@@ -509,7 +599,7 @@ async def test_generate_content_async_patches_tracking_headers(
     assert final_config.http_options is not None
     assert (
         final_config.http_options.headers["x-goog-api-client"]
-        == gemini_llm._tracking_headers["x-goog-api-client"]
+        == gemini_llm._tracking_headers()["x-goog-api-client"]
     )
 
     assert len(responses) == 2 if stream else 1
@@ -543,7 +633,7 @@ def test_live_api_client_properties(gemini_llm):
     assert http_options.api_version == "v1beta1"
 
     # Check that tracking headers are included
-    tracking_headers = gemini_llm._tracking_headers
+    tracking_headers = gemini_llm._tracking_headers()
     for key, value in tracking_headers.items():
       assert key in http_options.headers
       assert value in http_options.headers[key]
@@ -581,7 +671,7 @@ async def test_connect_with_custom_headers(gemini_llm, llm_request):
 
       # Verify that tracking headers were merged with custom headers
       expected_headers = custom_headers.copy()
-      expected_headers.update(gemini_llm._tracking_headers)
+      expected_headers.update(gemini_llm._tracking_headers())
       assert config_arg.http_options.headers == expected_headers
 
       # Verify that API version was set
@@ -1026,10 +1116,16 @@ async def test_generate_content_async_stream_no_aggregated_content_without_text(
         )
     ]
 
-    # Should have only 1 response (no aggregated content generated)
-    assert len(responses) == 1
-    # Verify it's a function call, not text
+    # With progressive SSE streaming enabled by default, we get 2 responses:
+    # 1. Partial response with function call
+    # 2. Final aggregated response with function call
+    assert len(responses) == 2
+    # First response is partial
+    assert responses[0].partial is True
     assert responses[0].content.parts[0].function_call is not None
+    # Second response is the final aggregated response
+    assert responses[1].partial is False
+    assert responses[1].content.parts[0].function_call is not None
 
 
 @pytest.mark.asyncio
@@ -1104,37 +1200,33 @@ async def test_generate_content_async_stream_mixed_text_function_call_text():
         )
     ]
 
-    # Should have multiple responses:
+    # With progressive SSE streaming enabled, we get 4 responses:
     # 1. Partial text "First text"
-    # 2. Aggregated "First text" when function call interrupts
-    # 3. Function call
-    # 4. Partial text " second text"
-    # 5. Final aggregated " second text"
-    assert len(responses) == 5
+    # 2. Partial function call
+    # 3. Partial text " second text"
+    # 4. Final aggregated response with all parts (text + FC + text)
+    assert len(responses) == 4
 
     # First partial text
     assert responses[0].partial is True
     assert responses[0].content.parts[0].text == "First text"
 
-    # Aggregated first text (when function call interrupts)
-    assert responses[1].content.parts[0].text == "First text"
-    assert (
-        responses[1].partial is None
-    )  # Aggregated responses don't have partial flag
+    # Partial function call
+    assert responses[1].partial is True
+    assert responses[1].content.parts[0].function_call is not None
+    assert responses[1].content.parts[0].function_call.name == "test_func"
 
-    # Function call
-    assert responses[2].content.parts[0].function_call is not None
-    assert responses[2].content.parts[0].function_call.name == "test_func"
+    # Partial second text
+    assert responses[2].partial is True
+    assert responses[2].content.parts[0].text == " second text"
 
-    # Second partial text
-    assert responses[3].partial is True
-    assert responses[3].content.parts[0].text == " second text"
-
-    # Final aggregated text with error info
-    assert responses[4].content.parts[0].text == " second text"
-    assert (
-        responses[4].error_code is None
-    )  # STOP finish reason should have None error_code
+    # Final aggregated response with all parts
+    assert responses[3].partial is False
+    assert len(responses[3].content.parts) == 3
+    assert responses[3].content.parts[0].text == "First text"
+    assert responses[3].content.parts[1].function_call.name == "test_func"
+    assert responses[3].content.parts[2].text == " second text"
+    assert responses[3].error_code is None  # STOP finish reason
 
 
 @pytest.mark.asyncio
@@ -1286,28 +1378,27 @@ async def test_generate_content_async_stream_complex_mixed_thought_text_function
         )
     ]
 
-    # Should properly separate thought and regular text across aggregations
-    assert len(responses) > 5  # Multiple partial + aggregated responses
+    # With progressive SSE streaming, we get 6 responses:
+    # 5 partial responses + 1 final aggregated response
+    assert len(responses) == 6
 
-    # Verify we get both thought and regular text parts in aggregated responses
-    aggregated_responses = [
-        r
-        for r in responses
-        if r.partial is None and r.content and len(r.content.parts) > 1
-    ]
-    assert (
-        len(aggregated_responses) > 0
-    )  # Should have at least one aggregated response with multiple parts
+    # All but the last should be partial
+    for i in range(5):
+      assert responses[i].partial is True
 
-    # Final aggregated response should have both thought and text
+    # Final aggregated response should have all parts
     final_response = responses[-1]
-    assert (
-        final_response.error_code is None
-    )  # STOP finish reason should have None error_code
-    assert len(final_response.content.parts) == 2  # thought part + text part
+    assert final_response.partial is False
+    assert final_response.error_code is None  # STOP finish reason
+    # Final response aggregates: thought + text + FC + thought + text
+    assert len(final_response.content.parts) == 5
     assert final_response.content.parts[0].thought is True
-    assert "More thinking..." in final_response.content.parts[0].text
-    assert final_response.content.parts[1].text == " and conclusion"
+    assert "Thinking..." in final_response.content.parts[0].text
+    assert final_response.content.parts[1].text == "Here's my answer"
+    assert final_response.content.parts[2].function_call.name == "lookup"
+    assert final_response.content.parts[3].thought is True
+    assert "More thinking..." in final_response.content.parts[3].text
+    assert final_response.content.parts[4].text == " and conclusion"
 
 
 @pytest.mark.asyncio
@@ -1401,44 +1492,23 @@ async def test_generate_content_async_stream_two_separate_text_aggregations():
         )
     ]
 
-    # Find the aggregated text responses (non-partial, text-only)
-    aggregated_text_responses = [
-        r
-        for r in responses
-        if (
-            r.partial is None
-            and r.content
-            and r.content.parts
-            and r.content.parts[0].text
-            and not r.content.parts[0].function_call
-        )
-    ]
+    # With progressive SSE streaming, we get 6 responses:
+    # 5 partial responses + 1 final aggregated response
+    assert len(responses) == 6
 
-    # Should have two separate text aggregations: "First chunk" and "Second chunk"
-    assert len(aggregated_text_responses) >= 2
+    # All but the last should be partial
+    for i in range(5):
+      assert responses[i].partial is True
 
-    # First aggregation should contain "First chunk"
-    first_aggregation = aggregated_text_responses[0]
-    assert first_aggregation.content.parts[0].text == "First chunk"
-
-    # Final aggregation should contain "Second chunk" and have error info
-    final_aggregation = aggregated_text_responses[-1]
-    assert final_aggregation.content.parts[0].text == "Second chunk"
-    assert (
-        final_aggregation.error_code is None
-    )  # STOP finish reason should have None error_code
-
-    # Verify the function call is preserved between aggregations
-    function_call_responses = [
-        r
-        for r in responses
-        if (r.content and r.content.parts and r.content.parts[0].function_call)
-    ]
-    assert len(function_call_responses) == 1
-    assert (
-        function_call_responses[0].content.parts[0].function_call.name
-        == "divide"
-    )
+    # Final response should be aggregated with all parts
+    final_response = responses[-1]
+    assert final_response.partial is False
+    assert final_response.error_code is None  # STOP finish reason
+    # Final response aggregates: text1 + text2 + FC + text3 + text4
+    assert len(final_response.content.parts) == 3
+    assert final_response.content.parts[0].text == "First chunk"
+    assert final_response.content.parts[1].function_call.name == "divide"
+    assert final_response.content.parts[2].text == "Second chunk"
 
 
 @pytest.mark.asyncio
@@ -1455,7 +1525,7 @@ async def test_computer_use_removes_system_instruction():
           system_instruction="You are a helpful assistant",
           tools=[
               types.Tool(
-                  computer_use=types.ToolComputerUse(
+                  computer_use=types.ComputerUse(
                       environment=types.Environment.ENVIRONMENT_BROWSER
                   )
               )
@@ -1600,3 +1670,465 @@ async def test_adapt_computer_use_tool_no_wait():
   # Verify tools_dict is unchanged
   assert llm_request.tools_dict == original_tools_dict
   assert "wait_5_seconds" not in llm_request.tools_dict
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_with_cache_metadata_integration(
+    gemini_llm, llm_request_with_cache, cache_metadata
+):
+  """Test integration between Google LLM and cache manager with proper parameter order.
+
+  This test specifically validates that the cache manager's
+  populate_cache_metadata_in_response
+  method is called with the correct parameter order: (llm_response,
+  cache_metadata).
+
+  This test would have caught the parameter order bug where cache_metadata and
+  llm_response
+  were passed in the wrong order, causing 'CacheMetadata' object has no
+  attribute 'usage_metadata' errors.
+  """
+
+  # Create a mock response with usage metadata including cached tokens
+  generate_content_response = types.GenerateContentResponse(
+      candidates=[
+          types.Candidate(
+              content=Content(
+                  role="model",
+                  parts=[Part.from_text(text="Hello, how can I help you?")],
+              ),
+              finish_reason=types.FinishReason.STOP,
+          )
+      ],
+      usage_metadata=types.GenerateContentResponseUsageMetadata(
+          prompt_token_count=1500,
+          candidates_token_count=150,
+          cached_content_token_count=800,  # This is the key field that was always 0 due to the bug
+          total_token_count=1650,
+      ),
+  )
+
+  with mock.patch.object(gemini_llm, "api_client") as mock_client:
+    # Create a mock coroutine that returns the generate_content_response
+    async def mock_coro():
+      return generate_content_response
+
+    mock_client.aio.models.generate_content.return_value = mock_coro()
+
+    # Mock the cache manager module to verify correct method call
+    with mock.patch(
+        "google.adk.models.gemini_context_cache_manager.GeminiContextCacheManager"
+    ) as MockCacheManagerClass:
+      mock_cache_manager = MockCacheManagerClass.return_value
+      # Configure cache manager to handle context caching
+      mock_cache_manager.handle_context_caching = AsyncMock(
+          return_value=cache_metadata
+      )
+
+      responses = [
+          resp
+          async for resp in gemini_llm.generate_content_async(
+              llm_request_with_cache, stream=False
+          )
+      ]
+
+      # Verify the response was processed
+      assert len(responses) == 1
+      response = responses[0]
+      assert isinstance(response, LlmResponse)
+      assert response.content.parts[0].text == "Hello, how can I help you?"
+
+      # CRITICAL TEST: Verify populate_cache_metadata_in_response was called with correct parameter order
+      mock_cache_manager.populate_cache_metadata_in_response.assert_called_once()
+      call_args = (
+          mock_cache_manager.populate_cache_metadata_in_response.call_args
+      )
+
+      # The first argument should be the LlmResponse (not CacheMetadata)
+      first_arg = call_args[0][0]  # First positional argument
+      second_arg = call_args[0][1]  # Second positional argument
+
+      # Verify correct parameter order: (llm_response, cache_metadata)
+      assert isinstance(first_arg, LlmResponse), (
+          f"First parameter should be LlmResponse, got {type(first_arg)}. "
+          "This indicates parameters are in wrong order."
+      )
+      assert isinstance(second_arg, CacheMetadata), (
+          f"Second parameter should be CacheMetadata, got {type(second_arg)}. "
+          "This indicates parameters are in wrong order."
+      )
+
+      # Verify the LlmResponse has the expected usage metadata
+      assert first_arg.usage_metadata is not None
+      assert first_arg.usage_metadata.cached_content_token_count == 800
+      assert first_arg.usage_metadata.prompt_token_count == 1500
+      assert first_arg.usage_metadata.candidates_token_count == 150
+
+      # Verify cache metadata is preserved
+      assert second_arg.cache_name == cache_metadata.cache_name
+      assert second_arg.invocations_used == cache_metadata.invocations_used
+
+
+def test_build_function_declaration_log():
+  """Test that _build_function_declaration_log formats function declarations correctly."""
+  # Test case 1: Function with parameters and response
+  func_decl1 = types.FunctionDeclaration(
+      name="test_func1",
+      description="Test function 1",
+      parameters=types.Schema(
+          type=types.Type.OBJECT,
+          properties={
+              "param1": types.Schema(
+                  type=types.Type.STRING, description="param1 desc"
+              )
+          },
+      ),
+      response=types.Schema(type=types.Type.BOOLEAN, description="return bool"),
+  )
+  log1 = _build_function_declaration_log(func_decl1)
+  assert log1 == (
+      "test_func1: {'param1': {'description': 'param1 desc', 'type':"
+      " <Type.STRING: 'STRING'>}} -> {'description': 'return bool', 'type':"
+      " <Type.BOOLEAN: 'BOOLEAN'>}"
+  )
+
+  # Test case 2: Function with JSON schema parameters and response
+  func_decl2 = types.FunctionDeclaration(
+      name="test_func2",
+      description="Test function 2",
+      parameters_json_schema={
+          "type": "object",
+          "properties": {"param2": {"type": "integer"}},
+      },
+      response_json_schema={"type": "string"},
+  )
+  log2 = _build_function_declaration_log(func_decl2)
+  assert log2 == (
+      "test_func2: {'type': 'object', 'properties': {'param2': {'type':"
+      " 'integer'}}} -> {'type': 'string'}"
+  )
+
+  # Test case 3: Function with no parameters and no response
+  func_decl3 = types.FunctionDeclaration(
+      name="test_func3",
+      description="Test function 3",
+  )
+  log3 = _build_function_declaration_log(func_decl3)
+  assert log3 == "test_func3: {} "
+
+
+def test_build_request_log_with_config_multiple_tool_types():
+  """Test that _build_request_log includes config with multiple tool types."""
+  func_decl = types.FunctionDeclaration(
+      name="test_function",
+      description="A test function",
+      parameters={"type": "object", "properties": {}},
+  )
+
+  tool = types.Tool(
+      function_declarations=[func_decl],
+      google_search=types.GoogleSearch(),
+      code_execution=types.ToolCodeExecution(),
+  )
+
+  llm_request = LlmRequest(
+      model="gemini-1.5-flash",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hello")])],
+      config=types.GenerateContentConfig(
+          temperature=0.7,
+          max_output_tokens=500,
+          system_instruction="You are a helpful assistant",
+          tools=[tool],
+      ),
+  )
+
+  log_output = _build_request_log(llm_request)
+
+  # Verify config section exists
+  assert "Config:" in log_output
+
+  # Verify config contains expected fields (using Python dict format with single quotes)
+  assert "'temperature': 0.7" in log_output
+  assert "'max_output_tokens': 500" in log_output
+
+  # Verify config contains other tool types (not function_declarations)
+  assert "'google_search'" in log_output
+  assert "'code_execution'" in log_output
+
+  # Verify function_declarations is NOT in config section
+  # (it should only be in the Functions section)
+  config_section = log_output.split("Functions:")[0]
+  assert "'function_declarations'" not in config_section
+
+  # Verify function is in Functions section
+  assert "Functions:" in log_output
+  assert "test_function" in log_output
+
+  # Verify system instruction is NOT in config section
+  assert (
+      "'system_instruction'"
+      not in log_output.split("Contents:")[0].split("Config:")[1]
+  )
+
+
+def test_build_request_log_function_declarations_in_second_tool():
+  """Test that function_declarations in non-first tool are handled correctly."""
+  func_decl = types.FunctionDeclaration(
+      name="my_function",
+      description="A test function",
+      parameters={"type": "object", "properties": {}},
+  )
+
+  # First tool has only google_search
+  tool1 = types.Tool(google_search=types.GoogleSearch())
+
+  # Second tool has function_declarations
+  tool2 = types.Tool(
+      function_declarations=[func_decl],
+      code_execution=types.ToolCodeExecution(),
+  )
+
+  llm_request = LlmRequest(
+      model="gemini-1.5-flash",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hello")])],
+      config=types.GenerateContentConfig(
+          temperature=0.5,
+          system_instruction="You are a helpful assistant",
+          tools=[tool1, tool2],
+      ),
+  )
+
+  log_output = _build_request_log(llm_request)
+
+  # Verify function is in Functions section
+  assert "Functions:" in log_output
+  assert "my_function" in log_output
+
+  # Verify function_declarations is NOT in config section
+  config_section = log_output.split("Functions:")[0]
+  assert "'function_declarations'" not in config_section
+
+  # Verify both tools are in config but without function_declarations (Python dict format)
+  assert "'google_search'" in log_output
+  assert "'code_execution'" in log_output
+
+  # Verify config has the expected structure without parsing
+  config_section = log_output.split("Config:")[1].split("---")[0]
+  # Should have 2 tools (two dict entries in the tools list)
+  assert config_section.count("'google_search'") == 1
+  assert config_section.count("'code_execution'") == 1
+  # Function declarations should NOT be in config section
+  assert "'function_declarations'" not in config_section
+
+
+def test_build_request_log_fallback_to_repr_on_all_failures(monkeypatch):
+  """Test that _build_request_log falls back to repr() if model_dump fails."""
+
+  llm_request = LlmRequest(
+      model="gemini-1.5-flash",
+      contents=[Content(role="user", parts=[Part.from_text(text="Hello")])],
+      config=types.GenerateContentConfig(
+          temperature=0.7,
+          system_instruction="You are a helpful assistant",
+      ),
+  )
+
+  # Mock model_dump at class level to raise exception
+  def mock_model_dump(*args, **kwargs):
+    raise Exception("dump failed")
+
+  monkeypatch.setattr(
+      types.GenerateContentConfig, "model_dump", mock_model_dump
+  )
+
+  log_output = _build_request_log(llm_request)
+
+  # Should still succeed using repr()
+  assert "Config:" in log_output
+  assert "GenerateContentConfig" in log_output
+
+
+@pytest.mark.asyncio
+async def test_connect_uses_gemini_speech_config_when_request_is_none(
+    gemini_llm, llm_request
+):
+  """Tests that Gemini's speech_config is used when live_connect_config's is None."""
+  # Arrange: Set a speech_config on the Gemini instance with the voice "Kore"
+  gemini_llm.speech_config = types.SpeechConfig(
+      voice_config=types.VoiceConfig(
+          prebuilt_voice_config=types.PrebuiltVoiceConfig(
+              voice_name="Kore",
+          )
+      )
+  )
+  llm_request.live_connect_config = (
+      types.LiveConnectConfig()
+  )  # speech_config is None
+
+  mock_live_session = mock.AsyncMock()
+
+  with mock.patch.object(gemini_llm, "_live_api_client") as mock_live_client:
+
+    class MockLiveConnect:
+
+      async def __aenter__(self):
+        return mock_live_session
+
+      async def __aexit__(self, *args):
+        pass
+
+    mock_live_client.aio.live.connect.return_value = MockLiveConnect()
+
+    # Act
+    async with gemini_llm.connect(llm_request) as connection:
+      # Assert
+      mock_live_client.aio.live.connect.assert_called_once()
+      call_args = mock_live_client.aio.live.connect.call_args
+      config_arg = call_args.kwargs["config"]
+
+      # Verify the speech_config from the Gemini instance was used
+      assert config_arg.speech_config is not None
+      assert (
+          config_arg.speech_config.voice_config.prebuilt_voice_config.voice_name
+          == "Kore"
+      )
+      assert isinstance(connection, GeminiLlmConnection)
+
+
+@pytest.mark.asyncio
+async def test_connect_uses_request_speech_config_when_gemini_is_none(
+    gemini_llm, llm_request
+):
+  """Tests that request's speech_config is used when Gemini's is None."""
+  # Arrange: Set a speech_config on the request instance with the voice "Kore"
+  gemini_llm.speech_config = None
+  request_speech_config = types.SpeechConfig(
+      voice_config=types.VoiceConfig(
+          prebuilt_voice_config=types.PrebuiltVoiceConfig(
+              voice_name="Kore",
+          )
+      )
+  )
+  llm_request.live_connect_config = types.LiveConnectConfig(
+      speech_config=request_speech_config
+  )
+
+  mock_live_session = mock.AsyncMock()
+
+  with mock.patch.object(gemini_llm, "_live_api_client") as mock_live_client:
+
+    class MockLiveConnect:
+
+      async def __aenter__(self):
+        return mock_live_session
+
+      async def __aexit__(self, *args):
+        pass
+
+    mock_live_client.aio.live.connect.return_value = MockLiveConnect()
+
+    # Act
+    async with gemini_llm.connect(llm_request) as connection:
+      # Assert
+      mock_live_client.aio.live.connect.assert_called_once()
+      call_args = mock_live_client.aio.live.connect.call_args
+      config_arg = call_args.kwargs["config"]
+
+      # Verify the speech_config from the request instance was used
+      assert config_arg.speech_config is not None
+      assert (
+          config_arg.speech_config.voice_config.prebuilt_voice_config.voice_name
+          == "Kore"
+      )
+      assert isinstance(connection, GeminiLlmConnection)
+
+
+@pytest.mark.asyncio
+async def test_connect_request_gemini_config_overrides_speech_config(
+    gemini_llm, llm_request
+):
+  """Tests that live_connect_config's speech_config is preserved even if Gemini has one."""
+  # Arrange: Set different speech_configs on both the Gemini instance ("Puck") and the request ("Zephyr")
+  gemini_llm.speech_config = types.SpeechConfig(
+      voice_config=types.VoiceConfig(
+          prebuilt_voice_config=types.PrebuiltVoiceConfig(
+              voice_name="Puck",
+          )
+      )
+  )
+  request_speech_config = types.SpeechConfig(
+      voice_config=types.VoiceConfig(
+          prebuilt_voice_config=types.PrebuiltVoiceConfig(
+              voice_name="Zephyr",
+          )
+      )
+  )
+  llm_request.live_connect_config = types.LiveConnectConfig(
+      speech_config=request_speech_config
+  )
+
+  mock_live_session = mock.AsyncMock()
+
+  with mock.patch.object(gemini_llm, "_live_api_client") as mock_live_client:
+
+    class MockLiveConnect:
+
+      async def __aenter__(self):
+        return mock_live_session
+
+      async def __aexit__(self, *args):
+        pass
+
+    mock_live_client.aio.live.connect.return_value = MockLiveConnect()
+
+    # Act
+    async with gemini_llm.connect(llm_request) as connection:
+      # Assert
+      mock_live_client.aio.live.connect.assert_called_once()
+      call_args = mock_live_client.aio.live.connect.call_args
+      config_arg = call_args.kwargs["config"]
+
+      # Verify the speech_config from the request ("Zephyr") was overwritten by Gemini's speech_config ("Puck")
+      assert config_arg.speech_config is not None
+      assert (
+          config_arg.speech_config.voice_config.prebuilt_voice_config.voice_name
+          == "Puck"
+      )
+      assert isinstance(connection, GeminiLlmConnection)
+
+
+@pytest.mark.asyncio
+async def test_connect_speech_config_remains_none_when_both_are_none(
+    gemini_llm, llm_request
+):
+  """Tests that speech_config is None when neither Gemini nor the request has it."""
+  # Arrange: Ensure both Gemini instance and request have no speech_config
+  gemini_llm.speech_config = None
+  llm_request.live_connect_config = (
+      types.LiveConnectConfig()
+  )  # speech_config is None
+
+  mock_live_session = mock.AsyncMock()
+
+  with mock.patch.object(gemini_llm, "_live_api_client") as mock_live_client:
+
+    class MockLiveConnect:
+
+      async def __aenter__(self):
+        return mock_live_session
+
+      async def __aexit__(self, *args):
+        pass
+
+    mock_live_client.aio.live.connect.return_value = MockLiveConnect()
+
+    # Act
+    async with gemini_llm.connect(llm_request) as connection:
+      # Assert
+      mock_live_client.aio.live.connect.assert_called_once()
+      call_args = mock_live_client.aio.live.connect.call_args
+      config_arg = call_args.kwargs["config"]
+
+      # Verify the final speech_config is still None
+      assert config_arg.speech_config is None
+      assert isinstance(connection, GeminiLlmConnection)

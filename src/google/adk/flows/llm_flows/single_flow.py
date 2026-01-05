@@ -23,8 +23,10 @@ from . import _nl_planning
 from . import _output_schema_processor
 from . import basic
 from . import contents
+from . import context_cache_processor
 from . import identity
 from . import instructions
+from . import interactions_processor
 from . import request_confirmation
 from ...auth import auth_preprocessor
 from .base_llm_flow import BaseLlmFlow
@@ -48,6 +50,11 @@ class SingleFlow(BaseLlmFlow):
         instructions.request_processor,
         identity.request_processor,
         contents.request_processor,
+        # Context cache processor sets up cache config and finds existing cache metadata
+        context_cache_processor.request_processor,
+        # Interactions processor extracts previous_interaction_id for stateful
+        # conversations via the Interactions API
+        interactions_processor.request_processor,
         # Some implementations of NL Planning mark planning contents as thoughts
         # in the post processor. Since these need to be unmarked, NL Planning
         # should be after contents.

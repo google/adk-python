@@ -219,9 +219,10 @@ async def test_include_contents_none_sequential_agents():
   runner = testing_utils.InMemoryRunner(sequential_agent)
   events = runner.run("Original user request")
 
-  assert len(events) == 2
-  assert events[0].author == "agent1"
-  assert events[1].author == "agent2"
+  simplified_events = [event for event in events if event.content]
+  assert len(simplified_events) == 2
+  assert simplified_events[0].author == "agent1"
+  assert simplified_events[1].author == "agent2"
 
   # Agent1 sees original user request
   agent1_contents = testing_utils.simplify_contents(

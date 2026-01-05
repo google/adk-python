@@ -22,6 +22,8 @@ from pydantic import alias_generators
 from pydantic import BaseModel
 from pydantic import ConfigDict
 
+from .cache_metadata import CacheMetadata
+
 
 class LlmResponse(BaseModel):
   """LLM response class that provides the first candidate response from the
@@ -31,7 +33,7 @@ class LlmResponse(BaseModel):
   Attributes:
     content: The content of the response.
     grounding_metadata: The grounding metadata of the response.
-    partial: Indicates whether the text content is part of a unfinished text
+    partial: Indicates whether the text content is part of an unfinished text
       stream. Only used for streaming mode and when the content is plain text.
     turn_complete: Indicates whether the response from the model is complete.
       Only used for streaming mode.
@@ -42,6 +44,8 @@ class LlmResponse(BaseModel):
     custom_metadata: The custom metadata of the LlmResponse.
     input_transcription: Audio transcription of user input.
     output_transcription: Audio transcription of model output.
+    avg_logprobs: Average log probability of the generated tokens.
+    logprobs_result: Detailed log probabilities for chosen and top candidate tokens.
   """
 
   model_config = ConfigDict(
@@ -51,14 +55,21 @@ class LlmResponse(BaseModel):
   )
   """The pydantic model config."""
 
+  model_version: Optional[str] = None
+  """Output only. The model version used to generate the response."""
+
   content: Optional[types.Content] = None
-  """The content of the response."""
+  """The generative content of the response.
+
+  This should only contain content from the user or the model, and not any
+  framework or system-generated data.
+  """
 
   grounding_metadata: Optional[types.GroundingMetadata] = None
   """The grounding metadata of the response."""
 
   partial: Optional[bool] = None
-  """Indicates whether the text content is part of a unfinished text stream.
+  """Indicates whether the text content is part of an unfinished text stream.
 
   Only used for streaming mode and when the content is plain text.
   """
@@ -105,6 +116,32 @@ class LlmResponse(BaseModel):
   output_transcription: Optional[types.Transcription] = None
   """Audio transcription of model output."""
 
+  avg_logprobs: Optional[float] = None
+  """Average log probability of the generated tokens."""
+
+  logprobs_result: Optional[types.LogprobsResult] = None
+  """Detailed log probabilities for chosen and top candidate tokens."""
+
+  cache_metadata: Optional[CacheMetadata] = None
+  """Context cache metadata if caching was used for this response.
+
+  Contains cache identification, usage tracking, and lifecycle information.
+  This field is automatically populated when context caching is enabled.
+  """
+
+  citation_metadata: Optional[types.CitationMetadata] = None
+  """Citation metadata for the response.
+
+  This field is automatically populated when citation is enabled.
+  """
+
+  interaction_id: Optional[str] = None
+  """The interaction ID from the interactions API.
+
+  This field is populated when using the interactions API for model invocation.
+  It can be used to identify and chain interactions for stateful conversations.
+  """
+
   @staticmethod
   def create(
       generate_content_response: types.GenerateContentResponse,
@@ -121,19 +158,29 @@ class LlmResponse(BaseModel):
     usage_metadata = generate_content_response.usage_metadata
     if generate_content_response.candidates:
       candidate = generate_content_response.candidates[0]
-      if candidate.content and candidate.content.parts:
+      if (
+          candidate.content and candidate.content.parts
+      ) or candidate.finish_reason == types.FinishReason.STOP:
         return LlmResponse(
             content=candidate.content,
             grounding_metadata=candidate.grounding_metadata,
             usage_metadata=usage_metadata,
             finish_reason=candidate.finish_reason,
+            citation_metadata=candidate.citation_metadata,
+            avg_logprobs=candidate.avg_logprobs,
+            logprobs_result=candidate.logprobs_result,
+            model_version=generate_content_response.model_version,
         )
       else:
         return LlmResponse(
             error_code=candidate.finish_reason,
             error_message=candidate.finish_message,
+            citation_metadata=candidate.citation_metadata,
             usage_metadata=usage_metadata,
             finish_reason=candidate.finish_reason,
+            avg_logprobs=candidate.avg_logprobs,
+            logprobs_result=candidate.logprobs_result,
+            model_version=generate_content_response.model_version,
         )
     else:
       if generate_content_response.prompt_feedback:
@@ -142,10 +189,12 @@ class LlmResponse(BaseModel):
             error_code=prompt_feedback.block_reason,
             error_message=prompt_feedback.block_reason_message,
             usage_metadata=usage_metadata,
+            model_version=generate_content_response.model_version,
         )
       else:
         return LlmResponse(
             error_code='UNKNOWN_ERROR',
             error_message='Unknown error.',
             usage_metadata=usage_metadata,
+            model_version=generate_content_response.model_version,
         )

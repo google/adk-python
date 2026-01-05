@@ -14,16 +14,17 @@
 
 from __future__ import annotations
 
-import json
+import functools
+import textwrap
+import types
+from typing import Callable
 
 from google.auth.credentials import Credentials
-from google.cloud.spanner_admin_database_v1.types import DatabaseDialect
 
-from . import client
+from . import utils
 from ..tool_context import ToolContext
+from .settings import QueryResultMode
 from .settings import SpannerToolSettings
-
-DEFAULT_MAX_EXECUTED_QUERY_RESULT_ROWS = 50
 
 
 def execute_sql(
@@ -54,61 +55,141 @@ def execute_sql(
             query not returned in the result.
 
   Examples:
-      Fetch data or insights from a table:
+      <Example>
+        >>> execute_sql("my_project", "my_instance", "my_database",
+        ... "SELECT COUNT(*) AS count FROM my_table")
+        {
+          "status": "SUCCESS",
+          "rows": [
+            [100]
+          ]
+        }
+      </Example>
 
-          >>> execute_sql("my_project", "my_instance", "my_database",
-          ... "SELECT COUNT(*) AS count FROM my_table")
-          {
-            "status": "SUCCESS",
-            "rows": [
-              [100]
-            ]
-          }
+      <Example>
+        >>> execute_sql("my_project", "my_instance", "my_database",
+        ... "SELECT name, rating, description FROM hotels_table")
+        {
+          "status": "SUCCESS",
+          "rows": [
+            ["The Hotel", 4.1, "Modern hotel."],
+            ["Park Inn", 4.5, "Cozy hotel."],
+            ...
+          ]
+        }
+      </Example>
 
   Note:
     This is running with Read-Only Transaction for query that only read data.
   """
+  return utils.execute_sql(
+      project_id,
+      instance_id,
+      database_id,
+      query,
+      credentials,
+      settings,
+      tool_context,
+  )
 
-  try:
-    # Get Spanner client
-    spanner_client = client.get_spanner_client(
-        project=project_id, credentials=credentials
-    )
-    instance = spanner_client.instance(instance_id)
-    database = instance.database(database_id)
 
-    if database.database_dialect == DatabaseDialect.POSTGRESQL:
-      return {
-          "status": "ERROR",
-          "error_details": "PostgreSQL dialect is not supported.",
+_EXECUTE_SQL_DICT_LIST_MODE_DOCSTRING = textwrap.dedent("""\
+Run a Spanner Read-Only query in the spanner database and return the result.
+
+Args:
+    project_id (str): The GCP project id in which the spanner database
+      resides.
+    instance_id (str): The instance id of the spanner database.
+    database_id (str): The database id of the spanner database.
+    query (str): The Spanner SQL query to be executed.
+    credentials (Credentials): The credentials to use for the request.
+    settings (SpannerToolSettings): The settings for the tool.
+    tool_context (ToolContext): The context for the tool.
+
+Returns:
+    dict: Dictionary with the result of the query.
+          If the result contains the key "result_is_likely_truncated" with
+          value True, it means that there may be additional rows matching the
+          query not returned in the result.
+
+Examples:
+    <Example>
+      >>> execute_sql("my_project", "my_instance", "my_database",
+      ... "SELECT COUNT(*) AS count FROM my_table")
+      {
+        "status": "SUCCESS",
+        "rows": [
+          {
+            "count": 100
+          }
+        ]
       }
+    </Example>
 
-    with database.snapshot() as snapshot:
-      result_set = snapshot.execute_sql(query)
-      rows = []
-      counter = (
-          settings.max_executed_query_result_rows
-          if settings and settings.max_executed_query_result_rows > 0
-          else DEFAULT_MAX_EXECUTED_QUERY_RESULT_ROWS
-      )
-      for row in result_set:
-        try:
-          # if the json serialization of the row succeeds, use it as is
-          json.dumps(row)
-        except:
-          row = str(row)
+    <Example>
+      >>> execute_sql("my_project", "my_instance", "my_database",
+      ... "SELECT COUNT(*) FROM my_table")
+      {
+        "status": "SUCCESS",
+        "rows": [
+          {
+            "": 100
+          }
+        ]
+      }
+    </Example>
 
-        rows.append(row)
-        counter -= 1
-        if counter <= 0:
-          break
+    <Example>
+      >>> execute_sql("my_project", "my_instance", "my_database",
+      ... "SELECT name, rating, description FROM hotels_table")
+      {
+        "status": "SUCCESS",
+        "rows": [
+          {
+            "name": "The Hotel",
+            "rating": 4.1,
+            "description": "Modern hotel."
+          },
+          {
+            "name": "Park Inn",
+            "rating": 4.5,
+            "description": "Cozy hotel."
+          },
+          ...
+        ]
+      }
+    </Example>
 
-      result = {"status": "SUCCESS", "rows": rows}
-      if counter <= 0:
-        result["result_is_likely_truncated"] = True
-      return result
-  except Exception as ex:
-    return {
-        "status": "ERROR",
-        "error_details": str(ex),
-    }
+Note:
+  This is running with Read-Only Transaction for query that only read data.
+""")
+
+
+def get_execute_sql(settings: SpannerToolSettings) -> Callable[..., dict]:
+  """Get the execute_sql tool customized as per the given tool settings.
+
+  Args:
+      settings: Spanner tool settings indicating the behavior of the execute_sql
+        tool.
+
+  Returns:
+      callable[..., dict]: A version of the execute_sql tool respecting the tool
+      settings.
+  """
+
+  if settings and settings.query_result_mode is QueryResultMode.DICT_LIST:
+
+    execute_sql_wrapper = types.FunctionType(
+        execute_sql.__code__,
+        execute_sql.__globals__,
+        execute_sql.__name__,
+        execute_sql.__defaults__,
+        execute_sql.__closure__,
+    )
+    functools.update_wrapper(execute_sql_wrapper, execute_sql)
+    # Update with the new docstring
+    execute_sql_wrapper.__doc__ = _EXECUTE_SQL_DICT_LIST_MODE_DOCSTRING
+    return execute_sql_wrapper
+
+  # Return the default execute_sql function.
+  return execute_sql

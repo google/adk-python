@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 from typing import List
 from typing import Literal
 from typing import Optional
@@ -22,6 +23,7 @@ from typing import Optional
 from google.genai import types
 from pydantic import ConfigDict
 from pydantic import Field
+from pydantic import model_validator
 
 from ..tools.tool_configs import ToolConfig
 from .base_agent_config import BaseAgentConfig
@@ -35,6 +37,10 @@ class LlmAgentConfig(BaseAgentConfig):
 
   model_config = ConfigDict(
       extra='forbid',
+      # Allow arbitrary types to support types.ContentUnion for static_instruction.
+      # ContentUnion includes PIL.Image.Image which doesn't have Pydantic schema
+      # support, but we validate it at runtime using google.genai._transformers.t_content()
+      arbitrary_types_allowed=True,
   )
 
   agent_class: str = Field(
@@ -48,12 +54,68 @@ class LlmAgentConfig(BaseAgentConfig):
   model: Optional[str] = Field(
       default=None,
       description=(
-          'Optional. LlmAgent.model. If not set, the model will be inherited'
-          ' from the ancestor.'
+          'Optional. LlmAgent.model. Provide a model name string (e.g.'
+          ' "gemini-2.0-flash"). If not set, the model will be inherited from'
+          ' the ancestor. To construct a model instance from code, use'
+          ' model_code.'
       ),
   )
 
-  instruction: str = Field(description='Required. LlmAgent.instruction.')
+  model_code: Optional[CodeConfig] = Field(
+      default=None,
+      description=(
+          'Optional. A CodeConfig that instantiates a BaseLlm implementation'
+          ' such as LiteLlm with custom arguments (API base, fallbacks,'
+          ' etc.). Cannot be set together with `model`.'
+      ),
+  )
+
+  @model_validator(mode='before')
+  @classmethod
+  def _normalize_model_code(cls, data: Any) -> dict[str, Any] | Any:
+    if not isinstance(data, dict):
+      return data
+
+    model_value = data.get('model')
+    model_code = data.get('model_code')
+    if isinstance(model_value, dict) and model_code is None:
+      logger.warning(
+          'Detected legacy `model` mapping. Use `model_code` to provide a'
+          ' CodeConfig for custom model construction.'
+      )
+      data = dict(data)
+      data['model_code'] = model_value
+      data['model'] = None
+
+    return data
+
+  @model_validator(mode='after')
+  def _validate_model_sources(self) -> LlmAgentConfig:
+    if self.model and self.model_code:
+      raise ValueError('Only one of `model` or `model_code` should be set.')
+
+    return self
+
+  instruction: str = Field(
+      description=(
+          'Required. LlmAgent.instruction. Dynamic instructions with'
+          ' placeholder support. Behavior: if static_instruction is None, goes'
+          ' to system_instruction; if static_instruction is set, goes to user'
+          ' content after static content.'
+      )
+  )
+
+  static_instruction: Optional[types.ContentUnion] = Field(
+      default=None,
+      description=(
+          'Optional. LlmAgent.static_instruction. Static content sent literally'
+          ' at position 0 without placeholder processing. When set, changes'
+          ' instruction behavior to go to user content instead of'
+          ' system_instruction. Supports context caching. Accepts'
+          ' types.ContentUnion (str, types.Content, types.Part,'
+          ' PIL.Image.Image, types.File, or list[PartUnion]).'
+      ),
+  )
 
   disallow_transfer_to_parent: Optional[bool] = Field(
       default=None,
@@ -120,7 +182,7 @@ Examples:
 
     ```
     # tools.py
-    my_mcp_toolset = MCPToolset(
+    my_mcp_toolset = McpToolset(
         connection_params=StdioServerParameters(
             command="npx",
             args=["-y", "@notionhq/notion-mcp-server"],
