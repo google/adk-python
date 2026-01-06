@@ -35,6 +35,11 @@ class StreamingMode(Enum):
   NONE = None
   SSE = 'sse'
   BIDI = 'bidi'
+  """
+  so far this mode is not used. the actual bidi-streaming behavior via
+  runner.run_live()) uses a completely different code path that doesn't rely on
+  streaming_mode.
+  """
 
 
 class RunConfig(BaseModel):

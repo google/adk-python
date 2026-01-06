@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 from contextlib import AsyncExitStack
 from datetime import timedelta
 import functools
@@ -25,18 +26,46 @@ import sys
 from typing import Any
 from typing import Dict
 from typing import Optional
+from typing import Protocol
+from typing import runtime_checkable
 from typing import TextIO
 from typing import Union
 
-import anyio
 from mcp import ClientSession
 from mcp import StdioServerParameters
 from mcp.client.sse import sse_client
 from mcp.client.stdio import stdio_client
+from mcp.client.streamable_http import create_mcp_http_client
+from mcp.client.streamable_http import McpHttpClientFactory
 from mcp.client.streamable_http import streamablehttp_client
 from pydantic import BaseModel
+from pydantic import ConfigDict
 
 logger = logging.getLogger('google_adk.' + __name__)
+
+
+def _has_cancelled_error_context(exc: BaseException) -> bool:
+  """Returns True if `exc` is/was caused by `asyncio.CancelledError`.
+
+  Cancellation can be translated into other exceptions during teardown (e.g.
+  connection errors) while still retaining the original cancellation in an
+  exception's context chain.
+  """
+
+  seen: set[int] = set()
+  queue = deque([exc])
+  while queue:
+    current = queue.popleft()
+    if id(current) in seen:
+      continue
+    seen.add(id(current))
+    if isinstance(current, asyncio.CancelledError):
+      return True
+    if current.__cause__ is not None:
+      queue.append(current.__cause__)
+    if current.__context__ is not None:
+      queue.append(current.__context__)
+  return False
 
 
 class StdioConnectionParams(BaseModel):
@@ -73,6 +102,11 @@ class SseConnectionParams(BaseModel):
   sse_read_timeout: float = 60 * 5.0
 
 
+@runtime_checkable
+class CheckableMcpHttpClientFactory(McpHttpClientFactory, Protocol):
+  pass
+
+
 class StreamableHTTPConnectionParams(BaseModel):
   """Parameters for the MCP Streamable HTTP connection.
 
@@ -88,13 +122,18 @@ class StreamableHTTPConnectionParams(BaseModel):
         Streamable HTTP server.
       terminate_on_close: Whether to terminate the MCP Streamable HTTP server
         when the connection is closed.
+      httpx_client_factory: Factory function to create a custom HTTPX client. If
+        not provided, a default factory will be used.
   """
+
+  model_config = ConfigDict(arbitrary_types_allowed=True)
 
   url: str
   headers: dict[str, Any] | None = None
   timeout: float = 5.0
   sse_read_timeout: float = 60 * 5.0
   terminate_on_close: bool = True
+  httpx_client_factory: CheckableMcpHttpClientFactory = create_mcp_http_client
 
 
 def retry_on_errors(func):
@@ -103,6 +142,10 @@ def retry_on_errors(func):
   When MCP session errors occur, the decorator will automatically retry the
   action once. The create_session method will handle creating a new session
   if the old one was disconnected.
+
+  Cancellation is not retried and must be allowed to propagate. In async
+  runtimes, cancellation may surface as `asyncio.CancelledError` or as another
+  exception while the task is cancelling.
 
   Args:
       func: The function to decorate.
@@ -116,6 +159,13 @@ def retry_on_errors(func):
     try:
       return await func(self, *args, **kwargs)
     except Exception as e:
+      task = asyncio.current_task()
+      if task is not None:
+        cancelling = getattr(task, 'cancelling', None)
+        if cancelling is not None and cancelling() > 0:
+          raise
+      if _has_cancelled_error_context(e):
+        raise
       # If an error is thrown, we will retry the function to reconnect to the
       # server. create_session will handle detecting and replacing disconnected
       # sessions.
@@ -275,6 +325,7 @@ class MCPSessionManager:
               seconds=self._connection_params.sse_read_timeout
           ),
           terminate_on_close=self._connection_params.terminate_on_close,
+          httpx_client_factory=self._connection_params.httpx_client_factory,
       )
     else:
       raise ValueError(
