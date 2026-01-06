@@ -7,32 +7,65 @@ This demo compares two approaches for logging and analyzing ADK agent telemetry:
 
 ---
 
-## Key Insight: BigQuery is Near Real-Time
+## Executive Summary: When to Use What
 
-A common misconception is that BigQuery logging is "not real-time." In practice:
-
-| Approach | Typical Latency | Notes |
-|----------|-----------------|-------|
-| **BigQuery Plugin** | **1-2 seconds** | Configurable batch size (default: 1-10 events) |
-| **Cloud Logging** | **~1 second** | Depends on batch processing and indexing |
-
-**For most analytics and monitoring use cases, both approaches provide comparable latency.**
-The BigQuery plugin can be configured with `batch_size=1` for immediate writes.
+| Use Case | Best Tool | Why |
+|----------|-----------|-----|
+| **"Debug this hanging call right now"** | Cloud Trace | Gantt chart visualization, Live Tail |
+| **"What's our average failure rate?"** | BigQuery Plugin | SQL aggregations, historical analysis |
+| **"Evaluate agent response quality at scale"** | BigQuery Plugin | Native AI integration with structured data |
+| **"Where did the 5 seconds go?"** | Cloud Trace | Span timeline visualization |
+| **"How many tokens did we use this week?"** | BigQuery Plugin | Structured token fields, easy aggregation |
 
 ---
 
-## The Killer Feature: AI-Powered Analytics
+## Key Insight: Different Types of "Real-Time"
 
-BigQuery's integration with **Vertex AI Gemini** enables analytics that are **IMPOSSIBLE** with Cloud Logging:
+Both approaches have fast ingestion, but **time-to-insight** differs:
 
-| AI Capability | BigQuery + Gemini | Cloud Logging |
-|---------------|-------------------|---------------|
-| **LLM-as-Judge Evaluation** | SQL with `AI.GENERATE_TEXT` | Not possible |
-| **Jailbreak Detection** | Automated scanning | Not possible |
-| **Tool Failure Root Cause** | AI-powered analysis | Manual inspection |
-| **Sentiment Analysis** | Bulk processing | Not possible |
-| **Memory Extraction** | User profile building | Not possible |
-| **Anomaly Detection** | AI-driven insights | Basic alerting only |
+| Approach | Ingestion Latency | Best For |
+|----------|------------------|----------|
+| **BigQuery Plugin** | 1-2 seconds | **Analytical real-time**: "Average failure rate of last 1,000 calls" |
+| **Cloud Logging/Trace** | ~1 second | **Operational real-time**: "Live Tail" - watching one session's logs |
+
+**Choose based on your question:**
+- "What's happening right now in this session?" → Cloud Logging/Trace
+- "What's the trend across all sessions?" → BigQuery Plugin
+
+---
+
+## The Key Advantage: Schema Stability
+
+The strongest argument for the BigQuery Plugin is **schema stability**:
+
+| Aspect | BigQuery Plugin | Cloud Logging/Trace |
+|--------|-----------------|---------------------|
+| **Schema** | Agent-aware, documented contract | Raw OTel-to-JSON blobs |
+| **Tool name location** | Always `content.tool` | Maybe `jsonPayload.message`, maybe `jsonPayload.attributes.tool_name` |
+| **Breaking changes** | Versioned schema (v2) | Format may change without notice |
+| **Query reliability** | Stable JSON paths | Regex parsing, fragile |
+
+**The BigQuery Plugin provides a contract. Cloud Logging provides raw data.**
+
+---
+
+## AI-Powered Analytics: Native vs High-Friction
+
+BigQuery's integration with **Vertex AI Gemini** provides **native, low-friction** AI analytics.
+Cloud Logging can technically access AI via Log Analytics + BigQuery, but with **significant friction**:
+
+| AI Capability | BigQuery Plugin | Cloud Logging | Notes |
+|---------------|-----------------|---------------|-------|
+| **LLM-as-Judge Evaluation** | ✅ Native | ⚠️ High friction | Requires Log Analytics + missing response content |
+| **Jailbreak Detection** | ✅ Native | ⚠️ High friction | User messages often redacted in OTel |
+| **Tool Failure Root Cause** | ✅ Native | ⚠️ Possible | Error text available, but no structured context |
+| **Sentiment Analysis** | ✅ Native | ❌ Missing data | Response content not in OTel spans |
+| **Memory Extraction** | ✅ Native | ❌ Missing data | Conversation content not captured |
+| **Anomaly Detection** | ✅ Native | ⚠️ Basic alerting | Log-based metrics only |
+
+**Note on Log Analytics:** Cloud Logging's Log Analytics feature creates BigQuery-linked datasets,
+enabling SQL queries on logs. However, this doesn't solve the **missing data problem** - tokens,
+full responses, and structured agent events are still not captured in OTel logs.
 
 See `bq_ai_powered_analytics.sql` for complete examples.
 
@@ -230,7 +263,7 @@ For the same analytics in Cloud Logging, you would need to:
 2. **Tool Failure Rate**: Parse log text manually, export to BigQuery
 3. **Latency**: Available in Cloud Trace spans, but not aggregatable via log queries
 4. **Session Analytics**: Requires log export + external processing
-5. **AI-Powered Analysis**: **IMPOSSIBLE** - no Gemini integration
+5. **AI-Powered Analysis**: High friction - requires Log Analytics setup, missing structured data
 
 ---
 
@@ -271,12 +304,12 @@ export PROJECT_ID="test-project-0728-467323"
 | **Tool Failure Rates** | SQL ready (4 tools, 10 calls) | Manual log parsing |
 | **Latency Metrics** | TTFT + total (avg 749ms) | Trace spans only |
 | **AI-Powered Analytics** | **Full Gemini integration** | Not available |
-| **LLM-as-Judge** | **Native SQL support** | Not possible |
-| **Jailbreak Detection** | **Automated with AI** | Not possible |
+| **LLM-as-Judge** | **Native SQL support** | High friction (missing response content) |
+| **Jailbreak Detection** | **Automated with AI** | High friction (user msgs often redacted) |
 | **Root Cause Analysis** | **AI-powered** | Manual inspection |
 | **Multi-Modal Content** | Full support (images, GCS) | Very limited (~256KB) |
 | **Query Language** | SQL + AI functions | Log query (filters only) |
-| **Distributed Tracing** | Trace IDs for correlation | Full visualization |
+| **Distributed Tracing** | Trace IDs for correlation | **Winner: Gantt chart visualization** |
 
 ---
 
@@ -727,17 +760,17 @@ bq query "CREATE MODEL gemini_model REMOTE WITH CONNECTION ..."
 
 | Data Field | BigQuery Plugin | Cloud Logging Export |
 |------------|-----------------|---------------------|
-| **Token usage (prompt/completion)** | `{"completion":17,"prompt":556,"total":573}` | **NOT AVAILABLE** |
-| **Tool name** | `"tool": "analyze_sentiment"` | Parse from text (fragile) |
-| **Tool arguments** | `"args": {"text": "..."}` | **NOT AVAILABLE** |
-| **Tool results** | `"result": {"sentiment": "positive"}` | **NOT AVAILABLE** |
-| **Session ID** | `"session_id": "bq-demo-f9403d20"` | **NOT AVAILABLE** |
-| **User ID** | `"user_id": "demo-user"` | **NOT AVAILABLE** |
-| **Invocation ID** | `"invocation_id": "e-68cf..."` | **NOT AVAILABLE** |
-| **Latency (total_ms)** | `"total_ms": 550` | **NOT AVAILABLE** |
-| **Time-to-first-token** | `"time_to_first_token_ms": 550` | **NOT AVAILABLE** |
-| **Response content** | Full text captured | **NOT AVAILABLE** |
-| **User message** | `"text_summary": "..."` | **NOT AVAILABLE** (PII) |
+| **Token usage (prompt/completion)** | `{"completion":17,"prompt":556,"total":573}` | Not in OTel logs (only in Trace spans) |
+| **Tool name** | `"tool": "analyze_sentiment"` | Parse from text (fragile schema) |
+| **Tool arguments** | `"args": {"text": "..."}` | In Trace spans, may be truncated (128KB limit) |
+| **Tool results** | `"result": {"sentiment": "positive"}` | In Trace spans, may be truncated |
+| **Session ID** | `"session_id": "bq-demo-f9403d20"` | As `conversation.id` in Trace spans |
+| **User ID** | `"user_id": "demo-user"` | Not captured in OTel |
+| **Invocation ID** | `"invocation_id": "e-68cf..."` | Not captured in OTel |
+| **Latency (total_ms)** | `"total_ms": 550` | In Trace spans (span duration) |
+| **Time-to-first-token** | `"time_to_first_token_ms": 550` | Not captured in OTel |
+| **Response content** | Full text captured | May be truncated (OTel attribute limits) |
+| **User message** | `"text_summary": "..."` | Often redacted (Google's OTel instrumentation) |
 | **Event types** | 10+ types (LLM_RESPONSE, TOOL_COMPLETED, etc.) | Severity only |
 | **Trace ID** | Yes | Yes |
 | **Span ID** | Yes | Yes |
@@ -809,18 +842,33 @@ Span: execute_tool get_weather
 
 **Cloud Trace captures more than expected:**
 - ✅ Span names and hierarchy
-- ✅ Duration/latency
+- ✅ Duration/latency (excellent for "where did the time go?" questions)
 - ✅ Token usage (input_tokens, output_tokens)
 - ✅ Tool name, arguments, and responses
 - ✅ Session ID (as conversation.id)
 - ✅ LLM requests and responses (full JSON)
+- ✅ **Gantt chart visualization** (Cloud Trace UI is excellent for debugging)
+
+**Important Constraint: OTel Attribute Size Limits**
+
+Cloud Trace and OTel have size limits that affect large payloads:
+- Total span size: ~128KB
+- Individual attributes: May be truncated if too large
+- Multi-modal content (images): Will NOT fit in span attributes
+
+**The BigQuery Plugin handles this by:**
+- Using GCS for large payloads (automatic offloading)
+- Storing multi-modal content references
+- No truncation of response content
 
 **What's Still Missing vs BigQuery Plugin:**
 - ❌ Structured event types (LLM_RESPONSE, TOOL_COMPLETED, etc.)
-- ❌ User ID tracking
-- ❌ SQL query interface (must use Trace API)
-- ❌ AI-powered analytics (no Gemini integration)
-- ❌ Easy aggregations (COUNT, AVG, etc.)
+- ❌ User ID tracking (not in OTel instrumentation)
+- ❌ Invocation ID tracking
+- ❌ Time-to-first-token (TTFT) metrics
+- ❌ SQL query interface (must use Trace API or build ETL)
+- ❌ Native AI analytics (requires ETL to BigQuery first)
+- ❌ Schema stability (span attribute names may change)
 
 **To get agent telemetry via Cloud Trace → BigQuery, you would need:**
 1. Enable Telemetry API (`telemetry.googleapis.com`) ✓ Done
@@ -868,11 +916,11 @@ This demonstrates the **operational complexity difference**.
 
 | AI Capability | BigQuery Plugin | Cloud Logging Export |
 |---------------|-----------------|---------------------|
-| **LLM-as-Judge** | Full (has responses) | **NOT POSSIBLE** (no responses) |
-| **Jailbreak Detection** | Full (has user msgs) | **NOT POSSIBLE** (no user msgs) |
-| **Root Cause Analysis** | Full (has tool data) | Limited (error text only) |
-| **Sentiment Analysis** | Full (has responses) | **NOT POSSIBLE** (no responses) |
-| **Memory Extraction** | Full (has content) | **NOT POSSIBLE** (no content) |
+| **LLM-as-Judge** | Full (has responses) | High friction (responses may be truncated) |
+| **Jailbreak Detection** | Full (has user msgs) | High friction (msgs often redacted) |
+| **Root Cause Analysis** | Full (has tool data) | Possible (error text available) |
+| **Sentiment Analysis** | Full (has responses) | High friction (responses may be truncated) |
+| **Memory Extraction** | Full (has content) | High friction (content often incomplete) |
 | **Anomaly Detection** | Full metrics | Limited (counts only) |
 
 ### Query Complexity Comparison
@@ -885,7 +933,7 @@ FROM agent_events_v2 WHERE event_type = 'LLM_RESPONSE';
 
 **Token Usage - Cloud Logging Export:**
 ```sql
--- NOT POSSIBLE: Token data is not captured in OTel logs
+-- Token data not in OTel logs (only in Trace spans, requires ETL to BigQuery)
 ```
 
 **Tool Failure Rate - BigQuery Plugin (simple):**
@@ -1087,39 +1135,50 @@ Even with the Cloud Trace → BigQuery pipeline working:
 
 | Approach | Best For | Setup Effort | Data Coverage | AI Capabilities |
 |----------|----------|--------------|---------------|-----------------|
-| **BigQuery Plugin** | Deep analytics, AI insights | 10 lines Python | 100% | Full |
-| **Cloud Trace → BQ** | When you need trace viz + analytics | 500+ lines code | ~80% | Full (after ETL) |
-| **Cloud Logging → BQ** | Basic error monitoring | 150 lines shell | ~20% | Limited |
-| **Cloud Trace only** | Trace visualization | Enable API | ~80% | None |
+| **BigQuery Plugin** | Analytical intelligence, AI insights | 10 lines Python | 100% | Native |
+| **Cloud Trace** | Operational debugging, latency analysis | Enable API | ~80% | Via ETL only |
+| **Cloud Trace → BQ** | Hybrid: viz + analytics | 500+ lines code | ~80% | Native (after ETL) |
+| **Cloud Logging → BQ** | Basic error monitoring | 150 lines shell | ~20% | High friction |
 
-**Bottom line:**
-- **BigQuery Plugin is the clear winner** for agent analytics
-- **Cloud Trace → BigQuery is possible** but requires 500+ lines of custom ETL code
-- **Cloud Logging captures logs, but ADK emits spans** - architecture mismatch
-- Use BigQuery Plugin for comprehensive analytics + AI insights
-- Use Cloud Trace UI for visual debugging (requires Telemetry API)
+**The Right Tool for the Right Job:**
+- **"Debug this hanging call"** → Cloud Trace (Gantt charts are unbeatable)
+- **"What's our token spend trend?"** → BigQuery Plugin (structured data, SQL)
+- **"Evaluate response quality at scale"** → BigQuery Plugin (native AI)
+- **"Where did the 5 seconds go?"** → Cloud Trace (span timeline)
+- **"Monitor agent performance"** → BigQuery Plugin (aggregations, dashboards)
 
 ---
 
-## Summary: Why BigQuery Plugin Wins
+## Summary: Trade-offs Analysis
 
-| Criterion | BigQuery Plugin | Cloud Trace → BQ Export | Cloud Trace Only | Winner |
-|-----------|-----------------|------------------------|------------------|--------|
-| **Setup complexity** | 10 lines Python | 500+ lines code + cron | Enable APIs | BigQuery |
-| **Data completeness** | 100% structured | ~80% (after ETL) | ~80% (spans) | BigQuery |
-| **Token tracking** | ✅ Native | ✅ After ETL | ✅ In spans | Tie |
-| **Tool analytics** | ✅ Structured | ✅ After ETL | ✅ In spans | BigQuery |
-| **AI analytics** | ✅ Full Gemini | ✅ Full Gemini | ❌ None | Tie* |
-| **Query interface** | SQL | SQL | REST API only | BigQuery/Export |
-| **Real-time** | ✅ 1-2 seconds | ❌ Manual ETL | ✅ ~1 second | BigQuery |
-| **User ID tracking** | ✅ Native field | ❌ Not available | ❌ Not available | BigQuery |
-| **Maintenance** | ✅ None | ❌ Ongoing ETL | ✅ None | BigQuery |
+| Criterion | BigQuery Plugin | Cloud Trace | Winner | Notes |
+|-----------|-----------------|-------------|--------|-------|
+| **Setup complexity** | 10 lines Python | Enable APIs | BigQuery | Cloud Trace needs Telemetry API |
+| **Schema stability** | Versioned contract | OTel attribute names | BigQuery | Key advantage for production |
+| **Token tracking** | ✅ Native fields | ✅ In spans | Tie | Both capture, BQ easier to query |
+| **Large payloads** | ✅ GCS offload | ⚠️ 128KB limit | BigQuery | Critical for multi-modal |
+| **AI analytics** | ✅ Native | ⚠️ After ETL | BigQuery | Friction vs native |
+| **Trace visualization** | IDs only | ✅ Gantt charts | Cloud Trace | Cloud Trace wins here |
+| **Analytical queries** | ✅ SQL | REST API | BigQuery | BigQuery for aggregations |
+| **Live debugging** | Good | ✅ Excellent | Cloud Trace | Live Tail is powerful |
+| **User ID tracking** | ✅ Native | ❌ Not captured | BigQuery | Important for user analytics |
+| **Maintenance** | ✅ None | ✅ None | Tie | ETL approach needs cron |
 
-*Cloud Trace → BQ Export can achieve AI analytics, but requires manual ETL setup.
+**Key Takeaways:**
 
-**The BigQuery Agent Analytics Plugin provides:**
-1. **Zero-effort setup** - 10 lines of Python, no ETL, no cron jobs
-2. **Real-time data** - Events appear in BigQuery within 1-2 seconds
-3. **Complete data** - All fields including user_id, invocation_id, event types
-4. **AI-ready** - Direct integration with Gemini for LLM-as-Judge, jailbreak detection
-5. **No maintenance** - Data flows automatically, schema is stable
+1. **Schema Stability is the Killer Feature** - The BigQuery Plugin provides an agent-aware,
+   documented contract. Cloud Logging/Trace gives you raw OTel blobs where field locations
+   may change without notice.
+
+2. **"High Friction" ≠ "Impossible"** - Cloud Logging can technically do AI analytics via
+   Log Analytics + BigQuery, but the missing/truncated data makes it impractical for
+   LLM-as-Judge or sentiment analysis.
+
+3. **Cloud Trace Wins for Debugging** - The Gantt chart visualization is unmatched for
+   answering "where did the latency come from?" Don't dismiss Cloud Trace entirely.
+
+4. **OTel Size Limits Matter** - The 128KB span limit means multi-modal content and large
+   responses may be truncated. The BigQuery Plugin handles this with GCS offloading.
+
+5. **Use Both in Production** - BigQuery Plugin for analytics + AI insights, Cloud Trace
+   for operational debugging. They're complementary, not competing.
