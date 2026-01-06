@@ -1531,14 +1531,31 @@ class AdkWebServer:
               )
           ) as agen:
             async for event in agen:
-              # Format as SSE data
-              sse_event = event.model_dump_json(
-                  exclude_none=True, by_alias=True
-              )
-              logger.debug(
-                  "Generated event in agent run streaming: %s", sse_event
-              )
-              yield f"data: {sse_event}\n\n"
+              # ADK Web renders artifacts from `actions.artifactDelta`
+              # during part processing *and* during action processing
+              # 1) the original event with `artifactDelta` cleared (content)
+              # 2) a content-less "action-only" event carrying `artifactDelta`
+              events_to_stream = [event]
+              if (
+                  event.actions.artifact_delta
+                  and event.content
+                  and event.content.parts
+              ):
+                content_event = event.model_copy(deep=True)
+                content_event.actions.artifact_delta = {}
+                artifact_event = event.model_copy(deep=True)
+                artifact_event.content = None
+                events_to_stream = [content_event, artifact_event]
+
+              for event_to_stream in events_to_stream:
+                sse_event = event_to_stream.model_dump_json(
+                    exclude_none=True,
+                    by_alias=True,
+                )
+                logger.debug(
+                    "Generated event in agent run streaming: %s", sse_event
+                )
+                yield f"data: {sse_event}\n\n"
         except Exception as e:
           logger.exception("Error in event_generator: %s", e)
           # You might want to yield an error event here
