@@ -26,6 +26,8 @@ from absl import flags
 import experiment
 from google.genai import types
 
+import utils
+
 _OUTPUT_DIR = flags.DEFINE_string(
     'output_dir',
     None,
@@ -104,7 +106,7 @@ def main(argv: Sequence[str]) -> None:
   for logger in loggers:
     logger.setLevel(logging.WARNING)
 
-  types.logger.addFilter(experiment.FilterInferenceWarnings())
+  types.logger.addFilter(utils.FilterInferenceWarnings())
   output_dir = os.path.join(
       _OUTPUT_DIR.value, datetime.now().strftime('%Y%m%d%H%M%S%f')
   )

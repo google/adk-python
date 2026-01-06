@@ -32,6 +32,169 @@ from .config import WriteMode
 BIGQUERY_SESSION_INFO_KEY = "bigquery_session_info"
 
 
+def _execute_sql(
+    project_id: str,
+    query: str,
+    credentials: Credentials,
+    settings: BigQueryToolConfig,
+    tool_context: ToolContext,
+    dry_run: bool = False,
+    caller_id: Optional[str] = None,
+) -> dict:
+  try:
+    # Validate compute project if applicable
+    if (
+        settings.compute_project_id
+        and project_id != settings.compute_project_id
+    ):
+      return {
+          "status": "ERROR",
+          "error_details": (
+              f"Cannot execute query in the project {project_id}, as the tool"
+              " is restricted to execute queries only in the project"
+              f" {settings.compute_project_id}."
+          ),
+      }
+
+    # Get BigQuery client
+    bq_client = client.get_bigquery_client(
+        project=project_id,
+        credentials=credentials,
+        location=settings.location,
+        user_agent=[settings.application_name, caller_id],
+    )
+
+    # BigQuery connection properties where applicable
+    bq_connection_properties = []
+
+    # BigQuery job labels if applicable
+    bq_job_labels = (
+        settings.job_labels.copy() if settings and settings.job_labels else {}
+    )
+
+    if caller_id:
+      bq_job_labels["adk-bigquery-tool"] = caller_id
+    if settings and settings.application_name:
+      bq_job_labels["adk-bigquery-application-name"] = settings.application_name
+
+    if not settings or settings.write_mode == WriteMode.BLOCKED:
+      dry_run_query_job = bq_client.query(
+          query,
+          project=project_id,
+          job_config=bigquery.QueryJobConfig(
+              dry_run=True, labels=bq_job_labels
+          ),
+      )
+      if dry_run_query_job.statement_type != "SELECT":
+        return {
+            "status": "ERROR",
+            "error_details": "Read-only mode only supports SELECT statements.",
+        }
+    elif settings.write_mode == WriteMode.PROTECTED:
+      # In protected write mode, write operation only to a temporary artifact is
+      # allowed. This artifact must have been created in a BigQuery session. In
+      # such a scenario, the session info (session id and the anonymous dataset
+      # containing the artifact) is persisted in the tool context.
+      bq_session_info = tool_context.state.get(BIGQUERY_SESSION_INFO_KEY, None)
+      if bq_session_info:
+        bq_session_id, bq_session_dataset_id = bq_session_info
+      else:
+        session_creator_job = bq_client.query(
+            "SELECT 1",
+            project=project_id,
+            job_config=bigquery.QueryJobConfig(
+                dry_run=True, create_session=True, labels=bq_job_labels
+            ),
+        )
+        bq_session_id = session_creator_job.session_info.session_id
+        bq_session_dataset_id = session_creator_job.destination.dataset_id
+
+        # Remember the BigQuery session info for subsequent queries
+        tool_context.state[BIGQUERY_SESSION_INFO_KEY] = (
+            bq_session_id,
+            bq_session_dataset_id,
+        )
+
+      # Session connection property will be set in the query execution
+      bq_connection_properties.append(
+          bigquery.ConnectionProperty("session_id", bq_session_id)
+      )
+
+      # Check the query type w.r.t. the BigQuery session
+      dry_run_query_job = bq_client.query(
+          query,
+          project=project_id,
+          job_config=bigquery.QueryJobConfig(
+              dry_run=True,
+              connection_properties=bq_connection_properties,
+              labels=bq_job_labels,
+          ),
+      )
+      if (
+          dry_run_query_job.statement_type != "SELECT"
+          and dry_run_query_job.destination
+          and dry_run_query_job.destination.dataset_id != bq_session_dataset_id
+      ):
+        return {
+            "status": "ERROR",
+            "error_details": (
+                "Protected write mode only supports SELECT statements, or write"
+                " operations in the anonymous dataset of a BigQuery session."
+            ),
+        }
+
+    # Return the dry run characteristics of the query if requested
+    if dry_run:
+      dry_run_job = bq_client.query(
+          query,
+          project=project_id,
+          job_config=bigquery.QueryJobConfig(
+              dry_run=True,
+              connection_properties=bq_connection_properties,
+              labels=bq_job_labels,
+          ),
+      )
+      return {"status": "SUCCESS", "dry_run_info": dry_run_job.to_api_repr()}
+
+    # Finally execute the query, fetch the result, and return it
+    job_config = bigquery.QueryJobConfig(
+        connection_properties=bq_connection_properties,
+        labels=bq_job_labels,
+    )
+    if settings.maximum_bytes_billed:
+      job_config.maximum_bytes_billed = settings.maximum_bytes_billed
+    row_iterator = bq_client.query_and_wait(
+        query,
+        job_config=job_config,
+        project=project_id,
+        max_results=settings.max_query_result_rows,
+    )
+    rows = []
+    for row in row_iterator:
+      row_values = {}
+      for key, val in row.items():
+        try:
+          # if the json serialization of the value succeeds, use it as is
+          json.dumps(val)
+        except:
+          val = str(val)
+        row_values[key] = val
+      rows.append(row_values)
+
+    result = {"status": "SUCCESS", "rows": rows}
+    if (
+        settings.max_query_result_rows is not None
+        and len(rows) == settings.max_query_result_rows
+    ):
+      result["result_is_likely_truncated"] = True
+    return result
+  except Exception as ex:  # pylint: disable=broad-except
+    return {
+        "status": "ERROR",
+        "error_details": str(ex),
+    }
+
+
 def execute_sql(
     project_id: str,
     query: str,
@@ -66,7 +229,7 @@ def execute_sql(
 
           >>> execute_sql("my_project",
           ... "SELECT island, COUNT(*) AS population "
-          ... "FROM bigquery-public-data.ml_datasets.penguins GROUP BY island")
+          ... "FROM `bigquery-public-data`.`ml_datasets`.`penguins` GROUP BY island")
           {
             "status": "SUCCESS",
             "rows": [
@@ -90,7 +253,7 @@ def execute_sql(
           >>> execute_sql(
           ...     "my_project",
           ...     "SELECT island FROM "
-          ...     "bigquery-public-data.ml_datasets.penguins",
+          ...     "`bigquery-public-data`.`ml_datasets`.`penguins`",
           ...     dry_run=True
           ... )
           {
@@ -106,7 +269,7 @@ def execute_sql(
                     "tableId": "anon..."
                   },
                   "priority": "INTERACTIVE",
-                  "query": "SELECT island FROM bigquery-public-data.ml_datasets.penguins",
+                  "query": "SELECT island FROM `bigquery-public-data`.`ml_datasets`.`penguins`",
                   "useLegacySql": False,
                   "writeDisposition": "WRITE_TRUNCATE"
                 }
@@ -118,142 +281,15 @@ def execute_sql(
             }
           }
   """
-  try:
-    # Validate compute project if applicable
-    if (
-        settings.compute_project_id
-        and project_id != settings.compute_project_id
-    ):
-      return {
-          "status": "ERROR",
-          "error_details": (
-              f"Cannot execute query in the project {project_id}, as the tool"
-              " is restricted to execute queries only in the project"
-              f" {settings.compute_project_id}."
-          ),
-      }
-
-    # Get BigQuery client
-    bq_client = client.get_bigquery_client(
-        project=project_id,
-        credentials=credentials,
-        location=settings.location,
-        user_agent=settings.application_name,
-    )
-
-    # BigQuery connection properties where applicable
-    bq_connection_properties = None
-
-    if not settings or settings.write_mode == WriteMode.BLOCKED:
-      dry_run_query_job = bq_client.query(
-          query,
-          project=project_id,
-          job_config=bigquery.QueryJobConfig(dry_run=True),
-      )
-      if dry_run_query_job.statement_type != "SELECT":
-        return {
-            "status": "ERROR",
-            "error_details": "Read-only mode only supports SELECT statements.",
-        }
-    elif settings.write_mode == WriteMode.PROTECTED:
-      # In protected write mode, write operation only to a temporary artifact is
-      # allowed. This artifact must have been created in a BigQuery session. In
-      # such a scenario, the session info (session id and the anonymous dataset
-      # containing the artifact) is persisted in the tool context.
-      bq_session_info = tool_context.state.get(BIGQUERY_SESSION_INFO_KEY, None)
-      if bq_session_info:
-        bq_session_id, bq_session_dataset_id = bq_session_info
-      else:
-        session_creator_job = bq_client.query(
-            "SELECT 1",
-            project=project_id,
-            job_config=bigquery.QueryJobConfig(
-                dry_run=True, create_session=True
-            ),
-        )
-        bq_session_id = session_creator_job.session_info.session_id
-        bq_session_dataset_id = session_creator_job.destination.dataset_id
-
-        # Remember the BigQuery session info for subsequent queries
-        tool_context.state[BIGQUERY_SESSION_INFO_KEY] = (
-            bq_session_id,
-            bq_session_dataset_id,
-        )
-
-      # Session connection property will be set in the query execution
-      bq_connection_properties = [
-          bigquery.ConnectionProperty("session_id", bq_session_id)
-      ]
-
-      # Check the query type w.r.t. the BigQuery session
-      dry_run_query_job = bq_client.query(
-          query,
-          project=project_id,
-          job_config=bigquery.QueryJobConfig(
-              dry_run=True,
-              connection_properties=bq_connection_properties,
-          ),
-      )
-      if (
-          dry_run_query_job.statement_type != "SELECT"
-          and dry_run_query_job.destination.dataset_id != bq_session_dataset_id
-      ):
-        return {
-            "status": "ERROR",
-            "error_details": (
-                "Protected write mode only supports SELECT statements, or write"
-                " operations in the anonymous dataset of a BigQuery session."
-            ),
-        }
-
-    # Finally execute the query and fetch the result
-    if dry_run:
-      job_config_kwargs = {"dry_run": True}
-      if bq_connection_properties:
-        job_config_kwargs["connection_properties"] = bq_connection_properties
-      job_config = bigquery.QueryJobConfig(**job_config_kwargs)
-      dry_run_job = bq_client.query(
-          query,
-          project=project_id,
-          job_config=job_config,
-      )
-      return {"status": "SUCCESS", "dry_run_info": dry_run_job.to_api_repr()}
-
-    job_config = (
-        bigquery.QueryJobConfig(connection_properties=bq_connection_properties)
-        if bq_connection_properties
-        else None
-    )
-    row_iterator = bq_client.query_and_wait(
-        query,
-        job_config=job_config,
-        project=project_id,
-        max_results=settings.max_query_result_rows,
-    )
-    rows = []
-    for row in row_iterator:
-      row_values = {}
-      for key, val in row.items():
-        try:
-          # if the json serialization of the value succeeds, use it as is
-          json.dumps(val)
-        except:
-          val = str(val)
-        row_values[key] = val
-      rows.append(row_values)
-
-    result = {"status": "SUCCESS", "rows": rows}
-    if (
-        settings.max_query_result_rows is not None
-        and len(rows) == settings.max_query_result_rows
-    ):
-      result["result_is_likely_truncated"] = True
-    return result
-  except Exception as ex:  # pylint: disable=broad-except
-    return {
-        "status": "ERROR",
-        "error_details": str(ex),
-    }
+  return _execute_sql(
+      project_id=project_id,
+      query=query,
+      credentials=credentials,
+      settings=settings,
+      tool_context=tool_context,
+      dry_run=dry_run,
+      caller_id="execute_sql",
+  )
 
 
 def _execute_sql_write_mode(*args, **kwargs) -> dict:
@@ -283,7 +319,7 @@ def _execute_sql_write_mode(*args, **kwargs) -> dict:
 
           >>> execute_sql("my_project",
           ... "SELECT island, COUNT(*) AS population "
-          ... "FROM bigquery-public-data.ml_datasets.penguins GROUP BY island")
+          ... "FROM `bigquery-public-data`.`ml_datasets`.`penguins` GROUP BY island")
           {
             "status": "SUCCESS",
             "rows": [
@@ -307,7 +343,7 @@ def _execute_sql_write_mode(*args, **kwargs) -> dict:
           >>> execute_sql(
           ...     "my_project",
           ...     "SELECT island FROM "
-          ...     "bigquery-public-data.ml_datasets.penguins",
+          ...     "`bigquery-public-data`.`ml_datasets`.`penguins`",
           ...     dry_run=True
           ... )
           {
@@ -323,7 +359,7 @@ def _execute_sql_write_mode(*args, **kwargs) -> dict:
                     "tableId": "anon..."
                   },
                   "priority": "INTERACTIVE",
-                  "query": "SELECT island FROM bigquery-public-data.ml_datasets.penguins",
+                  "query": "SELECT island FROM `bigquery-public-data`.`ml_datasets`.`penguins`",
                   "useLegacySql": False,
                   "writeDisposition": "WRITE_TRUNCATE"
                 }
@@ -338,7 +374,7 @@ def _execute_sql_write_mode(*args, **kwargs) -> dict:
       Create a table with schema prescribed:
 
           >>> execute_sql("my_project",
-          ... "CREATE TABLE my_project.my_dataset.my_table "
+          ... "CREATE TABLE `my_project`.`my_dataset`.`my_table` "
           ... "(island STRING, population INT64)")
           {
             "status": "SUCCESS",
@@ -348,7 +384,7 @@ def _execute_sql_write_mode(*args, **kwargs) -> dict:
       Insert data into an existing table:
 
           >>> execute_sql("my_project",
-          ... "INSERT INTO my_project.my_dataset.my_table (island, population) "
+          ... "INSERT INTO `my_project`.`my_dataset`.`my_table` (island, population) "
           ... "VALUES ('Dream', 124), ('Biscoe', 168)")
           {
             "status": "SUCCESS",
@@ -358,9 +394,9 @@ def _execute_sql_write_mode(*args, **kwargs) -> dict:
       Create a table from the result of a query:
 
           >>> execute_sql("my_project",
-          ... "CREATE TABLE my_project.my_dataset.my_table AS "
+          ... "CREATE TABLE `my_project`.`my_dataset`.`my_table` AS "
           ... "SELECT island, COUNT(*) AS population "
-          ... "FROM bigquery-public-data.ml_datasets.penguins GROUP BY island")
+          ... "FROM `bigquery-public-data`.`ml_datasets`.`penguins` GROUP BY island")
           {
             "status": "SUCCESS",
             "rows": []
@@ -369,7 +405,7 @@ def _execute_sql_write_mode(*args, **kwargs) -> dict:
       Delete a table:
 
           >>> execute_sql("my_project",
-          ... "DROP TABLE my_project.my_dataset.my_table")
+          ... "DROP TABLE `my_project`.`my_dataset`.`my_table`")
           {
             "status": "SUCCESS",
             "rows": []
@@ -378,8 +414,8 @@ def _execute_sql_write_mode(*args, **kwargs) -> dict:
       Copy a table to another table:
 
           >>> execute_sql("my_project",
-          ... "CREATE TABLE my_project.my_dataset.my_table_clone "
-          ... "CLONE my_project.my_dataset.my_table")
+          ... "CREATE TABLE `my_project`.`my_dataset`.`my_table_clone` "
+          ... "CLONE `my_project`.`my_dataset`.`my_table`")
           {
             "status": "SUCCESS",
             "rows": []
@@ -389,8 +425,8 @@ def _execute_sql_write_mode(*args, **kwargs) -> dict:
       table:
 
           >>> execute_sql("my_project",
-          ... "CREATE SNAPSHOT TABLE my_project.my_dataset.my_table_snapshot "
-          ... "CLONE my_project.my_dataset.my_table")
+          ... "CREATE SNAPSHOT TABLE `my_project`.`my_dataset`.`my_table_snapshot` "
+          ... "CLONE `my_project`.`my_dataset`.`my_table`")
           {
             "status": "SUCCESS",
             "rows": []
@@ -399,9 +435,9 @@ def _execute_sql_write_mode(*args, **kwargs) -> dict:
       Create a BigQuery ML linear regression model:
 
           >>> execute_sql("my_project",
-          ... "CREATE MODEL `my_dataset.my_model` "
+          ... "CREATE MODEL `my_dataset`.`my_model` "
           ... "OPTIONS (model_type='linear_reg', input_label_cols=['body_mass_g']) AS "
-          ... "SELECT * FROM `bigquery-public-data.ml_datasets.penguins` "
+          ... "SELECT * FROM `bigquery-public-data`.`ml_datasets`.`penguins` "
           ... "WHERE body_mass_g IS NOT NULL")
           {
             "status": "SUCCESS",
@@ -411,7 +447,7 @@ def _execute_sql_write_mode(*args, **kwargs) -> dict:
       Evaluate BigQuery ML model:
 
           >>> execute_sql("my_project",
-          ... "SELECT * FROM ML.EVALUATE(MODEL `my_dataset.my_model`)")
+          ... "SELECT * FROM ML.EVALUATE(MODEL `my_dataset`.`my_model`)")
           {
             "status": "SUCCESS",
             "rows": [{'mean_absolute_error': 227.01223667447218,
@@ -425,8 +461,8 @@ def _execute_sql_write_mode(*args, **kwargs) -> dict:
       Evaluate BigQuery ML model on custom data:
 
           >>> execute_sql("my_project",
-          ... "SELECT * FROM ML.EVALUATE(MODEL `my_dataset.my_model`, "
-          ... "(SELECT * FROM `my_dataset.my_table`))")
+          ... "SELECT * FROM ML.EVALUATE(MODEL `my_dataset`.`my_model`, "
+          ... "(SELECT * FROM `my_dataset`.`my_table`))")
           {
             "status": "SUCCESS",
             "rows": [{'mean_absolute_error': 227.01223667447218,
@@ -440,8 +476,8 @@ def _execute_sql_write_mode(*args, **kwargs) -> dict:
       Predict using BigQuery ML model:
 
           >>> execute_sql("my_project",
-          ... "SELECT * FROM ML.PREDICT(MODEL `my_dataset.my_model`, "
-          ... "(SELECT * FROM `my_dataset.my_table`))")
+          ... "SELECT * FROM ML.PREDICT(MODEL `my_dataset`.`my_model`, "
+          ... "(SELECT * FROM `my_dataset`.`my_table`))")
           {
             "status": "SUCCESS",
             "rows": [
@@ -458,7 +494,7 @@ def _execute_sql_write_mode(*args, **kwargs) -> dict:
 
       Delete a BigQuery ML model:
 
-          >>> execute_sql("my_project", "DROP MODEL `my_dataset.my_model`")
+          >>> execute_sql("my_project", "DROP MODEL `my_dataset`.`my_model`")
           {
             "status": "SUCCESS",
             "rows": []
@@ -503,7 +539,7 @@ def _execute_sql_protected_write_mode(*args, **kwargs) -> dict:
 
           >>> execute_sql("my_project",
           ... "SELECT island, COUNT(*) AS population "
-          ... "FROM bigquery-public-data.ml_datasets.penguins GROUP BY island")
+          ... "FROM `bigquery-public-data`.`ml_datasets`.`penguins` GROUP BY island")
           {
             "status": "SUCCESS",
             "rows": [
@@ -527,7 +563,7 @@ def _execute_sql_protected_write_mode(*args, **kwargs) -> dict:
           >>> execute_sql(
           ...     "my_project",
           ...     "SELECT island FROM "
-          ...     "bigquery-public-data.ml_datasets.penguins",
+          ...     "`bigquery-public-data`.`ml_datasets`.`penguins`",
           ...     dry_run=True
           ... )
           {
@@ -543,7 +579,7 @@ def _execute_sql_protected_write_mode(*args, **kwargs) -> dict:
                     "tableId": "anon..."
                   },
                   "priority": "INTERACTIVE",
-                  "query": "SELECT island FROM bigquery-public-data.ml_datasets.penguins",
+                  "query": "SELECT island FROM `bigquery-public-data`.`ml_datasets`.`penguins`",
                   "useLegacySql": False,
                   "writeDisposition": "WRITE_TRUNCATE"
                 }
@@ -558,7 +594,7 @@ def _execute_sql_protected_write_mode(*args, **kwargs) -> dict:
       Create a temporary table with schema prescribed:
 
           >>> execute_sql("my_project",
-          ... "CREATE TEMP TABLE my_table (island STRING, population INT64)")
+          ... "CREATE TEMP TABLE `my_table` (island STRING, population INT64)")
           {
             "status": "SUCCESS",
             "rows": []
@@ -567,7 +603,7 @@ def _execute_sql_protected_write_mode(*args, **kwargs) -> dict:
       Insert data into an existing temporary table:
 
           >>> execute_sql("my_project",
-          ... "INSERT INTO my_table (island, population) "
+          ... "INSERT INTO `my_table` (island, population) "
           ... "VALUES ('Dream', 124), ('Biscoe', 168)")
           {
             "status": "SUCCESS",
@@ -577,9 +613,9 @@ def _execute_sql_protected_write_mode(*args, **kwargs) -> dict:
       Create a temporary table from the result of a query:
 
           >>> execute_sql("my_project",
-          ... "CREATE TEMP TABLE my_table AS "
+          ... "CREATE TEMP TABLE `my_table` AS "
           ... "SELECT island, COUNT(*) AS population "
-          ... "FROM bigquery-public-data.ml_datasets.penguins GROUP BY island")
+          ... "FROM `bigquery-public-data`.`ml_datasets`.`penguins` GROUP BY island")
           {
             "status": "SUCCESS",
             "rows": []
@@ -587,7 +623,7 @@ def _execute_sql_protected_write_mode(*args, **kwargs) -> dict:
 
       Delete a temporary table:
 
-          >>> execute_sql("my_project", "DROP TABLE my_table")
+          >>> execute_sql("my_project", "DROP TABLE `my_table`")
           {
             "status": "SUCCESS",
             "rows": []
@@ -596,7 +632,7 @@ def _execute_sql_protected_write_mode(*args, **kwargs) -> dict:
       Copy a temporary table to another temporary table:
 
           >>> execute_sql("my_project",
-          ... "CREATE TEMP TABLE my_table_clone CLONE my_table")
+          ... "CREATE TEMP TABLE `my_table_clone` CLONE `my_table`")
           {
             "status": "SUCCESS",
             "rows": []
@@ -605,9 +641,9 @@ def _execute_sql_protected_write_mode(*args, **kwargs) -> dict:
       Create a temporary BigQuery ML linear regression model:
 
           >>> execute_sql("my_project",
-          ... "CREATE TEMP MODEL my_model "
+          ... "CREATE TEMP MODEL `my_model` "
           ... "OPTIONS (model_type='linear_reg', input_label_cols=['body_mass_g']) AS"
-          ... "SELECT * FROM `bigquery-public-data.ml_datasets.penguins` "
+          ... "SELECT * FROM `bigquery-public-data`.`ml_datasets`.`penguins` "
           ... "WHERE body_mass_g IS NOT NULL")
           {
             "status": "SUCCESS",
@@ -616,7 +652,7 @@ def _execute_sql_protected_write_mode(*args, **kwargs) -> dict:
 
       Evaluate BigQuery ML model:
 
-          >>> execute_sql("my_project", "SELECT * FROM ML.EVALUATE(MODEL my_model)")
+          >>> execute_sql("my_project", "SELECT * FROM ML.EVALUATE(MODEL `my_model`)")
           {
             "status": "SUCCESS",
             "rows": [{'mean_absolute_error': 227.01223667447218,
@@ -630,8 +666,8 @@ def _execute_sql_protected_write_mode(*args, **kwargs) -> dict:
       Evaluate BigQuery ML model on custom data:
 
           >>> execute_sql("my_project",
-          ... "SELECT * FROM ML.EVALUATE(MODEL my_model, "
-          ... "(SELECT * FROM `my_dataset.my_table`))")
+          ... "SELECT * FROM ML.EVALUATE(MODEL `my_model`, "
+          ... "(SELECT * FROM `my_dataset`.`my_table`))")
           {
             "status": "SUCCESS",
             "rows": [{'mean_absolute_error': 227.01223667447218,
@@ -645,8 +681,8 @@ def _execute_sql_protected_write_mode(*args, **kwargs) -> dict:
       Predict using BigQuery ML model:
 
           >>> execute_sql("my_project",
-          ... "SELECT * FROM ML.PREDICT(MODEL my_model, "
-          ... "(SELECT * FROM `my_dataset.my_table`))")
+          ... "SELECT * FROM ML.PREDICT(MODEL `my_model`, "
+          ... "(SELECT * FROM `my_dataset`.`my_table`))")
           {
             "status": "SUCCESS",
             "rows": [
@@ -663,7 +699,7 @@ def _execute_sql_protected_write_mode(*args, **kwargs) -> dict:
 
       Delete a BigQuery ML model:
 
-          >>> execute_sql("my_project", "DROP MODEL my_model")
+          >>> execute_sql("my_project", "DROP MODEL `my_model`")
           {
             "status": "SUCCESS",
             "rows": []
@@ -892,7 +928,14 @@ def forecast(
     confidence_level => {confidence_level}
   )
   """
-  return execute_sql(project_id, query, credentials, settings, tool_context)
+  return _execute_sql(
+      project_id=project_id,
+      query=query,
+      credentials=credentials,
+      settings=settings,
+      tool_context=tool_context,
+      caller_id="forecast",
+  )
 
 
 def analyze_contribution(
@@ -1055,41 +1098,42 @@ def analyze_contribution(
   """
 
   # Create a session and run the create model query.
-  original_write_mode = settings.write_mode
   try:
-    if original_write_mode == WriteMode.BLOCKED:
+    execute_sql_settings = settings
+    if execute_sql_settings.write_mode == WriteMode.BLOCKED:
       raise ValueError("analyze_contribution is not allowed in this session.")
-    elif original_write_mode != WriteMode.PROTECTED:
+    elif execute_sql_settings.write_mode != WriteMode.PROTECTED:
       # Running create temp model requires a session. So we set the write mode
       # to PROTECTED to run the create model query and job query in the same
       # session.
-      settings.write_mode = WriteMode.PROTECTED
+      execute_sql_settings = settings.model_copy(
+          update={"write_mode": WriteMode.PROTECTED}
+      )
 
-    result = execute_sql(
-        project_id,
-        create_model_query,
-        credentials,
-        settings,
-        tool_context,
+    result = _execute_sql(
+        project_id=project_id,
+        query=create_model_query,
+        credentials=credentials,
+        settings=execute_sql_settings,
+        tool_context=tool_context,
+        caller_id="analyze_contribution",
     )
     if result["status"] != "SUCCESS":
       return result
 
-    result = execute_sql(
-        project_id,
-        get_insights_query,
-        credentials,
-        settings,
-        tool_context,
+    result = _execute_sql(
+        project_id=project_id,
+        query=get_insights_query,
+        credentials=credentials,
+        settings=execute_sql_settings,
+        tool_context=tool_context,
+        caller_id="analyze_contribution",
     )
   except Exception as ex:  # pylint: disable=broad-except
     return {
         "status": "ERROR",
-        "error_details": f"Error during analyze_contribution: {str(ex)}",
+        "error_details": f"Error during analyze_contribution: {repr(ex)}",
     }
-  finally:
-    # Restore the original write mode.
-    settings.write_mode == original_write_mode
 
   return result
 
@@ -1099,7 +1143,7 @@ def detect_anomalies(
     history_data: str,
     times_series_timestamp_col: str,
     times_series_data_col: str,
-    horizon: Optional[int] = 10,
+    horizon: Optional[int] = 1000,
     target_data: Optional[str] = None,
     times_series_id_cols: Optional[list[str]] = None,
     anomaly_prob_threshold: Optional[float] = 0.95,
@@ -1121,7 +1165,7 @@ def detect_anomalies(
       times_series_data_col (str): The name of the column containing the
         numerical values to be forecasted and anomaly detected.
       horizon (int, optional): The number of time steps to forecast into the
-        future. Defaults to 10.
+        future. Defaults to 1000.
       target_data (str, optional): The table id of the BigQuery table containing
         the target time series data or a query statement that select the target
         data.
@@ -1264,9 +1308,14 @@ def detect_anomalies(
     OPTIONS ({options_str})
   AS {history_data_source}
   """
+  order_by_id_cols = (
+      ", ".join(col for col in times_series_id_cols) + ", "
+      if times_series_id_cols
+      else ""
+  )
 
   anomaly_detection_query = f"""
-  SELECT * FROM ML.DETECT_ANOMALIES(MODEL {model_name}, STRUCT({anomaly_prob_threshold} AS anomaly_prob_threshold))
+  SELECT * FROM ML.DETECT_ANOMALIES(MODEL {model_name}, STRUCT({anomaly_prob_threshold} AS anomaly_prob_threshold)) ORDER BY {order_by_id_cols}{times_series_timestamp_col}
   """
   if target_data:
     trimmed_upper_target_data = target_data.strip().upper()
@@ -1275,47 +1324,48 @@ def detect_anomalies(
     ) or trimmed_upper_target_data.startswith("WITH"):
       target_data_source = f"({target_data})"
     else:
-      target_data_source = f"SELECT * FROM `{target_data}`"
+      target_data_source = f"(SELECT * FROM `{target_data}`)"
 
     anomaly_detection_query = f"""
-    SELECT * FROM ML.DETECT_ANOMALIES(MODEL {model_name}, STRUCT({anomaly_prob_threshold} AS anomaly_prob_threshold), {target_data_source})
+    SELECT * FROM ML.DETECT_ANOMALIES(MODEL {model_name}, STRUCT({anomaly_prob_threshold} AS anomaly_prob_threshold), {target_data_source}) ORDER BY {order_by_id_cols}{times_series_timestamp_col}
     """
 
   # Create a session and run the create model query.
-  original_write_mode = settings.write_mode
   try:
-    if settings.write_mode == WriteMode.BLOCKED:
+    execute_sql_settings = settings
+    if execute_sql_settings.write_mode == WriteMode.BLOCKED:
       raise ValueError("anomaly detection is not allowed in this session.")
-    elif original_write_mode != WriteMode.PROTECTED:
+    elif execute_sql_settings.write_mode != WriteMode.PROTECTED:
       # Running create temp model requires a session. So we set the write mode
       # to PROTECTED to run the create model query and job query in the same
       # session.
-      settings.write_mode = WriteMode.PROTECTED
+      execute_sql_settings = settings.model_copy(
+          update={"write_mode": WriteMode.PROTECTED}
+      )
 
-    result = execute_sql(
-        project_id,
-        create_model_query,
-        credentials,
-        settings,
-        tool_context,
+    result = _execute_sql(
+        project_id=project_id,
+        query=create_model_query,
+        credentials=credentials,
+        settings=execute_sql_settings,
+        tool_context=tool_context,
+        caller_id="detect_anomalies",
     )
     if result["status"] != "SUCCESS":
       return result
 
-    result = execute_sql(
-        project_id,
-        anomaly_detection_query,
-        credentials,
-        settings,
-        tool_context,
+    result = _execute_sql(
+        project_id=project_id,
+        query=anomaly_detection_query,
+        credentials=credentials,
+        settings=execute_sql_settings,
+        tool_context=tool_context,
+        caller_id="detect_anomalies",
     )
   except Exception as ex:  # pylint: disable=broad-except
     return {
         "status": "ERROR",
-        "error_details": f"Error during anomaly detection: {str(ex)}",
+        "error_details": f"Error during anomaly detection: {repr(ex)}",
     }
-  finally:
-    # Restore the original write mode.
-    settings.write_mode == original_write_mode
 
   return result

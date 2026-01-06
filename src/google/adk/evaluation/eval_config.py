@@ -27,7 +27,7 @@ from pydantic import Field
 from ..evaluation.eval_metrics import EvalMetric
 from .eval_metrics import BaseCriterion
 from .eval_metrics import Threshold
-from .user_simulator import BaseUserSimulatorConfig
+from .simulation.user_simulator import BaseUserSimulatorConfig
 
 logger = logging.getLogger("google_adk." + __name__)
 

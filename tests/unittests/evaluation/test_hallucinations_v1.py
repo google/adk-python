@@ -105,7 +105,7 @@ class TestParseSentences:
     """Tests _parse_sentences method with sentences containing newlines."""
     text_with_newlines = """<sentence>This is a sentence with
 \n\nnewlines.</sentence>
-<sentence>This sentence will not be parsed</stenence>"""
+<sentence>This sentence won't be parsed because tag is misspelled</stenence>"""
     assert _parse_sentences(text_with_newlines) == [
         "This is a sentence with\n\n\nnewlines."
     ]

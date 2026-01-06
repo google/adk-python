@@ -17,20 +17,21 @@ from __future__ import annotations
 import math
 import os
 from typing import Optional
+from typing import TYPE_CHECKING
 
 from google.genai import types as genai_types
 import pandas as pd
 from typing_extensions import override
 
-from ..dependencies.vertexai import vertexai
+from .eval_case import ConversationScenario
 from .eval_case import Invocation
 from .evaluator import EvalStatus
 from .evaluator import EvaluationResult
 from .evaluator import Evaluator
 from .evaluator import PerInvocationResult
 
-vertexai_types = vertexai.types
-VertexAiClient = vertexai.Client
+if TYPE_CHECKING:
+  from vertexai import types as vertexai_types
 
 _ERROR_MESSAGE_SUFFIX = """
 You should specify both project id and location. This metric uses Vertex Gen AI
@@ -68,10 +69,12 @@ class _VertexAiEvalFacade(Evaluator):
   def evaluate_invocations(
       self,
       actual_invocations: list[Invocation],
-      expected_invocations: Optional[list[Invocation]],
+      expected_invocations: Optional[list[Invocation]] = None,
+      conversation_scenario: Optional[ConversationScenario] = None,
   ) -> EvaluationResult:
     if self._expected_invocations_required and expected_invocations is None:
       raise ValueError("expected_invocations is needed by this metric.")
+    del conversation_scenario  # not supported for per-invocation evaluation.
 
     # If expected_invocation are not required by the metric and if they are not
     # supplied, we provide a list of None.
@@ -162,7 +165,10 @@ class _VertexAiEvalFacade(Evaluator):
     if not location:
       raise ValueError("Missing location." + _ERROR_MESSAGE_SUFFIX)
 
-    client = VertexAiClient(project=project_id, location=location)
+    from vertexai import Client
+    from vertexai import types as vertexai_types
+
+    client = Client(project=project_id, location=location)
 
     return client.evals.evaluate(
         dataset=vertexai_types.EvaluationDataset(eval_dataset_df=dataset),

@@ -20,7 +20,6 @@ from typing import TYPE_CHECKING
 
 from google.genai import types
 from typing_extensions import override
-import vertexai
 
 from ..utils.vertex_ai_utils import get_express_mode_api_key
 from .base_memory_service import BaseMemoryService
@@ -49,14 +48,15 @@ class VertexAiMemoryBankService(BaseMemoryService):
     Args:
       project: The project ID of the Memory Bank to use.
       location: The location of the Memory Bank to use.
-      agent_engine_id: The ID of the agent engine to use for the Memory Bank.
+      agent_engine_id: The ID of the agent engine to use for the Memory Bank,
         e.g. '456' in
-        'projects/my-project/locations/us-central1/reasoningEngines/456'.
+        'projects/my-project/locations/us-central1/reasoningEngines/456'. To
+        extract from api_resource.name, use:
+        ``agent_engine.api_resource.name.split('/')[-1]``
       express_mode_api_key: The API key to use for Express Mode. If not
         provided, the API key from the GOOGLE_API_KEY environment variable will
-        be used. It will only be used if GOOGLE_GENAI_USE_VERTEXAI is true.
-        Do not use Google AI Studio API key for this field. For more details,
-        visit
+        be used. It will only be used if GOOGLE_GENAI_USE_VERTEXAI is true. Do
+        not use Google AI Studio API key for this field. For more details, visit
         https://cloud.google.com/vertex-ai/generative-ai/docs/start/express-mode/overview
     """
     self._project = project
@@ -65,6 +65,14 @@ class VertexAiMemoryBankService(BaseMemoryService):
     self._express_mode_api_key = get_express_mode_api_key(
         project, location, express_mode_api_key
     )
+
+    if agent_engine_id and '/' in agent_engine_id:
+      logger.warning(
+          "agent_engine_id appears to be a full resource path: '%s'. "
+          "Expected just the ID (e.g., '456'). "
+          "Extract the ID using: agent_engine.api_resource.name.split('/')[-1]",
+          agent_engine_id,
+      )
 
   @override
   async def add_session_to_memory(self, session: Session):
@@ -138,6 +146,8 @@ class VertexAiMemoryBankService(BaseMemoryService):
     Returns:
       An API client for the given project and location or express mode api key.
     """
+    import vertexai
+
     return vertexai.Client(
         project=self._project,
         location=self._location,

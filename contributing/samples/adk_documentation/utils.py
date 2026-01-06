@@ -12,9 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import re
 from typing import Any
 from typing import Dict
 from typing import List
+from typing import Tuple
 
 from adk_documentation.settings import GITHUB_TOKEN
 from google.adk.agents.run_config import RunConfig
@@ -96,3 +98,47 @@ async def call_agent_async(
           final_response_text += text
 
   return final_response_text
+
+
+def parse_suggestions(issue_body: str) -> List[Tuple[int, str]]:
+  """Parse numbered suggestions from issue body.
+
+  Supports multiple formats:
+  - Format A (markdown headers): "### 1. Title"
+  - Format B (numbered list with bold): "1. **Title**"
+
+  Args:
+      issue_body: The body text of the GitHub issue.
+
+  Returns:
+      A list of tuples, where each tuple contains:
+      - The suggestion number (1-based)
+      - The full text of that suggestion
+  """
+  # Try different patterns in order of preference
+  patterns = [
+      # Format A: "### 1. Title" (markdown header with number)
+      (r"(?=^###\s+\d+\.)", r"^###\s+(\d+)\."),
+      # Format B: "1. **Title**" (numbered list with bold)
+      (r"(?=^\d+\.\s+\*\*)", r"^(\d+)\.\s+\*\*"),
+  ]
+
+  for split_pattern, match_pattern in patterns:
+    parts = re.split(split_pattern, issue_body, flags=re.MULTILINE)
+
+    suggestions = []
+    for part in parts:
+      part = part.strip()
+      if not part:
+        continue
+
+      match = re.match(match_pattern, part)
+      if match:
+        suggestion_num = int(match.group(1))
+        suggestions.append((suggestion_num, part))
+
+    # If we found suggestions with this pattern, return them
+    if suggestions:
+      return suggestions
+
+  return []

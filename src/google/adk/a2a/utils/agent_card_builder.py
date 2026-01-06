@@ -15,25 +15,15 @@
 from __future__ import annotations
 
 import re
-import sys
 from typing import Dict
 from typing import List
 from typing import Optional
 
-try:
-  from a2a.types import AgentCapabilities
-  from a2a.types import AgentCard
-  from a2a.types import AgentProvider
-  from a2a.types import AgentSkill
-  from a2a.types import SecurityScheme
-except ImportError as e:
-  if sys.version_info < (3, 10):
-    raise ImportError(
-        'A2A requires Python 3.10 or above. Please upgrade your Python version.'
-    ) from e
-  else:
-    raise e
-
+from a2a.types import AgentCapabilities
+from a2a.types import AgentCard
+from a2a.types import AgentProvider
+from a2a.types import AgentSkill
+from a2a.types import SecurityScheme
 
 from ...agents.base_agent import BaseAgent
 from ...agents.llm_agent import LlmAgent

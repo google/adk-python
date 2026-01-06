@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import sys
 from unittest.mock import AsyncMock
 from unittest.mock import Mock
 from unittest.mock import patch
@@ -23,45 +22,26 @@ from google.adk.auth.auth_credential import HttpAuth
 from google.adk.auth.auth_credential import HttpCredentials
 from google.adk.auth.auth_credential import OAuth2Auth
 from google.adk.auth.auth_credential import ServiceAccount
+from google.adk.tools.mcp_tool.mcp_session_manager import MCPSessionManager
+from google.adk.tools.mcp_tool.mcp_tool import MCPTool
+from google.adk.tools.tool_context import ToolContext
+from google.genai.types import FunctionDeclaration
+from google.genai.types import Type
+from mcp.types import CallToolResult
+from mcp.types import TextContent
 import pytest
-
-# Skip all tests in this module if Python version is less than 3.10
-pytestmark = pytest.mark.skipif(
-    sys.version_info < (3, 10), reason="MCP tool requires Python 3.10+"
-)
-
-# Import dependencies with version checking
-try:
-  from google.adk.tools.mcp_tool.mcp_session_manager import MCPSessionManager
-  from google.adk.tools.mcp_tool.mcp_tool import MCPTool
-  from google.adk.tools.tool_context import ToolContext
-  from google.genai.types import FunctionDeclaration
-  from google.genai.types import Type
-  from mcp.types import CallToolResult
-  from mcp.types import TextContent
-except ImportError as e:
-  if sys.version_info < (3, 10):
-    # Create dummy classes to prevent NameError during test collection
-    # Tests will be skipped anyway due to pytestmark
-    class DummyClass:
-      pass
-
-    MCPSessionManager = DummyClass
-    MCPTool = DummyClass
-    ToolContext = DummyClass
-    FunctionDeclaration = DummyClass
-    Type = DummyClass
-    CallToolResult = DummyClass
-    TextContent = DummyClass
-  else:
-    raise e
 
 
 # Mock MCP Tool from mcp.types
 class MockMCPTool:
   """Mock MCP Tool for testing."""
 
-  def __init__(self, name="test_tool", description="Test tool description"):
+  def __init__(
+      self,
+      name="test_tool",
+      description="Test tool description",
+      outputSchema=None,
+  ):
     self.name = name
     self.description = description
     self.inputSchema = {
@@ -72,7 +52,7 @@ class MockMCPTool:
         },
         "required": ["param1"],
     }
-    self.outputSchema = None
+    self.outputSchema = outputSchema
 
 
 class TestMCPTool:
@@ -148,7 +128,70 @@ class TestMCPTool:
     assert declaration.name == "test_tool"
     assert declaration.description == "Test tool description"
     assert declaration.parameters is not None
+
+  def test_get_declaration_with_json_schema_for_func_decl_enabled(
+      self, monkeypatch
+  ):
+    """Test function declaration generation with json schema for func decl enabled."""
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+    )
+
+    with monkeypatch.context() as m:
+      m.setenv("ADK_ENABLE_JSON_SCHEMA_FOR_FUNC_DECL", "true")
+      declaration = tool._get_declaration()
+
+    assert isinstance(declaration, FunctionDeclaration)
+    assert declaration.name == "test_tool"
+    assert declaration.description == "Test tool description"
+    assert declaration.parameters is None
+    assert declaration.parameters_json_schema is not None
     assert declaration.response is None
+    assert declaration.response_json_schema is None
+
+  def test_get_declaration_with_output_schema_and_json_schema_for_func_decl_enabled(
+      self, monkeypatch
+  ):
+    """Test function declaration generation with an output schema and json schema for func decl enabled."""
+    output_schema = {
+        "type": "object",
+        "properties": {
+            "status": {
+                "type": "string",
+                "description": "The status of the operation",
+            },
+        },
+    }
+
+    tool = MCPTool(
+        mcp_tool=MockMCPTool(outputSchema=output_schema),
+        mcp_session_manager=self.mock_session_manager,
+    )
+
+    with monkeypatch.context() as m:
+      m.setenv("ADK_ENABLE_JSON_SCHEMA_FOR_FUNC_DECL", "true")
+      declaration = tool._get_declaration()
+
+    assert isinstance(declaration, FunctionDeclaration)
+    assert declaration.response is None
+    assert declaration.response_json_schema == output_schema
+
+  def test_get_declaration_with_empty_output_schema_and_json_schema_for_func_decl_enabled(
+      self, monkeypatch
+  ):
+    """Test function declaration with an empty output schema and json schema for func decl enabled."""
+    tool = MCPTool(
+        mcp_tool=MockMCPTool(outputSchema={}),
+        mcp_session_manager=self.mock_session_manager,
+    )
+
+    with monkeypatch.context() as m:
+      m.setenv("ADK_ENABLE_JSON_SCHEMA_FOR_FUNC_DECL", "true")
+      declaration = tool._get_declaration()
+
+    assert declaration.response is None
+    assert not declaration.response_json_schema
 
   @pytest.mark.asyncio
   async def test_run_async_impl_no_auth(self):

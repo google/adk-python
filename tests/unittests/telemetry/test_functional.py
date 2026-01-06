@@ -93,7 +93,7 @@ async def test_tracer_start_as_current_span(
 
   Additionally tests if each async generator invoked is wrapped in Aclosing.
   This is necessary because instrumentation utilizes contextvars, which ran into "ContextVar was created in a different Context" errors,
-  when a given coroutine gets indeterminitely suspended.
+  when a given coroutine gets indeterminately suspended.
   """
   firstiter, finalizer = sys.get_asyncgen_hooks()
 
@@ -103,7 +103,7 @@ async def test_tracer_start_as_current_span(
         isinstance(referrer, Aclosing)
         or isinstance(indirect_referrer, Aclosing)
         for referrer in gc.get_referrers(coro)
-        # Some coroutines have a layer of indirection in python 3.9 and 3.10
+        # Some coroutines have a layer of indirection in Python 3.10
         for indirect_referrer in gc.get_referrers(referrer)
     ), f'Coro `{coro.__name__}` is not wrapped with Aclosing'
     firstiter(coro)

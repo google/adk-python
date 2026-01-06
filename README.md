@@ -4,7 +4,7 @@
 [![PyPI](https://img.shields.io/pypi/v/google-adk)](https://pypi.org/project/google-adk/)
 [![Python Unit Tests](https://github.com/google/adk-python/actions/workflows/python-unit-tests.yml/badge.svg)](https://github.com/google/adk-python/actions/workflows/python-unit-tests.yml)
 [![r/agentdevelopmentkit](https://img.shields.io/badge/Reddit-r%2Fagentdevelopmentkit-FF4500?style=flat&logo=reddit&logoColor=white)](https://www.reddit.com/r/agentdevelopmentkit/)
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/google/adk-python)
+<a href="https://codewiki.google/github.com/google/adk-python"><img src="https://www.gstatic.com/_/boq-sdlc-agents-ui/_/r/Mvosg4klCA4.svg" alt="Ask Code Wiki" height="20"></a>
 
 <html>
     <h2 align="center">
@@ -17,7 +17,8 @@
       Important Links:
       <a href="https://google.github.io/adk-docs/">Docs</a>,
       <a href="https://github.com/google/adk-samples">Samples</a>,
-      <a href="https://github.com/google/adk-java">Java ADK</a> &
+      <a href="https://github.com/google/adk-java">Java ADK</a>,
+      <a href="https://github.com/google/adk-go">Go ADK</a> &
       <a href="https://github.com/google/adk-web">ADK Web</a>.
     </h3>
 </html>
@@ -157,13 +158,13 @@ We welcome contributions from the community! Whether it's bug reports, feature r
 
 ## Community Repo
 
-We have [adk-python-community repo](https://github.com/google/adk-python-community)that is home to a growing ecosystem of community-contributed tools, third-party
+We have [adk-python-community repo](https://github.com/google/adk-python-community) that is home to a growing ecosystem of community-contributed tools, third-party
 service integrations, and deployment scripts that extend the core capabilities
 of the ADK.
 
 ## Vibe Coding
 
-If you are to develop agent via vibe coding the [llms.txt](./llms.txt) and the [llms-full.txt](./llms-full.txt) can be used as context to LLM. While the former one is a summarized one and the later one has the full information in case your LLM has big enough context window.
+If you want to develop agent via vibe coding the [llms.txt](./llms.txt) and the [llms-full.txt](./llms-full.txt) can be used as context to LLM. While the former one is a summarized one and the later one has the full information in case your LLM has big enough context window.
 
 ## Community Events
 

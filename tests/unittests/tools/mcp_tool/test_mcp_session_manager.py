@@ -22,45 +22,13 @@ from unittest.mock import AsyncMock
 from unittest.mock import Mock
 from unittest.mock import patch
 
+from google.adk.tools.mcp_tool.mcp_session_manager import MCPSessionManager
+from google.adk.tools.mcp_tool.mcp_session_manager import retry_on_errors
+from google.adk.tools.mcp_tool.mcp_session_manager import SseConnectionParams
+from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
+from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
+from mcp import StdioServerParameters
 import pytest
-
-# Skip all tests in this module if Python version is less than 3.10
-pytestmark = pytest.mark.skipif(
-    sys.version_info < (3, 10), reason="MCP tool requires Python 3.10+"
-)
-
-# Import dependencies with version checking
-try:
-  from google.adk.tools.mcp_tool.mcp_session_manager import MCPSessionManager
-  from google.adk.tools.mcp_tool.mcp_session_manager import retry_on_closed_resource
-  from google.adk.tools.mcp_tool.mcp_session_manager import SseConnectionParams
-  from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
-  from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
-except ImportError as e:
-  if sys.version_info < (3, 10):
-    # Create dummy classes to prevent NameError during test collection
-    # Tests will be skipped anyway due to pytestmark
-    class DummyClass:
-      pass
-
-    MCPSessionManager = DummyClass
-    retry_on_closed_resource = lambda x: x
-    SseConnectionParams = DummyClass
-    StdioConnectionParams = DummyClass
-    StreamableHTTPConnectionParams = DummyClass
-  else:
-    raise e
-
-# Import real MCP classes
-try:
-  from mcp import StdioServerParameters
-except ImportError:
-  # Create a mock if MCP is not available
-  class StdioServerParameters:
-
-    def __init__(self, command="test_command", args=None):
-      self.command = command
-      self.args = args or []
 
 
 class MockClientSession:
@@ -145,6 +113,54 @@ class TestMCPSessionManager:
     manager = MCPSessionManager(http_params)
 
     assert manager._connection_params == http_params
+
+  @patch("google.adk.tools.mcp_tool.mcp_session_manager.streamablehttp_client")
+  def test_init_with_streamable_http_custom_httpx_factory(
+      self, mock_streamablehttp_client
+  ):
+    """Test that streamablehttp_client is called with custom httpx_client_factory."""
+    custom_httpx_factory = Mock()
+
+    http_params = StreamableHTTPConnectionParams(
+        url="https://example.com/mcp",
+        timeout=15.0,
+        httpx_client_factory=custom_httpx_factory,
+    )
+    manager = MCPSessionManager(http_params)
+
+    manager._create_client()
+
+    mock_streamablehttp_client.assert_called_once_with(
+        url="https://example.com/mcp",
+        headers=None,
+        timeout=timedelta(seconds=15.0),
+        sse_read_timeout=timedelta(seconds=300.0),
+        terminate_on_close=True,
+        httpx_client_factory=custom_httpx_factory,
+    )
+
+  @patch("google.adk.tools.mcp_tool.mcp_session_manager.streamablehttp_client")
+  def test_init_with_streamable_http_default_httpx_factory(
+      self, mock_streamablehttp_client
+  ):
+    """Test that streamablehttp_client is called with default httpx_client_factory."""
+    http_params = StreamableHTTPConnectionParams(
+        url="https://example.com/mcp", timeout=15.0
+    )
+    manager = MCPSessionManager(http_params)
+
+    manager._create_client()
+
+    mock_streamablehttp_client.assert_called_once_with(
+        url="https://example.com/mcp",
+        headers=None,
+        timeout=timedelta(seconds=15.0),
+        sse_read_timeout=timedelta(seconds=300.0),
+        terminate_on_close=True,
+        httpx_client_factory=StreamableHTTPConnectionParams.model_fields[
+            "httpx_client_factory"
+        ].get_default(),
+    )
 
   def test_generate_session_key_stdio(self):
     """Test session key generation for stdio connections."""
@@ -375,33 +391,88 @@ class TestMCPSessionManager:
     assert "Close error 1" in error_output
 
 
-def test_retry_on_closed_resource_decorator():
-  """Test the retry_on_closed_resource decorator."""
+@pytest.mark.asyncio
+async def test_retry_on_errors_decorator():
+  """Test the retry_on_errors decorator."""
 
   call_count = 0
 
-  @retry_on_closed_resource
+  @retry_on_errors
   async def mock_function(self):
     nonlocal call_count
     call_count += 1
     if call_count == 1:
-      import anyio
-
-      raise anyio.ClosedResourceError("Resource closed")
+      raise ConnectionError("Resource closed")
     return "success"
 
-  @pytest.mark.asyncio
-  async def test_retry():
+  mock_self = Mock()
+  result = await mock_function(mock_self)
+
+  assert result == "success"
+  assert call_count == 2  # First call fails, second succeeds
+
+
+@pytest.mark.asyncio
+async def test_retry_on_errors_decorator_does_not_retry_cancelled_error():
+  """Test the retry_on_errors decorator does not retry cancellation."""
+
+  call_count = 0
+
+  @retry_on_errors
+  async def mock_function(self):
     nonlocal call_count
-    call_count = 0
+    call_count += 1
+    raise asyncio.CancelledError()
 
-    mock_self = Mock()
-    result = await mock_function(mock_self)
+  mock_self = Mock()
+  with pytest.raises(asyncio.CancelledError):
+    await mock_function(mock_self)
 
-    assert result == "success"
-    assert call_count == 2  # First call fails, second succeeds
+  assert call_count == 1
 
-  # Run the test
-  import asyncio
 
-  asyncio.run(test_retry())
+@pytest.mark.asyncio
+async def test_retry_on_errors_decorator_does_not_retry_when_task_is_cancelling():
+  """Test the retry_on_errors decorator does not retry when cancelling."""
+
+  call_count = 0
+
+  @retry_on_errors
+  async def mock_function(self):
+    nonlocal call_count
+    call_count += 1
+    raise ConnectionError("Resource closed")
+
+  class _MockTask:
+
+    def cancelling(self):
+      return 1
+
+  mock_self = Mock()
+  with patch.object(asyncio, "current_task", return_value=_MockTask()):
+    with pytest.raises(ConnectionError):
+      await mock_function(mock_self)
+
+  assert call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_retry_on_errors_decorator_does_not_retry_exception_from_cancel():
+  """Test the retry_on_errors decorator does not retry exceptions on cancel."""
+
+  call_count = 0
+
+  @retry_on_errors
+  async def mock_function(self):
+    nonlocal call_count
+    call_count += 1
+    try:
+      raise asyncio.CancelledError()
+    except asyncio.CancelledError:
+      raise ConnectionError("Resource closed")
+
+  mock_self = Mock()
+  with pytest.raises(ConnectionError):
+    await mock_function(mock_self)
+
+  assert call_count == 1

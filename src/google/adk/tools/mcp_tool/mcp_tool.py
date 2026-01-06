@@ -17,7 +17,6 @@ from __future__ import annotations
 import base64
 import inspect
 import logging
-import sys
 from typing import Any
 from typing import Callable
 from typing import Dict
@@ -27,33 +26,21 @@ import warnings
 
 from fastapi.openapi.models import APIKeyIn
 from google.genai.types import FunctionDeclaration
+from mcp.types import Tool as McpBaseTool
 from typing_extensions import override
 
 from ...agents.readonly_context import ReadonlyContext
-from .._gemini_schema_util import _to_gemini_schema
-from .mcp_session_manager import MCPSessionManager
-from .mcp_session_manager import retry_on_closed_resource
-
-# Attempt to import MCP Tool from the MCP library, and hints user to upgrade
-# their Python version to 3.10 if it fails.
-try:
-  from mcp.types import Tool as McpBaseTool
-except ImportError as e:
-  if sys.version_info < (3, 10):
-    raise ImportError(
-        "MCP Tool requires Python 3.10 or above. Please upgrade your Python"
-        " version."
-    ) from e
-  else:
-    raise e
-
-
 from ...auth.auth_credential import AuthCredential
 from ...auth.auth_schemes import AuthScheme
 from ...auth.auth_tool import AuthConfig
+from ...features import FeatureName
+from ...features import is_feature_enabled
+from .._gemini_schema_util import _to_gemini_schema
 from ..base_authenticated_tool import BaseAuthenticatedTool
 #  import
 from ..tool_context import ToolContext
+from .mcp_session_manager import MCPSessionManager
+from .mcp_session_manager import retry_on_errors
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -120,12 +107,21 @@ class McpTool(BaseAuthenticatedTool):
         FunctionDeclaration: The Gemini function declaration for the tool.
     """
     input_schema = self._mcp_tool.inputSchema
-    parameters = _to_gemini_schema(input_schema)
-    function_decl = FunctionDeclaration(
-        name=self.name,
-        description=self.description,
-        parameters=parameters,
-    )
+    output_schema = self._mcp_tool.outputSchema
+    if is_feature_enabled(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL):
+      function_decl = FunctionDeclaration(
+          name=self.name,
+          description=self.description,
+          parameters_json_schema=input_schema,
+          response_json_schema=output_schema,
+      )
+    else:
+      parameters = _to_gemini_schema(input_schema)
+      function_decl = FunctionDeclaration(
+          name=self.name,
+          description=self.description,
+          parameters=parameters,
+      )
     return function_decl
 
   @property
@@ -184,7 +180,7 @@ class McpTool(BaseAuthenticatedTool):
         return {"error": "This tool call is rejected."}
     return await super().run_async(args=args, tool_context=tool_context)
 
-  @retry_on_closed_resource
+  @retry_on_errors
   @override
   async def _run_async_impl(
       self, *, args, tool_context: ToolContext, credential: AuthCredential

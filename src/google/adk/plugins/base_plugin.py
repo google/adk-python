@@ -187,6 +187,14 @@ class BasePlugin(ABC):
     """
     pass
 
+  async def close(self) -> None:
+    """Method executed when the runner is closed.
+
+    This method is used for cleanup tasks such as closing network connections
+    or releasing resources.
+    """
+    pass
+
   async def before_agent_callback(
       self, *, agent: BaseAgent, callback_context: CallbackContext
   ) -> Optional[types.Content]:

@@ -32,16 +32,14 @@ from ..models.llm_response import LlmResponse
 from ..models.registry import LLMRegistry
 from ..utils.context_utils import Aclosing
 from ..utils.feature_decorator import experimental
+from ._retry_options_utils import add_default_retry_options_if_not_present
 from .app_details import AppDetails
+from .eval_case import ConversationScenario
 from .eval_case import Invocation
 from .eval_case import InvocationEvent
 from .eval_case import InvocationEvents
 from .eval_metrics import EvalMetric
 from .eval_metrics import HallucinationsCriterion
-from .eval_metrics import Interval
-from .eval_metrics import MetricInfo
-from .eval_metrics import MetricValueInfo
-from .eval_metrics import PrebuiltMetrics
 from .evaluator import EvalStatus
 from .evaluator import EvaluationResult
 from .evaluator import Evaluator
@@ -297,28 +295,16 @@ class HallucinationsV1Evaluator(Evaluator):
     self.segmenter_prompt = _HALLUCINATIONS_V1_SEGMENTER_PROMPT
     self.sentence_validator_prompt = _HALLUCINATIONS_V1_VALIDATOR_PROMPT
     self._model = self._judge_model_options.judge_model
-    self._model_config = self._judge_model_options.judge_model_config
+    self._model_config = (
+        self._judge_model_options.judge_model_config
+        or genai_types.GenerateContentConfig()
+    )
 
   def _setup_auto_rater(self) -> BaseLlm:
     model_id = self._judge_model_options.judge_model
     llm_registry = LLMRegistry()
     llm_class = llm_registry.resolve(model_id)
     return llm_class(model=model_id)
-
-  @staticmethod
-  def get_metric_info() -> MetricInfo:
-    return MetricInfo(
-        metric_name=PrebuiltMetrics.HALLUCINATIONS_V1.value,
-        description=(
-            "This metric assesses whether a model response contains any false,"
-            " contradictory, or unsupported claims using a LLM as judge. Value"
-            " range for this metric is [0,1], with values closer to 1 more"
-            " desirable."
-        ),
-        metric_value_info=MetricValueInfo(
-            interval=Interval(min_value=0.0, max_value=1.0)
-        ),
-    )
 
   def _create_context_for_step(
       self,
@@ -526,6 +512,7 @@ class HallucinationsV1Evaluator(Evaluator):
         ],
         config=self._model_config,
     )
+    add_default_retry_options_if_not_present(segmenter_llm_request)
     try:
       async with Aclosing(
           self._judge_model.generate_content_async(segmenter_llm_request)
@@ -559,6 +546,7 @@ class HallucinationsV1Evaluator(Evaluator):
         ],
         config=self._model_config,
     )
+    add_default_retry_options_if_not_present(validator_llm_request)
     try:
       async with Aclosing(
           self._judge_model.generate_content_async(validator_llm_request)
@@ -713,8 +701,11 @@ class HallucinationsV1Evaluator(Evaluator):
   async def evaluate_invocations(
       self,
       actual_invocations: list[Invocation],
-      expected_invocations: Optional[list[Invocation]],
+      expected_invocations: Optional[list[Invocation]] = None,
+      conversation_scenario: Optional[ConversationScenario] = None,
   ) -> EvaluationResult:
+    del conversation_scenario  # not used by this metric.
+
     # expected_invocations are not required by the metric and if they are not
     # supplied, we provide a list of None to rest of the code.
     expected_invocations = (
@@ -722,6 +713,7 @@ class HallucinationsV1Evaluator(Evaluator):
         if expected_invocations is None
         else expected_invocations
     )
+
     per_invocation_results = []
     for actual, expected in zip(actual_invocations, expected_invocations):
       step_evaluations = self._get_steps_to_evaluate(actual)
