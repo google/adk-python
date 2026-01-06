@@ -32,11 +32,6 @@ from google.adk.tools import AgentTool
 from google.adk.tools.google_search_tool import google_search
 from google.adk.tools.tool_context import ToolContext
 
-# Uncomment to use Ollama (free, local) instead of Gemini:
-# from google.adk.models.lite_llm import LiteLlm
-# OLLAMA_MODEL = LiteLlm(model="ollama_chat/mistral-small3.1")
-# Then replace model='gemini-2.5-pro' with model=OLLAMA_MODEL
-
 
 # ============================================================================
 # Custom TimeoutAgentTool Wrapper
