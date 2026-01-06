@@ -1,5 +1,26 @@
 # BigQuery Agent Analytics vs Cloud Logging: A Side-by-Side Comparison
 
+## TL;DR Executive Summary
+
+**BigQuery Agent Analytics Plugin** = **Intelligence Layer** (analytics, AI, trends)
+**Cloud Trace/Logging** = **Observation Layer** (debugging, visualization, live ops)
+
+| Question You're Asking | Use This | Why |
+|------------------------|----------|-----|
+| "What's our token spend this week?" | **BigQuery Plugin** | Structured data, SQL aggregations |
+| "Why is this call hanging?" | **Cloud Trace** | Gantt chart, span timeline |
+| "Are our agent responses high quality?" | **BigQuery Plugin** | AI-powered evaluation at scale |
+| "Show me the last 5 errors" | **Cloud Logging** | Live Tail, quick filtering |
+
+**Bottom Line:** Use both. They're complementary, not competing.
+- BigQuery Plugin for **business intelligence** and **AI-powered insights**
+- Cloud Trace for **operational debugging** and **latency analysis**
+
+**Key Differentiator:** The BigQuery Plugin provides a **stable, agent-aware schema** (a contract).
+Cloud Logging/Trace provides raw OTel data where field locations may change without notice.
+
+---
+
 This demo compares two approaches for logging and analyzing ADK agent telemetry:
 
 1. **BigQuery Agent Analytics Plugin** - Purpose-built for deep agent analytics + AI-powered insights
@@ -7,7 +28,7 @@ This demo compares two approaches for logging and analyzing ADK agent telemetry:
 
 ---
 
-## Executive Summary: When to Use What
+## When to Use What
 
 | Use Case | Best Tool | Why |
 |----------|-----------|-----|
