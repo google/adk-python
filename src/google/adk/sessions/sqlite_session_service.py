@@ -415,7 +415,9 @@ class SqliteSessionService(BaseSessionService):
   @asynccontextmanager
   async def _get_db_connection(self):
     """Connects to the db and performs initial setup."""
-    async with aiosqlite.connect(self._db_path) as db:
+    # aiosqlite requires a file path
+    path = self._db_path.replace("sqlite+aiosqlite:///", "")
+    async with aiosqlite.connect(path) as db:
       db.row_factory = aiosqlite.Row
       await db.execute(PRAGMA_FOREIGN_KEYS)
       await db.executescript(CREATE_SCHEMA_SQL)
