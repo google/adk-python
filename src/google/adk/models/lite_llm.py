@@ -584,8 +584,11 @@ async def _get_content(
     parts: Iterable[types.Part],
     *,
     provider: str = "",
-) -> Union[OpenAIMessageContent, str]:
+) -> OpenAIMessageContent:
   """Converts a list of parts to litellm content.
+
+  Thought parts represent internal model reasoning and are always dropped so
+  they are not replayed back to the model in subsequent turns.
 
   Args:
     parts: The parts to convert.
@@ -595,11 +598,25 @@ async def _get_content(
     The litellm content.
   """
 
-  content_objects = []
-  for part in parts:
+  parts_without_thought = [part for part in parts if not part.thought]
+  if len(parts_without_thought) == 1:
+    part = parts_without_thought[0]
     if part.text:
-      if len(parts) == 1:
-        return part.text
+      return part.text
+    if (
+        part.inline_data
+        and part.inline_data.data
+        and part.inline_data.mime_type
+        and part.inline_data.mime_type.startswith("text/")
+    ):
+      return _decode_inline_text_data(part.inline_data.data)
+
+  content_objects = []
+  for part in parts_without_thought:
+    # Skip thought parts to prevent reasoning from being replayed in subsequent
+    # turns. Thought parts are internal model reasoning and should not be sent
+    # back to the model.
+    if part.text:
       content_objects.append({
           "type": "text",
           "text": part.text,
@@ -611,8 +628,6 @@ async def _get_content(
     ):
       if part.inline_data.mime_type.startswith("text/"):
         decoded_text = _decode_inline_text_data(part.inline_data.data)
-        if len(parts) == 1:
-          return decoded_text
         content_objects.append({
             "type": "text",
             "text": decoded_text,
