@@ -1624,7 +1624,7 @@ class AdkWebServer:
         user_id: str,
         session_id: str,
         modalities: List[Literal["TEXT", "AUDIO"]] = Query(
-            default=["TEXT", "AUDIO"]
+            default=["AUDIO"]
         ),  # Only allows "TEXT" or "AUDIO"
     ) -> None:
       await websocket.accept()
