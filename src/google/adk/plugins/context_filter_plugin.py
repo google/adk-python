@@ -14,10 +14,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 import logging
 from typing import Callable
 from typing import List
 from typing import Optional
+
+from google.genai import types
 
 from ..agents.callback_context import CallbackContext
 from ..events.event import Event
@@ -26,6 +29,37 @@ from ..models.llm_response import LlmResponse
 from .base_plugin import BasePlugin
 
 logger = logging.getLogger("google_adk." + __name__)
+
+
+def _adjust_split_index_to_avoid_orphaned_function_responses(
+    contents: Sequence[types.Content], split_index: int
+) -> int:
+  """Moves `split_index` left until function calls/responses stay paired.
+
+  When truncating context, we must avoid keeping a `function_response` while
+  dropping its matching preceding `function_call`.
+
+  Args:
+    contents: Full conversation contents in chronological order.
+    split_index: Candidate split index (keep `contents[split_index:]`).
+
+  Returns:
+    A (possibly smaller) split index that preserves call/response pairs.
+  """
+  needed_call_ids = set()
+  for i in range(len(contents) - 1, -1, -1):
+    parts = contents[i].parts
+    if parts:
+      for part in reversed(parts):
+        if part.function_response and part.function_response.id:
+          needed_call_ids.add(part.function_response.id)
+        if part.function_call and part.function_call.id:
+          needed_call_ids.discard(part.function_call.id)
+
+    if i <= split_index and not needed_call_ids:
+      return i
+
+  return 0
 
 
 class ContextFilterPlugin(BasePlugin):
@@ -76,6 +110,12 @@ class ContextFilterPlugin(BasePlugin):
                   start_index -= 1
                 split_index = start_index
                 break
+          # Adjust split_index to avoid orphaned function_responses.
+          split_index = (
+              _adjust_split_index_to_avoid_orphaned_function_responses(
+                  contents, split_index
+              )
+          )
           contents = contents[split_index:]
 
       if self._custom_filter:

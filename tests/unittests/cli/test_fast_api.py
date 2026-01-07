@@ -17,6 +17,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import signal
 import sys
 import tempfile
 import time
@@ -31,6 +32,7 @@ from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.run_config import RunConfig
 from google.adk.apps.app import App
 from google.adk.artifacts.base_artifact_service import ArtifactVersion
+from google.adk.cli import fast_api as fast_api_module
 from google.adk.cli.fast_api import get_fast_api_app
 from google.adk.errors.input_validation_error import InputValidationError
 from google.adk.evaluation.eval_case import EvalCase
@@ -128,6 +130,7 @@ async def dummy_run_async(
     new_message,
     state_delta=None,
     run_config: Optional[RunConfig] = None,
+    invocation_id: Optional[str] = None,
 ):
   run_config = run_config or RunConfig()
   yield _event_1()
@@ -414,29 +417,41 @@ def test_app(
 
   # Patch multiple services and signal handlers
   with (
-      patch("signal.signal", return_value=None),
-      patch(
-          "google.adk.cli.fast_api.create_session_service_from_options",
+      patch.object(signal, "signal", autospec=True, return_value=None),
+      patch.object(
+          fast_api_module,
+          "create_session_service_from_options",
+          autospec=True,
           return_value=mock_session_service,
       ),
-      patch(
-          "google.adk.cli.fast_api.create_artifact_service_from_options",
+      patch.object(
+          fast_api_module,
+          "create_artifact_service_from_options",
+          autospec=True,
           return_value=mock_artifact_service,
       ),
-      patch(
-          "google.adk.cli.fast_api.create_memory_service_from_options",
+      patch.object(
+          fast_api_module,
+          "create_memory_service_from_options",
+          autospec=True,
           return_value=mock_memory_service,
       ),
-      patch(
-          "google.adk.cli.fast_api.AgentLoader",
+      patch.object(
+          fast_api_module,
+          "AgentLoader",
+          autospec=True,
           return_value=mock_agent_loader,
       ),
-      patch(
-          "google.adk.cli.fast_api.LocalEvalSetsManager",
+      patch.object(
+          fast_api_module,
+          "LocalEvalSetsManager",
+          autospec=True,
           return_value=mock_eval_sets_manager,
       ),
-      patch(
-          "google.adk.cli.fast_api.LocalEvalSetResultsManager",
+      patch.object(
+          fast_api_module,
+          "LocalEvalSetResultsManager",
+          autospec=True,
           return_value=mock_eval_set_results_manager,
       ),
   ):
@@ -457,6 +472,70 @@ def test_app(
     client = TestClient(app)
 
     return client
+
+
+@pytest.fixture
+def builder_test_client(
+    tmp_path,
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """Return a TestClient rooted in a temporary agents directory."""
+  with (
+      patch.object(signal, "signal", autospec=True, return_value=None),
+      patch.object(
+          fast_api_module,
+          "create_session_service_from_options",
+          autospec=True,
+          return_value=mock_session_service,
+      ),
+      patch.object(
+          fast_api_module,
+          "create_artifact_service_from_options",
+          autospec=True,
+          return_value=mock_artifact_service,
+      ),
+      patch.object(
+          fast_api_module,
+          "create_memory_service_from_options",
+          autospec=True,
+          return_value=mock_memory_service,
+      ),
+      patch.object(
+          fast_api_module,
+          "AgentLoader",
+          autospec=True,
+          return_value=mock_agent_loader,
+      ),
+      patch.object(
+          fast_api_module,
+          "LocalEvalSetsManager",
+          autospec=True,
+          return_value=mock_eval_sets_manager,
+      ),
+      patch.object(
+          fast_api_module,
+          "LocalEvalSetResultsManager",
+          autospec=True,
+          return_value=mock_eval_set_results_manager,
+      ),
+  ):
+    app = get_fast_api_app(
+        agents_dir=str(tmp_path),
+        web=True,
+        session_service_uri="",
+        artifact_service_uri="",
+        memory_service_uri="",
+        allow_origins=["*"],
+        a2a=False,
+        host="127.0.0.1",
+        port=8000,
+    )
+    return TestClient(app)
 
 
 @pytest.fixture
@@ -881,6 +960,62 @@ def test_agent_run_passes_state_delta(test_app, create_test_session):
   assert data[3]["actions"]["stateDelta"] == payload["state_delta"]
 
 
+def test_agent_run_sse_splits_artifact_delta(
+    test_app, create_test_session, monkeypatch
+):
+  """Test /run_sse splits artifact deltas to avoid double-rendering in web."""
+  info = create_test_session
+
+  async def run_async_with_artifact_delta(
+      self,
+      *,
+      user_id: str,
+      session_id: str,
+      invocation_id: Optional[str] = None,
+      new_message: Optional[types.Content] = None,
+      state_delta: Optional[dict[str, Any]] = None,
+      run_config: Optional[RunConfig] = None,
+  ):
+    del user_id, session_id, invocation_id, new_message, state_delta, run_config
+    yield Event(
+        author="dummy agent",
+        invocation_id="invocation_id",
+        content=types.Content(
+            role="model", parts=[types.Part(text="LLM reply")]
+        ),
+        actions=EventActions(artifact_delta={"artifact.txt": 0}),
+    )
+
+  monkeypatch.setattr(Runner, "run_async", run_async_with_artifact_delta)
+
+  payload = {
+      "app_name": info["app_name"],
+      "user_id": info["user_id"],
+      "session_id": info["session_id"],
+      "new_message": {"role": "user", "parts": [{"text": "Hello agent"}]},
+      "streaming": True,
+  }
+
+  response = test_app.post("/run_sse", json=payload)
+  assert response.status_code == 200
+
+  sse_events = [
+      json.loads(line.removeprefix("data: "))
+      for line in response.text.splitlines()
+      if line.startswith("data: ")
+  ]
+
+  assert len(sse_events) == 2
+
+  # First event: content but artifactDelta cleared.
+  assert sse_events[0]["content"]["parts"][0]["text"] == "LLM reply"
+  assert sse_events[0]["actions"]["artifactDelta"] == {}
+
+  # Second event: artifactDelta but no content.
+  assert "content" not in sse_events[1]
+  assert sse_events[1]["actions"]["artifactDelta"] == {"artifact.txt": 0}
+
+
 def test_list_artifact_names(test_app, create_test_session):
   """Test listing artifact names for a session."""
   info = create_test_session
@@ -1173,6 +1308,104 @@ def test_patch_memory(test_app, create_test_session, mock_memory_service):
   assert response.status_code == 200
   mock_memory_service.add_session_to_memory.assert_called_once()
   logger.info("Add session to memory test completed successfully")
+
+
+def test_builder_final_save_preserves_tools_and_cleans_tmp(
+    builder_test_client, tmp_path
+):
+  files = [
+      ("files", ("app/__init__.py", b"from . import agent\n", "text/plain")),
+      ("files", ("app/tools.py", b"def tool():\n  return 1\n", "text/plain")),
+      (
+          "files",
+          ("app/root_agent.yaml", b"name: app\n", "application/x-yaml"),
+      ),
+  ]
+  response = builder_test_client.post("/builder/save?tmp=true", files=files)
+  assert response.status_code == 200
+  assert response.json() is True
+
+  response = builder_test_client.post(
+      "/builder/save",
+      files=[(
+          "files",
+          (
+              "app/root_agent.yaml",
+              b"name: app_updated\n",
+              "application/x-yaml",
+          ),
+      )],
+  )
+  assert response.status_code == 200
+  assert response.json() is True
+
+  assert (tmp_path / "app" / "tools.py").is_file()
+  assert not (tmp_path / "app" / "tmp" / "app").exists()
+  tmp_dir = tmp_path / "app" / "tmp"
+  assert not tmp_dir.exists() or not any(tmp_dir.iterdir())
+
+
+def test_builder_cancel_deletes_tmp_idempotent(builder_test_client, tmp_path):
+  tmp_agent_root = tmp_path / "app" / "tmp" / "app"
+  tmp_agent_root.mkdir(parents=True, exist_ok=True)
+  (tmp_agent_root / "root_agent.yaml").write_text("name: app\n")
+
+  response = builder_test_client.post("/builder/app/app/cancel")
+  assert response.status_code == 200
+  assert response.json() is True
+  assert not (tmp_path / "app" / "tmp").exists()
+
+  response = builder_test_client.post("/builder/app/app/cancel")
+  assert response.status_code == 200
+  assert response.json() is True
+  assert not (tmp_path / "app" / "tmp").exists()
+
+
+def test_builder_get_tmp_true_recreates_tmp(builder_test_client, tmp_path):
+  app_root = tmp_path / "app"
+  app_root.mkdir(parents=True, exist_ok=True)
+  (app_root / "root_agent.yaml").write_text("name: app\n")
+  nested_dir = app_root / "nested"
+  nested_dir.mkdir(parents=True, exist_ok=True)
+  (nested_dir / "nested.yaml").write_text("nested: true\n")
+
+  assert not (app_root / "tmp").exists()
+  response = builder_test_client.get("/builder/app/app?tmp=true")
+  assert response.status_code == 200
+  assert response.text == "name: app\n"
+
+  tmp_agent_root = app_root / "tmp" / "app"
+  assert (tmp_agent_root / "root_agent.yaml").is_file()
+  assert (tmp_agent_root / "nested" / "nested.yaml").is_file()
+
+  response = builder_test_client.get(
+      "/builder/app/app?tmp=true&file_path=nested/nested.yaml"
+  )
+  assert response.status_code == 200
+  assert response.text == "nested: true\n"
+
+
+def test_builder_get_tmp_true_missing_app_returns_empty(
+    builder_test_client, tmp_path
+):
+  response = builder_test_client.get("/builder/app/missing?tmp=true")
+  assert response.status_code == 200
+  assert response.text == ""
+  assert not (tmp_path / "missing").exists()
+
+
+def test_builder_save_rejects_traversal(builder_test_client, tmp_path):
+  response = builder_test_client.post(
+      "/builder/save?tmp=true",
+      files=[(
+          "files",
+          ("app/../escape.yaml", b"nope\n", "application/x-yaml"),
+      )],
+  )
+  assert response.status_code == 200
+  assert response.json() is False
+  assert not (tmp_path / "escape.yaml").exists()
+  assert not (tmp_path / "app" / "tmp" / "escape.yaml").exists()
 
 
 if __name__ == "__main__":

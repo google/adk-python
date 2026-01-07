@@ -2087,6 +2087,45 @@ def test_split_message_content_prefers_existing_structured_calls():
 
 
 @pytest.mark.asyncio
+async def test_get_content_filters_thought_parts():
+  """Test that thought parts are filtered from content.
+
+  Thought parts contain model reasoning that should not be sent back to
+  the model in subsequent turns. This test verifies that _get_content
+  skips parts with thought=True.
+
+  See: https://github.com/google/adk-python/issues/3948
+  """
+  # Create a thought part (reasoning) and a regular text part
+  thought_part = types.Part(text="Internal reasoning...", thought=True)
+  regular_part = types.Part.from_text(text="Visible response")
+  parts = [thought_part, regular_part]
+
+  content = await _get_content(parts)
+
+  # The thought part should be filtered out, leaving only the regular text
+  assert content == "Visible response"
+
+
+@pytest.mark.asyncio
+async def test_get_content_filters_all_thought_parts():
+  """Test that all thought parts are filtered when only thoughts present.
+
+  When all parts are thought parts, _get_content should return an empty list.
+
+  See: https://github.com/google/adk-python/issues/3948
+  """
+  thought_part1 = types.Part(text="First reasoning...", thought=True)
+  thought_part2 = types.Part(text="Second reasoning...", thought=True)
+  parts = [thought_part1, thought_part2]
+
+  content = await _get_content(parts)
+
+  # All thought parts should be filtered out
+  assert content == []
+
+
+@pytest.mark.asyncio
 async def test_get_content_text():
   parts = [types.Part.from_text(text="Test text")]
   content = await _get_content(parts)
