@@ -32,6 +32,7 @@ from google.adk.models.lite_llm import _get_completion_inputs
 from google.adk.models.lite_llm import _get_content
 from google.adk.models.lite_llm import _get_provider_from_model
 from google.adk.models.lite_llm import _message_to_generate_content_response
+from google.adk.models.lite_llm import _MISSING_TOOL_RESULT_MESSAGE
 from google.adk.models.lite_llm import _model_response_to_chunk
 from google.adk.models.lite_llm import _model_response_to_generate_content_response
 from google.adk.models.lite_llm import _parse_tool_calls_from_text
@@ -468,6 +469,43 @@ async def test_get_completion_inputs_uses_passed_model_for_gemini_format():
 
   assert response_format["type"] == "json_object"
   assert "response_schema" in response_format
+
+
+@pytest.mark.asyncio
+async def test_get_completion_inputs_inserts_missing_tool_results():
+  user_content = types.Content(
+      role="user", parts=[types.Part.from_text(text="Hi")]
+  )
+  assistant_content = types.Content(
+      role="assistant",
+      parts=[
+          types.Part.from_text(text="Calling tool."),
+          types.Part.from_function_call(
+              name="get_weather", args={"location": "Seoul"}
+          ),
+      ],
+  )
+  assistant_content.parts[1].function_call.id = "tool_call_1"
+  followup_user = types.Content(
+      role="user", parts=[types.Part.from_text(text="Next question.")]
+  )
+
+  llm_request = LlmRequest(
+      contents=[user_content, assistant_content, followup_user]
+  )
+  messages, _, _, _ = await _get_completion_inputs(
+      llm_request, model="openai/gpt-4o"
+  )
+
+  assert [message["role"] for message in messages] == [
+      "user",
+      "assistant",
+      "tool",
+      "user",
+  ]
+  tool_message = messages[2]
+  assert tool_message["tool_call_id"] == "tool_call_1"
+  assert tool_message["content"] == _MISSING_TOOL_RESULT_MESSAGE
 
 
 def test_schema_to_dict_filters_none_enum_values():
@@ -2046,6 +2084,45 @@ def test_split_message_content_prefers_existing_structured_calls():
   content, tool_calls = _split_message_content_and_tool_calls(message)
   assert content == "ignored"
   assert tool_calls == [tool_call]
+
+
+@pytest.mark.asyncio
+async def test_get_content_filters_thought_parts():
+  """Test that thought parts are filtered from content.
+
+  Thought parts contain model reasoning that should not be sent back to
+  the model in subsequent turns. This test verifies that _get_content
+  skips parts with thought=True.
+
+  See: https://github.com/google/adk-python/issues/3948
+  """
+  # Create a thought part (reasoning) and a regular text part
+  thought_part = types.Part(text="Internal reasoning...", thought=True)
+  regular_part = types.Part.from_text(text="Visible response")
+  parts = [thought_part, regular_part]
+
+  content = await _get_content(parts)
+
+  # The thought part should be filtered out, leaving only the regular text
+  assert content == "Visible response"
+
+
+@pytest.mark.asyncio
+async def test_get_content_filters_all_thought_parts():
+  """Test that all thought parts are filtered when only thoughts present.
+
+  When all parts are thought parts, _get_content should return an empty list.
+
+  See: https://github.com/google/adk-python/issues/3948
+  """
+  thought_part1 = types.Part(text="First reasoning...", thought=True)
+  thought_part2 = types.Part(text="Second reasoning...", thought=True)
+  parts = [thought_part1, thought_part2]
+
+  content = await _get_content(parts)
+
+  # All thought parts should be filtered out
+  assert content == []
 
 
 @pytest.mark.asyncio
