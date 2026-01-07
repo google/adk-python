@@ -76,6 +76,7 @@ def get_fast_api_app(
     session_db_kwargs: Optional[Mapping[str, Any]] = None,
     artifact_service_uri: Optional[str] = None,
     memory_service_uri: Optional[str] = None,
+    use_local_storage: bool = True,
     eval_storage_uri: Optional[str] = None,
     allow_origins: Optional[list[str]] = None,
     web: bool,
@@ -122,6 +123,7 @@ def get_fast_api_app(
       base_dir=agents_dir,
       session_service_uri=session_service_uri,
       session_db_kwargs=session_db_kwargs,
+      use_local_storage=use_local_storage,
   )
 
   # Build the Artifact service
@@ -130,6 +132,7 @@ def get_fast_api_app(
         base_dir=agents_dir,
         artifact_service_uri=artifact_service_uri,
         strict_uri=True,
+        use_local_storage=use_local_storage,
     )
   except ValueError as exc:
     raise click.ClickException(str(exc)) from exc
