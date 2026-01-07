@@ -178,12 +178,9 @@ class DatabaseSessionService(BaseSessionService):
           self._db_schema_version = await conn.run_sync(
               _schema_check_utils.get_db_schema_version_from_connection
           )
-      except Exception:
-        # If inspection fails, assume the latest schema
-        logger.warning(
-            "Failed to inspect database tables, assuming the latest schema."
-        )
-        self._db_schema_version = _schema_check_utils.LATEST_SCHEMA_VERSION
+      except Exception as e:
+        logger.error("Failed to inspect database tables: %s", e)
+        raise
 
     # Check if tables are created and create them if not
     if self._tables_created:

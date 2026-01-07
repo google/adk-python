@@ -130,6 +130,7 @@ async def dummy_run_async(
     new_message,
     state_delta=None,
     run_config: Optional[RunConfig] = None,
+    invocation_id: Optional[str] = None,
 ):
   run_config = run_config or RunConfig()
   yield _event_1()
@@ -957,6 +958,62 @@ def test_agent_run_passes_state_delta(test_app, create_test_session):
 
   # Verify we got the expected event
   assert data[3]["actions"]["stateDelta"] == payload["state_delta"]
+
+
+def test_agent_run_sse_splits_artifact_delta(
+    test_app, create_test_session, monkeypatch
+):
+  """Test /run_sse splits artifact deltas to avoid double-rendering in web."""
+  info = create_test_session
+
+  async def run_async_with_artifact_delta(
+      self,
+      *,
+      user_id: str,
+      session_id: str,
+      invocation_id: Optional[str] = None,
+      new_message: Optional[types.Content] = None,
+      state_delta: Optional[dict[str, Any]] = None,
+      run_config: Optional[RunConfig] = None,
+  ):
+    del user_id, session_id, invocation_id, new_message, state_delta, run_config
+    yield Event(
+        author="dummy agent",
+        invocation_id="invocation_id",
+        content=types.Content(
+            role="model", parts=[types.Part(text="LLM reply")]
+        ),
+        actions=EventActions(artifact_delta={"artifact.txt": 0}),
+    )
+
+  monkeypatch.setattr(Runner, "run_async", run_async_with_artifact_delta)
+
+  payload = {
+      "app_name": info["app_name"],
+      "user_id": info["user_id"],
+      "session_id": info["session_id"],
+      "new_message": {"role": "user", "parts": [{"text": "Hello agent"}]},
+      "streaming": True,
+  }
+
+  response = test_app.post("/run_sse", json=payload)
+  assert response.status_code == 200
+
+  sse_events = [
+      json.loads(line.removeprefix("data: "))
+      for line in response.text.splitlines()
+      if line.startswith("data: ")
+  ]
+
+  assert len(sse_events) == 2
+
+  # First event: content but artifactDelta cleared.
+  assert sse_events[0]["content"]["parts"][0]["text"] == "LLM reply"
+  assert sse_events[0]["actions"]["artifactDelta"] == {}
+
+  # Second event: artifactDelta but no content.
+  assert "content" not in sse_events[1]
+  assert sse_events[1]["actions"]["artifactDelta"] == {"artifact.txt": 0}
 
 
 def test_list_artifact_names(test_app, create_test_session):

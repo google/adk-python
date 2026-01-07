@@ -681,3 +681,186 @@ def test_parse_spec_with_path_level_parameters(openapi_spec_generator):
   assert local_param is not None
   assert local_param.param_location == "header"
   assert local_param.type_value is int
+
+
+def test_parse_spec_with_invalid_type_any(openapi_spec_generator):
+  """Test that schemas with type='Any' are sanitized for Pydantic 2.11+.
+
+  External APIs like Google Integration Connectors may return schemas with
+  non-standard types like 'Any'. This test verifies that such types are
+  removed to allow parsing to succeed.
+  """
+  openapi_spec = {
+      "openapi": "3.1.0",
+      "info": {"title": "API with Any type", "version": "1.0.0"},
+      "paths": {
+          "/test": {
+              "get": {
+                  "operationId": "testAnyType",
+                  "responses": {
+                      "200": {
+                          "description": "Success",
+                          "content": {
+                              "application/json": {"schema": {"type": "Any"}}
+                          },
+                      }
+                  },
+              }
+          }
+      },
+  }
+
+  # This should not raise a ValidationError
+  parsed_operations = openapi_spec_generator.parse(openapi_spec)
+
+  assert len(parsed_operations) == 1
+  assert parsed_operations[0].name == "test_any_type"
+
+
+def test_parse_spec_with_nested_invalid_types(openapi_spec_generator):
+  """Test that nested schemas with invalid types are sanitized."""
+  openapi_spec = {
+      "openapi": "3.1.0",
+      "info": {"title": "Nested Invalid Types API", "version": "1.0.0"},
+      "paths": {
+          "/test": {
+              "post": {
+                  "operationId": "testNestedInvalid",
+                  "requestBody": {
+                      "content": {
+                          "application/json": {
+                              "schema": {
+                                  "type": "object",
+                                  "properties": {
+                                      "valid_prop": {"type": "string"},
+                                      "invalid_prop": {"type": "Unknown"},
+                                      "nested_obj": {
+                                          "type": "object",
+                                          "properties": {
+                                              "deeply_invalid": {
+                                                  "type": "CustomType"
+                                              }
+                                          },
+                                      },
+                                  },
+                              }
+                          }
+                      }
+                  },
+                  "responses": {"200": {"description": "OK"}},
+              }
+          }
+      },
+  }
+
+  # This should not raise a ValidationError
+  parsed_operations = openapi_spec_generator.parse(openapi_spec)
+
+  assert len(parsed_operations) == 1
+  op = parsed_operations[0]
+  # The valid properties should still be parsed
+  param_names = [p.original_name for p in op.parameters]
+  assert "valid_prop" in param_names
+  assert "invalid_prop" in param_names
+  assert "nested_obj" in param_names
+
+
+def test_parse_spec_with_type_list_containing_invalid(openapi_spec_generator):
+  """Test that type arrays with invalid values are filtered."""
+  openapi_spec = {
+      "openapi": "3.1.0",
+      "info": {"title": "Type List API", "version": "1.0.0"},
+      "paths": {
+          "/test": {
+              "get": {
+                  "operationId": "testTypeList",
+                  "responses": {
+                      "200": {
+                          "description": "Success",
+                          "content": {
+                              "application/json": {
+                                  "schema": {"type": ["string", "Any", "null"]}
+                              }
+                          },
+                      }
+                  },
+              }
+          }
+      },
+  }
+
+  # This should not raise a ValidationError
+  parsed_operations = openapi_spec_generator.parse(openapi_spec)
+
+  assert len(parsed_operations) == 1
+
+
+def test_sanitize_schema_types_removes_invalid_types(openapi_spec_generator):
+  """Test that _sanitize_schema_types correctly handles invalid types."""
+  spec_with_invalid = {
+      "components": {
+          "schemas": {
+              "InvalidSchema": {"type": "Any", "description": "Invalid type"},
+              "ValidSchema": {"type": "string", "description": "Valid type"},
+          }
+      }
+  }
+
+  sanitized = openapi_spec_generator._sanitize_schema_types(spec_with_invalid)
+
+  # Invalid type should be removed
+  assert "type" not in sanitized["components"]["schemas"]["InvalidSchema"]
+  assert (
+      sanitized["components"]["schemas"]["InvalidSchema"]["description"]
+      == "Invalid type"
+  )
+
+  # Valid type should be preserved
+  assert sanitized["components"]["schemas"]["ValidSchema"]["type"] == "string"
+
+
+def test_sanitize_schema_types_does_not_touch_security_schemes(
+    openapi_spec_generator,
+):
+  """Test that schema type sanitization does not affect security schemes."""
+  spec = {
+      "components": {
+          "schemas": {"InvalidSchema": {"type": "Any"}},
+          "securitySchemes": {
+              "api_key": {
+                  "type": "apiKey",
+                  "in": "header",
+                  "name": "X-API-Key",
+              }
+          },
+      }
+  }
+
+  sanitized = openapi_spec_generator._sanitize_schema_types(spec)
+
+  assert "type" not in sanitized["components"]["schemas"]["InvalidSchema"]
+  assert (
+      sanitized["components"]["securitySchemes"]["api_key"]["type"] == "apiKey"
+  )
+
+
+def test_sanitize_schema_types_filters_type_lists(openapi_spec_generator):
+  """Test that type lists with invalid values are filtered."""
+  spec_with_list = {"schema": {"type": ["string", "Any", "null", "Unknown"]}}
+
+  sanitized = openapi_spec_generator._sanitize_schema_types(spec_with_list)
+
+  # Only valid types should remain
+  assert sanitized["schema"]["type"] == ["string", "null"]
+
+
+def test_sanitize_schema_types_removes_all_invalid_list(openapi_spec_generator):
+  """Test that type field is removed when all list values are invalid."""
+  spec_with_all_invalid = {"schema": {"type": ["Any", "Unknown", "Custom"]}}
+
+  sanitized = openapi_spec_generator._sanitize_schema_types(
+      spec_with_all_invalid
+  )
+
+  # Type field should be removed entirely
+  assert "type" not in sanitized["schema"]
