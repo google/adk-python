@@ -16,6 +16,7 @@ import pathlib
 from unittest import mock
 
 from google.adk.tools.bigquery import data_insights_tool
+from google.adk.tools.tool_context import ToolContext
 import pytest
 import yaml
 
@@ -269,3 +270,134 @@ def test_handle_error(response_dict, expected_output):
   """Tests the error response handler."""
   result = data_insights_tool._handle_error(response_dict)  # pylint: disable=protected-access
   assert result == expected_output
+
+
+@mock.patch.object(
+    data_insights_tool.geminidataanalytics, "DataAgentServiceClient"
+)
+def test_list_accessible_data_agents_success(mock_data_agent_client):
+  """Tests list_accessible_data_agents success path."""
+  mock_creds = mock.Mock()
+  mock_agent1 = mock.MagicMock()
+  mock_agent1.__str__.return_value = "agent1"
+  mock_agent2 = mock.MagicMock()
+  mock_agent2.__str__.return_value = "agent2"
+  mock_data_agent_client.return_value.list_accessible_data_agents.return_value = [
+      mock_agent1,
+      mock_agent2,
+  ]
+  result = data_insights_tool.list_accessible_data_agents(
+      "test-project", mock_creds
+  )
+  assert result["status"] == "SUCCESS"
+  assert result["response"] == ["agent1", "agent2"]
+  mock_data_agent_client.assert_called_once_with(credentials=mock_creds)
+
+
+@mock.patch.object(
+    data_insights_tool.geminidataanalytics, "DataAgentServiceClient"
+)
+def test_list_accessible_data_agents_exception(mock_data_agent_client):
+  """Tests list_accessible_data_agents exception path."""
+  mock_creds = mock.Mock()
+  mock_data_agent_client.return_value.list_accessible_data_agents.side_effect = Exception(
+      "List failed!"
+  )
+  result = data_insights_tool.list_accessible_data_agents(
+      "test-project", mock_creds
+  )
+  assert result["status"] == "ERROR"
+  assert "List failed!" in result["error_details"]
+  mock_data_agent_client.assert_called_once_with(credentials=mock_creds)
+
+
+@mock.patch.object(
+    data_insights_tool.geminidataanalytics, "DataAgentServiceClient"
+)
+def test_get_data_agent_info_success(mock_data_agent_client):
+  """Tests get_data_agent_info success path."""
+  mock_creds = mock.Mock()
+  mock_response = mock.MagicMock()
+  mock_response.__str__.return_value = "agent_info"
+  mock_data_agent_client.return_value.get_data_agent.return_value = (
+      mock_response
+  )
+  result = data_insights_tool.get_data_agent_info("agent_name", mock_creds)
+  assert result["status"] == "SUCCESS"
+  assert result["response"] == "agent_info"
+  mock_data_agent_client.assert_called_once_with(credentials=mock_creds)
+
+
+@mock.patch.object(
+    data_insights_tool.geminidataanalytics, "DataAgentServiceClient"
+)
+def test_get_data_agent_info_exception(mock_data_agent_client):
+  """Tests get_data_agent_info exception path."""
+  mock_creds = mock.Mock()
+  mock_data_agent_client.return_value.get_data_agent.side_effect = Exception(
+      "Get failed!"
+  )
+  result = data_insights_tool.get_data_agent_info("agent_name", mock_creds)
+  assert result["status"] == "ERROR"
+  assert "Get failed!" in result["error_details"]
+  mock_data_agent_client.assert_called_once_with(credentials=mock_creds)
+
+
+@mock.patch.object(
+    data_insights_tool.geminidataanalytics, "DataChatServiceClient"
+)
+def test_ask_data_agent_success(mock_data_chat_client):
+  """Tests ask_data_agent success path."""
+  mock_creds = mock.Mock()
+  mock_invocation_context = mock.Mock()
+  mock_invocation_context.session.state = {}
+  mock_context = ToolContext(mock_invocation_context)
+  mock_response1 = mock.MagicMock()
+  mock_response1.system_message.text.parts = ["response1"]
+  mock_response1.system_message.data.generated_sql = None
+  mock_response1.system_message.data.result = None
+  mock_response1.system_message.error = None
+  mock_response2 = mock.MagicMock()
+  mock_response2.system_message.text.parts = ["response2"]
+  mock_response2.system_message.data.generated_sql = None
+  mock_response2.system_message.data.result = None
+  mock_response2.system_message.error = None
+  mock_data_chat_client.return_value.chat.return_value = [
+      mock_response1,
+      mock_response2,
+  ]
+  result = data_insights_tool.ask_data_agent(
+      "projects/p/locations/l/dataAgents/a",
+      "query",
+      credentials=mock_creds,
+      tool_context=mock_context,
+  )
+  assert result["status"] == "SUCCESS"
+  assert result["response"] == [
+      {"Answer": "response1"},
+      {"Answer": "response2"},
+  ]
+  mock_data_chat_client.assert_called_once_with(credentials=mock_creds)
+
+
+@mock.patch.object(
+    data_insights_tool.geminidataanalytics, "DataChatServiceClient"
+)
+def test_ask_data_agent_exception(mock_data_chat_client):
+  """Tests ask_data_agent exception path."""
+  mock_creds = mock.Mock()
+  mock_invocation_context = mock.Mock()
+  mock_invocation_context.session.state = {}
+  mock_context = ToolContext(mock_invocation_context)
+  mock_data_chat_client.return_value.chat.side_effect = Exception(
+      "Chat failed!"
+  )
+  result = data_insights_tool.ask_data_agent(
+      "projects/p/locations/l/dataAgents/a",
+      "query",
+      credentials=mock_creds,
+      tool_context=mock_context,
+  )
+  assert result["status"] == "ERROR"
+  assert "Chat failed!" in result["error_details"]
+  mock_data_chat_client.assert_called_once_with(credentials=mock_creds)
