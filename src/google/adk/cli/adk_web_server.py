@@ -1642,9 +1642,12 @@ class AdkWebServer:
 
       async def forward_events():
         runner = await self.get_runner_async(app_name)
+        run_config = RunConfig(response_modalities=modalities)
         async with Aclosing(
             runner.run_live(
-                session=session, live_request_queue=live_request_queue
+                session=session,
+                live_request_queue=live_request_queue,
+                run_config=run_config,
             )
         ) as agen:
           async for event in agen:
