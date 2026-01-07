@@ -31,6 +31,9 @@ from google.adk.plugins import ReflectAndRetryToolPlugin
 from google.adk.tools import AgentTool
 from google.adk.tools.google_search_tool import google_search
 from google.adk.tools.tool_context import ToolContext
+import time
+from google.genai import types
+from google.adk.events.event import Event
 
 
 # ============================================================================
@@ -96,9 +99,6 @@ class TimeoutAgentTool(AgentTool):
     Note: Timeout for async generators requires careful handling.
     This implementation uses a task-based approach with timeout monitoring.
     """
-    import time
-    from google.genai import types
-    from google.adk.events.event import Event
     
     start_time = time.time()
     agen = super().run_async_with_events(
@@ -278,8 +278,8 @@ coordinator_agent = Agent(
         # For production, use a longer timeout (e.g., 30.0 seconds)
         TimeoutAgentTool(
             agent=research_agent_primary,
-            timeout=5.0,  # Change to 5.0 for timeout testing
-            timeout_error_message="Primary research agent timed out after 30 seconds",
+            timeout=10.0,  # Change to 5.0 for timeout testing
+            timeout_error_message="Primary research agent timed out after 10 seconds",
             skip_summarization=True,
         ),
         # Fallback agent timeout
@@ -287,7 +287,7 @@ coordinator_agent = Agent(
         # For production: Set to 60.0 to allow fallback to succeed after primary timeout
         TimeoutAgentTool(
             agent=research_agent_fallback,
-            timeout=5.0,  # Set to 60.0 to test successful fallback after primary timeout
+            timeout=60.0,  # Set to 60.0 to test successful fallback after primary timeout
             timeout_error_message="Fallback research agent timed out",
             skip_summarization=True,
         ),

@@ -33,5 +33,3 @@ The sample includes:
 - `research_agent_primary` - Primary agent with timeout protection (5s)
 - `research_agent_fallback` - Fallback agent with longer timeout (60s)
 - `error_recovery_agent` - Analyzes failures and provides recommendations
-
-For detailed documentation, see `README_EXTENSIVE.md`.
