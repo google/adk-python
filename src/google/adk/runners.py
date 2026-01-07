@@ -1381,23 +1381,15 @@ class Runner:
     """Creates a new invocation context for live multi-agent."""
     run_config = run_config or RunConfig()
 
-    # For live multi-agent, we need model's text transcription as context for
-    # next agent.
+    # For live multi-agents system, we need model's text transcription as
+    # context for the transferred agent.
     if self.agent.sub_agents and live_request_queue:
-      if not run_config.response_modalities:
-        # default
-        run_config.response_modalities = ['AUDIO']
-        if not run_config.output_audio_transcription:
-          run_config.output_audio_transcription = (
-              types.AudioTranscriptionConfig()
-          )
-      elif 'TEXT' not in run_config.response_modalities:
+      if 'AUDIO' in run_config.response_modalities:
         if not run_config.output_audio_transcription:
           run_config.output_audio_transcription = (
               types.AudioTranscriptionConfig()
           )
       if not run_config.input_audio_transcription:
-        # need this input transcription for agent transferring in live mode.
         run_config.input_audio_transcription = types.AudioTranscriptionConfig()
     return self._new_invocation_context(
         session,
