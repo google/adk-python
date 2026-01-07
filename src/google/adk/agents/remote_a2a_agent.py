@@ -420,6 +420,8 @@ class RemoteA2aAgent(BaseAgent):
                   TaskState.submitted,
                   TaskState.working,
               )
+              and event.content is not None
+              and event.content.parts
           ):
             event.content.parts[0].thought = True
         elif (
@@ -431,7 +433,7 @@ class RemoteA2aAgent(BaseAgent):
           event = convert_a2a_message_to_event(
               update.status.message, self.name, ctx, self._a2a_part_converter
           )
-          if event.content and update.status.state in (
+          if event.content is not None and update.status.state in (
               TaskState.submitted,
               TaskState.working,
           ):
