@@ -176,7 +176,7 @@ class CredentialManager:
   async def _load_existing_credential(
       self, callback_context: CallbackContext
   ) -> Optional[AuthCredential]:
-    """Load existing credential from credential service or cached exchanged credential."""
+    """Load existing credential from credential service."""
 
     # Try loading from credential service first
     credential = await self._load_from_credential_service(callback_context)

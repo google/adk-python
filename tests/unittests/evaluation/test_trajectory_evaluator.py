@@ -23,11 +23,77 @@ from google.adk.evaluation.eval_metrics import ToolTrajectoryCriterion
 from google.adk.evaluation.evaluator import EvalStatus
 from google.adk.evaluation.trajectory_evaluator import TrajectoryEvaluator
 from google.genai import types as genai_types
+from pydantic import ValidationError
 import pytest
 
 _USER_CONTENT = genai_types.Content(
     parts=[genai_types.Part(text="User input here.")]
 )
+
+
+def test_tool_trajectory_criterion_accepts_string_match_type():
+  criterion = ToolTrajectoryCriterion(threshold=0.5, match_type="in_order")
+  assert criterion.match_type == ToolTrajectoryCriterion.MatchType.IN_ORDER
+
+
+@pytest.mark.parametrize(
+    ("match_type", "expected"),
+    [
+        ("exact", ToolTrajectoryCriterion.MatchType.EXACT),
+        ("EXACT", ToolTrajectoryCriterion.MatchType.EXACT),
+        (" exact ", ToolTrajectoryCriterion.MatchType.EXACT),
+        ("in order", ToolTrajectoryCriterion.MatchType.IN_ORDER),
+        ("IN ORDER", ToolTrajectoryCriterion.MatchType.IN_ORDER),
+        ("In OrDeR", ToolTrajectoryCriterion.MatchType.IN_ORDER),
+        ("in-order", ToolTrajectoryCriterion.MatchType.IN_ORDER),
+        ("IN-ORDER", ToolTrajectoryCriterion.MatchType.IN_ORDER),
+        ("in_order", ToolTrajectoryCriterion.MatchType.IN_ORDER),
+        ("any order", ToolTrajectoryCriterion.MatchType.ANY_ORDER),
+        ("ANY ORDER", ToolTrajectoryCriterion.MatchType.ANY_ORDER),
+        ("any-order", ToolTrajectoryCriterion.MatchType.ANY_ORDER),
+        ("ANY-ORDER", ToolTrajectoryCriterion.MatchType.ANY_ORDER),
+        ("any_order", ToolTrajectoryCriterion.MatchType.ANY_ORDER),
+    ],
+)
+def test_tool_trajectory_criterion_normalizes_string_match_type(
+    match_type: str, expected: ToolTrajectoryCriterion.MatchType
+):
+  criterion = ToolTrajectoryCriterion(threshold=0.5, match_type=match_type)
+  assert criterion.match_type == expected
+
+
+def test_tool_trajectory_criterion_rejects_unknown_string_match_type():
+  with pytest.raises(ValidationError):
+    ToolTrajectoryCriterion(threshold=0.5, match_type="random string")
+
+
+def test_trajectory_evaluator_accepts_string_match_type_from_eval_metric_dict():
+  eval_metric = EvalMetric(
+      threshold=0.5,
+      metric_name=PrebuiltMetrics.TOOL_TRAJECTORY_AVG_SCORE.value,
+      criterion={
+          "threshold": 0.5,
+          "match_type": "ANY_ORDER",
+      },
+  )
+  evaluator = TrajectoryEvaluator(eval_metric=eval_metric)
+
+  tool_call1 = genai_types.FunctionCall(name="test_func1", args={})
+  tool_call2 = genai_types.FunctionCall(name="test_func2", args={})
+
+  actual_invocation = Invocation(
+      user_content=_USER_CONTENT,
+      intermediate_data=IntermediateData(tool_uses=[tool_call1, tool_call2]),
+  )
+  expected_invocation = Invocation(
+      user_content=_USER_CONTENT,
+      intermediate_data=IntermediateData(tool_uses=[tool_call2, tool_call1]),
+  )
+
+  result = evaluator.evaluate_invocations(
+      [actual_invocation], [expected_invocation]
+  )
+  assert result.overall_score == 1.0
 
 
 @pytest.fixture

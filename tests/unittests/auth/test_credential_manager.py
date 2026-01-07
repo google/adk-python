@@ -132,6 +132,22 @@ class TestCredentialManager:
     assert result is None
 
   @pytest.mark.asyncio
+  async def test_load_existing_credential_already_exchanged(self):
+    """Test _load_existing_credential ignores shared config cache."""
+    auth_config = Mock(spec=AuthConfig)
+    mock_credential = Mock(spec=AuthCredential)
+    auth_config.exchanged_auth_credential = mock_credential
+
+    callback_context = Mock()
+
+    manager = CredentialManager(auth_config)
+    manager._load_from_credential_service = AsyncMock(return_value=None)
+
+    result = await manager._load_existing_credential(callback_context)
+
+    assert result is None
+
+  @pytest.mark.asyncio
   async def test_load_existing_credential_with_credential_service(self):
     """Test _load_existing_credential with credential service."""
     auth_config = Mock(spec=AuthConfig)
