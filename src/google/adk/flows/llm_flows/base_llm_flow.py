@@ -476,7 +476,11 @@ class BaseLlmFlow(ABC):
     # We may need to wrap some built-in tools if there are other tools
     # because the built-in tools cannot be used together with other tools.
     # TODO(b/448114567): Remove once the workaround is no longer needed.
+    if not agent.tools:
+      return
+
     multiple_tools = len(agent.tools) > 1
+    model = agent.canonical_model
     for tool_union in agent.tools:
       tool_context = ToolContext(invocation_context)
 
@@ -492,7 +496,7 @@ class BaseLlmFlow(ABC):
       tools = await _convert_tool_union_to_tools(
           tool_union,
           ReadonlyContext(invocation_context),
-          agent.model,
+          model,
           multiple_tools,
       )
       for tool in tools:
