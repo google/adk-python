@@ -63,7 +63,6 @@ logger = logging.getLogger('google_adk.' + __name__)
 _ADK_AGENT_NAME_LABEL_KEY = 'adk_agent_name'
 
 # Timing configuration
-DEFAULT_REQUEST_QUEUE_TIMEOUT = 0.25
 DEFAULT_TRANSFER_AGENT_DELAY = 1.0
 DEFAULT_TASK_COMPLETION_DELAY = 1.0
 
@@ -238,29 +237,22 @@ class BaseLlmFlow(ABC):
     """Sends data to model."""
     while True:
       live_request_queue = invocation_context.live_request_queue
-      try:
-        # Streamlit's execution model doesn't preemptively yield to the event
-        # loop. Therefore, we must explicitly introduce timeouts to allow the
-        # event loop to process events.
-        # TODO: revert back(remove timeout) once we move off streamlit.
-        live_request = await asyncio.wait_for(
-            live_request_queue.get(), timeout=DEFAULT_REQUEST_QUEUE_TIMEOUT
-        )
-        # duplicate the live_request to all the active streams
-        logger.debug(
-            'Sending live request %s to active streams: %s',
-            live_request,
-            invocation_context.active_streaming_tools,
-        )
-        if invocation_context.active_streaming_tools:
-          for active_streaming_tool in (
-              invocation_context.active_streaming_tools
-          ).values():
-            if active_streaming_tool.stream:
-              active_streaming_tool.stream.send(live_request)
-        await asyncio.sleep(0)
-      except asyncio.TimeoutError:
-        continue
+      live_request = await live_request_queue.get()
+      # duplicate the live_request to all the active streams
+      logger.debug(
+          'Sending live request %s to active streams: %s',
+          live_request,
+          invocation_context.active_streaming_tools,
+      )
+      if invocation_context.active_streaming_tools:
+        for active_streaming_tool in (
+            invocation_context.active_streaming_tools
+        ).values():
+          if active_streaming_tool.stream:
+            active_streaming_tool.stream.send(live_request)
+      # Yield to event loop for cooperative multitasking
+      await asyncio.sleep(0)
+
       if live_request.close:
         await llm_connection.close()
         return
@@ -484,7 +476,11 @@ class BaseLlmFlow(ABC):
     # We may need to wrap some built-in tools if there are other tools
     # because the built-in tools cannot be used together with other tools.
     # TODO(b/448114567): Remove once the workaround is no longer needed.
+    if not agent.tools:
+      return
+
     multiple_tools = len(agent.tools) > 1
+    model = agent.canonical_model
     for tool_union in agent.tools:
       tool_context = ToolContext(invocation_context)
 
@@ -500,7 +496,7 @@ class BaseLlmFlow(ABC):
       tools = await _convert_tool_union_to_tools(
           tool_union,
           ReadonlyContext(invocation_context),
-          agent.model,
+          model,
           multiple_tools,
       )
       for tool in tools:

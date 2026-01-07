@@ -110,7 +110,9 @@ class TestBasicLlmRequestProcessor:
     assert llm_request.config.response_mime_type != 'application/json'
 
     # Should have checked if output schema can be used with tools
-    can_use_output_schema_with_tools.assert_called_once_with(agent.model)
+    can_use_output_schema_with_tools.assert_called_once_with(
+        agent.canonical_model
+    )
 
   @pytest.mark.asyncio
   async def test_sets_output_schema_when_tools_present(self, mocker):
@@ -141,7 +143,9 @@ class TestBasicLlmRequestProcessor:
     assert llm_request.config.response_mime_type == 'application/json'
 
     # Should have checked if output schema can be used with tools
-    can_use_output_schema_with_tools.assert_called_once_with(agent.model)
+    can_use_output_schema_with_tools.assert_called_once_with(
+        agent.canonical_model
+    )
 
   @pytest.mark.asyncio
   async def test_no_output_schema_no_tools(self):
