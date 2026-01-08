@@ -301,6 +301,7 @@ class RubricBasedEvaluator(LlmAsJudge):
       invocation_results_summarizer: InvocationResultsSummarizer = (
           MeanInvocationResultsSummarizer()
       ),
+      rubric_type: Optional[str] = None,
   ):
     """Initializes the RubricBasedEvaluator.
 
@@ -315,11 +316,14 @@ class RubricBasedEvaluator(LlmAsJudge):
         to account for the unreliability of the LLM.
       invocation_results_summarizer: An object that summarizes the results of
         all invocations in an eval case into a single result.
+      rubric_type: Invocation and case level rubrics will be filtered by this
+        type.
     """
     super().__init__(
         eval_metric,
         criterion_type=criterion_type,
     )
+    self._rubric_type = rubric_type
     self._auto_rater_prompt_template = ""
     self._auto_rater_response_parser = auto_rater_response_parser
     self._per_invocation_results_aggregator = per_invocation_results_aggregator
@@ -353,7 +357,12 @@ class RubricBasedEvaluator(LlmAsJudge):
     _add_rubrics(self._rubrics, "criterion")
 
     if invocation_rubrics:
-      _add_rubrics(invocation_rubrics, "invocation")
+      filtered_invocation_rubrics = invocation_rubrics
+      if self._rubric_type:
+        filtered_invocation_rubrics = [
+            r for r in invocation_rubrics if r.type == self._rubric_type
+        ]
+      _add_rubrics(filtered_invocation_rubrics, "invocation")
 
     self._effective_rubrics_list = list(rubrics_by_id.values())
 

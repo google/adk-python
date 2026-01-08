@@ -154,11 +154,13 @@ class RubricBasedToolUseV1Evaluator(RubricBasedEvaluator):
   """
 
   criterion_type: ClassVar[type[RubricsBasedCriterion]] = RubricsBasedCriterion
+  RUBRIC_TYPE: ClassVar[str] = "TOOL_USE_QUALITY"
 
   def __init__(self, eval_metric: EvalMetric):
     super().__init__(
         eval_metric,
         criterion_type=RubricBasedToolUseV1Evaluator.criterion_type,
+        rubric_type=RubricBasedToolUseV1Evaluator.RUBRIC_TYPE,
     )
     self._auto_rater_prompt_template = _RUBRIC_BASED_TOOL_USE_QUALITY_V1_PROMPT
 
