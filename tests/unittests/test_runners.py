@@ -22,6 +22,7 @@ from unittest.mock import AsyncMock
 
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.context_cache_config import ContextCacheConfig
+from google.adk.agents.live_request_queue import LiveRequestQueue
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.run_config import RunConfig
@@ -36,6 +37,7 @@ from google.adk.models.llm_response import LlmResponse
 from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from tests.unittests import testing_utils
 from google.adk.sessions.session import Session
 from google.genai import types
 import pytest
@@ -1785,6 +1787,125 @@ class TestRunnerMetadata:
 
     # Nested object changes in callback WILL affect original (shallow copy behavior)
     assert original_metadata["nested"]["inner_key"] == "modified_nested"
+
+  def test_new_invocation_context_for_live_with_metadata(self):
+    """Test that _new_invocation_context_for_live correctly passes metadata."""
+    mock_session = Session(
+        id=TEST_SESSION_ID,
+        app_name=TEST_APP_ID,
+        user_id=TEST_USER_ID,
+        events=[],
+    )
+
+    test_metadata = {"user_id": "live_user", "trace_id": "live_trace"}
+    invocation_context = self.runner._new_invocation_context_for_live(
+        mock_session, metadata=test_metadata
+    )
+
+    assert invocation_context.metadata == test_metadata
+    assert invocation_context.metadata["user_id"] == "live_user"
+
+  @pytest.mark.asyncio
+  async def test_run_sync_passes_metadata(self):
+    """Test that sync run() correctly passes metadata to run_async()."""
+    captured_metadata = None
+
+    def before_model_callback(callback_context, llm_request):
+      nonlocal captured_metadata
+      captured_metadata = llm_request.metadata
+      return LlmResponse(
+          content=types.Content(
+              role="model", parts=[types.Part(text="Test response")]
+          )
+      )
+
+    agent_with_callback = LlmAgent(
+        name="callback_agent",
+        model="gemini-2.0-flash",
+        before_model_callback=before_model_callback,
+    )
+
+    runner_with_callback = Runner(
+        app_name="test_app",
+        agent=agent_with_callback,
+        session_service=self.session_service,
+        artifact_service=self.artifact_service,
+    )
+
+    await self.session_service.create_session(
+        app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+    )
+
+    test_metadata = {"sync_key": "sync_value"}
+
+    for event in runner_with_callback.run(
+        user_id=TEST_USER_ID,
+        session_id=TEST_SESSION_ID,
+        new_message=types.Content(
+            role="user", parts=[types.Part(text="Hello")]
+        ),
+        metadata=test_metadata,
+    ):
+      pass
+
+    assert captured_metadata is not None
+    assert captured_metadata["sync_key"] == "sync_value"
+
+  @pytest.mark.asyncio
+  async def test_run_live_passes_metadata_to_llm_request(self):
+    """Test that run_live() passes metadata through live pipeline to LlmRequest."""
+    import asyncio
+
+    # Create MockModel to capture LlmRequest
+    mock_model = testing_utils.MockModel.create(
+        responses=[
+            LlmResponse(
+                content=types.Content(
+                    role="model", parts=[types.Part(text="Live response")]
+                )
+            )
+        ]
+    )
+
+    agent_with_mock = LlmAgent(
+        name="live_mock_agent",
+        model=mock_model,
+    )
+
+    runner_with_mock = Runner(
+        app_name="test_app",
+        agent=agent_with_mock,
+        session_service=self.session_service,
+        artifact_service=self.artifact_service,
+    )
+
+    await self.session_service.create_session(
+        app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+    )
+
+    test_metadata = {"live_key": "live_value", "trace_id": "live_trace_123"}
+    live_queue = LiveRequestQueue()
+    live_queue.close()  # Close immediately to end the live session
+
+    async def consume_events():
+      async for event in runner_with_mock.run_live(
+          user_id=TEST_USER_ID,
+          session_id=TEST_SESSION_ID,
+          live_request_queue=live_queue,
+          metadata=test_metadata,
+      ):
+        pass
+
+    try:
+      await asyncio.wait_for(consume_events(), timeout=2)
+    except asyncio.TimeoutError:
+      pass  # Expected - live session may not terminate cleanly
+
+    # Verify MockModel received LlmRequest with correct metadata
+    assert len(mock_model.requests) > 0
+    assert mock_model.requests[0].metadata is not None
+    assert mock_model.requests[0].metadata["live_key"] == "live_value"
+    assert mock_model.requests[0].metadata["trace_id"] == "live_trace_123"
 
 
 if __name__ == "__main__":
