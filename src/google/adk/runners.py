@@ -962,7 +962,10 @@ class Runner:
           app_name=self.app_name, user_id=user_id, session_id=session_id
       )
       if not session:
-        raise ValueError(f'Session not found: {session_id}')
+        raise ValueError(
+            f'Session not found for user id: {user_id} and session id:'
+            f' {session_id}'
+        )
     invocation_context = self._new_invocation_context_for_live(
         session,
         live_request_queue=live_request_queue,
