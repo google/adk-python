@@ -227,9 +227,13 @@ class AgentTool(BaseTool):
     )
 
     last_content = None
+    invocation_context = tool_context._invocation_context
     async with Aclosing(
         runner.run_async(
-            user_id=session.user_id, session_id=session.id, new_message=content
+            user_id=session.user_id,
+            session_id=session.id,
+            new_message=content,
+            run_config=invocation_context.run_config,
         )
     ) as agen:
       async for event in agen:
@@ -269,9 +273,13 @@ class AgentTool(BaseTool):
     )
 
     # Yield events from the sub-agent as they are generated
+    invocation_context = tool_context._invocation_context
     async with Aclosing(
         runner.run_async(
-            user_id=session.user_id, session_id=session.id, new_message=content
+            user_id=session.user_id,
+            session_id=session.id,
+            new_message=content,
+            run_config=invocation_context.run_config,
         )
     ) as agen:
       async for event in agen:
