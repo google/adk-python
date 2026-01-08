@@ -52,11 +52,24 @@ async def _create_readonly_context(
   return ReadonlyContext(invocation_context)
 
 
-def test_canonical_model_empty():
-  agent = LlmAgent(name='test_agent')
-
-  with pytest.raises(ValueError):
-    _ = agent.canonical_model
+@pytest.mark.parametrize(
+    ('default_model', 'expected_model_name', 'expected_model_type'),
+    [
+        (LlmAgent.DEFAULT_MODEL, LlmAgent.DEFAULT_MODEL, Gemini),
+        ('gemini-2.0-flash', 'gemini-2.0-flash', Gemini),
+    ],
+)
+def test_canonical_model_default_fallback(
+    default_model, expected_model_name, expected_model_type
+):
+  original_default = LlmAgent._default_model
+  LlmAgent.set_default_model(default_model)
+  try:
+    agent = LlmAgent(name='test_agent')
+    assert isinstance(agent.canonical_model, expected_model_type)
+    assert agent.canonical_model.model == expected_model_name
+  finally:
+    LlmAgent.set_default_model(original_default)
 
 
 def test_canonical_model_str():
