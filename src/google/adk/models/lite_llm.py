@@ -104,6 +104,11 @@ _SUPPORTED_FILE_CONTENT_MIME_TYPES = frozenset({
 # Providers that require file_id instead of inline file_data
 _FILE_ID_REQUIRED_PROVIDERS = frozenset({"openai", "azure"})
 
+_MISSING_TOOL_RESULT_MESSAGE = (
+    "Error: Missing tool result (tool execution may have been interrupted "
+    "before a response was recorded)."
+)
+
 
 def _get_provider_from_model(model: str) -> str:
   """Extracts the provider name from a LiteLLM model string.
@@ -516,12 +521,74 @@ async def _content_to_message_param(
     )
 
 
+def _ensure_tool_results(messages: List[Message]) -> List[Message]:
+  """Insert placeholder tool messages for missing tool results.
+
+  LiteLLM-backed providers like OpenAI and Anthropic reject histories where an
+  assistant tool call is not followed by tool responses before the next
+  non-tool message. This helps recover from interrupted tool execution.
+  """
+  if not messages:
+    return messages
+
+  healed_messages: List[Message] = []
+  pending_tool_call_ids: List[str] = []
+
+  for message in messages:
+    role = message.get("role")
+    if pending_tool_call_ids and role != "tool":
+      logger.warning(
+          "Missing tool results for tool_call_id(s): %s",
+          pending_tool_call_ids,
+      )
+      healed_messages.extend(
+          ChatCompletionToolMessage(
+              role="tool",
+              tool_call_id=tool_call_id,
+              content=_MISSING_TOOL_RESULT_MESSAGE,
+          )
+          for tool_call_id in pending_tool_call_ids
+      )
+      pending_tool_call_ids = []
+
+    if role == "assistant":
+      tool_calls = message.get("tool_calls") or []
+      pending_tool_call_ids = [
+          tool_call.get("id") for tool_call in tool_calls if tool_call.get("id")
+      ]
+    elif role == "tool":
+      tool_call_id = message.get("tool_call_id")
+      if tool_call_id in pending_tool_call_ids:
+        pending_tool_call_ids.remove(tool_call_id)
+
+    healed_messages.append(message)
+
+  if pending_tool_call_ids:
+    logger.warning(
+        "Missing tool results for tool_call_id(s): %s",
+        pending_tool_call_ids,
+    )
+    healed_messages.extend(
+        ChatCompletionToolMessage(
+            role="tool",
+            tool_call_id=tool_call_id,
+            content=_MISSING_TOOL_RESULT_MESSAGE,
+        )
+        for tool_call_id in pending_tool_call_ids
+    )
+
+  return healed_messages
+
+
 async def _get_content(
     parts: Iterable[types.Part],
     *,
     provider: str = "",
-) -> Union[OpenAIMessageContent, str]:
+) -> OpenAIMessageContent:
   """Converts a list of parts to litellm content.
+
+  Thought parts represent internal model reasoning and are always dropped so
+  they are not replayed back to the model in subsequent turns.
 
   Args:
     parts: The parts to convert.
@@ -531,11 +598,25 @@ async def _get_content(
     The litellm content.
   """
 
-  content_objects = []
-  for part in parts:
+  parts_without_thought = [part for part in parts if not part.thought]
+  if len(parts_without_thought) == 1:
+    part = parts_without_thought[0]
     if part.text:
-      if len(parts) == 1:
-        return part.text
+      return part.text
+    if (
+        part.inline_data
+        and part.inline_data.data
+        and part.inline_data.mime_type
+        and part.inline_data.mime_type.startswith("text/")
+    ):
+      return _decode_inline_text_data(part.inline_data.data)
+
+  content_objects = []
+  for part in parts_without_thought:
+    # Skip thought parts to prevent reasoning from being replayed in subsequent
+    # turns. Thought parts are internal model reasoning and should not be sent
+    # back to the model.
+    if part.text:
       content_objects.append({
           "type": "text",
           "text": part.text,
@@ -547,8 +628,6 @@ async def _get_content(
     ):
       if part.inline_data.mime_type.startswith("text/"):
         decoded_text = _decode_inline_text_data(part.inline_data.data)
-        if len(parts) == 1:
-          return decoded_text
         content_objects.append({
             "type": "text",
             "text": decoded_text,
@@ -1266,6 +1345,7 @@ async def _get_completion_inputs(
             content=llm_request.config.system_instruction,
         ),
     )
+  messages = _ensure_tool_results(messages)
 
   # 2. Convert tool declarations
   tools: Optional[List[Dict]] = None

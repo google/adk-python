@@ -191,7 +191,9 @@ async def test_output_schema_request_processor(
     assert not llm_request.config.system_instruction
 
   # Should have checked if output schema can be used with tools
-  can_use_output_schema_with_tools.assert_called_once_with(agent.model)
+  can_use_output_schema_with_tools.assert_called_once_with(
+      agent.canonical_model
+  )
 
 
 @pytest.mark.asyncio

@@ -84,6 +84,19 @@ def _has_non_empty_transcription_text(transcription) -> bool:
   )
 
 
+def _apply_run_config_custom_metadata(
+    event: Event, run_config: RunConfig | None
+) -> None:
+  """Merges run-level custom metadata into the event, if present."""
+  if not run_config or not run_config.custom_metadata:
+    return
+
+  event.custom_metadata = {
+      **run_config.custom_metadata,
+      **(event.custom_metadata or {}),
+  }
+
+
 class Runner:
   """The Runner class is used to run agents.
 
@@ -695,6 +708,9 @@ class Runner:
           author='model',
           content=early_exit_result,
       )
+      _apply_run_config_custom_metadata(
+          early_exit_event, invocation_context.run_config
+      )
       if self._should_append_event(early_exit_event, is_live_call):
         await self.session_service.append_event(
             session=session,
@@ -721,6 +737,9 @@ class Runner:
 
       async with Aclosing(execute_fn(invocation_context)) as agen:
         async for event in agen:
+          _apply_run_config_custom_metadata(
+              event, invocation_context.run_config
+          )
           if is_live_call:
             if event.partial and _is_transcription(event):
               is_transcribing = True
@@ -775,7 +794,13 @@ class Runner:
           modified_event = await plugin_manager.run_on_event_callback(
               invocation_context=invocation_context, event=event
           )
-          yield (modified_event if modified_event else event)
+          if modified_event:
+            _apply_run_config_custom_metadata(
+                modified_event, invocation_context.run_config
+            )
+            yield modified_event
+          else:
+            yield event
 
     # Step 4: Run the after_run callbacks to perform global cleanup tasks or
     # finalizing logs and metrics data.
@@ -846,6 +871,7 @@ class Runner:
           author='user',
           content=new_message,
       )
+    _apply_run_config_custom_metadata(event, invocation_context.run_config)
     # If new_message is a function response, find the matching function call
     # and use its branch as the new event's branch.
     if function_call := invocation_context._find_matching_function_call(event):
@@ -1355,23 +1381,15 @@ class Runner:
     """Creates a new invocation context for live multi-agent."""
     run_config = run_config or RunConfig()
 
-    # For live multi-agent, we need model's text transcription as context for
-    # next agent.
+    # For live multi-agents system, we need model's text transcription as
+    # context for the transferred agent.
     if self.agent.sub_agents and live_request_queue:
-      if not run_config.response_modalities:
-        # default
-        run_config.response_modalities = ['AUDIO']
-        if not run_config.output_audio_transcription:
-          run_config.output_audio_transcription = (
-              types.AudioTranscriptionConfig()
-          )
-      elif 'TEXT' not in run_config.response_modalities:
+      if 'AUDIO' in run_config.response_modalities:
         if not run_config.output_audio_transcription:
           run_config.output_audio_transcription = (
               types.AudioTranscriptionConfig()
           )
       if not run_config.input_audio_transcription:
-        # need this input transcription for agent transferring in live mode.
         run_config.input_audio_transcription = types.AudioTranscriptionConfig()
     return self._new_invocation_context(
         session,
