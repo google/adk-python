@@ -78,7 +78,9 @@ def _is_transcription(event: Event) -> bool:
   )
 
 
-def _has_non_empty_transcription_text(transcription) -> bool:
+def _has_non_empty_transcription_text(
+    transcription: types.Transcription,
+) -> bool:
   return bool(
       transcription and transcription.text and transcription.text.strip()
   )
