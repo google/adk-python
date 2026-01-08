@@ -328,28 +328,67 @@ class RubricBasedEvaluator(LlmAsJudge):
     assert self._criterion.rubrics, "Rubrics are required."
 
     self._rubrics: list[Rubric] = self._criterion.rubrics
+    self._effective_rubrics_list: Optional[list[Rubric]] = None
 
     self._normalized_rubric_to_id_map = {
         _normalize_text(r.rubric_content.text_property): r.rubric_id
         for r in self._rubrics
     }
 
+  def create_effective_rubrics_list(
+      self,
+      invocation_rubrics: Optional[list[Rubric]],
+  ) -> None:
+    rubrics_by_id = {}
+
+    def _add_rubrics(rubrics_to_add: list[Rubric], scope_name: str):
+      for r in rubrics_to_add:
+        if r.rubric_id in rubrics_by_id:
+          raise ValueError(
+              f"Rubric with rubric_id '{r.rubric_id}' already exists. Rubric"
+              f" defined in {scope_name} conflicts with an existing rubric."
+          )
+        rubrics_by_id[r.rubric_id] = r
+
+    _add_rubrics(self._rubrics, "criterion")
+
+    if invocation_rubrics:
+      _add_rubrics(invocation_rubrics, "invocation")
+
+    self._effective_rubrics_list = list(rubrics_by_id.values())
+
+  def get_effective_rubrics_list(self) -> list[Rubric]:
+    """Returns the effective rubrics list."""
+    if self._effective_rubrics_list is None:
+      raise ValueError(
+          "Effective rubrics list not initialized. Call"
+          " create_effective_rubrics_list() first."
+      )
+    return self._effective_rubrics_list
+
   @override
   def convert_auto_rater_response_to_score(
-      self, auto_rater_response: LlmResponse
+      self,
+      auto_rater_response: LlmResponse,
   ) -> AutoRaterScore:
     """Returns an AutoRaterScore generated from AutoRater's response."""
     response_text = get_text_from_content(auto_rater_response.content)
     rubric_responses = self._auto_rater_response_parser.parse(response_text)
     rubric_scores = []
 
+    normalized_rubric_to_rubric_map = {}
+    for r in self.get_effective_rubrics_list():
+      normalized_rubric_to_rubric_map[
+          _normalize_text(r.rubric_content.text_property)
+      ] = r
+
     for rubric_response in rubric_responses:
-      normalized_rubric = _normalize_text(rubric_response.property_text)
-      rubric_id = self._normalized_rubric_to_id_map.get(normalized_rubric, None)
-      if rubric_id:
+      normalized_rubric_text = _normalize_text(rubric_response.property_text)
+      rubric = normalized_rubric_to_rubric_map.get(normalized_rubric_text, None)
+      if rubric:
         rubric_scores.append(
             RubricScore(
-                rubric_id=rubric_id,
+                rubric_id=rubric.rubric_id,
                 rationale=rubric_response.rationale,
                 score=rubric_response.score,
             )

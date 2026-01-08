@@ -164,17 +164,21 @@ class RubricBasedToolUseV1Evaluator(RubricBasedEvaluator):
 
   @override
   def format_auto_rater_prompt(
-      self, actual_invocation: Invocation, _: Optional[Invocation]
+      self,
+      actual_invocation: Invocation,
+      _: Optional[Invocation],
   ) -> str:
     """Returns the autorater prompt."""
-
+    self.create_effective_rubrics_list(actual_invocation.rubrics)
     user_input = get_text_from_content(actual_invocation.user_content)
     tool_usage = get_tool_calls_and_responses_as_json_str(
         actual_invocation.intermediate_data
     )
-    rubrics = "\n*  ".join(
-        [r.rubric_content.text_property for r in self._rubrics]
-    )
+
+    rubrics_text = "\n".join([
+        f"*  {r.rubric_content.text_property}"
+        for r in self._effective_rubrics_list
+    ])
 
     app_details = actual_invocation.app_details
     tool_declarations = "Agent has no tools."
@@ -185,5 +189,5 @@ class RubricBasedToolUseV1Evaluator(RubricBasedEvaluator):
         tool_declarations=tool_declarations,
         user_input=user_input,
         tool_usage=tool_usage,
-        rubrics=rubrics,
+        rubrics=rubrics_text,
     )

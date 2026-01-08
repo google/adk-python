@@ -25,6 +25,7 @@ from .eval_case import Invocation
 from .eval_case import InvocationEvents
 from .eval_metrics import EvalMetric
 from .eval_metrics import RubricsBasedCriterion
+from .eval_rubrics import Rubric
 from .llm_as_judge_utils import get_text_from_content
 from .llm_as_judge_utils import get_tool_calls_and_responses_as_json_str
 from .llm_as_judge_utils import get_tool_declarations_as_json_str
@@ -264,15 +265,19 @@ class RubricBasedFinalResponseQualityV1Evaluator(RubricBasedEvaluator):
 
   @override
   def format_auto_rater_prompt(
-      self, actual_invocation: Invocation, _: Optional[Invocation]
+      self,
+      actual_invocation: Invocation,
+      _: Optional[Invocation],
   ) -> str:
     """Returns the autorater prompt."""
-
+    self.create_effective_rubrics_list(actual_invocation.rubrics)
     user_input = get_text_from_content(actual_invocation.user_content)
     final_response = get_text_from_content(actual_invocation.final_response)
-    rubrics = "\n*  ".join(
-        [r.rubric_content.text_property for r in self._rubrics]
-    )
+
+    rubrics_text = "\n".join([
+        f"*  {r.rubric_content.text_property}"
+        for r in self._effective_rubrics_list
+    ])
 
     developer_instructions = ""
     tool_declarations = "Agent has no tools."
@@ -299,7 +304,7 @@ class RubricBasedFinalResponseQualityV1Evaluator(RubricBasedEvaluator):
         user_input=user_input,
         response_steps=response_steps,
         final_response=final_response,
-        rubrics=rubrics,
+        rubrics=rubrics_text,
     )
 
     return auto_rater_prompt
