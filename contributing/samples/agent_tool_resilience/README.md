@@ -10,7 +10,11 @@ adk web contributing/samples/agent_tool_resilience
 
 Then in the web UI, select `agent_tool_resilience` from the dropdown and try:
 1. Simple query: "What is quantum computing?"
-2. Complex query: (very detailed research request)
+2. Complex query: (very detailed research request) as "Research quantum computing applications in healthcare, finance, cryptography, 
+          logistics, weather prediction, drug discovery, and machine learning. 
+          For each domain, provide: historical context, current state-of-the-art, 
+          technical challenges, recent breakthroughs in 2024, comparison with classical 
+          approaches, economic impact, and future roadmap for the next 10 years."
 3. Timeout scenario: Set timeout to 5 seconds in `agent.py` and use a complex query
 
 ## Features Demonstrated

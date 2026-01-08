@@ -88,85 +88,6 @@ class TimeoutAgentTool(AgentTool):
           "agent_name": self.agent.name,
       }
 
-  async def run_async_with_events(
-      self,
-      *,
-      args: dict[str, Any],
-      tool_context: ToolContext,
-  ) -> Any:
-    """Run with timeout protection and event streaming.
-    
-    Note: Timeout for async generators requires careful handling.
-    This implementation uses a task-based approach with timeout monitoring.
-    """
-    
-    start_time = time.time()
-    agen = super().run_async_with_events(
-        args=args, tool_context=tool_context
-    )
-    
-    try:
-      while True:
-        # Check overall timeout
-        elapsed = time.time() - start_time
-        if elapsed >= self.timeout:
-          # Timeout exceeded
-          yield Event(
-              content=types.Content(
-                  role='assistant',
-                  parts=[
-                      types.Part.from_text(
-                          text=f"Timeout: {self.timeout_error_message}"
-                      )
-                  ],
-              ),
-          )
-          return
-        
-        # Calculate remaining time
-        remaining = self.timeout - elapsed
-        if remaining <= 0:
-          yield Event(
-              content=types.Content(
-                  role='assistant',
-                  parts=[
-                      types.Part.from_text(
-                          text=f"Timeout: {self.timeout_error_message}"
-                      )
-                  ],
-              ),
-          )
-          return
-        
-        # Get next event with timeout check
-        try:
-          event = await asyncio.wait_for(
-              agen.__anext__(),
-              timeout=min(remaining, 0.5)  # Check frequently
-          )
-          yield event
-        except StopAsyncIteration:
-          # Generator finished normally
-          break
-        except asyncio.TimeoutError:
-          # This iteration timed out, but check overall timeout
-          if time.time() - start_time >= self.timeout:
-            yield Event(
-                content=types.Content(
-                    role='assistant',
-                    parts=[
-                        types.Part.from_text(
-                            text=f"Timeout: {self.timeout_error_message}"
-                        )
-                    ],
-                ),
-            )
-            return
-          # Otherwise, continue waiting for next event
-          continue
-    except Exception:
-      # Re-raise other exceptions
-      raise
 
 
 # ============================================================================
@@ -233,12 +154,15 @@ error_recovery_agent = Agent(
 
 coordinator_agent = Agent(
     name='coordinator_agent',
-    model='gemini-2.5-flash',
+    model='gemini-2.5-flash-lite',
     description='Coordinator that manages research tasks with resilience',
     instruction="""
     You are a coordinator agent that manages research tasks by delegating to
     specialized sub-agents. Your role is to ensure tasks complete successfully
     even when individual agents fail or timeout.
+
+    **CRITICAL WORKFLOW REQUIREMENT - READ THIS FIRST:**
+    After calling ANY tool and receiving its response, you MUST IMMEDIATELY generate a text response explaining the results to the user. Tool calls are NOT the final answer - they are just one step. You MUST always provide a final text response to complete the conversation. If you only call a tool without generating text afterward, the user will receive no response.
 
     **Tool Selection Strategy:**
     1. **Primary Tool (research_agent_primary)**: Use for complex, detailed
@@ -261,26 +185,36 @@ coordinator_agent = Agent(
 
     **User Communication:**
     - Always present results clearly, even if they come from fallback agents
+    - After receiving any tool response, immediately provide a helpful text explanation to the user
     - If errors occur, explain what happened and what you tried
     - Never expose internal error details or retry counts to users
     - Frame fallbacks as "using a different approach" rather than "fallback"
 
     **Example Flow:**
-    User: "Research quantum computing applications"
-    1. Try research_agent_primary
-    2. If timeout/error → Try research_agent_fallback
-    3. If still fails → Use error_recovery_agent to understand why
-    4. Present final result or error analysis to user
+    User: "What is quantum computing?"
+    1. Call research_agent_primary with request="What is quantum computing?"
+    2. Wait for the tool response
+    3. **MUST**: Generate a text response presenting the results to the user
+    
+    If the primary agent times out or fails:
+    4. Call research_agent_fallback with the same request
+    5. Wait for the tool response
+    6. **MUST**: Generate a text response presenting the results to the user
+
+    Remember: Tool calls are not the final answer - you must always follow up with a text response explaining the results to the user.
     """,
     tools=[
         # Primary agent with timeout protection
         # For testing timeouts, set a very short timeout (e.g., 5.0 seconds)
         # For production, use a longer timeout (e.g., 30.0 seconds)
+        # NOTE: skip_summarization=False is required for the coordinator to continue
+        # after tool calls. If True, the function response event is marked as final
+        # and the LLM flow stops, preventing the coordinator from generating a response.
         TimeoutAgentTool(
             agent=research_agent_primary,
-            timeout=10.0,  # Change to 5.0 for timeout testing
-            timeout_error_message="Primary research agent timed out after 10 seconds",
-            skip_summarization=True,
+            timeout=30.0,  # Change to 5.0 for timeout testing
+            timeout_error_message="Primary research agent timed out after 30 seconds",
+            skip_summarization=False,  # Must be False for coordinator to continue
         ),
         # Fallback agent timeout
         # For testing: Set to 5.0 to test full failure chain (primary → fallback → error recovery)
@@ -289,12 +223,12 @@ coordinator_agent = Agent(
             agent=research_agent_fallback,
             timeout=60.0,  # Set to 60.0 to test successful fallback after primary timeout
             timeout_error_message="Fallback research agent timed out",
-            skip_summarization=True,
+            skip_summarization=False,  # Must be False for coordinator to continue
         ),
         # Error recovery agent
         AgentTool(
             agent=error_recovery_agent,
-            skip_summarization=True,
+            skip_summarization=False,  # Must be False for coordinator to continue
         ),
     ],
 )
@@ -307,7 +241,6 @@ coordinator_agent = Agent(
 retry_plugin = ReflectAndRetryToolPlugin(
     max_retries=2,  # Allow 2 retries per tool before giving up
     throw_exception_if_retry_exceeded=False,  # Return guidance instead of raising
-    tracking_scope=None,  # Use default (per-invocation)
 )
 
 app = App(
