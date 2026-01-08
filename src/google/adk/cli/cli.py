@@ -137,6 +137,7 @@ async def run_cli(
     session_id: Optional[str] = None,
     session_service_uri: Optional[str] = None,
     artifact_service_uri: Optional[str] = None,
+    use_local_storage: bool = True,
 ) -> None:
   """Runs an interactive CLI for a certain agent.
 
@@ -153,6 +154,7 @@ async def run_cli(
     session_id: Optional[str], the session ID to save the session to on exit.
     session_service_uri: Optional[str], custom session service URI.
     artifact_service_uri: Optional[str], custom artifact service URI.
+    use_local_storage: bool, whether to use local .adk storage by default.
   """
   agent_parent_path = Path(agent_parent_dir).resolve()
   agent_root = agent_parent_path / agent_folder_name
@@ -169,17 +171,19 @@ async def run_cli(
   if isinstance(agent_or_app, App) and agent_or_app.name != agent_folder_name:
     app_name_to_dir = {agent_or_app.name: agent_folder_name}
 
-  # Create session and artifact services using factory functions
-  # Sessions persist under <agents_dir>/<agent>/.adk/session.db by default.
+  # Create session and artifact services using factory functions.
+  # Sessions persist under <agents_dir>/<agent>/.adk/session.db when enabled.
   session_service = create_session_service_from_options(
       base_dir=agent_parent_path,
       session_service_uri=session_service_uri,
       app_name_to_dir=app_name_to_dir,
+      use_local_storage=use_local_storage,
   )
 
   artifact_service = create_artifact_service_from_options(
       base_dir=agent_root,
       artifact_service_uri=artifact_service_uri,
+      use_local_storage=use_local_storage,
   )
 
   credential_service = InMemoryCredentialService()

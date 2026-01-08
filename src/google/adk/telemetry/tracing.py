@@ -340,7 +340,7 @@ def trace_send_data(
         'gcp.vertex.agent.data',
         _safe_json_serialize([
             types.Content(role=content.role, parts=content.parts).model_dump(
-                exclude_none=True
+                exclude_none=True, mode='json'
             )
             for content in data
         ]),
@@ -366,7 +366,7 @@ def _build_llm_request_for_trace(llm_request: LlmRequest) -> dict[str, Any]:
   result = {
       'model': llm_request.model,
       'config': llm_request.config.model_dump(
-          exclude_none=True, exclude='response_schema'
+          exclude_none=True, exclude='response_schema', mode='json'
       ),
       'contents': [],
   }
@@ -375,7 +375,7 @@ def _build_llm_request_for_trace(llm_request: LlmRequest) -> dict[str, Any]:
     parts = [part for part in content.parts if not part.inline_data]
     result['contents'].append(
         types.Content(role=content.role, parts=parts).model_dump(
-            exclude_none=True
+            exclude_none=True, mode='json'
         )
     )
   return result

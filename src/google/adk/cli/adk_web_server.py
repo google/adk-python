@@ -1640,7 +1640,7 @@ class AdkWebServer:
         user_id: str,
         session_id: str,
         modalities: List[Literal["TEXT", "AUDIO"]] = Query(
-            default=["TEXT", "AUDIO"]
+            default=["AUDIO"]
         ),  # Only allows "TEXT" or "AUDIO"
     ) -> None:
       await websocket.accept()
@@ -1658,9 +1658,12 @@ class AdkWebServer:
 
       async def forward_events():
         runner = await self.get_runner_async(app_name)
+        run_config = RunConfig(response_modalities=modalities)
         async with Aclosing(
             runner.run_live(
-                session=session, live_request_queue=live_request_queue
+                session=session,
+                live_request_queue=live_request_queue,
+                run_config=run_config,
             )
         ) as agen:
           async for event in agen:

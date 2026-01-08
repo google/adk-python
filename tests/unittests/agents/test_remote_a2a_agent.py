@@ -29,18 +29,18 @@ from a2a.types import AgentCard
 from a2a.types import AgentSkill
 from a2a.types import Artifact
 from a2a.types import Message as A2AMessage
-from a2a.types import Part as A2ATaskStatus
 from a2a.types import SendMessageSuccessResponse
 from a2a.types import Task as A2ATask
 from a2a.types import TaskArtifactUpdateEvent
 from a2a.types import TaskState
-from a2a.types import TaskStatus
+from a2a.types import TaskStatus as A2ATaskStatus
 from a2a.types import TaskStatusUpdateEvent
 from a2a.types import TextPart
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.remote_a2a_agent import A2A_METADATA_PREFIX
 from google.adk.agents.remote_a2a_agent import AgentCardResolutionError
 from google.adk.agents.remote_a2a_agent import RemoteA2aAgent
+import google.adk.agents.remote_a2a_agent as remote_a2a_agent
 from google.adk.events.event import Event
 from google.adk.sessions.session import Session
 from google.genai import types as genai_types
@@ -579,7 +579,7 @@ class TestRemoteA2aAgentMessageHandling:
           "google.adk.agents.remote_a2a_agent.convert_event_to_a2a_message"
       ) as mock_convert:
         # Create a proper mock A2A message
-        mock_a2a_message = Mock(spec=A2AMessage)
+        mock_a2a_message = create_autospec(A2AMessage, instance=True)
         mock_a2a_message.task_id = None  # Will be set by the method
         mock_convert.return_value = mock_a2a_message
 
@@ -716,8 +716,10 @@ class TestRemoteA2aAgentMessageHandling:
         content=genai_types.Content(role="model", parts=[mock_a2a_part]),
     )
 
-    with patch(
-        "google.adk.agents.remote_a2a_agent.convert_a2a_task_to_event"
+    with patch.object(
+        remote_a2a_agent,
+        "convert_a2a_task_to_event",
+        autospec=True,
     ) as mock_convert:
       mock_convert.return_value = mock_event
 
@@ -821,8 +823,10 @@ class TestRemoteA2aAgentMessageHandling:
         content=genai_types.Content(role="model", parts=[mock_a2a_part]),
     )
 
-    with patch(
-        "google.adk.agents.remote_a2a_agent.convert_a2a_task_to_event"
+    with patch.object(
+        remote_a2a_agent,
+        "convert_a2a_task_to_event",
+        autospec=True,
     ) as mock_convert:
       mock_convert.return_value = mock_event
 
@@ -846,6 +850,59 @@ class TestRemoteA2aAgentMessageHandling:
       assert A2A_METADATA_PREFIX + "context_id" in result.custom_metadata
 
   @pytest.mark.asyncio
+  @pytest.mark.parametrize(
+      "task_state,event_content",
+      [
+          pytest.param(
+              TaskState.submitted,
+              genai_types.Content(role="model", parts=[]),
+              id="submitted_empty_parts",
+          ),
+          pytest.param(
+              TaskState.working,
+              None,
+              id="working_no_content",
+          ),
+      ],
+  )
+  async def test_handle_a2a_response_with_task_missing_content(
+      self, task_state, event_content
+  ):
+    """Test streaming A2A response handling when content/parts are missing.
+
+    This verifies the fix for issue #3769 where the code could raise when it
+    tried to read parts[0] without checking for empty/missing content.
+    """
+    mock_a2a_task = create_autospec(A2ATask, instance=True)
+    mock_a2a_task.id = "task-123"
+    mock_a2a_task.context_id = "context-123"
+    mock_a2a_task.status = create_autospec(A2ATaskStatus, instance=True)
+    mock_a2a_task.status.state = task_state
+
+    mock_event = Event(
+        author=self.agent.name,
+        invocation_id=self.mock_context.invocation_id,
+        branch=self.mock_context.branch,
+        content=event_content,
+    )
+
+    with patch.object(
+        remote_a2a_agent,
+        "convert_a2a_task_to_event",
+        autospec=True,
+    ) as mock_convert:
+      mock_convert.return_value = mock_event
+
+      result = await self.agent._handle_a2a_response(
+          (mock_a2a_task, None), self.mock_context
+      )
+
+      assert result == mock_event
+      assert result.custom_metadata is not None
+      assert A2A_METADATA_PREFIX + "task_id" in result.custom_metadata
+      assert A2A_METADATA_PREFIX + "context_id" in result.custom_metadata
+
+  @pytest.mark.asyncio
   async def test_handle_a2a_response_with_task_working_and_no_update(self):
     """Test successful A2A response handling with streaming task and no update."""
     mock_a2a_task = Mock(spec=A2ATask)
@@ -863,8 +920,10 @@ class TestRemoteA2aAgentMessageHandling:
         content=genai_types.Content(role="model", parts=[mock_a2a_part]),
     )
 
-    with patch(
-        "google.adk.agents.remote_a2a_agent.convert_a2a_task_to_event"
+    with patch.object(
+        remote_a2a_agent,
+        "convert_a2a_task_to_event",
+        autospec=True,
     ) as mock_convert:
       mock_convert.return_value = mock_event
 
@@ -896,7 +955,7 @@ class TestRemoteA2aAgentMessageHandling:
 
     mock_a2a_message = Mock(spec=A2AMessage)
     mock_update = Mock(spec=TaskStatusUpdateEvent)
-    mock_update.status = Mock(TaskStatus)
+    mock_update.status = Mock(A2ATaskStatus)
     mock_update.status.state = TaskState.completed
     mock_update.status.message = mock_a2a_message
 
@@ -942,7 +1001,7 @@ class TestRemoteA2aAgentMessageHandling:
 
     mock_a2a_message = Mock(spec=A2AMessage)
     mock_update = Mock(spec=TaskStatusUpdateEvent)
-    mock_update.status = Mock(TaskStatus)
+    mock_update.status = Mock(A2ATaskStatus)
     mock_update.status.state = TaskState.working
     mock_update.status.message = mock_a2a_message
 
@@ -984,7 +1043,7 @@ class TestRemoteA2aAgentMessageHandling:
     mock_a2a_task.id = "task-123"
 
     mock_update = Mock(spec=TaskStatusUpdateEvent)
-    mock_update.status = Mock(TaskStatus)
+    mock_update.status = Mock(A2ATaskStatus)
     mock_update.status.state = TaskState.completed
     mock_update.status.message = None
 
@@ -1014,8 +1073,10 @@ class TestRemoteA2aAgentMessageHandling:
         branch=self.mock_context.branch,
     )
 
-    with patch(
-        "google.adk.agents.remote_a2a_agent.convert_a2a_task_to_event"
+    with patch.object(
+        remote_a2a_agent,
+        "convert_a2a_task_to_event",
+        autospec=True,
     ) as mock_convert:
       mock_convert.return_value = mock_event
 
@@ -1222,8 +1283,10 @@ class TestRemoteA2aAgentMessageHandlingFromFactory:
         content=genai_types.Content(role="model", parts=[mock_a2a_part]),
     )
 
-    with patch(
-        "google.adk.agents.remote_a2a_agent.convert_a2a_task_to_event"
+    with patch.object(
+        remote_a2a_agent,
+        "convert_a2a_task_to_event",
+        autospec=True,
     ) as mock_convert:
       mock_convert.return_value = mock_event
 
@@ -1263,8 +1326,10 @@ class TestRemoteA2aAgentMessageHandlingFromFactory:
         content=genai_types.Content(role="model", parts=[mock_a2a_part]),
     )
 
-    with patch(
-        "google.adk.agents.remote_a2a_agent.convert_a2a_task_to_event"
+    with patch.object(
+        remote_a2a_agent,
+        "convert_a2a_task_to_event",
+        autospec=True,
     ) as mock_convert:
       mock_convert.return_value = mock_event
 
@@ -1296,7 +1361,7 @@ class TestRemoteA2aAgentMessageHandlingFromFactory:
 
     mock_a2a_message = Mock(spec=A2AMessage)
     mock_update = Mock(spec=TaskStatusUpdateEvent)
-    mock_update.status = Mock(TaskStatus)
+    mock_update.status = Mock(A2ATaskStatus)
     mock_update.status.state = TaskState.completed
     mock_update.status.message = mock_a2a_message
 
@@ -1342,7 +1407,7 @@ class TestRemoteA2aAgentMessageHandlingFromFactory:
 
     mock_a2a_message = Mock(spec=A2AMessage)
     mock_update = Mock(spec=TaskStatusUpdateEvent)
-    mock_update.status = Mock(TaskStatus)
+    mock_update.status = Mock(A2ATaskStatus)
     mock_update.status.state = TaskState.working
     mock_update.status.message = mock_a2a_message
 
@@ -1384,7 +1449,7 @@ class TestRemoteA2aAgentMessageHandlingFromFactory:
     mock_a2a_task.id = "task-123"
 
     mock_update = Mock(spec=TaskStatusUpdateEvent)
-    mock_update.status = Mock(TaskStatus)
+    mock_update.status = Mock(A2ATaskStatus)
     mock_update.status.state = TaskState.completed
     mock_update.status.message = None
 
@@ -1414,8 +1479,10 @@ class TestRemoteA2aAgentMessageHandlingFromFactory:
         branch=self.mock_context.branch,
     )
 
-    with patch(
-        "google.adk.agents.remote_a2a_agent.convert_a2a_task_to_event"
+    with patch.object(
+        remote_a2a_agent,
+        "convert_a2a_task_to_event",
+        autospec=True,
     ) as mock_convert:
       mock_convert.return_value = mock_event
 
