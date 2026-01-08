@@ -24,7 +24,6 @@ from ..utils.env_utils import is_env_enabled
 class FeatureName(str, Enum):
   """Feature names."""
 
-  BIG_QUERY_DATA_AGENT_TOOLSET = "BIG_QUERY_DATA_AGENT_TOOLSET"
   BIG_QUERY_TOOLSET = "BIG_QUERY_TOOLSET"
   BIG_QUERY_TOOL_CONFIG = "BIG_QUERY_TOOL_CONFIG"
   BIGTABLE_TOOL_SETTINGS = "BIGTABLE_TOOL_SETTINGS"
@@ -68,9 +67,6 @@ class FeatureConfig:
 
 # Central registry: FeatureName -> FeatureConfig
 _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
-    FeatureName.BIG_QUERY_DATA_AGENT_TOOLSET: FeatureConfig(
-        FeatureStage.EXPERIMENTAL, default_on=True
-    ),
     FeatureName.BIG_QUERY_TOOLSET: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
     ),

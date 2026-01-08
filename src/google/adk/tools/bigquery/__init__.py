@@ -28,11 +28,9 @@ definition. The rationales to have customized tool are:
 """
 
 from .bigquery_credentials import BigQueryCredentialsConfig
-from .bigquery_data_agent_toolset import BigQueryDataAgentToolset
 from .bigquery_toolset import BigQueryToolset
 
 __all__ = [
     "BigQueryToolset",
     "BigQueryCredentialsConfig",
-    "BigQueryDataAgentToolset",
 ]
