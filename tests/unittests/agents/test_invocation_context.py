@@ -39,8 +39,9 @@ class TestInvocationContext:
     """Create mock events for testing."""
     # Create a parent branch and fork it to create two children
     parent_branch = Branch()
-    agent1_branch = parent_branch.fork()
-    agent2_branch = parent_branch.fork()
+    children = parent_branch.fork(2)
+    agent1_branch = children[0]
+    agent2_branch = children[1]
 
     event1 = Mock(spec=Event)
     event1.invocation_id = 'inv_1'

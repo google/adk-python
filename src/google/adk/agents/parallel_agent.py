@@ -33,16 +33,29 @@ from .invocation_context import InvocationContext
 from .parallel_agent_config import ParallelAgentConfig
 
 
-def _create_branch_ctx_for_sub_agent(
+def _create_branch_contexts_for_sub_agents(
     agent: BaseAgent,
-    sub_agent: BaseAgent,
+    sub_agents: list[BaseAgent],
     invocation_context: InvocationContext,
-) -> InvocationContext:
-  """Create isolated branch for every sub-agent."""
-  invocation_context = invocation_context.model_copy()
+) -> list[InvocationContext]:
+  """Create isolated branches for all sub-agents at once.
+  
+  Uses the structural fork approach: fork(N) creates N child branches
+  where each child can only see its own history.
+  """
+  if not sub_agents:
+    return []
+  
   parent_branch = invocation_context.branch or Branch()
-  invocation_context.branch = parent_branch.fork()
-  return invocation_context
+  child_branches = parent_branch.fork(len(sub_agents))
+  
+  contexts = []
+  for i, sub_agent in enumerate(sub_agents):
+    sub_ctx = invocation_context.model_copy()
+    sub_ctx.branch = child_branches[i]
+    contexts.append(sub_ctx)
+  
+  return contexts
 
 
 async def _merge_agent_run(
@@ -170,12 +183,13 @@ class ParallelAgent(BaseAgent):
       yield self._create_agent_state_event(ctx)
 
     agent_runs = []
-    sub_agent_contexts = []
+    # Create all branch contexts at once using structural fork
+    sub_agent_contexts = _create_branch_contexts_for_sub_agents(
+        self, self.sub_agents, ctx
+    )
+    
     # Prepare and collect async generators for each sub-agent.
-    for sub_agent in self.sub_agents:
-      sub_agent_ctx = _create_branch_ctx_for_sub_agent(self, sub_agent, ctx)
-      sub_agent_contexts.append(sub_agent_ctx)
-
+    for sub_agent, sub_agent_ctx in zip(self.sub_agents, sub_agent_contexts):
       # Only include sub-agents that haven't finished in a previous run.
       if not sub_agent_ctx.end_of_agents.get(sub_agent.name):
         agent_runs.append(sub_agent.run_async(sub_agent_ctx))
