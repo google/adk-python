@@ -648,19 +648,37 @@ class TestRunnerWithPlugins:
     )
     assert runner.plugin_manager._close_timeout == 10.0
 
-  def test_runner_init_raises_error_with_app_and_app_name_and_agent(self):
-    """Test that ValueError is raised when app, app_name and agent are provided."""
+  @pytest.mark.filterwarnings(
+      "ignore:The `plugins` argument is deprecated:DeprecationWarning"
+  )
+  def test_runner_init_raises_error_with_app_and_agent(self):
+    """Test that ValueError is raised when app and agent are provided."""
     with pytest.raises(
         ValueError,
-        match="When app is provided, app_name should not be provided.",
+        match="When app is provided, agent should not be provided.",
     ):
       Runner(
           app=App(name="test_app", root_agent=self.root_agent),
-          app_name="test_app",
           agent=self.root_agent,
           session_service=self.session_service,
           artifact_service=self.artifact_service,
       )
+
+  @pytest.mark.filterwarnings(
+      "ignore:The `plugins` argument is deprecated:DeprecationWarning"
+  )
+  def test_runner_init_allows_app_name_override_with_app(self):
+    """Test that app_name can override app.name when both are provided."""
+    app = App(name="test_app", root_agent=self.root_agent)
+    runner = Runner(
+        app=app,
+        app_name="override_name",
+        session_service=self.session_service,
+        artifact_service=self.artifact_service,
+    )
+    assert runner.app_name == "override_name"
+    assert runner.agent == self.root_agent
+    assert runner.app == app
 
   def test_runner_init_raises_error_without_app_and_app_name(self):
     """Test ValueError is raised when app is not provided and app_name is missing."""
