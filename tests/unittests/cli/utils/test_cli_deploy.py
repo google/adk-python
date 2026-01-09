@@ -262,6 +262,7 @@ def test_to_gke_happy_path(
       temp_folder=str(tmp_path),
       port=9090,
       trace_to_cloud=False,
+      otel_to_cloud=False,
       with_ui=True,
       log_level="debug",
       adk_version="1.2.0",

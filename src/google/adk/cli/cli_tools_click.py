@@ -1371,6 +1371,13 @@ def cli_api_server(
     help="Optional. Whether to enable Cloud Trace for cloud run.",
 )
 @click.option(
+    "--otel_to_cloud",
+    is_flag=True,
+    show_default=True,
+    default=False,
+    help="Optional. Whether to enable OpenTelemetry for Agent Engine.",
+)
+@click.option(
     "--with_ui",
     is_flag=True,
     show_default=True,
@@ -1450,6 +1457,7 @@ def cli_deploy_cloud_run(
     temp_folder: str,
     port: int,
     trace_to_cloud: bool,
+    otel_to_cloud: bool,
     with_ui: bool,
     adk_version: str,
     log_level: str,
@@ -1528,6 +1536,7 @@ def cli_deploy_cloud_run(
         temp_folder=temp_folder,
         port=port,
         trace_to_cloud=trace_to_cloud,
+        otel_to_cloud=otel_to_cloud,
         allow_origins=allow_origins,
         with_ui=with_ui,
         log_level=log_level,
@@ -1800,6 +1809,13 @@ def cli_deploy_agent_engine(
     help="Optional. Whether to enable Cloud Trace for GKE.",
 )
 @click.option(
+    "--otel_to_cloud",
+    is_flag=True,
+    show_default=True,
+    default=False,
+    help="Optional. Whether to enable OpenTelemetry for GKE.",
+)
+@click.option(
     "--with_ui",
     is_flag=True,
     show_default=True,
@@ -1855,6 +1871,7 @@ def cli_deploy_gke(
     temp_folder: str,
     port: int,
     trace_to_cloud: bool,
+    otel_to_cloud: bool,
     with_ui: bool,
     adk_version: str,
     log_level: Optional[str] = None,
@@ -1884,6 +1901,7 @@ def cli_deploy_gke(
         temp_folder=temp_folder,
         port=port,
         trace_to_cloud=trace_to_cloud,
+        otel_to_cloud=otel_to_cloud,
         with_ui=with_ui,
         log_level=log_level,
         adk_version=adk_version,
