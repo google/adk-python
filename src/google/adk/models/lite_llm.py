@@ -444,56 +444,86 @@ def _extract_cached_prompt_tokens(usage: Any) -> int:
 
 
 async def _content_to_message_param(
-  content: types.Content,
-  *,
-  provider: str = "",
+    content: types.Content,
+    *,
+    provider: str = "",
 ) -> Union[Message, list[Message]]:
-  """Converts a types.Content to a litellm Message or list of Messages.
+  """Converts a types.Content to a litellm Message or list of Messages."""
 
-  Handles multipart function responses and mixed content by returning a list of
-  messages if multiple parts (e.g., tool results and text/images) exist.
-
-  Args:
-    content: The content to convert.
-    provider: The LLM provider name (e.g., "openai", "azure").
-
-  Returns:
-    A litellm Message or a list of litellm Messages.
-  """
-  messages = []
-
-  # 1. Process all function responses into tool messages
+  tool_messages = []
+  other_parts = []
+  
   for part in content.parts:
     if part.function_response:
-      messages.append({
-        "role": "tool",
-        "tool_call_id": part.function_response.id,
-        "content": json.dumps(part.function_response.response),
-      })
+      response = part.function_response.response
+      response_content = (
+          response
+          if isinstance(response, str)
+          else _safe_json_serialize(response)
+      )
+      tool_messages.append(
+          ChatCompletionToolMessage(
+              role="tool",
+              tool_call_id=part.function_response.id,
+              content=response_content,
+          )
+      )
+    else:
+      other_parts.append(part)
 
-  # 2. Check for other parts (text, images, etc.) in the same content
-  other_parts = [p for p in content.parts if not p.function_response]
+  if tool_messages and not other_parts:
+    return tool_messages if len(tool_messages) > 1 else tool_messages[0]
 
+  extra_message = None
+  
   if other_parts:
-    # Convert the remaining parts (text/images) using existing logic
-    other_content = await _get_content(
-      other_parts,
-      provider=provider,
-    )
-    if other_content:
-      messages.append({
-        "role": _to_litellm_role(content.role),
-        "content": other_content,
-      })
+    role = _to_litellm_role(content.role)
 
-  # 3. Return the result (single dict if 1 message, list if multiple)
-  if messages:
-    return messages if len(messages) > 1 else messages[0]
+    if role == "user":
+      user_parts = [part for part in other_parts if not part.thought]
+      message_content = await _get_content(user_parts, provider=provider) or None
+      if message_content:
+        extra_message = ChatCompletionUserMessage(role="user", content=message_content)
+        
+    else:
+      tool_calls = []
+      content_parts: list[types.Part] = []
+      reasoning_parts: list[types.Part] = []
+      
+      for part in other_parts:
+        if part.function_call:
+          tool_calls.append(
+              ChatCompletionAssistantToolCall(
+                  type="function",
+                  id=part.function_call.id,
+                  function=Function(
+                      name=part.function_call.name,
+                      arguments=_safe_json_serialize(part.function_call.args),
+                  ),
+              )
+          )
+        elif part.thought:
+          reasoning_parts.append(part)
+        else:
+          content_parts.append(part)
 
-  return []
+      message_content = await _get_content(content_parts, provider=provider) or None
+      reasoning_content = "\n".join([p.thought for p in reasoning_parts]) if reasoning_parts else None
 
-  # Handle user or assistant messages
-  role = _to_litellm_role(content.role)
+      # Create the assistant message
+      extra_message = ChatCompletionAssistantMessage(
+          role="assistant",
+          content=message_content,
+          tool_calls=tool_calls if tool_calls else None,
+          thought=reasoning_content,
+      )
+
+  final_messages = tool_messages + ([extra_message] if extra_message else [])
+
+  if not final_messages:
+    return []
+    
+  return final_messages if len(final_messages) > 1 else final_messages[0]
 
   if role == "user":
     user_parts = [part for part in content.parts if not part.thought]
