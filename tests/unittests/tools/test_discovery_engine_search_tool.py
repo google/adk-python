@@ -14,10 +14,13 @@
 
 from unittest import mock
 
+from google.adk.tools import discovery_engine_search_tool
 from google.adk.tools.discovery_engine_search_tool import DiscoveryEngineSearchTool
 from google.api_core import exceptions
 from google.cloud import discoveryengine_v1beta as discoveryengine
 import pytest
+
+from google import auth
 
 
 @mock.patch(
@@ -76,10 +79,14 @@ class TestDiscoveryEngineSearchTool:
           data_store_id="test_data_store", data_store_specs=[{"id": "123"}]
       )
 
-  @mock.patch(
-      "google.cloud.discoveryengine_v1beta.SearchServiceClient",
+  @mock.patch.object(discovery_engine_search_tool, "client_options")
+  @mock.patch.object(
+      discoveryengine,
+      "SearchServiceClient",
   )
-  def test_discovery_engine_search_success(self, mock_search_client):
+  def test_discovery_engine_search_success(
+      self, mock_search_client, mock_client_options
+  ):
     """Test successful discovery engine search."""
     mock_response = discoveryengine.SearchResponse()
     mock_response.results = [
@@ -98,15 +105,28 @@ class TestDiscoveryEngineSearchTool:
         )
     ]
     mock_search_client.return_value.search.return_value = mock_response
+    mock_credentials = mock.MagicMock()
+    mock_credentials.quota_project_id = "test-quota-project"
 
-    tool = DiscoveryEngineSearchTool(data_store_id="test_data_store")
-    result = tool.discovery_engine_search("test query")
+    with mock.patch.object(
+        auth, "default", return_value=(mock_credentials, "project")
+    ) as mock_auth:
+      tool = DiscoveryEngineSearchTool(data_store_id="test_data_store")
+      result = tool.discovery_engine_search("test query")
 
-    assert result["status"] == "success"
-    assert len(result["results"]) == 1
-    assert result["results"][0]["title"] == "Test Title"
-    assert result["results"][0]["url"] == "http://example.com"
-    assert result["results"][0]["content"] == "Test Content"
+      assert result["status"] == "success"
+      assert len(result["results"]) == 1
+      assert result["results"][0]["title"] == "Test Title"
+      assert result["results"][0]["url"] == "http://example.com"
+      assert result["results"][0]["content"] == "Test Content"
+      mock_auth.assert_called_once()
+      mock_client_options.ClientOptions.assert_called_once_with(
+          quota_project_id="test-quota-project"
+      )
+      mock_search_client.assert_called_once_with(
+          credentials=mock_credentials,
+          client_options=mock_client_options.ClientOptions.return_value,
+      )
 
   @mock.patch(
       "google.cloud.discoveryengine_v1beta.SearchServiceClient",

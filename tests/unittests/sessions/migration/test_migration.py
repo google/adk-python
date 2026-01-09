@@ -19,10 +19,10 @@ from datetime import datetime
 from datetime import timezone
 
 from google.adk.events.event_actions import EventActions
-from google.adk.sessions import database_session_service as dss
-from google.adk.sessions.migration import _schema_check
+from google.adk.sessions.migration import _schema_check_utils
 from google.adk.sessions.migration import migrate_from_sqlalchemy_pickle as mfsp
-import pytest
+from google.adk.sessions.schemas import v0
+from google.adk.sessions.schemas import v1
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -34,21 +34,21 @@ def test_migrate_from_sqlalchemy_pickle(tmp_path):
   source_db_url = f"sqlite:///{source_db_path}"
   dest_db_url = f"sqlite:///{dest_db_path}"
 
-  # Setup source DB with old pickle schema
+  # Set up source DB with old pickle schema
   source_engine = create_engine(source_db_url)
-  mfsp.OldBase.metadata.create_all(source_engine)
+  v0.Base.metadata.create_all(source_engine)
   SourceSession = sessionmaker(bind=source_engine)
   source_session = SourceSession()
 
   # Populate source data
   now = datetime.now(timezone.utc)
-  app_state = mfsp.OldStorageAppState(
+  app_state = v0.StorageAppState(
       app_name="app1", state={"akey": 1}, update_time=now
   )
-  user_state = mfsp.OldStorageUserState(
+  user_state = v0.StorageUserState(
       app_name="app1", user_id="user1", state={"ukey": 2}, update_time=now
   )
-  session = mfsp.OldStorageSession(
+  session = v0.StorageSession(
       app_name="app1",
       user_id="user1",
       id="session1",
@@ -56,7 +56,7 @@ def test_migrate_from_sqlalchemy_pickle(tmp_path):
       create_time=now,
       update_time=now,
   )
-  event = mfsp.OldStorageEvent(
+  event = v0.StorageEvent(
       id="event1",
       app_name="app1",
       user_id="user1",
@@ -77,27 +77,27 @@ def test_migrate_from_sqlalchemy_pickle(tmp_path):
   DestSession = sessionmaker(bind=dest_engine)
   dest_session = DestSession()
 
-  metadata = dest_session.query(dss.StorageMetadata).first()
+  metadata = dest_session.query(v1.StorageMetadata).first()
   assert metadata is not None
-  assert metadata.key == _schema_check.SCHEMA_VERSION_KEY
-  assert metadata.value == _schema_check.SCHEMA_VERSION_1_0_JSON
+  assert metadata.key == _schema_check_utils.SCHEMA_VERSION_KEY
+  assert metadata.value == _schema_check_utils.SCHEMA_VERSION_1_JSON
 
-  app_state_res = dest_session.query(dss.StorageAppState).first()
+  app_state_res = dest_session.query(v1.StorageAppState).first()
   assert app_state_res is not None
   assert app_state_res.app_name == "app1"
   assert app_state_res.state == {"akey": 1}
 
-  user_state_res = dest_session.query(dss.StorageUserState).first()
+  user_state_res = dest_session.query(v1.StorageUserState).first()
   assert user_state_res is not None
   assert user_state_res.user_id == "user1"
   assert user_state_res.state == {"ukey": 2}
 
-  session_res = dest_session.query(dss.StorageSession).first()
+  session_res = dest_session.query(v1.StorageSession).first()
   assert session_res is not None
   assert session_res.id == "session1"
   assert session_res.state == {"skey": 3}
 
-  event_res = dest_session.query(dss.StorageEvent).first()
+  event_res = dest_session.query(v1.StorageEvent).first()
   assert event_res is not None
   assert event_res.id == "event1"
   assert "state_delta" in event_res.event_data["actions"]

@@ -17,35 +17,22 @@ import asyncio
 import copy
 from datetime import datetime
 from datetime import timezone
-import json
 import logging
 from typing import Any
 from typing import Optional
-import uuid
 
 from sqlalchemy import delete
-from sqlalchemy import Dialect
 from sqlalchemy import event
-from sqlalchemy import ForeignKeyConstraint
-from sqlalchemy import func
-from sqlalchemy import inspect
 from sqlalchemy import select
-from sqlalchemy import Text
-from sqlalchemy.dialects import mysql
-from sqlalchemy.dialects import postgresql
+from sqlalchemy import text
+from sqlalchemy.engine import make_url
 from sqlalchemy.exc import ArgumentError
 from sqlalchemy.ext.asyncio import async_sessionmaker
 from sqlalchemy.ext.asyncio import AsyncEngine
 from sqlalchemy.ext.asyncio import AsyncSession as DatabaseSessionFactory
 from sqlalchemy.ext.asyncio import create_async_engine
-from sqlalchemy.ext.mutable import MutableDict
-from sqlalchemy.orm import DeclarativeBase
-from sqlalchemy.orm import Mapped
-from sqlalchemy.orm import mapped_column
-from sqlalchemy.orm import relationship
-from sqlalchemy.types import DateTime
-from sqlalchemy.types import String
-from sqlalchemy.types import TypeDecorator
+from sqlalchemy.inspection import inspect
+from sqlalchemy.pool import StaticPool
 from typing_extensions import override
 from tzlocal import get_localzone
 
@@ -55,244 +42,58 @@ from ..events.event import Event
 from .base_session_service import BaseSessionService
 from .base_session_service import GetSessionConfig
 from .base_session_service import ListSessionsResponse
-from .migration import _schema_check
+from .migration import _schema_check_utils
+from .schemas.v0 import Base as BaseV0
+from .schemas.v0 import StorageAppState as StorageAppStateV0
+from .schemas.v0 import StorageEvent as StorageEventV0
+from .schemas.v0 import StorageSession as StorageSessionV0
+from .schemas.v0 import StorageUserState as StorageUserStateV0
+from .schemas.v1 import Base as BaseV1
+from .schemas.v1 import StorageAppState as StorageAppStateV1
+from .schemas.v1 import StorageEvent as StorageEventV1
+from .schemas.v1 import StorageMetadata
+from .schemas.v1 import StorageSession as StorageSessionV1
+from .schemas.v1 import StorageUserState as StorageUserStateV1
 from .session import Session
 from .state import State
 
 logger = logging.getLogger("google_adk." + __name__)
 
-DEFAULT_MAX_KEY_LENGTH = 128
-DEFAULT_MAX_VARCHAR_LENGTH = 256
 
-
-class DynamicJSON(TypeDecorator):
-  """A JSON-like type that uses JSONB on PostgreSQL and TEXT with JSON serialization for other databases."""
-
-  impl = Text  # Default implementation is TEXT
-
-  def load_dialect_impl(self, dialect: Dialect):
-    if dialect.name == "postgresql":
-      return dialect.type_descriptor(postgresql.JSONB)
-    if dialect.name == "mysql":
-      # Use LONGTEXT for MySQL to address the data too long issue
-      return dialect.type_descriptor(mysql.LONGTEXT)
-    return dialect.type_descriptor(Text)  # Default to Text for other dialects
-
-  def process_bind_param(self, value, dialect: Dialect):
-    if value is not None:
-      if dialect.name == "postgresql":
-        return value  # JSONB handles dict directly
-      return json.dumps(value)  # Serialize to JSON string for TEXT
-    return value
-
-  def process_result_value(self, value, dialect: Dialect):
-    if value is not None:
-      if dialect.name == "postgresql":
-        return value  # JSONB returns dict directly
-      else:
-        return json.loads(value)  # Deserialize from JSON string for TEXT
-    return value
-
-
-class PreciseTimestamp(TypeDecorator):
-  """Represents a timestamp precise to the microsecond."""
-
-  impl = DateTime
-  cache_ok = True
-
-  def load_dialect_impl(self, dialect):
-    if dialect.name == "mysql":
-      return dialect.type_descriptor(mysql.DATETIME(fsp=6))
-    return self.impl
-
-
-class Base(DeclarativeBase):
-  """Base class for database tables."""
-
-  pass
-
-
-class StorageMetadata(Base):
-  """Represents internal metadata stored in the database."""
-
-  __tablename__ = "adk_internal_metadata"
-  key: Mapped[str] = mapped_column(
-      String(DEFAULT_MAX_KEY_LENGTH), primary_key=True
-  )
-  value: Mapped[str] = mapped_column(String(DEFAULT_MAX_VARCHAR_LENGTH))
-
-
-class StorageSession(Base):
-  """Represents a session stored in the database."""
-
-  __tablename__ = "sessions"
-
-  app_name: Mapped[str] = mapped_column(
-      String(DEFAULT_MAX_KEY_LENGTH), primary_key=True
-  )
-  user_id: Mapped[str] = mapped_column(
-      String(DEFAULT_MAX_KEY_LENGTH), primary_key=True
-  )
-  id: Mapped[str] = mapped_column(
-      String(DEFAULT_MAX_KEY_LENGTH),
-      primary_key=True,
-      default=lambda: str(uuid.uuid4()),
-  )
-
-  state: Mapped[MutableDict[str, Any]] = mapped_column(
-      MutableDict.as_mutable(DynamicJSON), default={}
-  )
-
-  create_time: Mapped[datetime] = mapped_column(
-      PreciseTimestamp, default=func.now()
-  )
-  update_time: Mapped[datetime] = mapped_column(
-      PreciseTimestamp, default=func.now(), onupdate=func.now()
-  )
-
-  storage_events: Mapped[list[StorageEvent]] = relationship(
-      "StorageEvent",
-      back_populates="storage_session",
-  )
-
-  def __repr__(self):
-    return f"<StorageSession(id={self.id}, update_time={self.update_time})>"
-
-  @property
-  def _dialect_name(self) -> Optional[str]:
-    session = inspect(self).session
-    return session.bind.dialect.name if session else None
-
-  @property
-  def update_timestamp_tz(self) -> datetime:
-    """Returns the time zone aware update timestamp."""
-    if self._dialect_name == "sqlite":
-      # SQLite does not support timezone. SQLAlchemy returns a naive datetime
-      # object without timezone information. We need to convert it to UTC
-      # manually.
-      return self.update_time.replace(tzinfo=timezone.utc).timestamp()
-    return self.update_time.timestamp()
-
-  def to_session(
-      self,
-      state: dict[str, Any] | None = None,
-      events: list[Event] | None = None,
-  ) -> Session:
-    """Converts the storage session to a session object."""
-    if state is None:
-      state = {}
-    if events is None:
-      events = []
-
-    return Session(
-        app_name=self.app_name,
-        user_id=self.user_id,
-        id=self.id,
-        state=state,
-        events=events,
-        last_update_time=self.update_timestamp_tz,
-    )
-
-
-class StorageEvent(Base):
-  """Represents an event stored in the database."""
-
-  __tablename__ = "events"
-
-  id: Mapped[str] = mapped_column(
-      String(DEFAULT_MAX_KEY_LENGTH), primary_key=True
-  )
-  app_name: Mapped[str] = mapped_column(
-      String(DEFAULT_MAX_KEY_LENGTH), primary_key=True
-  )
-  user_id: Mapped[str] = mapped_column(
-      String(DEFAULT_MAX_KEY_LENGTH), primary_key=True
-  )
-  session_id: Mapped[str] = mapped_column(
-      String(DEFAULT_MAX_KEY_LENGTH), primary_key=True
-  )
-
-  invocation_id: Mapped[str] = mapped_column(String(DEFAULT_MAX_VARCHAR_LENGTH))
-  timestamp: Mapped[PreciseTimestamp] = mapped_column(
-      PreciseTimestamp, default=func.now()
-  )
-  event_data: Mapped[dict[str, Any]] = mapped_column(DynamicJSON)
-
-  storage_session: Mapped[StorageSession] = relationship(
-      "StorageSession",
-      back_populates="storage_events",
-  )
-
-  __table_args__ = (
-      ForeignKeyConstraint(
-          ["app_name", "user_id", "session_id"],
-          ["sessions.app_name", "sessions.user_id", "sessions.id"],
-          ondelete="CASCADE",
-      ),
-  )
-
-  @classmethod
-  def from_event(cls, session: Session, event: Event) -> StorageEvent:
-    """Creates a StorageEvent from an Event."""
-    return StorageEvent(
-        id=event.id,
-        invocation_id=event.invocation_id,
-        session_id=session.id,
-        app_name=session.app_name,
-        user_id=session.user_id,
-        timestamp=datetime.fromtimestamp(event.timestamp),
-        event_data=event.model_dump(exclude_none=True, mode="json"),
-    )
-
-  def to_event(self) -> Event:
-    """Converts the StorageEvent to an Event."""
-    return Event.model_validate({
-        **self.event_data,
-        "id": self.id,
-        "invocation_id": self.invocation_id,
-        "timestamp": self.timestamp.timestamp(),
-    })
-
-
-class StorageAppState(Base):
-  """Represents an app state stored in the database."""
-
-  __tablename__ = "app_states"
-
-  app_name: Mapped[str] = mapped_column(
-      String(DEFAULT_MAX_KEY_LENGTH), primary_key=True
-  )
-  state: Mapped[MutableDict[str, Any]] = mapped_column(
-      MutableDict.as_mutable(DynamicJSON), default={}
-  )
-  update_time: Mapped[datetime] = mapped_column(
-      PreciseTimestamp, default=func.now(), onupdate=func.now()
-  )
-
-
-class StorageUserState(Base):
-  """Represents a user state stored in the database."""
-
-  __tablename__ = "user_states"
-
-  app_name: Mapped[str] = mapped_column(
-      String(DEFAULT_MAX_KEY_LENGTH), primary_key=True
-  )
-  user_id: Mapped[str] = mapped_column(
-      String(DEFAULT_MAX_KEY_LENGTH), primary_key=True
-  )
-  state: Mapped[MutableDict[str, Any]] = mapped_column(
-      MutableDict.as_mutable(DynamicJSON), default={}
-  )
-  update_time: Mapped[datetime] = mapped_column(
-      PreciseTimestamp, default=func.now(), onupdate=func.now()
-  )
-
-
-def set_sqlite_pragma(dbapi_connection, connection_record):
+def _set_sqlite_pragma(dbapi_connection, connection_record):
   cursor = dbapi_connection.cursor()
   cursor.execute("PRAGMA foreign_keys=ON")
   cursor.close()
+
+
+def _merge_state(
+    app_state: dict[str, Any],
+    user_state: dict[str, Any],
+    session_state: dict[str, Any],
+) -> dict[str, Any]:
+  """Merge app, user, and session states into a single state dictionary."""
+  merged_state = copy.deepcopy(session_state)
+  for key in app_state.keys():
+    merged_state[State.APP_PREFIX + key] = app_state[key]
+  for key in user_state.keys():
+    merged_state[State.USER_PREFIX + key] = user_state[key]
+  return merged_state
+
+
+class _SchemaClasses:
+  """A helper class to hold schema classes based on version."""
+
+  def __init__(self, version: str):
+    if version == _schema_check_utils.LATEST_SCHEMA_VERSION:
+      self.StorageSession = StorageSessionV1
+      self.StorageAppState = StorageAppStateV1
+      self.StorageUserState = StorageUserStateV1
+      self.StorageEvent = StorageEventV1
+    else:
+      self.StorageSession = StorageSessionV0
+      self.StorageAppState = StorageAppStateV0
+      self.StorageUserState = StorageUserStateV0
+      self.StorageEvent = StorageEventV0
 
 
 class DatabaseSessionService(BaseSessionService):
@@ -304,11 +105,18 @@ class DatabaseSessionService(BaseSessionService):
     # 2. Create all tables based on schema
     # 3. Initialize all properties
     try:
-      db_engine = create_async_engine(db_url, **kwargs)
+      engine_kwargs = dict(kwargs)
+      url = make_url(db_url)
+      if url.get_backend_name() == "sqlite" and url.database == ":memory:":
+        engine_kwargs.setdefault("poolclass", StaticPool)
+        connect_args = dict(engine_kwargs.get("connect_args", {}))
+        connect_args.setdefault("check_same_thread", False)
+        engine_kwargs["connect_args"] = connect_args
 
+      db_engine = create_async_engine(db_url, **engine_kwargs)
       if db_engine.dialect.name == "sqlite":
         # Set sqlite pragma to enable foreign keys constraints
-        event.listen(db_engine.sync_engine, "connect", set_sqlite_pragma)
+        event.listen(db_engine.sync_engine, "connect", _set_sqlite_pragma)
 
     except Exception as e:
       if isinstance(e, ArgumentError):
@@ -336,58 +144,82 @@ class DatabaseSessionService(BaseSessionService):
 
     # Flag to indicate if tables are created
     self._tables_created = False
+
     # Lock to ensure thread-safe table creation
     self._table_creation_lock = asyncio.Lock()
 
-  async def _ensure_tables_created(self):
-    """Ensure database tables are created. This is called lazily."""
+    # The current database schema version in use, "None" if not yet checked
+    self._db_schema_version: Optional[str] = None
+
+    # Lock to ensure thread-safe schema version check
+    self._db_schema_lock = asyncio.Lock()
+
+  def _get_schema_classes(self) -> _SchemaClasses:
+    return _SchemaClasses(self._db_schema_version)
+
+  async def _prepare_tables(self):
+    """Ensure database tables are ready for use.
+
+    This method is called lazily before each database operation. It checks the
+    DB schema version to use and creates the tables (including setting the
+    schema version metadata) if needed.
+    """
+    # Check the database schema version and set the _db_schema_version if
+    # needed
+    if self._db_schema_version is not None:
+      return
+
+    async with self._db_schema_lock:
+      # Double-check after acquiring the lock
+      if self._db_schema_version is not None:
+        return
+      try:
+        async with self.db_engine.connect() as conn:
+          self._db_schema_version = await conn.run_sync(
+              _schema_check_utils.get_db_schema_version_from_connection
+          )
+      except Exception as e:
+        logger.error("Failed to inspect database tables: %s", e)
+        raise
+
+    # Check if tables are created and create them if not
     if self._tables_created:
       return
 
     async with self._table_creation_lock:
       # Double-check after acquiring the lock
       if not self._tables_created:
-        # Check schema version BEFORE creating tables.
-        # This prevents creating metadata table on a v0.1 DB.
-        async with self.database_session_factory() as sql_session:
-          version, is_v01 = await sql_session.run_sync(
-              _schema_check.get_version_and_v01_status_sync
-          )
-
-          if is_v01:
-            raise RuntimeError(
-                "Database schema appears to be v0.1, but"
-                f" {_schema_check.CURRENT_SCHEMA_VERSION} is required. Please"
-                " migrate the database using 'adk migrate session'."
-            )
-          elif version and version < _schema_check.CURRENT_SCHEMA_VERSION:
-            raise RuntimeError(
-                f"Database schema version is {version}, but current version is"
-                f" {_schema_check.CURRENT_SCHEMA_VERSION}. Please migrate"
-                " the database to the latest version using 'adk migrate"
-                " session'."
-            )
-
         async with self.db_engine.begin() as conn:
-          # Uncomment to recreate DB every time
-          # await conn.run_sync(Base.metadata.drop_all)
-          await conn.run_sync(Base.metadata.create_all)
-
-        # If we are here, DB is either new or >= current version.
-        # If new or without metadata row, stamp it as current version.
-        async with self.database_session_factory() as sql_session:
-          metadata = await sql_session.get(
-              StorageMetadata, _schema_check.SCHEMA_VERSION_KEY
-          )
-          if not metadata:
-            sql_session.add(
-                StorageMetadata(
-                    key=_schema_check.SCHEMA_VERSION_KEY,
-                    value=_schema_check.CURRENT_SCHEMA_VERSION,
-                )
-            )
-            await sql_session.commit()
+          if (
+              self._db_schema_version
+              == _schema_check_utils.LATEST_SCHEMA_VERSION
+          ):
+            # Uncomment to recreate DB every time
+            # await conn.run_sync(BaseV1.metadata.drop_all)
+            logger.debug("Using V1 schema tables...")
+            await conn.run_sync(BaseV1.metadata.create_all)
+          else:
+            # await conn.run_sync(BaseV0.metadata.drop_all)
+            logger.debug("Using V0 schema tables...")
+            await conn.run_sync(BaseV0.metadata.create_all)
         self._tables_created = True
+
+        if self._db_schema_version == _schema_check_utils.LATEST_SCHEMA_VERSION:
+          async with self.database_session_factory() as sql_session:
+            # Check if schema version is set, if not, set it to the latest
+            # version
+            stmt = select(StorageMetadata).where(
+                StorageMetadata.key == _schema_check_utils.SCHEMA_VERSION_KEY
+            )
+            result = await sql_session.execute(stmt)
+            metadata = result.scalars().first()
+            if not metadata:
+              metadata = StorageMetadata(
+                  key=_schema_check_utils.SCHEMA_VERSION_KEY,
+                  value=_schema_check_utils.LATEST_SCHEMA_VERSION,
+              )
+              sql_session.add(metadata)
+              await sql_session.commit()
 
   @override
   async def create_session(
@@ -403,27 +235,29 @@ class DatabaseSessionService(BaseSessionService):
     # 3. Add the object to the table
     # 4. Build the session object with generated id
     # 5. Return the session
-    await self._ensure_tables_created()
+    await self._prepare_tables()
+    schema = self._get_schema_classes()
     async with self.database_session_factory() as sql_session:
-
       if session_id and await sql_session.get(
-          StorageSession, (app_name, user_id, session_id)
+          schema.StorageSession, (app_name, user_id, session_id)
       ):
         raise AlreadyExistsError(
             f"Session with id {session_id} already exists."
         )
       # Fetch app and user states from storage
-      storage_app_state = await sql_session.get(StorageAppState, (app_name))
+      storage_app_state = await sql_session.get(
+          schema.StorageAppState, (app_name)
+      )
       storage_user_state = await sql_session.get(
-          StorageUserState, (app_name, user_id)
+          schema.StorageUserState, (app_name, user_id)
       )
 
       # Create state tables if not exist
       if not storage_app_state:
-        storage_app_state = StorageAppState(app_name=app_name, state={})
+        storage_app_state = schema.StorageAppState(app_name=app_name, state={})
         sql_session.add(storage_app_state)
       if not storage_user_state:
-        storage_user_state = StorageUserState(
+        storage_user_state = schema.StorageUserState(
             app_name=app_name, user_id=user_id, state={}
         )
         sql_session.add(storage_user_state)
@@ -441,7 +275,7 @@ class DatabaseSessionService(BaseSessionService):
         storage_user_state.state = storage_user_state.state | user_state_delta
 
       # Store the session
-      storage_session = StorageSession(
+      storage_session = schema.StorageSession(
           app_name=app_name,
           user_id=user_id,
           id=session_id,
@@ -468,29 +302,30 @@ class DatabaseSessionService(BaseSessionService):
       session_id: str,
       config: Optional[GetSessionConfig] = None,
   ) -> Optional[Session]:
-    await self._ensure_tables_created()
+    await self._prepare_tables()
     # 1. Get the storage session entry from session table
     # 2. Get all the events based on session id and filtering config
     # 3. Convert and return the session
+    schema = self._get_schema_classes()
     async with self.database_session_factory() as sql_session:
       storage_session = await sql_session.get(
-          StorageSession, (app_name, user_id, session_id)
+          schema.StorageSession, (app_name, user_id, session_id)
       )
       if storage_session is None:
         return None
 
       stmt = (
-          select(StorageEvent)
-          .filter(StorageEvent.app_name == app_name)
-          .filter(StorageEvent.session_id == storage_session.id)
-          .filter(StorageEvent.user_id == user_id)
+          select(schema.StorageEvent)
+          .filter(schema.StorageEvent.app_name == app_name)
+          .filter(schema.StorageEvent.session_id == storage_session.id)
+          .filter(schema.StorageEvent.user_id == user_id)
       )
 
       if config and config.after_timestamp:
         after_dt = datetime.fromtimestamp(config.after_timestamp)
-        stmt = stmt.filter(StorageEvent.timestamp >= after_dt)
+        stmt = stmt.filter(schema.StorageEvent.timestamp >= after_dt)
 
-      stmt = stmt.order_by(StorageEvent.timestamp.desc())
+      stmt = stmt.order_by(schema.StorageEvent.timestamp.desc())
 
       if config and config.num_recent_events:
         stmt = stmt.limit(config.num_recent_events)
@@ -499,9 +334,11 @@ class DatabaseSessionService(BaseSessionService):
       storage_events = result.scalars().all()
 
       # Fetch states from storage
-      storage_app_state = await sql_session.get(StorageAppState, (app_name))
+      storage_app_state = await sql_session.get(
+          schema.StorageAppState, (app_name)
+      )
       storage_user_state = await sql_session.get(
-          StorageUserState, (app_name, user_id)
+          schema.StorageUserState, (app_name, user_id)
       )
 
       app_state = storage_app_state.state if storage_app_state else {}
@@ -520,30 +357,35 @@ class DatabaseSessionService(BaseSessionService):
   async def list_sessions(
       self, *, app_name: str, user_id: Optional[str] = None
   ) -> ListSessionsResponse:
-    await self._ensure_tables_created()
+    await self._prepare_tables()
+    schema = self._get_schema_classes()
     async with self.database_session_factory() as sql_session:
-      stmt = select(StorageSession).filter(StorageSession.app_name == app_name)
+      stmt = select(schema.StorageSession).filter(
+          schema.StorageSession.app_name == app_name
+      )
       if user_id is not None:
-        stmt = stmt.filter(StorageSession.user_id == user_id)
+        stmt = stmt.filter(schema.StorageSession.user_id == user_id)
 
       result = await sql_session.execute(stmt)
       results = result.scalars().all()
 
       # Fetch app state from storage
-      storage_app_state = await sql_session.get(StorageAppState, (app_name))
+      storage_app_state = await sql_session.get(
+          schema.StorageAppState, (app_name)
+      )
       app_state = storage_app_state.state if storage_app_state else {}
 
       # Fetch user state(s) from storage
       user_states_map = {}
       if user_id is not None:
         storage_user_state = await sql_session.get(
-            StorageUserState, (app_name, user_id)
+            schema.StorageUserState, (app_name, user_id)
         )
         if storage_user_state:
           user_states_map[user_id] = storage_user_state.state
       else:
-        user_state_stmt = select(StorageUserState).filter(
-            StorageUserState.app_name == app_name
+        user_state_stmt = select(schema.StorageUserState).filter(
+            schema.StorageUserState.app_name == app_name
         )
         user_state_result = await sql_session.execute(user_state_stmt)
         all_user_states_for_app = user_state_result.scalars().all()
@@ -562,19 +404,20 @@ class DatabaseSessionService(BaseSessionService):
   async def delete_session(
       self, app_name: str, user_id: str, session_id: str
   ) -> None:
-    await self._ensure_tables_created()
+    await self._prepare_tables()
+    schema = self._get_schema_classes()
     async with self.database_session_factory() as sql_session:
-      stmt = delete(StorageSession).where(
-          StorageSession.app_name == app_name,
-          StorageSession.user_id == user_id,
-          StorageSession.id == session_id,
+      stmt = delete(schema.StorageSession).where(
+          schema.StorageSession.app_name == app_name,
+          schema.StorageSession.user_id == user_id,
+          schema.StorageSession.id == session_id,
       )
       await sql_session.execute(stmt)
       await sql_session.commit()
 
   @override
   async def append_event(self, session: Session, event: Event) -> Event:
-    await self._ensure_tables_created()
+    await self._prepare_tables()
     if event.partial:
       return event
 
@@ -584,9 +427,10 @@ class DatabaseSessionService(BaseSessionService):
     # 1. Check if timestamp is stale
     # 2. Update session attributes based on event config
     # 3. Store event to table
+    schema = self._get_schema_classes()
     async with self.database_session_factory() as sql_session:
       storage_session = await sql_session.get(
-          StorageSession, (session.app_name, session.user_id, session.id)
+          schema.StorageSession, (session.app_name, session.user_id, session.id)
       )
 
       if storage_session.update_timestamp_tz > session.last_update_time:
@@ -600,10 +444,10 @@ class DatabaseSessionService(BaseSessionService):
 
       # Fetch states from storage
       storage_app_state = await sql_session.get(
-          StorageAppState, (session.app_name)
+          schema.StorageAppState, (session.app_name)
       )
       storage_user_state = await sql_session.get(
-          StorageUserState, (session.app_name, session.user_id)
+          schema.StorageUserState, (session.app_name, session.user_id)
       )
 
       # Extract state delta
@@ -629,7 +473,7 @@ class DatabaseSessionService(BaseSessionService):
       else:
         update_time = datetime.fromtimestamp(event.timestamp)
       storage_session.update_time = update_time
-      sql_session.add(StorageEvent.from_event(session, event))
+      sql_session.add(schema.StorageEvent.from_event(session, event))
 
       await sql_session.commit()
       await sql_session.refresh(storage_session)
@@ -641,16 +485,14 @@ class DatabaseSessionService(BaseSessionService):
     await super().append_event(session=session, event=event)
     return event
 
+  async def close(self) -> None:
+    """Disposes the SQLAlchemy engine and closes pooled connections."""
+    await self.db_engine.dispose()
 
-def _merge_state(
-    app_state: dict[str, Any],
-    user_state: dict[str, Any],
-    session_state: dict[str, Any],
-) -> dict[str, Any]:
-  """Merge app, user, and session states into a single state dictionary."""
-  merged_state = copy.deepcopy(session_state)
-  for key in app_state.keys():
-    merged_state[State.APP_PREFIX + key] = app_state[key]
-  for key in user_state.keys():
-    merged_state[State.USER_PREFIX + key] = user_state[key]
-  return merged_state
+  async def __aenter__(self) -> DatabaseSessionService:
+    """Enters the async context manager and returns this service."""
+    return self
+
+  async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+    """Exits the async context manager and closes the service."""
+    await self.close()

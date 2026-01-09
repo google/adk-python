@@ -15,11 +15,12 @@
 from __future__ import annotations
 
 from google.adk.evaluation import conversation_scenarios
-from google.adk.evaluation.llm_backed_user_simulator import LlmBackedUserSimulator
-from google.adk.evaluation.llm_backed_user_simulator import LlmBackedUserSimulatorConfig
-from google.adk.evaluation.user_simulator import Status
+from google.adk.evaluation.simulation.llm_backed_user_simulator import LlmBackedUserSimulator
+from google.adk.evaluation.simulation.llm_backed_user_simulator import LlmBackedUserSimulatorConfig
+from google.adk.evaluation.simulation.user_simulator import Status
 from google.adk.events.event import Event
 from google.genai import types
+from pydantic import ValidationError
 import pytest
 
 _INPUT_EVENTS = [
@@ -88,6 +89,20 @@ user: I need to book a flight.
 helpful_assistant: Sure, what is your departure date and destination?"""
 
 
+def test_llm_backed_user_simulator_config_validation():
+  """Tests for LlmBackedUserSimulatorConfig."""
+  config = LlmBackedUserSimulatorConfig(custom_instructions=None)
+  assert config.custom_instructions is None
+  valid_instructions = (
+      "{stop_signal} {conversation_plan} {conversation_history}"
+  )
+  config = LlmBackedUserSimulatorConfig(custom_instructions=valid_instructions)
+  assert config.custom_instructions == valid_instructions
+  invalid_instructions = "Instructions with missing formatting placeholders"
+  with pytest.raises(ValidationError):
+    LlmBackedUserSimulatorConfig(custom_instructions=invalid_instructions)
+
+
 class TestHelperMethods:
   """Test cases for LlmBackedUserSimulator helper methods."""
 
@@ -112,7 +127,7 @@ async def to_async_iter(items):
 def mock_llm_agent(mocker):
   """Provides a mock LLM agent."""
   mock_llm_registry_cls = mocker.patch(
-      "google.adk.evaluation.llm_backed_user_simulator.LLMRegistry"
+      "google.adk.evaluation.simulation.llm_backed_user_simulator.LLMRegistry"
   )
   mock_llm_registry = mocker.MagicMock()
   mock_llm_registry_cls.return_value = mock_llm_registry

@@ -140,6 +140,7 @@ def _get_context_metadata(
         ("custom_metadata", event.custom_metadata),
         ("usage_metadata", event.usage_metadata),
         ("error_code", event.error_code),
+        ("actions", event.actions),
     ]
 
     for field_name, field_value in optional_fields:
@@ -228,7 +229,11 @@ def convert_a2a_task_to_event(
       message = Message(
           message_id="", role=Role.agent, parts=a2a_task.artifacts[-1].parts
       )
-    elif a2a_task.status and a2a_task.status.message:
+    elif (
+        a2a_task.status
+        and a2a_task.status.message
+        and a2a_task.status.message.parts
+    ):
       message = a2a_task.status.message
     elif a2a_task.history:
       message = a2a_task.history[-1]

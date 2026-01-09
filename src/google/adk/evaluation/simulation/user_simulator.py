@@ -26,10 +26,10 @@ from pydantic import Field
 from pydantic import model_validator
 from pydantic import ValidationError
 
-from ..events.event import Event
-from ..utils.feature_decorator import experimental
-from .common import EvalBaseModel
-from .evaluator import Evaluator
+from ...events.event import Event
+from ...utils.feature_decorator import experimental
+from ..common import EvalBaseModel
+from ..evaluator import Evaluator
 
 
 class BaseUserSimulatorConfig(BaseModel):

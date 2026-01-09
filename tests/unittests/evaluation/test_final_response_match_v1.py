@@ -139,11 +139,3 @@ def test_rouge_evaluator_multiple_invocations(
       expected_score, rel=1e-3
   )
   assert evaluation_result.overall_eval_status == expected_status
-
-
-def test_get_metric_info():
-  """Test get_metric_info function for response match metric."""
-  metric_info = RougeEvaluator.get_metric_info()
-  assert metric_info.metric_name == PrebuiltMetrics.RESPONSE_MATCH_SCORE.value
-  assert metric_info.metric_value_info.interval.min_value == 0.0
-  assert metric_info.metric_value_info.interval.max_value == 1.0

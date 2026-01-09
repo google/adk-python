@@ -37,8 +37,6 @@ from opentelemetry.sdk.trace import SpanProcessor
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
-from ..utils.feature_decorator import experimental
-
 
 @dataclass
 class OTelHooks:
@@ -47,7 +45,6 @@ class OTelHooks:
   log_record_processors: list[LogRecordProcessor] = field(default_factory=list)
 
 
-@experimental()
 def maybe_set_otel_providers(
     otel_hooks_to_setup: list[OTelHooks] = None,
     otel_resource: Optional[Resource] = None,

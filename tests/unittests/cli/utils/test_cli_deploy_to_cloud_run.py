@@ -122,6 +122,7 @@ def test_to_cloud_run_happy_path(
       temp_folder=str(tmp_path),
       port=8080,
       trace_to_cloud=True,
+      otel_to_cloud=True,
       with_ui=with_ui,
       log_level="info",
       verbosity="info",
@@ -154,6 +155,7 @@ def test_to_cloud_run_happy_path(
   assert "ENV GOOGLE_CLOUD_LOCATION=asia-northeast1" in dockerfile_content
   assert "RUN pip install google-adk==1.3.0" in dockerfile_content
   assert "--trace_to_cloud" in dockerfile_content
+  assert "--otel_to_cloud" in dockerfile_content
 
   # Check agent dependencies installation based on include_requirements
   if include_requirements:
@@ -220,6 +222,7 @@ def test_to_cloud_run_cleans_temp_dir(
       temp_folder=str(tmp_dir),
       port=8080,
       trace_to_cloud=False,
+      otel_to_cloud=False,
       with_ui=False,
       log_level="info",
       verbosity="info",
@@ -258,6 +261,7 @@ def test_to_cloud_run_cleans_temp_dir_on_failure(
         temp_folder=str(tmp_dir),
         port=8080,
         trace_to_cloud=False,
+        otel_to_cloud=False,
         with_ui=False,
         log_level="info",
         verbosity="info",
@@ -326,6 +330,7 @@ def test_cloud_run_label_merging(
       temp_folder=str(tmp_path),
       port=8080,
       trace_to_cloud=False,
+      otel_to_cloud=False,
       with_ui=False,
       log_level="info",
       verbosity="info",

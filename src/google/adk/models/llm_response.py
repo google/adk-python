@@ -135,6 +135,13 @@ class LlmResponse(BaseModel):
   This field is automatically populated when citation is enabled.
   """
 
+  interaction_id: Optional[str] = None
+  """The interaction ID from the interactions API.
+
+  This field is populated when using the interactions API for model invocation.
+  It can be used to identify and chain interactions for stateful conversations.
+  """
+
   @staticmethod
   def create(
       generate_content_response: types.GenerateContentResponse,

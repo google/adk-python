@@ -24,11 +24,12 @@ from google.adk.tools.spanner import query_tool
 from google.adk.tools.spanner import search_tool
 from typing_extensions import override
 
+from ...features import experimental
+from ...features import FeatureName
 from ...tools.base_tool import BaseTool
 from ...tools.base_toolset import BaseToolset
 from ...tools.base_toolset import ToolPredicate
 from ...tools.google_tool import GoogleTool
-from ...utils.feature_decorator import experimental
 from .settings import Capabilities
 from .settings import SpannerToolSettings
 from .spanner_credentials import SpannerCredentialsConfig
@@ -36,7 +37,7 @@ from .spanner_credentials import SpannerCredentialsConfig
 DEFAULT_SPANNER_TOOL_NAME_PREFIX = "spanner"
 
 
-@experimental
+@experimental(FeatureName.SPANNER_TOOLSET)
 class SpannerToolset(BaseToolset):
   """Spanner Toolset contains tools for interacting with Spanner data, database and table information.
 
@@ -47,6 +48,8 @@ class SpannerToolset(BaseToolset):
     - spanner_list_named_schemas
     - spanner_get_table_schema
     - spanner_execute_sql
+    - spanner_similarity_search
+    - spanner_vector_store_similarity_search
   """
 
   def __init__(
@@ -109,7 +112,7 @@ class SpannerToolset(BaseToolset):
     ):
       all_tools.append(
           GoogleTool(
-              func=query_tool.execute_sql,
+              func=query_tool.get_execute_sql(self._tool_settings),
               credentials_config=self._credentials_config,
               tool_settings=self._tool_settings,
           )
@@ -121,6 +124,16 @@ class SpannerToolset(BaseToolset):
               tool_settings=self._tool_settings,
           )
       )
+      if self._tool_settings.vector_store_settings:
+        # Only add the vector store similarity search tool if the vector store
+        # settings are specified.
+        all_tools.append(
+            GoogleTool(
+                func=search_tool.vector_store_similarity_search,
+                credentials_config=self._credentials_config,
+                tool_settings=self._tool_settings,
+            )
+        )
 
     return [
         tool

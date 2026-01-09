@@ -42,6 +42,24 @@ class TestExtractModelName:
     path_model_3 = 'projects/test-project/locations/europe-west1/publishers/google/models/claude-3-sonnet'
     assert extract_model_name(path_model_3) == 'claude-3-sonnet'
 
+    path_model_4 = 'apigee/gemini-2.5-flash'
+    assert extract_model_name(path_model_4) == 'gemini-2.5-flash'
+
+    path_model_5 = 'apigee/v1/gemini-2.5-flash'
+    assert extract_model_name(path_model_5) == 'gemini-2.5-flash'
+
+    path_model_6 = 'apigee/gemini/gemini-2.5-flash'
+    assert extract_model_name(path_model_6) == 'gemini-2.5-flash'
+
+    path_model_7 = 'apigee/vertex_ai/gemini-2.5-flash'
+    assert extract_model_name(path_model_7) == 'gemini-2.5-flash'
+
+    path_model_8 = 'apigee/gemini/v1/gemini-2.5-flash'
+    assert extract_model_name(path_model_8) == 'gemini-2.5-flash'
+
+    path_model_9 = 'apigee/vertex_ai/v1beta/gemini-2.5-flash'
+    assert extract_model_name(path_model_9) == 'gemini-2.5-flash'
+
   def test_extract_model_name_with_models_prefix(self):
     """Test extraction of model names with 'models/' prefix."""
     assert extract_model_name('models/gemini-2.5-pro') == 'gemini-2.5-pro'
