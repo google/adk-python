@@ -444,41 +444,53 @@ def _extract_cached_prompt_tokens(usage: Any) -> int:
 
 
 async def _content_to_message_param(
-    content: types.Content,
-    *,
-    provider: str = "",
+  content: types.Content,
+  *,
+  provider: str = "",
 ) -> Union[Message, list[Message]]:
   """Converts a types.Content to a litellm Message or list of Messages.
 
-  Handles multipart function responses by returning a list of
-  ChatCompletionToolMessage objects if multiple function_response parts exist.
+  Handles multipart function responses and mixed content by returning a list of
+  messages if multiple parts (e.g., tool results and text/images) exist.
 
   Args:
     content: The content to convert.
     provider: The LLM provider name (e.g., "openai", "azure").
 
   Returns:
-    A litellm Message, a list of litellm Messages.
+    A litellm Message or a list of litellm Messages.
   """
+  messages = []
 
-  tool_messages = []
+  # 1. Process all function responses into tool messages
   for part in content.parts:
     if part.function_response:
-      response = part.function_response.response
-      response_content = (
-          response
-          if isinstance(response, str)
-          else _safe_json_serialize(response)
-      )
-      tool_messages.append(
-          ChatCompletionToolMessage(
-              role="tool",
-              tool_call_id=part.function_response.id,
-              content=response_content,
-          )
-      )
-  if tool_messages:
-    return tool_messages if len(tool_messages) > 1 else tool_messages[0]
+      messages.append({
+        "role": "tool",
+        "tool_call_id": part.function_response.id,
+        "content": json.dumps(part.function_response.response),
+      })
+
+  # 2. Check for other parts (text, images, etc.) in the same content
+  other_parts = [p for p in content.parts if not p.function_response]
+
+  if other_parts:
+    # Convert the remaining parts (text/images) using existing logic
+    other_content = await _get_content(
+      other_parts,
+      provider=provider,
+    )
+    if other_content:
+      messages.append({
+        "role": _to_litellm_role(content.role),
+        "content": other_content,
+      })
+
+  # 3. Return the result (single dict if 1 message, list if multiple)
+  if messages:
+    return messages if len(messages) > 1 else messages[0]
+
+  return []
 
   # Handle user or assistant messages
   role = _to_litellm_role(content.role)
