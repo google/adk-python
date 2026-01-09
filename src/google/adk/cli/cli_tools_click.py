@@ -1553,6 +1553,47 @@ def cli_deploy_cloud_run(
     click.secho(f"Deploy failed: {e}", fg="red", err=True)
 
 
+@main.group()
+def migrate():
+  """ADK migration commands."""
+  pass
+
+
+@migrate.command("session", cls=HelpfulCommand)
+@click.option(
+    "--source_db_url",
+    required=True,
+    help=(
+        "SQLAlchemy URL of source database in database session service, e.g."
+        " sqlite:///source.db."
+    ),
+)
+@click.option(
+    "--dest_db_url",
+    required=True,
+    help=(
+        "SQLAlchemy URL of destination database in database session service,"
+        " e.g. sqlite:///dest.db."
+    ),
+)
+@click.option(
+    "--log_level",
+    type=LOG_LEVELS,
+    default="INFO",
+    help="Optional. Set the logging level",
+)
+def cli_migrate_session(
+    *, source_db_url: str, dest_db_url: str, log_level: str
+):
+  """Migrates a session database to the latest schema version."""
+  logs.setup_adk_logger(getattr(logging, log_level.upper()))
+  try:
+    migration_runner.upgrade(source_db_url, dest_db_url)
+    click.secho("Migration check and upgrade process finished.", fg="green")
+  except Exception as e:
+    click.secho(f"Migration failed: {e}", fg="red", err=True)
+
+
 @deploy.command("agent_engine")
 @click.option(
     "--api_key",
