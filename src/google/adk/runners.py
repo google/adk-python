@@ -952,6 +952,8 @@ class Runner:
       raise ValueError(
           'Either session or user_id and session_id must be provided.'
       )
+    if live_request_queue is None:
+      raise ValueError('live_request_queue is required for run_live.')
     if session is not None:
       warnings.warn(
           'The `session` parameter is deprecated. Please use `user_id` and'
@@ -1380,7 +1382,7 @@ class Runner:
       self,
       session: Session,
       *,
-      live_request_queue: Optional[LiveRequestQueue] = None,
+      live_request_queue: LiveRequestQueue,
       run_config: Optional[RunConfig] = None,
   ) -> InvocationContext:
     """Creates a new invocation context for live multi-agent."""
@@ -1388,7 +1390,7 @@ class Runner:
 
     # For live multi-agents system, we need model's text transcription as
     # context for the transferred agent.
-    if self.agent.sub_agents and live_request_queue:
+    if self.agent.sub_agents:
       if 'AUDIO' in run_config.response_modalities:
         if not run_config.output_audio_transcription:
           run_config.output_audio_transcription = (
