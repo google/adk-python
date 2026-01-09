@@ -444,9 +444,9 @@ def _extract_cached_prompt_tokens(usage: Any) -> int:
 
 
 async def _content_to_message_param(
-  content: types.Content,
-  *,
-  provider: str = "",
+    content: types.Content,
+    *,
+    provider: str = "",
 ) -> Union[Message, list[Message]]:
   """Converts a types.Content to a litellm Message or list of Messages.
 
@@ -470,10 +470,7 @@ async def _content_to_message_param(
   tool_messages = []
   other_parts = []
   
-  # 1. Separate function responses from other content
-
-  tool_messages: list[Message] = []
-  non_tool_parts: list[types.Part] = []
+  # 1. Separate function responses from other content (Text, Images, etc.)
   for part in content.parts:
     if part.function_response:
       response = part.function_response.response
@@ -492,22 +489,23 @@ async def _content_to_message_param(
     else:
       other_parts.append(part)
 
-  # 2. If ONLY tools are present, return them immediately
+  # 2. If ONLY tools are present, return them immediately (Original behavior)
   if tool_messages and not other_parts:
     return tool_messages if len(tool_messages) > 1 else tool_messages[0]
 
-  # 3. Handle user or assistant messages for the remaining parts
+  # 3. Handle user or assistant messages for any non-tool parts
   extra_message = None
   if other_parts:
     role = _to_litellm_role(content.role)
 
     if role == "user":
+      # Original logic for User messages
       user_parts = [part for part in other_parts if not part.thought]
       message_content = await _get_content(user_parts, provider=provider) or None
-      if message_content:
-        extra_message = ChatCompletionUserMessage(role="user", content=message_content)
-        
+      extra_message = ChatCompletionUserMessage(role="user", content=message_content)
+      
     else:  # assistant/model
+      # Original logic for Assistant messages (Tool calls + Reasoning)
       tool_calls = []
       content_parts: list[types.Part] = []
       reasoning_parts: list[types.Part] = []
@@ -528,107 +526,49 @@ async def _content_to_message_param(
         else:
           content_parts.append(part)
 
-      message_content = await _get_content(content_parts, provider=provider) or None
-      # Using p.text as requested by the code review
-      reasoning_content = (
-          "\n".join([p.text for p in reasoning_parts if p.text])
-          if reasoning_parts
+      final_content = (
+          await _get_content(content_parts, provider=provider)
+          if content_parts
           else None
       )
+      
+      # Handle Ollama specific formatting from original code
+      if final_content and isinstance(final_content, list):
+        final_content = (
+            final_content[0].get("text", "")
+            if final_content[0].get("type", None) == "text"
+            else final_content
+        )
 
+      # Handle reasoning/thoughts using original logic
+      reasoning_texts = []
+      for part in reasoning_parts:
+        if part.text:
+          reasoning_texts.append(part.text)
+        elif (
+            part.inline_data
+            and part.inline_data.data
+            and part.inline_data.mime_type
+            and part.inline_data.mime_type.startswith("text/")
+        ):
+          reasoning_texts.append(_decode_inline_text_data(part.inline_data.data))
+
+      reasoning_content = _NEW_LINE.join(text for text in reasoning_texts if text)
+      
       extra_message = ChatCompletionAssistantMessage(
-          role="assistant",
-          content=message_content,
-          tool_calls=tool_calls if tool_calls else None,
-          thought=reasoning_content,
+          role=role,
+          content=final_content,
+          tool_calls=tool_calls or None,
+          reasoning_content=reasoning_content or None,
       )
 
-  # 4. Combine and Return
-  final_messages = tool_messages + ([extra_message] if extra_message else [])
+  # 4. Final step: Combine tool results and the extra message (Original logic fix)
+  final_result = tool_messages + ([extra_message] if extra_message else [])
 
-  if not final_messages:
+  if not final_result:
     return []
     
-  return final_messages if len(final_messages) > 1 else final_messages[0]
-
-
-      non_tool_parts.append(part)
-
-  if tool_messages and not non_tool_parts:
-    return tool_messages if len(tool_messages) > 1 else tool_messages[0]
-
-  if tool_messages and non_tool_parts:
-    follow_up = await _content_to_message_param(
-        types.Content(role=content.role, parts=non_tool_parts),
-        provider=provider,
-    )
-    follow_up_messages = (
-        follow_up if isinstance(follow_up, list) else [follow_up]
-    )
-    return tool_messages + follow_up_messages
-
-  # Handle user or assistant messages
-  role = _to_litellm_role(content.role)
-
-
-  if role == "user":
-    user_parts = [part for part in content.parts if not part.thought]
-    message_content = await _get_content(user_parts, provider=provider) or None
-    return ChatCompletionUserMessage(role="user", content=message_content)
-  else:  # assistant/model
-    tool_calls = []
-    content_parts: list[types.Part] = []
-    reasoning_parts: list[types.Part] = []
-    for part in content.parts:
-      if part.function_call:
-        tool_calls.append(
-            ChatCompletionAssistantToolCall(
-                type="function",
-                id=part.function_call.id,
-                function=Function(
-                    name=part.function_call.name,
-                    arguments=_safe_json_serialize(part.function_call.args),
-                ),
-            )
-        )
-      elif part.thought:
-        reasoning_parts.append(part)
-      else:
-        content_parts.append(part)
-
-    final_content = (
-        await _get_content(content_parts, provider=provider)
-        if content_parts
-        else None
-    )
-    if final_content and isinstance(final_content, list):
-      # when the content is a single text object, we can use it directly.
-      # this is needed for ollama_chat provider which fails if content is a list
-      final_content = (
-          final_content[0].get("text", "")
-          if final_content[0].get("type", None) == "text"
-          else final_content
-      )
-
-    reasoning_texts = []
-    for part in reasoning_parts:
-      if part.text:
-        reasoning_texts.append(part.text)
-      elif (
-          part.inline_data
-          and part.inline_data.data
-          and part.inline_data.mime_type
-          and part.inline_data.mime_type.startswith("text/")
-      ):
-        reasoning_texts.append(_decode_inline_text_data(part.inline_data.data))
-
-    reasoning_content = _NEW_LINE.join(text for text in reasoning_texts if text)
-    return ChatCompletionAssistantMessage(
-        role=role,
-        content=final_content,
-        tool_calls=tool_calls or None,
-        reasoning_content=reasoning_content or None,
-    )
+  return final_result if len(final_result) > 1 else final_result[0]
 
 
 def _ensure_tool_results(messages: List[Message]) -> List[Message]:
