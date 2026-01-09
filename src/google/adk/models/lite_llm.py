@@ -444,12 +444,33 @@ def _extract_cached_prompt_tokens(usage: Any) -> int:
 
 
 async def _content_to_message_param(
-    content: types.Content,
-    *,
-    provider: str = "",
+  content: types.Content,
+  *,
+  provider: str = "",
 ) -> Union[Message, list[Message]]:
-  """Converts a types.Content to a litellm Message or list of Messages."""
+  """Converts a types.Content to a litellm Message or list of Messages.
 
+  This function processes a `types.Content` object, which may contain multiple
+  parts, and converts them into a format suitable for LiteLLM. It handles
+  mixed content, such as tool responses alongside text or other media, by
+  generating a list of messages.
+
+  - `function_response` parts are converted into `tool` role messages.
+  - Other parts (text, images, etc.) are grouped and converted into a
+    single `user` or `assistant` message.
+  - If the content contains only tool responses, it may return a single
+    message or a list, depending on the number of responses.
+
+  Args:
+    content: The content to convert.
+    provider: The LLM provider name (e.g., "openai", "azure"), used for
+      provider-specific content handling.
+
+  Returns:
+    A single litellm Message, a list of litellm Messages, or an empty list if
+    the content is empty.
+  """
+  # 1. Separate tool results (function_response) from other parts
   tool_messages = []
   other_parts = []
   
@@ -471,9 +492,11 @@ async def _content_to_message_param(
     else:
       other_parts.append(part)
 
+  # 2. Optimization: If there are ONLY tool messages, return them immediately
   if tool_messages and not other_parts:
     return tool_messages if len(tool_messages) > 1 else tool_messages[0]
 
+  # 3. Process the "other_parts" (text, images, reasoning, function_calls)
   extra_message = None
   
   if other_parts:
@@ -485,7 +508,7 @@ async def _content_to_message_param(
       if message_content:
         extra_message = ChatCompletionUserMessage(role="user", content=message_content)
         
-    else:
+    else:  # assistant/model
       tool_calls = []
       content_parts: list[types.Part] = []
       reasoning_parts: list[types.Part] = []
@@ -510,7 +533,6 @@ async def _content_to_message_param(
       message_content = await _get_content(content_parts, provider=provider) or None
       reasoning_content = "\n".join([p.thought for p in reasoning_parts]) if reasoning_parts else None
 
-      # Create the assistant message
       extra_message = ChatCompletionAssistantMessage(
           role="assistant",
           content=message_content,
@@ -518,6 +540,7 @@ async def _content_to_message_param(
           thought=reasoning_content,
       )
 
+  # 4. COMBINE AND RETURN
   final_messages = tool_messages + ([extra_message] if extra_message else [])
 
   if not final_messages:
