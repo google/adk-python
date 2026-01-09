@@ -1532,9 +1532,9 @@ class TestBigQueryAgentAnalyticsPlugin:
 
   @pytest.mark.asyncio
   async def test_global_client_reuse(
-      self, mock_write_client, mock_auth_default
+      self, mock_write_client, mock_auth_default, mock_bq_client
   ):
-    del mock_write_client, mock_auth_default  # Unused
+    del mock_write_client, mock_auth_default, mock_bq_client  # Unused
     # Reset global client for this test
     bigquery_agent_analytics_plugin._GLOBAL_WRITE_CLIENT = None
 

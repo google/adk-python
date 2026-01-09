@@ -16,6 +16,7 @@
 
 from unittest.mock import MagicMock
 
+from google.adk.agents.branch import Branch
 from google.adk.events.event import Event
 from google.adk.flows.llm_flows import interactions_processor
 from google.genai import types
@@ -183,7 +184,7 @@ class TestInteractionsRequestProcessor:
         invocation_id="inv2",
         author="test",
         content=types.ModelContent("test"),
-        branch="some_branch",
+        branch=Branch(tokens=frozenset({1})),
     )
     assert processor._is_event_in_branch(None, event_with_branch) is False
 
@@ -191,13 +192,14 @@ class TestInteractionsRequestProcessor:
     """Test that events in the same branch are included."""
     processor = interactions_processor.InteractionsRequestProcessor()
 
+    branch = Branch(tokens=frozenset({1, 2}))
     event = Event(
         invocation_id="inv1",
         author="test",
         content=types.ModelContent("test"),
-        branch="root.child",
+        branch=branch,
     )
-    assert processor._is_event_in_branch("root.child", event) is True
+    assert processor._is_event_in_branch(branch, event) is True
 
   def test_is_event_in_branch_different_branch(self):
     """Test that events in different branches are excluded."""
@@ -207,9 +209,9 @@ class TestInteractionsRequestProcessor:
         invocation_id="inv1",
         author="test",
         content=types.ModelContent("test"),
-        branch="root.other",
+        branch=Branch(tokens=frozenset({3})),
     )
-    assert processor._is_event_in_branch("root.child", event) is False
+    assert processor._is_event_in_branch(Branch(tokens=frozenset({1, 2})), event) is False
 
   def test_is_event_in_branch_root_events_included(self):
     """Test that root events (no branch) are included in child branches."""
@@ -220,4 +222,4 @@ class TestInteractionsRequestProcessor:
         author="test",
         content=types.ModelContent("test"),
     )
-    assert processor._is_event_in_branch("root.child", event) is True
+    assert processor._is_event_in_branch(Branch(tokens=frozenset({1, 2})), event) is True
