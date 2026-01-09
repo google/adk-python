@@ -22,7 +22,6 @@ from a2a.types import Task
 from a2a.types import TaskState
 from a2a.types import TaskStatusUpdateEvent
 from google.adk.a2a.converters.event_converter import _create_artifact_id
-from google.adk.agents.branch import Branch
 from google.adk.a2a.converters.event_converter import _create_error_status_event
 from google.adk.a2a.converters.event_converter import _create_status_update_event
 from google.adk.a2a.converters.event_converter import _get_adk_metadata_key
@@ -35,6 +34,7 @@ from google.adk.a2a.converters.event_converter import convert_event_to_a2a_event
 from google.adk.a2a.converters.event_converter import convert_event_to_a2a_message
 from google.adk.a2a.converters.event_converter import DEFAULT_ERROR_MESSAGE
 from google.adk.a2a.converters.utils import ADK_METADATA_KEY_PREFIX
+from google.adk.agents.branch import Branch
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions

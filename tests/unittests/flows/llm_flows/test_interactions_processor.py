@@ -211,7 +211,10 @@ class TestInteractionsRequestProcessor:
         content=types.ModelContent("test"),
         branch=Branch(tokens=frozenset({3})),
     )
-    assert processor._is_event_in_branch(Branch(tokens=frozenset({1, 2})), event) is False
+    assert (
+        processor._is_event_in_branch(Branch(tokens=frozenset({1, 2})), event)
+        is False
+    )
 
   def test_is_event_in_branch_root_events_included(self):
     """Test that root events (no branch) are included in child branches."""
@@ -222,4 +225,7 @@ class TestInteractionsRequestProcessor:
         author="test",
         content=types.ModelContent("test"),
     )
-    assert processor._is_event_in_branch(Branch(tokens=frozenset({1, 2})), event) is True
+    assert (
+        processor._is_event_in_branch(Branch(tokens=frozenset({1, 2})), event)
+        is True
+    )
