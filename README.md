@@ -98,10 +98,9 @@ deploying agents:
 
 ## 🏁 Feature Highlight
 
-**Beginner note:**  
-In ADK, an *agent* is a Python object that defines how your AI system behaves —  
-including its instructions, the tools it can use, and how it responds to users.  
-The example below shows the simplest way to define a single agent.
+> **Beginner note:**
+>
+> In ADK, an *agent* is a Python object that defines how your AI system behaves — including its instructions, the tools it can use, and how it responds to users. The example below shows the simplest way to define a single agent.
 
 ### Define a single agent:
 
