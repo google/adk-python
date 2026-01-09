@@ -31,14 +31,11 @@ from google.adk.plugins import ReflectAndRetryToolPlugin
 from google.adk.tools import AgentTool
 from google.adk.tools.google_search_tool import google_search
 from google.adk.tools.tool_context import ToolContext
-import time
-from google.genai import types
-from google.adk.events.event import Event
-
 
 # ============================================================================
 # Custom TimeoutAgentTool Wrapper
 # ============================================================================
+
 
 class TimeoutAgentTool(AgentTool):
   """AgentTool with timeout protection.
@@ -52,8 +49,8 @@ class TimeoutAgentTool(AgentTool):
       self,
       agent,
       timeout: float = 30.0,
-      timeout_error_message: str = "Sub-agent execution timed out",
-      **kwargs
+      timeout_error_message: str = 'Sub-agent execution timed out',
+      **kwargs,
   ):
     """Initialize TimeoutAgentTool.
 
@@ -77,17 +74,16 @@ class TimeoutAgentTool(AgentTool):
     try:
       return await asyncio.wait_for(
           super().run_async(args=args, tool_context=tool_context),
-          timeout=self.timeout
+          timeout=self.timeout,
       )
     except asyncio.TimeoutError:
       # Return structured error that ReflectAndRetryToolPlugin can handle
       return {
-          "error": "TimeoutError",
-          "message": self.timeout_error_message,
-          "timeout_seconds": self.timeout,
-          "agent_name": self.agent.name,
+          'error': 'TimeoutError',
+          'message': self.timeout_error_message,
+          'timeout_seconds': self.timeout,
+          'agent_name': self.agent.name,
       }
-
 
 
 # ============================================================================
@@ -116,7 +112,9 @@ research_agent_primary = Agent(
 research_agent_fallback = Agent(
     name='research_agent_fallback',
     model='gemini-2.5-flash',
-    description='Fallback research agent for simpler queries or when primary fails',
+    description=(
+        'Fallback research agent for simpler queries or when primary fails'
+    ),
     instruction="""
     You are a research assistant focused on quick, concise answers.
     When given a research task:
@@ -134,7 +132,9 @@ research_agent_fallback = Agent(
 error_recovery_agent = Agent(
     name='error_recovery_agent',
     model='gemini-2.5-flash',
-    description='Agent that handles error scenarios and provides alternative approaches',
+    description=(
+        'Agent that handles error scenarios and provides alternative approaches'
+    ),
     instruction="""
     You are an error recovery specialist. When you receive an error message
     or failure report, analyze what went wrong and suggest:
@@ -213,7 +213,9 @@ coordinator_agent = Agent(
         TimeoutAgentTool(
             agent=research_agent_primary,
             timeout=30.0,  # Change to 5.0 for timeout testing
-            timeout_error_message="Primary research agent timed out after 30 seconds",
+            timeout_error_message=(
+                'Primary research agent timed out after 30 seconds'
+            ),
             skip_summarization=False,  # Must be False for coordinator to continue
         ),
         # Fallback agent timeout
@@ -222,7 +224,7 @@ coordinator_agent = Agent(
         TimeoutAgentTool(
             agent=research_agent_fallback,
             timeout=60.0,  # Set to 60.0 to test successful fallback after primary timeout
-            timeout_error_message="Fallback research agent timed out",
+            timeout_error_message='Fallback research agent timed out',
             skip_summarization=False,  # Must be False for coordinator to continue
         ),
         # Error recovery agent
@@ -250,4 +252,3 @@ app = App(
 )
 
 root_agent = coordinator_agent
-
