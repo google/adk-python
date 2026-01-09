@@ -482,13 +482,15 @@ async def _content_to_message_param(
 
   # Handle user or assistant messages
   role = _to_litellm_role(content.role)
-  message_content = await _get_content(content.parts, provider=provider) or None
 
   if role == "user":
+    user_parts = [part for part in content.parts if not part.thought]
+    message_content = await _get_content(user_parts, provider=provider) or None
     return ChatCompletionUserMessage(role="user", content=message_content)
   else:  # assistant/model
     tool_calls = []
-    content_present = False
+    content_parts: list[types.Part] = []
+    reasoning_parts: list[types.Part] = []
     for part in content.parts:
       if part.function_call:
         tool_calls.append(
@@ -501,10 +503,16 @@ async def _content_to_message_param(
                 ),
             )
         )
-      elif part.text or part.inline_data:
-        content_present = True
+      elif part.thought:
+        reasoning_parts.append(part)
+      else:
+        content_parts.append(part)
 
-    final_content = message_content if content_present else None
+    final_content = (
+        await _get_content(content_parts, provider=provider)
+        if content_parts
+        else None
+    )
     if final_content and isinstance(final_content, list):
       # when the content is a single text object, we can use it directly.
       # this is needed for ollama_chat provider which fails if content is a list
@@ -514,10 +522,24 @@ async def _content_to_message_param(
           else final_content
       )
 
+    reasoning_texts = []
+    for part in reasoning_parts:
+      if part.text:
+        reasoning_texts.append(part.text)
+      elif (
+          part.inline_data
+          and part.inline_data.data
+          and part.inline_data.mime_type
+          and part.inline_data.mime_type.startswith("text/")
+      ):
+        reasoning_texts.append(_decode_inline_text_data(part.inline_data.data))
+
+    reasoning_content = _NEW_LINE.join(text for text in reasoning_texts if text)
     return ChatCompletionAssistantMessage(
         role=role,
         content=final_content,
         tool_calls=tool_calls or None,
+        reasoning_content=reasoning_content or None,
     )
 
 
@@ -587,8 +609,8 @@ async def _get_content(
 ) -> OpenAIMessageContent:
   """Converts a list of parts to litellm content.
 
-  Thought parts represent internal model reasoning and are always dropped so
-  they are not replayed back to the model in subsequent turns.
+  Callers may need to filter out thought parts before calling this helper if
+  thought parts are not needed.
 
   Args:
     parts: The parts to convert.
@@ -598,9 +620,9 @@ async def _get_content(
     The litellm content.
   """
 
-  parts_without_thought = [part for part in parts if not part.thought]
-  if len(parts_without_thought) == 1:
-    part = parts_without_thought[0]
+  parts_list = list(parts)
+  if len(parts_list) == 1:
+    part = parts_list[0]
     if part.text:
       return part.text
     if (
@@ -612,10 +634,7 @@ async def _get_content(
       return _decode_inline_text_data(part.inline_data.data)
 
   content_objects = []
-  for part in parts_without_thought:
-    # Skip thought parts to prevent reasoning from being replayed in subsequent
-    # turns. Thought parts are internal model reasoning and should not be sent
-    # back to the model.
+  for part in parts_list:
     if part.text:
       content_objects.append({
           "type": "text",

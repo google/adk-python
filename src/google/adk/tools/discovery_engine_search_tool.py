@@ -17,6 +17,7 @@ from __future__ import annotations
 from typing import Any
 from typing import Optional
 
+from google.api_core import client_options
 from google.api_core.exceptions import GoogleAPICallError
 import google.auth
 from google.cloud import discoveryengine_v1beta as discoveryengine
@@ -72,8 +73,14 @@ class DiscoveryEngineSearchTool(FunctionTool):
     self._max_results = max_results
 
     credentials, _ = google.auth.default()
+    quota_project_id = getattr(credentials, "quota_project_id", None)
+    options = (
+        client_options.ClientOptions(quota_project_id=quota_project_id)
+        if quota_project_id
+        else None
+    )
     self._discovery_engine_client = discoveryengine.SearchServiceClient(
-        credentials=credentials
+        credentials=credentials, client_options=options
     )
 
   def discovery_engine_search(
