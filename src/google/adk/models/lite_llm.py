@@ -471,6 +471,9 @@ async def _content_to_message_param(
   other_parts = []
   
   # 1. Separate function responses from other content
+
+  tool_messages: list[Message] = []
+  non_tool_parts: list[types.Part] = []
   for part in content.parts:
     if part.function_response:
       response = part.function_response.response
@@ -547,6 +550,25 @@ async def _content_to_message_param(
     return []
     
   return final_messages if len(final_messages) > 1 else final_messages[0]
+
+
+      non_tool_parts.append(part)
+
+  if tool_messages and not non_tool_parts:
+    return tool_messages if len(tool_messages) > 1 else tool_messages[0]
+
+  if tool_messages and non_tool_parts:
+    follow_up = await _content_to_message_param(
+        types.Content(role=content.role, parts=non_tool_parts),
+        provider=provider,
+    )
+    follow_up_messages = (
+        follow_up if isinstance(follow_up, list) else [follow_up]
+    )
+    return tool_messages + follow_up_messages
+
+  # Handle user or assistant messages
+  role = _to_litellm_role(content.role)
 
 
   if role == "user":
