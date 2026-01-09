@@ -62,8 +62,8 @@ async def test_sequence_of_parallels():
   # Debug: print all events and their branches
   print("\n=== All Events in Session ===")
   for event in final_session.events:
-    branch_info = event.branch.active_forks if event.branch else {}
-    print(f"{event.author:15} | branch={branch_info}")
+    branch_tokens = event.branch.tokens if event.branch else frozenset()
+    print(f"{event.author:15} | tokens={branch_tokens}")
 
   agent_a_branch = next(
       e.branch for e in final_session.events if e.author == "AgentA"
@@ -72,8 +72,8 @@ async def test_sequence_of_parallels():
       e.branch for e in final_session.events if e.author == "AgentD"
   )
 
-  # KEY: D's branch should be able to see A's branch
-  assert agent_d_branch.can_see(agent_a_branch), (
-      f"AgentD should see AgentA. A={agent_a_branch},"
-      f" D={agent_d_branch}"
+  # KEY: D's tokens should be superset of A's tokens
+  assert agent_a_branch.tokens.issubset(agent_d_branch.tokens), (
+      f"AgentD should see AgentA. A={agent_a_branch.tokens},"
+      f" D={agent_d_branch.tokens}"
   )

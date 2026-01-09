@@ -653,9 +653,9 @@ def _is_event_belongs_to_branch(
   This is for event context segregation between agents within the same
   invocation. E.g. parallel agent A shouldn't see output of parallel agent B.
 
-  Within the current invocation, uses Branch's structural visibility:
-  An Event is visible based on fork point relationships - at each fork point
-  in the event's history, the viewing branch must share a compatible path.
+  Within the current invocation, uses Branch's token-set visibility:
+  An Event is visible if its branch tokens are a subset of the current branch's tokens
+  (event.tokens ⊆ current.tokens).
 
   Args:
     invocation_branch: The current branch context.

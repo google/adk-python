@@ -193,12 +193,13 @@ def test_nested_parallel_reduce_architecture():
   session = runner.session
 
   # Debug: print all events and their branches
-  print("\n=== Branch Distribution (Nested Parallel) ===")
-  print(f"  {'Agent':<15} {'Branch':<50}")
-  print(f"  {'-'*15} {'-'*50}")
+  print("\n=== Token Distribution (Nested Parallel) ===")
+  print(f"  {'Agent':<15} {'Tokens':<30}")
+  print(f"  {'-'*15} {'-'*30}")
   for event in session.events:
     if event.author and event.branch:
-      print(f"  {event.author:15} | active_forks={event.branch.active_forks}")
+      tokens_sorted = sorted(event.branch.tokens)
+      print(f"  {event.author:15} | tokens={tokens_sorted}")
   print("=" * 70 + "\n")
 
   # Verify all agents ran
@@ -240,10 +241,10 @@ def test_nested_parallel_reduce_architecture():
   for abc_event in abc_events:
     for reducer1_event in reducer1_events:
       if reducer1_event.branch:
-        # Reducer1's branch should be able to see ABC branches
+        # Reducer1's tokens should be a superset of ABC tokens
         assert reducer1_event.branch.can_see(abc_event.branch), (
-            f"Reducer1 (branch={reducer1_event.branch}) should see"
-            f" {abc_event.author} (branch={abc_event.branch})"
+            f"Reducer1 (tokens={reducer1_event.branch.tokens}) should see"
+            f" {abc_event.author} (tokens={abc_event.branch.tokens})"
         )
 
   # Reducer2 should see D, E, F
@@ -255,10 +256,10 @@ def test_nested_parallel_reduce_architecture():
   for def_event in def_events:
     for reducer2_event in reducer2_events:
       if reducer2_event.branch:
-        # Reducer2's branch should be able to see DEF branches
+        # Reducer2's tokens should be a superset of DEF tokens
         assert reducer2_event.branch.can_see(def_event.branch), (
-            f"Reducer2 (branch={reducer2_event.branch}) should see"
-            f" {def_event.author} (branch={def_event.branch})"
+            f"Reducer2 (tokens={reducer2_event.branch.tokens}) should see"
+            f" {def_event.author} (tokens={def_event.branch.tokens})"
         )
 
   # Final reducer should see all reducers
@@ -268,8 +269,8 @@ def test_nested_parallel_reduce_architecture():
       for final_event in final_reducer_events:
         if final_event.branch:
           assert final_event.branch.can_see(reducer_event.branch), (
-              f"Final_Reducer (branch={final_event.branch}) should see"
-              f" {reducer_event.author} (branch={reducer_event.branch})"
+              f"Final_Reducer (tokens={final_event.branch.tokens}) should see"
+              f" {reducer_event.author} (tokens={reducer_event.branch.tokens})"
           )
 
   # Verify LLM request contents - the actual text sent to the model
@@ -526,31 +527,31 @@ def test_sequence_of_parallel_agents():
   # Verify visibility: Parallel2 should see Parallel1
   for p1_event in parallel1_events:
     for p2_event in parallel2_events:
-      # Parallel2 branch should be able to see Parallel1 branch
+      # Parallel2 tokens should be superset of Parallel1 tokens
       assert p2_event.branch.can_see(p1_event.branch), (
-          f"{p2_event.author} (branch={p2_event.branch}) should see"
-          f" {p1_event.author} (branch={p1_event.branch})"
+          f"{p2_event.author} (tokens={p2_event.branch.tokens}) should see"
+          f" {p1_event.author} (tokens={p1_event.branch.tokens})"
       )
 
   # Verify visibility: Parallel3 should see Parallel1 and Parallel2
   for p1_event in parallel1_events:
     for p3_event in parallel3_events:
       assert p3_event.branch.can_see(p1_event.branch), (
-          f"{p3_event.author} (branch={p3_event.branch}) should see"
-          f" {p1_event.author} (branch={p1_event.branch})"
+          f"{p3_event.author} (tokens={p3_event.branch.tokens}) should see"
+          f" {p1_event.author} (tokens={p1_event.branch.tokens})"
       )
 
   for p2_event in parallel2_events:
     for p3_event in parallel3_events:
       assert p3_event.branch.can_see(p2_event.branch), (
-          f"{p3_event.author} (branch={p3_event.branch}) should see"
-          f" {p2_event.author} (branch={p2_event.branch})"
+          f"{p3_event.author} (tokens={p3_event.branch.tokens}) should see"
+          f" {p2_event.author} (tokens={p2_event.branch.tokens})"
       )
 
-  # Print branch info for verification
-  print("\n=== Branch Distribution ===")
-  print(f"  {'Agent':<15} {'Branch':<50} {'Can See'}")
-  print(f"  {'-'*15} {'-'*50} {'-'*40}")
+  # Print token sets for verification
+  print("\n=== Token Distribution ===")
+  print(f"  {'Agent':<15} {'Tokens':<30} {'Can See'}")
+  print(f"  {'-'*15} {'-'*30} {'-'*40}")
 
   # Organize events by group for clearer display
   group1_agents = ["Alice", "Bob", "Charlie"]
@@ -560,33 +561,34 @@ def test_sequence_of_parallel_agents():
   print(f"  {'--- Group 1 ---':<15}")
   for event in session.events:
     if event.author in group1_agents and event.branch:
-      branch_info = str(event.branch.active_forks)
-      print(f"  {event.author:15} | branch={branch_info:<48} {'Root'}")
+      tokens_sorted = str(sorted(event.branch.tokens))
+      print(f"  {event.author:15} | tokens={tokens_sorted:<28} {'Root'}")
 
   print(f"  {'--- Group 2 ---':<15}")
   for event in session.events:
     if event.author in group2_agents and event.branch:
-      branch_info = str(event.branch.active_forks)
+      tokens_sorted = str(sorted(event.branch.tokens))
       print(
           f"  {event.author:15} |"
-          f" branch={branch_info:<48} {'Root, Group 1 (A,B,C)'}"
+          f" tokens={tokens_sorted:<28} {'Root, Group 1 (A,B,C)'}"
       )
 
   print(f"  {'--- Group 3 ---':<15}")
   for event in session.events:
     if event.author in group3_agents and event.branch:
-      branch_info = str(event.branch.active_forks)
+      tokens_sorted = str(sorted(event.branch.tokens))
       print(
           f"  {event.author:15} |"
-          f" branch={branch_info:<48} {'Root, Groups 1 & 2 (A-F)'}"
+          f" tokens={tokens_sorted:<28} {'Root, Groups 1 & 2 (A-F)'}"
       )
 
   print("\nKey Observations:")
-  print("  ✓ Group 2 agents inherit parent context - can see Group 1")
+  print("  ✓ Group 2 agents have tokens {1,2,3,...} - inherit from Group 1")
   print(
-      "  ✓ Group 3 agents inherit parent context - can see Groups 1 & 2"
+      "  ✓ Group 3 agents have tokens {1,2,3,4,5,6,...} - inherit from Groups"
+      " 1 & 2"
   )
-  print("  ✓ Each agent can see events from ancestor branches")
+  print("  ✓ Each agent can see all events with token subsets")
   print("=" * 70 + "\n")
 
   # Verify LLM request contents - the actual text sent to the models
