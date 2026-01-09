@@ -15,6 +15,7 @@
 from datetime import datetime
 from datetime import timezone
 import enum
+import sqlite3
 
 from google.adk.errors.already_exists_error import AlreadyExistsError
 from google.adk.events.event import Event
@@ -58,6 +59,46 @@ async def session_service(request, tmp_path):
   yield service
   if isinstance(service, DatabaseSessionService):
     await service.close()
+
+
+@pytest.mark.asyncio
+async def test_sqlite_session_service_accepts_sqlite_urls(
+    tmp_path, monkeypatch
+):
+  monkeypatch.chdir(tmp_path)
+
+  service = SqliteSessionService('sqlite+aiosqlite:///./sessions.db')
+  await service.create_session(app_name='app', user_id='user')
+  assert (tmp_path / 'sessions.db').exists()
+
+  service = SqliteSessionService('sqlite:///./sessions2.db')
+  await service.create_session(app_name='app', user_id='user')
+  assert (tmp_path / 'sessions2.db').exists()
+
+
+@pytest.mark.asyncio
+async def test_sqlite_session_service_preserves_uri_query_parameters(
+    tmp_path, monkeypatch
+):
+  monkeypatch.chdir(tmp_path)
+  db_path = tmp_path / 'readonly.db'
+  with sqlite3.connect(db_path) as conn:
+    conn.execute('CREATE TABLE IF NOT EXISTS t (id INTEGER)')
+    conn.commit()
+
+  service = SqliteSessionService(f'sqlite+aiosqlite:///{db_path}?mode=ro')
+  # `mode=ro` opens the DB read-only; schema creation should fail.
+  with pytest.raises(sqlite3.OperationalError, match=r'readonly'):
+    await service.create_session(app_name='app', user_id='user')
+
+
+@pytest.mark.asyncio
+async def test_sqlite_session_service_accepts_absolute_sqlite_urls(tmp_path):
+  abs_db_path = tmp_path / 'absolute.db'
+  abs_url = 'sqlite+aiosqlite:////' + str(abs_db_path).lstrip('/')
+  service = SqliteSessionService(abs_url)
+  await service.create_session(app_name='app', user_id='user')
+  assert abs_db_path.exists()
 
 
 @pytest.mark.asyncio
