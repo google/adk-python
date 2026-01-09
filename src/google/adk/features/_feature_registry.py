@@ -14,8 +14,10 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import Enum
+from typing import Generator
 import warnings
 
 from ..utils.env_utils import is_env_enabled
@@ -264,3 +266,52 @@ def _emit_non_stable_warning_once(
         f"[{feature_stage.name.upper()}] feature {feature_name} is enabled."
     )
     warnings.warn(full_message, category=UserWarning, stacklevel=4)
+
+
+@contextmanager
+def temporary_feature_override(
+    feature_name: FeatureName,
+    enabled: bool,
+) -> Generator[None, None, None]:
+  """Temporarily override a feature's enabled state within a context.
+
+  This context manager is useful for testing or temporarily enabling/disabling
+  a feature within a specific scope. The original state is restored when the
+  context exits.
+
+  Args:
+    feature_name: The feature name to override.
+    enabled: Whether the feature should be enabled.
+
+  Yields:
+    None
+
+  Example:
+    ```python
+    from google.adk.features import FeatureName, temporary_feature_override
+
+    # Temporarily enable a feature for testing
+    with temporary_feature_override(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL, True):
+        # Feature is enabled here
+        result = some_function_that_checks_feature()
+    # Feature is restored to original state here
+    ```
+  """
+  config = _get_feature_config(feature_name)
+  if config is None:
+    raise ValueError(f"Feature {feature_name} is not registered.")
+
+  # Save the original override state
+  had_override = feature_name in _FEATURE_OVERRIDES
+  original_value = _FEATURE_OVERRIDES.get(feature_name)
+
+  # Apply the temporary override
+  _FEATURE_OVERRIDES[feature_name] = enabled
+  try:
+    yield
+  finally:
+    # Restore the original state
+    if had_override:
+      _FEATURE_OVERRIDES[feature_name] = original_value
+    else:
+      _FEATURE_OVERRIDES.pop(feature_name, None)
