@@ -153,15 +153,21 @@ class Runner:
     """Initializes the Runner.
 
     Developers should provide either an `app` instance or both `app_name` and
-    `agent`. Providing a mix of `app` and `app_name`/`agent` will result in a
-    `ValueError`. Providing `app` is the recommended way to create a runner.
+    `agent`. When `app` is provided, `app_name` can optionally override the
+    app's name (useful for deployment scenarios like Agent Engine where the
+    resource name differs from the app's identifier). However, `agent` should
+    not be provided when `app` is provided. Providing `app` is the recommended
+    way to create a runner.
 
     Args:
-        app: An optional `App` instance. If provided, `app_name` and `agent`
-          should not be specified.
+        app: An optional `App` instance. If provided, `agent` should not be
+          specified. `app_name` can optionally override `app.name`.
         app_name: The application name of the runner. Required if `app` is not
-          provided.
-        agent: The root agent to run. Required if `app` is not provided.
+          provided. If `app` is provided, this can optionally override `app.name`
+          (e.g., for deployment scenarios where a resource name differs from the
+          app identifier).
+        agent: The root agent to run. Required if `app` is not provided. Should
+          not be provided when `app` is provided.
         plugins: Deprecated. A list of plugins for the runner. Please use the
           `app` argument to provide plugins instead.
         artifact_service: The artifact service for the runner.
@@ -171,8 +177,8 @@ class Runner:
         plugin_close_timeout: The timeout in seconds for plugin close methods.
 
     Raises:
-        ValueError: If `app` is provided along with `app_name` or `plugins`, or
-          if `app` is not provided but either `app_name` or `agent` is missing.
+        ValueError: If `app` is provided along with `agent` or `plugins`, or if
+          `app` is not provided but either `app_name` or `agent` is missing.
     """
     self.app = app
     (
@@ -213,7 +219,8 @@ class Runner:
 
     Args:
         app: An optional `App` instance.
-        app_name: The application name of the runner.
+        app_name: The application name of the runner. Can override app.name when
+          app is provided.
         agent: The root agent to run.
         plugins: A list of plugins for the runner.
 
@@ -232,10 +239,6 @@ class Runner:
       )
 
     if app:
-      if app_name:
-        raise ValueError(
-            'When app is provided, app_name should not be provided.'
-        )
       if agent:
         raise ValueError('When app is provided, agent should not be provided.')
       if plugins:
@@ -243,7 +246,9 @@ class Runner:
             'When app is provided, plugins should not be provided and should be'
             ' provided in the app instead.'
         )
-      app_name = app.name
+      # Allow app_name to override app.name (useful for deployment scenarios
+      # like Agent Engine where resource names differ from app identifiers)
+      app_name = app_name or app.name
       agent = app.root_agent
       plugins = app.plugins
       context_cache_config = app.context_cache_config
