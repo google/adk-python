@@ -458,22 +458,19 @@ async def _content_to_message_param(
   - `function_response` parts are converted into `tool` role messages.
   - Other parts (text, images, etc.) are grouped and converted into a
     single `user` or `assistant` message.
-  - If the content contains only tool responses, it may return a single
-    message or a list, depending on the number of responses.
 
   Args:
     content: The content to convert.
-    provider: The LLM provider name (e.g., "openai", "azure"), used for
-      provider-specific content handling.
+    provider: The LLM provider name (e.g., "openai", "azure").
 
   Returns:
     A single litellm Message, a list of litellm Messages, or an empty list if
     the content is empty.
   """
-  # 1. Separate tool results (function_response) from other parts
   tool_messages = []
   other_parts = []
   
+  # 1. Separate function responses from other content
   for part in content.parts:
     if part.function_response:
       response = part.function_response.response
@@ -492,13 +489,12 @@ async def _content_to_message_param(
     else:
       other_parts.append(part)
 
-  # 2. Optimization: If there are ONLY tool messages, return them immediately
+  # 2. If ONLY tools are present, return them immediately
   if tool_messages and not other_parts:
     return tool_messages if len(tool_messages) > 1 else tool_messages[0]
 
-  # 3. Process the "other_parts" (text, images, reasoning, function_calls)
+  # 3. Handle user or assistant messages for the remaining parts
   extra_message = None
-  
   if other_parts:
     role = _to_litellm_role(content.role)
 
@@ -512,7 +508,6 @@ async def _content_to_message_param(
       tool_calls = []
       content_parts: list[types.Part] = []
       reasoning_parts: list[types.Part] = []
-      
       for part in other_parts:
         if part.function_call:
           tool_calls.append(
@@ -531,7 +526,12 @@ async def _content_to_message_param(
           content_parts.append(part)
 
       message_content = await _get_content(content_parts, provider=provider) or None
-      reasoning_content = "\n".join([p.thought for p in reasoning_parts]) if reasoning_parts else None
+      # Using p.text as requested by the code review
+      reasoning_content = (
+          "\n".join([p.text for p in reasoning_parts if p.text])
+          if reasoning_parts
+          else None
+      )
 
       extra_message = ChatCompletionAssistantMessage(
           role="assistant",
@@ -540,13 +540,14 @@ async def _content_to_message_param(
           thought=reasoning_content,
       )
 
-  # 4. COMBINE AND RETURN
+  # 4. Combine and Return
   final_messages = tool_messages + ([extra_message] if extra_message else [])
 
   if not final_messages:
     return []
     
   return final_messages if len(final_messages) > 1 else final_messages[0]
+
 
   if role == "user":
     user_parts = [part for part in content.parts if not part.thought]
