@@ -36,6 +36,7 @@ from typing import TYPE_CHECKING
 import uuid
 import weakref
 
+from google.api_core import client_options
 from google.api_core.exceptions import InternalServerError
 from google.api_core.exceptions import ServiceUnavailable
 from google.api_core.exceptions import TooManyRequests
@@ -1352,19 +1353,31 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         if _GLOBAL_WRITE_CLIENT is None:
 
           def get_credentials():
-            creds, _ = google.auth.default(
+            creds, project_id = google.auth.default(
                 scopes=["https://www.googleapis.com/auth/cloud-platform"]
             )
-            return creds
+            return creds, project_id
 
-          creds = await loop.run_in_executor(self._executor, get_credentials)
+          creds, project_id = await loop.run_in_executor(
+              self._executor, get_credentials
+          )
+          quota_project_id = (
+              getattr(creds, "quota_project_id", None) or project_id
+          )
+          options = (
+              client_options.ClientOptions(quota_project_id=quota_project_id)
+              if quota_project_id
+              else None
+          )
           client_info = gapic_client_info.ClientInfo(
               user_agent=f"google-adk-bq-logger/{__version__}"
           )
           # Initialize the async client in the current event loop, not in the
           # executor.
           _GLOBAL_WRITE_CLIENT = BigQueryWriteAsyncClient(
-              credentials=creds, client_info=client_info
+              credentials=creds,
+              client_info=client_info,
+              client_options=options,
           )
         self.write_client = _GLOBAL_WRITE_CLIENT
 

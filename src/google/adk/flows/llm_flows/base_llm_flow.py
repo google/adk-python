@@ -116,6 +116,10 @@ class BaseLlmFlow(ABC):
           attempt += 1
           if not llm_request.live_connect_config:
             llm_request.live_connect_config = types.LiveConnectConfig()
+          if not llm_request.live_connect_config.session_resumption:
+            llm_request.live_connect_config.session_resumption = (
+                types.SessionResumptionConfig()
+            )
           llm_request.live_connect_config.session_resumption.handle = (
               invocation_context.live_session_resumption_handle
           )

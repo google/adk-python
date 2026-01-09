@@ -46,6 +46,7 @@ from .eval_metrics import EvalMetric
 from .eval_metrics import EvalMetricResult
 from .eval_metrics import EvalMetricResultDetails
 from .eval_metrics import EvalMetricResultPerInvocation
+from .eval_metrics import Rubric
 from .eval_result import EvalCaseResult
 from .eval_set import EvalCase
 from .eval_set_results_manager import EvalSetResultsManager
@@ -65,6 +66,46 @@ EVAL_SESSION_ID_PREFIX = '___eval___session___'
 
 def _get_session_id() -> str:
   return f'{EVAL_SESSION_ID_PREFIX}{str(uuid.uuid4())}'
+
+
+def _add_rubrics_to_invocation(
+    invocation: Invocation, rubrics_to_add: list[Rubric]
+):
+  """Adds rubrics to invocation, throwing ValueError on duplicate rubric_id."""
+  if not invocation.rubrics:
+    invocation.rubrics = []
+  existing_ids = {r.rubric_id for r in invocation.rubrics}
+  for rubric in rubrics_to_add:
+    if rubric.rubric_id in existing_ids:
+      raise ValueError(
+          f"Rubric with rubric_id '{rubric.rubric_id}' already exists."
+      )
+    invocation.rubrics.append(rubric)
+    existing_ids.add(rubric.rubric_id)
+
+
+def _copy_eval_case_rubrics_to_actual_invocations(
+    eval_case: EvalCase, actual_invocations: list[Invocation]
+):
+  """Copies EvalCase level rubrics to all actual invocations."""
+  if hasattr(eval_case, 'rubrics') and eval_case.rubrics:
+    for invocation in actual_invocations:
+      _add_rubrics_to_invocation(invocation, eval_case.rubrics)
+
+
+def _copy_invocation_rubrics_to_actual_invocations(
+    expected_invocations: Optional[list[Invocation]],
+    actual_invocations: list[Invocation],
+):
+  """Copies invocation level rubrics to corresponding actual invocations."""
+  if expected_invocations:
+    for actual_invocation, expected_invocation in zip(
+        actual_invocations, expected_invocations
+    ):
+      if expected_invocation.rubrics:
+        _add_rubrics_to_invocation(
+            actual_invocation, expected_invocation.rubrics
+        )
 
 
 @experimental
@@ -249,76 +290,27 @@ class LocalEvalService(BaseEvalService):
           )
       )
 
+    actual_invocations = inference_result.inferences
+    expected_invocations = eval_case.conversation
+
+    # 1. Copy EvalCase level rubrics to all actual invocations.
+    _copy_eval_case_rubrics_to_actual_invocations(eval_case, actual_invocations)
+
+    # 2. If expected invocations are present, copy invocation level
+    # rubrics to corresponding actual invocations.
+    _copy_invocation_rubrics_to_actual_invocations(
+        expected_invocations, actual_invocations
+    )
+
     for eval_metric in evaluate_config.eval_metrics:
       # Perform evaluation of the metric.
-      try:
-        with client_label_context(EVAL_CLIENT_LABEL):
-          evaluation_result = await self._evaluate_metric(
-              eval_metric=eval_metric,
-              actual_invocations=inference_result.inferences,
-              expected_invocations=eval_case.conversation,
-              conversation_scenario=eval_case.conversation_scenario,
-          )
-      except Exception as e:
-        # We intentionally catch the Exception as we don't want failures to
-        # affect other metric evaluation.
-        logger.error(
-            "Metric evaluation failed for metric `%s` for eval case id '%s'"
-            ' with following error `%s`',
-            eval_metric.metric_name,
-            eval_case.eval_id,
-            e,
-            exc_info=True,
-        )
-        # We use an empty result.
-        evaluation_result = EvaluationResult(
-            overall_eval_status=EvalStatus.NOT_EVALUATED
-        )
-
-      # Track overall score across all invocations.
-      eval_metric_result_details = EvalMetricResultDetails(
-          rubric_scores=evaluation_result.overall_rubric_scores
+      await self._evaluate_metric_for_eval_case(
+          eval_metric,
+          eval_case,
+          inference_result,
+          eval_metric_result_per_invocation,
+          overall_eval_metric_results,
       )
-      overall_eval_metric_results.append(
-          EvalMetricResult(
-              score=evaluation_result.overall_score,
-              eval_status=evaluation_result.overall_eval_status,
-              details=eval_metric_result_details,
-              **eval_metric.model_dump(),
-          )
-      )
-
-      if (
-          evaluation_result.overall_eval_status != EvalStatus.NOT_EVALUATED
-          and len(evaluation_result.per_invocation_results)
-          != len(eval_metric_result_per_invocation)
-      ):
-        raise ValueError(
-            'Eval metric should return results for each invocation. Found '
-            f'{len(evaluation_result.per_invocation_results)} results for '
-            f'{len(eval_metric_result_per_invocation)} invocations.'
-        )
-
-      # Track score across individual invocations.
-      for idx, invocation in enumerate(eval_metric_result_per_invocation):
-        invocation_result = (
-            evaluation_result.per_invocation_results[idx]
-            if evaluation_result.overall_eval_status != EvalStatus.NOT_EVALUATED
-            else PerInvocationResult(
-                actual_invocation=invocation.actual_invocation
-            )
-        )
-        eval_metric_result_details = EvalMetricResultDetails(
-            rubric_scores=invocation_result.rubric_scores
-        )
-        invocation.eval_metric_results.append(
-            EvalMetricResult(
-                score=invocation_result.score,
-                eval_status=invocation_result.eval_status,
-                details=eval_metric_result_details,
-                **eval_metric.model_dump(),
-            )
-        )
 
     final_eval_status = self._generate_final_eval_status(
         overall_eval_metric_results
@@ -341,6 +333,84 @@ class LocalEvalService(BaseEvalService):
     )
 
     return (inference_result, eval_case_result)
+
+  async def _evaluate_metric_for_eval_case(
+      self,
+      eval_metric: EvalMetric,
+      eval_case: EvalCase,
+      inference_result: InferenceResult,
+      eval_metric_result_per_invocation: list[EvalMetricResultPerInvocation],
+      overall_eval_metric_results: list[EvalMetricResult],
+  ):
+    """Performs evaluation of a metric for a given eval case and inference result."""
+    try:
+      with client_label_context(EVAL_CLIENT_LABEL):
+        evaluation_result = await self._evaluate_metric(
+            eval_metric=eval_metric,
+            actual_invocations=inference_result.inferences,
+            expected_invocations=eval_case.conversation,
+            conversation_scenario=eval_case.conversation_scenario,
+        )
+    except Exception as e:
+      # We intentionally catch the Exception as we don't want failures to
+      # affect other metric evaluation.
+      logger.error(
+          "Metric evaluation failed for metric `%s` for eval case id '%s'"
+          ' with following error `%s`',
+          eval_metric.metric_name,
+          eval_case.eval_id,
+          e,
+          exc_info=True,
+      )
+      # We use an empty result.
+      evaluation_result = EvaluationResult(
+          overall_eval_status=EvalStatus.NOT_EVALUATED
+      )
+
+    # Track overall score across all invocations.
+    eval_metric_result_details = EvalMetricResultDetails(
+        rubric_scores=evaluation_result.overall_rubric_scores
+    )
+    overall_eval_metric_results.append(
+        EvalMetricResult(
+            score=evaluation_result.overall_score,
+            eval_status=evaluation_result.overall_eval_status,
+            details=eval_metric_result_details,
+            **eval_metric.model_dump(),
+        )
+    )
+
+    if (
+        evaluation_result.overall_eval_status != EvalStatus.NOT_EVALUATED
+        and len(evaluation_result.per_invocation_results)
+        != len(eval_metric_result_per_invocation)
+    ):
+      raise ValueError(
+          'Eval metric should return results for each invocation. Found '
+          f'{len(evaluation_result.per_invocation_results)} results for '
+          f'{len(eval_metric_result_per_invocation)} invocations.'
+      )
+
+    # Track score across individual invocations.
+    for idx, invocation in enumerate(eval_metric_result_per_invocation):
+      invocation_result = (
+          evaluation_result.per_invocation_results[idx]
+          if evaluation_result.overall_eval_status != EvalStatus.NOT_EVALUATED
+          else PerInvocationResult(
+              actual_invocation=invocation.actual_invocation
+          )
+      )
+      eval_metric_result_details = EvalMetricResultDetails(
+          rubric_scores=invocation_result.rubric_scores
+      )
+      invocation.eval_metric_results.append(
+          EvalMetricResult(
+              score=invocation_result.score,
+              eval_status=invocation_result.eval_status,
+              details=eval_metric_result_details,
+              **eval_metric.model_dump(),
+          )
+      )
 
   async def _evaluate_metric(
       self,
