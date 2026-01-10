@@ -126,6 +126,7 @@ class RemoteA2aAgent(BaseAgent):
       a2a_request_meta_provider: Optional[
           Callable[[InvocationContext, A2AMessage], dict[str, Any]]
       ] = None,
+      full_history_when_stateless: bool = False,
       **kwargs: Any,
   ) -> None:
     """Initialize RemoteA2aAgent.
@@ -142,6 +143,10 @@ class RemoteA2aAgent(BaseAgent):
       a2a_request_meta_provider: Optional callable that takes InvocationContext
         and A2AMessage and returns a metadata object to attach to the A2A
         request.
+      full_history_when_stateless: If True, stateless agents (those that do not
+        return Tasks or context IDs) will receive all session events on every
+        request. If False, the default behavior of sending only events since the
+        last reply from the agent will be used.
       **kwargs: Additional arguments passed to BaseAgent
 
     Raises:
@@ -168,6 +173,7 @@ class RemoteA2aAgent(BaseAgent):
     self._a2a_part_converter = a2a_part_converter
     self._a2a_client_factory: Optional[A2AClientFactory] = a2a_client_factory
     self._a2a_request_meta_provider = a2a_request_meta_provider
+    self._full_history_when_stateless = full_history_when_stateless
 
     # Validate and store agent card reference
     if isinstance(agent_card, AgentCard):
@@ -365,7 +371,14 @@ class RemoteA2aAgent(BaseAgent):
         if event.custom_metadata:
           metadata = event.custom_metadata
           context_id = metadata.get(A2A_METADATA_PREFIX + "context_id")
-        break
+        # Historical note: this behavior originally always applied, regardless
+        # of whether the agent was stateful or stateless. However, only stateful
+        # agents can be expected to have previous events in the remote session.
+        # For backwards compatibility, we maintain this behavior when
+        # _full_history_when_stateless is false (the default) or if the agent
+        # is stateful (i.e. returned a context ID).
+        if not self._full_history_when_stateless or context_id:
+          break
       events_to_process.append(event)
 
     for event in reversed(events_to_process):

@@ -41,6 +41,7 @@ class FeatureName(str, Enum):
   PUBSUB_TOOLSET = "PUBSUB_TOOLSET"
   SPANNER_TOOLSET = "SPANNER_TOOLSET"
   SPANNER_TOOL_SETTINGS = "SPANNER_TOOL_SETTINGS"
+  SPANNER_VECTOR_STORE = "SPANNER_VECTOR_STORE"
   TOOL_CONFIG = "TOOL_CONFIG"
   TOOL_CONFIRMATION = "TOOL_CONFIRMATION"
 
@@ -118,6 +119,9 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
     FeatureName.SPANNER_TOOL_SETTINGS: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
+    FeatureName.SPANNER_VECTOR_STORE: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
     FeatureName.TOOL_CONFIG: FeatureConfig(
