@@ -22,6 +22,7 @@ from typing_extensions import override
 
 from ..errors.not_found_error import NotFoundError
 from ._eval_set_results_manager_utils import create_eval_set_result
+from ._eval_set_results_manager_utils import parse_eval_set_result_json
 from .eval_result import EvalCaseResult
 from .eval_result import EvalSetResult
 from .eval_set_results_manager import EvalSetResultsManager
@@ -101,7 +102,7 @@ class GcsEvalSetResultsManager(EvalSetResultsManager):
     if not blob.exists():
       raise NotFoundError(f"Eval set result `{eval_set_result_id}` not found.")
     eval_set_result_data = blob.download_as_text()
-    return EvalSetResult.model_validate_json(eval_set_result_data)
+    return parse_eval_set_result_json(eval_set_result_data)
 
   @override
   def list_eval_set_results(self, app_name: str) -> list[str]:

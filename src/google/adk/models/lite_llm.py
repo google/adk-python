@@ -104,6 +104,11 @@ _SUPPORTED_FILE_CONTENT_MIME_TYPES = frozenset({
 # Providers that require file_id instead of inline file_data
 _FILE_ID_REQUIRED_PROVIDERS = frozenset({"openai", "azure"})
 
+_MISSING_TOOL_RESULT_MESSAGE = (
+    "Error: Missing tool result (tool execution may have been interrupted "
+    "before a response was recorded)."
+)
+
 
 def _get_provider_from_model(model: str) -> str:
   """Extracts the provider name from a LiteLLM model string.
@@ -456,7 +461,8 @@ async def _content_to_message_param(
     A litellm Message, a list of litellm Messages.
   """
 
-  tool_messages = []
+  tool_messages: list[Message] = []
+  non_tool_parts: list[types.Part] = []
   for part in content.parts:
     if part.function_response:
       response = part.function_response.response
@@ -472,18 +478,33 @@ async def _content_to_message_param(
               content=response_content,
           )
       )
-  if tool_messages:
+    else:
+      non_tool_parts.append(part)
+
+  if tool_messages and not non_tool_parts:
     return tool_messages if len(tool_messages) > 1 else tool_messages[0]
+
+  if tool_messages and non_tool_parts:
+    follow_up = await _content_to_message_param(
+        types.Content(role=content.role, parts=non_tool_parts),
+        provider=provider,
+    )
+    follow_up_messages = (
+        follow_up if isinstance(follow_up, list) else [follow_up]
+    )
+    return tool_messages + follow_up_messages
 
   # Handle user or assistant messages
   role = _to_litellm_role(content.role)
-  message_content = await _get_content(content.parts, provider=provider) or None
 
   if role == "user":
+    user_parts = [part for part in content.parts if not part.thought]
+    message_content = await _get_content(user_parts, provider=provider) or None
     return ChatCompletionUserMessage(role="user", content=message_content)
   else:  # assistant/model
     tool_calls = []
-    content_present = False
+    content_parts: list[types.Part] = []
+    reasoning_parts: list[types.Part] = []
     for part in content.parts:
       if part.function_call:
         tool_calls.append(
@@ -496,10 +517,16 @@ async def _content_to_message_param(
                 ),
             )
         )
-      elif part.text or part.inline_data:
-        content_present = True
+      elif part.thought:
+        reasoning_parts.append(part)
+      else:
+        content_parts.append(part)
 
-    final_content = message_content if content_present else None
+    final_content = (
+        await _get_content(content_parts, provider=provider)
+        if content_parts
+        else None
+    )
     if final_content and isinstance(final_content, list):
       # when the content is a single text object, we can use it directly.
       # this is needed for ollama_chat provider which fails if content is a list
@@ -509,19 +536,95 @@ async def _content_to_message_param(
           else final_content
       )
 
+    reasoning_texts = []
+    for part in reasoning_parts:
+      if part.text:
+        reasoning_texts.append(part.text)
+      elif (
+          part.inline_data
+          and part.inline_data.data
+          and part.inline_data.mime_type
+          and part.inline_data.mime_type.startswith("text/")
+      ):
+        reasoning_texts.append(_decode_inline_text_data(part.inline_data.data))
+
+    reasoning_content = _NEW_LINE.join(text for text in reasoning_texts if text)
     return ChatCompletionAssistantMessage(
         role=role,
         content=final_content,
         tool_calls=tool_calls or None,
+        reasoning_content=reasoning_content or None,
     )
+
+
+def _ensure_tool_results(messages: List[Message]) -> List[Message]:
+  """Insert placeholder tool messages for missing tool results.
+
+  LiteLLM-backed providers like OpenAI and Anthropic reject histories where an
+  assistant tool call is not followed by tool responses before the next
+  non-tool message. This helps recover from interrupted tool execution.
+  """
+  if not messages:
+    return messages
+
+  healed_messages: List[Message] = []
+  pending_tool_call_ids: List[str] = []
+
+  for message in messages:
+    role = message.get("role")
+    if pending_tool_call_ids and role != "tool":
+      logger.warning(
+          "Missing tool results for tool_call_id(s): %s",
+          pending_tool_call_ids,
+      )
+      healed_messages.extend(
+          ChatCompletionToolMessage(
+              role="tool",
+              tool_call_id=tool_call_id,
+              content=_MISSING_TOOL_RESULT_MESSAGE,
+          )
+          for tool_call_id in pending_tool_call_ids
+      )
+      pending_tool_call_ids = []
+
+    if role == "assistant":
+      tool_calls = message.get("tool_calls") or []
+      pending_tool_call_ids = [
+          tool_call.get("id") for tool_call in tool_calls if tool_call.get("id")
+      ]
+    elif role == "tool":
+      tool_call_id = message.get("tool_call_id")
+      if tool_call_id in pending_tool_call_ids:
+        pending_tool_call_ids.remove(tool_call_id)
+
+    healed_messages.append(message)
+
+  if pending_tool_call_ids:
+    logger.warning(
+        "Missing tool results for tool_call_id(s): %s",
+        pending_tool_call_ids,
+    )
+    healed_messages.extend(
+        ChatCompletionToolMessage(
+            role="tool",
+            tool_call_id=tool_call_id,
+            content=_MISSING_TOOL_RESULT_MESSAGE,
+        )
+        for tool_call_id in pending_tool_call_ids
+    )
+
+  return healed_messages
 
 
 async def _get_content(
     parts: Iterable[types.Part],
     *,
     provider: str = "",
-) -> Union[OpenAIMessageContent, str]:
+) -> OpenAIMessageContent:
   """Converts a list of parts to litellm content.
+
+  Callers may need to filter out thought parts before calling this helper if
+  thought parts are not needed.
 
   Args:
     parts: The parts to convert.
@@ -531,11 +634,22 @@ async def _get_content(
     The litellm content.
   """
 
-  content_objects = []
-  for part in parts:
+  parts_list = list(parts)
+  if len(parts_list) == 1:
+    part = parts_list[0]
     if part.text:
-      if len(parts) == 1:
-        return part.text
+      return part.text
+    if (
+        part.inline_data
+        and part.inline_data.data
+        and part.inline_data.mime_type
+        and part.inline_data.mime_type.startswith("text/")
+    ):
+      return _decode_inline_text_data(part.inline_data.data)
+
+  content_objects = []
+  for part in parts_list:
+    if part.text:
       content_objects.append({
           "type": "text",
           "text": part.text,
@@ -547,8 +661,6 @@ async def _get_content(
     ):
       if part.inline_data.mime_type.startswith("text/"):
         decoded_text = _decode_inline_text_data(part.inline_data.data)
-        if len(parts) == 1:
-          return decoded_text
         content_objects.append({
             "type": "text",
             "text": decoded_text,
@@ -1266,6 +1378,7 @@ async def _get_completion_inputs(
             content=llm_request.config.system_instruction,
         ),
     )
+  messages = _ensure_tool_results(messages)
 
   # 2. Convert tool declarations
   tools: Optional[List[Dict]] = None

@@ -45,15 +45,6 @@ class LiveRequestQueue:
   """Queue used to send LiveRequest in a live(bidirectional streaming) way."""
 
   def __init__(self):
-    # Ensure there's an event loop available in this thread
-    try:
-      asyncio.get_running_loop()
-    except RuntimeError:
-      # No running loop, create one
-      loop = asyncio.new_event_loop()
-      asyncio.set_event_loop(loop)
-
-    # Now create the queue (it will use the event loop we just ensured exists)
     self._queue = asyncio.Queue()
 
   def close(self):

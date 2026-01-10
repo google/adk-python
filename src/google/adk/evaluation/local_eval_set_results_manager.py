@@ -14,7 +14,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 
@@ -22,6 +21,7 @@ from typing_extensions import override
 
 from ..errors.not_found_error import NotFoundError
 from ._eval_set_results_manager_utils import create_eval_set_result
+from ._eval_set_results_manager_utils import parse_eval_set_result_json
 from .eval_result import EvalCaseResult
 from .eval_result import EvalSetResult
 from .eval_set_results_manager import EvalSetResultsManager
@@ -54,14 +54,13 @@ class LocalEvalSetResultsManager(EvalSetResultsManager):
     if not os.path.exists(app_eval_history_dir):
       os.makedirs(app_eval_history_dir)
     # Convert to json and write to file.
-    eval_set_result_json = eval_set_result.model_dump_json()
     eval_set_result_file_path = os.path.join(
         app_eval_history_dir,
         eval_set_result.eval_set_result_name + _EVAL_SET_RESULT_FILE_EXTENSION,
     )
     logger.info("Writing eval result to file: %s", eval_set_result_file_path)
     with open(eval_set_result_file_path, "w", encoding="utf-8") as f:
-      f.write(json.dumps(eval_set_result_json, indent=2))
+      f.write(eval_set_result.model_dump_json(indent=2))
 
   @override
   def get_eval_set_result(
@@ -79,8 +78,8 @@ class LocalEvalSetResultsManager(EvalSetResultsManager):
     if not os.path.exists(maybe_eval_result_file_path):
       raise NotFoundError(f"Eval set result `{eval_set_result_id}` not found.")
     with open(maybe_eval_result_file_path, "r", encoding="utf-8") as file:
-      eval_result_data = json.load(file)
-    return EvalSetResult.model_validate_json(eval_result_data)
+      eval_result_data = file.read()
+    return parse_eval_set_result_json(eval_result_data)
 
   @override
   def list_eval_set_results(self, app_name: str) -> list[str]:

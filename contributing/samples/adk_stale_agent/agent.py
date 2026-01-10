@@ -49,6 +49,7 @@ logger = logging.getLogger("google_adk." + __name__)
 BOT_ALERT_SIGNATURE = (
     "**Notification:** The author has updated the issue description"
 )
+BOT_NAME = "adk-bot"
 
 # --- Global Cache ---
 _MAINTAINERS_CACHE: Optional[List[str]] = None
@@ -246,8 +247,9 @@ def _build_history_timeline(
     if BOT_ALERT_SIGNATURE in c_body:
       if last_bot_alert_time is None or c_time > last_bot_alert_time:
         last_bot_alert_time = c_time
+      continue
 
-    if actor and not actor.endswith("[bot]"):
+    if actor and not actor.endswith("[bot]") and actor != BOT_NAME:
       # Use edit time if available, otherwise creation time
       e_time = c.get("lastEditedAt")
       actual_time = dateutil.parser.isoparse(e_time) if e_time else c_time
@@ -263,7 +265,7 @@ def _build_history_timeline(
     if not e:
       continue
     actor = e.get("editor", {}).get("login")
-    if actor and not actor.endswith("[bot]"):
+    if actor and not actor.endswith("[bot]") and actor != BOT_NAME:
       history.append({
           "type": "edited_description",
           "actor": actor,
@@ -285,7 +287,7 @@ def _build_history_timeline(
         label_events.append(time_val)
       continue
 
-    if actor and not actor.endswith("[bot]"):
+    if actor and not actor.endswith("[bot]") and actor != BOT_NAME:
       pretty_type = (
           "renamed_title" if etype == "RenamedTitleEvent" else "reopened"
       )
