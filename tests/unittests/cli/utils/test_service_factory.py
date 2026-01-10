@@ -16,13 +16,17 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from unittest.mock import Mock
 
+from google.adk.artifacts.file_artifact_service import FileArtifactService
+from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.adk.cli.utils.local_storage import PerAgentDatabaseSessionService
 import google.adk.cli.utils.service_factory as service_factory
 from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
 from google.adk.sessions.database_session_service import DatabaseSessionService
+from google.adk.sessions.in_memory_session_service import InMemorySessionService
 import pytest
 
 
@@ -52,6 +56,7 @@ async def test_create_session_service_defaults_to_per_agent_sqlite(
   agent_dir.mkdir()
   service = service_factory.create_session_service_from_options(
       base_dir=tmp_path,
+      use_local_storage=True,
   )
 
   assert isinstance(service, PerAgentDatabaseSessionService)
@@ -71,6 +76,7 @@ async def test_create_session_service_respects_app_name_mapping(
   service = service_factory.create_session_service_from_options(
       base_dir=tmp_path,
       app_name_to_dir={logical_name: "agent_folder"},
+      use_local_storage=True,
   )
 
   assert isinstance(service, PerAgentDatabaseSessionService)
@@ -173,3 +179,175 @@ def test_create_memory_service_raises_on_unknown_scheme(
         base_dir=tmp_path,
         memory_service_uri="unknown://foo",
     )
+
+
+@pytest.mark.asyncio
+async def test_create_session_service_defaults_to_in_memory_when_disabled(
+    tmp_path: Path,
+) -> None:
+  service = service_factory.create_session_service_from_options(
+      base_dir=tmp_path,
+      use_local_storage=False,
+  )
+
+  assert isinstance(service, InMemorySessionService)
+  session = await service.create_session(app_name="agent_a", user_id="user")
+  assert session.app_name == "agent_a"
+  assert not (tmp_path / "agent_a" / ".adk").exists()
+
+
+def test_create_artifact_service_defaults_to_in_memory_when_disabled(
+    tmp_path: Path,
+) -> None:
+  service = service_factory.create_artifact_service_from_options(
+      base_dir=tmp_path,
+      use_local_storage=False,
+  )
+
+  assert isinstance(service, InMemoryArtifactService)
+  assert not (tmp_path / ".adk").exists()
+
+
+def test_create_session_service_fallbacks_to_in_memory_on_permission_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  def _raise_permission_error(*_args, **_kwargs):
+    raise PermissionError("nope")
+
+  monkeypatch.setattr(
+      service_factory, "create_local_session_service", _raise_permission_error
+  )
+
+  service = service_factory.create_session_service_from_options(
+      base_dir=tmp_path,
+      use_local_storage=True,
+  )
+
+  assert isinstance(service, InMemorySessionService)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="chmod behavior differs on Windows")
+def test_create_services_default_to_in_memory_when_agents_dir_unwritable(
+    tmp_path: Path,
+) -> None:
+  agents_dir = tmp_path / "agents"
+  agents_dir.mkdir()
+  try:
+    agents_dir.chmod(0o555)
+    if os.access(agents_dir, os.W_OK | os.X_OK):
+      pytest.skip("Test cannot make directory unwritable in this environment.")
+
+    session_service = service_factory.create_session_service_from_options(
+        base_dir=agents_dir,
+        use_local_storage=True,
+    )
+    assert isinstance(session_service, InMemorySessionService)
+
+    artifact_service = service_factory.create_artifact_service_from_options(
+        base_dir=agents_dir,
+        use_local_storage=True,
+    )
+    assert isinstance(artifact_service, InMemoryArtifactService)
+  finally:
+    agents_dir.chmod(0o755)
+
+
+def test_adk_disable_local_storage_env_forces_in_memory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  monkeypatch.setenv("ADK_DISABLE_LOCAL_STORAGE", "1")
+
+  session_service = service_factory.create_session_service_from_options(
+      base_dir=tmp_path,
+      use_local_storage=True,
+  )
+  assert isinstance(session_service, InMemorySessionService)
+
+  artifact_service = service_factory.create_artifact_service_from_options(
+      base_dir=tmp_path,
+      use_local_storage=True,
+  )
+  assert isinstance(artifact_service, InMemoryArtifactService)
+
+
+def test_cloud_run_env_defaults_to_in_memory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  monkeypatch.setenv("K_SERVICE", "adk-service")
+
+  session_service = service_factory.create_session_service_from_options(
+      base_dir=tmp_path,
+      use_local_storage=True,
+  )
+  assert isinstance(session_service, InMemorySessionService)
+
+  artifact_service = service_factory.create_artifact_service_from_options(
+      base_dir=tmp_path,
+      use_local_storage=True,
+  )
+  assert isinstance(artifact_service, InMemoryArtifactService)
+
+
+def test_kubernetes_env_defaults_to_in_memory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "10.0.0.1")
+
+  session_service = service_factory.create_session_service_from_options(
+      base_dir=tmp_path,
+      use_local_storage=True,
+  )
+  assert isinstance(session_service, InMemorySessionService)
+
+  artifact_service = service_factory.create_artifact_service_from_options(
+      base_dir=tmp_path,
+      use_local_storage=True,
+  )
+  assert isinstance(artifact_service, InMemoryArtifactService)
+
+
+@pytest.mark.asyncio
+async def test_adk_force_local_storage_env_overrides_flag(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  monkeypatch.setenv("ADK_FORCE_LOCAL_STORAGE", "1")
+  agent_dir = tmp_path / "agent_a"
+  agent_dir.mkdir()
+
+  session_service = service_factory.create_session_service_from_options(
+      base_dir=tmp_path,
+      use_local_storage=False,
+  )
+  assert isinstance(session_service, PerAgentDatabaseSessionService)
+  await session_service.create_session(app_name="agent_a", user_id="user")
+  assert (agent_dir / ".adk" / "session.db").exists()
+
+  artifact_service = service_factory.create_artifact_service_from_options(
+      base_dir=tmp_path,
+      use_local_storage=False,
+  )
+  assert isinstance(artifact_service, FileArtifactService)
+
+
+def test_create_artifact_service_fallbacks_to_in_memory_on_permission_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  def _raise_permission_error(*_args, **_kwargs):
+    raise PermissionError("nope")
+
+  monkeypatch.setattr(
+      service_factory, "create_local_artifact_service", _raise_permission_error
+  )
+
+  service = service_factory.create_artifact_service_from_options(
+      base_dir=tmp_path,
+      use_local_storage=True,
+  )
+
+  assert isinstance(service, InMemoryArtifactService)

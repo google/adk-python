@@ -1569,6 +1569,41 @@ class TestBigQueryAgentAnalyticsPlugin:
     bigquery_agent_analytics_plugin._GLOBAL_WRITE_CLIENT = None
 
   @pytest.mark.asyncio
+  async def test_quota_project_id_used_in_client(
+      self,
+      mock_bq_client,
+      mock_to_arrow_schema,
+      mock_asyncio_to_thread,
+  ):
+    bigquery_agent_analytics_plugin._GLOBAL_WRITE_CLIENT = None
+    mock_creds = mock.create_autospec(
+        google.auth.credentials.Credentials, instance=True, spec_set=True
+    )
+    mock_creds.quota_project_id = "quota-project"
+    with mock.patch.object(
+        google.auth,
+        "default",
+        autospec=True,
+        return_value=(mock_creds, PROJECT_ID),
+    ) as mock_auth_default:
+      with mock.patch.object(
+          bigquery_agent_analytics_plugin,
+          "BigQueryWriteAsyncClient",
+          autospec=True,
+      ) as mock_bq_write_cls:
+        plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+            project_id=PROJECT_ID,
+            dataset_id=DATASET_ID,
+            table_id=TABLE_ID,
+        )
+        await plugin._ensure_started()
+        mock_auth_default.assert_called_once()
+        mock_bq_write_cls.assert_called_once()
+        _, kwargs = mock_bq_write_cls.call_args
+        assert kwargs["client_options"].quota_project_id == "quota-project"
+        bigquery_agent_analytics_plugin._GLOBAL_WRITE_CLIENT = None
+
+  @pytest.mark.asyncio
   async def test_pickle_safety(self, mock_auth_default, mock_bq_client):
     """Test that the plugin can be pickled safely."""
     import pickle

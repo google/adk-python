@@ -51,12 +51,18 @@ async def test_new_db_uses_latest_schema(tmp_path):
         lambda sync_conn: inspect(sync_conn).has_table('adk_internal_metadata')
     )
     assert has_metadata_table
-    schema_version = await conn.run_sync(
-        lambda sync_conn: sync_conn.execute(
-            text('SELECT value FROM adk_internal_metadata WHERE key = :key'),
-            {'key': _schema_check_utils.SCHEMA_VERSION_KEY},
-        ).scalar_one_or_none()
-    )
+
+    def get_schema_version(sync_conn):
+      inspector = inspect(sync_conn)
+      key_col = inspector.dialect.identifier_preparer.quote('key')
+      return sync_conn.execute(
+          text(
+              f'SELECT value FROM adk_internal_metadata WHERE {key_col} = :key'
+          ),
+          {'key': _schema_check_utils.SCHEMA_VERSION_KEY},
+      ).scalar_one_or_none()
+
+    schema_version = await conn.run_sync(get_schema_version)
     assert schema_version == _schema_check_utils.LATEST_SCHEMA_VERSION
 
     # Verify events table columns for v1
