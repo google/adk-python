@@ -78,10 +78,25 @@ def _is_transcription(event: Event) -> bool:
   )
 
 
-def _has_non_empty_transcription_text(transcription) -> bool:
+def _has_non_empty_transcription_text(
+    transcription: types.Transcription,
+) -> bool:
   return bool(
       transcription and transcription.text and transcription.text.strip()
   )
+
+
+def _apply_run_config_custom_metadata(
+    event: Event, run_config: RunConfig | None
+) -> None:
+  """Merges run-level custom metadata into the event, if present."""
+  if not run_config or not run_config.custom_metadata:
+    return
+
+  event.custom_metadata = {
+      **run_config.custom_metadata,
+      **(event.custom_metadata or {}),
+  }
 
 
 class Runner:
@@ -138,15 +153,21 @@ class Runner:
     """Initializes the Runner.
 
     Developers should provide either an `app` instance or both `app_name` and
-    `agent`. Providing a mix of `app` and `app_name`/`agent` will result in a
-    `ValueError`. Providing `app` is the recommended way to create a runner.
+    `agent`. When `app` is provided, `app_name` can optionally override the
+    app's name (useful for deployment scenarios like Agent Engine where the
+    resource name differs from the app's identifier). However, `agent` should
+    not be provided when `app` is provided. Providing `app` is the recommended
+    way to create a runner.
 
     Args:
-        app: An optional `App` instance. If provided, `app_name` and `agent`
-          should not be specified.
+        app: An optional `App` instance. If provided, `agent` should not be
+          specified. `app_name` can optionally override `app.name`.
         app_name: The application name of the runner. Required if `app` is not
-          provided.
-        agent: The root agent to run. Required if `app` is not provided.
+          provided. If `app` is provided, this can optionally override `app.name`
+          (e.g., for deployment scenarios where a resource name differs from the
+          app identifier).
+        agent: The root agent to run. Required if `app` is not provided. Should
+          not be provided when `app` is provided.
         plugins: Deprecated. A list of plugins for the runner. Please use the
           `app` argument to provide plugins instead.
         artifact_service: The artifact service for the runner.
@@ -156,8 +177,8 @@ class Runner:
         plugin_close_timeout: The timeout in seconds for plugin close methods.
 
     Raises:
-        ValueError: If `app` is provided along with `app_name` or `plugins`, or
-          if `app` is not provided but either `app_name` or `agent` is missing.
+        ValueError: If `app` is provided along with `agent` or `plugins`, or if
+          `app` is not provided but either `app_name` or `agent` is missing.
     """
     self.app = app
     (
@@ -198,7 +219,8 @@ class Runner:
 
     Args:
         app: An optional `App` instance.
-        app_name: The application name of the runner.
+        app_name: The application name of the runner. Can override app.name when
+          app is provided.
         agent: The root agent to run.
         plugins: A list of plugins for the runner.
 
@@ -217,10 +239,6 @@ class Runner:
       )
 
     if app:
-      if app_name:
-        raise ValueError(
-            'When app is provided, app_name should not be provided.'
-        )
       if agent:
         raise ValueError('When app is provided, agent should not be provided.')
       if plugins:
@@ -228,7 +246,9 @@ class Runner:
             'When app is provided, plugins should not be provided and should be'
             ' provided in the app instead.'
         )
-      app_name = app.name
+      # Allow app_name to override app.name (useful for deployment scenarios
+      # like Agent Engine where resource names differ from app identifiers)
+      app_name = app_name or app.name
       agent = app.root_agent
       plugins = app.plugins
       context_cache_config = app.context_cache_config
@@ -695,6 +715,9 @@ class Runner:
           author='model',
           content=early_exit_result,
       )
+      _apply_run_config_custom_metadata(
+          early_exit_event, invocation_context.run_config
+      )
       if self._should_append_event(early_exit_event, is_live_call):
         await self.session_service.append_event(
             session=session,
@@ -721,6 +744,9 @@ class Runner:
 
       async with Aclosing(execute_fn(invocation_context)) as agen:
         async for event in agen:
+          _apply_run_config_custom_metadata(
+              event, invocation_context.run_config
+          )
           if is_live_call:
             if event.partial and _is_transcription(event):
               is_transcribing = True
@@ -775,7 +801,13 @@ class Runner:
           modified_event = await plugin_manager.run_on_event_callback(
               invocation_context=invocation_context, event=event
           )
-          yield (modified_event if modified_event else event)
+          if modified_event:
+            _apply_run_config_custom_metadata(
+                modified_event, invocation_context.run_config
+            )
+            yield modified_event
+          else:
+            yield event
 
     # Step 4: Run the after_run callbacks to perform global cleanup tasks or
     # finalizing logs and metrics data.
@@ -846,6 +878,7 @@ class Runner:
           author='user',
           content=new_message,
       )
+    _apply_run_config_custom_metadata(event, invocation_context.run_config)
     # If new_message is a function response, find the matching function call
     # and use its branch as the new event's branch.
     if function_call := invocation_context._find_matching_function_call(event):
@@ -924,6 +957,8 @@ class Runner:
       raise ValueError(
           'Either session or user_id and session_id must be provided.'
       )
+    if live_request_queue is None:
+      raise ValueError('live_request_queue is required for run_live.')
     if session is not None:
       warnings.warn(
           'The `session` parameter is deprecated. Please use `user_id` and'
@@ -936,7 +971,10 @@ class Runner:
           app_name=self.app_name, user_id=user_id, session_id=session_id
       )
       if not session:
-        raise ValueError(f'Session not found: {session_id}')
+        raise ValueError(
+            f'Session not found for user id: {user_id} and session id:'
+            f' {session_id}'
+        )
     invocation_context = self._new_invocation_context_for_live(
         session,
         live_request_queue=live_request_queue,
@@ -1349,29 +1387,21 @@ class Runner:
       self,
       session: Session,
       *,
-      live_request_queue: Optional[LiveRequestQueue] = None,
+      live_request_queue: LiveRequestQueue,
       run_config: Optional[RunConfig] = None,
   ) -> InvocationContext:
     """Creates a new invocation context for live multi-agent."""
     run_config = run_config or RunConfig()
 
-    # For live multi-agent, we need model's text transcription as context for
-    # next agent.
-    if self.agent.sub_agents and live_request_queue:
-      if not run_config.response_modalities:
-        # default
-        run_config.response_modalities = ['AUDIO']
-        if not run_config.output_audio_transcription:
-          run_config.output_audio_transcription = (
-              types.AudioTranscriptionConfig()
-          )
-      elif 'TEXT' not in run_config.response_modalities:
+    # For live multi-agents system, we need model's text transcription as
+    # context for the transferred agent.
+    if self.agent.sub_agents:
+      if 'AUDIO' in run_config.response_modalities:
         if not run_config.output_audio_transcription:
           run_config.output_audio_transcription = (
               types.AudioTranscriptionConfig()
           )
       if not run_config.input_audio_transcription:
-        # need this input transcription for agent transferring in live mode.
         run_config.input_audio_transcription = types.AudioTranscriptionConfig()
     return self._new_invocation_context(
         session,

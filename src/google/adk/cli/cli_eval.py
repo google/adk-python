@@ -201,9 +201,11 @@ def pretty_print_eval_result(eval_result: EvalCaseResult):
           for r in metric_result.criterion.rubrics
       }
       for rubric_score in metric_result.details.rubric_scores:
-        rubric = rubrics_by_id.get(rubric_score.rubric_id)
+        rubric_text = rubrics_by_id.get(rubric_score.rubric_id)
+        if not rubric_text:
+          rubric_text = rubric_score.rubric_id
         click.echo(
-            f"Rubric: {rubric}, "
+            f"Rubric: {rubric_text}, "
             f"Score: {rubric_score.score}, "
             f"Reasoning: {rubric_score.rationale}"
         )
@@ -243,6 +245,8 @@ def pretty_print_eval_result(eval_result: EvalCaseResult):
         }
         for rubric_score in metric_result.details.rubric_scores:
           rubric = rubrics_by_id.get(rubric_score.rubric_id)
+          if not rubric:
+            rubric = rubric_score.rubric_id
           row_data[f"Rubric: {rubric}"] = (
               f"Reasoning: {rubric_score.rationale}, "
               f"Score: {rubric_score.score}"

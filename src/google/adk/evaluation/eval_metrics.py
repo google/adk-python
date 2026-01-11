@@ -24,6 +24,7 @@ from pydantic import alias_generators
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
+from pydantic import field_validator
 from pydantic.json_schema import SkipJsonSchema
 from typing_extensions import TypeAlias
 
@@ -224,6 +225,17 @@ class ToolTrajectoryCriterion(BaseCriterion):
           " trajectories."
       ),
   )
+
+  @field_validator("match_type", mode="before")
+  @classmethod
+  def _coerce_match_type(cls, value: object) -> object:
+    if isinstance(value, cls.MatchType):
+      return value
+    if isinstance(value, str):
+      normalized = value.strip().upper().replace("-", "_").replace(" ", "_")
+      if normalized in cls.MatchType.__members__:
+        return cls.MatchType[normalized]
+    return value
 
 
 class LlmBackedUserSimulatorCriterion(LlmAsAJudgeCriterion):

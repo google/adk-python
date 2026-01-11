@@ -28,7 +28,8 @@ def load_web_page(url: str) -> str:
   """
   from bs4 import BeautifulSoup
 
-  response = requests.get(url)
+  # Set allow_redirects=False to prevent SSRF attacks via redirection.
+  response = requests.get(url, allow_redirects=False)
 
   if response.status_code == 200:
     soup = BeautifulSoup(response.content, 'lxml')
