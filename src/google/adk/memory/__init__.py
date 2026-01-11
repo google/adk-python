@@ -15,6 +15,7 @@ import logging
 
 from .base_memory_service import BaseMemoryService
 from .in_memory_memory_service import InMemoryMemoryService
+from .sqlite_memory_service import SqliteMemoryService
 from .vertex_ai_memory_bank_service import VertexAiMemoryBankService
 
 logger = logging.getLogger('google_adk.' + __name__)
@@ -22,6 +23,7 @@ logger = logging.getLogger('google_adk.' + __name__)
 __all__ = [
     'BaseMemoryService',
     'InMemoryMemoryService',
+    'SqliteMemoryService',
     'VertexAiMemoryBankService',
 ]
 

@@ -317,8 +317,22 @@ def _register_builtin_services(registry: ServiceRegistry) -> None:
     )
     return VertexAiMemoryBankService(**params)
 
+  def sqlite_memory_factory(uri: str, **kwargs):
+    from ..memory.sqlite_memory_service import SqliteMemoryService
+
+    parsed = urlparse(uri)
+    db_path = parsed.path
+    if not db_path:
+      db_path = ":memory:"
+    elif db_path.startswith("/"):
+      db_path = db_path[1:]
+    kwargs_copy = kwargs.copy()
+    kwargs_copy.pop("agents_dir", None)
+    return SqliteMemoryService(db_path=db_path, **kwargs_copy)
+
   registry.register_memory_service("rag", rag_memory_factory)
   registry.register_memory_service("agentengine", agentengine_memory_factory)
+  registry.register_memory_service("sqlite", sqlite_memory_factory)
 
 
 def _load_gcp_config(

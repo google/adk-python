@@ -39,6 +39,9 @@ def mock_services():
       patch(
           "google.adk.memory.vertex_ai_memory_bank_service.VertexAiMemoryBankService"
       ) as mock_agentengine_memory,
+      patch(
+          "google.adk.memory.sqlite_memory_service.SqliteMemoryService"
+      ) as mock_sqlite_memory,
   ):
     yield {
         "vertex_session": mock_vertex_session,
@@ -47,6 +50,7 @@ def mock_services():
         "gcs_artifact": mock_gcs_artifact,
         "rag_memory": mock_rag_memory,
         "agentengine_memory": mock_agentengine_memory,
+        "sqlite_memory": mock_sqlite_memory,
     }
 
 
@@ -151,6 +155,11 @@ def test_create_memory_service_agentengine_full(registry, mock_services):
   mock_services["agentengine_memory"].assert_called_once_with(
       project="p", location="l", agent_engine_id="456"
   )
+
+
+def test_create_memory_service_sqlite(registry, mock_services):
+  registry.create_memory_service("sqlite:///test.db")
+  mock_services["sqlite_memory"].assert_called_once_with(db_path="test.db")
 
 
 # General Tests
