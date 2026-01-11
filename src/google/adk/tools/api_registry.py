@@ -14,7 +14,6 @@
 
 from __future__ import annotations
 
-import sys
 from typing import Any
 from typing import Callable
 
@@ -56,17 +55,29 @@ class ApiRegistry:
     self._header_provider = header_provider
 
     url = f"{API_REGISTRY_URL}/v1beta/projects/{self.api_registry_project_id}/locations/{self.location}/mcpServers"
+
     try:
       headers = self._get_auth_headers()
       headers["Content-Type"] = "application/json"
+      page_token = None
       with httpx.Client() as client:
-        response = client.get(url, headers=headers)
-        response.raise_for_status()
-        mcp_servers_list = response.json().get("mcpServers", [])
-        for server in mcp_servers_list:
-          server_name = server.get("name", "")
-          if server_name:
-            self._mcp_servers[server_name] = server
+        while True:
+          params = {}
+          if page_token:
+            params["pageToken"] = page_token
+
+          response = client.get(url, headers=headers, params=params)
+          response.raise_for_status()
+          data = response.json()
+          mcp_servers_list = data.get("mcpServers", [])
+          for server in mcp_servers_list:
+            server_name = server.get("name", "")
+            if server_name:
+              self._mcp_servers[server_name] = server
+
+          page_token = data.get("nextPageToken")
+          if not page_token:
+            break
     except (httpx.HTTPError, ValueError) as e:
       # Handle error in fetching or parsing tool definitions
       raise RuntimeError(
