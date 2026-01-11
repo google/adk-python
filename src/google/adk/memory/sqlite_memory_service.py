@@ -19,6 +19,7 @@ from dataclasses import dataclass
 import hashlib
 import inspect
 import json
+import logging
 from pathlib import Path
 import sqlite3
 import threading
@@ -40,6 +41,8 @@ from .memory_entry import MemoryEntry
 if TYPE_CHECKING:
   from ..events.event import Event
   from ..sessions.session import Session
+
+logger = logging.getLogger("google_adk." + __name__)
 
 
 _SCHEMA_VERSION = "1"
@@ -536,9 +539,21 @@ def _row_to_memory_entry(
       "updated_at_ms": row["updated_at_ms"],
   }
   if row["metadata_json"]:
-    metadata["metadata"] = json.loads(row["metadata_json"])
+    try:
+      metadata["metadata"] = json.loads(row["metadata_json"])
+    except json.JSONDecodeError:
+      logger.warning(
+          "Failed to decode metadata_json for session_id %s.",
+          row["session_id"],
+      )
   if row["extracted_json"]:
-    metadata["extracted"] = json.loads(row["extracted_json"])
+    try:
+      metadata["extracted"] = json.loads(row["extracted_json"])
+    except json.JSONDecodeError:
+      logger.warning(
+          "Failed to decode extracted_json for session_id %s.",
+          row["session_id"],
+      )
   return MemoryEntry(
       id=str(row["id"]),
       content=content,
