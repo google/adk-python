@@ -14,7 +14,10 @@
 
 from __future__ import annotations
 
+import json
 import time
+
+from pydantic import ValidationError
 
 from .eval_result import EvalCaseResult
 from .eval_result import EvalSetResult
@@ -42,3 +45,25 @@ def create_eval_set_result(
       creation_timestamp=timestamp,
   )
   return eval_set_result
+
+
+def parse_eval_set_result_json(
+    eval_set_result_json: str | bytes,
+) -> EvalSetResult:
+  """Parses an EvalSetResult from JSON.
+
+  This is backward-compatible with legacy eval set result files that were
+  double-encoded, where the outer JSON is a string containing the inner JSON
+  object.
+  """
+  try:
+    return EvalSetResult.model_validate_json(eval_set_result_json)
+  except (ValidationError, ValueError) as first_error:
+    try:
+      decoded = json.loads(eval_set_result_json)
+    except json.JSONDecodeError:
+      raise first_error
+
+    if isinstance(decoded, str):
+      return EvalSetResult.model_validate_json(decoded)
+    return EvalSetResult.model_validate(decoded)

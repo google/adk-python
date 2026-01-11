@@ -85,11 +85,12 @@ class TestLocalEvalSetResultsManager:
     )
     assert os.path.exists(expected_file_path)
     with open(expected_file_path, "r") as f:
-      actual_eval_set_result_json = json.load(f)
+      actual_eval_set_result_data = json.load(f)
 
-    # need to convert eval_set_result to json
-    expected_eval_set_result_json = self.eval_set_result.model_dump_json()
-    assert expected_eval_set_result_json == actual_eval_set_result_json
+    # Verify the file contains a proper JSON object (not double-encoded)
+    # Use mode='json' to serialize enums to their values for comparison
+    expected_eval_set_result_data = self.eval_set_result.model_dump(mode="json")
+    assert expected_eval_set_result_data == actual_eval_set_result_data
 
   def test_get_eval_set_result(self, mocker):
     mock_time = mocker.patch("time.time")
@@ -97,6 +98,24 @@ class TestLocalEvalSetResultsManager:
     self.manager.save_eval_set_result(
         self.app_name, self.eval_set_id, self.eval_case_results
     )
+    retrieved_result = self.manager.get_eval_set_result(
+        self.app_name, self.eval_set_result_name
+    )
+    assert retrieved_result == self.eval_set_result
+
+  def test_get_eval_set_result_double_encoded_legacy(self):
+    eval_history_dir = os.path.join(
+        self.agents_dir, self.app_name, _ADK_EVAL_HISTORY_DIR
+    )
+    os.makedirs(eval_history_dir, exist_ok=True)
+    eval_set_result_file_path = os.path.join(
+        eval_history_dir,
+        self.eval_set_result_name + _EVAL_SET_RESULT_FILE_EXTENSION,
+    )
+    double_encoded_json = json.dumps(self.eval_set_result.model_dump_json())
+    with open(eval_set_result_file_path, "w", encoding="utf-8") as f:
+      f.write(double_encoded_json)
+
     retrieved_result = self.manager.get_eval_set_result(
         self.app_name, self.eval_set_result_name
     )

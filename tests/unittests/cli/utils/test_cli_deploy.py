@@ -128,13 +128,15 @@ def test_resolve_project_from_gcloud_fails(
 
 
 @pytest.mark.parametrize(
-    "adk_version, session_uri, artifact_uri, memory_uri, expected",
+    "adk_version, session_uri, artifact_uri, memory_uri, use_local_storage, "
+    "expected",
     [
         (
             "1.3.0",
             "sqlite://s",
             "gs://a",
             "rag://m",
+            None,
             (
                 "--session_service_uri=sqlite://s --artifact_service_uri=gs://a"
                 " --memory_service_uri=rag://m"
@@ -145,6 +147,7 @@ def test_resolve_project_from_gcloud_fails(
             "sqlite://s",
             "gs://a",
             "rag://m",
+            None,
             "--session_db_url=sqlite://s --artifact_storage_uri=gs://a",
         ),
         (
@@ -152,6 +155,7 @@ def test_resolve_project_from_gcloud_fails(
             "sqlite://s",
             "gs://a",
             "rag://m",
+            None,
             "--session_db_url=sqlite://s",
         ),
         (
@@ -159,16 +163,49 @@ def test_resolve_project_from_gcloud_fails(
             "sqlite://s",
             None,
             None,
-            "--session_service_uri=sqlite://s  ",
+            None,
+            "--session_service_uri=sqlite://s",
         ),
         (
             "1.3.0",
             None,
             "gs://a",
             "rag://m",
-            " --artifact_service_uri=gs://a --memory_service_uri=rag://m",
+            None,
+            "--artifact_service_uri=gs://a --memory_service_uri=rag://m",
         ),
-        ("1.2.0", None, "gs://a", None, " --artifact_storage_uri=gs://a"),
+        (
+            "1.2.0",
+            None,
+            "gs://a",
+            None,
+            None,
+            "--artifact_storage_uri=gs://a",
+        ),
+        (
+            "1.21.0",
+            None,
+            None,
+            None,
+            False,
+            "--no_use_local_storage",
+        ),
+        (
+            "1.21.0",
+            None,
+            None,
+            None,
+            True,
+            "--use_local_storage",
+        ),
+        (
+            "1.21.0",
+            "sqlite://s",
+            "gs://a",
+            None,
+            False,
+            "--session_service_uri=sqlite://s --artifact_service_uri=gs://a",
+        ),
     ],
 )
 def test_get_service_option_by_adk_version(
@@ -176,6 +213,7 @@ def test_get_service_option_by_adk_version(
     session_uri: str | None,
     artifact_uri: str | None,
     memory_uri: str | None,
+    use_local_storage: bool | None,
     expected: str,
 ) -> None:
   """It should return the correct service URI flags for a given ADK version."""
@@ -184,6 +222,7 @@ def test_get_service_option_by_adk_version(
       session_uri=session_uri,
       artifact_uri=artifact_uri,
       memory_uri=memory_uri,
+      use_local_storage=use_local_storage,
   )
   assert actual.rstrip() == expected.rstrip()
 
@@ -223,6 +262,7 @@ def test_to_gke_happy_path(
       temp_folder=str(tmp_path),
       port=9090,
       trace_to_cloud=False,
+      otel_to_cloud=False,
       with_ui=True,
       log_level="debug",
       adk_version="1.2.0",

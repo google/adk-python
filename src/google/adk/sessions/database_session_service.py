@@ -25,12 +25,14 @@ from sqlalchemy import delete
 from sqlalchemy import event
 from sqlalchemy import select
 from sqlalchemy import text
+from sqlalchemy.engine import make_url
 from sqlalchemy.exc import ArgumentError
 from sqlalchemy.ext.asyncio import async_sessionmaker
 from sqlalchemy.ext.asyncio import AsyncEngine
 from sqlalchemy.ext.asyncio import AsyncSession as DatabaseSessionFactory
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.inspection import inspect
+from sqlalchemy.pool import StaticPool
 from typing_extensions import override
 from tzlocal import get_localzone
 
@@ -103,7 +105,15 @@ class DatabaseSessionService(BaseSessionService):
     # 2. Create all tables based on schema
     # 3. Initialize all properties
     try:
-      db_engine = create_async_engine(db_url, **kwargs)
+      engine_kwargs = dict(kwargs)
+      url = make_url(db_url)
+      if url.get_backend_name() == "sqlite" and url.database == ":memory:":
+        engine_kwargs.setdefault("poolclass", StaticPool)
+        connect_args = dict(engine_kwargs.get("connect_args", {}))
+        connect_args.setdefault("check_same_thread", False)
+        engine_kwargs["connect_args"] = connect_args
+
+      db_engine = create_async_engine(db_url, **engine_kwargs)
       if db_engine.dialect.name == "sqlite":
         # Set sqlite pragma to enable foreign keys constraints
         event.listen(db_engine.sync_engine, "connect", _set_sqlite_pragma)
@@ -168,12 +178,9 @@ class DatabaseSessionService(BaseSessionService):
           self._db_schema_version = await conn.run_sync(
               _schema_check_utils.get_db_schema_version_from_connection
           )
-      except Exception:
-        # If inspection fails, assume the latest schema
-        logger.warning(
-            "Failed to inspect database tables, assuming the latest schema."
-        )
-        self._db_schema_version = _schema_check_utils.LATEST_SCHEMA_VERSION
+      except Exception as e:
+        logger.error("Failed to inspect database tables: %s", e)
+        raise
 
     # Check if tables are created and create them if not
     if self._tables_created:
@@ -477,3 +484,15 @@ class DatabaseSessionService(BaseSessionService):
     # Also update the in-memory session
     await super().append_event(session=session, event=event)
     return event
+
+  async def close(self) -> None:
+    """Disposes the SQLAlchemy engine and closes pooled connections."""
+    await self.db_engine.dispose()
+
+  async def __aenter__(self) -> DatabaseSessionService:
+    """Enters the async context manager and returns this service."""
+    return self
+
+  async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+    """Exits the async context manager and closes the service."""
+    await self.close()

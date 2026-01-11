@@ -23,6 +23,8 @@ from typing_extensions import override
 
 from . import _automatic_function_calling_util
 from ..agents.common_configs import AgentRefConfig
+from ..features import FeatureName
+from ..features import is_feature_enabled
 from ..memory.in_memory_memory_service import InMemoryMemoryService
 from ..utils.context_utils import Aclosing
 from ._forwarding_artifact_service import ForwardingArtifactService
@@ -82,29 +84,48 @@ class AgentTool(BaseTool):
       # Override the description with the agent's description
       result.description = self.agent.description
     else:
-      result = types.FunctionDeclaration(
-          parameters=types.Schema(
-              type=types.Type.OBJECT,
-              properties={
-                  'request': types.Schema(
-                      type=types.Type.STRING,
-                  ),
-              },
-              required=['request'],
-          ),
-          description=self.agent.description,
-          name=self.name,
-      )
+      if is_feature_enabled(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL):
+        result = types.FunctionDeclaration(
+            name=self.name,
+            description=self.agent.description,
+            parameters_json_schema={
+                'type': 'object',
+                'properties': {
+                    'request': {'type': 'string'},
+                },
+                'required': ['request'],
+            },
+        )
+      else:
+        result = types.FunctionDeclaration(
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    'request': types.Schema(
+                        type=types.Type.STRING,
+                    ),
+                },
+                required=['request'],
+            ),
+            description=self.agent.description,
+            name=self.name,
+        )
 
     # Set response schema for non-GEMINI_API variants
     if self._api_variant != GoogleLLMVariant.GEMINI_API:
       # Determine response type based on agent's output schema
       if isinstance(self.agent, LlmAgent) and self.agent.output_schema:
         # Agent has structured output schema - response is an object
-        result.response = types.Schema(type=types.Type.OBJECT)
+        if is_feature_enabled(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL):
+          result.response_json_schema = {'type': 'object'}
+        else:
+          result.response = types.Schema(type=types.Type.OBJECT)
       else:
         # Agent returns text - response is a string
-        result.response = types.Schema(type=types.Type.STRING)
+        if is_feature_enabled(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL):
+          result.response_json_schema = {'type': 'string'}
+        else:
+          result.response = types.Schema(type=types.Type.STRING)
 
     result.name = self.name
     return result
