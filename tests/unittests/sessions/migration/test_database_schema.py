@@ -29,17 +29,20 @@ async def create_v0_db(db_path):
   await engine.dispose()
 
 
+# Use async context managers so DatabaseSessionService always closes.
+
+
 @pytest.mark.asyncio
 async def test_new_db_uses_latest_schema(tmp_path):
   db_path = tmp_path / 'new_db.db'
   db_url = f'sqlite+aiosqlite:///{db_path}'
-  session_service = DatabaseSessionService(db_url)
-  assert session_service._db_schema_version is None
-  await session_service.create_session(app_name='my_app', user_id='test_user')
-  assert (
-      session_service._db_schema_version
-      == _schema_check_utils.LATEST_SCHEMA_VERSION
-  )
+  async with DatabaseSessionService(db_url) as session_service:
+    assert session_service._db_schema_version is None
+    await session_service.create_session(app_name='my_app', user_id='test_user')
+    assert (
+        session_service._db_schema_version
+        == _schema_check_utils.LATEST_SCHEMA_VERSION
+    )
 
   # Verify metadata table
   engine = create_async_engine(db_url)
@@ -48,12 +51,18 @@ async def test_new_db_uses_latest_schema(tmp_path):
         lambda sync_conn: inspect(sync_conn).has_table('adk_internal_metadata')
     )
     assert has_metadata_table
-    schema_version = await conn.run_sync(
-        lambda sync_conn: sync_conn.execute(
-            text('SELECT value FROM adk_internal_metadata WHERE key = :key'),
-            {'key': _schema_check_utils.SCHEMA_VERSION_KEY},
-        ).scalar_one_or_none()
-    )
+
+    def get_schema_version(sync_conn):
+      inspector = inspect(sync_conn)
+      key_col = inspector.dialect.identifier_preparer.quote('key')
+      return sync_conn.execute(
+          text(
+              f'SELECT value FROM adk_internal_metadata WHERE {key_col} = :key'
+          ),
+          {'key': _schema_check_utils.SCHEMA_VERSION_KEY},
+      ).scalar_one_or_none()
+
+    schema_version = await conn.run_sync(get_schema_version)
     assert schema_version == _schema_check_utils.LATEST_SCHEMA_VERSION
 
     # Verify events table columns for v1
@@ -71,21 +80,20 @@ async def test_existing_v0_db_uses_v0_schema(tmp_path):
   db_path = tmp_path / 'v0_db.db'
   await create_v0_db(db_path)
   db_url = f'sqlite+aiosqlite:///{db_path}'
-  session_service = DatabaseSessionService(db_url)
+  async with DatabaseSessionService(db_url) as session_service:
+    assert session_service._db_schema_version is None
+    await session_service.create_session(
+        app_name='my_app', user_id='test_user', session_id='s1'
+    )
+    assert (
+        session_service._db_schema_version
+        == _schema_check_utils.SCHEMA_VERSION_0_PICKLE
+    )
 
-  assert session_service._db_schema_version is None
-  await session_service.create_session(
-      app_name='my_app', user_id='test_user', session_id='s1'
-  )
-  assert (
-      session_service._db_schema_version
-      == _schema_check_utils.SCHEMA_VERSION_0_PICKLE
-  )
-
-  session = await session_service.get_session(
-      app_name='my_app', user_id='test_user', session_id='s1'
-  )
-  assert session.id == 's1'
+    session = await session_service.get_session(
+        app_name='my_app', user_id='test_user', session_id='s1'
+    )
+    assert session.id == 's1'
 
   # Verify schema tables
   engine = create_async_engine(db_url)
@@ -111,38 +119,38 @@ async def test_existing_latest_db_uses_latest_schema(tmp_path):
   db_url = f'sqlite+aiosqlite:///{db_path}'
 
   # Create session service which creates db with latest schema
-  session_service1 = DatabaseSessionService(db_url)
-  await session_service1.create_session(
-      app_name='my_app', user_id='test_user', session_id='s1'
-  )
-  assert (
-      session_service1._db_schema_version
-      == _schema_check_utils.LATEST_SCHEMA_VERSION
-  )
+  async with DatabaseSessionService(db_url) as session_service1:
+    await session_service1.create_session(
+        app_name='my_app', user_id='test_user', session_id='s1'
+    )
+    assert (
+        session_service1._db_schema_version
+        == _schema_check_utils.LATEST_SCHEMA_VERSION
+    )
 
-  # Create another session service on same db and check it detects latest schema
-  session_service2 = DatabaseSessionService(db_url)
-  await session_service2.create_session(
-      app_name='my_app', user_id='test_user2', session_id='s2'
-  )
-  assert (
-      session_service2._db_schema_version
-      == _schema_check_utils.LATEST_SCHEMA_VERSION
-  )
-  s2 = await session_service2.get_session(
-      app_name='my_app', user_id='test_user2', session_id='s2'
-  )
-  assert s2.id == 's2'
+    # Create another session service on same db and check it detects latest schema
+    async with DatabaseSessionService(db_url) as session_service2:
+      await session_service2.create_session(
+          app_name='my_app', user_id='test_user2', session_id='s2'
+      )
+      assert (
+          session_service2._db_schema_version
+          == _schema_check_utils.LATEST_SCHEMA_VERSION
+      )
+      s2 = await session_service2.get_session(
+          app_name='my_app', user_id='test_user2', session_id='s2'
+      )
+      assert s2.id == 's2'
 
-  s1 = await session_service2.get_session(
-      app_name='my_app', user_id='test_user', session_id='s1'
-  )
-  assert s1.id == 's1'
+      s1 = await session_service2.get_session(
+          app_name='my_app', user_id='test_user', session_id='s1'
+      )
+      assert s1.id == 's1'
 
-  list_sessions_response = await session_service2.list_sessions(
-      app_name='my_app'
-  )
-  assert len(list_sessions_response.sessions) == 2
+      list_sessions_response = await session_service2.list_sessions(
+          app_name='my_app'
+      )
+      assert len(list_sessions_response.sessions) == 2
 
   # Verify schema tables
   engine = create_async_engine(db_url)

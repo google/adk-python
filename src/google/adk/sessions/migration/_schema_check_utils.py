@@ -12,10 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """Database schema version check utility."""
+
 from __future__ import annotations
 
 import logging
 
+from sqlalchemy import create_engine as create_sync_engine
 from sqlalchemy import inspect
 from sqlalchemy import text
 
@@ -31,21 +33,27 @@ def _get_schema_version_impl(inspector, connection) -> str:
   """Gets DB schema version using inspector and connection."""
   if inspector.has_table("adk_internal_metadata"):
     try:
+      key_col = inspector.dialect.identifier_preparer.quote("key")
       result = connection.execute(
-          text("SELECT value FROM adk_internal_metadata WHERE key = :key"),
+          text(
+              f"SELECT value FROM adk_internal_metadata WHERE {key_col} = :key"
+          ),
           {"key": SCHEMA_VERSION_KEY},
       ).fetchone()
       if result:
         return result[0]
       else:
-        return LATEST_SCHEMA_VERSION
+        raise ValueError(
+            "Schema version not found in adk_internal_metadata. The database"
+            " might be malformed."
+        )
     except Exception as e:
-      logger.warning(
-          "Failed to query schema version from adk_internal_metadata,"
-          " assuming the latest schema: %s.",
+      logger.error(
+          "Failed to query schema version from adk_internal_metadata: %s.",
           e,
       )
-      return LATEST_SCHEMA_VERSION
+      raise
+
   # Metadata table doesn't exist, check for v0 schema.
   # V0 schema has an 'events' table with an 'actions' column.
   if inspector.has_table("events"):
@@ -57,13 +65,14 @@ def _get_schema_version_impl(inspector, connection) -> str:
             " serialize event actions. The v0 schema will not be supported"
             " going forward and will be deprecated in a few rollouts. Please"
             " migrate to the v1 schema which uses JSON serialization for event"
-            " data. The migration command and script will be provided soon."
+            " data. You can use `adk migrate session` command to migrate your"
+            " database."
         )
         return SCHEMA_VERSION_0_PICKLE
     except Exception as e:
-      logger.warning("Failed to inspect 'events' table columns: %s", e)
-      return LATEST_SCHEMA_VERSION
-  # New database, assume the latest schema.
+      logger.error("Failed to inspect 'events' table columns: %s", e)
+      raise
+  # New database, use the latest schema.
   return LATEST_SCHEMA_VERSION
 
 
@@ -71,3 +80,42 @@ def get_db_schema_version_from_connection(connection) -> str:
   """Gets DB schema version from a DB connection."""
   inspector = inspect(connection)
   return _get_schema_version_impl(inspector, connection)
+
+
+def _to_sync_url(db_url: str) -> str:
+  """Removes '+driver' from SQLAlchemy URL."""
+  if "://" in db_url:
+    scheme, _, rest = db_url.partition("://")
+    if "+" in scheme:
+      dialect = scheme.split("+", 1)[0]
+      return f"{dialect}://{rest}"
+  return db_url
+
+
+def get_db_schema_version(db_url: str) -> str:
+  """Reads schema version from DB.
+
+  Checks metadata table first and then falls back to table structure.
+
+  Args:
+    db_url: The database URL.
+
+  Returns:
+    The detected schema version as a string. Returns `LATEST_SCHEMA_VERSION`
+    if it's a new database.
+  """
+  engine = None
+  try:
+    engine = create_sync_engine(_to_sync_url(db_url))
+    with engine.connect() as connection:
+      inspector = inspect(connection)
+      return _get_schema_version_impl(inspector, connection)
+  except Exception:
+    logger.warning(
+        "Failed to get schema version from database %s.",
+        db_url,
+    )
+    raise
+  finally:
+    if engine:
+      engine.dispose()

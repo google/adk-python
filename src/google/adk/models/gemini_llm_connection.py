@@ -41,11 +41,13 @@ class GeminiLlmConnection(BaseLlmConnection):
       self,
       gemini_session: live.AsyncSession,
       api_backend: GoogleLLMVariant = GoogleLLMVariant.VERTEX_AI,
+      model_version: str | None = None,
   ):
     self._gemini_session = gemini_session
     self._input_transcription_text: str = ''
     self._output_transcription_text: str = ''
     self._api_backend = api_backend
+    self._model_version = model_version
 
   async def send_history(self, history: list[types.Content]):
     """Sends the conversation history to the gemini model.
@@ -162,7 +164,11 @@ class GeminiLlmConnection(BaseLlmConnection):
       async for message in agen:
         logger.debug('Got LLM Live message: %s', message)
         if message.usage_metadata:
-          yield LlmResponse(usage_metadata=message.usage_metadata)
+          # Tracks token usage data per model.
+          yield LlmResponse(
+              usage_metadata=message.usage_metadata,
+              model_version=self._model_version,
+          )
         if message.server_content:
           content = message.server_content.model_turn
           if content and content.parts:

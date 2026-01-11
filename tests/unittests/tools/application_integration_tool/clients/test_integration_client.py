@@ -16,6 +16,7 @@ import json
 import re
 from unittest import mock
 
+from google.adk.tools.application_integration_tool.clients import integration_client
 from google.adk.tools.application_integration_tool.clients.connections_client import ConnectionsClient
 from google.adk.tools.application_integration_tool.clients.integration_client import IntegrationClient
 import google.auth
@@ -110,6 +111,8 @@ class TestIntegrationClient:
       mock_credentials,
       mock_connections_client,
   ):
+    mock_credentials.quota_project_id = "quota-project"
+    mock_credentials.expired = False
     expected_spec = {"openapi": "3.0.0", "info": {"title": "Test Integration"}}
     mock_response = mock.MagicMock()
     mock_response.status_code = 200
@@ -117,11 +120,12 @@ class TestIntegrationClient:
 
     with (
         mock.patch.object(
-            IntegrationClient,
-            "_get_access_token",
-            return_value=mock_credentials.token,
+            integration_client,
+            "default_service_credential",
+            return_value=(mock_credentials, project),
         ),
-        mock.patch("requests.post", return_value=mock_response),
+        mock.patch.object(mock_credentials, "refresh", return_value=None),
+        mock.patch.object(requests, "post", return_value=mock_response),
     ):
       client = IntegrationClient(
           project=project,
@@ -140,6 +144,7 @@ class TestIntegrationClient:
           headers={
               "Content-Type": "application/json",
               "Authorization": f"Bearer {mock_credentials.token}",
+              "x-goog-user-project": "quota-project",
           },
           json={
               "apiTriggerResources": [{

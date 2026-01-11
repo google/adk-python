@@ -26,6 +26,7 @@ from packaging.version import parse
 
 _IS_WINDOWS = os.name == 'nt'
 _GCLOUD_CMD = 'gcloud.cmd' if _IS_WINDOWS else 'gcloud'
+_LOCAL_STORAGE_FLAG_MIN_VERSION: Final[str] = '1.21.0'
 
 _DOCKERFILE_TEMPLATE: Final[str] = """
 FROM python:3.11-slim
@@ -63,7 +64,7 @@ COPY --chown=myuser:myuser "agents/{app_name}/" "/app/agents/{app_name}/"
 
 EXPOSE {port}
 
-CMD adk {command} --port={port} {host_option} {service_option} {trace_to_cloud_option} {allow_origins_option} {a2a_option} "/app/agents"
+CMD adk {command} --port={port} {host_option} {service_option} {trace_to_cloud_option} {otel_to_cloud_option} {allow_origins_option} {a2a_option} "/app/agents"
 """
 
 _AGENT_ENGINE_APP_TEMPLATE: Final[str] = """
@@ -442,26 +443,38 @@ def _get_service_option_by_adk_version(
     session_uri: Optional[str],
     artifact_uri: Optional[str],
     memory_uri: Optional[str],
+    use_local_storage: Optional[bool] = None,
 ) -> str:
   """Returns service option string based on adk_version."""
   parsed_version = parse(adk_version)
+  options: list[str] = []
+
   if parsed_version >= parse('1.3.0'):
-    session_option = (
-        f'--session_service_uri={session_uri}' if session_uri else ''
-    )
-    artifact_option = (
-        f'--artifact_service_uri={artifact_uri}' if artifact_uri else ''
-    )
-    memory_option = f'--memory_service_uri={memory_uri}' if memory_uri else ''
-    return f'{session_option} {artifact_option} {memory_option}'
-  elif parsed_version >= parse('1.2.0'):
-    session_option = f'--session_db_url={session_uri}' if session_uri else ''
-    artifact_option = (
-        f'--artifact_storage_uri={artifact_uri}' if artifact_uri else ''
-    )
-    return f'{session_option} {artifact_option}'
+    if session_uri:
+      options.append(f'--session_service_uri={session_uri}')
+    if artifact_uri:
+      options.append(f'--artifact_service_uri={artifact_uri}')
+    if memory_uri:
+      options.append(f'--memory_service_uri={memory_uri}')
   else:
-    return f'--session_db_url={session_uri}' if session_uri else ''
+    if session_uri:
+      options.append(f'--session_db_url={session_uri}')
+    if parsed_version >= parse('1.2.0') and artifact_uri:
+      options.append(f'--artifact_storage_uri={artifact_uri}')
+
+  if use_local_storage is not None and parsed_version >= parse(
+      _LOCAL_STORAGE_FLAG_MIN_VERSION
+  ):
+    # Only valid when session/artifact URIs are unset; otherwise the CLI
+    # rejects the combination to avoid confusing precedence.
+    if session_uri is None and artifact_uri is None:
+      options.append((
+          '--use_local_storage'
+          if use_local_storage
+          else '--no_use_local_storage'
+      ))
+
+  return ' '.join(options)
 
 
 def to_cloud_run(
@@ -474,6 +487,7 @@ def to_cloud_run(
     temp_folder: str,
     port: int,
     trace_to_cloud: bool,
+    otel_to_cloud: bool,
     with_ui: bool,
     log_level: str,
     verbosity: str,
@@ -482,6 +496,7 @@ def to_cloud_run(
     session_service_uri: Optional[str] = None,
     artifact_service_uri: Optional[str] = None,
     memory_service_uri: Optional[str] = None,
+    use_local_storage: bool = False,
     a2a: bool = False,
     extra_gcloud_args: Optional[tuple[str, ...]] = None,
 ):
@@ -509,6 +524,8 @@ def to_cloud_run(
     temp_folder: The temp folder for the generated Cloud Run source files.
     port: The port of the ADK api server.
     trace_to_cloud: Whether to enable Cloud Trace.
+    otel_to_cloud: Whether to enable exporting OpenTelemetry signals
+      to Google Cloud.
     with_ui: Whether to deploy with UI.
     verbosity: The verbosity level of the CLI.
     adk_version: The ADK version to use in Cloud Run.
@@ -517,8 +534,12 @@ def to_cloud_run(
     session_service_uri: The URI of the session service.
     artifact_service_uri: The URI of the artifact service.
     memory_service_uri: The URI of the memory service.
+    use_local_storage: Whether to use local .adk storage in the container.
   """
   app_name = app_name or os.path.basename(agent_folder)
+  if parse(adk_version) >= parse('1.3.0') and not use_local_storage:
+    session_service_uri = session_service_uri or 'memory://'
+    artifact_service_uri = artifact_service_uri or 'memory://'
 
   click.echo(f'Start generating Cloud Run source files in {temp_folder}')
 
@@ -559,8 +580,10 @@ def to_cloud_run(
             session_service_uri,
             artifact_service_uri,
             memory_service_uri,
+            use_local_storage,
         ),
         trace_to_cloud_option='--trace_to_cloud' if trace_to_cloud else '',
+        otel_to_cloud_option='--otel_to_cloud' if otel_to_cloud else '',
         allow_origins_option=allow_origins_option,
         adk_version=adk_version,
         host_option=host_option,
@@ -937,6 +960,7 @@ def to_gke(
     temp_folder: str,
     port: int,
     trace_to_cloud: bool,
+    otel_to_cloud: bool,
     with_ui: bool,
     log_level: str,
     adk_version: str,
@@ -944,6 +968,7 @@ def to_gke(
     session_service_uri: Optional[str] = None,
     artifact_service_uri: Optional[str] = None,
     memory_service_uri: Optional[str] = None,
+    use_local_storage: bool = False,
     a2a: bool = False,
 ):
   """Deploys an agent to Google Kubernetes Engine(GKE).
@@ -961,6 +986,8 @@ def to_gke(
       Dockerfile and deployment.yaml.
     port: The port of the ADK api server.
     trace_to_cloud: Whether to enable Cloud Trace.
+    otel_to_cloud: Whether to enable exporting OpenTelemetry signals
+      to Google Cloud.
     with_ui: Whether to deploy with UI.
     log_level: The logging level.
     adk_version: The ADK version to use in GKE.
@@ -969,6 +996,7 @@ def to_gke(
     session_service_uri: The URI of the session service.
     artifact_service_uri: The URI of the artifact service.
     memory_service_uri: The URI of the memory service.
+    use_local_storage: Whether to use local .adk storage in the container.
   """
   click.secho(
       '\n🚀 Starting ADK Agent Deployment to GKE...', fg='cyan', bold=True
@@ -982,6 +1010,9 @@ def to_gke(
   click.echo('--------------------------------------------------\n')
 
   app_name = app_name or os.path.basename(agent_folder)
+  if parse(adk_version) >= parse('1.3.0') and not use_local_storage:
+    session_service_uri = session_service_uri or 'memory://'
+    artifact_service_uri = artifact_service_uri or 'memory://'
 
   click.secho('STEP 1: Preparing build environment...', bold=True)
   click.echo(f'  - Using temporary directory: {temp_folder}')
@@ -1024,8 +1055,10 @@ def to_gke(
             session_service_uri,
             artifact_service_uri,
             memory_service_uri,
+            use_local_storage,
         ),
         trace_to_cloud_option='--trace_to_cloud' if trace_to_cloud else '',
+        otel_to_cloud_option='--otel_to_cloud' if otel_to_cloud else '',
         allow_origins_option=allow_origins_option,
         adk_version=adk_version,
         host_option=host_option,
