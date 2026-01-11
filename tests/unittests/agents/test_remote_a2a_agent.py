@@ -665,6 +665,157 @@ class TestRemoteA2aAgentMessageHandling:
     assert parts == []
     assert context_id is None
 
+  def test_construct_message_parts_from_session_stops_on_agent_reply(self):
+    """Test message parts construction stops on agent reply by default."""
+    part1 = Mock()
+    part1.text = "User 1"
+    content1 = Mock()
+    content1.parts = [part1]
+    user1 = Mock()
+    user1.content = content1
+    user1.author = "user"
+    user1.custom_metadata = None
+
+    part2 = Mock()
+    part2.text = "Agent 1"
+    content2 = Mock()
+    content2.parts = [part2]
+    agent1 = Mock()
+    agent1.content = content2
+    agent1.author = self.agent.name
+    agent1.custom_metadata = None
+
+    part3 = Mock()
+    part3.text = "User 2"
+    content3 = Mock()
+    content3.parts = [part3]
+    user2 = Mock()
+    user2.content = content3
+    user2.author = "user"
+    user2.custom_metadata = None
+
+    self.mock_session.events = [user1, agent1, user2]
+
+    def mock_converter(part):
+      mock_a2a_part = Mock()
+      mock_a2a_part.text = part.text
+      return mock_a2a_part
+
+    self.mock_genai_part_converter.side_effect = mock_converter
+
+    with patch(
+        "google.adk.agents.remote_a2a_agent._present_other_agent_message"
+    ) as mock_present:
+      mock_present.side_effect = lambda event: event
+      parts, context_id = self.agent._construct_message_parts_from_session(
+          self.mock_context
+      )
+      assert len(parts) == 1
+      assert parts[0].text == "User 2"
+      assert context_id is None
+
+  def test_construct_message_parts_from_session_stateless_full_history(self):
+    """Test full history for stateless agent when enabled."""
+    self.agent._full_history_when_stateless = True
+    part1 = Mock()
+    part1.text = "User 1"
+    content1 = Mock()
+    content1.parts = [part1]
+    user1 = Mock()
+    user1.content = content1
+    user1.author = "user"
+    user1.custom_metadata = None
+
+    part2 = Mock()
+    part2.text = "Agent 1"
+    content2 = Mock()
+    content2.parts = [part2]
+    agent1 = Mock()
+    agent1.content = content2
+    agent1.author = self.agent.name
+    agent1.custom_metadata = None
+
+    part3 = Mock()
+    part3.text = "User 2"
+    content3 = Mock()
+    content3.parts = [part3]
+    user2 = Mock()
+    user2.content = content3
+    user2.author = "user"
+    user2.custom_metadata = None
+
+    self.mock_session.events = [user1, agent1, user2]
+
+    def mock_converter(part):
+      mock_a2a_part = Mock()
+      mock_a2a_part.text = part.text
+      return mock_a2a_part
+
+    self.mock_genai_part_converter.side_effect = mock_converter
+
+    with patch(
+        "google.adk.agents.remote_a2a_agent._present_other_agent_message"
+    ) as mock_present:
+      mock_present.side_effect = lambda event: event
+      parts, context_id = self.agent._construct_message_parts_from_session(
+          self.mock_context
+      )
+      assert len(parts) == 3
+      assert parts[0].text == "User 1"
+      assert parts[1].text == "Agent 1"
+      assert parts[2].text == "User 2"
+      assert context_id is None
+
+  def test_construct_message_parts_from_session_stateful_partial_history(self):
+    """Test partial history for stateful agent when full history is enabled."""
+    self.agent._full_history_when_stateless = True
+    part1 = Mock()
+    part1.text = "User 1"
+    content1 = Mock()
+    content1.parts = [part1]
+    user1 = Mock()
+    user1.content = content1
+    user1.author = "user"
+    user1.custom_metadata = None
+
+    part2 = Mock()
+    part2.text = "Agent 1"
+    content2 = Mock()
+    content2.parts = [part2]
+    agent1 = Mock()
+    agent1.content = content2
+    agent1.author = self.agent.name
+    agent1.custom_metadata = {A2A_METADATA_PREFIX + "context_id": "ctx-1"}
+
+    part3 = Mock()
+    part3.text = "User 2"
+    content3 = Mock()
+    content3.parts = [part3]
+    user2 = Mock()
+    user2.content = content3
+    user2.author = "user"
+    user2.custom_metadata = None
+
+    self.mock_session.events = [user1, agent1, user2]
+
+    def mock_converter(part):
+      mock_a2a_part = Mock()
+      mock_a2a_part.text = part.text
+      return mock_a2a_part
+
+    self.mock_genai_part_converter.side_effect = mock_converter
+
+    with patch(
+        "google.adk.agents.remote_a2a_agent._present_other_agent_message"
+    ) as mock_present:
+      mock_present.side_effect = lambda event: event
+      parts, context_id = self.agent._construct_message_parts_from_session(
+          self.mock_context
+      )
+      assert len(parts) == 1
+      assert parts[0].text == "User 2"
+      assert context_id == "ctx-1"
+
   @pytest.mark.asyncio
   async def test_handle_a2a_response_success_with_message(self):
     """Test successful A2A response handling with message."""

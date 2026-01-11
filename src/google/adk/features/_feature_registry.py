@@ -14,8 +14,10 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import Enum
+from typing import Generator
 import warnings
 
 from ..utils.env_utils import is_env_enabled
@@ -24,17 +26,24 @@ from ..utils.env_utils import is_env_enabled
 class FeatureName(str, Enum):
   """Feature names."""
 
+  AUTHENTICATED_FUNCTION_TOOL = "AUTHENTICATED_FUNCTION_TOOL"
+  BASE_AUTHENTICATED_TOOL = "BASE_AUTHENTICATED_TOOL"
   BIG_QUERY_TOOLSET = "BIG_QUERY_TOOLSET"
   BIG_QUERY_TOOL_CONFIG = "BIG_QUERY_TOOL_CONFIG"
   BIGTABLE_TOOL_SETTINGS = "BIGTABLE_TOOL_SETTINGS"
+  BIGTABLE_TOOLSET = "BIGTABLE_TOOLSET"
   COMPUTER_USE = "COMPUTER_USE"
   GOOGLE_CREDENTIALS_CONFIG = "GOOGLE_CREDENTIALS_CONFIG"
   GOOGLE_TOOL = "GOOGLE_TOOL"
   JSON_SCHEMA_FOR_FUNC_DECL = "JSON_SCHEMA_FOR_FUNC_DECL"
   PROGRESSIVE_SSE_STREAMING = "PROGRESSIVE_SSE_STREAMING"
+  PUBSUB_TOOL_CONFIG = "PUBSUB_TOOL_CONFIG"
   PUBSUB_TOOLSET = "PUBSUB_TOOLSET"
   SPANNER_TOOLSET = "SPANNER_TOOLSET"
   SPANNER_TOOL_SETTINGS = "SPANNER_TOOL_SETTINGS"
+  SPANNER_VECTOR_STORE = "SPANNER_VECTOR_STORE"
+  TOOL_CONFIG = "TOOL_CONFIG"
+  TOOL_CONFIRMATION = "TOOL_CONFIRMATION"
 
 
 class FeatureStage(Enum):
@@ -67,6 +76,12 @@ class FeatureConfig:
 
 # Central registry: FeatureName -> FeatureConfig
 _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
+    FeatureName.AUTHENTICATED_FUNCTION_TOOL: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
+    FeatureName.BASE_AUTHENTICATED_TOOL: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
     FeatureName.BIG_QUERY_TOOLSET: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
@@ -74,6 +89,9 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
     FeatureName.BIGTABLE_TOOL_SETTINGS: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
+    FeatureName.BIGTABLE_TOOLSET: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
     FeatureName.COMPUTER_USE: FeatureConfig(
@@ -91,6 +109,9 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
     FeatureName.PROGRESSIVE_SSE_STREAMING: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
+    FeatureName.PUBSUB_TOOL_CONFIG: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
     FeatureName.PUBSUB_TOOLSET: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
@@ -98,6 +119,15 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
     FeatureName.SPANNER_TOOL_SETTINGS: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
+    FeatureName.SPANNER_VECTOR_STORE: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
+    FeatureName.TOOL_CONFIG: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
+    FeatureName.TOOL_CONFIRMATION: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
 }
@@ -240,3 +270,52 @@ def _emit_non_stable_warning_once(
         f"[{feature_stage.name.upper()}] feature {feature_name} is enabled."
     )
     warnings.warn(full_message, category=UserWarning, stacklevel=4)
+
+
+@contextmanager
+def temporary_feature_override(
+    feature_name: FeatureName,
+    enabled: bool,
+) -> Generator[None, None, None]:
+  """Temporarily override a feature's enabled state within a context.
+
+  This context manager is useful for testing or temporarily enabling/disabling
+  a feature within a specific scope. The original state is restored when the
+  context exits.
+
+  Args:
+    feature_name: The feature name to override.
+    enabled: Whether the feature should be enabled.
+
+  Yields:
+    None
+
+  Example:
+    ```python
+    from google.adk.features import FeatureName, temporary_feature_override
+
+    # Temporarily enable a feature for testing
+    with temporary_feature_override(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL, True):
+        # Feature is enabled here
+        result = some_function_that_checks_feature()
+    # Feature is restored to original state here
+    ```
+  """
+  config = _get_feature_config(feature_name)
+  if config is None:
+    raise ValueError(f"Feature {feature_name} is not registered.")
+
+  # Save the original override state
+  had_override = feature_name in _FEATURE_OVERRIDES
+  original_value = _FEATURE_OVERRIDES.get(feature_name)
+
+  # Apply the temporary override
+  _FEATURE_OVERRIDES[feature_name] = enabled
+  try:
+    yield
+  finally:
+    # Restore the original state
+    if had_override:
+      _FEATURE_OVERRIDES[feature_name] = original_value
+    else:
+      _FEATURE_OVERRIDES.pop(feature_name, None)

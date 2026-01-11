@@ -1814,6 +1814,46 @@ async def test_content_to_message_param_multi_part_function_response():
 
 
 @pytest.mark.asyncio
+async def test_content_to_message_param_function_response_with_extra_parts():
+  tool_part = types.Part.from_function_response(
+      name="load_image",
+      response={"status": "success"},
+  )
+  tool_part.function_response.id = "tool_call_1"
+
+  text_part = types.Part.from_text(text="[Image: img_123.png]")
+  image_bytes = b"test_image_data"
+  image_part = types.Part.from_bytes(data=image_bytes, mime_type="image/png")
+
+  content = types.Content(
+      role="user",
+      parts=[tool_part, text_part, image_part],
+  )
+
+  messages = await _content_to_message_param(content)
+  assert isinstance(messages, list)
+  assert messages == [
+      {
+          "role": "tool",
+          "tool_call_id": "tool_call_1",
+          "content": '{"status": "success"}',
+      },
+      {
+          "role": "user",
+          "content": [
+              {"type": "text", "text": "[Image: img_123.png]"},
+              {
+                  "type": "image_url",
+                  "image_url": {
+                      "url": "data:image/png;base64,dGVzdF9pbWFnZV9kYXRh"
+                  },
+              },
+          ],
+      },
+  ]
+
+
+@pytest.mark.asyncio
 async def test_content_to_message_param_function_response_preserves_string():
   """Tests that string responses are used directly without double-serialization.
 

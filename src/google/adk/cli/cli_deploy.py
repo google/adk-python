@@ -64,7 +64,7 @@ COPY --chown=myuser:myuser "agents/{app_name}/" "/app/agents/{app_name}/"
 
 EXPOSE {port}
 
-CMD adk {command} --port={port} {host_option} {service_option} {trace_to_cloud_option} {allow_origins_option} {a2a_option} "/app/agents"
+CMD adk {command} --port={port} {host_option} {service_option} {trace_to_cloud_option} {otel_to_cloud_option} {allow_origins_option} {a2a_option} "/app/agents"
 """
 
 _AGENT_ENGINE_APP_TEMPLATE: Final[str] = """
@@ -487,6 +487,7 @@ def to_cloud_run(
     temp_folder: str,
     port: int,
     trace_to_cloud: bool,
+    otel_to_cloud: bool,
     with_ui: bool,
     log_level: str,
     verbosity: str,
@@ -523,6 +524,8 @@ def to_cloud_run(
     temp_folder: The temp folder for the generated Cloud Run source files.
     port: The port of the ADK api server.
     trace_to_cloud: Whether to enable Cloud Trace.
+    otel_to_cloud: Whether to enable exporting OpenTelemetry signals
+      to Google Cloud.
     with_ui: Whether to deploy with UI.
     verbosity: The verbosity level of the CLI.
     adk_version: The ADK version to use in Cloud Run.
@@ -580,6 +583,7 @@ def to_cloud_run(
             use_local_storage,
         ),
         trace_to_cloud_option='--trace_to_cloud' if trace_to_cloud else '',
+        otel_to_cloud_option='--otel_to_cloud' if otel_to_cloud else '',
         allow_origins_option=allow_origins_option,
         adk_version=adk_version,
         host_option=host_option,
@@ -956,6 +960,7 @@ def to_gke(
     temp_folder: str,
     port: int,
     trace_to_cloud: bool,
+    otel_to_cloud: bool,
     with_ui: bool,
     log_level: str,
     adk_version: str,
@@ -981,6 +986,8 @@ def to_gke(
       Dockerfile and deployment.yaml.
     port: The port of the ADK api server.
     trace_to_cloud: Whether to enable Cloud Trace.
+    otel_to_cloud: Whether to enable exporting OpenTelemetry signals
+      to Google Cloud.
     with_ui: Whether to deploy with UI.
     log_level: The logging level.
     adk_version: The ADK version to use in GKE.
@@ -1051,6 +1058,7 @@ def to_gke(
             use_local_storage,
         ),
         trace_to_cloud_option='--trace_to_cloud' if trace_to_cloud else '',
+        otel_to_cloud_option='--otel_to_cloud' if otel_to_cloud else '',
         allow_origins_option=allow_origins_option,
         adk_version=adk_version,
         host_option=host_option,
