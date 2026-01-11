@@ -22,6 +22,8 @@ from google.adk.auth.auth_credential import HttpAuth
 from google.adk.auth.auth_credential import HttpCredentials
 from google.adk.auth.auth_credential import OAuth2Auth
 from google.adk.auth.auth_credential import ServiceAccount
+from google.adk.features import FeatureName
+from google.adk.features._feature_registry import temporary_feature_override
 from google.adk.tools.mcp_tool.mcp_session_manager import MCPSessionManager
 from google.adk.tools.mcp_tool.mcp_tool import MCPTool
 from google.adk.tools.tool_context import ToolContext
@@ -141,17 +143,16 @@ class TestMCPTool:
     assert declaration.description == "Test tool description"
     assert declaration.parameters is not None
 
-  def test_get_declaration_with_json_schema_for_func_decl_enabled(
-      self, monkeypatch
-  ):
+  def test_get_declaration_with_json_schema_for_func_decl_enabled(self):
     """Test function declaration generation with json schema for func decl enabled."""
     tool = MCPTool(
         mcp_tool=self.mock_mcp_tool,
         mcp_session_manager=self.mock_session_manager,
     )
 
-    with monkeypatch.context() as m:
-      m.setenv("ADK_ENABLE_JSON_SCHEMA_FOR_FUNC_DECL", "true")
+    with temporary_feature_override(
+        FeatureName.JSON_SCHEMA_FOR_FUNC_DECL, True
+    ):
       declaration = tool._get_declaration()
 
     assert isinstance(declaration, FunctionDeclaration)
@@ -163,7 +164,7 @@ class TestMCPTool:
     assert declaration.response_json_schema is None
 
   def test_get_declaration_with_output_schema_and_json_schema_for_func_decl_enabled(
-      self, monkeypatch
+      self,
   ):
     """Test function declaration generation with an output schema and json schema for func decl enabled."""
     output_schema = {
@@ -181,8 +182,9 @@ class TestMCPTool:
         mcp_session_manager=self.mock_session_manager,
     )
 
-    with monkeypatch.context() as m:
-      m.setenv("ADK_ENABLE_JSON_SCHEMA_FOR_FUNC_DECL", "true")
+    with temporary_feature_override(
+        FeatureName.JSON_SCHEMA_FOR_FUNC_DECL, True
+    ):
       declaration = tool._get_declaration()
 
     assert isinstance(declaration, FunctionDeclaration)
@@ -190,7 +192,7 @@ class TestMCPTool:
     assert declaration.response_json_schema == output_schema
 
   def test_get_declaration_with_empty_output_schema_and_json_schema_for_func_decl_enabled(
-      self, monkeypatch
+      self,
   ):
     """Test function declaration with an empty output schema and json schema for func decl enabled."""
     tool = MCPTool(
@@ -198,8 +200,9 @@ class TestMCPTool:
         mcp_session_manager=self.mock_session_manager,
     )
 
-    with monkeypatch.context() as m:
-      m.setenv("ADK_ENABLE_JSON_SCHEMA_FOR_FUNC_DECL", "true")
+    with temporary_feature_override(
+        FeatureName.JSON_SCHEMA_FOR_FUNC_DECL, True
+    ):
       declaration = tool._get_declaration()
 
     assert declaration.response is None

@@ -20,12 +20,12 @@ from typing import Optional
 from pydantic import alias_generators
 from pydantic import BaseModel
 from pydantic import ConfigDict
-from pydantic import Field
 
-from ..utils.feature_decorator import experimental
+from ..features import experimental
+from ..features import FeatureName
 
 
-@experimental
+@experimental(FeatureName.TOOL_CONFIRMATION)
 class ToolConfirmation(BaseModel):
   """Represents a tool confirmation configuration."""
 

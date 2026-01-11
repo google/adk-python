@@ -26,13 +26,13 @@ classifiers = [ # List of https://pypi.org/classifiers/
 dependencies = [
   # go/keep-sorted start
   "PyYAML>=6.0.2, <7.0.0",                                   # For APIHubToolset.
-  # TODO: Update aiosqlite version once https://github.com/omnilib/aiosqlite/issues/369 is fixed.
-  "aiosqlite==0.21.0",                                       # For SQLite database
+  "aiosqlite>=0.21.0",                                       # For SQLite database
   "anyio>=4.9.0, <5.0.0",                                    # For MCP Session Manager
   "authlib>=1.5.1, <2.0.0",                                  # For RestAPI Tool
   "click>=8.1.8, <9.0.0",                                    # For CLI tools
   "fastapi>=0.115.0, <0.124.0",                              # FastAPI framework
   "google-api-python-client>=2.157.0, <3.0.0",               # Google API client discovery
+  "google-auth>=2.47.0",                                     # Google Auth library
   "google-cloud-aiplatform[agent_engines]>=1.132.0, <2.0.0", # For VertexAI integrations, e.g. example store.
   "google-cloud-bigquery-storage>=2.0.0",
   "google-cloud-bigquery>=2.2.0",
@@ -110,6 +110,7 @@ eval = [
   "google-cloud-aiplatform[evaluation]>=1.100.0",
   "pandas>=2.2.3",
   "rouge-score>=0.1.2",
+  "scipy<1.16; python_version<'3.11'",
   "tabulate>=0.9.0",
   # go/keep-sorted end
 ]

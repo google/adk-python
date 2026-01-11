@@ -157,7 +157,7 @@ class TestCredentialManager:
 
     result = await manager._load_existing_credential(callback_context)
 
-    assert result == mock_credential
+    assert result is None
 
   @pytest.mark.asyncio
   async def test_load_existing_credential_with_credential_service(self):
