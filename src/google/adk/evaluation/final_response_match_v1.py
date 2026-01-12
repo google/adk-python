@@ -27,6 +27,7 @@ from .evaluator import EvalStatus
 from .evaluator import EvaluationResult
 from .evaluator import Evaluator
 from .evaluator import PerInvocationResult
+from .text_utils import normalize_text #importing normalize_text function for non-English text comparison
 
 
 class RougeEvaluator(Evaluator):
@@ -110,10 +111,55 @@ def _calculate_rouge_1_scores(candidate: str, reference: str):
   Returns:
       A dictionary containing the ROUGE-1 precision, recall, and f-measure.
   """
-  scorer = rouge_scorer.RougeScorer(["rouge1"], use_stemmer=True)
+  # Normalize both texts before scoring to handle Unicode variations
+  normalized_candidate = normalize_text(candidate)
+  normalized_reference = normalize_text(reference)
 
-  # The score method returns a dictionary where keys are the ROUGE types
-  # and values are Score objects (tuples) with precision, recall, and fmeasure.
-  scores = scorer.score(reference, candidate)
+  # Check if the text contains spaces (word-separated languages)
+  has_spaces = ' ' in normalized_reference or ' ' in normalized_candidate
+  
+  if has_spaces:
+    # Use standard word-level ROUGE for space-separated languages
+    scorer = rouge_scorer.RougeScorer(["rouge1"], use_stemmer=True)
+    scores = scorer.score(normalized_reference, normalized_candidate)
+    return scores["rouge1"]
+  else:
+    # For non-space-separated languages, use character-level comparison
+    return _calculate_character_level_rouge(normalized_candidate, normalized_reference)
 
-  return scores["rouge1"]
+
+def _calculate_character_level_rouge(candidate: str, reference: str):
+  """Calculates character-level ROUGE-1 score for non-space-separated text.
+  
+  Args:
+    candidate: The candidate text (already normalized).
+    reference: The reference text (already normalized).
+  
+  Returns:
+    A Score namedtuple with precision, recall, and fmeasure.
+  """
+  from collections import Counter, namedtuple
+  
+  if not reference or not candidate:
+    Score = namedtuple('Score', ['precision', 'recall', 'fmeasure'])
+    return Score(precision=0.0, recall=0.0, fmeasure=0.0)
+  
+  # Count character occurrences
+  ref_chars = Counter(reference)
+  cand_chars = Counter(candidate)
+  
+  # Calculate overlapping characters
+  overlap = sum((ref_chars & cand_chars).values())
+  
+  # Calculate precision and recall
+  precision = overlap / len(candidate) if len(candidate) > 0 else 0.0
+  recall = overlap / len(reference) if len(reference) > 0 else 0.0
+  
+  # Calculate F-measure
+  if precision + recall > 0:
+    fmeasure = 2 * (precision * recall) / (precision + recall)
+  else:
+    fmeasure = 0.0
+  
+  Score = namedtuple('Score', ['precision', 'recall', 'fmeasure'])
+  return Score(precision=precision, recall=recall, fmeasure=fmeasure)
