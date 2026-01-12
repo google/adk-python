@@ -303,7 +303,6 @@ class BaseLlmFlow(ABC):
       else:
         return invocation_context.agent.name
 
-    assert invocation_context.live_request_queue
     try:
       while True:
         async with Aclosing(llm_connection.receive()) as agen:
