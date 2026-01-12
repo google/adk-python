@@ -320,6 +320,13 @@ class RestApiTool(BaseTool):
     user_agent = f"google-adk/{adk_version} (tool: {self.name})"
     header_params["User-Agent"] = user_agent
 
+    if (
+        self.auth_credential
+        and self.auth_credential.http
+        and self.auth_credential.http.additional_headers
+    ):
+      header_params.update(self.auth_credential.http.additional_headers)
+
     params_map: Dict[str, ApiParameter] = {p.py_name: p for p in parameters}
 
     # Fill in path, query, header and cookie parameters to the request
