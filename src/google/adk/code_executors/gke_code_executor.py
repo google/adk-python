@@ -82,6 +82,9 @@ class GkeCodeExecutor(BaseCodeExecutor):
 
   kubeconfig_path: str | None = None
   kubeconfig_context: str | None = None
+  
+  # Sandbox constants
+  python_sandbox_template: str = "python-sandbox-template"
 
   _batch_v1: k8s.client.BatchV1Api
   _core_v1: k8s.client.CoreV1Api
@@ -148,19 +151,16 @@ class GkeCodeExecutor(BaseCodeExecutor):
     """Executes code using Agent Sandbox Client."""
     try:
         with SandboxClient(
-            template_name="python-sandbox-template",
+            template_name=self.python_sandbox_template,
             gateway_name=self.sandbox_gateway_name,
             namespace=self.namespace
         ) as sandbox:
             # Execute the code as a python script
-            logging.debug("Executing code in sandbox:\n```\n%s\n```", code)
+            logger.debug("Executing code in sandbox:\n```\n%s\n```", code)
             sandbox.write("script.py", code)
             result = sandbox.run("python3 script.py")
-                
-            return CodeExecutionResult(
-                stdout=result.stdout,
-                stderr=result.stderr if result.stderr else None
-            )
+
+            return CodeExecutionResult(stdout=result.stdout)
     except Exception as e:
         return CodeExecutionResult(
             stderr=f"Sandbox execution failed: {str(e)}",
@@ -219,9 +219,7 @@ class GkeCodeExecutor(BaseCodeExecutor):
   ) -> CodeExecutionResult:
 
     """Overrides the base method to route execution based on executor_type."""
-        
     code = code_execution_input.code
-        
     if self.executor_type == "sandbox":
         return self._execute_in_sandbox(code)
     else:

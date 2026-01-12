@@ -27,7 +27,7 @@ dependencies = [
   # go/keep-sorted start
   "PyYAML>=6.0.2, <7.0.0",                                   # For APIHubToolset.
   "aiosqlite>=0.21.0",                                       # For SQLite database
-    "agentic_sandbox @ git+https://github.com/kubernetes-sigs/agent-sandbox.git@main#subdirectory=clients/python/agentic-sandbox-client", # For Agent Sandboxed Code Execution
+  "agentic_sandbox @ git+https://github.com/kubernetes-sigs/agent-sandbox.git@dbac66ecba5497ac493ca5e4ab5e0fcb1c945134#subdirectory=clients/python/agentic-sandbox-client", # For Agent Sandboxed Code Execution
   "anyio>=4.9.0, <5.0.0",                                    # For MCP Session Manager
   "authlib>=1.5.1, <2.0.0",                                  # For RestAPI Tool
   "click>=8.1.8, <9.0.0",                                    # For CLI tools
