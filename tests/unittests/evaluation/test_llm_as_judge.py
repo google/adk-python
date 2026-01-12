@@ -20,6 +20,7 @@ from google.adk.evaluation.eval_case import Invocation
 from google.adk.evaluation.eval_metrics import EvalMetric
 from google.adk.evaluation.eval_metrics import JudgeModelOptions
 from google.adk.evaluation.eval_metrics import LlmAsAJudgeCriterion
+from google.adk.evaluation.eval_rubrics import Rubric
 from google.adk.evaluation.evaluator import EvalStatus
 from google.adk.evaluation.evaluator import EvaluationResult
 from google.adk.evaluation.evaluator import PerInvocationResult
@@ -35,12 +36,17 @@ import pytest
 class MockLlmAsJudge(LlmAsJudge):
 
   def format_auto_rater_prompt(
-      self, actual_invocation: Invocation, expected_invocation: Invocation
+      self,
+      actual_invocation: Invocation,
+      expected_invocation: Optional[Invocation],
+      rubrics: Optional[list[Rubric]] = None,
   ) -> str:
     return "formatted prompt"
 
   def convert_auto_rater_response_to_score(
-      self, llm_response: LlmResponse
+      self,
+      llm_response: LlmResponse,
+      rubrics: Optional[list[Rubric]] = None,
   ) -> AutoRaterScore:
     return AutoRaterScore(score=1.0)
 

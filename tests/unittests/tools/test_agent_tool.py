@@ -21,6 +21,8 @@ from google.adk.agents.llm_agent import Agent
 from google.adk.agents.run_config import RunConfig
 from google.adk.agents.sequential_agent import SequentialAgent
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
+from google.adk.features import FeatureName
+from google.adk.features._feature_registry import temporary_feature_override
 from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
@@ -33,6 +35,7 @@ from google.adk.utils.variant_utils import GoogleLLMVariant
 from google.genai import types
 from google.genai.types import Part
 from pydantic import BaseModel
+import pytest
 from pytest import mark
 
 from .. import testing_utils
@@ -702,3 +705,198 @@ def test_agent_tool_description_with_input_schema():
 
   # The description should come from the agent, not the Pydantic model
   assert declaration.description == agent_description
+
+
+@pytest.fixture
+def enable_json_schema_feature():
+  """Fixture to enable JSON_SCHEMA_FOR_FUNC_DECL feature for a test."""
+  with temporary_feature_override(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL, True):
+    yield
+
+
+def test_agent_tool_no_schema_with_json_schema_feature(
+    enable_json_schema_feature,
+):
+  """Test AgentTool without input_schema uses parameters_json_schema when feature enabled."""
+  tool_agent = Agent(
+      name='tool_agent',
+      description='A tool agent for testing.',
+      model=testing_utils.MockModel.create(responses=['test response']),
+  )
+
+  agent_tool = AgentTool(agent=tool_agent)
+  declaration = agent_tool._get_declaration()
+
+  assert declaration.model_dump(exclude_none=True) == {
+      'name': 'tool_agent',
+      'description': 'A tool agent for testing.',
+      'parameters_json_schema': {
+          'type': 'object',
+          'properties': {
+              'request': {'type': 'string'},
+          },
+          'required': ['request'],
+      },
+  }
+
+
+@mark.parametrize(
+    'env_variables',
+    [
+        'VERTEX',  # Test VERTEX_AI variant
+    ],
+    indirect=True,
+)
+def test_agent_tool_response_json_schema_no_output_schema_vertex_ai(
+    env_variables,
+    enable_json_schema_feature,
+):
+  """Test AgentTool with no output schema uses response_json_schema for VERTEX_AI when feature enabled."""
+  tool_agent = Agent(
+      name='tool_agent',
+      description='A tool agent for testing.',
+      model=testing_utils.MockModel.create(responses=['test response']),
+  )
+
+  agent_tool = AgentTool(agent=tool_agent)
+  declaration = agent_tool._get_declaration()
+
+  assert declaration.model_dump(exclude_none=True) == {
+      'name': 'tool_agent',
+      'description': 'A tool agent for testing.',
+      'parameters_json_schema': {
+          'type': 'object',
+          'properties': {
+              'request': {'type': 'string'},
+          },
+          'required': ['request'],
+      },
+      'response_json_schema': {'type': 'string'},
+  }
+
+
+@mark.parametrize(
+    'env_variables',
+    [
+        'VERTEX',  # Test VERTEX_AI variant
+    ],
+    indirect=True,
+)
+def test_agent_tool_response_json_schema_with_output_schema_vertex_ai(
+    env_variables,
+    enable_json_schema_feature,
+):
+  """Test AgentTool with output schema uses response_json_schema for VERTEX_AI when feature enabled."""
+
+  class CustomOutput(BaseModel):
+    custom_output: str
+
+  tool_agent = Agent(
+      name='tool_agent',
+      description='A tool agent for testing.',
+      model=testing_utils.MockModel.create(responses=['test response']),
+      output_schema=CustomOutput,
+  )
+
+  agent_tool = AgentTool(agent=tool_agent)
+  declaration = agent_tool._get_declaration()
+
+  assert declaration.model_dump(exclude_none=True) == {
+      'name': 'tool_agent',
+      'description': 'A tool agent for testing.',
+      'parameters_json_schema': {
+          'type': 'object',
+          'properties': {
+              'request': {'type': 'string'},
+          },
+          'required': ['request'],
+      },
+      'response_json_schema': {'type': 'object'},
+  }
+
+
+@mark.parametrize(
+    'env_variables',
+    [
+        'GOOGLE_AI',  # Test GEMINI_API variant
+    ],
+    indirect=True,
+)
+def test_agent_tool_no_response_json_schema_gemini_api(
+    env_variables,
+    enable_json_schema_feature,
+):
+  """Test AgentTool with GEMINI_API variant has no response_json_schema when feature enabled."""
+
+  class CustomOutput(BaseModel):
+    custom_output: str
+
+  tool_agent = Agent(
+      name='tool_agent',
+      description='A tool agent for testing.',
+      model=testing_utils.MockModel.create(responses=['test response']),
+      output_schema=CustomOutput,
+  )
+
+  agent_tool = AgentTool(agent=tool_agent)
+  declaration = agent_tool._get_declaration()
+
+  # GEMINI_API should not have response_json_schema
+  assert declaration.model_dump(exclude_none=True) == {
+      'name': 'tool_agent',
+      'description': 'A tool agent for testing.',
+      'parameters_json_schema': {
+          'type': 'object',
+          'properties': {
+              'request': {'type': 'string'},
+          },
+          'required': ['request'],
+      },
+  }
+
+
+@mark.parametrize(
+    'env_variables',
+    [
+        'VERTEX',  # Test VERTEX_AI variant
+    ],
+    indirect=True,
+)
+def test_agent_tool_with_input_schema_uses_json_schema_feature(
+    env_variables,
+    enable_json_schema_feature,
+):
+  """Test AgentTool with input_schema uses parameters_json_schema when feature enabled."""
+
+  class CustomInput(BaseModel):
+    custom_input: str
+
+  class CustomOutput(BaseModel):
+    custom_output: str
+
+  tool_agent = Agent(
+      name='tool_agent',
+      description='A tool agent for testing.',
+      model=testing_utils.MockModel.create(responses=['test response']),
+      input_schema=CustomInput,
+      output_schema=CustomOutput,
+  )
+
+  agent_tool = AgentTool(agent=tool_agent)
+  declaration = agent_tool._get_declaration()
+
+  # When input_schema is provided, build_function_declaration uses Pydantic's
+  # model_json_schema() which includes additional fields like 'title'
+  assert declaration.model_dump(exclude_none=True) == {
+      'name': 'tool_agent',
+      'description': 'A tool agent for testing.',
+      'parameters_json_schema': {
+          'properties': {
+              'custom_input': {'title': 'Custom Input', 'type': 'string'},
+          },
+          'required': ['custom_input'],
+          'title': 'CustomInput',
+          'type': 'object',
+      },
+      'response_json_schema': {'type': 'object'},
+  }

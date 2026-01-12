@@ -19,6 +19,8 @@ from google.adk.utils.variant_utils import GoogleLLMVariant
 from google.genai import types
 import pytest
 
+MODEL_VERSION = 'gemini-2.5-pro'
+
 
 @pytest.fixture
 def mock_gemini_session():
@@ -30,7 +32,9 @@ def mock_gemini_session():
 def gemini_connection(mock_gemini_session):
   """GeminiLlmConnection instance with mocked session."""
   return GeminiLlmConnection(
-      mock_gemini_session, api_backend=GoogleLLMVariant.VERTEX_AI
+      mock_gemini_session,
+      api_backend=GoogleLLMVariant.VERTEX_AI,
+      model_version=MODEL_VERSION,
   )
 
 
@@ -38,7 +42,9 @@ def gemini_connection(mock_gemini_session):
 def gemini_api_connection(mock_gemini_session):
   """GeminiLlmConnection instance with mocked session for Gemini API."""
   return GeminiLlmConnection(
-      mock_gemini_session, api_backend=GoogleLLMVariant.GEMINI_API
+      mock_gemini_session,
+      api_backend=GoogleLLMVariant.GEMINI_API,
+      model_version=MODEL_VERSION,
   )
 
 
@@ -215,6 +221,7 @@ async def test_receive_usage_metadata_and_server_content(
 
   usage_response = next((r for r in responses if r.usage_metadata), None)
   assert usage_response is not None
+  assert usage_response.model_version == MODEL_VERSION
   content_response = next((r for r in responses if r.content), None)
   assert content_response is not None
 

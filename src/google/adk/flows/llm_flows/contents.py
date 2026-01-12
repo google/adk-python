@@ -220,13 +220,15 @@ def _rearrange_events_for_latest_function_response(
 
 
 def _is_part_invisible(p: types.Part) -> bool:
-  """A part is considered invisble if it's a thought, or has no visible content."""
+  """Returns whether a part is invisible for LLM context."""
   return getattr(p, 'thought', False) or not (
       p.text
       or p.inline_data
       or p.file_data
       or p.function_call
       or p.function_response
+      or p.executable_code
+      or p.code_execution_result
   )
 
 
@@ -236,9 +238,8 @@ def _contains_empty_content(event: Event) -> bool:
   This can happen to the events that only changed session state.
   When both content and transcriptions are empty, the event will be considered
   as empty. The content is considered empty if none of its parts contain text,
-  inline data, file data, function call, or function response. Parts with
-  only thoughts are also considered empty.
-
+  inline data, file data, function call, function response, executable code, or
+  code execution result. Parts with only thoughts are also considered empty.
 
   Args:
     event: The event to check.
@@ -520,7 +521,7 @@ def _present_other_agent_message(event: Event) -> Optional[Event]:
     if part.thought:
       # Exclude thoughts from the context.
       continue
-    elif part.text:
+    elif part.text is not None and part.text.strip():
       content.parts.append(
           types.Part(text=f'[{event.author}] said: {part.text}')
       )
@@ -543,11 +544,17 @@ def _present_other_agent_message(event: Event) -> Optional[Event]:
               )
           )
       )
-    # Fallback to the original part for non-text and non-functionCall parts.
-    else:
+    elif (
+        part.inline_data
+        or part.file_data
+        or part.executable_code
+        or part.code_execution_result
+    ):
       content.parts.append(part)
+    else:
+      continue
 
-  # If no meaningful parts were added (only "For context:" remains), return None
+  # Return None when only "For context:" remains.
   if len(content.parts) == 1:
     return None
 
