@@ -2305,6 +2305,126 @@ async def test_get_content_file_uri(file_uri, mime_type):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "provider,model",
+    [
+        ("openai", "openai/gpt-4o"),
+        ("azure", "azure/gpt-4"),
+    ],
+)
+async def test_get_content_file_uri_file_id_required_falls_back_to_text(
+    provider, model
+):
+  parts = [
+      types.Part(
+          file_data=types.FileData(
+              file_uri="gs://bucket/path/to/document.pdf",
+              mime_type="application/pdf",
+              display_name="document.pdf",
+          )
+      )
+  ]
+  content = await _get_content(parts, provider=provider, model=model)
+  assert content == [
+      {"type": "text", "text": '[File reference: "document.pdf"]'}
+  ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "provider,model",
+    [
+        ("openai", "openai/gpt-4o"),
+        ("azure", "azure/gpt-4"),
+    ],
+)
+async def test_get_content_file_uri_file_id_required_preserves_file_id(
+    provider, model
+):
+  parts = [
+      types.Part(
+          file_data=types.FileData(
+              file_uri="file-abc123",
+              mime_type="application/pdf",
+          )
+      )
+  ]
+  content = await _get_content(parts, provider=provider, model=model)
+  assert content == [{"type": "file", "file": {"file_id": "file-abc123"}}]
+
+
+@pytest.mark.asyncio
+async def test_get_content_file_uri_anthropic_falls_back_to_text():
+  parts = [
+      types.Part(
+          file_data=types.FileData(
+              file_uri="gs://bucket/path/to/document.pdf",
+              mime_type="application/pdf",
+              display_name="document.pdf",
+          )
+      )
+  ]
+  content = await _get_content(
+      parts, provider="anthropic", model="anthropic/claude-3-5"
+  )
+  assert content == [
+      {"type": "text", "text": '[File reference: "document.pdf"]'}
+  ]
+
+
+@pytest.mark.asyncio
+async def test_get_content_file_uri_anthropic_openai_file_id_falls_back_to_text():
+  parts = [types.Part(file_data=types.FileData(file_uri="file-abc123"))]
+  content = await _get_content(
+      parts, provider="anthropic", model="anthropic/claude-3-5"
+  )
+  assert content == [
+      {"type": "text", "text": '[File reference: "file-abc123"]'}
+  ]
+
+
+@pytest.mark.asyncio
+async def test_get_content_file_uri_vertex_ai_non_gemini_falls_back_to_text():
+  parts = [
+      types.Part(
+          file_data=types.FileData(
+              file_uri="gs://bucket/path/to/document.pdf",
+              mime_type="application/pdf",
+              display_name="document.pdf",
+          )
+      )
+  ]
+  content = await _get_content(
+      parts, provider="vertex_ai", model="vertex_ai/claude-3-5"
+  )
+  assert content == [
+      {"type": "text", "text": '[File reference: "document.pdf"]'}
+  ]
+
+
+@pytest.mark.asyncio
+async def test_get_content_file_uri_vertex_ai_gemini_keeps_file_block():
+  parts = [
+      types.Part(
+          file_data=types.FileData(
+              file_uri="gs://bucket/path/to/document.pdf",
+              mime_type="application/pdf",
+          )
+      )
+  ]
+  content = await _get_content(
+      parts, provider="vertex_ai", model="vertex_ai/gemini-2.5-flash"
+  )
+  assert content == [{
+      "type": "file",
+      "file": {
+          "file_id": "gs://bucket/path/to/document.pdf",
+          "format": "application/pdf",
+      },
+  }]
+
+
+@pytest.mark.asyncio
 async def test_get_content_file_uri_infer_mime_type():
   """Test MIME type inference from file_uri extension.
 
