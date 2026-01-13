@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING
 from typing import Union
 
 from google.genai import types
+from google.genai.errors import ClientError
 from typing_extensions import override
 
 if TYPE_CHECKING:
@@ -155,13 +156,22 @@ class VertexAiSessionService(BaseSessionService):
             )
         }
 
-      get_session_response, events_iterator = await asyncio.gather(
-          api_client.agent_engines.sessions.get(name=session_resource_name),
-          api_client.agent_engines.sessions.events.list(
-              name=session_resource_name,
-              **list_events_kwargs,
-          ),
-      )
+      try:
+        get_session_response, events_iterator = await asyncio.gather(
+            api_client.agent_engines.sessions.get(name=session_resource_name),
+            api_client.agent_engines.sessions.events.list(
+                name=session_resource_name,
+                **list_events_kwargs,
+            ),
+        )
+      except ClientError as e:
+        if e.code == 404:
+          logger.debug(
+              'Session %s not found in Vertex AI Agent Engine.',
+              session_resource_name,
+          )
+          return None
+        raise
       if get_session_response.user_id != user_id:
         raise ValueError(
             f'Session {session_id} does not belong to user {user_id}.'

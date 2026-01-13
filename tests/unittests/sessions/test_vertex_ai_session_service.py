@@ -32,6 +32,7 @@ from google.adk.sessions.session import Session
 from google.adk.sessions.vertex_ai_session_service import VertexAiSessionService
 from google.api_core import exceptions as api_core_exceptions
 from google.genai import types as genai_types
+from google.genai.errors import ClientError
 import pytest
 
 MOCK_SESSION_JSON_1 = {
@@ -550,6 +551,31 @@ async def test_initialize_with_project_location_and_api_key_error():
       ' project and location, or just the express_mode_api_key.'
       in str(excinfo.value)
   )
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
+async def test_get_session_returns_none_when_invalid_argument(
+    mock_api_client_instance,
+):
+  session_service = mock_vertex_ai_session_service()
+  # Simulate the API raising a session not found exception.
+  mock_api_client_instance.agent_engines.sessions.get.side_effect = ClientError(
+      code=404,
+      response_json={
+          'message': (
+              'Session (projectNumber: 123, reasoningEngineId: 123, sessionId:'
+              ' 123) not found.'
+          )
+      },
+      response=None,
+  )
+
+  session = await session_service.get_session(
+      app_name='123', user_id='user', session_id='missing'
+  )
+
+  assert session is None
 
 
 @pytest.mark.asyncio
