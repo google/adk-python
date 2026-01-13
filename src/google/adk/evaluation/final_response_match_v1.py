@@ -62,19 +62,8 @@ CJK_CHAR_PATTERN = re.compile(f"[{CJK_RANGES}]")
 CJK_PUNCT_PATTERN = re.compile(f"[{CJK_PUNCTUATION}]")
 
 
-def _is_ascii_alnum(char: str) -> bool:
-  """Check if char is lowercase ASCII alphanumeric.
-
-  This function is designed to be called AFTER text.lower().
-  It only matches 'a'-'z' and '0'-'9', not 'A'-'Z'.
-
-  Args:
-      char: A single character (assumed to be lowercase).
-
-  Returns:
-      True if char is in 'a'-'z' or '0'-'9'.
-  """
-  return ("a" <= char <= "z") or ("0" <= char <= "9")
+# Regex pattern for tokenization: matches CJK characters or ASCII alphanumeric words
+_CJK_TOKEN_PATTERN = re.compile(f"[{CJK_RANGES}]|[a-z0-9]+")
 
 
 def _contains_cjk(text: str) -> bool:
@@ -121,26 +110,7 @@ class CJKTokenizer(tokenizers.Tokenizer):
 
     text = text.lower()
     text = CJK_PUNCT_PATTERN.sub(" ", text)
-
-    tokens = []
-    i = 0
-    n = len(text)
-
-    while i < n:
-      char = text[i]
-
-      if CJK_CHAR_PATTERN.match(char):
-        tokens.append(char)
-        i += 1
-      elif _is_ascii_alnum(char):
-        word_start = i
-        while i < n and _is_ascii_alnum(text[i]):
-          i += 1
-        tokens.append(text[word_start:i])
-      else:
-        i += 1
-
-    return tokens
+    return _CJK_TOKEN_PATTERN.findall(text)
 
 
 class RougeEvaluator(Evaluator):
@@ -159,10 +129,11 @@ class RougeEvaluator(Evaluator):
 
   def __init__(self, eval_metric: EvalMetric):
     self._eval_metric = eval_metric
-    self._tokenizer: Optional[tokenizers.Tokenizer] = None
-    self._use_stemmer = True
     # Warning is logged at most once per instance
     self._warned_about_cjk = False
+
+    tokenizer: Optional[tokenizers.Tokenizer] = None
+    use_stemmer = True
 
     if eval_metric.criterion:
       try:
@@ -170,10 +141,22 @@ class RougeEvaluator(Evaluator):
             eval_metric.criterion.model_dump()
         )
         if criterion.tokenizer == "cjk":
-          self._tokenizer = CJKTokenizer()
-          self._use_stemmer = False  # Stemming not applicable to CJK
+          tokenizer = CJKTokenizer()
+          use_stemmer = False  # Stemming not applicable to CJK
       except ValidationError:
         pass  # Different criterion type, ignore
+
+    # Create scorer once for reuse across invocations (performance optimization)
+    if tokenizer:
+      self._scorer = rouge_scorer.RougeScorer(
+          ["rouge1"], use_stemmer=False, tokenizer=tokenizer
+      )
+      self._has_cjk_tokenizer = True
+    else:
+      self._scorer = rouge_scorer.RougeScorer(
+          ["rouge1"], use_stemmer=use_stemmer
+      )
+      self._has_cjk_tokenizer = False
 
   @override
   def evaluate_invocations(
@@ -196,13 +179,9 @@ class RougeEvaluator(Evaluator):
       # Log warning once if CJK detected without tokenizer
       self._maybe_warn_cjk(reference, response)
 
-      rouge_1_scores = _calculate_rouge_1_scores(
-          response,
-          reference,
-          tokenizer=self._tokenizer,
-          use_stemmer=self._use_stemmer,
-      )
-      score = rouge_1_scores.fmeasure
+      # Use pre-created scorer for performance
+      scores = self._scorer.score(reference, response)
+      score = scores["rouge1"].fmeasure
       per_invocation_results.append(
           PerInvocationResult(
               actual_invocation=actual,
@@ -230,7 +209,7 @@ class RougeEvaluator(Evaluator):
     """Log warning if CJK detected without tokenizer (once per instance)."""
     if self._warned_about_cjk:
       return
-    if self._tokenizer is not None:
+    if self._has_cjk_tokenizer:
       return
     if _contains_cjk(reference) or _contains_cjk(response):
       logger.warning(
