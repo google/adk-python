@@ -36,6 +36,7 @@ from . import cli_create
 from . import cli_deploy
 from .. import version
 from ..evaluation.constants import MISSING_EVAL_DEPENDENCIES_MESSAGE
+from ..sessions.migration import migration_runner
 from .cli import run_cli
 from .fast_api import get_fast_api_app
 from .utils import envs

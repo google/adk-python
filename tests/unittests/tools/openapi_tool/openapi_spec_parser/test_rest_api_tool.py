@@ -25,6 +25,10 @@ from fastapi.openapi.models import Operation
 from fastapi.openapi.models import Parameter as OpenAPIParameter
 from fastapi.openapi.models import RequestBody
 from fastapi.openapi.models import Schema as OpenAPISchema
+from google.adk.auth.auth_credential import AuthCredential
+from google.adk.auth.auth_credential import AuthCredentialTypes
+from google.adk.auth.auth_credential import HttpAuth
+from google.adk.auth.auth_credential import HttpCredentials
 from google.adk.sessions.state import State
 from google.adk.tools.openapi_tool.auth.auth_helpers import token_to_scheme_credential
 from google.adk.tools.openapi_tool.common.common import ApiParameter
@@ -720,6 +724,35 @@ class TestRestApiTool:
     request_params = tool._prepare_request_params(params, kwargs)
 
     assert request_params["cookies"]["session_id"] == "cookie_value"
+
+  def test_prepare_request_params_quota_project_id(
+      self,
+      sample_endpoint,
+      sample_operation,
+      sample_auth_scheme,
+  ):
+    auth_credential = AuthCredential(
+        auth_type=AuthCredentialTypes.HTTP,
+        http=HttpAuth(
+            scheme="bearer",
+            credentials=HttpCredentials(),
+            additional_headers={"x-goog-user-project": "test-project"},
+        ),
+    )
+    tool = RestApiTool(
+        name="test_tool",
+        description="Test Tool",
+        endpoint=sample_endpoint,
+        operation=sample_operation,
+        auth_credential=auth_credential,
+        auth_scheme=sample_auth_scheme,
+    )
+    params = []
+    kwargs = {}
+
+    request_params = tool._prepare_request_params(params, kwargs)
+
+    assert request_params["headers"]["x-goog-user-project"] == "test-project"
 
   def test_prepare_request_params_multiple_mime_types(
       self, sample_endpoint, sample_auth_credential, sample_auth_scheme

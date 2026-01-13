@@ -114,7 +114,7 @@ async def _build_llm_agent_skills(agent: LlmAgent) -> List[AgentSkill]:
           id=agent.name,
           name='model',
           description=agent_description,
-          examples=agent_examples,
+          examples=_extract_inputs_from_examples(agent_examples),
           input_modes=_get_input_modes(agent),
           output_modes=_get_output_modes(agent),
           tags=['llm'],
@@ -239,7 +239,7 @@ async def _build_non_llm_agent_skills(agent: BaseAgent) -> List[AgentSkill]:
           id=agent.name,
           name=agent_name,
           description=agent_description,
-          examples=agent_examples,
+          examples=_extract_inputs_from_examples(agent_examples),
           input_modes=_get_input_modes(agent),
           output_modes=_get_output_modes(agent),
           tags=[agent_type],
@@ -350,6 +350,7 @@ def _build_llm_agent_description_with_instructions(agent: LlmAgent) -> str:
 
 def _replace_pronouns(text: str) -> str:
   """Replace pronouns and conjugate common verbs for agent description.
+
   (e.g., "You are" -> "I am", "your" -> "my").
   """
   pronoun_map = {
@@ -458,6 +459,33 @@ def _get_default_description(agent: BaseAgent) -> str:
       return description
 
   return 'A custom agent'
+
+
+def _extract_inputs_from_examples(examples: Optional[list[dict]]) -> list[str]:
+  """Extracts only the input strings so they can be added to an AgentSkill."""
+  if examples is None:
+    return []
+
+  extracted_inputs = []
+  for example in examples:
+    example_input = example.get('input')
+    if not example_input:
+      continue
+
+    parts = example_input.get('parts')
+    if parts is not None:
+      part_texts = []
+      for part in parts:
+        text = part.get('text')
+        if text is not None:
+          part_texts.append(text)
+      extracted_inputs.append('\n'.join(part_texts))
+    else:
+      text = example_input.get('text')
+      if text is not None:
+        extracted_inputs.append(text)
+
+  return extracted_inputs
 
 
 async def _extract_examples_from_agent(

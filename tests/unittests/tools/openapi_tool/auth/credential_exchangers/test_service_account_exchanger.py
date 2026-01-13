@@ -99,14 +99,28 @@ def test_exchange_credential_success(
   mock_credentials.refresh.assert_called_once()
 
 
+@pytest.mark.parametrize(
+    "cred_quota_project_id, adc_project_id, expected_quota_project_id",
+    [
+        ("test_project", "another_project", "test_project"),
+        (None, "adc_project", "adc_project"),
+        (None, None, None),
+    ],
+)
 def test_exchange_credential_use_default_credential_success(
-    service_account_exchanger, auth_scheme, monkeypatch
+    service_account_exchanger,
+    auth_scheme,
+    monkeypatch,
+    cred_quota_project_id,
+    adc_project_id,
+    expected_quota_project_id,
 ):
   """Test successful exchange of service account credentials using default credential."""
   mock_credentials = MagicMock()
   mock_credentials.token = "mock_access_token"
+  mock_credentials.quota_project_id = cred_quota_project_id
   mock_google_auth_default = MagicMock(
-      return_value=(mock_credentials, "test_project")
+      return_value=(mock_credentials, adc_project_id)
   )
   monkeypatch.setattr(google.auth, "default", mock_google_auth_default)
 
@@ -125,6 +139,13 @@ def test_exchange_credential_use_default_credential_success(
   assert result.auth_type == AuthCredentialTypes.HTTP
   assert result.http.scheme == "bearer"
   assert result.http.credentials.token == "mock_access_token"
+  if expected_quota_project_id:
+    assert (
+        result.http.additional_headers["x-goog-user-project"]
+        == expected_quota_project_id
+    )
+  else:
+    assert not result.http.additional_headers
   # Verify google.auth.default is called with the correct scopes parameter
   mock_google_auth_default.assert_called_once_with(
       scopes=["https://www.googleapis.com/auth/cloud-platform"]
