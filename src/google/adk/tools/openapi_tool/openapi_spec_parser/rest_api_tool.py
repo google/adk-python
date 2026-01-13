@@ -33,6 +33,8 @@ from typing_extensions import override
 from ....agents.readonly_context import ReadonlyContext
 from ....auth.auth_credential import AuthCredential
 from ....auth.auth_schemes import AuthScheme
+from ....features import FeatureName
+from ....features import is_feature_enabled
 from ..._gemini_schema_util import _to_gemini_schema
 from ..._gemini_schema_util import _to_snake_case
 from ...base_tool import BaseTool
@@ -221,10 +223,17 @@ class RestApiTool(BaseTool):
   def _get_declaration(self) -> FunctionDeclaration:
     """Returns the function declaration in the Gemini Schema format."""
     schema_dict = self._operation_parser.get_json_schema()
-    parameters = _to_gemini_schema(schema_dict)
-    function_decl = FunctionDeclaration(
-        name=self.name, description=self.description, parameters=parameters
-    )
+    if is_feature_enabled(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL):
+      function_decl = FunctionDeclaration(
+          name=self.name,
+          description=self.description,
+          parameters_json_schema=schema_dict,
+      )
+    else:
+      parameters = _to_gemini_schema(schema_dict)
+      function_decl = FunctionDeclaration(
+          name=self.name, description=self.description, parameters=parameters
+      )
     return function_decl
 
   def configure_auth_scheme(

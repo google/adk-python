@@ -633,6 +633,12 @@ class BaseLlmFlow(ABC):
       for event in flushed_events:
         yield event
       if flushed_events:
+        # NOTE below return is O.K. for now, because currently we only flush
+        # events on interrupted or turn_complete. turn_complete is a pure
+        # control event and interrupted is not with content but those content
+        # is ignorable because model is already interrupted. If we have other
+        # case to flush events in the future that are not pure control events,
+        # we should not return here.
         return
 
     # Builds the event.
