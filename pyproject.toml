@@ -157,7 +157,7 @@ extensions = [
   "llama-index-readers-file>=0.4.0",            # For retrieval using LlamaIndex.
   "llama-index-embeddings-google-genai>=0.3.0", # For files retrieval using LlamaIndex.
   "lxml>=5.3.0",                                # For load_web_page tool.
-  "toolbox-core>=0.1.0",                        # For tools.toolbox_toolset.ToolboxToolset
+  "toolbox-adk>=0.1.0",                         # For tools.toolbox_toolset.ToolboxToolset
 ]
 
 otel-gcp = ["opentelemetry-instrumentation-google-genai>=0.3b0, <1.0.0"]
