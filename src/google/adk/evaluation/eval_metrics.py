@@ -251,6 +251,30 @@ class LlmBackedUserSimulatorCriterion(LlmAsAJudgeCriterion):
   )
 
 
+class RougeScoreCriterion(BaseCriterion):
+  """Criterion for ROUGE score evaluation with tokenizer options.
+
+  This criterion allows specifying a custom tokenizer for ROUGE-1
+  evaluation, particularly useful for CJK languages (Chinese, Japanese,
+  Korean) where the default tokenizer produces zero scores.
+
+  Note: The `threshold` field is inherited from BaseCriterion but is
+  IGNORED by RougeEvaluator. Always use EvalMetric.threshold instead.
+  """
+
+  tokenizer: Optional[str] = Field(
+      default=None,
+      description=(
+          "Tokenizer for text tokenization. Options:\n"
+          "- None: Default word-based tokenization (ASCII alphanumeric only).\n"
+          "  Non-ASCII text will produce score=0.0.\n"
+          "- 'cjk': Character-based tokenization for CJK (Chinese, Japanese,\n"
+          "  Korean) + ASCII alphanumeric. Other scripts (Greek, Cyrillic,\n"
+          "  fullwidth alphanumeric, etc.) are skipped. Stemming is disabled."
+      ),
+  )
+
+
 class EvalMetric(EvalBaseModel):
   """A metric used to evaluate a particular aspect of an eval case."""
 

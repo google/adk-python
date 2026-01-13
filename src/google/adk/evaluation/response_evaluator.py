@@ -58,6 +58,8 @@ class ResponseEvaluator(Evaluator):
           " metric_name should be specified."
       )
 
+    self._eval_metric = eval_metric
+
     if eval_metric:
       threshold = eval_metric.threshold
       metric_name = eval_metric.metric_name
@@ -82,9 +84,12 @@ class ResponseEvaluator(Evaluator):
   ) -> EvaluationResult:
     # If the metric is response_match_score, just use the RougeEvaluator.
     if self._metric_name == PrebuiltMetrics.RESPONSE_MATCH_SCORE.value:
-      rouge_evaluator = RougeEvaluator(
-          EvalMetric(metric_name=self._metric_name, threshold=self._threshold)
-      )
+      if self._eval_metric:
+        rouge_evaluator = RougeEvaluator(eval_metric=self._eval_metric)
+      else:
+        rouge_evaluator = RougeEvaluator(
+            EvalMetric(metric_name=self._metric_name, threshold=self._threshold)
+        )
       return rouge_evaluator.evaluate_invocations(
           actual_invocations, expected_invocations, conversation_scenario
       )
