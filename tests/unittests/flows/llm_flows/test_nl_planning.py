@@ -212,7 +212,6 @@ async def test_process_planning_response_not_called_without_override(
   with patch.object(
       BuiltInPlanner,
       'process_planning_response',
-      wraps=planner.process_planning_response,
   ) as mock_method:
     async for _ in response_processor.run_async(
         invocation_context, llm_response
