@@ -36,6 +36,7 @@ from a2a.types import TaskState
 from a2a.types import TaskStatus as A2ATaskStatus
 from a2a.types import TaskStatusUpdateEvent
 from a2a.types import TextPart
+from google.adk.agents.branch import Branch
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.remote_a2a_agent import A2A_METADATA_PREFIX
 from google.adk.agents.remote_a2a_agent import AgentCardResolutionError
@@ -542,7 +543,7 @@ class TestRemoteA2aAgentMessageHandling:
     self.mock_context = Mock(spec=InvocationContext)
     self.mock_context.session = self.mock_session
     self.mock_context.invocation_id = "invocation-123"
-    self.mock_context.branch = "main"
+    self.mock_context.branch = Branch()
 
   def test_create_a2a_request_for_user_function_response_no_function_call(self):
     """Test function response request creation when no function call exists."""
@@ -1290,7 +1291,7 @@ class TestRemoteA2aAgentMessageHandlingFromFactory:
     self.mock_context = Mock(spec=InvocationContext)
     self.mock_context.session = self.mock_session
     self.mock_context.invocation_id = "invocation-123"
-    self.mock_context.branch = "main"
+    self.mock_context.branch = Branch()
 
   def test_create_a2a_request_for_user_function_response_no_function_call(self):
     """Test function response request creation when no function call exists."""
@@ -1695,7 +1696,7 @@ class TestRemoteA2aAgentExecution:
     self.mock_context = Mock(spec=InvocationContext)
     self.mock_context.session = self.mock_session
     self.mock_context.invocation_id = "invocation-123"
-    self.mock_context.branch = "main"
+    self.mock_context.branch = Branch()
 
   @pytest.mark.asyncio
   async def test_run_async_impl_initialization_failure(self):
@@ -1971,7 +1972,7 @@ class TestRemoteA2aAgentExecutionFromFactory:
     self.mock_context = Mock(spec=InvocationContext)
     self.mock_context.session = self.mock_session
     self.mock_context.invocation_id = "invocation-123"
-    self.mock_context.branch = "main"
+    self.mock_context.branch = Branch()
 
   @pytest.mark.asyncio
   async def test_run_async_impl_initialization_failure(self):
@@ -2258,7 +2259,7 @@ class TestRemoteA2aAgentIntegration:
     mock_context = Mock(spec=InvocationContext)
     mock_context.session = mock_session
     mock_context.invocation_id = "invocation-123"
-    mock_context.branch = "main"
+    mock_context.branch = Branch()
 
     # Mock dependencies
     with patch(
@@ -2354,7 +2355,7 @@ class TestRemoteA2aAgentIntegration:
     mock_context = Mock(spec=InvocationContext)
     mock_context.session = mock_session
     mock_context.invocation_id = "invocation-123"
-    mock_context.branch = "main"
+    mock_context.branch = Branch()
 
     # Mock dependencies
     with patch(

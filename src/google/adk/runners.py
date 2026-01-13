@@ -1357,6 +1357,10 @@ class Runner:
     run_config = run_config or RunConfig()
     invocation_id = invocation_id or new_invocation_context_id()
 
+    from .agents.branch import BranchTokenFactory
+
+    BranchTokenFactory.reset()
+
     if run_config.support_cfc and isinstance(self.agent, LlmAgent):
       model_name = self.agent.canonical_model.model
       if not model_name.startswith('gemini-2'):

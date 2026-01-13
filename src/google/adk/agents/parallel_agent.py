@@ -28,6 +28,7 @@ from ..utils.context_utils import Aclosing
 from .base_agent import BaseAgent
 from .base_agent import BaseAgentState
 from .base_agent_config import BaseAgentConfig
+from .branch import Branch
 from .invocation_context import InvocationContext
 from .parallel_agent_config import ParallelAgentConfig
 
@@ -39,12 +40,8 @@ def _create_branch_ctx_for_sub_agent(
 ) -> InvocationContext:
   """Create isolated branch for every sub-agent."""
   invocation_context = invocation_context.model_copy()
-  branch_suffix = f'{agent.name}.{sub_agent.name}'
-  invocation_context.branch = (
-      f'{invocation_context.branch}.{branch_suffix}'
-      if invocation_context.branch
-      else branch_suffix
-  )
+  parent_branch = invocation_context.branch or Branch()
+  invocation_context.branch = parent_branch.fork()
   return invocation_context
 
 
@@ -173,9 +170,11 @@ class ParallelAgent(BaseAgent):
       yield self._create_agent_state_event(ctx)
 
     agent_runs = []
+    sub_agent_contexts = []
     # Prepare and collect async generators for each sub-agent.
     for sub_agent in self.sub_agents:
       sub_agent_ctx = _create_branch_ctx_for_sub_agent(self, sub_agent, ctx)
+      sub_agent_contexts.append(sub_agent_ctx)
 
       # Only include sub-agents that haven't finished in a previous run.
       if not sub_agent_ctx.end_of_agents.get(sub_agent.name):
@@ -196,6 +195,11 @@ class ParallelAgent(BaseAgent):
 
       if pause_invocation:
         return
+
+      # Join all child branches back together after parallel execution completes
+      parent_branch = ctx.branch or Branch()
+      joined_branch = parent_branch.join([c.branch for c in sub_agent_contexts])
+      ctx.branch = joined_branch
 
       # Once all sub-agents are done, mark the ParallelAgent as final.
       if ctx.is_resumable and all(

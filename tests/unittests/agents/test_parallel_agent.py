@@ -102,8 +102,11 @@ async def test_run_async(request: pytest.FixtureRequest, is_resumable: bool):
     # and agent1 has a delay.
     assert events[1].author == agent2.name
     assert events[2].author == agent1.name
-    assert events[1].branch == f'{parallel_agent.name}.{agent2.name}'
-    assert events[2].branch == f'{parallel_agent.name}.{agent1.name}'
+    # Branches are now Branch objects with unique tokens
+    assert events[1].branch is not None
+    assert events[2].branch is not None
+    # Parallel siblings should have different branches (different tokens)
+    assert events[1].branch != events[2].branch
     assert events[1].content.parts[0].text == f'Hello, async {agent2.name}!'
     assert events[2].content.parts[0].text == f'Hello, async {agent1.name}!'
 
@@ -114,8 +117,11 @@ async def test_run_async(request: pytest.FixtureRequest, is_resumable: bool):
 
     assert events[0].author == agent2.name
     assert events[1].author == agent1.name
-    assert events[0].branch == f'{parallel_agent.name}.{agent2.name}'
-    assert events[1].branch == f'{parallel_agent.name}.{agent1.name}'
+    # Branches are now Branch objects with unique tokens
+    assert events[0].branch is not None
+    assert events[1].branch is not None
+    # Parallel siblings should have different branches
+    assert events[0].branch != events[1].branch
     assert events[0].content.parts[0].text == f'Hello, async {agent2.name}!'
     assert events[1].content.parts[0].text == f'Hello, async {agent1.name}!'
 
@@ -158,26 +164,27 @@ async def test_run_async_branches(
     assert events[1].author == sequential_agent.name
     assert not events[1].actions.end_of_agent
     assert events[1].actions.agent_state['current_sub_agent'] == agent2.name
-    assert events[1].branch == f'{parallel_agent.name}.{sequential_agent.name}'
+    assert events[1].branch is not None
+    sequential_branch = events[1].branch
 
     # 3. agent 2 event
     assert events[2].author == agent2.name
-    assert events[2].branch == f'{parallel_agent.name}.{sequential_agent.name}'
+    assert events[2].branch is not None
 
     # 4. sequential agent checkpoint
     assert events[3].author == sequential_agent.name
     assert not events[3].actions.end_of_agent
     assert events[3].actions.agent_state['current_sub_agent'] == agent3.name
-    assert events[3].branch == f'{parallel_agent.name}.{sequential_agent.name}'
+    assert events[3].branch is not None
 
     # 5. agent 3 event
     assert events[4].author == agent3.name
-    assert events[4].branch == f'{parallel_agent.name}.{sequential_agent.name}'
+    assert events[4].branch is not None
 
     # 6. sequential agent checkpoint (end)
     assert events[5].author == sequential_agent.name
     assert events[5].actions.end_of_agent
-    assert events[5].branch == f'{parallel_agent.name}.{sequential_agent.name}'
+    assert events[5].branch is not None
 
     # Descendants of the same sub-agent should have the same branch.
     assert events[1].branch == events[2].branch
@@ -187,10 +194,11 @@ async def test_run_async_branches(
 
     # 7. agent 1 event
     assert events[6].author == agent1.name
-    assert events[6].branch == f'{parallel_agent.name}.{agent1.name}'
+    assert events[6].branch is not None
+    agent1_branch = events[6].branch
 
     # Sub-agents should have different branches.
-    assert events[6].branch != events[1].branch
+    assert agent1_branch != sequential_branch
 
     # 8. parallel agent checkpoint (end)
     assert events[7].author == parallel_agent.name
@@ -200,15 +208,20 @@ async def test_run_async_branches(
 
     # 1. agent 2 event
     assert events[0].author == agent2.name
-    assert events[0].branch == f'{parallel_agent.name}.{sequential_agent.name}'
+    assert events[0].branch is not None
+    sequential_branch = events[0].branch
 
     # 2. agent 3 event
     assert events[1].author == agent3.name
-    assert events[1].branch == f'{parallel_agent.name}.{sequential_agent.name}'
+    assert events[1].branch is not None
+    # Sequential sub-agents share the same branch
+    assert events[1].branch == sequential_branch
 
     # 3. agent 1 event
     assert events[2].author == agent1.name
-    assert events[2].branch == f'{parallel_agent.name}.{agent1.name}'
+    assert events[2].branch is not None
+    # Parallel siblings have different branches
+    assert events[2].branch != sequential_branch
 
 
 @pytest.mark.asyncio
@@ -246,17 +259,22 @@ async def test_resume_async_branches(request: pytest.FixtureRequest):
   # The sequential agent resumes from agent3.
   # 1. Agent 3 event
   assert events[0].author == agent3.name
-  assert events[0].branch == f'{parallel_agent.name}.{sequential_agent.name}'
+  assert events[0].branch is not None
+  sequential_branch = events[0].branch
 
   # 2. Sequential agent checkpoint (end)
   assert events[1].author == sequential_agent.name
   assert events[1].actions.end_of_agent
-  assert events[1].branch == f'{parallel_agent.name}.{sequential_agent.name}'
+  assert events[1].branch is not None
+  # Same branch as agent3 (sequential)
+  assert events[1].branch == sequential_branch
 
   # Agent 1 runs in parallel but has a delay.
   # 3. Agent 1 event
   assert events[2].author == agent1.name
-  assert events[2].branch == f'{parallel_agent.name}.{agent1.name}'
+  assert events[2].branch is not None
+  # Different branch from sequential (parallel sibling)
+  assert events[2].branch != sequential_branch
 
   # 4. Parallel agent checkpoint (end)
   assert events[3].author == parallel_agent.name

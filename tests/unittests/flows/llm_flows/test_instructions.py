@@ -15,6 +15,7 @@
 from typing import Any
 from typing import Optional
 
+from google.adk.agents.branch import Branch
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import Agent
 from google.adk.agents.llm_agent import LlmAgent
@@ -47,7 +48,7 @@ async def _create_invocation_context(
       session=session,
       session_service=session_service,
       run_config=RunConfig(),
-      branch="main",
+      branch=Branch(),
   )
 
 

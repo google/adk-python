@@ -23,6 +23,7 @@ from pydantic import alias_generators
 from pydantic import ConfigDict
 from pydantic import Field
 
+from ..agents.branch import Branch
 from ..models.llm_response import LlmResponse
 from .event_actions import EventActions
 
@@ -56,15 +57,8 @@ class Event(LlmResponse):
   Agent client will know from this field about which function call is long running.
   only valid for function call event
   """
-  branch: Optional[str] = None
-  """The branch of the event.
-
-  The format is like agent_1.agent_2.agent_3, where agent_1 is the parent of
-  agent_2, and agent_2 is the parent of agent_3.
-
-  Branch is used when multiple sub-agent shouldn't see their peer agents'
-  conversation history.
-  """
+  branch: Optional[Branch] = None
+  """The branch context of the event. Used for provenance-based event filtering in parallel agents."""
 
   # The following are computed fields.
   # Do not assign the ID. It will be assigned by the session.

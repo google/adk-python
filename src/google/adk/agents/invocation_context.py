@@ -36,6 +36,7 @@ from ..tools.base_tool import BaseTool
 from .active_streaming_tool import ActiveStreamingTool
 from .base_agent import BaseAgent
 from .base_agent import BaseAgentState
+from .branch import Branch
 from .context_cache_config import ContextCacheConfig
 from .live_request_queue import LiveRequestQueue
 from .run_config import RunConfig
@@ -149,15 +150,8 @@ class InvocationContext(BaseModel):
 
   invocation_id: str
   """The id of this invocation context. Readonly."""
-  branch: Optional[str] = None
-  """The branch of the invocation context.
-
-  The format is like agent_1.agent_2.agent_3, where agent_1 is the parent of
-  agent_2, and agent_2 is the parent of agent_3.
-
-  Branch is used when multiple sub-agents shouldn't see their peer agents'
-  conversation history.
-  """
+  branch: Branch = Field(default_factory=Branch)
+  """The branch context tracking event provenance for visibility filtering."""
   agent: BaseAgent
   """The current agent of this invocation context. Readonly."""
   user_content: Optional[types.Content] = None
@@ -349,7 +343,11 @@ class InvocationContext(BaseModel):
           if event.invocation_id == self.invocation_id
       ]
     if current_branch:
-      results = [event for event in results if event.branch == self.branch]
+      results = [
+          event
+          for event in results
+          if event.branch is None or event.branch == self.branch
+      ]
     return results
 
   def should_pause_invocation(self, event: Event) -> bool:

@@ -22,6 +22,7 @@ from typing import Optional
 from google.genai import types
 from typing_extensions import override
 
+from ...agents.branch import Branch
 from ...agents.invocation_context import InvocationContext
 from ...events.event import Event
 from ...models.llm_request import LlmRequest
@@ -54,6 +55,7 @@ class _ContentLlmRequestProcessor(BaseLlmRequestProcessor):
           invocation_context.branch,
           invocation_context.session.events,
           agent.name,
+          invocation_context.invocation_id,
       )
     else:
       # Include current turn context only (no conversation history)
@@ -61,6 +63,7 @@ class _ContentLlmRequestProcessor(BaseLlmRequestProcessor):
           invocation_context.branch,
           invocation_context.session.events,
           agent.name,
+          invocation_context.invocation_id,
       )
 
     # Add instruction-related contents to proper position in conversation
@@ -259,7 +262,9 @@ def _contains_empty_content(event: Event) -> bool:
 
 
 def _should_include_event_in_context(
-    current_branch: Optional[str], event: Event
+    current_branch: Optional[Branch],
+    event: Event,
+    current_invocation_id: str = '',
 ) -> bool:
   """Determines if an event should be included in the LLM context.
 
@@ -270,13 +275,16 @@ def _should_include_event_in_context(
   Args:
     current_branch: The current branch of the agent.
     event: The event to filter.
+    current_invocation_id: The current invocation ID for branch filtering.
 
   Returns:
     True if the event should be included in the context, False otherwise.
   """
   return not (
       _contains_empty_content(event)
-      or not _is_event_belongs_to_branch(current_branch, event)
+      or not _is_event_belongs_to_branch(
+          current_branch, event, current_invocation_id
+      )
       or _is_adk_framework_event(event)
       or _is_auth_event(event)
       or _is_request_confirmation_event(event)
@@ -342,7 +350,10 @@ def _process_compaction_events(events: list[Event]) -> list[Event]:
 
 
 def _get_contents(
-    current_branch: Optional[str], events: list[Event], agent_name: str = ''
+    current_branch: Optional[Branch],
+    events: list[Event],
+    agent_name: str = '',
+    current_invocation_id: str = '',
 ) -> list[types.Content]:
   """Get the contents for the LLM request.
 
@@ -352,6 +363,7 @@ def _get_contents(
     current_branch: The current branch of the agent.
     events: Events to process.
     agent_name: The name of the agent.
+    current_invocation_id: The current invocation ID for branch filtering.
 
   Returns:
     A list of processed contents.
@@ -383,7 +395,9 @@ def _get_contents(
   raw_filtered_events = [
       e
       for e in rewind_filtered_events
-      if _should_include_event_in_context(current_branch, e)
+      if _should_include_event_in_context(
+          current_branch, e, current_invocation_id
+      )
   ]
 
   has_compaction_events = any(
@@ -457,7 +471,10 @@ def _get_contents(
 
 
 def _get_current_turn_contents(
-    current_branch: Optional[str], events: list[Event], agent_name: str = ''
+    current_branch: Optional[Branch],
+    events: list[Event],
+    agent_name: str = '',
+    current_invocation_id: str = '',
 ) -> list[types.Content]:
   """Get contents for the current turn only (no conversation history).
 
@@ -473,6 +490,7 @@ def _get_current_turn_contents(
     current_branch: The current branch of the agent.
     events: A list of all session events.
     agent_name: The name of the agent.
+    current_invocation_id: The current invocation ID for branch filtering.
 
   Returns:
     A list of contents for the current turn only, preserving context needed
@@ -481,10 +499,12 @@ def _get_current_turn_contents(
   # Find the latest event that starts the current turn and process from there
   for i in range(len(events) - 1, -1, -1):
     event = events[i]
-    if _should_include_event_in_context(current_branch, event) and (
-        event.author == 'user' or _is_other_agent_reply(agent_name, event)
-    ):
-      return _get_contents(current_branch, events[i:], agent_name)
+    if _should_include_event_in_context(
+        current_branch, event, current_invocation_id
+    ) and (event.author == 'user' or _is_other_agent_reply(agent_name, event)):
+      return _get_contents(
+          current_branch, events[i:], agent_name, current_invocation_id
+      )
 
   return []
 
@@ -631,21 +651,40 @@ def _merge_function_response_events(
 
 
 def _is_event_belongs_to_branch(
-    invocation_branch: Optional[str], event: Event
+    invocation_branch: Optional[Branch],
+    event: Event,
+    current_invocation_id: str = '',
 ) -> bool:
   """Check if an event belongs to the current branch.
 
-  This is for event context segregation between agents. E.g. agent A shouldn't
-  see output of agent B.
+  This is for event context segregation between agents within the same
+  invocation. E.g. parallel agent A shouldn't see output of parallel agent B.
+
+  Within the current invocation, uses Branch's token-set visibility:
+  An Event is visible if its branch tokens are a subset of the current branch's tokens
+  (event.tokens ⊆ current.tokens).
+
+  Args:
+    invocation_branch: The current branch context.
+    event: The event to check visibility for.
+    current_invocation_id: The current invocation ID.
+
+  Returns:
+    True if the event should be visible, False otherwise.
   """
-  if not invocation_branch or not event.branch:
+  if not invocation_branch:
     return True
-  # We use dot to delimit branch nodes. To avoid simple prefix match
-  # (e.g. agent_0 unexpectedly matching agent_00), require either perfect branch
-  # match, or match prefix with an additional explicit '.'
-  return invocation_branch == event.branch or invocation_branch.startswith(
-      f'{event.branch}.'
-  )
+
+  # Events from different invocations are ALWAYS visible (multi-turn history)
+  if event.invocation_id != current_invocation_id:
+    return True
+
+  # Events without Branch are from old code - considered visible
+  if not event.branch:
+    return True
+
+  # Check token-set visibility: event.tokens ⊆ invocation_branch.tokens
+  return invocation_branch.can_see(event.branch)
 
 
 def _is_function_call_event(event: Event, function_name: str) -> bool:
