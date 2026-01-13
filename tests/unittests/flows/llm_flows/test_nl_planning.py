@@ -186,38 +186,16 @@ async def test_overridden_subclass_process_planning_response_called():
 
 
 @pytest.mark.asyncio
-async def test_base_builtin_planner_process_planning_response_not_called():
-  """Test that base BuiltInPlanner does not have process_planning_response called."""
-  planner = BuiltInPlanner(thinking_config=types.ThinkingConfig())
-  agent = Agent(name='test_agent', planner=planner)
-  invocation_context = await testing_utils.create_invocation_context(
-      agent=agent, user_content='test message'
-  )
-
-  response_parts = [
-      types.Part(text='thinking...', thought=True),
-      types.Part(text='Here is my response'),
-  ]
-  llm_response = LlmResponse(
-      content=types.Content(role='model', parts=response_parts)
-  )
-
-  with patch.object(
-      BuiltInPlanner,
-      'process_planning_response',
-      wraps=planner.process_planning_response,
-  ) as mock_method:
-    async for _ in response_processor.run_async(
-        invocation_context, llm_response
-    ):
-      pass
-    mock_method.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_non_overridden_subclass_process_planning_response_not_called():
-  """Test that subclasses NOT overriding process_planning_response are skipped."""
-  planner = NonOverriddenBuiltInPlanner(thinking_config=types.ThinkingConfig())
+@pytest.mark.parametrize(
+    'planner_class',
+    [BuiltInPlanner, NonOverriddenBuiltInPlanner],
+    ids=['base_class', 'non_overridden_subclass'],
+)
+async def test_process_planning_response_not_called_without_override(
+    planner_class,
+):
+  """Test that process_planning_response is not called for base or non-overridden subclasses."""
+  planner = planner_class(thinking_config=types.ThinkingConfig())
   agent = Agent(name='test_agent', planner=planner)
   invocation_context = await testing_utils.create_invocation_context(
       agent=agent, user_content='test message'
