@@ -20,6 +20,7 @@ from google.adk.evaluation.eval_config import get_eval_metrics_from_config
 from google.adk.evaluation.eval_config import get_evaluation_criteria_or_default
 from google.adk.evaluation.eval_rubrics import Rubric
 from google.adk.evaluation.eval_rubrics import RubricContent
+import pytest
 
 
 def test_get_evaluation_criteria_or_default_returns_default():
@@ -97,6 +98,42 @@ def test_get_eval_metrics_from_config():
   )
   assert len(eval_metrics[3].criterion.rubrics) == 1
   assert eval_metrics[3].criterion.rubrics[0] == rubric_1
+
+
+def test_get_eval_metrics_from_config_with_custom_metrics():
+  eval_config = EvalConfig(
+      criteria={
+          "custom_metric_1": 1.0,
+          "custom_metric_2": {
+              "threshold": 0.5,
+          },
+      },
+      custom_metrics={
+          "custom_metric_1": {"name": "path/to/custom/metric_1"},
+          "custom_metric_2": {"name": "path/to/custom/metric_2"},
+      },
+  )
+  eval_metrics = get_eval_metrics_from_config(eval_config)
+
+  assert len(eval_metrics) == 2
+  assert eval_metrics[0].metric_name == "custom_metric_1"
+  assert eval_metrics[0].threshold == 1.0
+  assert eval_metrics[0].criterion.threshold == 1.0
+  assert eval_metrics[0].custom_function_path == "path/to/custom/metric_1"
+  assert eval_metrics[1].metric_name == "custom_metric_2"
+  assert eval_metrics[1].threshold == 0.5
+  assert eval_metrics[1].criterion.threshold == 0.5
+  assert eval_metrics[1].custom_function_path == "path/to/custom/metric_2"
+
+
+def test_custom_metric_code_config_with_args_raises_error():
+  with pytest.raises(ValueError):
+    eval_config = EvalConfig(
+        criteria={"custom_metric": 1.0},
+        custom_metrics={
+            "custom_metric": {"name": "name", "args": [{"value": 1}]}
+        },
+    )
 
 
 def test_get_eval_metrics_from_config_empty_criteria():

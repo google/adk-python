@@ -36,7 +36,6 @@ from . import cli_create
 from . import cli_deploy
 from .. import version
 from ..evaluation.constants import MISSING_EVAL_DEPENDENCIES_MESSAGE
-from ..sessions.migration import migration_runner
 from .cli import run_cli
 from .fast_api import get_fast_api_app
 from .utils import envs
@@ -1589,6 +1588,8 @@ def cli_migrate_session(
   """Migrates a session database to the latest schema version."""
   logs.setup_adk_logger(getattr(logging, log_level.upper()))
   try:
+    from ..sessions.migration import migration_runner
+
     migration_runner.upgrade(source_db_url, dest_db_url)
     click.secho("Migration check and upgrade process finished.", fg="green")
   except Exception as e:
