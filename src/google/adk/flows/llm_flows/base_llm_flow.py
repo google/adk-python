@@ -974,13 +974,8 @@ class BaseLlmFlow(ABC):
           flush_user_audio=True,
           flush_model_audio=True,
       )
-    elif getattr(llm_response, 'generation_complete', False):
-      # model generation complete so we can flush model audio
-      return await self.audio_cache_manager.flush_caches(
-          invocation_context,
-          flush_user_audio=False,
-          flush_model_audio=True,
-      )
+    # TODO: Once generation_complete is surfaced on LlmResponse, we can flush
+    # model audio here (flush_user_audio=False, flush_model_audio=True).
     return []
 
   async def _run_and_handle_error(
