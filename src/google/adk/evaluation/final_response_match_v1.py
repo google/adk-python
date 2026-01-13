@@ -28,6 +28,7 @@ from .evaluator import EvaluationResult
 from .evaluator import Evaluator
 from .evaluator import PerInvocationResult
 from .text_utils import normalize_text #importing normalize_text function for non-English text comparison
+from collections import Counter, namedtuple
 
 
 class RougeEvaluator(Evaluator):
@@ -92,6 +93,7 @@ def _get_text_from_content(content: Optional[genai_types.Content]) -> str:
 def _get_eval_status(score: float, threshold: float):
   return EvalStatus.PASSED if score >= threshold else EvalStatus.FAILED
 
+Score = namedtuple('Score', ['precision', 'recall', 'fmeasure'])
 
 def _calculate_rouge_1_scores(candidate: str, reference: str):
   """Calculates the ROUGE-1 score between a candidate and reference text.
@@ -138,10 +140,8 @@ def _calculate_character_level_rouge(candidate: str, reference: str):
   Returns:
     A Score namedtuple with precision, recall, and fmeasure.
   """
-  from collections import Counter, namedtuple
   
   if not reference or not candidate:
-    Score = namedtuple('Score', ['precision', 'recall', 'fmeasure'])
     return Score(precision=0.0, recall=0.0, fmeasure=0.0)
   
   # Count character occurrences
@@ -161,5 +161,4 @@ def _calculate_character_level_rouge(candidate: str, reference: str):
   else:
     fmeasure = 0.0
   
-  Score = namedtuple('Score', ['precision', 'recall', 'fmeasure'])
   return Score(precision=precision, recall=recall, fmeasure=fmeasure)

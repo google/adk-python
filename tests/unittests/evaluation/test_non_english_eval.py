@@ -15,26 +15,22 @@
 """Tests for final_response_match_v1."""
 
 from __future__ import annotations
+import pytest
 
+def test_normalization_applied_in_rouge():
+    """Normalization should make identical Thai strings match."""
+    from google.adk.evaluation.final_response_match_v1 import _calculate_rouge_1_scores
+    from google.adk.evaluation.text_utils import normalize_text
 
-def test_debug_normalization():
-  """Debug test to see if normalization is being applied."""
-  from google.adk.evaluation.final_response_match_v1 import _calculate_rouge_1_scores
-  from google.adk.evaluation.text_utils import normalize_text
-  
-  reference = "สวัสดี"
-  candidate = "สวัสดี"
-  
-  # Check normalization directly
-  norm_ref = normalize_text(reference)
-  norm_cand = normalize_text(candidate)
-  
-  print(f"Reference: {repr(reference)}")
-  print(f"Candidate: {repr(candidate)}")
-  print(f"Normalized reference: {repr(norm_ref)}")
-  print(f"Normalized candidate: {repr(norm_cand)}")
-  print(f"Are they equal after normalization? {norm_ref == norm_cand}")
-  
-  # Now test the actual function
-  score = _calculate_rouge_1_scores(candidate, reference)
-  print(f"ROUGE score: {score}")
+    reference = "สวัสดี"
+    candidate = "สวัสดี"
+
+    # Verify normalization directly
+    assert normalize_text(reference) == normalize_text(candidate)
+
+    # Verify ROUGE score reflects a perfect match
+    score = _calculate_rouge_1_scores(candidate, reference)
+
+    assert score.precision == pytest.approx(1.0)
+    assert score.recall == pytest.approx(1.0)
+    assert score.fmeasure == pytest.approx(1.0)
