@@ -279,6 +279,11 @@ class EvalMetric(EvalBaseModel):
       default=None, description="""Evaluation criterion used by the metric."""
   )
 
+  custom_function_path: Optional[str] = Field(
+      default=None,
+      description="""Path to custom function, if this is a custom metric.""",
+  )
+
 
 class EvalMetricResultDetails(EvalBaseModel):
   rubric_scores: Optional[list[RubricScore]] = Field(

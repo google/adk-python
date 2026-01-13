@@ -23,7 +23,9 @@ from pydantic import alias_generators
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
+from pydantic import model_validator
 
+from ..agents.common_configs import CodeConfig
 from ..evaluation.eval_metrics import EvalMetric
 from .eval_metrics import BaseCriterion
 from .eval_metrics import Threshold
@@ -72,10 +74,45 @@ the third one uses `LlmAsAJudgeCriterion`.
 """,
   )
 
+  custom_metrics: Optional[dict[str, CodeConfig]] = Field(
+      default=None,
+      description="""A dictionary mapping custom metric names to CodeConfig
+objects, which specify the path to the function for each custom metric.
+
+If a metric name in `criteria` is also present in `custom_metrics`, the
+corresponding `CodeConfig`'s `name` field will be used to locate the custom
+metric implementation. The `name` field should contain the fully qualified
+path to the custom metric function, e.g., `my.custom.metrics.metric_function`.
+
+Example:
+{
+  "criteria": {
+    "my_custom_metric": 0.5
+  },
+  "custom_metrics": {
+    "my_custom_metric": {
+      "name": "path.to.my.custom.metric.function"
+    }
+  }
+}
+""",
+  )
+
   user_simulator_config: Optional[BaseUserSimulatorConfig] = Field(
       default=None,
       description="Config to be used by the user simulator.",
   )
+
+  @model_validator(mode="after")
+  def check_custom_metrics_code_config_args(self) -> "EvalConfig":
+    if self.custom_metrics:
+      for metric_name, metric_config in self.custom_metrics.items():
+        if metric_config.args:
+          raise ValueError(
+              f"args field in CodeConfig for custom metric '{metric_name}' is"
+              " not supported."
+          )
+    return self
 
 
 _DEFAULT_EVAL_CONFIG = EvalConfig(
@@ -106,12 +143,20 @@ def get_eval_metrics_from_config(eval_config: EvalConfig) -> list[EvalMetric]:
   eval_metric_list = []
   if eval_config.criteria:
     for metric_name, criterion in eval_config.criteria.items():
+      custom_function_path = None
+      if (
+          eval_config.custom_metrics
+          and metric_name in eval_config.custom_metrics
+      ):
+        custom_function_path = eval_config.custom_metrics[metric_name].name
+
       if isinstance(criterion, float):
         eval_metric_list.append(
             EvalMetric(
                 metric_name=metric_name,
                 threshold=criterion,
                 criterion=BaseCriterion(threshold=criterion),
+                custom_function_path=custom_function_path,
             )
         )
       elif isinstance(criterion, BaseCriterion):
@@ -120,6 +165,7 @@ def get_eval_metrics_from_config(eval_config: EvalConfig) -> list[EvalMetric]:
                 metric_name=metric_name,
                 threshold=criterion.threshold,
                 criterion=criterion,
+                custom_function_path=custom_function_path,
             )
         )
       else:
