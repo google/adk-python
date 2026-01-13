@@ -30,13 +30,29 @@ class LiveRequest(BaseModel):
   """The pydantic model config."""
 
   content: Optional[types.Content] = None
-  """If set, send the content to the model in turn-by-turn mode."""
+  """If set, send the content to the model in turn-by-turn mode.
+
+  When multiple fields are set, they are processed by priority (highest first):
+  activity_start > activity_end > blob > content.
+  """
   blob: Optional[types.Blob] = None
-  """If set, send the blob to the model in realtime mode."""
+  """If set, send the blob to the model in realtime mode.
+
+  When multiple fields are set, they are processed by priority (highest first):
+  activity_start > activity_end > blob > content.
+  """
   activity_start: Optional[types.ActivityStart] = None
-  """If set, signal the start of user activity to the model."""
+  """If set, signal the start of user activity to the model.
+
+  When multiple fields are set, they are processed by priority (highest first):
+  activity_start > activity_end > blob > content.
+  """
   activity_end: Optional[types.ActivityEnd] = None
-  """If set, signal the end of user activity to the model."""
+  """If set, signal the end of user activity to the model.
+
+  When multiple fields are set, they are processed by priority (highest first):
+  activity_start > activity_end > blob > content.
+  """
   close: bool = False
   """If set, close the queue. queue.shutdown() is only supported in Python 3.13+."""
 
