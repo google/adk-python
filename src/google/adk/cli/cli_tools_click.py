@@ -1291,6 +1291,7 @@ def cli_web(
       host=host,
       port=port,
       reload=reload,
+      log_level=log_level.lower(),
   )
 
   server = uvicorn.Server(config)
@@ -1367,6 +1368,7 @@ def cli_api_server(
       host=host,
       port=port,
       reload=reload,
+      log_level=log_level.lower(),
   )
   server = uvicorn.Server(config)
   server.run()
