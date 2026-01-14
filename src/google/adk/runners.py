@@ -149,6 +149,7 @@ class Runner:
       memory_service: Optional[BaseMemoryService] = None,
       credential_service: Optional[BaseCredentialService] = None,
       plugin_close_timeout: float = 5.0,
+      auto_create_session: bool = False,
   ):
     """Initializes the Runner.
 
@@ -175,6 +176,9 @@ class Runner:
         memory_service: The memory service for the runner.
         credential_service: The credential service for the runner.
         plugin_close_timeout: The timeout in seconds for plugin close methods.
+        auto_create_session: Whether to automatically create a session when
+          not found. Defaults to False. If False, a missing session raises
+          ValueError with a helpful message.
 
     Raises:
         ValueError: If `app` is provided along with `agent` or `plugins`, or if
@@ -195,6 +199,7 @@ class Runner:
     self.plugin_manager = PluginManager(
         plugins=plugins, close_timeout=plugin_close_timeout
     )
+    self.auto_create_session = auto_create_session
     (
         self._agent_origin_app_name,
         self._agent_origin_dir,
@@ -343,8 +348,42 @@ class Runner:
       return message
     return (
         f'{message}. {self._app_name_alignment_hint} '
-        'The mismatch prevents the runner from locating the session.'
+        'The mismatch prevents the runner from locating the session. '
+        'To automatically create a session when missing, set '
+        'auto_create_session=True when constructing the runner.'
     )
+
+  async def _get_or_create_session(
+      self, *, user_id: str, session_id: str
+  ) -> Session:
+    """Gets the session or creates it if auto-creation is enabled.
+
+    This helper first attempts to retrieve the session. If not found and
+    auto_create_session is True, it creates a new session with the provided
+    identifiers. Otherwise, it raises a ValueError with a helpful message.
+
+    Args:
+      user_id: The user ID of the session.
+      session_id: The session ID of the session.
+
+    Returns:
+      The existing or newly created `Session`.
+
+    Raises:
+      ValueError: If the session is not found and auto_create_session is False.
+    """
+    session = await self.session_service.get_session(
+        app_name=self.app_name, user_id=user_id, session_id=session_id
+    )
+    if not session:
+      if self.auto_create_session:
+        session = await self.session_service.create_session(
+            app_name=self.app_name, user_id=user_id, session_id=session_id
+        )
+      else:
+        message = self._format_session_not_found_message(session_id)
+        raise ValueError(message)
+    return session
 
   def run(
       self,
@@ -455,12 +494,9 @@ class Runner:
         invocation_id: Optional[str] = None,
     ) -> AsyncGenerator[Event, None]:
       with tracer.start_as_current_span('invocation'):
-        session = await self.session_service.get_session(
-            app_name=self.app_name, user_id=user_id, session_id=session_id
+        session = await self._get_or_create_session(
+            user_id=user_id, session_id=session_id
         )
-        if not session:
-          message = self._format_session_not_found_message(session_id)
-          raise ValueError(message)
         if not invocation_id and not new_message:
           raise ValueError(
               'Running an agent requires either a new_message or an '
@@ -534,12 +570,9 @@ class Runner:
       rewind_before_invocation_id: str,
   ) -> None:
     """Rewinds the session to before the specified invocation."""
-    session = await self.session_service.get_session(
-        app_name=self.app_name, user_id=user_id, session_id=session_id
+    session = await self._get_or_create_session(
+        user_id=user_id, session_id=session_id
     )
-    if not session:
-      raise ValueError(f'Session not found: {session_id}')
-
     rewind_event_index = -1
     for i, event in enumerate(session.events):
       if event.invocation_id == rewind_before_invocation_id:
@@ -967,14 +1000,9 @@ class Runner:
           stacklevel=2,
       )
     if not session:
-      session = await self.session_service.get_session(
-          app_name=self.app_name, user_id=user_id, session_id=session_id
+      session = await self._get_or_create_session(
+          user_id=user_id, session_id=session_id
       )
-      if not session:
-        raise ValueError(
-            f'Session not found for user id: {user_id} and session id:'
-            f' {session_id}'
-        )
     invocation_context = self._new_invocation_context_for_live(
         session,
         live_request_queue=live_request_queue,
