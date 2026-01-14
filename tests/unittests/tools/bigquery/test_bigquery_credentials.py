@@ -46,7 +46,10 @@ class TestBigQueryCredentials:
     assert config.credentials == auth_creds
     assert config.client_id is None
     assert config.client_secret is None
-    assert config.scopes == ["https://www.googleapis.com/auth/bigquery"]
+    assert config.scopes == [
+        "https://www.googleapis.com/auth/bigquery",
+        "https://www.googleapis.com/auth/cloud-platform",
+    ]
 
   def test_valid_credentials_object_oauth2_credentials(self):
     """Test that providing valid Credentials object works correctly with
@@ -86,7 +89,10 @@ class TestBigQueryCredentials:
     assert config.credentials is None
     assert config.client_id == "test_client_id"
     assert config.client_secret == "test_client_secret"
-    assert config.scopes == ["https://www.googleapis.com/auth/bigquery"]
+    assert config.scopes == [
+        "https://www.googleapis.com/auth/bigquery",
+        "https://www.googleapis.com/auth/cloud-platform",
+    ]
 
   def test_valid_client_id_secret_pair_w_scope(self):
     """Test that providing client ID and secret with explicit scopes works.
@@ -128,7 +134,10 @@ class TestBigQueryCredentials:
     assert config.credentials is None
     assert config.client_id == "test_client_id"
     assert config.client_secret == "test_client_secret"
-    assert config.scopes == ["https://www.googleapis.com/auth/bigquery"]
+    assert config.scopes == [
+        "https://www.googleapis.com/auth/bigquery",
+        "https://www.googleapis.com/auth/cloud-platform",
+    ]
 
   def test_missing_client_secret_raises_error(self):
     """Test that missing client secret raises appropriate validation error.
