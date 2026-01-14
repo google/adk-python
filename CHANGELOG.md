@@ -74,7 +74,7 @@
 
 ### Improvements
 
-* Remove unnecessary event loop creation in LiveRequstQueue constructor ([ecc9f18](https://github.com/google/adk-python/commit/ecc9f182e3bd25ee8eda8920d665e967517ca59a)).
+* Remove unnecessary event loop creation in LiveRequestQueue constructor ([ecc9f18](https://github.com/google/adk-python/commit/ecc9f182e3bd25ee8eda8920d665e967517ca59a)).
 * Close database engines to avoid aiosqlite pytest hangs ([4ddb2cb](https://github.com/google/adk-python/commit/4ddb2cb2a8d1d026a43418b2dd698e6ea199594e)).
 * Add `override_feature_enabled` to override the default feature enable states ([a088506](https://github.com/google/adk-python/commit/a0885064b0cbef3b25484025da0748dc64320d4a)).
 * Move SQLite migration script to migration/ folder ([e8ab7da](https://github.com/google/adk-python/commit/e8ab7dafa96d5890a4fff919b9fa180993ef5830)).
