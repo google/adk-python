@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+from collections import Counter
+from collections import namedtuple
 from typing import Optional
 
 from google.genai import types as genai_types
@@ -27,8 +29,7 @@ from .evaluator import EvalStatus
 from .evaluator import EvaluationResult
 from .evaluator import Evaluator
 from .evaluator import PerInvocationResult
-from .text_utils import normalize_text #importing normalize_text function for non-English text comparison
-from collections import Counter, namedtuple
+from .text_utils import normalize_text
 
 
 class RougeEvaluator(Evaluator):
@@ -48,7 +49,7 @@ class RougeEvaluator(Evaluator):
       conversation_scenario: Optional[ConversationScenario] = None,
   ) -> EvaluationResult:
     if expected_invocations is None:
-      raise ValueError("expected_invocations is required for this metric.")
+      raise ValueError('expected_invocations is required for this metric.')
     del conversation_scenario  # not used by this metric.
 
     total_score = 0.0
@@ -85,15 +86,17 @@ class RougeEvaluator(Evaluator):
 
 def _get_text_from_content(content: Optional[genai_types.Content]) -> str:
   if content and content.parts:
-    return "\n".join([part.text for part in content.parts if part.text])
+    return '\n'.join([part.text for part in content.parts if part.text])
 
-  return ""
+  return ''
 
 
 def _get_eval_status(score: float, threshold: float):
   return EvalStatus.PASSED if score >= threshold else EvalStatus.FAILED
 
+
 Score = namedtuple('Score', ['precision', 'recall', 'fmeasure'])
+
 
 def _calculate_rouge_1_scores(candidate: str, reference: str):
   """Calculates the ROUGE-1 score between a candidate and reference text.
@@ -111,7 +114,7 @@ def _calculate_rouge_1_scores(candidate: str, reference: str):
       reference: The ground-truth text to compare against.
 
   Returns:
-      A dictionary containing the ROUGE-1 precision, recall, and f-measure.
+      A Score namedtuple containing the ROUGE-1 precision, recall, and f-measure.
   """
   # Normalize both texts before scoring to handle Unicode variations
   normalized_candidate = normalize_text(candidate)
@@ -119,46 +122,48 @@ def _calculate_rouge_1_scores(candidate: str, reference: str):
 
   # Check if the text contains spaces (word-separated languages)
   has_spaces = ' ' in normalized_reference or ' ' in normalized_candidate
-  
+
   if has_spaces:
     # Use standard word-level ROUGE for space-separated languages
-    scorer = rouge_scorer.RougeScorer(["rouge1"], use_stemmer=True)
+    scorer = rouge_scorer.RougeScorer(['rouge1'], use_stemmer=True)
     scores = scorer.score(normalized_reference, normalized_candidate)
-    return scores["rouge1"]
+    return scores['rouge1']
   else:
     # For non-space-separated languages, use character-level comparison
-    return _calculate_character_level_rouge(normalized_candidate, normalized_reference)
+    return _calculate_character_level_rouge(
+        normalized_candidate, normalized_reference
+    )
 
 
 def _calculate_character_level_rouge(candidate: str, reference: str):
   """Calculates character-level ROUGE-1 score for non-space-separated text.
-  
+
   Args:
     candidate: The candidate text (already normalized).
     reference: The reference text (already normalized).
-  
+
   Returns:
     A Score namedtuple with precision, recall, and fmeasure.
   """
-  
+
   if not reference or not candidate:
     return Score(precision=0.0, recall=0.0, fmeasure=0.0)
-  
+
   # Count character occurrences
   ref_chars = Counter(reference)
   cand_chars = Counter(candidate)
-  
+
   # Calculate overlapping characters
   overlap = sum((ref_chars & cand_chars).values())
-  
+
   # Calculate precision and recall
   precision = overlap / len(candidate) if len(candidate) > 0 else 0.0
   recall = overlap / len(reference) if len(reference) > 0 else 0.0
-  
+
   # Calculate F-measure
   if precision + recall > 0:
     fmeasure = 2 * (precision * recall) / (precision + recall)
   else:
     fmeasure = 0.0
-  
+
   return Score(precision=precision, recall=recall, fmeasure=fmeasure)

@@ -15,22 +15,24 @@
 """Tests for final_response_match_v1."""
 
 from __future__ import annotations
+
 import pytest
 
+
 def test_normalization_applied_in_rouge():
-    """Normalization should make identical Thai strings match."""
-    from google.adk.evaluation.final_response_match_v1 import _calculate_rouge_1_scores
-    from google.adk.evaluation.text_utils import normalize_text
+  """Normalization should make identical Thai strings match."""
+  from google.adk.evaluation.final_response_match_v1 import _calculate_rouge_1_scores
+  from google.adk.evaluation.text_utils import normalize_text
 
-    reference = "สวัสดี"
-    candidate = "สวัสดี"
+  reference = "สวัสดี"
+  candidate = "สวัสดี"
 
-    # Verify normalization directly
-    assert normalize_text(reference) == normalize_text(candidate)
+  # Verify normalization directly
+  assert normalize_text(reference) == normalize_text(candidate)
 
-    # Verify ROUGE score reflects a perfect match
-    score = _calculate_rouge_1_scores(candidate, reference)
+  # Verify ROUGE score reflects a perfect match
+  score = _calculate_rouge_1_scores(candidate, reference)
 
-    assert score.precision == pytest.approx(1.0)
-    assert score.recall == pytest.approx(1.0)
-    assert score.fmeasure == pytest.approx(1.0)
+  assert score.precision == pytest.approx(1.0)
+  assert score.recall == pytest.approx(1.0)
+  assert score.fmeasure == pytest.approx(1.0)

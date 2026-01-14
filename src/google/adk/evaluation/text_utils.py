@@ -21,13 +21,13 @@ import unicodedata
 
 def normalize_text(text: str) -> str:
   """Normalize text using NFC normalization and strip whitespace.
-  
+
   This ensures consistent text comparison across different Unicode
   representations, which is particularly important for non-English text.
-  
+
   Args:
     text: The text to normalize.
-    
+
   Returns:
     The normalized text.
   """
