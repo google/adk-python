@@ -100,26 +100,30 @@ def part_to_message_block(
     content = ""
     response_data = part.function_response.response
 
-    # Handle response with content array
-    if "content" in response_data and response_data["content"]:
+    # Handle content array format
+    if "content" in response_data and isinstance(
+        response_data["content"], list
+    ):
       content_items = []
       for item in response_data["content"]:
         if isinstance(item, dict):
-          # Handle text content blocks
           if item.get("type") == "text" and "text" in item:
             content_items.append(item["text"])
           else:
-            # Handle other structured content
             content_items.append(str(item))
         else:
           content_items.append(str(item))
-      content = "\n".join(content_items) if content_items else ""
-    # Handle traditional result format
-    elif "result" in response_data and response_data["result"]:
-      # Transformation is required because the content is a list of dict.
-      # ToolResultBlockParam content doesn't support list of dict. Converting
-      # to str to prevent anthropic.BadRequestError from being thrown.
+      content = "\n".join(content_items)
+    # Handle direct result key format
+    elif (
+        isinstance(response_data, dict)
+        and "result" in response_data
+        and len(response_data) == 1
+    ):
       content = str(response_data["result"])
+    # Fallback: handle arbitrary dictionary or object by stringifying it
+    else:
+      content = str(response_data)
 
     return anthropic_types.ToolResultBlockParam(
         tool_use_id=part.function_response.id or "",
