@@ -129,3 +129,4 @@ type.
 * which tables exist in the ml_datasets dataset?
 * show more details about the penguins table
 * compute penguins population per island.
+* are there any tables related to animals in project <your_project_id>?

@@ -20,14 +20,11 @@ def test_dataplex_client_default(mock_catalog_service_client):
   """Test get_dataplex_catalog_client with default user agent."""
   mock_creds = mock.create_autospec(Credentials, instance=True)
 
-  # Call the function under test
   client = get_dataplex_catalog_client(credentials=mock_creds)
 
-  # Assert that CatalogServiceClient constructor was called once
   mock_catalog_service_client.assert_called_once()
   _, kwargs = mock_catalog_service_client.call_args
 
-  # Check the arguments passed to the CatalogServiceClient constructor
   assert kwargs["credentials"] == mock_creds
   client_info = kwargs["client_info"]
   assert isinstance(client_info, gapic_client_info.ClientInfo)

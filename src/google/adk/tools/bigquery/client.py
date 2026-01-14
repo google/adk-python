@@ -14,8 +14,6 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
 import google.api_core.client_info
 from google.api_core.gapic_v1 import client_info as gapic_client_info
 from google.auth.credentials import Credentials
@@ -27,18 +25,15 @@ from ... import version
 USER_AGENT_BASE = f"google-adk/{version.__version__}"
 BQ_USER_AGENT = f"adk-bigquery-tool {USER_AGENT_BASE}"
 DP_USER_AGENT = f"adk-dataplex-tool {USER_AGENT_BASE}"
-
-
-from typing import List
-from typing import Union
+USER_AGENT = BQ_USER_AGENT
 
 
 def get_bigquery_client(
     *,
-    project: Optional[str],
+    project: str | None,
     credentials: Credentials,
-    location: Optional[str] = None,
-    user_agent: Optional[Union[str, List[str]]] = None,
+    location: str | None = None,
+    user_agent: str | list[str] | None = None,
 ) -> bigquery.Client:
   """Get a BigQuery client.
 
@@ -76,7 +71,7 @@ def get_bigquery_client(
 def get_dataplex_catalog_client(
     *,
     credentials: Credentials,
-    user_agent: Optional[Union[str, List[str]]] = None,
+    user_agent: str | list[str] | None = None,
 ) -> dataplex_v1.CatalogServiceClient:
   """Get a Dataplex CatalogServiceClient with minimal necessary arguments.
 

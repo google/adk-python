@@ -1,9 +1,40 @@
 from __future__ import annotations
 
+import sys
 from typing import Any
-from typing import Dict
-from typing import List
+import unittest
 from unittest import mock
+
+# Mock google.genai and pydantic if not available, before importing google.adk modules
+try:
+  import google.genai
+except ImportError:
+  m = mock.MagicMock()
+  m.__path__ = []
+  sys.modules["google.genai"] = m
+  sys.modules["google.genai.types"] = mock.MagicMock()
+  sys.modules["google.genai.errors"] = mock.MagicMock()
+
+try:
+  import pydantic
+except ImportError:
+  m_pydantic = mock.MagicMock()
+
+  class MockBaseModel:
+    pass
+
+  m_pydantic.BaseModel = MockBaseModel
+  sys.modules["pydantic"] = m_pydantic
+
+try:
+  import fastapi
+  import fastapi.openapi.models
+except ImportError:
+  m_fastapi = mock.MagicMock()
+  m_fastapi.openapi.models = mock.MagicMock()
+  sys.modules["fastapi"] = m_fastapi
+  sys.modules["fastapi.openapi"] = mock.MagicMock()
+  sys.modules["fastapi.openapi.models"] = mock.MagicMock()
 
 from google.adk.tools.bigquery import client
 from google.adk.tools.bigquery import search_tool
@@ -11,30 +42,35 @@ from google.adk.tools.bigquery.config import BigQueryToolConfig
 from google.api_core import exceptions as api_exceptions
 from google.auth.credentials import Credentials
 from google.cloud import dataplex_v1
-import pytest
 
 
-# Helper function to create mock credentials
 def _mock_creds():
   return mock.create_autospec(Credentials, instance=True)
 
 
-# Helper function to create mock settings
 def _mock_settings(app_name: str | None = "test-app"):
   return BigQueryToolConfig(application_name=app_name)
 
 
-# Mock response for dataplex_client.search_entries
-def _mock_search_entries_response(results: List[Dict[str, Any]]):
+def _mock_search_entries_response(results: list[dict[str, Any]]):
   mock_response = mock.MagicMock(spec=dataplex_v1.SearchEntriesResponse)
   mock_results = []
   for r in results:
-    mock_result = mock.MagicMock()
-    mock_entry = mock_result.dataplex_entry
+    mock_result = mock.create_autospec(
+        dataplex_v1.SearchEntriesResult, instance=True
+    )
+    # Manually attach dataplex_entry since it's not visible in dir() of the proto class
+    mock_entry = mock.create_autospec(dataplex_v1.Entry, instance=True)
+    mock_result.dataplex_entry = mock_entry
+
     mock_entry.name = r.get("name")
     mock_entry.entry_type = r.get("entry_type")
     mock_entry.update_time = r.get("update_time", "2026-01-14T05:00:00Z")
-    mock_source = mock_entry.entry_source
+
+    # Manually attach entry_source since it's not visible in dir() of the proto class
+    mock_source = mock.create_autospec(dataplex_v1.EntrySource, instance=True)
+    mock_entry.entry_source = mock_source
+
     mock_source.display_name = r.get("display_name")
     mock_source.resource = r.get("linked_resource")
     mock_source.description = r.get("description")
@@ -44,24 +80,29 @@ def _mock_search_entries_response(results: List[Dict[str, Any]]):
   return mock_response
 
 
-class TestSearchCatalog:
+class TestSearchCatalog(unittest.TestCase):
 
-  @pytest.fixture(autouse=True)
-  def setup_mocks(self):
-    self.mock_dataplex_client = mock.MagicMock(
-        spec=dataplex_v1.CatalogServiceClient
+  def setUp(self):
+    super().setUp()
+    self.mock_dataplex_client = mock.create_autospec(
+        dataplex_v1.CatalogServiceClient, instance=True
     )
-    self.mock_get_dataplex_client = mock.patch.object(
+
+    # Patch get_dataplex_catalog_client
+    self.patcher_get_client = mock.patch.object(
         client, "get_dataplex_catalog_client", autospec=True
-    ).start()
+    )
+    self.mock_get_dataplex_client = self.patcher_get_client.start()
     self.mock_get_dataplex_client.return_value = self.mock_dataplex_client
-    self.mock_search_request = mock.patch.object(
+
+    # Patch SearchEntriesRequest
+    self.patcher_search_request = mock.patch.object(
         dataplex_v1, "SearchEntriesRequest", autospec=True
-    ).start()
+    )
+    self.mock_search_request = self.patcher_search_request.start()
 
-    yield
-
-    mock.patch.stopall()
+    self.addCleanup(self.patcher_get_client.stop)
+    self.addCleanup(self.patcher_search_request.stop)
 
   def test_search_catalog_success(self):
     """Test the successful path of search_catalog."""
@@ -69,6 +110,7 @@ class TestSearchCatalog:
     settings = _mock_settings()
     prompt = "customer data"
     project_id = "test-project"
+    location = "us"
 
     mock_api_results = [{
         "name": "entry1",
@@ -84,34 +126,46 @@ class TestSearchCatalog:
         _mock_search_entries_response(mock_api_results)
     )
 
-    result = search_tool.search_catalog(prompt, project_id, creds, settings)
-
-    assert result["status"] == "SUCCESS"
-    assert len(result["results"]) == 1
-    assert result["results"][0]["name"] == "entry1"
-    assert result["results"][0]["display_name"] == "Cust Table"
-
-    self.mock_get_dataplex_client.assert_called_once_with(
-        credentials=creds, user_agent=["test-app", "search_catalog"]
+    result = search_tool.search_catalog(
+        prompt=prompt,
+        project_id=project_id,
+        credentials=creds,
+        settings=settings,
+        location=location,
     )
 
-    expected_query = (
-        '(customer data) AND projectid="test-project" AND system=BIGQUERY'
-    )
-    self.mock_search_request.assert_called_once_with(
-        name=f"projects/{project_id}/locations/global",
-        query=expected_query,
-        page_size=10,
-        semantic_search=True,
-    )
-    self.mock_dataplex_client.search_entries.assert_called_once_with(
-        request=self.mock_search_request.return_value
-    )
+    with self.subTest("Test result content"):
+      assert result["status"] == "SUCCESS"
+      assert len(result["results"]) == 1
+      assert result["results"][0]["name"] == "entry1"
+      assert result["results"][0]["display_name"] == "Cust Table"
+
+    with self.subTest("Test mock calls"):
+      self.mock_get_dataplex_client.assert_called_once_with(
+          credentials=creds, user_agent=["test-app", "search_catalog"]
+      )
+
+      expected_query = (
+          '(customer data) AND projectid="test-project" AND system=BIGQUERY'
+      )
+      self.mock_search_request.assert_called_once_with(
+          name=f"projects/{project_id}/locations/us",
+          query=expected_query,
+          page_size=10,
+          semantic_search=True,
+      )
+      self.mock_dataplex_client.search_entries.assert_called_once_with(
+          request=self.mock_search_request.return_value
+      )
 
   def test_search_catalog_no_project_id(self):
     """Test search_catalog with missing project_id."""
     result = search_tool.search_catalog(
-        "test", "", _mock_creds(), _mock_settings()
+        prompt="test",
+        project_id="",
+        credentials=_mock_creds(),
+        settings=_mock_settings(),
+        location="us",
     )
     assert result["status"] == "ERROR"
     assert "project_id must be provided" in result["error_details"]
@@ -124,10 +178,14 @@ class TestSearchCatalog:
     )
 
     result = search_tool.search_catalog(
-        "test", "test-project", _mock_creds(), _mock_settings()
+        prompt="test",
+        project_id="test-project",
+        credentials=_mock_creds(),
+        settings=_mock_settings(),
+        location="us",
     )
     assert result["status"] == "ERROR"
-    assert "Dataplex API Error: Invalid query" in result["error_details"]
+    assert "Dataplex API Error: 400 Invalid query" in result["error_details"]
 
   def test_search_catalog_other_exception(self):
     """Test search_catalog handling unexpected exceptions."""
@@ -136,55 +194,73 @@ class TestSearchCatalog:
     )
 
     result = search_tool.search_catalog(
-        "test", "test-project", _mock_creds(), _mock_settings()
+        prompt="test",
+        project_id="test-project",
+        credentials=_mock_creds(),
+        settings=_mock_settings(),
+        location="us",
     )
     assert result["status"] == "ERROR"
     assert "Something went wrong" in result["error_details"]
 
-  @pytest.mark.parametrize(
-      "prompt, project_ids, dataset_ids, types, expected_query_part",
-      [
-          ("p", None, None, None, 'projectid="test-project"'),
-          ("p", ["proj1"], None, None, 'projectid="proj1"'),
-          ("p", ["p1", "p2"], None, None, '(projectid="p1" OR projectid="p2")'),
-          ("p", None, None, ["TABLE"], 'type="TABLE"'),
-          (
-              "p",
-              None,
-              None,
-              ["TABLE", "DATASET"],
-              '(type="TABLE" OR type="DATASET")',
-          ),
-      ],
-  )
-  def test_search_catalog_query_construction(
-      self, prompt, project_ids, dataset_ids, types, expected_query_part
-  ):
+  def test_search_catalog_query_construction(self):
     """Test different query constructions based on filters."""
-    search_tool.search_catalog(
+    test_cases = [
+        ("p", None, None, None, 'projectid="test-project"'),
+        ("p", ["proj1"], None, None, 'projectid="proj1"'),
+        ("p", ["p1", "p2"], None, None, '(projectid="p1" OR projectid="p2")'),
+        ("p", None, None, ["TABLE"], 'type="TABLE"'),
+        (
+            "p",
+            None,
+            None,
+            ["TABLE", "DATASET"],
+            '(type="TABLE" OR type="DATASET")',
+        ),
+    ]
+
+    for (
         prompt,
-        "test-project",
-        _mock_creds(),
-        _mock_settings(),
-        project_ids_filter=project_ids,
-        dataset_ids_filter=dataset_ids,
-        types_filter=types,
-    )
+        project_ids,
+        dataset_ids,
+        types,
+        expected_query_part,
+    ) in test_cases:
+      with self.subTest(prompt=prompt, project_ids=project_ids, types=types):
+        # Reset mock for each subtest
+        self.mock_search_request.reset_mock()
 
-    self.mock_search_request.assert_called_once()
-    _, kwargs = self.mock_search_request.call_args
-    query = kwargs["query"]
+        search_tool.search_catalog(
+            prompt=prompt,
+            project_id="test-project",
+            credentials=_mock_creds(),
+            settings=_mock_settings(),
+            location="us",
+            project_ids_filter=project_ids,
+            dataset_ids_filter=dataset_ids,
+            types_filter=types,
+        )
 
-    if prompt:
-      assert f"({prompt})" in query
-    assert "system=BIGQUERY" in query
-    assert expected_query_part in query
+        self.mock_search_request.assert_called_once()
+        _, kwargs = self.mock_search_request.call_args
+        query = kwargs["query"]
+
+        if prompt:
+          assert f"({prompt})" in query
+        assert "system=BIGQUERY" in query
+        assert expected_query_part in query
 
   def test_search_catalog_no_app_name(self):
     """Test search_catalog when settings.application_name is None."""
     creds = _mock_creds()
     settings = _mock_settings(app_name=None)
-    search_tool.search_catalog("test", "test-project", creds, settings)
+    search_tool.search_catalog(
+        prompt="test",
+        project_id="test-project",
+        credentials=creds,
+        settings=settings,
+        location="us",
+    )
 
     self.mock_get_dataplex_client.assert_called_once_with(
         credentials=creds, user_agent=[None, "search_catalog"]
@@ -204,10 +280,10 @@ class TestSearchCatalog:
     )
 
     search_tool.search_catalog(
-        prompt,
-        project_id,
-        creds,
-        settings,
+        prompt=prompt,
+        project_id=project_id,
+        credentials=creds,
+        settings=settings,
         location=location,
         project_ids_filter=project_filters,
         types_filter=["DATASET"],
@@ -269,29 +345,34 @@ class TestSearchCatalog:
         _mock_search_entries_response(mock_api_results)
     )
 
-    # Call the tool
     result = search_tool.search_catalog(
-        prompt, project_id, creds, settings, location=location
+        prompt=prompt,
+        project_id=project_id,
+        credentials=creds,
+        settings=settings,
+        location=location,
     )
 
-    # Assert the request was made as expected
-    expected_query = (
-        f'({prompt}) AND projectid="{project_id}" AND system=BIGQUERY'
-    )
-    self.mock_search_request.assert_called_once_with(
-        name=f"projects/{project_id}/locations/{location}",
-        query=expected_query,
-        page_size=10,
-        semantic_search=True,
-    )
-    self.mock_dataplex_client.search_entries.assert_called_once()
+    with self.subTest("Query Construction"):
+      # Assert the request was made as expected
+      expected_query = (
+          f'({prompt}) AND projectid="{project_id}" AND system=BIGQUERY'
+      )
+      self.mock_search_request.assert_called_once_with(
+          name=f"projects/{project_id}/locations/{location}",
+          query=expected_query,
+          page_size=10,
+          semantic_search=True,
+      )
+      self.mock_dataplex_client.search_entries.assert_called_once()
 
-    # Assert the output is processed correctly
-    assert result["status"] == "SUCCESS"
-    assert len(result["results"]) == 2
-    assert result["results"][0]["display_name"] == "uk_football_premiership"
-    assert result["results"][1]["display_name"] == "serie_a_matches"
-    assert "UK Premier League" in result["results"][0]["description"]
+    with self.subTest("Response Processing"):
+      # Assert the output is processed correctly
+      assert result["status"] == "SUCCESS"
+      assert len(result["results"]) == 2
+      assert result["results"][0]["display_name"] == "uk_football_premiership"
+      assert result["results"][1]["display_name"] == "serie_a_matches"
+      assert "UK Premier League" in result["results"][0]["description"]
 
   def test_query_with_project_and_dataset_filters(self):
     creds = _mock_creds()
@@ -330,3 +411,45 @@ class TestSearchCatalog:
     self.mock_dataplex_client.search_entries.assert_called_once_with(
         request=self.mock_search_request.return_value
     )
+
+  def test_search_catalog_default_location(self):
+    """Test search_catalog fallback to global location when None is provided."""
+    creds = _mock_creds()
+    settings = _mock_settings()
+    # settings.location is None by default
+
+    self.mock_dataplex_client.search_entries.return_value = (
+        _mock_search_entries_response([])
+    )
+
+    search_tool.search_catalog(
+        prompt="test",
+        project_id="test-project",
+        credentials=creds,
+        settings=settings,
+    )
+
+    self.mock_search_request.assert_called_once()
+    _, kwargs = self.mock_search_request.call_args
+    name_arg = kwargs["name"]
+    assert "locations/global" in name_arg
+
+  def test_search_catalog_settings_location(self):
+    """Test search_catalog uses settings.location when provided."""
+    creds = _mock_creds()
+    settings = BigQueryToolConfig(location="eu")
+
+    self.mock_dataplex_client.search_entries.return_value = (
+        _mock_search_entries_response([])
+    )
+
+    search_tool.search_catalog(
+        prompt="test",
+        project_id="test-project",
+        credentials=creds,
+        settings=settings,
+    )
+
+    self.mock_search_request.assert_called_once()
+    name_arg = self.mock_search_request.call_args[1]["name"]
+    assert "locations/eu" in name_arg

@@ -16,9 +16,6 @@ from __future__ import annotations
 
 import logging
 from typing import Any
-from typing import Dict
-from typing import List
-from typing import Optional
 
 from google.api_core import exceptions as api_exceptions
 from google.auth.credentials import Credentials
@@ -29,44 +26,74 @@ from .config import BigQueryToolConfig
 
 
 def _construct_search_query_helper(
-    predicate: str, operator: str, items: List[str]
+    predicate: str, operator: str, items: list[str]
 ) -> str:
+  """Constructs a search query part for a specific predicate and items."""
   if not items:
     return ""
-  if len(items) == 1:
-    return f'{predicate}{operator}"{items[0]}"'
 
   clauses = [f'{predicate}{operator}"{item}"' for item in items]
-  return "(" + " OR ".join(clauses) + ")"
+  return "(" + " OR ".join(clauses) + ")" if len(items) > 1 else clauses[0]
 
 
 def search_catalog(
     prompt: str,
     project_id: str,
+    *,
     credentials: Credentials,
     settings: BigQueryToolConfig,
-    location: str,
+    location: str | None = None,
     page_size: int = 10,
-    project_ids_filter: Optional[List[str]] = None,
-    dataset_ids_filter: Optional[List[str]] = None,
-    types_filter: Optional[List[str]] = None,
-) -> Dict[str, Any]:
+    project_ids_filter: list[str] | None = None,
+    dataset_ids_filter: list[str] | None = None,
+    types_filter: list[str] | None = None,
+) -> dict[str, Any]:
   """Search for BigQuery assets within Dataplex.
 
   Args:
-      prompt (str): The base search query (natural language or keywords).
-      project_id (str): The Google Cloud project ID to scope the search.
-      credentials (Credentials): Credentials for the request.
-      settings (BigQueryToolConfig): BigQuery tool settings.
-      location (str): The Dataplex location to use.
-      page_size (int): Maximum number of results.
-      project_ids_filter (Optional[List[str]]): Specific project IDs to include in the search results.
-                                              If None, defaults to the scoping project_id.
-      dataset_ids_filter (Optional[List[str]]): BigQuery dataset IDs to filter by.
-      types_filter (Optional[List[str]]): Entry types to filter by (e.g., "TABLE", "DATASET").
+      prompt: The base search query (natural language or keywords).
+      project_id: The Google Cloud project ID to scope the search.
+      credentials: Credentials for the request.
+      settings: BigQuery tool settings.
+      location: The Dataplex location to use.
+      page_size: Maximum number of results.
+      project_ids_filter: Specific project IDs to include in the search results.
+        If None, defaults to the scoping project_id.
+      dataset_ids_filter: BigQuery dataset IDs to filter by.
+      types_filter: Entry types to filter by (e.g., BigQueryEntryType.TABLE,
+        BigQueryEntryType.DATASET).
 
   Returns:
-      dict: Search results or error.
+      Search results or error. The "results" list contains items with:
+          - name: The Dataplex Entry name (e.g.,
+            "projects/p/locations/l/entryGroups/g/entries/e").
+          - linked_resource: The underlying BigQuery resource name (e.g.,
+            "//bigquery.googleapis.com/projects/p/datasets/d/tables/t").
+          - display_name, entry_type, description, location, update_time.
+
+  Examples:
+      Search for tables related to customer data:
+
+          >>> search_catalog(
+          ...     prompt="Search for tables related to customer data",
+          ...     project_id="my-project",
+          ...     credentials=creds,
+          ...     settings=settings
+          ... )
+          {
+            "status": "SUCCESS",
+            "results": [
+              {
+                "name": "projects/my-project/locations/us/entryGroups/@bigquery/entries/entry-id",
+                "display_name": "customer_table",
+                "entry_type": "projects/p/locations/l/entryTypes/bigquery-table",
+                "linked_resource": "//bigquery.googleapis.com/projects/my-project/datasets/d/tables/customer_table",
+                "description": "Table containing customer details.",
+                "location": "us",
+                "update_time": "2024-01-01 12:00:00+00:00"
+              }
+            ]
+          }
   """
   try:
     if not project_id:
@@ -95,11 +122,12 @@ def search_catalog(
 
     # Filter by dataset IDs
     if dataset_ids_filter:
-      dataset_resource_filters = [
-          f'linked_resource:"//bigquery.googleapis.com/projects/{pid}/datasets/{did}/*"'
-          for pid in projects_to_filter
-          for did in dataset_ids_filter
-      ]
+      dataset_resource_filters = []
+      for pid in projects_to_filter:
+        for did in dataset_ids_filter:
+          dataset_resource_filters.append(
+              f'linked_resource:"//bigquery.googleapis.com/projects/{pid}/datasets/{did}/*"'
+          )
       if dataset_resource_filters:
         query_parts.append(f"({' OR '.join(dataset_resource_filters)})")
     # Filter by entry types
@@ -113,7 +141,8 @@ def search_catalog(
 
     full_query = " AND ".join(filter(None, query_parts))
 
-    search_scope = f"projects/{project_id}/locations/{location}"
+    search_location = location or settings.location or "global"
+    search_scope = f"projects/{project_id}/locations/{search_location}"
 
     request = dataplex_v1.SearchEntriesRequest(
         name=search_scope,
@@ -142,6 +171,6 @@ def search_catalog(
   except api_exceptions.GoogleAPICallError as e:
     logging.exception("search_catalog tool: API call failed")
     return {"status": "ERROR", "error_details": f"Dataplex API Error: {str(e)}"}
-  except Exception as ex:
+  except Exception as e:
     logging.exception("search_catalog tool: Unexpected error")
-    return {"status": "ERROR", "error_details": str(ex)}
+    return {"status": "ERROR", "error_details": str(e)}

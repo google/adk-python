@@ -23,6 +23,7 @@ BIGQUERY_SCOPES = [
     "https://www.googleapis.com/auth/bigquery",
     "https://www.googleapis.com/auth/cloud-platform",
 ]
+BIGQUERY_DEFAULT_SCOPE = BIGQUERY_SCOPES
 
 
 @experimental(FeatureName.GOOGLE_CREDENTIALS_CONFIG)
