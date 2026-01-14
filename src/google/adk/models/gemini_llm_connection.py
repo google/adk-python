@@ -21,6 +21,7 @@ from typing import Union
 from google.genai import types
 
 from ..utils.context_utils import Aclosing
+from ..utils.variant_utils import GoogleLLMVariant
 from .base_llm_connection import BaseLlmConnection
 from .llm_response import LlmResponse
 
@@ -36,10 +37,17 @@ if TYPE_CHECKING:
 class GeminiLlmConnection(BaseLlmConnection):
   """The Gemini model connection."""
 
-  def __init__(self, gemini_session: live.AsyncSession):
+  def __init__(
+      self,
+      gemini_session: live.AsyncSession,
+      api_backend: GoogleLLMVariant = GoogleLLMVariant.VERTEX_AI,
+      model_version: str | None = None,
+  ):
     self._gemini_session = gemini_session
     self._input_transcription_text: str = ''
     self._output_transcription_text: str = ''
+    self._api_backend = api_backend
+    self._model_version = model_version
 
   async def send_history(self, history: list[types.Content]):
     """Sends the conversation history to the gemini model.
@@ -156,7 +164,11 @@ class GeminiLlmConnection(BaseLlmConnection):
       async for message in agen:
         logger.debug('Got LLM Live message: %s', message)
         if message.usage_metadata:
-          yield LlmResponse(usage_metadata=message.usage_metadata)
+          # Tracks token usage data per model.
+          yield LlmResponse(
+              usage_metadata=message.usage_metadata,
+              model_version=self._model_version,
+          )
         if message.server_content:
           content = message.server_content.model_turn
           if content and content.parts:
@@ -171,6 +183,9 @@ class GeminiLlmConnection(BaseLlmConnection):
               yield self.__build_full_text_response(text)
               text = ''
             yield llm_response
+          # Note: in some cases, tool_call may arrive before
+          # generation_complete, causing transcription to appear after
+          # tool_call in the session log.
           if message.server_content.input_transcription:
             if message.server_content.input_transcription.text:
               self._input_transcription_text += (
@@ -207,6 +222,32 @@ class GeminiLlmConnection(BaseLlmConnection):
                   partial=True,
               )
             if message.server_content.output_transcription.finished:
+              yield LlmResponse(
+                  output_transcription=types.Transcription(
+                      text=self._output_transcription_text,
+                      finished=True,
+                  ),
+                  partial=False,
+              )
+              self._output_transcription_text = ''
+          # The Gemini API might not send a transcription finished signal.
+          # Instead, we rely on generation_complete, turn_complete or
+          # interrupted signals to flush any pending transcriptions.
+          if self._api_backend == GoogleLLMVariant.GEMINI_API and (
+              message.server_content.interrupted
+              or message.server_content.turn_complete
+              or message.server_content.generation_complete
+          ):
+            if self._input_transcription_text:
+              yield LlmResponse(
+                  input_transcription=types.Transcription(
+                      text=self._input_transcription_text,
+                      finished=True,
+                  ),
+                  partial=False,
+              )
+              self._input_transcription_text = ''
+            if self._output_transcription_text:
               yield LlmResponse(
                   output_transcription=types.Transcription(
                       text=self._output_transcription_text,

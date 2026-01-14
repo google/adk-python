@@ -16,6 +16,7 @@ from google.adk.agents.llm_agent import Agent
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
 from google.adk.flows.llm_flows import contents
+from google.adk.flows.llm_flows.contents import request_processor
 from google.adk.flows.llm_flows.functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
 from google.adk.flows.llm_flows.functions import REQUEST_EUC_FUNCTION_CALL_NAME
 from google.adk.models.llm_request import LlmRequest
@@ -434,6 +435,58 @@ async def test_rewind_events_are_filtered_out():
 
 
 @pytest.mark.asyncio
+async def test_other_agent_empty_content():
+  """Test that other agent messages with only thoughts or empty content are filtered out."""
+  agent = Agent(model="gemini-2.5-flash", name="current_agent")
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  # Add events: user message, other agents with empty content, user message
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("Hello"),
+      ),
+      # Other agent with only thoughts
+      Event(
+          invocation_id="inv2",
+          author="other_agent1",
+          content=types.ModelContent([
+              types.Part(text="This is a private thought", thought=True),
+              types.Part(text="Another private thought", thought=True),
+          ]),
+      ),
+      # Other agent with empty text and thoughts
+      Event(
+          invocation_id="inv3",
+          author="other_agent2",
+          content=types.ModelContent([
+              types.Part(text="", thought=False),
+              types.Part(text="Secret thought", thought=True),
+          ]),
+      ),
+      Event(
+          invocation_id="inv4",
+          author="user",
+          content=types.UserContent("World"),
+      ),
+  ]
+  invocation_context.session.events = events
+
+  # Process the request
+  async for _ in request_processor.run_async(invocation_context, llm_request):
+    pass
+
+  # Verify empty content events are completely filtered out
+  assert llm_request.contents == [
+      types.UserContent("Hello"),
+      types.UserContent("World"),
+  ]
+
+
+@pytest.mark.asyncio
 async def test_events_with_empty_content_are_skipped():
   """Test that events with empty content (state-only changes) are skipped."""
   agent = Agent(model="gemini-2.5-flash", name="test_agent")
@@ -471,6 +524,14 @@ async def test_events_with_empty_content_are_skipped():
           author="user",
           content=types.Content(parts=[types.Part(text="")], role="model"),
       ),
+      # Event with content that has multiple empty text parts
+      Event(
+          invocation_id="inv6_2",
+          author="user",
+          content=types.Content(
+              parts=[types.Part(text=""), types.Part(text="")], role="model"
+          ),
+      ),
       # Event with content that has only inline data part
       Event(
           invocation_id="inv7",
@@ -500,6 +561,47 @@ async def test_events_with_empty_content_are_skipped():
                   )
               ],
               role="user",
+          ),
+      ),
+      # Event with mixed empty and non-empty text parts
+      Event(
+          invocation_id="inv9",
+          author="user",
+          content=types.Content(
+              parts=[types.Part(text=""), types.Part(text="Mixed content")],
+              role="user",
+          ),
+      ),
+      # Event with content that has executable code part
+      Event(
+          invocation_id="inv10",
+          author="test_agent",
+          content=types.Content(
+              parts=[
+                  types.Part(
+                      executable_code=types.ExecutableCode(
+                          code="print('hello')",
+                          language="PYTHON",
+                      )
+                  )
+              ],
+              role="model",
+          ),
+      ),
+      # Event with content that has code execution result part
+      Event(
+          invocation_id="inv11",
+          author="test_agent",
+          content=types.Content(
+              parts=[
+                  types.Part(
+                      code_execution_result=types.CodeExecutionResult(
+                          outcome="OUTCOME_OK",
+                          output="hello",
+                      )
+                  )
+              ],
+              role="model",
           ),
       ),
   ]
@@ -534,4 +636,157 @@ async def test_events_with_empty_content_are_skipped():
           ],
           role="user",
       ),
+      types.Content(
+          parts=[types.Part(text=""), types.Part(text="Mixed content")],
+          role="user",
+      ),
+      types.Content(
+          parts=[
+              types.Part(
+                  executable_code=types.ExecutableCode(
+                      code="print('hello')",
+                      language="PYTHON",
+                  )
+              )
+          ],
+          role="model",
+      ),
+      types.Content(
+          parts=[
+              types.Part(
+                  code_execution_result=types.CodeExecutionResult(
+                      outcome="OUTCOME_OK",
+                      output="hello",
+                  )
+              )
+          ],
+          role="model",
+      ),
   ]
+
+
+@pytest.mark.asyncio
+async def test_code_execution_result_events_are_not_skipped():
+  """Test that events with code execution result are not skipped.
+
+  This is a regression test for the endless loop bug where code executor
+  outputs were not passed to the LLM because the events were incorrectly
+  filtered as empty.
+  """
+  agent = Agent(model="gemini-2.5-flash", name="test_agent")
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("Write code to calculate factorial"),
+      ),
+      # Model generates code
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.Content(
+              parts=[
+                  types.Part(text="Here's the code:"),
+                  types.Part(
+                      executable_code=types.ExecutableCode(
+                          code=(
+                              "def factorial(n):\n  return 1 if n <= 1 else n *"
+                              " factorial(n-1)\nprint(factorial(5))"
+                          ),
+                          language="PYTHON",
+                      )
+                  ),
+              ],
+              role="model",
+          ),
+      ),
+      # Code execution result
+      Event(
+          invocation_id="inv3",
+          author="test_agent",
+          content=types.Content(
+              parts=[
+                  types.Part(
+                      code_execution_result=types.CodeExecutionResult(
+                          outcome="OUTCOME_OK",
+                          output="120",
+                      )
+                  )
+              ],
+              role="model",
+          ),
+      ),
+  ]
+  invocation_context.session.events = events
+
+  # Process the request
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  # Verify all three events are included, especially the code execution result
+  assert len(llm_request.contents) == 3
+  assert llm_request.contents[0] == types.UserContent(
+      "Write code to calculate factorial"
+  )
+  # Second event has executable code
+  assert llm_request.contents[1].parts[1].executable_code is not None
+  # Third event has code execution result - this was the bug!
+  assert llm_request.contents[2].parts[0].code_execution_result is not None
+  assert llm_request.contents[2].parts[0].code_execution_result.output == "120"
+
+
+@pytest.mark.asyncio
+async def test_code_execution_result_not_in_first_part_is_not_skipped():
+  """Test that code execution results aren't skipped.
+
+  This covers results that appear in a non-first part.
+  """
+  agent = Agent(model="gemini-2.5-flash", name="test_agent")
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("Run some code."),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.Content(
+              parts=[
+                  types.Part(text=""),
+                  types.Part(
+                      code_execution_result=types.CodeExecutionResult(
+                          outcome="OUTCOME_OK",
+                          output="42",
+                      )
+                  ),
+              ],
+              role="model",
+          ),
+      ),
+  ]
+  invocation_context.session.events = events
+
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  assert len(llm_request.contents) == 2
+  assert any(
+      part.code_execution_result is not None
+      and part.code_execution_result.output == "42"
+      for part in llm_request.contents[1].parts
+  )

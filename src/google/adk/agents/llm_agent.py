@@ -183,10 +183,18 @@ async def _convert_tool_union_to_tools(
 class LlmAgent(BaseAgent):
   """LLM-based Agent."""
 
+  DEFAULT_MODEL: ClassVar[str] = 'gemini-2.5-flash'
+  """System default model used when no model is set on an agent."""
+
+  _default_model: ClassVar[Union[str, BaseLlm]] = DEFAULT_MODEL
+  """Current default model used when an agent has no model set."""
+
   model: Union[str, BaseLlm] = ''
   """The model to use for the agent.
 
-  When not set, the agent will inherit the model from its ancestor.
+  When not set, the agent will inherit the model from its ancestor. If no
+  ancestor provides a model, the agent uses the default model configured via
+  LlmAgent.set_default_model. The built-in default is gemini-2.5-flash.
   """
 
   config_type: ClassVar[Type[BaseAgentConfig]] = LlmAgentConfig
@@ -469,7 +477,7 @@ class LlmAgent(BaseAgent):
 
     if ctx.is_resumable:
       events = ctx._get_events(current_invocation=True, current_branch=True)
-      if any(ctx.should_pause_invocation(e) for e in events[-2:]):
+      if events and any(ctx.should_pause_invocation(e) for e in events[-2:]):
         return
       # Only yield an end state if the last event is no longer a long running
       # tool call.
@@ -503,7 +511,24 @@ class LlmAgent(BaseAgent):
         if isinstance(ancestor_agent, LlmAgent):
           return ancestor_agent.canonical_model
         ancestor_agent = ancestor_agent.parent_agent
-      raise ValueError(f'No model found for {self.name}.')
+      return self._resolve_default_model()
+
+  @classmethod
+  def set_default_model(cls, model: Union[str, BaseLlm]) -> None:
+    """Overrides the default model used when an agent has no model set."""
+    if not isinstance(model, (str, BaseLlm)):
+      raise TypeError('Default model must be a model name or BaseLlm.')
+    if isinstance(model, str) and not model:
+      raise ValueError('Default model must be a non-empty string.')
+    cls._default_model = model
+
+  @classmethod
+  def _resolve_default_model(cls) -> BaseLlm:
+    """Resolves the current default model to a BaseLlm instance."""
+    default_model = cls._default_model
+    if isinstance(default_model, BaseLlm):
+      return default_model
+    return LLMRegistry.new_llm(default_model)
 
   async def canonical_instruction(
       self, ctx: ReadonlyContext
@@ -575,10 +600,11 @@ class LlmAgent(BaseAgent):
     # because the built-in tools cannot be used together with other tools.
     # TODO(b/448114567): Remove once the workaround is no longer needed.
     multiple_tools = len(self.tools) > 1
+    model = self.canonical_model
     for tool_union in self.tools:
       resolved_tools.extend(
           await _convert_tool_union_to_tools(
-              tool_union, ctx, self.model, multiple_tools
+              tool_union, ctx, model, multiple_tools
           )
       )
     return resolved_tools
@@ -907,7 +933,9 @@ class LlmAgent(BaseAgent):
     from .config_agent_utils import resolve_callbacks
     from .config_agent_utils import resolve_code_reference
 
-    if config.model:
+    if config.model_code:
+      kwargs['model'] = resolve_code_reference(config.model_code)
+    elif config.model:
       kwargs['model'] = config.model
     if config.instruction:
       kwargs['instruction'] = config.instruction

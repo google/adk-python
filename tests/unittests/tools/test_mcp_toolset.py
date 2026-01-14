@@ -14,30 +14,11 @@
 
 """Unit tests for McpToolset."""
 
-import sys
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 
+from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
 import pytest
-
-# Skip all tests in this module if Python version is less than 3.10
-pytestmark = pytest.mark.skipif(
-    sys.version_info < (3, 10), reason="MCP tool requires Python 3.10+"
-)
-
-# Import dependencies with version checking
-try:
-  from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
-except ImportError as e:
-  if sys.version_info < (3, 10):
-    # Create dummy classes to prevent NameError during test collection
-    # Tests will be skipped anyway due to pytestmark
-    class DummyClass:
-      pass
-
-    McpToolset = DummyClass
-  else:
-    raise e
 
 
 @pytest.mark.asyncio

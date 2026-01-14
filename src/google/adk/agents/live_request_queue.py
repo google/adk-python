@@ -30,13 +30,29 @@ class LiveRequest(BaseModel):
   """The pydantic model config."""
 
   content: Optional[types.Content] = None
-  """If set, send the content to the model in turn-by-turn mode."""
+  """If set, send the content to the model in turn-by-turn mode.
+
+  When multiple fields are set, they are processed by priority (highest first):
+  activity_start > activity_end > blob > content.
+  """
   blob: Optional[types.Blob] = None
-  """If set, send the blob to the model in realtime mode."""
+  """If set, send the blob to the model in realtime mode.
+
+  When multiple fields are set, they are processed by priority (highest first):
+  activity_start > activity_end > blob > content.
+  """
   activity_start: Optional[types.ActivityStart] = None
-  """If set, signal the start of user activity to the model."""
+  """If set, signal the start of user activity to the model.
+
+  When multiple fields are set, they are processed by priority (highest first):
+  activity_start > activity_end > blob > content.
+  """
   activity_end: Optional[types.ActivityEnd] = None
-  """If set, signal the end of user activity to the model."""
+  """If set, signal the end of user activity to the model.
+
+  When multiple fields are set, they are processed by priority (highest first):
+  activity_start > activity_end > blob > content.
+  """
   close: bool = False
   """If set, close the queue. queue.shutdown() is only supported in Python 3.13+."""
 
@@ -45,15 +61,6 @@ class LiveRequestQueue:
   """Queue used to send LiveRequest in a live(bidirectional streaming) way."""
 
   def __init__(self):
-    # Ensure there's an event loop available in this thread
-    try:
-      asyncio.get_running_loop()
-    except RuntimeError:
-      # No running loop, create one
-      loop = asyncio.new_event_loop()
-      asyncio.set_event_loop(loop)
-
-    # Now create the queue (it will use the event loop we just ensured exists)
     self._queue = asyncio.Queue()
 
   def close(self):

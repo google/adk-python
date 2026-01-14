@@ -17,7 +17,6 @@ from __future__ import annotations
 import base64
 import inspect
 import logging
-import sys
 from typing import Any
 from typing import Callable
 from typing import Dict
@@ -27,35 +26,21 @@ import warnings
 
 from fastapi.openapi.models import APIKeyIn
 from google.genai.types import FunctionDeclaration
+from mcp.types import Tool as McpBaseTool
 from typing_extensions import override
 
 from ...agents.readonly_context import ReadonlyContext
-from ...features import FeatureName
-from ...features import is_feature_enabled
-from .._gemini_schema_util import _to_gemini_schema
-from .mcp_session_manager import MCPSessionManager
-from .mcp_session_manager import retry_on_errors
-
-# Attempt to import MCP Tool from the MCP library, and hints user to upgrade
-# their Python version to 3.10 if it fails.
-try:
-  from mcp.types import Tool as McpBaseTool
-except ImportError as e:
-  if sys.version_info < (3, 10):
-    raise ImportError(
-        "MCP Tool requires Python 3.10 or above. Please upgrade your Python"
-        " version."
-    ) from e
-  else:
-    raise e
-
-
 from ...auth.auth_credential import AuthCredential
 from ...auth.auth_schemes import AuthScheme
 from ...auth.auth_tool import AuthConfig
+from ...features import FeatureName
+from ...features import is_feature_enabled
+from .._gemini_schema_util import _to_gemini_schema
 from ..base_authenticated_tool import BaseAuthenticatedTool
 #  import
 from ..tool_context import ToolContext
+from .mcp_session_manager import MCPSessionManager
+from .mcp_session_manager import retry_on_errors
 
 logger = logging.getLogger("google_adk." + __name__)
 

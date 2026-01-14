@@ -12,9 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import logging
-import sys
-
 from .base_agent import BaseAgent
 from .invocation_context import InvocationContext
 from .live_request_queue import LiveRequest
@@ -22,6 +19,7 @@ from .live_request_queue import LiveRequestQueue
 from .llm_agent import Agent
 from .llm_agent import LlmAgent
 from .loop_agent import LoopAgent
+from .mcp_instruction_provider import McpInstructionProvider
 from .parallel_agent import ParallelAgent
 from .run_config import RunConfig
 from .sequential_agent import SequentialAgent
@@ -31,6 +29,7 @@ __all__ = [
     'BaseAgent',
     'LlmAgent',
     'LoopAgent',
+    'McpInstructionProvider',
     'ParallelAgent',
     'SequentialAgent',
     'InvocationContext',
@@ -38,16 +37,3 @@ __all__ = [
     'LiveRequestQueue',
     'RunConfig',
 ]
-
-if sys.version_info < (3, 10):
-  logger = logging.getLogger('google_adk.' + __name__)
-  logger.warning(
-      'MCP requires Python 3.10 or above. Please upgrade your Python'
-      ' version in order to use it.'
-  )
-else:
-  from .mcp_instruction_provider import McpInstructionProvider
-
-  __all__.extend([
-      'McpInstructionProvider',
-  ])

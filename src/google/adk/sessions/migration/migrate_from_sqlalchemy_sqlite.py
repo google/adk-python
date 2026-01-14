@@ -22,8 +22,8 @@ import logging
 import sqlite3
 import sys
 
-from google.adk.sessions import database_session_service as dss
 from google.adk.sessions import sqlite_session_service as sss
+from google.adk.sessions.schemas import v0 as v0_schema
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -35,7 +35,9 @@ def migrate(source_db_url: str, dest_db_path: str):
   logger.info(f"Connecting to source database: {source_db_url}")
   try:
     engine = create_engine(source_db_url)
-    dss.Base.metadata.create_all(engine)  # Ensure tables exist for inspection
+    v0_schema.Base.metadata.create_all(
+        engine
+    )  # Ensure tables exist for inspection
     SourceSession = sessionmaker(bind=engine)
     source_session = SourceSession()
   except Exception as e:
@@ -55,7 +57,7 @@ def migrate(source_db_url: str, dest_db_path: str):
   try:
     # Migrate app_states
     logger.info("Migrating app_states...")
-    app_states = source_session.query(dss.StorageAppState).all()
+    app_states = source_session.query(v0_schema.StorageAppState).all()
     for item in app_states:
       dest_cursor.execute(
           "INSERT INTO app_states (app_name, state, update_time) VALUES (?,"
@@ -70,7 +72,7 @@ def migrate(source_db_url: str, dest_db_path: str):
 
     # Migrate user_states
     logger.info("Migrating user_states...")
-    user_states = source_session.query(dss.StorageUserState).all()
+    user_states = source_session.query(v0_schema.StorageUserState).all()
     for item in user_states:
       dest_cursor.execute(
           "INSERT INTO user_states (app_name, user_id, state, update_time)"
@@ -86,7 +88,7 @@ def migrate(source_db_url: str, dest_db_path: str):
 
     # Migrate sessions
     logger.info("Migrating sessions...")
-    sessions = source_session.query(dss.StorageSession).all()
+    sessions = source_session.query(v0_schema.StorageSession).all()
     for item in sessions:
       dest_cursor.execute(
           "INSERT INTO sessions (app_name, user_id, id, state, create_time,"
@@ -104,7 +106,7 @@ def migrate(source_db_url: str, dest_db_path: str):
 
     # Migrate events
     logger.info("Migrating events...")
-    events = source_session.query(dss.StorageEvent).all()
+    events = source_session.query(v0_schema.StorageEvent).all()
     for item in events:
       try:
         event_obj = item.to_event()

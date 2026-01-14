@@ -23,163 +23,19 @@ import logging
 import pickle
 import sys
 from typing import Any
-from typing import Optional
 
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
 from google.adk.sessions import _session_util
-from google.adk.sessions import database_session_service as dss
-from google.adk.sessions.migration import _schema_check
+from google.adk.sessions.migration import _schema_check_utils
+from google.adk.sessions.schemas import v1
 from google.genai import types
 import sqlalchemy
-from sqlalchemy import Boolean
 from sqlalchemy import create_engine
-from sqlalchemy import ForeignKeyConstraint
-from sqlalchemy import func
 from sqlalchemy import text
-from sqlalchemy import Text
-from sqlalchemy.dialects import mysql
-from sqlalchemy.ext.mutable import MutableDict
-from sqlalchemy.orm import DeclarativeBase
-from sqlalchemy.orm import Mapped
-from sqlalchemy.orm import mapped_column
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.types import PickleType
-from sqlalchemy.types import String
-from sqlalchemy.types import TypeDecorator
 
 logger = logging.getLogger("google_adk." + __name__)
-
-
-# --- Old Schema Definitions ---
-class DynamicPickleType(TypeDecorator):
-  """Represents a type that can be pickled."""
-
-  impl = PickleType
-
-  def load_dialect_impl(self, dialect):
-    if dialect.name == "mysql":
-      return dialect.type_descriptor(mysql.LONGBLOB)
-    if dialect.name == "spanner+spanner":
-      from google.cloud.sqlalchemy_spanner.sqlalchemy_spanner import SpannerPickleType
-
-      return dialect.type_descriptor(SpannerPickleType)
-    return self.impl
-
-  def process_bind_param(self, value, dialect):
-    """Ensures the pickled value is a bytes object before passing it to the database dialect."""
-    if value is not None:
-      if dialect.name in ("spanner+spanner", "mysql"):
-        return pickle.dumps(value)
-    return value
-
-  def process_result_value(self, value, dialect):
-    """Ensures the raw bytes from the database are unpickled back into a Python object."""
-    if value is not None:
-      if dialect.name in ("spanner+spanner", "mysql"):
-        return pickle.loads(value)
-    return value
-
-
-class OldBase(DeclarativeBase):
-  pass
-
-
-class OldStorageSession(OldBase):
-  __tablename__ = "sessions"
-  app_name: Mapped[str] = mapped_column(
-      String(dss.DEFAULT_MAX_KEY_LENGTH), primary_key=True
-  )
-  user_id: Mapped[str] = mapped_column(
-      String(dss.DEFAULT_MAX_KEY_LENGTH), primary_key=True
-  )
-  id: Mapped[str] = mapped_column(
-      String(dss.DEFAULT_MAX_KEY_LENGTH), primary_key=True
-  )
-  state: Mapped[MutableDict[str, Any]] = mapped_column(
-      MutableDict.as_mutable(dss.DynamicJSON), default={}
-  )
-  create_time: Mapped[datetime] = mapped_column(
-      dss.PreciseTimestamp, default=func.now()
-  )
-  update_time: Mapped[datetime] = mapped_column(
-      dss.PreciseTimestamp, default=func.now(), onupdate=func.now()
-  )
-
-
-class OldStorageEvent(OldBase):
-  """Old storage event with pickle."""
-
-  __tablename__ = "events"
-  id: Mapped[str] = mapped_column(
-      String(dss.DEFAULT_MAX_KEY_LENGTH), primary_key=True
-  )
-  app_name: Mapped[str] = mapped_column(
-      String(dss.DEFAULT_MAX_KEY_LENGTH), primary_key=True
-  )
-  user_id: Mapped[str] = mapped_column(
-      String(dss.DEFAULT_MAX_KEY_LENGTH), primary_key=True
-  )
-  session_id: Mapped[str] = mapped_column(
-      String(dss.DEFAULT_MAX_KEY_LENGTH), primary_key=True
-  )
-  invocation_id: Mapped[str] = mapped_column(
-      String(dss.DEFAULT_MAX_VARCHAR_LENGTH)
-  )
-  author: Mapped[str] = mapped_column(String(dss.DEFAULT_MAX_VARCHAR_LENGTH))
-  actions: Mapped[Any] = mapped_column(DynamicPickleType)
-  long_running_tool_ids_json: Mapped[Optional[str]] = mapped_column(
-      Text, nullable=True
-  )
-  branch: Mapped[str] = mapped_column(
-      String(dss.DEFAULT_MAX_VARCHAR_LENGTH), nullable=True
-  )
-  timestamp: Mapped[datetime] = mapped_column(
-      dss.PreciseTimestamp, default=func.now()
-  )
-  content: Mapped[dict[str, Any]] = mapped_column(
-      dss.DynamicJSON, nullable=True
-  )
-  grounding_metadata: Mapped[dict[str, Any]] = mapped_column(
-      dss.DynamicJSON, nullable=True
-  )
-  custom_metadata: Mapped[dict[str, Any]] = mapped_column(
-      dss.DynamicJSON, nullable=True
-  )
-  usage_metadata: Mapped[dict[str, Any]] = mapped_column(
-      dss.DynamicJSON, nullable=True
-  )
-  citation_metadata: Mapped[dict[str, Any]] = mapped_column(
-      dss.DynamicJSON, nullable=True
-  )
-  partial: Mapped[bool] = mapped_column(Boolean, nullable=True)
-  turn_complete: Mapped[bool] = mapped_column(Boolean, nullable=True)
-  error_code: Mapped[str] = mapped_column(
-      String(dss.DEFAULT_MAX_VARCHAR_LENGTH), nullable=True
-  )
-  error_message: Mapped[str] = mapped_column(String(1024), nullable=True)
-  interrupted: Mapped[bool] = mapped_column(Boolean, nullable=True)
-  input_transcription: Mapped[dict[str, Any]] = mapped_column(
-      dss.DynamicJSON, nullable=True
-  )
-  output_transcription: Mapped[dict[str, Any]] = mapped_column(
-      dss.DynamicJSON, nullable=True
-  )
-  __table_args__ = (
-      ForeignKeyConstraint(
-          ["app_name", "user_id", "session_id"],
-          ["sessions.app_name", "sessions.user_id", "sessions.id"],
-          ondelete="CASCADE",
-      ),
-  )
-
-  @property
-  def long_running_tool_ids(self) -> set[str]:
-    return (
-        set(json.loads(self.long_running_tool_ids_json))
-        if self.long_running_tool_ids_json
-        else set()
-    )
 
 
 def _to_datetime_obj(val: Any) -> datetime | Any:
@@ -213,7 +69,7 @@ def _row_to_event(row: dict) -> Event:
       actions = None
 
   if actions and hasattr(actions, "model_dump"):
-    actions = EventActions().model_copy(update=actions.model_dump())
+    actions = EventActions().model_validate(actions.model_dump())
   elif isinstance(actions, dict):
     actions = EventActions(**actions)
   else:
@@ -306,35 +162,6 @@ def _get_state_dict(state_val: Any) -> dict:
   return {}
 
 
-class OldStorageAppState(OldBase):
-  __tablename__ = "app_states"
-  app_name: Mapped[str] = mapped_column(
-      String(dss.DEFAULT_MAX_KEY_LENGTH), primary_key=True
-  )
-  state: Mapped[MutableDict[str, Any]] = mapped_column(
-      MutableDict.as_mutable(dss.DynamicJSON), default={}
-  )
-  update_time: Mapped[datetime] = mapped_column(
-      dss.PreciseTimestamp, default=func.now(), onupdate=func.now()
-  )
-
-
-class OldStorageUserState(OldBase):
-  __tablename__ = "user_states"
-  app_name: Mapped[str] = mapped_column(
-      String(dss.DEFAULT_MAX_KEY_LENGTH), primary_key=True
-  )
-  user_id: Mapped[str] = mapped_column(
-      String(dss.DEFAULT_MAX_KEY_LENGTH), primary_key=True
-  )
-  state: Mapped[MutableDict[str, Any]] = mapped_column(
-      MutableDict.as_mutable(dss.DynamicJSON), default={}
-  )
-  update_time: Mapped[datetime] = mapped_column(
-      dss.PreciseTimestamp, default=func.now(), onupdate=func.now()
-  )
-
-
 # --- Migration Logic ---
 def migrate(source_db_url: str, dest_db_url: str):
   """Migrates data from old pickle schema to new JSON schema."""
@@ -349,74 +176,70 @@ def migrate(source_db_url: str, dest_db_url: str):
   logger.info(f"Connecting to destination database: {dest_db_url}")
   try:
     dest_engine = create_engine(dest_db_url)
-    dss.Base.metadata.create_all(dest_engine)
+    v1.Base.metadata.create_all(dest_engine)
     DestSession = sessionmaker(bind=dest_engine)
   except Exception as e:
     logger.error(f"Failed to connect to destination database: {e}")
     raise RuntimeError(f"Failed to connect to destination database: {e}") from e
 
   with SourceSession() as source_session, DestSession() as dest_session:
-    dest_session.merge(
-        dss.StorageMetadata(
-            key=_schema_check.SCHEMA_VERSION_KEY,
-            value=_schema_check.SCHEMA_VERSION_1_0_JSON,
-        )
-    )
-    dest_session.commit()
     try:
+      dest_session.merge(
+          v1.StorageMetadata(
+              key=_schema_check_utils.SCHEMA_VERSION_KEY,
+              value=_schema_check_utils.SCHEMA_VERSION_1_JSON,
+          )
+      )
+      logger.info("Created metadata table in destination database.")
+
       inspector = sqlalchemy.inspect(source_engine)
 
       logger.info("Migrating app_states...")
       if inspector.has_table("app_states"):
-        rows = (
-            source_session.execute(text("SELECT * FROM app_states"))
-            .mappings()
-            .all()
-        )
-        for row in rows:
+        num_rows = 0
+        for row in source_session.execute(
+            text("SELECT * FROM app_states")
+        ).mappings():
+          num_rows += 1
           dest_session.merge(
-              dss.StorageAppState(
+              v1.StorageAppState(
                   app_name=row["app_name"],
                   state=_get_state_dict(row.get("state")),
                   update_time=_to_datetime_obj(row["update_time"]),
               )
           )
-        dest_session.commit()
-        logger.info(f"Migrated {len(rows)} app_states.")
+        logger.info(f"Migrated {num_rows} app_states.")
       else:
         logger.info("No 'app_states' table found in source db.")
 
       logger.info("Migrating user_states...")
       if inspector.has_table("user_states"):
-        rows = (
-            source_session.execute(text("SELECT * FROM user_states"))
-            .mappings()
-            .all()
-        )
-        for row in rows:
+        num_rows = 0
+        for row in source_session.execute(
+            text("SELECT * FROM user_states")
+        ).mappings():
+          num_rows += 1
           dest_session.merge(
-              dss.StorageUserState(
+              v1.StorageUserState(
                   app_name=row["app_name"],
                   user_id=row["user_id"],
                   state=_get_state_dict(row.get("state")),
                   update_time=_to_datetime_obj(row["update_time"]),
               )
           )
-        dest_session.commit()
-        logger.info(f"Migrated {len(rows)} user_states.")
+        logger.info(f"Migrated {num_rows} user_states.")
       else:
         logger.info("No 'user_states' table found in source db.")
 
       logger.info("Migrating sessions...")
       if inspector.has_table("sessions"):
-        rows = (
-            source_session.execute(text("SELECT * FROM sessions"))
-            .mappings()
-            .all()
-        )
-        for row in rows:
+        num_rows = 0
+        for row in source_session.execute(
+            text("SELECT * FROM sessions")
+        ).mappings():
+          num_rows += 1
           dest_session.merge(
-              dss.StorageSession(
+              v1.StorageSession(
                   app_name=row["app_name"],
                   user_id=row["user_id"],
                   id=row["id"],
@@ -425,23 +248,19 @@ def migrate(source_db_url: str, dest_db_url: str):
                   update_time=_to_datetime_obj(row["update_time"]),
               )
           )
-        dest_session.commit()
-        logger.info(f"Migrated {len(rows)} sessions.")
+        logger.info(f"Migrated {num_rows} sessions.")
       else:
         logger.info("No 'sessions' table found in source db.")
 
       logger.info("Migrating events...")
-      events = []
+      num_rows = 0
       if inspector.has_table("events"):
-        rows = (
-            source_session.execute(text("SELECT * FROM events"))
-            .mappings()
-            .all()
-        )
-        for row in rows:
+        for row in source_session.execute(
+            text("SELECT * FROM events")
+        ).mappings():
           try:
             event_obj = _row_to_event(dict(row))
-            new_event = dss.StorageEvent(
+            new_event = v1.StorageEvent(
                 id=event_obj.id,
                 app_name=row["app_name"],
                 user_id=row["user_id"],
@@ -453,16 +272,16 @@ def migrate(source_db_url: str, dest_db_url: str):
                 event_data=event_obj.model_dump(mode="json", exclude_none=True),
             )
             dest_session.merge(new_event)
-            events.append(new_event)
+            num_rows += 1
           except Exception as e:
             logger.warning(
                 f"Failed to migrate event row {row.get('id', 'N/A')}: {e}"
             )
-        dest_session.commit()
-        logger.info(f"Migrated {len(events)} events.")
+        logger.info(f"Migrated {num_rows} events.")
       else:
         logger.info("No 'events' table found in source database.")
 
+      dest_session.commit()
       logger.info("Migration completed successfully.")
     except Exception as e:
       logger.error(f"An error occurred during migration: {e}", exc_info=True)
