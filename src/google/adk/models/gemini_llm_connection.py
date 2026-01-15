@@ -20,6 +20,7 @@ from typing import Union
 
 from google.genai import types
 
+from ..utils.content_utils import filter_audio_parts
 from ..utils.context_utils import Aclosing
 from ..utils.variant_utils import GoogleLLMVariant
 from .base_llm_connection import BaseLlmConnection
@@ -63,15 +64,22 @@ class GeminiLlmConnection(BaseLlmConnection):
     # TODO: Remove this filter and translate unary contents to streaming
     # contents properly.
 
-    # We ignore any audio from user during the agent transfer phase
+    # Filter out audio parts from history because:
+    # 1. audio has already been transcribed.
+    # 2. sending audio via connection.send or connection.send_live_content is
+    # not supported by LIVE API (session will be corrupted).
+    # This method is called when:
+    # 1. Agent transfer to a new agent
+    # 2. Establishing a new live connection with previous ADK session history
+
     contents = [
-        content
+        filtered
         for content in history
-        if content.parts and content.parts[0].text
+        if (filtered := filter_audio_parts(content)) is not None
     ]
-    logger.debug('Sending history to live connection: %s', contents)
 
     if contents:
+      logger.debug('Sending history to live connection: %s', contents)
       await self._gemini_session.send(
           input=types.LiveClientContent(
               turns=contents,
