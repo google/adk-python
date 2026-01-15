@@ -1015,12 +1015,15 @@ class Runner:
     # Pre-processing for live streaming tools
     # Inspect the tool's parameters to find if it uses LiveRequestQueue
     invocation_context.active_streaming_tools = {}
-    # TODO(hangfei): switch to use canonical_tools.
-    # for shell agents, there is no tools associated with it so we should skip.
-    if hasattr(invocation_context.agent, 'tools'):
+    # For shell agents, there is no canonical_tools method so we should skip.
+    if hasattr(invocation_context.agent, 'canonical_tools'):
       import inspect
 
-      for tool in invocation_context.agent.tools:
+      # Use canonical_tools to get properly wrapped BaseTool instances
+      canonical_tools = await invocation_context.agent.canonical_tools(
+          invocation_context
+      )
+      for tool in canonical_tools:
         # We use `inspect.signature()` to examine the tool's underlying function (`tool.func`).
         # This approach is deliberately chosen over `typing.get_type_hints()` for robustness.
         #
@@ -1044,10 +1047,14 @@ class Runner:
           if param.annotation is LiveRequestQueue:
             if not invocation_context.active_streaming_tools:
               invocation_context.active_streaming_tools = {}
+
+            logger.debug(
+                'Register streaming tool with input stream: %s', tool.name
+            )
             active_streaming_tool = ActiveStreamingTool(
                 stream=LiveRequestQueue()
             )
-            invocation_context.active_streaming_tools[tool.__name__] = (
+            invocation_context.active_streaming_tools[tool.name] = (
                 active_streaming_tool
             )
 
