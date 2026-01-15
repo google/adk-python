@@ -88,6 +88,11 @@ class TestGkeCodeExecutor:
     assert executor.cpu_limit == "1000m"
     assert executor.executor_type == "sandbox"
 
+  def test_init_invalid_executor_type(self):
+    """Tests that init raises ValueError for invalid executor_type."""
+    with pytest.raises(ValueError, match="Invalid executor_type"):
+      GkeCodeExecutor(executor_type="invalid_type")
+
   @patch("google.adk.code_executors.gke_code_executor.Watch")
   def test_execute_code_success(
       self,
@@ -262,6 +267,29 @@ class TestGkeCodeExecutor:
 
     # Verify Job path was NOT taken
     mock_k8s_clients["batch_v1"].create_namespaced_job.assert_not_called()
+
+  @patch("google.adk.code_executors.gke_code_executor.SandboxClient")
+  def test_execute_code_sandbox_exception(
+      self,
+      mock_sandbox_client,
+      mock_invocation_context,
+  ):
+    """Tests handling of exceptions from SandboxClient."""
+    # Setup Sandbox mock to raise exception
+    mock_sandbox_client.return_value.__enter__.side_effect = Exception(
+        "Connection failed"
+    )
+
+    # Instantiate with sandbox type
+    executor = GkeCodeExecutor(executor_type="sandbox")
+    code_input = CodeExecutionInput(code='print("sandbox")')
+
+    # Execute
+    result = executor.execute_code(mock_invocation_context, code_input)
+
+    # Assertions
+    assert result.stdout == ""
+    assert "Sandbox execution failed: Connection failed" in result.stderr
 
   @patch("google.adk.code_executors.gke_code_executor.SandboxClient")
   @patch("google.adk.code_executors.gke_code_executor.Watch")

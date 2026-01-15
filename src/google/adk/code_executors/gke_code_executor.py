@@ -110,6 +110,10 @@ class GkeCodeExecutor(BaseCodeExecutor):
     self.kubeconfig_path = kubeconfig_path
     self.kubeconfig_context = kubeconfig_context
 
+    if executor_type not in ['job', 'sandbox']:
+      raise ValueError(
+          f"Invalid executor_type: '{executor_type}'. Must be 'job' or 'sandbox'."
+      )
     if self.kubeconfig_path:
       try:
         logger.info(f"Using explicit kubeconfig from '{self.kubeconfig_path}'.")
@@ -162,6 +166,7 @@ class GkeCodeExecutor(BaseCodeExecutor):
 
             return CodeExecutionResult(stdout=result.stdout)
     except Exception as e:
+        logger.error("Sandbox execution failed", exc_info=True)
         return CodeExecutionResult(
             stderr=f"Sandbox execution failed: {str(e)}",
         )
