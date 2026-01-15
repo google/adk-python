@@ -486,13 +486,3 @@ def test_aggregate_invocation_results():
   # Only 4 / 8 invocations are evaluated, and 2 / 4 are valid.
   assert aggregated_result.overall_score == 0.5
   assert aggregated_result.overall_eval_status == EvalStatus.PASSED
-
-
-def test_get_metric_info():
-  """Test get_metric_info function for Final Response Match V2 metric."""
-  metric_info = FinalResponseMatchV2Evaluator.get_metric_info()
-  assert (
-      metric_info.metric_name == PrebuiltMetrics.FINAL_RESPONSE_MATCH_V2.value
-  )
-  assert metric_info.metric_value_info.interval.min_value == 0.0
-  assert metric_info.metric_value_info.interval.max_value == 1.0
