@@ -683,7 +683,16 @@ class TestRemoteA2aAgentMessageHandling:
     agent1 = Mock()
     agent1.content = content2
     agent1.author = self.agent.name
-    agent1.custom_metadata = None
+    agent1.custom_metadata = {
+        A2A_METADATA_PREFIX + "response": True,
+    }
+
+    agent2 = Mock()
+    agent2.content = None
+    agent2.author = self.agent.name
+    # Just actions, no content. Not marked as a response.
+    agent2.actions = Mock()
+    agent2.custom_metadata = None
 
     part3 = Mock()
     part3.text = "User 2"
@@ -694,7 +703,7 @@ class TestRemoteA2aAgentMessageHandling:
     user2.author = "user"
     user2.custom_metadata = None
 
-    self.mock_session.events = [user1, agent1, user2]
+    self.mock_session.events = [user1, agent1, user2, agent2]
 
     def mock_converter(part):
       mock_a2a_part = Mock()
@@ -785,7 +794,10 @@ class TestRemoteA2aAgentMessageHandling:
     agent1 = Mock()
     agent1.content = content2
     agent1.author = self.agent.name
-    agent1.custom_metadata = {A2A_METADATA_PREFIX + "context_id": "ctx-1"}
+    agent1.custom_metadata = {
+        A2A_METADATA_PREFIX + "response": True,
+        A2A_METADATA_PREFIX + "context_id": "ctx-1",
+    }
 
     part3 = Mock()
     part3.text = "User 2"
