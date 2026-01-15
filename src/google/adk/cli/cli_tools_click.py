@@ -1031,6 +1031,19 @@ def web_options():
   return decorator
 
 
+def _deprecate_staging_bucket(ctx, param, value):
+  if value:
+    click.echo(
+        click.style(
+            f"WARNING: --{param} is deprecated and will be removed. Please"
+            " leave it unspecified.",
+            fg="yellow",
+        ),
+        err=True,
+    )
+  return value
+
+
 def deprecated_adk_services_options():
   """Deprecated ADK services options."""
 
@@ -1689,10 +1702,8 @@ def cli_migrate_session(
     "--staging_bucket",
     type=str,
     default=None,
-    help=(
-        "Optional. GCS bucket for staging the deployment artifacts. It will be"
-        " ignored if api_key is set."
-    ),
+    help="Deprecated. This argument is no longer required or used.",
+    callback=_deprecate_staging_bucket,
 )
 @click.option(
     "--agent_engine_id",
@@ -1827,8 +1838,7 @@ def cli_deploy_agent_engine(
 
     # With Google Cloud Project and Region
     adk deploy agent_engine --project=[project] --region=[region]
-      --staging_bucket=[staging_bucket] --display_name=[app_name]
-      my_agent
+      --display_name=[app_name] my_agent
   """
   logging.getLogger("vertexai_genai.agentengines").setLevel(logging.INFO)
   try:
@@ -1836,7 +1846,6 @@ def cli_deploy_agent_engine(
         agent_folder=agent,
         project=project,
         region=region,
-        staging_bucket=staging_bucket,
         agent_engine_id=agent_engine_id,
         trace_to_cloud=trace_to_cloud,
         api_key=api_key,
