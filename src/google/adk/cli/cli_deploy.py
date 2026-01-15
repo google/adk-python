@@ -74,12 +74,7 @@ from vertexai.agent_engines import AdkApp
 
 if {is_config_agent}:
   from google.adk.agents import config_agent_utils
-  try:
-    # This path is for local loading.
-    root_agent = config_agent_utils.from_config("{agent_folder}/root_agent.yaml")
-  except FileNotFoundError:
-    # This path is used to support the file structure in Agent Engine.
-    root_agent = config_agent_utils.from_config("./{temp_folder}/{app_name}/root_agent.yaml")
+  root_agent = config_agent_utils.from_config("{agent_folder}/root_agent.yaml")
 else:
   from .agent import {adk_app_object}
 
@@ -912,8 +907,7 @@ def to_agent_engine(
               app_name=app_name,
               trace_to_cloud_option=trace_to_cloud,
               is_config_agent=is_config_agent,
-              temp_folder=temp_folder,
-              agent_folder=agent_folder,
+              agent_folder=f'./{temp_folder}',
               adk_app_object=adk_app_object,
               adk_app_type=adk_app_type,
               express_mode=api_key is not None,
