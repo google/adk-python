@@ -2880,6 +2880,7 @@ async def test_generate_content_async_stream(
       "test_arg": "test_value"
   }
   assert responses[3].content.parts[-1].function_call.id == "test_tool_call_id"
+  assert responses[3].finish_reason == types.FinishReason.STOP
   assert responses[3].model_version == "test_model"
   mock_completion.assert_called_once()
 
@@ -2898,6 +2899,55 @@ async def test_generate_content_async_stream(
       ]
       == "string"
   )
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_stream_sets_finish_reason(
+    mock_completion, lite_llm_instance
+):
+  mock_completion.return_value = iter([
+      ModelResponse(
+          model="test_model",
+          choices=[
+              StreamingChoices(
+                  finish_reason=None,
+                  delta=Delta(role="assistant", content="Hello "),
+              )
+          ],
+      ),
+      ModelResponse(
+          model="test_model",
+          choices=[
+              StreamingChoices(
+                  finish_reason=None,
+                  delta=Delta(role="assistant", content="world"),
+              )
+          ],
+      ),
+      ModelResponse(
+          model="test_model",
+          choices=[StreamingChoices(finish_reason="stop", delta=Delta())],
+      ),
+  ])
+
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role="user", parts=[types.Part.from_text(text="Test prompt")]
+          )
+      ],
+  )
+
+  responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          llm_request, stream=True
+      )
+  ]
+
+  assert responses[-1].partial is False
+  assert responses[-1].finish_reason == types.FinishReason.STOP
+  assert responses[-1].content.parts[0].text == "Hello world"
 
 
 @pytest.mark.asyncio
@@ -2944,6 +2994,7 @@ async def test_generate_content_async_stream_with_usage_metadata(
       "test_arg": "test_value"
   }
   assert responses[3].content.parts[-1].function_call.id == "test_tool_call_id"
+  assert responses[3].finish_reason == types.FinishReason.STOP
 
   assert responses[3].usage_metadata.prompt_token_count == 10
   assert responses[3].usage_metadata.candidates_token_count == 5

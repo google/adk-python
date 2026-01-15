@@ -110,6 +110,18 @@ _MISSING_TOOL_RESULT_MESSAGE = (
 )
 
 
+def _map_finish_reason(
+    finish_reason: Any,
+) -> types.FinishReason | None:
+  """Maps a LiteLLM finish_reason value to a google-genai FinishReason enum."""
+  if not finish_reason:
+    return None
+  if isinstance(finish_reason, types.FinishReason):
+    return finish_reason
+  finish_reason_str = str(finish_reason).lower()
+  return _FINISH_REASON_MAPPING.get(finish_reason_str, types.FinishReason.OTHER)
+
+
 def _get_provider_from_model(model: str) -> str:
   """Extracts the provider name from a LiteLLM model string.
 
@@ -1840,6 +1852,9 @@ class LiteLlm(BaseLlm):
                     else None,
                 )
             )
+            aggregated_llm_response_with_tool_call.finish_reason = (
+                _map_finish_reason(finish_reason)
+            )
             text = ""
             reasoning_parts = []
             function_calls.clear()
@@ -1853,6 +1868,9 @@ class LiteLlm(BaseLlm):
                 thought_parts=list(reasoning_parts)
                 if reasoning_parts
                 else None,
+            )
+            aggregated_llm_response.finish_reason = _map_finish_reason(
+                finish_reason
             )
             text = ""
             reasoning_parts = []
