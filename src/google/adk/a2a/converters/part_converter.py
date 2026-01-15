@@ -40,6 +40,9 @@ A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL = 'function_call'
 A2A_DATA_PART_METADATA_TYPE_FUNCTION_RESPONSE = 'function_response'
 A2A_DATA_PART_METADATA_TYPE_CODE_EXECUTION_RESULT = 'code_execution_result'
 A2A_DATA_PART_METADATA_TYPE_EXECUTABLE_CODE = 'executable_code'
+A2A_DATA_PART_TEXT_MIME_TYPE = 'text/plain'
+A2A_DATA_PART_START_TAG = b'<a2a_datapart_json>'
+A2A_DATA_PART_END_TAG = b'</a2a_datapart_json>'
 
 
 A2APartToGenAIPartConverter = Callable[
@@ -130,7 +133,16 @@ def convert_a2a_part_to_genai_part(
                 part.data, by_alias=True
             )
         )
-    return genai_types.Part(text=json.dumps(part.data))
+    return genai_types.Part(
+        inline_data=genai_types.Blob(
+            data=A2A_DATA_PART_START_TAG
+            + part.model_dump_json(by_alias=True, exclude_none=True).encode(
+                'utf-8'
+            )
+            + A2A_DATA_PART_END_TAG,
+            mime_type=A2A_DATA_PART_TEXT_MIME_TYPE,
+        )
+    )
 
   logger.warning(
       'Cannot convert unsupported part type: %s for A2A part: %s',
@@ -163,6 +175,20 @@ def convert_genai_part_to_a2a_part(
     )
 
   if part.inline_data:
+    if (
+        part.inline_data.mime_type == A2A_DATA_PART_TEXT_MIME_TYPE
+        and part.inline_data.data is not None
+        and part.inline_data.data.startswith(A2A_DATA_PART_START_TAG)
+        and part.inline_data.data.endswith(A2A_DATA_PART_END_TAG)
+    ):
+      return a2a_types.Part(
+          root=a2a_types.DataPart.model_validate_json(
+              part.inline_data.data[
+                  len(A2A_DATA_PART_START_TAG) : -len(A2A_DATA_PART_END_TAG)
+              ]
+          )
+      )
+    # The default case for inline_data is to convert it to FileWithBytes.
     a2a_part = a2a_types.FilePart(
         file=a2a_types.FileWithBytes(
             bytes=base64.b64encode(part.inline_data.data).decode('utf-8'),
