@@ -25,6 +25,8 @@ from typing_extensions import override
 
 from ...auth.auth_credential import AuthCredential
 from ...auth.auth_schemes import AuthScheme
+from ...features import FeatureName
+from ...features import is_feature_enabled
 from .._gemini_schema_util import _to_gemini_schema
 from ..base_tool import BaseTool
 from ..openapi_tool.openapi_spec_parser.rest_api_tool import RestApiTool
@@ -125,10 +127,17 @@ class IntegrationConnectorTool(BaseTool):
       if field in schema_dict['required']:
         schema_dict['required'].remove(field)
 
-    parameters = _to_gemini_schema(schema_dict)
-    function_decl = FunctionDeclaration(
-        name=self.name, description=self.description, parameters=parameters
-    )
+    if is_feature_enabled(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL):
+      function_decl = FunctionDeclaration(
+          name=self.name,
+          description=self.description,
+          parameters_json_schema=schema_dict,
+      )
+    else:
+      parameters = _to_gemini_schema(schema_dict)
+      function_decl = FunctionDeclaration(
+          name=self.name, description=self.description, parameters=parameters
+      )
     return function_decl
 
   def _prepare_dynamic_euc(self, auth_credential: AuthCredential) -> str:
