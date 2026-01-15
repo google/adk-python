@@ -23,6 +23,7 @@ from unittest.mock import AsyncMock
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.context_cache_config import ContextCacheConfig
 from google.adk.agents.invocation_context import InvocationContext
+from google.adk.agents.live_request_queue import LiveRequestQueue
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.run_config import RunConfig
 from google.adk.apps.app import App
@@ -34,6 +35,7 @@ from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.sessions.session import Session
+from google.adk.tools.function_tool import FunctionTool
 from google.genai import types
 import pytest
 
@@ -356,6 +358,88 @@ async def test_run_live_auto_create_session():
       app_name="live_app", user_id="user", session_id="missing"
   )
   assert session is not None
+
+
+@pytest.mark.asyncio
+async def test_run_live_detects_streaming_tools_with_canonical_tools():
+  """run_live should detect streaming tools using canonical_tools and tool.name."""
+
+  # Define streaming tools - one as raw function, one wrapped in FunctionTool
+  async def raw_streaming_tool(
+      input_stream: LiveRequestQueue,
+  ) -> AsyncGenerator[str, None]:
+    """A raw streaming tool function."""
+    yield "test"
+
+  async def wrapped_streaming_tool(
+      input_stream: LiveRequestQueue,
+  ) -> AsyncGenerator[str, None]:
+    """A streaming tool wrapped in FunctionTool."""
+    yield "test"
+
+  def non_streaming_tool(param: str) -> str:
+    """A regular non-streaming tool."""
+    return param
+
+  # Create a mock LlmAgent that yields an event and captures invocation context
+  captured_context = {}
+
+  class StreamingToolsAgent(LlmAgent):
+
+    async def _run_live_impl(
+        self, invocation_context: InvocationContext
+    ) -> AsyncGenerator[Event, None]:
+      # Capture the active_streaming_tools for verification
+      captured_context["active_streaming_tools"] = (
+          invocation_context.active_streaming_tools
+      )
+      yield Event(
+          invocation_id=invocation_context.invocation_id,
+          author=self.name,
+          content=types.Content(
+              role="model", parts=[types.Part(text="streaming test")]
+          ),
+      )
+
+  agent = StreamingToolsAgent(
+      name="streaming_agent",
+      model="gemini-2.0-flash",
+      tools=[
+          raw_streaming_tool,  # Raw function
+          FunctionTool(wrapped_streaming_tool),  # Wrapped in FunctionTool
+          non_streaming_tool,  # Non-streaming tool (should not be detected)
+      ],
+  )
+
+  session_service = InMemorySessionService()
+  artifact_service = InMemoryArtifactService()
+  runner = Runner(
+      app_name="streaming_test_app",
+      agent=agent,
+      session_service=session_service,
+      artifact_service=artifact_service,
+      auto_create_session=True,
+  )
+
+  live_queue = LiveRequestQueue()
+
+  agen = runner.run_live(
+      user_id="user",
+      session_id="test_session",
+      live_request_queue=live_queue,
+  )
+
+  event = await agen.__anext__()
+  await agen.aclose()
+
+  assert event.author == "streaming_agent"
+
+  # Verify streaming tools were detected correctly
+  active_tools = captured_context.get("active_streaming_tools", {})
+  assert "raw_streaming_tool" in active_tools
+  assert "wrapped_streaming_tool" in active_tools
+  # Non-streaming tool should not be detected
+  assert "non_streaming_tool" not in active_tools
 
 
 @pytest.mark.asyncio
