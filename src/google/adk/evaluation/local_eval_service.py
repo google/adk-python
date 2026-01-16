@@ -268,6 +268,22 @@ class LocalEvalService(BaseEvalService):
         else 'test_user_id'
     )
 
+    if (
+        inference_result.status == InferenceStatus.FAILURE
+        or inference_result.inferences is None
+    ):
+      logger.error(
+          'Evaluation attempted on failed inference for eval case `%s`.'
+          ' Error: %s',
+          inference_result.eval_case_id,
+          inference_result.error_message,
+      )
+      eval_case_result = await self._build_not_evaluated_eval_case_result(
+          inference_result=inference_result,
+          user_id=user_id,
+      )
+      return (inference_result, eval_case_result)
+
     if eval_case.conversation_scenario is None and len(
         inference_result.inferences
     ) != len(eval_case.conversation):
@@ -463,6 +479,31 @@ class LocalEvalService(BaseEvalService):
         raise ValueError(f'Unknown eval status: {overall_eval_status}.')
 
     return final_eval_status
+
+  async def _build_not_evaluated_eval_case_result(
+      self,
+      *,
+      inference_result: InferenceResult,
+      user_id: str,
+  ) -> EvalCaseResult:
+    """Constructs an EvalCaseResult for cases that could not be evaluated."""
+    session_details = await self._session_service.get_session(
+        app_name=inference_result.app_name,
+        user_id=user_id,
+        session_id=inference_result.session_id,
+    )
+
+    return EvalCaseResult(
+        eval_set_file=inference_result.eval_set_id,
+        eval_set_id=inference_result.eval_set_id,
+        eval_id=inference_result.eval_case_id,
+        final_eval_status=EvalStatus.NOT_EVALUATED,
+        overall_eval_metric_results=[],
+        eval_metric_result_per_invocation=[],
+        session_id=inference_result.session_id,
+        session_details=session_details,
+        user_id=user_id,
+    )
 
   async def _perform_inference_single_eval_item(
       self,

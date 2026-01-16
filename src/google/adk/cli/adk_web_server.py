@@ -330,6 +330,7 @@ class AppInfo(common.BaseModel):
   root_agent_name: str
   description: str
   language: Literal["yaml", "python"]
+  is_computer_use: bool = False
 
 
 class ListAppsResponse(common.BaseModel):

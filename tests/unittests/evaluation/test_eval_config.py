@@ -109,8 +109,12 @@ def test_get_eval_metrics_from_config_with_custom_metrics():
           },
       },
       custom_metrics={
-          "custom_metric_1": {"name": "path/to/custom/metric_1"},
-          "custom_metric_2": {"name": "path/to/custom/metric_2"},
+          "custom_metric_1": {
+              "code_config": {"name": "path/to/custom/metric_1"},
+          },
+          "custom_metric_2": {
+              "code_config": {"name": "path/to/custom/metric_2"},
+          },
       },
   )
   eval_metrics = get_eval_metrics_from_config(eval_config)
@@ -128,10 +132,12 @@ def test_get_eval_metrics_from_config_with_custom_metrics():
 
 def test_custom_metric_code_config_with_args_raises_error():
   with pytest.raises(ValueError):
-    eval_config = EvalConfig(
+    _ = EvalConfig(
         criteria={"custom_metric": 1.0},
         custom_metrics={
-            "custom_metric": {"name": "name", "args": [{"value": 1}]}
+            "custom_metric": {
+                "code_config": {"name": "name", "args": [{"value": 1}]},
+            }
         },
     )
 

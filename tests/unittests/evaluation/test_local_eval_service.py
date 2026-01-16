@@ -326,6 +326,82 @@ async def test_evaluate_success(
 
 
 @pytest.mark.asyncio
+async def test_evaluate_skips_failed_inference_results(
+    eval_service, mock_eval_sets_manager, mock_eval_set_results_manager, mocker
+):
+  invocation = Invocation(
+      user_content=genai_types.Content(
+          parts=[genai_types.Part(text="test user content.")]
+      ),
+      final_response=genai_types.Content(
+          parts=[genai_types.Part(text="test final response.")]
+      ),
+  )
+  inference_results = [
+      InferenceResult(
+          app_name="test_app",
+          eval_set_id="test_eval_set",
+          eval_case_id="case_failure",
+          inferences=None,
+          session_id="session_fail",
+          status=InferenceStatus.FAILURE,
+          error_message="simulated failure",
+      ),
+      InferenceResult(
+          app_name="test_app",
+          eval_set_id="test_eval_set",
+          eval_case_id="case_success",
+          inferences=[invocation.model_copy(deep=True)],
+          session_id="session_success",
+          status=InferenceStatus.SUCCESS,
+      ),
+      InferenceResult(
+          app_name="test_app",
+          eval_set_id="test_eval_set",
+          eval_case_id="case_unknown",
+          inferences=[invocation.model_copy(deep=True)],
+          session_id="session_unknown",
+          status=InferenceStatus.UNKNOWN,
+      ),
+  ]
+  eval_metric = EvalMetric(metric_name="fake_metric", threshold=0.5)
+  evaluate_request = EvaluateRequest(
+      inference_results=inference_results,
+      evaluate_config=EvaluateConfig(eval_metrics=[eval_metric], parallelism=2),
+  )
+
+  mock_eval_case = mocker.MagicMock(spec=EvalCase)
+  mock_eval_case.conversation = [invocation.model_copy(deep=True)]
+  mock_eval_case.conversation_scenario = None
+  mock_eval_case.session_input = None
+  mock_eval_sets_manager.get_eval_case.return_value = mock_eval_case
+
+  results = []
+  async for result in eval_service.evaluate(evaluate_request):
+    results.append(result)
+
+  assert len(results) == 3
+  results_by_case = {result.eval_id: result for result in results}
+
+  failure_result = results_by_case["case_failure"]
+  assert failure_result.final_eval_status == EvalStatus.NOT_EVALUATED
+  assert failure_result.overall_eval_metric_results == []
+  assert failure_result.eval_metric_result_per_invocation == []
+
+  for case_id in ["case_success", "case_unknown"]:
+    case_result = results_by_case[case_id]
+    assert case_result.final_eval_status == EvalStatus.PASSED
+    assert len(case_result.overall_eval_metric_results) == 1
+    assert (
+        case_result.overall_eval_metric_results[0].metric_name == "fake_metric"
+    )
+    assert case_result.overall_eval_metric_results[0].score == 0.9
+
+  assert mock_eval_sets_manager.get_eval_case.call_count == 3
+  assert mock_eval_set_results_manager.save_eval_set_result.call_count == 3
+
+
+@pytest.mark.asyncio
 async def test_evaluate_eval_case_not_found(
     eval_service,
     mock_eval_sets_manager,
@@ -416,6 +492,93 @@ async def test_evaluate_single_inference_result(
     assert metric_result.metric_name == "fake_metric"
     assert metric_result.score == 0.9
     assert metric_result.eval_status == EvalStatus.PASSED
+
+
+@pytest.mark.asyncio
+async def test_evaluate_single_inference_result_handles_failed_inference(
+    eval_service, mock_eval_sets_manager, mocker
+):
+  invocation = Invocation(
+      user_content=genai_types.Content(
+          parts=[genai_types.Part(text="test user content.")]
+      ),
+      final_response=genai_types.Content(
+          parts=[genai_types.Part(text="test final response.")]
+      ),
+  )
+  inference_result = InferenceResult(
+      app_name="test_app",
+      eval_set_id="test_eval_set",
+      eval_case_id="case1",
+      inferences=None,
+      session_id="session1",
+      status=InferenceStatus.FAILURE,
+      error_message="simulated inference failure",
+  )
+  eval_metric = EvalMetric(metric_name="fake_metric", threshold=0.5)
+  evaluate_config = EvaluateConfig(eval_metrics=[eval_metric], parallelism=1)
+
+  mock_eval_case = mocker.MagicMock(spec=EvalCase)
+  mock_eval_case.conversation = [invocation.model_copy(deep=True)]
+  mock_eval_case.conversation_scenario = None
+  mock_eval_case.session_input = None
+  mock_eval_sets_manager.get_eval_case.return_value = mock_eval_case
+
+  _, result = await eval_service._evaluate_single_inference_result(
+      inference_result=inference_result, evaluate_config=evaluate_config
+  )
+
+  assert isinstance(result, EvalCaseResult)
+  assert result.eval_id == "case1"
+  assert result.final_eval_status == EvalStatus.NOT_EVALUATED
+  assert result.overall_eval_metric_results == []
+  assert result.eval_metric_result_per_invocation == []
+  mock_eval_sets_manager.get_eval_case.assert_called_once_with(
+      app_name="test_app", eval_set_id="test_eval_set", eval_case_id="case1"
+  )
+
+
+@pytest.mark.asyncio
+async def test_evaluate_single_inference_result_handles_missing_inferences(
+    eval_service, mock_eval_sets_manager, mocker
+):
+  invocation = Invocation(
+      user_content=genai_types.Content(
+          parts=[genai_types.Part(text="test user content.")]
+      ),
+      final_response=genai_types.Content(
+          parts=[genai_types.Part(text="test final response.")]
+      ),
+  )
+  inference_result = InferenceResult(
+      app_name="test_app",
+      eval_set_id="test_eval_set",
+      eval_case_id="case1",
+      inferences=None,
+      session_id="session1",
+      status=InferenceStatus.SUCCESS,
+  )
+  eval_metric = EvalMetric(metric_name="fake_metric", threshold=0.5)
+  evaluate_config = EvaluateConfig(eval_metrics=[eval_metric], parallelism=1)
+
+  mock_eval_case = mocker.MagicMock(spec=EvalCase)
+  mock_eval_case.conversation = [invocation.model_copy(deep=True)]
+  mock_eval_case.conversation_scenario = None
+  mock_eval_case.session_input = None
+  mock_eval_sets_manager.get_eval_case.return_value = mock_eval_case
+
+  _, result = await eval_service._evaluate_single_inference_result(
+      inference_result=inference_result, evaluate_config=evaluate_config
+  )
+
+  assert isinstance(result, EvalCaseResult)
+  assert result.eval_id == "case1"
+  assert result.final_eval_status == EvalStatus.NOT_EVALUATED
+  assert result.overall_eval_metric_results == []
+  assert result.eval_metric_result_per_invocation == []
+  mock_eval_sets_manager.get_eval_case.assert_called_once_with(
+      app_name="test_app", eval_set_id="test_eval_set", eval_case_id="case1"
+  )
 
 
 @pytest.mark.asyncio

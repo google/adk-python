@@ -35,19 +35,9 @@ if TYPE_CHECKING:
 class ToolboxToolset(BaseToolset):
   """A class that provides access to toolbox toolsets.
 
-  This class acts as a bridge to the `toolbox-adk` package.
-  You must install `toolbox-adk` to use this class.
-
   Example:
   ```python
-  from toolbox_adk import CredentialStrategy
-
-  toolbox_toolset = ToolboxToolset(
-      server_url="http://127.0.0.1:5000",
-      # toolset_name and tool_names are optional. If omitted, all tools are
-      loaded.
-      credentials=CredentialStrategy.toolbox_identity()
-  )
+  toolbox_toolset = ToolboxToolset("http://127.0.0.1:5000")
   ```
   """
 
@@ -64,29 +54,37 @@ class ToolboxToolset(BaseToolset):
       additional_headers: Optional[Mapping[str, str]] = None,
       **kwargs,
   ):
-    """Args:
+    """Initializes the ToolboxToolset.
 
-    server_url: The URL of the toolbox server.
-    toolset_name: The name of the toolbox toolset to load.
-    tool_names: The names of the tools to load.
-    auth_token_getters: (Deprecated) Map of auth token getters.
-    bound_params: Parameters to bind to the tools.
-    credentials: (Optional) toolbox_adk.CredentialConfig object.
-    additional_headers: (Optional) Static headers dictionary.
-    **kwargs: Additional arguments passed to the underlying
-    toolbox_adk.ToolboxToolset.
+    Args:
+      server_url: The URL of the toolbox server.
+      toolset_name: (Optional) The name of the toolbox toolset to load.
+      tool_names: (Optional) The names of the tools to load.
+      auth_token_getters: (Optional) A mapping of authentication service names
+        to callables that return the corresponding authentication token. see:
+        https://github.com/googleapis/mcp-toolbox-sdk-python/tree/main/packages/toolbox-core#authenticating-tools
+          for details.
+      bound_params: (Optional) A mapping of parameter names to bind to specific
+        values or callables that are called to produce values as needed. see:
+        https://github.com/googleapis/mcp-toolbox-sdk-python/tree/main/packages/toolbox-core#binding-parameter-values
+          for details.
+      credentials: (Optional) toolbox_adk.CredentialConfig object.
+      additional_headers: (Optional) Static headers mapping.
+      **kwargs: Additional arguments passed to the underlying
+        toolbox_adk.ToolboxToolset.
+
+    The resulting ToolboxToolset will contain both tools loaded by tool_names
+    and toolset_name.
+
+    Note: toolset_name and tool_names are optional.
+    If both are omitted, all tools are loaded.
     """
-    if not toolset_name and not tool_names:
-      raise ValueError(
-          "Either 'toolset_name' or 'tool_names' must be provided."
-      )
-
     try:
       from toolbox_adk import ToolboxToolset as RealToolboxToolset  # pylint: disable=import-outside-toplevel
     except ImportError as exc:
       raise ImportError(
           "ToolboxToolset requires the 'toolbox-adk' package. "
-          "Please install it using `pip install toolbox-adk`."
+          "Please install it using `pip install google-adk[toolbox]`."
       ) from exc
 
     super().__init__()
@@ -95,10 +93,10 @@ class ToolboxToolset(BaseToolset):
         server_url=server_url,
         toolset_name=toolset_name,
         tool_names=tool_names,
+        auth_token_getters=auth_token_getters,
+        bound_params=bound_params,
         credentials=credentials,
         additional_headers=additional_headers,
-        bound_params=bound_params,
-        auth_token_getters=auth_token_getters,
         **kwargs,
     )
 

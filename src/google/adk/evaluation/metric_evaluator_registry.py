@@ -18,6 +18,7 @@ import logging
 
 from ..errors.not_found_error import NotFoundError
 from ..utils.feature_decorator import experimental
+from .custom_metric_evaluator import _CustomMetricEvaluator
 from .eval_metrics import EvalMetric
 from .eval_metrics import MetricInfo
 from .eval_metrics import PrebuiltMetrics
@@ -62,7 +63,13 @@ class MetricEvaluatorRegistry:
     if eval_metric.metric_name not in self._registry:
       raise NotFoundError(f"{eval_metric.metric_name} not found in registry.")
 
-    return self._registry[eval_metric.metric_name][0](eval_metric=eval_metric)
+    evaluator_type = self._registry[eval_metric.metric_name][0]
+    if issubclass(evaluator_type, _CustomMetricEvaluator):
+      return evaluator_type(
+          eval_metric=eval_metric,
+          custom_function_path=eval_metric.custom_function_path,
+      )
+    return evaluator_type(eval_metric=eval_metric)
 
   def register_evaluator(
       self,
