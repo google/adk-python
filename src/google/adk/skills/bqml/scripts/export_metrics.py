@@ -16,9 +16,9 @@
 """Export BQML model evaluation metrics to JSON format."""
 
 import argparse
+from datetime import datetime
 import json
 import sys
-from datetime import datetime
 
 
 def format_metrics(raw_metrics: dict, model_name: str = None) -> dict:

@@ -59,6 +59,9 @@ Example usage:
   ```
 """
 
+# Skills directory path for loading bundled skills
+from pathlib import Path
+
 from .agent_skill_loader import AgentSkillLoader
 # Core abstractions
 from .base_skill import BaseSkill
@@ -76,8 +79,6 @@ from .skill_manager import SkillsManager
 from .skill_tool import create_skill_tools
 from .skill_tool import SkillTool
 
-# Skills directory path for loading bundled skills
-from pathlib import Path
 SKILLS_DIR = Path(__file__).parent
 
 __all__ = [

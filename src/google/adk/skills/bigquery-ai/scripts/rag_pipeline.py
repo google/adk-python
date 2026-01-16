@@ -43,10 +43,10 @@ def generate_setup_sql(
     id_column: str,
     chunk_size: int = 1000,
 ) -> str:
-    """Generate SQL to set up a RAG knowledge base."""
-    dataset = source_table.split(".")[0]
+  """Generate SQL to set up a RAG knowledge base."""
+  dataset = source_table.split(".")[0]
 
-    sql = f"""-- RAG Pipeline Setup
+  sql = f"""-- RAG Pipeline Setup
 -- Step 1: Create embedding model
 CREATE MODEL IF NOT EXISTS `{project_id}.{dataset}.rag_embedding_model`
   REMOTE WITH CONNECTION DEFAULT
@@ -105,7 +105,7 @@ SELECT
   'RAG pipeline setup complete' AS status,
   (SELECT COUNT(*) FROM `{project_id}.{kb_table}`) AS total_chunks;"""
 
-    return sql
+  return sql
 
 
 def generate_rag_query_sql(
@@ -119,12 +119,12 @@ def generate_rag_query_sql(
     temperature: float = 0.2,
     include_sources: bool = True,
 ) -> str:
-    """Generate SQL for RAG query."""
-    escaped_query = query_text.replace("'", "''")
+  """Generate SQL for RAG query."""
+  escaped_query = query_text.replace("'", "''")
 
-    sources_select = ""
-    if include_sources:
-        sources_select = """,
+  sources_select = ""
+  if include_sources:
+    sources_select = """,
   (SELECT ARRAY_AGG(STRUCT(
     chunk_id,
     LEFT(content, 200) AS excerpt,
@@ -132,7 +132,7 @@ def generate_rag_query_sql(
    ))
    FROM retrieved_context) AS sources"""
 
-    sql = f"""-- RAG Query: {query_text[:50]}...
+  sql = f"""-- RAG Query: {query_text[:50]}...
 DECLARE user_query STRING DEFAULT '{escaped_query}';
 
 WITH query_embedding AS (
@@ -185,215 +185,227 @@ FROM ML.GENERATE_TEXT(
 ),
 retrieved_context;"""
 
-    return sql
+  return sql
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Build and run RAG pipelines in BigQuery",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=__doc__,
+  parser = argparse.ArgumentParser(
+      description="Build and run RAG pipelines in BigQuery",
+      formatter_class=argparse.RawDescriptionHelpFormatter,
+      epilog=__doc__,
+  )
+
+  parser.add_argument(
+      "--project-id",
+      required=True,
+      help="Google Cloud project ID",
+  )
+  parser.add_argument(
+      "--kb-table",
+      help="Knowledge base embeddings table (dataset.table)",
+  )
+  parser.add_argument(
+      "--query",
+      help="Question to answer using RAG",
+  )
+  parser.add_argument(
+      "--setup",
+      action="store_true",
+      help="Setup new RAG pipeline from source documents",
+  )
+  parser.add_argument(
+      "--source-table",
+      help="Source documents table for setup (dataset.table)",
+  )
+  parser.add_argument(
+      "--content-column",
+      default="content",
+      help="Column containing document text (default: content)",
+  )
+  parser.add_argument(
+      "--id-column",
+      default="id",
+      help="Column containing document ID (default: id)",
+  )
+  parser.add_argument(
+      "--chunk-size",
+      type=int,
+      default=1000,
+      help="Characters per chunk (default: 1000)",
+  )
+  parser.add_argument(
+      "--embedding-model",
+      help="Embedding model (default: auto-detect)",
+  )
+  parser.add_argument(
+      "--generation-model",
+      help="Generation model (default: auto-detect)",
+  )
+  parser.add_argument(
+      "--num-sources",
+      type=int,
+      default=5,
+      help="Number of sources to retrieve (default: 5)",
+  )
+  parser.add_argument(
+      "--max-tokens",
+      type=int,
+      default=512,
+      help="Max output tokens (default: 512)",
+  )
+  parser.add_argument(
+      "--temperature",
+      type=float,
+      default=0.2,
+      help="Generation temperature (default: 0.2)",
+  )
+  parser.add_argument(
+      "--no-sources",
+      action="store_true",
+      help="Don't include source references in output",
+  )
+  parser.add_argument(
+      "--dry-run",
+      action="store_true",
+      help="Print SQL without executing",
+  )
+  parser.add_argument(
+      "--output",
+      choices=["text", "json", "sql"],
+      default="text",
+      help="Output format (default: text)",
+  )
+
+  args = parser.parse_args()
+
+  # Handle setup mode
+  if args.setup:
+    if not args.source_table:
+      print("Error: --source-table required for setup mode")
+      return 1
+
+    kb_table = (
+        args.kb_table or f"{args.source_table.split('.')[0]}.kb_embeddings"
     )
 
-    parser.add_argument(
-        "--project-id",
-        required=True,
-        help="Google Cloud project ID",
-    )
-    parser.add_argument(
-        "--kb-table",
-        help="Knowledge base embeddings table (dataset.table)",
-    )
-    parser.add_argument(
-        "--query",
-        help="Question to answer using RAG",
-    )
-    parser.add_argument(
-        "--setup",
-        action="store_true",
-        help="Setup new RAG pipeline from source documents",
-    )
-    parser.add_argument(
-        "--source-table",
-        help="Source documents table for setup (dataset.table)",
-    )
-    parser.add_argument(
-        "--content-column",
-        default="content",
-        help="Column containing document text (default: content)",
-    )
-    parser.add_argument(
-        "--id-column",
-        default="id",
-        help="Column containing document ID (default: id)",
-    )
-    parser.add_argument(
-        "--chunk-size",
-        type=int,
-        default=1000,
-        help="Characters per chunk (default: 1000)",
-    )
-    parser.add_argument(
-        "--embedding-model",
-        help="Embedding model (default: auto-detect)",
-    )
-    parser.add_argument(
-        "--generation-model",
-        help="Generation model (default: auto-detect)",
-    )
-    parser.add_argument(
-        "--num-sources",
-        type=int,
-        default=5,
-        help="Number of sources to retrieve (default: 5)",
-    )
-    parser.add_argument(
-        "--max-tokens",
-        type=int,
-        default=512,
-        help="Max output tokens (default: 512)",
-    )
-    parser.add_argument(
-        "--temperature",
-        type=float,
-        default=0.2,
-        help="Generation temperature (default: 0.2)",
-    )
-    parser.add_argument(
-        "--no-sources",
-        action="store_true",
-        help="Don't include source references in output",
-    )
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Print SQL without executing",
-    )
-    parser.add_argument(
-        "--output",
-        choices=["text", "json", "sql"],
-        default="text",
-        help="Output format (default: text)",
-    )
-
-    args = parser.parse_args()
-
-    # Handle setup mode
-    if args.setup:
-        if not args.source_table:
-            print("Error: --source-table required for setup mode")
-            return 1
-
-        kb_table = args.kb_table or f"{args.source_table.split('.')[0]}.kb_embeddings"
-
-        sql = generate_setup_sql(
-            project_id=args.project_id,
-            source_table=args.source_table,
-            kb_table=kb_table,
-            content_column=args.content_column,
-            id_column=args.id_column,
-            chunk_size=args.chunk_size,
-        )
-
-        print("-- RAG Pipeline Setup SQL")
-        print(sql)
-
-        if args.dry_run:
-            print("\n-- Dry run mode: SQL not executed")
-            return 0
-
-        try:
-            from google.cloud import bigquery
-            client = bigquery.Client(project=args.project_id)
-
-            print("\nExecuting setup (this may take several minutes)...")
-            for statement in sql.split(";"):
-                statement = statement.strip()
-                if statement and not statement.startswith("--"):
-                    print(f"  Running: {statement[:60]}...")
-                    client.query(statement + ";").result()
-
-            print("\nSetup complete!")
-            return 0
-
-        except ImportError:
-            print("\n-- Run in BigQuery Console to execute")
-            return 0
-
-    # Handle query mode
-    if not args.query:
-        print("Error: --query required (or use --setup for pipeline setup)")
-        return 1
-
-    if not args.kb_table:
-        print("Error: --kb-table required for query mode")
-        return 1
-
-    # Determine models
-    dataset = args.kb_table.split(".")[0]
-    embedding_model = args.embedding_model or f"{args.project_id}.{dataset}.rag_embedding_model"
-    generation_model = args.generation_model or f"{args.project_id}.{dataset}.rag_generation_model"
-
-    sql = generate_rag_query_sql(
+    sql = generate_setup_sql(
         project_id=args.project_id,
-        kb_table=f"{args.project_id}.{args.kb_table}",
-        embedding_model=embedding_model,
-        generation_model=generation_model,
-        query_text=args.query,
-        num_sources=args.num_sources,
-        max_output_tokens=args.max_tokens,
-        temperature=args.temperature,
-        include_sources=not args.no_sources,
+        source_table=args.source_table,
+        kb_table=kb_table,
+        content_column=args.content_column,
+        id_column=args.id_column,
+        chunk_size=args.chunk_size,
     )
 
-    if args.output == "sql" or args.dry_run:
-        print(sql)
-        if args.dry_run:
-            print("\n-- Dry run mode: SQL not executed")
-        return 0
+    print("-- RAG Pipeline Setup SQL")
+    print(sql)
 
-    # Execute query
+    if args.dry_run:
+      print("\n-- Dry run mode: SQL not executed")
+      return 0
+
     try:
-        from google.cloud import bigquery
+      from google.cloud import bigquery
 
-        client = bigquery.Client(project=args.project_id)
+      client = bigquery.Client(project=args.project_id)
 
-        print(f"Querying: {args.query[:60]}...")
-        result = list(client.query(sql).result())[0]
+      print("\nExecuting setup (this may take several minutes)...")
+      for statement in sql.split(";"):
+        statement = statement.strip()
+        if statement and not statement.startswith("--"):
+          print(f"  Running: {statement[:60]}...")
+          client.query(statement + ";").result()
 
-        if args.output == "json":
-            output = {
-                "question": result.question,
-                "answer": result.answer,
-            }
-            if hasattr(result, "sources") and result.sources:
-                output["sources"] = [
-                    {"chunk_id": s["chunk_id"], "excerpt": s["excerpt"], "relevance": s["relevance"]}
-                    for s in result.sources
-                ]
-            print(json.dumps(output, indent=2))
-        else:
-            print(f"\nQuestion: {result.question}")
-            print(f"\nAnswer: {result.answer}")
-
-            if hasattr(result, "sources") and result.sources:
-                print("\nSources:")
-                for i, source in enumerate(result.sources, 1):
-                    print(f"  [{i}] (relevance: {source['relevance']:.2f})")
-                    print(f"      {source['excerpt'][:100]}...")
-
-        return 0
+      print("\nSetup complete!")
+      return 0
 
     except ImportError:
-        print("\n-- google-cloud-bigquery not installed")
-        print("-- Run: pip install google-cloud-bigquery")
-        print("-- Or execute SQL in BigQuery Console")
-        return 0
+      print("\n-- Run in BigQuery Console to execute")
+      return 0
 
-    except Exception as e:
-        print(f"Error: {e}", file=sys.stderr)
-        return 1
+  # Handle query mode
+  if not args.query:
+    print("Error: --query required (or use --setup for pipeline setup)")
+    return 1
+
+  if not args.kb_table:
+    print("Error: --kb-table required for query mode")
+    return 1
+
+  # Determine models
+  dataset = args.kb_table.split(".")[0]
+  embedding_model = (
+      args.embedding_model or f"{args.project_id}.{dataset}.rag_embedding_model"
+  )
+  generation_model = (
+      args.generation_model
+      or f"{args.project_id}.{dataset}.rag_generation_model"
+  )
+
+  sql = generate_rag_query_sql(
+      project_id=args.project_id,
+      kb_table=f"{args.project_id}.{args.kb_table}",
+      embedding_model=embedding_model,
+      generation_model=generation_model,
+      query_text=args.query,
+      num_sources=args.num_sources,
+      max_output_tokens=args.max_tokens,
+      temperature=args.temperature,
+      include_sources=not args.no_sources,
+  )
+
+  if args.output == "sql" or args.dry_run:
+    print(sql)
+    if args.dry_run:
+      print("\n-- Dry run mode: SQL not executed")
+    return 0
+
+  # Execute query
+  try:
+    from google.cloud import bigquery
+
+    client = bigquery.Client(project=args.project_id)
+
+    print(f"Querying: {args.query[:60]}...")
+    result = list(client.query(sql).result())[0]
+
+    if args.output == "json":
+      output = {
+          "question": result.question,
+          "answer": result.answer,
+      }
+      if hasattr(result, "sources") and result.sources:
+        output["sources"] = [
+            {
+                "chunk_id": s["chunk_id"],
+                "excerpt": s["excerpt"],
+                "relevance": s["relevance"],
+            }
+            for s in result.sources
+        ]
+      print(json.dumps(output, indent=2))
+    else:
+      print(f"\nQuestion: {result.question}")
+      print(f"\nAnswer: {result.answer}")
+
+      if hasattr(result, "sources") and result.sources:
+        print("\nSources:")
+        for i, source in enumerate(result.sources, 1):
+          print(f"  [{i}] (relevance: {source['relevance']:.2f})")
+          print(f"      {source['excerpt'][:100]}...")
+
+    return 0
+
+  except ImportError:
+    print("\n-- google-cloud-bigquery not installed")
+    print("-- Run: pip install google-cloud-bigquery")
+    print("-- Or execute SQL in BigQuery Console")
+    return 0
+
+  except Exception as e:
+    print(f"Error: {e}", file=sys.stderr)
+    return 1
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+  sys.exit(main())
