@@ -18,7 +18,6 @@ import logging
 import uuid
 
 from agentic_sandbox import SandboxClient
-
 import kubernetes as k8s
 from kubernetes.watch import Watch
 
@@ -92,7 +91,7 @@ class GkeCodeExecutor(BaseCodeExecutor):
 
   kubeconfig_path: str | None = None
   kubeconfig_context: str | None = None
-  
+
   # Sandbox constants
   sandbox_template: str = "python-sandbox-template"
 
@@ -122,9 +121,10 @@ class GkeCodeExecutor(BaseCodeExecutor):
     self.kubeconfig_path = kubeconfig_path
     self.kubeconfig_context = kubeconfig_context
 
-    if executor_type not in ['job', 'sandbox']:
+    if executor_type not in ["job", "sandbox"]:
       raise ValueError(
-          f"Invalid executor_type: '{executor_type}'. Must be 'job' or 'sandbox'."
+          f"Invalid executor_type: '{executor_type}'. Must be 'job' or"
+          " 'sandbox'."
       )
     if self.kubeconfig_path:
       try:
@@ -166,24 +166,26 @@ class GkeCodeExecutor(BaseCodeExecutor):
   def _execute_in_sandbox(self, code: str) -> CodeExecutionResult:
     """Executes code using Agent Sandbox Client."""
     try:
-        with SandboxClient(
-            template_name=self.sandbox_template,
-            gateway_name=self.sandbox_gateway_name,
-            namespace=self.namespace
-        ) as sandbox:
-            # Execute the code as a python script
-            logger.debug("Executing code in sandbox:\n```\n%s\n```", code)
-            sandbox.write("script.py", code)
-            result = sandbox.run("python3 script.py")
+      with SandboxClient(
+          template_name=self.sandbox_template,
+          gateway_name=self.sandbox_gateway_name,
+          namespace=self.namespace,
+      ) as sandbox:
+        # Execute the code as a python script
+        logger.debug("Executing code in sandbox:\n```\n%s\n```", code)
+        sandbox.write("script.py", code)
+        result = sandbox.run("python3 script.py")
 
-            return CodeExecutionResult(stdout=result.stdout)
+        return CodeExecutionResult(stdout=result.stdout)
     except Exception as e:
-        logger.error("Sandbox execution failed", exc_info=True)
-        return CodeExecutionResult(
-            stderr=f"Sandbox execution failed: {str(e)}",
-        )
+      logger.error("Sandbox execution failed", exc_info=True)
+      return CodeExecutionResult(
+          stderr=f"Sandbox execution failed: {str(e)}",
+      )
 
-  def _execute_as_job(self, code: str, invocation_context: InvocationContext) -> CodeExecutionResult:
+  def _execute_as_job(
+      self, code: str, invocation_context: InvocationContext
+  ) -> CodeExecutionResult:
     """Orchestrates the secure execution of a code snippet on GKE."""
     job_name = f"adk-exec-{uuid.uuid4().hex[:10]}"
     configmap_name = f"code-src-{job_name}"
@@ -234,14 +236,13 @@ class GkeCodeExecutor(BaseCodeExecutor):
       invocation_context: InvocationContext,
       code_execution_input: CodeExecutionInput,
   ) -> CodeExecutionResult:
-
     """Overrides the base method to route execution based on executor_type."""
     code = code_execution_input.code
     if self.executor_type == "sandbox":
-        return self._execute_in_sandbox(code)
+      return self._execute_in_sandbox(code)
     else:
-        # Fallback to existing GKE Job logic
-        return self._execute_as_job(code, invocation_context)
+      # Fallback to existing GKE Job logic
+      return self._execute_as_job(code, invocation_context)
 
   def _create_job_manifest(
       self,
