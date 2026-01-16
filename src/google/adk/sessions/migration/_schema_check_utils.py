@@ -82,8 +82,28 @@ def get_db_schema_version_from_connection(connection) -> str:
   return _get_schema_version_impl(inspector, connection)
 
 
-def _to_sync_url(db_url: str) -> str:
-  """Removes '+driver' from SQLAlchemy URL."""
+def to_sync_url(db_url: str) -> str:
+  """Removes '+driver' from SQLAlchemy URL.
+
+  This is useful when you need to use a synchronous SQLAlchemy engine with
+  a database URL that specifies an async driver (e.g., postgresql+asyncpg://
+  or sqlite+aiosqlite://).
+
+  Args:
+    db_url: The database URL, potentially with a driver specification.
+
+  Returns:
+    The database URL with the driver specification removed (e.g.,
+    'postgresql+asyncpg://host/db' becomes 'postgresql://host/db').
+
+  Examples:
+    >>> to_sync_url('postgresql+asyncpg://localhost/mydb')
+    'postgresql://localhost/mydb'
+    >>> to_sync_url('sqlite+aiosqlite:///path/to/db.sqlite')
+    'sqlite:///path/to/db.sqlite'
+    >>> to_sync_url('mysql://localhost/mydb')  # No driver, returns unchanged
+    'mysql://localhost/mydb'
+  """
   if "://" in db_url:
     scheme, _, rest = db_url.partition("://")
     if "+" in scheme:
@@ -106,7 +126,7 @@ def get_db_schema_version(db_url: str) -> str:
   """
   engine = None
   try:
-    engine = create_sync_engine(_to_sync_url(db_url))
+    engine = create_sync_engine(to_sync_url(db_url))
     with engine.connect() as connection:
       inspector = inspect(connection)
       return _get_schema_version_impl(inspector, connection)
