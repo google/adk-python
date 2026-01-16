@@ -90,6 +90,7 @@ class TestBaseAuthenticatedTool:
     assert tool.description == "Test description"
     assert tool._credentials_manager is not None
     assert tool._response_for_auth_required == unauthenticated_response
+    assert tool._auth_config == auth_config
 
   def test_init_with_no_auth_config(self):
     """Test initialization without auth_config."""
@@ -99,6 +100,7 @@ class TestBaseAuthenticatedTool:
     assert tool.description == "Test authenticated tool"
     assert tool._credentials_manager is None
     assert tool._response_for_auth_required is None
+    assert tool._auth_config is None
 
   def test_init_with_empty_auth_scheme(self):
     """Test initialization with auth_config but no auth_scheme."""

@@ -1,5 +1,13 @@
 # Changelog
 
+
+## [1.22.1](https://github.com/google/adk-python/compare/v1.22.0...v1.22.1) (2026-01-09)
+
+### Bug Fixes
+* Add back `adk migrate session` CLI ([8fb2be2](https://github.com/google/adk-python/commit/8fb2be216f11dabe7fa361a0402e5e6316878ad8)).
+* Escape database reserved keyword ([94d48fc](https://github.com/google/adk-python/commit/94d48fce32a1f07cef967d50e82f2b1975b4abd9)).
+
+
 ## [1.22.0](https://github.com/google/adk-python/compare/v1.21.0...v1.22.0) (2026-01-08)
 
 ### Features

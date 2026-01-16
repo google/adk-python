@@ -149,7 +149,7 @@ def trace_tool_call(
         _safe_json_serialize(args),
     )
   else:
-    span.set_attribute('gcp.vertex.agent.tool_call_args', {})
+    span.set_attribute('gcp.vertex.agent.tool_call_args', '{}')
 
   # Tracing tool response
   tool_call_id = '<not specified>'
@@ -179,7 +179,7 @@ def trace_tool_call(
         _safe_json_serialize(tool_response),
     )
   else:
-    span.set_attribute('gcp.vertex.agent.tool_response', {})
+    span.set_attribute('gcp.vertex.agent.tool_response', '{}')
 
 
 def trace_merged_tool_calls(
@@ -219,7 +219,7 @@ def trace_merged_tool_calls(
         function_response_event_json,
     )
   else:
-    span.set_attribute('gcp.vertex.agent.tool_response', {})
+    span.set_attribute('gcp.vertex.agent.tool_response', '{}')
   # Setting empty llm request and response (as UI expect these) while not
   # applicable for tool_response.
   span.set_attribute('gcp.vertex.agent.llm_request', '{}')
@@ -265,7 +265,7 @@ def trace_call_llm(
         _safe_json_serialize(_build_llm_request_for_trace(llm_request)),
     )
   else:
-    span.set_attribute('gcp.vertex.agent.llm_request', {})
+    span.set_attribute('gcp.vertex.agent.llm_request', '{}')
   # Consider removing once GenAI SDK provides a way to record this info.
   if llm_request.config:
     if llm_request.config.top_p:
@@ -290,7 +290,7 @@ def trace_call_llm(
         llm_response_json,
     )
   else:
-    span.set_attribute('gcp.vertex.agent.llm_response', {})
+    span.set_attribute('gcp.vertex.agent.llm_response', '{}')
 
   if llm_response.usage_metadata is not None:
     span.set_attribute(
@@ -346,7 +346,7 @@ def trace_send_data(
         ]),
     )
   else:
-    span.set_attribute('gcp.vertex.agent.data', {})
+    span.set_attribute('gcp.vertex.agent.data', '{}')
 
 
 def _build_llm_request_for_trace(llm_request: LlmRequest) -> dict[str, Any]:
