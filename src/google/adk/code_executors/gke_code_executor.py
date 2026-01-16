@@ -49,7 +49,7 @@ class GkeCodeExecutor(BaseCodeExecutor):
   infrastructure to be deployed in the cluster, specifically:
   - Agent-sandbox controller
   - Sandbox templates (e.g., python-sandbox-template)
-  - Client router and gateway
+  - Sandbox router and gateway
 
   Key Features:
   - Sandboxed execution using the gVisor runtime.
