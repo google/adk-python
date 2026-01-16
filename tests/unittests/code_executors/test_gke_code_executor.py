@@ -87,6 +87,7 @@ class TestGkeCodeExecutor:
     assert executor.timeout_seconds == 60
     assert executor.cpu_limit == "1000m"
     assert executor.executor_type == "sandbox"
+    assert executor.sandbox_template == "python-sandbox-template"
 
   def test_init_invalid_executor_type(self):
     """Tests that init raises ValueError for invalid executor_type."""

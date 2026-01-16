@@ -38,9 +38,19 @@ logger = logging.getLogger("google_adk." + __name__)
 class GkeCodeExecutor(BaseCodeExecutor):
   """Executes Python code in a secure gVisor-sandboxed Pod on GKE.
 
-  This executor securely runs code by dynamically creating a Kubernetes Job for
-  each execution request. The user's code is mounted via a ConfigMap, and the
-  Pod is hardened with a strict security context and resource limits.
+  This executor supports two modes of execution: 'job' and 'sandbox'.
+
+  Job Mode (default):
+  Securely runs code by dynamically creating a Kubernetes Job for each execution
+  request. The user's code is mounted via a ConfigMap, and the Pod is hardened
+  with a strict security context and resource limits.
+
+  Sandbox Mode:
+  Executes code using the Agent Sandbox Client. This mode requires additional
+  infrastructure to be deployed in the cluster, specifically:
+  - Agent-sandbox controller
+  - Sandbox templates (e.g., python-sandbox-template)
+  - Client router and gateway
 
   Key Features:
   - Sandboxed execution using the gVisor runtime.
@@ -84,7 +94,7 @@ class GkeCodeExecutor(BaseCodeExecutor):
   kubeconfig_context: str | None = None
   
   # Sandbox constants
-  python_sandbox_template: str = "python-sandbox-template"
+  sandbox_template: str = "python-sandbox-template"
 
   _batch_v1: k8s.client.BatchV1Api
   _core_v1: k8s.client.CoreV1Api
@@ -93,6 +103,7 @@ class GkeCodeExecutor(BaseCodeExecutor):
       self,
       executor_type: str = "job",
       sandbox_gateway_name: str | None = None,
+      sandbox_template: str = "python-sandbox-template",
       kubeconfig_path: str | None = None,
       kubeconfig_context: str | None = None,
       **data,
@@ -107,6 +118,7 @@ class GkeCodeExecutor(BaseCodeExecutor):
     super().__init__(**data)
     self.executor_type = executor_type
     self.sandbox_gateway_name = sandbox_gateway_name
+    self.sandbox_template = sandbox_template
     self.kubeconfig_path = kubeconfig_path
     self.kubeconfig_context = kubeconfig_context
 
@@ -155,7 +167,7 @@ class GkeCodeExecutor(BaseCodeExecutor):
     """Executes code using Agent Sandbox Client."""
     try:
         with SandboxClient(
-            template_name=self.python_sandbox_template,
+            template_name=self.sandbox_template,
             gateway_name=self.sandbox_gateway_name,
             namespace=self.namespace
         ) as sandbox:
