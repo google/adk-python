@@ -24,10 +24,13 @@ allowing us to delegate schema generation complexity to Pydantic.
 
 from __future__ import annotations
 
+import collections.abc
 import inspect
 import logging
 from typing import Any
 from typing import Callable
+from typing import get_args
+from typing import get_origin
 from typing import get_type_hints
 from typing import Optional
 from typing import Type
@@ -144,6 +147,19 @@ def _build_response_json_schema(
       return_annotation = type_hints.get('return', return_annotation)
     except TypeError:
       pass
+
+  # Handle AsyncGenerator and Generator return types (streaming tools)
+  # AsyncGenerator[YieldType, SendType] -> use YieldType as response schema
+  # Generator[YieldType, SendType, ReturnType] -> use YieldType as response schema
+  origin = get_origin(return_annotation)
+  if origin is not None and (
+      origin is collections.abc.AsyncGenerator
+      or origin is collections.abc.Generator
+  ):
+    type_args = get_args(return_annotation)
+    if type_args:
+      # First type argument is the yield type
+      return_annotation = type_args[0]
 
   try:
     adapter = pydantic.TypeAdapter(

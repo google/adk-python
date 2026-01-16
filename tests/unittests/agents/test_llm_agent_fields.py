@@ -14,6 +14,7 @@
 
 """Unit tests for canonical_xxx fields in LlmAgent."""
 
+import logging
 from typing import Any
 from typing import Optional
 from unittest import mock
@@ -27,6 +28,7 @@ from google.adk.models.google_llm import Gemini
 from google.adk.models.lite_llm import LiteLlm
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.registry import LLMRegistry
+from google.adk.planners.built_in_planner import BuiltInPlanner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.tools.google_search_tool import google_search
 from google.adk.tools.google_search_tool import GoogleSearchTool
@@ -234,17 +236,35 @@ def test_before_model_callback():
   assert agent.before_model_callback is not None
 
 
-def test_validate_generate_content_config_thinking_config_throw():
-  with pytest.raises(ValueError):
-    _ = LlmAgent(
-        name='test_agent',
-        generate_content_config=types.GenerateContentConfig(
-            thinking_config=types.ThinkingConfig()
-        ),
-    )
+def test_validate_generate_content_config_thinking_config_allow():
+  """Tests that thinking_config is now allowed directly in the agent init."""
+  agent = LlmAgent(
+      name='test_agent',
+      generate_content_config=types.GenerateContentConfig(
+          thinking_config=types.ThinkingConfig(include_thoughts=True)
+      ),
+  )
+  assert agent.generate_content_config.thinking_config.include_thoughts is True
+
+
+def test_thinking_config_precedence_warning():
+  """Tests that a UserWarning is issued when both manual config and planner exist."""
+
+  config = types.GenerateContentConfig(
+      thinking_config=types.ThinkingConfig(include_thoughts=True)
+  )
+  planner = BuiltInPlanner(
+      thinking_config=types.ThinkingConfig(include_thoughts=True)
+  )
+
+  with pytest.warns(
+      UserWarning, match="planner's configuration will take precedence"
+  ):
+    LlmAgent(name='test_agent', generate_content_config=config, planner=planner)
 
 
 def test_validate_generate_content_config_tools_throw():
+  """Tests that tools cannot be set directly in config."""
   with pytest.raises(ValueError):
     _ = LlmAgent(
         name='test_agent',
@@ -255,6 +275,7 @@ def test_validate_generate_content_config_tools_throw():
 
 
 def test_validate_generate_content_config_system_instruction_throw():
+  """Tests that system instructions cannot be set directly in config."""
   with pytest.raises(ValueError):
     _ = LlmAgent(
         name='test_agent',
@@ -265,6 +286,8 @@ def test_validate_generate_content_config_system_instruction_throw():
 
 
 def test_validate_generate_content_config_response_schema_throw():
+  """Tests that response schema cannot be set directly in config."""
+
   class Schema(BaseModel):
     pass
 
@@ -471,3 +494,28 @@ def test_agent_with_litellm_string_model(model_name):
   agent = LlmAgent(name='test_agent', model=model_name)
   assert isinstance(agent.canonical_model, LiteLlm)
   assert agent.canonical_model.model == model_name
+
+
+def test_builtin_planner_overwrite_logging(caplog):
+  """Tests that the planner logs an DEBUG message when overwriting a config."""
+
+  planner = BuiltInPlanner(
+      thinking_config=types.ThinkingConfig(include_thoughts=True)
+  )
+
+  # Create a request that already has a thinking_config
+  req = LlmRequest(
+      contents=[],
+      config=types.GenerateContentConfig(
+          thinking_config=types.ThinkingConfig(include_thoughts=True)
+      ),
+  )
+
+  with caplog.at_level(
+      logging.DEBUG, logger='google_adk.google.adk.planners.built_in_planner'
+  ):
+    planner.apply_thinking_config(req)
+  assert (
+      'Overwriting `thinking_config` from `generate_content_config`'
+      in caplog.text
+  )
