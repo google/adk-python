@@ -397,7 +397,7 @@ def test_find_function_call_event_multiple_function_responses():
 @pytest.mark.asyncio
 async def test_function_call_args_not_modified():
   """Test that function_call.args is not modified when making a copy."""
-  from google.adk.flows.llm_flows.functions import handle_function_calls_async
+  from google.adk.flows.llm_flows.functions import handle_function_calls_async_gen
   from google.adk.flows.llm_flows.functions import handle_function_calls_live
 
   def simple_fn(**kwargs) -> dict:
@@ -426,11 +426,15 @@ async def test_function_call_args_not_modified():
   tools_dict = {tool.name: tool}
 
   # Test handle_function_calls_async
-  result_async = await handle_function_calls_async(
+  result_async_gen = handle_function_calls_async_gen(
       invocation_context,
       event,
       tools_dict,
   )
+
+  result_async = None
+  async for result_async_item in result_async_gen:
+    result_async = result_async_item
 
   # Verify original args are not modified
   assert function_call.args == original_args
@@ -455,7 +459,7 @@ async def test_function_call_args_not_modified():
 @pytest.mark.asyncio
 async def test_function_call_args_none_handling():
   """Test that function_call.args=None is handled correctly."""
-  from google.adk.flows.llm_flows.functions import handle_function_calls_async
+  from google.adk.flows.llm_flows.functions import handle_function_calls_async_gen
   from google.adk.flows.llm_flows.functions import handle_function_calls_live
 
   def simple_fn(**kwargs) -> dict:
@@ -483,11 +487,15 @@ async def test_function_call_args_none_handling():
   tools_dict = {tool.name: tool}
 
   # Test handle_function_calls_async
-  result_async = await handle_function_calls_async(
+  result_async_gen = handle_function_calls_async_gen(
       invocation_context,
       event,
       tools_dict,
   )
+
+  result_async = None
+  async for result_async_item in result_async_gen:
+    result_async = result_async_item
 
   # Test handle_function_calls_live
   result_live = await handle_function_calls_live(
@@ -504,7 +512,7 @@ async def test_function_call_args_none_handling():
 @pytest.mark.asyncio
 async def test_function_call_args_copy_behavior():
   """Test that modifying the copied args doesn't affect the original."""
-  from google.adk.flows.llm_flows.functions import handle_function_calls_async
+  from google.adk.flows.llm_flows.functions import handle_function_calls_async_gen
   from google.adk.flows.llm_flows.functions import handle_function_calls_live
 
   def simple_fn(test_param: str, other_param: int) -> dict:
@@ -537,11 +545,15 @@ async def test_function_call_args_copy_behavior():
   tools_dict = {tool.name: tool}
 
   # Test handle_function_calls_async
-  result_async = await handle_function_calls_async(
+  result_async_gen = handle_function_calls_async_gen(
       invocation_context,
       event,
       tools_dict,
   )
+
+  result_async = None
+  async for result_async_item in result_async_gen:
+    result_async = result_async_item
 
   # Verify original args are unchanged
   assert function_call.args == original_args
@@ -565,7 +577,7 @@ async def test_function_call_args_copy_behavior():
 @pytest.mark.asyncio
 async def test_function_call_args_deep_copy_behavior():
   """Test that deep copy behavior works correctly with nested structures."""
-  from google.adk.flows.llm_flows.functions import handle_function_calls_async
+  from google.adk.flows.llm_flows.functions import handle_function_calls_async_gen
   from google.adk.flows.llm_flows.functions import handle_function_calls_live
 
   def simple_fn(nested_dict: dict, list_param: list) -> dict:
@@ -607,11 +619,15 @@ async def test_function_call_args_deep_copy_behavior():
   tools_dict = {tool.name: tool}
 
   # Test handle_function_calls_async
-  result_async = await handle_function_calls_async(
+  result_async_gen = handle_function_calls_async_gen(
       invocation_context,
       event,
       tools_dict,
   )
+
+  result_async = None
+  async for result_async_item in result_async_gen:
+    result_async = result_async_item
 
   # Verify original args are completely unchanged
   assert function_call.args == original_args

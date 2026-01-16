@@ -345,7 +345,7 @@ async def test_live_callback_compatibility_with_async():
     return {"bypassed": "by_before_callback"}
 
   # Test with async version
-  from google.adk.flows.llm_flows.functions import handle_function_calls_async
+  from google.adk.flows.llm_flows.functions import handle_function_calls_async_gen
 
   def simple_fn(**kwargs) -> Dict[str, Any]:
     return {"initial": "response"}
@@ -371,9 +371,15 @@ async def test_live_callback_compatibility_with_async():
   tools_dict = {tool.name: tool}
 
   # Get result from async version
-  async_result = await handle_function_calls_async(
-      invocation_context, event, tools_dict
+  result_async_gen = handle_function_calls_async_gen(
+      invocation_context,
+      event,
+      tools_dict,
   )
+
+  async_result = None
+  async for result_async_item in result_async_gen:
+    async_result = result_async_item
 
   # Get result from live version
   live_result = await handle_function_calls_live(

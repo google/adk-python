@@ -117,7 +117,7 @@ class CrewaiTool(FunctionTool):
 You could retry calling this tool, but it is IMPORTANT for you to provide all the mandatory parameters."""
       return {'error': error_str}
 
-    return await self._invoke_callable(self.func, args_to_call)
+    return await self._invoke_callable(self.func, args_to_call, tool_context)
 
   @override
   def _get_declaration(self) -> types.FunctionDeclaration:

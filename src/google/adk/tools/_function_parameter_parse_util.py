@@ -21,11 +21,11 @@ from collections.abc import AsyncIterator as ABCAsyncIterator
 from collections.abc import Generator as ABCGenerator
 from collections.abc import Iterable as ABCIterable
 from collections.abc import Iterator as ABCIterator
+from enum import Enum
 import inspect
 import logging
 import types as typing_types
 from typing import _GenericAlias
-from typing import _SpecialGenericAlias
 from typing import Any
 from typing import get_args
 from typing import get_origin
@@ -35,6 +35,7 @@ from typing import Union
 from google.genai import types
 import pydantic
 
+from ..tools.tool_context import ToolContext
 from ..utils.variant_utils import GoogleLLMVariant
 
 _py_builtin_type_to_schema_type = {
@@ -52,6 +53,91 @@ _py_builtin_type_to_schema_type = {
 }
 
 logger = logging.getLogger('google_adk.' + __name__)
+
+
+def _handle_params_as_deferred_annotations(
+    param: inspect.Parameter, annotation_under_future: dict[str, Any], name: str
+) -> inspect.Parameter:
+  """Catches the case when type hints are stored as strings."""
+  if isinstance(param.annotation, str):
+    param = param.replace(annotation=annotation_under_future[name])
+  return param
+
+
+def _add_unevaluated_items_to_fixed_len_tuple_schema(
+    json_schema: dict[str, Any],
+) -> dict[str, Any]:
+  """Adds 'unevaluatedItems': False to schemas for fixed-length tuples.
+
+  For example, the schema for a parameter of type `tuple[float, float]` would
+  be:
+  {
+      "type": "array",
+      "prefixItems": [
+          {
+              "type": "number"
+          },
+          {
+              "type": "number"
+          },
+      ],
+      "minItems": 2,
+      "maxItems": 2,
+      "unevaluatedItems": False
+  }
+
+  """
+  if (
+      json_schema.get('maxItems')
+      and (
+          json_schema.get('prefixItems')
+          and len(json_schema['prefixItems']) == json_schema['maxItems']
+      )
+      and json_schema.get('type') == 'array'
+  ):
+    json_schema['unevaluatedItems'] = False
+  return json_schema
+
+
+def _raise_for_unsupported_param(
+    param: inspect.Parameter,
+    func_name: str,
+    exception: Exception,
+) -> None:
+  raise ValueError(
+      f'Failed to parse the parameter {param} of function {func_name} for'
+      ' automatic function calling.Automatic function calling works best with'
+      ' simpler function signature schema, consider manually parsing your'
+      f' function declaration for function {func_name}.'
+  ) from exception
+
+
+def _raise_for_invalid_enum_value(param: inspect.Parameter):
+  """Raises an error if the default value is not a valid enum value."""
+  if inspect.isclass(param.annotation) and issubclass(param.annotation, Enum):
+    if param.default is not inspect.Parameter.empty and param.default not in [
+        e.value for e in param.annotation
+    ]:
+      raise ValueError(
+          f'Default value {param.default} is not a valid enum value for'
+          f' {param.annotation}.'
+      )
+
+
+def _generate_json_schema_for_parameter(
+    param: inspect.Parameter,
+) -> dict[str, Any]:
+  """Generates a JSON schema for a parameter using pydantic.TypeAdapter."""
+
+  param_schema_adapter = pydantic.TypeAdapter(
+      param.annotation,
+      config=pydantic.ConfigDict(arbitrary_types_allowed=True),
+  )
+  json_schema_dict = param_schema_adapter.json_schema()
+  json_schema_dict = _add_unevaluated_items_to_fixed_len_tuple_schema(
+      json_schema_dict
+  )
+  return json_schema_dict
 
 
 def _is_builtin_primitive_or_compound(
@@ -82,7 +168,7 @@ def _raise_if_schema_unsupported(
 ):
   if variant == GoogleLLMVariant.GEMINI_API:
     _raise_for_any_of_if_mldev(schema)
-    _update_for_default_if_mldev(schema)
+    # _update_for_default_if_mldev(schema) # No need of this since GEMINI now supports default value
 
 
 def _is_default_value_compatible(
@@ -150,6 +236,20 @@ def _parse_schema_from_parameter(
         raise ValueError(default_value_error_msg)
       schema.default = param.default
     schema.type = _py_builtin_type_to_schema_type[param.annotation]
+    _raise_if_schema_unsupported(variant, schema)
+    return schema
+  if isinstance(param.annotation, type) and issubclass(param.annotation, Enum):
+    schema.type = types.Type.STRING
+    schema.enum = [e.value for e in param.annotation]
+    if param.default is not inspect.Parameter.empty:
+      default_value = (
+          param.default.value
+          if isinstance(param.default, Enum)
+          else param.default
+      )
+      if default_value not in schema.enum:
+        raise ValueError(default_value_error_msg)
+      schema.default = default_value
     _raise_if_schema_unsupported(variant, schema)
     return schema
   if (
@@ -283,17 +383,25 @@ def _parse_schema_from_parameter(
       _raise_if_schema_unsupported(variant, schema)
       return schema
       # all other generic alias will be invoked in raise branch
-  if get_origin(param.annotation) in (ABCGenerator, ABCIterator, ABCIterable):
-    origin = get_origin(param.annotation)
-    args = get_args(param.annotation)
-    if origin in {
-        ABCGenerator,
-        ABCIterator,
-        ABCIterable,
-        ABCAsyncGenerator,
-        ABCAsyncIterator,
-        ABCAsyncIterable,
-    }:
+    if origin in {ABCGenerator, ABCIterator, ABCIterable}:
+      schema.type = types.Type.ARRAY
+      item_ann = args[0] if args else Any
+      schema.items = _parse_schema_from_parameter(
+          variant,
+          inspect.Parameter(
+              'item',
+              inspect.Parameter.POSITIONAL_OR_KEYWORD,
+              annotation=item_ann,
+          ),
+          func_name,
+      )
+      if param.default is not inspect.Parameter.empty:
+        if not _is_default_value_compatible(param.default, param.annotation):
+          raise ValueError(default_value_error_msg)
+        schema.default = param.default
+      _raise_if_schema_unsupported(variant, schema)
+      return schema
+    if origin in {ABCAsyncGenerator, ABCAsyncIterator, ABCAsyncIterable}:
       schema.type = types.Type.ARRAY
       item_ann = args[0] if args else Any
       schema.items = _parse_schema_from_parameter(
@@ -335,6 +443,13 @@ def _parse_schema_from_parameter(
       )
     _raise_if_schema_unsupported(variant, schema)
     return schema
+  if inspect.isclass(param.annotation) and issubclass(
+      param.annotation, ToolContext
+  ):
+    raise ValueError(
+        '`ToolContext` parameter must be named as `tool_context`. Found'
+        f' `{param.name}` instead in function `{func_name}`.'
+    )
   if param.annotation is None:
     # https://swagger.io/docs/specification/v3_0/data-models/data-types/#null
     # null is not a valid type in schema, use object instead.

@@ -18,7 +18,7 @@ from typing import Optional
 
 from google.adk.agents.llm_agent import Agent
 from google.adk.events.event import Event
-from google.adk.flows.llm_flows.functions import handle_function_calls_async
+from google.adk.flows.llm_flows.functions import handle_function_calls_async_gen
 from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.function_tool import FunctionTool
@@ -131,11 +131,15 @@ async def invoke_tool_with_plugin(mock_tool, mock_plugin) -> Optional[Event]:
       content=content,
   )
   tools_dict = {mock_tool.name: mock_tool}
-  return await handle_function_calls_async(
+  gen = handle_function_calls_async_gen(
       invocation_context,
       event,
       tools_dict,
   )
+  result = None
+  async for result_item in gen:
+    result = result_item
+  return result
 
 
 @pytest.mark.asyncio

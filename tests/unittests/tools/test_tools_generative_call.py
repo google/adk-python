@@ -51,6 +51,11 @@ def generator_yield_message_and_returning_none() -> Generator:
   yield None
 
 
+def function_returning_empty_dict() -> Generator:
+  """Function for testing with empty dict return value."""
+  yield {}
+
+
 def generator_function_for_testing_with_1_arg_and_tool_context(
     arg1, tool_context
 ) -> Generator:
@@ -412,6 +417,10 @@ async def test_parallel_call_generative_function_with_stream():
   events = await runner.run_async(
       'test', run_config=RunConfig(streaming_mode=StreamingMode.SSE)
   )
+  for event in events:
+    print('-' * 50)
+    print(event)
+    print('-' * 50)
 
   assert testing_utils.simplify_events(events) == [
       ('root_agent', function_calls),

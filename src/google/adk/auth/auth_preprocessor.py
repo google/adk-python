@@ -26,6 +26,7 @@ from ..flows.llm_flows import functions
 from ..flows.llm_flows._base_llm_processor import BaseLlmRequestProcessor
 from ..flows.llm_flows.functions import REQUEST_EUC_FUNCTION_CALL_NAME
 from ..models.llm_request import LlmRequest
+from ..utils.context_utils import Aclosing
 from .auth_handler import AuthHandler
 from .auth_tool import AuthConfig
 from .auth_tool import AuthToolArguments
@@ -112,7 +113,7 @@ class _AuthLlmRequestProcessor(BaseLlmRequestProcessor):
             function_call.id in tools_to_resume
             for function_call in function_calls
         ]):
-          if function_response_event := await functions.handle_function_calls_async(
+          if function_response_event_async_gen := functions.handle_function_calls_async_gen(
               invocation_context,
               event,
               {
@@ -125,7 +126,9 @@ class _AuthLlmRequestProcessor(BaseLlmRequestProcessor):
               # auth response would be a dict keyed by function call id
               tools_to_resume,
           ):
-            yield function_response_event
+            async with Aclosing(function_response_event_async_gen) as agen:
+              async for function_response_event in agen:
+                yield function_response_event
           return
       return
 
