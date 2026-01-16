@@ -443,7 +443,8 @@ class RemoteA2aAgent(BaseAgent):
               and event.content is not None
               and event.content.parts
           ):
-            event.content.parts[0].thought = True
+            for part in event.content.parts:
+              part.thought = True
         elif (
             isinstance(update, A2ATaskStatusUpdateEvent)
             and update.status
