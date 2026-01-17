@@ -497,74 +497,91 @@ async def _execute_single_function_call_async(
   async def _run_with_trace():
     nonlocal function_args
 
-    # Step 1: Check if plugin before_tool_callback overrides the function
-    # response.
-    function_response = (
-        await invocation_context.plugin_manager.run_before_tool_callback(
-            tool=tool, tool_args=function_args, tool_context=tool_context
+    async def _execute_tool_pipeline() -> Any:
+      """Executes tool call pipeline once; result can be cached by invocation."""
+      # Step 1: Check if plugin before_tool_callback overrides the function
+      # response.
+      function_response = (
+          await invocation_context.plugin_manager.run_before_tool_callback(
+              tool=tool, tool_args=function_args, tool_context=tool_context
+          )
+      )
+
+      # Step 2: If no overrides are provided from the plugins, further run the
+      # canonical callback.
+      if function_response is None:
+        for callback in agent.canonical_before_tool_callbacks:
+          function_response = callback(
+              tool=tool, args=function_args, tool_context=tool_context
+          )
+          if inspect.isawaitable(function_response):
+            function_response = await function_response
+          if function_response:
+            break
+
+      # Step 3: Otherwise, proceed calling the tool normally.
+      if function_response is None:
+        try:
+          function_response = await __call_tool_async(
+              tool, args=function_args, tool_context=tool_context
+          )
+        except Exception as tool_error:
+          error_response = await _run_on_tool_error_callbacks(
+              tool=tool,
+              tool_args=function_args,
+              tool_context=tool_context,
+              error=tool_error,
+          )
+          if error_response is not None:
+            function_response = error_response
+          else:
+            raise tool_error
+
+      # Step 4: Check if plugin after_tool_callback overrides the function
+      # response.
+      altered_function_response = (
+          await invocation_context.plugin_manager.run_after_tool_callback(
+              tool=tool,
+              tool_args=function_args,
+              tool_context=tool_context,
+              result=function_response,
+          )
+      )
+
+      # Step 5: If no overrides are provided from the plugins, further run the
+      # canonical after_tool_callbacks.
+      if altered_function_response is None:
+        for callback in agent.canonical_after_tool_callbacks:
+          altered_function_response = callback(
+              tool=tool,
+              args=function_args,
+              tool_context=tool_context,
+              tool_response=function_response,
+          )
+          if inspect.isawaitable(altered_function_response):
+            altered_function_response = await altered_function_response
+          if altered_function_response:
+            break
+
+      # Step 6: If alternative response exists from after_tool_callback, use it
+      # instead of the original function response.
+      if altered_function_response is not None:
+        function_response = altered_function_response
+
+      return function_response
+
+    should_dedupe = bool(
+        invocation_context.run_config
+        and invocation_context.run_config.dedupe_tool_calls
+    ) or tool.is_long_running
+    function_response, cache_hit = (
+        await invocation_context.get_or_execute_deduped_tool_call(
+            tool_name=tool.name,
+            tool_args=function_args,
+            execute=_execute_tool_pipeline,
+            dedupe=should_dedupe,
         )
     )
-
-    # Step 2: If no overrides are provided from the plugins, further run the
-    # canonical callback.
-    if function_response is None:
-      for callback in agent.canonical_before_tool_callbacks:
-        function_response = callback(
-            tool=tool, args=function_args, tool_context=tool_context
-        )
-        if inspect.isawaitable(function_response):
-          function_response = await function_response
-        if function_response:
-          break
-
-    # Step 3: Otherwise, proceed calling the tool normally.
-    if function_response is None:
-      try:
-        function_response = await __call_tool_async(
-            tool, args=function_args, tool_context=tool_context
-        )
-      except Exception as tool_error:
-        error_response = await _run_on_tool_error_callbacks(
-            tool=tool,
-            tool_args=function_args,
-            tool_context=tool_context,
-            error=tool_error,
-        )
-        if error_response is not None:
-          function_response = error_response
-        else:
-          raise tool_error
-
-    # Step 4: Check if plugin after_tool_callback overrides the function
-    # response.
-    altered_function_response = (
-        await invocation_context.plugin_manager.run_after_tool_callback(
-            tool=tool,
-            tool_args=function_args,
-            tool_context=tool_context,
-            result=function_response,
-        )
-    )
-
-    # Step 5: If no overrides are provided from the plugins, further run the
-    # canonical after_tool_callbacks.
-    if altered_function_response is None:
-      for callback in agent.canonical_after_tool_callbacks:
-        altered_function_response = callback(
-            tool=tool,
-            args=function_args,
-            tool_context=tool_context,
-            tool_response=function_response,
-        )
-        if inspect.isawaitable(altered_function_response):
-          altered_function_response = await altered_function_response
-        if altered_function_response:
-          break
-
-    # Step 6: If alternative response exists from after_tool_callback, use it
-    # instead of the original function response.
-    if altered_function_response is not None:
-      function_response = altered_function_response
 
     if tool.is_long_running:
       # Allow long-running function to return None to not provide function
@@ -580,6 +597,11 @@ async def _execute_single_function_call_async(
     function_response_event = __build_response_event(
         tool, function_response, tool_context, invocation_context
     )
+    if cache_hit:
+      function_response_event.custom_metadata = (
+          function_response_event.custom_metadata or {}
+      )
+      function_response_event.custom_metadata['adk_tool_call_cache_hit'] = True
     return function_response_event
 
   with tracer.start_as_current_span(f'execute_tool {tool.name}'):
@@ -671,48 +693,69 @@ async def _execute_single_function_call_live(
   async def _run_with_trace():
     nonlocal function_args
 
-    # Do not use "args" as the variable name, because it is a reserved keyword
-    # in python debugger.
-    # Make a deep copy to avoid being modified.
-    function_response = None
+    async def _execute_tool_pipeline() -> Any:
+      # Do not use "args" as the variable name, because it is a reserved keyword
+      # in python debugger.
+      # Make a deep copy to avoid being modified.
+      function_response = None
 
-    # Handle before_tool_callbacks - iterate through the canonical callback
-    # list
-    for callback in agent.canonical_before_tool_callbacks:
-      function_response = callback(
-          tool=tool, args=function_args, tool_context=tool_context
+      # Handle before_tool_callbacks - iterate through the canonical callback
+      # list.
+      for callback in agent.canonical_before_tool_callbacks:
+        function_response = callback(
+            tool=tool, args=function_args, tool_context=tool_context
+        )
+        if inspect.isawaitable(function_response):
+          function_response = await function_response
+        if function_response:
+          break
+
+      if function_response is None:
+        function_response = await _process_function_live_helper(
+            tool,
+            tool_context,
+            function_call,
+            function_args,
+            invocation_context,
+            streaming_lock,
+        )
+
+      # Calls after_tool_callback if it exists.
+      altered_function_response = None
+      for callback in agent.canonical_after_tool_callbacks:
+        altered_function_response = callback(
+            tool=tool,
+            args=function_args,
+            tool_context=tool_context,
+            tool_response=function_response,
+        )
+        if inspect.isawaitable(altered_function_response):
+          altered_function_response = await altered_function_response
+        if altered_function_response:
+          break
+
+      if altered_function_response is not None:
+        function_response = altered_function_response
+
+      return function_response
+
+    # Never cache stop_streaming calls (control operation).
+    if function_call.name == 'stop_streaming':
+      function_response = await _execute_tool_pipeline()
+      cache_hit = False
+    else:
+      should_dedupe = bool(
+          invocation_context.run_config
+          and invocation_context.run_config.dedupe_tool_calls
+      ) or tool.is_long_running
+      function_response, cache_hit = (
+          await invocation_context.get_or_execute_deduped_tool_call(
+              tool_name=tool.name,
+              tool_args=function_args,
+              execute=_execute_tool_pipeline,
+              dedupe=should_dedupe,
+          )
       )
-      if inspect.isawaitable(function_response):
-        function_response = await function_response
-      if function_response:
-        break
-
-    if function_response is None:
-      function_response = await _process_function_live_helper(
-          tool,
-          tool_context,
-          function_call,
-          function_args,
-          invocation_context,
-          streaming_lock,
-      )
-
-    # Calls after_tool_callback if it exists.
-    altered_function_response = None
-    for callback in agent.canonical_after_tool_callbacks:
-      altered_function_response = callback(
-          tool=tool,
-          args=function_args,
-          tool_context=tool_context,
-          tool_response=function_response,
-      )
-      if inspect.isawaitable(altered_function_response):
-        altered_function_response = await altered_function_response
-      if altered_function_response:
-        break
-
-    if altered_function_response is not None:
-      function_response = altered_function_response
 
     if tool.is_long_running:
       # Allow async function to return None to not provide function response.
@@ -727,6 +770,11 @@ async def _execute_single_function_call_live(
     function_response_event = __build_response_event(
         tool, function_response, tool_context, invocation_context
     )
+    if cache_hit:
+      function_response_event.custom_metadata = (
+          function_response_event.custom_metadata or {}
+      )
+      function_response_event.custom_metadata['adk_tool_call_cache_hit'] = True
     return function_response_event
 
   with tracer.start_as_current_span(f'execute_tool {tool.name}'):

@@ -14,7 +14,10 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
+from typing import Awaitable
+from typing import Callable
 from typing import Optional
 import uuid
 
@@ -213,6 +216,19 @@ class InvocationContext(BaseModel):
   of this invocation.
   """
 
+  _tool_call_cache_lock: asyncio.Lock = PrivateAttr(
+      default_factory=asyncio.Lock
+  )
+  _tool_call_cache: dict[tuple[Any, ...], asyncio.Task] = PrivateAttr(
+      default_factory=dict
+  )
+  """Caches tool call results within a single invocation.
+
+  This is used to prevent redundant tool execution when the model repeats the
+  same function call (same tool name + same args) multiple times during a single
+  invocation.
+  """
+
   @property
   def is_resumable(self) -> bool:
     """Returns whether the current invocation is resumable."""
@@ -220,6 +236,76 @@ class InvocationContext(BaseModel):
         self.resumability_config is not None
         and self.resumability_config.is_resumable
     )
+
+  @staticmethod
+  def _canonicalize_tool_args(value: Any) -> Any:
+    """Converts a JSON-like structure into a stable, hashable representation."""
+    if isinstance(value, dict):
+      return tuple(
+          (k, InvocationContext._canonicalize_tool_args(v))
+          for k, v in sorted(value.items())
+      )
+    if isinstance(value, list):
+      return tuple(InvocationContext._canonicalize_tool_args(v) for v in value)
+    if isinstance(value, (str, int, float, bool)) or value is None:
+      return value
+    # Fallback: keep it hashable and stable.
+    return repr(value)
+
+  def _tool_call_cache_key(
+      self, *, tool_name: str, tool_args: dict[str, Any]
+  ) -> tuple[Any, ...]:
+    """Builds a cache key for a tool call within this invocation."""
+    return (
+        self.branch,
+        tool_name,
+        InvocationContext._canonicalize_tool_args(tool_args),
+    )
+
+  async def get_or_execute_deduped_tool_call(
+      self,
+      *,
+      tool_name: str,
+      tool_args: dict[str, Any],
+      execute: Callable[[], Awaitable[Any]],
+      dedupe: bool = False,
+  ) -> tuple[Any, bool]:
+    """Returns cached tool result for identical calls, otherwise executes once.
+
+    Args:
+      tool_name: Tool name.
+      tool_args: Tool arguments from the model.
+      execute: A coroutine factory that executes the tool and returns its
+        response.
+
+    Returns:
+      A tuple of (tool_result, cache_hit).
+    """
+    if not dedupe:
+      return await execute(), False
+
+    key = self._tool_call_cache_key(tool_name=tool_name, tool_args=tool_args)
+
+    async with self._tool_call_cache_lock:
+      task = self._tool_call_cache.get(key)
+      if task is None:
+        task = asyncio.create_task(execute())
+        self._tool_call_cache[key] = task
+        cache_hit = False
+      else:
+        cache_hit = True
+
+    try:
+      result = await task
+    except Exception:
+      # If the execution failed, remove from cache so subsequent calls can
+      # retry instead of returning a cached exception forever.
+      async with self._tool_call_cache_lock:
+        if self._tool_call_cache.get(key) is task:
+          self._tool_call_cache.pop(key, None)
+      raise
+
+    return result, cache_hit
 
   def set_agent_state(
       self,

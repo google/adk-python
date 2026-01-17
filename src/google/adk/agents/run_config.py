@@ -316,6 +316,19 @@ class RunConfig(BaseModel):
     - Less than or equal to 0: This allows for unbounded number of llm calls.
   """
 
+  dedupe_tool_calls: bool = False
+  """
+  Whether to deduplicate identical tool calls (same tool name + same arguments)
+  within a single invocation.
+
+  This helps prevent redundant tool execution when the model repeats the same
+  function call multiple times (for example, when a tool is slow or the model
+  does not follow the instruction to call a tool only once).
+
+  Note: Only the tool result is reused; tool side effects (state/artifact
+  deltas) are only applied once from the first execution.
+  """
+
   custom_metadata: Optional[dict[str, Any]] = None
   """Custom metadata for the current invocation."""
 
