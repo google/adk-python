@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 from unittest import mock
 
@@ -150,6 +151,7 @@ def mock_write_client():
 def dummy_arrow_schema():
   return pa.schema([
       pa.field("timestamp", pa.timestamp("us", tz="UTC"), nullable=False),
+      pa.field("root_agent_name", pa.string(), nullable=True),
       pa.field("event_type", pa.string(), nullable=True),
       pa.field("agent", pa.string(), nullable=True),
       pa.field("session_id", pa.string(), nullable=True),
@@ -288,6 +290,36 @@ async def _get_captured_event_dict_async(mock_write_client, expected_schema):
   return {k: v[0] for k, v in pydict.items()}
 
 
+async def _get_captured_rows_async(mock_write_client, expected_schema):
+  """Helper to get all rows passed to append_rows."""
+  all_rows = []
+  for call in mock_write_client.append_rows.call_args_list:
+    requests_iter = call.args[0]
+    requests = []
+    if hasattr(requests_iter, "__aiter__"):
+      async for req in requests_iter:
+        requests.append(req)
+    else:
+      requests = list(requests_iter)
+
+    for request in requests:
+      # Parse the Arrow batch back to a dict for verification
+      try:
+        reader = pa.ipc.open_stream(
+            request.arrow_rows.rows.serialized_record_batch
+        )
+        table = reader.read_all()
+      except Exception:
+        # Fallback: try reading as a single batch
+        buf = pa.py_buffer(request.arrow_rows.rows.serialized_record_batch)
+        batch = pa.ipc.read_record_batch(buf, expected_schema)
+        table = pa.Table.from_batches([batch])
+
+      pydict = table.to_pylist()
+      all_rows.extend(pydict)
+  return all_rows
+
+
 def _assert_common_fields(log_entry, event_type, agent="MyTestAgent"):
   assert log_entry["event_type"] == event_type
   assert log_entry["agent"] == agent
@@ -313,6 +345,40 @@ def test_recursive_smart_truncate():
   assert truncated["b"][0] == "short"
   assert truncated["b"][1] == "long strin...[TRUNCATED]"
   assert truncated["c"]["d"] == "long strin...[TRUNCATED]"
+
+
+def test_recursive_smart_truncate_with_dataclasses():
+  """Test recursive smart truncate with dataclasses."""
+
+  @dataclasses.dataclass
+  class LocalMissedKPI:
+    kpi: str
+    value: float
+
+  @dataclasses.dataclass
+  class LocalIncident:
+    id: str
+    kpi_missed: list[LocalMissedKPI]
+    status: str
+
+  incident = LocalIncident(
+      id="inc-123",
+      kpi_missed=[LocalMissedKPI(kpi="latency", value=99.9)],
+      status="active",
+  )
+  content = {"result": incident}
+  max_len = 1000
+
+  truncated, is_truncated = (
+      bigquery_agent_analytics_plugin._recursive_smart_truncate(
+          content, max_len
+      )
+  )
+  assert not is_truncated
+  assert isinstance(truncated["result"], dict)
+  assert truncated["result"]["id"] == "inc-123"
+  assert isinstance(truncated["result"]["kpi_missed"][0], dict)
+  assert truncated["result"]["kpi_missed"][0]["kpi"] == "latency"
 
 
 # --- Test Class ---
@@ -344,7 +410,121 @@ class TestBigQueryAgentAnalyticsPlugin:
     )
     mock_auth_default.assert_not_called()
     mock_bq_client.assert_not_called()
-    mock_write_client.append_rows.assert_not_called()
+
+  @pytest.mark.asyncio
+  async def test_enriched_metadata_logging(
+      self,
+      mock_auth_default,
+      mock_bq_client,
+      mock_write_client,
+      mock_to_arrow_schema,
+      dummy_arrow_schema,
+      callback_context,
+  ):
+    # Setup
+    config = BigQueryLoggerConfig()
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID, DATASET_ID, config=config
+    )
+
+    # Mock root agent
+    mock_root = mock.create_autospec(
+        base_agent.BaseAgent, instance=True, spec_set=True
+    )
+    type(mock_root).name = mock.PropertyMock(return_value="RootAgent")
+    callback_context._invocation_context.agent.root_agent = mock_root
+
+    # 1. Test root_agent_name and model extraction from request
+    llm_request = llm_request_lib.LlmRequest(
+        model="gemini-pro",
+        contents=[types.Content(parts=[types.Part(text="Hi")])],
+    )
+    await plugin.before_model_callback(
+        callback_context=callback_context, llm_request=llm_request
+    )
+
+    # 2. Test model_version and usage_metadata extraction from response
+    usage = types.GenerateContentResponseUsageMetadata(
+        prompt_token_count=10, candidates_token_count=20, total_token_count=30
+    )
+    llm_response = llm_response_lib.LlmResponse(
+        content=types.Content(parts=[types.Part(text="Hello")]),
+        usage_metadata=usage,
+        model_version="v1.2.3",
+    )
+    await plugin.after_model_callback(
+        callback_context=callback_context, llm_response=llm_response
+    )
+
+    await plugin.shutdown()
+
+    # Verify captured rows from mock client
+    rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+    assert len(rows) == 2
+
+    # Check LLM_REQUEST row
+    # Sort by event_type to ensure consistent indexing
+    rows.sort(key=lambda x: x["event_type"])
+    request_row = rows[0]  # LLM_REQUEST
+    response_row = rows[1]  # LLM_RESPONSE
+
+    assert request_row["event_type"] == "LLM_REQUEST"
+    attr_req = json.loads(request_row["attributes"])
+    assert attr_req["root_agent_name"] == "RootAgent"
+    assert attr_req["model"] == "gemini-pro"
+
+    # Check LLM_RESPONSE row
+    assert response_row["event_type"] == "LLM_RESPONSE"
+    attr_res = json.loads(response_row["attributes"])
+    assert attr_res["root_agent_name"] == "RootAgent"
+    assert attr_res["model_version"] == "v1.2.3"
+    usage_meta = attr_res["usage_metadata"]
+    assert "prompt_token_count" in usage_meta
+    assert usage_meta["prompt_token_count"] == 10
+    mock_write_client.append_rows.assert_called()
+
+  @pytest.mark.asyncio
+  async def test_concurrent_span_management(
+      self,
+      mock_auth_default,
+      mock_bq_client,
+      mock_write_client,
+      mock_to_arrow_schema,
+      callback_context,
+  ):
+    # Setup
+    config = BigQueryLoggerConfig()
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID, DATASET_ID, config=config
+    )
+
+    # Initialize trace in main context
+    bigquery_agent_analytics_plugin.TraceManager.init_trace(callback_context)
+
+    async def branch_1():
+      bigquery_agent_analytics_plugin.TraceManager.push_span(
+          callback_context, span_id="span-1"
+      )
+      await asyncio.sleep(0.02)
+      s_id = bigquery_agent_analytics_plugin.TraceManager.get_current_span_id()
+      bigquery_agent_analytics_plugin.TraceManager.pop_span()
+      return s_id
+
+    async def branch_2():
+      bigquery_agent_analytics_plugin.TraceManager.push_span(
+          callback_context, span_id="span-2"
+      )
+      await asyncio.sleep(0.02)
+      s_id = bigquery_agent_analytics_plugin.TraceManager.get_current_span_id()
+      bigquery_agent_analytics_plugin.TraceManager.pop_span()
+      return s_id
+
+    # Run concurrently
+    results = await asyncio.gather(branch_1(), branch_2())
+    # If they shared the same list/dict, they would interfere.
+    assert "span-1" in results
+    assert "span-2" in results
+    assert results[0] != results[1]
 
   @pytest.mark.asyncio
   async def test_event_allowlist(
@@ -1704,8 +1884,72 @@ class TestBigQueryAgentAnalyticsPlugin:
     assert log_entry_resp["parent_span_id"] == agent_span_id
     assert log_entry_resp["parent_span_id"] != log_entry_resp["span_id"]
 
-    # Verify Span was popped
-    current_span = (
+    # Verify LLM Span was popped and we are back to Agent Span
+    assert (
         bigquery_agent_analytics_plugin.TraceManager.get_current_span_id()
+        == agent_span_id
     )
-    assert current_span == agent_span_id
+    # Clean up Agent Span
+    bigquery_agent_analytics_plugin.TraceManager.pop_span()
+    assert (
+        not bigquery_agent_analytics_plugin.TraceManager.get_current_span_id()
+    )
+
+  @pytest.mark.asyncio
+  async def test_custom_object_serialization(
+      self,
+      mock_write_client,
+      tool_context,
+      mock_auth_default,
+      mock_bq_client,
+      mock_to_arrow_schema,
+      dummy_arrow_schema,
+      mock_asyncio_to_thread,
+  ):
+    """Verifies that custom objects (Dataclasses) are serialized to dicts."""
+    _ = mock_auth_default
+    _ = mock_bq_client
+
+    @dataclasses.dataclass
+    class LocalMissedKPI:
+      kpi: str
+      value: float
+
+    @dataclasses.dataclass
+    class LocalIncident:
+      id: str
+      kpi_missed: list[LocalMissedKPI]
+      status: str
+
+    incident = LocalIncident(
+        id="inc-123",
+        kpi_missed=[LocalMissedKPI(kpi="latency", value=99.9)],
+        status="active",
+    )
+
+    config = BigQueryLoggerConfig()
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
+    )
+    await plugin._ensure_started()
+    mock_write_client.append_rows.reset_mock()
+
+    content = {"result": incident}
+
+    # Verify full flow
+    await plugin._log_event(
+        "TOOL_PARTIAL",
+        tool_context,
+        raw_content=content,
+    )
+    await asyncio.sleep(0.01)
+
+    mock_write_client.append_rows.assert_called_once()
+    log_entry = await _get_captured_event_dict_async(
+        mock_write_client, dummy_arrow_schema
+    )
+
+    # Content should be valid JSON string
+    content_json = json.loads(log_entry["content"])
+    assert content_json["result"]["id"] == "inc-123"
+    assert content_json["result"]["kpi_missed"][0]["kpi"] == "latency"

@@ -201,6 +201,7 @@ def mock_agent_loader():
           "root_agent_name": "test_agent",
           "description": "A test agent for unit testing",
           "language": "python",
+          "is_computer_use": False,
       }]
 
   return MockAgentLoader(".")
@@ -735,6 +736,8 @@ def test_list_apps_detailed(test_app):
     assert "description" in app
     assert "language" in app
     assert app["language"] in ["yaml", "python"]
+    assert "isComputerUse" in app
+    assert not app["isComputerUse"]
 
   logger.info(f"Listed apps: {data}")
 
