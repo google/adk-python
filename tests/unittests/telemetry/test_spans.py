@@ -27,6 +27,7 @@ from google.adk.telemetry.tracing import ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS
 from google.adk.telemetry.tracing import trace_agent_invocation
 from google.adk.telemetry.tracing import trace_call_llm
 from google.adk.telemetry.tracing import trace_merged_tool_calls
+from google.adk.telemetry.tracing import trace_send_data
 from google.adk.telemetry.tracing import trace_tool_call
 from google.adk.tools.base_tool import BaseTool
 from google.genai import types
@@ -447,7 +448,7 @@ def test_trace_merged_tool_calls_sets_correct_attributes(
 async def test_call_llm_disabling_request_response_content(
     monkeypatch, mock_span_fixture
 ):
-  """Test trace_call_llm doesn't set request and response attributes if env is set to false"""
+  """Test trace_call_llm sets placeholders when capture is disabled."""
   # Arrange
   monkeypatch.setenv(ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS, 'false')
   monkeypatch.setattr(
@@ -474,23 +475,19 @@ async def test_call_llm_disabling_request_response_content(
   trace_call_llm(invocation_context, 'test_event_id', llm_request, llm_response)
 
   # Assert
-  assert not any(
-      arg_name == 'gcp.vertex.agent.llm_request' and arg_value != {}
-      for arg_name, arg_value in (
-          call_obj.args
-          for call_obj in mock_span_fixture.set_attribute.call_args_list
-      )
-  ), "Attribute 'gcp.vertex.agent.llm_request' was incorrectly set on the span."
-
-  assert not any(
-      arg_name == 'gcp.vertex.agent.llm_response' and arg_value != {}
-      for arg_name, arg_value in (
-          call_obj.args
-          for call_obj in mock_span_fixture.set_attribute.call_args_list
-      )
-  ), (
-      "Attribute 'gcp.vertex.agent.llm_response' was incorrectly set on the"
-      ' span.'
+  assert (
+      'gcp.vertex.agent.llm_request',
+      '{}',
+  ) in (
+      call_obj.args
+      for call_obj in mock_span_fixture.set_attribute.call_args_list
+  )
+  assert (
+      'gcp.vertex.agent.llm_response',
+      '{}',
+  ) in (
+      call_obj.args
+      for call_obj in mock_span_fixture.set_attribute.call_args_list
   )
 
 
@@ -500,7 +497,7 @@ def test_trace_tool_call_disabling_request_response_content(
     mock_tool_fixture,
     mock_event_fixture,
 ):
-  """Test trace_tool_call doesn't set request and response attributes if env is set to false"""
+  """Test trace_tool_call sets placeholders when capture is disabled."""
   # Arrange
   monkeypatch.setenv(ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS, 'false')
   monkeypatch.setattr(
@@ -537,26 +534,19 @@ def test_trace_tool_call_disabling_request_response_content(
   )
 
   # Assert
-  assert not any(
-      arg_name == 'gcp.vertex.agent.tool_call_args' and arg_value != {}
-      for arg_name, arg_value in (
-          call_obj.args
-          for call_obj in mock_span_fixture.set_attribute.call_args_list
-      )
-  ), (
-      "Attribute 'gcp.vertex.agent.tool_call_args' was incorrectly set on the"
-      ' span.'
+  assert (
+      'gcp.vertex.agent.tool_call_args',
+      '{}',
+  ) in (
+      call_obj.args
+      for call_obj in mock_span_fixture.set_attribute.call_args_list
   )
-
-  assert not any(
-      arg_name == 'gcp.vertex.agent.tool_response' and arg_value != {}
-      for arg_name, arg_value in (
-          call_obj.args
-          for call_obj in mock_span_fixture.set_attribute.call_args_list
-      )
-  ), (
-      "Attribute 'gcp.vertex.agent.tool_response' was incorrectly set on the"
-      ' span.'
+  assert (
+      'gcp.vertex.agent.tool_response',
+      '{}',
+  ) in (
+      call_obj.args
+      for call_obj in mock_span_fixture.set_attribute.call_args_list
   )
 
 
@@ -565,7 +555,7 @@ def test_trace_merged_tool_disabling_request_response_content(
     mock_span_fixture,
     mock_event_fixture,
 ):
-  """Test trace_merged_tool doesn't set request and response attributes if env is set to false"""
+  """Test trace_merged_tool_calls sets placeholders when capture is disabled."""
   # Arrange
   monkeypatch.setenv(ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS, 'false')
   monkeypatch.setattr(
@@ -585,13 +575,40 @@ def test_trace_merged_tool_disabling_request_response_content(
   )
 
   # Assert
-  assert not any(
-      arg_name == 'gcp.vertex.agent.tool_response' and arg_value != {}
-      for arg_name, arg_value in (
-          call_obj.args
-          for call_obj in mock_span_fixture.set_attribute.call_args_list
-      )
-  ), (
-      "Attribute 'gcp.vertex.agent.tool_response' was incorrectly set on the"
-      ' span.'
+  assert (
+      'gcp.vertex.agent.tool_response',
+      '{}',
+  ) in (
+      call_obj.args
+      for call_obj in mock_span_fixture.set_attribute.call_args_list
+  )
+
+
+@pytest.mark.asyncio
+async def test_trace_send_data_disabling_request_response_content(
+    monkeypatch, mock_span_fixture
+):
+  """Test trace_send_data sets placeholders when capture is disabled."""
+  monkeypatch.setenv(ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS, 'false')
+  monkeypatch.setattr(
+      'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
+  )
+
+  agent = LlmAgent(name='test_agent')
+  invocation_context = await _create_invocation_context(agent)
+
+  trace_send_data(
+      invocation_context=invocation_context,
+      event_id='test_event_id',
+      data=[
+          types.Content(
+              role='user',
+              parts=[types.Part(text='hi')],
+          )
+      ],
+  )
+
+  assert ('gcp.vertex.agent.data', '{}') in (
+      call_obj.args
+      for call_obj in mock_span_fixture.set_attribute.call_args_list
   )

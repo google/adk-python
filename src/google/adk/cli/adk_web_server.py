@@ -330,6 +330,7 @@ class AppInfo(common.BaseModel):
   root_agent_name: str
   description: str
   language: Literal["yaml", "python"]
+  is_computer_use: bool = False
 
 
 class ListAppsResponse(common.BaseModel):
@@ -1558,8 +1559,17 @@ class AdkWebServer:
                 yield f"data: {sse_event}\n\n"
         except Exception as e:
           logger.exception("Error in event_generator: %s", e)
-          # You might want to yield an error event here
-          yield f'data: {{"error": "{str(e)}"}}\n\n'
+          # Yield a proper Event object for the error
+          error_event = Event(
+              author="system",
+              content=types.Content(
+                  role="model", parts=[types.Part(text=f"Error: {e}")]
+              ),
+          )
+          yield (
+              "data:"
+              f" {error_event.model_dump_json(by_alias=True, exclude_none=True)}\n\n"
+          )
 
       # Returns a streaming response with the proper media type for SSE
       return StreamingResponse(

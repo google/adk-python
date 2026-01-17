@@ -110,6 +110,18 @@ _MISSING_TOOL_RESULT_MESSAGE = (
 )
 
 
+def _map_finish_reason(
+    finish_reason: Any,
+) -> types.FinishReason | None:
+  """Maps a LiteLLM finish_reason value to a google-genai FinishReason enum."""
+  if not finish_reason:
+    return None
+  if isinstance(finish_reason, types.FinishReason):
+    return finish_reason
+  finish_reason_str = str(finish_reason).lower()
+  return _FINISH_REASON_MAPPING.get(finish_reason_str, types.FinishReason.OTHER)
+
+
 def _get_provider_from_model(model: str) -> str:
   """Extracts the provider name from a LiteLLM model string.
 
@@ -179,6 +191,45 @@ def _infer_mime_type_from_uri(uri: str) -> Optional[str]:
   except (ValueError, AttributeError) as e:
     logger.debug("Could not infer MIME type from URI %s: %s", uri, e)
     return None
+
+
+def _looks_like_openai_file_id(file_uri: str) -> bool:
+  """Returns True when file_uri resembles an OpenAI/Azure file id."""
+  return file_uri.startswith("file-")
+
+
+def _redact_file_uri_for_log(
+    file_uri: str, *, display_name: str | None = None
+) -> str:
+  """Returns a privacy-preserving identifier for logs."""
+  if display_name:
+    return display_name
+  if _looks_like_openai_file_id(file_uri):
+    return "file-<redacted>"
+  try:
+    parsed = urlparse(file_uri)
+  except ValueError:
+    return "<unparseable>"
+  if not parsed.scheme:
+    return "<unknown>"
+  segments = [segment for segment in parsed.path.split("/") if segment]
+  tail = segments[-1] if segments else ""
+  if tail:
+    return f"{parsed.scheme}://<redacted>/{tail}"
+  return f"{parsed.scheme}://<redacted>"
+
+
+def _requires_file_uri_fallback(
+    provider: str, model: str, file_uri: str
+) -> bool:
+  """Returns True when `file_uri` should not be sent as a file content block."""
+  if provider in _FILE_ID_REQUIRED_PROVIDERS:
+    return not _looks_like_openai_file_id(file_uri)
+  if provider == "anthropic":
+    return True
+  if provider == "vertex_ai" and not _is_litellm_gemini_model(model):
+    return True
+  return False
 
 
 def _decode_inline_text_data(raw_bytes: bytes) -> str:
@@ -447,6 +498,7 @@ async def _content_to_message_param(
     content: types.Content,
     *,
     provider: str = "",
+    model: str = "",
 ) -> Union[Message, list[Message]]:
   """Converts a types.Content to a litellm Message or list of Messages.
 
@@ -456,6 +508,7 @@ async def _content_to_message_param(
   Args:
     content: The content to convert.
     provider: The LLM provider name (e.g., "openai", "azure").
+    model: The LiteLLM model string, used for provider-specific behavior.
 
   Returns:
     A litellm Message, a list of litellm Messages.
@@ -499,7 +552,9 @@ async def _content_to_message_param(
 
   if role == "user":
     user_parts = [part for part in content.parts if not part.thought]
-    message_content = await _get_content(user_parts, provider=provider) or None
+    message_content = (
+        await _get_content(user_parts, provider=provider, model=model) or None
+    )
     return ChatCompletionUserMessage(role="user", content=message_content)
   else:  # assistant/model
     tool_calls = []
@@ -523,7 +578,7 @@ async def _content_to_message_param(
         content_parts.append(part)
 
     final_content = (
-        await _get_content(content_parts, provider=provider)
+        await _get_content(content_parts, provider=provider, model=model)
         if content_parts
         else None
     )
@@ -620,6 +675,7 @@ async def _get_content(
     parts: Iterable[types.Part],
     *,
     provider: str = "",
+    model: str = "",
 ) -> OpenAIMessageContent:
   """Converts a list of parts to litellm content.
 
@@ -629,6 +685,8 @@ async def _get_content(
   Args:
     parts: The parts to convert.
     provider: The LLM provider name (e.g., "openai", "azure").
+    model: The LiteLLM model string (e.g., "openai/gpt-4o",
+      "vertex_ai/gemini-2.5-flash").
 
   Returns:
     The litellm content.
@@ -709,6 +767,32 @@ async def _get_content(
             f"{part.inline_data.mime_type}."
         )
     elif part.file_data and part.file_data.file_uri:
+      if (
+          provider in _FILE_ID_REQUIRED_PROVIDERS
+          and _looks_like_openai_file_id(part.file_data.file_uri)
+      ):
+        content_objects.append({
+            "type": "file",
+            "file": {"file_id": part.file_data.file_uri},
+        })
+        continue
+
+      if _requires_file_uri_fallback(provider, model, part.file_data.file_uri):
+        logger.debug(
+            "File URI %s not supported for provider %s, using text fallback",
+            _redact_file_uri_for_log(
+                part.file_data.file_uri,
+                display_name=part.file_data.display_name,
+            ),
+            provider,
+        )
+        identifier = part.file_data.display_name or part.file_data.file_uri
+        content_objects.append({
+            "type": "text",
+            "text": f'[File reference: "{identifier}"]',
+        })
+        continue
+
       file_object: ChatCompletionFileUrlObject = {
           "file_id": part.file_data.file_uri,
       }
@@ -1363,7 +1447,7 @@ async def _get_completion_inputs(
   messages: List[Message] = []
   for content in llm_request.contents or []:
     message_param_or_list = await _content_to_message_param(
-        content, provider=provider
+        content, provider=provider, model=model
     )
     if isinstance(message_param_or_list, list):
       messages.extend(message_param_or_list)
@@ -1768,6 +1852,9 @@ class LiteLlm(BaseLlm):
                     else None,
                 )
             )
+            aggregated_llm_response_with_tool_call.finish_reason = (
+                _map_finish_reason(finish_reason)
+            )
             text = ""
             reasoning_parts = []
             function_calls.clear()
@@ -1781,6 +1868,9 @@ class LiteLlm(BaseLlm):
                 thought_parts=list(reasoning_parts)
                 if reasoning_parts
                 else None,
+            )
+            aggregated_llm_response.finish_reason = _map_finish_reason(
+                finish_reason
             )
             text = ""
             reasoning_parts = []

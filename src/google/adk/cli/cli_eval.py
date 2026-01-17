@@ -34,6 +34,9 @@ from ..evaluation.constants import MISSING_EVAL_DEPENDENCIES_MESSAGE
 from ..evaluation.eval_case import get_all_tool_calls
 from ..evaluation.eval_case import IntermediateDataType
 from ..evaluation.eval_metrics import EvalMetric
+from ..evaluation.eval_metrics import Interval
+from ..evaluation.eval_metrics import MetricInfo
+from ..evaluation.eval_metrics import MetricValueInfo
 from ..evaluation.eval_result import EvalCaseResult
 from ..evaluation.eval_sets_manager import EvalSetsManager
 from ..utils.context_utils import Aclosing
@@ -68,6 +71,19 @@ def _get_agent_module(agent_module_file_path: str):
   file_path = os.path.join(agent_module_file_path, "__init__.py")
   module_name = "agent"
   return _import_from_path(module_name, file_path)
+
+
+def get_default_metric_info(
+    metric_name: str, description: str = ""
+) -> MetricInfo:
+  """Returns a default MetricInfo for a metric."""
+  return MetricInfo(
+      metric_name=metric_name,
+      description=description,
+      metric_value_info=MetricValueInfo(
+          interval=Interval(min_value=0.0, max_value=1.0)
+      ),
+  )
 
 
 def get_root_agent(agent_module_file_path: str) -> Agent:

@@ -18,6 +18,7 @@ import asyncio
 import atexit
 from concurrent.futures import ThreadPoolExecutor
 import contextvars
+import dataclasses
 from dataclasses import dataclass
 from dataclasses import field
 from datetime import datetime
@@ -120,6 +121,8 @@ def _recursive_smart_truncate(obj: Any, max_len: int) -> tuple[Any, bool]:
     return obj, False
   elif isinstance(obj, dict):
     truncated_any = False
+    # Use dict comprehension for potentially slightly better performance,
+    # but explicit loop is fine for clarity given recursive nature.
     new_dict = {}
     for k, v in obj.items():
       val, trunc = _recursive_smart_truncate(v, max_len)
@@ -130,13 +133,41 @@ def _recursive_smart_truncate(obj: Any, max_len: int) -> tuple[Any, bool]:
   elif isinstance(obj, (list, tuple)):
     truncated_any = False
     new_list = []
+    # Explicit loop to handle flag propagation
     for i in obj:
       val, trunc = _recursive_smart_truncate(i, max_len)
       if trunc:
         truncated_any = True
       new_list.append(val)
     return type(obj)(new_list), truncated_any
-  return obj, False
+  elif dataclasses.is_dataclass(obj) and not isinstance(obj, type):
+    # Convert dataclasses to dicts so they become valid JSON objects
+    return _recursive_smart_truncate(dataclasses.asdict(obj), max_len)
+  elif hasattr(obj, "model_dump") and callable(obj.model_dump):
+    # Pydantic v2
+    try:
+      return _recursive_smart_truncate(obj.model_dump(), max_len)
+    except Exception:
+      pass
+  elif hasattr(obj, "dict") and callable(obj.dict):
+    # Pydantic v1
+    try:
+      return _recursive_smart_truncate(obj.dict(), max_len)
+    except Exception:
+      pass
+  elif hasattr(obj, "to_dict") and callable(obj.to_dict):
+    # Common pattern for custom objects
+    try:
+      return _recursive_smart_truncate(obj.to_dict(), max_len)
+    except Exception:
+      pass
+  elif obj is None or isinstance(obj, (int, float, bool)):
+    # Basic types are safe
+    return obj, False
+
+  # Fallback for unknown types: Convert to string to ensure JSON validity
+  # We return string representation of the object, which is a valid JSON string value.
+  return str(obj), False
 
 
 # --- PyArrow Helper Functions ---
@@ -352,9 +383,10 @@ class BigQueryLoggerConfig:
 # ==============================================================================
 
 _trace_id_ctx = contextvars.ContextVar("_bq_analytics_trace_id", default=None)
-_span_stack_ctx = contextvars.ContextVar(
-    "_bq_analytics_span_stack", default=None
+_root_agent_name_ctx = contextvars.ContextVar(
+    "_bq_analytics_root_agent_name", default=None
 )
+_span_stack_ctx = contextvars.ContextVar("_bq_analytics_span_stack", default=())
 _span_times_ctx = contextvars.ContextVar(
     "_bq_analytics_span_times", default=None
 )
@@ -370,7 +402,13 @@ class TraceManager:
   def init_trace(callback_context: CallbackContext) -> None:
     if _trace_id_ctx.get() is None:
       _trace_id_ctx.set(callback_context.invocation_id)
-      _span_stack_ctx.set([])
+      # Extract root agent name from invocation context
+      try:
+        root_agent = callback_context._invocation_context.agent.root_agent
+        _root_agent_name_ctx.set(root_agent.name)
+      except (AttributeError, ValueError):
+        pass
+      _span_stack_ctx.set(())
       _span_times_ctx.set({})
       _span_first_token_times_ctx.set({})
 
@@ -393,39 +431,29 @@ class TraceManager:
     span_id = span_id or str(uuid.uuid4())
 
     stack = _span_stack_ctx.get()
-    if stack is None:
-      # Should have been called by init_trace, but just in case
-      stack = []
-      _span_stack_ctx.set(stack)
+    new_stack = stack + (span_id,)
+    _span_stack_ctx.set(new_stack)
 
-    stack.append(span_id)
-
-    times = _span_times_ctx.get()
-    if times is None:
-      times = {}
-      _span_times_ctx.set(times)
-
-    first_tokens = _span_first_token_times_ctx.get()
-    if first_tokens is None:
-      first_tokens = {}
-      _span_first_token_times_ctx.set(first_tokens)
-
+    times = dict(_span_times_ctx.get() or {})
     times[span_id] = time.time()
+    _span_times_ctx.set(times)
     return span_id
 
   @staticmethod
   def pop_span() -> tuple[Optional[str], Optional[int]]:
-    stack = _span_stack_ctx.get()
+    stack = list(_span_stack_ctx.get())
     if not stack:
       return None, None
     span_id = stack.pop()
+    _span_stack_ctx.set(tuple(stack))
 
-    times = _span_times_ctx.get()
-    start_time = times.pop(span_id, None) if times else None
+    times_dict = dict(_span_times_ctx.get() or {})
+    start_time = times_dict.pop(span_id, None)
+    _span_times_ctx.set(times_dict)
 
-    first_tokens = _span_first_token_times_ctx.get()
-    if first_tokens:
-      first_tokens.pop(span_id, None)
+    ft_dict = dict(_span_first_token_times_ctx.get() or {})
+    ft_dict.pop(span_id, None)
+    _span_first_token_times_ctx.set(ft_dict)
 
     duration_ms = int((time.time() - start_time) * 1000) if start_time else None
     return span_id, duration_ms
@@ -443,6 +471,10 @@ class TraceManager:
     return stack[-1] if stack else None
 
   @staticmethod
+  def get_root_agent_name() -> Optional[str]:
+    return _root_agent_name_ctx.get()
+
+  @staticmethod
   def get_start_time(span_id: str) -> Optional[float]:
     times = _span_times_ctx.get()
     return times.get(span_id) if times else None
@@ -454,13 +486,10 @@ class TraceManager:
     Returns:
         True if this was the first token (newly recorded), False otherwise.
     """
-    first_tokens = _span_first_token_times_ctx.get()
-    if first_tokens is None:
-      first_tokens = {}
-      _span_first_token_times_ctx.set(first_tokens)
-
+    first_tokens = dict(_span_first_token_times_ctx.get() or {})
     if span_id not in first_tokens:
       first_tokens[span_id] = time.time()
+      _span_first_token_times_ctx.set(first_tokens)
       return True
     return False
 
@@ -1218,7 +1247,10 @@ def _get_events_schema() -> list[bigquery.SchemaField]:
           mode="NULLABLE",
           description=(
               "A JSON object containing arbitrary key-value pairs for"
-              " additional event metadata not covered by standard fields."
+              " additional event metadata. Includes enrichment fields like"
+              " 'root_agent_name' (turn orchestration), 'model' (request"
+              " model), 'model_version' (response version), and"
+              " 'usage_metadata' (detailed token counts)."
           ),
       ),
       bigquery.SchemaField(
@@ -1421,7 +1453,6 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       atexit.register(self._atexit_cleanup, weakref.proxy(self.batch_processor))
 
   @staticmethod
-  @staticmethod
   def _atexit_cleanup(batch_processor: "BatchProcessor") -> None:
     """Clean up batch processor on script exit."""
     # Check if the batch_processor object is still alive
@@ -1563,7 +1594,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
   async def _ensure_started(self, **kwargs) -> None:
     """Ensures that the plugin is started and initialized."""
     if not self._started:
-      # Kept original lock name as it was not explicitly changed in the
+      # Kept original lock name as it was not explicitly changed.
       if self._setup_lock is None:
         self._setup_lock = asyncio.Lock()
       async with self._setup_lock:
@@ -1659,6 +1690,28 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
 
     status = kwargs.pop("status", "OK")
     error_message = kwargs.pop("error_message", None)
+
+    # V2 Metadata Extensions
+    model = kwargs.pop("model", None)
+    model_version = kwargs.pop("model_version", None)
+    usage_metadata = kwargs.pop("usage_metadata", None)
+
+    # Add new fields to attributes instead of columns
+    kwargs["root_agent_name"] = TraceManager.get_root_agent_name()
+    if model:
+      kwargs["model"] = model
+    if model_version:
+      kwargs["model_version"] = model_version
+    if usage_metadata:
+      # Use smart truncate to handle Pydantic, Dataclasses, and other objects
+      usage_dict, _ = _recursive_smart_truncate(
+          usage_metadata, self.config.max_content_length
+      )
+      if isinstance(usage_dict, dict):
+        kwargs["usage_metadata"] = usage_dict
+      else:
+        # Fallback if it couldn't be converted to dict
+        kwargs["usage_metadata"] = usage_metadata
 
     # Serialize remaining kwargs to JSON string for attributes
     try:
@@ -1822,6 +1875,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         "LLM_REQUEST",
         callback_context,
         raw_content=llm_request,
+        model=llm_request.model,
         **attributes,
     )
 
@@ -1921,6 +1975,8 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         raw_content=content_str,
         is_truncated=is_truncated,
         latency_ms=duration,
+        model_version=llm_response.model_version,
+        usage_metadata=llm_response.usage_metadata,
         span_id_override=span_id if is_popped else None,
         parent_span_id_override=parent_span_id
         if is_popped
