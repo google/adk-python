@@ -12,13 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Sample CodingAgent demonstrating code generation with tool usage.
+"""Data Analysis Agent using CodingAgent.
 
-This sample shows how to create a CodingAgent that can:
-- Generate Python code to solve tasks
-- Call tools as Python functions from within the generated code
-- Execute code in a sandboxed container environment
-- Provide final answers after multi-step reasoning
+This sample demonstrates a CodingAgent configured as a data analyst that can:
+- Fetch datasets from URLs (CSV, JSON, text)
+- Analyze data using pandas
+- Create visualizations using matplotlib
+- Generate statistical summaries and insights
 
 Prerequisites:
 - Docker must be installed and running
@@ -29,106 +29,117 @@ Usage:
     adk web contributing/samples
 
 Example queries:
-- "What is 15% of 847?"
-- "Calculate the compound interest on $10,000 at 5% annual rate for 3 years"
-- "Search for the latest Python release and summarize the key features"
+- "What is the survival rate on the Titanic?"
+- "Create a bar chart showing survival rate by passenger class"
+- "Analyze the iris dataset and create a scatter plot"
 """
+
+import base64
+import binascii
+import os
+import urllib.error
+import urllib.request
+from datetime import datetime
 
 from google.adk.agents import CodingAgent
 from google.adk.code_executors import ContainerCodeExecutor
+from google.adk.code_executors.allowlist_validator import DEFAULT_SAFE_IMPORTS
 
 
-# Define sample tools that the CodingAgent can use
-def calculator(expression: str) -> dict:
-    """Evaluate a mathematical expression.
+# Sample dataset URLs
+SAMPLE_DATASETS = {
+    "titanic": {
+        "url": "https://raw.githubusercontent.com/datasciencedojo/datasets/master/titanic.csv",
+        "description": "Titanic passenger data with survival information. 891 passengers with features like age, sex, class, fare, and survival status.",
+        "columns": "PassengerId, Survived, Pclass, Name, Sex, Age, SibSp, Parch, Ticket, Fare, Cabin, Embarked",
+    },
+    "iris": {
+        "url": "https://raw.githubusercontent.com/mwaskom/seaborn-data/master/iris.csv",
+        "description": "Iris flower dataset. 150 samples of 3 species with sepal and petal measurements.",
+        "columns": "sepal_length, sepal_width, petal_length, petal_width, species",
+    },
+    "tips": {
+        "url": "https://raw.githubusercontent.com/mwaskom/seaborn-data/master/tips.csv",
+        "description": "Restaurant tips dataset. 244 records with bill amount, tip, and customer info.",
+        "columns": "total_bill, tip, sex, smoker, day, time, size",
+    },
+}
+
+
+def fetch_url(url: str) -> dict:
+    """Fetch content from a URL.
+
+    Fetches data from the specified URL and returns the content along with
+    metadata. Supports CSV, JSON, and plain text content.
 
     Args:
-      expression: A mathematical expression to evaluate (e.g., "2 + 2 * 3").
+        url: The URL to fetch content from.
 
     Returns:
-      Dictionary with the result or error message.
+        Dictionary containing:
+        - content: The fetched content as a string
+        - content_type: The MIME type of the content
+        - size: Size of the content in bytes
+        - url: The original URL
+        - success: Whether the fetch was successful
+        - error: Error message if fetch failed (only present on failure)
     """
     try:
-        # Safe evaluation of mathematical expressions
-        allowed_names = {
-            "abs": abs,
-            "round": round,
-            "min": min,
-            "max": max,
-            "sum": sum,
-            "pow": pow,
-        }
-        result = eval(expression, {"__builtins__": {}}, allowed_names)
-        return {"result": result, "expression": expression}
-    except Exception as e:
-        return {"error": str(e), "expression": expression}
-
-
-def web_search(query: str, max_results: int = 5) -> dict:
-    """Search the web for information.
-
-    Args:
-      query: The search query.
-      max_results: Maximum number of results to return.
-
-    Returns:
-      Dictionary with search results.
-    """
-    # This is a mock implementation for demonstration
-    # In production, you would integrate with a real search API
-    return {
-        "query": query,
-        "results": [
-            {
-                "title": f"Result {i + 1} for: {query}",
-                "snippet": f"This is a sample result snippet for '{query}'...",
-                "url": f"https://example.com/result{i + 1}",
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; ADK-DataAnalyst/1.0)"},
+        )
+        with urllib.request.urlopen(req, timeout=30) as response:
+            content = response.read().decode("utf-8")
+            content_type = response.headers.get("Content-Type", "text/plain")
+            return {
+                "content": content,
+                "content_type": content_type,
+                "size": len(content),
+                "url": url,
+                "success": True,
             }
-            for i in range(min(max_results, 3))
-        ],
-        "total_results": max_results,
-    }
+    except urllib.error.URLError as e:
+        return {
+            "content": "",
+            "url": url,
+            "success": False,
+            "error": f"Failed to fetch URL: {str(e)}",
+        }
+    except Exception as e:
+        return {
+            "content": "",
+            "url": url,
+            "success": False,
+            "error": f"Unexpected error: {str(e)}",
+        }
 
 
-def read_file(path: str) -> dict:
-    """Read contents of a file.
+def get_sample_datasets() -> dict:
+    """Get available sample datasets with their URLs and descriptions.
 
-    Args:
-      path: Path to the file to read.
+    Returns a dictionary of sample datasets that can be used for analysis.
+    Each dataset includes a URL, description, and column information.
 
     Returns:
-      Dictionary with file contents or error.
+        Dictionary with dataset names as keys, each containing:
+        - url: Direct URL to download the CSV file
+        - description: Brief description of the dataset
+        - columns: Comma-separated list of column names
     """
-    # This is a mock implementation for demonstration
-    # In production, you would implement actual file reading with proper security
-    mock_files = {
-        "data.csv": {
-            "content": "name,amount\nAlice,100\nBob,200\nCharlie,150",
-            "rows": [
-                {"name": "Alice", "amount": "100"},
-                {"name": "Bob", "amount": "200"},
-                {"name": "Charlie", "amount": "150"},
-            ],
-        },
-        "config.json": {
-            "content": '{"setting": "value"}',
-            "data": {"setting": "value"},
-        },
-    }
-
-    if path in mock_files:
-        return {"path": path, **mock_files[path]}
-    return {"error": f"File not found: {path}", "path": path}
+    return SAMPLE_DATASETS
 
 
 def get_current_time() -> dict:
     """Get the current date and time.
 
     Returns:
-      Dictionary with current timestamp information.
+        Dictionary containing:
+        - timestamp: ISO format timestamp
+        - year, month, day: Date components
+        - hour, minute, second: Time components
+        - weekday: Name of the day of the week
     """
-    from datetime import datetime
-
     now = datetime.now()
     return {
         "timestamp": now.isoformat(),
@@ -137,42 +148,211 @@ def get_current_time() -> dict:
         "day": now.day,
         "hour": now.hour,
         "minute": now.minute,
+        "second": now.second,
         "weekday": now.strftime("%A"),
     }
 
 
-# Create the CodingAgent with tools
+# Directory on host system to save charts
+HOST_CHARTS_DIR = "/tmp/adk_charts"
+
+
+def save_chart(image_data: str, filename: str) -> dict:
+    """Save a chart image to the host system.
+
+    This tool saves base64-encoded image data to the host machine's filesystem,
+    making charts accessible outside the Docker container.
+
+    To use this tool, first save your matplotlib figure to a bytes buffer,
+    then encode it as base64:
+
+    Example:
+        import base64
+        import io
+        import matplotlib.pyplot as plt
+
+        # Create your plot
+        plt.figure()
+        plt.plot([1, 2, 3], [1, 4, 9])
+
+        # Save to buffer and encode
+        buf = io.BytesIO()
+        plt.savefig(buf, format='png', dpi=150, bbox_inches='tight')
+        buf.seek(0)
+        image_data = base64.b64encode(buf.read()).decode('utf-8')
+        plt.close()
+
+        # Save to host system
+        result = save_chart(image_data=image_data, filename="my_chart.png")
+
+    Args:
+        image_data: Base64-encoded image data (PNG format recommended).
+        filename: Name for the saved file (e.g., "chart.png").
+
+    Returns:
+        Dictionary containing:
+        - success: Whether the save was successful
+        - filepath: Full path where the file was saved on the host
+        - size: Size of the saved file in bytes
+        - error: Error message if save failed (only present on failure)
+    """
+    try:
+        # Ensure the output directory exists
+        os.makedirs(HOST_CHARTS_DIR, exist_ok=True)
+
+        # Sanitize filename
+        safe_filename = os.path.basename(filename)
+        if not safe_filename:
+            safe_filename = "chart.png"
+
+        filepath = os.path.join(HOST_CHARTS_DIR, safe_filename)
+
+        # Decode and save
+        image_bytes = base64.b64decode(image_data)
+        with open(filepath, "wb") as f:
+            f.write(image_bytes)
+
+        return {
+            "success": True,
+            "filepath": filepath,
+            "size": len(image_bytes),
+            "message": f"Chart saved to {filepath}",
+        }
+    except binascii.Error as e:
+        return {
+            "success": False,
+            "error": f"Invalid base64 data: {str(e)}",
+        }
+    except OSError as e:
+        return {
+            "success": False,
+            "error": f"Failed to save file: {str(e)}",
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": f"Unexpected error: {str(e)}",
+        }
+
+
+def list_saved_charts() -> dict:
+    """List all charts saved on the host system.
+
+    Returns:
+        Dictionary containing:
+        - success: Whether the operation was successful
+        - charts: List of saved chart filenames
+        - directory: The directory where charts are saved
+        - count: Number of charts found
+    """
+    try:
+        if not os.path.exists(HOST_CHARTS_DIR):
+            return {
+                "success": True,
+                "charts": [],
+                "directory": HOST_CHARTS_DIR,
+                "count": 0,
+            }
+
+        charts = [
+            f
+            for f in os.listdir(HOST_CHARTS_DIR)
+            if f.lower().endswith((".png", ".jpg", ".jpeg", ".svg", ".pdf"))
+        ]
+        return {
+            "success": True,
+            "charts": charts,
+            "directory": HOST_CHARTS_DIR,
+            "count": len(charts),
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": f"Failed to list charts: {str(e)}",
+        }
+
+
+# Additional imports allowed for data analysis
+DATA_ANALYSIS_IMPORTS = frozenset(
+    {
+        # Data analysis
+        "pandas",
+        "pandas.*",
+        "numpy",
+        "numpy.*",
+        # Visualization
+        "matplotlib",
+        "matplotlib.*",
+        "seaborn",
+        "seaborn.*",
+        # Data I/O
+        "csv",
+        "io",
+        "io.*",
+        # Encoding for chart saving
+        "base64",
+        # Subprocess for pip installs
+        "subprocess",
+    }
+)
+
+
+# Create the Data Analysis Agent
 root_agent = CodingAgent(
-    name="code_assistant",
+    name="data_analyst",
     description=(
-        "An AI assistant that solves tasks by writing and executing Python code. "
-        "It can perform calculations, search for information, read files, and more."
+        "An AI data analyst that analyzes datasets, creates visualizations, "
+        "and generates insights using Python code execution."
     ),
     model="gemini-2.5-flash",
-    instruction="""
-You are a helpful coding assistant that solves problems by writing Python code.
+    instruction="""You are a data analyst. Analyze data, create visualizations, and provide insights.
 
-When given a task:
-1. Think about what tools and computations you need
-2. Write clear, well-commented Python code
-3. Use the available tools as needed
-4. Print intermediate results to verify your work
-5. Call final_answer() with your result
+IMPORTANT: First install required packages before using them:
+```tool_code
+import subprocess
+subprocess.run(["pip", "install", "-q", "pandas", "matplotlib", "seaborn", "numpy"], check=True)
+print("Packages installed successfully")
+```
 
-Always show your reasoning through code comments and print statements.
-If a task cannot be completed with the available tools, explain why.
+Then use the available tools to fetch datasets. Write Python code to analyze data using pandas and create charts with matplotlib.
+
+CRITICAL: You MUST use the save_chart() tool to save charts - do NOT use plt.savefig() to a file path directly. The save_chart() tool transfers the chart to the host system. Here is the REQUIRED pattern:
+```tool_code
+import base64
+import io
+import matplotlib.pyplot as plt
+
+# Create your plot
+plt.figure(figsize=(10, 6))
+# ... your plotting code ...
+
+# Save to buffer and encode as base64
+buf = io.BytesIO()
+plt.savefig(buf, format='png', dpi=150, bbox_inches='tight')
+buf.seek(0)
+image_data = base64.b64encode(buf.read()).decode('utf-8')
+plt.close()
+
+# Use the save_chart tool to save to host system
+result = save_chart(image_data=image_data, filename="my_chart.png")
+print(f"Chart saved: {result}")
+```
+
+The chart will be saved to the host system at /tmp/adk_charts/. Always report this filepath in your final answer.
+
+Call final_answer() with your findings when done.
 """,
     tools=[
-        calculator,
-        web_search,
-        read_file,
+        fetch_url,
+        get_sample_datasets,
         get_current_time,
+        save_chart,
+        list_saved_charts,
     ],
-    # Use ContainerCodeExecutor for sandboxed execution
-    # Note: Docker must be installed and running
     code_executor=ContainerCodeExecutor(
         image="python:3.11-slim",
     ),
+    authorized_imports=DEFAULT_SAFE_IMPORTS | DATA_ANALYSIS_IMPORTS,
     max_iterations=10,
     error_retry_attempts=2,
     stateful=False,
