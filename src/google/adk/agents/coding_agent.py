@@ -69,17 +69,17 @@ logger = logging.getLogger("google_adk." + __name__)
 
 @experimental
 class CodingAgentState(BaseAgentState):
-    """State for CodingAgent tracking execution progress.
+  """State for CodingAgent tracking execution progress.
 
-    Attributes:
-      iteration_count: Number of ReAct loop iterations completed.
-      error_count: Number of consecutive errors encountered.
-      execution_history: List of execution steps with code, results, and traces.
-    """
+  Attributes:
+    iteration_count: Number of ReAct loop iterations completed.
+    error_count: Number of consecutive errors encountered.
+    execution_history: List of execution steps with code, results, and traces.
+  """
 
-    iteration_count: int = 0
-    error_count: int = 0
-    execution_history: List[Dict[str, Any]] = Field(default_factory=list)
+  iteration_count: int = 0
+  error_count: int = 0
+  execution_history: List[Dict[str, Any]] = Field(default_factory=list)
 
 
 ToolUnion = Union[Callable[..., Any], BaseTool, BaseToolset]
@@ -89,296 +89,297 @@ async def _convert_tool_union_to_tools(
     tool_union: ToolUnion,
     ctx: Optional[ReadonlyContext] = None,
 ) -> List[BaseTool]:
-    """Convert a tool union to a list of BaseTool instances.
+  """Convert a tool union to a list of BaseTool instances.
 
-    Args:
-      tool_union: A callable, BaseTool, or BaseToolset.
-      ctx: Optional context for toolset resolution.
+  Args:
+    tool_union: A callable, BaseTool, or BaseToolset.
+    ctx: Optional context for toolset resolution.
 
-    Returns:
-      List of BaseTool instances.
-    """
-    if isinstance(tool_union, BaseTool):
-        return [tool_union]
-    if callable(tool_union):
-        return [FunctionTool(func=tool_union)]
-    # BaseToolset
-    if ctx:
-        return await tool_union.get_tools_with_prefix(ctx)
-    return await tool_union.get_tools_with_prefix(None)
+  Returns:
+    List of BaseTool instances.
+  """
+  if isinstance(tool_union, BaseTool):
+    return [tool_union]
+  if callable(tool_union):
+    return [FunctionTool(func=tool_union)]
+  # BaseToolset
+  if ctx:
+    return await tool_union.get_tools_with_prefix(ctx)
+  return await tool_union.get_tools_with_prefix(None)
 
 
 @experimental
 class CodingAgent(BaseAgent):
-    """Agent that generates Python code to solve tasks using available tools.
+  """Agent that generates Python code to solve tasks using available tools.
 
-    CodingAgent implements a ReAct-style loop where it:
-    1. Receives a task from the user
-    2. Generates Python code that calls available tools
-    3. Executes the code in a sandboxed environment
-    4. Processes the results and either provides an answer or continues
+  CodingAgent implements a ReAct-style loop where it:
+  1. Receives a task from the user
+  2. Generates Python code that calls available tools
+  3. Executes the code in a sandboxed environment
+  4. Processes the results and either provides an answer or continues
 
-    Tools are made available as Python functions that the generated code
-    can call. The code execution happens in a container for security,
-    with tool calls routed via HTTP to the host.
+  Tools are made available as Python functions that the generated code
+  can call. The code execution happens in a container for security,
+  with tool calls routed via HTTP to the host.
 
-    Attributes:
-      model: The LLM model to use for code generation.
-      instruction: Additional instructions for the agent.
-      tools: List of tools available to the agent.
-      code_executor: The underlying code executor (e.g., ContainerCodeExecutor).
-      authorized_imports: Set of allowed Python imports.
-      max_iterations: Maximum ReAct loop iterations.
-      error_retry_attempts: Number of retries on execution errors.
-      stateful: Whether to maintain state across iterations.
-      tool_server_host: Host for the tool execution server.
-      tool_server_port: Port for the tool execution server.
+  Attributes:
+    model: The LLM model to use for code generation.
+    instruction: Additional instructions for the agent.
+    tools: List of tools available to the agent.
+    code_executor: The underlying code executor (e.g., ContainerCodeExecutor).
+    authorized_imports: Set of allowed Python imports.
+    max_iterations: Maximum ReAct loop iterations.
+    error_retry_attempts: Number of retries on execution errors.
+    stateful: Whether to maintain state across iterations.
+    tool_server_host: Host for the tool execution server.
+    tool_server_port: Port for the tool execution server.
+  """
+
+  DEFAULT_MODEL: ClassVar[str] = "gemini-2.5-flash"
+
+  config_type: ClassVar[Type[BaseAgentConfig]] = CodingAgentConfig
+
+  model: Union[str, BaseLlm] = ""
+  """The model to use for code generation."""
+
+  instruction: str = ""
+  """Additional instructions for the agent."""
+
+  tools: List[ToolUnion] = Field(default_factory=list)
+  """Tools available to the agent."""
+
+  code_executor: Optional[BaseCodeExecutor] = None
+  """The underlying code executor. If not set, uses ContainerCodeExecutor."""
+
+  authorized_imports: FrozenSet[str] = DEFAULT_SAFE_IMPORTS
+  """Set of allowed import patterns."""
+
+  max_iterations: int = 10
+  """Maximum number of ReAct loop iterations."""
+
+  error_retry_attempts: int = 2
+  """Number of retries on execution errors."""
+
+  stateful: bool = False
+  """Whether to maintain state across iterations."""
+
+  tool_server_host: Optional[str] = None
+  """Host for the tool execution server."""
+
+  tool_server_port: int = 8765
+  """Port for the tool execution server."""
+
+  # Internal state
+  _coding_executor: Optional[CodingAgentCodeExecutor] = None
+  _resolved_tools: Optional[List[BaseTool]] = None
+
+  class Config:
+    """Pydantic config."""
+
+    arbitrary_types_allowed = True
+
+  @property
+  def canonical_model(self) -> BaseLlm:
+    """Get the resolved model as BaseLlm."""
+    if isinstance(self.model, BaseLlm):
+      return self.model
+    elif self.model:
+      return LLMRegistry.new_llm(self.model)
+    else:
+      # Find model from ancestors
+      ancestor_agent = self.parent_agent
+      while ancestor_agent is not None:
+        if hasattr(ancestor_agent, "canonical_model"):
+          return ancestor_agent.canonical_model
+        ancestor_agent = ancestor_agent.parent_agent
+      return LLMRegistry.new_llm(self.DEFAULT_MODEL)
+
+  async def _resolve_tools(
+      self,
+      ctx: Optional[ReadonlyContext] = None,
+  ) -> List[BaseTool]:
+    """Resolve tool unions to BaseTool instances.
+
+    Args:
+      ctx: Optional context for toolset resolution.
+
+    Returns:
+      List of resolved BaseTool instances.
     """
+    if self._resolved_tools is not None:
+      return self._resolved_tools
 
-    DEFAULT_MODEL: ClassVar[str] = "gemini-2.5-flash"
+    resolved = []
+    for tool_union in self.tools:
+      resolved.extend(await _convert_tool_union_to_tools(tool_union, ctx))
 
-    config_type: ClassVar[Type[BaseAgentConfig]] = CodingAgentConfig
+    self._resolved_tools = resolved
+    return resolved
 
-    model: Union[str, BaseLlm] = ""
-    """The model to use for code generation."""
+  async def _get_coding_executor(
+      self,
+      ctx: InvocationContext,
+  ) -> CodingAgentCodeExecutor:
+    """Get or create the CodingAgentCodeExecutor.
 
-    instruction: str = ""
-    """Additional instructions for the agent."""
+    Args:
+      ctx: The invocation context.
 
-    tools: List[ToolUnion] = Field(default_factory=list)
-    """Tools available to the agent."""
+    Returns:
+      The configured code executor.
+    """
+    if self._coding_executor is not None:
+      return self._coding_executor
 
-    code_executor: Optional[BaseCodeExecutor] = None
-    """The underlying code executor. If not set, uses ContainerCodeExecutor."""
+    # Resolve tools
+    tools = await self._resolve_tools(ReadonlyContext(ctx))
 
-    authorized_imports: FrozenSet[str] = DEFAULT_SAFE_IMPORTS
-    """Set of allowed import patterns."""
+    # Get or create underlying executor
+    if self.code_executor:
+      underlying = self.code_executor
+    else:
+      # Default to ContainerCodeExecutor
+      try:
+        from ..code_executors.container_code_executor import ContainerCodeExecutor
 
-    max_iterations: int = 10
-    """Maximum number of ReAct loop iterations."""
-
-    error_retry_attempts: int = 2
-    """Number of retries on execution errors."""
-
-    stateful: bool = False
-    """Whether to maintain state across iterations."""
-
-    tool_server_host: Optional[str] = None
-    """Host for the tool execution server."""
-
-    tool_server_port: int = 8765
-    """Port for the tool execution server."""
-
-    # Internal state
-    _coding_executor: Optional[CodingAgentCodeExecutor] = None
-    _resolved_tools: Optional[List[BaseTool]] = None
-
-    class Config:
-        """Pydantic config."""
-
-        arbitrary_types_allowed = True
-
-    @property
-    def canonical_model(self) -> BaseLlm:
-        """Get the resolved model as BaseLlm."""
-        if isinstance(self.model, BaseLlm):
-            return self.model
-        elif self.model:
-            return LLMRegistry.new_llm(self.model)
-        else:
-            # Find model from ancestors
-            ancestor_agent = self.parent_agent
-            while ancestor_agent is not None:
-                if hasattr(ancestor_agent, "canonical_model"):
-                    return ancestor_agent.canonical_model
-                ancestor_agent = ancestor_agent.parent_agent
-            return LLMRegistry.new_llm(self.DEFAULT_MODEL)
-
-    async def _resolve_tools(
-        self,
-        ctx: Optional[ReadonlyContext] = None,
-    ) -> List[BaseTool]:
-        """Resolve tool unions to BaseTool instances.
-
-        Args:
-          ctx: Optional context for toolset resolution.
-
-        Returns:
-          List of resolved BaseTool instances.
-        """
-        if self._resolved_tools is not None:
-            return self._resolved_tools
-
-        resolved = []
-        for tool_union in self.tools:
-            resolved.extend(await _convert_tool_union_to_tools(tool_union, ctx))
-
-        self._resolved_tools = resolved
-        return resolved
-
-    async def _get_coding_executor(
-        self,
-        ctx: InvocationContext,
-    ) -> CodingAgentCodeExecutor:
-        """Get or create the CodingAgentCodeExecutor.
-
-        Args:
-          ctx: The invocation context.
-
-        Returns:
-          The configured code executor.
-        """
-        if self._coding_executor is not None:
-            return self._coding_executor
-
-        # Resolve tools
-        tools = await self._resolve_tools(ReadonlyContext(ctx))
-
-        # Get or create underlying executor
-        if self.code_executor:
-            underlying = self.code_executor
-        else:
-            # Default to ContainerCodeExecutor
-            try:
-                from ..code_executors.container_code_executor import (
-                    ContainerCodeExecutor,
-                )
-
-                underlying = ContainerCodeExecutor(
-                    image="python:3.11-slim",
-                )
-            except ImportError as e:
-                raise ImportError(
-                    "CodingAgent requires ContainerCodeExecutor. "
-                    'Please install with: pip install "google-adk[extensions]" '
-                    "or provide a custom code_executor."
-                ) from e
-
-        # Create the CodingAgentCodeExecutor wrapper
-        self._coding_executor = CodingAgentCodeExecutor(
-            underlying_executor=underlying,
-            tools=tools,
-            authorized_imports=self.authorized_imports,
-            tool_server_host=self.tool_server_host,
-            tool_server_port=self.tool_server_port,
-            stateful=self.stateful,
-            error_retry_attempts=self.error_retry_attempts,
+        underlying = ContainerCodeExecutor(
+            image="python:3.11-slim",
         )
+      except ImportError as e:
+        raise ImportError(
+            "CodingAgent requires ContainerCodeExecutor. "
+            'Please install with: pip install "google-adk[extensions]" '
+            "or provide a custom code_executor."
+        ) from e
 
-        return self._coding_executor
+    # Create the CodingAgentCodeExecutor wrapper
+    self._coding_executor = CodingAgentCodeExecutor(
+        underlying_executor=underlying,
+        tools=tools,
+        authorized_imports=self.authorized_imports,
+        tool_server_host=self.tool_server_host,
+        tool_server_port=self.tool_server_port,
+        stateful=self.stateful,
+        error_retry_attempts=self.error_retry_attempts,
+    )
 
-    def _build_system_prompt(self, tools: List[BaseTool]) -> str:
-        """Build the system prompt with tool documentation.
+    return self._coding_executor
 
-        Args:
-          tools: List of available tools.
+  def _build_system_prompt(self, tools: List[BaseTool]) -> str:
+    """Build the system prompt with tool documentation.
 
-        Returns:
-          The complete system prompt.
-        """
-        return generate_system_prompt(
-            tools=tools,
-            custom_instruction=self.instruction,
-        )
+    Args:
+      tools: List of available tools.
 
-    def _extract_code_block(self, response_text: str) -> Optional[str]:
-        """Extract code from the model response.
+    Returns:
+      The complete system prompt.
+    """
+    return generate_system_prompt(
+        tools=tools,
+        custom_instruction=self.instruction,
+    )
 
-        Args:
-          response_text: The model's response text.
+  def _extract_code_block(self, response_text: str) -> Optional[str]:
+    """Extract code from the model response.
 
-        Returns:
-          The extracted code, or None if no code block found.
-        """
-        # Try tool_code blocks first
-        pattern = r"```tool_code\n(.*?)```"
-        match = re.search(pattern, response_text, re.DOTALL)
-        if match:
-            return match.group(1).strip()
+    Args:
+      response_text: The model's response text.
 
-        # Fall back to python blocks
-        pattern = r"```python\n(.*?)```"
-        match = re.search(pattern, response_text, re.DOTALL)
-        if match:
-            return match.group(1).strip()
+    Returns:
+      The extracted code, or None if no code block found.
+    """
+    # Try tool_code blocks first
+    pattern = r"```tool_code\n(.*?)```"
+    match = re.search(pattern, response_text, re.DOTALL)
+    if match:
+      return match.group(1).strip()
 
-        return None
+    # Fall back to python blocks
+    pattern = r"```python\n(.*?)```"
+    match = re.search(pattern, response_text, re.DOTALL)
+    if match:
+      return match.group(1).strip()
 
-    def _is_real_error(self, stderr: str) -> bool:
-        """Check if stderr contains a real error vs just warnings.
+    return None
 
-        Args:
-          stderr: The stderr output from code execution.
+  def _is_real_error(self, stderr: str) -> bool:
+    """Check if stderr contains a real error vs just warnings.
 
-        Returns:
-          True if stderr contains a real error, False if just warnings.
-        """
-        if not stderr:
-            return False
+    Args:
+      stderr: The stderr output from code execution.
 
-        # Patterns that indicate this is just a warning, not an error
-        warning_patterns = [
-            "WARNING: Running pip as the 'root' user",
-            "[notice] A new release of pip",
-            "[notice] To update, run:",
-            "pip install --upgrade pip",
-            "UserWarning:",
-            "DeprecationWarning:",
-            "FutureWarning:",
-            "RuntimeWarning:",
-        ]
+    Returns:
+      True if stderr contains a real error, False if just warnings.
+    """
+    if not stderr:
+      return False
 
-        # Check if ALL lines are just warnings
-        lines = stderr.strip().split("\n")
-        real_error_lines = []
-        for line in lines:
-            line_stripped = line.strip()
-            if not line_stripped:
-                continue
-            is_warning = any(
-                pattern.lower() in line_stripped.lower() for pattern in warning_patterns
-            )
-            if not is_warning:
-                real_error_lines.append(line)
+    # Patterns that indicate this is just a warning, not an error
+    warning_patterns = [
+        "WARNING: Running pip as the 'root' user",
+        "[notice] A new release of pip",
+        "[notice] To update, run:",
+        "pip install --upgrade pip",
+        "UserWarning:",
+        "DeprecationWarning:",
+        "FutureWarning:",
+        "RuntimeWarning:",
+    ]
 
-        # Also check for actual error keywords
-        error_keywords = [
-            "error:",
-            "traceback",
-            "exception",
-            "syntaxerror",
-            "nameerror",
-            "typeerror",
-            "valueerror",
-            "importerror",
-            "modulenotfounderror",
-            "attributeerror",
-            "keyerror",
-            "indexerror",
-            "zerodivisionerror",
-        ]
+    # Check if ALL lines are just warnings
+    lines = stderr.strip().split("\n")
+    real_error_lines = []
+    for line in lines:
+      line_stripped = line.strip()
+      if not line_stripped:
+        continue
+      is_warning = any(
+          pattern.lower() in line_stripped.lower()
+          for pattern in warning_patterns
+      )
+      if not is_warning:
+        real_error_lines.append(line)
 
-        stderr_lower = stderr.lower()
-        has_error_keyword = any(keyword in stderr_lower for keyword in error_keywords)
+    # Also check for actual error keywords
+    error_keywords = [
+        "error:",
+        "traceback",
+        "exception",
+        "syntaxerror",
+        "nameerror",
+        "typeerror",
+        "valueerror",
+        "importerror",
+        "modulenotfounderror",
+        "attributeerror",
+        "keyerror",
+        "indexerror",
+        "zerodivisionerror",
+    ]
 
-        # Consider it a real error if there are non-warning lines with error keywords
-        return bool(real_error_lines) and has_error_keyword
+    stderr_lower = stderr.lower()
+    has_error_keyword = any(
+        keyword in stderr_lower for keyword in error_keywords
+    )
 
-    def _build_error_feedback(
-        self,
-        error: str,
-        code: str,
-    ) -> str:
-        """Build feedback message for execution errors.
+    # Consider it a real error if there are non-warning lines with error keywords
+    return bool(real_error_lines) and has_error_keyword
 
-        Args:
-          error: The error message.
-          code: The code that caused the error.
+  def _build_error_feedback(
+      self,
+      error: str,
+      code: str,
+  ) -> str:
+    """Build feedback message for execution errors.
 
-        Returns:
-          Formatted error feedback for the LLM.
-        """
-        return f"""The code execution failed with the following error:
+    Args:
+      error: The error message.
+      code: The code that caused the error.
+
+    Returns:
+      Formatted error feedback for the LLM.
+    """
+    return f"""The code execution failed with the following error:
 
 ```
 {error}
@@ -395,217 +396,215 @@ Please fix the error and try again. Common issues:
 - Python syntax errors
 """
 
-    @override
-    async def _run_async_impl(
-        self,
-        ctx: InvocationContext,
-    ) -> AsyncGenerator[Event, None]:
-        """Core implementation of the ReAct loop.
+  @override
+  async def _run_async_impl(
+      self,
+      ctx: InvocationContext,
+  ) -> AsyncGenerator[Event, None]:
+    """Core implementation of the ReAct loop.
 
-        Args:
-          ctx: The invocation context.
+    Args:
+      ctx: The invocation context.
 
-        Yields:
-          Events generated during execution.
-        """
-        # Load or initialize state
-        state = self._load_agent_state(ctx, CodingAgentState)
-        if state is None:
-            state = CodingAgentState()
+    Yields:
+      Events generated during execution.
+    """
+    # Load or initialize state
+    state = self._load_agent_state(ctx, CodingAgentState)
+    if state is None:
+      state = CodingAgentState()
 
-        # Resolve tools and get executor
-        tools = await self._resolve_tools(ReadonlyContext(ctx))
-        coding_executor = await self._get_coding_executor(ctx)
+    # Resolve tools and get executor
+    tools = await self._resolve_tools(ReadonlyContext(ctx))
+    coding_executor = await self._get_coding_executor(ctx)
 
-        # Create tool context for the executor
-        tool_context = ToolContext(invocation_context=ctx)
-        coding_executor.set_context(ctx, tool_context)
+    # Create tool context for the executor
+    tool_context = ToolContext(invocation_context=ctx)
+    coding_executor.set_context(ctx, tool_context)
 
-        # Build system prompt
-        system_prompt = self._build_system_prompt(tools)
+    # Build system prompt
+    system_prompt = self._build_system_prompt(tools)
 
-        # Get the model
-        model = self.canonical_model
+    # Get the model
+    model = self.canonical_model
 
-        # Build initial request with conversation history
-        contents = []
-        events = ctx._get_events(current_invocation=True, current_branch=True)
-        for event in events:
-            if event.content:
-                contents.append(event.content)
+    # Build initial request with conversation history
+    contents = []
+    events = ctx._get_events(current_invocation=True, current_branch=True)
+    for event in events:
+      if event.content:
+        contents.append(event.content)
 
-        iteration = 0
-        error_count = 0
-        final_answer = None
+    iteration = 0
+    error_count = 0
+    final_answer = None
 
-        while iteration < self.max_iterations:
-            iteration += 1
-            state.iteration_count = iteration
+    while iteration < self.max_iterations:
+      iteration += 1
+      state.iteration_count = iteration
 
-            # Build LLM request
-            llm_request = LlmRequest(
-                model=model.model,
-                contents=contents,
-                config=types.GenerateContentConfig(
-                    system_instruction=system_prompt,
-                ),
+      # Build LLM request
+      llm_request = LlmRequest(
+          model=model.model,
+          contents=contents,
+          config=types.GenerateContentConfig(
+              system_instruction=system_prompt,
+          ),
+      )
+
+      # Call the model (generate_content_async returns an async generator)
+      llm_response = None
+      async for response in model.generate_content_async(
+          llm_request, stream=False
+      ):
+        llm_response = response
+        break
+
+      # Extract response text
+      response_text = ""
+      if llm_response and llm_response.content and llm_response.content.parts:
+        response_text = "".join(
+            part.text for part in llm_response.content.parts if part.text
+        )
+
+      # Check for code block
+      code = self._extract_code_block(response_text)
+
+      if not code:
+        # No code generated - treat as final response
+        # Check if the response looks like a final answer
+        final_answer = response_text
+        break
+
+      # Execute the code
+      code_input = CodeExecutionInput(code=code)
+      exec_result = coding_executor.execute_code_extended(
+          invocation_context=ctx,
+          code_execution_input=code_input,
+      )
+
+      # Record execution in state
+      state.execution_history.append({
+          "iteration": iteration,
+          "code": code,
+          "stdout": exec_result.clean_stdout,
+          "stderr": exec_result.code_result.stderr,
+          "tool_traces": exec_result.tool_traces,
+          "has_final_answer": exec_result.has_final_answer,
+      })
+
+      # Check for errors - ignore warnings from pip and other non-fatal stderr
+      stderr = exec_result.code_result.stderr or ""
+      is_real_error = self._is_real_error(stderr)
+
+      if is_real_error:
+        error_count += 1
+        state.error_count = error_count
+
+        if error_count > self.error_retry_attempts:
+          # Too many errors - give up
+          final_answer = (
+              "I encountered too many errors while executing code. "
+              f"Last error: {stderr}"
+          )
+          break
+
+        # Build error feedback and add to conversation
+        error_feedback = self._build_error_feedback(
+            stderr,
+            code,
+        )
+        contents.append(
+            types.Content(
+                role="model",
+                parts=[types.Part(text=response_text)],
             )
-
-            # Call the model (generate_content_async returns an async generator)
-            llm_response = None
-            async for response in model.generate_content_async(
-                llm_request, stream=False
-            ):
-                llm_response = response
-                break
-
-            # Extract response text
-            response_text = ""
-            if llm_response and llm_response.content and llm_response.content.parts:
-                response_text = "".join(
-                    part.text for part in llm_response.content.parts if part.text
-                )
-
-            # Check for code block
-            code = self._extract_code_block(response_text)
-
-            if not code:
-                # No code generated - treat as final response
-                # Check if the response looks like a final answer
-                final_answer = response_text
-                break
-
-            # Execute the code
-            code_input = CodeExecutionInput(code=code)
-            exec_result = coding_executor.execute_code_extended(
-                invocation_context=ctx,
-                code_execution_input=code_input,
+        )
+        contents.append(
+            types.Content(
+                role="user",
+                parts=[types.Part(text=error_feedback)],
             )
+        )
+        continue
 
-            # Record execution in state
-            state.execution_history.append(
-                {
-                    "iteration": iteration,
-                    "code": code,
-                    "stdout": exec_result.clean_stdout,
-                    "stderr": exec_result.code_result.stderr,
-                    "tool_traces": exec_result.tool_traces,
-                    "has_final_answer": exec_result.has_final_answer,
-                }
-            )
+      # Reset error count on success
+      error_count = 0
+      state.error_count = 0
 
-            # Check for errors - ignore warnings from pip and other non-fatal stderr
-            stderr = exec_result.code_result.stderr or ""
-            is_real_error = self._is_real_error(stderr)
+      # Check for final answer
+      if exec_result.has_final_answer:
+        final_answer = exec_result.final_answer
+        break
 
-            if is_real_error:
-                error_count += 1
-                state.error_count = error_count
+      # Add execution result to conversation and continue
+      contents.append(
+          types.Content(
+              role="model",
+              parts=[types.Part(text=response_text)],
+          )
+      )
 
-                if error_count > self.error_retry_attempts:
-                    # Too many errors - give up
-                    final_answer = (
-                        f"I encountered too many errors while executing code. "
-                        f"Last error: {stderr}"
-                    )
-                    break
-
-                # Build error feedback and add to conversation
-                error_feedback = self._build_error_feedback(
-                    stderr,
-                    code,
-                )
-                contents.append(
-                    types.Content(
-                        role="model",
-                        parts=[types.Part(text=response_text)],
-                    )
-                )
-                contents.append(
-                    types.Content(
-                        role="user",
-                        parts=[types.Part(text=error_feedback)],
-                    )
-                )
-                continue
-
-            # Reset error count on success
-            error_count = 0
-            state.error_count = 0
-
-            # Check for final answer
-            if exec_result.has_final_answer:
-                final_answer = exec_result.final_answer
-                break
-
-            # Add execution result to conversation and continue
-            contents.append(
-                types.Content(
-                    role="model",
-                    parts=[types.Part(text=response_text)],
-                )
-            )
-
-            # Add execution output as user message
-            output_text = f"""Code execution result:
+      # Add execution output as user message
+      output_text = f"""Code execution result:
 ```
 {exec_result.clean_stdout}
 ```
 """
-            contents.append(
-                types.Content(
-                    role="user",
-                    parts=[types.Part(text=output_text)],
-                )
-            )
+      contents.append(
+          types.Content(
+              role="user",
+              parts=[types.Part(text=output_text)],
+          )
+      )
 
-        # Build final event
-        if final_answer is None:
-            final_answer = (
-                "I was unable to complete the task within the allowed iterations."
-            )
+    # Build final event
+    if final_answer is None:
+      final_answer = (
+          "I was unable to complete the task within the allowed iterations."
+      )
 
-        # Convert final_answer to string if needed
-        if not isinstance(final_answer, str):
-            import json
+    # Convert final_answer to string if needed
+    if not isinstance(final_answer, str):
+      import json
 
-            try:
-                final_answer = json.dumps(final_answer)
-            except (TypeError, ValueError):
-                final_answer = str(final_answer)
+      try:
+        final_answer = json.dumps(final_answer)
+      except (TypeError, ValueError):
+        final_answer = str(final_answer)
 
-        # Update state in context
-        ctx.agent_states[self.name] = state.model_dump()
+    # Update state in context
+    ctx.agent_states[self.name] = state.model_dump()
 
-        # Yield final event
-        yield Event(
-            invocation_id=ctx.invocation_id,
-            author=self.name,
-            branch=ctx.branch,
-            content=types.Content(
-                role="model",
-                parts=[types.Part(text=final_answer)],
-            ),
-            actions=EventActions(
-                agent_state=state.model_dump(),
-            ),
-        )
+    # Yield final event
+    yield Event(
+        invocation_id=ctx.invocation_id,
+        author=self.name,
+        branch=ctx.branch,
+        content=types.Content(
+            role="model",
+            parts=[types.Part(text=final_answer)],
+        ),
+        actions=EventActions(
+            agent_state=state.model_dump(),
+        ),
+    )
 
-    @model_validator(mode="after")
-    def _validate_model(self) -> CodingAgent:
-        """Validate the model after construction."""
-        return self
+  @model_validator(mode="after")
+  def _validate_model(self) -> CodingAgent:
+    """Validate the model after construction."""
+    return self
 
-    def cleanup(self) -> None:
-        """Clean up resources."""
-        if self._coding_executor:
-            self._coding_executor.cleanup()
-            self._coding_executor = None
-        self._resolved_tools = None
+  def cleanup(self) -> None:
+    """Clean up resources."""
+    if self._coding_executor:
+      self._coding_executor.cleanup()
+      self._coding_executor = None
+    self._resolved_tools = None
 
-    def __del__(self):
-        """Destructor to clean up resources."""
-        try:
-            self.cleanup()
-        except Exception:
-            pass
+  def __del__(self):
+    """Destructor to clean up resources."""
+    try:
+      self.cleanup()
+    except Exception:
+      pass
