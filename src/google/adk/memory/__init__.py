@@ -35,3 +35,20 @@ except ImportError:
       ' VertexAiRagMemoryService please install it. If not, you can ignore this'
       ' warning.'
   )
+
+try:
+  from .chroma_memory_service import ChromaMemoryService
+  from .embeddings import BaseEmbeddingProvider
+  from .embeddings import OllamaEmbeddingProvider
+
+  __all__.extend([
+      'ChromaMemoryService',
+      'BaseEmbeddingProvider',
+      'OllamaEmbeddingProvider',
+  ])
+except ImportError:
+  logger.debug(
+      'chromadb is not installed. If you want to use the ChromaMemoryService'
+      ' please install it with: pip install chromadb. If not, you can ignore'
+      ' this warning.'
+  )

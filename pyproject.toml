@@ -164,6 +164,10 @@ otel-gcp = ["opentelemetry-instrumentation-google-genai>=0.3b0, <1.0.0"]
 
 toolbox = ["toolbox-adk>=0.5.7, <0.6.0"]
 
+chroma = [
+  "chromadb>=0.4.0, <1.0.0",  # For ChromaMemoryService
+]
+
 [tool.pyink]
 # Format py files following Google style-guide
 line-length = 80
