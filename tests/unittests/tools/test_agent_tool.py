@@ -900,3 +900,45 @@ def test_agent_tool_with_input_schema_uses_json_schema_feature(
       },
       'response_json_schema': {'type': 'object'},
   }
+
+
+@mark.asyncio
+async def test_run_async_handles_none_parts_in_response():
+  """Verify run_async handles None parts in response without raising TypeError."""
+
+  # Mock model for the tool_agent that returns content with parts=None
+  # This simulates the condition causing the TypeError
+  tool_agent_model = testing_utils.MockModel.create(
+      responses=[
+          LlmResponse(
+              content=types.Content(parts=None),
+          )
+      ]
+  )
+
+  tool_agent = Agent(
+      name='tool_agent',
+      model=tool_agent_model,
+  )
+
+  agent_tool = AgentTool(agent=tool_agent)
+
+  session_service = InMemorySessionService()
+  session = await session_service.create_session(
+      app_name='test_app', user_id='test_user'
+  )
+
+  invocation_context = InvocationContext(
+      invocation_id='invocation_id',
+      agent=tool_agent,
+      session=session,
+      session_service=session_service,
+  )
+  tool_context = ToolContext(invocation_context=invocation_context)
+
+  # This should not raise `TypeError: 'NoneType' object is not iterable`.
+  tool_result = await agent_tool.run_async(
+      args={'request': 'test request'}, tool_context=tool_context
+  )
+
+  assert tool_result == ''

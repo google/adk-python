@@ -26,7 +26,6 @@ import types
 from typing import Any
 from typing import Callable
 from typing import Dict
-from typing import Generator
 from typing import List
 from typing import Tuple
 from unittest import mock
@@ -225,6 +224,72 @@ def test_get_service_option_by_adk_version(
       use_local_storage=use_local_storage,
   )
   assert actual.rstrip() == expected.rstrip()
+
+
+@pytest.mark.parametrize("include_requirements", [True, False])
+def test_to_agent_engine_happy_path(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+    include_requirements: bool,
+) -> None:
+  """Tests the happy path for the `to_agent_engine` function."""
+  rmtree_recorder = _Recorder()
+  monkeypatch.setattr(shutil, "rmtree", rmtree_recorder)
+  create_recorder = _Recorder()
+
+  fake_vertexai = types.ModuleType("vertexai")
+
+  class _FakeAgentEngines:
+
+    def create(self, *, config: Dict[str, Any]) -> Any:
+      create_recorder(config=config)
+      return types.SimpleNamespace(
+          api_resource=types.SimpleNamespace(
+              name="projects/p/locations/l/reasoningEngines/e"
+          )
+      )
+
+    def update(self, *, name: str, config: Dict[str, Any]) -> None:
+      del name
+      del config
+
+  class _FakeVertexClient:
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+      del args
+      del kwargs
+      self.agent_engines = _FakeAgentEngines()
+
+  fake_vertexai.Client = _FakeVertexClient
+  monkeypatch.setitem(sys.modules, "vertexai", fake_vertexai)
+  src_dir = agent_dir(include_requirements, False)
+  tmp_dir = src_dir.parent / "tmp"
+  cli_deploy.to_agent_engine(
+      agent_folder=str(src_dir),
+      temp_folder="tmp",
+      adk_app="my_adk_app",
+      trace_to_cloud=True,
+      project="my-gcp-project",
+      region="us-central1",
+      display_name="My Test Agent",
+      description="A test agent.",
+  )
+  agent_file = tmp_dir / "agent.py"
+  assert agent_file.is_file()
+  init_file = tmp_dir / "__init__.py"
+  assert init_file.is_file()
+  adk_app_file = tmp_dir / "my_adk_app.py"
+  assert adk_app_file.is_file()
+  content = adk_app_file.read_text()
+  assert "from .agent import root_agent" in content
+  assert "adk_app = AdkApp(" in content
+  assert "agent=root_agent" in content
+  assert "enable_tracing=True" in content
+  reqs_path = tmp_dir / "requirements.txt"
+  assert reqs_path.is_file()
+  assert "google-cloud-aiplatform[adk,agent_engines]" in reqs_path.read_text()
+  assert len(create_recorder.calls) == 1
+  assert str(rmtree_recorder.get_last_call_args()[0]) == str(tmp_dir)
 
 
 @pytest.mark.parametrize("include_requirements", [True, False])

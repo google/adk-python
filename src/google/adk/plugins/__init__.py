@@ -13,12 +13,14 @@
 # limitations under the License.
 
 from .base_plugin import BasePlugin
+from .debug_logging_plugin import DebugLoggingPlugin
 from .logging_plugin import LoggingPlugin
 from .plugin_manager import PluginManager
 from .reflect_retry_tool_plugin import ReflectAndRetryToolPlugin
 
 __all__ = [
     'BasePlugin',
+    'DebugLoggingPlugin',
     'LoggingPlugin',
     'PluginManager',
     'ReflectAndRetryToolPlugin',
