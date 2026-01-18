@@ -30,7 +30,7 @@ from typing import Optional
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from ..tools.base_tool import BaseTool
+  from ..tools.base_tool import BaseTool
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -132,129 +132,129 @@ def final_answer(result):
 def generate_runtime_header(
     tool_server_url: str,
 ) -> str:
-    """Generate the runtime header with HTTP client and helper functions.
+  """Generate the runtime header with HTTP client and helper functions.
 
-    Args:
-      tool_server_url: URL of the tool execution server.
+  Args:
+    tool_server_url: URL of the tool execution server.
 
-    Returns:
-      Python code string containing the runtime header.
-    """
-    return RUNTIME_HEADER_TEMPLATE.format(tool_server_url=tool_server_url)
+  Returns:
+    Python code string containing the runtime header.
+  """
+  return RUNTIME_HEADER_TEMPLATE.format(tool_server_url=tool_server_url)
 
 
 def _get_schema_type(schema: Any) -> str:
-    """Get the type from a schema (dict or Pydantic Schema object).
+  """Get the type from a schema (dict or Pydantic Schema object).
 
-    Args:
-      schema: JSON schema dict or google.genai.types.Schema object.
+  Args:
+    schema: JSON schema dict or google.genai.types.Schema object.
 
-    Returns:
-      The type as a lowercase string.
-    """
-    if hasattr(schema, "type"):
-        # Pydantic Schema object from google.genai.types
-        schema_type = schema.type
-        if schema_type is None:
-            return "any"
-        # Handle enum (Type.STRING -> "string")
-        if hasattr(schema_type, "value"):
-            return schema_type.value.lower()
-        return str(schema_type).lower()
-    elif isinstance(schema, dict):
-        return schema.get("type", "any")
-    return "any"
+  Returns:
+    The type as a lowercase string.
+  """
+  if hasattr(schema, "type"):
+    # Pydantic Schema object from google.genai.types
+    schema_type = schema.type
+    if schema_type is None:
+      return "any"
+    # Handle enum (Type.STRING -> "string")
+    if hasattr(schema_type, "value"):
+      return schema_type.value.lower()
+    return str(schema_type).lower()
+  elif isinstance(schema, dict):
+    return schema.get("type", "any")
+  return "any"
 
 
 def _get_schema_attr(schema: Any, attr: str, default: Any = None) -> Any:
-    """Get an attribute from a schema (dict or Pydantic Schema object).
+  """Get an attribute from a schema (dict or Pydantic Schema object).
 
-    Args:
-      schema: JSON schema dict or google.genai.types.Schema object.
-      attr: The attribute name to get.
-      default: Default value if attribute not found.
+  Args:
+    schema: JSON schema dict or google.genai.types.Schema object.
+    attr: The attribute name to get.
+    default: Default value if attribute not found.
 
-    Returns:
-      The attribute value or default.
-    """
-    if hasattr(schema, attr):
-        return getattr(schema, attr, default)
-    elif isinstance(schema, dict):
-        return schema.get(attr, default)
-    return default
+  Returns:
+    The attribute value or default.
+  """
+  if hasattr(schema, attr):
+    return getattr(schema, attr, default)
+  elif isinstance(schema, dict):
+    return schema.get(attr, default)
+  return default
 
 
 def _get_python_type_hint(schema: Any) -> str:
-    """Convert JSON schema type to Python type hint.
+  """Convert JSON schema type to Python type hint.
 
-    Args:
-      schema: JSON schema dict or google.genai.types.Schema object.
+  Args:
+    schema: JSON schema dict or google.genai.types.Schema object.
 
-    Returns:
-      Python type hint string.
-    """
-    schema_type = _get_schema_type(schema)
+  Returns:
+    Python type hint string.
+  """
+  schema_type = _get_schema_type(schema)
 
-    type_mapping = {
-        "string": "str",
-        "integer": "int",
-        "number": "float",
-        "boolean": "bool",
-        "array": "list",
-        "object": "dict",
-    }
+  type_mapping = {
+      "string": "str",
+      "integer": "int",
+      "number": "float",
+      "boolean": "bool",
+      "array": "list",
+      "object": "dict",
+  }
 
-    if schema_type == "array":
-        items = _get_schema_attr(schema, "items", {})
-        if items:
-            item_type = _get_python_type_hint(items)
-            return f"list[{item_type}]"
-        return "list"
-    elif schema_type == "object":
-        return "dict"
+  if schema_type == "array":
+    items = _get_schema_attr(schema, "items", {})
+    if items:
+      item_type = _get_python_type_hint(items)
+      return f"list[{item_type}]"
+    return "list"
+  elif schema_type == "object":
+    return "dict"
 
-    return type_mapping.get(schema_type, "Any")
+  return type_mapping.get(schema_type, "Any")
 
 
 def _generate_tool_stub(tool: BaseTool) -> str:
-    """Generate a Python function stub for a single tool.
+  """Generate a Python function stub for a single tool.
 
-    Args:
-      tool: The BaseTool to generate a stub for.
+  Args:
+    tool: The BaseTool to generate a stub for.
 
-    Returns:
-      Python code string for the tool stub function.
-    """
-    decl = tool._get_declaration()
-    if not decl:
-        logger.warning(
-            "Tool %s has no declaration, skipping stub generation", tool.name
-        )
-        return ""
+  Returns:
+    Python code string for the tool stub function.
+  """
+  decl = tool._get_declaration()
+  if not decl:
+    logger.warning(
+        "Tool %s has no declaration, skipping stub generation", tool.name
+    )
+    return ""
 
-    # Build parameter list with type hints
-    params = []
-    param_docs = []
+  # Build parameter list with type hints
+  params = []
+  param_docs = []
 
-    if decl.parameters and decl.parameters.properties:
-        required = set(decl.parameters.required or [])
+  if decl.parameters and decl.parameters.properties:
+    required = set(decl.parameters.required or [])
 
-        for param_name, param_schema in decl.parameters.properties.items():
-            type_hint = _get_python_type_hint(param_schema)
-            description = _get_schema_attr(param_schema, "description", "")
+    for param_name, param_schema in decl.parameters.properties.items():
+      type_hint = _get_python_type_hint(param_schema)
+      description = _get_schema_attr(param_schema, "description", "")
 
-            if param_name in required:
-                params.append(f"{param_name}: {type_hint}")
-            else:
-                params.append(f"{param_name}: {type_hint} = None")
+      if param_name in required:
+        params.append(f"{param_name}: {type_hint}")
+      else:
+        params.append(f"{param_name}: {type_hint} = None")
 
-            param_docs.append(f"        {param_name}: {description}")
+      param_docs.append(f"        {param_name}: {description}")
 
-    param_str = ", ".join(params)
-    param_doc_str = "\n".join(param_docs) if param_docs else "        None"
+  param_str = ", ".join(params)
+  param_doc_str = "\n".join(param_docs) if param_docs else "        None"
 
-    # Build the function stub
-    stub = f'''
+  # Build the function stub
+  stub = f'''
 def {tool.name}({param_str}) -> dict:
     """{tool.description}
     
@@ -272,43 +272,47 @@ def {tool.name}({param_str}) -> dict:
     return response
 
 '''
-    return stub
+  return stub
 
 
 def generate_tool_stubs(tools: List[BaseTool]) -> str:
-    """Generate Python function stubs for all tools.
+  """Generate Python function stubs for all tools.
 
-    Args:
-      tools: List of tools to generate stubs for.
+  Args:
+    tools: List of tools to generate stubs for.
 
-    Returns:
-      Python code string containing all tool stubs.
-    """
-    stubs = [
-        "# ============================================================================",
-        "# Tool Function Stubs",
-        "# ============================================================================",
-        "",
-    ]
+  Returns:
+    Python code string containing all tool stubs.
+  """
+  stubs = [
+      (
+          "# ============================================================================"
+      ),
+      "# Tool Function Stubs",
+      (
+          "# ============================================================================"
+      ),
+      "",
+  ]
 
-    for tool in tools:
-        stub = _generate_tool_stub(tool)
-        if stub:
-            stubs.append(stub)
+  for tool in tools:
+    stub = _generate_tool_stub(tool)
+    if stub:
+      stubs.append(stub)
 
-    return "\n".join(stubs)
+  return "\n".join(stubs)
 
 
 def generate_final_answer_stub() -> str:
-    """Generate the final_answer function documentation.
+  """Generate the final_answer function documentation.
 
-    This is included in the runtime header, but we generate additional
-    documentation here for the system prompt.
+  This is included in the runtime header, but we generate additional
+  documentation here for the system prompt.
 
-    Returns:
-      Documentation string about the final_answer function.
-    """
-    return """
+  Returns:
+    Documentation string about the final_answer function.
+  """
+  return """
 The `final_answer(result)` function is available to mark your final result.
 Call this function when you have completed the task and have a result to return.
 Example: `final_answer("The calculation result is 42")`
@@ -366,34 +370,32 @@ def generate_system_prompt(
     tools: List[BaseTool],
     custom_instruction: str = "",
 ) -> str:
-    """Generate the system prompt for the CodingAgent.
+  """Generate the system prompt for the CodingAgent.
 
-    Args:
-      tools: List of available tools.
-      custom_instruction: Additional custom instructions.
+  Args:
+    tools: List of available tools.
+    custom_instruction: Additional custom instructions.
 
-    Returns:
-      Complete system prompt string.
-    """
-    # Build tool documentation
-    tool_docs = []
-    for tool in tools:
-        decl = tool._get_declaration()
-        if decl:
-            params_doc = ""
-            if decl.parameters and decl.parameters.properties:
-                param_lines = []
-                required = set(decl.parameters.required or [])
-                for name, schema in decl.parameters.properties.items():
-                    type_hint = _get_python_type_hint(schema)
-                    req_marker = " (required)" if name in required else " (optional)"
-                    desc = _get_schema_attr(schema, "description", "")
-                    param_lines.append(
-                        f"    - {name}: {type_hint}{req_marker} - {desc}"
-                    )
-                params_doc = "\n".join(param_lines)
+  Returns:
+    Complete system prompt string.
+  """
+  # Build tool documentation
+  tool_docs = []
+  for tool in tools:
+    decl = tool._get_declaration()
+    if decl:
+      params_doc = ""
+      if decl.parameters and decl.parameters.properties:
+        param_lines = []
+        required = set(decl.parameters.required or [])
+        for name, schema in decl.parameters.properties.items():
+          type_hint = _get_python_type_hint(schema)
+          req_marker = " (required)" if name in required else " (optional)"
+          desc = _get_schema_attr(schema, "description", "")
+          param_lines.append(f"    - {name}: {type_hint}{req_marker} - {desc}")
+        params_doc = "\n".join(param_lines)
 
-            tool_docs.append(f"""
+      tool_docs.append(f"""
 ### {tool.name}
 {tool.description}
 
@@ -401,9 +403,9 @@ Parameters:
 {params_doc if params_doc else "    None"}
 """)
 
-    tools_section = "\n".join(tool_docs) if tool_docs else "No tools available."
+  tools_section = "\n".join(tool_docs) if tool_docs else "No tools available."
 
-    system_prompt = f"""You are a coding agent that solves tasks by writing and executing Python code.
+  system_prompt = f"""You are a coding agent that solves tasks by writing and executing Python code.
 
 ## How to Respond
 
@@ -439,7 +441,7 @@ Parameters:
 {custom_instruction}
 """
 
-    return system_prompt.strip()
+  return system_prompt.strip()
 
 
 def generate_full_code_with_stubs(
@@ -447,20 +449,20 @@ def generate_full_code_with_stubs(
     tools: List[BaseTool],
     tool_server_url: str,
 ) -> str:
-    """Generate complete executable code with runtime header and tool stubs.
+  """Generate complete executable code with runtime header and tool stubs.
 
-    Args:
-      user_code: The user-generated code to execute.
-      tools: List of available tools.
-      tool_server_url: URL of the tool execution server.
+  Args:
+    user_code: The user-generated code to execute.
+    tools: List of available tools.
+    tool_server_url: URL of the tool execution server.
 
-    Returns:
-      Complete Python code ready for execution.
-    """
-    runtime_header = generate_runtime_header(tool_server_url)
-    tool_stubs = generate_tool_stubs(tools)
+  Returns:
+    Complete Python code ready for execution.
+  """
+  runtime_header = generate_runtime_header(tool_server_url)
+  tool_stubs = generate_tool_stubs(tools)
 
-    full_code = f"""{runtime_header}
+  full_code = f"""{runtime_header}
 {tool_stubs}
 # ============================================================================
 # User Code
@@ -475,4 +477,4 @@ import json as __output_json
 print("__TOOL_TRACE__:" + __output_json.dumps(__get_tool_traces()))
 """
 
-    return full_code
+  return full_code
