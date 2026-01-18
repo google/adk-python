@@ -16,19 +16,18 @@
 Research Orchestration Agent
 
 A multi-agent pipeline that searches the internet, curates information,
-and synthesizes reports using a mix of Gemini and DeepSeek models.
+and synthesizes reports using Gemini models.
 
 Model Configuration:
 - SearchAgent: Gemini 2.5 Flash (for Google Search grounding)
-- ScraperAgent: DeepSeek (for web content extraction)
+- ScraperAgent: Gemini 2.5 Flash (for web content extraction)
 - CuratorAgent: Gemini 2.5 Flash (for filtering and organizing)
-- WriterAgent: DeepSeek (for final report synthesis)
+- WriterAgent: Gemini 2.5 Flash (for final report synthesis)
 """
 
 from bs4 import BeautifulSoup
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.sequential_agent import SequentialAgent
-from google.adk.models.lite_llm import LiteLlm
 from google.adk.tools import google_search
 import requests
 
@@ -67,11 +66,8 @@ def load_web_page(url: str) -> str:
 
 
 # --- Model Configuration ---
-# Gemini for search and curation (uses google_search grounding)
+# Gemini model for all agents
 GEMINI_MODEL = "gemini-2.5-flash"
-
-# DeepSeek for scraping and writing (via LiteLLM)
-DEEPSEEK_MODEL = LiteLlm(model="deepseek/deepseek-chat")
 
 
 # --- Agent 1: Search Agent (Gemini) ---
@@ -98,11 +94,11 @@ search_agent = LlmAgent(
 )
 
 
-# --- Agent 2: Scraper Agent (DeepSeek) ---
+# --- Agent 2: Scraper Agent (Gemini) ---
 # Extracts detailed content from web pages
 scraper_agent = LlmAgent(
     name="ScraperAgent",
-    model=DEEPSEEK_MODEL,
+    model=GEMINI_MODEL,
     description="Extracts and processes detailed content from web pages",
     instruction="""
     You are a web content extraction specialist.
@@ -150,11 +146,11 @@ curator_agent = LlmAgent(
 )
 
 
-# --- Agent 4: Writer Agent (DeepSeek) ---
+# --- Agent 4: Writer Agent (Gemini) ---
 # Synthesizes the final comprehensive report
 writer_agent = LlmAgent(
     name="WriterAgent",
-    model=DEEPSEEK_MODEL,
+    model=GEMINI_MODEL,
     description="Writes comprehensive reports from curated research",
     instruction="""
     You are an expert research report writer.
@@ -187,13 +183,13 @@ root_agent = SequentialAgent(
     name="ResearchOrchestration",
     sub_agents=[
         search_agent,  # Step 1: Find sources (Gemini + Google Search)
-        scraper_agent,  # Step 2: Extract content (DeepSeek)
+        scraper_agent,  # Step 2: Extract content (Gemini)
         curator_agent,  # Step 3: Organize & filter (Gemini)
-        writer_agent,  # Step 4: Write report (DeepSeek)
+        writer_agent,  # Step 4: Write report (Gemini)
     ],
     description=(
         "A research pipeline that searches the internet, extracts content, "
         "curates information, and produces a comprehensive report. "
-        "Uses Gemini for search/curation and DeepSeek for extraction/writing."
+        "Uses Gemini for all agents with Google Search grounding."
     ),
 )

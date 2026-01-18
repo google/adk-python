@@ -1,7 +1,7 @@
 # Research Orchestration Agent
 
 A multi-agent research pipeline demonstrating SequentialAgent orchestration
-with multi-model support via LiteLLM.
+with Gemini models.
 
 ## Architecture
 
@@ -12,7 +12,7 @@ User Query → SearchAgent → ScraperAgent → CuratorAgent → WriterAgent →
 ## Features Demonstrated
 
 * **SequentialAgent** - Pipeline orchestration pattern
-* **LiteLLM integration** - Multi-model support
+* **Gemini 2.5 Flash** - Consistent model across all agents
 * **Google Search grounding** - Built-in search tool
 * **Custom tools** - Web scraping with BeautifulSoup
 
@@ -33,6 +33,6 @@ adk web contributing/samples
 
 ## Requirements
 
-* `google-adk` with LiteLLM extension: `pip install google-adk[extensions]`
+* `google-adk`: `pip install google-adk`
 * BeautifulSoup: `pip install beautifulsoup4 lxml`
-* Configure API keys in `.env` for your chosen models
+* Configure `GOOGLE_API_KEY` in `.env`
