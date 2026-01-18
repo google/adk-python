@@ -926,6 +926,7 @@ class Runner:
       session_id: Optional[str] = None,
       live_request_queue: LiveRequestQueue,
       run_config: Optional[RunConfig] = None,
+      state_delta: Optional[dict[str, Any]] = None,
       session: Optional[Session] = None,
   ) -> AsyncGenerator[Event, None]:
     """Runs the agent in live mode (experimental feature).
@@ -966,6 +967,7 @@ class Runner:
           None.
         live_request_queue: The queue for live requests.
         run_config: The run config for the agent.
+        state_delta: Optional state changes to apply to the session.
         session: The session to use. This parameter is deprecated, please use
           `user_id` and `session_id` instead.
 
@@ -1008,6 +1010,16 @@ class Runner:
         live_request_queue=live_request_queue,
         run_config=run_config,
     )
+
+    # Apply state_delta if provided
+    if state_delta:
+      state_event = Event(
+          invocation_id=invocation_context.invocation_id,
+          author='user',
+          actions=EventActions(state_delta=state_delta),
+      )
+      _apply_run_config_custom_metadata(state_event, run_config)
+      await self.session_service.append_event(session=session, event=state_event)
 
     root_agent = self.agent
     invocation_context.agent = self._find_agent_to_run(session, root_agent)
