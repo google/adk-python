@@ -504,8 +504,6 @@ class RemoteA2aAgent(BaseAgent):
             invocation_id=ctx.invocation_id,
             branch=ctx.branch,
         )
-      event.custom_metadata = event.custom_metadata or {}
-      event.custom_metadata[A2A_METADATA_PREFIX + "response"] = True
       return event
     except A2AClientError as e:
       logger.error("Failed to handle A2A response: %s", e)
