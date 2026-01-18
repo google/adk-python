@@ -20,23 +20,34 @@ from typing import Dict
 from typing import List
 from typing import Optional
 
-from google.adk.tools.spanner import client
-from google.adk.tools.spanner.settings import SpannerToolSettings
-from google.adk.tools.tool_context import ToolContext
 from google.auth.credentials import Credentials
 from google.cloud.spanner_admin_database_v1.types import DatabaseDialect
 from google.cloud.spanner_v1.database import Database
 
-# Embedding options
-_SPANNER_EMBEDDING_MODEL_NAME = "spanner_embedding_model_name"
-_VERTEX_AI_EMBEDDING_MODEL_ENDPOINT = "vertex_ai_embedding_model_endpoint"
+from . import client
+from . import utils
+from .settings import APPROXIMATE_NEAREST_NEIGHBORS
+from .settings import EXACT_NEAREST_NEIGHBORS
+from .settings import SpannerToolSettings
+
+# Embedding model settings.
+# Only for Spanner GoogleSQL dialect database, and use Spanner ML.PREDICT
+# function.
+_SPANNER_GSQL_EMBEDDING_MODEL_NAME = "spanner_googlesql_embedding_model_name"
+# Only for Spanner PostgreSQL dialect database, and use spanner.ML_PREDICT_ROW
+# to inferencing with Vertex AI embedding model endpoint.
+_SPANNER_PG_VERTEX_AI_EMBEDDING_MODEL_ENDPOINT = (
+    "spanner_postgresql_vertex_ai_embedding_model_endpoint"
+)
+# For both Spanner GoogleSQL and PostgreSQL dialects, use Vertex AI embedding
+# model to generate embeddings for vector similarity search.
+_VERTEX_AI_EMBEDDING_MODEL_NAME = "vertex_ai_embedding_model_name"
+_OUTPUT_DIMENSIONALITY = "output_dimensionality"
 
 # Search options
 _TOP_K = "top_k"
 _DISTANCE_TYPE = "distance_type"
 _NEAREST_NEIGHBORS_ALGORITHM = "nearest_neighbors_algorithm"
-_EXACT_NEAREST_NEIGHBORS = "EXACT_NEAREST_NEIGHBORS"
-_APPROXIMATE_NEAREST_NEIGHBORS = "APPROXIMATE_NEAREST_NEIGHBORS"
 _NUM_LEAVES_TO_SEARCH = "num_leaves_to_search"
 
 # Constants
@@ -48,12 +59,12 @@ _POSTGRESQL_PARAMETER_QUERY_EMBEDDING = "1"
 
 
 def _generate_googlesql_for_embedding_query(
-    spanner_embedding_model_name: str,
+    spanner_gsql_embedding_model_name: str,
 ) -> str:
   return f"""
     SELECT embeddings.values
     FROM ML.PREDICT(
-      MODEL {spanner_embedding_model_name},
+      MODEL {spanner_gsql_embedding_model_name},
       (SELECT CAST(@{_GOOGLESQL_PARAMETER_TEXT_QUERY} AS STRING) as content)
     )
   """
@@ -61,37 +72,60 @@ def _generate_googlesql_for_embedding_query(
 
 def _generate_postgresql_for_embedding_query(
     vertex_ai_embedding_model_endpoint: str,
+    output_dimensionality: Optional[int],
 ) -> str:
-  return f"""
-    SELECT spanner.FLOAT32_ARRAY( spanner.ML_PREDICT_ROW(
-      '{vertex_ai_embedding_model_endpoint}',
-      JSONB_BUILD_OBJECT(
-        'instances',
-        JSONB_BUILD_ARRAY( JSONB_BUILD_OBJECT(
-          'content',
-          ${_POSTGRESQL_PARAMETER_TEXT_QUERY}::TEXT
-        ))
+  instances_json = f"""
+      'instances',
+      JSONB_BUILD_ARRAY(
+          JSONB_BUILD_OBJECT(
+              'content',
+              ${_POSTGRESQL_PARAMETER_TEXT_QUERY}::TEXT
+          )
       )
-    ) -> 'predictions'->0->'embeddings'->'values' )
+  """
+
+  params_list = []
+  if output_dimensionality is not None:
+    params_list.append(f"""
+        'parameters',
+        JSONB_BUILD_OBJECT(
+            'outputDimensionality',
+            {output_dimensionality}
+        )
+    """)
+
+  jsonb_build_args = ",\n".join([instances_json] + params_list)
+
+  return f"""
+      SELECT spanner.FLOAT32_ARRAY(
+          spanner.ML_PREDICT_ROW(
+              '{vertex_ai_embedding_model_endpoint}',
+              JSONB_BUILD_OBJECT(
+                  {jsonb_build_args}
+              )
+          ) -> 'predictions' -> 0 -> 'embeddings' -> 'values'
+      )
   """
 
 
 def _get_embedding_for_query(
     database: Database,
     dialect: DatabaseDialect,
-    spanner_embedding_model_name: Optional[str],
-    vertex_ai_embedding_model_endpoint: Optional[str],
+    spanner_gsql_embedding_model_name: Optional[str],
+    spanner_pg_vertex_ai_embedding_model_endpoint: Optional[str],
     query: str,
+    output_dimensionality: Optional[int] = None,
 ) -> List[float]:
   """Gets the embedding for the query."""
   if dialect == DatabaseDialect.POSTGRESQL:
     embedding_query = _generate_postgresql_for_embedding_query(
-        vertex_ai_embedding_model_endpoint
+        spanner_pg_vertex_ai_embedding_model_endpoint,
+        output_dimensionality,
     )
     params = {f"p{_POSTGRESQL_PARAMETER_TEXT_QUERY}": query}
   else:
     embedding_query = _generate_googlesql_for_embedding_query(
-        spanner_embedding_model_name
+        spanner_gsql_embedding_model_name
     )
     params = {_GOOGLESQL_PARAMETER_TEXT_QUERY: query}
   with database.snapshot() as snapshot:
@@ -101,8 +135,8 @@ def _get_embedding_for_query(
 
 def _get_postgresql_distance_function(distance_type: str) -> str:
   return {
-      "COSINE_DISTANCE": "spanner.cosine_distance",
-      "EUCLIDEAN_DISTANCE": "spanner.euclidean_distance",
+      "COSINE": "spanner.cosine_distance",
+      "EUCLIDEAN": "spanner.euclidean_distance",
       "DOT_PRODUCT": "spanner.dot_product",
   }[distance_type]
 
@@ -110,13 +144,13 @@ def _get_postgresql_distance_function(distance_type: str) -> str:
 def _get_googlesql_distance_function(distance_type: str, ann: bool) -> str:
   if ann:
     return {
-        "COSINE_DISTANCE": "APPROX_COSINE_DISTANCE",
-        "EUCLIDEAN_DISTANCE": "APPROX_EUCLIDEAN_DISTANCE",
+        "COSINE": "APPROX_COSINE_DISTANCE",
+        "EUCLIDEAN": "APPROX_EUCLIDEAN_DISTANCE",
         "DOT_PRODUCT": "APPROX_DOT_PRODUCT",
     }[distance_type]
   return {
-      "COSINE_DISTANCE": "COSINE_DISTANCE",
-      "EUCLIDEAN_DISTANCE": "EUCLIDEAN_DISTANCE",
+      "COSINE": "COSINE_DISTANCE",
+      "EUCLIDEAN": "EUCLIDEAN_DISTANCE",
       "DOT_PRODUCT": "DOT_PRODUCT",
   }[distance_type]
 
@@ -172,7 +206,7 @@ def _generate_sql_for_ann(
   """Generates a SQL query for ANN search."""
   if dialect == DatabaseDialect.POSTGRESQL:
     raise NotImplementedError(
-        f"{_APPROXIMATE_NEAREST_NEIGHBORS} is not supported for PostgreSQL"
+        f"{APPROXIMATE_NEAREST_NEIGHBORS} is not supported for PostgreSQL"
         " dialect."
     )
   distance_function = _get_googlesql_distance_function(distance_type, ann=True)
@@ -206,8 +240,6 @@ def similarity_search(
     columns: List[str],
     embedding_options: Dict[str, str],
     credentials: Credentials,
-    settings: SpannerToolSettings,
-    tool_context: ToolContext,
     additional_filter: Optional[str] = None,
     search_options: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
@@ -234,21 +266,34 @@ def similarity_search(
       columns (List[str]): A list of column names, representing the additional
         columns to return in the search results.
       embedding_options (Dict[str, str]): A dictionary of options to use for
-        the embedding service. The following options are supported:
-        - spanner_embedding_model_name: (For GoogleSQL dialect) The
+        the embedding service. **Exactly one of the following three keys
+        MUST be present in this dictionary**:
+        `vertex_ai_embedding_model_name`, `spanner_googlesql_embedding_model_name`,
+        or `spanner_postgresql_vertex_ai_embedding_model_endpoint`.
+        - vertex_ai_embedding_model_name (str): (Supported both **GoogleSQL and
+            PostgreSQL** dialects Spanner database) The name of a
+            public Vertex AI embedding model (e.g., `'text-embedding-005'`).
+            If specified, the tool generates embeddings client-side using the
+            Vertex AI embedding model.
+        - spanner_googlesql_embedding_model_name (str): (For GoogleSQL dialect) The
           name of the embedding model that is registered in Spanner via a
           `CREATE MODEL` statement. For more details, see
           https://cloud.google.com/spanner/docs/ml-tutorial-embeddings#generate_and_store_text_embeddings
-        - vertex_ai_embedding_model_endpoint: (For PostgreSQL dialect)
-          The fully qualified endpoint of the Vertex AI embedding model,
-          in the format of
+          If specified, embedding generation is performed using Spanner's
+          `ML.PREDICT` function.
+        - spanner_postgresql_vertex_ai_embedding_model_endpoint (str):
+          (For PostgreSQL dialect) The fully qualified endpoint of the Vertex AI
+          embedding model, in the format of
           `projects/$project/locations/$location/publishers/google/models/$model_name`,
           where $project is the project hosting the Vertex AI endpoint,
           $location is the location of the endpoint, and $model_name is
           the name of the text embedding model.
+          If specified, embedding generation is performed using Spanner's
+          `spanner.ML_PREDICT_ROW` function.
+        - output_dimensionality: Optional. The output dimensionality of the
+          embedding. If not specified, the embedding model's default output
+          dimensionality will be used.
       credentials (Credentials): The credentials to use for the request.
-      settings (SpannerToolSettings): The configuration for the tool.
-      tool_context (ToolContext): The context for the tool.
       additional_filter (Optional[str]): An optional filter to apply to the
         search query. If provided, this will be added to the WHERE clause of the
         final query.
@@ -257,9 +302,9 @@ def similarity_search(
         - top_k: The number of most similar documents to return. The
           default value is 4.
         - distance_type: The distance type to use to perform the
-          similarity search. Valid values include "COSINE_DISTANCE",
-          "EUCLIDEAN_DISTANCE", and "DOT_PRODUCT". Default value is
-          "COSINE_DISTANCE".
+          similarity search. Valid values include "COSINE",
+          "EUCLIDEAN", and "DOT_PRODUCT". Default value is
+          "COSINE".
         - nearest_neighbors_algorithm: The nearest neighbors search
           algorithm to use. Valid values include "EXACT_NEAREST_NEIGHBORS"
           and "APPROXIMATE_NEAREST_NEIGHBORS". Default value is
@@ -287,15 +332,13 @@ def similarity_search(
         ...   embedding_column_to_search="product_description_embedding",
         ...   columns=["product_name", "product_description", "price_in_cents"],
         ...   credentials=credentials,
-        ...   settings=settings,
-        ...   tool_context=tool_context,
         ...   additional_filter="price_in_cents < 100000",
         ...   embedding_options={
-        ...     "spanner_embedding_model_name": "my_embedding_model"
+        ...     "vertex_ai_embedding_model_name": "text-embedding-005"
         ...   },
         ...   search_options={
         ...     "top_k": 2,
-        ...     "distance_type": "COSINE_DISTANCE"
+        ...     "distance_type": "COSINE"
         ...   }
         ... )
         {
@@ -336,33 +379,68 @@ def similarity_search(
       embedding_options = {}
     if search_options is None:
       search_options = {}
-    spanner_embedding_model_name = embedding_options.get(
-        _SPANNER_EMBEDDING_MODEL_NAME
+
+    exclusive_embedding_model_keys = {
+        _VERTEX_AI_EMBEDDING_MODEL_NAME,
+        _SPANNER_GSQL_EMBEDDING_MODEL_NAME,
+        _SPANNER_PG_VERTEX_AI_EMBEDDING_MODEL_ENDPOINT,
+    }
+    if (
+        len(
+            exclusive_embedding_model_keys.intersection(
+                embedding_options.keys()
+            )
+        )
+        != 1
+    ):
+      raise ValueError("Exactly one embedding model option must be specified.")
+
+    vertex_ai_embedding_model_name = embedding_options.get(
+        _VERTEX_AI_EMBEDDING_MODEL_NAME
+    )
+    spanner_gsql_embedding_model_name = embedding_options.get(
+        _SPANNER_GSQL_EMBEDDING_MODEL_NAME
+    )
+    spanner_pg_vertex_ai_embedding_model_endpoint = embedding_options.get(
+        _SPANNER_PG_VERTEX_AI_EMBEDDING_MODEL_ENDPOINT
     )
     if (
         database.database_dialect == DatabaseDialect.GOOGLE_STANDARD_SQL
-        and spanner_embedding_model_name is None
+        and vertex_ai_embedding_model_name is None
+        and spanner_gsql_embedding_model_name is None
     ):
       raise ValueError(
-          f"embedding_options['{_SPANNER_EMBEDDING_MODEL_NAME}']"
-          " must be specified for GoogleSQL dialect."
+          f"embedding_options['{_VERTEX_AI_EMBEDDING_MODEL_NAME}'] or"
+          f" embedding_options['{_SPANNER_GSQL_EMBEDDING_MODEL_NAME}'] must be"
+          " specified for GoogleSQL dialect Spanner database."
       )
-    vertex_ai_embedding_model_endpoint = embedding_options.get(
-        _VERTEX_AI_EMBEDDING_MODEL_ENDPOINT
-    )
     if (
         database.database_dialect == DatabaseDialect.POSTGRESQL
-        and vertex_ai_embedding_model_endpoint is None
+        and vertex_ai_embedding_model_name is None
+        and spanner_pg_vertex_ai_embedding_model_endpoint is None
     ):
       raise ValueError(
-          f"embedding_options['{_VERTEX_AI_EMBEDDING_MODEL_ENDPOINT}']"
-          " must be specified for PostgreSQL dialect."
+          f"embedding_options['{_VERTEX_AI_EMBEDDING_MODEL_NAME}'] or"
+          f" embedding_options['{_SPANNER_PG_VERTEX_AI_EMBEDDING_MODEL_ENDPOINT}']"
+          " must be specified for PostgreSQL dialect Spanner database."
+      )
+    output_dimensionality = embedding_options.get(_OUTPUT_DIMENSIONALITY)
+    if (
+        output_dimensionality is not None
+        and spanner_gsql_embedding_model_name is not None
+    ):
+      # Currently, Spanner GSQL Model ML.PREDICT does not support
+      # output_dimensionality parameter for inference embedding models.
+      raise ValueError(
+          f"embedding_options[{_OUTPUT_DIMENSIONALITY}] is not supported when"
+          f" embedding_options['{_SPANNER_GSQL_EMBEDDING_MODEL_NAME}'] is"
+          " specified."
       )
 
     # Use cosine distance by default.
     distance_type = search_options.get(_DISTANCE_TYPE)
     if distance_type is None:
-      distance_type = "COSINE_DISTANCE"
+      distance_type = "COSINE"
 
     top_k = search_options.get(_TOP_K)
     if top_k is None:
@@ -370,26 +448,36 @@ def similarity_search(
 
     # Use EXACT_NEAREST_NEIGHBORS (i.e. kNN) by default.
     nearest_neighbors_algorithm = search_options.get(
-        _NEAREST_NEIGHBORS_ALGORITHM, _EXACT_NEAREST_NEIGHBORS
+        _NEAREST_NEIGHBORS_ALGORITHM,
+        EXACT_NEAREST_NEIGHBORS,
     )
     if nearest_neighbors_algorithm not in (
-        _EXACT_NEAREST_NEIGHBORS,
-        _APPROXIMATE_NEAREST_NEIGHBORS,
+        EXACT_NEAREST_NEIGHBORS,
+        APPROXIMATE_NEAREST_NEIGHBORS,
     ):
       raise NotImplementedError(
           f"Unsupported search_options['{_NEAREST_NEIGHBORS_ALGORITHM}']:"
           f" {nearest_neighbors_algorithm}"
       )
 
-    embedding = _get_embedding_for_query(
-        database,
-        database.database_dialect,
-        spanner_embedding_model_name,
-        vertex_ai_embedding_model_endpoint,
-        query,
-    )
+    # Generate embedding for the query according to the embedding options.
+    if vertex_ai_embedding_model_name:
+      embedding = utils.embed_contents(
+          vertex_ai_embedding_model_name,
+          [query],
+          output_dimensionality,
+      )[0]
+    else:
+      embedding = _get_embedding_for_query(
+          database,
+          database.database_dialect,
+          spanner_gsql_embedding_model_name,
+          spanner_pg_vertex_ai_embedding_model_endpoint,
+          query,
+          output_dimensionality,
+      )
 
-    if nearest_neighbors_algorithm == _EXACT_NEAREST_NEIGHBORS:
+    if nearest_neighbors_algorithm == EXACT_NEAREST_NEIGHBORS:
       sql = _generate_sql_for_knn(
           database.database_dialect,
           table_name,
@@ -438,5 +526,100 @@ def similarity_search(
   except Exception as ex:
     return {
         "status": "ERROR",
-        "error_details": str(ex),
+        "error_details": repr(ex),
+    }
+
+
+def vector_store_similarity_search(
+    query: str,
+    credentials: Credentials,
+    settings: SpannerToolSettings,
+) -> Dict[str, Any]:
+  """Performs a semantic similarity search to retrieve relevant context from the Spanner vector store.
+
+  This function performs vector similarity search directly on a vector store
+  table in Spanner database and returns the relevant data.
+
+  Args:
+      query (str): The search string based on the user's question.
+      credentials (Credentials): The credentials to use for the request.
+      settings (SpannerToolSettings): The configuration for the tool.
+
+  Returns:
+      Dict[str, Any]: A dictionary representing the result of the search.
+        On success, it contains {"status": "SUCCESS", "rows": [...]}. The last
+        column of each row is the distance between the query and the row result.
+        On error, it contains {"status": "ERROR", "error_details": "..."}.
+
+  Examples:
+        >>> vector_store_similarity_search(
+        ...   query="Spanner database optimization techniques for high QPS",
+        ...   credentials=credentials,
+        ...   settings=settings
+        ... )
+        {
+          "status": "SUCCESS",
+          "rows": [
+            (
+              "Optimizing Query Performance",
+              0.12,
+            ),
+            (
+              "Schema Design Best Practices",
+              0.25,
+            ),
+            (
+              "Using Secondary Indexes Effectively",
+              0.31,
+            ),
+            ...
+          ],
+        }
+  """
+
+  try:
+    if not settings or not settings.vector_store_settings:
+      raise ValueError("Spanner vector store settings are not set.")
+
+    # Get the embedding model settings.
+    embedding_options = {
+        _VERTEX_AI_EMBEDDING_MODEL_NAME: (
+            settings.vector_store_settings.vertex_ai_embedding_model_name
+        ),
+        _OUTPUT_DIMENSIONALITY: settings.vector_store_settings.vector_length,
+    }
+
+    # Get the search settings.
+    search_options = {
+        _TOP_K: settings.vector_store_settings.top_k,
+        _DISTANCE_TYPE: settings.vector_store_settings.distance_type,
+        _NEAREST_NEIGHBORS_ALGORITHM: (
+            settings.vector_store_settings.nearest_neighbors_algorithm
+        ),
+    }
+    if (
+        settings.vector_store_settings.nearest_neighbors_algorithm
+        == APPROXIMATE_NEAREST_NEIGHBORS
+    ):
+      search_options[_NUM_LEAVES_TO_SEARCH] = (
+          settings.vector_store_settings.num_leaves_to_search
+      )
+
+    return similarity_search(
+        project_id=settings.vector_store_settings.project_id,
+        instance_id=settings.vector_store_settings.instance_id,
+        database_id=settings.vector_store_settings.database_id,
+        table_name=settings.vector_store_settings.table_name,
+        query=query,
+        embedding_column_to_search=settings.vector_store_settings.embedding_column,
+        columns=settings.vector_store_settings.selected_columns,
+        embedding_options=embedding_options,
+        credentials=credentials,
+        additional_filter=settings.vector_store_settings.additional_filter,
+        search_options=search_options,
+    )
+  except Exception as ex:
+    return {
+        "status": "ERROR",
+        "error_details": repr(ex),
     }

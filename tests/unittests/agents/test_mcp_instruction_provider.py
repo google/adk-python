@@ -13,33 +13,13 @@
 # limitations under the License.
 
 """Unit tests for McpInstructionProvider."""
-import sys
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
+from google.adk.agents.mcp_instruction_provider import McpInstructionProvider
 from google.adk.agents.readonly_context import ReadonlyContext
 import pytest
-
-# Skip all tests in this module if Python version is less than 3.10
-pytestmark = pytest.mark.skipif(
-    sys.version_info < (3, 10),
-    reason="MCP instruction provider requires Python 3.10+",
-)
-
-# Import dependencies with version checking
-try:
-  from google.adk.agents.mcp_instruction_provider import McpInstructionProvider
-except ImportError as e:
-  if sys.version_info < (3, 10):
-    # Create dummy classes to prevent NameError during test collection
-    # Tests will be skipped anyway due to pytestmark
-    class DummyClass:
-      pass
-
-    McpInstructionProvider = DummyClass
-  else:
-    raise e
 
 
 class TestMcpInstructionProvider:

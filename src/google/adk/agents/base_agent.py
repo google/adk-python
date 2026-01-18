@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import inspect
+import logging
 from typing import Any
 from typing import AsyncGenerator
 from typing import Awaitable
@@ -48,6 +49,8 @@ from .callback_context import CallbackContext
 
 if TYPE_CHECKING:
   from .invocation_context import InvocationContext
+
+logger = logging.getLogger('google_adk.' + __name__)
 
 _SingleAgentCallback: TypeAlias = Callable[
     [CallbackContext],
@@ -561,6 +564,45 @@ class BaseAgent(BaseModel):
           "Agent name cannot be `user`. `user` is reserved for end-user's"
           ' input.'
       )
+    return value
+
+  @field_validator('sub_agents', mode='after')
+  @classmethod
+  def validate_sub_agents_unique_names(
+      cls, value: list[BaseAgent]
+  ) -> list[BaseAgent]:
+    """Validates that all sub-agents have unique names.
+
+    Args:
+      value: The list of sub-agents to validate.
+
+    Returns:
+      The validated list of sub-agents.
+
+    """
+    if not value:
+      return value
+
+    seen_names: set[str] = set()
+    duplicates: set[str] = set()
+
+    for sub_agent in value:
+      name = sub_agent.name
+      if name in seen_names:
+        duplicates.add(name)
+      else:
+        seen_names.add(name)
+
+    if duplicates:
+      duplicate_names_str = ', '.join(
+          f'`{name}`' for name in sorted(duplicates)
+      )
+      logger.warning(
+          'Found duplicate sub-agent names: %s. '
+          'All sub-agents must have unique names.',
+          duplicate_names_str,
+      )
+
     return value
 
   def __set_parent_agent_for_sub_agents(self) -> BaseAgent:

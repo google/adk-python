@@ -13,7 +13,6 @@
 # limitations under the License.
 
 import json
-import os
 from typing import Any
 from typing import Dict
 from typing import Optional
@@ -28,6 +27,7 @@ from google.adk.telemetry.tracing import ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS
 from google.adk.telemetry.tracing import trace_agent_invocation
 from google.adk.telemetry.tracing import trace_call_llm
 from google.adk.telemetry.tracing import trace_merged_tool_calls
+from google.adk.telemetry.tracing import trace_send_data
 from google.adk.telemetry.tracing import trace_tool_call
 from google.adk.tools.base_tool import BaseTool
 from google.genai import types
@@ -207,18 +207,87 @@ async def test_trace_call_llm_with_binary_content(
   assert mock_span_fixture.set_attribute.call_count == 7
   mock_span_fixture.set_attribute.assert_has_calls(expected_calls)
 
-  # Verify binary content is replaced with '<not serializable>' in JSON
+  # Verify binary values are properly serialized as base64
   llm_request_json_str = None
   for call_obj in mock_span_fixture.set_attribute.call_args_list:
-    if call_obj.args[0] == 'gcp.vertex.agent.llm_request':
-      llm_request_json_str = call_obj.args[1]
+    arg_name, arg_value = call_obj.args
+    if arg_name == 'gcp.vertex.agent.llm_request':
+      llm_request_json_str = arg_value
+      break
+
+  assert llm_request_json_str is not None
+
+  # Verify bytes are base64 encoded (b'test_data' -> 'dGVzdF9kYXRh')
+  assert 'dGVzdF9kYXRh' in llm_request_json_str
+
+  # Verify no serialization failures
+  assert '<not serializable>' not in llm_request_json_str
+
+
+@pytest.mark.asyncio
+async def test_trace_call_llm_with_thought_signature(
+    monkeypatch, mock_span_fixture
+):
+  """Test trace_call_llm handles thought_signature bytes correctly.
+
+  This test verifies that thought_signature bytes from Gemini 3.0 models
+  are properly serialized as base64 in telemetry traces.
+  """
+  monkeypatch.setattr(
+      'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
+  )
+
+  agent = LlmAgent(name='test_agent')
+  invocation_context = await _create_invocation_context(agent)
+
+  # multi-turn conversation where the model's response contains
+  # thought_signature bytes
+  thought_signature_bytes = b'thought_signature'
+  llm_request = LlmRequest(
+      model='gemini-3-pro-preview',
+      contents=[
+          types.Content(
+              role='user',
+              parts=[types.Part(text='Hello')],
+          ),
+          types.Content(
+              role='model',
+              parts=[
+                  types.Part(
+                      thought=True,
+                      thought_signature=thought_signature_bytes,
+                  )
+              ],
+          ),
+          types.Content(
+              role='user',
+              parts=[types.Part(text='Follow up question')],
+          ),
+      ],
+      config=types.GenerateContentConfig(),
+  )
+  llm_response = LlmResponse(turn_complete=True)
+
+  # should not raise TypeError for bytes serialization
+  trace_call_llm(invocation_context, 'test_event_id', llm_request, llm_response)
+
+  llm_request_json_str = None
+  for call_obj in mock_span_fixture.set_attribute.call_args_list:
+    arg_name, arg_value = call_obj.args
+    if arg_name == 'gcp.vertex.agent.llm_request':
+      llm_request_json_str = arg_value
       break
 
   assert (
       llm_request_json_str is not None
   ), "Attribute 'gcp.vertex.agent.llm_request' was not set on the span."
 
-  assert llm_request_json_str.count('<not serializable>') == 2
+  # no serialization failures
+  assert '<not serializable>' not in llm_request_json_str
+  # llm request is valid JSON
+  parsed = json.loads(llm_request_json_str)
+  assert parsed['model'] == 'gemini-3-pro-preview'
+  assert len(parsed['contents']) == 3
 
 
 def test_trace_tool_call_with_scalar_response(
@@ -379,7 +448,7 @@ def test_trace_merged_tool_calls_sets_correct_attributes(
 async def test_call_llm_disabling_request_response_content(
     monkeypatch, mock_span_fixture
 ):
-  """Test trace_call_llm doesn't set request and response attributes if env is set to false"""
+  """Test trace_call_llm sets placeholders when capture is disabled."""
   # Arrange
   monkeypatch.setenv(ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS, 'false')
   monkeypatch.setattr(
@@ -406,19 +475,19 @@ async def test_call_llm_disabling_request_response_content(
   trace_call_llm(invocation_context, 'test_event_id', llm_request, llm_response)
 
   # Assert
-  assert not any(
-      call_obj.args[0] == 'gcp.vertex.agent.llm_request'
-      and call_obj.args[1] != {}
+  assert (
+      'gcp.vertex.agent.llm_request',
+      '{}',
+  ) in (
+      call_obj.args
       for call_obj in mock_span_fixture.set_attribute.call_args_list
-  ), "Attribute 'gcp.vertex.agent.llm_request' was incorrectly set on the span."
-
-  assert not any(
-      call_obj.args[0] == 'gcp.vertex.agent.llm_response'
-      and call_obj.args[1] != {}
+  )
+  assert (
+      'gcp.vertex.agent.llm_response',
+      '{}',
+  ) in (
+      call_obj.args
       for call_obj in mock_span_fixture.set_attribute.call_args_list
-  ), (
-      "Attribute 'gcp.vertex.agent.llm_response' was incorrectly set on the"
-      ' span.'
   )
 
 
@@ -428,7 +497,7 @@ def test_trace_tool_call_disabling_request_response_content(
     mock_tool_fixture,
     mock_event_fixture,
 ):
-  """Test trace_tool_call doesn't set request and response attributes if env is set to false"""
+  """Test trace_tool_call sets placeholders when capture is disabled."""
   # Arrange
   monkeypatch.setenv(ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS, 'false')
   monkeypatch.setattr(
@@ -465,22 +534,19 @@ def test_trace_tool_call_disabling_request_response_content(
   )
 
   # Assert
-  assert not any(
-      call_obj.args[0] == 'gcp.vertex.agent.tool_call_args'
-      and call_obj.args[1] != {}
+  assert (
+      'gcp.vertex.agent.tool_call_args',
+      '{}',
+  ) in (
+      call_obj.args
       for call_obj in mock_span_fixture.set_attribute.call_args_list
-  ), (
-      "Attribute 'gcp.vertex.agent.tool_call_args' was incorrectly set on the"
-      ' span.'
   )
-
-  assert not any(
-      call_obj.args[0] == 'gcp.vertex.agent.tool_response'
-      and call_obj.args[1] != {}
+  assert (
+      'gcp.vertex.agent.tool_response',
+      '{}',
+  ) in (
+      call_obj.args
       for call_obj in mock_span_fixture.set_attribute.call_args_list
-  ), (
-      "Attribute 'gcp.vertex.agent.tool_response' was incorrectly set on the"
-      ' span.'
   )
 
 
@@ -489,7 +555,7 @@ def test_trace_merged_tool_disabling_request_response_content(
     mock_span_fixture,
     mock_event_fixture,
 ):
-  """Test trace_merged_tool doesn't set request and response attributes if env is set to false"""
+  """Test trace_merged_tool_calls sets placeholders when capture is disabled."""
   # Arrange
   monkeypatch.setenv(ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS, 'false')
   monkeypatch.setattr(
@@ -509,11 +575,40 @@ def test_trace_merged_tool_disabling_request_response_content(
   )
 
   # Assert
-  assert not any(
-      call_obj.args[0] == 'gcp.vertex.agent.tool_response'
-      and call_obj.args[1] != {}
+  assert (
+      'gcp.vertex.agent.tool_response',
+      '{}',
+  ) in (
+      call_obj.args
       for call_obj in mock_span_fixture.set_attribute.call_args_list
-  ), (
-      "Attribute 'gcp.vertex.agent.tool_response' was incorrectly set on the"
-      ' span.'
+  )
+
+
+@pytest.mark.asyncio
+async def test_trace_send_data_disabling_request_response_content(
+    monkeypatch, mock_span_fixture
+):
+  """Test trace_send_data sets placeholders when capture is disabled."""
+  monkeypatch.setenv(ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS, 'false')
+  monkeypatch.setattr(
+      'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
+  )
+
+  agent = LlmAgent(name='test_agent')
+  invocation_context = await _create_invocation_context(agent)
+
+  trace_send_data(
+      invocation_context=invocation_context,
+      event_id='test_event_id',
+      data=[
+          types.Content(
+              role='user',
+              parts=[types.Part(text='hi')],
+          )
+      ],
+  )
+
+  assert ('gcp.vertex.agent.data', '{}') in (
+      call_obj.args
+      for call_obj in mock_span_fixture.set_attribute.call_args_list
   )

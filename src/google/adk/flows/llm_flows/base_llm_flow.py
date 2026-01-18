@@ -38,6 +38,8 @@ from ...agents.readonly_context import ReadonlyContext
 from ...agents.run_config import StreamingMode
 from ...agents.transcription_entry import TranscriptionEntry
 from ...events.event import Event
+from ...features import FeatureName
+from ...features import is_feature_enabled
 from ...models.base_llm_connection import BaseLlmConnection
 from ...models.llm_request import LlmRequest
 from ...models.llm_response import LlmResponse
@@ -61,7 +63,6 @@ logger = logging.getLogger('google_adk.' + __name__)
 _ADK_AGENT_NAME_LABEL_KEY = 'adk_agent_name'
 
 # Timing configuration
-DEFAULT_REQUEST_QUEUE_TIMEOUT = 0.25
 DEFAULT_TRANSFER_AGENT_DELAY = 1.0
 DEFAULT_TASK_COMPLETION_DELAY = 1.0
 
@@ -115,6 +116,10 @@ class BaseLlmFlow(ABC):
           attempt += 1
           if not llm_request.live_connect_config:
             llm_request.live_connect_config = types.LiveConnectConfig()
+          if not llm_request.live_connect_config.session_resumption:
+            llm_request.live_connect_config.session_resumption = (
+                types.SessionResumptionConfig()
+            )
           llm_request.live_connect_config.session_resumption.handle = (
               invocation_context.live_session_resumption_handle
           )
@@ -154,7 +159,7 @@ class BaseLlmFlow(ABC):
                   break
                 logger.debug('Receive new event: %s', event)
                 yield event
-                # send back the function response
+                # send back the function response to models
                 if event.get_function_responses():
                   logger.debug(
                       'Sending back last function response event: %s', event
@@ -162,6 +167,16 @@ class BaseLlmFlow(ABC):
                   invocation_context.live_request_queue.send_content(
                       event.content
                   )
+                # We handle agent transfer here in `run_live` rather than
+                # in `_postprocess_live` to prevent duplication of function
+                # response processing. If agent transfer were handled in
+                # `_postprocess_live`, events yielded from child agent's
+                # `run_live` would bubble up to parent agent's `run_live`,
+                # causing `event.get_function_responses()` to be true in both
+                # child and parent, and `send_content()` to be called twice for
+                # the same function response. By handling agent transfer here,
+                # we ensure that only child agent processes its own function
+                # responses after the transfer.
                 if (
                     event.content
                     and event.content.parts
@@ -172,7 +187,21 @@ class BaseLlmFlow(ABC):
                   await asyncio.sleep(DEFAULT_TRANSFER_AGENT_DELAY)
                   # cancel the tasks that belongs to the closed connection.
                   send_task.cancel()
+                  logger.debug('Closing live connection')
                   await llm_connection.close()
+                  logger.debug('Live connection closed.')
+                  # transfer to the sub agent.
+                  transfer_to_agent = event.actions.transfer_to_agent
+                  if transfer_to_agent:
+                    logger.debug('Transferring to agent: %s', transfer_to_agent)
+                    agent_to_run = self._get_agent_to_run(
+                        invocation_context, transfer_to_agent
+                    )
+                    async with Aclosing(
+                        agent_to_run.run_live(invocation_context)
+                    ) as agen:
+                      async for item in agen:
+                        yield item
                 if (
                     event.content
                     and event.content.parts
@@ -212,29 +241,22 @@ class BaseLlmFlow(ABC):
     """Sends data to model."""
     while True:
       live_request_queue = invocation_context.live_request_queue
-      try:
-        # Streamlit's execution model doesn't preemptively yield to the event
-        # loop. Therefore, we must explicitly introduce timeouts to allow the
-        # event loop to process events.
-        # TODO: revert back(remove timeout) once we move off streamlit.
-        live_request = await asyncio.wait_for(
-            live_request_queue.get(), timeout=DEFAULT_REQUEST_QUEUE_TIMEOUT
-        )
-        # duplicate the live_request to all the active streams
-        logger.debug(
-            'Sending live request %s to active streams: %s',
-            live_request,
-            invocation_context.active_streaming_tools,
-        )
-        if invocation_context.active_streaming_tools:
-          for active_streaming_tool in (
-              invocation_context.active_streaming_tools
-          ).values():
-            if active_streaming_tool.stream:
-              active_streaming_tool.stream.send(live_request)
-        await asyncio.sleep(0)
-      except asyncio.TimeoutError:
-        continue
+      live_request = await live_request_queue.get()
+      # duplicate the live_request to all the active streams
+      logger.debug(
+          'Sending live request %s to active streams: %s',
+          live_request,
+          invocation_context.active_streaming_tools,
+      )
+      if invocation_context.active_streaming_tools:
+        for active_streaming_tool in (
+            invocation_context.active_streaming_tools
+        ).values():
+          if active_streaming_tool.stream:
+            active_streaming_tool.stream.send(live_request)
+      # Yield to event loop for cooperative multitasking
+      await asyncio.sleep(0)
+
       if live_request.close:
         await llm_connection.close()
         return
@@ -281,7 +303,6 @@ class BaseLlmFlow(ABC):
       else:
         return invocation_context.agent.name
 
-    assert invocation_context.live_request_queue
     try:
       while True:
         async with Aclosing(llm_connection.receive()) as agen:
@@ -458,7 +479,11 @@ class BaseLlmFlow(ABC):
     # We may need to wrap some built-in tools if there are other tools
     # because the built-in tools cannot be used together with other tools.
     # TODO(b/448114567): Remove once the workaround is no longer needed.
+    if not agent.tools:
+      return
+
     multiple_tools = len(agent.tools) > 1
+    model = agent.canonical_model
     for tool_union in agent.tools:
       tool_context = ToolContext(invocation_context)
 
@@ -474,7 +499,7 @@ class BaseLlmFlow(ABC):
       tools = await _convert_tool_union_to_tools(
           tool_union,
           ReadonlyContext(invocation_context),
-          agent.model,
+          model,
           multiple_tools,
       )
       for tool in tools:
@@ -525,6 +550,16 @@ class BaseLlmFlow(ABC):
 
     # Handles function calls.
     if model_response_event.get_function_calls():
+
+      if is_feature_enabled(FeatureName.PROGRESSIVE_SSE_STREAMING):
+        # In progressive SSE streaming mode stage 1, we skip partial FC events
+        # Only execute FCs in the final aggregated event (partial=False)
+        if (
+            invocation_context.run_config.streaming_mode == StreamingMode.SSE
+            and model_response_event.partial
+        ):
+          return
+
       async with Aclosing(
           self._postprocess_handle_function_calls_async(
               invocation_context, model_response_event, llm_request
@@ -598,6 +633,12 @@ class BaseLlmFlow(ABC):
       for event in flushed_events:
         yield event
       if flushed_events:
+        # NOTE below return is O.K. for now, because currently we only flush
+        # events on interrupted or turn_complete. turn_complete is a pure
+        # control event and interrupted is not with content but those content
+        # is ignorable because model is already interrupted. If we have other
+        # case to flush events in the future that are not pure control events,
+        # we should not return here.
         return
 
     # Builds the event.
@@ -625,15 +666,6 @@ class BaseLlmFlow(ABC):
             )
         )
         yield final_event
-
-      transfer_to_agent = function_response_event.actions.transfer_to_agent
-      if transfer_to_agent:
-        agent_to_run = self._get_agent_to_run(
-            invocation_context, transfer_to_agent
-        )
-        async with Aclosing(agent_to_run.run_live(invocation_context)) as agen:
-          async for item in agen:
-            yield item
 
   async def _postprocess_run_processors_async(
       self, invocation_context: InvocationContext, llm_response: LlmResponse
@@ -942,13 +974,8 @@ class BaseLlmFlow(ABC):
           flush_user_audio=True,
           flush_model_audio=True,
       )
-    elif getattr(llm_response, 'generation_complete', False):
-      # model generation complete so we can flush model audio
-      return await self.audio_cache_manager.flush_caches(
-          invocation_context,
-          flush_user_audio=False,
-          flush_model_audio=True,
-      )
+    # TODO: Once generation_complete is surfaced on LlmResponse, we can flush
+    # model audio here (flush_user_audio=False, flush_model_audio=True).
     return []
 
   async def _run_and_handle_error(

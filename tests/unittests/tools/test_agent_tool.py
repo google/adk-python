@@ -21,6 +21,8 @@ from google.adk.agents.llm_agent import Agent
 from google.adk.agents.run_config import RunConfig
 from google.adk.agents.sequential_agent import SequentialAgent
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
+from google.adk.features import FeatureName
+from google.adk.features._feature_registry import temporary_feature_override
 from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
@@ -33,6 +35,7 @@ from google.adk.utils.variant_utils import GoogleLLMVariant
 from google.genai import types
 from google.genai.types import Part
 from pydantic import BaseModel
+import pytest
 from pytest import mark
 
 from .. import testing_utils
@@ -570,3 +573,372 @@ def test_agent_tool_response_schema_with_input_schema_no_output_vertex_ai(
   # Should have string response schema for VERTEX_AI when no output_schema
   assert declaration.response is not None
   assert declaration.response.type == types.Type.STRING
+
+
+def test_include_plugins_default_true():
+  """Test that plugins are propagated by default (include_plugins=True)."""
+
+  # Create a test plugin that tracks callbacks
+  class TrackingPlugin(BasePlugin):
+
+    def __init__(self, name: str):
+      super().__init__(name)
+      self.before_agent_calls = 0
+
+    async def before_agent_callback(self, **kwargs):
+      self.before_agent_calls += 1
+
+  tracking_plugin = TrackingPlugin(name='tracking')
+
+  mock_model = testing_utils.MockModel.create(
+      responses=[function_call_no_schema, 'response1', 'response2']
+  )
+
+  tool_agent = Agent(
+      name='tool_agent',
+      model=mock_model,
+  )
+
+  root_agent = Agent(
+      name='root_agent',
+      model=mock_model,
+      tools=[AgentTool(agent=tool_agent)],  # Default include_plugins=True
+  )
+
+  runner = testing_utils.InMemoryRunner(root_agent, plugins=[tracking_plugin])
+  runner.run('test1')
+
+  # Plugin should be called for both root_agent and tool_agent
+  assert tracking_plugin.before_agent_calls == 2
+
+
+def test_include_plugins_explicit_true():
+  """Test that plugins are propagated when include_plugins=True."""
+
+  class TrackingPlugin(BasePlugin):
+
+    def __init__(self, name: str):
+      super().__init__(name)
+      self.before_agent_calls = 0
+
+    async def before_agent_callback(self, **kwargs):
+      self.before_agent_calls += 1
+
+  tracking_plugin = TrackingPlugin(name='tracking')
+
+  mock_model = testing_utils.MockModel.create(
+      responses=[function_call_no_schema, 'response1', 'response2']
+  )
+
+  tool_agent = Agent(
+      name='tool_agent',
+      model=mock_model,
+  )
+
+  root_agent = Agent(
+      name='root_agent',
+      model=mock_model,
+      tools=[AgentTool(agent=tool_agent, include_plugins=True)],
+  )
+
+  runner = testing_utils.InMemoryRunner(root_agent, plugins=[tracking_plugin])
+  runner.run('test1')
+
+  # Plugin should be called for both root_agent and tool_agent
+  assert tracking_plugin.before_agent_calls == 2
+
+
+def test_include_plugins_false():
+  """Test that plugins are NOT propagated when include_plugins=False."""
+
+  class TrackingPlugin(BasePlugin):
+
+    def __init__(self, name: str):
+      super().__init__(name)
+      self.before_agent_calls = 0
+
+    async def before_agent_callback(self, **kwargs):
+      self.before_agent_calls += 1
+
+  tracking_plugin = TrackingPlugin(name='tracking')
+
+  mock_model = testing_utils.MockModel.create(
+      responses=[function_call_no_schema, 'response1', 'response2']
+  )
+
+  tool_agent = Agent(
+      name='tool_agent',
+      model=mock_model,
+  )
+
+  root_agent = Agent(
+      name='root_agent',
+      model=mock_model,
+      tools=[AgentTool(agent=tool_agent, include_plugins=False)],
+  )
+
+  runner = testing_utils.InMemoryRunner(root_agent, plugins=[tracking_plugin])
+  runner.run('test1')
+
+  # Plugin should only be called for root_agent, not tool_agent
+  assert tracking_plugin.before_agent_calls == 1
+
+
+def test_agent_tool_description_with_input_schema():
+  """Test that agent description is propagated when using input_schema."""
+
+  class CustomInput(BaseModel):
+    """This is the Pydantic model docstring."""
+
+    custom_input: str
+
+  agent_description = 'This is the agent description that should be used'
+  tool_agent = Agent(
+      name='tool_agent',
+      model=testing_utils.MockModel.create(responses=['test response']),
+      description=agent_description,
+      input_schema=CustomInput,
+  )
+
+  agent_tool = AgentTool(agent=tool_agent)
+  declaration = agent_tool._get_declaration()
+
+  # The description should come from the agent, not the Pydantic model
+  assert declaration.description == agent_description
+
+
+@pytest.fixture
+def enable_json_schema_feature():
+  """Fixture to enable JSON_SCHEMA_FOR_FUNC_DECL feature for a test."""
+  with temporary_feature_override(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL, True):
+    yield
+
+
+def test_agent_tool_no_schema_with_json_schema_feature(
+    enable_json_schema_feature,
+):
+  """Test AgentTool without input_schema uses parameters_json_schema when feature enabled."""
+  tool_agent = Agent(
+      name='tool_agent',
+      description='A tool agent for testing.',
+      model=testing_utils.MockModel.create(responses=['test response']),
+  )
+
+  agent_tool = AgentTool(agent=tool_agent)
+  declaration = agent_tool._get_declaration()
+
+  assert declaration.model_dump(exclude_none=True) == {
+      'name': 'tool_agent',
+      'description': 'A tool agent for testing.',
+      'parameters_json_schema': {
+          'type': 'object',
+          'properties': {
+              'request': {'type': 'string'},
+          },
+          'required': ['request'],
+      },
+  }
+
+
+@mark.parametrize(
+    'env_variables',
+    [
+        'VERTEX',  # Test VERTEX_AI variant
+    ],
+    indirect=True,
+)
+def test_agent_tool_response_json_schema_no_output_schema_vertex_ai(
+    env_variables,
+    enable_json_schema_feature,
+):
+  """Test AgentTool with no output schema uses response_json_schema for VERTEX_AI when feature enabled."""
+  tool_agent = Agent(
+      name='tool_agent',
+      description='A tool agent for testing.',
+      model=testing_utils.MockModel.create(responses=['test response']),
+  )
+
+  agent_tool = AgentTool(agent=tool_agent)
+  declaration = agent_tool._get_declaration()
+
+  assert declaration.model_dump(exclude_none=True) == {
+      'name': 'tool_agent',
+      'description': 'A tool agent for testing.',
+      'parameters_json_schema': {
+          'type': 'object',
+          'properties': {
+              'request': {'type': 'string'},
+          },
+          'required': ['request'],
+      },
+      'response_json_schema': {'type': 'string'},
+  }
+
+
+@mark.parametrize(
+    'env_variables',
+    [
+        'VERTEX',  # Test VERTEX_AI variant
+    ],
+    indirect=True,
+)
+def test_agent_tool_response_json_schema_with_output_schema_vertex_ai(
+    env_variables,
+    enable_json_schema_feature,
+):
+  """Test AgentTool with output schema uses response_json_schema for VERTEX_AI when feature enabled."""
+
+  class CustomOutput(BaseModel):
+    custom_output: str
+
+  tool_agent = Agent(
+      name='tool_agent',
+      description='A tool agent for testing.',
+      model=testing_utils.MockModel.create(responses=['test response']),
+      output_schema=CustomOutput,
+  )
+
+  agent_tool = AgentTool(agent=tool_agent)
+  declaration = agent_tool._get_declaration()
+
+  assert declaration.model_dump(exclude_none=True) == {
+      'name': 'tool_agent',
+      'description': 'A tool agent for testing.',
+      'parameters_json_schema': {
+          'type': 'object',
+          'properties': {
+              'request': {'type': 'string'},
+          },
+          'required': ['request'],
+      },
+      'response_json_schema': {'type': 'object'},
+  }
+
+
+@mark.parametrize(
+    'env_variables',
+    [
+        'GOOGLE_AI',  # Test GEMINI_API variant
+    ],
+    indirect=True,
+)
+def test_agent_tool_no_response_json_schema_gemini_api(
+    env_variables,
+    enable_json_schema_feature,
+):
+  """Test AgentTool with GEMINI_API variant has no response_json_schema when feature enabled."""
+
+  class CustomOutput(BaseModel):
+    custom_output: str
+
+  tool_agent = Agent(
+      name='tool_agent',
+      description='A tool agent for testing.',
+      model=testing_utils.MockModel.create(responses=['test response']),
+      output_schema=CustomOutput,
+  )
+
+  agent_tool = AgentTool(agent=tool_agent)
+  declaration = agent_tool._get_declaration()
+
+  # GEMINI_API should not have response_json_schema
+  assert declaration.model_dump(exclude_none=True) == {
+      'name': 'tool_agent',
+      'description': 'A tool agent for testing.',
+      'parameters_json_schema': {
+          'type': 'object',
+          'properties': {
+              'request': {'type': 'string'},
+          },
+          'required': ['request'],
+      },
+  }
+
+
+@mark.parametrize(
+    'env_variables',
+    [
+        'VERTEX',  # Test VERTEX_AI variant
+    ],
+    indirect=True,
+)
+def test_agent_tool_with_input_schema_uses_json_schema_feature(
+    env_variables,
+    enable_json_schema_feature,
+):
+  """Test AgentTool with input_schema uses parameters_json_schema when feature enabled."""
+
+  class CustomInput(BaseModel):
+    custom_input: str
+
+  class CustomOutput(BaseModel):
+    custom_output: str
+
+  tool_agent = Agent(
+      name='tool_agent',
+      description='A tool agent for testing.',
+      model=testing_utils.MockModel.create(responses=['test response']),
+      input_schema=CustomInput,
+      output_schema=CustomOutput,
+  )
+
+  agent_tool = AgentTool(agent=tool_agent)
+  declaration = agent_tool._get_declaration()
+
+  # When input_schema is provided, build_function_declaration uses Pydantic's
+  # model_json_schema() which includes additional fields like 'title'
+  assert declaration.model_dump(exclude_none=True) == {
+      'name': 'tool_agent',
+      'description': 'A tool agent for testing.',
+      'parameters_json_schema': {
+          'properties': {
+              'custom_input': {'title': 'Custom Input', 'type': 'string'},
+          },
+          'required': ['custom_input'],
+          'title': 'CustomInput',
+          'type': 'object',
+      },
+      'response_json_schema': {'type': 'object'},
+  }
+
+
+@mark.asyncio
+async def test_run_async_handles_none_parts_in_response():
+  """Verify run_async handles None parts in response without raising TypeError."""
+
+  # Mock model for the tool_agent that returns content with parts=None
+  # This simulates the condition causing the TypeError
+  tool_agent_model = testing_utils.MockModel.create(
+      responses=[
+          LlmResponse(
+              content=types.Content(parts=None),
+          )
+      ]
+  )
+
+  tool_agent = Agent(
+      name='tool_agent',
+      model=tool_agent_model,
+  )
+
+  agent_tool = AgentTool(agent=tool_agent)
+
+  session_service = InMemorySessionService()
+  session = await session_service.create_session(
+      app_name='test_app', user_id='test_user'
+  )
+
+  invocation_context = InvocationContext(
+      invocation_id='invocation_id',
+      agent=tool_agent,
+      session=session,
+      session_service=session_service,
+  )
+  tool_context = ToolContext(invocation_context=invocation_context)
+
+  # This should not raise `TypeError: 'NoneType' object is not iterable`.
+  tool_result = await agent_tool.run_async(
+      args={'request': 'test request'}, tool_context=tool_context
+  )
+
+  assert tool_result == ''
