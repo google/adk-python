@@ -61,6 +61,7 @@ class HttpAuth(BaseModelWithConfig):
   # Examples: 'basic', 'bearer'
   scheme: str
   credentials: HttpCredentials
+  additional_headers: Optional[Dict[str, str]] = None
 
 
 class OAuth2Auth(BaseModelWithConfig):

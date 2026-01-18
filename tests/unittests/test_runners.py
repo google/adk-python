@@ -23,6 +23,7 @@ from unittest.mock import AsyncMock
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.context_cache_config import ContextCacheConfig
 from google.adk.agents.invocation_context import InvocationContext
+from google.adk.agents.live_request_queue import LiveRequestQueue
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.run_config import RunConfig
 from google.adk.apps.app import App
@@ -34,6 +35,7 @@ from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.sessions.session import Session
+from google.adk.tools.function_tool import FunctionTool
 from google.genai import types
 import pytest
 
@@ -64,6 +66,24 @@ class MockAgent(BaseAgent):
         author=self.name,
         content=types.Content(
             role="model", parts=[types.Part(text="Test response")]
+        ),
+    )
+
+
+class MockLiveAgent(BaseAgent):
+  """Mock live agent for unit testing."""
+
+  def __init__(self, name: str):
+    super().__init__(name=name, sub_agents=[])
+
+  async def _run_live_impl(
+      self, invocation_context: InvocationContext
+  ) -> AsyncGenerator[Event, None]:
+    yield Event(
+        invocation_id=invocation_context.invocation_id,
+        author=self.name,
+        content=types.Content(
+            role="model", parts=[types.Part(text="live hello")]
         ),
     )
 
@@ -235,6 +255,191 @@ async def test_session_not_found_message_includes_alignment_hint():
   assert "configured_app" in message
   assert "expected_app" in message
   assert "Ensure the runner app_name matches" in message
+
+
+@pytest.mark.asyncio
+async def test_session_auto_creation():
+
+  class RunnerWithMismatch(Runner):
+
+    def _infer_agent_origin(
+        self, agent: BaseAgent
+    ) -> tuple[Optional[str], Optional[Path]]:
+      del agent
+      return "expected_app", Path("/workspace/agents/expected_app")
+
+  session_service = InMemorySessionService()
+  runner = RunnerWithMismatch(
+      app_name="expected_app",
+      agent=MockLlmAgent("test_agent"),
+      session_service=session_service,
+      artifact_service=InMemoryArtifactService(),
+      auto_create_session=True,
+  )
+
+  agen = runner.run_async(
+      user_id="user",
+      session_id="missing",
+      new_message=types.Content(role="user", parts=[types.Part(text="hi")]),
+  )
+
+  event = await agen.__anext__()
+  await agen.aclose()
+
+  # Verify that session_id="missing" doesn't error out - session is auto-created
+  assert event.author == "test_agent"
+  assert event.content.parts[0].text == "Test LLM response"
+
+
+@pytest.mark.asyncio
+async def test_rewind_auto_create_session_on_missing_session():
+  """When auto_create_session=True, rewind should create session if missing.
+
+  The newly created session won't contain the target invocation, so
+  `rewind_async` should raise an Invocation ID not found error (rather than
+  a session not found error), demonstrating auto-creation occurred.
+  """
+  session_service = InMemorySessionService()
+  runner = Runner(
+      app_name="auto_create_app",
+      agent=MockLlmAgent("agent_for_rewind"),
+      session_service=session_service,
+      artifact_service=InMemoryArtifactService(),
+      auto_create_session=True,
+  )
+
+  with pytest.raises(ValueError, match=r"Invocation ID not found: inv_missing"):
+    await runner.rewind_async(
+        user_id="user",
+        session_id="missing",
+        rewind_before_invocation_id="inv_missing",
+    )
+
+  # Verify the session actually exists now due to auto-creation.
+  session = await session_service.get_session(
+      app_name="auto_create_app", user_id="user", session_id="missing"
+  )
+  assert session is not None
+  assert session.app_name == "auto_create_app"
+
+
+@pytest.mark.asyncio
+async def test_run_live_auto_create_session():
+  """run_live should auto-create session when missing and yield events."""
+  session_service = InMemorySessionService()
+  artifact_service = InMemoryArtifactService()
+  runner = Runner(
+      app_name="live_app",
+      agent=MockLiveAgent("live_agent"),
+      session_service=session_service,
+      artifact_service=artifact_service,
+      auto_create_session=True,
+  )
+
+  # An empty LiveRequestQueue is sufficient for our mock agent.
+  from google.adk.agents.live_request_queue import LiveRequestQueue
+
+  live_queue = LiveRequestQueue()
+
+  agen = runner.run_live(
+      user_id="user",
+      session_id="missing",
+      live_request_queue=live_queue,
+  )
+
+  event = await agen.__anext__()
+  await agen.aclose()
+
+  assert event.author == "live_agent"
+  assert event.content.parts[0].text == "live hello"
+
+  # Session should have been created automatically.
+  session = await session_service.get_session(
+      app_name="live_app", user_id="user", session_id="missing"
+  )
+  assert session is not None
+
+
+@pytest.mark.asyncio
+async def test_run_live_detects_streaming_tools_with_canonical_tools():
+  """run_live should detect streaming tools using canonical_tools and tool.name."""
+
+  # Define streaming tools - one as raw function, one wrapped in FunctionTool
+  async def raw_streaming_tool(
+      input_stream: LiveRequestQueue,
+  ) -> AsyncGenerator[str, None]:
+    """A raw streaming tool function."""
+    yield "test"
+
+  async def wrapped_streaming_tool(
+      input_stream: LiveRequestQueue,
+  ) -> AsyncGenerator[str, None]:
+    """A streaming tool wrapped in FunctionTool."""
+    yield "test"
+
+  def non_streaming_tool(param: str) -> str:
+    """A regular non-streaming tool."""
+    return param
+
+  # Create a mock LlmAgent that yields an event and captures invocation context
+  captured_context = {}
+
+  class StreamingToolsAgent(LlmAgent):
+
+    async def _run_live_impl(
+        self, invocation_context: InvocationContext
+    ) -> AsyncGenerator[Event, None]:
+      # Capture the active_streaming_tools for verification
+      captured_context["active_streaming_tools"] = (
+          invocation_context.active_streaming_tools
+      )
+      yield Event(
+          invocation_id=invocation_context.invocation_id,
+          author=self.name,
+          content=types.Content(
+              role="model", parts=[types.Part(text="streaming test")]
+          ),
+      )
+
+  agent = StreamingToolsAgent(
+      name="streaming_agent",
+      model="gemini-2.0-flash",
+      tools=[
+          raw_streaming_tool,  # Raw function
+          FunctionTool(wrapped_streaming_tool),  # Wrapped in FunctionTool
+          non_streaming_tool,  # Non-streaming tool (should not be detected)
+      ],
+  )
+
+  session_service = InMemorySessionService()
+  artifact_service = InMemoryArtifactService()
+  runner = Runner(
+      app_name="streaming_test_app",
+      agent=agent,
+      session_service=session_service,
+      artifact_service=artifact_service,
+      auto_create_session=True,
+  )
+
+  live_queue = LiveRequestQueue()
+
+  agen = runner.run_live(
+      user_id="user",
+      session_id="test_session",
+      live_request_queue=live_queue,
+  )
+
+  event = await agen.__anext__()
+  await agen.aclose()
+
+  assert event.author == "streaming_agent"
+
+  # Verify streaming tools were detected correctly
+  active_tools = captured_context.get("active_streaming_tools", {})
+  assert "raw_streaming_tool" in active_tools
+  assert "wrapped_streaming_tool" in active_tools
+  # Non-streaming tool should not be detected
+  assert "non_streaming_tool" not in active_tools
 
 
 @pytest.mark.asyncio

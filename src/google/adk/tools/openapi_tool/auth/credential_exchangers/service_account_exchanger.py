@@ -74,14 +74,18 @@ class ServiceAccountCredentialExchanger(BaseAuthCredentialExchanger):
 
     try:
       if auth_credential.service_account.use_default_credential:
-        credentials, _ = google.auth.default(
+        credentials, project_id = google.auth.default(
             scopes=["https://www.googleapis.com/auth/cloud-platform"],
+        )
+        quota_project_id = (
+            getattr(credentials, "quota_project_id", None) or project_id
         )
       else:
         config = auth_credential.service_account
         credentials = service_account.Credentials.from_service_account_info(
             config.service_account_credential.model_dump(), scopes=config.scopes
         )
+        quota_project_id = None
 
       credentials.refresh(Request())
 
@@ -90,6 +94,11 @@ class ServiceAccountCredentialExchanger(BaseAuthCredentialExchanger):
           http=HttpAuth(
               scheme="bearer",
               credentials=HttpCredentials(token=credentials.token),
+              additional_headers={
+                  "x-goog-user-project": quota_project_id,
+              }
+              if quota_project_id
+              else None,
           ),
       )
       return updated_credential

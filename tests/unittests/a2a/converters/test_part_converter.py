@@ -17,11 +17,14 @@ from unittest.mock import Mock
 from unittest.mock import patch
 
 from a2a import types as a2a_types
+from google.adk.a2a.converters.part_converter import A2A_DATA_PART_END_TAG
 from google.adk.a2a.converters.part_converter import A2A_DATA_PART_METADATA_TYPE_CODE_EXECUTION_RESULT
 from google.adk.a2a.converters.part_converter import A2A_DATA_PART_METADATA_TYPE_EXECUTABLE_CODE
 from google.adk.a2a.converters.part_converter import A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL
 from google.adk.a2a.converters.part_converter import A2A_DATA_PART_METADATA_TYPE_FUNCTION_RESPONSE
 from google.adk.a2a.converters.part_converter import A2A_DATA_PART_METADATA_TYPE_KEY
+from google.adk.a2a.converters.part_converter import A2A_DATA_PART_START_TAG
+from google.adk.a2a.converters.part_converter import A2A_DATA_PART_TEXT_MIME_TYPE
 from google.adk.a2a.converters.part_converter import convert_a2a_part_to_genai_part
 from google.adk.a2a.converters.part_converter import convert_genai_part_to_a2a_part
 from google.adk.a2a.converters.utils import _get_adk_metadata_key
@@ -154,12 +157,43 @@ class TestConvertA2aPartToGenaiPart:
         "data": [1, 2, 3],
     }
 
-  def test_convert_data_part_without_special_metadata(self):
-    """Test conversion of A2A DataPart without special metadata to text."""
+  @pytest.mark.parametrize(
+      "test_name, data, metadata",
+      [
+          (
+              "without_special_metadata",
+              {"key": "value", "number": 123},
+              {"other": "metadata"},
+          ),
+          (
+              "no_metadata",
+              {"key": "value", "array": [1, 2, 3]},
+              None,
+          ),
+          (
+              "complex_data",
+              {
+                  "nested": {
+                      "array": [1, 2, {"inner": "value"}],
+                      "boolean": True,
+                      "null_value": None,
+                  },
+                  "unicode": "Hello 世界 🌍",
+              },
+              None,
+          ),
+          (
+              "empty_metadata",
+              {"key": "value"},
+              {},
+          ),
+      ],
+  )
+  def test_convert_data_part_to_inline_data(self, test_name, data, metadata):
+    """Test conversion of A2A DataPart to GenAI inline_data Part."""
     # Arrange
-    data = {"key": "value", "number": 123}
     a2a_part = a2a_types.Part(
-        root=a2a_types.DataPart(data=data, metadata={"other": "metadata"})
+        root=a2a_types.DataPart(data=data, metadata=metadata)
     )
 
     # Act
@@ -168,21 +202,17 @@ class TestConvertA2aPartToGenaiPart:
     # Assert
     assert result is not None
     assert isinstance(result, genai_types.Part)
-    assert result.text == json.dumps(data)
-
-  def test_convert_data_part_no_metadata(self):
-    """Test conversion of A2A DataPart with no metadata to text."""
-    # Arrange
-    data = {"key": "value", "array": [1, 2, 3]}
-    a2a_part = a2a_types.Part(root=a2a_types.DataPart(data=data))
-
-    # Act
-    result = convert_a2a_part_to_genai_part(a2a_part)
-
-    # Assert
-    assert result is not None
-    assert isinstance(result, genai_types.Part)
-    assert result.text == json.dumps(data)
+    assert result.inline_data is not None
+    assert result.inline_data.mime_type == A2A_DATA_PART_TEXT_MIME_TYPE
+    assert result.inline_data.data.startswith(A2A_DATA_PART_START_TAG)
+    assert result.inline_data.data.endswith(A2A_DATA_PART_END_TAG)
+    converted_data_part = a2a_types.DataPart.model_validate_json(
+        result.inline_data.data[
+            len(A2A_DATA_PART_START_TAG) : -len(A2A_DATA_PART_END_TAG)
+        ]
+    )
+    assert converted_data_part.data == data
+    assert converted_data_part.metadata == metadata
 
   def test_convert_unsupported_file_type(self):
     """Test handling of unsupported file types."""
@@ -324,6 +354,32 @@ class TestConvertGenaiPartToA2aPart:
     assert isinstance(result.root.file, a2a_types.FileWithBytes)
     assert result.root.metadata is not None
     assert _get_adk_metadata_key("video_metadata") in result.root.metadata
+
+  def test_convert_inline_data_part_to_data_part(self):
+    """Test conversion of GenAI inline_data Part to A2A DataPart."""
+    # Arrange
+    data = {"key": "value"}
+    metadata = {"meta": "data"}
+    a2a_part_to_convert = a2a_types.DataPart(data=data, metadata=metadata)
+    json_data = a2a_part_to_convert.model_dump_json(
+        by_alias=True, exclude_none=True
+    ).encode("utf-8")
+    genai_part = genai_types.Part(
+        inline_data=genai_types.Blob(
+            data=A2A_DATA_PART_START_TAG + json_data + A2A_DATA_PART_END_TAG,
+            mime_type=A2A_DATA_PART_TEXT_MIME_TYPE,
+        )
+    )
+
+    # Act
+    result = convert_genai_part_to_a2a_part(genai_part)
+
+    # Assert
+    assert result is not None
+    assert isinstance(result, a2a_types.Part)
+    assert isinstance(result.root, a2a_types.DataPart)
+    assert result.root.data == data
+    assert result.root.metadata == metadata
 
   def test_convert_function_call_part(self):
     """Test conversion of GenAI function_call Part to A2A Part."""
@@ -596,6 +652,47 @@ class TestRoundTripConversions:
     )
     assert result_genai_part.executable_code.code == executable_code.code
 
+  def test_data_part_round_trip(self):
+    """Test round-trip conversion for data parts."""
+    # Arrange
+    data = {"key": "value"}
+    metadata = {"meta": "data"}
+    a2a_part = a2a_types.Part(
+        root=a2a_types.DataPart(data=data, metadata=metadata)
+    )
+
+    # Act
+    genai_part = convert_a2a_part_to_genai_part(a2a_part)
+    result_a2a_part = convert_genai_part_to_a2a_part(genai_part)
+
+    # Assert
+    assert result_a2a_part is not None
+    assert isinstance(result_a2a_part, a2a_types.Part)
+    assert isinstance(result_a2a_part.root, a2a_types.DataPart)
+    assert result_a2a_part.root.data == data
+    assert result_a2a_part.root.metadata == metadata
+
+  def test_data_part_with_mime_type_metadata_round_trip(self):
+    """Test round-trip conversion for data parts with 'mime_type' in metadata."""
+    # Arrange
+    data = {"content": "some data"}
+    metadata = {"meta": "data", "mime_type": "application/json"}
+    a2a_part = a2a_types.Part(
+        root=a2a_types.DataPart(data=data, metadata=metadata)
+    )
+
+    # Act
+    genai_part = convert_a2a_part_to_genai_part(a2a_part)
+    result_a2a_part = convert_genai_part_to_a2a_part(genai_part)
+
+    # Assert
+    assert result_a2a_part is not None
+    assert isinstance(result_a2a_part, a2a_types.Part)
+    assert isinstance(result_a2a_part.root, a2a_types.DataPart)
+    assert result_a2a_part.root.data == data
+    # The 'mime_type' key in the metadata should be preserved as is
+    assert result_a2a_part.root.metadata == metadata
+
 
 class TestEdgeCases:
   """Test cases for edge cases and error conditions."""
@@ -612,6 +709,37 @@ class TestEdgeCases:
     assert result is not None
     assert result.text == ""
 
+  def test_genai_inline_data_with_mimetype_to_a2a(self):
+    """Test conversion of GenAI inline_data with 'mimeType' in DataPart metadata to A2A.
+
+    This tests if 'mimeType' in metadata of a DataPart wrapped in inline_data
+    is correctly handled, ensuring the key casing is preserved.
+    """
+    # Arrange
+    data = {"key": "value"}
+    metadata = {"adk_type": "some_type", "mimeType": "image/png"}
+    a2a_part_inner = a2a_types.DataPart(data=data, metadata=metadata)
+    json_data = a2a_part_inner.model_dump_json(
+        by_alias=True, exclude_none=True
+    ).encode("utf-8")
+    genai_part = genai_types.Part(
+        inline_data=genai_types.Blob(
+            data=A2A_DATA_PART_START_TAG + json_data + A2A_DATA_PART_END_TAG,
+            mime_type=A2A_DATA_PART_TEXT_MIME_TYPE,
+        )
+    )
+
+    # Act
+    result = convert_genai_part_to_a2a_part(genai_part)
+
+    # Assert
+    assert result is not None
+    assert isinstance(result, a2a_types.Part)
+    assert isinstance(result.root, a2a_types.DataPart)
+    assert result.root.data == data
+    # The key casing should be preserved from the JSON
+    assert result.root.metadata == metadata
+
   def test_none_input_a2a_to_genai(self):
     """Test handling of None input for A2A to GenAI conversion."""
     # This test depends on how the function handles None input
@@ -625,39 +753,6 @@ class TestEdgeCases:
     # If it should raise an exception, we test for that
     with pytest.raises(AttributeError):
       convert_genai_part_to_a2a_part(None)
-
-  def test_data_part_with_complex_data(self):
-    """Test conversion of DataPart with complex nested data."""
-    # Arrange
-    complex_data = {
-        "nested": {
-            "array": [1, 2, {"inner": "value"}],
-            "boolean": True,
-            "null_value": None,
-        },
-        "unicode": "Hello 世界 🌍",
-    }
-    a2a_part = a2a_types.Part(root=a2a_types.DataPart(data=complex_data))
-
-    # Act
-    result = convert_a2a_part_to_genai_part(a2a_part)
-
-    # Assert
-    assert result is not None
-    assert result.text == json.dumps(complex_data)
-
-  def test_data_part_with_empty_metadata(self):
-    """Test conversion of DataPart with empty metadata dict."""
-    # Arrange
-    data = {"key": "value"}
-    a2a_part = a2a_types.Part(root=a2a_types.DataPart(data=data, metadata={}))
-
-    # Act
-    result = convert_a2a_part_to_genai_part(a2a_part)
-
-    # Assert
-    assert result is not None
-    assert result.text == json.dumps(data)
 
 
 class TestNewConstants:

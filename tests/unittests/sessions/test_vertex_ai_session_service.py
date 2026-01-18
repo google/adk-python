@@ -32,6 +32,7 @@ from google.adk.sessions.session import Session
 from google.adk.sessions.vertex_ai_session_service import VertexAiSessionService
 from google.api_core import exceptions as api_core_exceptions
 from google.genai import types as genai_types
+from google.genai.errors import ClientError
 import pytest
 
 MOCK_SESSION_JSON_1 = {
@@ -397,6 +398,103 @@ class MockAsyncClient:
       self.event_dict[session_id] = ([event_json], None)
 
 
+class MockAsyncClientWithPagination:
+  """Mock client that simulates pagination requiring an open client connection.
+
+  This mock tracks whether the client context is active and raises RuntimeError
+  if iteration occurs outside the context, simulating the real httpx behavior.
+  """
+
+  def __init__(self, session_data: dict, events_pages: list[list[dict]]):
+    self._session_data = session_data
+    self._events_pages = events_pages
+    self._context_active = False
+    self.agent_engines = mock.AsyncMock()
+    self.agent_engines.sessions.get.side_effect = self._get_session
+    self.agent_engines.sessions.events.list.side_effect = self._list_events
+
+  async def __aenter__(self):
+    self._context_active = True
+    return self
+
+  async def __aexit__(self, exc_type, exc_val, exc_tb):
+    self._context_active = False
+
+  async def _get_session(self, name: str):
+    return _convert_to_object(self._session_data)
+
+  async def _list_events(self, name: str, **kwargs):
+    return self._paginated_events_iterator()
+
+  async def _paginated_events_iterator(self):
+    for page in self._events_pages:
+      for event in page:
+        if not self._context_active:
+          raise RuntimeError(
+              'Cannot send a request, as the client has been closed.'
+          )
+        yield _convert_to_object(event)
+
+
+def _generate_events_for_page(session_id: str, start_idx: int, count: int):
+  events = []
+  start_time = isoparse('2024-12-12T12:12:12.123456Z')
+  for i in range(count):
+    idx = start_idx + i
+    event_time = start_time + datetime.timedelta(microseconds=idx * 1000)
+    events.append({
+        'name': (
+            'projects/test-project/locations/test-location/'
+            f'reasoningEngines/123/sessions/{session_id}/events/{idx}'
+        ),
+        'invocation_id': f'invocation_{idx}',
+        'author': 'pagination_user',
+        'timestamp': event_time.isoformat().replace('+00:00', 'Z'),
+    })
+  return events
+
+
+@pytest.mark.asyncio
+async def test_get_session_pagination_keeps_client_open():
+  """Regression test: event iteration must occur inside the api_client context.
+
+  This test verifies that get_session() keeps the API client open while
+  iterating through paginated events. Before the fix, the events_iterator
+  was consumed outside the async with block, causing RuntimeError when
+  fetching subsequent pages.
+  """
+  session_data = {
+      'name': (
+          'projects/test-project/locations/test-location/'
+          'reasoningEngines/123/sessions/pagination_test'
+      ),
+      'update_time': '2024-12-12T12:12:12.123456Z',
+      'user_id': 'pagination_user',
+  }
+  page1_events = _generate_events_for_page('pagination_test', 0, 100)
+  page2_events = _generate_events_for_page('pagination_test', 100, 100)
+  page3_events = _generate_events_for_page('pagination_test', 200, 50)
+
+  mock_client = MockAsyncClientWithPagination(
+      session_data=session_data,
+      events_pages=[page1_events, page2_events, page3_events],
+  )
+
+  session_service = mock_vertex_ai_session_service()
+
+  with mock.patch.object(
+      session_service, '_get_api_client', return_value=mock_client
+  ):
+    session = await session_service.get_session(
+        app_name='123', user_id='pagination_user', session_id='pagination_test'
+    )
+
+  assert session is not None
+  assert len(session.events) == 250
+  assert session.events[0].invocation_id == 'invocation_0'
+  assert session.events[249].invocation_id == 'invocation_249'
+
+
 def mock_vertex_ai_session_service(
     project: Optional[str] = 'test-project',
     location: Optional[str] = 'test-location',
@@ -453,6 +551,31 @@ async def test_initialize_with_project_location_and_api_key_error():
       ' project and location, or just the express_mode_api_key.'
       in str(excinfo.value)
   )
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
+async def test_get_session_returns_none_when_invalid_argument(
+    mock_api_client_instance,
+):
+  session_service = mock_vertex_ai_session_service()
+  # Simulate the API raising a session not found exception.
+  mock_api_client_instance.agent_engines.sessions.get.side_effect = ClientError(
+      code=404,
+      response_json={
+          'message': (
+              'Session (projectNumber: 123, reasoningEngineId: 123, sessionId:'
+              ' 123) not found.'
+          )
+      },
+      response=None,
+  )
+
+  session = await session_service.get_session(
+      app_name='123', user_id='user', session_id='missing'
+  )
+
+  assert session is None
 
 
 @pytest.mark.asyncio

@@ -14,12 +14,15 @@
 
 from __future__ import annotations
 
+import collections.abc
 import inspect
 from types import FunctionType
 import typing
 from typing import Any
 from typing import Callable
 from typing import Dict
+from typing import get_args
+from typing import get_origin
 from typing import Optional
 from typing import Union
 
@@ -390,6 +393,20 @@ def from_function_with_options(
     return declaration
 
   return_annotation = inspect.signature(func).return_annotation
+
+  # Handle AsyncGenerator and Generator return types (streaming tools)
+  # AsyncGenerator[YieldType, SendType] -> use YieldType as response schema
+  # Generator[YieldType, SendType, ReturnType] -> use YieldType as response schema
+  origin = get_origin(return_annotation)
+  if origin is not None and (
+      origin is collections.abc.AsyncGenerator
+      or origin is collections.abc.Generator
+  ):
+    type_args = get_args(return_annotation)
+    if type_args:
+      # First type argument is the yield type
+      yield_type = type_args[0]
+      return_annotation = yield_type
 
   # Handle functions with no return annotation
   if return_annotation is inspect._empty:

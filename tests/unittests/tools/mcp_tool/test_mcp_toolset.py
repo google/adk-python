@@ -17,6 +17,7 @@ from io import StringIO
 import sys
 import unittest
 from unittest.mock import AsyncMock
+from unittest.mock import MagicMock
 from unittest.mock import Mock
 from unittest.mock import patch
 
@@ -28,6 +29,9 @@ from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
 from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
 from google.adk.tools.mcp_tool.mcp_tool import MCPTool
 from google.adk.tools.mcp_tool.mcp_toolset import MCPToolset
+from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
+from google.adk.tools.mcp_tool.mcp_toolset import McpToolsetConfig
+from google.adk.tools.tool_configs import ToolArgsConfig
 from mcp import StdioServerParameters
 import pytest
 
@@ -244,6 +248,94 @@ class TestMCPToolset:
     )
 
   @pytest.mark.asyncio
+  async def test_get_tools_with_auth_headers(self):
+    """Test get_tools with auth headers."""
+    from fastapi.openapi import models as openapi_models
+    from google.adk.auth.auth_credential import AuthCredentialTypes
+    from google.adk.auth.auth_credential import OAuth2Auth
+
+    mock_tools = [MockMCPTool("tool1")]
+    self.mock_session.list_tools = AsyncMock(
+        return_value=MockListToolsResult(mock_tools)
+    )
+    mock_readonly_context = Mock(spec=ReadonlyContext)
+
+    auth_scheme = openapi_models.HTTPBase(scheme="bearer")
+    auth_credential = AuthCredential(
+        auth_type=AuthCredentialTypes.OAUTH2,
+        oauth2=OAuth2Auth(access_token="test_token"),
+    )
+
+    with patch(
+        "google.adk.tools.mcp_tool.mcp_toolset.CredentialManager"
+    ) as MockCredentialManager:
+      mock_manager_instance = MockCredentialManager.return_value
+      mock_manager_instance.get_auth_credential = AsyncMock(
+          return_value=auth_credential
+      )
+
+      toolset = MCPToolset(
+          connection_params=self.mock_stdio_params,
+          auth_scheme=auth_scheme,
+          auth_credential=auth_credential,
+      )
+      toolset._mcp_session_manager = self.mock_session_manager
+
+      await toolset.get_tools(readonly_context=mock_readonly_context)
+
+      self.mock_session_manager.create_session.assert_called_once()
+      call_args = self.mock_session_manager.create_session.call_args
+      headers = call_args[1]["headers"]
+      assert headers == {"Authorization": "Bearer test_token"}
+
+  @pytest.mark.asyncio
+  async def test_get_tools_with_auth_and_header_provider(self):
+    """Test get_tools with auth and header_provider."""
+    from fastapi.openapi import models as openapi_models
+    from google.adk.auth.auth_credential import AuthCredentialTypes
+    from google.adk.auth.auth_credential import OAuth2Auth
+
+    mock_tools = [MockMCPTool("tool1")]
+    self.mock_session.list_tools = AsyncMock(
+        return_value=MockListToolsResult(mock_tools)
+    )
+    mock_readonly_context = Mock(spec=ReadonlyContext)
+    provided_headers = {"X-Tenant-ID": "test-tenant"}
+    header_provider = Mock(return_value=provided_headers)
+
+    auth_scheme = openapi_models.HTTPBase(scheme="bearer")
+    auth_credential = AuthCredential(
+        auth_type=AuthCredentialTypes.OAUTH2,
+        oauth2=OAuth2Auth(access_token="test_token"),
+    )
+
+    with patch(
+        "google.adk.tools.mcp_tool.mcp_toolset.CredentialManager"
+    ) as MockCredentialManager:
+      mock_manager_instance = MockCredentialManager.return_value
+      mock_manager_instance.get_auth_credential = AsyncMock(
+          return_value=auth_credential
+      )
+
+      toolset = MCPToolset(
+          connection_params=self.mock_stdio_params,
+          auth_scheme=auth_scheme,
+          auth_credential=auth_credential,
+          header_provider=header_provider,
+      )
+      toolset._mcp_session_manager = self.mock_session_manager
+
+      await toolset.get_tools(readonly_context=mock_readonly_context)
+
+      self.mock_session_manager.create_session.assert_called_once()
+      call_args = self.mock_session_manager.create_session.call_args
+      headers = call_args[1]["headers"]
+      assert headers == {
+          "X-Tenant-ID": "test-tenant",
+          "Authorization": "Bearer test_token",
+      }
+
+  @pytest.mark.asyncio
   async def test_close_success(self):
     """Test successful cleanup."""
     toolset = MCPToolset(connection_params=self.mock_stdio_params)
@@ -302,3 +394,52 @@ class TestMCPToolset:
 
     # Check that the method has the retry decorator
     assert hasattr(toolset.get_tools, "__wrapped__")
+
+  @pytest.mark.asyncio
+  async def test_mcp_toolset_with_prefix(self):
+    """Test that McpToolset correctly applies the tool_name_prefix."""
+    # Mock the connection parameters
+    mock_connection_params = MagicMock()
+    mock_connection_params.timeout = None
+
+    # Mock the MCPSessionManager and its create_session method
+    mock_session_manager = MagicMock()
+    mock_session = MagicMock()
+
+    # Mock the list_tools response from the MCP server
+    mock_tool1 = MagicMock()
+    mock_tool1.name = "tool1"
+    mock_tool1.description = "tool 1 desc"
+    mock_tool2 = MagicMock()
+    mock_tool2.name = "tool2"
+    mock_tool2.description = "tool 2 desc"
+    list_tools_result = MagicMock()
+    list_tools_result.tools = [mock_tool1, mock_tool2]
+    mock_session.list_tools = AsyncMock(return_value=list_tools_result)
+    mock_session_manager.create_session = AsyncMock(return_value=mock_session)
+
+    # Create an instance of McpToolset with a prefix
+    toolset = McpToolset(
+        connection_params=mock_connection_params,
+        tool_name_prefix="my_prefix",
+    )
+
+    # Replace the internal session manager with our mock
+    toolset._mcp_session_manager = mock_session_manager
+
+    # Get the tools from the toolset
+    tools = await toolset.get_tools()
+
+    # The get_tools method in McpToolset returns MCPTool objects, which are
+    # instances of BaseTool. The prefixing is handled by the BaseToolset,
+    # so we need to call get_tools_with_prefix to get the prefixed tools.
+    prefixed_tools = await toolset.get_tools_with_prefix()
+
+    # Assert that the tools are prefixed correctly
+    assert len(prefixed_tools) == 2
+    assert prefixed_tools[0].name == "my_prefix_tool1"
+    assert prefixed_tools[1].name == "my_prefix_tool2"
+
+    # Assert that the original tools are not modified
+    assert tools[0].name == "tool1"
+    assert tools[1].name == "tool2"
