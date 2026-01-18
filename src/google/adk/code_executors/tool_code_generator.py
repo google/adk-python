@@ -265,7 +265,11 @@ def {tool.name}({param_str}) -> dict:
         Tool execution result as a dictionary.
     """
     kwargs = {{k: v for k, v in locals().items() if v is not None}}
-    return _call_adk_tool("{tool.name}", **kwargs)
+    response = _call_adk_tool("{tool.name}", **kwargs)
+    # Extract the result from the tool server response
+    if isinstance(response, dict) and "result" in response:
+        return response["result"]
+    return response
 
 '''
     return stub
@@ -425,7 +429,12 @@ Parameters:
 2. **Always print results**: Use print() to see what tools return.
 3. **Handle errors gracefully**: If a tool fails, try an alternative approach.
 4. **Call final_answer()**: When done, call final_answer() with your result.
-5. **No external imports**: Only use the provided tools and standard library.
+5. **Install packages if needed**: If you need external libraries (pandas, matplotlib, numpy, etc.), install them first using subprocess:
+   ```python
+   import subprocess
+   subprocess.run(["pip", "install", "-q", "pandas", "matplotlib", "seaborn"], check=True)
+   ```
+   Then import and use them normally.
 
 {custom_instruction}
 """

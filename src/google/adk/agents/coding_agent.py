@@ -304,6 +304,66 @@ class CodingAgent(BaseAgent):
 
         return None
 
+    def _is_real_error(self, stderr: str) -> bool:
+        """Check if stderr contains a real error vs just warnings.
+
+        Args:
+          stderr: The stderr output from code execution.
+
+        Returns:
+          True if stderr contains a real error, False if just warnings.
+        """
+        if not stderr:
+            return False
+
+        # Patterns that indicate this is just a warning, not an error
+        warning_patterns = [
+            "WARNING: Running pip as the 'root' user",
+            "[notice] A new release of pip",
+            "[notice] To update, run:",
+            "pip install --upgrade pip",
+            "UserWarning:",
+            "DeprecationWarning:",
+            "FutureWarning:",
+            "RuntimeWarning:",
+        ]
+
+        # Check if ALL lines are just warnings
+        lines = stderr.strip().split("\n")
+        real_error_lines = []
+        for line in lines:
+            line_stripped = line.strip()
+            if not line_stripped:
+                continue
+            is_warning = any(
+                pattern.lower() in line_stripped.lower() for pattern in warning_patterns
+            )
+            if not is_warning:
+                real_error_lines.append(line)
+
+        # Also check for actual error keywords
+        error_keywords = [
+            "error:",
+            "traceback",
+            "exception",
+            "syntaxerror",
+            "nameerror",
+            "typeerror",
+            "valueerror",
+            "importerror",
+            "modulenotfounderror",
+            "attributeerror",
+            "keyerror",
+            "indexerror",
+            "zerodivisionerror",
+        ]
+
+        stderr_lower = stderr.lower()
+        has_error_keyword = any(keyword in stderr_lower for keyword in error_keywords)
+
+        # Consider it a real error if there are non-warning lines with error keywords
+        return bool(real_error_lines) and has_error_keyword
+
     def _build_error_feedback(
         self,
         error: str,
@@ -434,8 +494,11 @@ Please fix the error and try again. Common issues:
                 }
             )
 
-            # Check for errors
-            if exec_result.code_result.stderr:
+            # Check for errors - ignore warnings from pip and other non-fatal stderr
+            stderr = exec_result.code_result.stderr or ""
+            is_real_error = self._is_real_error(stderr)
+
+            if is_real_error:
                 error_count += 1
                 state.error_count = error_count
 
@@ -443,13 +506,13 @@ Please fix the error and try again. Common issues:
                     # Too many errors - give up
                     final_answer = (
                         f"I encountered too many errors while executing code. "
-                        f"Last error: {exec_result.code_result.stderr}"
+                        f"Last error: {stderr}"
                     )
                     break
 
                 # Build error feedback and add to conversation
                 error_feedback = self._build_error_feedback(
-                    exec_result.code_result.stderr,
+                    stderr,
                     code,
                 )
                 contents.append(
