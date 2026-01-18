@@ -360,6 +360,9 @@ class Ollama(BaseLlm):
     for tool_call in message.get("tool_calls", []):
       function_payload = tool_call.get("function", {}) or {}
       name = function_payload.get("name")
+      if not name:
+        logger.warning("Skipping tool call with missing name: %s", tool_call)
+        continue
       arguments: Union[str, dict[str, Any], None] = function_payload.get(
           "arguments"
       )

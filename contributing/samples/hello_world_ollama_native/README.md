@@ -6,11 +6,11 @@ If your agent uses tools, choose an Ollama model that supports **function callin
 Tool support can be verified with:
 
 ```bash
-ollama show mistral-small3.1
+ollama show llama3.1
 ```
 Model
-  architecture        mistral3
-  parameters          24.0B
+  architecture        llama
+  parameters          8.0B
   context length      131072
   embedding length    5120
   quantization        Q4_K_M
