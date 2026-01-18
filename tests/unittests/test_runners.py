@@ -443,6 +443,50 @@ async def test_run_live_detects_streaming_tools_with_canonical_tools():
 
 
 @pytest.mark.asyncio
+async def test_run_live_state_delta_applied_to_session():
+  """run_live should apply state_delta to the session at the start."""
+  session_service = InMemorySessionService()
+  artifact_service = InMemoryArtifactService()
+  runner = Runner(
+      app_name="run_live_app",
+      agent=MockLiveAgent("live_agent"),
+      session_service=session_service,
+      artifact_service=artifact_service,
+      auto_create_session=True,
+  )
+
+  live_queue = LiveRequestQueue()
+  state_delta = {"useCase": "voice_assistant"}
+
+  agen = runner.run_live(
+      user_id="user",
+      session_id="test_session",
+      live_request_queue=live_queue,
+      state_delta=state_delta,
+  )
+
+  event = await agen.__anext__()
+  await agen.aclose()
+
+  assert event.author == "live_agent"
+
+  # Verify state_delta was applied to the session
+  session = await session_service.get_session(
+      app_name="run_live_app", user_id="user", session_id="test_session"
+  )
+  assert session is not None
+  assert session.state.get("useCase") == "voice_assistant"
+
+  # Verify the state_delta event was appended to the session
+  state_delta_events = [
+      e for e in session.events
+      if e.actions.state_delta and e.author == "user"
+  ]
+  assert len(state_delta_events) == 1
+  assert state_delta_events[0].actions.state_delta == state_delta
+
+
+@pytest.mark.asyncio
 async def test_runner_allows_nested_agent_directories(tmp_path, monkeypatch):
   project_root = tmp_path / "workspace"
   agent_dir = project_root / "agents" / "examples" / "001_hello_world"
