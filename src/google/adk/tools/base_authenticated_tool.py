@@ -66,6 +66,7 @@ class BaseAuthenticatedTool(BaseTool):
         name=name,
         description=description,
     )
+    self._auth_config = auth_config
 
     if auth_config and auth_config.auth_scheme:
       self._credentials_manager = CredentialManager(auth_config=auth_config)

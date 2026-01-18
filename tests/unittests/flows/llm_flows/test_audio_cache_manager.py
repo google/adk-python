@@ -387,3 +387,54 @@ class TestAudioCacheManager:
     assert filename.startswith(
         f'adk_live_audio_storage_input_audio_{expected_timestamp_ms}'
     )
+
+  @pytest.mark.asyncio
+  async def test_flush_event_author_for_user_audio(self):
+    """Test that flushed user audio events have 'user' as author."""
+    invocation_context = await testing_utils.create_invocation_context(
+        testing_utils.create_test_agent()
+    )
+
+    # Set up mock artifact service
+    mock_artifact_service = AsyncMock()
+    mock_artifact_service.save_artifact.return_value = 123
+    invocation_context.artifact_service = mock_artifact_service
+
+    # Cache user input audio
+    input_blob = types.Blob(data=b'user_audio_data', mime_type='audio/pcm')
+    self.manager.cache_audio(invocation_context, input_blob, 'input')
+
+    # Flush cache and get events
+    events = await self.manager.flush_caches(
+        invocation_context, flush_user_audio=True, flush_model_audio=False
+    )
+
+    # Verify event author is 'user' for user audio
+    assert len(events) == 1
+    assert events[0].author == 'user'
+    assert events[0].content.role == 'user'
+
+  @pytest.mark.asyncio
+  async def test_flush_event_author_for_model_audio(self):
+    """Test that flushed model audio events have agent name as author, not 'model'."""
+    agent = testing_utils.create_test_agent(name='my_test_agent')
+    invocation_context = await testing_utils.create_invocation_context(agent)
+
+    # Set up mock artifact service
+    mock_artifact_service = AsyncMock()
+    mock_artifact_service.save_artifact.return_value = 123
+    invocation_context.artifact_service = mock_artifact_service
+
+    # Cache model output audio
+    output_blob = types.Blob(data=b'model_audio_data', mime_type='audio/wav')
+    self.manager.cache_audio(invocation_context, output_blob, 'output')
+
+    # Flush cache and get events
+    events = await self.manager.flush_caches(
+        invocation_context, flush_user_audio=False, flush_model_audio=True
+    )
+
+    # Verify event author is agent name (not 'model') for model audio
+    assert len(events) == 1
+    assert events[0].author == 'my_test_agent'  # Agent name, not 'model'
+    assert events[0].content.role == 'model'  # Role is still 'model'

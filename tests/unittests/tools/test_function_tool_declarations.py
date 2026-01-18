@@ -23,6 +23,8 @@ from __future__ import annotations
 from collections.abc import Sequence
 from enum import Enum
 from typing import Any
+from typing import AsyncGenerator
+from typing import Generator
 from typing import Literal
 from typing import Optional
 
@@ -840,3 +842,81 @@ class TestPydanticModelAsFunction(parameterized.TestCase):
     # When passing a BaseModel, there is no function return, so response schema
     # is None
     self.assertIsNone(decl.response_json_schema)
+
+
+class TestStreamingReturnTypes(parameterized.TestCase):
+  """Tests for AsyncGenerator and Generator return types (streaming tools)."""
+
+  def test_async_generator_string_yield(self):
+    """Test AsyncGenerator[str, None] return type extracts str as response."""
+
+    async def streaming_tool(param: str) -> AsyncGenerator[str, None]:
+      """A streaming tool that yields strings."""
+      yield param
+
+    decl = build_function_declaration_with_json_schema(streaming_tool)
+
+    self.assertEqual(decl.name, "streaming_tool")
+    self.assertIsNotNone(decl.parameters_json_schema)
+    self.assertEqual(
+        decl.parameters_json_schema["properties"]["param"]["type"], "string"
+    )
+    # Should extract str from AsyncGenerator[str, None]
+    self.assertEqual(decl.response_json_schema, {"type": "string"})
+
+  def test_async_generator_int_yield(self):
+    """Test AsyncGenerator[int, None] return type extracts int as response."""
+
+    async def counter(start: int) -> AsyncGenerator[int, None]:
+      """A streaming counter."""
+      yield start
+
+    decl = build_function_declaration_with_json_schema(counter)
+
+    self.assertEqual(decl.name, "counter")
+    # Should extract int from AsyncGenerator[int, None]
+    self.assertEqual(decl.response_json_schema, {"type": "integer"})
+
+  def test_async_generator_dict_yield(self):
+    """Test AsyncGenerator[dict[str, str], None] return type."""
+
+    async def streaming_dict(
+        param: str,
+    ) -> AsyncGenerator[dict[str, str], None]:
+      """A streaming tool that yields dicts."""
+      yield {"result": param}
+
+    decl = build_function_declaration_with_json_schema(streaming_dict)
+
+    self.assertEqual(decl.name, "streaming_dict")
+    # Should extract dict[str, str] from AsyncGenerator
+    self.assertEqual(
+        decl.response_json_schema,
+        {"additionalProperties": {"type": "string"}, "type": "object"},
+    )
+
+  def test_generator_string_yield(self):
+    """Test Generator[str, None, None] return type extracts str as response."""
+
+    def sync_streaming_tool(param: str) -> Generator[str, None, None]:
+      """A sync streaming tool that yields strings."""
+      yield param
+
+    decl = build_function_declaration_with_json_schema(sync_streaming_tool)
+
+    self.assertEqual(decl.name, "sync_streaming_tool")
+    # Should extract str from Generator[str, None, None]
+    self.assertEqual(decl.response_json_schema, {"type": "string"})
+
+  def test_generator_int_yield(self):
+    """Test Generator[int, None, None] return type extracts int as response."""
+
+    def sync_counter(start: int) -> Generator[int, None, None]:
+      """A sync streaming counter."""
+      yield start
+
+    decl = build_function_declaration_with_json_schema(sync_counter)
+
+    self.assertEqual(decl.name, "sync_counter")
+    # Should extract int from Generator[int, None, None]
+    self.assertEqual(decl.response_json_schema, {"type": "integer"})
