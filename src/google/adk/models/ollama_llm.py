@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from typing import Any
 from typing import AsyncGenerator
 from typing import Optional
@@ -24,7 +25,6 @@ from typing import Sequence
 from typing import Union
 import urllib.error
 import urllib.request
-import os
 
 from google.genai import types
 from pydantic import Field

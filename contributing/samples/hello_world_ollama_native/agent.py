@@ -13,10 +13,11 @@
 # limitations under the License.
 
 import random
+from typing import Any
 
 from google.adk.agents.llm_agent import Agent
 from google.adk.models.ollama_llm import Ollama
-from typing import Any
+
 
 def roll_die(sides: int) -> int:
   """Roll a die and return the rolled result.
@@ -31,37 +32,38 @@ def roll_die(sides: int) -> int:
 
 
 def check_prime(numbers: list[Any]) -> str:
-    """Check which values in a list are prime numbers.
+  """Check which values in a list are prime numbers.
 
-    Args:
-        numbers: The list of values to check. Values may be non-integers
-        and are safely ignored if they cannot be converted.
+  Args:
+      numbers: The list of values to check. Values may be non-integers
+      and are safely ignored if they cannot be converted.
 
-    Returns:
-        A string indicating which numbers are prime.
-    """
-    primes = set()
+  Returns:
+      A string indicating which numbers are prime.
+  """
+  primes = set()
 
-    for number in numbers:
-        try:
-            number = int(number)
-        except (ValueError, TypeError):
-            continue  # Safely skip non-numeric values
+  for number in numbers:
+    try:
+      number = int(number)
+    except (ValueError, TypeError):
+      continue  # Safely skip non-numeric values
 
-        if number <= 1:
-            continue
+    if number <= 1:
+      continue
 
-        for i in range(2, int(number ** 0.5) + 1):
-            if number % i == 0:
-                break
-        else:
-            primes.add(number)
+    for i in range(2, int(number**0.5) + 1):
+      if number % i == 0:
+        break
+    else:
+      primes.add(number)
 
-    return (
-        "No prime numbers found."
-        if not primes
-        else f"{', '.join(str(num) for num in sorted(primes))} are prime numbers."
-    )
+  return (
+      "No prime numbers found."
+      if not primes
+      else f"{', '.join(str(num) for num in sorted(primes))} are prime numbers."
+  )
+
 
 root_agent = Agent(
     model=Ollama(model="llama3.1"),
