@@ -20,8 +20,7 @@ import asyncio
 import json
 import logging
 from typing import Optional
-import urllib.error
-import urllib.request
+import requests
 
 from .base_embedding_provider import BaseEmbeddingProvider
 
