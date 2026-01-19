@@ -16,10 +16,11 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
-from ...utils.feature_decorator import experimental
+from ...features import experimental
+from ...features import FeatureName
 
 
-@experimental('Tool settings defaults may have breaking change in the future.')
+@experimental(FeatureName.BIGTABLE_TOOL_SETTINGS)
 class BigtableToolSettings(BaseModel):
   """Settings for Bigtable tools."""
 

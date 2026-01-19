@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import abc
 from enum import Enum
 from typing import Optional
 from typing import Union
@@ -23,6 +24,8 @@ from pydantic import alias_generators
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
+from pydantic import field_validator
+from pydantic.json_schema import SkipJsonSchema
 from typing_extensions import TypeAlias
 
 from .common import EvalBaseModel
@@ -56,6 +59,8 @@ class PrebuiltMetrics(Enum):
 
   RUBRIC_BASED_TOOL_USE_QUALITY_V1 = "rubric_based_tool_use_quality_v1"
 
+  PER_TURN_USER_SIMULATOR_QUALITY_V1 = "per_turn_user_simulator_quality_v1"
+
 
 MetricName: TypeAlias = Union[str, PrebuiltMetrics]
 Threshold: TypeAlias = float
@@ -71,8 +76,10 @@ class JudgeModelOptions(EvalBaseModel):
       ),
   )
 
-  judge_model_config: Optional[genai_types.GenerateContentConfig] = Field(
-      default=genai_types.GenerateContentConfig,
+  judge_model_config: SkipJsonSchema[
+      Optional[genai_types.GenerateContentConfig]
+  ] = Field(
+      default=None,
       description="The configuration for the judge model.",
   )
 
@@ -219,6 +226,30 @@ class ToolTrajectoryCriterion(BaseCriterion):
       ),
   )
 
+  @field_validator("match_type", mode="before")
+  @classmethod
+  def _coerce_match_type(cls, value: object) -> object:
+    if isinstance(value, cls.MatchType):
+      return value
+    if isinstance(value, str):
+      normalized = value.strip().upper().replace("-", "_").replace(" ", "_")
+      if normalized in cls.MatchType.__members__:
+        return cls.MatchType[normalized]
+    return value
+
+
+class LlmBackedUserSimulatorCriterion(LlmAsAJudgeCriterion):
+  """Criterion for LLM-backed User Simulator Evaluators."""
+
+  stop_signal: str = Field(
+      default="</finished>",
+      description=(
+          "Stop signal to validate the successful completion of a conversation."
+          " For optimal performance, this should match the one in the User"
+          " Simulator."
+      ),
+  )
+
 
 class EvalMetric(EvalBaseModel):
   """A metric used to evaluate a particular aspect of an eval case."""
@@ -246,6 +277,11 @@ class EvalMetric(EvalBaseModel):
 
   criterion: Optional[BaseCriterion] = Field(
       default=None, description="""Evaluation criterion used by the metric."""
+  )
+
+  custom_function_path: Optional[str] = Field(
+      default=None,
+      description="""Path to custom function, if this is a custom metric.""",
   )
 
 
@@ -344,3 +380,12 @@ class MetricInfo(EvalBaseModel):
   metric_value_info: MetricValueInfo = Field(
       description="Information on the nature of values supported by the metric."
   )
+
+
+class MetricInfoProvider(abc.ABC):
+  """Interface for providing MetricInfo."""
+
+  @abc.abstractmethod
+  def get_metric_info(self) -> MetricInfo:
+    """Returns MetricInfo for a given metric."""
+    raise NotImplementedError

@@ -18,8 +18,10 @@ from typing import Optional
 
 from ...agents.base_agent import BaseAgent
 from ...agents.llm_agent import LlmAgent
+from .dot_adk_folder import DotAdkFolder
 from .state import create_empty_state
 
 __all__ = [
     'create_empty_state',
+    'DotAdkFolder',
 ]

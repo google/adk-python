@@ -19,8 +19,7 @@ import contextlib
 import copy
 from functools import cached_property
 import logging
-import os
-import sys
+from typing import Any
 from typing import AsyncGenerator
 from typing import cast
 from typing import Optional
@@ -28,9 +27,10 @@ from typing import TYPE_CHECKING
 from typing import Union
 
 from google.genai import types
+from google.genai.errors import ClientError
 from typing_extensions import override
 
-from .. import version
+from ..utils._client_labels_utils import get_client_labels
 from ..utils.context_utils import Aclosing
 from ..utils.streaming_utils import StreamingResponseAggregator
 from ..utils.variant_utils import GoogleLLMVariant
@@ -48,8 +48,35 @@ logger = logging.getLogger('google_adk.' + __name__)
 
 _NEW_LINE = '\n'
 _EXCLUDED_PART_FIELD = {'inline_data': {'data'}}
-_AGENT_ENGINE_TELEMETRY_TAG = 'remote_reasoning_engine'
-_AGENT_ENGINE_TELEMETRY_ENV_VARIABLE_NAME = 'GOOGLE_CLOUD_AGENT_ENGINE_ID'
+
+
+_RESOURCE_EXHAUSTED_POSSIBLE_FIX_MESSAGE = """
+On how to mitigate this issue, please refer to:
+
+https://google.github.io/adk-docs/agents/models/#error-code-429-resource_exhausted
+"""
+
+
+class _ResourceExhaustedError(ClientError):
+  """Represents an resources exhausted error received from the Model."""
+
+  def __init__(
+      self,
+      client_error: ClientError,
+  ):
+    super().__init__(
+        code=client_error.code,
+        response_json=client_error.details,
+        response=client_error.response,
+    )
+
+  def __str__(self):
+    # We don't get override the actual message on ClientError, so we override
+    # this method instead. This will ensure that when the exception is
+    # stringified (for either publishing the exception on console or to logs)
+    # we put in the required details for the developer.
+    base_message = super().__str__()
+    return f'{_RESOURCE_EXHAUSTED_POSSIBLE_FIX_MESSAGE}\n\n{base_message}'
 
 
 class Gemini(BaseLlm):
@@ -57,11 +84,31 @@ class Gemini(BaseLlm):
 
   Attributes:
     model: The name of the Gemini model.
+    use_interactions_api: Whether to use the interactions API for model
+      invocation.
   """
 
   model: str = 'gemini-2.5-flash'
 
   speech_config: Optional[types.SpeechConfig] = None
+
+  use_interactions_api: bool = False
+  """Whether to use the interactions API for model invocation.
+
+  When enabled, uses the interactions API (client.aio.interactions.create())
+  instead of the traditional generate_content API. The interactions API
+  provides stateful conversation capabilities, allowing you to chain
+  interactions using previous_interaction_id instead of sending full history.
+  The response format will be converted to match the existing LlmResponse
+  structure for compatibility.
+
+  Sample:
+  ```python
+  agent = Agent(
+    model=Gemini(use_interactions_api=True)
+  )
+  ```
+  """
 
   retry_options: Optional[types.HttpRetryOptions] = None
   """Allow Gemini to retry failed responses.
@@ -137,7 +184,6 @@ class Gemini(BaseLlm):
         self._api_backend,
         stream,
     )
-    logger.debug(_build_request_log(llm_request))
 
     # Always add tracking headers to custom headers given it will override
     # the headers set in the api client constructor to avoid tracking headers
@@ -149,49 +195,100 @@ class Gemini(BaseLlm):
           llm_request.config.http_options.headers
       )
 
-    if stream:
-      responses = await self.api_client.aio.models.generate_content_stream(
-          model=llm_request.model,
-          contents=llm_request.contents,
-          config=llm_request.config,
-      )
+    try:
+      # Use interactions API if enabled
+      if self.use_interactions_api:
+        async for llm_response in self._generate_content_via_interactions(
+            llm_request, stream
+        ):
+          yield llm_response
+        return
 
-      # for sse, similar as bidi (see receive method in gemini_llm_connection.py),
-      # we need to mark those text content as partial and after all partial
-      # contents are sent, we send an accumulated event which contains all the
-      # previous partial content. The only difference is bidi rely on
-      # complete_turn flag to detect end while sse depends on finish_reason.
-      aggregator = StreamingResponseAggregator()
-      async with Aclosing(responses) as agen:
-        async for response in agen:
-          logger.debug(_build_response_log(response))
-          async with Aclosing(
-              aggregator.process_response(response)
-          ) as aggregator_gen:
-            async for llm_response in aggregator_gen:
-              yield llm_response
-      if (close_result := aggregator.close()) is not None:
-        # Populate cache metadata in the final aggregated response for streaming
+      logger.debug(_build_request_log(llm_request))
+
+      if stream:
+        responses = await self.api_client.aio.models.generate_content_stream(
+            model=llm_request.model,
+            contents=llm_request.contents,
+            config=llm_request.config,
+        )
+
+        # for sse, similar as bidi (see receive method in
+        # gemini_llm_connection.py), we need to mark those text content as
+        # partial and after all partial contents are sent, we send an
+        # accumulated event which contains all the previous partial content. The
+        # only difference is bidi rely on complete_turn flag to detect end while
+        # sse depends on finish_reason.
+        aggregator = StreamingResponseAggregator()
+        async with Aclosing(responses) as agen:
+          async for response in agen:
+            logger.debug(_build_response_log(response))
+            async with Aclosing(
+                aggregator.process_response(response)
+            ) as aggregator_gen:
+              async for llm_response in aggregator_gen:
+                yield llm_response
+        if (close_result := aggregator.close()) is not None:
+          # Populate cache metadata in the final aggregated response for
+          # streaming
+          if cache_metadata:
+            cache_manager.populate_cache_metadata_in_response(
+                close_result, cache_metadata
+            )
+          yield close_result
+
+      else:
+        response = await self.api_client.aio.models.generate_content(
+            model=llm_request.model,
+            contents=llm_request.contents,
+            config=llm_request.config,
+        )
+        logger.info('Response received from the model.')
+        logger.debug(_build_response_log(response))
+
+        llm_response = LlmResponse.create(response)
         if cache_metadata:
           cache_manager.populate_cache_metadata_in_response(
-              close_result, cache_metadata
+              llm_response, cache_metadata
           )
-        yield close_result
+        yield llm_response
+    except ClientError as ce:
+      if ce.code == 429:
+        # We expect running into a Resource Exhausted error to be a common
+        # client error that developers would run into. We enhance the messaging
+        # with possible fixes to this issue.
+        raise _ResourceExhaustedError(ce) from ce
 
-    else:
-      response = await self.api_client.aio.models.generate_content(
-          model=llm_request.model,
-          contents=llm_request.contents,
-          config=llm_request.config,
-      )
-      logger.info('Response received from the model.')
-      logger.debug(_build_response_log(response))
+      raise ce
 
-      llm_response = LlmResponse.create(response)
-      if cache_metadata:
-        cache_manager.populate_cache_metadata_in_response(
-            llm_response, cache_metadata
-        )
+  async def _generate_content_via_interactions(
+      self,
+      llm_request: LlmRequest,
+      stream: bool,
+  ) -> AsyncGenerator[LlmResponse, None]:
+    """Generate content using the interactions API.
+
+    The interactions API provides stateful conversation capabilities. When
+    previous_interaction_id is set in the request, the API chains interactions
+    instead of requiring full conversation history.
+
+    Note: Context caching is not used with the Interactions API since it
+    maintains conversation state via previous_interaction_id.
+
+    Args:
+      llm_request: The LLM request to send.
+      stream: Whether to stream the response.
+
+    Yields:
+      LlmResponse objects converted from interaction responses.
+    """
+    from .interactions_utils import generate_content_via_interactions
+
+    async for llm_response in generate_content_via_interactions(
+        api_client=self.api_client,
+        llm_request=llm_request,
+        stream=stream,
+    ):
       yield llm_response
 
   @cached_property
@@ -205,7 +302,7 @@ class Gemini(BaseLlm):
 
     return Client(
         http_options=types.HttpOptions(
-            headers=self._tracking_headers,
+            headers=self._tracking_headers(),
             retry_options=self.retry_options,
         )
     )
@@ -218,16 +315,12 @@ class Gemini(BaseLlm):
         else GoogleLLMVariant.GEMINI_API
     )
 
-  @cached_property
   def _tracking_headers(self) -> dict[str, str]:
-    framework_label = f'google-adk/{version.__version__}'
-    if os.environ.get(_AGENT_ENGINE_TELEMETRY_ENV_VARIABLE_NAME):
-      framework_label = f'{framework_label}+{_AGENT_ENGINE_TELEMETRY_TAG}'
-    language_label = 'gl-python/' + sys.version.split()[0]
-    version_header_value = f'{framework_label} {language_label}'
+    labels = get_client_labels()
+    header_value = ' '.join(labels)
     tracking_headers = {
-        'x-goog-api-client': version_header_value,
-        'user-agent': version_header_value,
+        'x-goog-api-client': header_value,
+        'user-agent': header_value,
     }
     return tracking_headers
 
@@ -246,7 +339,7 @@ class Gemini(BaseLlm):
 
     return Client(
         http_options=types.HttpOptions(
-            headers=self._tracking_headers, api_version=self._live_api_version
+            headers=self._tracking_headers(), api_version=self._live_api_version
         )
     )
 
@@ -270,7 +363,7 @@ class Gemini(BaseLlm):
       if not llm_request.live_connect_config.http_options.headers:
         llm_request.live_connect_config.http_options.headers = {}
       llm_request.live_connect_config.http_options.headers.update(
-          self._tracking_headers
+          self._tracking_headers()
       )
       llm_request.live_connect_config.http_options.api_version = (
           self._live_api_version
@@ -285,14 +378,38 @@ class Gemini(BaseLlm):
             types.Part.from_text(text=llm_request.config.system_instruction)
         ],
     )
+
+    logger.info(
+        'Trying to connect to live model: %s with api backend: %s',
+        llm_request.model,
+        self._api_backend,
+    )
+
+    if (
+        llm_request.live_connect_config.session_resumption
+        and llm_request.live_connect_config.session_resumption.transparent
+    ):
+      logger.debug(
+          'session resumption config: %s',
+          llm_request.live_connect_config.session_resumption,
+      )
+
+      if self._api_backend == GoogleLLMVariant.GEMINI_API:
+        raise ValueError(
+            'Transparent session resumption is only supported for Vertex AI'
+            ' backend. Please use Vertex AI backend.'
+        )
     llm_request.live_connect_config.tools = llm_request.config.tools
-    logger.info('Connecting to live for model: %s', llm_request.model)
     logger.debug('Connecting to live with llm_request:%s', llm_request)
     logger.debug('Live connect config: %s', llm_request.live_connect_config)
     async with self._live_api_client.aio.live.connect(
         model=llm_request.model, config=llm_request.live_connect_config
     ) as live_session:
-      yield GeminiLlmConnection(live_session)
+      yield GeminiLlmConnection(
+          live_session,
+          api_backend=self._api_backend,
+          model_version=llm_request.model,
+      )
 
   async def _adapt_computer_use_tool(self, llm_request: LlmRequest) -> None:
     """Adapt the google computer use predefined functions to the adk computer use toolset."""
@@ -340,7 +457,7 @@ class Gemini(BaseLlm):
   def _merge_tracking_headers(self, headers: dict[str, str]) -> dict[str, str]:
     """Merge tracking headers to the given headers."""
     headers = headers or {}
-    for key, tracking_header_value in self._tracking_headers.items():
+    for key, tracking_header_value in self._tracking_headers().items():
       custom_value = headers.get(key, None)
       if not custom_value:
         headers[key] = tracking_header_value
@@ -364,9 +481,15 @@ def _build_function_declaration_log(
         k: v.model_dump(exclude_none=True)
         for k, v in func_decl.parameters.properties.items()
     })
+  elif func_decl.parameters_json_schema:
+    param_str = str(func_decl.parameters_json_schema)
+
   return_str = ''
   if func_decl.response:
     return_str = '-> ' + str(func_decl.response.model_dump(exclude_none=True))
+  elif func_decl.response_json_schema:
+    return_str = '-> ' + str(func_decl.response_json_schema)
+
   return f'{func_decl.name}: {param_str} {return_str}'
 
 

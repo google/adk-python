@@ -24,7 +24,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 2
 
@@ -96,7 +96,7 @@ jobs:
             echo ""
 
             set +e
-            FILES_WITH_FORBIDDEN_IMPORT=$(grep -lE '^from.*cli.*import.*$' $CHANGED_FILES)
+            FILES_WITH_FORBIDDEN_IMPORT=$(grep -lE '^from.*\bcli\b.*import.*$' $CHANGED_FILES)
             GREP_EXIT_CODE=$?
             set -e
 

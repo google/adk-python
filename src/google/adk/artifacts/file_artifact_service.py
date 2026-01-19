@@ -32,6 +32,7 @@ from pydantic import Field
 from pydantic import ValidationError
 from typing_extensions import override
 
+from ..errors.input_validation_error import InputValidationError
 from .base_artifact_service import ArtifactVersion
 from .base_artifact_service import BaseArtifactService
 
@@ -100,14 +101,14 @@ def _resolve_scoped_artifact_path(
     to `scope_root`.
 
   Raises:
-    ValueError: If `filename` resolves outside of `scope_root`.
+    InputValidationError: If `filename` resolves outside of `scope_root`.
   """
   stripped = _strip_user_namespace(filename).strip()
   pure_path = _to_posix_path(stripped)
 
   scope_root_resolved = scope_root.resolve(strict=False)
   if pure_path.is_absolute():
-    raise ValueError(
+    raise InputValidationError(
         f"Absolute artifact filename {filename!r} is not permitted; "
         "provide a path relative to the storage scope."
     )
@@ -118,7 +119,7 @@ def _resolve_scoped_artifact_path(
   try:
     relative = candidate.relative_to(scope_root_resolved)
   except ValueError as exc:
-    raise ValueError(
+    raise InputValidationError(
         f"Artifact filename {filename!r} escapes storage directory "
         f"{scope_root_resolved}"
     ) from exc
@@ -188,20 +189,18 @@ class FileArtifactService(BaseArtifactService):
 
   # Storage layout matches the cloud and in-memory services:
   # root/
-  # ├── apps/
-  # │   └── {app_name}/
-  # │       └── users/
-  # │           └── {user_id}/
-  # │               ├── sessions/
-  # │               │   └── {session_id}/
-  # │               │       └── artifacts/
-  # │               │           └── {artifact_path}/  # derived from filename
-  # │               │               └── versions/
-  # │               │                   └── {version}/
-  # │               │                       ├── {original_filename}
-  # │               │                       └── metadata.json
-  # │               └── artifacts/
-  # │                   └── {artifact_path}/...
+  # └── users/
+  #     └── {user_id}/
+  #         ├── sessions/
+  #         │   └── {session_id}/
+  #         │       └── artifacts/
+  #         │           └── {artifact_path}/  # derived from filename
+  #         │               └── versions/
+  #         │                   └── {version}/
+  #         │                       ├── {original_filename}
+  #         │                       └── metadata.json
+  #         └── artifacts/
+  #             └── {artifact_path}/...
   #
   # Artifact paths are derived from the provided filenames: separators create
   # nested directories, and path traversal is rejected to keep the layout
@@ -217,37 +216,34 @@ class FileArtifactService(BaseArtifactService):
     self.root_dir = Path(root_dir).expanduser().resolve()
     self.root_dir.mkdir(parents=True, exist_ok=True)
 
-  def _base_root(self, app_name: str, user_id: str) -> Path:
-    """Returns the artifacts root directory for an app/user combination."""
-    return self.root_dir / "apps" / app_name / "users" / user_id
+  def _base_root(self, user_id: str, /) -> Path:
+    """Returns the artifacts root directory for a user."""
+    return self.root_dir / "users" / user_id
 
   def _scope_root(
       self,
-      app_name: str,
       user_id: str,
       session_id: Optional[str],
       filename: str,
   ) -> Path:
     """Returns the directory that represents the artifact scope."""
-    base = self._base_root(app_name, user_id)
+    base = self._base_root(user_id)
     if _is_user_scoped(session_id, filename):
       return _user_artifacts_dir(base)
     if not session_id:
-      raise ValueError(
+      raise InputValidationError(
           "Session ID must be provided for session-scoped artifacts."
       )
     return _session_artifacts_dir(base, session_id)
 
   def _artifact_dir(
       self,
-      app_name: str,
       user_id: str,
       session_id: Optional[str],
       filename: str,
   ) -> Path:
     """Builds the directory path for an artifact."""
     scope_root = self._scope_root(
-        app_name=app_name,
         user_id=user_id,
         session_id=session_id,
         filename=filename,
@@ -258,7 +254,6 @@ class FileArtifactService(BaseArtifactService):
   def _build_artifact_version(
       self,
       *,
-      app_name: str,
       user_id: str,
       session_id: Optional[str],
       filename: str,
@@ -270,7 +265,6 @@ class FileArtifactService(BaseArtifactService):
         metadata.canonical_uri
         if metadata and metadata.canonical_uri
         else self._canonical_uri(
-            app_name=app_name,
             user_id=user_id,
             session_id=session_id,
             filename=filename,
@@ -289,7 +283,6 @@ class FileArtifactService(BaseArtifactService):
   def _canonical_uri(
       self,
       *,
-      app_name: str,
       user_id: str,
       session_id: Optional[str],
       filename: str,
@@ -297,7 +290,6 @@ class FileArtifactService(BaseArtifactService):
   ) -> str:
     """Builds the canonical file:// URI for an artifact payload."""
     artifact_dir = self._artifact_dir(
-        app_name=app_name,
         user_id=user_id,
         session_id=session_id,
         filename=filename,
@@ -336,7 +328,6 @@ class FileArtifactService(BaseArtifactService):
     """
     return await asyncio.to_thread(
         self._save_artifact_sync,
-        app_name,
         user_id,
         filename,
         artifact,
@@ -346,7 +337,6 @@ class FileArtifactService(BaseArtifactService):
 
   def _save_artifact_sync(
       self,
-      app_name: str,
       user_id: str,
       filename: str,
       artifact: types.Part,
@@ -355,7 +345,6 @@ class FileArtifactService(BaseArtifactService):
   ) -> int:
     """Saves an artifact to disk and returns its version."""
     artifact_dir = self._artifact_dir(
-        app_name=app_name,
         user_id=user_id,
         session_id=session_id,
         filename=filename,
@@ -383,10 +372,11 @@ class FileArtifactService(BaseArtifactService):
       content_path.write_text(artifact.text, encoding="utf-8")
       mime_type = None
     else:
-      raise ValueError("Artifact must have either inline_data or text content.")
+      raise InputValidationError(
+          "Artifact must have either inline_data or text content."
+      )
 
     canonical_uri = self._canonical_uri(
-        app_name=app_name,
         user_id=user_id,
         session_id=session_id,
         filename=filename,
@@ -421,7 +411,6 @@ class FileArtifactService(BaseArtifactService):
   ) -> Optional[types.Part]:
     return await asyncio.to_thread(
         self._load_artifact_sync,
-        app_name,
         user_id,
         filename,
         session_id,
@@ -430,7 +419,6 @@ class FileArtifactService(BaseArtifactService):
 
   def _load_artifact_sync(
       self,
-      app_name: str,
       user_id: str,
       filename: str,
       session_id: Optional[str],
@@ -438,7 +426,6 @@ class FileArtifactService(BaseArtifactService):
   ) -> Optional[types.Part]:
     """Loads an artifact from disk."""
     artifact_dir = self._artifact_dir(
-        app_name=app_name,
         user_id=user_id,
         session_id=session_id,
         filename=filename,
@@ -493,21 +480,19 @@ class FileArtifactService(BaseArtifactService):
   ) -> list[str]:
     return await asyncio.to_thread(
         self._list_artifact_keys_sync,
-        app_name,
         user_id,
         session_id,
     )
 
   def _list_artifact_keys_sync(
       self,
-      app_name: str,
       user_id: str,
       session_id: Optional[str],
   ) -> list[str]:
     """Lists artifact filenames for the given session/user."""
     filenames: set[str] = set()
 
-    base_root = self._base_root(app_name, user_id)
+    base_root = self._base_root(user_id)
 
     if session_id:
       session_root = _session_artifacts_dir(base_root, session_id)
@@ -550,7 +535,6 @@ class FileArtifactService(BaseArtifactService):
     """
     await asyncio.to_thread(
         self._delete_artifact_sync,
-        app_name,
         user_id,
         filename,
         session_id,
@@ -558,13 +542,11 @@ class FileArtifactService(BaseArtifactService):
 
   def _delete_artifact_sync(
       self,
-      app_name: str,
       user_id: str,
       filename: str,
       session_id: Optional[str],
   ) -> None:
     artifact_dir = self._artifact_dir(
-        app_name=app_name,
         user_id=user_id,
         session_id=session_id,
         filename=filename,
@@ -585,7 +567,6 @@ class FileArtifactService(BaseArtifactService):
     """Lists all versions stored for an artifact."""
     return await asyncio.to_thread(
         self._list_versions_sync,
-        app_name,
         user_id,
         filename,
         session_id,
@@ -593,13 +574,11 @@ class FileArtifactService(BaseArtifactService):
 
   def _list_versions_sync(
       self,
-      app_name: str,
       user_id: str,
       filename: str,
       session_id: Optional[str],
   ) -> list[int]:
     artifact_dir = self._artifact_dir(
-        app_name=app_name,
         user_id=user_id,
         session_id=session_id,
         filename=filename,
@@ -618,7 +597,6 @@ class FileArtifactService(BaseArtifactService):
     """Lists metadata for each artifact version on disk."""
     return await asyncio.to_thread(
         self._list_artifact_versions_sync,
-        app_name,
         user_id,
         filename,
         session_id,
@@ -626,13 +604,11 @@ class FileArtifactService(BaseArtifactService):
 
   def _list_artifact_versions_sync(
       self,
-      app_name: str,
       user_id: str,
       filename: str,
       session_id: Optional[str],
   ) -> list[ArtifactVersion]:
     artifact_dir = self._artifact_dir(
-        app_name=app_name,
         user_id=user_id,
         session_id=session_id,
         filename=filename,
@@ -644,7 +620,6 @@ class FileArtifactService(BaseArtifactService):
       metadata = _read_metadata(metadata_path)
       artifact_versions.append(
           self._build_artifact_version(
-              app_name=app_name,
               user_id=user_id,
               session_id=session_id,
               filename=filename,
@@ -667,7 +642,6 @@ class FileArtifactService(BaseArtifactService):
     """Gets metadata for a specific artifact version."""
     return await asyncio.to_thread(
         self._get_artifact_version_sync,
-        app_name,
         user_id,
         filename,
         session_id,
@@ -676,14 +650,12 @@ class FileArtifactService(BaseArtifactService):
 
   def _get_artifact_version_sync(
       self,
-      app_name: str,
       user_id: str,
       filename: str,
       session_id: Optional[str],
       version: Optional[int],
   ) -> Optional[ArtifactVersion]:
     artifact_dir = self._artifact_dir(
-        app_name=app_name,
         user_id=user_id,
         session_id=session_id,
         filename=filename,
@@ -701,7 +673,6 @@ class FileArtifactService(BaseArtifactService):
     metadata_path = _metadata_path(artifact_dir, version_to_read)
     metadata = _read_metadata(metadata_path)
     return self._build_artifact_version(
-        app_name=app_name,
         user_id=user_id,
         session_id=session_id,
         filename=filename,
