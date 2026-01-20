@@ -205,7 +205,7 @@ class RunAgentRequest(common.BaseModel):
   new_message: types.Content
   streaming: bool = False
   state_delta: Optional[dict[str, Any]] = None
-  # for resume long running functions
+  # for resume long-running functions
   invocation_id: Optional[str] = None
 
 

@@ -24,7 +24,7 @@ agentic architectures that range from simple tasks to complex workflows.
     interacts with various services like session management, artifact storage,
     and memory, and integrates with application-wide plugins. The runner
     provides different execution modes: `run_async` for asynchronous execution
-    in production, `run_live` for bi-directional streaming interaction, and
+    in production, `run_live` for bidirectional streaming interaction, and
     `run` for synchronous execution suitable for local testing and debugging. At
     the end of each invocation, it can perform event compaction to manage
     session history size.

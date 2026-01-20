@@ -4,7 +4,7 @@
 
 This sample agent demonstrates using ADK's `McpToolset` to interact with
 BigQuery's official MCP endpoint, allowing an agent to access and execute
-toole by leveraging the Model Context Protocol (MCP). These tools include:
+tools by leveraging the Model Context Protocol (MCP). These tools include:
 
 
 1. `list_dataset_ids`

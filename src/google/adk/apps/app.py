@@ -43,7 +43,7 @@ class ResumabilityConfig(BaseModel):
   """The config of the resumability for an application.
 
   The "resumability" in ADK refers to the ability to:
-  1. pause an invocation upon a long running function call.
+  1. pause an invocation upon a long-running function call.
   2. resume an invocation from the last event, if it's paused or failed midway
   through.
 

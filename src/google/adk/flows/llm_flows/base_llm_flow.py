@@ -73,7 +73,7 @@ DEFAULT_ENABLE_CACHE_STATISTICS = False
 class BaseLlmFlow(ABC):
   """A basic flow that calls the LLM in a loop until a final response is generated.
 
-  This flow ends when it transfer to another agent.
+  This flow ends when it transfers to another agent.
   """
 
   def __init__(self):
@@ -393,8 +393,8 @@ class BaseLlmFlow(ABC):
         current_invocation=True, current_branch=True
     )
 
-    # Long running tool calls should have been handled before this point.
-    # If there are still long running tool calls, it means the agent is paused
+    # Long-running tool calls should have been handled before this point.
+    # If there are still long-running tool calls, it means the agent is paused
     # before, and its branch hasn't been resumed yet.
     if (
         invocation_context.is_resumable
