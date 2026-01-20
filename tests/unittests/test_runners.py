@@ -22,7 +22,6 @@ from unittest.mock import AsyncMock
 
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.context_cache_config import ContextCacheConfig
-from google.adk.agents.live_request_queue import LiveRequestQueue
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.run_config import RunConfig
@@ -37,10 +36,11 @@ from google.adk.models.llm_response import LlmResponse
 from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
-from tests.unittests import testing_utils
 from google.adk.sessions.session import Session
 from google.genai import types
 import pytest
+
+from tests.unittests import testing_utils
 
 TEST_APP_ID = "test_app"
 TEST_USER_ID = "test_user"
@@ -1798,8 +1798,9 @@ class TestRunnerMetadata:
     )
 
     test_metadata = {"user_id": "live_user", "trace_id": "live_trace"}
+    live_queue = LiveRequestQueue()
     invocation_context = self.runner._new_invocation_context_for_live(
-        mock_session, metadata=test_metadata
+        mock_session, live_request_queue=live_queue, metadata=test_metadata
     )
 
     assert invocation_context.metadata == test_metadata
