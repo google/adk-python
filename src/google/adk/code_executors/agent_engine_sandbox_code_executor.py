@@ -23,7 +23,6 @@ from typing import Optional
 from typing_extensions import override
 
 from ..agents.invocation_context import InvocationContext
-from ..utils.feature_decorator import experimental
 from .base_code_executor import BaseCodeExecutor
 from .code_execution_utils import CodeExecutionInput
 from .code_execution_utils import CodeExecutionResult
@@ -32,7 +31,6 @@ from .code_execution_utils import File
 logger = logging.getLogger('google_adk.' + __name__)
 
 
-@experimental
 class AgentEngineSandboxCodeExecutor(BaseCodeExecutor):
   """A code executor that uses Agent Engine Code Execution Sandbox to execute code.
 
