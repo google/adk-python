@@ -19,6 +19,9 @@ import os
 from pathlib import Path
 from typing import Any
 from typing import Optional
+from urllib.parse import parse_qsl
+from urllib.parse import urlsplit
+from urllib.parse import urlunsplit
 
 from ...artifacts.base_artifact_service import BaseArtifactService
 from ...memory.base_memory_service import BaseMemoryService
@@ -40,6 +43,41 @@ _LOCAL_STORAGE_ERRNOS = frozenset({
 
 _CLOUD_RUN_SERVICE_ENV = "K_SERVICE"
 _KUBERNETES_HOST_ENV = "KUBERNETES_SERVICE_HOST"
+
+
+def _redact_uri_for_log(uri: str) -> str:
+  """Returns a safe-to-log representation of a URI.
+
+  Redacts user info (username/password) and query parameter values.
+  """
+  if not uri or not uri.strip():
+    return "<empty>"
+  sanitized = uri.replace("\r", "\\r").replace("\n", "\\n")
+  if "://" not in sanitized:
+    return "<scheme-missing>"
+  try:
+    parsed = urlsplit(sanitized)
+  except ValueError:
+    return "<unparseable>"
+
+  if not parsed.scheme:
+    return "<scheme-missing>"
+
+  netloc = parsed.netloc
+  if "@" in netloc:
+    _, netloc = netloc.rsplit("@", 1)
+
+  if parsed.query:
+    try:
+      redacted_pairs = parse_qsl(parsed.query, keep_blank_values=True)
+    except ValueError:
+      query = "<redacted>"
+    else:
+      query = "&".join(f"{key}=<redacted>" for key, _ in redacted_pairs)
+  else:
+    query = ""
+
+  return urlunsplit((parsed.scheme, netloc, parsed.path, query, ""))
 
 
 def _is_cloud_run() -> bool:
@@ -148,7 +186,10 @@ def create_session_service_from_options(
     kwargs.update(session_db_kwargs)
 
   if session_service_uri:
-    logger.info("Using session service URI: %s", session_service_uri)
+    logger.info(
+        "Using session service URI: %s",
+        _redact_uri_for_log(session_service_uri),
+    )
     service = registry.create_session_service(session_service_uri, **kwargs)
     if service is not None:
       return service
@@ -162,7 +203,7 @@ def create_session_service_from_options(
     fallback_kwargs.pop("agents_dir", None)
     logger.info(
         "Falling back to DatabaseSessionService for URI: %s",
-        session_service_uri,
+        _redact_uri_for_log(session_service_uri),
     )
     return DatabaseSessionService(db_url=session_service_uri, **fallback_kwargs)
 
@@ -208,13 +249,18 @@ def create_memory_service_from_options(
   registry = get_service_registry()
 
   if memory_service_uri:
-    logger.info("Using memory service URI: %s", memory_service_uri)
+    logger.info(
+        "Using memory service URI: %s", _redact_uri_for_log(memory_service_uri)
+    )
     service = registry.create_memory_service(
         memory_service_uri,
         agents_dir=str(base_path),
     )
     if service is None:
-      raise ValueError(f"Unsupported memory service URI: {memory_service_uri}")
+      raise ValueError(
+          "Unsupported memory service URI: %s"
+          % _redact_uri_for_log(memory_service_uri)
+      )
     return service
 
   logger.info("Using in-memory memory service")
@@ -235,7 +281,10 @@ def create_artifact_service_from_options(
   registry = get_service_registry()
 
   if artifact_service_uri:
-    logger.info("Using artifact service URI: %s", artifact_service_uri)
+    logger.info(
+        "Using artifact service URI: %s",
+        _redact_uri_for_log(artifact_service_uri),
+    )
     service = registry.create_artifact_service(
         artifact_service_uri,
         agents_dir=str(base_path),
@@ -243,11 +292,12 @@ def create_artifact_service_from_options(
     if service is None:
       if strict_uri:
         raise ValueError(
-            f"Unsupported artifact service URI: {artifact_service_uri}"
+            "Unsupported artifact service URI: %s"
+            % _redact_uri_for_log(artifact_service_uri)
         )
       return _create_in_memory_artifact_service(
           "Unsupported artifact service URI: %s, falling back to in-memory",
-          artifact_service_uri,
+          _redact_uri_for_log(artifact_service_uri),
       )
     return service
 

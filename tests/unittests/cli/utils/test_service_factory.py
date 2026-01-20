@@ -16,12 +16,14 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
-from unittest.mock import Mock
+from unittest import mock
 
 from google.adk.artifacts.file_artifact_service import FileArtifactService
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
+from google.adk.cli.service_registry import ServiceRegistry
 from google.adk.cli.utils.local_storage import PerAgentDatabaseSessionService
 import google.adk.cli.utils.service_factory as service_factory
 from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
@@ -31,7 +33,7 @@ import pytest
 
 
 def test_create_session_service_uses_registry(tmp_path: Path, monkeypatch):
-  registry = Mock()
+  registry = mock.create_autospec(ServiceRegistry, instance=True, spec_set=True)
   expected = object()
   registry.create_session_service.return_value = expected
   monkeypatch.setattr(service_factory, "get_service_registry", lambda: registry)
@@ -45,6 +47,87 @@ def test_create_session_service_uses_registry(tmp_path: Path, monkeypatch):
   registry.create_session_service.assert_called_once_with(
       "sqlite:///test.db",
       agents_dir=str(tmp_path),
+  )
+
+
+def test_create_session_service_logs_redacted_uri(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+  registry = mock.create_autospec(ServiceRegistry, instance=True, spec_set=True)
+  registry.create_session_service.return_value = object()
+  monkeypatch.setattr(service_factory, "get_service_registry", lambda: registry)
+
+  session_service_uri = (
+      "postgresql://user:supersecret@localhost:5432/dbname?sslmode=require"
+  )
+  caplog.set_level(logging.INFO, logger=service_factory.logger.name)
+
+  service_factory.create_session_service_from_options(
+      base_dir=tmp_path,
+      session_service_uri=session_service_uri,
+  )
+
+  assert "supersecret" not in caplog.text
+  assert "sslmode=require" not in caplog.text
+  assert "localhost:5432" in caplog.text
+
+
+def test_redact_uri_for_log_removes_credentials_with_at_in_password() -> None:
+  uri = "postgresql://user:super@secret@localhost:5432/dbname"
+
+  assert (
+      service_factory._redact_uri_for_log(uri)
+      == "postgresql://localhost:5432/dbname"
+  )
+
+
+def test_redact_uri_for_log_preserves_host_when_no_credentials() -> None:
+  uri = "postgresql://localhost:5432/dbname?sslmode=require&password=secret"
+
+  redacted = service_factory._redact_uri_for_log(uri)
+
+  assert redacted.startswith("postgresql://localhost:5432/dbname?")
+  assert "require" not in redacted
+  assert "secret" not in redacted
+  assert "sslmode=<redacted>" in redacted
+  assert "password=<redacted>" in redacted
+
+
+def test_redact_uri_for_log_redacts_when_parse_qsl_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  def _raise_value_error(*_args, **_kwargs):
+    raise ValueError("bad query")
+
+  monkeypatch.setattr(service_factory, "parse_qsl", _raise_value_error)
+
+  uri = "postgresql://user:pass@localhost:5432/dbname?sslmode=require"
+  redacted = service_factory._redact_uri_for_log(uri)
+
+  assert "pass" not in redacted
+  assert "require" not in redacted
+  assert redacted.endswith("?<redacted>")
+
+
+def test_redact_uri_for_log_escapes_crlf() -> None:
+  uri = (
+      "postgresql://user:pass@localhost:5432/dbname\rINJECT\nINJECT"
+      "?sslmode=require"
+  )
+
+  redacted = service_factory._redact_uri_for_log(uri)
+
+  assert "\r" not in redacted
+  assert "\n" not in redacted
+  assert "\\rINJECT\\nINJECT" in redacted
+
+
+def test_redact_uri_for_log_returns_scheme_missing_without_separator() -> None:
+  assert (
+      service_factory._redact_uri_for_log("user:pass@localhost:5432/dbname")
+      == "<scheme-missing>"
   )
 
 
@@ -88,7 +171,7 @@ async def test_create_session_service_respects_app_name_mapping(
 def test_create_session_service_fallbacks_to_database(
     tmp_path: Path, monkeypatch
 ):
-  registry = Mock()
+  registry = mock.create_autospec(ServiceRegistry, instance=True, spec_set=True)
   registry.create_session_service.return_value = None
   monkeypatch.setattr(service_factory, "get_service_registry", lambda: registry)
 
@@ -109,7 +192,7 @@ def test_create_session_service_fallbacks_to_database(
 
 
 def test_create_artifact_service_uses_registry(tmp_path: Path, monkeypatch):
-  registry = Mock()
+  registry = mock.create_autospec(ServiceRegistry, instance=True, spec_set=True)
   expected = object()
   registry.create_artifact_service.return_value = expected
   monkeypatch.setattr(service_factory, "get_service_registry", lambda: registry)
@@ -129,7 +212,7 @@ def test_create_artifact_service_uses_registry(tmp_path: Path, monkeypatch):
 def test_create_artifact_service_raises_on_unknown_scheme_when_strict(
     tmp_path: Path, monkeypatch
 ):
-  registry = Mock()
+  registry = mock.create_autospec(ServiceRegistry, instance=True, spec_set=True)
   registry.create_artifact_service.return_value = None
   monkeypatch.setattr(service_factory, "get_service_registry", lambda: registry)
 
@@ -142,7 +225,7 @@ def test_create_artifact_service_raises_on_unknown_scheme_when_strict(
 
 
 def test_create_memory_service_uses_registry(tmp_path: Path, monkeypatch):
-  registry = Mock()
+  registry = mock.create_autospec(ServiceRegistry, instance=True, spec_set=True)
   expected = object()
   registry.create_memory_service.return_value = expected
   monkeypatch.setattr(service_factory, "get_service_registry", lambda: registry)
@@ -170,7 +253,7 @@ def test_create_memory_service_defaults_to_in_memory(tmp_path: Path):
 def test_create_memory_service_raises_on_unknown_scheme(
     tmp_path: Path, monkeypatch
 ):
-  registry = Mock()
+  registry = mock.create_autospec(ServiceRegistry, instance=True, spec_set=True)
   registry.create_memory_service.return_value = None
   monkeypatch.setattr(service_factory, "get_service_registry", lambda: registry)
 
