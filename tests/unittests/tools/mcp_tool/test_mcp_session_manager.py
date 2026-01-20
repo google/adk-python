@@ -56,6 +56,33 @@ class MockAsyncExitStack:
     pass
 
 
+class MockSessionContext:
+  """Mock SessionContext for testing."""
+
+  def __init__(self, session=None):
+    """Initialize MockSessionContext.
+
+    Args:
+        session: The mock session to return from __aenter__ and session property.
+    """
+    self._session = session
+    self._aenter_mock = AsyncMock(return_value=session)
+    self._aexit_mock = AsyncMock(return_value=False)
+
+  @property
+  def session(self):
+    """Get the mock session."""
+    return self._session
+
+  async def __aenter__(self):
+    """Enter the async context manager."""
+    return await self._aenter_mock()
+
+  async def __aexit__(self, exc_type, exc_val, exc_tb):
+    """Exit the async context manager."""
+    return await self._aexit_mock(exc_type, exc_val, exc_tb)
+
+
 class TestMCPSessionManager:
   """Test suite for MCPSessionManager class."""
 
@@ -113,6 +140,54 @@ class TestMCPSessionManager:
     manager = MCPSessionManager(http_params)
 
     assert manager._connection_params == http_params
+
+  @patch("google.adk.tools.mcp_tool.mcp_session_manager.streamablehttp_client")
+  def test_init_with_streamable_http_custom_httpx_factory(
+      self, mock_streamablehttp_client
+  ):
+    """Test that streamablehttp_client is called with custom httpx_client_factory."""
+    custom_httpx_factory = Mock()
+
+    http_params = StreamableHTTPConnectionParams(
+        url="https://example.com/mcp",
+        timeout=15.0,
+        httpx_client_factory=custom_httpx_factory,
+    )
+    manager = MCPSessionManager(http_params)
+
+    manager._create_client()
+
+    mock_streamablehttp_client.assert_called_once_with(
+        url="https://example.com/mcp",
+        headers=None,
+        timeout=timedelta(seconds=15.0),
+        sse_read_timeout=timedelta(seconds=300.0),
+        terminate_on_close=True,
+        httpx_client_factory=custom_httpx_factory,
+    )
+
+  @patch("google.adk.tools.mcp_tool.mcp_session_manager.streamablehttp_client")
+  def test_init_with_streamable_http_default_httpx_factory(
+      self, mock_streamablehttp_client
+  ):
+    """Test that streamablehttp_client is called with default httpx_client_factory."""
+    http_params = StreamableHTTPConnectionParams(
+        url="https://example.com/mcp", timeout=15.0
+    )
+    manager = MCPSessionManager(http_params)
+
+    manager._create_client()
+
+    mock_streamablehttp_client.assert_called_once_with(
+        url="https://example.com/mcp",
+        headers=None,
+        timeout=timedelta(seconds=15.0),
+        sse_read_timeout=timedelta(seconds=300.0),
+        terminate_on_close=True,
+        httpx_client_factory=StreamableHTTPConnectionParams.model_fields[
+            "httpx_client_factory"
+        ].get_default(),
+    )
 
   def test_generate_session_key_stdio(self):
     """Test session key generation for stdio connections."""
@@ -193,7 +268,6 @@ class TestMCPSessionManager:
     """Test creating a new stdio session."""
     manager = MCPSessionManager(self.mock_stdio_connection_params)
 
-    mock_session = MockClientSession()
     mock_exit_stack = MockAsyncExitStack()
 
     with patch(
@@ -203,17 +277,19 @@ class TestMCPSessionManager:
           "google.adk.tools.mcp_tool.mcp_session_manager.AsyncExitStack"
       ) as mock_exit_stack_class:
         with patch(
-            "google.adk.tools.mcp_tool.mcp_session_manager.ClientSession"
-        ) as mock_session_class:
+            "google.adk.tools.mcp_tool.mcp_session_manager.SessionContext"
+        ) as mock_session_context_class:
 
           # Setup mocks
           mock_exit_stack_class.return_value = mock_exit_stack
           mock_stdio.return_value = AsyncMock()
-          mock_exit_stack.enter_async_context.side_effect = [
-              ("read", "write"),  # First call returns transports
-              mock_session,  # Second call returns session
-          ]
-          mock_session_class.return_value = mock_session
+
+          # Mock SessionContext using MockSessionContext
+          # Create a mock session that will be returned by SessionContext
+          mock_session = AsyncMock()
+          mock_session_context = MockSessionContext(session=mock_session)
+          mock_session_context_class.return_value = mock_session_context
+          mock_exit_stack.enter_async_context.return_value = mock_session
 
           # Create session
           session = await manager.create_session()
@@ -223,8 +299,10 @@ class TestMCPSessionManager:
           assert len(manager._sessions) == 1
           assert "stdio_session" in manager._sessions
 
-          # Verify session was initialized
-          mock_session.initialize.assert_called_once()
+          # Verify SessionContext was created
+          mock_session_context_class.assert_called_once()
+          # Verify enter_async_context was called (which internally calls __aenter__)
+          mock_exit_stack.enter_async_context.assert_called_once()
 
   @pytest.mark.asyncio
   async def test_create_session_reuse_existing(self):
@@ -252,39 +330,37 @@ class TestMCPSessionManager:
   @pytest.mark.asyncio
   @patch("google.adk.tools.mcp_tool.mcp_session_manager.stdio_client")
   @patch("google.adk.tools.mcp_tool.mcp_session_manager.AsyncExitStack")
-  @patch("google.adk.tools.mcp_tool.mcp_session_manager.ClientSession")
+  @patch("google.adk.tools.mcp_tool.mcp_session_manager.SessionContext")
   async def test_create_session_timeout(
-      self, mock_session_class, mock_exit_stack_class, mock_stdio
+      self, mock_session_context_class, mock_exit_stack_class, mock_stdio
   ):
     """Test session creation timeout."""
     manager = MCPSessionManager(self.mock_stdio_connection_params)
 
-    mock_session = MockClientSession()
     mock_exit_stack = MockAsyncExitStack()
 
     mock_exit_stack_class.return_value = mock_exit_stack
     mock_stdio.return_value = AsyncMock()
-    mock_exit_stack.enter_async_context.side_effect = [
-        ("read", "write"),  # First call returns transports
-        mock_session,  # Second call returns session
-    ]
-    mock_session_class.return_value = mock_session
 
-    # Simulate timeout during session initialization
-    mock_session.initialize.side_effect = asyncio.TimeoutError("Test timeout")
+    # Mock SessionContext
+    mock_session_context = AsyncMock()
+    mock_session_context.__aenter__ = AsyncMock(
+        return_value=MockClientSession()
+    )
+    mock_session_context.__aexit__ = AsyncMock(return_value=False)
+    mock_session_context_class.return_value = mock_session_context
+
+    # Mock enter_async_context to raise TimeoutError (simulating asyncio.wait_for timeout)
+    mock_exit_stack.enter_async_context = AsyncMock(
+        side_effect=asyncio.TimeoutError("Test timeout")
+    )
 
     # Expect ConnectionError due to timeout
     with pytest.raises(ConnectionError, match="Failed to create MCP session"):
       await manager.create_session()
 
-    # Verify ClientSession called with timeout
-    mock_session_class.assert_called_with(
-        "read",
-        "write",
-        read_timeout_seconds=timedelta(
-            seconds=manager._connection_params.timeout
-        ),
-    )
+    # Verify SessionContext was created
+    mock_session_context_class.assert_called_once()
     # Verify session was not added to pool
     assert not manager._sessions
     # Verify cleanup was called
@@ -342,8 +418,39 @@ class TestMCPSessionManager:
     assert "Warning: Error during MCP session cleanup" in error_output
     assert "Close error 1" in error_output
 
+  @pytest.mark.asyncio
+  @patch("google.adk.tools.mcp_tool.mcp_session_manager.stdio_client")
+  @patch("google.adk.tools.mcp_tool.mcp_session_manager.AsyncExitStack")
+  @patch("google.adk.tools.mcp_tool.mcp_session_manager.SessionContext")
+  async def test_create_and_close_session_in_different_tasks(
+      self, mock_session_context_class, mock_exit_stack_class, mock_stdio
+  ):
+    """Test creating and closing a session in different tasks."""
+    manager = MCPSessionManager(self.mock_stdio_connection_params)
 
-def test_retry_on_errors_decorator():
+    mock_exit_stack_class.return_value = MockAsyncExitStack()
+    mock_stdio.return_value = AsyncMock()
+
+    # Mock SessionContext
+    mock_session_context = AsyncMock()
+    mock_session_context.__aenter__ = AsyncMock(
+        return_value=MockClientSession()
+    )
+    mock_session_context.__aexit__ = AsyncMock(return_value=False)
+    mock_session_context_class.return_value = mock_session_context
+
+    # Create session in a new task
+    await asyncio.create_task(manager.create_session())
+
+    # Close session in another task
+    await asyncio.create_task(manager.close())
+
+    # Verify session was closed
+    assert not manager._sessions
+
+
+@pytest.mark.asyncio
+async def test_retry_on_errors_decorator():
   """Test the retry_on_errors decorator."""
 
   call_count = 0
@@ -353,23 +460,77 @@ def test_retry_on_errors_decorator():
     nonlocal call_count
     call_count += 1
     if call_count == 1:
-      import anyio
-
-      raise anyio.ClosedResourceError("Resource closed")
+      raise ConnectionError("Resource closed")
     return "success"
 
-  @pytest.mark.asyncio
-  async def test_retry():
+  mock_self = Mock()
+  result = await mock_function(mock_self)
+
+  assert result == "success"
+  assert call_count == 2  # First call fails, second succeeds
+
+
+@pytest.mark.asyncio
+async def test_retry_on_errors_decorator_does_not_retry_cancelled_error():
+  """Test the retry_on_errors decorator does not retry cancellation."""
+
+  call_count = 0
+
+  @retry_on_errors
+  async def mock_function(self):
     nonlocal call_count
-    call_count = 0
+    call_count += 1
+    raise asyncio.CancelledError()
 
-    mock_self = Mock()
-    result = await mock_function(mock_self)
+  mock_self = Mock()
+  with pytest.raises(asyncio.CancelledError):
+    await mock_function(mock_self)
 
-    assert result == "success"
-    assert call_count == 2  # First call fails, second succeeds
+  assert call_count == 1
 
-  # Run the test
-  import asyncio
 
-  asyncio.run(test_retry())
+@pytest.mark.asyncio
+async def test_retry_on_errors_decorator_does_not_retry_when_task_is_cancelling():
+  """Test the retry_on_errors decorator does not retry when cancelling."""
+
+  call_count = 0
+
+  @retry_on_errors
+  async def mock_function(self):
+    nonlocal call_count
+    call_count += 1
+    raise ConnectionError("Resource closed")
+
+  class _MockTask:
+
+    def cancelling(self):
+      return 1
+
+  mock_self = Mock()
+  with patch.object(asyncio, "current_task", return_value=_MockTask()):
+    with pytest.raises(ConnectionError):
+      await mock_function(mock_self)
+
+  assert call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_retry_on_errors_decorator_does_not_retry_exception_from_cancel():
+  """Test the retry_on_errors decorator does not retry exceptions on cancel."""
+
+  call_count = 0
+
+  @retry_on_errors
+  async def mock_function(self):
+    nonlocal call_count
+    call_count += 1
+    try:
+      raise asyncio.CancelledError()
+    except asyncio.CancelledError:
+      raise ConnectionError("Resource closed")
+
+  mock_self = Mock()
+  with pytest.raises(ConnectionError):
+    await mock_function(mock_self)
+
+  assert call_count == 1

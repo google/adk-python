@@ -20,24 +20,25 @@ from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
 
-from ..utils.feature_decorator import experimental
+from ..features import experimental
+from ..features import FeatureName
 
 
-@experimental
+@experimental(FeatureName.TOOL_CONFIG)
 class BaseToolConfig(BaseModel):
   """The base class for all tool configs."""
 
   model_config = ConfigDict(extra="forbid")
 
 
-@experimental
+@experimental(FeatureName.TOOL_CONFIG)
 class ToolArgsConfig(BaseModel):
   """Config to host free key-value pairs for the args in ToolConfig."""
 
   model_config = ConfigDict(extra="allow")
 
 
-@experimental
+@experimental(FeatureName.TOOL_CONFIG)
 class ToolConfig(BaseModel):
   """The configuration for a tool.
 

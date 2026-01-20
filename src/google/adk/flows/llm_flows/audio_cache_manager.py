@@ -181,10 +181,16 @@ class AudioCacheManager:
       artifact_ref = f'artifact://{invocation_context.app_name}/{invocation_context.user_id}/{invocation_context.session.id}/_adk_live/{filename}#{revision_id}'
 
       # Create event with file data reference to add to session
+      # For model events, author should be the agent name, not the role
+      author = (
+          invocation_context.agent.name
+          if audio_cache[0].role == 'model'
+          else audio_cache[0].role
+      )
       audio_event = Event(
           id=Event.new_id(),
           invocation_id=invocation_context.invocation_id,
-          author=audio_cache[0].role,
+          author=author,
           content=types.Content(
               role=audio_cache[0].role,
               parts=[
