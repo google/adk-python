@@ -50,28 +50,44 @@ LOG_LEVELS = click.Choice(
 )
 
 
-def _apply_feature_overrides(enable_features: tuple[str, ...]) -> None:
+def _apply_feature_overrides(
+    *,
+    enable_features: tuple[str, ...] = (),
+    disable_features: tuple[str, ...] = (),
+) -> None:
   """Apply feature overrides from CLI flags.
 
   Args:
     enable_features: Tuple of feature names to enable.
+    disable_features: Tuple of feature names to disable.
   """
+  feature_overrides: dict[str, bool] = {}
+
   for features_str in enable_features:
     for feature_name_str in features_str.split(","):
       feature_name_str = feature_name_str.strip()
-      if not feature_name_str:
-        continue
-      try:
-        feature_name = FeatureName(feature_name_str)
-        override_feature_enabled(feature_name, True)
-      except ValueError:
-        valid_names = ", ".join(f.value for f in FeatureName)
-        click.secho(
-            f"WARNING: Unknown feature name '{feature_name_str}'. "
-            f"Valid names are: {valid_names}",
-            fg="yellow",
-            err=True,
-        )
+      if feature_name_str:
+        feature_overrides[feature_name_str] = True
+
+  for features_str in disable_features:
+    for feature_name_str in features_str.split(","):
+      feature_name_str = feature_name_str.strip()
+      if feature_name_str:
+        feature_overrides[feature_name_str] = False
+
+  # Apply all overrides
+  for feature_name_str, enabled in feature_overrides.items():
+    try:
+      feature_name = FeatureName(feature_name_str)
+      override_feature_enabled(feature_name, enabled)
+    except ValueError:
+      valid_names = ", ".join(f.value for f in FeatureName)
+      click.secho(
+          f"WARNING: Unknown feature name '{feature_name_str}'. "
+          f"Valid names are: {valid_names}",
+          fg="yellow",
+          err=True,
+      )
 
 
 def feature_options():
@@ -88,11 +104,25 @@ def feature_options():
         ),
         multiple=True,
     )
+    @click.option(
+        "--disable_features",
+        help=(
+            "Optional. Comma-separated list of feature names to disable. "
+            "This provides an alternative to environment variables for "
+            "disabling features. Example: "
+            "--disable_features=JSON_SCHEMA_FOR_FUNC_DECL,PROGRESSIVE_SSE_STREAMING"
+        ),
+        multiple=True,
+    )
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
       enable_features = kwargs.pop("enable_features", ())
-      if enable_features:
-        _apply_feature_overrides(enable_features)
+      disable_features = kwargs.pop("disable_features", ())
+      if enable_features or disable_features:
+        _apply_feature_overrides(
+            enable_features=enable_features,
+            disable_features=disable_features,
+        )
       return func(*args, **kwargs)
 
     return wrapper
