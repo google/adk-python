@@ -95,7 +95,10 @@ def test_adk_run():
 
   assert run_command is not None, "Run command not found"
   _check_options_in_parameters(
-      run_command, cli_run.callback, "run", ignore_params={"enable_features"}
+      run_command,
+      cli_run.callback,
+      "run",
+      ignore_params={"enable_features", "disable_features"},
   )
 
 
@@ -105,7 +108,10 @@ def test_adk_eval():
 
   assert eval_command is not None, "Eval command not found"
   _check_options_in_parameters(
-      eval_command, cli_eval.callback, "eval", ignore_params={"enable_features"}
+      eval_command,
+      cli_eval.callback,
+      "eval",
+      ignore_params={"enable_features", "disable_features"},
   )
 
 
@@ -118,7 +124,7 @@ def test_adk_web():
       web_command,
       cli_web.callback,
       "web",
-      ignore_params={"verbose", "enable_features"},
+      ignore_params={"verbose", "enable_features", "disable_features"},
   )
 
 
@@ -131,7 +137,7 @@ def test_adk_api_server():
       api_server_command,
       cli_api_server.callback,
       "api_server",
-      ignore_params={"verbose", "enable_features"},
+      ignore_params={"verbose", "enable_features", "disable_features"},
   )
 
 
