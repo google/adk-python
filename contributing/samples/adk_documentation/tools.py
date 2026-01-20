@@ -548,3 +548,114 @@ def _git_grep(
       check=False,  # Don't raise error on non-zero exit code (1 means no match)
   )
   return grep_process
+
+
+def get_file_diff_for_release(
+    repo_owner: str,
+    repo_name: str,
+    start_tag: str,
+    end_tag: str,
+    file_path: str,
+) -> Dict[str, Any]:
+  """Gets the diff/patch for a specific file between two release tags.
+
+  This is useful for incremental processing where you want to analyze
+  one file at a time instead of loading all changes at once.
+
+  Args:
+      repo_owner: The name of the repository owner.
+      repo_name: The name of the repository.
+      start_tag: The older tag (base) for the comparison.
+      end_tag: The newer tag (head) for the comparison.
+      file_path: The relative path of the file to get the diff for.
+
+  Returns:
+      A dictionary containing the status and the file diff details.
+  """
+  url = f"{GITHUB_BASE_URL}/repos/{repo_owner}/{repo_name}/compare/{start_tag}...{end_tag}"
+
+  try:
+    comparison_data = get_request(url)
+    changed_files = comparison_data.get("files", [])
+
+    for file_data in changed_files:
+      if file_data.get("filename") == file_path:
+        return {
+            "status": "success",
+            "file": {
+                "relative_path": file_data.get("filename"),
+                "status": file_data.get("status"),
+                "additions": file_data.get("additions"),
+                "deletions": file_data.get("deletions"),
+                "changes": file_data.get("changes"),
+                "patch": file_data.get("patch", "No patch available."),
+            },
+        }
+
+    return error_response(f"File {file_path} not found in the comparison.")
+  except requests.exceptions.HTTPError as e:
+    return error_response(f"HTTP Error: {e}")
+  except requests.exceptions.RequestException as e:
+    return error_response(f"Request Error: {e}")
+
+
+def get_changed_files_summary(
+    repo_owner: str, repo_name: str, start_tag: str, end_tag: str
+) -> Dict[str, Any]:
+  """Gets a summary of changed files between two releases without patches.
+
+  This is a lighter-weight version of get_changed_files_between_releases
+  that only returns file paths and metadata, without the actual diff content.
+  Use this for planning which files to analyze.
+
+  Args:
+      repo_owner: The name of the repository owner.
+      repo_name: The name of the repository.
+      start_tag: The older tag (base) for the comparison.
+      end_tag: The newer tag (head) for the comparison.
+
+  Returns:
+      A dictionary containing the status and a summary of changed files.
+  """
+  url = f"{GITHUB_BASE_URL}/repos/{repo_owner}/{repo_name}/compare/{start_tag}...{end_tag}"
+
+  try:
+    comparison_data = get_request(url)
+    changed_files = comparison_data.get("files", [])
+
+    # Group files by directory for easier processing
+    files_by_dir: Dict[str, List[Dict[str, Any]]] = {}
+    formatted_files = []
+
+    for file_data in changed_files:
+      file_info = {
+          "relative_path": file_data.get("filename"),
+          "status": file_data.get("status"),
+          "additions": file_data.get("additions"),
+          "deletions": file_data.get("deletions"),
+          "changes": file_data.get("changes"),
+      }
+      formatted_files.append(file_info)
+
+      # Group by top-level directory
+      path = file_data.get("filename", "")
+      parts = path.split("/")
+      top_dir = parts[0] if parts else "root"
+      if top_dir not in files_by_dir:
+        files_by_dir[top_dir] = []
+      files_by_dir[top_dir].append(file_info)
+
+    return {
+        "status": "success",
+        "total_files": len(formatted_files),
+        "files": formatted_files,
+        "files_by_directory": files_by_dir,
+        "compare_url": (
+            f"https://github.com/{repo_owner}/{repo_name}"
+            f"/compare/{start_tag}...{end_tag}"
+        ),
+    }
+  except requests.exceptions.HTTPError as e:
+    return error_response(f"HTTP Error: {e}")
+  except requests.exceptions.RequestException as e:
+    return error_response(f"Request Error: {e}")

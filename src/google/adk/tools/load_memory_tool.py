@@ -21,6 +21,8 @@ from pydantic import BaseModel
 from pydantic import Field
 from typing_extensions import override
 
+from ..features import FeatureName
+from ..features import is_feature_enabled
 from ..memory.memory_entry import MemoryEntry
 from .function_tool import FunctionTool
 from .tool_context import ToolContext
@@ -59,6 +61,18 @@ class LoadMemoryTool(FunctionTool):
 
   @override
   def _get_declaration(self) -> types.FunctionDeclaration | None:
+    if is_feature_enabled(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL):
+      return types.FunctionDeclaration(
+          name=self.name,
+          description=self.description,
+          parameters_json_schema={
+              'type': 'object',
+              'properties': {
+                  'query': {'type': 'string'},
+              },
+              'required': ['query'],
+          },
+      )
     return types.FunctionDeclaration(
         name=self.name,
         description=self.description,

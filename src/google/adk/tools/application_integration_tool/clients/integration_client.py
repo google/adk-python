@@ -75,6 +75,7 @@ class IntegrationClient:
     self.actions = actions if actions is not None else []
     self.service_account_json = service_account_json
     self.credential_cache = None
+    self._quota_project_id = None
 
   def get_openapi_spec_for_integration(self):
     """Gets the OpenAPI spec for the integration.
@@ -92,6 +93,8 @@ class IntegrationClient:
           "Content-Type": "application/json",
           "Authorization": f"Bearer {self._get_access_token()}",
       }
+      if not self.service_account_json:
+        headers["x-goog-user-project"] = self._quota_project_id or self.project
       data = {
           "apiTriggerResources": [
               {
@@ -247,11 +250,14 @@ class IntegrationClient:
       )
     else:
       try:
-        credentials, _ = default_service_credential(
+        credentials, project_id = default_service_credential(
             scopes=["https://www.googleapis.com/auth/cloud-platform"]
         )
       except:
         credentials = None
+      if credentials:
+        quota_project_id = getattr(credentials, "quota_project_id", None)
+        self._quota_project_id = quota_project_id or project_id
 
     if not credentials:
       raise ValueError(

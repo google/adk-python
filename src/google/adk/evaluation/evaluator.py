@@ -62,8 +62,8 @@ class Evaluator(ABC):
   def evaluate_invocations(
       self,
       actual_invocations: list[Invocation],
-      expected_invocations: Optional[list[Invocation]],
-      conversation_scenario: Optional[ConversationScenario],
+      expected_invocations: Optional[list[Invocation]] = None,
+      conversation_scenario: Optional[ConversationScenario] = None,
   ) -> EvaluationResult:
     """Returns EvaluationResult after performing evaluations using actual and expected invocations.
 

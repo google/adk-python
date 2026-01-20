@@ -28,6 +28,7 @@ from google.adk.a2a.utils.agent_card_builder import _build_parallel_description
 from google.adk.a2a.utils.agent_card_builder import _build_sequential_description
 from google.adk.a2a.utils.agent_card_builder import _convert_example_tool_examples
 from google.adk.a2a.utils.agent_card_builder import _extract_examples_from_instruction
+from google.adk.a2a.utils.agent_card_builder import _extract_inputs_from_examples
 from google.adk.a2a.utils.agent_card_builder import _get_agent_skill_name
 from google.adk.a2a.utils.agent_card_builder import _get_agent_type
 from google.adk.a2a.utils.agent_card_builder import _get_default_description
@@ -41,6 +42,7 @@ from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.loop_agent import LoopAgent
 from google.adk.agents.parallel_agent import ParallelAgent
 from google.adk.agents.sequential_agent import SequentialAgent
+from google.adk.examples import Example
 from google.adk.tools.example_tool import ExampleTool
 import pytest
 
@@ -1100,3 +1102,73 @@ class TestExampleExtractionFunctions:
     assert len(result) == 1  # Only complete pairs should be included
     assert result[0]["input"] == {"text": "What is the weather?"}
     assert result[0]["output"] == [{"text": "What time is it?"}]
+
+  def test_extract_inputs_from_examples_from_plain_text_input(self):
+    """Test _extract_inputs_from_examples on plain text as input."""
+    # Arrange
+    examples = [
+        {
+            "input": {"text": "What is the weather?"},
+            "output": [{"text": "What time is it?"}],
+        },
+        {
+            "input": {"text": "The weather is sunny."},
+            "output": [{"text": "It is 3 PM."}],
+        },
+    ]
+
+    # Act
+    result = _extract_inputs_from_examples(examples)
+
+    # Assert
+    assert len(result) == 2
+    assert result[0] == "What is the weather?"
+    assert result[1] == "The weather is sunny."
+
+  def test_extract_inputs_from_examples_from_example_tool(self):
+    """Test _extract_inputs_from_examples as extracted from ExampleTool."""
+
+    # Arrange
+    # This is what would be extracted from an ExampleTool
+    examples = [
+        {
+            "input": {
+                "role": "user",
+                "parts": [{"text": "What is the weather?"}],
+            },
+            "output": [
+                {
+                    "role": "model",
+                    "parts": [{"text": "What time is it?"}],
+                },
+            ],
+        },
+        {
+            "input": {
+                "role": "user",
+                "parts": [{"text": "The weather is sunny."}],
+            },
+            "output": [
+                {
+                    "role": "model",
+                    "parts": [{"text": "It is 3 PM."}],
+                },
+            ],
+        },
+    ]
+
+    # Act
+    result = _extract_inputs_from_examples(examples)
+
+    # Assert
+    assert len(result) == 2
+    assert result[0] == "What is the weather?"
+    assert result[1] == "The weather is sunny."
+
+  def test_extract_inputs_from_examples_none_input(self):
+    """Test _extract_inputs_from_examples on None as input."""
+    # Act
+    result = _extract_inputs_from_examples(None)
+
+    # Assert
+    assert len(result) == 0

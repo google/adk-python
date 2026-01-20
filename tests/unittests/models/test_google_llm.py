@@ -705,20 +705,27 @@ async def test_connect_without_custom_headers(gemini_llm, llm_request):
 
     mock_live_client.aio.live.connect.return_value = MockLiveConnect()
 
-    async with gemini_llm.connect(llm_request) as connection:
-      # Verify that the connect method was called with the right config
-      mock_live_client.aio.live.connect.assert_called_once()
-      call_args = mock_live_client.aio.live.connect.call_args
-      config_arg = call_args.kwargs["config"]
+    with mock.patch(
+        "google.adk.models.google_llm.GeminiLlmConnection"
+    ) as MockGeminiLlmConnection:
+      async with gemini_llm.connect(llm_request) as connection:
+        # Verify that the connect method was called with the right config
+        mock_live_client.aio.live.connect.assert_called_once()
+        call_args = mock_live_client.aio.live.connect.call_args
+        config_arg = call_args.kwargs["config"]
 
-      # Verify that http_options remains None since no custom headers were provided
-      assert config_arg.http_options is None
+        # Verify that http_options remains None since no custom headers were provided
+        assert config_arg.http_options is None
 
-      # Verify that system instruction and tools were still set
-      assert config_arg.system_instruction is not None
-      assert config_arg.tools == llm_request.config.tools
+        # Verify that system instruction and tools were still set
+        assert config_arg.system_instruction is not None
+        assert config_arg.tools == llm_request.config.tools
 
-      assert isinstance(connection, GeminiLlmConnection)
+        MockGeminiLlmConnection.assert_called_once_with(
+            mock_live_session,
+            api_backend=gemini_llm._api_backend,
+            model_version=llm_request.model,
+        )
 
 
 @pytest.mark.parametrize(

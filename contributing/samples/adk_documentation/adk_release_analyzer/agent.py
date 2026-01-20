@@ -12,8 +12,26 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""ADK Release Analyzer Agent - Multi-agent architecture for analyzing releases.
+
+This agent uses a SequentialAgent + LoopAgent pattern to handle large releases
+without context overflow:
+
+1. PlannerAgent: Collects changed files and creates analysis groups
+2. LoopAgent + FileGroupAnalyzer: Processes one group at a time
+3. SummaryAgent: Compiles all findings and creates the GitHub issue
+
+State keys used:
+- start_tag, end_tag: Release tags being compared
+- compare_url: GitHub compare URL
+- file_groups: List of file groups to analyze
+- current_group_index: Index of current group being processed
+- recommendations: Accumulated recommendations from all groups
+"""
+
 import os
 import sys
+from typing import Any
 
 SAMPLES_DIR = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "..")
@@ -29,12 +47,21 @@ from adk_documentation.settings import IS_INTERACTIVE
 from adk_documentation.settings import LOCAL_REPOS_DIR_PATH
 from adk_documentation.tools import clone_or_pull_repo
 from adk_documentation.tools import create_issue
-from adk_documentation.tools import get_changed_files_between_releases
+from adk_documentation.tools import get_changed_files_summary
+from adk_documentation.tools import get_file_diff_for_release
 from adk_documentation.tools import list_directory_contents
 from adk_documentation.tools import list_releases
 from adk_documentation.tools import read_local_git_repo_file_content
 from adk_documentation.tools import search_local_git_repo
 from google.adk import Agent
+from google.adk.agents.loop_agent import LoopAgent
+from google.adk.agents.readonly_context import ReadonlyContext
+from google.adk.agents.sequential_agent import SequentialAgent
+from google.adk.tools.exit_loop_tool import exit_loop
+from google.adk.tools.tool_context import ToolContext
+
+# Maximum number of files per analysis group to avoid context overflow
+MAX_FILES_PER_GROUP = 5
 
 if IS_INTERACTIVE:
   APPROVAL_INSTRUCTION = (
@@ -43,96 +70,551 @@ if IS_INTERACTIVE:
   )
 else:
   APPROVAL_INSTRUCTION = (
-      "**Do not** wait or ask for user approval or confirmation for creating or"
-      " updating the issue."
+      "**Do not** wait or ask for user approval or confirmation for creating"
+      " or updating the issue."
   )
+
+
+# =============================================================================
+# Tool functions for state management
+# =============================================================================
+
+
+def get_next_file_group(tool_context: ToolContext) -> dict[str, Any]:
+  """Gets the next group of files to analyze from the state.
+
+  This tool retrieves the next file group from state["file_groups"]
+  and increments the current_group_index.
+
+  Args:
+      tool_context: The tool context providing access to state.
+
+  Returns:
+      A dictionary with the next file group or indication that all groups
+      are processed.
+  """
+  file_groups = tool_context.state.get("file_groups", [])
+  current_index = tool_context.state.get("current_group_index", 0)
+
+  if current_index >= len(file_groups):
+    return {
+        "status": "complete",
+        "message": "All file groups have been processed.",
+        "total_groups": len(file_groups),
+        "processed": current_index,
+    }
+
+  current_group = file_groups[current_index]
+  tool_context.state["current_group_index"] = current_index + 1
+
+  return {
+      "status": "success",
+      "group_index": current_index,
+      "total_groups": len(file_groups),
+      "remaining": len(file_groups) - current_index - 1,
+      "files": current_group,
+  }
+
+
+def save_group_recommendations(
+    tool_context: ToolContext,
+    group_index: int,
+    recommendations: list[dict[str, str]],
+) -> dict[str, Any]:
+  """Saves recommendations for a file group to state.
+
+  Args:
+      tool_context: The tool context providing access to state.
+      group_index: The index of the group these recommendations belong to.
+      recommendations: List of recommendation dicts with keys:
+          - summary: Brief summary of the change
+          - doc_file: Path to the doc file to update
+          - current_state: Current content in the doc
+          - proposed_change: What should be changed
+          - reasoning: Why this change is needed
+          - reference: Reference to the code file
+
+  Returns:
+      A dictionary confirming the save operation.
+  """
+  all_recommendations = tool_context.state.get("recommendations", [])
+  all_recommendations.extend(recommendations)
+  tool_context.state["recommendations"] = all_recommendations
+
+  return {
+      "status": "success",
+      "group_index": group_index,
+      "new_recommendations": len(recommendations),
+      "total_recommendations": len(all_recommendations),
+  }
+
+
+def get_all_recommendations(tool_context: ToolContext) -> dict[str, Any]:
+  """Retrieves all accumulated recommendations from state.
+
+  Args:
+      tool_context: The tool context providing access to state.
+
+  Returns:
+      A dictionary with all recommendations and metadata.
+  """
+  recommendations = tool_context.state.get("recommendations", [])
+  start_tag = tool_context.state.get("start_tag", "unknown")
+  end_tag = tool_context.state.get("end_tag", "unknown")
+  compare_url = tool_context.state.get("compare_url", "")
+
+  return {
+      "status": "success",
+      "start_tag": start_tag,
+      "end_tag": end_tag,
+      "compare_url": compare_url,
+      "total_recommendations": len(recommendations),
+      "recommendations": recommendations,
+  }
+
+
+def save_release_info(
+    tool_context: ToolContext,
+    start_tag: str,
+    end_tag: str,
+    compare_url: str,
+    file_groups: list[list[dict[str, Any]]],
+    release_summary: str,
+    all_changed_files: list[str],
+) -> dict[str, Any]:
+  """Saves release info and file groups to state for processing.
+
+  Args:
+      tool_context: The tool context providing access to state.
+      start_tag: The starting release tag.
+      end_tag: The ending release tag.
+      compare_url: The GitHub compare URL.
+      file_groups: List of file groups, where each group is a list of file
+          info dicts.
+      release_summary: A high-level summary of all changes in this release,
+          including the main themes (e.g., "new feature X", "refactoring Y",
+          "bug fixes in Z"). This helps individual analyzers understand the
+          bigger picture.
+      all_changed_files: List of all changed file paths (for cross-reference).
+
+  Returns:
+      A dictionary confirming the save operation.
+  """
+  tool_context.state["start_tag"] = start_tag
+  tool_context.state["end_tag"] = end_tag
+  tool_context.state["compare_url"] = compare_url
+  tool_context.state["file_groups"] = file_groups
+  tool_context.state["current_group_index"] = 0
+  tool_context.state["recommendations"] = []
+  tool_context.state["release_summary"] = release_summary
+  tool_context.state["all_changed_files"] = all_changed_files
+
+  return {
+      "status": "success",
+      "start_tag": start_tag,
+      "end_tag": end_tag,
+      "total_groups": len(file_groups),
+      "total_files": sum(len(group) for group in file_groups),
+  }
+
+
+def get_release_context(tool_context: ToolContext) -> dict[str, Any]:
+  """Gets the global release context for cross-group awareness.
+
+  This allows individual file group analyzers to understand:
+  - The overall theme of the release
+  - What other files were changed (for identifying related changes)
+  - What recommendations have already been made (to avoid duplicates)
+
+  Args:
+      tool_context: The tool context providing access to state.
+
+  Returns:
+      A dictionary with global release context.
+  """
+  return {
+      "status": "success",
+      "start_tag": tool_context.state.get("start_tag", "unknown"),
+      "end_tag": tool_context.state.get("end_tag", "unknown"),
+      "release_summary": tool_context.state.get("release_summary", ""),
+      "all_changed_files": tool_context.state.get("all_changed_files", []),
+      "existing_recommendations": tool_context.state.get("recommendations", []),
+      "current_group_index": tool_context.state.get("current_group_index", 0),
+      "total_groups": len(tool_context.state.get("file_groups", [])),
+  }
+
+
+# =============================================================================
+# Agent 1: Planner Agent
+# =============================================================================
+
+planner_agent = Agent(
+    model="gemini-2.5-pro",
+    name="release_planner",
+    description=(
+        "Plans the analysis by fetching release info and organizing files into"
+        " groups for incremental processing."
+    ),
+    instruction=f"""
+# 1. Identity
+You are the Release Planner, responsible for setting up the analysis of ADK
+Python releases. You gather information about changes and organize them for
+efficient processing.
+
+# 2. Workflow
+1. First, call `clone_or_pull_repo` for both repositories:
+   - ADK Python codebase: owner={CODE_OWNER}, repo={CODE_REPO}, path={LOCAL_REPOS_DIR_PATH}/{CODE_REPO}
+   - ADK Docs: owner={DOC_OWNER}, repo={DOC_REPO}, path={LOCAL_REPOS_DIR_PATH}/{DOC_REPO}
+
+2. Call `list_releases` to find the release tags for {CODE_OWNER}/{CODE_REPO}.
+   - By default, compare the two most recent releases.
+   - If the user specifies tags, use those instead.
+
+3. Call `get_changed_files_summary` to get the list of changed files WITHOUT
+   the full patches (to save context space).
+
+4. Filter and organize the files:
+   - **INCLUDE** only files in `src/google/adk/` directory
+   - **EXCLUDE** test files, `__init__.py`, and files outside src/
+   - **IMPORTANT**: Do NOT exclude any file just because it has few changes.
+     Even single-line changes to public APIs need documentation updates.
+   - **PRIORITIZE** by importance:
+     a) New files (status: "added") - ALWAYS include these
+     b) CLI files (cli/) - often contain user-facing flags and options
+     c) Tool files (tools/) - may contain new tools or tool parameters
+     d) Core files (agents/, models/, sessions/, memory/, a2a/, flows/,
+        plugins/, evaluation/)
+     e) Files with many changes (high additions + deletions)
+
+5. **Create a high-level release summary** based on the changed files:
+   - Identify the main themes (e.g., "new tool X added", "refactoring of Y")
+   - Note any files that appear related (e.g., same feature area)
+   - This summary will be shared with individual file analyzers so they
+     understand the bigger picture.
+
+6. Group the filtered files into groups of at most {MAX_FILES_PER_GROUP} files each.
+   - **IMPORTANT**: Group RELATED files together (same directory or feature)
+   - Files that are part of the same feature should be in the same group
+   - Each group should be independently analyzable
+
+7. Call `save_release_info` to save:
+   - start_tag, end_tag
+   - compare_url
+   - file_groups (the organized groups)
+   - release_summary (the high-level summary you created)
+   - all_changed_files (list of all file paths for cross-reference)
+
+# 3. Output
+Provide a summary of:
+- Which releases are being compared
+- The high-level themes of this release
+- How many files changed in total
+- How many files are relevant for doc analysis
+- How many groups were created
+""",
+    tools=[
+        clone_or_pull_repo,
+        list_releases,
+        get_changed_files_summary,
+        save_release_info,
+    ],
+    output_key="planner_output",
+)
+
+
+# =============================================================================
+# Agent 2: File Group Analyzer (runs inside LoopAgent)
+# =============================================================================
+
+
+def file_analyzer_instruction(readonly_context: ReadonlyContext) -> str:
+  """Dynamic instruction that includes current state info."""
+  start_tag = readonly_context.state.get("start_tag", "unknown")
+  end_tag = readonly_context.state.get("end_tag", "unknown")
+  release_summary = readonly_context.state.get("release_summary", "")
+
+  return f"""
+# 1. Identity
+You are the File Group Analyzer, responsible for analyzing a group of changed
+files and finding related documentation that needs updating.
+
+# 2. Context
+- Comparing releases: {start_tag} to {end_tag}
+- Code repository: {CODE_OWNER}/{CODE_REPO}
+- Docs repository: {DOC_OWNER}/{DOC_REPO}
+- Docs local path: {LOCAL_REPOS_DIR_PATH}/{DOC_REPO}
+- Code local path: {LOCAL_REPOS_DIR_PATH}/{CODE_REPO}
+
+## Release Summary (from Planner)
+{release_summary}
+
+# 3. Workflow
+1. Call `get_next_file_group` to get the next group of files to analyze.
+   - If status is "complete", call the `exit_loop` tool to exit the loop.
+
+2. **FIRST**, call `get_release_context` to understand:
+   - The overall release themes (to understand how your files fit in)
+   - What other files were changed (to identify related changes)
+   - What recommendations already exist (to AVOID DUPLICATES)
+
+3. For each file in the group:
+   a) Call `get_file_diff_for_release` to get the patch content for that file.
+   b) Analyze the changes THOROUGHLY. Look for:
+      **API Changes:**
+      - New functions, classes, methods (especially public ones)
+      - New parameters added to existing functions
+      - New CLI arguments or flags (look for argparse, click decorators)
+      - New environment variables (look for os.environ, getenv)
+      - New tools or features being added
+      - Renamed or deprecated functionality
+      **Behavior Changes (even without API changes):**
+      - Default values changed
+      - Error handling or exception types changed
+      - Return value format or content changed
+      - Side effects added or removed
+      - Performance characteristics changed
+      - Edge case handling changed
+      - Validation rules changed
+   c) Consider how this file relates to OTHER changed files in this release.
+   d) Generate MULTIPLE search patterns based on:
+      - Class/function names that changed
+      - Feature names mentioned in the file path
+      - Keywords from the patch content (e.g., "local_storage", "allow_origins")
+      - Tool names, parameter names, environment variable names
+
+4. For EACH significant change, call `search_local_git_repo` to find related docs
+   in {LOCAL_REPOS_DIR_PATH}/{DOC_REPO}/docs/
+   - Search for the feature name, class name, or related keywords
+   - If no docs found, recommend creating new documentation
+
+5. Call `read_local_git_repo_file_content` to read the relevant doc files
+   and check if they need updating.
+
+6. For each documentation update needed, create a recommendation with:
+   - summary: Brief summary of what needs to change
+   - doc_file: Relative path in the docs repo (e.g., docs/tools/google-search.md)
+   - current_state: What the doc currently says
+   - proposed_change: What it should say instead
+   - reasoning: Why this update is needed
+   - reference: The source code file path
+   - related_files: Other changed files that are part of the same change (if any)
+
+7. Call `save_group_recommendations` with all recommendations for this group.
+
+8. After saving, output a brief summary of what you found for this group.
+
+# 4. Rules
+- **BE THOROUGH**: Check EVERY change in the diff that could affect users.
+  This includes API changes AND behavior changes (default values, error handling,
+  return formats, side effects, etc.).
+- Focus on changes that users need to know about
+- Include behavior changes even if the API signature stays the same
+- If a change only affects auto-generated API reference docs, note that
+  regeneration is needed instead of manual updates
+- **AVOID DUPLICATES**: Check existing_recommendations before adding new ones
+- **CROSS-REFERENCE**: If files in your group relate to files in other groups,
+  mention this in your recommendation so the Summary agent can consolidate
+- **DON'T MISS ITEMS**: Better to have too many recommendations than too few.
+  If unsure whether something needs documentation, include it.
+- For new features with no existing docs, recommend creating a new page
+"""
+
+
+file_group_analyzer = Agent(
+    model="gemini-2.5-pro",
+    name="file_group_analyzer",
+    description=(
+        "Analyzes a group of changed files and generates recommendations."
+    ),
+    instruction=file_analyzer_instruction,
+    tools=[
+        get_next_file_group,
+        get_release_context,  # Get global context to avoid duplicates
+        get_file_diff_for_release,
+        search_local_git_repo,
+        read_local_git_repo_file_content,
+        list_directory_contents,
+        save_group_recommendations,
+        exit_loop,  # Call this when all groups are processed
+    ],
+    output_key="analyzer_output",
+)
+
+# Loop agent that processes file groups one at a time
+file_analysis_loop = LoopAgent(
+    name="file_analysis_loop",
+    sub_agents=[file_group_analyzer],
+    max_iterations=50,  # Safety limit
+)
+
+
+# =============================================================================
+# Agent 3: Summary Agent
+# =============================================================================
+
+
+def summary_instruction(readonly_context: ReadonlyContext) -> str:
+  """Dynamic instruction with release info."""
+  start_tag = readonly_context.state.get("start_tag", "unknown")
+  end_tag = readonly_context.state.get("end_tag", "unknown")
+
+  return f"""
+# 1. Identity
+You are the Summary Agent, responsible for compiling all recommendations into
+a well-formatted GitHub issue.
+
+# 2. Workflow
+1. Call `get_all_recommendations` to retrieve all accumulated recommendations.
+
+2. Organize the recommendations:
+   - Group by importance: Feature changes > Bug fixes > Other
+   - Within each group, sort by number of affected files
+   - Remove duplicates or merge similar recommendations
+
+3. Format the issue body using this template for each recommendation:
+   ```
+   ### N. **Summary of the change**
+
+   **Doc file**: path/to/doc.md
+
+   **Current state**:
+   > Current content in the doc
+
+   **Proposed Change**:
+   > What it should say instead
+
+   **Reasoning**:
+   Explanation of why this change is necessary.
+
+   **Reference**: src/google/adk/path/to/file.py
+   ```
+
+4. Create the GitHub issue:
+   - Title: "Found docs updates needed from ADK python release {start_tag} to {end_tag}"
+   - Include the compare link at the top
+   - {APPROVAL_INSTRUCTION}
+
+5. Call `create_issue` for {DOC_OWNER}/{DOC_REPO} with the formatted content.
+
+# 3. Output
+Present a summary of:
+- Total recommendations created
+- Issue URL if created
+- Any notes about the analysis
+"""
+
+
+summary_agent = Agent(
+    model="gemini-2.5-pro",
+    name="summary_agent",
+    description="Compiles recommendations and creates the GitHub issue.",
+    instruction=summary_instruction,
+    tools=[
+        get_all_recommendations,
+        create_issue,
+    ],
+    output_key="summary_output",
+)
+
+
+# =============================================================================
+# Pipeline Agent: Sequential orchestration of the analysis
+# =============================================================================
+
+analysis_pipeline = SequentialAgent(
+    name="analysis_pipeline",
+    description=(
+        "Executes the release analysis pipeline: planning, file analysis, and"
+        " summary generation."
+    ),
+    sub_agents=[
+        planner_agent,
+        file_analysis_loop,
+        summary_agent,
+    ],
+)
+
+
+# =============================================================================
+# Root Agent: Entry point that understands user requests
+# =============================================================================
 
 root_agent = Agent(
     model="gemini-2.5-pro",
     name="adk_release_analyzer",
     description=(
-        "Analyze the changes between two ADK releases and generate instructions"
-        " about how to update the ADK docs."
+        "Analyzes ADK Python releases and generates documentation update"
+        " recommendations."
     ),
     instruction=f"""
-      # 1. Identity
-      You are a helper bot that checks if ADK docs in GitHub Repository {DOC_REPO} owned by {DOC_OWNER}
-      should be updated based on the changes in the ADK Python codebase in GitHub Repository {CODE_REPO} owned by {CODE_OWNER}.
+# 1. Identity
+You are the ADK Release Analyzer, a helper bot that analyzes changes between
+ADK Python releases and identifies documentation updates needed in the ADK
+Docs repository.
 
-      You are very familiar with GitHub, especially how to search for files in a GitHub repository using git grep.
+# 2. Capabilities
+You can help users in several ways:
 
-      # 2. Responsibilities
-      Your core responsibility includes:
-      - Find all the code changes between the two ADK releases.
-      - Find **all** the related docs files in ADK Docs repository under the "/docs/" directory.
-      - Compare the code changes with the docs files and analyze the differences.
-      - Write the instructions about how to update the ADK docs in markdown format and create a GitHub issue in the GitHub Repository {DOC_REPO} with the instructions.
+## A. Full Release Analysis (delegate to analysis_pipeline)
+When users want a complete analysis of releases, delegate to the
+`analysis_pipeline` sub-agent. This will:
+- Clone/update repositories
+- Analyze all changed files
+- Generate recommendations
+- Create a GitHub issue
 
-      # 3. Workflow
-      1. Always call the `clone_or_pull_repo` tool to make sure the ADK docs and codebase repos exist in the local folder {LOCAL_REPOS_DIR_PATH}/repo_name and are the latest version.
-      2. Find the code changes between the two ADK releases.
-        - You should call the `get_changed_files_between_releases` tool to find all the code changes between the two ADK releases.
-        - You can call the `list_releases` tool to find the release tags.
-      3. Understand the code changes between the two ADK releases.
-        - You should focus on the main ADK Python codebase, ignore the changes in tests or other auxiliary files.
-      4. Come up with a list of regex search patterns to search for related docs files.
-      5. Use the `search_local_git_repo` tool to search for related docs files using the regex patterns.
-        - You should look into all the related docs files, not only the most relevant one.
-        - Prefer searching from the root directory of the ADK Docs repository (i.e. /docs/), unless you are certain that the file is in a specific directory.
-      6. Read the found docs files using the `read_local_git_repo_file_content` tool to find all the docs to update.
-        - You should read all the found docs files and check if they are up to date.
-      7. Compare the code changes and docs files, and analyze the differences.
-        - You should not only check the code snippets in the docs, but also the text contents.
-      8. Write the instructions about how to update the ADK docs in a markdown format.
-        - For **each** recommended change, reference the code changes.
-        - For **each** recommended change, follow the format of the following template:
-          ```
-          1. **Highlighted summary of the change**.
-             Details of the change.
+Use this when users say things like:
+- "Analyze the latest releases"
+- "Check what docs need updating for v1.15.0"
+- "Run a full analysis"
 
-             **Current state**:
-             Current content in the doc
+## B. Quick Queries (use your tools directly)
+For targeted questions, use your tools directly WITHOUT delegating:
 
-             **Proposed Change**:
-             Proposed change to the doc.
+- **"How should I modify doc1.md?"** → Use `search_local_git_repo` to find
+  mentions of doc1.md in the codebase, then use `get_changed_files_summary`
+  to see what changed, and provide specific guidance.
 
-             **Reasoning**:
-             Explanation of why this change is necessary.
+- **"What changed in the tools module?"** → Use `get_changed_files_summary`
+  and filter for tools/ directory.
 
-             **Reference**:
-             Reference to the code file (e.g. src/google/adk/tools/spanner/metadata_tool.py).
-          ```
-        - When referencing doc file, use the full relative path of the doc file in the ADK Docs repository (e.g. docs/sessions/memory.md).
-      9. Create or recommend to create a GitHub issue in the GitHub Repository {DOC_REPO} with the instructions using the `create_issue` tool.
-        - The title of the issue should be "Found docs updates needed from ADK python release <start_tag> to <end_tag>", where start_tag and end_tag are the release tags.
-        - The body of the issue should be the instructions about how to update the ADK docs.
-          - Include the compare link between the two ADK releases in the issue body, e.g. https://github.com/google/adk-python/compare/v1.14.0...v1.14.1.
-        - **{APPROVAL_INSTRUCTION}**
+- **"Show me the recommendations from the last analysis"** → Use
+  `get_all_recommendations` to retrieve stored recommendations.
 
-      # 4. Guidelines & Rules
-      - **File Paths:** Always use absolute paths when calling the tools to read files, list directories, or search the codebase.
-      - **Tool Call Parallelism:** Execute multiple independent tool calls in parallel when feasible (i.e. searching the codebase).
-      - **Explanation:** Provide concise explanations for your actions and reasoning for each step.
-      - **Reference:** For each recommended change, reference the code changes (i.e. links to the commits) **AND** the code files (i.e. relative paths to the code files in the codebase).
-      - **Sorting:** Sort the recommended changes by the importance of the changes, from the most important to the least important.
-        - Here are the importance groups: Feature changes > Bug fixes > Other changes.
-        - Within each importance group, sort the changes by the number of files they affect.
-        - Within each group of changes with the same number of files, sort by the number of lines changed in each file.
-      - **API Reference Updates:** ADK Docs repository has auto-generated API reference docs for the ADK Python codebase, which can be found in the "/docs/api-reference/python" directory.
-        - If a change in the codebase can be covered by the auto-generated API reference docs, you should just recommend to update the API reference docs (i.e. regenerate the API reference docs) instead of the other human-written ADK docs.
+- **"What releases are available?"** → Use `list_releases` directly.
 
-      # 5. Output
-      Present the following in an easy to read format as the final output to the user.
-      - The actions you took and the reasoning
-      - The summary of the differences found
-    """,
+# 3. Workflow Decision
+1. First, understand what the user is asking:
+   - Full analysis request → delegate to analysis_pipeline
+   - Specific question about a file/module → use tools directly
+   - Query about previous results → use get_all_recommendations
+
+2. For quick queries, ensure repos are cloned first using `clone_or_pull_repo`
+   if needed.
+
+3. Always explain what you're doing and provide clear, actionable answers.
+
+# 4. Available Tools
+- `clone_or_pull_repo`: Ensure local repos are up to date
+- `list_releases`: See available release tags
+- `get_changed_files_summary`: Get list of changed files (lightweight)
+- `get_file_diff_for_release`: Get patch for a specific file
+- `search_local_git_repo`: Search for patterns in repos
+- `read_local_git_repo_file_content`: Read file contents
+- `get_all_recommendations`: Retrieve recommendations from previous analysis
+
+# 5. Repository Info
+- Code repo: {CODE_OWNER}/{CODE_REPO} at {LOCAL_REPOS_DIR_PATH}/{CODE_REPO}
+- Docs repo: {DOC_OWNER}/{DOC_REPO} at {LOCAL_REPOS_DIR_PATH}/{DOC_REPO}
+""",
     tools=[
-        list_releases,
-        get_changed_files_between_releases,
         clone_or_pull_repo,
-        list_directory_contents,
+        list_releases,
+        get_changed_files_summary,
+        get_file_diff_for_release,
         search_local_git_repo,
         read_local_git_repo_file_content,
-        create_issue,
+        get_all_recommendations,
     ],
+    sub_agents=[analysis_pipeline],
 )

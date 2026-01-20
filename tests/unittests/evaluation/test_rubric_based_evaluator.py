@@ -40,8 +40,13 @@ class FakeRubricBasedEvaluator(RubricBasedEvaluator):
   def __init__(
       self,
       eval_metric: EvalMetric,
+      rubric_type: str | None = None,
   ):
-    super().__init__(eval_metric, criterion_type=RubricsBasedCriterion)
+    super().__init__(
+        eval_metric,
+        criterion_type=RubricsBasedCriterion,
+        rubric_type=rubric_type,
+    )
 
   def format_auto_rater_prompt(
       self, actual: Invocation, expected: Invocation
@@ -465,6 +470,7 @@ class TestRubricBasedEvaluator:
       evaluator: RubricBasedEvaluator,
   ):
     """Tests convert_auto_rater_response_to_score with an empty response."""
+    evaluator.create_effective_rubrics_list(None)
     response = LlmResponse(
         content=genai_types.Content(parts=[genai_types.Part(text="")])
     )
@@ -477,6 +483,7 @@ class TestRubricBasedEvaluator:
       evaluator: RubricBasedEvaluator,
   ):
     """Tests convert_auto_rater_response_to_score with a malformed response."""
+    evaluator.create_effective_rubrics_list(None)
     response = LlmResponse(
         content=genai_types.Content(
             parts=[genai_types.Part(text="This is not a valid format.")]
@@ -491,6 +498,7 @@ class TestRubricBasedEvaluator:
       evaluator: RubricBasedEvaluator,
   ):
     """Tests convert_auto_rater_response_to_score with mixed verdicts."""
+    evaluator.create_effective_rubrics_list(None)
     response_text = """
     Property: Is the response good?
     Rationale: It was good.
@@ -515,6 +523,7 @@ class TestRubricBasedEvaluator:
       evaluator: RubricBasedEvaluator,
   ):
     """Tests convert_auto_rater_response_to_score with an invalid verdict."""
+    evaluator.create_effective_rubrics_list(None)
     response_text = """
     Property: Is the response good?
     Rationale: It was good.
@@ -539,6 +548,7 @@ class TestRubricBasedEvaluator:
       evaluator: RubricBasedEvaluator,
   ):
     """Tests convert_auto_rater_response_to_score with an unknown property."""
+    evaluator.create_effective_rubrics_list(None)
     response_text = """
     Property: Is the response amazing?
     Rationale: It was amazing.
@@ -551,4 +561,100 @@ class TestRubricBasedEvaluator:
     )
     auto_rater_score = evaluator.convert_auto_rater_response_to_score(response)
     assert auto_rater_score.score is None
-    assert len(auto_rater_score.rubric_scores) == 0
+    assert auto_rater_score.rubric_scores == []
+
+  def test_create_effective_rubrics_list_with_invocation_rubrics(
+      self, evaluator: RubricBasedEvaluator
+  ):
+    invocation_rubrics = [
+        Rubric(
+            rubric_id="3",
+            rubric_content=RubricContent(text_property="Invocation rubric"),
+        )
+    ]
+    evaluator.create_effective_rubrics_list(invocation_rubrics)
+    effective_rubrics = evaluator.get_effective_rubrics_list()
+    assert len(effective_rubrics) == 3
+    assert {r.rubric_id for r in effective_rubrics} == {"1", "2", "3"}
+
+  def test_create_effective_rubrics_list_with_duplicate_invocation_rubric_id(
+      self, evaluator: RubricBasedEvaluator
+  ):
+    invocation_rubrics = [
+        Rubric(
+            rubric_id="1",
+            rubric_content=RubricContent(text_property="Invocation rubric"),
+        )
+    ]
+    with pytest.raises(
+        ValueError, match="Rubric with rubric_id '1' already exists."
+    ):
+      evaluator.create_effective_rubrics_list(invocation_rubrics)
+
+  def test_create_effective_rubrics_list_with_no_invocation_rubrics(
+      self, evaluator: RubricBasedEvaluator
+  ):
+    evaluator.create_effective_rubrics_list(None)
+    effective_rubrics = evaluator.get_effective_rubrics_list()
+    assert len(effective_rubrics) == 2
+    assert {r.rubric_id for r in effective_rubrics} == {"1", "2"}
+
+  def test_get_effective_rubrics_list_before_creation_raises_error(
+      self, evaluator: RubricBasedEvaluator
+  ):
+    with pytest.raises(
+        ValueError, match="Effective rubrics list not initialized."
+    ):
+      evaluator.get_effective_rubrics_list()
+
+  def test_create_effective_rubrics_list_multiple_calls(
+      self, evaluator: RubricBasedEvaluator
+  ):
+    invocation_rubrics1 = [
+        Rubric(
+            rubric_id="3",
+            rubric_content=RubricContent(text_property="Invocation rubric 1"),
+        )
+    ]
+    evaluator.create_effective_rubrics_list(invocation_rubrics1)
+    effective_rubrics1 = evaluator.get_effective_rubrics_list()
+    assert len(effective_rubrics1) == 3
+    assert {r.rubric_id for r in effective_rubrics1} == {"1", "2", "3"}
+
+    invocation_rubrics2 = [
+        Rubric(
+            rubric_id="4",
+            rubric_content=RubricContent(text_property="Invocation rubric 2"),
+        )
+    ]
+    evaluator.create_effective_rubrics_list(invocation_rubrics2)
+    effective_rubrics2 = evaluator.get_effective_rubrics_list()
+    assert len(effective_rubrics2) == 3
+    assert {r.rubric_id for r in effective_rubrics2} == {"1", "2", "4"}
+
+  def test_create_effective_rubrics_filters_by_rubric_type(
+      self, evaluator: RubricBasedEvaluator
+  ):
+    evaluator_with_type = FakeRubricBasedEvaluator(
+        evaluator._eval_metric, rubric_type="TEST_TYPE"
+    )
+    invocation_rubrics = [
+        Rubric(
+            rubric_id="test_type_rubric",
+            rubric_content=RubricContent(text_property="Invocation rubric 1"),
+            type="TEST_TYPE",
+        ),
+        Rubric(
+            rubric_id="other_type_rubric",
+            rubric_content=RubricContent(text_property="Invocation rubric 2"),
+            type="OTHER_TYPE",
+        ),
+    ]
+    evaluator_with_type.create_effective_rubrics_list(invocation_rubrics)
+    effective_rubrics = evaluator_with_type.get_effective_rubrics_list()
+    assert len(effective_rubrics) == 3
+    assert {r.rubric_id for r in effective_rubrics} == {
+        "1",
+        "2",
+        "test_type_rubric",
+    }
