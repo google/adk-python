@@ -31,12 +31,17 @@ if TYPE_CHECKING:
 class EnterpriseWebSearchTool(BaseTool):
   """A Gemini 2+ built-in tool using web grounding for Enterprise compliance.
 
+  NOTE: This tool is not the same as Vertex AI Search, which is used to be
+  called "Enterprise Search".
+
   See the documentation for more details:
   https://cloud.google.com/vertex-ai/generative-ai/docs/grounding/web-grounding-enterprise.
+
+
   """
 
   def __init__(self):
-    """Initializes the Vertex AI Search tool."""
+    """Initializes the Enterprise Web Search tool."""
     # Name and description are not used because this is a model built-in tool.
     super().__init__(
         name='enterprise_web_search', description='enterprise_web_search'
@@ -52,7 +57,7 @@ class EnterpriseWebSearchTool(BaseTool):
     if is_gemini_model(llm_request.model):
       if is_gemini_1_model(llm_request.model) and llm_request.config.tools:
         raise ValueError(
-            'Enterprise web search tool cannot be used with other tools in'
+            'Enterprise Web Search tool cannot be used with other tools in'
             ' Gemini 1.x.'
         )
       llm_request.config = llm_request.config or types.GenerateContentConfig()
@@ -62,7 +67,7 @@ class EnterpriseWebSearchTool(BaseTool):
       )
     else:
       raise ValueError(
-          'Enterprise web search tool is not supported for model'
+          'Enterprise Web Search tool is not supported for model'
           f' {llm_request.model}'
       )
 

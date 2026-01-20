@@ -45,7 +45,7 @@ class _OutputSchemaRequestProcessor(BaseLlmRequestProcessor):
     if (
         not agent.output_schema
         or not agent.tools
-        or can_use_output_schema_with_tools(agent.model)
+        or can_use_output_schema_with_tools(agent.canonical_model)
     ):
       return
 

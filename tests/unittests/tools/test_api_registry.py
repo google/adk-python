@@ -91,6 +91,7 @@ class TestApiRegistry(unittest.IsolatedAsyncioTestCase):
             "Authorization": "Bearer mock_token",
             "Content-Type": "application/json",
         },
+        params={},
     )
 
   @patch("httpx.Client", autospec=True)
@@ -119,6 +120,71 @@ class TestApiRegistry(unittest.IsolatedAsyncioTestCase):
             "Content-Type": "application/json",
             "x-goog-user-project": "quota-project",
         },
+        params={},
+    )
+
+  @patch("httpx.Client", autospec=True)
+  def test_init_with_pagination_success(self, MockHttpClient):
+    mock_response1 = create_autospec(httpx.Response, instance=True)
+    mock_response1.json.return_value = {
+        "mcpServers": [
+            {
+                "name": "test-mcp-server-1",
+                "urls": ["mcp.server1.com"],
+            },
+            {
+                "name": "test-mcp-server-2",
+                "urls": ["mcp.server2.com"],
+            },
+        ],
+        "nextPageToken": "next_page_token",
+    }
+    mock_response2 = create_autospec(httpx.Response, instance=True)
+    mock_response2.json.return_value = {
+        "mcpServers": [
+            {
+                "name": "test-mcp-server-no-url",
+            },
+            {
+                "name": "test-mcp-server-http",
+                "urls": ["http://mcp.server_http.com"],
+            },
+            {
+                "name": "test-mcp-server-https",
+                "urls": ["https://mcp.server_https.com"],
+            },
+        ]
+    }
+    mock_client_instance = MockHttpClient.return_value
+    mock_client_instance.__enter__.return_value = mock_client_instance
+    mock_client_instance.get.side_effect = [mock_response1, mock_response2]
+
+    api_registry = ApiRegistry(
+        api_registry_project_id=self.project_id, location=self.location
+    )
+
+    self.assertEqual(len(api_registry._mcp_servers), 5)
+    self.assertIn("test-mcp-server-1", api_registry._mcp_servers)
+    self.assertIn("test-mcp-server-2", api_registry._mcp_servers)
+    self.assertIn("test-mcp-server-no-url", api_registry._mcp_servers)
+    self.assertIn("test-mcp-server-http", api_registry._mcp_servers)
+    self.assertIn("test-mcp-server-https", api_registry._mcp_servers)
+    self.assertEqual(mock_client_instance.get.call_count, 2)
+    mock_client_instance.get.assert_any_call(
+        f"https://cloudapiregistry.googleapis.com/v1beta/projects/{self.project_id}/locations/{self.location}/mcpServers",
+        headers={
+            "Authorization": "Bearer mock_token",
+            "Content-Type": "application/json",
+        },
+        params={},
+    )
+    mock_client_instance.get.assert_called_with(
+        f"https://cloudapiregistry.googleapis.com/v1beta/projects/{self.project_id}/locations/{self.location}/mcpServers",
+        headers={
+            "Authorization": "Bearer mock_token",
+            "Content-Type": "application/json",
+        },
+        params={"pageToken": "next_page_token"},
     )
 
   @patch("httpx.Client", autospec=True)

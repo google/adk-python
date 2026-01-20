@@ -310,7 +310,11 @@ class StorageEvent(Base):
         branch=self.branch,
         # This is needed as previous ADK version pickled actions might not have
         # value defined in the current version of the EventActions model.
-        actions=EventActions().model_copy(update=self.actions.model_dump()),
+        actions=(
+            EventActions.model_validate(self.actions.model_dump())
+            if self.actions
+            else EventActions()
+        ),
         timestamp=self.timestamp.timestamp(),
         long_running_tool_ids=self.long_running_tool_ids,
         partial=self.partial,
