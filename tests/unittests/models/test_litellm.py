@@ -128,7 +128,7 @@ FILE_BYTES_TEST_CASES = [
 ]
 
 STREAMING_MODEL_RESPONSE = [
-    ModelResponse(
+    ModelResponse.model_construct(
         model="test_model",
         choices=[
             StreamingChoices(
@@ -140,7 +140,7 @@ STREAMING_MODEL_RESPONSE = [
             )
         ],
     ),
-    ModelResponse(
+    ModelResponse.model_construct(
         model="test_model",
         choices=[
             StreamingChoices(
@@ -152,7 +152,7 @@ STREAMING_MODEL_RESPONSE = [
             )
         ],
     ),
-    ModelResponse(
+    ModelResponse.model_construct(
         model="test_model",
         choices=[
             StreamingChoices(
@@ -164,7 +164,7 @@ STREAMING_MODEL_RESPONSE = [
             )
         ],
     ),
-    ModelResponse(
+    ModelResponse.model_construct(
         model="test_model",
         choices=[
             StreamingChoices(
@@ -186,7 +186,7 @@ STREAMING_MODEL_RESPONSE = [
             )
         ],
     ),
-    ModelResponse(
+    ModelResponse.model_construct(
         model="test_model",
         choices=[
             StreamingChoices(
@@ -208,7 +208,7 @@ STREAMING_MODEL_RESPONSE = [
             )
         ],
     ),
-    ModelResponse(
+    ModelResponse.model_construct(
         model="test_model",
         choices=[
             StreamingChoices(
@@ -531,7 +531,7 @@ def test_schema_to_dict_filters_none_enum_values():
 
 
 MULTIPLE_FUNCTION_CALLS_STREAM = [
-    ModelResponse(
+    ModelResponse.model_construct(
         choices=[
             StreamingChoices(
                 finish_reason=None,
@@ -552,7 +552,7 @@ MULTIPLE_FUNCTION_CALLS_STREAM = [
             )
         ]
     ),
-    ModelResponse(
+    ModelResponse.model_construct(
         choices=[
             StreamingChoices(
                 finish_reason=None,
@@ -573,7 +573,7 @@ MULTIPLE_FUNCTION_CALLS_STREAM = [
             )
         ]
     ),
-    ModelResponse(
+    ModelResponse.model_construct(
         choices=[
             StreamingChoices(
                 finish_reason=None,
@@ -594,7 +594,7 @@ MULTIPLE_FUNCTION_CALLS_STREAM = [
             )
         ]
     ),
-    ModelResponse(
+    ModelResponse.model_construct(
         choices=[
             StreamingChoices(
                 finish_reason=None,
@@ -615,7 +615,7 @@ MULTIPLE_FUNCTION_CALLS_STREAM = [
             )
         ]
     ),
-    ModelResponse(
+    ModelResponse.model_construct(
         choices=[
             StreamingChoices(
                 finish_reason="tool_calls",
@@ -626,7 +626,7 @@ MULTIPLE_FUNCTION_CALLS_STREAM = [
 
 
 STREAM_WITH_EMPTY_CHUNK = [
-    ModelResponse(
+    ModelResponse.model_construct(
         choices=[
             StreamingChoices(
                 finish_reason=None,
@@ -647,7 +647,7 @@ STREAM_WITH_EMPTY_CHUNK = [
             )
         ]
     ),
-    ModelResponse(
+    ModelResponse.model_construct(
         choices=[
             StreamingChoices(
                 finish_reason=None,
@@ -669,7 +669,7 @@ STREAM_WITH_EMPTY_CHUNK = [
         ]
     ),
     # This is the problematic empty chunk that should be ignored.
-    ModelResponse(
+    ModelResponse.model_construct(
         choices=[
             StreamingChoices(
                 finish_reason=None,
@@ -690,7 +690,7 @@ STREAM_WITH_EMPTY_CHUNK = [
             )
         ]
     ),
-    ModelResponse(
+    ModelResponse.model_construct(
         choices=[StreamingChoices(finish_reason="tool_calls", delta=Delta())]
     ),
 ]
@@ -726,7 +726,7 @@ def mock_response():
 # indices all 0
 # finish_reason stop instead of tool_calls
 NON_COMPLIANT_MULTIPLE_FUNCTION_CALLS_STREAM = [
-    ModelResponse(
+    ModelResponse.model_construct(
         choices=[
             StreamingChoices(
                 finish_reason=None,
@@ -747,7 +747,7 @@ NON_COMPLIANT_MULTIPLE_FUNCTION_CALLS_STREAM = [
             )
         ]
     ),
-    ModelResponse(
+    ModelResponse.model_construct(
         choices=[
             StreamingChoices(
                 finish_reason=None,
@@ -768,7 +768,7 @@ NON_COMPLIANT_MULTIPLE_FUNCTION_CALLS_STREAM = [
             )
         ]
     ),
-    ModelResponse(
+    ModelResponse.model_construct(
         choices=[
             StreamingChoices(
                 finish_reason=None,
@@ -789,7 +789,7 @@ NON_COMPLIANT_MULTIPLE_FUNCTION_CALLS_STREAM = [
             )
         ]
     ),
-    ModelResponse(
+    ModelResponse.model_construct(
         choices=[
             StreamingChoices(
                 finish_reason=None,
@@ -810,7 +810,7 @@ NON_COMPLIANT_MULTIPLE_FUNCTION_CALLS_STREAM = [
             )
         ]
     ),
-    ModelResponse(
+    ModelResponse.model_construct(
         choices=[
             StreamingChoices(
                 finish_reason="stop",
@@ -848,9 +848,11 @@ class MockLLMClient(LiteLLMClient):
 
   async def acompletion(self, model, messages, tools, **kwargs):
     if kwargs.get("stream", False):
+      # For streaming, return an async generator
+      # Remove 'stream' from kwargs to avoid duplicate keyword argument
       kwargs_copy = dict(kwargs)
       kwargs_copy.pop("stream", None)
-
+      
       async def stream_generator():
         stream_data = self.completion_mock(
             model=model,
@@ -859,6 +861,7 @@ class MockLLMClient(LiteLLMClient):
             stream=True,
             **kwargs_copy,
         )
+        # Iterate over the synchronous iterator and yield items asynchronously
         for item in stream_data:
           yield item
 
@@ -2588,7 +2591,7 @@ def test_to_litellm_role():
             "stop",
         ),
         (
-            ModelResponse(
+            ModelResponse.model_construct(
                 choices=[
                     StreamingChoices(
                         finish_reason=None,
@@ -2607,7 +2610,8 @@ def test_to_litellm_role():
                             ],
                         ),
                     )
-                ]
+                ],
+                usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
             ),
             [FunctionChunk(id="1", name="test_function", args='{"key": "va')],
             UsageMetadataChunk(
