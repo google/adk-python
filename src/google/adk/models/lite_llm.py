@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import base64
 import copy
+import importlib.util
 import json
 import logging
 import mimetypes
@@ -32,6 +33,7 @@ from typing import List
 from typing import Literal
 from typing import Optional
 from typing import Tuple
+from typing import TYPE_CHECKING
 from typing import TypedDict
 from typing import Union
 from urllib.parse import urlparse
@@ -39,20 +41,12 @@ import uuid
 import warnings
 
 from google.genai import types
-import litellm
-from litellm import acompletion
-from litellm import ChatCompletionAssistantMessage
-from litellm import ChatCompletionAssistantToolCall
-from litellm import ChatCompletionMessageToolCall
-from litellm import ChatCompletionSystemMessage
-from litellm import ChatCompletionToolMessage
-from litellm import ChatCompletionUserMessage
-from litellm import completion
-from litellm import CustomStreamWrapper
-from litellm import Function
-from litellm import Message
-from litellm import ModelResponse
-from litellm import OpenAIMessageContent
+
+if not TYPE_CHECKING and importlib.util.find_spec("litellm") is None:
+  raise ImportError(
+      "LiteLLM support requires: pip install google-adk[extensions]"
+  )
+
 from pydantic import BaseModel
 from pydantic import Field
 from typing_extensions import override
@@ -61,8 +55,36 @@ from .base_llm import BaseLlm
 from .llm_request import LlmRequest
 from .llm_response import LlmResponse
 
-# This will add functions to prompts if functions are provided.
-litellm.add_function_to_prompt = True
+if TYPE_CHECKING:
+  import litellm
+  from litellm import acompletion
+  from litellm import ChatCompletionAssistantMessage
+  from litellm import ChatCompletionAssistantToolCall
+  from litellm import ChatCompletionMessageToolCall
+  from litellm import ChatCompletionSystemMessage
+  from litellm import ChatCompletionToolMessage
+  from litellm import ChatCompletionUserMessage
+  from litellm import completion
+  from litellm import CustomStreamWrapper
+  from litellm import Function
+  from litellm import Message
+  from litellm import ModelResponse
+  from litellm import OpenAIMessageContent
+else:
+  litellm = None
+  acompletion = None
+  ChatCompletionAssistantMessage = None
+  ChatCompletionAssistantToolCall = None
+  ChatCompletionMessageToolCall = None
+  ChatCompletionSystemMessage = None
+  ChatCompletionToolMessage = None
+  ChatCompletionUserMessage = None
+  completion = None
+  CustomStreamWrapper = None
+  Function = None
+  Message = None
+  ModelResponse = None
+  OpenAIMessageContent = None
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -108,6 +130,50 @@ _MISSING_TOOL_RESULT_MESSAGE = (
     "Error: Missing tool result (tool execution may have been interrupted "
     "before a response was recorded)."
 )
+
+_LITELLM_IMPORTED = False
+_LITELLM_GLOBAL_SYMBOLS = (
+    "ChatCompletionAssistantMessage",
+    "ChatCompletionAssistantToolCall",
+    "ChatCompletionMessageToolCall",
+    "ChatCompletionSystemMessage",
+    "ChatCompletionToolMessage",
+    "ChatCompletionUserMessage",
+    "CustomStreamWrapper",
+    "Function",
+    "Message",
+    "ModelResponse",
+    "OpenAIMessageContent",
+    "acompletion",
+    "completion",
+)
+
+
+def _ensure_litellm_imported() -> None:
+  """Imports LiteLLM with safe defaults.
+
+  LiteLLM defaults to DEV mode, which auto-loads a local `.env` at import time.
+  ADK should not implicitly load `.env` just because LiteLLM is installed.
+
+  Users can opt into LiteLLM's default behavior by setting LITELLM_MODE=DEV.
+  """
+  global _LITELLM_IMPORTED
+  if _LITELLM_IMPORTED:
+    return
+
+  # https://github.com/BerriAI/litellm/blob/main/litellm/__init__.py#L80-L82
+  os.environ.setdefault("LITELLM_MODE", "PRODUCTION")
+
+  import litellm as litellm_module
+
+  litellm_module.add_function_to_prompt = True
+
+  globals()["litellm"] = litellm_module
+  for symbol in _LITELLM_GLOBAL_SYMBOLS:
+    globals()[symbol] = getattr(litellm_module, symbol)
+
+  _redirect_litellm_loggers_to_stdout()
+  _LITELLM_IMPORTED = True
 
 
 def _map_finish_reason(
@@ -344,6 +410,7 @@ class LiteLLMClient:
     Returns:
       The model response as a message.
     """
+    _ensure_litellm_imported()
 
     return await acompletion(
         model=model,
@@ -367,6 +434,7 @@ class LiteLLMClient:
     Returns:
       The response from the model.
     """
+    _ensure_litellm_imported()
 
     return completion(
         model=model,
@@ -513,6 +581,7 @@ async def _content_to_message_param(
   Returns:
     A litellm Message, a list of litellm Messages.
   """
+  _ensure_litellm_imported()
 
   tool_messages: list[Message] = []
   non_tool_parts: list[types.Part] = []
@@ -622,6 +691,8 @@ def _ensure_tool_results(messages: List[Message]) -> List[Message]:
   if not messages:
     return messages
 
+  _ensure_litellm_imported()
+
   healed_messages: List[Message] = []
   pending_tool_call_ids: List[str] = []
 
@@ -691,6 +762,7 @@ async def _get_content(
   Returns:
     The litellm content.
   """
+  _ensure_litellm_imported()
 
   parts_list = list(parts)
   if len(parts_list) == 1:
@@ -925,6 +997,7 @@ def _build_tool_call_from_json_dict(
     candidate: Any, *, index: int
 ) -> Optional[ChatCompletionMessageToolCall]:
   """Creates a tool call object from JSON content embedded in text."""
+  _ensure_litellm_imported()
 
   if not isinstance(candidate, dict):
     return None
@@ -972,10 +1045,11 @@ def _parse_tool_calls_from_text(
     text_block: str,
 ) -> tuple[list[ChatCompletionMessageToolCall], Optional[str]]:
   """Extracts inline JSON tool calls from LiteLLM text responses."""
-
   tool_calls = []
   if not text_block:
     return tool_calls, None
+
+  _ensure_litellm_imported()
 
   remainder_segments = []
   cursor = 0
@@ -1014,7 +1088,6 @@ def _split_message_content_and_tool_calls(
     message: Message,
 ) -> tuple[Optional[OpenAIMessageContent], list[ChatCompletionMessageToolCall]]:
   """Returns message content and tool calls, parsing inline JSON when needed."""
-
   existing_tool_calls = message.get("tool_calls") or []
   normalized_tool_calls = (
       list(existing_tool_calls) if existing_tool_calls else []
@@ -1180,6 +1253,7 @@ def _model_response_to_chunk(
   Yields:
     A tuple of text or function or usage metadata chunk and finish reason.
   """
+  _ensure_litellm_imported()
 
   message = None
   if response.get("choices", None):
@@ -1255,6 +1329,7 @@ def _model_response_to_generate_content_response(
   Returns:
     The LlmResponse.
   """
+  _ensure_litellm_imported()
 
   message = None
   finish_reason = None
@@ -1313,6 +1388,7 @@ def _message_to_generate_content_response(
   Returns:
     The LlmResponse.
   """
+  _ensure_litellm_imported()
 
   parts: List[types.Part] = []
   if not thought_parts:
@@ -1440,6 +1516,8 @@ async def _get_completion_inputs(
     The litellm inputs (message list, tool dictionary, response format and
     generation params).
   """
+  _ensure_litellm_imported()
+
   # Determine provider for file handling
   provider = _get_provider_from_model(model)
 
@@ -1665,11 +1743,6 @@ def _redirect_litellm_loggers_to_stdout() -> None:
         handler.stream = sys.stdout
 
 
-# Redirect LiteLLM loggers to stdout immediately after import to ensure
-# INFO-level logs are not incorrectly treated as errors in cloud environments.
-_redirect_litellm_loggers_to_stdout()
-
-
 class LiteLlm(BaseLlm):
   """Wrapper around litellm.
 
@@ -1732,6 +1805,7 @@ class LiteLlm(BaseLlm):
     Yields:
       LlmResponse: The model response.
     """
+    _ensure_litellm_imported()
 
     self._maybe_append_user_content(llm_request)
     _append_fallback_user_content_if_missing(llm_request)
