@@ -382,6 +382,10 @@ class BigQueryLoggerConfig:
       shutdown_timeout: Max time to wait for shutdown.
       queue_max_size: Max size of the in-memory queue.
       content_formatter: Optional custom formatter for content.
+      gcs_bucket_name: GCS bucket name for offloading large content.
+      connection_id: BigQuery connection ID for ObjectRef authorization.
+      default_attributes: Static key-value pairs included in every event's
+          attributes. Useful for service version, environment, etc.
   """
 
   enabled: bool = True
@@ -408,6 +412,10 @@ class BigQueryLoggerConfig:
   # If provided, this connection ID will be used as the authorizer for ObjectRef columns.
   # Format: "location.connection_id" (e.g. "us.my-connection")
   connection_id: Optional[str] = None
+  # If provided, these key-value pairs will be merged into every event's attributes.
+  # Useful for adding static metadata like service version, deployment environment, etc.
+  # Event-specific attributes will override these if there are conflicts.
+  default_attributes: Optional[dict[str, Any]] = None
 
 
 # ==============================================================================
@@ -1883,12 +1891,18 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         # Fallback if it couldn't be converted to dict
         kwargs["usage_metadata"] = usage_metadata
 
+    # Merge default_attributes first, then let event-specific kwargs override
+    if self.config.default_attributes:
+      merged_attributes = {**self.config.default_attributes, **kwargs}
+    else:
+      merged_attributes = kwargs
+
     # Serialize remaining kwargs to JSON string for attributes
     try:
-      attributes_json = json.dumps(kwargs)
+      attributes_json = json.dumps(merged_attributes)
     except (TypeError, ValueError):
       # Fallback for non-serializable objects
-      attributes_json = json.dumps(kwargs, default=str)
+      attributes_json = json.dumps(merged_attributes, default=str)
 
     row = {
         "timestamp": timestamp,

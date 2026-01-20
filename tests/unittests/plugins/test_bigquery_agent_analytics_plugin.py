@@ -2086,3 +2086,127 @@ class TestBigQueryAgentAnalyticsPlugin:
         mock_write_client, dummy_arrow_schema
     )
     assert log_entry["event_type"] == "INVOCATION_STARTING"
+
+  @pytest.mark.asyncio
+  async def test_default_attributes_included_in_events(
+      self,
+      mock_write_client,
+      invocation_context,
+      mock_auth_default,
+      mock_bq_client,
+      mock_to_arrow_schema,
+      dummy_arrow_schema,
+      mock_asyncio_to_thread,
+  ):
+    """Test that default_attributes are included in every logged event."""
+    default_attrs = {
+        "service_version": "1.2.3",
+        "environment": "production",
+        "deployment_id": "deploy-abc",
+    }
+    config = BigQueryLoggerConfig(default_attributes=default_attrs)
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
+    )
+    await plugin._ensure_started()
+    mock_write_client.append_rows.reset_mock()
+
+    user_message = types.Content(parts=[types.Part(text="Hello")])
+    bigquery_agent_analytics_plugin.TraceManager.push_span(invocation_context)
+    await plugin.on_user_message_callback(
+        invocation_context=invocation_context, user_message=user_message
+    )
+    await asyncio.sleep(0.01)
+
+    mock_write_client.append_rows.assert_called_once()
+    log_entry = await _get_captured_event_dict_async(
+        mock_write_client, dummy_arrow_schema
+    )
+
+    # Verify default attributes are in the attributes field
+    attributes = json.loads(log_entry["attributes"])
+    assert attributes["service_version"] == "1.2.3"
+    assert attributes["environment"] == "production"
+    assert attributes["deployment_id"] == "deploy-abc"
+
+  @pytest.mark.asyncio
+  async def test_default_attributes_overridden_by_event_attributes(
+      self,
+      mock_write_client,
+      callback_context,
+      mock_auth_default,
+      mock_bq_client,
+      mock_to_arrow_schema,
+      dummy_arrow_schema,
+      mock_asyncio_to_thread,
+  ):
+    """Test that event-specific attributes override default_attributes."""
+    default_attrs = {
+        "service_version": "1.2.3",
+        "model": "default-model",
+    }
+    config = BigQueryLoggerConfig(default_attributes=default_attrs)
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
+    )
+    await plugin._ensure_started()
+    mock_write_client.append_rows.reset_mock()
+
+    # LLM request will add its own "model" attribute which should override the default
+    llm_request = llm_request_lib.LlmRequest(
+        model="gemini-pro",
+        contents=[types.Content(parts=[types.Part(text="Hi")])],
+    )
+    bigquery_agent_analytics_plugin.TraceManager.push_span(callback_context)
+    await plugin.before_model_callback(
+        callback_context=callback_context, llm_request=llm_request
+    )
+    await asyncio.sleep(0.01)
+
+    mock_write_client.append_rows.assert_called_once()
+    log_entry = await _get_captured_event_dict_async(
+        mock_write_client, dummy_arrow_schema
+    )
+
+    attributes = json.loads(log_entry["attributes"])
+    # service_version should come from default_attributes
+    assert attributes["service_version"] == "1.2.3"
+    # model should be overridden by the event-specific value
+    assert attributes["model"] == "gemini-pro"
+
+  @pytest.mark.asyncio
+  async def test_default_attributes_none_does_not_affect_events(
+      self,
+      mock_write_client,
+      invocation_context,
+      mock_auth_default,
+      mock_bq_client,
+      mock_to_arrow_schema,
+      dummy_arrow_schema,
+      mock_asyncio_to_thread,
+  ):
+    """Test that when default_attributes is None, events work normally."""
+    config = BigQueryLoggerConfig(default_attributes=None)
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
+    )
+    await plugin._ensure_started()
+    mock_write_client.append_rows.reset_mock()
+
+    user_message = types.Content(parts=[types.Part(text="Hello")])
+    bigquery_agent_analytics_plugin.TraceManager.push_span(invocation_context)
+    await plugin.on_user_message_callback(
+        invocation_context=invocation_context, user_message=user_message
+    )
+    await asyncio.sleep(0.01)
+
+    mock_write_client.append_rows.assert_called_once()
+    log_entry = await _get_captured_event_dict_async(
+        mock_write_client, dummy_arrow_schema
+    )
+
+    # Verify event was logged successfully with normal attributes
+    assert log_entry["event_type"] == "USER_MESSAGE_RECEIVED"
+    # Attributes should only contain root_agent_name (added by plugin)
+    attributes = json.loads(log_entry["attributes"])
+    assert "root_agent_name" in attributes
