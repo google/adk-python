@@ -1752,6 +1752,14 @@ def cli_migrate_session(
     help="Optional. Whether to enable Cloud Trace for Agent Engine.",
 )
 @click.option(
+    "--otel_to_cloud",
+    type=bool,
+    is_flag=True,
+    show_default=True,
+    default=None,
+    help="Optional. Whether to enable OpenTelemetry for Agent Engine.",
+)
+@click.option(
     "--display_name",
     type=str,
     show_default=True,
@@ -1842,6 +1850,7 @@ def cli_deploy_agent_engine(
     staging_bucket: Optional[str],
     agent_engine_id: Optional[str],
     trace_to_cloud: Optional[bool],
+    otel_to_cloud: Optional[bool],
     api_key: Optional[str],
     display_name: str,
     description: str,
@@ -1872,6 +1881,7 @@ def cli_deploy_agent_engine(
         region=region,
         agent_engine_id=agent_engine_id,
         trace_to_cloud=trace_to_cloud,
+        otel_to_cloud=otel_to_cloud,
         api_key=api_key,
         adk_app_object=adk_app_object,
         display_name=display_name,
