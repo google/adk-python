@@ -19,6 +19,7 @@ from typing import Any
 from typing import Dict
 from typing import List
 from typing import Optional
+from typing import Set
 
 from fastapi.openapi.models import Operation
 from pydantic import BaseModel
@@ -28,6 +29,21 @@ from ....auth.auth_schemes import AuthScheme
 from ..._gemini_schema_util import _to_snake_case
 from ..common.common import ApiParameter
 from .operation_parser import OperationParser
+
+# Valid JSON Schema types as per OpenAPI 3.0/3.1 specification.
+#
+# These are the only types accepted by Pydantic 2.11+ for Schema.type.
+_VALID_SCHEMA_TYPES: Set[str] = frozenset({
+    "array",
+    "boolean",
+    "integer",
+    "null",
+    "number",
+    "object",
+    "string",
+})
+
+_SCHEMA_CONTAINER_KEYS: Set[str] = frozenset({"schema", "schemas"})
 
 
 class OperationEndpoint(BaseModel):
@@ -70,8 +86,80 @@ class OpenApiSpecParser:
     """
 
     openapi_spec_dict = self._resolve_references(openapi_spec_dict)
+    openapi_spec_dict = self._sanitize_schema_types(openapi_spec_dict)
     operations = self._collect_operations(openapi_spec_dict)
     return operations
+
+  def _sanitize_schema_types(
+      self, openapi_spec: Dict[str, Any]
+  ) -> Dict[str, Any]:
+    """Recursively sanitizes schema types in an OpenAPI specification.
+
+    Pydantic 2.11+ strictly validates that schema types are one of:
+    'array', 'boolean', 'integer', 'null', 'number', 'object', 'string'.
+
+    External APIs (like Google Integration Connectors) may return schemas
+    with non-standard types like 'Any'. This method removes or converts
+    such invalid types to ensure compatibility.
+
+    Args:
+        openapi_spec: A dictionary representing the OpenAPI specification.
+
+    Returns:
+        A dictionary with invalid schema types removed or sanitized.
+    """
+    openapi_spec = copy.deepcopy(openapi_spec)
+
+    def sanitize_type_field(schema_dict: Dict[str, Any]) -> None:
+      if "type" not in schema_dict:
+        return
+
+      type_value = schema_dict["type"]
+      if isinstance(type_value, str):
+        normalized_type = type_value.lower()
+        if normalized_type in _VALID_SCHEMA_TYPES:
+          schema_dict["type"] = normalized_type
+          return
+
+        del schema_dict["type"]
+        return
+
+      if isinstance(type_value, list):
+        valid_types = []
+        for entry in type_value:
+          if not isinstance(entry, str):
+            continue
+
+          normalized_entry = entry.lower()
+          if normalized_entry not in _VALID_SCHEMA_TYPES:
+            continue
+
+          if normalized_entry not in valid_types:
+            valid_types.append(normalized_entry)
+
+        if valid_types:
+          schema_dict["type"] = valid_types
+        else:
+          del schema_dict["type"]
+
+    def sanitize_recursive(obj: Any, *, in_schema: bool) -> Any:
+      if isinstance(obj, dict):
+        if in_schema:
+          sanitize_type_field(obj)
+
+        # Recursively process all values in the dict
+        for key, value in obj.items():
+          obj[key] = sanitize_recursive(
+              value,
+              in_schema=in_schema or key in _SCHEMA_CONTAINER_KEYS,
+          )
+        return obj
+      elif isinstance(obj, list):
+        return [sanitize_recursive(item, in_schema=in_schema) for item in obj]
+      else:
+        return obj
+
+    return sanitize_recursive(openapi_spec, in_schema=False)
 
   def _collect_operations(
       self, openapi_spec: Dict[str, Any]

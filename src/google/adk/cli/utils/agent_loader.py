@@ -32,6 +32,7 @@ from . import envs
 from ...agents import config_agent_utils
 from ...agents.base_agent import BaseAgent
 from ...apps.app import App
+from ...tools.computer_use.computer_use_toolset import ComputerUseToolset
 from ...utils.feature_decorator import experimental
 from .base_agent_loader import BaseAgentLoader
 
@@ -358,12 +359,17 @@ class AgentLoader(BaseAgentLoader):
           agent = loaded
 
         language = self._determine_agent_language(agent_name)
+        is_computer_use = any(
+            isinstance(t, ComputerUseToolset)
+            for t in getattr(agent, "tools", [])
+        )
 
         app_info = {
             "name": agent_name,
             "root_agent_name": agent.name,
             "description": agent.description,
             "language": language,
+            "is_computer_use": is_computer_use,
         }
         apps_info.append(app_info)
 

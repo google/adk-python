@@ -400,8 +400,6 @@ def test_cli_deploy_agent_engine_success(
           "test-proj",
           "--region",
           "us-central1",
-          "--staging_bucket",
-          "gs://mybucket",
           str(agent_dir),
       ],
   )
@@ -410,7 +408,6 @@ def test_cli_deploy_agent_engine_success(
   called_kwargs = rec.calls[0][1]
   assert called_kwargs.get("project") == "test-proj"
   assert called_kwargs.get("region") == "us-central1"
-  assert called_kwargs.get("staging_bucket") == "gs://mybucket"
 
 
 # cli deploy gke

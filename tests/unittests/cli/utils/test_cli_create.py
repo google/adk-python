@@ -156,6 +156,23 @@ def test_run_cmd_overwrite_reject(
     )
 
 
+def test_run_cmd_invalid_app_name(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+  """Invalid app names should be rejected before creating any files."""
+  monkeypatch.setattr(os, "getcwd", lambda: str(tmp_path))
+
+  with pytest.raises(click.BadParameter, match="Invalid app name"):
+    cli_create.run_cmd(
+        "my-agent",
+        model="gemini-2.0-flash-001",
+        google_api_key=None,
+        google_cloud_project=None,
+        google_cloud_region=None,
+        type="code",
+    )
+
+
 def test_run_cmd_with_type_config(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
