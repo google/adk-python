@@ -23,8 +23,86 @@ from google.adk.sessions.migration import _schema_check_utils
 from google.adk.sessions.migration import migrate_from_sqlalchemy_pickle as mfsp
 from google.adk.sessions.schemas import v0
 from google.adk.sessions.schemas import v1
+import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+
+
+class TestToSyncUrl:
+  """Tests for the to_sync_url function."""
+
+  @pytest.mark.parametrize(
+      "input_url,expected_url",
+      [
+          # PostgreSQL async drivers
+          (
+              "postgresql+asyncpg://localhost/mydb",
+              "postgresql://localhost/mydb",
+          ),
+          (
+              "postgresql+asyncpg://user:pass@localhost:5432/mydb",
+              "postgresql://user:pass@localhost:5432/mydb",
+          ),
+          # PostgreSQL sync drivers (should still strip)
+          (
+              "postgresql+psycopg2://localhost/mydb",
+              "postgresql://localhost/mydb",
+          ),
+          # MySQL async drivers
+          (
+              "mysql+aiomysql://localhost/mydb",
+              "mysql://localhost/mydb",
+          ),
+          (
+              "mysql+asyncmy://user:pass@localhost:3306/mydb",
+              "mysql://user:pass@localhost:3306/mydb",
+          ),
+          # SQLite async driver
+          (
+              "sqlite+aiosqlite:///path/to/db.sqlite",
+              "sqlite:///path/to/db.sqlite",
+          ),
+          (
+              "sqlite+aiosqlite:///:memory:",
+              "sqlite:///:memory:",
+          ),
+          # URLs without driver specification (unchanged)
+          (
+              "postgresql://localhost/mydb",
+              "postgresql://localhost/mydb",
+          ),
+          (
+              "mysql://localhost/mydb",
+              "mysql://localhost/mydb",
+          ),
+          (
+              "sqlite:///path/to/db.sqlite",
+              "sqlite:///path/to/db.sqlite",
+          ),
+          # Edge cases
+          (
+              "sqlite:///:memory:",
+              "sqlite:///:memory:",
+          ),
+          # Complex URL with query parameters
+          (
+              "postgresql+asyncpg://user:pass@host/db?ssl=require",
+              "postgresql://user:pass@host/db?ssl=require",
+          ),
+      ],
+  )
+  def test_to_sync_url(self, input_url, expected_url):
+    """Test that async driver specifications are correctly removed."""
+    assert _schema_check_utils.to_sync_url(input_url) == expected_url
+
+  def test_to_sync_url_no_scheme_separator(self):
+    """Test that URLs without :// are returned unchanged."""
+    # This is an invalid URL but the function should handle it gracefully
+    assert _schema_check_utils.to_sync_url("not-a-url") == "not-a-url"
+
+  def test_to_sync_url_empty_string(self):
+    """Test that empty string is returned unchanged."""
+    assert _schema_check_utils.to_sync_url("") == ""
 
 
 def test_migrate_from_sqlalchemy_pickle(tmp_path):
@@ -102,5 +180,68 @@ def test_migrate_from_sqlalchemy_pickle(tmp_path):
   assert event_res.id == "event1"
   assert "state_delta" in event_res.event_data["actions"]
   assert event_res.event_data["actions"]["state_delta"] == {"skey": 4}
+
+  dest_session.close()
+
+
+def test_migrate_from_sqlalchemy_pickle_with_async_driver_urls(tmp_path):
+  """Tests that migration works with async driver URLs (fixes issue #4176).
+
+  Users often provide async driver URLs (e.g., postgresql+asyncpg://) since
+  that's what ADK requires at runtime. The migration tool should handle these
+  by automatically converting them to sync URLs.
+  """
+  source_db_path = tmp_path / "source_pickle_async.db"
+  dest_db_path = tmp_path / "dest_json_async.db"
+  # Use async driver URLs like users would typically provide
+  source_db_url = f"sqlite+aiosqlite:///{source_db_path}"
+  dest_db_url = f"sqlite+aiosqlite:///{dest_db_path}"
+
+  # Set up source DB with old pickle schema using sync URL
+  sync_source_url = f"sqlite:///{source_db_path}"
+  source_engine = create_engine(sync_source_url)
+  v0.Base.metadata.create_all(source_engine)
+  SourceSession = sessionmaker(bind=source_engine)
+  source_session = SourceSession()
+
+  # Populate source data
+  now = datetime.now(timezone.utc)
+  app_state = v0.StorageAppState(
+      app_name="async_app", state={"key": "value"}, update_time=now
+  )
+  session = v0.StorageSession(
+      app_name="async_app",
+      user_id="async_user",
+      id="async_session",
+      state={},
+      create_time=now,
+      update_time=now,
+  )
+  source_session.add_all([app_state, session])
+  source_session.commit()
+  source_session.close()
+
+  # This should NOT raise an error about async drivers (the fix for #4176)
+  mfsp.migrate(source_db_url, dest_db_url)
+
+  # Verify destination DB
+  sync_dest_url = f"sqlite:///{dest_db_path}"
+  dest_engine = create_engine(sync_dest_url)
+  DestSession = sessionmaker(bind=dest_engine)
+  dest_session = DestSession()
+
+  metadata = dest_session.query(v1.StorageMetadata).first()
+  assert metadata is not None
+  assert metadata.key == _schema_check_utils.SCHEMA_VERSION_KEY
+  assert metadata.value == _schema_check_utils.SCHEMA_VERSION_1_JSON
+
+  app_state_res = dest_session.query(v1.StorageAppState).first()
+  assert app_state_res is not None
+  assert app_state_res.app_name == "async_app"
+  assert app_state_res.state == {"key": "value"}
+
+  session_res = dest_session.query(v1.StorageSession).first()
+  assert session_res is not None
+  assert session_res.id == "async_session"
 
   dest_session.close()
