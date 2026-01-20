@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import abc
+from typing import NamedTuple
 from typing import Optional
 
 from ...utils.feature_decorator import experimental
@@ -26,6 +27,11 @@ from ..auth_schemes import AuthScheme
 
 class CredentialExchangeError(Exception):
   """Base exception for credential exchange errors."""
+
+
+class ExchangeResult(NamedTuple):
+  credential: AuthCredential
+  was_exchanged: bool
 
 
 @experimental
@@ -41,15 +47,17 @@ class BaseCredentialExchanger(abc.ABC):
       self,
       auth_credential: AuthCredential,
       auth_scheme: Optional[AuthScheme] = None,
-  ) -> AuthCredential:
+  ) -> ExchangeResult:
     """Exchange credential if needed.
 
     Args:
         auth_credential: The credential to exchange.
-        auth_scheme: The authentication scheme (optional, some exchangers don't need it).
+        auth_scheme: The authentication scheme (optional, some exchangers don't
+          need it).
 
     Returns:
-        The exchanged credential.
+        An ExchangeResult object containing the exchanged credential and a
+        boolean indicating whether the credential was exchanged.
 
     Raises:
         CredentialExchangeError: If credential exchange fails.

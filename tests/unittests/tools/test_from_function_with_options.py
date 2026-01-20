@@ -14,7 +14,9 @@
 
 from collections.abc import Sequence
 from typing import Any
+from typing import AsyncGenerator
 from typing import Dict
+from typing import Generator
 
 from google.adk.tools import _automatic_function_calling_util
 from google.adk.utils.variant_utils import GoogleLLMVariant
@@ -242,3 +244,78 @@ def test_from_function_with_collections_return_type():
   assert declaration.name == 'test_function'
   assert declaration.response.type == types.Type.ARRAY
   assert declaration.response.items.type == types.Type.STRING
+
+
+def test_from_function_with_async_generator_return_vertex():
+  """Test from_function_with_options with AsyncGenerator return for VERTEX_AI."""
+
+  async def test_function(param: str) -> AsyncGenerator[str, None]:
+    """A streaming function that yields strings."""
+    yield param
+
+  declaration = _automatic_function_calling_util.from_function_with_options(
+      test_function, GoogleLLMVariant.VERTEX_AI
+  )
+
+  assert declaration.name == 'test_function'
+  assert declaration.parameters.type == 'OBJECT'
+  assert declaration.parameters.properties['param'].type == 'STRING'
+  # VERTEX_AI should extract yield type (str) from AsyncGenerator[str, None]
+  assert declaration.response is not None
+  assert declaration.response.type == types.Type.STRING
+
+
+def test_from_function_with_async_generator_return_gemini():
+  """Test from_function_with_options with AsyncGenerator return for GEMINI_API."""
+
+  async def test_function(param: str) -> AsyncGenerator[str, None]:
+    """A streaming function that yields strings."""
+    yield param
+
+  declaration = _automatic_function_calling_util.from_function_with_options(
+      test_function, GoogleLLMVariant.GEMINI_API
+  )
+
+  assert declaration.name == 'test_function'
+  assert declaration.parameters.type == 'OBJECT'
+  assert declaration.parameters.properties['param'].type == 'STRING'
+  # GEMINI_API should not have response schema
+  assert declaration.response is None
+
+
+def test_from_function_with_generator_return_vertex():
+  """Test from_function_with_options with Generator return for VERTEX_AI."""
+
+  def test_function(param: str) -> Generator[int, None, None]:
+    """A streaming function that yields integers."""
+    yield 42
+
+  declaration = _automatic_function_calling_util.from_function_with_options(
+      test_function, GoogleLLMVariant.VERTEX_AI
+  )
+
+  assert declaration.name == 'test_function'
+  assert declaration.parameters.type == 'OBJECT'
+  assert declaration.parameters.properties['param'].type == 'STRING'
+  # VERTEX_AI should extract yield type (int) from Generator[int, None, None]
+  assert declaration.response is not None
+  assert declaration.response.type == types.Type.INTEGER
+
+
+def test_from_function_with_async_generator_complex_yield_type_vertex():
+  """Test from_function_with_options with AsyncGenerator yielding dict."""
+
+  async def test_function(param: str) -> AsyncGenerator[Dict[str, str], None]:
+    """A streaming function that yields dicts."""
+    yield {'result': param}
+
+  declaration = _automatic_function_calling_util.from_function_with_options(
+      test_function, GoogleLLMVariant.VERTEX_AI
+  )
+
+  assert declaration.name == 'test_function'
+  assert declaration.parameters.type == 'OBJECT'
+  assert declaration.parameters.properties['param'].type == 'STRING'
+  # VERTEX_AI should extract yield type (Dict[str, str]) from AsyncGenerator
+  assert declaration.response is not None
+  assert declaration.response.type == types.Type.OBJECT
