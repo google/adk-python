@@ -21,9 +21,6 @@ from typing_extensions import override
 from .eval_case import ConversationScenario
 from .eval_case import Invocation
 from .eval_metrics import EvalMetric
-from .eval_metrics import Interval
-from .eval_metrics import MetricInfo
-from .eval_metrics import MetricValueInfo
 from .eval_metrics import PrebuiltMetrics
 from .evaluator import EvaluationResult
 from .evaluator import Evaluator
@@ -75,26 +72,6 @@ class ResponseEvaluator(Evaluator):
       raise ValueError(f"`{metric_name}` is not supported.")
 
     self._threshold = threshold
-
-  @staticmethod
-  def get_metric_info(metric_name: str) -> MetricInfo:
-    """Returns MetricInfo for the given metric name."""
-    if PrebuiltMetrics.RESPONSE_EVALUATION_SCORE.value == metric_name:
-      return MetricInfo(
-          metric_name=PrebuiltMetrics.RESPONSE_EVALUATION_SCORE.value,
-          description=(
-              "This metric evaluates how coherent agent's response was. Value"
-              " range of this metric is [1,5], with values closer to 5 more"
-              " desirable."
-          ),
-          metric_value_info=MetricValueInfo(
-              interval=Interval(min_value=1.0, max_value=5.0)
-          ),
-      )
-    elif PrebuiltMetrics.RESPONSE_MATCH_SCORE.value == metric_name:
-      return RougeEvaluator.get_metric_info()
-    else:
-      raise ValueError(f"`{metric_name}` is not supported.")
 
   @override
   def evaluate_invocations(

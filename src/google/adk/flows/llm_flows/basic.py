@@ -35,15 +35,9 @@ class _BasicLlmRequestProcessor(BaseLlmRequestProcessor):
   async def run_async(
       self, invocation_context: InvocationContext, llm_request: LlmRequest
   ) -> AsyncGenerator[Event, None]:
-    from ...agents.llm_agent import LlmAgent
-
     agent = invocation_context.agent
-
-    llm_request.model = (
-        agent.canonical_model
-        if isinstance(agent.canonical_model, str)
-        else agent.canonical_model.model
-    )
+    model = agent.canonical_model
+    llm_request.model = model if isinstance(model, str) else model.model
     llm_request.config = (
         agent.generate_content_config.model_copy(deep=True)
         if agent.generate_content_config
@@ -54,7 +48,7 @@ class _BasicLlmRequestProcessor(BaseLlmRequestProcessor):
     # both output_schema and tools at the same time. see
     # _output_schema_processor.py for details
     if agent.output_schema:
-      if not agent.tools or can_use_output_schema_with_tools(agent.model):
+      if not agent.tools or can_use_output_schema_with_tools(model):
         llm_request.set_output_schema(agent.output_schema)
 
     llm_request.live_connect_config.response_modalities = (

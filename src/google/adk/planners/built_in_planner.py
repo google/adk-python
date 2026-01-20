@@ -12,6 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
+import logging
 from typing import List
 from typing import Optional
 
@@ -22,6 +25,8 @@ from ..agents.callback_context import CallbackContext
 from ..agents.readonly_context import ReadonlyContext
 from ..models.llm_request import LlmRequest
 from .base_planner import BasePlanner
+
+logger = logging.getLogger('google_adk.' + __name__)
 
 
 class BuiltInPlanner(BasePlanner):
@@ -57,6 +62,11 @@ class BuiltInPlanner(BasePlanner):
     """
     if self.thinking_config:
       llm_request.config = llm_request.config or types.GenerateContentConfig()
+      if llm_request.config.thinking_config:
+        logger.debug(
+            'Overwriting `thinking_config` from `generate_content_config` with '
+            'the one provided by the `BuiltInPlanner`.'
+        )
       llm_request.config.thinking_config = self.thinking_config
 
   @override

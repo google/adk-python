@@ -15,9 +15,11 @@ jobs:
     # - New issues (need component labeling)
     # - Issues labeled with "planned" (need owner assignment)
     if: >-
-      github.event_name == 'schedule' ||
-      github.event.action == 'opened' ||
-      github.event.label.name == 'planned'
+      github.repository == 'google/adk-python' && (
+        github.event_name == 'schedule' ||
+        github.event.action == 'opened' ||
+        github.event.label.name == 'planned'
+      )
     permissions:
       issues: write
       contents: read

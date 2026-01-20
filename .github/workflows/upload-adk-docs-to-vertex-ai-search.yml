@@ -9,6 +9,7 @@ on:
 
 jobs:
   upload-adk-docs-to-vertex-ai-search:
+    if: github.repository == 'google/adk-python'
     runs-on: ubuntu-latest
 
     steps:

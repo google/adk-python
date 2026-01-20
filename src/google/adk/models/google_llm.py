@@ -378,6 +378,13 @@ class Gemini(BaseLlm):
             types.Part.from_text(text=llm_request.config.system_instruction)
         ],
     )
+
+    logger.info(
+        'Trying to connect to live model: %s with api backend: %s',
+        llm_request.model,
+        self._api_backend,
+    )
+
     if (
         llm_request.live_connect_config.session_resumption
         and llm_request.live_connect_config.session_resumption.transparent
@@ -386,23 +393,23 @@ class Gemini(BaseLlm):
           'session resumption config: %s',
           llm_request.live_connect_config.session_resumption,
       )
-      logger.debug(
-          'self._api_backend: %s',
-          self._api_backend,
-      )
+
       if self._api_backend == GoogleLLMVariant.GEMINI_API:
         raise ValueError(
             'Transparent session resumption is only supported for Vertex AI'
             ' backend. Please use Vertex AI backend.'
         )
     llm_request.live_connect_config.tools = llm_request.config.tools
-    logger.info('Connecting to live for model: %s', llm_request.model)
     logger.debug('Connecting to live with llm_request:%s', llm_request)
     logger.debug('Live connect config: %s', llm_request.live_connect_config)
     async with self._live_api_client.aio.live.connect(
         model=llm_request.model, config=llm_request.live_connect_config
     ) as live_session:
-      yield GeminiLlmConnection(live_session, api_backend=self._api_backend)
+      yield GeminiLlmConnection(
+          live_session,
+          api_backend=self._api_backend,
+          model_version=llm_request.model,
+      )
 
   async def _adapt_computer_use_tool(self, llm_request: LlmRequest) -> None:
     """Adapt the google computer use predefined functions to the adk computer use toolset."""

@@ -20,6 +20,7 @@ import re
 import sys
 import tempfile
 from textwrap import dedent
+from unittest import mock
 
 from google.adk.cli.utils import agent_loader as agent_loader_module
 from google.adk.cli.utils.agent_loader import AgentLoader
@@ -49,7 +50,8 @@ class TestAgentLoader:
     Args:
         temp_dir: The temporary directory to create the agent in
         agent_name: Name of the agent
-        structure_type: One of 'module', 'package_with_root', 'package_with_agent_module'
+        structure_type: One of 'module', 'package_with_root',
+          'package_with_agent_module'
     """
     if structure_type == "module":
       # Structure: agents_dir/agent_name.py
@@ -928,3 +930,66 @@ class TestAgentLoader:
       # Verify they are different agents
       assert default_agent.name != custom_agent.name
       assert explicit_agent.name == default_agent.name
+
+  def test_list_agents_detailed_identifies_computer_use(self):
+    """Test that list_agents_detailed correctly identifies computer use capability."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+      temp_path = Path(temp_dir)
+      agent_name = "computer_use_agent"
+
+      agent_dir = temp_path / agent_name
+      agent_dir.mkdir()
+
+      (agent_dir / "__init__.py").write_text(dedent(f"""
+          from typing import Any
+          from unittest.mock import MagicMock
+          from google.adk.agents.base_agent import BaseAgent
+          from google.adk.tools.computer_use.computer_use_toolset import ComputerUseToolset
+          from google.adk.tools.computer_use.base_computer import BaseComputer
+
+          class {agent_name.title()}Agent(BaseAgent):
+              tools: list[Any] = []
+
+              def __init__(self):
+                  super().__init__(name="{agent_name}")
+                  self.tools = [ComputerUseToolset(computer=MagicMock(spec=BaseComputer))]
+
+          root_agent = {agent_name.title()}Agent()
+      """))
+
+      loader = AgentLoader(str(temp_path))
+      detailed_list = loader.list_agents_detailed()
+
+      assert len(detailed_list) == 1
+      assert detailed_list[0]["name"] == agent_name
+      assert detailed_list[0]["is_computer_use"]
+
+  def test_list_agents_detailed_detects_no_computer_use(self):
+    """Test that list_agents_detailed sets is_computer_use to False when toolset is absent."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+      temp_path = Path(temp_dir)
+      agent_name = "standard_agent"
+
+      agent_dir = temp_path / agent_name
+      agent_dir.mkdir()
+
+      (agent_dir / "__init__.py").write_text(dedent(f"""
+          from typing import Any
+          from google.adk.agents.base_agent import BaseAgent
+
+          class {agent_name.title()}Agent(BaseAgent):
+              tools: list[Any] = []
+
+              def __init__(self):
+                  super().__init__(name="{agent_name}")
+                  self.tools = []
+
+          root_agent = {agent_name.title()}Agent()
+      """))
+
+      loader = AgentLoader(str(temp_path))
+      detailed_list = loader.list_agents_detailed()
+
+      assert len(detailed_list) == 1
+      assert detailed_list[0]["name"] == agent_name
+      assert not detailed_list[0]["is_computer_use"]
