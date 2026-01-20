@@ -689,6 +689,7 @@ def to_agent_engine(
     adk_app: str,
     staging_bucket: Optional[str] = None,
     trace_to_cloud: Optional[bool] = None,
+    otel_to_cloud: Optional[bool] = None,
     api_key: Optional[str] = None,
     adk_app_object: Optional[str] = None,
     agent_engine_id: Optional[str] = None,
@@ -733,6 +734,8 @@ def to_agent_engine(
     staging_bucket (str): Deprecated. This argument is no longer required or
       used.
     trace_to_cloud (bool): Whether to enable Cloud Trace.
+    otel_to_cloud (bool): Whether to enable exporting OpenTelemetry signals
+      to Google Cloud.
     api_key (str): Optional. The API key to use for Express Mode.
       If not provided, the API key from the GOOGLE_API_KEY environment variable
       will be used. It will only be used if GOOGLE_GENAI_USE_VERTEXAI is true.
@@ -910,6 +913,14 @@ def to_agent_engine(
       if 'GOOGLE_API_KEY' in env_vars:
         api_key = env_vars['GOOGLE_API_KEY']
         click.echo(f'api_key set by GOOGLE_API_KEY in {env_file}')
+    if otel_to_cloud:
+      if 'GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY' in env_vars:
+        click.secho(
+            'Ignoring GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY in .env'
+            ' as `--otel_to_cloud` was explicitly passed and takes precedence',
+            fg='yellow',
+        )
+      env_vars['GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY'] = 'true'
     if env_vars:
       if 'env_vars' in agent_config:
         click.echo(
