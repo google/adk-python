@@ -165,9 +165,15 @@ def _get_state_dict(state_val: Any) -> dict:
 # --- Migration Logic ---
 def migrate(source_db_url: str, dest_db_url: str):
   """Migrates data from old pickle schema to new JSON schema."""
+  # Convert async driver URLs to sync URLs for SQLAlchemy's synchronous engine.
+  # This allows users to provide URLs like 'postgresql+asyncpg://...' and have
+  # them automatically converted to 'postgresql://...' for migration.
+  source_sync_url = _schema_check_utils.to_sync_url(source_db_url)
+  dest_sync_url = _schema_check_utils.to_sync_url(dest_db_url)
+
   logger.info(f"Connecting to source database: {source_db_url}")
   try:
-    source_engine = create_engine(source_db_url)
+    source_engine = create_engine(source_sync_url)
     SourceSession = sessionmaker(bind=source_engine)
   except Exception as e:
     logger.error(f"Failed to connect to source database: {e}")
@@ -175,7 +181,7 @@ def migrate(source_db_url: str, dest_db_url: str):
 
   logger.info(f"Connecting to destination database: {dest_db_url}")
   try:
-    dest_engine = create_engine(dest_db_url)
+    dest_engine = create_engine(dest_sync_url)
     v1.Base.metadata.create_all(dest_engine)
     DestSession = sessionmaker(bind=dest_engine)
   except Exception as e:
