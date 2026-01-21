@@ -84,6 +84,9 @@ class StorageSession(Base):
       primary_key=True,
       default=lambda: str(uuid.uuid4()),
   )
+  display_name: Mapped[Optional[str]] = mapped_column(
+      String(DEFAULT_MAX_VARCHAR_LENGTH), nullable=True
+  )
 
   state: Mapped[MutableDict[str, Any]] = mapped_column(
       MutableDict.as_mutable(DynamicJSON), default={}
@@ -139,6 +142,7 @@ class StorageSession(Base):
         state=state,
         events=events,
         last_update_time=self.update_timestamp_tz,
+        display_name=self.display_name,
     )
 
 
