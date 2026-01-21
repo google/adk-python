@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,10 +15,12 @@
 
 from __future__ import annotations
 
+from typing import Any
 from typing import Optional
 
 from google.genai import types
 from pydantic import BaseModel
+from pydantic import Field
 
 
 class MemoryEntry(BaseModel):
@@ -26,6 +28,12 @@ class MemoryEntry(BaseModel):
 
   content: types.Content
   """The main content of the memory."""
+
+  custom_metadata: dict[str, Any] = Field(default_factory=dict)
+  """Optional custom metadata associated with the memory."""
+
+  id: Optional[str] = None
+  """The unique identifier of the memory."""
 
   author: Optional[str] = None
   """The author of the memory."""

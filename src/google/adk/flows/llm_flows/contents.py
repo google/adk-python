@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -219,12 +219,27 @@ def _rearrange_events_for_latest_function_response(
   return result_events
 
 
+def _is_part_invisible(p: types.Part) -> bool:
+  """Returns whether a part is invisible for LLM context."""
+  return getattr(p, 'thought', False) or not (
+      p.text
+      or p.inline_data
+      or p.file_data
+      or p.function_call
+      or p.function_response
+      or p.executable_code
+      or p.code_execution_result
+  )
+
+
 def _contains_empty_content(event: Event) -> bool:
   """Check if an event should be skipped due to missing or empty content.
 
   This can happen to the events that only changed session state.
   When both content and transcriptions are empty, the event will be considered
-  as empty.
+  as empty. The content is considered empty if none of its parts contain text,
+  inline data, file data, function call, function response, executable code, or
+  code execution result. Parts with only thoughts are also considered empty.
 
   Args:
     event: The event to check.
@@ -239,7 +254,7 @@ def _contains_empty_content(event: Event) -> bool:
       not event.content
       or not event.content.role
       or not event.content.parts
-      or event.content.parts[0].text == ''
+      or all(_is_part_invisible(p) for p in event.content.parts)
   ) and (not event.output_transcription and not event.input_transcription)
 
 
@@ -262,6 +277,7 @@ def _should_include_event_in_context(
   return not (
       _contains_empty_content(event)
       or not _is_event_belongs_to_branch(current_branch, event)
+      or _is_adk_framework_event(event)
       or _is_auth_event(event)
       or _is_request_confirmation_event(event)
   )
@@ -505,7 +521,7 @@ def _present_other_agent_message(event: Event) -> Optional[Event]:
     if part.thought:
       # Exclude thoughts from the context.
       continue
-    elif part.text:
+    elif part.text is not None and part.text.strip():
       content.parts.append(
           types.Part(text=f'[{event.author}] said: {part.text}')
       )
@@ -528,11 +544,17 @@ def _present_other_agent_message(event: Event) -> Optional[Event]:
               )
           )
       )
-    # Fallback to the original part for non-text and non-functionCall parts.
-    else:
+    elif (
+        part.inline_data
+        or part.file_data
+        or part.executable_code
+        or part.code_execution_result
+    ):
       content.parts.append(part)
+    else:
+      continue
 
-  # If no meaningful parts were added (only "For context:" remains), return None
+  # Return None when only "For context:" remains.
   if len(content.parts) == 1:
     return None
 
@@ -648,10 +670,15 @@ def _is_request_confirmation_event(event: Event) -> bool:
   return _is_function_call_event(event, REQUEST_CONFIRMATION_FUNCTION_CALL_NAME)
 
 
-def _is_live_model_audio_event(event: Event) -> bool:
-  """Check if the event is an audio event produced by live/bidi models
+def _is_adk_framework_event(event: Event) -> bool:
+  """Checks if the event is an ADK framework event."""
+  return _is_function_call_event(event, 'adk_framework')
 
-  There are two possible cases:
+
+def _is_live_model_audio_event_with_inline_data(event: Event) -> bool:
+  """Check if the event is a live/bidi audio event with inline data.
+
+  There are two possible cases and we only care about the second case:
   content=Content(
     parts=[
       Part(
@@ -676,22 +703,13 @@ def _is_live_model_audio_event(event: Event) -> bool:
   ) grounding_metadata=None partial=None turn_complete=None finish_reason=None
   error_code=None error_message=None ...
   """
-  if not event.content:
+  if not event.content or not event.content.parts:
     return False
-  if not event.content.parts:
-    return False
-  # If it's audio data, then one event only has one part of audio.
   for part in event.content.parts:
     if (
         part.inline_data
         and part.inline_data.mime_type
         and part.inline_data.mime_type.startswith('audio/')
-    ):
-      return True
-    if (
-        part.file_data
-        and part.file_data.mime_type
-        and part.file_data.mime_type.startswith('audio/')
     ):
       return True
   return False

@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -90,6 +90,14 @@ class LlmRequest(BaseModel):
 
   cacheable_contents_token_count: Optional[int] = None
   """Token count from previous request's prompt, used for cache size validation."""
+
+  previous_interaction_id: Optional[str] = None
+  """The ID of the previous interaction for stateful conversations.
+
+  When using the interactions API, this ID is used to chain interactions
+  together, allowing the API to maintain conversation state without sending
+  the full history.
+  """
 
   def append_instructions(
       self, instructions: Union[list[str], types.Content]

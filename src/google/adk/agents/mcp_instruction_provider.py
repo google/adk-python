@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -22,23 +22,11 @@ from typing import Any
 from typing import Dict
 from typing import TextIO
 
+from mcp import types
+
+from ..tools.mcp_tool.mcp_session_manager import MCPSessionManager
 from .llm_agent import InstructionProvider
 from .readonly_context import ReadonlyContext
-
-# Attempt to import MCP Session Manager from the MCP library, and hints user to
-# upgrade their Python version to 3.10 if it fails.
-try:
-  from mcp import types
-
-  from ..tools.mcp_tool.mcp_session_manager import MCPSessionManager
-except ImportError as e:
-  if sys.version_info < (3, 10):
-    raise ImportError(
-        "MCP Session Manager requires Python 3.10 or above. Please upgrade"
-        " your Python version."
-    ) from e
-  else:
-    raise e
 
 
 class McpInstructionProvider(InstructionProvider):

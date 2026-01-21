@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -68,9 +68,14 @@ def _execute_sql(
     bq_connection_properties = []
 
     # BigQuery job labels if applicable
-    bq_job_labels = {}
+    bq_job_labels = (
+        settings.job_labels.copy() if settings and settings.job_labels else {}
+    )
+
     if caller_id:
       bq_job_labels["adk-bigquery-tool"] = caller_id
+    if settings and settings.application_name:
+      bq_job_labels["adk-bigquery-application-name"] = settings.application_name
 
     if not settings or settings.write_mode == WriteMode.BLOCKED:
       dry_run_query_job = bq_client.query(
@@ -152,12 +157,15 @@ def _execute_sql(
       return {"status": "SUCCESS", "dry_run_info": dry_run_job.to_api_repr()}
 
     # Finally execute the query, fetch the result, and return it
+    job_config = bigquery.QueryJobConfig(
+        connection_properties=bq_connection_properties,
+        labels=bq_job_labels,
+    )
+    if settings.maximum_bytes_billed:
+      job_config.maximum_bytes_billed = settings.maximum_bytes_billed
     row_iterator = bq_client.query_and_wait(
         query,
-        job_config=bigquery.QueryJobConfig(
-            connection_properties=bq_connection_properties,
-            labels=bq_job_labels,
-        ),
+        job_config=job_config,
         project=project_id,
         max_results=settings.max_query_result_rows,
     )
@@ -221,7 +229,7 @@ def execute_sql(
 
           >>> execute_sql("my_project",
           ... "SELECT island, COUNT(*) AS population "
-          ... "FROM bigquery-public-data.ml_datasets.penguins GROUP BY island")
+          ... "FROM `bigquery-public-data`.`ml_datasets`.`penguins` GROUP BY island")
           {
             "status": "SUCCESS",
             "rows": [
@@ -245,7 +253,7 @@ def execute_sql(
           >>> execute_sql(
           ...     "my_project",
           ...     "SELECT island FROM "
-          ...     "bigquery-public-data.ml_datasets.penguins",
+          ...     "`bigquery-public-data`.`ml_datasets`.`penguins`",
           ...     dry_run=True
           ... )
           {
@@ -261,7 +269,7 @@ def execute_sql(
                     "tableId": "anon..."
                   },
                   "priority": "INTERACTIVE",
-                  "query": "SELECT island FROM bigquery-public-data.ml_datasets.penguins",
+                  "query": "SELECT island FROM `bigquery-public-data`.`ml_datasets`.`penguins`",
                   "useLegacySql": False,
                   "writeDisposition": "WRITE_TRUNCATE"
                 }
@@ -311,7 +319,7 @@ def _execute_sql_write_mode(*args, **kwargs) -> dict:
 
           >>> execute_sql("my_project",
           ... "SELECT island, COUNT(*) AS population "
-          ... "FROM bigquery-public-data.ml_datasets.penguins GROUP BY island")
+          ... "FROM `bigquery-public-data`.`ml_datasets`.`penguins` GROUP BY island")
           {
             "status": "SUCCESS",
             "rows": [
@@ -335,7 +343,7 @@ def _execute_sql_write_mode(*args, **kwargs) -> dict:
           >>> execute_sql(
           ...     "my_project",
           ...     "SELECT island FROM "
-          ...     "bigquery-public-data.ml_datasets.penguins",
+          ...     "`bigquery-public-data`.`ml_datasets`.`penguins`",
           ...     dry_run=True
           ... )
           {
@@ -351,7 +359,7 @@ def _execute_sql_write_mode(*args, **kwargs) -> dict:
                     "tableId": "anon..."
                   },
                   "priority": "INTERACTIVE",
-                  "query": "SELECT island FROM bigquery-public-data.ml_datasets.penguins",
+                  "query": "SELECT island FROM `bigquery-public-data`.`ml_datasets`.`penguins`",
                   "useLegacySql": False,
                   "writeDisposition": "WRITE_TRUNCATE"
                 }
@@ -366,7 +374,7 @@ def _execute_sql_write_mode(*args, **kwargs) -> dict:
       Create a table with schema prescribed:
 
           >>> execute_sql("my_project",
-          ... "CREATE TABLE my_project.my_dataset.my_table "
+          ... "CREATE TABLE `my_project`.`my_dataset`.`my_table` "
           ... "(island STRING, population INT64)")
           {
             "status": "SUCCESS",
@@ -376,7 +384,7 @@ def _execute_sql_write_mode(*args, **kwargs) -> dict:
       Insert data into an existing table:
 
           >>> execute_sql("my_project",
-          ... "INSERT INTO my_project.my_dataset.my_table (island, population) "
+          ... "INSERT INTO `my_project`.`my_dataset`.`my_table` (island, population) "
           ... "VALUES ('Dream', 124), ('Biscoe', 168)")
           {
             "status": "SUCCESS",
@@ -386,9 +394,9 @@ def _execute_sql_write_mode(*args, **kwargs) -> dict:
       Create a table from the result of a query:
 
           >>> execute_sql("my_project",
-          ... "CREATE TABLE my_project.my_dataset.my_table AS "
+          ... "CREATE TABLE `my_project`.`my_dataset`.`my_table` AS "
           ... "SELECT island, COUNT(*) AS population "
-          ... "FROM bigquery-public-data.ml_datasets.penguins GROUP BY island")
+          ... "FROM `bigquery-public-data`.`ml_datasets`.`penguins` GROUP BY island")
           {
             "status": "SUCCESS",
             "rows": []
@@ -397,7 +405,7 @@ def _execute_sql_write_mode(*args, **kwargs) -> dict:
       Delete a table:
 
           >>> execute_sql("my_project",
-          ... "DROP TABLE my_project.my_dataset.my_table")
+          ... "DROP TABLE `my_project`.`my_dataset`.`my_table`")
           {
             "status": "SUCCESS",
             "rows": []
@@ -406,8 +414,8 @@ def _execute_sql_write_mode(*args, **kwargs) -> dict:
       Copy a table to another table:
 
           >>> execute_sql("my_project",
-          ... "CREATE TABLE my_project.my_dataset.my_table_clone "
-          ... "CLONE my_project.my_dataset.my_table")
+          ... "CREATE TABLE `my_project`.`my_dataset`.`my_table_clone` "
+          ... "CLONE `my_project`.`my_dataset`.`my_table`")
           {
             "status": "SUCCESS",
             "rows": []
@@ -417,8 +425,8 @@ def _execute_sql_write_mode(*args, **kwargs) -> dict:
       table:
 
           >>> execute_sql("my_project",
-          ... "CREATE SNAPSHOT TABLE my_project.my_dataset.my_table_snapshot "
-          ... "CLONE my_project.my_dataset.my_table")
+          ... "CREATE SNAPSHOT TABLE `my_project`.`my_dataset`.`my_table_snapshot` "
+          ... "CLONE `my_project`.`my_dataset`.`my_table`")
           {
             "status": "SUCCESS",
             "rows": []
@@ -427,9 +435,9 @@ def _execute_sql_write_mode(*args, **kwargs) -> dict:
       Create a BigQuery ML linear regression model:
 
           >>> execute_sql("my_project",
-          ... "CREATE MODEL `my_dataset.my_model` "
+          ... "CREATE MODEL `my_dataset`.`my_model` "
           ... "OPTIONS (model_type='linear_reg', input_label_cols=['body_mass_g']) AS "
-          ... "SELECT * FROM `bigquery-public-data.ml_datasets.penguins` "
+          ... "SELECT * FROM `bigquery-public-data`.`ml_datasets`.`penguins` "
           ... "WHERE body_mass_g IS NOT NULL")
           {
             "status": "SUCCESS",
@@ -439,7 +447,7 @@ def _execute_sql_write_mode(*args, **kwargs) -> dict:
       Evaluate BigQuery ML model:
 
           >>> execute_sql("my_project",
-          ... "SELECT * FROM ML.EVALUATE(MODEL `my_dataset.my_model`)")
+          ... "SELECT * FROM ML.EVALUATE(MODEL `my_dataset`.`my_model`)")
           {
             "status": "SUCCESS",
             "rows": [{'mean_absolute_error': 227.01223667447218,
@@ -453,8 +461,8 @@ def _execute_sql_write_mode(*args, **kwargs) -> dict:
       Evaluate BigQuery ML model on custom data:
 
           >>> execute_sql("my_project",
-          ... "SELECT * FROM ML.EVALUATE(MODEL `my_dataset.my_model`, "
-          ... "(SELECT * FROM `my_dataset.my_table`))")
+          ... "SELECT * FROM ML.EVALUATE(MODEL `my_dataset`.`my_model`, "
+          ... "(SELECT * FROM `my_dataset`.`my_table`))")
           {
             "status": "SUCCESS",
             "rows": [{'mean_absolute_error': 227.01223667447218,
@@ -468,8 +476,8 @@ def _execute_sql_write_mode(*args, **kwargs) -> dict:
       Predict using BigQuery ML model:
 
           >>> execute_sql("my_project",
-          ... "SELECT * FROM ML.PREDICT(MODEL `my_dataset.my_model`, "
-          ... "(SELECT * FROM `my_dataset.my_table`))")
+          ... "SELECT * FROM ML.PREDICT(MODEL `my_dataset`.`my_model`, "
+          ... "(SELECT * FROM `my_dataset`.`my_table`))")
           {
             "status": "SUCCESS",
             "rows": [
@@ -486,7 +494,7 @@ def _execute_sql_write_mode(*args, **kwargs) -> dict:
 
       Delete a BigQuery ML model:
 
-          >>> execute_sql("my_project", "DROP MODEL `my_dataset.my_model`")
+          >>> execute_sql("my_project", "DROP MODEL `my_dataset`.`my_model`")
           {
             "status": "SUCCESS",
             "rows": []
@@ -531,7 +539,7 @@ def _execute_sql_protected_write_mode(*args, **kwargs) -> dict:
 
           >>> execute_sql("my_project",
           ... "SELECT island, COUNT(*) AS population "
-          ... "FROM bigquery-public-data.ml_datasets.penguins GROUP BY island")
+          ... "FROM `bigquery-public-data`.`ml_datasets`.`penguins` GROUP BY island")
           {
             "status": "SUCCESS",
             "rows": [
@@ -555,7 +563,7 @@ def _execute_sql_protected_write_mode(*args, **kwargs) -> dict:
           >>> execute_sql(
           ...     "my_project",
           ...     "SELECT island FROM "
-          ...     "bigquery-public-data.ml_datasets.penguins",
+          ...     "`bigquery-public-data`.`ml_datasets`.`penguins`",
           ...     dry_run=True
           ... )
           {
@@ -571,7 +579,7 @@ def _execute_sql_protected_write_mode(*args, **kwargs) -> dict:
                     "tableId": "anon..."
                   },
                   "priority": "INTERACTIVE",
-                  "query": "SELECT island FROM bigquery-public-data.ml_datasets.penguins",
+                  "query": "SELECT island FROM `bigquery-public-data`.`ml_datasets`.`penguins`",
                   "useLegacySql": False,
                   "writeDisposition": "WRITE_TRUNCATE"
                 }
@@ -586,7 +594,7 @@ def _execute_sql_protected_write_mode(*args, **kwargs) -> dict:
       Create a temporary table with schema prescribed:
 
           >>> execute_sql("my_project",
-          ... "CREATE TEMP TABLE my_table (island STRING, population INT64)")
+          ... "CREATE TEMP TABLE `my_table` (island STRING, population INT64)")
           {
             "status": "SUCCESS",
             "rows": []
@@ -595,7 +603,7 @@ def _execute_sql_protected_write_mode(*args, **kwargs) -> dict:
       Insert data into an existing temporary table:
 
           >>> execute_sql("my_project",
-          ... "INSERT INTO my_table (island, population) "
+          ... "INSERT INTO `my_table` (island, population) "
           ... "VALUES ('Dream', 124), ('Biscoe', 168)")
           {
             "status": "SUCCESS",
@@ -605,9 +613,9 @@ def _execute_sql_protected_write_mode(*args, **kwargs) -> dict:
       Create a temporary table from the result of a query:
 
           >>> execute_sql("my_project",
-          ... "CREATE TEMP TABLE my_table AS "
+          ... "CREATE TEMP TABLE `my_table` AS "
           ... "SELECT island, COUNT(*) AS population "
-          ... "FROM bigquery-public-data.ml_datasets.penguins GROUP BY island")
+          ... "FROM `bigquery-public-data`.`ml_datasets`.`penguins` GROUP BY island")
           {
             "status": "SUCCESS",
             "rows": []
@@ -615,7 +623,7 @@ def _execute_sql_protected_write_mode(*args, **kwargs) -> dict:
 
       Delete a temporary table:
 
-          >>> execute_sql("my_project", "DROP TABLE my_table")
+          >>> execute_sql("my_project", "DROP TABLE `my_table`")
           {
             "status": "SUCCESS",
             "rows": []
@@ -624,7 +632,7 @@ def _execute_sql_protected_write_mode(*args, **kwargs) -> dict:
       Copy a temporary table to another temporary table:
 
           >>> execute_sql("my_project",
-          ... "CREATE TEMP TABLE my_table_clone CLONE my_table")
+          ... "CREATE TEMP TABLE `my_table_clone` CLONE `my_table`")
           {
             "status": "SUCCESS",
             "rows": []
@@ -633,9 +641,9 @@ def _execute_sql_protected_write_mode(*args, **kwargs) -> dict:
       Create a temporary BigQuery ML linear regression model:
 
           >>> execute_sql("my_project",
-          ... "CREATE TEMP MODEL my_model "
+          ... "CREATE TEMP MODEL `my_model` "
           ... "OPTIONS (model_type='linear_reg', input_label_cols=['body_mass_g']) AS"
-          ... "SELECT * FROM `bigquery-public-data.ml_datasets.penguins` "
+          ... "SELECT * FROM `bigquery-public-data`.`ml_datasets`.`penguins` "
           ... "WHERE body_mass_g IS NOT NULL")
           {
             "status": "SUCCESS",
@@ -644,7 +652,7 @@ def _execute_sql_protected_write_mode(*args, **kwargs) -> dict:
 
       Evaluate BigQuery ML model:
 
-          >>> execute_sql("my_project", "SELECT * FROM ML.EVALUATE(MODEL my_model)")
+          >>> execute_sql("my_project", "SELECT * FROM ML.EVALUATE(MODEL `my_model`)")
           {
             "status": "SUCCESS",
             "rows": [{'mean_absolute_error': 227.01223667447218,
@@ -658,8 +666,8 @@ def _execute_sql_protected_write_mode(*args, **kwargs) -> dict:
       Evaluate BigQuery ML model on custom data:
 
           >>> execute_sql("my_project",
-          ... "SELECT * FROM ML.EVALUATE(MODEL my_model, "
-          ... "(SELECT * FROM `my_dataset.my_table`))")
+          ... "SELECT * FROM ML.EVALUATE(MODEL `my_model`, "
+          ... "(SELECT * FROM `my_dataset`.`my_table`))")
           {
             "status": "SUCCESS",
             "rows": [{'mean_absolute_error': 227.01223667447218,
@@ -673,8 +681,8 @@ def _execute_sql_protected_write_mode(*args, **kwargs) -> dict:
       Predict using BigQuery ML model:
 
           >>> execute_sql("my_project",
-          ... "SELECT * FROM ML.PREDICT(MODEL my_model, "
-          ... "(SELECT * FROM `my_dataset.my_table`))")
+          ... "SELECT * FROM ML.PREDICT(MODEL `my_model`, "
+          ... "(SELECT * FROM `my_dataset`.`my_table`))")
           {
             "status": "SUCCESS",
             "rows": [
@@ -691,7 +699,7 @@ def _execute_sql_protected_write_mode(*args, **kwargs) -> dict:
 
       Delete a BigQuery ML model:
 
-          >>> execute_sql("my_project", "DROP MODEL my_model")
+          >>> execute_sql("my_project", "DROP MODEL `my_model`")
           {
             "status": "SUCCESS",
             "rows": []
@@ -1090,21 +1098,23 @@ def analyze_contribution(
   """
 
   # Create a session and run the create model query.
-  original_write_mode = settings.write_mode
   try:
-    if original_write_mode == WriteMode.BLOCKED:
+    execute_sql_settings = settings
+    if execute_sql_settings.write_mode == WriteMode.BLOCKED:
       raise ValueError("analyze_contribution is not allowed in this session.")
-    elif original_write_mode != WriteMode.PROTECTED:
+    elif execute_sql_settings.write_mode != WriteMode.PROTECTED:
       # Running create temp model requires a session. So we set the write mode
       # to PROTECTED to run the create model query and job query in the same
       # session.
-      settings.write_mode = WriteMode.PROTECTED
+      execute_sql_settings = settings.model_copy(
+          update={"write_mode": WriteMode.PROTECTED}
+      )
 
     result = _execute_sql(
         project_id=project_id,
         query=create_model_query,
         credentials=credentials,
-        settings=settings,
+        settings=execute_sql_settings,
         tool_context=tool_context,
         caller_id="analyze_contribution",
     )
@@ -1115,18 +1125,15 @@ def analyze_contribution(
         project_id=project_id,
         query=get_insights_query,
         credentials=credentials,
-        settings=settings,
+        settings=execute_sql_settings,
         tool_context=tool_context,
         caller_id="analyze_contribution",
     )
   except Exception as ex:  # pylint: disable=broad-except
     return {
         "status": "ERROR",
-        "error_details": f"Error during analyze_contribution: {str(ex)}",
+        "error_details": f"Error during analyze_contribution: {repr(ex)}",
     }
-  finally:
-    # Restore the original write mode.
-    settings.write_mode == original_write_mode
 
   return result
 
@@ -1324,21 +1331,23 @@ def detect_anomalies(
     """
 
   # Create a session and run the create model query.
-  original_write_mode = settings.write_mode
   try:
-    if settings.write_mode == WriteMode.BLOCKED:
+    execute_sql_settings = settings
+    if execute_sql_settings.write_mode == WriteMode.BLOCKED:
       raise ValueError("anomaly detection is not allowed in this session.")
-    elif original_write_mode != WriteMode.PROTECTED:
+    elif execute_sql_settings.write_mode != WriteMode.PROTECTED:
       # Running create temp model requires a session. So we set the write mode
       # to PROTECTED to run the create model query and job query in the same
       # session.
-      settings.write_mode = WriteMode.PROTECTED
+      execute_sql_settings = settings.model_copy(
+          update={"write_mode": WriteMode.PROTECTED}
+      )
 
     result = _execute_sql(
         project_id=project_id,
         query=create_model_query,
         credentials=credentials,
-        settings=settings,
+        settings=execute_sql_settings,
         tool_context=tool_context,
         caller_id="detect_anomalies",
     )
@@ -1349,17 +1358,14 @@ def detect_anomalies(
         project_id=project_id,
         query=anomaly_detection_query,
         credentials=credentials,
-        settings=settings,
+        settings=execute_sql_settings,
         tool_context=tool_context,
         caller_id="detect_anomalies",
     )
   except Exception as ex:  # pylint: disable=broad-except
     return {
         "status": "ERROR",
-        "error_details": f"Error during anomaly detection: {str(ex)}",
+        "error_details": f"Error during anomaly detection: {repr(ex)}",
     }
-  finally:
-    # Restore the original write mode.
-    settings.write_mode == original_write_mode
 
   return result

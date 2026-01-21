@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,8 +15,11 @@
 from unittest import mock
 
 from google.adk.models.gemini_llm_connection import GeminiLlmConnection
+from google.adk.utils.variant_utils import GoogleLLMVariant
 from google.genai import types
 import pytest
+
+MODEL_VERSION = 'gemini-2.5-pro'
 
 
 @pytest.fixture
@@ -28,7 +31,21 @@ def mock_gemini_session():
 @pytest.fixture
 def gemini_connection(mock_gemini_session):
   """GeminiLlmConnection instance with mocked session."""
-  return GeminiLlmConnection(mock_gemini_session)
+  return GeminiLlmConnection(
+      mock_gemini_session,
+      api_backend=GoogleLLMVariant.VERTEX_AI,
+      model_version=MODEL_VERSION,
+  )
+
+
+@pytest.fixture
+def gemini_api_connection(mock_gemini_session):
+  """GeminiLlmConnection instance with mocked session for Gemini API."""
+  return GeminiLlmConnection(
+      mock_gemini_session,
+      api_backend=GoogleLLMVariant.GEMINI_API,
+      model_version=MODEL_VERSION,
+  )
 
 
 @pytest.fixture
@@ -204,6 +221,7 @@ async def test_receive_usage_metadata_and_server_content(
 
   usage_response = next((r for r in responses if r.usage_metadata), None)
   assert usage_response is not None
+  assert usage_response.model_version == MODEL_VERSION
   content_response = next((r for r in responses if r.content), None)
   assert content_response is not None
 
@@ -226,6 +244,227 @@ async def test_receive_usage_metadata_and_server_content(
 
 
 @pytest.mark.asyncio
+async def test_receive_transcript_finished_on_interrupt(
+    gemini_api_connection,
+    mock_gemini_session,
+):
+  """Test receive finishes transcription on interrupt signal."""
+
+  message1 = mock.Mock()
+  message1.usage_metadata = None
+  message1.server_content = mock.Mock()
+  message1.server_content.model_turn = None
+  message1.server_content.interrupted = False
+  message1.server_content.input_transcription = types.Transcription(
+      text='Hello', finished=False
+  )
+  message1.server_content.output_transcription = None
+  message1.server_content.turn_complete = False
+  message1.server_content.generation_complete = False
+  message1.tool_call = None
+  message1.session_resumption_update = None
+
+  message2 = mock.Mock()
+  message2.usage_metadata = None
+  message2.server_content = mock.Mock()
+  message2.server_content.model_turn = None
+  message2.server_content.interrupted = False
+  message2.server_content.input_transcription = None
+  message2.server_content.output_transcription = types.Transcription(
+      text='How can', finished=False
+  )
+  message2.server_content.turn_complete = False
+  message2.server_content.generation_complete = False
+  message2.tool_call = None
+  message2.session_resumption_update = None
+
+  message3 = mock.Mock()
+  message3.usage_metadata = None
+  message3.server_content = mock.Mock()
+  message3.server_content.model_turn = None
+  message3.server_content.interrupted = True
+  message3.server_content.input_transcription = None
+  message3.server_content.output_transcription = None
+  message3.server_content.turn_complete = False
+  message3.server_content.generation_complete = False
+  message3.tool_call = None
+  message3.session_resumption_update = None
+
+  async def mock_receive_generator():
+    yield message1
+    yield message2
+    yield message3
+
+  receive_mock = mock.Mock(return_value=mock_receive_generator())
+  mock_gemini_session.receive = receive_mock
+
+  responses = [resp async for resp in gemini_api_connection.receive()]
+
+  assert len(responses) == 5
+  assert responses[4].interrupted is True
+
+  assert responses[0].input_transcription.text == 'Hello'
+  assert responses[0].input_transcription.finished is False
+  assert responses[0].partial is True
+  assert responses[1].output_transcription.text == 'How can'
+  assert responses[1].output_transcription.finished is False
+  assert responses[1].partial is True
+  assert responses[2].input_transcription.text == 'Hello'
+  assert responses[2].input_transcription.finished is True
+  assert responses[2].partial is False
+  assert responses[3].output_transcription.text == 'How can'
+  assert responses[3].output_transcription.finished is True
+  assert responses[3].partial is False
+
+
+@pytest.mark.asyncio
+async def test_receive_transcript_finished_on_generation_complete(
+    gemini_api_connection,
+    mock_gemini_session,
+):
+  """Test receive finishes transcription on generation_complete signal."""
+
+  message1 = mock.Mock()
+  message1.usage_metadata = None
+  message1.server_content = mock.Mock()
+  message1.server_content.model_turn = None
+  message1.server_content.interrupted = False
+  message1.server_content.input_transcription = types.Transcription(
+      text='Hello', finished=False
+  )
+  message1.server_content.output_transcription = None
+  message1.server_content.turn_complete = False
+  message1.server_content.generation_complete = False
+  message1.tool_call = None
+  message1.session_resumption_update = None
+
+  message2 = mock.Mock()
+  message2.usage_metadata = None
+  message2.server_content = mock.Mock()
+  message2.server_content.model_turn = None
+  message2.server_content.interrupted = False
+  message2.server_content.input_transcription = None
+  message2.server_content.output_transcription = types.Transcription(
+      text='How can', finished=False
+  )
+  message2.server_content.turn_complete = False
+  message2.server_content.generation_complete = False
+  message2.tool_call = None
+  message2.session_resumption_update = None
+
+  message3 = mock.Mock()
+  message3.usage_metadata = None
+  message3.server_content = mock.Mock()
+  message3.server_content.model_turn = None
+  message3.server_content.interrupted = False
+  message3.server_content.input_transcription = None
+  message3.server_content.output_transcription = None
+  message3.server_content.turn_complete = False
+  message3.server_content.generation_complete = True
+  message3.tool_call = None
+  message3.session_resumption_update = None
+
+  async def mock_receive_generator():
+    yield message1
+    yield message2
+    yield message3
+
+  receive_mock = mock.Mock(return_value=mock_receive_generator())
+  mock_gemini_session.receive = receive_mock
+
+  responses = [resp async for resp in gemini_api_connection.receive()]
+
+  assert len(responses) == 4
+
+  assert responses[0].input_transcription.text == 'Hello'
+  assert responses[0].input_transcription.finished is False
+  assert responses[0].partial is True
+  assert responses[1].output_transcription.text == 'How can'
+  assert responses[1].output_transcription.finished is False
+  assert responses[1].partial is True
+  assert responses[2].input_transcription.text == 'Hello'
+  assert responses[2].input_transcription.finished is True
+  assert responses[2].partial is False
+  assert responses[3].output_transcription.text == 'How can'
+  assert responses[3].output_transcription.finished is True
+  assert responses[3].partial is False
+
+
+@pytest.mark.asyncio
+async def test_receive_transcript_finished_on_turn_complete(
+    gemini_api_connection,
+    mock_gemini_session,
+):
+  """Test receive finishes transcription on interrupt or complete signals."""
+
+  message1 = mock.Mock()
+  message1.usage_metadata = None
+  message1.server_content = mock.Mock()
+  message1.server_content.model_turn = None
+  message1.server_content.interrupted = False
+  message1.server_content.input_transcription = types.Transcription(
+      text='Hello', finished=False
+  )
+  message1.server_content.output_transcription = None
+  message1.server_content.turn_complete = False
+  message1.server_content.generation_complete = False
+  message1.tool_call = None
+  message1.session_resumption_update = None
+
+  message2 = mock.Mock()
+  message2.usage_metadata = None
+  message2.server_content = mock.Mock()
+  message2.server_content.model_turn = None
+  message2.server_content.interrupted = False
+  message2.server_content.input_transcription = None
+  message2.server_content.output_transcription = types.Transcription(
+      text='How can', finished=False
+  )
+  message2.server_content.turn_complete = False
+  message2.server_content.generation_complete = False
+  message2.tool_call = None
+  message2.session_resumption_update = None
+
+  message3 = mock.Mock()
+  message3.usage_metadata = None
+  message3.server_content = mock.Mock()
+  message3.server_content.model_turn = None
+  message3.server_content.interrupted = False
+  message3.server_content.input_transcription = None
+  message3.server_content.output_transcription = None
+  message3.server_content.turn_complete = True
+  message3.server_content.generation_complete = False
+  message3.tool_call = None
+  message3.session_resumption_update = None
+
+  async def mock_receive_generator():
+    yield message1
+    yield message2
+    yield message3
+
+  receive_mock = mock.Mock(return_value=mock_receive_generator())
+  mock_gemini_session.receive = receive_mock
+
+  responses = [resp async for resp in gemini_api_connection.receive()]
+
+  assert len(responses) == 5
+  assert responses[4].turn_complete is True
+
+  assert responses[0].input_transcription.text == 'Hello'
+  assert responses[0].input_transcription.finished is False
+  assert responses[0].partial is True
+  assert responses[1].output_transcription.text == 'How can'
+  assert responses[1].output_transcription.finished is False
+  assert responses[1].partial is True
+  assert responses[2].input_transcription.text == 'Hello'
+  assert responses[2].input_transcription.finished is True
+  assert responses[2].partial is False
+  assert responses[3].output_transcription.text == 'How can'
+  assert responses[3].output_transcription.finished is True
+  assert responses[3].partial is False
+
+
+@pytest.mark.asyncio
 async def test_receive_handles_input_transcription_fragments(
     gemini_connection, mock_gemini_session
 ):
@@ -240,6 +479,7 @@ async def test_receive_handles_input_transcription_fragments(
   )
   message1.server_content.output_transcription = None
   message1.server_content.turn_complete = False
+  message1.server_content.generation_complete = False
   message1.tool_call = None
   message1.session_resumption_update = None
 
@@ -253,6 +493,7 @@ async def test_receive_handles_input_transcription_fragments(
   )
   message2.server_content.output_transcription = None
   message2.server_content.turn_complete = False
+  message2.server_content.generation_complete = False
   message2.tool_call = None
   message2.session_resumption_update = None
 
@@ -266,6 +507,7 @@ async def test_receive_handles_input_transcription_fragments(
   )
   message3.server_content.output_transcription = None
   message3.server_content.turn_complete = False
+  message3.server_content.generation_complete = False
   message3.tool_call = None
   message3.session_resumption_update = None
 
@@ -306,6 +548,7 @@ async def test_receive_handles_output_transcription_fragments(
       text='How can', finished=False
   )
   message1.server_content.turn_complete = False
+  message1.server_content.generation_complete = False
   message1.tool_call = None
   message1.session_resumption_update = None
 
@@ -319,6 +562,7 @@ async def test_receive_handles_output_transcription_fragments(
       text=' I help?', finished=False
   )
   message2.server_content.turn_complete = False
+  message2.server_content.generation_complete = False
   message2.tool_call = None
   message2.session_resumption_update = None
 
@@ -332,6 +576,7 @@ async def test_receive_handles_output_transcription_fragments(
       text=None, finished=True
   )
   message3.server_content.turn_complete = False
+  message3.server_content.generation_complete = False
   message3.tool_call = None
   message3.session_resumption_update = None
 
@@ -355,3 +600,177 @@ async def test_receive_handles_output_transcription_fragments(
   assert responses[2].output_transcription.text == 'How can I help?'
   assert responses[2].output_transcription.finished is True
   assert responses[2].partial is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'audio_part',
+    [
+        types.Part(
+            inline_data=types.Blob(data=b'\x00\xFF', mime_type='audio/pcm')
+        ),
+        types.Part(
+            file_data=types.FileData(
+                file_uri='artifact://app/user/session/_adk_live/audio.pcm#1',
+                mime_type='audio/pcm',
+            )
+        ),
+    ],
+)
+async def test_send_history_filters_audio(mock_gemini_session, audio_part):
+  """Test that audio parts (inline or file_data) are filtered out."""
+  connection = GeminiLlmConnection(
+      mock_gemini_session, api_backend=GoogleLLMVariant.VERTEX_AI
+  )
+  history = [
+      types.Content(
+          role='user',
+          parts=[audio_part],
+      ),
+      types.Content(
+          role='model', parts=[types.Part.from_text(text='I heard you')]
+      ),
+  ]
+
+  await connection.send_history(history)
+
+  mock_gemini_session.send.assert_called_once()
+  call_args = mock_gemini_session.send.call_args[1]
+  sent_contents = call_args['input'].turns
+  # Only the model response should be sent (user audio filtered out)
+  assert len(sent_contents) == 1
+  assert sent_contents[0].role == 'model'
+  assert sent_contents[0].parts == [types.Part.from_text(text='I heard you')]
+
+
+@pytest.mark.asyncio
+async def test_send_history_keeps_image_data(mock_gemini_session):
+  """Test that image data is NOT filtered out."""
+  connection = GeminiLlmConnection(
+      mock_gemini_session, api_backend=GoogleLLMVariant.VERTEX_AI
+  )
+  image_blob = types.Blob(data=b'\x89PNG\r\n', mime_type='image/png')
+  history = [
+      types.Content(
+          role='user',
+          parts=[types.Part(inline_data=image_blob)],
+      ),
+      types.Content(
+          role='model', parts=[types.Part.from_text(text='Nice image!')]
+      ),
+  ]
+
+  await connection.send_history(history)
+
+  mock_gemini_session.send.assert_called_once()
+  call_args = mock_gemini_session.send.call_args[1]
+  sent_contents = call_args['input'].turns
+  # Both contents should be sent (image is not filtered)
+  assert len(sent_contents) == 2
+  assert sent_contents[0].parts[0].inline_data == image_blob
+
+
+@pytest.mark.asyncio
+async def test_send_history_mixed_content_filters_only_audio(
+    mock_gemini_session,
+):
+  """Test that mixed content keeps non-audio parts."""
+  connection = GeminiLlmConnection(
+      mock_gemini_session, api_backend=GoogleLLMVariant.VERTEX_AI
+  )
+  history = [
+      types.Content(
+          role='user',
+          parts=[
+              types.Part(
+                  inline_data=types.Blob(
+                      data=b'\x00\xFF', mime_type='audio/wav'
+                  )
+              ),
+              types.Part.from_text(text='transcribed text'),
+          ],
+      ),
+  ]
+
+  await connection.send_history(history)
+
+  mock_gemini_session.send.assert_called_once()
+  call_args = mock_gemini_session.send.call_args[1]
+  sent_contents = call_args['input'].turns
+  # Content should be sent but only with the text part
+  assert len(sent_contents) == 1
+  assert len(sent_contents[0].parts) == 1
+  assert sent_contents[0].parts[0].text == 'transcribed text'
+
+
+@pytest.mark.asyncio
+async def test_send_history_all_audio_content_not_sent(mock_gemini_session):
+  """Test that content with only audio parts is completely removed."""
+  connection = GeminiLlmConnection(
+      mock_gemini_session, api_backend=GoogleLLMVariant.VERTEX_AI
+  )
+  history = [
+      types.Content(
+          role='user',
+          parts=[
+              types.Part(
+                  inline_data=types.Blob(
+                      data=b'\x00\xFF', mime_type='audio/pcm'
+                  )
+              ),
+              types.Part(
+                  file_data=types.FileData(
+                      file_uri='artifact://audio.pcm#1',
+                      mime_type='audio/wav',
+                  )
+              ),
+          ],
+      ),
+  ]
+
+  await connection.send_history(history)
+
+  # No content should be sent since all parts are audio
+  mock_gemini_session.send.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_send_history_empty_history_not_sent(mock_gemini_session):
+  """Test that empty history does not call send."""
+  connection = GeminiLlmConnection(
+      mock_gemini_session, api_backend=GoogleLLMVariant.VERTEX_AI
+  )
+
+  await connection.send_history([])
+
+  mock_gemini_session.send.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'audio_mime_type',
+    ['audio/pcm', 'audio/wav', 'audio/mp3', 'audio/ogg'],
+)
+async def test_send_history_filters_various_audio_mime_types(
+    mock_gemini_session,
+    audio_mime_type,
+):
+  """Test that various audio mime types are all filtered."""
+  connection = GeminiLlmConnection(
+      mock_gemini_session, api_backend=GoogleLLMVariant.VERTEX_AI
+  )
+  history = [
+      types.Content(
+          role='user',
+          parts=[
+              types.Part(
+                  inline_data=types.Blob(data=b'', mime_type=audio_mime_type)
+              )
+          ],
+      ),
+  ]
+
+  await connection.send_history(history)
+
+  # No content should be sent since the only part is audio
+  mock_gemini_session.send.assert_not_called()

@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -18,6 +18,7 @@ from typing import Optional
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
+from pydantic import model_validator
 
 from ..agents.base_agent import BaseAgent
 from ..agents.context_cache_config import ContextCacheConfig
@@ -26,12 +27,23 @@ from ..plugins.base_plugin import BasePlugin
 from ..utils.feature_decorator import experimental
 
 
+def validate_app_name(name: str) -> None:
+  """Ensures the provided application name is safe and intuitive."""
+  if not name.isidentifier():
+    raise ValueError(
+        f"Invalid app name '{name}': must be a valid identifier consisting of"
+        " letters, digits, and underscores."
+    )
+  if name == "user":
+    raise ValueError("App name cannot be 'user'; reserved for end-user input.")
+
+
 @experimental
 class ResumabilityConfig(BaseModel):
   """The config of the resumability for an application.
 
   The "resumability" in ADK refers to the ability to:
-  1. pause an invocation upon a long running function call.
+  1. pause an invocation upon a long-running function call.
   2. resume an invocation from the last event, if it's paused or failed midway
   through.
 
@@ -105,3 +117,8 @@ class App(BaseModel):
   The config of the resumability for the application.
   If configured, will be applied to all agents in the app.
   """
+
+  @model_validator(mode="after")
+  def _validate_name(self) -> App:
+    validate_app_name(self.name)
+    return self

@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING
 from typing import Union
 
 from google.genai import types
+from google.genai.errors import ClientError
 from typing_extensions import override
 
 if TYPE_CHECKING:
@@ -160,18 +161,26 @@ class VertexAiSessionService(BaseSessionService):
             )
         }
 
-      get_session_response, events_iterator = await asyncio.gather(
-          api_client.agent_engines.sessions.get(name=session_resource_name),
-          api_client.agent_engines.sessions.events.list(
-              name=session_resource_name,
-              **list_events_kwargs,
-          ),
-      )
-
-    if get_session_response.user_id != user_id:
-      raise ValueError(
-          f'Session {session_id} does not belong to user {user_id}.'
-      )
+      try:
+        get_session_response, events_iterator = await asyncio.gather(
+            api_client.agent_engines.sessions.get(name=session_resource_name),
+            api_client.agent_engines.sessions.events.list(
+                name=session_resource_name,
+                **list_events_kwargs,
+            ),
+        )
+      except ClientError as e:
+        if e.code == 404:
+          logger.debug(
+              'Session %s not found in Vertex AI Agent Engine.',
+              session_resource_name,
+          )
+          return None
+        raise
+      if get_session_response.user_id != user_id:
+        raise ValueError(
+            f'Session {session_id} does not belong to user {user_id}.'
+        )
 
     update_timestamp = get_session_response.update_time.timestamp()
     session = Session(
@@ -180,7 +189,6 @@ class VertexAiSessionService(BaseSessionService):
         id=session_id,
         state=getattr(get_session_response, 'session_state', None) or {},
         last_update_time=update_timestamp,
-        display_name=getattr(get_session_response, 'display_name', None),
     )
     session.events += [
         _from_api_event(event)

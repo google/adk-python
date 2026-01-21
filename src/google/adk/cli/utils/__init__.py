@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -18,8 +18,10 @@ from typing import Optional
 
 from ...agents.base_agent import BaseAgent
 from ...agents.llm_agent import LlmAgent
+from .dot_adk_folder import DotAdkFolder
 from .state import create_empty_state
 
 __all__ = [
     'create_empty_state',
+    'DotAdkFolder',
 ]

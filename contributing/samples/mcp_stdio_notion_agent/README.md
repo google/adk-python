@@ -1,6 +1,6 @@
 # Notion MCP Agent
 
-This is an agent that is using Notion MCP tool to call Notion API. And it demonstrate how to pass in the Notion API key.
+This is an agent that is using Notion MCP tool to call Notion API. And it demonstrates how to pass in the Notion API key.
 
 Follow below instruction to use it:
 

@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from abc import ABC
 from abc import abstractmethod
+from typing import Any
 from typing import Union
 
 from ...agents.base_agent import BaseAgent
@@ -34,3 +35,15 @@ class BaseAgentLoader(ABC):
   @abstractmethod
   def list_agents(self) -> list[str]:
     """Lists all agents available in the agent loader in alphabetical order."""
+
+  def list_agents_detailed(self) -> list[dict[str, Any]]:
+    agent_names = self.list_agents()
+    return [
+        {
+            'name': name,
+            'display_name': None,
+            'description': None,
+            'type': None,
+        }
+        for name in agent_names
+    ]

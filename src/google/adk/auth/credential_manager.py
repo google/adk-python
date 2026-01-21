@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -29,6 +29,7 @@ from .auth_schemes import ExtendedOAuth2
 from .auth_schemes import OpenIdConnectWithConfig
 from .auth_tool import AuthConfig
 from .exchanger.base_credential_exchanger import BaseCredentialExchanger
+from .exchanger.base_credential_exchanger import ExchangeResult
 from .exchanger.credential_exchanger_registry import CredentialExchangerRegistry
 from .oauth2_discovery import OAuth2DiscoveryManager
 from .refresher.credential_refresher_registry import CredentialRefresherRegistry
@@ -175,16 +176,12 @@ class CredentialManager:
   async def _load_existing_credential(
       self, callback_context: CallbackContext
   ) -> Optional[AuthCredential]:
-    """Load existing credential from credential service or cached exchanged credential."""
+    """Load existing credential from credential service."""
 
     # Try loading from credential service first
     credential = await self._load_from_credential_service(callback_context)
     if credential:
       return credential
-
-    # Check if we have a cached exchanged credential
-    if self._auth_config.exchanged_auth_credential:
-      return self._auth_config.exchanged_auth_credential
 
     return None
 
@@ -214,15 +211,17 @@ class CredentialManager:
       return credential, False
 
     if isinstance(exchanger, ServiceAccountCredentialExchanger):
-      exchanged_credential = exchanger.exchange_credential(
-          self._auth_config.auth_scheme, credential
-      )
-    else:
-      exchanged_credential = await exchanger.exchange(
-          credential, self._auth_config.auth_scheme
+      return (
+          exchanger.exchange_credential(
+              self._auth_config.auth_scheme, credential
+          ),
+          True,
       )
 
-    return exchanged_credential, True
+    exchange_result = await exchanger.exchange(
+        credential, self._auth_config.auth_scheme
+    )
+    return exchange_result.credential, exchange_result.was_exchanged
 
   async def _refresh_credential(
       self, credential: AuthCredential

@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -19,7 +19,6 @@ from __future__ import annotations
 from typing import AsyncGenerator
 from typing import TYPE_CHECKING
 
-from google.genai import _transformers
 from typing_extensions import override
 
 from ...agents.readonly_context import ReadonlyContext
@@ -85,6 +84,8 @@ class _InstructionsLlmRequestProcessor(BaseLlmRequestProcessor):
 
     # Handle static_instruction - add via append_instructions
     if agent.static_instruction:
+      from google.genai import _transformers
+
       # Convert ContentUnion to Content using genai transformer
       static_content = _transformers.t_content(agent.static_instruction)
       llm_request.append_instructions(static_content)

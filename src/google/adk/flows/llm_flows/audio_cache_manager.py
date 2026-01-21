@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -86,7 +86,7 @@ class AudioCacheManager:
       invocation_context: InvocationContext,
       flush_user_audio: bool = True,
       flush_model_audio: bool = True,
-  ) -> None:
+  ) -> list[Event]:
     """Flush audio caches to artifact services.
 
     The multimodality data is saved in artifact service in the format of
@@ -101,32 +101,40 @@ class AudioCacheManager:
       invocation_context: The invocation context containing audio caches.
       flush_user_audio: Whether to flush the input (user) audio cache.
       flush_model_audio: Whether to flush the output (model) audio cache.
+
+    Returns:
+      A list of Event objects created from the flushed caches.
     """
+    flushed_events = []
     if flush_user_audio and invocation_context.input_realtime_cache:
-      flush_success = await self._flush_cache_to_services(
+      audio_event = await self._flush_cache_to_services(
           invocation_context,
           invocation_context.input_realtime_cache,
           'input_audio',
       )
-      if flush_success:
+      if audio_event:
+        flushed_events.append(audio_event)
         invocation_context.input_realtime_cache = []
 
     if flush_model_audio and invocation_context.output_realtime_cache:
       logger.debug('Flushed output audio cache')
-      flush_success = await self._flush_cache_to_services(
+      audio_event = await self._flush_cache_to_services(
           invocation_context,
           invocation_context.output_realtime_cache,
           'output_audio',
       )
-      if flush_success:
+      if audio_event:
+        flushed_events.append(audio_event)
         invocation_context.output_realtime_cache = []
+
+    return flushed_events
 
   async def _flush_cache_to_services(
       self,
       invocation_context: InvocationContext,
       audio_cache: list[RealtimeCacheEntry],
       cache_type: str,
-  ) -> bool:
+  ) -> Event | None:
     """Flush a list of audio cache entries to artifact services.
 
     The artifact service stores the actual blob. The session stores the
@@ -138,11 +146,11 @@ class AudioCacheManager:
       cache_type: Type identifier for the cache ('input_audio' or 'output_audio').
 
     Returns:
-      True if the cache was successfully flushed, False otherwise.
+      The created Event if the cache was successfully flushed, None otherwise.
     """
     if not invocation_context.artifact_service or not audio_cache:
       logger.debug('Skipping cache flush: no artifact service or empty cache')
-      return False
+      return None
 
     try:
       # Combine audio chunks into a single file
@@ -173,10 +181,16 @@ class AudioCacheManager:
       artifact_ref = f'artifact://{invocation_context.app_name}/{invocation_context.user_id}/{invocation_context.session.id}/_adk_live/{filename}#{revision_id}'
 
       # Create event with file data reference to add to session
+      # For model events, author should be the agent name, not the role
+      author = (
+          invocation_context.agent.name
+          if audio_cache[0].role == 'model'
+          else audio_cache[0].role
+      )
       audio_event = Event(
           id=Event.new_id(),
           invocation_id=invocation_context.invocation_id,
-          author=audio_cache[0].role,
+          author=author,
           content=types.Content(
               role=audio_cache[0].role,
               parts=[
@@ -201,7 +215,7 @@ class AudioCacheManager:
 
     except Exception as e:
       logger.error('Failed to flush %s cache: %s', cache_type, e)
-      return False
+      return None
 
   def get_cache_stats(
       self, invocation_context: InvocationContext

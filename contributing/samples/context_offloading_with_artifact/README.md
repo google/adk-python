@@ -32,7 +32,7 @@ response. This keeps the turn events small, saving context space.
     the *next* request to the LLM. This makes the report data available
     immediately, allowing the agent to summarize it or answer questions in the
     same turn, as seen in the logs. This artifact is only appended for that
-    round and not saved to session. For furtuer rounds of conversation, it will
+    round and not saved to session. For future rounds of conversation, it will
     be removed from context.
 3.  **Loading on Demand**: The `CustomLoadArtifactsTool` enhances the default
     `load_artifacts` behavior.

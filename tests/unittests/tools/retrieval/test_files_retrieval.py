@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,7 +14,6 @@
 
 """Tests for FilesRetrieval tool."""
 
-import sys
 import unittest.mock as mock
 
 from google.adk.tools.retrieval.files_retrieval import _get_default_embedding_model
@@ -111,9 +110,6 @@ class TestFilesRetrieval:
 
   def test_get_default_embedding_model_success(self):
     """Test _get_default_embedding_model returns Google embedding when available."""
-    # Skip this test in Python 3.9 where llama_index.embeddings.google_genai may not be available
-    if sys.version_info < (3, 10):
-      pytest.skip("llama_index.embeddings.google_genai requires Python 3.10+")
 
     # Mock the module creation to avoid import issues
     mock_module = mock.MagicMock()
