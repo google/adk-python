@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -73,6 +73,24 @@ class TestApiParameter:
         param_schema=schema,
     )
     assert param.py_name == 'param_in'
+
+  def test_api_parameter_uses_location_default_when_name_missing(self):
+    schema = Schema(type='string')
+    param = ApiParameter(
+        original_name='',
+        param_location='body',
+        param_schema=schema,
+    )
+    assert param.py_name == 'body'
+
+  def test_api_parameter_uses_value_default_when_location_unknown(self):
+    schema = Schema(type='integer')
+    param = ApiParameter(
+        original_name='',
+        param_location='',
+        param_schema=schema,
+    )
+    assert param.py_name == 'value'
 
   def test_api_parameter_custom_py_name(self):
     schema = Schema(type='integer')

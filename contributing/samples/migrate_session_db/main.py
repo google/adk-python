@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -32,7 +32,7 @@ logs.log_to_tmp_folder()
 async def main():
   app_name = 'migrate_session_db_app'
   user_id_1 = 'user1'
-  session_service = DatabaseSessionService('sqlite:///./sessions.db')
+  session_service = DatabaseSessionService('sqlite+aiosqlite:///./sessions.db')
   artifact_service = InMemoryArtifactService()
   runner = Runner(
       app_name=app_name,

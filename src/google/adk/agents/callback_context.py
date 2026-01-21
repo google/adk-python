@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -175,4 +175,28 @@ class CallbackContext(ReadonlyContext):
       raise ValueError("Credential service is not initialized.")
     return await self._invocation_context.credential_service.load_credential(
         auth_config, self
+    )
+
+  async def add_session_to_memory(self) -> None:
+    """Triggers memory generation for the current session.
+
+    This method saves the current session's events to the memory service,
+    enabling the agent to recall information from past interactions.
+
+    Raises:
+      ValueError: If memory service is not available.
+
+    Example:
+      ```python
+      async def my_after_agent_callback(callback_context: CallbackContext):
+          # Save conversation to memory at the end of each interaction
+          await callback_context.add_session_to_memory()
+      ```
+    """
+    if self._invocation_context.memory_service is None:
+      raise ValueError(
+          "Cannot add session to memory: memory service is not available."
+      )
+    await self._invocation_context.memory_service.add_session_to_memory(
+        self._invocation_context.session
     )

@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -25,39 +25,27 @@ from typing import TextIO
 from typing import Union
 import warnings
 
+from mcp import StdioServerParameters
+from mcp.types import ListToolsResult
 from pydantic import model_validator
 from typing_extensions import override
 
 from ...agents.readonly_context import ReadonlyContext
 from ...auth.auth_credential import AuthCredential
 from ...auth.auth_schemes import AuthScheme
+from ...auth.auth_tool import AuthConfig
+from ...auth.credential_manager import CredentialManager
 from ..base_tool import BaseTool
 from ..base_toolset import BaseToolset
 from ..base_toolset import ToolPredicate
 from ..tool_configs import BaseToolConfig
 from ..tool_configs import ToolArgsConfig
+from .mcp_auth_utils import get_mcp_auth_headers
 from .mcp_session_manager import MCPSessionManager
-from .mcp_session_manager import retry_on_closed_resource
+from .mcp_session_manager import retry_on_errors
 from .mcp_session_manager import SseConnectionParams
 from .mcp_session_manager import StdioConnectionParams
 from .mcp_session_manager import StreamableHTTPConnectionParams
-
-# Attempt to import MCP Tool from the MCP library, and hints user to upgrade
-# their Python version to 3.10 if it fails.
-try:
-  from mcp import StdioServerParameters
-  from mcp.types import ListToolsResult
-except ImportError as e:
-  import sys
-
-  if sys.version_info < (3, 10):
-    raise ImportError(
-        "MCP Tool requires Python 3.10 or above. Please upgrade your Python"
-        " version."
-    ) from e
-  else:
-    raise e
-
 from .mcp_tool import MCPTool
 
 logger = logging.getLogger("google_adk." + __name__)
@@ -155,7 +143,7 @@ class McpToolset(BaseToolset):
     self._auth_credential = auth_credential
     self._require_confirmation = require_confirmation
 
-  @retry_on_closed_resource
+  @retry_on_errors
   async def get_tools(
       self,
       readonly_context: Optional[ReadonlyContext] = None,
@@ -169,13 +157,50 @@ class McpToolset(BaseToolset):
     Returns:
         List[BaseTool]: A list of tools available under the specified context.
     """
-    headers = (
+    provided_headers = (
         self._header_provider(readonly_context)
         if self._header_provider and readonly_context
-        else None
+        else {}
     )
+
+    auth_headers = {}
+    if self._auth_scheme:
+      try:
+        # Instantiate CredentialsManager to resolve credentials
+        auth_config = AuthConfig(
+            auth_scheme=self._auth_scheme,
+            raw_auth_credential=self._auth_credential,
+        )
+        credentials_manager = CredentialManager(auth_config)
+
+        # Resolve the credential
+        resolved_credential = await credentials_manager.get_auth_credential(
+            readonly_context
+        )
+
+        if resolved_credential:
+          auth_headers = get_mcp_auth_headers(
+              self._auth_scheme, resolved_credential
+          )
+        else:
+          logger.warning(
+              "Failed to resolve credential for tool listing, proceeding"
+              " without auth headers."
+          )
+      except Exception as e:
+        logger.warning(
+            "Error generating auth headers for tool listing: %s, proceeding"
+            " without auth headers.",
+            e,
+            exc_info=True,
+        )
+
+    merged_headers = {**(provided_headers or {}), **(auth_headers or {})}
+
     # Get session from session manager
-    session = await self._mcp_session_manager.create_session(headers=headers)
+    session = await self._mcp_session_manager.create_session(
+        headers=merged_headers
+    )
 
     # Fetch available tools from the MCP server
     timeout_in_seconds = (

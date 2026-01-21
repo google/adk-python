@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -24,6 +24,8 @@ from typing_extensions import override
 
 from . import _automatic_function_calling_util
 from ..agents.common_configs import AgentRefConfig
+from ..features import FeatureName
+from ..features import is_feature_enabled
 from ..memory.in_memory_memory_service import InMemoryMemoryService
 from ..utils.context_utils import Aclosing
 from ._forwarding_artifact_service import ForwardingArtifactService
@@ -47,11 +49,22 @@ class AgentTool(BaseTool):
   Attributes:
     agent: The agent to wrap.
     skip_summarization: Whether to skip summarization of the agent output.
+    include_plugins: Whether to propagate plugins from the parent runner context
+      to the agent's runner. When True (default), the agent will inherit all
+      plugins from its parent. Set to False to run the agent with an isolated
+      plugin environment.
   """
 
-  def __init__(self, agent: BaseAgent, skip_summarization: bool = False):
+  def __init__(
+      self,
+      agent: BaseAgent,
+      skip_summarization: bool = False,
+      *,
+      include_plugins: bool = True,
+  ):
     self.agent = agent
     self.skip_summarization: bool = skip_summarization
+    self.include_plugins = include_plugins
 
     super().__init__(name=agent.name, description=agent.description)
 
@@ -70,30 +83,51 @@ class AgentTool(BaseTool):
       result = _automatic_function_calling_util.build_function_declaration(
           func=self.agent.input_schema, variant=self._api_variant
       )
+      # Override the description with the agent's description
+      result.description = self.agent.description
     else:
-      result = types.FunctionDeclaration(
-          parameters=types.Schema(
-              type=types.Type.OBJECT,
-              properties={
-                  'request': types.Schema(
-                      type=types.Type.STRING,
-                  ),
-              },
-              required=['request'],
-          ),
-          description=self.agent.description,
-          name=self.name,
-      )
+      if is_feature_enabled(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL):
+        result = types.FunctionDeclaration(
+            name=self.name,
+            description=self.agent.description,
+            parameters_json_schema={
+                'type': 'object',
+                'properties': {
+                    'request': {'type': 'string'},
+                },
+                'required': ['request'],
+            },
+        )
+      else:
+        result = types.FunctionDeclaration(
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    'request': types.Schema(
+                        type=types.Type.STRING,
+                    ),
+                },
+                required=['request'],
+            ),
+            description=self.agent.description,
+            name=self.name,
+        )
 
     # Set response schema for non-GEMINI_API variants
     if self._api_variant != GoogleLLMVariant.GEMINI_API:
       # Determine response type based on agent's output schema
       if isinstance(self.agent, LlmAgent) and self.agent.output_schema:
         # Agent has structured output schema - response is an object
-        result.response = types.Schema(type=types.Type.OBJECT)
+        if is_feature_enabled(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL):
+          result.response_json_schema = {'type': 'object'}
+        else:
+          result.response = types.Schema(type=types.Type.OBJECT)
       else:
         # Agent returns text - response is a string
-        result.response = types.Schema(type=types.Type.STRING)
+        if is_feature_enabled(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL):
+          result.response_json_schema = {'type': 'string'}
+        else:
+          result.response = types.Schema(type=types.Type.STRING)
 
     result.name = self.name
     return result
@@ -133,6 +167,11 @@ class AgentTool(BaseTool):
         invocation_context.app_name if invocation_context else None
     )
     child_app_name = parent_app_name or self.agent.name
+    plugins = (
+        tool_context._invocation_context.plugin_manager.plugins
+        if self.include_plugins
+        else None
+    )
     runner = Runner(
         app_name=child_app_name,
         agent=self.agent,
@@ -140,7 +179,7 @@ class AgentTool(BaseTool):
         session_service=InMemorySessionService(),
         memory_service=InMemoryMemoryService(),
         credential_service=tool_context._invocation_context.credential_service,
-        plugins=list(tool_context._invocation_context.plugin_manager.plugins),
+        plugins=plugins,
     )
 
     state_dict = {
@@ -171,9 +210,11 @@ class AgentTool(BaseTool):
     # to avoid "Attempted to exit cancel scope in a different task" errors
     await runner.close()
 
-    if not last_content:
+    if last_content is None or last_content.parts is None:
       return ''
-    merged_text = '\n'.join(p.text for p in last_content.parts if p.text)
+    merged_text = '\n'.join(
+        p.text for p in last_content.parts if p.text and not p.thought
+    )
     if isinstance(self.agent, LlmAgent) and self.agent.output_schema:
       tool_result = validate_and_dump_schema(
           self.agent.output_schema, merged_text
@@ -195,7 +236,9 @@ class AgentTool(BaseTool):
         agent_tool_config.agent, config_abs_path
     )
     return cls(
-        agent=agent, skip_summarization=agent_tool_config.skip_summarization
+        agent=agent,
+        skip_summarization=agent_tool_config.skip_summarization,
+        include_plugins=agent_tool_config.include_plugins,
     )
 
 
@@ -207,3 +250,6 @@ class AgentToolConfig(BaseToolConfig):
 
   skip_summarization: bool = False
   """Whether to skip summarization of the agent output."""
+
+  include_plugins: bool = True
+  """Whether to include plugins from parent runner context."""

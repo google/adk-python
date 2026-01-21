@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -47,7 +47,9 @@ class ForwardingArtifactService(BaseArtifactService):
       custom_metadata: Optional[dict[str, Any]] = None,
   ) -> int:
     return await self.tool_context.save_artifact(
-        filename=filename, artifact=artifact
+        filename=filename,
+        artifact=artifact,
+        custom_metadata=custom_metadata,
     )
 
   @override

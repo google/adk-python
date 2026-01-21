@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,54 +12,39 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import sys
 from unittest.mock import Mock
 from unittest.mock import patch
 
+from a2a.types import AgentCapabilities
+from a2a.types import AgentCard
+from a2a.types import AgentProvider
+from a2a.types import AgentSkill
+from a2a.types import SecurityScheme
+from google.adk.a2a.utils.agent_card_builder import _build_agent_description
+from google.adk.a2a.utils.agent_card_builder import _build_llm_agent_description_with_instructions
+from google.adk.a2a.utils.agent_card_builder import _build_loop_description
+from google.adk.a2a.utils.agent_card_builder import _build_orchestration_skill
+from google.adk.a2a.utils.agent_card_builder import _build_parallel_description
+from google.adk.a2a.utils.agent_card_builder import _build_sequential_description
+from google.adk.a2a.utils.agent_card_builder import _convert_example_tool_examples
+from google.adk.a2a.utils.agent_card_builder import _extract_examples_from_instruction
+from google.adk.a2a.utils.agent_card_builder import _extract_inputs_from_examples
+from google.adk.a2a.utils.agent_card_builder import _get_agent_skill_name
+from google.adk.a2a.utils.agent_card_builder import _get_agent_type
+from google.adk.a2a.utils.agent_card_builder import _get_default_description
+from google.adk.a2a.utils.agent_card_builder import _get_input_modes
+from google.adk.a2a.utils.agent_card_builder import _get_output_modes
+from google.adk.a2a.utils.agent_card_builder import _get_workflow_description
+from google.adk.a2a.utils.agent_card_builder import _replace_pronouns
+from google.adk.a2a.utils.agent_card_builder import AgentCardBuilder
+from google.adk.agents.base_agent import BaseAgent
+from google.adk.agents.llm_agent import LlmAgent
+from google.adk.agents.loop_agent import LoopAgent
+from google.adk.agents.parallel_agent import ParallelAgent
+from google.adk.agents.sequential_agent import SequentialAgent
+from google.adk.examples import Example
+from google.adk.tools.example_tool import ExampleTool
 import pytest
-
-# Skip all tests in this module if Python version is less than 3.10
-pytestmark = pytest.mark.skipif(
-    sys.version_info < (3, 10), reason="A2A requires Python 3.10+"
-)
-
-# Import dependencies with version checking
-try:
-  from a2a.types import AgentCapabilities
-  from a2a.types import AgentCard
-  from a2a.types import AgentProvider
-  from a2a.types import AgentSkill
-  from a2a.types import SecurityScheme
-  from google.adk.a2a.utils.agent_card_builder import _build_agent_description
-  from google.adk.a2a.utils.agent_card_builder import _build_llm_agent_description_with_instructions
-  from google.adk.a2a.utils.agent_card_builder import _build_loop_description
-  from google.adk.a2a.utils.agent_card_builder import _build_orchestration_skill
-  from google.adk.a2a.utils.agent_card_builder import _build_parallel_description
-  from google.adk.a2a.utils.agent_card_builder import _build_sequential_description
-  from google.adk.a2a.utils.agent_card_builder import _convert_example_tool_examples
-  from google.adk.a2a.utils.agent_card_builder import _extract_examples_from_instruction
-  from google.adk.a2a.utils.agent_card_builder import _get_agent_skill_name
-  from google.adk.a2a.utils.agent_card_builder import _get_agent_type
-  from google.adk.a2a.utils.agent_card_builder import _get_default_description
-  from google.adk.a2a.utils.agent_card_builder import _get_input_modes
-  from google.adk.a2a.utils.agent_card_builder import _get_output_modes
-  from google.adk.a2a.utils.agent_card_builder import _get_workflow_description
-  from google.adk.a2a.utils.agent_card_builder import _replace_pronouns
-  from google.adk.a2a.utils.agent_card_builder import AgentCardBuilder
-  from google.adk.agents.base_agent import BaseAgent
-  from google.adk.agents.llm_agent import LlmAgent
-  from google.adk.agents.loop_agent import LoopAgent
-  from google.adk.agents.parallel_agent import ParallelAgent
-  from google.adk.agents.sequential_agent import SequentialAgent
-  from google.adk.tools.example_tool import ExampleTool
-except ImportError as e:
-  if sys.version_info < (3, 10):
-    # Imports are not needed since tests will be skipped due to pytestmark.
-    # The imported names are only used within test methods, not at module level,
-    # so no NameError occurs during module compilation.
-    pass
-  else:
-    raise e
 
 
 class TestAgentCardBuilder:
@@ -1117,3 +1102,73 @@ class TestExampleExtractionFunctions:
     assert len(result) == 1  # Only complete pairs should be included
     assert result[0]["input"] == {"text": "What is the weather?"}
     assert result[0]["output"] == [{"text": "What time is it?"}]
+
+  def test_extract_inputs_from_examples_from_plain_text_input(self):
+    """Test _extract_inputs_from_examples on plain text as input."""
+    # Arrange
+    examples = [
+        {
+            "input": {"text": "What is the weather?"},
+            "output": [{"text": "What time is it?"}],
+        },
+        {
+            "input": {"text": "The weather is sunny."},
+            "output": [{"text": "It is 3 PM."}],
+        },
+    ]
+
+    # Act
+    result = _extract_inputs_from_examples(examples)
+
+    # Assert
+    assert len(result) == 2
+    assert result[0] == "What is the weather?"
+    assert result[1] == "The weather is sunny."
+
+  def test_extract_inputs_from_examples_from_example_tool(self):
+    """Test _extract_inputs_from_examples as extracted from ExampleTool."""
+
+    # Arrange
+    # This is what would be extracted from an ExampleTool
+    examples = [
+        {
+            "input": {
+                "role": "user",
+                "parts": [{"text": "What is the weather?"}],
+            },
+            "output": [
+                {
+                    "role": "model",
+                    "parts": [{"text": "What time is it?"}],
+                },
+            ],
+        },
+        {
+            "input": {
+                "role": "user",
+                "parts": [{"text": "The weather is sunny."}],
+            },
+            "output": [
+                {
+                    "role": "model",
+                    "parts": [{"text": "It is 3 PM."}],
+                },
+            ],
+        },
+    ]
+
+    # Act
+    result = _extract_inputs_from_examples(examples)
+
+    # Assert
+    assert len(result) == 2
+    assert result[0] == "What is the weather?"
+    assert result[1] == "The weather is sunny."
+
+  def test_extract_inputs_from_examples_none_input(self):
+    """Test _extract_inputs_from_examples on None as input."""
+    # Act
+    result = _extract_inputs_from_examples(None)
+
+    # Assert
+    assert len(result) == 0

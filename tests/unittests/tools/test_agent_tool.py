@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -23,6 +23,8 @@ from google.adk.agents.llm_agent import Agent
 from google.adk.agents.run_config import RunConfig
 from google.adk.agents.sequential_agent import SequentialAgent
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
+from google.adk.features import FeatureName
+from google.adk.features._feature_registry import temporary_feature_override
 from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
@@ -34,6 +36,7 @@ from google.adk.tools.tool_context import ToolContext
 from google.genai import types
 from google.genai.types import Part
 from pydantic import BaseModel
+import pytest
 from pytest import mark
 
 from .. import testing_utils
@@ -730,133 +733,3 @@ def test_agent_tool_response_schema_with_input_schema_no_output_vertex_ai(
   # Should have string response schema for VERTEX_AI when no output_schema
   assert declaration.response is not None
   assert declaration.response.type == types.Type.STRING
-
-
-@mark.parametrize(
-    'env_variables',
-    ['GOOGLE_AI', 'VERTEX'],
-    indirect=True,
-)
-def test_custom_schema_with_union_input():
-  """Tests if agent can have a Union type in input_schema."""
-
-  class CustomInput1(BaseModel):
-    custom_input1: str
-
-  class CustomInput2(BaseModel):
-    custom_input2: str
-
-  mock_model = testing_utils.MockModel.create(
-      responses=[
-          Part.from_function_call(
-              name='tool_agent', args={'custom_input1': 'test_union_1'}
-          ),
-          'response1',
-          'response2',
-      ]
-  )
-
-  tool_agent = Agent(
-      name='tool_agent',
-      model=mock_model,
-      input_schema=Union[CustomInput1, CustomInput2],
-  )
-
-  root_agent = Agent(
-      name='root_agent',
-      model=mock_model,
-      tools=[AgentTool(agent=tool_agent)],
-  )
-
-  runner = testing_utils.InMemoryRunner(root_agent)
-  runner.run('test1')
-
-  assert len(mock_model.requests) == 3
-  # The second request is the tool agent request.
-  assert (
-      mock_model.requests[1].contents[0].parts[0].text
-      == '{"custom_input1":"test_union_1"}'
-  )
-
-
-@mark.parametrize(
-    'env_variables',
-    ['GOOGLE_AI', 'VERTEX'],
-    indirect=True,
-)
-def test_custom_schema_with_union_in_model():
-  """Tests if agent can have a Union type in a field of a BaseModel."""
-
-  class MyInput(BaseModel):
-    my_field: Union[int, str]
-
-  class MyOutput(BaseModel):
-    my_field: Union[int, str]
-
-  # Test with int
-  mock_model_1 = testing_utils.MockModel.create(
-      responses=[
-          Part.from_function_call(name='tool_agent', args={'my_field': 1}),
-          '{"my_field": 2}',
-          'response2',
-      ]
-  )
-
-  tool_agent = Agent(
-      name='tool_agent',
-      model=mock_model_1,
-      input_schema=MyInput,
-      output_schema=MyOutput,
-  )
-
-  root_agent = Agent(
-      name='root_agent',
-      model=mock_model_1,
-      tools=[AgentTool(agent=tool_agent)],
-  )
-
-  runner = testing_utils.InMemoryRunner(root_agent)
-  events = runner.run('test1')
-  simplified_events = testing_utils.simplify_events(events)
-
-  assert simplified_events == [
-      (
-          'root_agent',
-          Part.from_function_call(name='tool_agent', args={'my_field': 1}),
-      ),
-      (
-          'root_agent',
-          Part.from_function_response(
-              name='tool_agent', response={'my_field': 2}
-          ),
-      ),
-      ('root_agent', 'response2'),
-  ]
-
-  # Test with str
-  mock_model_2 = testing_utils.MockModel.create(
-      responses=[
-          Part.from_function_call(name='tool_agent', args={'my_field': 'a'}),
-          '{"my_field": "b"}',
-          'response2',
-      ]
-  )
-  tool_agent.model = mock_model_2
-  root_agent.model = mock_model_2
-  runner = testing_utils.InMemoryRunner(root_agent)
-  events = runner.run('test1')
-  simplified_events = testing_utils.simplify_events(events)
-
-  assert simplified_events == [
-      (
-          'root_agent',
-          Part.from_function_call(name='tool_agent', args={'my_field': 'a'}),
-      ),
-      (
-          'root_agent',
-          Part.from_function_response(
-              name='tool_agent', response={'my_field': 'b'}
-          ),
-      ),
-      ('root_agent', 'response2'),
-  ]

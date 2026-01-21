@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -45,9 +45,9 @@ from .eval_case import InvocationEvents
 from .eval_case import SessionInput
 from .eval_set import EvalSet
 from .request_intercepter_plugin import _RequestIntercepterPlugin
-from .user_simulator import Status as UserSimulatorStatus
-from .user_simulator import UserSimulator
-from .user_simulator_provider import UserSimulatorProvider
+from .simulation.user_simulator import Status as UserSimulatorStatus
+from .simulation.user_simulator import UserSimulator
+from .simulation.user_simulator_provider import UserSimulatorProvider
 
 _USER_AUTHOR = "user"
 _DEFAULT_AUTHOR = "agent"

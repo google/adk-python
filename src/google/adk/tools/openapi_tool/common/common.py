@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -64,11 +64,9 @@ class ApiParameter(BaseModel):
   required: bool = False
 
   def model_post_init(self, _: Any):
-    self.py_name = (
-        self.py_name
-        if self.py_name
-        else rename_python_keywords(_to_snake_case(self.original_name))
-    )
+    if not self.py_name:
+      inferred_name = rename_python_keywords(_to_snake_case(self.original_name))
+      self.py_name = inferred_name or self._default_py_name()
     if isinstance(self.param_schema, str):
       self.param_schema = Schema.model_validate_json(self.param_schema)
 
@@ -76,6 +74,16 @@ class ApiParameter(BaseModel):
     self.type_value = TypeHintHelper.get_type_value(self.param_schema)
     self.type_hint = TypeHintHelper.get_type_hint(self.param_schema)
     return self
+
+  def _default_py_name(self) -> str:
+    location_defaults = {
+        'body': 'body',
+        'query': 'query_param',
+        'path': 'path_param',
+        'header': 'header_param',
+        'cookie': 'cookie_param',
+    }
+    return location_defaults.get(self.param_location or '', 'value')
 
   @model_serializer
   def _serialize(self):
