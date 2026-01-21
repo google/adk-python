@@ -567,7 +567,7 @@ Finally, you instantiate your `StoryFlowAgent` and use the `Runner` as usual.
     
         ```python
         # Full runnable code for the StoryFlowAgent example
-        # Copyright 2025 Google LLC
+        # Copyright 2026 Google LLC
         #
         # Licensed under the Apache License, Version 2.0 (the "License");
         # you may not use this file except in compliance with the License.
@@ -3704,7 +3704,7 @@ When the ADK framework encounters a point where a callback can run (e.g., just b
 This example demonstrates the common pattern for a guardrail using `before_model_callback`.
 
 <!-- ```py
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -3817,7 +3817,7 @@ await call_agent_async("write a joke on BLOCK")
     === "Python"
     
         ```python
-        # Copyright 2025 Google LLC
+        # Copyright 2026 Google LLC
         #
         # Licensed under the Apache License, Version 2.0 (the "License");
         # you may not use this file except in compliance with the License.
@@ -3955,7 +3955,7 @@ These callbacks are available on *any* agent that inherits from `BaseAgent` (inc
     === "Python"
     
         ```python
-        # Copyright 2025 Google LLC
+        # Copyright 2026 Google LLC
         #
         # Licensed under the Apache License, Version 2.0 (the "License");
         # you may not use this file except in compliance with the License.
@@ -4121,7 +4121,7 @@ These callbacks are available on *any* agent that inherits from `BaseAgent` (inc
     === "Python"
     
         ```python
-        # Copyright 2025 Google LLC
+        # Copyright 2026 Google LLC
         #
         # Licensed under the Apache License, Version 2.0 (the "License");
         # you may not use this file except in compliance with the License.
@@ -4297,7 +4297,7 @@ If the callback returns `None` (or a `Maybe.empty()` object in Java), the LLM co
     === "Python"
     
         ```python
-        # Copyright 2025 Google LLC
+        # Copyright 2026 Google LLC
         #
         # Licensed under the Apache License, Version 2.0 (the "License");
         # you may not use this file except in compliance with the License.
@@ -4427,7 +4427,7 @@ If the callback returns `None` (or a `Maybe.empty()` object in Java), the LLM co
     === "Python"
     
         ```python
-        # Copyright 2025 Google LLC
+        # Copyright 2026 Google LLC
         #
         # Licensed under the Apache License, Version 2.0 (the "License");
         # you may not use this file except in compliance with the License.
@@ -4567,7 +4567,7 @@ These callbacks are also specific to `LlmAgent` and trigger around the execution
     === "Python"
     
         ```python
-        # Copyright 2025 Google LLC
+        # Copyright 2026 Google LLC
         #
         # Licensed under the Apache License, Version 2.0 (the "License");
         # you may not use this file except in compliance with the License.
@@ -4687,7 +4687,7 @@ These callbacks are also specific to `LlmAgent` and trigger around the execution
     === "Python"
     
         ```python
-        # Copyright 2025 Google LLC
+        # Copyright 2026 Google LLC
         #
         # Licensed under the Apache License, Version 2.0 (the "License");
         # you may not use this file except in compliance with the License.
@@ -14314,7 +14314,7 @@ Search. The `google_search` tool is only compatible with Gemini 2 models.
 === "Python"
 
     ```py
-    # Copyright 2025 Google LLC
+    # Copyright 2026 Google LLC
     #
     # Licensed under the Apache License, Version 2.0 (the "License");
     # you may not use this file except in compliance with the License.
@@ -14385,7 +14385,7 @@ like calculations, data manipulation, or running small scripts.
 === "Python"
 
     ```py
-    # Copyright 2025 Google LLC
+    # Copyright 2026 Google LLC
     #
     # Licensed under the Apache License, Version 2.0 (the "License");
     # you may not use this file except in compliance with the License.
@@ -14628,7 +14628,7 @@ They are packaged in the toolset `BigQueryToolset`.
 
 
 ```py
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14871,7 +14871,7 @@ The docstring (or comments above) your function serve as the tool's description 
         <u>Note</u>: You need to `pip install yfinance` library before using this tool.
     
         ```py
-        # Copyright 2025 Google LLC
+        # Copyright 2026 Google LLC
         #
         # Licensed under the Apache License, Version 2.0 (the "License");
         # you may not use this file except in compliance with the License.
@@ -15075,7 +15075,7 @@ Agent client received an event with long running function calls and check the st
 ??? "Python complete example: File Processing Simulation"
 
     ```py
-    # Copyright 2025 Google LLC
+    # Copyright 2026 Google LLC
     #
     # Licensed under the Apache License, Version 2.0 (the "License");
     # you may not use this file except in compliance with the License.
@@ -15274,7 +15274,7 @@ The `AgentTool` class provides the following attributes for customizing its beha
     === "Python"
 
         ```py
-        # Copyright 2025 Google LLC
+        # Copyright 2026 Google LLC
         #
         # Licensed under the Apache License, Version 2.0 (the "License");
         # you may not use this file except in compliance with the License.
@@ -15873,7 +15873,7 @@ The following example showcases how an agent can use tools by **referencing thei
 === "Python"
 
     ```py
-    # Copyright 2025 Google LLC
+    # Copyright 2026 Google LLC
     #
     # Licensed under the Apache License, Version 2.0 (the "License");
     # you may not use this file except in compliance with the License.
@@ -16058,7 +16058,7 @@ The `tool_context.actions` attribute (`ToolContext.actions()` in Java) holds an 
 === "Python"
 
     ```py
-    # Copyright 2025 Google LLC
+    # Copyright 2026 Google LLC
     #
     # Licensed under the Apache License, Version 2.0 (the "License");
     # you may not use this file except in compliance with the License.
@@ -16181,7 +16181,7 @@ These methods provide convenient ways for your tool to interact with persistent 
 === "Python"
 
     ```py
-    # Copyright 2025 Google LLC
+    # Copyright 2026 Google LLC
     #
     # Licensed under the Apache License, Version 2.0 (the "License");
     # you may not use this file except in compliance with the License.
@@ -17123,7 +17123,7 @@ This example demonstrates generating tools from a simple Pet Store OpenAPI spec 
 ???+ "Code: Pet Store API"
 
     ```python title="openapi_example.py"
-    # Copyright 2025 Google LLC
+    # Copyright 2026 Google LLC
     #
     # Licensed under the Apache License, Version 2.0 (the "License");
     # you may not use this file except in compliance with the License.
@@ -17429,7 +17429,7 @@ ADK provides the `LangchainTool` wrapper to integrate tools from the LangChain e
 Here's the full code combining the steps above to create and run an agent using the LangChain Tavily search tool.
 
 ```py
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -17569,7 +17569,7 @@ ADK provides the `CrewaiTool` wrapper to integrate tools from the CrewAI library
 Here's the full code combining the steps above to create and run an agent using the CrewAI Serper API search tool.
 
 ```py
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
