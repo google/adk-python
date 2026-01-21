@@ -23,6 +23,14 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
+# Ensure the environment is restored if the script is interrupted.
+cleanup_on_interrupt() {
+    echo -e "\nScript interrupted. Restoring full development environment..."
+    uv sync --all-extras
+    exit 130 # Standard exit code for Ctrl+C
+}
+trap cleanup_on_interrupt INT TERM
+
 RUN_FORMAT=false
 if [[ "${1:-}" == "format" ]]; then
     RUN_FORMAT=true
