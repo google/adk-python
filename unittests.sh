@@ -18,7 +18,7 @@
 # Usage: ./unittests.sh [format]
 #   format - Optional argument to run autoformat.sh if tests pass
 
-set -e
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
