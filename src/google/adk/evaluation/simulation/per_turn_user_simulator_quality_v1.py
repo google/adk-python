@@ -58,7 +58,7 @@ The Conversation Plan is sequential in nature and the User Simulator must ensure
 
 # Definition of Conversation History
 The Conversation History is the actual dialogue between the User Simulator and the Agent.
-The Conversation History may not be complete, but the exsisting dialogue should adhere to the Conversation Plan.
+The Conversation History may not be complete, but the existing dialogue should adhere to the Conversation Plan.
 The Conversation History may contain instances where the User Simulator troubleshoots an incorrect/inappropriate response from the Agent in order to enforce the Conversation Plan.
 The Conversation History is finished only when the User Simulator outputs `{stop_signal}` in its response. If this token is missing, the conversation between the User Simulator and the Agent has not finished, and more turns can be generated.
 
@@ -171,7 +171,7 @@ def _parse_llm_response(response: str) -> Label:
       response,
   )
 
-  # If there was not match for "is_valid", return NOT_FOUND
+  # If there was no match for "is_valid", return NOT_FOUND
   if is_valid_match is None:
     return Label.NOT_FOUND
 

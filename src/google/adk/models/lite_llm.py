@@ -152,7 +152,7 @@ _LITELLM_GLOBAL_SYMBOLS = (
 def _ensure_litellm_imported() -> None:
   """Imports LiteLLM with safe defaults.
 
-  LiteLLM defaults to DEV mode, which auto-loads a local `.env` at import time.
+  LiteLLM defaults to DEV mode, which autoloads a local `.env` at import time.
   ADK should not implicitly load `.env` just because LiteLLM is installed.
 
   Users can opt into LiteLLM's default behavior by setting LITELLM_MODE=DEV.
