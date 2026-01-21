@@ -24,7 +24,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 RUN_FORMAT=false
-if [[ "$1" == "format" ]]; then
+if [[ "${1:-}" == "format" ]]; then
     RUN_FORMAT=true
 fi
 
