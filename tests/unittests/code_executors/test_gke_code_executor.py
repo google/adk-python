@@ -331,3 +331,34 @@ class TestGkeCodeExecutor:
 
     # Verify SandboxClient was NOT used
     mock_sandbox_client.assert_not_called()
+
+  @patch("google.adk.code_executors.gke_code_executor.SandboxClient")
+  def test_execute_in_sandbox_returns_stderr(
+      self,
+      mock_sandbox_client,
+      mock_invocation_context,
+  ):
+    """Tests that stderr from the sandbox run is propagated to the result."""
+    # Setup Sandbox mock
+    mock_sandbox_instance = (
+        mock_sandbox_client.return_value.__enter__.return_value
+    )
+    mock_run_result = MagicMock()
+    mock_run_result.stdout = ""
+    mock_run_result.stderr = "oops\n"
+    mock_sandbox_instance.run.return_value = mock_run_result
+
+    # Instantiate with sandbox type
+    executor = GkeCodeExecutor(executor_type="sandbox")
+    code_input = CodeExecutionInput(
+        code="import sys; print('oops', file=sys.stderr)"
+    )
+
+    # Execute
+    result = executor.execute_code(mock_invocation_context, code_input)
+
+    # Assertions
+    assert result.stdout == ""
+    assert result.stderr == "oops\n"
+    mock_sandbox_instance.write.assert_called_with("script.py", code_input.code)
+    mock_sandbox_instance.run.assert_called_with("python3 script.py")

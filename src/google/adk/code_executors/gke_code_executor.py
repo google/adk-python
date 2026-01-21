@@ -93,7 +93,7 @@ class GkeCodeExecutor(BaseCodeExecutor):
   kubeconfig_context: str | None = None
 
   # Sandbox constants
-  sandbox_template: str = "python-sandbox-template"
+  sandbox_template: str | None = None
 
   _batch_v1: k8s.client.BatchV1Api
   _core_v1: k8s.client.CoreV1Api
@@ -176,7 +176,7 @@ class GkeCodeExecutor(BaseCodeExecutor):
         sandbox.write("script.py", code)
         result = sandbox.run("python3 script.py")
 
-        return CodeExecutionResult(stdout=result.stdout)
+        return CodeExecutionResult(stdout=result.stdout, stderr=result.stderr)
     except Exception as e:
       logger.error("Sandbox execution failed", exc_info=True)
       return CodeExecutionResult(
