@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -205,7 +205,7 @@ class RunAgentRequest(common.BaseModel):
   new_message: types.Content
   streaming: bool = False
   state_delta: Optional[dict[str, Any]] = None
-  # for resume long running functions
+  # for resume long-running functions
   invocation_id: Optional[str] = None
 
 
@@ -330,6 +330,7 @@ class AppInfo(common.BaseModel):
   root_agent_name: str
   description: str
   language: Literal["yaml", "python"]
+  is_computer_use: bool = False
 
 
 class ListAppsResponse(common.BaseModel):
@@ -1558,8 +1559,17 @@ class AdkWebServer:
                 yield f"data: {sse_event}\n\n"
         except Exception as e:
           logger.exception("Error in event_generator: %s", e)
-          # You might want to yield an error event here
-          yield f'data: {{"error": "{str(e)}"}}\n\n'
+          # Yield a proper Event object for the error
+          error_event = Event(
+              author="system",
+              content=types.Content(
+                  role="model", parts=[types.Part(text=f"Error: {e}")]
+              ),
+          )
+          yield (
+              "data:"
+              f" {error_event.model_dump_json(by_alias=True, exclude_none=True)}\n\n"
+          )
 
       # Returns a streaming response with the proper media type for SSE
       return StreamingResponse(

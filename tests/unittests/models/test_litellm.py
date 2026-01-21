@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -2305,6 +2305,126 @@ async def test_get_content_file_uri(file_uri, mime_type):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "provider,model",
+    [
+        ("openai", "openai/gpt-4o"),
+        ("azure", "azure/gpt-4"),
+    ],
+)
+async def test_get_content_file_uri_file_id_required_falls_back_to_text(
+    provider, model
+):
+  parts = [
+      types.Part(
+          file_data=types.FileData(
+              file_uri="gs://bucket/path/to/document.pdf",
+              mime_type="application/pdf",
+              display_name="document.pdf",
+          )
+      )
+  ]
+  content = await _get_content(parts, provider=provider, model=model)
+  assert content == [
+      {"type": "text", "text": '[File reference: "document.pdf"]'}
+  ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "provider,model",
+    [
+        ("openai", "openai/gpt-4o"),
+        ("azure", "azure/gpt-4"),
+    ],
+)
+async def test_get_content_file_uri_file_id_required_preserves_file_id(
+    provider, model
+):
+  parts = [
+      types.Part(
+          file_data=types.FileData(
+              file_uri="file-abc123",
+              mime_type="application/pdf",
+          )
+      )
+  ]
+  content = await _get_content(parts, provider=provider, model=model)
+  assert content == [{"type": "file", "file": {"file_id": "file-abc123"}}]
+
+
+@pytest.mark.asyncio
+async def test_get_content_file_uri_anthropic_falls_back_to_text():
+  parts = [
+      types.Part(
+          file_data=types.FileData(
+              file_uri="gs://bucket/path/to/document.pdf",
+              mime_type="application/pdf",
+              display_name="document.pdf",
+          )
+      )
+  ]
+  content = await _get_content(
+      parts, provider="anthropic", model="anthropic/claude-3-5"
+  )
+  assert content == [
+      {"type": "text", "text": '[File reference: "document.pdf"]'}
+  ]
+
+
+@pytest.mark.asyncio
+async def test_get_content_file_uri_anthropic_openai_file_id_falls_back_to_text():
+  parts = [types.Part(file_data=types.FileData(file_uri="file-abc123"))]
+  content = await _get_content(
+      parts, provider="anthropic", model="anthropic/claude-3-5"
+  )
+  assert content == [
+      {"type": "text", "text": '[File reference: "file-abc123"]'}
+  ]
+
+
+@pytest.mark.asyncio
+async def test_get_content_file_uri_vertex_ai_non_gemini_falls_back_to_text():
+  parts = [
+      types.Part(
+          file_data=types.FileData(
+              file_uri="gs://bucket/path/to/document.pdf",
+              mime_type="application/pdf",
+              display_name="document.pdf",
+          )
+      )
+  ]
+  content = await _get_content(
+      parts, provider="vertex_ai", model="vertex_ai/claude-3-5"
+  )
+  assert content == [
+      {"type": "text", "text": '[File reference: "document.pdf"]'}
+  ]
+
+
+@pytest.mark.asyncio
+async def test_get_content_file_uri_vertex_ai_gemini_keeps_file_block():
+  parts = [
+      types.Part(
+          file_data=types.FileData(
+              file_uri="gs://bucket/path/to/document.pdf",
+              mime_type="application/pdf",
+          )
+      )
+  ]
+  content = await _get_content(
+      parts, provider="vertex_ai", model="vertex_ai/gemini-2.5-flash"
+  )
+  assert content == [{
+      "type": "file",
+      "file": {
+          "file_id": "gs://bucket/path/to/document.pdf",
+          "format": "application/pdf",
+      },
+  }]
+
+
+@pytest.mark.asyncio
 async def test_get_content_file_uri_infer_mime_type():
   """Test MIME type inference from file_uri extension.
 
@@ -2760,6 +2880,7 @@ async def test_generate_content_async_stream(
       "test_arg": "test_value"
   }
   assert responses[3].content.parts[-1].function_call.id == "test_tool_call_id"
+  assert responses[3].finish_reason == types.FinishReason.STOP
   assert responses[3].model_version == "test_model"
   mock_completion.assert_called_once()
 
@@ -2778,6 +2899,55 @@ async def test_generate_content_async_stream(
       ]
       == "string"
   )
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_stream_sets_finish_reason(
+    mock_completion, lite_llm_instance
+):
+  mock_completion.return_value = iter([
+      ModelResponse(
+          model="test_model",
+          choices=[
+              StreamingChoices(
+                  finish_reason=None,
+                  delta=Delta(role="assistant", content="Hello "),
+              )
+          ],
+      ),
+      ModelResponse(
+          model="test_model",
+          choices=[
+              StreamingChoices(
+                  finish_reason=None,
+                  delta=Delta(role="assistant", content="world"),
+              )
+          ],
+      ),
+      ModelResponse(
+          model="test_model",
+          choices=[StreamingChoices(finish_reason="stop", delta=Delta())],
+      ),
+  ])
+
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role="user", parts=[types.Part.from_text(text="Test prompt")]
+          )
+      ],
+  )
+
+  responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          llm_request, stream=True
+      )
+  ]
+
+  assert responses[-1].partial is False
+  assert responses[-1].finish_reason == types.FinishReason.STOP
+  assert responses[-1].content.parts[0].text == "Hello world"
 
 
 @pytest.mark.asyncio
@@ -2824,6 +2994,7 @@ async def test_generate_content_async_stream_with_usage_metadata(
       "test_arg": "test_value"
   }
   assert responses[3].content.parts[-1].function_call.id == "test_tool_call_id"
+  assert responses[3].finish_reason == types.FinishReason.STOP
 
   assert responses[3].usage_metadata.prompt_token_count == 10
   assert responses[3].usage_metadata.candidates_token_count == 5

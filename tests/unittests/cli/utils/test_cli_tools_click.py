@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -400,8 +400,6 @@ def test_cli_deploy_agent_engine_success(
           "test-proj",
           "--region",
           "us-central1",
-          "--staging_bucket",
-          "gs://mybucket",
           str(agent_dir),
       ],
   )
@@ -410,7 +408,38 @@ def test_cli_deploy_agent_engine_success(
   called_kwargs = rec.calls[0][1]
   assert called_kwargs.get("project") == "test-proj"
   assert called_kwargs.get("region") == "us-central1"
-  assert called_kwargs.get("staging_bucket") == "gs://mybucket"
+
+
+# cli deploy agent_engine with --otel_to_cloud
+def test_cli_deploy_agent_engine_otel_to_cloud_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """Successful path should call cli_deploy.to_agent_engine with --otel_to_cloud."""
+  rec = _Recorder()
+  monkeypatch.setattr(cli_tools_click.cli_deploy, "to_agent_engine", rec)
+
+  agent_dir = tmp_path / "agent_ae"
+  agent_dir.mkdir()
+  runner = CliRunner()
+  result = runner.invoke(
+      cli_tools_click.main,
+      [
+          "deploy",
+          "agent_engine",
+          "--project",
+          "test-proj",
+          "--region",
+          "us-central1",
+          "--otel_to_cloud",
+          str(agent_dir),
+      ],
+  )
+  assert result.exit_code == 0
+  assert rec.calls, "cli_deploy.to_agent_engine must be invoked"
+  called_kwargs = rec.calls[0][1]
+  assert called_kwargs.get("project") == "test-proj"
+  assert called_kwargs.get("region") == "us-central1"
+  assert called_kwargs.get("otel_to_cloud")
 
 
 # cli deploy gke

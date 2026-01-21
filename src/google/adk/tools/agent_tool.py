@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -207,7 +207,7 @@ class AgentTool(BaseTool):
     # to avoid "Attempted to exit cancel scope in a different task" errors
     await runner.close()
 
-    if not last_content:
+    if last_content is None or last_content.parts is None:
       return ''
     merged_text = '\n'.join(
         p.text for p in last_content.parts if p.text and not p.thought
