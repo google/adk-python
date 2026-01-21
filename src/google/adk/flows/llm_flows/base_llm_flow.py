@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -73,7 +73,7 @@ DEFAULT_ENABLE_CACHE_STATISTICS = False
 class BaseLlmFlow(ABC):
   """A basic flow that calls the LLM in a loop until a final response is generated.
 
-  This flow ends when it transfer to another agent.
+  This flow ends when it transfers to another agent.
   """
 
   def __init__(self):
@@ -116,6 +116,10 @@ class BaseLlmFlow(ABC):
           attempt += 1
           if not llm_request.live_connect_config:
             llm_request.live_connect_config = types.LiveConnectConfig()
+          if not llm_request.live_connect_config.session_resumption:
+            llm_request.live_connect_config.session_resumption = (
+                types.SessionResumptionConfig()
+            )
           llm_request.live_connect_config.session_resumption.handle = (
               invocation_context.live_session_resumption_handle
           )
@@ -299,7 +303,6 @@ class BaseLlmFlow(ABC):
       else:
         return invocation_context.agent.name
 
-    assert invocation_context.live_request_queue
     try:
       while True:
         async with Aclosing(llm_connection.receive()) as agen:
@@ -390,8 +393,8 @@ class BaseLlmFlow(ABC):
         current_invocation=True, current_branch=True
     )
 
-    # Long running tool calls should have been handled before this point.
-    # If there are still long running tool calls, it means the agent is paused
+    # Long-running tool calls should have been handled before this point.
+    # If there are still long-running tool calls, it means the agent is paused
     # before, and its branch hasn't been resumed yet.
     if (
         invocation_context.is_resumable
@@ -630,6 +633,12 @@ class BaseLlmFlow(ABC):
       for event in flushed_events:
         yield event
       if flushed_events:
+        # NOTE below return is O.K. for now, because currently we only flush
+        # events on interrupted or turn_complete. turn_complete is a pure
+        # control event and interrupted is not with content but those content
+        # is ignorable because model is already interrupted. If we have other
+        # case to flush events in the future that are not pure control events,
+        # we should not return here.
         return
 
     # Builds the event.
@@ -965,13 +974,8 @@ class BaseLlmFlow(ABC):
           flush_user_audio=True,
           flush_model_audio=True,
       )
-    elif getattr(llm_response, 'generation_complete', False):
-      # model generation complete so we can flush model audio
-      return await self.audio_cache_manager.flush_caches(
-          invocation_context,
-          flush_user_audio=False,
-          flush_model_audio=True,
-      )
+    # TODO: Once generation_complete is surfaced on LlmResponse, we can flush
+    # model audio here (flush_user_audio=False, flush_model_audio=True).
     return []
 
   async def _run_and_handle_error(

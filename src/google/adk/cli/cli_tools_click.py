@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -36,6 +36,8 @@ from . import cli_create
 from . import cli_deploy
 from .. import version
 from ..evaluation.constants import MISSING_EVAL_DEPENDENCIES_MESSAGE
+from ..features import FeatureName
+from ..features import override_feature_enabled
 from .cli import run_cli
 from .fast_api import get_fast_api_app
 from .utils import envs
@@ -46,6 +48,86 @@ LOG_LEVELS = click.Choice(
     ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
     case_sensitive=False,
 )
+
+
+def _apply_feature_overrides(
+    *,
+    enable_features: tuple[str, ...] = (),
+    disable_features: tuple[str, ...] = (),
+) -> None:
+  """Apply feature overrides from CLI flags.
+
+  Args:
+    enable_features: Tuple of feature names to enable.
+    disable_features: Tuple of feature names to disable.
+  """
+  feature_overrides: dict[str, bool] = {}
+
+  for features_str in enable_features:
+    for feature_name_str in features_str.split(","):
+      feature_name_str = feature_name_str.strip()
+      if feature_name_str:
+        feature_overrides[feature_name_str] = True
+
+  for features_str in disable_features:
+    for feature_name_str in features_str.split(","):
+      feature_name_str = feature_name_str.strip()
+      if feature_name_str:
+        feature_overrides[feature_name_str] = False
+
+  # Apply all overrides
+  for feature_name_str, enabled in feature_overrides.items():
+    try:
+      feature_name = FeatureName(feature_name_str)
+      override_feature_enabled(feature_name, enabled)
+    except ValueError:
+      valid_names = ", ".join(f.value for f in FeatureName)
+      click.secho(
+          f"WARNING: Unknown feature name '{feature_name_str}'. "
+          f"Valid names are: {valid_names}",
+          fg="yellow",
+          err=True,
+      )
+
+
+def feature_options():
+  """Decorator to add feature override options to click commands."""
+
+  def decorator(func):
+    @click.option(
+        "--enable_features",
+        help=(
+            "Optional. Comma-separated list of feature names to enable. "
+            "This provides an alternative to environment variables for "
+            "enabling experimental features. Example: "
+            "--enable_features=JSON_SCHEMA_FOR_FUNC_DECL,PROGRESSIVE_SSE_STREAMING"
+        ),
+        multiple=True,
+    )
+    @click.option(
+        "--disable_features",
+        help=(
+            "Optional. Comma-separated list of feature names to disable. "
+            "This provides an alternative to environment variables for "
+            "disabling features. Example: "
+            "--disable_features=JSON_SCHEMA_FOR_FUNC_DECL,PROGRESSIVE_SSE_STREAMING"
+        ),
+        multiple=True,
+    )
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+      enable_features = kwargs.pop("enable_features", ())
+      disable_features = kwargs.pop("disable_features", ())
+      if enable_features or disable_features:
+        _apply_feature_overrides(
+            enable_features=enable_features,
+            disable_features=disable_features,
+        )
+      return func(*args, **kwargs)
+
+    return wrapper
+
+  return decorator
 
 
 class HelpfulCommand(click.Command):
@@ -451,6 +533,7 @@ def adk_services_options(*, default_use_local_storage: bool = True):
 
 
 @main.command("run", cls=HelpfulCommand)
+@feature_options()
 @adk_services_options(default_use_local_storage=True)
 @click.option(
     "--save_session",
@@ -576,6 +659,7 @@ def eval_options():
 
 
 @main.command("eval", cls=HelpfulCommand)
+@feature_options()
 @click.argument(
     "agent_module_file_path",
     type=click.Path(
@@ -658,8 +742,11 @@ def cli_eval(
   logs.setup_adk_logger(getattr(logging, log_level.upper()))
 
   try:
+    import importlib
+
     from ..evaluation.base_eval_service import InferenceConfig
     from ..evaluation.base_eval_service import InferenceRequest
+    from ..evaluation.custom_metric_evaluator import _CustomMetricEvaluator
     from ..evaluation.eval_config import get_eval_metrics_from_config
     from ..evaluation.eval_config import get_evaluation_criteria_or_default
     from ..evaluation.eval_result import EvalCaseResult
@@ -669,9 +756,11 @@ def cli_eval(
     from ..evaluation.local_eval_set_results_manager import LocalEvalSetResultsManager
     from ..evaluation.local_eval_sets_manager import load_eval_set_from_file
     from ..evaluation.local_eval_sets_manager import LocalEvalSetsManager
+    from ..evaluation.metric_evaluator_registry import DEFAULT_METRIC_EVALUATOR_REGISTRY
     from ..evaluation.simulation.user_simulator_provider import UserSimulatorProvider
     from .cli_eval import _collect_eval_results
     from .cli_eval import _collect_inferences
+    from .cli_eval import get_default_metric_info
     from .cli_eval import get_root_agent
     from .cli_eval import parse_and_get_evals_to_run
     from .cli_eval import pretty_print_eval_result
@@ -764,11 +853,30 @@ def cli_eval(
   )
 
   try:
+    metric_evaluator_registry = DEFAULT_METRIC_EVALUATOR_REGISTRY
+    if eval_config.custom_metrics:
+      for (
+          metric_name,
+          config,
+      ) in eval_config.custom_metrics.items():
+        if config.metric_info:
+          metric_info = config.metric_info.model_copy()
+          metric_info.metric_name = metric_name
+        else:
+          metric_info = get_default_metric_info(
+              metric_name=metric_name, description=config.description
+          )
+
+        metric_evaluator_registry.register_evaluator(
+            metric_info, _CustomMetricEvaluator
+        )
+
     eval_service = LocalEvalService(
         root_agent=root_agent,
         eval_sets_manager=eval_sets_manager,
         eval_set_results_manager=eval_set_results_manager,
         user_simulator_provider=user_simulator_provider,
+        metric_evaluator_registry=metric_evaluator_registry,
     )
 
     inference_results = asyncio.run(
@@ -977,6 +1085,19 @@ def web_options():
   return decorator
 
 
+def _deprecate_staging_bucket(ctx, param, value):
+  if value:
+    click.echo(
+        click.style(
+            f"WARNING: --{param} is deprecated and will be removed. Please"
+            " leave it unspecified.",
+            fg="yellow",
+        ),
+        err=True,
+    )
+  return value
+
+
 def deprecated_adk_services_options():
   """Deprecated ADK services options."""
 
@@ -1141,6 +1262,7 @@ def fast_api_common_options():
 
 
 @main.command("web")
+@feature_options()
 @fast_api_common_options()
 @web_options()
 @adk_services_options(default_use_local_storage=True)
@@ -1243,6 +1365,7 @@ def cli_web(
 
 
 @main.command("api_server")
+@feature_options()
 # The directory of agents, where each sub-directory is a single agent.
 # By default, it is the current working directory
 @click.argument(
@@ -1371,6 +1494,13 @@ def cli_api_server(
     help="Optional. Whether to enable Cloud Trace for cloud run.",
 )
 @click.option(
+    "--otel_to_cloud",
+    is_flag=True,
+    show_default=True,
+    default=False,
+    help="Optional. Whether to enable OpenTelemetry for Agent Engine.",
+)
+@click.option(
     "--with_ui",
     is_flag=True,
     show_default=True,
@@ -1450,6 +1580,7 @@ def cli_deploy_cloud_run(
     temp_folder: str,
     port: int,
     trace_to_cloud: bool,
+    otel_to_cloud: bool,
     with_ui: bool,
     adk_version: str,
     log_level: str,
@@ -1528,6 +1659,7 @@ def cli_deploy_cloud_run(
         temp_folder=temp_folder,
         port=port,
         trace_to_cloud=trace_to_cloud,
+        otel_to_cloud=otel_to_cloud,
         allow_origins=allow_origins,
         with_ui=with_ui,
         log_level=log_level,
@@ -1542,6 +1674,49 @@ def cli_deploy_cloud_run(
     )
   except Exception as e:
     click.secho(f"Deploy failed: {e}", fg="red", err=True)
+
+
+@main.group()
+def migrate():
+  """ADK migration commands."""
+  pass
+
+
+@migrate.command("session", cls=HelpfulCommand)
+@click.option(
+    "--source_db_url",
+    required=True,
+    help=(
+        "SQLAlchemy URL of source database in database session service, e.g."
+        " sqlite:///source.db."
+    ),
+)
+@click.option(
+    "--dest_db_url",
+    required=True,
+    help=(
+        "SQLAlchemy URL of destination database in database session service,"
+        " e.g. sqlite:///dest.db."
+    ),
+)
+@click.option(
+    "--log_level",
+    type=LOG_LEVELS,
+    default="INFO",
+    help="Optional. Set the logging level",
+)
+def cli_migrate_session(
+    *, source_db_url: str, dest_db_url: str, log_level: str
+):
+  """Migrates a session database to the latest schema version."""
+  logs.setup_adk_logger(getattr(logging, log_level.upper()))
+  try:
+    from ..sessions.migration import migration_runner
+
+    migration_runner.upgrade(source_db_url, dest_db_url)
+    click.secho("Migration check and upgrade process finished.", fg="green")
+  except Exception as e:
+    click.secho(f"Migration failed: {e}", fg="red", err=True)
 
 
 @deploy.command("agent_engine")
@@ -1581,10 +1756,8 @@ def cli_deploy_cloud_run(
     "--staging_bucket",
     type=str,
     default=None,
-    help=(
-        "Optional. GCS bucket for staging the deployment artifacts. It will be"
-        " ignored if api_key is set."
-    ),
+    help="Deprecated. This argument is no longer required or used.",
+    callback=_deprecate_staging_bucket,
 )
 @click.option(
     "--agent_engine_id",
@@ -1607,6 +1780,14 @@ def cli_deploy_cloud_run(
     show_default=True,
     default=None,
     help="Optional. Whether to enable Cloud Trace for Agent Engine.",
+)
+@click.option(
+    "--otel_to_cloud",
+    type=bool,
+    is_flag=True,
+    show_default=True,
+    default=None,
+    help="Optional. Whether to enable OpenTelemetry for Agent Engine.",
 )
 @click.option(
     "--display_name",
@@ -1699,6 +1880,7 @@ def cli_deploy_agent_engine(
     staging_bucket: Optional[str],
     agent_engine_id: Optional[str],
     trace_to_cloud: Optional[bool],
+    otel_to_cloud: Optional[bool],
     api_key: Optional[str],
     display_name: str,
     description: str,
@@ -1719,8 +1901,7 @@ def cli_deploy_agent_engine(
 
     # With Google Cloud Project and Region
     adk deploy agent_engine --project=[project] --region=[region]
-      --staging_bucket=[staging_bucket] --display_name=[app_name]
-      my_agent
+      --display_name=[app_name] my_agent
   """
   logging.getLogger("vertexai_genai.agentengines").setLevel(logging.INFO)
   try:
@@ -1728,9 +1909,9 @@ def cli_deploy_agent_engine(
         agent_folder=agent,
         project=project,
         region=region,
-        staging_bucket=staging_bucket,
         agent_engine_id=agent_engine_id,
         trace_to_cloud=trace_to_cloud,
+        otel_to_cloud=otel_to_cloud,
         api_key=api_key,
         adk_app_object=adk_app_object,
         display_name=display_name,
@@ -1800,6 +1981,13 @@ def cli_deploy_agent_engine(
     help="Optional. Whether to enable Cloud Trace for GKE.",
 )
 @click.option(
+    "--otel_to_cloud",
+    is_flag=True,
+    show_default=True,
+    default=False,
+    help="Optional. Whether to enable OpenTelemetry for GKE.",
+)
+@click.option(
     "--with_ui",
     is_flag=True,
     show_default=True,
@@ -1855,6 +2043,7 @@ def cli_deploy_gke(
     temp_folder: str,
     port: int,
     trace_to_cloud: bool,
+    otel_to_cloud: bool,
     with_ui: bool,
     adk_version: str,
     log_level: Optional[str] = None,
@@ -1884,6 +2073,7 @@ def cli_deploy_gke(
         temp_folder=temp_folder,
         port=port,
         trace_to_cloud=trace_to_cloud,
+        otel_to_cloud=otel_to_cloud,
         with_ui=with_ui,
         log_level=log_level,
         adk_version=adk_version,
