@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -37,6 +37,7 @@ import google.auth.credentials
 from google.cloud import bigquery
 from google.cloud import exceptions as cloud_exceptions
 from google.genai import types
+from opentelemetry import trace
 import pyarrow as pa
 import pytest
 
@@ -502,28 +503,34 @@ class TestBigQueryAgentAnalyticsPlugin:
     bigquery_agent_analytics_plugin.TraceManager.init_trace(callback_context)
 
     async def branch_1():
-      bigquery_agent_analytics_plugin.TraceManager.push_span(
-          callback_context, span_id="span-1"
+      s_id = bigquery_agent_analytics_plugin.TraceManager.push_span(
+          callback_context, span_name="span-1"
       )
       await asyncio.sleep(0.02)
-      s_id = bigquery_agent_analytics_plugin.TraceManager.get_current_span_id()
+      current_s_id = (
+          bigquery_agent_analytics_plugin.TraceManager.get_current_span_id()
+      )
+      assert s_id == current_s_id
       bigquery_agent_analytics_plugin.TraceManager.pop_span()
       return s_id
 
     async def branch_2():
-      bigquery_agent_analytics_plugin.TraceManager.push_span(
-          callback_context, span_id="span-2"
+      s_id = bigquery_agent_analytics_plugin.TraceManager.push_span(
+          callback_context, span_name="span-2"
       )
       await asyncio.sleep(0.02)
-      s_id = bigquery_agent_analytics_plugin.TraceManager.get_current_span_id()
+      current_s_id = (
+          bigquery_agent_analytics_plugin.TraceManager.get_current_span_id()
+      )
+      assert s_id == current_s_id
       bigquery_agent_analytics_plugin.TraceManager.pop_span()
       return s_id
 
     # Run concurrently
     results = await asyncio.gather(branch_1(), branch_2())
     # If they shared the same list/dict, they would interfere.
-    assert "span-1" in results
-    assert "span-2" in results
+    assert results[0] is not None
+    assert results[1] is not None
     assert results[0] != results[1]
 
   @pytest.mark.asyncio
@@ -1953,3 +1960,104 @@ class TestBigQueryAgentAnalyticsPlugin:
     content_json = json.loads(log_entry["content"])
     assert content_json["result"]["id"] == "inc-123"
     assert content_json["result"]["kpi_missed"][0]["kpi"] == "latency"
+
+  @pytest.mark.asyncio
+  async def test_otel_integration(
+      self,
+      callback_context,
+  ):
+    """Verifies OpenTelemetry integration in TraceManager."""
+    # Mock the tracer and span
+    mock_tracer = mock.Mock()
+    mock_span = mock.Mock()
+    mock_context = mock.Mock()
+
+    # Setup mock IDs (128-bit trace_id, 64-bit span_id)
+    trace_id_int = 0x12345678123456781234567812345678
+    span_id_int = 0x1234567812345678
+
+    mock_context.trace_id = trace_id_int
+    mock_context.span_id = span_id_int
+    mock_context.is_valid = True
+
+    mock_span.get_span_context.return_value = mock_context
+    mock_span.start_time = 1234567890000000000  # Mock start time in ns
+    mock_tracer.start_span.return_value = mock_span
+
+    # Patch the global tracer in the plugin module
+    with mock.patch(
+        "google.adk.plugins.bigquery_agent_analytics_plugin.tracer", mock_tracer
+    ):
+      # Test push_span
+      span_id = bigquery_agent_analytics_plugin.TraceManager.push_span(
+          callback_context, "test_span"
+      )
+
+      mock_tracer.start_span.assert_called_with("test_span")
+      assert span_id == format(span_id_int, "016x")
+
+      # Test get_trace_id
+      # We need to mock trace.get_current_span() to return our mock span
+      # because push_span calls trace.attach(), which affects the global context
+      with mock.patch(
+          "opentelemetry.trace.get_current_span", return_value=mock_span
+      ):
+        trace_id = bigquery_agent_analytics_plugin.TraceManager.get_trace_id(
+            callback_context
+        )
+        assert trace_id == format(trace_id_int, "032x")
+
+      # Test pop_span
+      # pop_span calls span.end()
+      bigquery_agent_analytics_plugin.TraceManager.pop_span()
+      mock_span.end.assert_called_once()
+
+  @pytest.mark.asyncio
+  async def test_otel_integration_real_provider(self, callback_context):
+    """Verifies TraceManager with a real OpenTelemetry TracerProvider."""
+    # Setup OTEL with in-memory exporter
+    # pylint: disable=g-import-not-at-top
+    from opentelemetry.sdk import trace as trace_sdk
+    from opentelemetry.sdk.trace import export as trace_export
+    from opentelemetry.sdk.trace.export import in_memory_span_exporter
+
+    # pylint: enable=g-import-not-at-top
+
+    provider = trace_sdk.TracerProvider()
+    exporter = in_memory_span_exporter.InMemorySpanExporter()
+    processor = trace_export.SimpleSpanProcessor(exporter)
+    provider.add_span_processor(processor)
+    tracer = provider.get_tracer("test_tracer")
+
+    # Patch the global tracer in the plugin module
+    with mock.patch(
+        "google.adk.plugins.bigquery_agent_analytics_plugin.tracer", tracer
+    ):
+      # 1. Start a span
+      span_id = bigquery_agent_analytics_plugin.TraceManager.push_span(
+          callback_context, "test_span"
+      )
+
+      # Verify a span was started but not ended
+      current_spans = exporter.get_finished_spans()
+      assert not current_spans
+
+      # Verify we can retrieve the trace ID
+      trace_id = bigquery_agent_analytics_plugin.TraceManager.get_trace_id(
+          callback_context
+      )
+      assert trace_id is not None
+
+      # 2. End the span
+      popped_span_id, _ = (
+          bigquery_agent_analytics_plugin.TraceManager.pop_span()
+      )
+
+      assert popped_span_id == span_id
+
+      # Verify span is now finished and exported
+      finished_spans = exporter.get_finished_spans()
+      assert len(finished_spans) == 1
+      assert finished_spans[0].name == "test_span"
+      assert format(finished_spans[0].context.span_id, "016x") == span_id
+      assert format(finished_spans[0].context.trace_id, "032x") == trace_id
