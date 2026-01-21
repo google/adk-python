@@ -427,7 +427,7 @@ def test_custom_schema(env_variables):
     ['GOOGLE_AI', 'VERTEX'],
     indirect=True,
 )
-def test_custom_schema_with_union():
+def test_custom_schema_with_union(env_variables):
   """Tests if agent can have a Union type in output_schema."""
 
   class CustomInput(BaseModel):
