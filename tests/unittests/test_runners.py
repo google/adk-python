@@ -1321,6 +1321,8 @@ class TestRunnerInferAgentOrigin:
     assert runner._app_name_alignment_hint is not None
     assert "wrong_name" in runner._app_name_alignment_hint
     assert "actual_name" in runner._app_name_alignment_hint
+
+
 class TestRunnerGetSessionConfig:
   """Tests for Runner get_session_config passing to session service."""
 
