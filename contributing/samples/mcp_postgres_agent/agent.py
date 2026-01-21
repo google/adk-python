@@ -31,7 +31,7 @@ if not POSTGRES_CONNECTION_STRING:
   )
 
 root_agent = LlmAgent(
-    model="gemini-2.0-flash",
+    model="gemini-2.5-flash",
     name="postgres_agent",
     instruction=(
         "You are a PostgreSQL database assistant. "
