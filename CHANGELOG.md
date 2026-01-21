@@ -531,7 +531,7 @@
 * Set `max_output_tokens` for the agent builder ([2e2d61b](https://github.com/google/adk-python/commit/2e2d61b6fecb90cd474d6f51255678ff74b67a9b))
 * Set default response modality to AUDIO in run_session ([68402bd](https://github.com/google/adk-python/commit/68402bda49083f2d56f8e8488fe13aa58b3bc18c))
 * Update remote_a2a_agent to better handle streaming events and avoid duplicate responses ([8e5f361](https://github.com/google/adk-python/commit/8e5f36126498f751171bb2639c7f5a9e7dca2558))
-* Update the load_artifacts tool so that the model can reliably call it for follow up questions about the same artifact ([238472d](https://github.com/google/adk-python/commit/238472d083b5aa67551bde733fc47826ff062679))
+* Update the load_artifacts tool so that the model can reliably call it for follow-up questions about the same artifact ([238472d](https://github.com/google/adk-python/commit/238472d083b5aa67551bde733fc47826ff062679))
 * Fix VertexAiSessionService base_url override to preserve initialized http_options ([8110e41](https://github.com/google/adk-python/commit/8110e41b36cceddb8b92ba17cffaacf701706b36), [c51ea0b](https://github.com/google/adk-python/commit/c51ea0b52e63de8e43d3dccb24f9d20987784aa5))
 * Handle `App` instances returned by `agent_loader.load_agent` ([847df16](https://github.com/google/adk-python/commit/847df1638cbf1686aa43e8e094121d4e23e40245))
 
@@ -698,7 +698,7 @@
 * AgentTool returns last content, instead of the content in the last event [bcf0dda](https://github.com/google/adk-python/commit/bcf0dda8bcc221974098f3077007c9e84c63021a)
 * Fix adk deploy docker file permission [ad81aa5](https://github.com/google/adk-python/commit/ad81aa54de1f38df580915b7f47834ea8e5f1004)
 * Updating BaseAgent.clone() and LlmAgent.clone() to properly clone fields that are lists [29bb75f](https://github.com/google/adk-python/commit/29bb75f975fe0c9c9d9a7e534a9c20158e1cbe1e)
-* Make tool description for bigquery `execute_sql` for various write modes self contained [167182b](https://github.com/google/adk-python/commit/167182be0163117f814c70f453d5b2e19bf474df)
+* Make tool description for bigquery `execute_sql` for various write modes self-contained [167182b](https://github.com/google/adk-python/commit/167182be0163117f814c70f453d5b2e19bf474df)
 * Set invocation_id and branch for event generated when both output_schema and tools are used [3f3aa7b](https://github.com/google/adk-python/commit/3f3aa7b32d63cae5750d71bc586c088427c979ea)
 * Rework parallel_agent.py to always aclose async generators [826f554](https://github.com/google/adk-python/commit/826f5547890dc02e707be33a3d6a58b527dac223)
 * Add table metadata info into Spanner tool `get_table_schema` and fix the key usage info [81a53b5](https://github.com/google/adk-python/commit/81a53b53d6336011187a50ae8f1544de9b2764a8)

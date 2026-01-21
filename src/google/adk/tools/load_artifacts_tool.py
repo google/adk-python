@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -24,6 +24,8 @@ from typing import TYPE_CHECKING
 from google.genai import types
 from typing_extensions import override
 
+from ..features import FeatureName
+from ..features import is_feature_enabled
 from .base_tool import BaseTool
 
 # MIME types Gemini accepts for inline data in requests.
@@ -132,6 +134,20 @@ web UI)."""),
     )
 
   def _get_declaration(self) -> types.FunctionDeclaration | None:
+    if is_feature_enabled(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL):
+      return types.FunctionDeclaration(
+          name=self.name,
+          description=self.description,
+          parameters_json_schema={
+              'type': 'object',
+              'properties': {
+                  'artifact_names': {
+                      'type': 'array',
+                      'items': {'type': 'string'},
+                  },
+              },
+          },
+      )
     return types.FunctionDeclaration(
         name=self.name,
         description=self.description,
