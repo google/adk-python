@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -43,7 +43,7 @@ class ResumabilityConfig(BaseModel):
   """The config of the resumability for an application.
 
   The "resumability" in ADK refers to the ability to:
-  1. pause an invocation upon a long running function call.
+  1. pause an invocation upon a long-running function call.
   2. resume an invocation from the last event, if it's paused or failed midway
   through.
 
