@@ -14,6 +14,8 @@
 
 import base64
 
+from google.adk.features import FeatureName
+from google.adk.features._feature_registry import temporary_feature_override
 from google.adk.models.llm_request import LlmRequest
 from google.adk.tools.load_artifacts_tool import _maybe_base64_to_bytes
 from google.adk.tools.load_artifacts_tool import load_artifacts_tool
@@ -160,3 +162,21 @@ def test_maybe_base64_to_bytes_returns_none_for_invalid():
   """Invalid base64 strings return None."""
   # Single character is invalid (base64 requires length % 4 == 0 after padding)
   assert _maybe_base64_to_bytes('x') is None
+
+
+def test_get_declaration_with_json_schema_feature_enabled():
+  """Test that _get_declaration uses parameters_json_schema when feature is enabled."""
+  with temporary_feature_override(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL, True):
+    declaration = load_artifacts_tool._get_declaration()
+
+  assert declaration.name == 'load_artifacts'
+  assert declaration.parameters is None
+  assert declaration.parameters_json_schema == {
+      'type': 'object',
+      'properties': {
+          'artifact_names': {
+              'type': 'array',
+              'items': {'type': 'string'},
+          },
+      },
+  }
