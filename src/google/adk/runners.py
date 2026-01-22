@@ -760,7 +760,7 @@ class Runner:
     else:
       # Step 2: Otherwise continue with normal execution
       # Note for live/bidi:
-      # the transcription may arrive later then the action(function call
+      # the transcription may arrive later than the action(function call
       # event and thus function response event). In this case, the order of
       # transcription and function call event will be wrong if we just
       # append as it arrives. To address this, we should check if there is
@@ -770,7 +770,7 @@ class Runner:
       # identified by checking if the transcription event is partial. When
       # the next transcription event is not partial, it means the previous
       # transcription is finished. Then if there is any buffered function
-      # call event, we should append them after this finished(non-parital)
+      # call event, we should append them after this finished(non-partial)
       # transcription event.
       buffered_events: list[Event] = []
       is_transcribing: bool = False
@@ -789,7 +789,7 @@ class Runner:
               buffered_events.append(event)
               continue
             # Note for live/bidi: for audio response, it's considered as
-            # non-paritla event(event.partial=None)
+            # non-partial event(event.partial=None)
             # event.partial=False and event.partial=None are considered as
             # non-partial event; event.partial=True is considered as partial
             # event.
@@ -938,7 +938,7 @@ class Runner:
     *   **Live Model Audio Events with Inline Data:** Events containing raw
         audio `Blob` data(`inline_data`).
     *   **Live Model Audio Events with File Data:** Both input and ouput audio
-        data are aggregated into a audio file saved into artifacts. The
+        data are aggregated into an audio file saved into artifacts. The
         reference to the file is saved in the event as `file_data`.
     *   **Usage Metadata:** Events containing token usage.
     *   **Transcription Events:** Both partial and non-partial transcription
@@ -948,7 +948,7 @@ class Runner:
 
     **Events Saved to the Session:**
     *   **Live Model Audio Events with File Data:** Both input and ouput audio
-        data are aggregated into a audio file saved into artifacts. The
+        data are aggregated into an audio file saved into artifacts. The
         reference to the file is saved as event in the `file_data` to session
         if RunConfig.save_live_model_audio_to_session is True.
     *   **Usage Metadata Events:** Saved to the session.
@@ -1099,7 +1099,7 @@ class Runner:
     # If the last event is a function response, should send this response to
     # the agent that returned the corresponding function call regardless the
     # type of the agent. e.g. a remote a2a agent may surface a credential
-    # request as a special long running function tool call.
+    # request as a special long-running function tool call.
     event = find_matching_function_call(session.events)
     if event and event.author:
       return root_agent.find_agent(event.author)
