@@ -49,7 +49,7 @@ def upgrade(source_db_url: str, dest_db_url: str):
   LATEST_VERSION.
 
   If multiple migration steps are required, intermediate results are stored in
-  temporary SQLite database files. This means a multi-step migration
+  temporary SQLite database files. This means a multistep migration
   between other database types (e.g. PostgreSQL to PostgreSQL) will use
   SQLite for intermediate steps.
 
