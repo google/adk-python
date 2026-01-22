@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -183,10 +183,18 @@ async def _convert_tool_union_to_tools(
 class LlmAgent(BaseAgent):
   """LLM-based Agent."""
 
+  DEFAULT_MODEL: ClassVar[str] = 'gemini-2.5-flash'
+  """System default model used when no model is set on an agent."""
+
+  _default_model: ClassVar[Union[str, BaseLlm]] = DEFAULT_MODEL
+  """Current default model used when an agent has no model set."""
+
   model: Union[str, BaseLlm] = ''
   """The model to use for the agent.
 
-  When not set, the agent will inherit the model from its ancestor.
+  When not set, the agent will inherit the model from its ancestor. If no
+  ancestor provides a model, the agent uses the default model configured via
+  LlmAgent.set_default_model. The built-in default is gemini-2.5-flash.
   """
 
   config_type: ClassVar[Type[BaseAgentConfig]] = LlmAgentConfig
@@ -277,7 +285,7 @@ class LlmAgent(BaseAgent):
   """The additional content generation configurations.
 
   NOTE: not all fields are usable, e.g. tools must be configured via `tools`,
-  thinking_config must be configured via `planner` in LlmAgent.
+  thinking_config can be configured here or via the `planner`. If both are set, the planner's configuration takes precedence.
 
   For example: use this config to adjust model temperature, configure safety
   settings, etc.
@@ -503,7 +511,24 @@ class LlmAgent(BaseAgent):
         if isinstance(ancestor_agent, LlmAgent):
           return ancestor_agent.canonical_model
         ancestor_agent = ancestor_agent.parent_agent
-      raise ValueError(f'No model found for {self.name}.')
+      return self._resolve_default_model()
+
+  @classmethod
+  def set_default_model(cls, model: Union[str, BaseLlm]) -> None:
+    """Overrides the default model used when an agent has no model set."""
+    if not isinstance(model, (str, BaseLlm)):
+      raise TypeError('Default model must be a model name or BaseLlm.')
+    if isinstance(model, str) and not model:
+      raise ValueError('Default model must be a non-empty string.')
+    cls._default_model = model
+
+  @classmethod
+  def _resolve_default_model(cls) -> BaseLlm:
+    """Resolves the current default model to a BaseLlm instance."""
+    default_model = cls._default_model
+    if isinstance(default_model, BaseLlm):
+      return default_model
+    return LLMRegistry.new_llm(default_model)
 
   async def canonical_instruction(
       self, ctx: ReadonlyContext
@@ -575,10 +600,11 @@ class LlmAgent(BaseAgent):
     # because the built-in tools cannot be used together with other tools.
     # TODO(b/448114567): Remove once the workaround is no longer needed.
     multiple_tools = len(self.tools) > 1
+    model = self.canonical_model
     for tool_union in self.tools:
       resolved_tools.extend(
           await _convert_tool_union_to_tools(
-              tool_union, ctx, self.model, multiple_tools
+              tool_union, ctx, model, multiple_tools
           )
       )
     return resolved_tools
@@ -823,8 +849,6 @@ class LlmAgent(BaseAgent):
   ) -> types.GenerateContentConfig:
     if not generate_content_config:
       return types.GenerateContentConfig()
-    if generate_content_config.thinking_config:
-      raise ValueError('Thinking config should be set via LlmAgent.planner.')
     if generate_content_config.tools:
       raise ValueError('All tools must be set via LlmAgent.tools.')
     if generate_content_config.system_instruction:
@@ -836,6 +860,23 @@ class LlmAgent(BaseAgent):
           'Response schema must be set via LlmAgent.output_schema.'
       )
     return generate_content_config
+
+  @override
+  def model_post_init(self, __context: Any) -> None:
+    """Provides a warning if multiple thinking configurations are found."""
+    super().model_post_init(__context)
+
+    # Note: Using getattr to check both locations for thinking_config
+    if getattr(
+        self.generate_content_config, 'thinking_config', None
+    ) and getattr(self.planner, 'thinking_config', None):
+      warnings.warn(
+          'Both `thinking_config` in `generate_content_config` and a '
+          'planner with `thinking_config` are provided. The '
+          "planner's configuration will take precedence.",
+          UserWarning,
+          stacklevel=3,
+      )
 
   @classmethod
   @experimental

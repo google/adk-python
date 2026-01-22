@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -18,6 +18,7 @@ import asyncio
 import atexit
 from concurrent.futures import ThreadPoolExecutor
 import contextvars
+import dataclasses
 from dataclasses import dataclass
 from dataclasses import field
 from datetime import datetime
@@ -36,6 +37,7 @@ from typing import TYPE_CHECKING
 import uuid
 import weakref
 
+from google.api_core import client_options
 from google.api_core.exceptions import InternalServerError
 from google.api_core.exceptions import ServiceUnavailable
 from google.api_core.exceptions import TooManyRequests
@@ -48,6 +50,8 @@ from google.cloud.bigquery import schema as bq_schema
 from google.cloud.bigquery_storage_v1 import types as bq_storage_types
 from google.cloud.bigquery_storage_v1.services.big_query_write.async_client import BigQueryWriteAsyncClient
 from google.genai import types
+from opentelemetry import context
+from opentelemetry import trace
 import pyarrow as pa
 
 from ..agents.callback_context import CallbackContext
@@ -62,6 +66,9 @@ if TYPE_CHECKING:
   from ..agents.invocation_context import InvocationContext
 
 logger: logging.Logger = logging.getLogger("google_adk." + __name__)
+tracer = trace.get_tracer(
+    "google.adk.plugins.bigquery_agent_analytics", __version__
+)
 
 
 # gRPC Error Codes
@@ -103,39 +110,96 @@ def _format_content(
   return " | ".join(parts), truncated
 
 
-def _recursive_smart_truncate(obj: Any, max_len: int) -> tuple[Any, bool]:
+def _recursive_smart_truncate(
+    obj: Any, max_len: int, seen: Optional[set[int]] = None
+) -> tuple[Any, bool]:
   """Recursively truncates string values within a dict or list.
 
   Args:
       obj: The object to truncate.
       max_len: Maximum length for string values.
+      seen: Set of object IDs visited in the current recursion stack.
 
   Returns:
       A tuple of (truncated_object, is_truncated).
   """
-  if isinstance(obj, str):
-    if max_len != -1 and len(obj) > max_len:
-      return obj[:max_len] + "...[TRUNCATED]", True
-    return obj, False
-  elif isinstance(obj, dict):
-    truncated_any = False
-    new_dict = {}
-    for k, v in obj.items():
-      val, trunc = _recursive_smart_truncate(v, max_len)
-      if trunc:
-        truncated_any = True
-      new_dict[k] = val
-    return new_dict, truncated_any
-  elif isinstance(obj, (list, tuple)):
-    truncated_any = False
-    new_list = []
-    for i in obj:
-      val, trunc = _recursive_smart_truncate(i, max_len)
-      if trunc:
-        truncated_any = True
-      new_list.append(val)
-    return type(obj)(new_list), truncated_any
-  return obj, False
+  if seen is None:
+    seen = set()
+
+  obj_id = id(obj)
+  if obj_id in seen:
+    return "[CIRCULAR_REFERENCE]", False
+
+  # Track compound objects to detect cycles
+  is_compound = (
+      isinstance(obj, (dict, list, tuple))
+      or (dataclasses.is_dataclass(obj) and not isinstance(obj, type))
+      or hasattr(obj, "model_dump")
+      or hasattr(obj, "dict")
+      or hasattr(obj, "to_dict")
+  )
+
+  if is_compound:
+    seen.add(obj_id)
+
+  try:
+    if isinstance(obj, str):
+      if max_len != -1 and len(obj) > max_len:
+        return obj[:max_len] + "...[TRUNCATED]", True
+      return obj, False
+    elif isinstance(obj, dict):
+      truncated_any = False
+      # Use dict comprehension for potentially slightly better performance,
+      # but explicit loop is fine for clarity given recursive nature.
+      new_dict = {}
+      for k, v in obj.items():
+        val, trunc = _recursive_smart_truncate(v, max_len, seen)
+        if trunc:
+          truncated_any = True
+        new_dict[k] = val
+      return new_dict, truncated_any
+    elif isinstance(obj, (list, tuple)):
+      truncated_any = False
+      new_list = []
+      # Explicit loop to handle flag propagation
+      for i in obj:
+        val, trunc = _recursive_smart_truncate(i, max_len, seen)
+        if trunc:
+          truncated_any = True
+        new_list.append(val)
+      return type(obj)(new_list), truncated_any
+    elif dataclasses.is_dataclass(obj) and not isinstance(obj, type):
+      # Manually iterate fields to preserve 'seen' context, avoiding dataclasses.asdict recursion
+      as_dict = {f.name: getattr(obj, f.name) for f in dataclasses.fields(obj)}
+      return _recursive_smart_truncate(as_dict, max_len, seen)
+    elif hasattr(obj, "model_dump") and callable(obj.model_dump):
+      # Pydantic v2
+      try:
+        return _recursive_smart_truncate(obj.model_dump(), max_len, seen)
+      except Exception:
+        pass
+    elif hasattr(obj, "dict") and callable(obj.dict):
+      # Pydantic v1
+      try:
+        return _recursive_smart_truncate(obj.dict(), max_len, seen)
+      except Exception:
+        pass
+    elif hasattr(obj, "to_dict") and callable(obj.to_dict):
+      # Common pattern for custom objects
+      try:
+        return _recursive_smart_truncate(obj.to_dict(), max_len, seen)
+      except Exception:
+        pass
+    elif obj is None or isinstance(obj, (int, float, bool)):
+      # Basic types are safe
+      return obj, False
+
+    # Fallback for unknown types: Convert to string to ensure JSON validity
+    # We return string representation of the object, which is a valid JSON string value.
+    return str(obj), False
+  finally:
+    if is_compound:
+      seen.remove(obj_id)
 
 
 # --- PyArrow Helper Functions ---
@@ -350,15 +414,26 @@ class BigQueryLoggerConfig:
 # HELPER: TRACE MANAGER (Async-Safe with ContextVars)
 # ==============================================================================
 
-_trace_id_ctx = contextvars.ContextVar("_bq_analytics_trace_id", default=None)
-_span_stack_ctx = contextvars.ContextVar(
-    "_bq_analytics_span_stack", default=None
+_root_agent_name_ctx = contextvars.ContextVar(
+    "_bq_analytics_root_agent_name", default=None
 )
-_span_times_ctx = contextvars.ContextVar(
-    "_bq_analytics_span_times", default=None
+_span_stack_ctx: contextvars.ContextVar[list[trace.Span]] = (
+    contextvars.ContextVar("_bq_analytics_span_stack", default=None)
 )
-_span_first_token_times_ctx = contextvars.ContextVar(
-    "_bq_analytics_span_first_token_times", default=None
+_span_token_stack_ctx: contextvars.ContextVar[list[trace.Token]] = (
+    contextvars.ContextVar("_bq_analytics_span_token_stack", default=None)
+)
+_span_first_token_times_ctx: contextvars.ContextVar[dict[str, float]] = (
+    contextvars.ContextVar("_bq_analytics_span_first_token_times", default=None)
+)
+_span_map_ctx: contextvars.ContextVar[dict[str, trace.Span]] = (
+    contextvars.ContextVar("_bq_analytics_span_map", default=None)
+)
+_span_id_stack_ctx: contextvars.ContextVar[list[str]] = contextvars.ContextVar(
+    "_bq_analytics_span_id_stack", default=None
+)
+_span_start_time_ctx: contextvars.ContextVar[dict[str, int]] = (
+    contextvars.ContextVar("_bq_analytics_span_start_time", default=None)
 )
 
 
@@ -367,104 +442,217 @@ class TraceManager:
 
   @staticmethod
   def init_trace(callback_context: CallbackContext) -> None:
-    if _trace_id_ctx.get() is None:
-      _trace_id_ctx.set(callback_context.invocation_id)
-      _span_stack_ctx.set([])
-      _span_times_ctx.set({})
+    # Extract root agent name from invocation context if not set
+    if _root_agent_name_ctx.get() is None:
+      try:
+        root_agent = callback_context._invocation_context.agent.root_agent
+        _root_agent_name_ctx.set(root_agent.name)
+      except (AttributeError, ValueError):
+        pass
+
+    if _span_first_token_times_ctx.get() is None:
       _span_first_token_times_ctx.set({})
+
+    if _span_map_ctx.get() is None:
+      _span_map_ctx.set({})
+
+    if _span_start_time_ctx.get() is None:
+      _span_start_time_ctx.set({})
 
   @staticmethod
   def get_trace_id(callback_context: CallbackContext) -> Optional[str]:
-    # Try contextvars first
-    if trace_id := _trace_id_ctx.get():
-      return trace_id
-    # Fallback to callback_context for existing tests/legacy flows
-    return callback_context.state.get("_bq_analytics_trace_id")
+    """Gets the trace ID from the current span or invocation_id."""
+    # Prefer internal stack if available
+    stack = _span_stack_ctx.get()
+    if stack:
+      current_span = stack[-1]
+      if current_span.get_span_context().is_valid:
+        return format(current_span.get_span_context().trace_id, "032x")
+
+    # Fallback to OTel context to satisfy "Trace Context Extraction" requirement
+    current_span = trace.get_current_span()
+    if current_span.get_span_context().is_valid:
+      return format(current_span.get_span_context().trace_id, "032x")
+
+    return callback_context.invocation_id
 
   @staticmethod
   def push_span(
-      callback_context: CallbackContext, span_id: Optional[str] = None
+      callback_context: CallbackContext, span_name: Optional[str] = "adk-span"
   ) -> str:
-    # Ensure trace is initialized
-    if _trace_id_ctx.get() is None:
-      TraceManager.init_trace(callback_context)
+    """Starts a new span and pushes it onto the stack.
 
-    span_id = span_id or str(uuid.uuid4())
+    If OTel is not configured (returning non-recording spans), a UUID fallback
+    is generated to ensure span_id and parent_span_id are populated in logs.
+    """
+    # Ensure init_trace logic (root agent name) runs if needed
+    TraceManager.init_trace(callback_context)
 
-    stack = _span_stack_ctx.get()
-    if stack is None:
-      # Should have been called by init_trace, but just in case
-      stack = []
-      _span_stack_ctx.set(stack)
+    span = tracer.start_span(span_name)
+    token = context.attach(trace.set_span_in_context(span))
 
-    stack.append(span_id)
+    stack = _span_stack_ctx.get() or []
+    new_stack = list(stack)
+    new_stack.append(span)
+    _span_stack_ctx.set(new_stack)
 
-    times = _span_times_ctx.get()
-    if times is None:
-      times = {}
-      _span_times_ctx.set(times)
+    token_stack = _span_token_stack_ctx.get() or []
+    new_token_stack = list(token_stack)
+    new_token_stack.append(token)
+    _span_token_stack_ctx.set(new_token_stack)
 
-    first_tokens = _span_first_token_times_ctx.get()
-    if first_tokens is None:
-      first_tokens = {}
-      _span_first_token_times_ctx.set(first_tokens)
+    if span.get_span_context().is_valid:
+      span_id_str = format(span.get_span_context().span_id, "016x")
+    else:
+      # Fallback: Generate a UUID-based ID if OTel span is invalid (NoOp)
+      # using 32-char hex to avoid collision, treated as string in BQ.
+      span_id_str = uuid.uuid4().hex
 
-    times[span_id] = time.time()
-    return span_id
+    id_stack = _span_id_stack_ctx.get() or []
+    new_id_stack = list(id_stack)
+    new_id_stack.append(span_id_str)
+    _span_id_stack_ctx.set(new_id_stack)
+
+    span_map = _span_map_ctx.get() or {}
+    new_span_map = span_map.copy()
+    new_span_map[span_id_str] = span
+    _span_map_ctx.set(new_span_map)
+
+    # Record start time manually for fallback support (NoOpSpan lacks start_time)
+    start_times = _span_start_time_ctx.get() or {}
+    new_start_times = start_times.copy()
+    new_start_times[span_id_str] = time.time_ns()
+    _span_start_time_ctx.set(new_start_times)
+
+    return span_id_str
 
   @staticmethod
   def pop_span() -> tuple[Optional[str], Optional[int]]:
+    """Ends the current span and pops it from the stack."""
     stack = _span_stack_ctx.get()
-    if not stack:
-      return None, None
-    span_id = stack.pop()
+    token_stack = _span_token_stack_ctx.get()
 
-    times = _span_times_ctx.get()
-    start_time = times.pop(span_id, None) if times else None
+    if not stack or not token_stack:
+      return None, None
+
+    new_stack = list(stack)
+    new_token_stack = list(token_stack)
+
+    span = new_stack.pop()
+    token = new_token_stack.pop()
+
+    _span_stack_ctx.set(new_stack)
+    _span_token_stack_ctx.set(new_token_stack)
+
+    # Pop from ID stack regarding fallback support
+    id_stack = _span_id_stack_ctx.get()
+    if id_stack:
+      new_id_stack = list(id_stack)
+      span_id = new_id_stack.pop()
+      _span_id_stack_ctx.set(new_id_stack)
+    else:
+      # Should not happen if stacks are in sync, but robust fallback:
+      if span.get_span_context().is_valid:
+        span_id = format(span.get_span_context().span_id, "016x")
+      else:
+        span_id = "unknown-id"
+
+    duration_ms = None
+    # Try getting start time from OTel span first, then fallback to manual tracking
+    if hasattr(span, "start_time") and span.start_time:
+      duration_ms = int((time.time_ns() - span.start_time) / 1_000_000)
+    else:
+      start_times = _span_start_time_ctx.get()
+      if start_times and span_id in start_times:
+        start_ns = start_times[span_id]
+        duration_ms = int((time.time_ns() - start_ns) / 1_000_000)
+
+    span.end()
+    context.detach(token)
 
     first_tokens = _span_first_token_times_ctx.get()
     if first_tokens:
-      first_tokens.pop(span_id, None)
+      # Copy to modify
+      new_first_tokens = first_tokens.copy()
+      new_first_tokens.pop(span_id, None)
+      _span_first_token_times_ctx.set(new_first_tokens)
 
-    duration_ms = int((time.time() - start_time) * 1000) if start_time else None
+    span_map = _span_map_ctx.get()
+    if span_map:
+      new_span_map = span_map.copy()
+      new_span_map.pop(span_id, None)
+      _span_map_ctx.set(new_span_map)
+
+    start_times = _span_start_time_ctx.get()
+    if start_times:
+      new_start_times = start_times.copy()
+      new_start_times.pop(span_id, None)
+      _span_start_time_ctx.set(new_start_times)
+
     return span_id, duration_ms
 
   @staticmethod
   def get_current_span_and_parent() -> tuple[Optional[str], Optional[str]]:
-    stack = _span_stack_ctx.get()
-    if not stack:
-      return None, None
-    return stack[-1], (stack[-2] if len(stack) > 1 else None)
+    """Gets current span_id and parent span_id from OTEL context or fallback stack."""
+    # Use internal ID stack for robust resolution (handling both OTel and fallback IDs)
+    id_stack = _span_id_stack_ctx.get()
+    if id_stack:
+      span_id = id_stack[-1]
+      parent_id = None
+      if len(id_stack) > 1:
+        parent_id = id_stack[-2]
+      return span_id, parent_id
+
+    return None, None
 
   @staticmethod
   def get_current_span_id() -> Optional[str]:
-    stack = _span_stack_ctx.get()
-    return stack[-1] if stack else None
+    """Gets current span_id from OTEL context or fallback stack."""
+    id_stack = _span_id_stack_ctx.get()
+    if id_stack:
+      return id_stack[-1]
+    return None
+
+  @staticmethod
+  def get_root_agent_name() -> Optional[str]:
+    return _root_agent_name_ctx.get()
 
   @staticmethod
   def get_start_time(span_id: str) -> Optional[float]:
-    times = _span_times_ctx.get()
-    return times.get(span_id) if times else None
+    """Gets start time of a span by ID."""
+    # Try OTel Object first
+    span_map = _span_map_ctx.get()
+    if span_map:
+      span = span_map.get(span_id)
+      if (
+          span
+          and span.get_span_context().is_valid
+          and hasattr(span, "start_time")
+      ):
+        return span.start_time / 1_000_000_000.0
+
+    # Fallback to manual start time
+    start_times = _span_start_time_ctx.get()
+    if start_times and span_id in start_times:
+      return start_times[span_id] / 1_000_000_000.0
+
+    return None
 
   @staticmethod
   def record_first_token(span_id: str) -> bool:
-    """Records the current time as first token time if not already recorded.
-
-    Returns:
-        True if this was the first token (newly recorded), False otherwise.
-    """
+    """Records the current time as first token time if not already recorded."""
     first_tokens = _span_first_token_times_ctx.get()
-    if first_tokens is None:
-      first_tokens = {}
-      _span_first_token_times_ctx.set(first_tokens)
 
     if span_id not in first_tokens:
-      first_tokens[span_id] = time.time()
+      new_first_tokens = first_tokens.copy()
+      new_first_tokens[span_id] = time.time()
+      _span_first_token_times_ctx.set(new_first_tokens)
       return True
     return False
 
   @staticmethod
   def get_first_token_time(span_id: str) -> Optional[float]:
+    """Gets the recorded first token time."""
     first_tokens = _span_first_token_times_ctx.get()
     return first_tokens.get(span_id) if first_tokens else None
 
@@ -510,6 +698,13 @@ class BatchProcessor:
     )
     self._batch_processor_task: Optional[asyncio.Task] = None
     self._shutdown = False
+
+  async def flush(self) -> None:
+    """Flushes the queue by waiting for it to be empty."""
+    if self._queue.empty():
+      return
+    # Wait for all items in the queue to be processed
+    await self._queue.join()
 
   async def start(self):
     """Starts the batch writer worker task."""
@@ -1217,7 +1412,10 @@ def _get_events_schema() -> list[bigquery.SchemaField]:
           mode="NULLABLE",
           description=(
               "A JSON object containing arbitrary key-value pairs for"
-              " additional event metadata not covered by standard fields."
+              " additional event metadata. Includes enrichment fields like"
+              " 'root_agent_name' (turn orchestration), 'model' (request"
+              " model), 'model_version' (response version), and"
+              " 'usage_metadata' (detailed token counts)."
           ),
       ),
       bigquery.SchemaField(
@@ -1325,6 +1523,11 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       logger.warning("Content formatter failed: %s", e)
       return "[FORMATTING FAILED]", False
 
+  async def flush(self) -> None:
+    """Flushes any pending events to BigQuery."""
+    if self.batch_processor:
+      await self.batch_processor.flush()
+
   async def _lazy_setup(self, **kwargs) -> None:
     """Performs lazy initialization of BigQuery clients and resources."""
     if self._started:
@@ -1352,19 +1555,31 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         if _GLOBAL_WRITE_CLIENT is None:
 
           def get_credentials():
-            creds, _ = google.auth.default(
+            creds, project_id = google.auth.default(
                 scopes=["https://www.googleapis.com/auth/cloud-platform"]
             )
-            return creds
+            return creds, project_id
 
-          creds = await loop.run_in_executor(self._executor, get_credentials)
+          creds, project_id = await loop.run_in_executor(
+              self._executor, get_credentials
+          )
+          quota_project_id = (
+              getattr(creds, "quota_project_id", None) or project_id
+          )
+          options = (
+              client_options.ClientOptions(quota_project_id=quota_project_id)
+              if quota_project_id
+              else None
+          )
           client_info = gapic_client_info.ClientInfo(
               user_agent=f"google-adk-bq-logger/{__version__}"
           )
           # Initialize the async client in the current event loop, not in the
           # executor.
           _GLOBAL_WRITE_CLIENT = BigQueryWriteAsyncClient(
-              credentials=creds, client_info=client_info
+              credentials=creds,
+              client_info=client_info,
+              client_options=options,
           )
         self.write_client = _GLOBAL_WRITE_CLIENT
 
@@ -1407,7 +1622,6 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       # Use weakref to avoid circular references that prevent garbage collection
       atexit.register(self._atexit_cleanup, weakref.proxy(self.batch_processor))
 
-  @staticmethod
   @staticmethod
   def _atexit_cleanup(batch_processor: "BatchProcessor") -> None:
     """Clean up batch processor on script exit."""
@@ -1550,7 +1764,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
   async def _ensure_started(self, **kwargs) -> None:
     """Ensures that the plugin is started and initialized."""
     if not self._started:
-      # Kept original lock name as it was not explicitly changed in the
+      # Kept original lock name as it was not explicitly changed.
       if self._setup_lock is None:
         self._setup_lock = asyncio.Lock()
       async with self._setup_lock:
@@ -1647,6 +1861,28 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     status = kwargs.pop("status", "OK")
     error_message = kwargs.pop("error_message", None)
 
+    # V2 Metadata Extensions
+    model = kwargs.pop("model", None)
+    model_version = kwargs.pop("model_version", None)
+    usage_metadata = kwargs.pop("usage_metadata", None)
+
+    # Add new fields to attributes instead of columns
+    kwargs["root_agent_name"] = TraceManager.get_root_agent_name()
+    if model:
+      kwargs["model"] = model
+    if model_version:
+      kwargs["model_version"] = model_version
+    if usage_metadata:
+      # Use smart truncate to handle Pydantic, Dataclasses, and other objects
+      usage_dict, _ = _recursive_smart_truncate(
+          usage_metadata, self.config.max_content_length
+      )
+      if isinstance(usage_dict, dict):
+        kwargs["usage_metadata"] = usage_dict
+      else:
+        # Fallback if it couldn't be converted to dict
+        kwargs["usage_metadata"] = usage_metadata
+
     # Serialize remaining kwargs to JSON string for attributes
     try:
       attributes_json = json.dumps(kwargs)
@@ -1723,6 +1959,8 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     await self._log_event(
         "INVOCATION_COMPLETED", CallbackContext(invocation_context)
     )
+    # Ensure all logs are flushed before the agent returns
+    await self.flush()
 
   async def before_agent_callback(
       self, *, agent: Any, callback_context: CallbackContext, **kwargs
@@ -1734,9 +1972,11 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         callback_context: The callback context.
     """
     TraceManager.init_trace(callback_context)
-    TraceManager.push_span(callback_context)
+    TraceManager.push_span(callback_context, "agent")
     await self._log_event(
-        "AGENT_STARTING", callback_context, raw_content=agent.instruction
+        "AGENT_STARTING",
+        callback_context,
+        raw_content=getattr(agent, "instruction", ""),
     )
 
   async def after_agent_callback(
@@ -1802,11 +2042,12 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     # Merge any additional kwargs into attributes
     attributes.update(kwargs)
 
-    TraceManager.push_span(callback_context)
+    TraceManager.push_span(callback_context, "llm")
     await self._log_event(
         "LLM_REQUEST",
         callback_context,
         raw_content=llm_request,
+        model=llm_request.model,
         **attributes,
     )
 
@@ -1906,6 +2147,8 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         raw_content=content_str,
         is_truncated=is_truncated,
         latency_ms=duration,
+        model_version=llm_response.model_version,
+        usage_metadata=llm_response.usage_metadata,
         span_id_override=span_id if is_popped else None,
         parent_span_id_override=parent_span_id
         if is_popped
@@ -1954,7 +2197,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         tool_args, self.config.max_content_length
     )
     content_dict = {"tool": tool.name, "args": args_truncated}
-    TraceManager.push_span(tool_context)
+    TraceManager.push_span(tool_context, "tool")
     await self._log_event(
         "TOOL_STARTING",
         tool_context,

@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -23,10 +23,6 @@ from ..dependencies.rouge_scorer import rouge_scorer
 from .eval_case import ConversationScenario
 from .eval_case import Invocation
 from .eval_metrics import EvalMetric
-from .eval_metrics import Interval
-from .eval_metrics import MetricInfo
-from .eval_metrics import MetricValueInfo
-from .eval_metrics import PrebuiltMetrics
 from .evaluator import EvalStatus
 from .evaluator import EvaluationResult
 from .evaluator import Evaluator
@@ -42,29 +38,16 @@ class RougeEvaluator(Evaluator):
   def __init__(self, eval_metric: EvalMetric):
     self._eval_metric = eval_metric
 
-  @staticmethod
-  def get_metric_info() -> MetricInfo:
-    return MetricInfo(
-        metric_name=PrebuiltMetrics.RESPONSE_MATCH_SCORE.value,
-        description=(
-            "This metric evaluates if the agent's final response matches a"
-            " golden/expected final response using Rouge_1 metric. Value range"
-            " for this metric is [0,1], with values closer to 1 more desirable."
-        ),
-        metric_value_info=MetricValueInfo(
-            interval=Interval(min_value=0.0, max_value=1.0)
-        ),
-    )
-
   @override
   def evaluate_invocations(
       self,
       actual_invocations: list[Invocation],
-      expected_invocations: Optional[list[Invocation]],
-      _: Optional[ConversationScenario] = None,
+      expected_invocations: Optional[list[Invocation]] = None,
+      conversation_scenario: Optional[ConversationScenario] = None,
   ) -> EvaluationResult:
     if expected_invocations is None:
       raise ValueError("expected_invocations is required for this metric.")
+    del conversation_scenario  # not used by this metric.
 
     total_score = 0.0
     num_invocations = 0

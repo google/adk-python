@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -70,6 +70,18 @@ async def test_per_agent_session_service_respects_app_name_alias(
 
   assert session.app_name == logical_name
   assert (tmp_path / folder_name / ".adk" / "session.db").exists()
+
+
+@pytest.mark.asyncio
+async def test_per_agent_session_service_routes_built_in_agents_to_root_dot_adk(
+    tmp_path: Path,
+) -> None:
+  service = PerAgentDatabaseSessionService(agents_root=tmp_path)
+
+  await service.create_session(app_name="__helper", user_id="user")
+
+  assert not (tmp_path / "__helper").exists()
+  assert (tmp_path / ".adk" / "session.db").exists()
 
 
 def test_create_local_database_session_service_returns_sqlite(

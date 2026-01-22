@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 from contextlib import AsyncExitStack
 from datetime import timedelta
 import functools
@@ -25,18 +26,48 @@ import sys
 from typing import Any
 from typing import Dict
 from typing import Optional
+from typing import Protocol
+from typing import runtime_checkable
 from typing import TextIO
 from typing import Union
 
-import anyio
 from mcp import ClientSession
 from mcp import StdioServerParameters
 from mcp.client.sse import sse_client
 from mcp.client.stdio import stdio_client
+from mcp.client.streamable_http import create_mcp_http_client
+from mcp.client.streamable_http import McpHttpClientFactory
 from mcp.client.streamable_http import streamablehttp_client
 from pydantic import BaseModel
+from pydantic import ConfigDict
+
+from .session_context import SessionContext
 
 logger = logging.getLogger('google_adk.' + __name__)
+
+
+def _has_cancelled_error_context(exc: BaseException) -> bool:
+  """Returns True if `exc` is/was caused by `asyncio.CancelledError`.
+
+  Cancellation can be translated into other exceptions during teardown (e.g.
+  connection errors) while still retaining the original cancellation in an
+  exception's context chain.
+  """
+
+  seen: set[int] = set()
+  queue = deque([exc])
+  while queue:
+    current = queue.popleft()
+    if id(current) in seen:
+      continue
+    seen.add(id(current))
+    if isinstance(current, asyncio.CancelledError):
+      return True
+    if current.__cause__ is not None:
+      queue.append(current.__cause__)
+    if current.__context__ is not None:
+      queue.append(current.__context__)
+  return False
 
 
 class StdioConnectionParams(BaseModel):
@@ -73,6 +104,11 @@ class SseConnectionParams(BaseModel):
   sse_read_timeout: float = 60 * 5.0
 
 
+@runtime_checkable
+class CheckableMcpHttpClientFactory(McpHttpClientFactory, Protocol):
+  pass
+
+
 class StreamableHTTPConnectionParams(BaseModel):
   """Parameters for the MCP Streamable HTTP connection.
 
@@ -88,13 +124,18 @@ class StreamableHTTPConnectionParams(BaseModel):
         Streamable HTTP server.
       terminate_on_close: Whether to terminate the MCP Streamable HTTP server
         when the connection is closed.
+      httpx_client_factory: Factory function to create a custom HTTPX client. If
+        not provided, a default factory will be used.
   """
+
+  model_config = ConfigDict(arbitrary_types_allowed=True)
 
   url: str
   headers: dict[str, Any] | None = None
   timeout: float = 5.0
   sse_read_timeout: float = 60 * 5.0
   terminate_on_close: bool = True
+  httpx_client_factory: CheckableMcpHttpClientFactory = create_mcp_http_client
 
 
 def retry_on_errors(func):
@@ -103,6 +144,10 @@ def retry_on_errors(func):
   When MCP session errors occur, the decorator will automatically retry the
   action once. The create_session method will handle creating a new session
   if the old one was disconnected.
+
+  Cancellation is not retried and must be allowed to propagate. In async
+  runtimes, cancellation may surface as `asyncio.CancelledError` or as another
+  exception while the task is cancelling.
 
   Args:
       func: The function to decorate.
@@ -116,6 +161,13 @@ def retry_on_errors(func):
     try:
       return await func(self, *args, **kwargs)
     except Exception as e:
+      task = asyncio.current_task()
+      if task is not None:
+        cancelling = getattr(task, 'cancelling', None)
+        if cancelling is not None and cancelling() > 0:
+          raise
+      if _has_cancelled_error_context(e):
+        raise
       # If an error is thrown, we will retry the function to reconnect to the
       # server. create_session will handle detecting and replacing disconnected
       # sessions.
@@ -275,6 +327,7 @@ class MCPSessionManager:
               seconds=self._connection_params.sse_read_timeout
           ),
           terminate_on_close=self._connection_params.terminate_on_close,
+          httpx_client_factory=self._connection_params.httpx_client_factory,
       )
     else:
       raise ValueError(
@@ -334,29 +387,27 @@ class MCPSessionManager:
           if hasattr(self._connection_params, 'timeout')
           else None
       )
+      sse_read_timeout_in_seconds = (
+          self._connection_params.sse_read_timeout
+          if hasattr(self._connection_params, 'sse_read_timeout')
+          else None
+      )
 
       try:
         client = self._create_client(merged_headers)
+        is_stdio = isinstance(self._connection_params, StdioConnectionParams)
 
-        transports = await asyncio.wait_for(
-            exit_stack.enter_async_context(client),
+        session = await asyncio.wait_for(
+            exit_stack.enter_async_context(
+                SessionContext(
+                    client=client,
+                    timeout=timeout_in_seconds,
+                    sse_read_timeout=sse_read_timeout_in_seconds,
+                    is_stdio=is_stdio,
+                )
+            ),
             timeout=timeout_in_seconds,
         )
-        # The streamable http client returns a GetSessionCallback in addition to the
-        # read/write MemoryObjectStreams needed to build the ClientSession, we limit
-        # then to the two first values to be compatible with all clients.
-        if isinstance(self._connection_params, StdioConnectionParams):
-          session = await exit_stack.enter_async_context(
-              ClientSession(
-                  *transports[:2],
-                  read_timeout_seconds=timedelta(seconds=timeout_in_seconds),
-              )
-          )
-        else:
-          session = await exit_stack.enter_async_context(
-              ClientSession(*transports[:2])
-          )
-        await asyncio.wait_for(session.initialize(), timeout=timeout_in_seconds)
 
         # Store session and exit stack in the pool
         self._sessions[session_key] = (session, exit_stack)
