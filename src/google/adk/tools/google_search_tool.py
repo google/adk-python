@@ -35,17 +35,26 @@ class GoogleSearchTool(BaseTool):
   local code execution.
   """
 
-  def __init__(self, *, bypass_multi_tools_limit: bool = False):
+  def __init__(
+      self,
+      *,
+      bypass_multi_tools_limit: bool = False,
+      model: str | None = None,
+  ):
     """Initializes the Google search tool.
 
     Args:
       bypass_multi_tools_limit: Whether to bypass the multi tools limitation,
         so that the tool can be used with other tools in the same agent.
+      model: Optional model name to use for processing the LLM request. If
+        provided, this model will be used instead of the model from the
+        incoming llm_request.
     """
 
     # Name and description are not used because this is a model built-in tool.
     super().__init__(name='google_search', description='google_search')
     self.bypass_multi_tools_limit = bypass_multi_tools_limit
+    self.model = model
 
   @override
   async def process_llm_request(
@@ -54,6 +63,10 @@ class GoogleSearchTool(BaseTool):
       tool_context: ToolContext,
       llm_request: LlmRequest,
   ) -> None:
+    # If a custom model is specified, use it instead of the original model
+    if self.model is not None:
+      llm_request.model = self.model
+
     llm_request.config = llm_request.config or types.GenerateContentConfig()
     llm_request.config.tools = llm_request.config.tools or []
     if is_gemini_1_model(llm_request.model):
