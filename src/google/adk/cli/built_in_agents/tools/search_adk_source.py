@@ -13,6 +13,7 @@
 # limitations under the License.
 
 """ADK source code search tool for Agent Builder Assistant."""
+
 from __future__ import annotations
 
 from pathlib import Path

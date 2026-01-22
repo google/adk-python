@@ -479,8 +479,7 @@ async def test_run_live_state_delta_applied_to_session():
 
   # Verify the state_delta event was appended to the session
   state_delta_events = [
-      e for e in session.events
-      if e.actions.state_delta and e.author == "user"
+      e for e in session.events if e.actions.state_delta and e.author == "user"
   ]
   assert len(state_delta_events) == 1
   assert state_delta_events[0].actions.state_delta == state_delta

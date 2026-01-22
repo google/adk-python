@@ -1019,7 +1019,9 @@ class Runner:
           actions=EventActions(state_delta=state_delta),
       )
       _apply_run_config_custom_metadata(state_event, run_config)
-      await self.session_service.append_event(session=session, event=state_event)
+      await self.session_service.append_event(
+          session=session, event=state_event
+      )
 
     root_agent = self.agent
     invocation_context.agent = self._find_agent_to_run(session, root_agent)

@@ -18,6 +18,7 @@ This package provides an intelligent assistant for building multi-agent systems
 using YAML configurations. It can be used directly as an agent or integrated
 with ADK tools and web interfaces.
 """
+
 from __future__ import annotations
 
 from . import agent  # Import to make agent.root_agent available

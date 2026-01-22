@@ -13,6 +13,7 @@
 # limitations under the License.
 
 """Utilities for finding ADK source folder dynamically and loading schema."""
+
 from __future__ import annotations
 
 import json

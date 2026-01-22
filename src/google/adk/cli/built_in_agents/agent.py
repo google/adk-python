@@ -13,6 +13,7 @@
 # limitations under the License.
 
 """Agent Builder Assistant instance for ADK web testing."""
+
 from __future__ import annotations
 
 from .adk_agent_builder_assistant import AgentBuilderAssistant

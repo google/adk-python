@@ -14,7 +14,6 @@
 
 """Tests for SetModelResponseTool."""
 
-
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.run_config import RunConfig
