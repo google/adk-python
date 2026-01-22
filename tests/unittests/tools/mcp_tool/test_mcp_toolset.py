@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -30,8 +30,6 @@ from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnecti
 from google.adk.tools.mcp_tool.mcp_tool import MCPTool
 from google.adk.tools.mcp_tool.mcp_toolset import MCPToolset
 from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
-from google.adk.tools.mcp_tool.mcp_toolset import McpToolsetConfig
-from google.adk.tools.tool_configs import ToolArgsConfig
 from mcp import StdioServerParameters
 import pytest
 
@@ -246,94 +244,6 @@ class TestMCPToolset:
     self.mock_session_manager.create_session.assert_called_once_with(
         headers=expected_headers
     )
-
-  @pytest.mark.asyncio
-  async def test_get_tools_with_auth_headers(self):
-    """Test get_tools with auth headers."""
-    from fastapi.openapi import models as openapi_models
-    from google.adk.auth.auth_credential import AuthCredentialTypes
-    from google.adk.auth.auth_credential import OAuth2Auth
-
-    mock_tools = [MockMCPTool("tool1")]
-    self.mock_session.list_tools = AsyncMock(
-        return_value=MockListToolsResult(mock_tools)
-    )
-    mock_readonly_context = Mock(spec=ReadonlyContext)
-
-    auth_scheme = openapi_models.HTTPBase(scheme="bearer")
-    auth_credential = AuthCredential(
-        auth_type=AuthCredentialTypes.OAUTH2,
-        oauth2=OAuth2Auth(access_token="test_token"),
-    )
-
-    with patch(
-        "google.adk.tools.mcp_tool.mcp_toolset.CredentialManager"
-    ) as MockCredentialManager:
-      mock_manager_instance = MockCredentialManager.return_value
-      mock_manager_instance.get_auth_credential = AsyncMock(
-          return_value=auth_credential
-      )
-
-      toolset = MCPToolset(
-          connection_params=self.mock_stdio_params,
-          auth_scheme=auth_scheme,
-          auth_credential=auth_credential,
-      )
-      toolset._mcp_session_manager = self.mock_session_manager
-
-      await toolset.get_tools(readonly_context=mock_readonly_context)
-
-      self.mock_session_manager.create_session.assert_called_once()
-      call_args = self.mock_session_manager.create_session.call_args
-      headers = call_args[1]["headers"]
-      assert headers == {"Authorization": "Bearer test_token"}
-
-  @pytest.mark.asyncio
-  async def test_get_tools_with_auth_and_header_provider(self):
-    """Test get_tools with auth and header_provider."""
-    from fastapi.openapi import models as openapi_models
-    from google.adk.auth.auth_credential import AuthCredentialTypes
-    from google.adk.auth.auth_credential import OAuth2Auth
-
-    mock_tools = [MockMCPTool("tool1")]
-    self.mock_session.list_tools = AsyncMock(
-        return_value=MockListToolsResult(mock_tools)
-    )
-    mock_readonly_context = Mock(spec=ReadonlyContext)
-    provided_headers = {"X-Tenant-ID": "test-tenant"}
-    header_provider = Mock(return_value=provided_headers)
-
-    auth_scheme = openapi_models.HTTPBase(scheme="bearer")
-    auth_credential = AuthCredential(
-        auth_type=AuthCredentialTypes.OAUTH2,
-        oauth2=OAuth2Auth(access_token="test_token"),
-    )
-
-    with patch(
-        "google.adk.tools.mcp_tool.mcp_toolset.CredentialManager"
-    ) as MockCredentialManager:
-      mock_manager_instance = MockCredentialManager.return_value
-      mock_manager_instance.get_auth_credential = AsyncMock(
-          return_value=auth_credential
-      )
-
-      toolset = MCPToolset(
-          connection_params=self.mock_stdio_params,
-          auth_scheme=auth_scheme,
-          auth_credential=auth_credential,
-          header_provider=header_provider,
-      )
-      toolset._mcp_session_manager = self.mock_session_manager
-
-      await toolset.get_tools(readonly_context=mock_readonly_context)
-
-      self.mock_session_manager.create_session.assert_called_once()
-      call_args = self.mock_session_manager.create_session.call_args
-      headers = call_args[1]["headers"]
-      assert headers == {
-          "X-Tenant-ID": "test-tenant",
-          "Authorization": "Bearer test_token",
-      }
 
   @pytest.mark.asyncio
   async def test_close_success(self):

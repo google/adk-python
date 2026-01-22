@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -58,7 +58,7 @@ https://google.github.io/adk-docs/agents/models/#error-code-429-resource_exhaust
 
 
 class _ResourceExhaustedError(ClientError):
-  """Represents an resources exhausted error received from the Model."""
+  """Represents a resources exhausted error received from the Model."""
 
   def __init__(
       self,

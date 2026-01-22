@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -49,6 +49,7 @@ if TYPE_CHECKING:
 AF_FUNCTION_CALL_ID_PREFIX = 'adk-'
 REQUEST_EUC_FUNCTION_CALL_NAME = 'adk_request_credential'
 REQUEST_CONFIRMATION_FUNCTION_CALL_NAME = 'adk_request_confirmation'
+REQUEST_INPUT_FUNCTION_CALL_NAME = 'adk_request_input'
 
 logger = logging.getLogger('google_adk.' + __name__)
 
@@ -410,7 +411,7 @@ async def _execute_single_function_call_async(
       function_response = altered_function_response
 
     if tool.is_long_running:
-      # Allow long running function to return None to not provide function
+      # Allow long-running function to return None to not provide function
       # response.
       if not function_response:
         return None
@@ -893,7 +894,7 @@ def find_matching_function_call(
     )
     for i in range(len(events) - 2, -1, -1):
       event = events[i]
-      # looking for the system long running request euc function call
+      # looking for the system long-running request euc function call
       function_calls = event.get_function_calls()
       if not function_calls:
         continue
