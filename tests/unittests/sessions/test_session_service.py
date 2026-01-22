@@ -852,27 +852,60 @@ async def test_clone_session_deduplicates_events(session_service):
       app_name=app_name, user_id=user_id, session_id='session2'
   )
 
-  # Create events - event1 and event3 have the same ID (duplicate)
-  event1 = Event(id='shared_event_id', invocation_id='inv1', author='user')
-  event2 = Event(id='unique_event_1', invocation_id='inv2', author='model')
-  event3 = Event(id='shared_event_id', invocation_id='inv3', author='user')
-  event4 = Event(id='unique_event_2', invocation_id='inv4', author='model')
+  # Create events - event1 and event3 have the same ID (duplicate).
+  # Explicitly set timestamps to ensure the test is deterministic and to
+  # verify that the chronologically first event is kept.
+  event1 = Event(
+      id='shared_event_id',
+      invocation_id='inv1',
+      author='user',
+      timestamp=100.0,
+  )
+  event2 = Event(
+      id='unique_event_1',
+      invocation_id='inv2',
+      author='model',
+      timestamp=200.0,
+  )
+  # This event has the same ID as event1, but a later timestamp. It should be
+  # discarded during deduplication.
+  event3 = Event(
+      id='shared_event_id',
+      invocation_id='inv3',
+      author='user',
+      timestamp=300.0,
+  )
+  event4 = Event(
+      id='unique_event_2',
+      invocation_id='inv4',
+      author='model',
+      timestamp=400.0,
+  )
 
   await session_service.append_event(session1, event1)
   await session_service.append_event(session1, event2)
   await session_service.append_event(session2, event3)
   await session_service.append_event(session2, event4)
 
-  # Clone - should have 3 events (duplicate automatically removed)
+  # Clone all sessions for the user. This should merge events and deduplicate.
   cloned_session = await session_service.clone_session(
       app_name=app_name,
       src_user_id=user_id,
   )
+
+  # Verify that there are 3 events after deduplication.
   assert len(cloned_session.events) == 3
-  # Verify the unique event IDs
-  event_ids = [e.id for e in cloned_session.events]
-  assert 'shared_event_id' in event_ids
-  assert 'unique_event_1' in event_ids
-  assert 'unique_event_2' in event_ids
-  # Count occurrences - shared_event_id should appear only once
-  assert event_ids.count('shared_event_id') == 1
+
+  # Verify that the correct events were kept and are in chronological order.
+  event_map = {e.id: e for e in cloned_session.events}
+  assert 'shared_event_id' in event_map
+  assert 'unique_event_1' in event_map
+  assert 'unique_event_2' in event_map
+
+  # Check that for the shared ID, the event with the earlier timestamp ('inv1')
+  # was kept, confirming the "first occurrence wins" rule.
+  assert event_map['shared_event_id'].invocation_id == 'inv1'
+
+  # Verify that the final list of events is sorted chronologically.
+  event_timestamps = [e.timestamp for e in cloned_session.events]
+  assert event_timestamps == [100.0, 200.0, 400.0]
