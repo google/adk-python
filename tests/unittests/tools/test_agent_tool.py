@@ -942,3 +942,225 @@ async def test_run_async_handles_none_parts_in_response():
   )
 
   assert tool_result == ''
+
+
+class TestAgentToolWithCompositeAgents:
+  """Tests for AgentTool wrapping composite agents (SequentialAgent, etc.)."""
+
+  def test_sequential_agent_with_first_sub_agent_input_schema(self):
+    """Test that AgentTool exposes input_schema from first sub-agent of SequentialAgent."""
+
+    class CustomInput(BaseModel):
+      query: str
+      language: str
+
+    first_agent = Agent(
+        name='first_agent',
+        model=testing_utils.MockModel.create(responses=['response1']),
+        input_schema=CustomInput,
+    )
+
+    second_agent = Agent(
+        name='second_agent',
+        model=testing_utils.MockModel.create(responses=['response2']),
+    )
+
+    sequence = SequentialAgent(
+        name='sequence',
+        description='Process the query through multiple steps',
+        sub_agents=[first_agent, second_agent],
+    )
+
+    agent_tool = AgentTool(agent=sequence)
+    declaration = agent_tool._get_declaration()
+
+    # Should expose CustomInput schema, not fallback to 'request'
+    assert declaration.name == 'sequence'
+    assert declaration.description == 'Process the query through multiple steps'
+    assert declaration.parameters.properties['query'].type == 'STRING'
+    assert declaration.parameters.properties['language'].type == 'STRING'
+    assert 'request' not in declaration.parameters.properties
+
+  def test_sequential_agent_without_input_schema_falls_back_to_request(self):
+    """Test that AgentTool falls back to 'request' when no sub-agent has input_schema."""
+
+    first_agent = Agent(
+        name='first_agent',
+        model=testing_utils.MockModel.create(responses=['response1']),
+    )
+
+    second_agent = Agent(
+        name='second_agent',
+        model=testing_utils.MockModel.create(responses=['response2']),
+    )
+
+    sequence = SequentialAgent(
+        name='sequence',
+        description='Process the query through multiple steps',
+        sub_agents=[first_agent, second_agent],
+    )
+
+    agent_tool = AgentTool(agent=sequence)
+    declaration = agent_tool._get_declaration()
+
+    # Should fall back to 'request' parameter
+    assert declaration.name == 'sequence'
+    assert declaration.parameters.properties['request'].type == 'STRING'
+    assert 'query' not in declaration.parameters.properties
+
+  @mark.parametrize(
+      'env_variables',
+      [
+          'VERTEX',
+      ],
+      indirect=True,
+  )
+  def test_sequential_agent_with_last_sub_agent_output_schema(
+      self, env_variables
+  ):
+    """Test that AgentTool uses output_schema from last sub-agent of SequentialAgent."""
+
+    class CustomOutput(BaseModel):
+      result: str
+
+    first_agent = Agent(
+        name='first_agent',
+        model=testing_utils.MockModel.create(responses=['response1']),
+    )
+
+    second_agent = Agent(
+        name='second_agent',
+        model=testing_utils.MockModel.create(responses=['response2']),
+        output_schema=CustomOutput,
+    )
+
+    sequence = SequentialAgent(
+        name='sequence',
+        description='Process the query',
+        sub_agents=[first_agent, second_agent],
+    )
+
+    agent_tool = AgentTool(agent=sequence)
+    declaration = agent_tool._get_declaration()
+
+    # Should have object response schema from last sub-agent
+    assert declaration.response is not None
+    assert declaration.response.type == types.Type.OBJECT
+
+  def test_nested_sequential_agent_input_schema(self):
+    """Test that AgentTool recursively finds input_schema in nested composite agents."""
+
+    class CustomInput(BaseModel):
+      deep_query: str
+
+    inner_agent = Agent(
+        name='inner_agent',
+        model=testing_utils.MockModel.create(responses=['response1']),
+        input_schema=CustomInput,
+    )
+
+    inner_sequence = SequentialAgent(
+        name='inner_sequence',
+        sub_agents=[inner_agent],
+    )
+
+    outer_sequence = SequentialAgent(
+        name='outer_sequence',
+        description='Nested sequence',
+        sub_agents=[inner_sequence],
+    )
+
+    agent_tool = AgentTool(agent=outer_sequence)
+    declaration = agent_tool._get_declaration()
+
+    # Should recursively find CustomInput from inner_agent
+    assert declaration.name == 'outer_sequence'
+    assert 'deep_query' in declaration.parameters.properties
+    assert declaration.parameters.properties['deep_query'].type == 'STRING'
+    assert 'request' not in declaration.parameters.properties
+
+  @mark.parametrize(
+      'env_variables',
+      [
+          'GOOGLE_AI',
+          'VERTEX',
+      ],
+      indirect=True,
+  )
+  def test_sequential_agent_custom_schema_end_to_end(self, env_variables):
+    """Test end-to-end flow with SequentialAgent using custom input/output schema."""
+
+    class CustomInput(BaseModel):
+      custom_input: str
+
+    class CustomOutput(BaseModel):
+      custom_output: str
+
+    function_call_seq = Part.from_function_call(
+        name='sequence', args={'custom_input': 'test_input'}
+    )
+
+    mock_model = testing_utils.MockModel.create(
+        responses=[
+            function_call_seq,
+            '{"custom_output": "step1_response"}',
+            '{"custom_output": "final_response"}',
+            'root_response',
+        ]
+    )
+
+    first_agent = Agent(
+        name='first_agent',
+        model=mock_model,
+        input_schema=CustomInput,
+    )
+
+    second_agent = Agent(
+        name='second_agent',
+        model=mock_model,
+        output_schema=CustomOutput,
+        output_key='seq_output',
+    )
+
+    sequence = SequentialAgent(
+        name='sequence',
+        description='A sequential pipeline',
+        sub_agents=[first_agent, second_agent],
+    )
+
+    root_agent = Agent(
+        name='root_agent',
+        model=mock_model,
+        tools=[AgentTool(agent=sequence)],
+    )
+
+    runner = testing_utils.InMemoryRunner(root_agent)
+    runner.run('test1')
+
+    # Verify the tool declaration sent to LLM has the correct schema
+    # The first request is from root_agent, which should have the tool declaration
+    first_request = mock_model.requests[0]
+    tool_declarations = first_request.config.tools
+    assert len(tool_declarations) == 1
+
+    sequence_tool = tool_declarations[0].function_declarations[0]
+    assert sequence_tool.name == 'sequence'
+    # Should have 'custom_input' parameter from first sub-agent's input_schema
+    assert 'custom_input' in sequence_tool.parameters.properties
+    # Should NOT have the fallback 'request' parameter
+    assert 'request' not in sequence_tool.parameters.properties
+
+  def test_empty_sequential_agent_falls_back_to_request(self):
+    """Test that AgentTool with empty SequentialAgent falls back to 'request'."""
+
+    sequence = SequentialAgent(
+        name='empty_sequence',
+        description='An empty sequence',
+        sub_agents=[],
+    )
+
+    agent_tool = AgentTool(agent=sequence)
+    declaration = agent_tool._get_declaration()
+
+    # Should fall back to 'request' parameter
+    assert declaration.parameters.properties['request'].type == 'STRING'
