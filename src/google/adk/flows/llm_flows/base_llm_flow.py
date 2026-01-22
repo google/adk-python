@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -38,8 +38,6 @@ from ...agents.readonly_context import ReadonlyContext
 from ...agents.run_config import StreamingMode
 from ...agents.transcription_entry import TranscriptionEntry
 from ...events.event import Event
-from ...features import FeatureName
-from ...features import is_feature_enabled
 from ...models.base_llm_connection import BaseLlmConnection
 from ...models.llm_request import LlmRequest
 from ...models.llm_response import LlmResponse
@@ -73,7 +71,7 @@ DEFAULT_ENABLE_CACHE_STATISTICS = False
 class BaseLlmFlow(ABC):
   """A basic flow that calls the LLM in a loop until a final response is generated.
 
-  This flow ends when it transfer to another agent.
+  This flow ends when it transfers to another agent.
   """
 
   def __init__(self):
@@ -274,6 +272,25 @@ class BaseLlmFlow(ABC):
         await llm_connection.send_realtime(live_request.blob)
 
       if live_request.content:
+        content = live_request.content
+        # Persist user text content to session (similar to non-live mode)
+        # Skip function responses - they are already handled separately
+        is_function_response = content.parts and any(
+            part.function_response for part in content.parts
+        )
+        if not is_function_response:
+          if not content.role:
+            content.role = 'user'
+          user_content_event = Event(
+              id=Event.new_id(),
+              invocation_id=invocation_context.invocation_id,
+              author='user',
+              content=content,
+          )
+          await invocation_context.session_service.append_event(
+              session=invocation_context.session,
+              event=user_content_event,
+          )
         await llm_connection.send_content(live_request.content)
 
   async def _receive_from_model(
@@ -551,14 +568,11 @@ class BaseLlmFlow(ABC):
     # Handles function calls.
     if model_response_event.get_function_calls():
 
-      if is_feature_enabled(FeatureName.PROGRESSIVE_SSE_STREAMING):
-        # In progressive SSE streaming mode stage 1, we skip partial FC events
-        # Only execute FCs in the final aggregated event (partial=False)
-        if (
-            invocation_context.run_config.streaming_mode == StreamingMode.SSE
-            and model_response_event.partial
-        ):
-          return
+      # Skip partial function call events - they should not trigger execution
+      # since partial events are not saved to session (see runners.py).
+      # Only execute function calls in the non-partial events.
+      if model_response_event.partial:
+        return
 
       async with Aclosing(
           self._postprocess_handle_function_calls_async(

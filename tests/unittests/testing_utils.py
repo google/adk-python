@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -409,6 +409,10 @@ class MockLlmConnection(BaseLlmConnection):
   async def receive(self) -> AsyncGenerator[LlmResponse, None]:
     """Yield each of the pre-defined LlmResponses."""
     for response in self.llm_responses:
+      # Yield control to allow other tasks (like send_task) to run first.
+      # This ensures user content gets persisted before the mock response
+      # is yielded.
+      await asyncio.sleep(0)
       yield response
 
   async def close(self):
