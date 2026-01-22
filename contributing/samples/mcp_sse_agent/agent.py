@@ -28,7 +28,7 @@ connection_params = SseConnectionParams(
 )
 
 root_agent = LlmAgent(
-    model='gemini-2.0-flash',
+    model='gemini-2.5-flash',
     name='enterprise_assistant',
     instruction=McpInstructionProvider(
         connection_params=connection_params,
