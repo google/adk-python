@@ -1421,16 +1421,8 @@ def test_native_audio_model_forces_audio_modality():
       model="gemini-live-2.5-flash-native-audio",
   )
 
-  class NativeAudioAgentLoader:
-
-    def load_agent(self, app_name):
-      return native_audio_agent
-
-    def list_agents(self):
-      return ["test_app"]
-
   adk_web_server = AdkWebServer(
-      agent_loader=NativeAudioAgentLoader(),
+      agent_loader=MagicMock(),
       session_service=MagicMock(),
       memory_service=MagicMock(),
       artifact_service=MagicMock(),
@@ -1441,11 +1433,15 @@ def test_native_audio_model_forces_audio_modality():
   )
 
   # Test: requesting TEXT should be forced to AUDIO
-  modalities = adk_web_server._get_effective_modalities("test_app", ["TEXT"])
+  modalities = adk_web_server._get_effective_modalities(
+      native_audio_agent, ["TEXT"]
+  )
   assert modalities == ["AUDIO"]
 
   # Test: requesting AUDIO should stay AUDIO
-  modalities = adk_web_server._get_effective_modalities("test_app", ["AUDIO"])
+  modalities = adk_web_server._get_effective_modalities(
+      native_audio_agent, ["AUDIO"]
+  )
   assert modalities == ["AUDIO"]
 
 
@@ -1458,16 +1454,8 @@ def test_non_native_audio_model_keeps_requested_modality():
       model="gemini-2.5-flash",
   )
 
-  class RegularAgentLoader:
-
-    def load_agent(self, app_name):
-      return regular_agent
-
-    def list_agents(self):
-      return ["test_app"]
-
   adk_web_server = AdkWebServer(
-      agent_loader=RegularAgentLoader(),
+      agent_loader=MagicMock(),
       session_service=MagicMock(),
       memory_service=MagicMock(),
       artifact_service=MagicMock(),
@@ -1478,11 +1466,13 @@ def test_non_native_audio_model_keeps_requested_modality():
   )
 
   # Test: requesting TEXT should stay TEXT
-  modalities = adk_web_server._get_effective_modalities("test_app", ["TEXT"])
+  modalities = adk_web_server._get_effective_modalities(regular_agent, ["TEXT"])
   assert modalities == ["TEXT"]
 
   # Test: requesting AUDIO should stay AUDIO
-  modalities = adk_web_server._get_effective_modalities("test_app", ["AUDIO"])
+  modalities = adk_web_server._get_effective_modalities(
+      regular_agent, ["AUDIO"]
+  )
   assert modalities == ["AUDIO"]
 
 
@@ -1492,16 +1482,8 @@ def test_agent_without_model_attribute():
 
   base_agent = DummyAgent(name="base_agent")
 
-  class BaseAgentLoader:
-
-    def load_agent(self, app_name):
-      return base_agent
-
-    def list_agents(self):
-      return ["test_app"]
-
   adk_web_server = AdkWebServer(
-      agent_loader=BaseAgentLoader(),
+      agent_loader=MagicMock(),
       session_service=MagicMock(),
       memory_service=MagicMock(),
       artifact_service=MagicMock(),
@@ -1512,7 +1494,7 @@ def test_agent_without_model_attribute():
   )
 
   # Test: BaseAgent without model attr should keep requested modality
-  modalities = adk_web_server._get_effective_modalities("test_app", ["TEXT"])
+  modalities = adk_web_server._get_effective_modalities(base_agent, ["TEXT"])
   assert modalities == ["TEXT"]
 
 

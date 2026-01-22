@@ -551,7 +551,7 @@ class AdkWebServer:
     return agent_or_app
 
   def _get_effective_modalities(
-      self, app_name: str, requested_modalities: List[str]
+      self, root_agent: BaseAgent, requested_modalities: List[str]
   ) -> List[str]:
     """Determines effective modalities, forcing AUDIO for native-audio models.
 
@@ -560,14 +560,12 @@ class AdkWebServer:
     and forces AUDIO modality for those models.
 
     Args:
-      app_name: The name of the application/agent.
+      root_agent: The root agent of the application.
       requested_modalities: The modalities requested by the client.
 
     Returns:
       The effective modalities to use.
     """
-    agent_or_app = self.agent_loader.load_agent(app_name)
-    root_agent = self._get_root_agent(agent_or_app)
     model = getattr(root_agent, "model", None)
     model_name = model if isinstance(model, str) else ""
     if "native-audio" in model_name:
@@ -1677,7 +1675,7 @@ class AdkWebServer:
       async def forward_events():
         runner = await self.get_runner_async(app_name)
         effective_modalities = self._get_effective_modalities(
-            app_name, modalities
+            runner.app.root_agent, modalities
         )
         run_config = RunConfig(response_modalities=effective_modalities)
         async with Aclosing(
