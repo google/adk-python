@@ -127,13 +127,13 @@ def to_a2a(
   # Create A2A components
   task_store = InMemoryTaskStore()
   
-  executer_config = A2aAgentExecutorConfig(
+  executor_config = A2aAgentExecutorConfig(
     request_converter=create_request_converter(streaming_mode=streaming_mode)
   )
 
   agent_executor = A2aAgentExecutor(
       runner=runner or create_runner,
-      config=executer_config,
+      config=executor_config,
   )
 
   request_handler = DefaultRequestHandler(
