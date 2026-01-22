@@ -1299,7 +1299,7 @@ def cli_web(
 ):
   """Starts a FastAPI server with Web UI for agents.
 
-  AGENTS_DIR: The directory of agents, where each sub-directory is a single
+  AGENTS_DIR: The directory of agents, where each subdirectory is a single
   agent, containing at least `__init__.py` and `agent.py` files.
 
   Example:
@@ -1366,7 +1366,7 @@ def cli_web(
 
 @main.command("api_server")
 @feature_options()
-# The directory of agents, where each sub-directory is a single agent.
+# The directory of agents, where each subdirectory is a single agent.
 # By default, it is the current working directory
 @click.argument(
     "agents_dir",
@@ -1401,7 +1401,7 @@ def cli_api_server(
 ):
   """Starts a FastAPI server for agents.
 
-  AGENTS_DIR: The directory of agents, where each sub-directory is a single
+  AGENTS_DIR: The directory of agents, where each subdirectory is a single
   agent, containing at least `__init__.py` and `agent.py` files.
 
   Example:

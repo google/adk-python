@@ -36,7 +36,7 @@ if TYPE_CHECKING:
 class LoggingPlugin(BasePlugin):
   """A plugin that logs important information at each callback point.
 
-  This plugin helps printing all critical events in the console. It is not a
+  This plugin helps print all critical events in the console. It is not a
   replacement of existing logging in ADK. It rather helps terminal based
   debugging by showing all logs in the console, and serves as a simple demo for
   everyone to leverage when developing new plugins.
