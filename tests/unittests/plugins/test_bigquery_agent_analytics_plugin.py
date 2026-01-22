@@ -2061,3 +2061,28 @@ class TestBigQueryAgentAnalyticsPlugin:
       assert finished_spans[0].name == "test_span"
       assert format(finished_spans[0].context.span_id, "016x") == span_id
       assert format(finished_spans[0].context.trace_id, "032x") == trace_id
+
+  @pytest.mark.asyncio
+  async def test_flush_mechanism(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      dummy_arrow_schema,
+      invocation_context,
+  ):
+    """Verifies that flush() forces pending events to be written."""
+    # Log an event
+    bigquery_agent_analytics_plugin.TraceManager.push_span(invocation_context)
+    await bq_plugin_inst.before_run_callback(
+        invocation_context=invocation_context
+    )
+
+    # Call flush - this should block until the event is written
+    await bq_plugin_inst.flush()
+
+    # Verify write called
+    mock_write_client.append_rows.assert_called_once()
+    log_entry = await _get_captured_event_dict_async(
+        mock_write_client, dummy_arrow_schema
+    )
+    assert log_entry["event_type"] == "INVOCATION_STARTING"

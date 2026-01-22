@@ -1120,3 +1120,89 @@ def test_live_streaming_buffered_function_call_yielded_during_transcription():
   assert (
       function_response_found
   ), 'Buffered function_response event was not yielded.'
+
+
+def test_live_streaming_text_content_persisted_in_session():
+  """Test that user text content sent via send_content is persisted in session."""
+  response1 = LlmResponse(
+      content=types.Content(
+          role='model', parts=[types.Part(text='Hello! How can I help you?')]
+      ),
+      turn_complete=True,
+  )
+
+  mock_model = testing_utils.MockModel.create([response1])
+
+  root_agent = Agent(
+      name='root_agent',
+      model=mock_model,
+      tools=[],
+  )
+
+  class CustomTestRunner(testing_utils.InMemoryRunner):
+
+    def run_live_and_get_session(
+        self,
+        live_request_queue: LiveRequestQueue,
+        run_config: testing_utils.RunConfig = None,
+    ) -> tuple[list[testing_utils.Event], testing_utils.Session]:
+      collected_responses = []
+
+      async def consume_responses(session: testing_utils.Session):
+        run_res = self.runner.run_live(
+            session=session,
+            live_request_queue=live_request_queue,
+            run_config=run_config or testing_utils.RunConfig(),
+        )
+        async for response in run_res:
+          collected_responses.append(response)
+          if len(collected_responses) >= 1:
+            return
+
+      try:
+        session = self.session
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+          loop.run_until_complete(
+              asyncio.wait_for(consume_responses(session), timeout=5.0)
+          )
+        finally:
+          loop.close()
+      except (asyncio.TimeoutError, asyncio.CancelledError):
+        pass
+
+      # Get the updated session
+      updated_session = self.runner.session_service.get_session_sync(
+          app_name=self.app_name,
+          user_id=session.user_id,
+          session_id=session.id,
+      )
+      return collected_responses, updated_session
+
+  runner = CustomTestRunner(root_agent=root_agent)
+  live_request_queue = LiveRequestQueue()
+
+  # Send text content (not audio blob)
+  user_text = 'Hello, this is a test message'
+  live_request_queue.send_content(
+      types.Content(role='user', parts=[types.Part(text=user_text)])
+  )
+
+  res_events, session = runner.run_live_and_get_session(live_request_queue)
+
+  assert res_events is not None, 'Expected a list of events, got None.'
+
+  # Check that user text content was persisted in the session
+  user_content_found = False
+  for event in session.events:
+    if event.author == 'user' and event.content:
+      for part in event.content.parts:
+        if part.text and user_text in part.text:
+          user_content_found = True
+          break
+
+  assert user_content_found, (
+      f'Expected user text content "{user_text}" to be persisted in session. '
+      f'Session events: {[e.content for e in session.events]}'
+  )
