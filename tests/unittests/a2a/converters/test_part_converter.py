@@ -48,6 +48,62 @@ class TestConvertA2aPartToGenaiPart:
     assert isinstance(result, genai_types.Part)
     assert result.text == "Hello, world!"
 
+  def test_convert_text_part_with_thought_true_metadata(self):
+    """Test conversion of A2A TextPart with thought=True metadata to GenAI Part."""
+    # Arrange
+    a2a_part = a2a_types.Part(
+        root=a2a_types.TextPart(
+            text="I'm thinking about this...",
+            metadata={_get_adk_metadata_key("thought"): True},
+        )
+    )
+
+    # Act
+    result = convert_a2a_part_to_genai_part(a2a_part)
+
+    # Assert
+    assert result is not None
+    assert isinstance(result, genai_types.Part)
+    assert result.text == "I'm thinking about this..."
+    assert result.thought is True
+
+  def test_convert_text_part_with_thought_false_metadata(self):
+    """Test conversion of A2A TextPart with thought=False metadata to GenAI Part."""
+    # Arrange
+    a2a_part = a2a_types.Part(
+        root=a2a_types.TextPart(
+            text="This is not a thought.",
+            metadata={_get_adk_metadata_key("thought"): False},
+        )
+    )
+
+    # Act
+    result = convert_a2a_part_to_genai_part(a2a_part)
+
+    # Assert
+    assert result is not None
+    assert isinstance(result, genai_types.Part)
+    assert result.text == "This is not a thought."
+    assert result.thought is False
+
+  def test_convert_text_part_without_thought_metadata(self):
+    """Test that TextPart without thought metadata has thought=None."""
+    # Arrange
+    a2a_part = a2a_types.Part(
+        root=a2a_types.TextPart(
+            text="Regular text",
+            metadata={"some_other_key": "value"},
+        )
+    )
+
+    # Act
+    result = convert_a2a_part_to_genai_part(a2a_part)
+
+    # Assert
+    assert result is not None
+    assert result.text == "Regular text"
+    assert result.thought is None
+
   def test_convert_file_part_with_uri(self):
     """Test conversion of A2A FilePart with URI to GenAI Part."""
     # Arrange
@@ -96,6 +152,54 @@ class TestConvertA2aPartToGenaiPart:
     assert result.inline_data.data == test_bytes
     assert result.inline_data.mime_type == "text/plain"
 
+  def test_convert_file_part_with_uri_and_thought_metadata(self):
+    """Test conversion of A2A FilePart with URI and thought metadata to GenAI Part."""
+    # Arrange
+    a2a_part = a2a_types.Part(
+        root=a2a_types.FilePart(
+            file=a2a_types.FileWithUri(
+                uri="gs://bucket/file.txt", mime_type="text/plain"
+            ),
+            metadata={_get_adk_metadata_key("thought"): True},
+        )
+    )
+
+    # Act
+    result = convert_a2a_part_to_genai_part(a2a_part)
+
+    # Assert
+    assert result is not None
+    assert isinstance(result, genai_types.Part)
+    assert result.file_data is not None
+    assert result.file_data.file_uri == "gs://bucket/file.txt"
+    assert result.thought is True
+
+  def test_convert_file_part_with_bytes_and_thought_metadata(self):
+    """Test conversion of A2A FilePart with bytes and thought metadata to GenAI Part."""
+    # Arrange
+    import base64
+
+    test_bytes = b"test file content"
+    base64_encoded = base64.b64encode(test_bytes).decode("utf-8")
+    a2a_part = a2a_types.Part(
+        root=a2a_types.FilePart(
+            file=a2a_types.FileWithBytes(
+                bytes=base64_encoded, mime_type="text/plain"
+            ),
+            metadata={_get_adk_metadata_key("thought"): True},
+        )
+    )
+
+    # Act
+    result = convert_a2a_part_to_genai_part(a2a_part)
+
+    # Assert
+    assert result is not None
+    assert isinstance(result, genai_types.Part)
+    assert result.inline_data is not None
+    assert result.inline_data.data == test_bytes
+    assert result.thought is True
+
   def test_convert_data_part_function_call(self):
     """Test conversion of A2A DataPart with function call metadata."""
     # Arrange
@@ -124,6 +228,34 @@ class TestConvertA2aPartToGenaiPart:
     assert result.function_call is not None
     assert result.function_call.name == "test_function"
     assert result.function_call.args == {"param1": "value1", "param2": 42}
+
+  def test_convert_data_part_function_call_with_thought_metadata(self):
+    """Test conversion of A2A DataPart with function call and thought metadata."""
+    # Arrange
+    function_call_data = {
+        "name": "test_function",
+        "args": {"param1": "value1"},
+    }
+    a2a_part = a2a_types.Part(
+        root=a2a_types.DataPart(
+            data=function_call_data,
+            metadata={
+                _get_adk_metadata_key(
+                    A2A_DATA_PART_METADATA_TYPE_KEY
+                ): A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL,
+                _get_adk_metadata_key("thought"): True,
+            },
+        )
+    )
+
+    # Act
+    result = convert_a2a_part_to_genai_part(a2a_part)
+
+    # Assert
+    assert result is not None
+    assert result.function_call is not None
+    assert result.function_call.name == "test_function"
+    assert result.thought is True
 
   def test_convert_data_part_function_response(self):
     """Test conversion of A2A DataPart with function response metadata."""
@@ -242,7 +374,7 @@ class TestConvertA2aPartToGenaiPart:
 
     # Arrange - Create a mock unsupported part type
     class UnsupportedPartType:
-      pass
+      metadata = None  # Required since code accesses part.metadata
 
     mock_part = Mock()
     mock_part.root = UnsupportedPartType()
@@ -515,6 +647,38 @@ class TestRoundTripConversions:
     assert isinstance(result_a2a_part, a2a_types.Part)
     assert isinstance(result_a2a_part.root, a2a_types.TextPart)
     assert result_a2a_part.root.text == original_text
+
+  def test_text_part_with_thought_round_trip(self):
+    """Test round-trip conversion for text parts with thought=True."""
+    # Arrange - Start with GenAI part with thought=True
+    original_text = "I'm reasoning about this problem..."
+    genai_part = genai_types.Part(text=original_text, thought=True)
+
+    # Act - Round trip: GenAI -> A2A -> GenAI
+    a2a_part = convert_genai_part_to_a2a_part(genai_part)
+    result_genai_part = convert_a2a_part_to_genai_part(a2a_part)
+
+    # Assert
+    assert result_genai_part is not None
+    assert isinstance(result_genai_part, genai_types.Part)
+    assert result_genai_part.text == original_text
+    assert result_genai_part.thought is True
+
+  def test_text_part_with_thought_false_round_trip(self):
+    """Test round-trip conversion for text parts with thought=False."""
+    # Arrange - Start with GenAI part with thought=False
+    original_text = "This is not a thought."
+    genai_part = genai_types.Part(text=original_text, thought=False)
+
+    # Act - Round trip: GenAI -> A2A -> GenAI
+    a2a_part = convert_genai_part_to_a2a_part(genai_part)
+    result_genai_part = convert_a2a_part_to_genai_part(a2a_part)
+
+    # Assert
+    assert result_genai_part is not None
+    assert isinstance(result_genai_part, genai_types.Part)
+    assert result_genai_part.text == original_text
+    assert result_genai_part.thought is False
 
   def test_file_uri_round_trip(self):
     """Test round-trip conversion for file parts with URI."""

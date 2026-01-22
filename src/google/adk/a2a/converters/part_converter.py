@@ -60,15 +60,20 @@ def convert_a2a_part_to_genai_part(
 ) -> Optional[genai_types.Part]:
   """Convert an A2A Part to a Google GenAI Part."""
   part = a2a_part.root
+
+  thought = None
+  if part.metadata:
+    thought = part.metadata.get(_get_adk_metadata_key('thought'))
+
   if isinstance(part, a2a_types.TextPart):
-    return genai_types.Part(text=part.text)
+    return genai_types.Part(text=part.text, thought=thought)
 
   if isinstance(part, a2a_types.FilePart):
     if isinstance(part.file, a2a_types.FileWithUri):
       return genai_types.Part(
           file_data=genai_types.FileData(
               file_uri=part.file.uri, mime_type=part.file.mime_type
-          )
+          ), thought=thought
       )
 
     elif isinstance(part.file, a2a_types.FileWithBytes):
@@ -76,7 +81,7 @@ def convert_a2a_part_to_genai_part(
           inline_data=genai_types.Blob(
               data=base64.b64decode(part.file.bytes),
               mime_type=part.file.mime_type,
-          )
+          ), thought=thought
       )
     else:
       logger.warning(
@@ -104,7 +109,7 @@ def convert_a2a_part_to_genai_part(
         return genai_types.Part(
             function_call=genai_types.FunctionCall.model_validate(
                 part.data, by_alias=True
-            )
+            ), thought=thought
         )
       if (
           part.metadata[_get_adk_metadata_key(A2A_DATA_PART_METADATA_TYPE_KEY)]
@@ -113,7 +118,7 @@ def convert_a2a_part_to_genai_part(
         return genai_types.Part(
             function_response=genai_types.FunctionResponse.model_validate(
                 part.data, by_alias=True
-            )
+            ), thought=thought
         )
       if (
           part.metadata[_get_adk_metadata_key(A2A_DATA_PART_METADATA_TYPE_KEY)]
@@ -122,7 +127,7 @@ def convert_a2a_part_to_genai_part(
         return genai_types.Part(
             code_execution_result=genai_types.CodeExecutionResult.model_validate(
                 part.data, by_alias=True
-            )
+            ), thought=thought
         )
       if (
           part.metadata[_get_adk_metadata_key(A2A_DATA_PART_METADATA_TYPE_KEY)]
@@ -131,7 +136,7 @@ def convert_a2a_part_to_genai_part(
         return genai_types.Part(
             executable_code=genai_types.ExecutableCode.model_validate(
                 part.data, by_alias=True
-            )
+            ), thought=thought
         )
     return genai_types.Part(
         inline_data=genai_types.Blob(
@@ -141,7 +146,7 @@ def convert_a2a_part_to_genai_part(
             )
             + A2A_DATA_PART_END_TAG,
             mime_type=A2A_DATA_PART_TEXT_MIME_TYPE,
-        )
+        ), thought=thought
     )
 
   logger.warning(
