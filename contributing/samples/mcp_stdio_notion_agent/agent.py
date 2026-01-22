@@ -29,7 +29,7 @@ NOTION_HEADERS = json.dumps({
 })
 
 root_agent = LlmAgent(
-    model="gemini-2.0-flash",
+    model="gemini-2.5-flash",
     name="notion_agent",
     instruction=(
         "You are my workspace assistant. "
