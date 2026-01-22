@@ -41,6 +41,7 @@ from ...events.event import Event
 from ...models.base_llm_connection import BaseLlmConnection
 from ...models.llm_request import LlmRequest
 from ...models.llm_response import LlmResponse
+from ...telemetry import tracing
 from ...telemetry.tracing import trace_call_llm
 from ...telemetry.tracing import trace_send_data
 from ...telemetry.tracing import tracer
@@ -771,7 +772,7 @@ class BaseLlmFlow(ABC):
     llm = self.__get_llm(invocation_context)
 
     async def _call_llm_with_tracing() -> AsyncGenerator[LlmResponse, None]:
-      with tracer.start_as_current_span('call_llm'):
+      with tracer.start_as_current_span('call_llm') as span:
         if invocation_context.run_config.support_cfc:
           invocation_context.live_request_queue = LiveRequestQueue()
           responses_generator = self.run_live(invocation_context)
@@ -822,6 +823,7 @@ class BaseLlmFlow(ABC):
                   model_response_event.id,
                   llm_request,
                   llm_response,
+                  span,
               )
               # Runs after_model_callback if it exists.
               if altered_llm_response := await self._handle_after_model_callback(
@@ -1050,8 +1052,12 @@ class BaseLlmFlow(ABC):
 
     try:
       async with Aclosing(response_generator) as agen:
-        async for response in agen:
-          yield response
+        with tracing.use_generate_content_span(
+            llm_request, invocation_context, model_response_event
+        ) as span:
+          async for llm_response in agen:
+            tracing.trace_generate_content_result(span, llm_response)
+            yield llm_response
     except Exception as model_error:
       callback_context = CallbackContext(
           invocation_context, event_actions=model_response_event.actions
