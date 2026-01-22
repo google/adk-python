@@ -181,7 +181,7 @@ type.
 
 ## 💬 Sample prompts
 
-* I'd like to buy a starter bike for my 3 year old child, can you show me the recommendation?
+* I'd like to buy a starter bike for my 3-year-old child, can you show me the recommendation?
 
 ![Spanner RAG Sample Agent](Spanner_RAG_Sample_Agent.png)
 

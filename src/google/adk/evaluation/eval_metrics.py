@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -277,6 +277,11 @@ class EvalMetric(EvalBaseModel):
 
   criterion: Optional[BaseCriterion] = Field(
       default=None, description="""Evaluation criterion used by the metric."""
+  )
+
+  custom_function_path: Optional[str] = Field(
+      default=None,
+      description="""Path to custom function, if this is a custom metric.""",
   )
 
 

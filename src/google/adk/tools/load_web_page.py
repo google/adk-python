@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -11,6 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+from __future__ import annotations
 
 """Tool for web browse."""
 
@@ -28,7 +30,8 @@ def load_web_page(url: str) -> str:
   """
   from bs4 import BeautifulSoup
 
-  response = requests.get(url)
+  # Set allow_redirects=False to prevent SSRF attacks via redirection.
+  response = requests.get(url, allow_redirects=False)
 
   if response.status_code == 200:
     soup = BeautifulSoup(response.content, 'lxml')
