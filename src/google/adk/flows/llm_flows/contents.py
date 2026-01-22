@@ -29,6 +29,7 @@ from ._base_llm_processor import BaseLlmRequestProcessor
 from .functions import remove_client_function_call_id
 from .functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
 from .functions import REQUEST_EUC_FUNCTION_CALL_NAME
+from .functions import REQUEST_INPUT_FUNCTION_CALL_NAME
 
 logger = logging.getLogger('google_adk.' + __name__)
 
@@ -280,6 +281,7 @@ def _should_include_event_in_context(
       or _is_adk_framework_event(event)
       or _is_auth_event(event)
       or _is_request_confirmation_event(event)
+      or _is_request_input_event(event)
   )
 
 
@@ -673,6 +675,11 @@ def _is_request_confirmation_event(event: Event) -> bool:
 def _is_adk_framework_event(event: Event) -> bool:
   """Checks if the event is an ADK framework event."""
   return _is_function_call_event(event, 'adk_framework')
+
+
+def _is_request_input_event(event: Event) -> bool:
+  """Checks if the event is a request input event."""
+  return _is_function_call_event(event, REQUEST_INPUT_FUNCTION_CALL_NAME)
 
 
 def _is_live_model_audio_event_with_inline_data(event: Event) -> bool:

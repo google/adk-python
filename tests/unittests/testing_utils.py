@@ -409,6 +409,10 @@ class MockLlmConnection(BaseLlmConnection):
   async def receive(self) -> AsyncGenerator[LlmResponse, None]:
     """Yield each of the pre-defined LlmResponses."""
     for response in self.llm_responses:
+      # Yield control to allow other tasks (like send_task) to run first.
+      # This ensures user content gets persisted before the mock response
+      # is yielded.
+      await asyncio.sleep(0)
       yield response
 
   async def close(self):

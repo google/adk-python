@@ -815,6 +815,7 @@ class Runner:
                   await self.session_service.append_event(
                       session=session, event=buffered_event
                   )
+                  yield buffered_event  # yield buffered events to caller
                 buffered_events = []
               else:
                 # non-transcription event or empty transcription event, for
