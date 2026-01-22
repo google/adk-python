@@ -550,6 +550,30 @@ class AdkWebServer:
       return agent_or_app.root_agent
     return agent_or_app
 
+  def _get_effective_modalities(
+      self, app_name: str, requested_modalities: List[str]
+  ) -> List[str]:
+    """Determines effective modalities, forcing AUDIO for native-audio models.
+
+    Native-audio models only support AUDIO modality. This method detects
+    native-audio models by checking if the model name contains "native-audio"
+    and forces AUDIO modality for those models.
+
+    Args:
+      app_name: The name of the application/agent.
+      requested_modalities: The modalities requested by the client.
+
+    Returns:
+      The effective modalities to use.
+    """
+    agent_or_app = self.agent_loader.load_agent(app_name)
+    root_agent = self._get_root_agent(agent_or_app)
+    model = getattr(root_agent, "model", None)
+    model_name = model if isinstance(model, str) else ""
+    if "native-audio" in model_name:
+      return ["AUDIO"]
+    return requested_modalities
+
   def _create_runner(self, agentic_app: App) -> Runner:
     """Create a runner with common services."""
     return Runner(
@@ -1652,22 +1676,9 @@ class AdkWebServer:
 
       async def forward_events():
         runner = await self.get_runner_async(app_name)
-
-        # Check if agent uses a native-audio model.
-        # Native audio models only support AUDIO modality, so we force it.
-        agent_or_app = self.agent_loader.load_agent(app_name)
-        root_agent = self._get_root_agent(agent_or_app)
-        model_name = (
-            root_agent.model
-            if hasattr(root_agent, "model")
-            and isinstance(root_agent.model, str)
-            else ""
+        effective_modalities = self._get_effective_modalities(
+            app_name, modalities
         )
-        if "native-audio" in model_name:
-          effective_modalities = ["AUDIO"]
-        else:
-          effective_modalities = modalities
-
         run_config = RunConfig(response_modalities=effective_modalities)
         async with Aclosing(
             runner.run_live(
