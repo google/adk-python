@@ -272,6 +272,25 @@ class BaseLlmFlow(ABC):
         await llm_connection.send_realtime(live_request.blob)
 
       if live_request.content:
+        content = live_request.content
+        # Persist user text content to session (similar to non-live mode)
+        # Skip function responses - they are already handled separately
+        is_function_response = content.parts and any(
+            part.function_response for part in content.parts
+        )
+        if not is_function_response:
+          if not content.role:
+            content.role = 'user'
+          user_content_event = Event(
+              id=Event.new_id(),
+              invocation_id=invocation_context.invocation_id,
+              author='user',
+              content=content,
+          )
+          await invocation_context.session_service.append_event(
+              session=invocation_context.session,
+              event=user_content_event,
+          )
         await llm_connection.send_content(live_request.content)
 
   async def _receive_from_model(
@@ -391,8 +410,8 @@ class BaseLlmFlow(ABC):
         current_invocation=True, current_branch=True
     )
 
-    # Long-running tool calls should have been handled before this point.
-    # If there are still long-running tool calls, it means the agent is paused
+    # Long running tool calls should have been handled before this point.
+    # If there are still long running tool calls, it means the agent is paused
     # before, and its branch hasn't been resumed yet.
     if (
         invocation_context.is_resumable

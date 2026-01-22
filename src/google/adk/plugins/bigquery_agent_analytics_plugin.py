@@ -699,6 +699,13 @@ class BatchProcessor:
     self._batch_processor_task: Optional[asyncio.Task] = None
     self._shutdown = False
 
+  async def flush(self) -> None:
+    """Flushes the queue by waiting for it to be empty."""
+    if self._queue.empty():
+      return
+    # Wait for all items in the queue to be processed
+    await self._queue.join()
+
   async def start(self):
     """Starts the batch writer worker task."""
     if self._batch_processor_task is None:
@@ -1516,6 +1523,11 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       logger.warning("Content formatter failed: %s", e)
       return "[FORMATTING FAILED]", False
 
+  async def flush(self) -> None:
+    """Flushes any pending events to BigQuery."""
+    if self.batch_processor:
+      await self.batch_processor.flush()
+
   async def _lazy_setup(self, **kwargs) -> None:
     """Performs lazy initialization of BigQuery clients and resources."""
     if self._started:
@@ -1947,6 +1959,8 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     await self._log_event(
         "INVOCATION_COMPLETED", CallbackContext(invocation_context)
     )
+    # Ensure all logs are flushed before the agent returns
+    await self.flush()
 
   async def before_agent_callback(
       self, *, agent: Any, callback_context: CallbackContext, **kwargs
