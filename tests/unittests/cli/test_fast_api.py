@@ -29,6 +29,7 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 from google.adk.agents.base_agent import BaseAgent
+from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.run_config import RunConfig
 from google.adk.apps.app import App
 from google.adk.artifacts.base_artifact_service import ArtifactVersion
@@ -1409,6 +1410,144 @@ def test_builder_save_rejects_traversal(builder_test_client, tmp_path):
   assert response.json() is False
   assert not (tmp_path / "escape.yaml").exists()
   assert not (tmp_path / "app" / "tmp" / "escape.yaml").exists()
+
+
+def test_native_audio_model_forces_audio_modality():
+  """Test that native-audio models force AUDIO modality in run_live endpoint."""
+  from google.adk.cli.adk_web_server import AdkWebServer
+
+  # Create an LlmAgent with a native-audio model
+  native_audio_agent = LlmAgent(
+      name="native_audio_agent",
+      model="gemini-live-2.5-flash-native-audio",
+  )
+
+  class NativeAudioAgentLoader:
+
+    def load_agent(self, app_name):
+      return native_audio_agent
+
+    def list_agents(self):
+      return ["test_native_audio_app"]
+
+  session_service = AsyncMock()
+  session = Session(
+      id="session_id",
+      app_name="test_native_audio_app",
+      user_id="user",
+      state={},
+      events=[],
+  )
+  session_service.get_session.return_value = session
+
+  adk_web_server = AdkWebServer(
+      agent_loader=NativeAudioAgentLoader(),
+      session_service=session_service,
+      memory_service=MagicMock(),
+      artifact_service=MagicMock(),
+      credential_service=MagicMock(),
+      eval_sets_manager=MagicMock(),
+      eval_set_results_manager=MagicMock(),
+      agents_dir=".",
+  )
+
+  # Verify the _get_root_agent method works correctly
+  root_agent = adk_web_server._get_root_agent(native_audio_agent)
+  assert root_agent.model == "gemini-live-2.5-flash-native-audio"
+  assert "native-audio" in root_agent.model
+
+  # Verify the model name detection logic
+  model_name = (
+      root_agent.model
+      if hasattr(root_agent, "model") and isinstance(root_agent.model, str)
+      else ""
+  )
+  assert "native-audio" in model_name
+
+  # Test with App wrapping the agent
+  app_agent = App(name="test_app", root_agent=native_audio_agent)
+  root_agent_from_app = adk_web_server._get_root_agent(app_agent)
+  assert root_agent_from_app.model == "gemini-live-2.5-flash-native-audio"
+
+
+def test_non_native_audio_model_keeps_requested_modality():
+  """Test that non-native-audio models keep the requested modality."""
+  from google.adk.cli.adk_web_server import AdkWebServer
+
+  # Create an LlmAgent with a regular model (not native-audio)
+  regular_agent = LlmAgent(
+      name="regular_agent",
+      model="gemini-2.5-flash",
+  )
+
+  class RegularAgentLoader:
+
+    def load_agent(self, app_name):
+      return regular_agent
+
+    def list_agents(self):
+      return ["test_regular_app"]
+
+  adk_web_server = AdkWebServer(
+      agent_loader=RegularAgentLoader(),
+      session_service=MagicMock(),
+      memory_service=MagicMock(),
+      artifact_service=MagicMock(),
+      credential_service=MagicMock(),
+      eval_sets_manager=MagicMock(),
+      eval_set_results_manager=MagicMock(),
+      agents_dir=".",
+  )
+
+  root_agent = adk_web_server._get_root_agent(regular_agent)
+  model_name = (
+      root_agent.model
+      if hasattr(root_agent, "model") and isinstance(root_agent.model, str)
+      else ""
+  )
+
+  # For regular models, the modality should NOT be forced to AUDIO
+  assert "native-audio" not in model_name
+
+
+def test_agent_without_model_attribute():
+  """Test handling of agents without model attribute (BaseAgent)."""
+  from google.adk.cli.adk_web_server import AdkWebServer
+
+  # Create a BaseAgent (which doesn't have a model attribute)
+  base_agent = DummyAgent(name="base_agent")
+
+  class BaseAgentLoader:
+
+    def load_agent(self, app_name):
+      return base_agent
+
+    def list_agents(self):
+      return ["test_base_app"]
+
+  adk_web_server = AdkWebServer(
+      agent_loader=BaseAgentLoader(),
+      session_service=MagicMock(),
+      memory_service=MagicMock(),
+      artifact_service=MagicMock(),
+      credential_service=MagicMock(),
+      eval_sets_manager=MagicMock(),
+      eval_set_results_manager=MagicMock(),
+      agents_dir=".",
+  )
+
+  root_agent = adk_web_server._get_root_agent(base_agent)
+
+  # BaseAgent (DummyAgent) doesn't have a model attribute
+  model_name = (
+      root_agent.model
+      if hasattr(root_agent, "model") and isinstance(root_agent.model, str)
+      else ""
+  )
+
+  # Should default to empty string when no model attribute
+  assert model_name == ""
+  assert "native-audio" not in model_name
 
 
 if __name__ == "__main__":

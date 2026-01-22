@@ -1652,7 +1652,23 @@ class AdkWebServer:
 
       async def forward_events():
         runner = await self.get_runner_async(app_name)
-        run_config = RunConfig(response_modalities=modalities)
+
+        # Check if agent uses a native-audio model.
+        # Native audio models only support AUDIO modality, so we force it.
+        agent_or_app = self.agent_loader.load_agent(app_name)
+        root_agent = self._get_root_agent(agent_or_app)
+        model_name = (
+            root_agent.model
+            if hasattr(root_agent, "model")
+            and isinstance(root_agent.model, str)
+            else ""
+        )
+        if "native-audio" in model_name:
+          effective_modalities = ["AUDIO"]
+        else:
+          effective_modalities = modalities
+
+        run_config = RunConfig(response_modalities=effective_modalities)
         async with Aclosing(
             runner.run_live(
                 session=session,
