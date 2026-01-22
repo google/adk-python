@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -26,6 +26,7 @@ from google.adk.evaluation.base_eval_service import InferenceConfig
 from google.adk.evaluation.base_eval_service import InferenceRequest
 from google.adk.evaluation.base_eval_service import InferenceResult
 from google.adk.evaluation.base_eval_service import InferenceStatus
+from google.adk.evaluation.conversation_scenarios import ConversationScenario
 from google.adk.evaluation.eval_case import Invocation
 from google.adk.evaluation.eval_metrics import EvalMetric
 from google.adk.evaluation.eval_metrics import EvalMetricResult
@@ -33,6 +34,8 @@ from google.adk.evaluation.eval_metrics import Interval
 from google.adk.evaluation.eval_metrics import MetricInfo
 from google.adk.evaluation.eval_metrics import MetricValueInfo
 from google.adk.evaluation.eval_result import EvalCaseResult
+from google.adk.evaluation.eval_rubrics import Rubric
+from google.adk.evaluation.eval_rubrics import RubricContent
 from google.adk.evaluation.eval_set import EvalCase
 from google.adk.evaluation.eval_set import EvalSet
 from google.adk.evaluation.eval_set_results_manager import EvalSetResultsManager
@@ -41,11 +44,15 @@ from google.adk.evaluation.evaluator import EvalStatus
 from google.adk.evaluation.evaluator import EvaluationResult
 from google.adk.evaluation.evaluator import Evaluator
 from google.adk.evaluation.evaluator import PerInvocationResult
+from google.adk.evaluation.local_eval_service import _add_rubrics_to_invocation
+from google.adk.evaluation.local_eval_service import _copy_eval_case_rubrics_to_actual_invocations
+from google.adk.evaluation.local_eval_service import _copy_invocation_rubrics_to_actual_invocations
 from google.adk.evaluation.local_eval_service import LocalEvalService
 from google.adk.evaluation.metric_evaluator_registry import DEFAULT_METRIC_EVALUATOR_REGISTRY
 from google.adk.models.registry import LLMRegistry
 from google.genai import types as genai_types
 import pytest
+from typing_extensions import override
 
 
 @pytest.fixture
@@ -97,11 +104,13 @@ class FakeEvaluator(Evaluator):
         ),
     )
 
+  @override
   def evaluate_invocations(
       self,
       actual_invocations: list[Invocation],
-      expected_invocations: Optional[list[Invocation]],
-  ):
+      expected_invocations: Optional[list[Invocation]] = None,
+      conversation_scenario: Optional[ConversationScenario] = None,
+  ) -> EvaluationResult:
     if expected_invocations is None:
       raise ValueError("expected_invocations is required for this metric.")
     per_invocation_results = []
@@ -136,11 +145,13 @@ class FakeSingleSidedEvaluator(Evaluator):
         ),
     )
 
+  @override
   def evaluate_invocations(
       self,
       actual_invocations: list[Invocation],
-      expected_invocations: Optional[list[Invocation]],
-  ):
+      expected_invocations: Optional[list[Invocation]] = None,
+      conversation_scenario: Optional[ConversationScenario] = None,
+  ) -> EvaluationResult:
     per_invocation_results = []
     for actual in actual_invocations:
       per_invocation_results.append(
@@ -672,3 +683,111 @@ async def test_mcp_stdio_agent_no_runtime_error(mocker):
     import shutil
 
     shutil.rmtree(test_dir, ignore_errors=True)
+
+
+def test_add_rubrics_to_invocation_initializes_rubrics_list():
+  invocation = Invocation(user_content=genai_types.Content())
+  rubric = Rubric(
+      rubric_id="r1", rubric_content=RubricContent(text_property="p1")
+  )
+  _add_rubrics_to_invocation(invocation, [rubric])
+  assert invocation.rubrics == [rubric]
+
+
+def test_add_rubrics_to_invocation_adds_to_existing_list():
+  rubric1 = Rubric(
+      rubric_id="r1", rubric_content=RubricContent(text_property="p1")
+  )
+  rubric2 = Rubric(
+      rubric_id="r2", rubric_content=RubricContent(text_property="p2")
+  )
+  invocation = Invocation(user_content=genai_types.Content(), rubrics=[rubric1])
+  _add_rubrics_to_invocation(invocation, [rubric2])
+  assert invocation.rubrics == [rubric1, rubric2]
+
+
+def test_add_rubrics_to_invocation_errors_on_duplicate_id():
+  rubric1 = Rubric(
+      rubric_id="r1", rubric_content=RubricContent(text_property="p1")
+  )
+  rubric2 = Rubric(
+      rubric_id="r1", rubric_content=RubricContent(text_property="p2")
+  )
+  invocation = Invocation(user_content=genai_types.Content(), rubrics=[rubric1])
+  with pytest.raises(ValueError):
+    _add_rubrics_to_invocation(invocation, [rubric2])
+
+
+def test_copy_eval_case_rubrics_to_actual_invocations():
+  rubric1 = Rubric(
+      rubric_id="r1", rubric_content=RubricContent(text_property="p1")
+  )
+  eval_case = EvalCase(
+      eval_id="case1",
+      conversation=[
+          Invocation(
+              user_content=genai_types.Content(
+                  parts=[genai_types.Part(text="expected invocation 1.")]
+              )
+          ),
+          Invocation(
+              user_content=genai_types.Content(
+                  parts=[genai_types.Part(text="expected invocation 2.")]
+              )
+          ),
+      ],
+      rubrics=[rubric1],
+  )
+  invocations = [
+      Invocation(
+          user_content=genai_types.Content(
+              parts=[genai_types.Part(text="actual invocation 1.")]
+          )
+      ),
+      Invocation(
+          user_content=genai_types.Content(
+              parts=[genai_types.Part(text="actual invocation 2.")]
+          )
+      ),
+  ]
+  _copy_eval_case_rubrics_to_actual_invocations(eval_case, invocations)
+  assert invocations[0].rubrics == [rubric1]
+  assert invocations[1].rubrics == [rubric1]
+
+
+def test_copy_invocation_rubrics_to_actual_invocations():
+  rubric1 = Rubric(
+      rubric_id="r1", rubric_content=RubricContent(text_property="p1")
+  )
+  rubric2 = Rubric(
+      rubric_id="r2", rubric_content=RubricContent(text_property="p2")
+  )
+  expected = [
+      Invocation(
+          user_content=genai_types.Content(
+              parts=[genai_types.Part(text="expected invocation 1.")]
+          ),
+          rubrics=[rubric1],
+      ),
+      Invocation(
+          user_content=genai_types.Content(
+              parts=[genai_types.Part(text="expected invocation 2.")]
+          ),
+          rubrics=[rubric2],
+      ),
+  ]
+  actual = [
+      Invocation(
+          user_content=genai_types.Content(
+              parts=[genai_types.Part(text="actual invocation 1.")]
+          )
+      ),
+      Invocation(
+          user_content=genai_types.Content(
+              parts=[genai_types.Part(text="actual invocation 2.")]
+          )
+      ),
+  ]
+  _copy_invocation_rubrics_to_actual_invocations(expected, actual)
+  assert actual[0].rubrics == [rubric1]
+  assert actual[1].rubrics == [rubric2]

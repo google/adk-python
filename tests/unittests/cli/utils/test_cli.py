@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -293,7 +293,10 @@ async def test_run_cli_save_session(
 
 def test_create_artifact_service_defaults_to_file(tmp_path: Path) -> None:
   """Service factory should default to FileArtifactService when URI is unset."""
-  service = create_artifact_service_from_options(base_dir=tmp_path)
+  service = create_artifact_service_from_options(
+      base_dir=tmp_path,
+      use_local_storage=True,
+  )
   assert isinstance(service, FileArtifactService)
   expected_root = Path(tmp_path) / ".adk" / "artifacts"
   assert service.root_dir == expected_root
@@ -304,7 +307,10 @@ def test_create_artifact_service_uses_shared_root(
     tmp_path: Path,
 ) -> None:
   """Artifact service should use a single file artifact service."""
-  service = create_artifact_service_from_options(base_dir=tmp_path)
+  service = create_artifact_service_from_options(
+      base_dir=tmp_path,
+      use_local_storage=True,
+  )
   assert isinstance(service, FileArtifactService)
   expected_root = Path(tmp_path) / ".adk" / "artifacts"
   assert service.root_dir == expected_root

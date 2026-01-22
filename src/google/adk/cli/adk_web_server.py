@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -106,6 +106,36 @@ _EVAL_SET_FILE_EXTENSION = ".evalset.json"
 TAG_DEBUG = "Debug"
 TAG_EVALUATION = "Evaluation"
 
+_REGEX_PREFIX = "regex:"
+
+
+def _parse_cors_origins(
+    allow_origins: list[str],
+) -> tuple[list[str], Optional[str]]:
+  """Parse allow_origins into literal origins and a combined regex pattern.
+
+  Args:
+    allow_origins: List of origin strings. Entries prefixed with 'regex:' are
+      treated as regex patterns; all others are treated as literal origins.
+
+  Returns:
+    A tuple of (literal_origins, combined_regex) where combined_regex is None
+    if no regex patterns were provided, or a single pattern joining all regex
+    patterns with '|'.
+  """
+  literal_origins = []
+  regex_patterns = []
+  for origin in allow_origins:
+    if origin.startswith(_REGEX_PREFIX):
+      pattern = origin[len(_REGEX_PREFIX) :]
+      if pattern:
+        regex_patterns.append(pattern)
+    else:
+      literal_origins.append(origin)
+
+  combined_regex = "|".join(regex_patterns) if regex_patterns else None
+  return literal_origins, combined_regex
+
 
 class ApiServerSpanExporter(export_lib.SpanExporter):
 
@@ -177,7 +207,7 @@ class RunAgentRequest(common.BaseModel):
   new_message: types.Content
   streaming: bool = False
   state_delta: Optional[dict[str, Any]] = None
-  # for resume long running functions
+  # for resume long-running functions
   invocation_id: Optional[str] = None
 
 
@@ -302,6 +332,7 @@ class AppInfo(common.BaseModel):
   root_agent_name: str
   description: str
   language: Literal["yaml", "python"]
+  is_computer_use: bool = False
 
 
 class ListAppsResponse(common.BaseModel):
@@ -366,7 +397,7 @@ def _setup_gcp_telemetry(
           # TODO - use trace_to_cloud here as well once otel_to_cloud is no
           # longer experimental.
           enable_cloud_tracing=True,
-          # TODO - reenable metrics once errors during shutdown are fixed.
+          # TODO - re-enable metrics once errors during shutdown are fixed.
           enable_cloud_metrics=False,
           enable_cloud_logging=True,
           google_auth=(credentials, project_id),
@@ -664,6 +695,8 @@ class AdkWebServer:
     Args:
       lifespan: The lifespan of the FastAPI app.
       allow_origins: The origins that are allowed to make cross-origin requests.
+        Entries can be literal origins (e.g., 'https://example.com') or regex
+        patterns prefixed with 'regex:' (e.g., 'regex:https://.*\\.example\\.com').
       web_assets_dir: The directory containing the web assets to serve.
       setup_observer: Callback for setting up the file system observer.
       tear_down_observer: Callback for cleaning up the file system observer.
@@ -723,9 +756,11 @@ class AdkWebServer:
     app = FastAPI(lifespan=internal_lifespan)
 
     if allow_origins:
+      literal_origins, combined_regex = _parse_cors_origins(allow_origins)
       app.add_middleware(
           CORSMiddleware,
-          allow_origins=allow_origins,
+          allow_origins=literal_origins,
+          allow_origin_regex=combined_regex,
           allow_credentials=True,
           allow_methods=["*"],
           allow_headers=["*"],
@@ -1512,18 +1547,44 @@ class AdkWebServer:
               )
           ) as agen:
             async for event in agen:
-              # Format as SSE data
-              sse_event = event.model_dump_json(
-                  exclude_none=True, by_alias=True
-              )
-              logger.debug(
-                  "Generated event in agent run streaming: %s", sse_event
-              )
-              yield f"data: {sse_event}\n\n"
+              # ADK Web renders artifacts from `actions.artifactDelta`
+              # during part processing *and* during action processing
+              # 1) the original event with `artifactDelta` cleared (content)
+              # 2) a content-less "action-only" event carrying `artifactDelta`
+              events_to_stream = [event]
+              if (
+                  event.actions.artifact_delta
+                  and event.content
+                  and event.content.parts
+              ):
+                content_event = event.model_copy(deep=True)
+                content_event.actions.artifact_delta = {}
+                artifact_event = event.model_copy(deep=True)
+                artifact_event.content = None
+                events_to_stream = [content_event, artifact_event]
+
+              for event_to_stream in events_to_stream:
+                sse_event = event_to_stream.model_dump_json(
+                    exclude_none=True,
+                    by_alias=True,
+                )
+                logger.debug(
+                    "Generated event in agent run streaming: %s", sse_event
+                )
+                yield f"data: {sse_event}\n\n"
         except Exception as e:
           logger.exception("Error in event_generator: %s", e)
-          # You might want to yield an error event here
-          yield f'data: {{"error": "{str(e)}"}}\n\n'
+          # Yield a proper Event object for the error
+          error_event = Event(
+              author="system",
+              content=types.Content(
+                  role="model", parts=[types.Part(text=f"Error: {e}")]
+              ),
+          )
+          yield (
+              "data:"
+              f" {error_event.model_dump_json(by_alias=True, exclude_none=True)}\n\n"
+          )
 
       # Returns a streaming response with the proper media type for SSE
       return StreamingResponse(
@@ -1588,7 +1649,7 @@ class AdkWebServer:
         user_id: str,
         session_id: str,
         modalities: List[Literal["TEXT", "AUDIO"]] = Query(
-            default=["TEXT", "AUDIO"]
+            default=["AUDIO"]
         ),  # Only allows "TEXT" or "AUDIO"
     ) -> None:
       await websocket.accept()
@@ -1606,9 +1667,12 @@ class AdkWebServer:
 
       async def forward_events():
         runner = await self.get_runner_async(app_name)
+        run_config = RunConfig(response_modalities=modalities)
         async with Aclosing(
             runner.run_live(
-                session=session, live_request_queue=live_request_queue
+                session=session,
+                live_request_queue=live_request_queue,
+                run_config=run_config,
             )
         ) as agen:
           async for event in agen:
@@ -1638,7 +1702,8 @@ class AdkWebServer:
         for task in done:
           task.result()
       except WebSocketDisconnect:
-        logger.info("Client disconnected during process_messages.")
+        # Disconnection could happen when receive or send text via websocket
+        logger.info("Client disconnected during live session.")
       except Exception as e:
         logger.exception("Error during live websocket communication: %s", e)
         traceback.print_exc()

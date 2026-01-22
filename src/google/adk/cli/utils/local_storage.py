@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -33,6 +33,8 @@ from .dot_adk_folder import dot_adk_folder_for_agent
 from .dot_adk_folder import DotAdkFolder
 
 logger = logging.getLogger("google_adk." + __name__)
+
+_BUILT_IN_SESSION_SERVICE_KEY = "__adk_built_in_session_service__"
 
 
 def create_local_database_session_service(
@@ -124,6 +126,16 @@ class PerAgentDatabaseSessionService(BaseSessionService):
 
   async def _get_service(self, app_name: str) -> BaseSessionService:
     async with self._service_lock:
+      if app_name.startswith("__"):
+        service = self._services.get(_BUILT_IN_SESSION_SERVICE_KEY)
+        if service is not None:
+          return service
+        service = create_local_database_session_service(
+            base_dir=self._agents_root,
+        )
+        self._services[_BUILT_IN_SESSION_SERVICE_KEY] = service
+        return service
+
       storage_name = self._app_name_to_dir.get(app_name, app_name)
       service = self._services.get(storage_name)
       if service is not None:
