@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -21,16 +21,12 @@ from google.adk.tools.api_registry import ApiRegistry
 PROJECT_ID = "your-google-cloud-project-id"
 MCP_SERVER_NAME = "your-mcp-server-name"
 
-# Header required for BigQuery MCP server
-header_provider = lambda context: {
-    "x-goog-user-project": PROJECT_ID,
-}
-api_registry = ApiRegistry(PROJECT_ID, header_provider=header_provider)
+api_registry = ApiRegistry(PROJECT_ID)
 registry_tools = api_registry.get_toolset(
     mcp_server_name=MCP_SERVER_NAME,
 )
 root_agent = LlmAgent(
-    model="gemini-2.0-flash",
+    model="gemini-2.5-flash",
     name="bigquery_assistant",
     instruction=f"""
 You are a helpful data analyst assistant with access to BigQuery. The project ID is: {PROJECT_ID}

@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -17,10 +17,11 @@ from __future__ import annotations
 from pydantic import BaseModel
 from pydantic import ConfigDict
 
-from ...utils.feature_decorator import experimental
+from ...features import experimental
+from ...features import FeatureName
 
 
-@experimental('Config defaults may have breaking change in the future.')
+@experimental(FeatureName.PUBSUB_TOOL_CONFIG)
 class PubSubToolConfig(BaseModel):
   """Configuration for Pub/Sub tools."""
 

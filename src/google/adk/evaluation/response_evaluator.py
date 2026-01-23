@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -21,9 +21,6 @@ from typing_extensions import override
 from .eval_case import ConversationScenario
 from .eval_case import Invocation
 from .eval_metrics import EvalMetric
-from .eval_metrics import Interval
-from .eval_metrics import MetricInfo
-from .eval_metrics import MetricValueInfo
 from .eval_metrics import PrebuiltMetrics
 from .evaluator import EvaluationResult
 from .evaluator import Evaluator
@@ -76,32 +73,12 @@ class ResponseEvaluator(Evaluator):
 
     self._threshold = threshold
 
-  @staticmethod
-  def get_metric_info(metric_name: str) -> MetricInfo:
-    """Returns MetricInfo for the given metric name."""
-    if PrebuiltMetrics.RESPONSE_EVALUATION_SCORE.value == metric_name:
-      return MetricInfo(
-          metric_name=PrebuiltMetrics.RESPONSE_EVALUATION_SCORE.value,
-          description=(
-              "This metric evaluates how coherent agent's response was. Value"
-              " range of this metric is [1,5], with values closer to 5 more"
-              " desirable."
-          ),
-          metric_value_info=MetricValueInfo(
-              interval=Interval(min_value=1.0, max_value=5.0)
-          ),
-      )
-    elif PrebuiltMetrics.RESPONSE_MATCH_SCORE.value == metric_name:
-      return RougeEvaluator.get_metric_info()
-    else:
-      raise ValueError(f"`{metric_name}` is not supported.")
-
   @override
   def evaluate_invocations(
       self,
       actual_invocations: list[Invocation],
-      expected_invocations: Optional[list[Invocation]],
-      _: Optional[ConversationScenario] = None,
+      expected_invocations: Optional[list[Invocation]] = None,
+      conversation_scenario: Optional[ConversationScenario] = None,
   ) -> EvaluationResult:
     # If the metric is response_match_score, just use the RougeEvaluator.
     if self._metric_name == PrebuiltMetrics.RESPONSE_MATCH_SCORE.value:
@@ -109,11 +86,13 @@ class ResponseEvaluator(Evaluator):
           EvalMetric(metric_name=self._metric_name, threshold=self._threshold)
       )
       return rouge_evaluator.evaluate_invocations(
-          actual_invocations, expected_invocations
+          actual_invocations, expected_invocations, conversation_scenario
       )
 
     return _VertexAiEvalFacade(
         threshold=self._threshold,
         metric_name=self._metric_name,
         expected_invocations_required=True,
-    ).evaluate_invocations(actual_invocations, expected_invocations)
+    ).evaluate_invocations(
+        actual_invocations, expected_invocations, conversation_scenario
+    )

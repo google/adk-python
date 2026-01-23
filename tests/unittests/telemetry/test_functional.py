@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,19 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import asyncio
 import gc
 import sys
 
 from google.adk.agents import base_agent
 from google.adk.agents.llm_agent import Agent
 from google.adk.models.base_llm import BaseLlm
-from google.adk.models.llm_response import LlmResponse
 from google.adk.telemetry import tracing
 from google.adk.tools import FunctionTool
 from google.adk.utils.context_utils import Aclosing
-from google.genai.types import Content
 from google.genai.types import Part
+from opentelemetry.instrumentation.google_genai import GoogleGenAiSdkInstrumentor
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
@@ -121,6 +119,8 @@ async def test_tracer_start_as_current_span(
       'call_llm',
       'call_llm',
       'execute_tool some_tool',
+      'generate_content mock',
+      'generate_content mock',
       'invocation',
       'invoke_agent some_root_agent',
   ]
@@ -161,4 +161,51 @@ async def test_exception_preserves_attributes(
       span.attributes is not None and len(span.attributes) > 0
       for span in spans
       if span.name != 'invocation'  # not expected to have attributes
+  )
+
+
+@pytest.mark.asyncio
+async def test_no_generate_content_for_gemini_model_when_already_instrumented(
+    test_runner: TestInMemoryRunner,
+    span_exporter: InMemorySpanExporter,
+    monkeypatch: pytest.MonkeyPatch,
+):
+  """Tests"""
+  # Arrange
+  monkeypatch.setattr(
+      tracing,
+      '_instrumented_with_opentelemetry_instrumentation_google_genai',
+      lambda: True,
+  )
+  monkeypatch.setattr(
+      tracing,
+      '_is_gemini_agent',
+      lambda _: True,
+  )
+
+  # Act
+  async with Aclosing(test_runner.run_async_with_new_session_agen('')) as agen:
+    async for _ in agen:
+      pass
+
+  # Assert
+  spans = span_exporter.get_finished_spans()
+  assert not any(span.name.startswith('generate_content') for span in spans)
+
+
+def test_instrumented_with_opentelemetry_instrumentation_google_genai():
+  instrumentor = GoogleGenAiSdkInstrumentor()
+
+  assert (
+      not tracing._instrumented_with_opentelemetry_instrumentation_google_genai()
+  )
+  try:
+    instrumentor.instrument()
+    assert (
+        tracing._instrumented_with_opentelemetry_instrumentation_google_genai()
+    )
+  finally:
+    instrumentor.uninstrument()
+  assert (
+      not tracing._instrumented_with_opentelemetry_instrumentation_google_genai()
   )

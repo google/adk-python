@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -26,11 +26,7 @@ from ..utils.feature_decorator import experimental
 from .eval_case import Invocation
 from .eval_metrics import EvalMetric
 from .eval_metrics import EvalStatus
-from .eval_metrics import Interval
 from .eval_metrics import LlmAsAJudgeCriterion
-from .eval_metrics import MetricInfo
-from .eval_metrics import MetricValueInfo
-from .eval_metrics import PrebuiltMetrics
 from .evaluator import EvaluationResult
 from .evaluator import PerInvocationResult
 from .llm_as_judge import AutoRaterScore
@@ -153,20 +149,6 @@ class FinalResponseMatchV2Evaluator(LlmAsJudge):
         expected_invocations_required=True,
     )
     self._auto_rater_prompt_template = _FINAL_RESPONSE_MATCH_V2_PROMPT
-
-  @staticmethod
-  def get_metric_info() -> MetricInfo:
-    return MetricInfo(
-        metric_name=PrebuiltMetrics.FINAL_RESPONSE_MATCH_V2.value,
-        description=(
-            "This metric evaluates if the agent's final response matches a"
-            " golden/expected final response using LLM as a judge. Value range"
-            " for this metric is [0,1], with values closer to 1 more desirable."
-        ),
-        metric_value_info=MetricValueInfo(
-            interval=Interval(min_value=0.0, max_value=1.0)
-        ),
-    )
 
   @override
   def format_auto_rater_prompt(
