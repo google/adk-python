@@ -91,5 +91,8 @@ When plotting trends, you should make sure to sort and order the data by the x-a
         # Replace with agent engine resource name used for creating sandbox if
         # sandbox_resource_name is not set.
         agent_engine_resource_name="AGENT_ENGINE_RESOURCE_NAME",
+        # Optional: Set a TTL for the sandbox to automatically clean up resources.
+        # Format: duration string like "3600s" for 1 hour.
+        # sandbox_ttl="3600s",
     ),
 )
