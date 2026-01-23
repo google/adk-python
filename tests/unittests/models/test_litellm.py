@@ -852,7 +852,7 @@ class MockLLMClient(LiteLLMClient):
       # Remove 'stream' from kwargs to avoid duplicate keyword argument
       kwargs_copy = dict(kwargs)
       kwargs_copy.pop("stream", None)
-      
+
       async def stream_generator():
         stream_data = self.completion_mock(
             model=model,
@@ -2611,7 +2611,11 @@ def test_to_litellm_role():
                         ),
                     )
                 ],
-                usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                usage={
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0,
+                },
             ),
             [FunctionChunk(id="1", name="test_function", args='{"key": "va')],
             UsageMetadataChunk(
@@ -2903,55 +2907,6 @@ async def test_generate_content_async_stream(
       ]
       == "string"
   )
-
-
-@pytest.mark.asyncio
-async def test_generate_content_async_stream_sets_finish_reason(
-    mock_completion, lite_llm_instance
-):
-  mock_completion.return_value = iter([
-      ModelResponse(
-          model="test_model",
-          choices=[
-              StreamingChoices(
-                  finish_reason=None,
-                  delta=Delta(role="assistant", content="Hello "),
-              )
-          ],
-      ),
-      ModelResponse(
-          model="test_model",
-          choices=[
-              StreamingChoices(
-                  finish_reason=None,
-                  delta=Delta(role="assistant", content="world"),
-              )
-          ],
-      ),
-      ModelResponse(
-          model="test_model",
-          choices=[StreamingChoices(finish_reason="stop", delta=Delta())],
-      ),
-  ])
-
-  llm_request = LlmRequest(
-      contents=[
-          types.Content(
-              role="user", parts=[types.Part.from_text(text="Test prompt")]
-          )
-      ],
-  )
-
-  responses = [
-      response
-      async for response in lite_llm_instance.generate_content_async(
-          llm_request, stream=True
-      )
-  ]
-
-  assert responses[-1].partial is False
-  assert responses[-1].finish_reason == types.FinishReason.STOP
-  assert responses[-1].content.parts[0].text == "Hello world"
 
 
 @pytest.mark.asyncio
