@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -1009,3 +1009,200 @@ def test_live_streaming_multiple_streaming_tools():
 
   assert stock_call_found, 'Expected monitor_stock_price function call event.'
   assert video_call_found, 'Expected monitor_video_stream function call event.'
+
+
+def test_live_streaming_buffered_function_call_yielded_during_transcription():
+  """Test that function calls buffered during transcription are yielded.
+
+  This tests the fix for the bug where function_call and function_response
+  events were buffered during active transcription but never yielded to the
+  caller. The fix ensures buffered events are yielded after transcription ends.
+  """
+  function_call = types.Part.from_function_call(
+      name='get_weather', args={'location': 'San Francisco'}
+  )
+
+  response1 = LlmResponse(
+      input_transcription=types.Transcription(text='Show'),
+      partial=True,  # ← Triggers is_transcribing = True
+  )
+  response2 = LlmResponse(
+      content=types.Content(
+          role='model', parts=[function_call]
+      ),  # ← Gets buffered
+      turn_complete=False,
+  )
+  response3 = LlmResponse(
+      input_transcription=types.Transcription(text='Show me the weather'),
+      partial=False,  # ← Transcription ends, buffered events yielded
+  )
+  response4 = LlmResponse(
+      turn_complete=True,
+  )
+
+  mock_model = testing_utils.MockModel.create(
+      [response1, response2, response3, response4]
+  )
+
+  def get_weather(location: str) -> dict:
+    return {'temperature': 22, 'location': location}
+
+  root_agent = Agent(
+      name='root_agent',
+      model=mock_model,
+      tools=[get_weather],
+  )
+
+  class CustomTestRunner(testing_utils.InMemoryRunner):
+
+    def run_live(
+        self,
+        live_request_queue: LiveRequestQueue,
+        run_config: testing_utils.RunConfig = None,
+    ) -> list[testing_utils.Event]:
+      collected_responses = []
+
+      async def consume_responses(session: testing_utils.Session):
+        run_res = self.runner.run_live(
+            session=session,
+            live_request_queue=live_request_queue,
+            run_config=run_config or testing_utils.RunConfig(),
+        )
+
+        async for response in run_res:
+          collected_responses.append(response)
+          if len(collected_responses) >= 5:
+            return
+
+      try:
+        session = self.session
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+          loop.run_until_complete(
+              asyncio.wait_for(consume_responses(session), timeout=5.0)
+          )
+        finally:
+          loop.close()
+      except (asyncio.TimeoutError, asyncio.CancelledError):
+        pass
+
+      return collected_responses
+
+  runner = CustomTestRunner(root_agent=root_agent)
+  live_request_queue = LiveRequestQueue()
+  live_request_queue.send_realtime(
+      blob=types.Blob(data=b'Show me the weather', mime_type='audio/pcm')
+  )
+
+  res_events = runner.run_live(live_request_queue)
+
+  assert res_events is not None, 'Expected a list of events, got None.'
+  assert len(res_events) >= 1, 'Expected at least one event.'
+
+  function_call_found = False
+  function_response_found = False
+
+  for event in res_events:
+    if event.content and event.content.parts:
+      for part in event.content.parts:
+        if part.function_call and part.function_call.name == 'get_weather':
+          function_call_found = True
+          assert part.function_call.args['location'] == 'San Francisco'
+        if (
+            part.function_response
+            and part.function_response.name == 'get_weather'
+        ):
+          function_response_found = True
+          assert part.function_response.response['temperature'] == 22
+
+  assert function_call_found, 'Buffered function_call event was not yielded.'
+  assert (
+      function_response_found
+  ), 'Buffered function_response event was not yielded.'
+
+
+def test_live_streaming_text_content_persisted_in_session():
+  """Test that user text content sent via send_content is persisted in session."""
+  response1 = LlmResponse(
+      content=types.Content(
+          role='model', parts=[types.Part(text='Hello! How can I help you?')]
+      ),
+      turn_complete=True,
+  )
+
+  mock_model = testing_utils.MockModel.create([response1])
+
+  root_agent = Agent(
+      name='root_agent',
+      model=mock_model,
+      tools=[],
+  )
+
+  class CustomTestRunner(testing_utils.InMemoryRunner):
+
+    def run_live_and_get_session(
+        self,
+        live_request_queue: LiveRequestQueue,
+        run_config: testing_utils.RunConfig = None,
+    ) -> tuple[list[testing_utils.Event], testing_utils.Session]:
+      collected_responses = []
+
+      async def consume_responses(session: testing_utils.Session):
+        run_res = self.runner.run_live(
+            session=session,
+            live_request_queue=live_request_queue,
+            run_config=run_config or testing_utils.RunConfig(),
+        )
+        async for response in run_res:
+          collected_responses.append(response)
+          if len(collected_responses) >= 1:
+            return
+
+      try:
+        session = self.session
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+          loop.run_until_complete(
+              asyncio.wait_for(consume_responses(session), timeout=5.0)
+          )
+        finally:
+          loop.close()
+      except (asyncio.TimeoutError, asyncio.CancelledError):
+        pass
+
+      # Get the updated session
+      updated_session = self.runner.session_service.get_session_sync(
+          app_name=self.app_name,
+          user_id=session.user_id,
+          session_id=session.id,
+      )
+      return collected_responses, updated_session
+
+  runner = CustomTestRunner(root_agent=root_agent)
+  live_request_queue = LiveRequestQueue()
+
+  # Send text content (not audio blob)
+  user_text = 'Hello, this is a test message'
+  live_request_queue.send_content(
+      types.Content(role='user', parts=[types.Part(text=user_text)])
+  )
+
+  res_events, session = runner.run_live_and_get_session(live_request_queue)
+
+  assert res_events is not None, 'Expected a list of events, got None.'
+
+  # Check that user text content was persisted in the session
+  user_content_found = False
+  for event in session.events:
+    if event.author == 'user' and event.content:
+      for part in event.content.parts:
+        if part.text and user_text in part.text:
+          user_content_found = True
+          break
+
+  assert user_content_found, (
+      f'Expected user text content "{user_text}" to be persisted in session. '
+      f'Session events: {[e.content for e in session.events]}'
+  )

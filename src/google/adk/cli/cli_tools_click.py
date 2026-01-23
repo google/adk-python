@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -50,28 +50,44 @@ LOG_LEVELS = click.Choice(
 )
 
 
-def _apply_feature_overrides(enable_features: tuple[str, ...]) -> None:
+def _apply_feature_overrides(
+    *,
+    enable_features: tuple[str, ...] = (),
+    disable_features: tuple[str, ...] = (),
+) -> None:
   """Apply feature overrides from CLI flags.
 
   Args:
     enable_features: Tuple of feature names to enable.
+    disable_features: Tuple of feature names to disable.
   """
+  feature_overrides: dict[str, bool] = {}
+
   for features_str in enable_features:
     for feature_name_str in features_str.split(","):
       feature_name_str = feature_name_str.strip()
-      if not feature_name_str:
-        continue
-      try:
-        feature_name = FeatureName(feature_name_str)
-        override_feature_enabled(feature_name, True)
-      except ValueError:
-        valid_names = ", ".join(f.value for f in FeatureName)
-        click.secho(
-            f"WARNING: Unknown feature name '{feature_name_str}'. "
-            f"Valid names are: {valid_names}",
-            fg="yellow",
-            err=True,
-        )
+      if feature_name_str:
+        feature_overrides[feature_name_str] = True
+
+  for features_str in disable_features:
+    for feature_name_str in features_str.split(","):
+      feature_name_str = feature_name_str.strip()
+      if feature_name_str:
+        feature_overrides[feature_name_str] = False
+
+  # Apply all overrides
+  for feature_name_str, enabled in feature_overrides.items():
+    try:
+      feature_name = FeatureName(feature_name_str)
+      override_feature_enabled(feature_name, enabled)
+    except ValueError:
+      valid_names = ", ".join(f.value for f in FeatureName)
+      click.secho(
+          f"WARNING: Unknown feature name '{feature_name_str}'. "
+          f"Valid names are: {valid_names}",
+          fg="yellow",
+          err=True,
+      )
 
 
 def feature_options():
@@ -88,11 +104,25 @@ def feature_options():
         ),
         multiple=True,
     )
+    @click.option(
+        "--disable_features",
+        help=(
+            "Optional. Comma-separated list of feature names to disable. "
+            "This provides an alternative to environment variables for "
+            "disabling features. Example: "
+            "--disable_features=JSON_SCHEMA_FOR_FUNC_DECL,PROGRESSIVE_SSE_STREAMING"
+        ),
+        multiple=True,
+    )
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
       enable_features = kwargs.pop("enable_features", ())
-      if enable_features:
-        _apply_feature_overrides(enable_features)
+      disable_features = kwargs.pop("disable_features", ())
+      if enable_features or disable_features:
+        _apply_feature_overrides(
+            enable_features=enable_features,
+            disable_features=disable_features,
+        )
       return func(*args, **kwargs)
 
     return wrapper
@@ -712,8 +742,11 @@ def cli_eval(
   logs.setup_adk_logger(getattr(logging, log_level.upper()))
 
   try:
+    import importlib
+
     from ..evaluation.base_eval_service import InferenceConfig
     from ..evaluation.base_eval_service import InferenceRequest
+    from ..evaluation.custom_metric_evaluator import _CustomMetricEvaluator
     from ..evaluation.eval_config import get_eval_metrics_from_config
     from ..evaluation.eval_config import get_evaluation_criteria_or_default
     from ..evaluation.eval_result import EvalCaseResult
@@ -723,9 +756,11 @@ def cli_eval(
     from ..evaluation.local_eval_set_results_manager import LocalEvalSetResultsManager
     from ..evaluation.local_eval_sets_manager import load_eval_set_from_file
     from ..evaluation.local_eval_sets_manager import LocalEvalSetsManager
+    from ..evaluation.metric_evaluator_registry import DEFAULT_METRIC_EVALUATOR_REGISTRY
     from ..evaluation.simulation.user_simulator_provider import UserSimulatorProvider
     from .cli_eval import _collect_eval_results
     from .cli_eval import _collect_inferences
+    from .cli_eval import get_default_metric_info
     from .cli_eval import get_root_agent
     from .cli_eval import parse_and_get_evals_to_run
     from .cli_eval import pretty_print_eval_result
@@ -818,11 +853,30 @@ def cli_eval(
   )
 
   try:
+    metric_evaluator_registry = DEFAULT_METRIC_EVALUATOR_REGISTRY
+    if eval_config.custom_metrics:
+      for (
+          metric_name,
+          config,
+      ) in eval_config.custom_metrics.items():
+        if config.metric_info:
+          metric_info = config.metric_info.model_copy()
+          metric_info.metric_name = metric_name
+        else:
+          metric_info = get_default_metric_info(
+              metric_name=metric_name, description=config.description
+          )
+
+        metric_evaluator_registry.register_evaluator(
+            metric_info, _CustomMetricEvaluator
+        )
+
     eval_service = LocalEvalService(
         root_agent=root_agent,
         eval_sets_manager=eval_sets_manager,
         eval_set_results_manager=eval_set_results_manager,
         user_simulator_provider=user_simulator_provider,
+        metric_evaluator_registry=metric_evaluator_registry,
     )
 
     inference_results = asyncio.run(
@@ -1245,7 +1299,7 @@ def cli_web(
 ):
   """Starts a FastAPI server with Web UI for agents.
 
-  AGENTS_DIR: The directory of agents, where each sub-directory is a single
+  AGENTS_DIR: The directory of agents, where each subdirectory is a single
   agent, containing at least `__init__.py` and `agent.py` files.
 
   Example:
@@ -1312,7 +1366,7 @@ def cli_web(
 
 @main.command("api_server")
 @feature_options()
-# The directory of agents, where each sub-directory is a single agent.
+# The directory of agents, where each subdirectory is a single agent.
 # By default, it is the current working directory
 @click.argument(
     "agents_dir",
@@ -1347,7 +1401,7 @@ def cli_api_server(
 ):
   """Starts a FastAPI server for agents.
 
-  AGENTS_DIR: The directory of agents, where each sub-directory is a single
+  AGENTS_DIR: The directory of agents, where each subdirectory is a single
   agent, containing at least `__init__.py` and `agent.py` files.
 
   Example:
@@ -1728,6 +1782,14 @@ def cli_migrate_session(
     help="Optional. Whether to enable Cloud Trace for Agent Engine.",
 )
 @click.option(
+    "--otel_to_cloud",
+    type=bool,
+    is_flag=True,
+    show_default=True,
+    default=None,
+    help="Optional. Whether to enable OpenTelemetry for Agent Engine.",
+)
+@click.option(
     "--display_name",
     type=str,
     show_default=True,
@@ -1818,6 +1880,7 @@ def cli_deploy_agent_engine(
     staging_bucket: Optional[str],
     agent_engine_id: Optional[str],
     trace_to_cloud: Optional[bool],
+    otel_to_cloud: Optional[bool],
     api_key: Optional[str],
     display_name: str,
     description: str,
@@ -1848,6 +1911,7 @@ def cli_deploy_agent_engine(
         region=region,
         agent_engine_id=agent_engine_id,
         trace_to_cloud=trace_to_cloud,
+        otel_to_cloud=otel_to_cloud,
         api_key=api_key,
         adk_app_object=adk_app_object,
         display_name=display_name,
