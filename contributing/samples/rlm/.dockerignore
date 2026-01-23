@@ -1,0 +1,67 @@
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Git
+.git/
+.gitignore
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Build artifacts
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Local files
+*.db
+*.sqlite
+logs/
+*.log
+*.jsonl
+
+# Documentation
+docs/
+*.md
+!README.md
+!adk_rlm/**/*.md
+
+# Tests
+tests/
+
+# Examples
+examples/
+
+# Deployment scripts (not needed in container)
+deployment/

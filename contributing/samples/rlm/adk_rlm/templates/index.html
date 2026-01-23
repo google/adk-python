@@ -1,0 +1,2234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ADK-RLM</title>
+    <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <style>
+        :root {
+            --primary: {{ colors.primary }};
+            --secondary: {{ colors.secondary }};
+            --success: {{ colors.success }};
+            --warning: {{ colors.warning }};
+            --error: {{ colors.error }};
+            --text: {{ colors.text }};
+            --muted: {{ colors.muted }};
+            --accent: {{ colors.accent }};
+            --border: {{ colors.border }};
+            --bg: {{ colors.bg }};
+            --bg-dark: {{ colors.bg_dark }};
+            --bg-highlight: {{ colors.bg_highlight }};
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: 'Inter', system-ui, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* Header */
+        .header {
+            background: var(--bg-dark);
+            border-bottom: 1px solid var(--border);
+            padding: 12px 20px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-shrink: 0;
+            z-index: 10;
+        }
+
+        .header-left {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .logo {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .logo-icon {
+            color: var(--accent);
+            font-size: 24px;
+        }
+
+        .logo-text {
+            font-weight: 600;
+            font-size: 18px;
+            color: var(--primary);
+        }
+
+        .session-title {
+            font-size: 14px;
+            color: var(--muted);
+            max-width: 300px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .status-badge {
+            font-size: 12px;
+            padding: 4px 10px;
+            border-radius: 12px;
+            background: var(--bg-highlight);
+            color: var(--muted);
+        }
+
+        .status-badge.connected {
+            color: var(--success);
+        }
+
+        .header-right {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .header-btn {
+            background: transparent;
+            border: 1px solid var(--border);
+            color: var(--muted);
+            padding: 6px 12px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 13px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            transition: all 0.2s;
+        }
+
+        .header-btn:hover {
+            border-color: var(--primary);
+            color: var(--primary);
+        }
+
+        .header-btn .material-icons {
+            font-size: 16px;
+        }
+
+        /* Settings button glow effect */
+        @keyframes settingsGlow {
+            0%, 100% {
+                box-shadow: 0 0 2px var(--warning), 0 0 4px rgba(255, 158, 100, 0.2);
+                transform: scale(1);
+            }
+            50% {
+                box-shadow: 0 0 12px var(--warning), 0 0 24px rgba(255, 158, 100, 0.6), 0 0 36px rgba(255, 158, 100, 0.3);
+                transform: scale(1.03);
+            }
+        }
+
+        .header-btn.needs-config {
+            border-color: var(--warning);
+            color: var(--warning);
+            animation: settingsGlow 1.5s ease-in-out infinite;
+        }
+
+        .header-btn.needs-config:hover {
+            border-color: var(--warning);
+            color: var(--warning);
+        }
+
+        /* Settings hint */
+        .settings-hint {
+            display: none;
+            font-size: 11px;
+            color: var(--warning);
+            background: rgba(255, 158, 100, 0.15);
+            padding: 4px 10px;
+            border-radius: 6px;
+            white-space: nowrap;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .settings-hint.visible {
+            display: flex;
+        }
+
+        .settings-hint .material-icons {
+            font-size: 14px;
+        }
+
+        /* Main layout */
+        .main-container {
+            flex: 1;
+            display: flex;
+            overflow: hidden;
+        }
+
+        /* Session sidebar */
+        .session-sidebar {
+            width: 280px;
+            background: var(--bg-dark);
+            border-right: 1px solid var(--border);
+            display: flex;
+            flex-direction: column;
+            flex-shrink: 0;
+            transition: width 0.3s, margin-left 0.3s;
+        }
+
+        .session-sidebar.collapsed {
+            width: 0;
+            margin-left: -1px;
+            overflow: hidden;
+        }
+
+        .sidebar-header {
+            padding: 12px 16px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .sidebar-title {
+            font-weight: 500;
+            font-size: 14px;
+            color: var(--text);
+            flex: 1;
+        }
+
+        .new-session-btn {
+            background: var(--primary);
+            border: none;
+            color: var(--bg);
+            width: 28px;
+            height: 28px;
+            border-radius: 6px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s;
+        }
+
+        .new-session-btn:hover {
+            background: var(--accent);
+        }
+
+        .new-session-btn .material-icons {
+            font-size: 18px;
+        }
+
+        .session-list {
+            flex: 1;
+            overflow-y: auto;
+            padding: 8px;
+        }
+
+        .session-item {
+            padding: 10px 12px;
+            border-radius: 8px;
+            cursor: pointer;
+            margin-bottom: 4px;
+            transition: background 0.2s;
+            position: relative;
+        }
+
+        .session-item:hover {
+            background: var(--bg-highlight);
+        }
+
+        .session-item.active {
+            background: var(--bg-highlight);
+            border: 1px solid var(--border);
+        }
+
+        .session-item-title {
+            font-size: 13px;
+            font-weight: 500;
+            color: var(--text);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            padding-right: 24px;
+        }
+
+        .session-item-meta {
+            font-size: 11px;
+            color: var(--muted);
+            margin-top: 4px;
+            display: flex;
+            gap: 8px;
+        }
+
+        .session-item-delete {
+            position: absolute;
+            right: 8px;
+            top: 50%;
+            transform: translateY(-50%);
+            background: transparent;
+            border: none;
+            color: var(--muted);
+            cursor: pointer;
+            padding: 4px;
+            border-radius: 4px;
+            opacity: 0;
+            transition: all 0.2s;
+        }
+
+        .session-item:hover .session-item-delete {
+            opacity: 1;
+        }
+
+        .session-item-delete:hover {
+            color: var(--error);
+            background: var(--bg);
+        }
+
+        .session-item-delete .material-icons {
+            font-size: 16px;
+        }
+
+        /* Toggle sidebar button */
+        .toggle-sidebar-btn {
+            position: absolute;
+            left: 0;
+            top: 50%;
+            transform: translateY(-50%);
+            background: var(--bg-dark);
+            border: 1px solid var(--border);
+            border-left: none;
+            color: var(--muted);
+            width: 20px;
+            height: 48px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 0 6px 6px 0;
+            z-index: 5;
+            transition: all 0.2s;
+        }
+
+        .toggle-sidebar-btn:hover {
+            color: var(--text);
+            background: var(--bg-highlight);
+        }
+
+        .toggle-sidebar-btn .material-icons {
+            font-size: 16px;
+        }
+
+        .session-sidebar.collapsed + .chat-area .toggle-sidebar-btn {
+            left: 0;
+        }
+
+        .session-sidebar:not(.collapsed) + .chat-area .toggle-sidebar-btn {
+            display: none;
+        }
+
+        /* Chat area */
+        .chat-area {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            position: relative;
+        }
+
+        .messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px;
+        }
+
+        .message {
+            max-width: 80%;
+            margin-bottom: 16px;
+        }
+
+        .message.user {
+            margin-left: auto;
+        }
+
+        .message-content {
+            padding: 12px 16px;
+            border-radius: 12px;
+            line-height: 1.5;
+        }
+
+        .message.user .message-content {
+            background: var(--primary);
+            color: var(--bg);
+            border-radius: 12px 12px 4px 12px;
+        }
+
+        .message.assistant .message-content {
+            background: var(--bg-highlight);
+            border: 1px solid var(--border);
+            border-radius: 12px 12px 12px 4px;
+        }
+
+        .message-label {
+            font-size: 11px;
+            color: var(--muted);
+            margin-bottom: 4px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .message.user .message-label {
+            justify-content: flex-end;
+        }
+
+        .answer-panel {
+            background: var(--bg-dark);
+            border: 1px solid var(--warning);
+            border-radius: 12px;
+            padding: 16px;
+            margin-top: 8px;
+        }
+
+        .answer-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            color: var(--warning);
+            margin-bottom: 12px;
+            font-weight: 500;
+        }
+
+        .answer-header .material-icons {
+            font-size: 18px;
+        }
+
+        .answer-stats {
+            font-size: 12px;
+            color: var(--muted);
+            margin-left: auto;
+        }
+
+        .answer-text {
+            line-height: 1.6;
+        }
+
+        /* Markdown styling for answer text */
+        .answer-text h1,
+        .answer-text h2,
+        .answer-text h3,
+        .answer-text h4,
+        .answer-text h5,
+        .answer-text h6 {
+            margin-top: 1em;
+            margin-bottom: 0.5em;
+            color: var(--text);
+            font-weight: 600;
+        }
+
+        .answer-text h1 { font-size: 1.5em; }
+        .answer-text h2 { font-size: 1.3em; }
+        .answer-text h3 { font-size: 1.15em; }
+        .answer-text h4 { font-size: 1em; }
+
+        .answer-text p {
+            margin-bottom: 0.75em;
+        }
+
+        .answer-text ul,
+        .answer-text ol {
+            margin-left: 1.5em;
+            margin-bottom: 0.75em;
+        }
+
+        .answer-text li {
+            margin-bottom: 0.25em;
+        }
+
+        .answer-text code {
+            background: var(--bg);
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.9em;
+            color: var(--accent);
+        }
+
+        .answer-text pre {
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 12px;
+            margin: 0.75em 0;
+            overflow-x: auto;
+        }
+
+        .answer-text pre code {
+            background: none;
+            padding: 0;
+            color: var(--text);
+        }
+
+        .answer-text blockquote {
+            border-left: 3px solid var(--primary);
+            margin: 0.75em 0;
+            padding-left: 1em;
+            color: var(--muted);
+        }
+
+        .answer-text a {
+            color: var(--primary);
+            text-decoration: none;
+        }
+
+        .answer-text a:hover {
+            text-decoration: underline;
+        }
+
+        .answer-text table {
+            border-collapse: collapse;
+            width: 100%;
+            margin: 0.75em 0;
+        }
+
+        .answer-text th,
+        .answer-text td {
+            border: 1px solid var(--border);
+            padding: 8px 12px;
+            text-align: left;
+        }
+
+        .answer-text th {
+            background: var(--bg);
+            font-weight: 600;
+        }
+
+        .answer-text hr {
+            border: none;
+            border-top: 1px solid var(--border);
+            margin: 1em 0;
+        }
+
+        .answer-text strong {
+            font-weight: 600;
+            color: var(--text);
+        }
+
+        .answer-text em {
+            font-style: italic;
+        }
+
+        /* Processing indicator */
+        .processing {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 16px 20px;
+            background: var(--bg-highlight);
+            border-top: 1px solid var(--border);
+        }
+
+        .processing.hidden {
+            display: none;
+        }
+
+        .spinner {
+            width: 20px;
+            height: 20px;
+            border: 2px solid var(--border);
+            border-top-color: var(--accent);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .processing-text {
+            color: var(--accent);
+            font-size: 14px;
+        }
+
+        /* Input area */
+        .input-area {
+            padding: 16px 20px;
+            background: var(--bg-dark);
+            border-top: 1px solid var(--border);
+            flex-shrink: 0;
+        }
+
+        .input-wrapper {
+            display: flex;
+            gap: 12px;
+            align-items: flex-end;
+        }
+
+        .input-container {
+            flex: 1;
+            position: relative;
+        }
+
+        #prompt-input {
+            width: 100%;
+            padding: 12px 16px;
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            color: var(--text);
+            font-family: inherit;
+            font-size: 14px;
+            resize: none;
+            min-height: 48px;
+            max-height: 200px;
+            transition: border-color 0.2s;
+        }
+
+        #prompt-input:focus {
+            outline: none;
+            border-color: var(--primary);
+        }
+
+        #prompt-input::placeholder {
+            color: var(--muted);
+        }
+
+        .send-btn {
+            width: 48px;
+            height: 48px;
+            border-radius: 12px;
+            background: var(--primary);
+            border: none;
+            color: var(--bg);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s;
+        }
+
+        .send-btn:hover {
+            background: var(--accent);
+        }
+
+        .send-btn:disabled {
+            background: var(--border);
+            cursor: not-allowed;
+        }
+
+        /* Event log panel */
+        .event-log-panel {
+            width: 400px;
+            background: var(--bg-dark);
+            border-left: 1px solid var(--border);
+            display: flex;
+            flex-direction: column;
+            flex-shrink: 0;
+            transition: width 0.3s;
+            position: relative;
+        }
+
+        .event-log-panel.collapsed {
+            width: 48px;
+        }
+
+        .event-log-header {
+            padding: 12px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            min-height: 52px;
+        }
+
+        .event-log-header-icon {
+            color: var(--accent);
+            flex-shrink: 0;
+        }
+
+        .event-log-title {
+            font-weight: 500;
+            font-size: 14px;
+            color: var(--accent);
+            flex: 1;
+            white-space: nowrap;
+            overflow: hidden;
+        }
+
+        .event-log-panel.collapsed .event-log-title,
+        .event-log-panel.collapsed .event-count {
+            display: none;
+        }
+
+        .event-count {
+            font-size: 11px;
+            background: var(--bg-highlight);
+            padding: 2px 8px;
+            border-radius: 10px;
+            color: var(--muted);
+            flex-shrink: 0;
+        }
+
+        .toggle-log-btn {
+            background: transparent;
+            border: none;
+            color: var(--muted);
+            cursor: pointer;
+            padding: 4px;
+            border-radius: 4px;
+            display: flex;
+            align-items: center;
+            flex-shrink: 0;
+        }
+
+        .toggle-log-btn:hover {
+            color: var(--text);
+            background: var(--bg-highlight);
+        }
+
+        .event-log-content {
+            flex: 1;
+            overflow-y: auto;
+            padding: 8px;
+        }
+
+        .event-log-panel.collapsed .event-log-content {
+            display: none;
+        }
+
+        /* Event items */
+        .iteration-group {
+            margin-bottom: 8px;
+        }
+
+        .iteration-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 12px;
+            background: var(--bg-highlight);
+            border-radius: 8px;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        .iteration-header:hover {
+            background: var(--border);
+        }
+
+        .iteration-icon {
+            color: var(--primary);
+            font-size: 18px;
+        }
+
+        .iteration-label {
+            font-weight: 500;
+            font-size: 13px;
+            flex: 1;
+        }
+
+        .iteration-count {
+            font-size: 11px;
+            color: var(--muted);
+        }
+
+        .expand-icon {
+            color: var(--muted);
+            font-size: 18px;
+            transition: transform 0.2s;
+        }
+
+        .iteration-group.expanded .expand-icon {
+            transform: rotate(180deg);
+        }
+
+        .iteration-events {
+            display: none;
+            padding-left: 24px;
+            border-left: 2px solid var(--border);
+            margin-left: 16px;
+            margin-top: 4px;
+        }
+
+        .iteration-group.expanded .iteration-events {
+            display: block;
+        }
+
+        .event-item {
+            display: flex;
+            align-items: flex-start;
+            gap: 8px;
+            padding: 6px 8px;
+            border-radius: 6px;
+            margin-bottom: 2px;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        .event-item:hover {
+            background: var(--bg-highlight);
+        }
+
+        .event-item.child-event {
+            margin-left: 16px;
+            border-left: 2px solid var(--warning);
+            padding-left: 12px;
+            opacity: 0.9;
+        }
+
+        .child-agent-group {
+            margin: 4px 0;
+            padding: 8px;
+            background: var(--bg);
+            border-radius: 6px;
+            border-left: 3px solid var(--warning);
+        }
+
+        .child-agent-header {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 11px;
+            color: var(--warning);
+            margin-bottom: 6px;
+            cursor: pointer;
+        }
+
+        .child-agent-header .material-icons {
+            font-size: 14px;
+        }
+
+        .child-agent-events {
+            display: none;
+        }
+
+        .child-agent-group.expanded .child-agent-events {
+            display: block;
+        }
+
+        .child-agent-group.expanded .child-expand-icon {
+            transform: rotate(180deg);
+        }
+
+        .child-expand-icon {
+            transition: transform 0.2s;
+        }
+
+        /* Nested agent styling with depth-based colors */
+        .agent-group {
+            margin: 4px 0;
+            border-radius: 6px;
+            overflow: hidden;
+        }
+
+        .agent-group[data-depth="0"] { border-left: 3px solid var(--primary); }
+        .agent-group[data-depth="1"] { border-left: 3px solid var(--warning); }
+        .agent-group[data-depth="2"] { border-left: 3px solid var(--secondary); }
+        .agent-group[data-depth="3"] { border-left: 3px solid var(--accent); }
+        .agent-group[data-depth="4"] { border-left: 3px solid var(--success); }
+        .agent-group[data-depth="5"] { border-left: 3px solid var(--error); }
+
+        .agent-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 12px;
+            background: var(--bg);
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: 500;
+        }
+
+        .agent-header:hover {
+            background: var(--bg-highlight);
+        }
+
+        .agent-name {
+            flex: 1;
+        }
+
+        .agent-depth-badge {
+            font-size: 10px;
+            padding: 2px 6px;
+            border-radius: 4px;
+            background: var(--bg-highlight);
+            color: var(--muted);
+        }
+
+        .agent-content {
+            padding-left: 12px;
+        }
+
+        .agent-group:not(.expanded) .agent-content {
+            display: none;
+        }
+
+        .agent-group .agent-expand-icon {
+            transition: transform 0.2s;
+        }
+
+        .agent-group.expanded .agent-expand-icon {
+            transform: rotate(180deg);
+        }
+
+        /* Nested iteration styling within agents */
+        .agent-iteration {
+            margin-bottom: 4px;
+        }
+
+        .agent-iteration-header {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 10px;
+            background: var(--bg-highlight);
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+        }
+
+        .agent-iteration-header:hover {
+            background: var(--border);
+        }
+
+        .agent-iteration-events {
+            display: none;
+            padding-left: 16px;
+            border-left: 1px solid var(--border);
+            margin-left: 8px;
+            margin-top: 4px;
+        }
+
+        .agent-iteration.expanded .agent-iteration-events {
+            display: block;
+        }
+
+        .agent-iteration.expanded .iteration-expand-icon {
+            transform: rotate(180deg);
+        }
+
+        .event-icon {
+            font-size: 16px;
+            margin-top: 2px;
+        }
+
+        .event-info {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .event-label {
+            font-size: 12px;
+            font-weight: 500;
+        }
+
+        .event-time {
+            font-size: 10px;
+            color: var(--muted);
+        }
+
+        .event-preview {
+            font-size: 11px;
+            color: var(--muted);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            margin-top: 2px;
+        }
+
+        /* Modals */
+        .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.7);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+        }
+
+        .modal-overlay.hidden {
+            display: none;
+        }
+
+        .modal {
+            background: var(--bg-dark);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            width: 90%;
+            max-width: 700px;
+            max-height: 80vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .modal-header {
+            padding: 16px 20px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .modal-title {
+            flex: 1;
+            font-weight: 500;
+            font-size: 16px;
+        }
+
+        .modal-close {
+            background: transparent;
+            border: none;
+            color: var(--muted);
+            cursor: pointer;
+            padding: 4px;
+            border-radius: 4px;
+        }
+
+        .modal-close:hover {
+            color: var(--text);
+            background: var(--bg-highlight);
+        }
+
+        .modal-body {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px;
+        }
+
+        .modal-section {
+            margin-bottom: 20px;
+        }
+
+        .modal-section-title {
+            font-size: 12px;
+            color: var(--muted);
+            text-transform: uppercase;
+            margin-bottom: 8px;
+        }
+
+        .code-block {
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 12px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 13px;
+            white-space: pre-wrap;
+            overflow-x: auto;
+            line-height: 1.5;
+        }
+
+        .code-block.output {
+            border-color: var(--accent);
+        }
+
+        .code-block.error {
+            border-color: var(--error);
+            color: var(--error);
+        }
+
+        /* Config form */
+        .config-form {
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+
+        .form-group {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        .form-label {
+            font-size: 13px;
+            color: var(--muted);
+        }
+
+        .form-input {
+            padding: 10px 12px;
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            color: var(--text);
+            font-family: inherit;
+            font-size: 14px;
+        }
+
+        .form-input:focus {
+            outline: none;
+            border-color: var(--primary);
+        }
+
+        .form-actions {
+            display: flex;
+            gap: 12px;
+            justify-content: flex-end;
+            padding-top: 12px;
+        }
+
+        .btn {
+            padding: 10px 20px;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .btn-primary {
+            background: var(--primary);
+            border: none;
+            color: var(--bg);
+        }
+
+        .btn-primary:hover {
+            background: var(--accent);
+        }
+
+        .btn-secondary {
+            background: transparent;
+            border: 1px solid var(--border);
+            color: var(--text);
+        }
+
+        .btn-secondary:hover {
+            border-color: var(--primary);
+        }
+
+        .btn-danger {
+            background: transparent;
+            border: 1px solid var(--error);
+            color: var(--error);
+        }
+
+        .btn-danger:hover {
+            background: var(--error);
+            color: var(--bg);
+        }
+
+        /* Files display */
+        .files-section {
+            padding: 8px 16px;
+            background: var(--bg-highlight);
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
+        .files-section.hidden {
+            display: none;
+        }
+
+        .files-label {
+            font-size: 12px;
+            color: var(--muted);
+        }
+
+        .file-chip {
+            font-size: 12px;
+            padding: 4px 8px;
+            background: var(--bg-dark);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            color: var(--success);
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .file-chip .material-icons {
+            font-size: 14px;
+        }
+
+        /* Empty state */
+        .empty-state {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100%;
+            color: var(--muted);
+            text-align: center;
+            padding: 40px;
+        }
+
+        .empty-state .material-icons {
+            font-size: 48px;
+            margin-bottom: 16px;
+            opacity: 0.5;
+        }
+
+        .empty-state h3 {
+            font-weight: 500;
+            margin-bottom: 8px;
+            color: var(--text);
+        }
+
+        .empty-state p {
+            font-size: 14px;
+            line-height: 1.6;
+        }
+
+        .empty-sessions {
+            padding: 20px;
+            text-align: center;
+            color: var(--muted);
+            font-size: 13px;
+        }
+    </style>
+</head>
+<body>
+    <header class="header">
+        <div class="header-left">
+            <div class="logo">
+                <span class="material-icons logo-icon">auto_awesome</span>
+                <span class="logo-text">ADK-RLM</span>
+            </div>
+            <span class="session-title" id="session-title"></span>
+            <span class="status-badge" id="status-badge">Connecting...</span>
+        </div>
+        <div class="header-right">
+            <span class="settings-hint" id="settings-hint">
+                <span class="material-icons">arrow_forward</span>
+                Set context sources
+            </span>
+            <button class="header-btn" id="config-btn">
+                <span class="material-icons">settings</span>
+                <span>Settings</span>
+            </button>
+        </div>
+    </header>
+
+    <div class="files-section hidden" id="files-section">
+        <span class="files-label">Files:</span>
+        <div id="files-list"></div>
+    </div>
+
+    <div class="main-container">
+        <!-- Session Sidebar -->
+        <div class="session-sidebar" id="session-sidebar">
+            <div class="sidebar-header">
+                <span class="sidebar-title">Sessions</span>
+                <button class="new-session-btn" id="new-session-btn" title="New Session">
+                    <span class="material-icons">add</span>
+                </button>
+                <button class="toggle-log-btn" id="toggle-sidebar-close" title="Hide Sidebar">
+                    <span class="material-icons">chevron_left</span>
+                </button>
+            </div>
+            <div class="session-list" id="session-list">
+                <div class="empty-sessions">No sessions yet</div>
+            </div>
+        </div>
+
+        <div class="chat-area">
+            <!-- Toggle sidebar button (visible when collapsed) -->
+            <button class="toggle-sidebar-btn" id="toggle-sidebar-open" title="Show Sessions">
+                <span class="material-icons">chevron_right</span>
+            </button>
+
+            <div class="messages" id="messages">
+                <div class="empty-state" id="empty-state">
+                    <span class="material-icons">psychology</span>
+                    <h3>Recursive Language Model</h3>
+                    <p>Ask a question to start. The RLM will iteratively reason<br>through the problem using code execution.</p>
+                </div>
+            </div>
+
+            <div class="processing hidden" id="processing">
+                <div class="spinner"></div>
+                <span class="processing-text" id="processing-text">Processing...</span>
+            </div>
+
+            <div class="input-area">
+                <div class="input-wrapper">
+                    <div class="input-container">
+                        <textarea
+                            id="prompt-input"
+                            placeholder="Ask a question..."
+                            rows="1"
+                        ></textarea>
+                    </div>
+                    <button class="send-btn" id="send-btn">
+                        <span class="material-icons">send</span>
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <div class="event-log-panel" id="event-log-panel">
+            <div class="event-log-header">
+                <span class="material-icons event-log-header-icon">timeline</span>
+                <span class="event-log-title">Event Log</span>
+                <span class="event-count" id="event-count">0 events</span>
+                <button class="toggle-log-btn" id="toggle-log-btn" title="Toggle Event Log">
+                    <span class="material-icons">chevron_right</span>
+                </button>
+            </div>
+            <div class="event-log-content" id="event-log-content">
+                <div class="empty-state" id="event-empty">
+                    <span class="material-icons">hourglass_empty</span>
+                    <p>Events will appear here<br>as the RLM processes</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Event Detail Modal -->
+    <div class="modal-overlay hidden" id="event-modal">
+        <div class="modal">
+            <div class="modal-header">
+                <span class="material-icons" id="modal-icon" style="color: var(--accent);">info</span>
+                <span class="modal-title" id="modal-title">Event Details</span>
+                <button class="modal-close" id="modal-close">
+                    <span class="material-icons">close</span>
+                </button>
+            </div>
+            <div class="modal-body" id="modal-body"></div>
+        </div>
+    </div>
+
+    <!-- Config Modal -->
+    <div class="modal-overlay hidden" id="config-modal">
+        <div class="modal">
+            <div class="modal-header">
+                <span class="material-icons" style="color: var(--secondary);">settings</span>
+                <span class="modal-title">Settings</span>
+                <button class="modal-close" id="config-modal-close">
+                    <span class="material-icons">close</span>
+                </button>
+            </div>
+            <div class="modal-body">
+                <form class="config-form" id="config-form">
+                    <div class="form-group">
+                        <label class="form-label">Session Title</label>
+                        <input type="text" class="form-input" id="config-title" placeholder="Auto-generated from first message">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Model</label>
+                        <input type="text" class="form-input" id="config-model" value="gemini-3-pro-preview">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Sub-Model (for recursive calls)</label>
+                        <input type="text" class="form-input" id="config-sub-model" placeholder="Same as main model">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Max Iterations</label>
+                        <input type="number" class="form-input" id="config-iterations" value="30" min="1" max="100">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Files (glob patterns, space-separated)</label>
+                        <input type="text" class="form-input" id="config-files" placeholder="./docs/*.md ./data/*.csv">
+                    </div>
+                    <div class="form-actions">
+                        <button type="button" class="btn btn-danger" id="config-clear">Clear Session</button>
+                        <button type="button" class="btn btn-secondary" id="config-cancel">Cancel</button>
+                        <button type="submit" class="btn btn-primary">Save</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Configure marked.js for GitHub Flavored Markdown
+        marked.setOptions({
+            gfm: true,
+            breaks: true,
+        });
+
+        // Session and WebSocket management
+        let currentSessionId = crypto.randomUUID();
+        let ws = null;
+        let events = [];
+        let iterationGroups = new Map();
+        let isProcessing = false;
+        let sessionsList = [];
+
+        // DOM elements
+        const statusBadge = document.getElementById('status-badge');
+        const sessionTitle = document.getElementById('session-title');
+        const promptInput = document.getElementById('prompt-input');
+        const sendBtn = document.getElementById('send-btn');
+        const messages = document.getElementById('messages');
+        const emptyState = document.getElementById('empty-state');
+        const processing = document.getElementById('processing');
+        const processingText = document.getElementById('processing-text');
+        const eventLogPanel = document.getElementById('event-log-panel');
+        const eventLogContent = document.getElementById('event-log-content');
+        const eventCount = document.getElementById('event-count');
+        const eventEmpty = document.getElementById('event-empty');
+        const toggleLogBtn = document.getElementById('toggle-log-btn');
+        const configBtn = document.getElementById('config-btn');
+        const configModal = document.getElementById('config-modal');
+        const configForm = document.getElementById('config-form');
+        const eventModal = document.getElementById('event-modal');
+        const filesSection = document.getElementById('files-section');
+        const filesList = document.getElementById('files-list');
+        const sessionSidebar = document.getElementById('session-sidebar');
+        const sessionListEl = document.getElementById('session-list');
+        const newSessionBtn = document.getElementById('new-session-btn');
+        const toggleSidebarOpen = document.getElementById('toggle-sidebar-open');
+        const toggleSidebarClose = document.getElementById('toggle-sidebar-close');
+        const settingsHint = document.getElementById('settings-hint');
+
+        // Track whether session needs configuration (new session without files)
+        let sessionNeedsConfig = true;
+
+        function updateSettingsGlow(hasFiles) {
+            if (hasFiles) {
+                sessionNeedsConfig = false;
+                configBtn.classList.remove('needs-config');
+                settingsHint.classList.remove('visible');
+            } else if (sessionNeedsConfig) {
+                configBtn.classList.add('needs-config');
+                settingsHint.classList.add('visible');
+            }
+        }
+
+        // Connect WebSocket
+        function connect() {
+            try {
+                const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                const wsUrl = `${protocol}//${window.location.host}/ws/${currentSessionId}`;
+                console.log('Connecting to WebSocket:', wsUrl);
+                statusBadge.textContent = 'Connecting...';
+
+                ws = new WebSocket(wsUrl);
+
+                ws.onopen = () => {
+                    console.log('WebSocket connected successfully');
+                    statusBadge.textContent = 'Connected';
+                    statusBadge.classList.add('connected');
+                    sendBtn.disabled = false;
+
+                    // Get initial status and sessions
+                    ws.send(JSON.stringify({ action: 'get_status' }));
+                    ws.send(JSON.stringify({ action: 'list_sessions' }));
+                };
+
+                ws.onclose = (event) => {
+                    console.log('WebSocket closed:', event.code, event.reason);
+                    statusBadge.textContent = 'Disconnected';
+                    statusBadge.classList.remove('connected');
+                    sendBtn.disabled = true;
+
+                    // Reconnect after delay
+                    setTimeout(connect, 3000);
+                };
+
+                ws.onerror = (error) => {
+                    console.error('WebSocket error:', error);
+                    statusBadge.textContent = 'Error';
+                    statusBadge.classList.remove('connected');
+                };
+
+                ws.onmessage = (event) => {
+                    console.log('WebSocket message:', event.data.substring(0, 100));
+                    try {
+                        const data = JSON.parse(event.data);
+                        handleMessage(data);
+                    } catch (e) {
+                        console.error('Failed to parse message:', e, event.data);
+                    }
+                };
+            } catch (e) {
+                console.error('Failed to create WebSocket:', e);
+                statusBadge.textContent = 'Error';
+            }
+        }
+
+        // Handle incoming messages
+        function handleMessage(data) {
+            switch (data.type) {
+                case 'status_response':
+                case 'session_loaded':
+                    currentSessionId = data.session_id;
+                    sessionTitle.textContent = data.title;
+                    document.getElementById('config-title').value = data.title;
+                    document.getElementById('config-model').value = data.model;
+                    document.getElementById('config-sub-model').value = data.sub_model || '';
+                    document.getElementById('config-iterations').value = data.max_iterations;
+                    updateFilesDisplay(data.files);
+
+                    // Check if this is a session with existing files or conversation
+                    const hasExistingContent = (data.files && data.files.length > 0) ||
+                                               (data.conversation && data.conversation.length > 0);
+                    if (hasExistingContent) {
+                        sessionNeedsConfig = false;
+                        updateSettingsGlow(true);
+                    } else {
+                        sessionNeedsConfig = true;
+                        updateSettingsGlow(false);
+                    }
+
+                    // Restore conversation
+                    if (data.conversation && data.conversation.length > 0) {
+                        restoreConversation(data.conversation);
+                    }
+
+                    // Restore events
+                    if (data.events && data.events.length > 0) {
+                        restoreEvents(data.events);
+                    }
+
+                    // Refresh session list
+                    ws.send(JSON.stringify({ action: 'list_sessions' }));
+                    break;
+
+                case 'sessions_list':
+                    sessionsList = data.sessions;
+                    renderSessionList();
+                    break;
+
+                case 'session_created':
+                    currentSessionId = data.session_id;
+                    sessionTitle.textContent = data.title;
+                    clearUI();
+                    // New session needs configuration
+                    sessionNeedsConfig = true;
+                    updateSettingsGlow(false);
+                    ws.send(JSON.stringify({ action: 'list_sessions' }));
+                    break;
+
+                case 'session_deleted':
+                    ws.send(JSON.stringify({ action: 'list_sessions' }));
+                    break;
+
+                case 'query_start':
+                    startProcessing();
+                    break;
+
+                case 'event':
+                    addEvent(data);
+                    updateProcessingStatus(data);
+                    break;
+
+                case 'query_complete':
+                    endProcessing(data);
+                    // Update title if changed
+                    if (data.title) {
+                        sessionTitle.textContent = data.title;
+                        ws.send(JSON.stringify({ action: 'list_sessions' }));
+                    }
+                    break;
+
+                case 'error':
+                    showError(data.message);
+                    endProcessing();
+                    break;
+
+                case 'files_added':
+                    updateFilesDisplay(data.names);
+                    // Files added, turn off the glow
+                    if (data.names && data.names.length > 0) {
+                        updateSettingsGlow(true);
+                    }
+                    break;
+
+                case 'status':
+                    console.log('Status:', data.message);
+                    break;
+            }
+        }
+
+        // Restore conversation from saved state
+        function restoreConversation(conversation) {
+            messages.innerHTML = '';
+            emptyState.style.display = conversation.length > 0 ? 'none' : 'flex';
+
+            for (const msg of conversation) {
+                if (msg.role === 'user') {
+                    addUserMessage(msg.content, false);
+                } else {
+                    addAnswer(msg.content, null, null, false);
+                }
+            }
+        }
+
+        // Restore events from saved state
+        function restoreEvents(savedEvents) {
+            events = [];
+            iterationGroups.clear();
+            eventLogContent.innerHTML = '';
+
+            for (const event of savedEvents) {
+                addEvent(event);
+            }
+        }
+
+        // Render session list
+        function renderSessionList() {
+            if (sessionsList.length === 0) {
+                sessionListEl.innerHTML = '<div class="empty-sessions">No sessions yet</div>';
+                return;
+            }
+
+            sessionListEl.innerHTML = sessionsList.map(session => {
+                const isActive = session.session_id === currentSessionId;
+                const date = session.updated_at ? new Date(session.updated_at).toLocaleDateString() : '';
+                return `
+                    <div class="session-item ${isActive ? 'active' : ''}" data-session-id="${session.session_id}">
+                        <div class="session-item-title">${escapeHtml(session.title)}</div>
+                        <div class="session-item-meta">
+                            <span>${session.message_count || 0} messages</span>
+                            <span>${date}</span>
+                        </div>
+                        <button class="session-item-delete" data-session-id="${session.session_id}" title="Delete">
+                            <span class="material-icons">delete</span>
+                        </button>
+                    </div>
+                `;
+            }).join('');
+
+            // Add click handlers
+            sessionListEl.querySelectorAll('.session-item').forEach(el => {
+                el.addEventListener('click', (e) => {
+                    if (e.target.closest('.session-item-delete')) return;
+                    const sessionId = el.dataset.sessionId;
+                    if (sessionId !== currentSessionId) {
+                        loadSession(sessionId);
+                    }
+                });
+            });
+
+            sessionListEl.querySelectorAll('.session-item-delete').forEach(el => {
+                el.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    const sessionId = el.dataset.sessionId;
+                    if (confirm('Delete this session?')) {
+                        deleteSession(sessionId);
+                    }
+                });
+            });
+        }
+
+        function loadSession(sessionId) {
+            ws.send(JSON.stringify({ action: 'load_session', session_id: sessionId }));
+        }
+
+        function deleteSession(sessionId) {
+            ws.send(JSON.stringify({ action: 'delete_session', session_id: sessionId }));
+        }
+
+        function clearUI() {
+            messages.innerHTML = `
+                <div class="empty-state" id="empty-state">
+                    <span class="material-icons">psychology</span>
+                    <h3>Recursive Language Model</h3>
+                    <p>Ask a question to start. The RLM will iteratively reason<br>through the problem using code execution.</p>
+                </div>
+            `;
+            events = [];
+            iterationGroups.clear();
+            agentTree.clear();
+            eventLogContent.innerHTML = `
+                <div class="empty-state" id="event-empty">
+                    <span class="material-icons">hourglass_empty</span>
+                    <p>Events will appear here<br>as the RLM processes</p>
+                </div>
+            `;
+            eventCount.textContent = '0 events';
+            filesSection.classList.add('hidden');
+        }
+
+        // UI Functions
+        function startProcessing() {
+            isProcessing = true;
+            const es = document.getElementById('empty-state');
+            if (es) es.style.display = 'none';
+            processing.classList.remove('hidden');
+            sendBtn.disabled = true;
+            events = [];
+            iterationGroups.clear();
+            agentTree.clear();
+            eventLogContent.innerHTML = '';
+            const ee = document.getElementById('event-empty');
+            if (ee) ee.style.display = 'none';
+        }
+
+        function updateProcessingStatus(event) {
+            const labels = {
+                'rlm.run.start': 'Starting...',
+                'rlm.iteration.start': `Iteration ${event.iteration}...`,
+                'rlm.llm.start': `Iteration ${event.iteration} - Calling LLM...`,
+                'rlm.llm.end': `Iteration ${event.iteration} - Processing response...`,
+                'rlm.code.found': `Iteration ${event.iteration} - Found code...`,
+                'rlm.code.start': `Iteration ${event.iteration} - Executing...`,
+                'rlm.code.end': `Iteration ${event.iteration} - Executed`,
+                'rlm.final.detected': 'Final answer detected!',
+            };
+            processingText.textContent = labels[event.event_type] || 'Processing...';
+        }
+
+        function endProcessing(data) {
+            isProcessing = false;
+            processing.classList.add('hidden');
+            sendBtn.disabled = false;
+
+            if (data && data.final_answer) {
+                addAnswer(data.final_answer, data.elapsed_seconds, data.total_events, true);
+            }
+        }
+
+        function addUserMessage(text, scroll = true) {
+            const es = document.getElementById('empty-state');
+            if (es) es.style.display = 'none';
+
+            const div = document.createElement('div');
+            div.className = 'message user';
+            div.innerHTML = `
+                <div class="message-label">You</div>
+                <div class="message-content">${escapeHtml(text)}</div>
+            `;
+            messages.appendChild(div);
+            if (scroll) messages.scrollTop = messages.scrollHeight;
+        }
+
+        function addAnswer(answer, elapsed, eventCount, scroll = true) {
+            const div = document.createElement('div');
+            div.className = 'message assistant';
+
+            const stats = elapsed ? `${elapsed.toFixed(1)}s` : '';
+
+            // Render markdown using marked.js
+            let renderedAnswer;
+            try {
+                renderedAnswer = marked.parse(answer);
+            } catch (e) {
+                console.error('Markdown parsing failed:', e);
+                renderedAnswer = escapeHtml(answer);
+            }
+
+            div.innerHTML = `
+                <div class="message-label">
+                    <span class="material-icons" style="font-size: 14px; color: var(--warning);">auto_awesome</span>
+                    RLM
+                </div>
+                <div class="answer-panel">
+                    <div class="answer-header">
+                        <span class="material-icons">check_circle</span>
+                        Answer
+                        <span class="answer-stats">${stats}</span>
+                    </div>
+                    <div class="answer-text">${renderedAnswer}</div>
+                </div>
+            `;
+            messages.appendChild(div);
+            if (scroll) messages.scrollTop = messages.scrollHeight;
+        }
+
+        function showError(message) {
+            const div = document.createElement('div');
+            div.className = 'message assistant';
+            div.innerHTML = `
+                <div class="message-label" style="color: var(--error);">
+                    <span class="material-icons" style="font-size: 14px;">error</span>
+                    Error
+                </div>
+                <div class="message-content" style="border-color: var(--error);">${escapeHtml(message)}</div>
+            `;
+            messages.appendChild(div);
+            messages.scrollTop = messages.scrollHeight;
+        }
+
+        // Track agent tree: agentName -> { element, iterations: Map, children: Map }
+        let agentTree = new Map();
+
+        // Get depth-specific color
+        function getDepthColor(depth) {
+            const colors = ['var(--primary)', 'var(--warning)', 'var(--secondary)', 'var(--accent)', 'var(--success)', 'var(--error)'];
+            return colors[Math.min(depth, colors.length - 1)];
+        }
+
+        // Get or create agent node in the tree
+        function getOrCreateAgent(agentName, depth, parentAgentName = null, parentIteration = null, parentBlockIndex = null) {
+            if (agentTree.has(agentName)) {
+                return agentTree.get(agentName);
+            }
+
+            const agent = {
+                name: agentName,
+                depth: depth,
+                parent: parentAgentName,
+                parentIteration: parentIteration,
+                parentBlockIndex: parentBlockIndex,
+                iterations: new Map(),
+                element: null,
+            };
+
+            // Create agent element
+            const div = document.createElement('div');
+            div.className = 'agent-group expanded';
+            div.dataset.depth = depth;
+            div.dataset.agent = agentName;
+            div.innerHTML = `
+                <div class="agent-header">
+                    <span class="material-icons" style="color: ${getDepthColor(depth)}; font-size: 16px;">account_tree</span>
+                    <span class="agent-name">${escapeHtml(agentName)}</span>
+                    <span class="agent-depth-badge">depth ${depth}</span>
+                    <span class="agent-event-count" style="font-size: 11px; color: var(--muted);">0 events</span>
+                    <span class="material-icons agent-expand-icon" style="font-size: 16px; color: var(--muted);">expand_more</span>
+                </div>
+                <div class="agent-content"></div>
+            `;
+
+            // Add click handler for toggle
+            div.querySelector('.agent-header').addEventListener('click', function() {
+                div.classList.toggle('expanded');
+            });
+
+            agent.element = div;
+
+            // Insert into tree
+            if (parentAgentName && parentIteration !== null) {
+                // This is a child agent - insert it into parent's iteration
+                const parentAgent = agentTree.get(parentAgentName);
+                if (parentAgent && parentAgent.iterations.has(parentIteration)) {
+                    const parentIter = parentAgent.iterations.get(parentIteration);
+                    parentIter.eventsContainer.appendChild(div);
+                } else {
+                    // Parent iteration not found, append to event log
+                    eventLogContent.appendChild(div);
+                }
+            } else {
+                // Root agent or standalone
+                eventLogContent.appendChild(div);
+            }
+
+            agentTree.set(agentName, agent);
+            return agent;
+        }
+
+        // Get or create iteration within an agent
+        function getOrCreateIteration(agent, iterationNum) {
+            if (agent.iterations.has(iterationNum)) {
+                return agent.iterations.get(iterationNum);
+            }
+
+            const iteration = {
+                num: iterationNum,
+                events: [],
+                element: null,
+                eventsContainer: null,
+            };
+
+            // Create iteration element
+            const div = document.createElement('div');
+            div.className = 'agent-iteration expanded';
+            div.dataset.iteration = iterationNum;
+            div.innerHTML = `
+                <div class="agent-iteration-header">
+                    <span class="material-icons" style="color: ${getDepthColor(agent.depth)}; font-size: 14px;">loop</span>
+                    <span style="flex: 1;">${iterationNum === 0 ? 'Setup' : `Iteration ${iterationNum}`}</span>
+                    <span class="iteration-event-count" style="font-size: 10px; color: var(--muted);">0</span>
+                    <span class="material-icons iteration-expand-icon" style="font-size: 14px; color: var(--muted);">expand_more</span>
+                </div>
+                <div class="agent-iteration-events"></div>
+            `;
+
+            // Add click handler for toggle
+            div.querySelector('.agent-iteration-header').addEventListener('click', function() {
+                div.classList.toggle('expanded');
+            });
+
+            iteration.element = div;
+            iteration.eventsContainer = div.querySelector('.agent-iteration-events');
+
+            // Insert in sorted order by iteration number
+            const agentContent = agent.element.querySelector('.agent-content');
+            const existingIterations = Array.from(agentContent.querySelectorAll('.agent-iteration'));
+            let inserted = false;
+
+            for (const existing of existingIterations) {
+                const existingNum = parseInt(existing.dataset.iteration, 10);
+                if (iterationNum < existingNum) {
+                    agentContent.insertBefore(div, existing);
+                    inserted = true;
+                    break;
+                }
+            }
+
+            if (!inserted) {
+                agentContent.appendChild(div);
+            }
+
+            agent.iterations.set(iterationNum, iteration);
+            return iteration;
+        }
+
+        // Event log functions
+        function addEvent(event) {
+            events.push(event);
+            eventCount.textContent = `${events.length} events`;
+
+            // Determine which agent this event belongs to
+            const ancestry = event.metadata?.ancestry || [];
+            const agentName = event.metadata?.agent_name || 'rlm_agent';
+            const agentDepth = event.metadata?.agent_depth ?? 0;
+            const eventIteration = event.iteration || event.metadata?.iteration || 0;
+
+            // Determine parent info from ancestry
+            let parentAgentName = null;
+            let parentIteration = null;
+            let parentBlockIndex = null;
+
+            if (ancestry.length > 0) {
+                const parent = ancestry[ancestry.length - 1];
+                parentAgentName = parent.agent;
+                parentIteration = parent.iteration;
+                parentBlockIndex = parent.block_index;
+            } else if (event.metadata?.parent_agent) {
+                // Backwards compatibility
+                parentAgentName = event.metadata.parent_agent;
+                parentIteration = event.metadata.parent_iteration;
+                parentBlockIndex = event.metadata.parent_block_index;
+            }
+
+            // Get or create the agent
+            const agent = getOrCreateAgent(agentName, agentDepth, parentAgentName, parentIteration, parentBlockIndex);
+
+            // Get or create the iteration
+            const iteration = getOrCreateIteration(agent, eventIteration);
+
+            // Create and add event item
+            const eventItem = createEventItem(event, agentDepth > 0);
+            iteration.eventsContainer.appendChild(eventItem);
+            iteration.events.push(event);
+
+            // Update counts
+            const iterCountEl = iteration.element.querySelector('.iteration-event-count');
+            iterCountEl.textContent = iteration.events.length;
+
+            // Update agent event count
+            let totalEvents = 0;
+            agent.iterations.forEach(iter => totalEvents += iter.events.length);
+            const agentCountEl = agent.element.querySelector('.agent-event-count');
+            agentCountEl.textContent = `${totalEvents} event${totalEvents === 1 ? '' : 's'}`;
+
+            eventLogContent.scrollTop = eventLogContent.scrollHeight;
+        }
+
+        function toggleAgent(group) {
+            group.classList.toggle('expanded');
+        }
+
+        function toggleAgentIteration(iterGroup) {
+            iterGroup.classList.toggle('expanded');
+        }
+
+        // Legacy functions for backwards compatibility
+        function toggleChildAgent(group) {
+            group.classList.toggle('expanded');
+        }
+
+        function createIterationGroup(iteration) {
+            // Legacy - use agent-based rendering
+            const div = document.createElement('div');
+            div.className = 'iteration-group expanded';
+            div.innerHTML = `
+                <div class="iteration-header" onclick="toggleIteration(this.parentElement)">
+                    <span class="material-icons iteration-icon">loop</span>
+                    <span class="iteration-label">${iteration === 0 ? 'Setup' : `Iteration ${iteration}`}</span>
+                    <span class="iteration-count">0 events</span>
+                    <span class="material-icons expand-icon">expand_more</span>
+                </div>
+                <div class="iteration-events"></div>
+            `;
+            return div;
+        }
+
+        function createEventItem(event, isChild = false) {
+            const div = document.createElement('div');
+            div.className = isChild ? 'event-item child-event' : 'event-item';
+            div.onclick = () => showEventDetail(event);
+
+            let preview = '';
+            if (event.metadata && event.metadata.response_preview) {
+                preview = event.metadata.response_preview.substring(0, 50) + '...';
+            } else if (event.metadata && event.metadata.code) {
+                preview = event.metadata.code.substring(0, 50) + '...';
+            } else if (event.metadata && event.metadata.output) {
+                preview = event.metadata.output.substring(0, 50) + '...';
+            } else if (event.metadata && event.metadata.error) {
+                preview = event.metadata.error.substring(0, 50) + '...';
+            }
+
+            div.innerHTML = `
+                <span class="material-icons event-icon" style="color: ${event.color};">${event.icon}</span>
+                <div class="event-info">
+                    <div class="event-label" style="color: ${event.color};">${event.label}</div>
+                    ${preview ? `<div class="event-preview">${escapeHtml(preview)}</div>` : ''}
+                </div>
+                <span class="event-time">${event.timestamp.toFixed(1)}s</span>
+            `;
+            return div;
+        }
+
+        function toggleIteration(group) {
+            group.classList.toggle('expanded');
+        }
+
+        function showEventDetail(event) {
+            const modal = document.getElementById('event-modal');
+            const modalIcon = document.getElementById('modal-icon');
+            const modalTitle = document.getElementById('modal-title');
+            const modalBody = document.getElementById('modal-body');
+
+            modalIcon.textContent = event.icon;
+            modalIcon.style.color = event.color;
+            modalTitle.textContent = event.label;
+
+            let content = `
+                <div class="modal-section">
+                    <div class="modal-section-title">Event Type</div>
+                    <div class="code-block">${event.event_type}</div>
+                </div>
+                <div class="modal-section">
+                    <div class="modal-section-title">Timestamp</div>
+                    <div class="code-block">${event.timestamp.toFixed(3)}s</div>
+                </div>
+            `;
+
+            if (event.metadata) {
+                // Use full content if available, otherwise fall back to preview
+                const response = event.metadata.response_full || event.metadata.response_preview;
+                if (response) {
+                    content += `
+                        <div class="modal-section">
+                            <div class="modal-section-title">LLM Response</div>
+                            <div class="code-block">${escapeHtml(response)}</div>
+                        </div>
+                    `;
+                }
+
+                const code = event.metadata.code_full || event.metadata.code;
+                if (code) {
+                    content += `
+                        <div class="modal-section">
+                            <div class="modal-section-title">Code</div>
+                            <div class="code-block">${escapeHtml(code)}</div>
+                        </div>
+                    `;
+                }
+
+                const output = event.metadata.output_full || event.metadata.output;
+                if (output) {
+                    content += `
+                        <div class="modal-section">
+                            <div class="modal-section-title">Output</div>
+                            <div class="code-block output">${escapeHtml(output)}</div>
+                        </div>
+                    `;
+                }
+
+                const error = event.metadata.error_full || event.metadata.error;
+                if (error) {
+                    content += `
+                        <div class="modal-section">
+                            <div class="modal-section-title">Error</div>
+                            <div class="code-block error">${escapeHtml(error)}</div>
+                        </div>
+                    `;
+                }
+
+                if (event.metadata.answer) {
+                    content += `
+                        <div class="modal-section">
+                            <div class="modal-section-title">Answer</div>
+                            <div class="code-block">${escapeHtml(event.metadata.answer)}</div>
+                        </div>
+                    `;
+                }
+
+                if (event.metadata.prompt_preview) {
+                    content += `
+                        <div class="modal-section">
+                            <div class="modal-section-title">Prompt Preview</div>
+                            <div class="code-block">${escapeHtml(event.metadata.prompt_preview)}</div>
+                        </div>
+                    `;
+                }
+            }
+
+            modalBody.innerHTML = content;
+            modal.classList.remove('hidden');
+        }
+
+        function updateFilesDisplay(files) {
+            if (!files || files.length === 0) {
+                filesSection.classList.add('hidden');
+                return;
+            }
+
+            filesSection.classList.remove('hidden');
+            filesList.innerHTML = files.map(f =>
+                `<span class="file-chip"><span class="material-icons">description</span>${escapeHtml(f)}</span>`
+            ).join('');
+        }
+
+        // Send message
+        function sendMessage() {
+            const text = promptInput.value.trim();
+            if (!text || isProcessing || !ws) return;
+
+            addUserMessage(text);
+            ws.send(JSON.stringify({ action: 'query', prompt: text }));
+            promptInput.value = '';
+            promptInput.style.height = 'auto';
+        }
+
+        // Auto-resize textarea
+        promptInput.addEventListener('input', () => {
+            promptInput.style.height = 'auto';
+            promptInput.style.height = Math.min(promptInput.scrollHeight, 200) + 'px';
+        });
+
+        promptInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                sendMessage();
+            }
+        });
+
+        sendBtn.addEventListener('click', sendMessage);
+
+        // Toggle event log
+        toggleLogBtn.addEventListener('click', () => {
+            eventLogPanel.classList.toggle('collapsed');
+            toggleLogBtn.querySelector('.material-icons').textContent =
+                eventLogPanel.classList.contains('collapsed') ? 'chevron_left' : 'chevron_right';
+        });
+
+        // Toggle session sidebar
+        toggleSidebarOpen.addEventListener('click', () => {
+            sessionSidebar.classList.remove('collapsed');
+        });
+
+        toggleSidebarClose.addEventListener('click', () => {
+            sessionSidebar.classList.add('collapsed');
+        });
+
+        // New session
+        newSessionBtn.addEventListener('click', () => {
+            ws.send(JSON.stringify({ action: 'new_session' }));
+        });
+
+        // Config modal
+        configBtn.addEventListener('click', () => {
+            configModal.classList.remove('hidden');
+        });
+
+        document.getElementById('config-modal-close').addEventListener('click', () => {
+            configModal.classList.add('hidden');
+        });
+
+        document.getElementById('config-cancel').addEventListener('click', () => {
+            configModal.classList.add('hidden');
+        });
+
+        document.getElementById('config-clear').addEventListener('click', () => {
+            if (confirm('Clear this session? This will delete all messages and events.')) {
+                ws.send(JSON.stringify({ action: 'clear' }));
+                clearUI();
+                // Session cleared, enable glow to prompt for context sources
+                sessionNeedsConfig = true;
+                updateSettingsGlow(false);
+                configModal.classList.add('hidden');
+            }
+        });
+
+        configForm.addEventListener('submit', (e) => {
+            e.preventDefault();
+
+            const title = document.getElementById('config-title').value;
+            const model = document.getElementById('config-model').value;
+            const subModel = document.getElementById('config-sub-model').value;
+            const maxIterations = parseInt(document.getElementById('config-iterations').value);
+            const files = document.getElementById('config-files').value.trim();
+
+            ws.send(JSON.stringify({
+                action: 'config',
+                title: title || undefined,
+                model: model,
+                sub_model: subModel || null,
+                max_iterations: maxIterations,
+            }));
+
+            if (title) {
+                sessionTitle.textContent = title;
+            }
+
+            if (files) {
+                const patterns = files.split(/\s+/).filter(p => p);
+                ws.send(JSON.stringify({
+                    action: 'add_files',
+                    patterns: patterns,
+                }));
+                // Files being added, turn off the glow immediately
+                if (patterns.length > 0) {
+                    updateSettingsGlow(true);
+                }
+            }
+
+            configModal.classList.add('hidden');
+            ws.send(JSON.stringify({ action: 'list_sessions' }));
+        });
+
+        // Event modal
+        document.getElementById('modal-close').addEventListener('click', () => {
+            eventModal.classList.add('hidden');
+        });
+
+        eventModal.addEventListener('click', (e) => {
+            if (e.target === eventModal) {
+                eventModal.classList.add('hidden');
+            }
+        });
+
+        configModal.addEventListener('click', (e) => {
+            if (e.target === configModal) {
+                configModal.classList.add('hidden');
+            }
+        });
+
+        // Utility
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function safeSend(data) {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify(data));
+                return true;
+            } else {
+                console.error('WebSocket not connected, cannot send:', data);
+                alert('Not connected to server. Please wait for connection or refresh the page.');
+                return false;
+            }
+        }
+
+        // Initialize
+        console.log('Initializing ADK-RLM Web Interface...');
+        connect();
+    </script>
+</body>
+</html>

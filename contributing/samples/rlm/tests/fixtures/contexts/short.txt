@@ -1,0 +1,3 @@
+The quick brown fox jumps over the lazy dog.
+This sentence contains every letter of the English alphabet.
+The magic number is 42.

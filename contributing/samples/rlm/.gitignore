@@ -1,0 +1,28 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Environment files
+.env
+.env.*
+
+# ADK generated files
+.adk/
+*/.adk/
+
+original_rlm/
+plans/
+CLAUDE.md
+logs/
+.pytest_cache/
+sessions.db
+corpora/
+*.db 
+.ruff_cache/

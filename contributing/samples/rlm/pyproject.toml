@@ -1,0 +1,73 @@
+[project]
+name = "adk-rlm"
+version = "0.1.0"
+description = "Recursive Language Models implemented with Google ADK"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "google-adk>=1.0.0",
+    "google-genai>=1.0.0",
+    "rich>=13.0.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+    "pytest-timeout>=2.3.0",
+    "pytest-playwright>=0.4.0",
+    "playwright>=1.40.0",
+    "ruff>=0.4.0",
+]
+
+# Web interface dependencies
+web = [
+    "fastapi>=0.109.0",
+    "uvicorn[standard]>=0.27.0",
+    "jinja2>=3.1.0",
+]
+
+# File handling dependencies
+files = [
+    "pdfplumber>=0.10.0",
+    "pyyaml>=6.0.0",
+]
+
+# Individual file format support
+pdf = ["pdfplumber>=0.10.0"]
+
+# Cloud storage sources
+gcs = ["google-cloud-storage>=2.14.0"]
+
+# All optional features
+all = [
+    "pdfplumber>=0.10.0",
+    "pyyaml>=6.0.0",
+    "fastapi>=0.109.0",
+    "uvicorn[standard]>=0.27.0",
+    "jinja2>=3.1.0",
+    "google-cloud-storage>=2.14.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+markers = [
+    "e2e: mark test as end-to-end (requires real LLM)",
+    "ui: mark test as UI test (requires playwright)",
+    "e2e_web: mark test as web E2E test (requires server)",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+ignore = ["E501"]
