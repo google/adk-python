@@ -115,7 +115,7 @@ class VectorSearchIndexSettings(BaseModel):
   """
 
   num_branches: Optional[int] = None
-  """Optional. The number of branches to further parititon the vector data.
+  """Optional. The number of branches to further partition the vector data.
 
   You can only designate num_branches for trees with 3 levels.
   The number of branches must be fewer than the number of leaves
@@ -165,7 +165,7 @@ class SpannerVectorStoreSettings(BaseModel):
   """Required. The vector store table columns to return in the vector similarity search result.
 
   By default, only the `content_column` value and the distance value are returned.
-  If sepecified, the list of selected columns and the distance value are returned.
+  If specified, the list of selected columns and the distance value are returned.
   For example, if `selected_columns` is ['col1', 'col2'], then the result will contain the values of 'col1' and 'col2' columns and the distance value.
   """
 

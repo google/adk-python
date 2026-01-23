@@ -22,7 +22,7 @@ from google.adk.tools.mcp_tool.mcp_toolset import MCPToolset
 _allowed_path = os.path.dirname(os.path.abspath(__file__))
 
 root_agent = LlmAgent(
-    model='gemini-2.0-flash',
+    model='gemini-2.5-flash',
     name='enterprise_assistant',
     instruction=f"""\
 Help user accessing their file systems.
