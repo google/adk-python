@@ -289,6 +289,92 @@ class TestConvertA2aPartToGenaiPart:
         "data": [1, 2, 3],
     }
 
+  def test_convert_data_part_function_response_with_thought_metadata(self):
+    """Test conversion of A2A DataPart with function response and thought metadata."""
+    # Arrange
+    function_response_data = {
+        "name": "test_function",
+        "response": {"result": "success"},
+    }
+    a2a_part = a2a_types.Part(
+        root=a2a_types.DataPart(
+            data=function_response_data,
+            metadata={
+                _get_adk_metadata_key(
+                    A2A_DATA_PART_METADATA_TYPE_KEY
+                ): A2A_DATA_PART_METADATA_TYPE_FUNCTION_RESPONSE,
+                _get_adk_metadata_key("thought"): True,
+            },
+        )
+    )
+
+    # Act
+    result = convert_a2a_part_to_genai_part(a2a_part)
+
+    # Assert
+    assert result is not None
+    assert result.function_response is not None
+    assert result.function_response.name == "test_function"
+    assert result.thought is True
+
+  def test_convert_data_part_code_execution_result_with_thought_metadata(self):
+    """Test conversion of A2A DataPart with code execution result and thought metadata."""
+    # Arrange
+    code_execution_result_data = {
+        "outcome": "OUTCOME_OK",
+        "output": "Hello, World!",
+    }
+    a2a_part = a2a_types.Part(
+        root=a2a_types.DataPart(
+            data=code_execution_result_data,
+            metadata={
+                _get_adk_metadata_key(
+                    A2A_DATA_PART_METADATA_TYPE_KEY
+                ): A2A_DATA_PART_METADATA_TYPE_CODE_EXECUTION_RESULT,
+                _get_adk_metadata_key("thought"): True,
+            },
+        )
+    )
+
+    # Act
+    result = convert_a2a_part_to_genai_part(a2a_part)
+
+    # Assert
+    assert result is not None
+    assert result.code_execution_result is not None
+    assert (
+        result.code_execution_result.outcome == genai_types.Outcome.OUTCOME_OK
+    )
+    assert result.thought is True
+
+  def test_convert_data_part_executable_code_with_thought_metadata(self):
+    """Test conversion of A2A DataPart with executable code and thought metadata."""
+    # Arrange
+    executable_code_data = {
+        "language": "PYTHON",
+        "code": "print('Hello, World!')",
+    }
+    a2a_part = a2a_types.Part(
+        root=a2a_types.DataPart(
+            data=executable_code_data,
+            metadata={
+                _get_adk_metadata_key(
+                    A2A_DATA_PART_METADATA_TYPE_KEY
+                ): A2A_DATA_PART_METADATA_TYPE_EXECUTABLE_CODE,
+                _get_adk_metadata_key("thought"): True,
+            },
+        )
+    )
+
+    # Act
+    result = convert_a2a_part_to_genai_part(a2a_part)
+
+    # Assert
+    assert result is not None
+    assert result.executable_code is not None
+    assert result.executable_code.language == genai_types.Language.PYTHON
+    assert result.thought is True
+
   @pytest.mark.parametrize(
       "test_name, data, metadata",
       [
@@ -729,6 +815,49 @@ class TestRoundTripConversions:
     assert result_genai_part.inline_data.data == original_bytes
     assert result_genai_part.inline_data.mime_type == original_mime_type
 
+  def test_file_uri_part_with_thought_round_trip(self):
+    """Test round-trip conversion for file_data parts with thought=True."""
+    # Arrange - Start with GenAI part with file_data and thought=True
+    genai_part = genai_types.Part(
+        file_data=genai_types.FileData(
+            file_uri="gs://bucket/file.txt", mime_type="text/plain"
+        ),
+        thought=True,
+    )
+
+    # Act - Round trip: GenAI -> A2A -> GenAI
+    a2a_part = convert_genai_part_to_a2a_part(genai_part)
+    result_genai_part = convert_a2a_part_to_genai_part(a2a_part)
+
+    # Assert
+    assert result_genai_part is not None
+    assert isinstance(result_genai_part, genai_types.Part)
+    assert result_genai_part.file_data is not None
+    assert result_genai_part.file_data.file_uri == "gs://bucket/file.txt"
+    assert result_genai_part.thought is True
+
+  def test_file_bytes_part_with_thought_round_trip(self):
+    """Test round-trip conversion for inline_data parts with thought=True."""
+    # Arrange - Start with GenAI part with inline_data and thought=True
+    original_bytes = b"test file content"
+    genai_part = genai_types.Part(
+        inline_data=genai_types.Blob(
+            data=original_bytes, mime_type="application/octet-stream"
+        ),
+        thought=True,
+    )
+
+    # Act - Round trip: GenAI -> A2A -> GenAI
+    a2a_part = convert_genai_part_to_a2a_part(genai_part)
+    result_genai_part = convert_a2a_part_to_genai_part(a2a_part)
+
+    # Assert
+    assert result_genai_part is not None
+    assert isinstance(result_genai_part, genai_types.Part)
+    assert result_genai_part.inline_data is not None
+    assert result_genai_part.inline_data.data == original_bytes
+    assert result_genai_part.thought is True
+
   def test_function_call_round_trip(self):
     """Test round-trip conversion for function call parts."""
     # Arrange
@@ -747,6 +876,24 @@ class TestRoundTripConversions:
     assert result_genai_part.function_call is not None
     assert result_genai_part.function_call.name == function_call.name
     assert result_genai_part.function_call.args == function_call.args
+
+  def test_function_call_with_thought_round_trip(self):
+    """Test round-trip conversion for function call parts with thought=True."""
+    # Arrange
+    function_call = genai_types.FunctionCall(
+        name="test_function", args={"param1": "value1"}
+    )
+    genai_part = genai_types.Part(function_call=function_call, thought=True)
+
+    # Act - Round trip: GenAI -> A2A -> GenAI
+    a2a_part = convert_genai_part_to_a2a_part(genai_part)
+    result_genai_part = convert_a2a_part_to_genai_part(a2a_part)
+
+    # Assert
+    assert result_genai_part is not None
+    assert result_genai_part.function_call is not None
+    assert result_genai_part.function_call.name == function_call.name
+    assert result_genai_part.thought is True
 
   def test_function_response_round_trip(self):
     """Test round-trip conversion for function response parts."""
@@ -769,6 +916,26 @@ class TestRoundTripConversions:
         result_genai_part.function_response.response
         == function_response.response
     )
+
+  def test_function_response_with_thought_round_trip(self):
+    """Test round-trip conversion for function response parts with thought=True."""
+    # Arrange
+    function_response = genai_types.FunctionResponse(
+        name="test_function", response={"result": "success"}
+    )
+    genai_part = genai_types.Part(
+        function_response=function_response, thought=True
+    )
+
+    # Act - Round trip: GenAI -> A2A -> GenAI
+    a2a_part = convert_genai_part_to_a2a_part(genai_part)
+    result_genai_part = convert_a2a_part_to_genai_part(a2a_part)
+
+    # Assert
+    assert result_genai_part is not None
+    assert result_genai_part.function_response is not None
+    assert result_genai_part.function_response.name == function_response.name
+    assert result_genai_part.thought is True
 
   def test_code_execution_result_round_trip(self):
     """Test round-trip conversion for code execution result parts."""
@@ -795,6 +962,29 @@ class TestRoundTripConversions:
         == code_execution_result.output
     )
 
+  def test_code_execution_result_with_thought_round_trip(self):
+    """Test round-trip conversion for code execution result parts with thought=True."""
+    # Arrange
+    code_execution_result = genai_types.CodeExecutionResult(
+        outcome=genai_types.Outcome.OUTCOME_OK, output="Hello, World!"
+    )
+    genai_part = genai_types.Part(
+        code_execution_result=code_execution_result, thought=True
+    )
+
+    # Act - Round trip: GenAI -> A2A -> GenAI
+    a2a_part = convert_genai_part_to_a2a_part(genai_part)
+    result_genai_part = convert_a2a_part_to_genai_part(a2a_part)
+
+    # Assert
+    assert result_genai_part is not None
+    assert result_genai_part.code_execution_result is not None
+    assert (
+        result_genai_part.code_execution_result.outcome
+        == code_execution_result.outcome
+    )
+    assert result_genai_part.thought is True
+
   def test_executable_code_round_trip(self):
     """Test round-trip conversion for executable code parts."""
     # Arrange
@@ -815,6 +1005,27 @@ class TestRoundTripConversions:
         result_genai_part.executable_code.language == executable_code.language
     )
     assert result_genai_part.executable_code.code == executable_code.code
+
+  def test_executable_code_with_thought_round_trip(self):
+    """Test round-trip conversion for executable code parts with thought=True."""
+    # Arrange
+    executable_code = genai_types.ExecutableCode(
+        language=genai_types.Language.PYTHON, code="print('Hello, World!')"
+    )
+    genai_part = genai_types.Part(executable_code=executable_code, thought=True)
+
+    # Act - Round trip: GenAI -> A2A -> GenAI
+    a2a_part = convert_genai_part_to_a2a_part(genai_part)
+    result_genai_part = convert_a2a_part_to_genai_part(a2a_part)
+
+    # Assert
+    assert result_genai_part is not None
+    assert result_genai_part.executable_code is not None
+    assert (
+        result_genai_part.executable_code.language == executable_code.language
+    )
+    assert result_genai_part.executable_code.code == executable_code.code
+    assert result_genai_part.thought is True
 
   def test_data_part_round_trip(self):
     """Test round-trip conversion for data parts."""

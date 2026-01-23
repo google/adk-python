@@ -177,14 +177,15 @@ def convert_genai_part_to_a2a_part(
     return a2a_types.Part(root=a2a_part)
 
   if part.file_data:
-    return a2a_types.Part(
-        root=a2a_types.FilePart(
-            file=a2a_types.FileWithUri(
-                uri=part.file_data.file_uri,
-                mime_type=part.file_data.mime_type,
-            )
+    a2a_part = a2a_types.FilePart(
+        file=a2a_types.FileWithUri(
+            uri=part.file_data.file_uri,
+            mime_type=part.file_data.mime_type,
         )
     )
+    if part.thought is not None:
+      a2a_part.metadata = {_get_adk_metadata_key('thought'): part.thought}
+    return a2a_types.Part(root=a2a_part)
 
   if part.inline_data:
     if (
@@ -208,12 +209,15 @@ def convert_genai_part_to_a2a_part(
         )
     )
 
+    metadata = {}
     if part.video_metadata:
-      a2a_part.metadata = {
-          _get_adk_metadata_key(
-              'video_metadata'
-          ): part.video_metadata.model_dump(by_alias=True, exclude_none=True)
-      }
+      metadata[_get_adk_metadata_key('video_metadata')] = (
+          part.video_metadata.model_dump(by_alias=True, exclude_none=True)
+      )
+    if part.thought is not None:
+      metadata[_get_adk_metadata_key('thought')] = part.thought
+    if metadata:
+      a2a_part.metadata = metadata
 
     return a2a_types.Part(root=a2a_part)
 
@@ -223,58 +227,70 @@ def convert_genai_part_to_a2a_part(
   # TODO once A2A defined how to service such information, migrate below
   # logic accordingly
   if part.function_call:
+    metadata = {
+        _get_adk_metadata_key(
+            A2A_DATA_PART_METADATA_TYPE_KEY
+        ): A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL
+    }
+    if part.thought is not None:
+      metadata[_get_adk_metadata_key('thought')] = part.thought
     return a2a_types.Part(
         root=a2a_types.DataPart(
             data=part.function_call.model_dump(
                 by_alias=True, exclude_none=True
             ),
-            metadata={
-                _get_adk_metadata_key(
-                    A2A_DATA_PART_METADATA_TYPE_KEY
-                ): A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL
-            },
+            metadata=metadata,
         )
     )
 
   if part.function_response:
+    metadata = {
+        _get_adk_metadata_key(
+            A2A_DATA_PART_METADATA_TYPE_KEY
+        ): A2A_DATA_PART_METADATA_TYPE_FUNCTION_RESPONSE
+    }
+    if part.thought is not None:
+      metadata[_get_adk_metadata_key('thought')] = part.thought
     return a2a_types.Part(
         root=a2a_types.DataPart(
             data=part.function_response.model_dump(
                 by_alias=True, exclude_none=True
             ),
-            metadata={
-                _get_adk_metadata_key(
-                    A2A_DATA_PART_METADATA_TYPE_KEY
-                ): A2A_DATA_PART_METADATA_TYPE_FUNCTION_RESPONSE
-            },
+            metadata=metadata,
         )
     )
 
   if part.code_execution_result:
+    metadata = {
+        _get_adk_metadata_key(
+            A2A_DATA_PART_METADATA_TYPE_KEY
+        ): A2A_DATA_PART_METADATA_TYPE_CODE_EXECUTION_RESULT
+    }
+    if part.thought is not None:
+      metadata[_get_adk_metadata_key('thought')] = part.thought
     return a2a_types.Part(
         root=a2a_types.DataPart(
             data=part.code_execution_result.model_dump(
                 by_alias=True, exclude_none=True
             ),
-            metadata={
-                _get_adk_metadata_key(
-                    A2A_DATA_PART_METADATA_TYPE_KEY
-                ): A2A_DATA_PART_METADATA_TYPE_CODE_EXECUTION_RESULT
-            },
+            metadata=metadata,
         )
     )
 
   if part.executable_code:
+    metadata = {
+        _get_adk_metadata_key(
+            A2A_DATA_PART_METADATA_TYPE_KEY
+        ): A2A_DATA_PART_METADATA_TYPE_EXECUTABLE_CODE
+    }
+    if part.thought is not None:
+      metadata[_get_adk_metadata_key('thought')] = part.thought
     return a2a_types.Part(
         root=a2a_types.DataPart(
             data=part.executable_code.model_dump(
                 by_alias=True, exclude_none=True
             ),
-            metadata={
-                _get_adk_metadata_key(
-                    A2A_DATA_PART_METADATA_TYPE_KEY
-                ): A2A_DATA_PART_METADATA_TYPE_EXECUTABLE_CODE
-            },
+            metadata=metadata,
         )
     )
 
