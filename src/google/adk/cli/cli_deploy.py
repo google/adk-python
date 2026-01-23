@@ -767,13 +767,10 @@ def to_agent_engine(
   
   # Validate folder name is a valid Python identifier for module imports
   if not app_name.isidentifier():
-    click.secho(
-        f'Error: Agent folder name "{app_name}" must be a valid identifier '
-        'consisting of letters, digits, and underscores.',
-        fg='red',
-        err=True,
+    raise click.ClickException(
+        f'Agent folder name "{app_name}" must be a valid identifier '
+        'consisting of letters, digits, and underscores.'
     )
-    return
   
   adk_app_object = adk_app_object or 'root_agent'
   if adk_app_object not in ['root_agent', 'app']:
@@ -804,13 +801,10 @@ def to_agent_engine(
   # Validate temp_folder if provided by user
   if temp_folder:
     if not temp_folder.isidentifier():
-      click.secho(
-          f'Error: The folder name "{temp_folder}" must be a valid identifier '
-          'consisting of letters, digits, and underscores.',
-          fg='red',
-          err=True,
+      raise click.ClickException(
+          f'The folder name "{temp_folder}" must be a valid identifier '
+          'consisting of letters, digits, and underscores.'
       )
-      return
   else:
     temp_folder = tmp_app_name
   
