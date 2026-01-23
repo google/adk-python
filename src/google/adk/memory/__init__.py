@@ -49,6 +49,6 @@ try:
 except ImportError:
   logger.debug(
       'chromadb is not installed. If you want to use the ChromaMemoryService'
-      ' please install it with: pip install chromadb. If not, you can ignore'
-      ' this warning.'
+      ' please install it with: pip install \'google-adk[chroma]\'. If not, you can'
+      ' ignore this warning.'
   )

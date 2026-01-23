@@ -21,6 +21,8 @@ import logging
 from typing import Optional
 from typing import TYPE_CHECKING
 
+from google.genai import types
+
 from typing_extensions import override
 
 from . import _utils
@@ -172,7 +174,6 @@ class ChromaMemoryService(BaseMemoryService):
     Returns:
         A SearchMemoryResponse containing the matching memories.
     """
-    from google.genai import types
 
     user_key = _user_key(app_name, user_id)
 

@@ -17,7 +17,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from typing import Optional
 import requests
@@ -123,23 +122,13 @@ class OllamaEmbeddingProvider(BaseEmbeddingProvider):
         "model": self._model,
         "input": texts,
     }
-    data = json.dumps(payload).encode("utf-8")
-    request = urllib.request.Request(
-        url,
-        data=data,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-
     try:
-      with urllib.request.urlopen(
-          request, timeout=self._request_timeout
-      ) as response:
-        response_body = response.read().decode("utf-8")
-    except urllib.error.URLError as exc:
-      raise RuntimeError(f"Failed to connect to Ollama: {exc.reason}") from exc
-    except urllib.error.HTTPError as exc:
-      message = exc.read().decode("utf-8", errors="ignore")
-      raise RuntimeError(f"Ollama API error {exc.code}: {message}") from exc
-
-    return json.loads(response_body)
+      response = requests.post(
+          url,
+          json=payload,
+          timeout=self._request_timeout,
+      )
+      response.raise_for_status()
+      return response.json()
+    except requests.exceptions.RequestException as exc:
+      raise RuntimeError(f"Failed to connect to Ollama: {exc}") from exc
