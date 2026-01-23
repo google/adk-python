@@ -463,8 +463,7 @@ def _enforce_max_bytes(
   for item in (session_json, search_text, extracted_json, metadata_json):
     if item:
       total_bytes += len(item.encode("utf-8"))
-  if total_bytes > max_bytes:
-    raise ValueError(f"Session payload is too large ({total_bytes} bytes).")
+    raise ValueError(f"Session payload is too large ({total_bytes} bytes), exceeding the limit of {max_bytes} bytes.")
 
 
 def _build_raw_text(events: list[Event]) -> str:
