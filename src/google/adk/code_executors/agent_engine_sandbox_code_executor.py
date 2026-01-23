@@ -38,14 +38,20 @@ class AgentEngineSandboxCodeExecutor(BaseCodeExecutor):
     sandbox_resource_name: If set, load the existing resource name of the code
       interpreter extension instead of creating a new one. Format:
       projects/123/locations/us-central1/reasoningEngines/456/sandboxEnvironments/789
+    sandbox_ttl: The time-to-live for the sandbox. The expiration time is
+      computed as: now + TTL. Format should be a duration string like "3600s"
+      for 1 hour. Only used when creating a new sandbox with
+      agent_engine_resource_name.
   """
 
   sandbox_resource_name: str = None
+  sandbox_ttl: Optional[str] = None
 
   def __init__(
       self,
       sandbox_resource_name: Optional[str] = None,
       agent_engine_resource_name: Optional[str] = None,
+      sandbox_ttl: Optional[str] = None,
       **data,
   ):
     """Initializes the AgentEngineSandboxCodeExecutor.
@@ -60,6 +66,9 @@ class AgentEngineSandboxCodeExecutor(BaseCodeExecutor):
         projects/123/locations/us-central1/reasoningEngines/456, when both
         sandbox_resource_name and agent_engine_resource_name are set,
         agent_engine_resource_name will be ignored.
+      sandbox_ttl: The time-to-live for the sandbox. The expiration time is
+        computed as: now + TTL. Format should be a duration string like "3600s"
+        for 1 hour. Only used when creating a new sandbox.
       **data: Additional keyword arguments to be passed to the base class.
     """
     super().__init__(**data)
@@ -81,13 +90,13 @@ class AgentEngineSandboxCodeExecutor(BaseCodeExecutor):
               agent_engine_resource_name, agent_engine_resource_name_pattern
           )
       )
-      # @TODO - Add TTL for sandbox creation after it is available
-      # in SDK.
+      self.sandbox_ttl = sandbox_ttl
       operation = self._get_api_client().agent_engines.sandboxes.create(
           spec={'code_execution_environment': {}},
           name=agent_engine_resource_name,
           config=types.CreateAgentEngineSandboxConfig(
-              display_name='default_sandbox'
+              display_name='default_sandbox',
+              ttl=sandbox_ttl,
           ),
       )
       self.sandbox_resource_name = operation.response.name
