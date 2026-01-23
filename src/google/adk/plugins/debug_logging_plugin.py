@@ -82,7 +82,7 @@ class DebugLoggingPlugin(BasePlugin):
   Example:
       >>> debug_plugin = DebugLoggingPlugin(output_path="/tmp/adk_debug.yaml")
       >>> runner = Runner(
-      ...     agents=[my_agent],
+      ...     agent=my_agent,
       ...     plugins=[debug_plugin],
       ... )
 
