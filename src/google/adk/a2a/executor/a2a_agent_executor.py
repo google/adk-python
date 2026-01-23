@@ -141,9 +141,7 @@ class A2aAgentExecutor(AgentExecutor):
       task = self._active_tasks.pop(context.task_id, None)
 
     if not task:
-      logger.warning(
-          'Task %s not found or already completed', context.task_id
-      )
+      logger.warning('Task %s not found or already completed', context.task_id)
       return
 
     if task.done():
