@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -134,7 +134,7 @@ class RemoteA2aAgent(BaseAgent):
     Args:
       name: Agent name (must be unique identifier)
       agent_card: AgentCard object, URL string, or file path string
-      description: Agent description (auto-populated from card if empty)
+      description: Agent description (autopopulated from card if empty)
       httpx_client: Optional shared HTTP client (will create own if not
         provided) [deprecated] Use a2a_client_factory instead.
       timeout: HTTP timeout in seconds
@@ -443,7 +443,8 @@ class RemoteA2aAgent(BaseAgent):
               and event.content is not None
               and event.content.parts
           ):
-            event.content.parts[0].thought = True
+            for part in event.content.parts:
+              part.thought = True
         elif (
             isinstance(update, A2ATaskStatusUpdateEvent)
             and update.status
@@ -503,8 +504,6 @@ class RemoteA2aAgent(BaseAgent):
             invocation_id=ctx.invocation_id,
             branch=ctx.branch,
         )
-      event.custom_metadata = event.custom_metadata or {}
-      event.custom_metadata[A2A_METADATA_PREFIX + "response"] = True
       return event
     except A2AClientError as e:
       logger.error("Failed to handle A2A response: %s", e)

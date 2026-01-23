@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -224,6 +224,19 @@ def test_get_service_option_by_adk_version(
       use_local_storage=use_local_storage,
   )
   assert actual.rstrip() == expected.rstrip()
+
+
+def test_agent_engine_app_template_compiles_with_windows_paths() -> None:
+  """It should not emit invalid Python when paths contain `\\u` segments."""
+  rendered = cli_deploy._AGENT_ENGINE_APP_TEMPLATE.format(
+      is_config_agent=True,
+      agent_folder=r".\user_agent_tmp20260101_000000",
+      adk_app_object="root_agent",
+      adk_app_type="agent",
+      trace_to_cloud_option=False,
+      express_mode=False,
+  )
+  compile(rendered, "<agent_engine_app.py>", "exec")
 
 
 @pytest.mark.parametrize("include_requirements", [True, False])

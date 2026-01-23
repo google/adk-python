@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -205,7 +205,7 @@ class RunAgentRequest(common.BaseModel):
   new_message: types.Content
   streaming: bool = False
   state_delta: Optional[dict[str, Any]] = None
-  # for resume long running functions
+  # for resume long-running functions
   invocation_id: Optional[str] = None
 
 
@@ -330,6 +330,7 @@ class AppInfo(common.BaseModel):
   root_agent_name: str
   description: str
   language: Literal["yaml", "python"]
+  is_computer_use: bool = False
 
 
 class ListAppsResponse(common.BaseModel):
@@ -394,7 +395,7 @@ def _setup_gcp_telemetry(
           # TODO - use trace_to_cloud here as well once otel_to_cloud is no
           # longer experimental.
           enable_cloud_tracing=True,
-          # TODO - reenable metrics once errors during shutdown are fixed.
+          # TODO - re-enable metrics once errors during shutdown are fixed.
           enable_cloud_metrics=False,
           enable_cloud_logging=True,
           google_auth=(credentials, project_id),

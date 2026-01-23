@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -272,6 +272,8 @@ efficient processing.
 
 3. Call `get_changed_files_summary` to get the list of changed files WITHOUT
    the full patches (to save context space).
+   - **IMPORTANT**: Pass `local_repo_path="{LOCAL_REPOS_DIR_PATH}/{CODE_REPO}"`
+     to use local git and avoid GitHub API's 300-file limit.
 
 4. Filter and organize the files:
    - **INCLUDE** only files in `src/google/adk/` directory

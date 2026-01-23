@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -52,7 +52,7 @@ class VertexAiRagMemoryService(BaseMemoryService):
           or ``{rag_corpus_id}``
         similarity_top_k: The number of contexts to retrieve.
         vector_distance_threshold: Only returns contexts with vector distance
-          smaller than the threshold..
+          smaller than the threshold.
     """
     self._vertex_rag_store = types.VertexRagStore(
         rag_resources=[
