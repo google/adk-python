@@ -118,3 +118,69 @@ class TestAgentEngineSandboxCodeExecutor:
         name="projects/123/locations/us-central1/reasoningEngines/456/sandboxEnvironments/789",
         input_data={"code": 'print("hello world")'},
     )
+
+  @patch("vertexai.types.CreateAgentEngineSandboxConfig")
+  @patch("vertexai.Client")
+  def test_init_with_agent_engine_resource_name_and_ttl(
+      self,
+      mock_vertexai_client,
+      mock_sandbox_config,
+  ):
+    """Tests sandbox creation with agent_engine_resource_name and TTL."""
+    # Setup Mocks
+    mock_api_client = MagicMock()
+    mock_vertexai_client.return_value = mock_api_client
+    mock_operation = MagicMock()
+    mock_operation.response.name = (
+        "projects/123/locations/us-central1/reasoningEngines/456/sandboxEnvironments/789"
+    )
+    mock_api_client.agent_engines.sandboxes.create.return_value = mock_operation
+
+    # Execute
+    executor = AgentEngineSandboxCodeExecutor(
+        agent_engine_resource_name="projects/123/locations/us-central1/reasoningEngines/456",
+        sandbox_ttl="3600s",
+    )
+
+    # Assert
+    assert executor.sandbox_resource_name == (
+        "projects/123/locations/us-central1/reasoningEngines/456/sandboxEnvironments/789"
+    )
+    assert executor.sandbox_ttl == "3600s"
+    mock_sandbox_config.assert_called_once_with(
+        display_name="default_sandbox",
+        ttl="3600s",
+    )
+
+  @patch("vertexai.types.CreateAgentEngineSandboxConfig")
+  @patch("vertexai.Client")
+  def test_init_with_agent_engine_resource_name_without_ttl(
+      self,
+      mock_vertexai_client,
+      mock_sandbox_config,
+  ):
+    """Tests sandbox creation with agent_engine_resource_name and no TTL."""
+    # Setup Mocks
+    mock_api_client = MagicMock()
+    mock_vertexai_client.return_value = mock_api_client
+    mock_operation = MagicMock()
+    mock_operation.response.name = (
+        "projects/123/locations/us-central1/reasoningEngines/456/sandboxEnvironments/789"
+    )
+    mock_api_client.agent_engines.sandboxes.create.return_value = mock_operation
+
+    # Execute
+    executor = AgentEngineSandboxCodeExecutor(
+        agent_engine_resource_name="projects/123/locations/us-central1/reasoningEngines/456",
+    )
+
+    # Assert
+    assert executor.sandbox_resource_name == (
+        "projects/123/locations/us-central1/reasoningEngines/456/sandboxEnvironments/789"
+    )
+    assert executor.sandbox_ttl is None
+    mock_sandbox_config.assert_called_once_with(
+        display_name="default_sandbox",
+        ttl=None,
+    )
+
