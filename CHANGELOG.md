@@ -5,11 +5,11 @@
 ### ⚠ BREAKING CHANGES
 
 * Breaking: Use OpenTelemetry for BigQuery plugin tracing, replacing custom `ContextVar` implementation ([ab89d12](https://github.com/google/adk-python/commit/ab89d1283430041afb303834749869e9ee331721))
-* Add support to automatically create a session if one does not exist ([8e69a58](https://github.com/google/adk-python/commit/8e69a58df4eadeccbb100b7264bb518a46b61fd7))
 
 ### Features
 
 * **[Core]**
+  * Add support to automatically create a session if one does not exist ([8e69a58](https://github.com/google/adk-python/commit/8e69a58df4eadeccbb100b7264bb518a46b61fd7))
   * Remove `@experimental` decorator from `AgentEngineSandboxCodeExecutor` ([135f763](https://github.com/google/adk-python/commit/135f7633253f6a415302142abc3579b664601d5b))
   * Add `--disable_features` CLI option to override default feature enable state ([53b67ce](https://github.com/google/adk-python/commit/53b67ce6340f3f3f8c3d732f9f7811e445c76359))
   * Add `otel_to_cloud` flag to `adk deploy agent_engine` command ([21f63f6](https://github.com/google/adk-python/commit/21f63f66ee424501d9a70806277463ef718ae843))
