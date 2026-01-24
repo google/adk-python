@@ -30,7 +30,7 @@ def runner():
 
 @pytest.fixture
 def mock_agent_loader():
-  with patch("google.adk.cli.cli_generate_agent_card.AgentLoader") as mock:
+  with patch("google.adk.cli.utils.agent_loader.AgentLoader") as mock:
     yield mock
 
 
@@ -78,7 +78,7 @@ def test_generate_agent_card_missing_a2a(runner):
   pass
 
 
-@patch("google.adk.cli.cli_generate_agent_card.AgentLoader")
+@patch("google.adk.cli.utils.agent_loader.AgentLoader")
 @patch("google.adk.a2a.utils.agent_card_builder.AgentCardBuilder")
 def test_generate_agent_card_success_no_file(
     mock_builder_cls, mock_loader_cls, runner
@@ -115,7 +115,7 @@ def test_generate_agent_card_success_no_file(
   mock_builder.build.assert_called_once()
 
 
-@patch("google.adk.cli.cli_generate_agent_card.AgentLoader")
+@patch("google.adk.cli.utils.agent_loader.AgentLoader")
 @patch("google.adk.a2a.utils.agent_card_builder.AgentCardBuilder")
 def test_generate_agent_card_success_create_file(
     mock_builder_cls, mock_loader_cls, runner, tmp_path
@@ -151,7 +151,7 @@ def test_generate_agent_card_success_create_file(
     assert content["name"] == "agent1"
 
 
-@patch("google.adk.cli.cli_generate_agent_card.AgentLoader")
+@patch("google.adk.cli.utils.agent_loader.AgentLoader")
 @patch("google.adk.a2a.utils.agent_card_builder.AgentCardBuilder")
 def test_generate_agent_card_agent_error(
     mock_builder_cls, mock_loader_cls, runner
