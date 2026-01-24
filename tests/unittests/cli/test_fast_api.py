@@ -1287,6 +1287,7 @@ def test_a2a_agent_discovery(test_app_with_a2a):
   assert response.status_code == 200
   logger.info("A2A agent discovery test passed")
 
+
 def test_a2a_disabled_by_default(test_app):
   """Test that A2A functionality is disabled by default."""
   # The regular test_app fixture has a2a=False
