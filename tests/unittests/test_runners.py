@@ -1451,6 +1451,79 @@ class TestRunnerGetSessionConfig:
     for call in self.mock_session_service.get_session.call_args_list:
       assert call.kwargs["config"] is None
 
+  @pytest.mark.asyncio
+  async def test_run_live_passes_get_session_config(self):
+    """Test that run_live passes get_session_config to session service."""
+    # Use MockLiveAgent which implements _run_live_impl
+    live_agent = MockLiveAgent("live_agent")
+    runner = Runner(
+        app_name=TEST_APP_ID,
+        agent=live_agent,
+        session_service=self.mock_session_service,
+        artifact_service=self.artifact_service,
+    )
+
+    config = GetSessionConfig(num_recent_events=15)
+    run_config = RunConfig(get_session_config=config)
+
+    live_queue = LiveRequestQueue()
+
+    agen = runner.run_live(
+        user_id=TEST_USER_ID,
+        session_id=TEST_SESSION_ID,
+        live_request_queue=live_queue,
+        run_config=run_config,
+    )
+
+    # Consume first event to trigger get_session call
+    try:
+      await agen.__anext__()
+    except StopAsyncIteration:
+      pass
+    finally:
+      await agen.aclose()
+
+    # Verify get_session was called with the config
+    self.mock_session_service.get_session.assert_called_once()
+    call_kwargs = self.mock_session_service.get_session.call_args.kwargs
+    assert call_kwargs["config"] == config
+    assert call_kwargs["app_name"] == TEST_APP_ID
+    assert call_kwargs["user_id"] == TEST_USER_ID
+    assert call_kwargs["session_id"] == TEST_SESSION_ID
+
+  @pytest.mark.asyncio
+  async def test_run_live_passes_none_when_no_config(self):
+    """Test that run_live passes None when get_session_config is not set."""
+    # Use MockLiveAgent which implements _run_live_impl
+    live_agent = MockLiveAgent("live_agent")
+    runner = Runner(
+        app_name=TEST_APP_ID,
+        agent=live_agent,
+        session_service=self.mock_session_service,
+        artifact_service=self.artifact_service,
+    )
+
+    live_queue = LiveRequestQueue()
+
+    agen = runner.run_live(
+        user_id=TEST_USER_ID,
+        session_id=TEST_SESSION_ID,
+        live_request_queue=live_queue,
+    )
+
+    # Consume first event to trigger get_session call
+    try:
+      await agen.__anext__()
+    except StopAsyncIteration:
+      pass
+    finally:
+      await agen.aclose()
+
+    # Verify get_session was called with config=None
+    self.mock_session_service.get_session.assert_called_once()
+    call_kwargs = self.mock_session_service.get_session.call_args.kwargs
+    assert call_kwargs["config"] is None
+
 
 if __name__ == "__main__":
   pytest.main([__file__])

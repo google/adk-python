@@ -56,7 +56,7 @@ from .memory.in_memory_memory_service import InMemoryMemoryService
 from .platform.thread import create_thread
 from .plugins.base_plugin import BasePlugin
 from .plugins.plugin_manager import PluginManager
-from .sessions.base_session_service import BaseSessionService
+from .sessions.base_session_service import BaseSessionService, GetSessionConfig
 from .sessions.in_memory_session_service import InMemorySessionService
 from .sessions.session import Session
 from .telemetry.tracing import tracer
@@ -354,7 +354,7 @@ class Runner:
     )
 
   async def _get_or_create_session(
-      self, *, user_id: str, session_id: str
+      self, *, user_id: str, session_id: str, get_session_config: Optional[GetSessionConfig] = None
   ) -> Session:
     """Gets the session or creates it if auto-creation is enabled.
 
@@ -365,6 +365,7 @@ class Runner:
     Args:
       user_id: The user ID of the session.
       session_id: The session ID of the session.
+      get_session_config: Optional `GetSessionConfig` for retrieving the session.
 
     Returns:
       The existing or newly created `Session`.
@@ -373,7 +374,7 @@ class Runner:
       ValueError: If the session is not found and auto_create_session is False.
     """
     session = await self.session_service.get_session(
-        app_name=self.app_name, user_id=user_id, session_id=session_id
+        app_name=self.app_name, user_id=user_id, session_id=session_id, config=get_session_config
     )
     if not session:
       if self.auto_create_session:
@@ -494,11 +495,8 @@ class Runner:
         invocation_id: Optional[str] = None,
     ) -> AsyncGenerator[Event, None]:
       with tracer.start_as_current_span('invocation'):
-        session = await self.session_service.get_session(
-            app_name=self.app_name,
-            user_id=user_id,
-            session_id=session_id,
-            config=run_config.get_session_config,
+        session = await self._get_or_create_session(
+            user_id=user_id, session_id=session_id, get_session_config=run_config.get_session_config
         )
         if not invocation_id and not new_message:
           raise ValueError(
@@ -1003,11 +1001,8 @@ class Runner:
           stacklevel=2,
       )
     if not session:
-      session = await self.session_service.get_session(
-          app_name=self.app_name,
-          user_id=user_id,
-          session_id=session_id,
-          config=run_config.get_session_config,
+      session = await self._get_or_create_session(
+          user_id=user_id, session_id=session_id, get_session_config=run_config.get_session_config
       )
     invocation_context = self._new_invocation_context_for_live(
         session,
