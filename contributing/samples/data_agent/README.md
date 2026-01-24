@@ -37,10 +37,6 @@ questions in the same session, and the agent will maintain context.
 *   `get_data_agent_info`: Retrieves details about a specific Data Agent given
     its full resource name.
 *   `ask_data_agent`: Chats with a specific Data Agent using natural language.
-    This tool maintains conversation state: if you ask multiple
-    questions to the same agent in one session, it will use the same
-    conversation, allowing for follow-ups. If you switch agents, a new
-    conversation will be started for the new agent.
 
 ## How to Run
 
