@@ -26,7 +26,7 @@ registry_tools = api_registry.get_toolset(
     mcp_server_name=MCP_SERVER_NAME,
 )
 root_agent = LlmAgent(
-    model="gemini-2.0-flash",
+    model="gemini-2.5-flash",
     name="bigquery_assistant",
     instruction=f"""
 You are a helpful data analyst assistant with access to BigQuery. The project ID is: {PROJECT_ID}

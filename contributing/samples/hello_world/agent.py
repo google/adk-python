@@ -65,7 +65,7 @@ async def check_prime(nums: list[int]) -> str:
 
 
 root_agent = Agent(
-    model='gemini-2.0-flash',
+    model='gemini-2.5-flash',
     name='hello_world_agent',
     description=(
         'hello world agent that can roll a dice of 8 sides and check prime'

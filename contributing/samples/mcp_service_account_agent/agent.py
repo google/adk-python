@@ -29,7 +29,7 @@ MCP_SERVER_URL = "https://test.sandbox.googleapis.com/mcp"
 SCOPES = {"https://www.googleapis.com/auth/cloud-platform": ""}
 
 root_agent = LlmAgent(
-    model="gemini-2.0-flash",
+    model="gemini-2.5-flash",
     name="enterprise_assistant",
     instruction="""
 Help the user with the tools available to you.

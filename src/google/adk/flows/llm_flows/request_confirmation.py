@@ -78,8 +78,9 @@ class _RequestConfirmationLlmRequestProcessor(BaseLlmRequestProcessor):
             and len(function_response.response.values()) == 1
             and 'response' in function_response.response.keys()
         ):
-          # ADK web client will send a request that is always encapsulated in a
-          # 'response' key.
+          # ADK client must send a resuming run request with a function response
+          # that always encapsulate the confirmation result with a 'response'
+          # key
           tool_confirmation = ToolConfirmation.model_validate(
               json.loads(function_response.response['response'])
           )
