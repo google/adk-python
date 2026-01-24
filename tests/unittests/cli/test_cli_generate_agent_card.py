@@ -36,13 +36,11 @@ def mock_agent_loader():
 
 @pytest.fixture
 def mock_agent_card_builder():
+  mock_module = MagicMock()
   with patch.dict(
-      "sys.modules", {"google.adk.a2a.utils.agent_card_builder": MagicMock()}
+      "sys.modules", {"google.adk.a2a.utils.agent_card_builder": mock_module}
   ):
-    with patch(
-        "google.adk.a2a.utils.agent_card_builder.AgentCardBuilder"
-    ) as mock:
-      yield mock
+    yield mock_module.AgentCardBuilder
 
 
 def test_generate_agent_card_missing_a2a(runner):
@@ -78,11 +76,12 @@ def test_generate_agent_card_missing_a2a(runner):
   pass
 
 
-@patch("google.adk.cli.utils.agent_loader.AgentLoader")
-@patch("google.adk.a2a.utils.agent_card_builder.AgentCardBuilder")
+@patch("google.adk.cli.cli_generate_agent_card.AgentLoader")
 def test_generate_agent_card_success_no_file(
-    mock_builder_cls, mock_loader_cls, runner
+    mock_loader_cls, mock_agent_card_builder, runner
 ):
+  # Setup mocks
+  mock_builder_cls = mock_agent_card_builder
   # Setup mocks
   mock_loader = mock_loader_cls.return_value
   mock_loader.list_agents.return_value = ["agent1"]
@@ -115,11 +114,12 @@ def test_generate_agent_card_success_no_file(
   mock_builder.build.assert_called_once()
 
 
-@patch("google.adk.cli.utils.agent_loader.AgentLoader")
-@patch("google.adk.a2a.utils.agent_card_builder.AgentCardBuilder")
+@patch("google.adk.cli.cli_generate_agent_card.AgentLoader")
 def test_generate_agent_card_success_create_file(
-    mock_builder_cls, mock_loader_cls, runner, tmp_path
+    mock_loader_cls, mock_agent_card_builder, runner, tmp_path
 ):
+  # Setup mocks
+  mock_builder_cls = mock_agent_card_builder
   # Setup mocks
   cwd = tmp_path / "project"
   cwd.mkdir()
@@ -151,11 +151,12 @@ def test_generate_agent_card_success_create_file(
     assert content["name"] == "agent1"
 
 
-@patch("google.adk.cli.utils.agent_loader.AgentLoader")
-@patch("google.adk.a2a.utils.agent_card_builder.AgentCardBuilder")
+@patch("google.adk.cli.cli_generate_agent_card.AgentLoader")
 def test_generate_agent_card_agent_error(
-    mock_builder_cls, mock_loader_cls, runner
+    mock_loader_cls, mock_agent_card_builder, runner
 ):
+  # Setup mocks
+  mock_builder_cls = mock_agent_card_builder
   # Setup mocks
   mock_loader = mock_loader_cls.return_value
   mock_loader.list_agents.return_value = ["agent1", "agent2"]
