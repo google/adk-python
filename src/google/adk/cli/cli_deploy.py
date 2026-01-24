@@ -105,7 +105,8 @@ from vertexai.agent_engines import AdkApp
 
 if {is_config_agent}:
   from google.adk.agents import config_agent_utils
-  root_agent = config_agent_utils.from_config("{agent_folder}/root_agent.yaml")
+  config_path = os.path.join(os.path.dirname(__file__), "root_agent.yaml")
+  root_agent = config_agent_utils.from_config(config_path)
 else:
   from .agent import {adk_app_object}
 
