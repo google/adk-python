@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -688,6 +688,12 @@ class TestRemoteA2aAgentMessageHandling:
         A2A_METADATA_PREFIX + "response": True,
     }
 
+    agent2 = Mock()
+    agent2.content = None
+    agent2.author = self.agent.name
+    # Just actions, no content. Not marked as a response.
+    agent2.actions = Mock()
+    agent2.custom_metadata = None
 
     part3 = Mock()
     part3.text = "User 2"
@@ -698,7 +704,7 @@ class TestRemoteA2aAgentMessageHandling:
     user2.author = "user"
     user2.custom_metadata = None
 
-    self.mock_session.events = [user1, agent1, user2]
+    self.mock_session.events = [user1, agent1, user2, agent2]
 
     def mock_converter(part):
       mock_a2a_part = Mock()
