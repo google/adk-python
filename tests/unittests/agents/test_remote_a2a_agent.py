@@ -17,6 +17,7 @@ from pathlib import Path
 import tempfile
 from unittest.mock import AsyncMock
 from unittest.mock import create_autospec
+from unittest.mock import MagicMock
 from unittest.mock import Mock
 from unittest.mock import patch
 
@@ -1002,7 +1003,7 @@ class TestRemoteA2aAgentMessageHandling:
           mock_a2a_task,
           self.agent.name,
           self.mock_context,
-          self.mock_a2a_part_converter,
+          self.agent._a2a_part_converter,
       )
       # Check the parts are updated as Thought
       assert result.content.parts[0].thought is True
@@ -1770,7 +1771,7 @@ class TestRemoteA2aAgentExecution:
           )  # Tuple with parts and context_id
 
           # Mock A2A client
-          mock_a2a_client = create_autospec(spec=A2AClient, instance=True)
+          mock_a2a_client = MagicMock(spec=A2AClient)
           mock_response = Mock()
           mock_send_message = AsyncMock()
           mock_send_message.__aiter__.return_value = [mock_response]
@@ -1909,7 +1910,7 @@ class TestRemoteA2aAgentExecution:
           )  # Tuple with parts and context_id
 
           # Mock A2A client
-          mock_a2a_client = create_autospec(spec=A2AClient, instance=True)
+          mock_a2a_client = MagicMock(spec=A2AClient)
           mock_response = Mock()
           mock_send_message = AsyncMock()
           mock_send_message.__aiter__.return_value = [mock_response]
@@ -2046,7 +2047,7 @@ class TestRemoteA2aAgentExecutionFromFactory:
           )  # Tuple with parts and context_id
 
           # Mock A2A client
-          mock_a2a_client = create_autospec(spec=A2AClient, instance=True)
+          mock_a2a_client = MagicMock(spec=A2AClient)
           mock_response = Mock()
           mock_send_message = AsyncMock()
           mock_send_message.__aiter__.return_value = [mock_response]
