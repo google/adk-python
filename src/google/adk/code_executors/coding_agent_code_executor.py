@@ -315,6 +315,11 @@ class CodingAgentCodeExecutor(BaseCodeExecutor):
             invocation_context=invocation_context,
             code_execution_input=input_data,
         )
+        if last_result.stderr:
+            raise RuntimeError(
+                f'Failed to replay history step with hash {step.code_hash}. '
+                f'Error: {last_result.stderr}'
+            )
         logger.debug("Replayed history step: %s", step.code_hash)
 
     return last_result
