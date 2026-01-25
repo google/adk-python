@@ -22,8 +22,8 @@ from unittest.mock import patch
 
 from google.adk.agents.coding_agent import CodingAgent
 from google.adk.agents.coding_agent import CodingAgentState
+from google.adk.agents.coding_agent_config import _EXTENDED_SAFE_IMPORTS
 from google.adk.agents.coding_agent_config import CodingAgentConfig
-from google.adk.agents.coding_agent_config import DEFAULT_SAFE_IMPORTS
 from google.adk.tools.base_tool import BaseTool
 import pytest
 
@@ -41,7 +41,7 @@ class TestCodingAgentConfig:
     assert config.error_retry_attempts == 2
     assert config.stateful is False
     assert config.tool_server_port == 8765
-    assert config.authorized_imports == DEFAULT_SAFE_IMPORTS
+    assert config.authorized_imports == _EXTENDED_SAFE_IMPORTS
 
   def test_custom_values(self):
     """Test that custom values can be set."""
