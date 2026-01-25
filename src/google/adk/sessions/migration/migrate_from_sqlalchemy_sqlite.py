@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -23,6 +23,7 @@ import sqlite3
 import sys
 
 from google.adk.sessions import sqlite_session_service as sss
+from google.adk.sessions.migration import _schema_check_utils
 from google.adk.sessions.schemas import v0 as v0_schema
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -32,9 +33,14 @@ logger = logging.getLogger("google_adk." + __name__)
 
 def migrate(source_db_url: str, dest_db_path: str):
   """Migrates data from a SQLAlchemy-based SQLite DB to the new schema."""
+  # Convert async driver URLs to sync URLs for SQLAlchemy's synchronous engine.
+  # This allows users to provide URLs like 'sqlite+aiosqlite://...' and have
+  # them automatically converted to 'sqlite://...' for migration.
+  source_sync_url = _schema_check_utils.to_sync_url(source_db_url)
+
   logger.info(f"Connecting to source database: {source_db_url}")
   try:
-    engine = create_engine(source_db_url)
+    engine = create_engine(source_sync_url)
     v0_schema.Base.metadata.create_all(
         engine
     )  # Ensure tables exist for inspection

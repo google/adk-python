@@ -26,10 +26,10 @@ Install SQLite from [https://sqlite.org/](https://sqlite.org/)
 
 ### 3. Install Required Python Dependencies
 
-**Important**: The ADK's `ToolboxToolset` class requires the `toolbox-core` package, which is not automatically installed with the ADK. Install it using:
+**Important**: The ADK's `ToolboxToolset` class requires the `toolbox-adk` package, which is not automatically installed with the ADK. Install it using:
 
 ```bash
-pip install toolbox-core
+pip install google-adk[toolbox]
 ```
 
 ### 4. Create Database (Optional)
