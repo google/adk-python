@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -23,7 +23,6 @@ from typing import Optional
 from typing_extensions import override
 
 from ..agents.invocation_context import InvocationContext
-from ..utils.feature_decorator import experimental
 from .base_code_executor import BaseCodeExecutor
 from .code_execution_utils import CodeExecutionInput
 from .code_execution_utils import CodeExecutionResult
@@ -32,7 +31,6 @@ from .code_execution_utils import File
 logger = logging.getLogger('google_adk.' + __name__)
 
 
-@experimental
 class AgentEngineSandboxCodeExecutor(BaseCodeExecutor):
   """A code executor that uses Agent Engine Code Execution Sandbox to execute code.
 
