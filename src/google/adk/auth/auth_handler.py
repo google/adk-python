@@ -52,7 +52,6 @@ class AuthHandler:
       res = await exchanger.exchange(credential, self.auth_config.auth_scheme)
       return res.credential
 
-
   async def parse_and_store_auth_response(self, state: State) -> None:
 
     credential_key = "temp:" + self.auth_config.credential_key
