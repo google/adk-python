@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -39,11 +39,10 @@ from ...agents.readonly_context import ReadonlyContext
 from ...agents.run_config import StreamingMode
 from ...agents.transcription_entry import TranscriptionEntry
 from ...events.event import Event
-from ...features import FeatureName
-from ...features import is_feature_enabled
 from ...models.base_llm_connection import BaseLlmConnection
 from ...models.llm_request import LlmRequest
 from ...models.llm_response import LlmResponse
+from ...telemetry import tracing
 from ...telemetry.tracing import trace_call_llm
 from ...telemetry.tracing import trace_send_data
 from ...telemetry.tracing import tracer
@@ -290,10 +289,46 @@ def _should_stop_afc_loop(
   return False, 0
 
 
+def _finalize_model_response_event(
+    llm_request: LlmRequest,
+    llm_response: LlmResponse,
+    model_response_event: Event,
+) -> Event:
+  """Finalize and build the model response event from LLM response.
+
+  Merges the LLM response data into the model response event and
+  populates function call IDs and long-running tool information.
+
+  Args:
+    llm_request: The original LLM request.
+    llm_response: The LLM response from the model.
+    model_response_event: The base event to populate.
+
+  Returns:
+    The finalized Event with LLM response data merged in.
+  """
+  finalized_event = Event.model_validate({
+      **model_response_event.model_dump(exclude_none=True),
+      **llm_response.model_dump(exclude_none=True),
+  })
+
+  if finalized_event.content:
+    function_calls = finalized_event.get_function_calls()
+    if function_calls:
+      functions.populate_client_function_call_id(finalized_event)
+      finalized_event.long_running_tool_ids = (
+          functions.get_long_running_function_calls(
+              function_calls, llm_request.tools_dict
+          )
+      )
+
+  return finalized_event
+
+
 class BaseLlmFlow(ABC):
   """A basic flow that calls the LLM in a loop until a final response is generated.
 
-  This flow ends when it transfer to another agent.
+  This flow ends when it transfers to another agent.
   """
 
   def __init__(self):
@@ -494,6 +529,25 @@ class BaseLlmFlow(ABC):
         await llm_connection.send_realtime(live_request.blob)
 
       if live_request.content:
+        content = live_request.content
+        # Persist user text content to session (similar to non-live mode)
+        # Skip function responses - they are already handled separately
+        is_function_response = content.parts and any(
+            part.function_response for part in content.parts
+        )
+        if not is_function_response:
+          if not content.role:
+            content.role = 'user'
+          user_content_event = Event(
+              id=Event.new_id(),
+              invocation_id=invocation_context.invocation_id,
+              author='user',
+              content=content,
+          )
+          await invocation_context.session_service.append_event(
+              session=invocation_context.session,
+              event=user_content_event,
+          )
         await llm_connection.send_content(live_request.content)
 
   async def _receive_from_model(
@@ -905,14 +959,11 @@ class BaseLlmFlow(ABC):
     # Handles function calls.
     if model_response_event.get_function_calls():
 
-      if is_feature_enabled(FeatureName.PROGRESSIVE_SSE_STREAMING):
-        # In progressive SSE streaming mode stage 1, we skip partial FC events
-        # Only execute FCs in the final aggregated event (partial=False)
-        if (
-            invocation_context.run_config.streaming_mode == StreamingMode.SSE
-            and model_response_event.partial
-        ):
-          return
+      # Skip partial function call events - they should not trigger execution
+      # since partial events are not saved to session (see runners.py).
+      # Only execute function calls in the non-partial events.
+      if model_response_event.partial:
+        return
 
       # Check if AFC should be disabled - skip function call execution
       # Returns (should_stop, _) - we ignore the counter for execution checks
@@ -1135,7 +1186,7 @@ class BaseLlmFlow(ABC):
     llm = self.__get_llm(invocation_context)
 
     async def _call_llm_with_tracing() -> AsyncGenerator[LlmResponse, None]:
-      with tracer.start_as_current_span('call_llm'):
+      with tracer.start_as_current_span('call_llm') as span:
         if invocation_context.run_config.support_cfc:
           invocation_context.live_request_queue = LiveRequestQueue()
           responses_generator = self.run_live(invocation_context)
@@ -1186,6 +1237,7 @@ class BaseLlmFlow(ABC):
                   model_response_event.id,
                   llm_request,
                   llm_response,
+                  span,
               )
               # Runs after_model_callback if it exists.
               if altered_llm_response := await self._handle_after_model_callback(
@@ -1303,22 +1355,9 @@ class BaseLlmFlow(ABC):
       llm_response: LlmResponse,
       model_response_event: Event,
   ) -> Event:
-    model_response_event = Event.model_validate({
-        **model_response_event.model_dump(exclude_none=True),
-        **llm_response.model_dump(exclude_none=True),
-    })
-
-    if model_response_event.content:
-      function_calls = model_response_event.get_function_calls()
-      if function_calls:
-        functions.populate_client_function_call_id(model_response_event)
-        model_response_event.long_running_tool_ids = (
-            functions.get_long_running_function_calls(
-                function_calls, llm_request.tools_dict
-            )
-        )
-
-    return model_response_event
+    return _finalize_model_response_event(
+        llm_request, llm_response, model_response_event
+    )
 
   async def _handle_control_event_flush(
       self, invocation_context: InvocationContext, llm_response: LlmResponse
@@ -1414,8 +1453,12 @@ class BaseLlmFlow(ABC):
 
     try:
       async with Aclosing(response_generator) as agen:
-        async for response in agen:
-          yield response
+        with tracing.use_generate_content_span(
+            llm_request, invocation_context, model_response_event
+        ) as span:
+          async for llm_response in agen:
+            tracing.trace_generate_content_result(span, llm_response)
+            yield llm_response
     except Exception as model_error:
       callback_context = CallbackContext(
           invocation_context, event_actions=model_response_event.actions

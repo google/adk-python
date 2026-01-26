@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -17,7 +17,9 @@
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import copy
+import functools
 import inspect
 import logging
 import threading
@@ -49,8 +51,112 @@ if TYPE_CHECKING:
 AF_FUNCTION_CALL_ID_PREFIX = 'adk-'
 REQUEST_EUC_FUNCTION_CALL_NAME = 'adk_request_credential'
 REQUEST_CONFIRMATION_FUNCTION_CALL_NAME = 'adk_request_confirmation'
+REQUEST_INPUT_FUNCTION_CALL_NAME = 'adk_request_input'
 
 logger = logging.getLogger('google_adk.' + __name__)
+
+# Global thread pool executors for running tools in background threads.
+# This prevents blocking tools from blocking the event loop in Live API mode.
+# Key is max_workers, value is the executor.
+_TOOL_THREAD_POOLS: dict[int, ThreadPoolExecutor] = {}
+_TOOL_THREAD_POOL_LOCK = threading.Lock()
+
+
+def _get_tool_thread_pool(max_workers: int = 4) -> ThreadPoolExecutor:
+  """Gets or creates a thread pool executor for tool execution.
+
+  Args:
+    max_workers: Maximum number of worker threads in the pool.
+
+  Returns:
+    A ThreadPoolExecutor with the specified max_workers.
+  """
+  if max_workers not in _TOOL_THREAD_POOLS:
+    with _TOOL_THREAD_POOL_LOCK:
+      if max_workers not in _TOOL_THREAD_POOLS:
+        _TOOL_THREAD_POOLS[max_workers] = ThreadPoolExecutor(
+            max_workers=max_workers, thread_name_prefix='adk_tool_executor'
+        )
+  return _TOOL_THREAD_POOLS[max_workers]
+
+
+def _is_sync_tool(tool: BaseTool) -> bool:
+  """Checks if a tool's underlying function is synchronous."""
+  if not hasattr(tool, 'func'):
+    return False
+  func = tool.func
+  return not (
+      inspect.iscoroutinefunction(func)
+      or inspect.isasyncgenfunction(func)
+      or (
+          hasattr(func, '__call__')
+          and inspect.iscoroutinefunction(func.__call__)
+      )
+  )
+
+
+async def _call_tool_in_thread_pool(
+    tool: BaseTool,
+    args: dict[str, Any],
+    tool_context: ToolContext,
+    max_workers: int = 4,
+) -> Any:
+  """Runs a tool in a thread pool to avoid blocking the event loop.
+
+  For sync tools, this runs the tool's function directly in a background thread.
+  For async tools, this creates a new event loop in the background thread and
+  runs the async function there. This helps catch blocking I/O (like time.sleep,
+  network calls, file I/O) that was mistakenly used inside async functions.
+
+  Note: Due to Python's GIL, this does NOT help with pure Python CPU-bound code.
+  Thread pool only helps when the GIL is released (blocking I/O, C extensions).
+
+  Args:
+    tool: The tool to execute.
+    args: Arguments to pass to the tool.
+    tool_context: The tool context.
+    max_workers: Maximum number of worker threads in the pool.
+
+  Returns:
+    The result of running the tool.
+  """
+  from ...tools.function_tool import FunctionTool
+
+  loop = asyncio.get_running_loop()
+  executor = _get_tool_thread_pool(max_workers)
+
+  if _is_sync_tool(tool):
+    # For sync FunctionTool, call the underlying function directly
+    def run_sync_tool():
+      if isinstance(tool, FunctionTool):
+        args_to_call = tool._preprocess_args(args)
+        signature = inspect.signature(tool.func)
+        valid_params = {param for param in signature.parameters}
+        if 'tool_context' in valid_params:
+          args_to_call['tool_context'] = tool_context
+        args_to_call = {
+            k: v for k, v in args_to_call.items() if k in valid_params
+        }
+        return tool.func(**args_to_call)
+      else:
+        # For other sync tool types, we can't easily run them in thread pool
+        return None
+
+    result = await loop.run_in_executor(executor, run_sync_tool)
+    if result is not None:
+      return result
+  else:
+    # For async tools, run them in a new event loop in a background thread.
+    # This helps when async functions contain blocking I/O (common user mistake)
+    # that would otherwise block the main event loop.
+    def run_async_tool_in_new_loop():
+      # Create a new event loop for this thread
+      return asyncio.run(tool.run_async(args=args, tool_context=tool_context))
+
+    return await loop.run_in_executor(executor, run_async_tool_in_new_loop)
+
+  # Fall back to normal async execution for non-FunctionTool sync tools
+  return await tool.run_async(args=args, tool_context=tool_context)
 
 
 def generate_client_function_call_id() -> str:
@@ -410,7 +516,7 @@ async def _execute_single_function_call_async(
       function_response = altered_function_response
 
     if tool.is_long_running:
-      # Allow long running function to return None to not provide function
+      # Allow long-running function to return None to not provide function
       # response.
       if not function_response:
         return None
@@ -705,9 +811,19 @@ async def _process_function_live_helper(
         )
     }
   else:
-    function_response = await __call_tool_async(
-        tool, args=function_args, tool_context=tool_context
-    )
+    # Check if we should run tools in thread pool to avoid blocking event loop
+    thread_pool_config = invocation_context.run_config.tool_thread_pool_config
+    if thread_pool_config is not None:
+      function_response = await _call_tool_in_thread_pool(
+          tool,
+          args=function_args,
+          tool_context=tool_context,
+          max_workers=thread_pool_config.max_workers,
+      )
+    else:
+      function_response = await __call_tool_async(
+          tool, args=function_args, tool_context=tool_context
+      )
   return function_response
 
 
@@ -893,7 +1009,7 @@ def find_matching_function_call(
     )
     for i in range(len(events) - 2, -1, -1):
       event = events[i]
-      # looking for the system long running request euc function call
+      # looking for the system long-running request euc function call
       function_calls = event.get_function_calls()
       if not function_calls:
         continue

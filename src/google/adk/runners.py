@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -149,6 +149,7 @@ class Runner:
       memory_service: Optional[BaseMemoryService] = None,
       credential_service: Optional[BaseCredentialService] = None,
       plugin_close_timeout: float = 5.0,
+      auto_create_session: bool = False,
   ):
     """Initializes the Runner.
 
@@ -175,6 +176,9 @@ class Runner:
         memory_service: The memory service for the runner.
         credential_service: The credential service for the runner.
         plugin_close_timeout: The timeout in seconds for plugin close methods.
+        auto_create_session: Whether to automatically create a session when
+          not found. Defaults to False. If False, a missing session raises
+          ValueError with a helpful message.
 
     Raises:
         ValueError: If `app` is provided along with `agent` or `plugins`, or if
@@ -195,6 +199,7 @@ class Runner:
     self.plugin_manager = PluginManager(
         plugins=plugins, close_timeout=plugin_close_timeout
     )
+    self.auto_create_session = auto_create_session
     (
         self._agent_origin_app_name,
         self._agent_origin_dir,
@@ -343,8 +348,42 @@ class Runner:
       return message
     return (
         f'{message}. {self._app_name_alignment_hint} '
-        'The mismatch prevents the runner from locating the session.'
+        'The mismatch prevents the runner from locating the session. '
+        'To automatically create a session when missing, set '
+        'auto_create_session=True when constructing the runner.'
     )
+
+  async def _get_or_create_session(
+      self, *, user_id: str, session_id: str
+  ) -> Session:
+    """Gets the session or creates it if auto-creation is enabled.
+
+    This helper first attempts to retrieve the session. If not found and
+    auto_create_session is True, it creates a new session with the provided
+    identifiers. Otherwise, it raises a ValueError with a helpful message.
+
+    Args:
+      user_id: The user ID of the session.
+      session_id: The session ID of the session.
+
+    Returns:
+      The existing or newly created `Session`.
+
+    Raises:
+      ValueError: If the session is not found and auto_create_session is False.
+    """
+    session = await self.session_service.get_session(
+        app_name=self.app_name, user_id=user_id, session_id=session_id
+    )
+    if not session:
+      if self.auto_create_session:
+        session = await self.session_service.create_session(
+            app_name=self.app_name, user_id=user_id, session_id=session_id
+        )
+      else:
+        message = self._format_session_not_found_message(session_id)
+        raise ValueError(message)
+    return session
 
   def run(
       self,
@@ -455,12 +494,9 @@ class Runner:
         invocation_id: Optional[str] = None,
     ) -> AsyncGenerator[Event, None]:
       with tracer.start_as_current_span('invocation'):
-        session = await self.session_service.get_session(
-            app_name=self.app_name, user_id=user_id, session_id=session_id
+        session = await self._get_or_create_session(
+            user_id=user_id, session_id=session_id
         )
-        if not session:
-          message = self._format_session_not_found_message(session_id)
-          raise ValueError(message)
         if not invocation_id and not new_message:
           raise ValueError(
               'Running an agent requires either a new_message or an '
@@ -534,12 +570,9 @@ class Runner:
       rewind_before_invocation_id: str,
   ) -> None:
     """Rewinds the session to before the specified invocation."""
-    session = await self.session_service.get_session(
-        app_name=self.app_name, user_id=user_id, session_id=session_id
+    session = await self._get_or_create_session(
+        user_id=user_id, session_id=session_id
     )
-    if not session:
-      raise ValueError(f'Session not found: {session_id}')
-
     rewind_event_index = -1
     for i, event in enumerate(session.events):
       if event.invocation_id == rewind_before_invocation_id:
@@ -727,7 +760,7 @@ class Runner:
     else:
       # Step 2: Otherwise continue with normal execution
       # Note for live/bidi:
-      # the transcription may arrive later then the action(function call
+      # the transcription may arrive later than the action(function call
       # event and thus function response event). In this case, the order of
       # transcription and function call event will be wrong if we just
       # append as it arrives. To address this, we should check if there is
@@ -737,7 +770,7 @@ class Runner:
       # identified by checking if the transcription event is partial. When
       # the next transcription event is not partial, it means the previous
       # transcription is finished. Then if there is any buffered function
-      # call event, we should append them after this finished(non-parital)
+      # call event, we should append them after this finished(non-partial)
       # transcription event.
       buffered_events: list[Event] = []
       is_transcribing: bool = False
@@ -756,7 +789,7 @@ class Runner:
               buffered_events.append(event)
               continue
             # Note for live/bidi: for audio response, it's considered as
-            # non-paritla event(event.partial=None)
+            # non-partial event(event.partial=None)
             # event.partial=False and event.partial=None are considered as
             # non-partial event; event.partial=True is considered as partial
             # event.
@@ -782,6 +815,7 @@ class Runner:
                   await self.session_service.append_event(
                       session=session, event=buffered_event
                   )
+                  yield buffered_event  # yield buffered events to caller
                 buffered_events = []
               else:
                 # non-transcription event or empty transcription event, for
@@ -904,7 +938,7 @@ class Runner:
     *   **Live Model Audio Events with Inline Data:** Events containing raw
         audio `Blob` data(`inline_data`).
     *   **Live Model Audio Events with File Data:** Both input and ouput audio
-        data are aggregated into a audio file saved into artifacts. The
+        data are aggregated into an audio file saved into artifacts. The
         reference to the file is saved in the event as `file_data`.
     *   **Usage Metadata:** Events containing token usage.
     *   **Transcription Events:** Both partial and non-partial transcription
@@ -914,7 +948,7 @@ class Runner:
 
     **Events Saved to the Session:**
     *   **Live Model Audio Events with File Data:** Both input and ouput audio
-        data are aggregated into a audio file saved into artifacts. The
+        data are aggregated into an audio file saved into artifacts. The
         reference to the file is saved as event in the `file_data` to session
         if RunConfig.save_live_model_audio_to_session is True.
     *   **Usage Metadata Events:** Saved to the session.
@@ -967,14 +1001,9 @@ class Runner:
           stacklevel=2,
       )
     if not session:
-      session = await self.session_service.get_session(
-          app_name=self.app_name, user_id=user_id, session_id=session_id
+      session = await self._get_or_create_session(
+          user_id=user_id, session_id=session_id
       )
-      if not session:
-        raise ValueError(
-            f'Session not found for user id: {user_id} and session id:'
-            f' {session_id}'
-        )
     invocation_context = self._new_invocation_context_for_live(
         session,
         live_request_queue=live_request_queue,
@@ -987,12 +1016,15 @@ class Runner:
     # Pre-processing for live streaming tools
     # Inspect the tool's parameters to find if it uses LiveRequestQueue
     invocation_context.active_streaming_tools = {}
-    # TODO(hangfei): switch to use canonical_tools.
-    # for shell agents, there is no tools associated with it so we should skip.
-    if hasattr(invocation_context.agent, 'tools'):
+    # For shell agents, there is no canonical_tools method so we should skip.
+    if hasattr(invocation_context.agent, 'canonical_tools'):
       import inspect
 
-      for tool in invocation_context.agent.tools:
+      # Use canonical_tools to get properly wrapped BaseTool instances
+      canonical_tools = await invocation_context.agent.canonical_tools(
+          invocation_context
+      )
+      for tool in canonical_tools:
         # We use `inspect.signature()` to examine the tool's underlying function (`tool.func`).
         # This approach is deliberately chosen over `typing.get_type_hints()` for robustness.
         #
@@ -1016,10 +1048,14 @@ class Runner:
           if param.annotation is LiveRequestQueue:
             if not invocation_context.active_streaming_tools:
               invocation_context.active_streaming_tools = {}
+
+            logger.debug(
+                'Register streaming tool with input stream: %s', tool.name
+            )
             active_streaming_tool = ActiveStreamingTool(
                 stream=LiveRequestQueue()
             )
-            invocation_context.active_streaming_tools[tool.__name__] = (
+            invocation_context.active_streaming_tools[tool.name] = (
                 active_streaming_tool
             )
 
@@ -1063,7 +1099,7 @@ class Runner:
     # If the last event is a function response, should send this response to
     # the agent that returned the corresponding function call regardless the
     # type of the agent. e.g. a remote a2a agent may surface a credential
-    # request as a special long running function tool call.
+    # request as a special long-running function tool call.
     event = find_matching_function_call(session.events)
     if event and event.author:
       return root_agent.find_agent(event.author)
