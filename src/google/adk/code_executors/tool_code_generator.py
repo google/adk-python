@@ -266,10 +266,9 @@ def {tool.name}({param_str}) -> dict:
     """
     kwargs = {{k: v for k, v in locals().items() if v is not None}}
     response = _call_adk_tool("{tool.name}", **kwargs)
-    # Extract the result from the tool server response
-    if isinstance(response, dict) and "result" in response:
-        return response["result"]
-    return response
+    # On success, the response is a dict with a "result" key.
+    # On failure, _call_adk_tool raises an exception.
+    return response["result"]
 
 '''
   return stub
