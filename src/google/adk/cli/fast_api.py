@@ -503,20 +503,11 @@ def get_fast_api_app(
           ):
             # VertexAiSessionService is not compliant with A2A (impossible to create session on the fly with contextID)
             # So, change it to InMemorySessionService. Put the other service in memory because persistence do not make sense
-            kwargs = {}
-            if original_runner.app:
-              kwargs["app"] = original_runner.app
-            else:
-              kwargs["app_name"] = original_runner.app_name
-              kwargs["agent"] = original_runner.agent
-
-            runner = Runner(
-                session_service=InMemorySessionService(),
-                artifact_service=InMemoryArtifactService(),
-                memory_service=InMemoryMemoryService(),
-                credential_service=InMemoryCredentialService(),
-                **kwargs,
-            )
+            runner = copy.copy(original_runner)
+            runner.session_service = InMemorySessionService()
+            runner.artifact_service = InMemoryArtifactService()
+            runner.memory_service = InMemoryMemoryService()
+            runner.credential_service = InMemoryCredentialService()
             return runner
           return original_runner
 
