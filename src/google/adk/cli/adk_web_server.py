@@ -1662,9 +1662,7 @@ class AdkWebServer:
                 if proactive_audio
                 else None
             ),
-            enable_affective_dialog=(
-                affective_dialog if affective_dialog else None
-            ),
+            enable_affective_dialog=affective_dialog or None,
             session_resumption=(
                 types.SessionResumptionConfig() if session_resumption else None
             ),
