@@ -1636,6 +1636,9 @@ class AdkWebServer:
         modalities: List[Literal["TEXT", "AUDIO"]] = Query(
             default=["AUDIO"]
         ),  # Only allows "TEXT" or "AUDIO"
+        proactive_audio: bool = Query(default=False),
+        affective_dialog: bool = Query(default=False),
+        session_resumption: bool = Query(default=False),
     ) -> None:
       await websocket.accept()
 
@@ -1652,7 +1655,20 @@ class AdkWebServer:
 
       async def forward_events():
         runner = await self.get_runner_async(app_name)
-        run_config = RunConfig(response_modalities=modalities)
+        run_config = RunConfig(
+            response_modalities=modalities,
+            proactivity=(
+                types.ProactivityConfig(proactive_audio=proactive_audio)
+                if proactive_audio
+                else None
+            ),
+            enable_affective_dialog=(
+                affective_dialog if affective_dialog else None
+            ),
+            session_resumption=(
+                types.SessionResumptionConfig() if session_resumption else None
+            ),
+        )
         async with Aclosing(
             runner.run_live(
                 session=session,

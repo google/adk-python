@@ -113,7 +113,12 @@ def _event_state_delta(state_delta: dict[str, Any]):
 
 
 # Define mocked async generator functions for the Runner
-async def dummy_run_live(self, session, live_request_queue):
+async def dummy_run_live(
+    self,
+    session,
+    live_request_queue,
+    run_config: Optional[RunConfig] = None,
+):
   yield _event_1()
   await asyncio.sleep(0)
 
@@ -1409,6 +1414,49 @@ def test_builder_save_rejects_traversal(builder_test_client, tmp_path):
   assert response.json() is False
   assert not (tmp_path / "escape.yaml").exists()
   assert not (tmp_path / "app" / "tmp" / "escape.yaml").exists()
+
+
+def test_run_live_accepts_new_config_options(test_app, test_session_info):
+  """Test that /run_live endpoint accepts proactive_audio, affective_dialog, and session_resumption query parameters."""
+  # First, create a session to use
+  session_url = (
+      f"/apps/{test_session_info['app_name']}/users/"
+      f"{test_session_info['user_id']}/sessions/{test_session_info['session_id']}"
+  )
+  test_app.post(session_url, json={"state": {}})
+
+  # The actual websocket test would require more elaborate setup.
+  # Here we verify that the endpoint accepts the new query parameters
+  # by checking FastAPI's route signature.
+  from fastapi import Query as FastApiQuery
+
+  # Find the /run_live route
+  run_live_route = None
+  for route in test_app.app.routes:
+    if hasattr(route, "path") and route.path == "/run_live":
+      run_live_route = route
+      break
+
+  assert run_live_route is not None, "/run_live route not found"
+
+  # Check that the endpoint function signature includes the new parameters
+  import inspect
+
+  endpoint_fn = run_live_route.endpoint
+  sig = inspect.signature(endpoint_fn)
+  params = sig.parameters
+
+  # Verify the new parameters exist
+  assert "proactive_audio" in params, "proactive_audio parameter not found"
+  assert "affective_dialog" in params, "affective_dialog parameter not found"
+  assert (
+      "session_resumption" in params
+  ), "session_resumption parameter not found"
+
+  # Verify they have default values of False
+  assert params["proactive_audio"].default.default is False
+  assert params["affective_dialog"].default.default is False
+  assert params["session_resumption"].default.default is False
 
 
 if __name__ == "__main__":
