@@ -116,18 +116,11 @@ def test_generate_agent_card_success_no_file(
 
 @patch("google.adk.cli.cli_generate_agent_card.AgentLoader")
 def test_generate_agent_card_success_create_file(
-    mock_loader_cls, mock_agent_card_builder, runner, tmp_path
+    mock_loader_cls, mock_agent_card_builder, runner
 ):
   # Setup mocks
   mock_builder_cls = mock_agent_card_builder
-  # Setup mocks
-  cwd = tmp_path / "project"
-  cwd.mkdir()
-  os.chdir(cwd)
-
-  agent_dir = cwd / "agent1"
-  agent_dir.mkdir()
-
+  
   mock_loader = mock_loader_cls.return_value
   mock_loader.list_agents.return_value = ["agent1"]
   mock_agent = MagicMock()
@@ -138,17 +131,20 @@ def test_generate_agent_card_success_create_file(
   mock_card.model_dump.return_value = {"name": "agent1", "description": "test"}
   mock_builder.build = AsyncMock(return_value=mock_card)
 
-  # Run command
-  result = runner.invoke(generate_agent_card, ["--create-file"])
+  with runner.isolated_filesystem():
+    os.mkdir("agent1")
 
-  assert result.exit_code == 0
+    # Run command
+    result = runner.invoke(generate_agent_card, ["--create-file"])
 
-  # Verify file creation
-  agent_json = agent_dir / "agent.json"
-  assert agent_json.exists()
-  with open(agent_json, "r") as f:
-    content = json.load(f)
-    assert content["name"] == "agent1"
+    assert result.exit_code == 0
+
+    # Verify file creation
+    agent_json = os.path.join("agent1", "agent.json")
+    assert os.path.exists(agent_json)
+    with open(agent_json, "r") as f:
+      content = json.load(f)
+      assert content["name"] == "agent1"
 
 
 @patch("google.adk.cli.cli_generate_agent_card.AgentLoader")
