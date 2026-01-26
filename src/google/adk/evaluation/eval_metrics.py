@@ -258,9 +258,11 @@ class EvalMetric(EvalBaseModel):
       description="The name of the metric.",
   )
 
-  threshold: float = Field(
+  threshold: Optional[float] = Field(
+      default=None,
       description=(
-          "A threshold value. Each metric decides how to interpret this"
+          "This field will be deprecated soon. Please use `criterion` instead."
+          " A threshold value. Each metric decides how to interpret this"
           " threshold."
       ),
   )
