@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -54,7 +54,7 @@ class _AgentTransferLlmRequestProcessor(BaseLlmRequestProcessor):
     )
 
     llm_request.append_instructions([
-        _build_target_agents_instructions(
+        _build_transfer_instructions(
             transfer_to_agent_tool.name,
             invocation_context.agent,
             transfer_targets,
@@ -83,11 +83,24 @@ Agent description: {target_agent.description}
 line_break = '\n'
 
 
-def _build_target_agents_instructions(
+def _build_transfer_instructions(
     tool_name: str,
-    agent: LlmAgent,
-    target_agents: list[BaseAgent],
+    agent: 'LlmAgent',
+    target_agents: list['BaseAgent'],
 ) -> str:
+  """Build instructions for agent transfer.
+
+  This function generates the instruction text that guides the LLM on how to
+  use the transfer tool to delegate to other agents.
+
+  Args:
+    tool_name: The name of the transfer tool (e.g., 'transfer_to_agent').
+    agent: The current agent that may initiate transfers.
+    target_agents: List of agents that can be transferred to.
+
+  Returns:
+    Instruction text for the LLM about agent transfers.
+  """
   # Build list of available agent names for the NOTE
   # target_agents already includes parent agent if applicable,
   # so no need to add it again

@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -23,35 +23,59 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from collections.abc import Mapping
+from contextlib import contextmanager
 import json
+import logging
 import os
 from typing import Any
-from typing import Optional
 from typing import TYPE_CHECKING
 
 from google.genai import types
+from google.genai.models import Models
+from opentelemetry import _logs
 from opentelemetry import trace
+from opentelemetry._logs import LogRecord
+from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_AGENT_DESCRIPTION
+from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_AGENT_NAME
+from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_CONVERSATION_ID
+from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_OPERATION_NAME
+from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_REQUEST_MODEL
+from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_RESPONSE_FINISH_REASONS
+from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_SYSTEM
+from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_TOOL_CALL_ID
+from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_TOOL_DESCRIPTION
+from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_TOOL_NAME
+from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_TOOL_TYPE
+from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_USAGE_INPUT_TOKENS
+from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_USAGE_OUTPUT_TOKENS
+from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GenAiSystemValues
+from opentelemetry.semconv.schemas import Schemas
+from opentelemetry.trace import Span
+from opentelemetry.util.types import AnyValue
+from opentelemetry.util.types import AttributeValue
+from pydantic import BaseModel
 
 from .. import version
-from ..events.event import Event
+from ..utils.model_name_utils import is_gemini_model
 
 # By default some ADK spans include attributes with potential PII data.
 # This env, when set to false, allows to disable populating those attributes.
 ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS = 'ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS'
-# TODO: Replace with constant from opentelemetry.semconv when it reaches version 1.37 in g3.
-GEN_AI_AGENT_DESCRIPTION = 'gen_ai.agent.description'
-GEN_AI_AGENT_NAME = 'gen_ai.agent.name'
-GEN_AI_CONVERSATION_ID = 'gen_ai.conversation.id'
-GEN_AI_OPERATION_NAME = 'gen_ai.operation.name'
-GEN_AI_TOOL_CALL_ID = 'gen_ai.tool.call.id'
-GEN_AI_TOOL_DESCRIPTION = 'gen_ai.tool.description'
-GEN_AI_TOOL_NAME = 'gen_ai.tool.name'
-GEN_AI_TOOL_TYPE = 'gen_ai.tool.type'
+
+# Standard OTEL env variable to enable logging of prompt/response content.
+OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT = (
+    'OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT'
+)
+
+USER_CONTENT_ELIDED = '<elided>'
 
 # Needed to avoid circular imports
 if TYPE_CHECKING:
   from ..agents.base_agent import BaseAgent
   from ..agents.invocation_context import InvocationContext
+  from ..events.event import Event
   from ..models.llm_request import LlmRequest
   from ..models.llm_response import LlmResponse
   from ..tools.base_tool import BaseTool
@@ -59,9 +83,16 @@ if TYPE_CHECKING:
 tracer = trace.get_tracer(
     instrumenting_module_name='gcp.vertex.agent',
     instrumenting_library_version=version.__version__,
-    # TODO: Replace with constant from opentelemetry.semconv when it reaches version 1.37 in g3.
-    schema_url='https://opentelemetry.io/schemas/1.37.0',
+    schema_url=Schemas.V1_36_0.value,
 )
+
+otel_logger = _logs.get_logger(
+    instrumenting_module_name='gcp.vertex.agent',
+    instrumenting_library_version=version.__version__,
+    schema_url=Schemas.V1_36_0.value,
+)
+
+logger = logging.getLogger('google_adk.' + __name__)
 
 
 def _safe_json_serialize(obj) -> str:
@@ -119,7 +150,7 @@ def trace_agent_invocation(
 def trace_tool_call(
     tool: BaseTool,
     args: dict[str, Any],
-    function_response_event: Optional[Event],
+    function_response_event: Event | None,
 ):
   """Traces tool call.
 
@@ -149,7 +180,7 @@ def trace_tool_call(
         _safe_json_serialize(args),
     )
   else:
-    span.set_attribute('gcp.vertex.agent.tool_call_args', {})
+    span.set_attribute('gcp.vertex.agent.tool_call_args', '{}')
 
   # Tracing tool response
   tool_call_id = '<not specified>'
@@ -179,7 +210,7 @@ def trace_tool_call(
         _safe_json_serialize(tool_response),
     )
   else:
-    span.set_attribute('gcp.vertex.agent.tool_response', {})
+    span.set_attribute('gcp.vertex.agent.tool_response', '{}')
 
 
 def trace_merged_tool_calls(
@@ -219,7 +250,7 @@ def trace_merged_tool_calls(
         function_response_event_json,
     )
   else:
-    span.set_attribute('gcp.vertex.agent.tool_response', {})
+    span.set_attribute('gcp.vertex.agent.tool_response', '{}')
   # Setting empty llm request and response (as UI expect these) while not
   # applicable for tool_response.
   span.set_attribute('gcp.vertex.agent.llm_request', '{}')
@@ -234,6 +265,7 @@ def trace_call_llm(
     event_id: str,
     llm_request: LlmRequest,
     llm_response: LlmResponse,
+    span: Span | None = None,
 ):
   """Traces a call to the LLM.
 
@@ -246,7 +278,7 @@ def trace_call_llm(
     llm_request: The LLM request object.
     llm_response: The LLM response object.
   """
-  span = trace.get_current_span()
+  span = span or trace.get_current_span()
   # Special standard Open Telemetry GenaI attributes that indicate
   # that this is a span related to a Generative AI system.
   span.set_attribute('gen_ai.system', 'gcp.vertex.agent')
@@ -265,7 +297,7 @@ def trace_call_llm(
         _safe_json_serialize(_build_llm_request_for_trace(llm_request)),
     )
   else:
-    span.set_attribute('gcp.vertex.agent.llm_request', {})
+    span.set_attribute('gcp.vertex.agent.llm_request', '{}')
   # Consider removing once GenAI SDK provides a way to record this info.
   if llm_request.config:
     if llm_request.config.top_p:
@@ -290,7 +322,7 @@ def trace_call_llm(
         llm_response_json,
     )
   else:
-    span.set_attribute('gcp.vertex.agent.llm_response', {})
+    span.set_attribute('gcp.vertex.agent.llm_response', '{}')
 
   if llm_response.usage_metadata is not None:
     span.set_attribute(
@@ -340,13 +372,13 @@ def trace_send_data(
         'gcp.vertex.agent.data',
         _safe_json_serialize([
             types.Content(role=content.role, parts=content.parts).model_dump(
-                exclude_none=True
+                exclude_none=True, mode='json'
             )
             for content in data
         ]),
     )
   else:
-    span.set_attribute('gcp.vertex.agent.data', {})
+    span.set_attribute('gcp.vertex.agent.data', '{}')
 
 
 def _build_llm_request_for_trace(llm_request: LlmRequest) -> dict[str, Any]:
@@ -366,7 +398,7 @@ def _build_llm_request_for_trace(llm_request: LlmRequest) -> dict[str, Any]:
   result = {
       'model': llm_request.model,
       'config': llm_request.config.model_dump(
-          exclude_none=True, exclude='response_schema'
+          exclude_none=True, exclude='response_schema', mode='json'
       ),
       'contents': [],
   }
@@ -375,7 +407,7 @@ def _build_llm_request_for_trace(llm_request: LlmRequest) -> dict[str, Any]:
     parts = [part for part in content.parts if not part.inline_data]
     result['contents'].append(
         types.Content(role=content.role, parts=parts).model_dump(
-            exclude_none=True
+            exclude_none=True, mode='json'
         )
     )
   return result
@@ -390,3 +422,166 @@ def _should_add_request_response_to_spans() -> bool:
       ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS, 'true'
   ).lower() in ('false', '0')
   return not disabled_via_env_var
+
+
+@contextmanager
+def use_generate_content_span(
+    llm_request: LlmRequest,
+    invocation_context: InvocationContext,
+    model_response_event: Event,
+) -> Iterator[Span | None]:
+  """Context manager encompassing `generate_content {model.name}` span.
+
+  When an external library for inference instrumentation is installed (e.g. opentelemetry-instrumentation-google-genai),
+  span creation is delegated to said library.
+  """
+
+  common_attributes = {
+      GEN_AI_CONVERSATION_ID: invocation_context.session.id,
+      'gcp.vertex.agent.event_id': model_response_event.id,
+  }
+  if (
+      _is_gemini_agent(invocation_context.agent)
+      and _instrumented_with_opentelemetry_instrumentation_google_genai()
+  ):
+    yield None
+  else:
+    with _use_native_generate_content_span(
+        llm_request=llm_request,
+        common_attributes=common_attributes,
+    ) as span:
+      yield span
+
+
+def _should_log_prompt_response_content() -> bool:
+  return os.getenv(
+      OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT, ''
+  ).lower() in ('1', 'true')
+
+
+def _serialize_content(content: types.ContentUnion) -> AnyValue:
+  if isinstance(content, BaseModel):
+    return content.model_dump()
+  if isinstance(content, str):
+    return content
+  if isinstance(content, list):
+    return [_serialize_content(part) for part in content]
+  return _safe_json_serialize(content)
+
+
+def _serialize_content_with_elision(
+    content: types.ContentUnion | None,
+) -> AnyValue:
+  if not _should_log_prompt_response_content():
+    return USER_CONTENT_ELIDED
+  if content is None:
+    return None
+  return _serialize_content(content)
+
+
+def _instrumented_with_opentelemetry_instrumentation_google_genai() -> bool:
+  maybe_wrapped_function = Models.generate_content
+  while wrapped := getattr(maybe_wrapped_function, '__wrapped__', None):
+    if (
+        'opentelemetry/instrumentation/google_genai'
+        in maybe_wrapped_function.__code__.co_filename
+    ):
+      return True
+    maybe_wrapped_function = wrapped  # pyright: ignore[reportAny]
+
+  return False
+
+
+def _is_gemini_agent(agent: BaseAgent) -> bool:
+  from ..agents.llm_agent import LlmAgent
+
+  if not isinstance(agent, LlmAgent):
+    return False
+
+  if isinstance(agent.model, str):
+    return is_gemini_model(agent.model)
+
+  from ..models.google_llm import Gemini
+
+  return isinstance(agent.model, Gemini)
+
+
+@contextmanager
+def _use_native_generate_content_span(
+    llm_request: LlmRequest,
+    common_attributes: Mapping[str, AttributeValue],
+) -> Iterator[Span]:
+  with tracer.start_as_current_span(
+      f"generate_content {llm_request.model or ''}"
+  ) as span:
+    span.set_attribute(GEN_AI_SYSTEM, _guess_gemini_system_name())
+    span.set_attribute(GEN_AI_OPERATION_NAME, 'generate_content')
+    span.set_attribute(GEN_AI_REQUEST_MODEL, llm_request.model or '')
+    span.set_attributes(common_attributes)
+
+    otel_logger.emit(
+        LogRecord(
+            event_name='gen_ai.system.message',
+            body={
+                'content': _serialize_content_with_elision(
+                    llm_request.config.system_instruction
+                )
+            },
+            attributes={GEN_AI_SYSTEM: _guess_gemini_system_name()},
+        )
+    )
+
+    for content in llm_request.contents:
+      otel_logger.emit(
+          LogRecord(
+              event_name='gen_ai.user.message',
+              body={'content': _serialize_content_with_elision(content)},
+              attributes={GEN_AI_SYSTEM: _guess_gemini_system_name()},
+          )
+      )
+
+    yield span
+
+
+def trace_generate_content_result(span: Span | None, llm_response: LlmResponse):
+  """Trace result of the inference in generate_content span."""
+
+  if span is None:
+    return
+
+  if llm_response.partial:
+    return
+
+  if finish_reason := llm_response.finish_reason:
+    span.set_attribute(GEN_AI_RESPONSE_FINISH_REASONS, [finish_reason.lower()])
+  if usage_metadata := llm_response.usage_metadata:
+    if usage_metadata.prompt_token_count is not None:
+      span.set_attribute(
+          GEN_AI_USAGE_INPUT_TOKENS, usage_metadata.prompt_token_count
+      )
+    if usage_metadata.candidates_token_count is not None:
+      span.set_attribute(
+          GEN_AI_USAGE_OUTPUT_TOKENS, usage_metadata.candidates_token_count
+      )
+
+  otel_logger.emit(
+      LogRecord(
+          event_name='gen_ai.choice',
+          body={
+              'content': _serialize_content_with_elision(llm_response.content),
+              'index': 0,  # ADK always returns a single candidate
+          }
+          | {'finish_reason': llm_response.finish_reason.value}
+          if llm_response.finish_reason is not None
+          else {},
+          attributes={GEN_AI_SYSTEM: _guess_gemini_system_name()},
+      )
+  )
+
+
+def _guess_gemini_system_name() -> str:
+  return (
+      GenAiSystemValues.VERTEX_AI.name.lower()
+      if os.getenv('GOOGLE_GENAI_USE_VERTEXAI', '').lower() in ('true', '1')
+      else GenAiSystemValues.GEMINI.name.lower()
+  )

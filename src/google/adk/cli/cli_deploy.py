@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -20,12 +20,44 @@ import shutil
 import subprocess
 from typing import Final
 from typing import Optional
+import warnings
 
 import click
 from packaging.version import parse
 
 _IS_WINDOWS = os.name == 'nt'
 _GCLOUD_CMD = 'gcloud.cmd' if _IS_WINDOWS else 'gcloud'
+_LOCAL_STORAGE_FLAG_MIN_VERSION: Final[str] = '1.21.0'
+_AGENT_ENGINE_REQUIREMENT: Final[str] = (
+    'google-cloud-aiplatform[adk,agent_engines]'
+)
+
+
+def _ensure_agent_engine_dependency(requirements_txt_path: str) -> None:
+  """Ensures staged requirements include Agent Engine dependencies."""
+  if not os.path.exists(requirements_txt_path):
+    raise FileNotFoundError(
+        f'requirements.txt not found at: {requirements_txt_path}'
+    )
+
+  requirements = ''
+  with open(requirements_txt_path, 'r', encoding='utf-8') as f:
+    requirements = f.read()
+
+  for line in requirements.splitlines():
+    stripped = line.strip()
+    if (
+        stripped
+        and not stripped.startswith('#')
+        and stripped.startswith('google-cloud-aiplatform')
+    ):
+      return
+
+  with open(requirements_txt_path, 'a', encoding='utf-8') as f:
+    if requirements and not requirements.endswith('\n'):
+      f.write('\n')
+    f.write(_AGENT_ENGINE_REQUIREMENT + '\n')
+
 
 _DOCKERFILE_TEMPLATE: Final[str] = """
 FROM python:3.11-slim
@@ -63,7 +95,7 @@ COPY --chown=myuser:myuser "agents/{app_name}/" "/app/agents/{app_name}/"
 
 EXPOSE {port}
 
-CMD adk {command} --port={port} {host_option} {service_option} {trace_to_cloud_option} {allow_origins_option} {a2a_option} "/app/agents"
+CMD adk {command} --port={port} {host_option} {service_option} {trace_to_cloud_option} {otel_to_cloud_option} {allow_origins_option} {a2a_option} "/app/agents"
 """
 
 _AGENT_ENGINE_APP_TEMPLATE: Final[str] = """
@@ -73,12 +105,8 @@ from vertexai.agent_engines import AdkApp
 
 if {is_config_agent}:
   from google.adk.agents import config_agent_utils
-  try:
-    # This path is for local loading.
-    root_agent = config_agent_utils.from_config("{agent_folder}/root_agent.yaml")
-  except FileNotFoundError:
-    # This path is used to support the file structure in Agent Engine.
-    root_agent = config_agent_utils.from_config("./{temp_folder}/{app_name}/root_agent.yaml")
+  config_path = os.path.join(os.path.dirname(__file__), "root_agent.yaml")
+  root_agent = config_agent_utils.from_config(config_path)
 else:
   from .agent import {adk_app_object}
 
@@ -442,26 +470,38 @@ def _get_service_option_by_adk_version(
     session_uri: Optional[str],
     artifact_uri: Optional[str],
     memory_uri: Optional[str],
+    use_local_storage: Optional[bool] = None,
 ) -> str:
   """Returns service option string based on adk_version."""
   parsed_version = parse(adk_version)
+  options: list[str] = []
+
   if parsed_version >= parse('1.3.0'):
-    session_option = (
-        f'--session_service_uri={session_uri}' if session_uri else ''
-    )
-    artifact_option = (
-        f'--artifact_service_uri={artifact_uri}' if artifact_uri else ''
-    )
-    memory_option = f'--memory_service_uri={memory_uri}' if memory_uri else ''
-    return f'{session_option} {artifact_option} {memory_option}'
-  elif parsed_version >= parse('1.2.0'):
-    session_option = f'--session_db_url={session_uri}' if session_uri else ''
-    artifact_option = (
-        f'--artifact_storage_uri={artifact_uri}' if artifact_uri else ''
-    )
-    return f'{session_option} {artifact_option}'
+    if session_uri:
+      options.append(f'--session_service_uri={session_uri}')
+    if artifact_uri:
+      options.append(f'--artifact_service_uri={artifact_uri}')
+    if memory_uri:
+      options.append(f'--memory_service_uri={memory_uri}')
   else:
-    return f'--session_db_url={session_uri}' if session_uri else ''
+    if session_uri:
+      options.append(f'--session_db_url={session_uri}')
+    if parsed_version >= parse('1.2.0') and artifact_uri:
+      options.append(f'--artifact_storage_uri={artifact_uri}')
+
+  if use_local_storage is not None and parsed_version >= parse(
+      _LOCAL_STORAGE_FLAG_MIN_VERSION
+  ):
+    # Only valid when session/artifact URIs are unset; otherwise the CLI
+    # rejects the combination to avoid confusing precedence.
+    if session_uri is None and artifact_uri is None:
+      options.append((
+          '--use_local_storage'
+          if use_local_storage
+          else '--no_use_local_storage'
+      ))
+
+  return ' '.join(options)
 
 
 def to_cloud_run(
@@ -474,6 +514,7 @@ def to_cloud_run(
     temp_folder: str,
     port: int,
     trace_to_cloud: bool,
+    otel_to_cloud: bool,
     with_ui: bool,
     log_level: str,
     verbosity: str,
@@ -482,6 +523,7 @@ def to_cloud_run(
     session_service_uri: Optional[str] = None,
     artifact_service_uri: Optional[str] = None,
     memory_service_uri: Optional[str] = None,
+    use_local_storage: bool = False,
     a2a: bool = False,
     extra_gcloud_args: Optional[tuple[str, ...]] = None,
 ):
@@ -509,6 +551,8 @@ def to_cloud_run(
     temp_folder: The temp folder for the generated Cloud Run source files.
     port: The port of the ADK api server.
     trace_to_cloud: Whether to enable Cloud Trace.
+    otel_to_cloud: Whether to enable exporting OpenTelemetry signals
+      to Google Cloud.
     with_ui: Whether to deploy with UI.
     verbosity: The verbosity level of the CLI.
     adk_version: The ADK version to use in Cloud Run.
@@ -517,8 +561,12 @@ def to_cloud_run(
     session_service_uri: The URI of the session service.
     artifact_service_uri: The URI of the artifact service.
     memory_service_uri: The URI of the memory service.
+    use_local_storage: Whether to use local .adk storage in the container.
   """
   app_name = app_name or os.path.basename(agent_folder)
+  if parse(adk_version) >= parse('1.3.0') and not use_local_storage:
+    session_service_uri = session_service_uri or 'memory://'
+    artifact_service_uri = artifact_service_uri or 'memory://'
 
   click.echo(f'Start generating Cloud Run source files in {temp_folder}')
 
@@ -559,8 +607,10 @@ def to_cloud_run(
             session_service_uri,
             artifact_service_uri,
             memory_service_uri,
+            use_local_storage,
         ),
         trace_to_cloud_option='--trace_to_cloud' if trace_to_cloud else '',
+        otel_to_cloud_option='--otel_to_cloud' if otel_to_cloud else '',
         allow_origins_option=allow_origins_option,
         adk_version=adk_version,
         host_option=host_option,
@@ -638,8 +688,9 @@ def to_agent_engine(
     agent_folder: str,
     temp_folder: Optional[str] = None,
     adk_app: str,
-    staging_bucket: str,
+    staging_bucket: Optional[str] = None,
     trace_to_cloud: Optional[bool] = None,
+    otel_to_cloud: Optional[bool] = None,
     api_key: Optional[str] = None,
     adk_app_object: Optional[str] = None,
     agent_engine_id: Optional[str] = None,
@@ -681,8 +732,11 @@ def to_agent_engine(
       files. It will be replaced with the generated files if it already exists.
     adk_app (str): The name of the file (without .py) containing the AdkApp
       instance.
-    staging_bucket (str): The GCS bucket for staging the deployment artifacts.
+    staging_bucket (str): Deprecated. This argument is no longer required or
+      used.
     trace_to_cloud (bool): Whether to enable Cloud Trace.
+    otel_to_cloud (bool): Whether to enable exporting OpenTelemetry signals
+      to Google Cloud.
     api_key (str): Optional. The API key to use for Express Mode.
       If not provided, the API key from the GOOGLE_API_KEY environment variable
       will be used. It will only be used if GOOGLE_GENAI_USE_VERTEXAI is true.
@@ -711,13 +765,6 @@ def to_agent_engine(
   app_name = os.path.basename(agent_folder)
   display_name = display_name or app_name
   parent_folder = os.path.dirname(agent_folder)
-  if parent_folder != os.getcwd():
-    click.echo(f'Please deploy from the project dir: {parent_folder}')
-    return
-  tmp_app_name = app_name + '_tmp' + datetime.now().strftime('%Y%m%d_%H%M%S')
-  temp_folder = temp_folder or tmp_app_name
-  agent_src_path = os.path.join(parent_folder, temp_folder)
-  click.echo(f'Staging all files in: {agent_src_path}')
   adk_app_object = adk_app_object or 'root_agent'
   if adk_app_object not in ['root_agent', 'app']:
     click.echo(
@@ -725,12 +772,34 @@ def to_agent_engine(
         ' or "app".'
     )
     return
+  if staging_bucket:
+    warnings.warn(
+        'WARNING: `staging_bucket` is deprecated and will be removed in a'
+        ' future release. Please drop it from the list of arguments.',
+        DeprecationWarning,
+        stacklevel=2,
+    )
+
+  original_cwd = os.getcwd()
+  did_change_cwd = False
+  if parent_folder != original_cwd:
+    click.echo(
+        'Agent Engine deployment uses relative paths; temporarily switching '
+        f'working directory to: {parent_folder}'
+    )
+    os.chdir(parent_folder)
+    did_change_cwd = True
+  tmp_app_name = app_name + '_tmp' + datetime.now().strftime('%Y%m%d_%H%M%S')
+  temp_folder = temp_folder or tmp_app_name
+  agent_src_path = os.path.join(parent_folder, temp_folder)
+  click.echo(f'Staging all files in: {agent_src_path}')
   # remove agent_src_path if it exists
   if os.path.exists(agent_src_path):
     click.echo('Removing existing files')
     shutil.rmtree(agent_src_path)
 
   try:
+    click.echo(f'Staging all files in: {agent_src_path}')
     ignore_patterns = None
     ae_ignore_path = os.path.join(agent_folder, '.ae_ignore')
     if os.path.exists(ae_ignore_path):
@@ -739,15 +808,18 @@ def to_agent_engine(
         patterns = [pattern.strip() for pattern in f.readlines()]
         ignore_patterns = shutil.ignore_patterns(*patterns)
     click.echo('Copying agent source code...')
-    shutil.copytree(agent_folder, agent_src_path, ignore=ignore_patterns)
+    shutil.copytree(
+        agent_folder,
+        agent_src_path,
+        ignore=ignore_patterns,
+        dirs_exist_ok=True,
+    )
     click.echo('Copying agent source code complete.')
 
     project = _resolve_project(project)
 
     click.echo('Resolving files and dependencies...')
     agent_config = {}
-    if staging_bucket:
-      agent_config['staging_bucket'] = staging_bucket
     if not agent_engine_config_file:
       # Attempt to read the agent engine config from .agent_engine_config.json in the dir (if any).
       agent_engine_config_file = os.path.join(
@@ -790,8 +862,9 @@ def to_agent_engine(
       if not os.path.exists(requirements_txt_path):
         click.echo(f'Creating {requirements_txt_path}...')
         with open(requirements_txt_path, 'w', encoding='utf-8') as f:
-          f.write('google-cloud-aiplatform[adk,agent_engines]')
+          f.write(_AGENT_ENGINE_REQUIREMENT + '\n')
         click.echo(f'Created {requirements_txt_path}')
+    _ensure_agent_engine_dependency(requirements_txt_path)
     agent_config['requirements_file'] = f'{temp_folder}/requirements.txt'
 
     env_vars = {}
@@ -841,6 +914,14 @@ def to_agent_engine(
       if 'GOOGLE_API_KEY' in env_vars:
         api_key = env_vars['GOOGLE_API_KEY']
         click.echo(f'api_key set by GOOGLE_API_KEY in {env_file}')
+    if otel_to_cloud:
+      if 'GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY' in env_vars:
+        click.secho(
+            'Ignoring GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY in .env'
+            ' as `--otel_to_cloud` was explicitly passed and takes precedence',
+            fg='yellow',
+        )
+      env_vars['GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY'] = 'true'
     if env_vars:
       if 'env_vars' in agent_config:
         click.echo(
@@ -889,8 +970,7 @@ def to_agent_engine(
               app_name=app_name,
               trace_to_cloud_option=trace_to_cloud,
               is_config_agent=is_config_agent,
-              temp_folder=temp_folder,
-              agent_folder=agent_folder,
+              agent_folder=f'./{temp_folder}',
               adk_app_object=adk_app_object,
               adk_app_type=adk_app_type,
               express_mode=api_key is not None,
@@ -923,7 +1003,9 @@ def to_agent_engine(
       click.secho(f'✅ Updated agent engine: {agent_engine_id}', fg='green')
   finally:
     click.echo(f'Cleaning up the temp folder: {temp_folder}')
-    shutil.rmtree(temp_folder)
+    shutil.rmtree(agent_src_path)
+    if did_change_cwd:
+      os.chdir(original_cwd)
 
 
 def to_gke(
@@ -937,6 +1019,7 @@ def to_gke(
     temp_folder: str,
     port: int,
     trace_to_cloud: bool,
+    otel_to_cloud: bool,
     with_ui: bool,
     log_level: str,
     adk_version: str,
@@ -944,6 +1027,7 @@ def to_gke(
     session_service_uri: Optional[str] = None,
     artifact_service_uri: Optional[str] = None,
     memory_service_uri: Optional[str] = None,
+    use_local_storage: bool = False,
     a2a: bool = False,
 ):
   """Deploys an agent to Google Kubernetes Engine(GKE).
@@ -961,6 +1045,8 @@ def to_gke(
       Dockerfile and deployment.yaml.
     port: The port of the ADK api server.
     trace_to_cloud: Whether to enable Cloud Trace.
+    otel_to_cloud: Whether to enable exporting OpenTelemetry signals
+      to Google Cloud.
     with_ui: Whether to deploy with UI.
     log_level: The logging level.
     adk_version: The ADK version to use in GKE.
@@ -969,6 +1055,7 @@ def to_gke(
     session_service_uri: The URI of the session service.
     artifact_service_uri: The URI of the artifact service.
     memory_service_uri: The URI of the memory service.
+    use_local_storage: Whether to use local .adk storage in the container.
   """
   click.secho(
       '\n🚀 Starting ADK Agent Deployment to GKE...', fg='cyan', bold=True
@@ -982,6 +1069,9 @@ def to_gke(
   click.echo('--------------------------------------------------\n')
 
   app_name = app_name or os.path.basename(agent_folder)
+  if parse(adk_version) >= parse('1.3.0') and not use_local_storage:
+    session_service_uri = session_service_uri or 'memory://'
+    artifact_service_uri = artifact_service_uri or 'memory://'
 
   click.secho('STEP 1: Preparing build environment...', bold=True)
   click.echo(f'  - Using temporary directory: {temp_folder}')
@@ -1024,8 +1114,10 @@ def to_gke(
             session_service_uri,
             artifact_service_uri,
             memory_service_uri,
+            use_local_storage,
         ),
         trace_to_cloud_option='--trace_to_cloud' if trace_to_cloud else '',
+        otel_to_cloud_option='--otel_to_cloud' if otel_to_cloud else '',
         allow_origins_option=allow_origins_option,
         adk_version=adk_version,
         host_option=host_option,

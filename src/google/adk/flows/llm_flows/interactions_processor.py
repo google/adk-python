@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -53,9 +53,10 @@ class InteractionsRequestProcessor(BaseLlmRequestProcessor):
     # Only process if using Gemini with interactions API
     if not isinstance(agent, LlmAgent):
       return
-    if not isinstance(agent.model, Gemini):
+    model = agent.canonical_model
+    if not isinstance(model, Gemini):
       return
-    if not agent.model.use_interactions_api:
+    if not model.use_interactions_api:
       return
     # Extract previous interaction ID from session events
     previous_interaction_id = self._find_previous_interaction_id(
