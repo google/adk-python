@@ -63,7 +63,7 @@ async def _generate_agent_card_async(
         fg="red",
         err=True,
     )
-    return
+    raise click.Abort()
 
   cwd = os.getcwd()
   loader = AgentLoader(agents_dir=cwd)
