@@ -49,6 +49,7 @@ import base64
 import binascii
 from datetime import datetime
 import os
+import socket
 import urllib.error
 import urllib.request
 
@@ -127,19 +128,19 @@ def fetch_url(url: str) -> dict:
                 "url": url,
                 "success": True,
             }
-    except urllib.error.URLError as e:
+    except (urllib.error.URLError, socket.timeout) as e:
         return {
             "content": "",
             "url": url,
             "success": False,
             "error": f"Failed to fetch URL: {str(e)}",
         }
-    except Exception as e:
+    except OSError as e:
         return {
             "content": "",
             "url": url,
             "success": False,
-            "error": f"Unexpected error: {str(e)}",
+            "error": f"Failed to decode response: {str(e)}",
         }
 
 
@@ -256,11 +257,6 @@ def save_chart(image_data: str, filename: str) -> dict:
             "success": False,
             "error": f"Failed to save file: {str(e)}",
         }
-    except Exception as e:
-        return {
-            "success": False,
-            "error": f"Unexpected error: {str(e)}",
-        }
 
 
 def list_saved_charts() -> dict:
@@ -293,7 +289,7 @@ def list_saved_charts() -> dict:
             "directory": HOST_CHARTS_DIR,
             "count": len(charts),
         }
-    except Exception as e:
+    except OSError as e:
         return {
             "success": False,
             "error": f"Failed to list charts: {str(e)}",

@@ -505,6 +505,11 @@ class CodingAgentCodeExecutor(BaseCodeExecutor):
     self._stop_tool_server()
     self._execution_history.clear()
 
-  def __del__(self):
-    """Destructor to clean up resources."""
+  def __enter__(self) -> CodingAgentCodeExecutor:
+    """Enter context manager and return self."""
+    return self
+
+  def __exit__(self, exc_type, exc, traceback) -> bool:
+    """Exit context manager and clean up resources."""
     self.cleanup()
+    return False

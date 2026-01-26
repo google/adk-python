@@ -650,9 +650,11 @@ Please fix the error and try again. Common issues:
             self._coding_executor = None
         self._resolved_tools = None
 
-    def __del__(self):
-        """Destructor to clean up resources."""
-        try:
-            self.cleanup()
-        except Exception:
-            pass
+    def __enter__(self) -> "CodingAgent":
+        """Enter context manager and return self."""
+        return self
+
+    def __exit__(self, exc_type, exc, traceback) -> bool:
+        """Exit context manager and clean up resources."""
+        self.cleanup()
+        return False
