@@ -173,7 +173,7 @@ class McpToolset(BaseToolset):
           session.list_tools(), timeout=timeout_in_seconds
       )
     except Exception as e:
-      raise ConnectionError("Failed to get tools from MCP server.") from e
+      raise ConnectionError(f"Failed to get tools from MCP server: {e}") from e
 
     # Apply filtering based on context and tool_filter
     tools = []
