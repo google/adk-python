@@ -267,16 +267,6 @@ class EvalMetric(EvalBaseModel):
       ),
   )
 
-  judge_model_options: Optional[JudgeModelOptions] = Field(
-      deprecated=True,
-      default=None,
-      description=(
-          "[DEPRECATED] This field is deprecated in favor of `criterion`."
-          " Depending on the metric you may want to one of the sub-classes of"
-          " BaseCriterion."
-      ),
-  )
-
   criterion: Optional[BaseCriterion] = Field(
       default=None, description="""Evaluation criterion used by the metric."""
   )
