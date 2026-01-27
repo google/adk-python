@@ -20,6 +20,7 @@ The blob name format used depends on whether the filename has a user namespace:
   - For regular session-scoped files:
     {app_name}/{user_id}/{session_id}/{filename}/{version}
 """
+
 from __future__ import annotations
 
 import asyncio

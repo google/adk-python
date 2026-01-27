@@ -23,6 +23,7 @@ cd tau-bench/
 pip install -e . --quiet
 ```
 """
+
 from __future__ import annotations
 
 from typing import Any

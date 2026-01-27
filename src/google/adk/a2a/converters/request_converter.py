@@ -22,7 +22,7 @@ from a2a.server.agent_execution import RequestContext
 from google.genai import types as genai_types
 from pydantic import BaseModel
 
-from ...agents.run_config import RunConfig,StreamingMode
+from ...agents.run_config import StreamingMode
 from ...runners import RunConfig
 from ..experimental import a2a_experimental
 from .part_converter import A2APartToGenAIPartConverter
@@ -51,7 +51,7 @@ A2ARequestToAgentRunRequestConverter = Callable[
 """A callable that converts an A2A RequestContext to RunnerRequest for ADK runner.
 
 This interface allows for custom logic to map an incoming A2A RequestContext to the
-structured arguments expected by the ADK runner's `run_async` method.
+structured arguments expected by the ADK runner's run_async method.
 
 Args:
     request: The incoming request context from the A2A server.
@@ -79,12 +79,14 @@ def _get_user_id(request: RequestContext) -> str:
 def convert_a2a_request_to_agent_run_request(
     request: RequestContext,
     part_converter: A2APartToGenAIPartConverter = convert_a2a_part_to_genai_part,
+    streaming_mode: StreamingMode = StreamingMode.NONE,
 ) -> AgentRunRequest:
   """Converts an A2A RequestContext to an AgentRunRequest model.
 
   Args:
     request: The incoming request context from the A2A server.
     part_converter: A function to convert A2A content parts to GenAI parts.
+    streaming_mode: The streaming mode to use for the agent execution.
 
   Returns:
     A AgentRunRequest object ready to be used as arguments for the ADK runner.
@@ -114,48 +116,33 @@ def convert_a2a_request_to_agent_run_request(
           role='user',
           parts=output_parts,
       ),
-      run_config=RunConfig(custom_metadata=custom_metadata),
+      run_config=RunConfig(
+          streaming_mode=streaming_mode, custom_metadata=custom_metadata
+      ),
   )
+
 
 @a2a_experimental
 def create_request_converter(
-  streaming_mode: StreamingMode = StreamingMode.NONE
-  ) -> A2ARequestToAgentRunRequestConverter:
-  """Creates a request converter with specified streaming mode.
-  
+    streaming_mode: StreamingMode = StreamingMode.NONE,
+) -> A2ARequestToAgentRunRequestConverter:
+  """Creates a request converter function with specified streaming mode.
+
   Args:
     streaming_mode: The streaming mode to use for the agent execution.
 
   Returns:
-    A Converter function configured with the specified streaming mode.
+    A converter function configured with the specified streaming mode.
   """
+
   def converter(
-    request: RequestContext,
-    part_converter: A2APartToGenAIPartConverter = convert_a2a_part_to_genai_part,
-  )-> AgentRunRequest:
-    
-    if not request.message:
-      raise ValueError('Request message cannot be None')
-    
-    custom_metadata = {}  
-    if request.metadata:
-      custom_metadata['a2a_metadata'] = request.metadata
-    
-    output_parts = []
-    for a2a_part in request.message.parts:
-      genai_parts = part_converter(a2a_part)
-      if not isinstance(genai_parts, list):
-        genai_parts = [genai_parts] if genai_parts else []
-      output_parts.extend(genai_parts)
-      
-    return AgentRunRequest(
-        user_id=_get_user_id(request),
-        session_id=request.context_id,
-        new_message=genai_types.Content(
-            role='user',
-            parts=output_parts,
-        ),
-        run_config=RunConfig(streaming_mode=streaming_mode, custom_metadata=custom_metadata),
+      request: RequestContext,
+      part_converter: A2APartToGenAIPartConverter = convert_a2a_part_to_genai_part,
+  ) -> AgentRunRequest:
+    return convert_a2a_request_to_agent_run_request(
+        request=request,
+        part_converter=part_converter,
+        streaming_mode=streaming_mode,
     )
-  
+
   return converter
