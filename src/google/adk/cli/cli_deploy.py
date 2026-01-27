@@ -14,16 +14,22 @@
 from __future__ import annotations
 
 from datetime import datetime
+import importlib.util
 import json
+import logging
 import os
 import shutil
 import subprocess
+import sys
+import traceback
 from typing import Final
 from typing import Optional
 import warnings
 
 import click
 from packaging.version import parse
+
+logger = logging.getLogger('google_adk.' + __name__)
 
 _IS_WINDOWS = os.name == 'nt'
 _GCLOUD_CMD = 'gcloud.cmd' if _IS_WINDOWS else 'gcloud'
@@ -463,6 +469,120 @@ def _validate_gcloud_extra_args(
           ' configuration. ADK will set these arguments automatically, so'
           ' please remove them from your command.'
       )
+
+
+def _validate_agent_import(
+    agent_src_path: str,
+    adk_app_object: str,
+    is_config_agent: bool,
+) -> None:
+  """Validates that the agent module can be imported successfully.
+
+  This pre-deployment validation catches common issues like missing
+  dependencies or import errors in custom BaseLlm implementations before
+  the agent is deployed to Agent Engine. This provides clearer error
+  messages and prevents deployments that would fail at runtime.
+
+  Args:
+    agent_src_path: Path to the staged agent source code.
+    adk_app_object: The Python object name to import ('root_agent' or 'app').
+    is_config_agent: Whether this is a config-based agent.
+
+  Raises:
+    click.ClickException: If the agent module cannot be imported.
+  """
+  if is_config_agent:
+    # Config agents are loaded from YAML, skip Python import validation
+    return
+
+  agent_module_path = os.path.join(agent_src_path, 'agent.py')
+  if not os.path.exists(agent_module_path):
+    raise click.ClickException(
+        f'Agent module not found at {agent_module_path}. '
+        'Please ensure your agent folder contains an agent.py file.'
+    )
+
+  # Add the parent directory to sys.path temporarily for import resolution
+  parent_dir = os.path.dirname(agent_src_path)
+  module_name = os.path.basename(agent_src_path)
+
+  original_sys_path = sys.path.copy()
+  try:
+    # Add parent directory to path so imports work correctly
+    if parent_dir not in sys.path:
+      sys.path.insert(0, parent_dir)
+
+    # Load the agent module spec
+    spec = importlib.util.spec_from_file_location(
+        f'{module_name}.agent',
+        agent_module_path,
+        submodule_search_locations=[agent_src_path],
+    )
+    if spec is None or spec.loader is None:
+      raise click.ClickException(
+          f'Failed to load module spec from {agent_module_path}'
+      )
+
+    # Try to load the module
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[f'{module_name}.agent'] = module
+
+    try:
+      spec.loader.exec_module(module)
+    except ImportError as e:
+      error_msg = str(e)
+      tb = traceback.format_exc()
+
+      # Check for common issues
+      if 'BaseLlm' in tb or 'base_llm' in tb.lower():
+        raise click.ClickException(
+            'Failed to import agent module due to a BaseLlm-related error:\n'
+            f'{error_msg}\n\n'
+            'This error often occurs when deploying agents with custom LLM '
+            'implementations. Please ensure:\n'
+            '1. All custom LLM classes are defined in files within your agent '
+            'folder\n'
+            '2. All required dependencies are listed in requirements.txt\n'
+            '3. Import paths use relative imports (e.g., "from .my_llm import '
+            'MyLlm")\n'
+            '4. Your custom BaseLlm implementation is serializable'
+        ) from e
+      else:
+        raise click.ClickException(
+            f'Failed to import agent module:\n{error_msg}\n\n'
+            'Please ensure all dependencies are listed in requirements.txt '
+            'and all imports are resolvable.\n\n'
+            f'Full traceback:\n{tb}'
+        ) from e
+    except Exception as e:
+      tb = traceback.format_exc()
+      raise click.ClickException(
+          f'Error while loading agent module:\n{e}\n\n'
+          'Please check your agent code for errors.\n\n'
+          f'Full traceback:\n{tb}'
+      ) from e
+
+    # Check that the expected object exists
+    if not hasattr(module, adk_app_object):
+      available_attrs = [
+          attr for attr in dir(module) if not attr.startswith('_')
+      ]
+      raise click.ClickException(
+          f"Agent module does not export '{adk_app_object}'. "
+          f'Available exports: {available_attrs}\n\n'
+          'Please ensure your agent.py exports either "root_agent" or "app".'
+      )
+
+    click.echo(
+        'Agent module validation successful: '
+        f'found "{adk_app_object}" in agent.py'
+    )
+
+  finally:
+    # Restore original sys.path
+    sys.path[:] = original_sys_path
+    # Clean up the module from sys.modules
+    sys.modules.pop(f'{module_name}.agent', None)
 
 
 def _get_service_option_by_adk_version(
@@ -952,6 +1072,10 @@ def to_agent_engine(
     if os.path.exists(config_root_agent_file):
       click.echo(f'Config agent detected: {config_root_agent_file}')
       is_config_agent = True
+
+    # Validate that the agent module can be imported before deployment
+    click.echo('Validating agent module...')
+    _validate_agent_import(agent_src_path, adk_app_object, is_config_agent)
 
     adk_app_file = os.path.join(temp_folder, f'{adk_app}.py')
     if adk_app_object == 'root_agent':
