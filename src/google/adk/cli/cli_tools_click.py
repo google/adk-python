@@ -701,6 +701,7 @@ def cli_eval(
   separated list of eval names and then add that as a suffix to the eval set
   file name, demarcated by a `:`.
 
+  \b
   For example, we have `sample_eval_set_file.json` file that has following the
   eval cases:
   sample_eval_set_file.json:
@@ -721,6 +722,7 @@ def cli_eval(
   separated list of eval names and then add that as a suffix to the eval set
   file name, demarcated by a `:`.
 
+  \b
   For example, we have `sample_eval_set_id` that has following the eval cases:
   sample_eval_set_id:
     |....... eval_1
@@ -729,6 +731,7 @@ def cli_eval(
     |....... eval_4
     |....... eval_5
 
+  \b
   If we did:
       sample_eval_set_id:eval_1,eval_2,eval_3
 
