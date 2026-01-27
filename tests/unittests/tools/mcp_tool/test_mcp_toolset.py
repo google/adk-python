@@ -13,7 +13,9 @@
 # limitations under the License.
 
 import asyncio
+import base64
 from io import StringIO
+import json
 import sys
 import unittest
 from unittest.mock import AsyncMock
@@ -31,6 +33,8 @@ from google.adk.tools.mcp_tool.mcp_tool import MCPTool
 from google.adk.tools.mcp_tool.mcp_toolset import MCPToolset
 from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
 from mcp import StdioServerParameters
+from mcp.types import ListResourcesResult
+from mcp.types import Resource
 import pytest
 
 
@@ -353,3 +357,135 @@ class TestMCPToolset:
     # Assert that the original tools are not modified
     assert tools[0].name == "tool1"
     assert tools[1].name == "tool2"
+
+  @pytest.mark.asyncio
+  async def test_list_resources(self):
+    """Test listing resources."""
+    resources = [
+        Resource(
+            name="file1.txt", mime_type="text/plain", uri="file:///file1.txt"
+        ),
+        Resource(
+            name="data.json",
+            mime_type="application/json",
+            uri="file:///data.json",
+        ),
+    ]
+    list_resources_result = ListResourcesResult(resources=resources)
+    self.mock_session.list_resources = AsyncMock(
+        return_value=list_resources_result
+    )
+
+    toolset = MCPToolset(connection_params=self.mock_stdio_params)
+    toolset._mcp_session_manager = self.mock_session_manager
+
+    result = await toolset.list_resources()
+
+    assert result == ["file1.txt", "data.json"]
+    self.mock_session.list_resources.assert_called_once()
+
+  @pytest.mark.asyncio
+  async def test_get_resource_info_success(self):
+    """Test getting resource info for an existing resource."""
+    resources = [
+        Resource(
+            name="file1.txt", mime_type="text/plain", uri="file:///file1.txt"
+        ),
+        Resource(
+            name="data.json",
+            mime_type="application/json",
+            uri="file:///data.json",
+        ),
+    ]
+    list_resources_result = ListResourcesResult(resources=resources)
+    self.mock_session.list_resources = AsyncMock(
+        return_value=list_resources_result
+    )
+
+    toolset = MCPToolset(connection_params=self.mock_stdio_params)
+    toolset._mcp_session_manager = self.mock_session_manager
+
+    result = await toolset.get_resource_info("data.json")
+
+    assert result == {
+        "name": "data.json",
+        "mime_type": "application/json",
+        "uri": "file:///data.json",
+    }
+    self.mock_session.list_resources.assert_called_once()
+
+  @pytest.mark.asyncio
+  async def test_get_resource_info_not_found(self):
+    """Test getting resource info for a non-existent resource."""
+    resources = [
+        Resource(
+            name="file1.txt", mime_type="text/plain", uri="file:///file1.txt"
+        ),
+    ]
+    list_resources_result = ListResourcesResult(resources=resources)
+    self.mock_session.list_resources = AsyncMock(
+        return_value=list_resources_result
+    )
+
+    toolset = MCPToolset(connection_params=self.mock_stdio_params)
+    toolset._mcp_session_manager = self.mock_session_manager
+
+    with pytest.raises(
+        ValueError, match="Resource with name 'other.json' not found."
+    ):
+      await toolset.get_resource_info("other.json")
+
+  @pytest.mark.parametrize(
+      "name,mime_type,content,encoding,expected_result",
+      [
+          ("file1.txt", "text/plain", "hello world", None, "hello world"),
+          (
+              "data.json",
+              "application/json",
+              '{"key": "value"}',
+              None,
+              {"key": "value"},
+          ),
+          (
+              "file1_b64.txt",
+              "text/plain",
+              base64.b64encode(b"hello world").decode("ascii"),
+              "base64",
+              "hello world",
+          ),
+          (
+              "data_b64.json",
+              "application/json",
+              base64.b64encode(b'{"key": "value"}').decode("ascii"),
+              "base64",
+              {"key": "value"},
+          ),
+          (
+              "data.bin",
+              "application/octet-stream",
+              base64.b64encode(b"\x01\x02\x03").decode("ascii"),
+              "base64",
+              b"\x01\x02\x03",
+          ),
+      ],
+  )
+  @pytest.mark.asyncio
+  async def test_read_resource(
+      self, name, mime_type, content, encoding, expected_result
+  ):
+    """Test reading various resource types."""
+    get_resource_result = MagicMock()
+    get_resource_result.resource = Resource(
+        name=name, mime_type=mime_type, uri=f"file:///{name}"
+    )
+    get_resource_result.content = content
+    get_resource_result.encoding = encoding
+    self.mock_session.get_resource = AsyncMock(return_value=get_resource_result)
+
+    toolset = MCPToolset(connection_params=self.mock_stdio_params)
+    toolset._mcp_session_manager = self.mock_session_manager
+
+    result = await toolset.read_resource(name)
+
+    assert result == expected_result
+    self.mock_session.get_resource.assert_called_once_with(name=name)
