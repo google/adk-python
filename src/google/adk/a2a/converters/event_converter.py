@@ -105,7 +105,7 @@ def _serialize_metadata_value(value: Any) -> str:
 
 
 def _get_context_metadata(
-    event, invocation_context: InvocationContext
+    event: Event, invocation_context: InvocationContext
 ) -> Dict[str, str]:
   """Gets the context metadata for the event.
 
