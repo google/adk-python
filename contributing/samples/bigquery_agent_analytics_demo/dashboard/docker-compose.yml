@@ -1,0 +1,68 @@
+# Docker Compose for Agent Analytics Dashboard
+#
+# Usage:
+#   # Set environment variables first
+#   export BQ_AGENT_ANALYTICS_PROJECT=your-project
+#   export BQ_AGENT_ANALYTICS_DATASET=your-dataset
+#
+#   # Start the dashboard
+#   docker-compose up -d
+#
+#   # View logs
+#   docker-compose logs -f
+#
+#   # Stop
+#   docker-compose down
+
+version: '3.8'
+
+services:
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: agent-analytics-dashboard
+    ports:
+      - "8080:8080"
+    environment:
+      - BQ_AGENT_ANALYTICS_PROJECT=${BQ_AGENT_ANALYTICS_PROJECT}
+      - BQ_AGENT_ANALYTICS_DATASET=${BQ_AGENT_ANALYTICS_DATASET}
+      - BQ_AGENT_ANALYTICS_TABLE=${BQ_AGENT_ANALYTICS_TABLE:-agent_events_v2}
+    volumes:
+      # Mount Google Cloud credentials for authentication
+      # Option 1: Mount the entire gcloud config directory
+      - ${HOME}/.config/gcloud:/home/appuser/.config/gcloud:ro
+      # Option 2: Mount a specific service account key (uncomment if using)
+      # - ${GOOGLE_APPLICATION_CREDENTIALS}:/app/credentials.json:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # Optional: Run simulation to populate sample data
+  # Uncomment to run simulation on startup
+  # simulate:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile
+  #   container_name: agent-analytics-simulator
+  #   command: ["python", "simulate_agent_data.py", "--num-sessions", "10"]
+  #   environment:
+  #     - BQ_AGENT_ANALYTICS_PROJECT=${BQ_AGENT_ANALYTICS_PROJECT}
+  #     - BQ_AGENT_ANALYTICS_DATASET=${BQ_AGENT_ANALYTICS_DATASET}
+  #     - BQ_AGENT_ANALYTICS_TABLE=${BQ_AGENT_ANALYTICS_TABLE:-agent_events_v2}
+  #     - VERTEXAI_PROJECT=${BQ_AGENT_ANALYTICS_PROJECT}
+  #     - VERTEXAI_LOCATION=us-central1
+  #     - GOOGLE_GENAI_USE_VERTEXAI=true
+  #   volumes:
+  #     - ${HOME}/.config/gcloud:/home/appuser/.config/gcloud:ro
+  #   depends_on:
+  #     dashboard:
+  #       condition: service_healthy
+
+networks:
+  default:
+    name: agent-analytics-network

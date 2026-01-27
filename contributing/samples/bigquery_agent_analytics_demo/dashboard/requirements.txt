@@ -1,0 +1,12 @@
+# Dashboard dependencies
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+google-cloud-bigquery>=3.13.0
+pydantic>=2.0.0
+
+# For simulation script (if using ADK agent features)
+# Note: Install google-adk separately if needed
+# pip install google-adk
+
+# Optional: for development
+python-multipart>=0.0.6
