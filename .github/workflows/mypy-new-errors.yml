@@ -31,6 +31,8 @@ jobs:
         run: |
           # Switch to main branch to generate baseline
           git checkout origin/main
+
+          git checkout ${{ github.sha }} -- pyproject.toml
           
           # Install dependencies for main
           uv venv .venv
