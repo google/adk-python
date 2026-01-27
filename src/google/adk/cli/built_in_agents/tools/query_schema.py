@@ -13,6 +13,7 @@
 # limitations under the License.
 
 """ADK AgentConfig schema query tool for dynamic schema information access."""
+
 from __future__ import annotations
 
 from typing import Any

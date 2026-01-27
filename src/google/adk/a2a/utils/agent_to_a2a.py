@@ -24,18 +24,19 @@ from a2a.server.tasks import InMemoryTaskStore
 from a2a.types import AgentCard
 from starlette.applications import Starlette
 
-from ...agents.run_config import StreamingMode
 from ...agents.base_agent import BaseAgent
+from ...agents.run_config import StreamingMode
 from ...artifacts.in_memory_artifact_service import InMemoryArtifactService
 from ...auth.credential_service.in_memory_credential_service import InMemoryCredentialService
 from ...memory.in_memory_memory_service import InMemoryMemoryService
 from ...runners import Runner
 from ...sessions.in_memory_session_service import InMemorySessionService
+from ..converters.request_converter import create_request_converter
 from ..executor.a2a_agent_executor import A2aAgentExecutor
+from ..executor.a2a_agent_executor import A2aAgentExecutorConfig
 from ..experimental import a2a_experimental
 from .agent_card_builder import AgentCardBuilder
-from ..executor.a2a_agent_executor import A2aAgentExecutorConfig
-from ..converters.request_converter import create_request_converter
+
 
 def _load_agent_card(
     agent_card: Optional[Union[AgentCard, str]],
@@ -81,7 +82,7 @@ def to_a2a(
     protocol: str = "http",
     agent_card: Optional[Union[AgentCard, str]] = None,
     runner: Optional[Runner] = None,
-    streaming_mode: StreamingMode = StreamingMode.NONE
+    streaming_mode: StreamingMode = StreamingMode.NONE,
 ) -> Starlette:
   """Convert an ADK agent to a A2A Starlette application.
 
@@ -95,7 +96,7 @@ def to_a2a(
                   agent.
       runner: Optional pre-built Runner object. If not provided, a default
               runner will be created using in-memory services.
-      streaming_mode: The streaming mode to use for the request converter. (default: StreamingMode.NONE) 
+      streaming_mode: The streaming mode to use for the request converter. (default: StreamingMode.NONE)
 
   Returns:
       A Starlette application that can be run with uvicorn
@@ -126,9 +127,9 @@ def to_a2a(
 
   # Create A2A components
   task_store = InMemoryTaskStore()
-  
+
   executor_config = A2aAgentExecutorConfig(
-    request_converter=create_request_converter(streaming_mode=streaming_mode)
+      request_converter=create_request_converter(streaming_mode=streaming_mode)
   )
 
   agent_executor = A2aAgentExecutor(
