@@ -131,14 +131,14 @@ class TestAgentEngineSandboxCodeExecutor:
     mock_api_client = MagicMock()
     mock_vertexai_client.return_value = mock_api_client
     mock_operation = MagicMock()
-    mock_operation.response.name = (
-        "projects/123/locations/us-central1/reasoningEngines/456/sandboxEnvironments/789"
-    )
+    mock_operation.response.name = "projects/123/locations/us-central1/reasoningEngines/456/sandboxEnvironments/789"
     mock_api_client.agent_engines.sandboxes.create.return_value = mock_operation
 
     # Execute
     executor = AgentEngineSandboxCodeExecutor(
-        agent_engine_resource_name="projects/123/locations/us-central1/reasoningEngines/456",
+        agent_engine_resource_name=(
+            "projects/123/locations/us-central1/reasoningEngines/456"
+        ),
         sandbox_ttl="3600s",
     )
 
@@ -164,14 +164,14 @@ class TestAgentEngineSandboxCodeExecutor:
     mock_api_client = MagicMock()
     mock_vertexai_client.return_value = mock_api_client
     mock_operation = MagicMock()
-    mock_operation.response.name = (
-        "projects/123/locations/us-central1/reasoningEngines/456/sandboxEnvironments/789"
-    )
+    mock_operation.response.name = "projects/123/locations/us-central1/reasoningEngines/456/sandboxEnvironments/789"
     mock_api_client.agent_engines.sandboxes.create.return_value = mock_operation
 
     # Execute
     executor = AgentEngineSandboxCodeExecutor(
-        agent_engine_resource_name="projects/123/locations/us-central1/reasoningEngines/456",
+        agent_engine_resource_name=(
+            "projects/123/locations/us-central1/reasoningEngines/456"
+        ),
     )
 
     # Assert
@@ -183,4 +183,3 @@ class TestAgentEngineSandboxCodeExecutor:
         display_name="default_sandbox",
         ttl=None,
     )
-
