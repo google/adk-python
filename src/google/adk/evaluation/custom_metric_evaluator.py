@@ -24,7 +24,6 @@ from typing_extensions import override
 from .eval_case import ConversationScenario
 from .eval_case import Invocation
 from .eval_metrics import EvalMetric
-from .eval_metrics import EvalStatus
 from .evaluator import EvaluationResult
 from .evaluator import Evaluator
 
@@ -44,12 +43,6 @@ def _get_metric_function(
     ) from e
 
 
-def _get_eval_status(score: Optional[float], threshold: float) -> EvalStatus:
-  if score is None:
-    return EvalStatus.NOT_EVALUATED
-  return EvalStatus.PASSED if score >= threshold else EvalStatus.FAILED
-
-
 class _CustomMetricEvaluator(Evaluator):
   """Evaluator for custom metrics."""
 
@@ -64,16 +57,20 @@ class _CustomMetricEvaluator(Evaluator):
       expected_invocations: Optional[list[Invocation]],
       conversation_scenario: Optional[ConversationScenario] = None,
   ) -> EvaluationResult:
+    eval_metric = self._eval_metric.model_copy(deep=True)
+    eval_metric.threshold = None
     if inspect.iscoroutinefunction(self._metric_function):
       eval_result = await self._metric_function(
-          actual_invocations, expected_invocations, conversation_scenario
+          eval_metric,
+          actual_invocations,
+          expected_invocations,
+          conversation_scenario,
       )
     else:
       eval_result = self._metric_function(
-          actual_invocations, expected_invocations, conversation_scenario
+          eval_metric,
+          actual_invocations,
+          expected_invocations,
+          conversation_scenario,
       )
-
-    eval_result.overall_eval_status = _get_eval_status(
-        eval_result.overall_score, self._eval_metric.threshold
-    )
     return eval_result
