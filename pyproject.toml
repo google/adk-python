@@ -127,6 +127,7 @@ test = [
   "llama-index-readers-file>=0.4.0",              # For retrieval tests
   "openai>=1.100.2",                              # For LiteLLM
   "opentelemetry-instrumentation-google-genai>=0.3b0, <1.0.0",
+  "pypika>=0.50.0",                               # For crewai->chromadb dependency
   "pytest-asyncio>=0.25.0",
   "pytest-mock>=3.14.0",
   "pytest-xdist>=3.6.1",
@@ -158,6 +159,7 @@ extensions = [
   "llama-index-readers-file>=0.4.0",            # For retrieval using LlamaIndex.
   "llama-index-embeddings-google-genai>=0.3.0", # For files retrieval using LlamaIndex.
   "lxml>=5.3.0",                                # For load_web_page tool.
+  "pypika>=0.50.0",                             # For crewai->chromadb dependency
   "toolbox-adk>=0.5.7, <0.6.0",                 # For tools.toolbox_toolset.ToolboxToolset
 ]
 

@@ -272,6 +272,8 @@ efficient processing.
 
 3. Call `get_changed_files_summary` to get the list of changed files WITHOUT
    the full patches (to save context space).
+   - **IMPORTANT**: Pass `local_repo_path="{LOCAL_REPOS_DIR_PATH}/{CODE_REPO}"`
+     to use local git and avoid GitHub API's 300-file limit.
 
 4. Filter and organize the files:
    - **INCLUDE** only files in `src/google/adk/` directory
