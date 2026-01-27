@@ -69,6 +69,42 @@ DEFAULT_TASK_COMPLETION_DELAY = 1.0
 DEFAULT_ENABLE_CACHE_STATISTICS = False
 
 
+def _finalize_model_response_event(
+    llm_request: LlmRequest,
+    llm_response: LlmResponse,
+    model_response_event: Event,
+) -> Event:
+  """Finalize and build the model response event from LLM response.
+
+  Merges the LLM response data into the model response event and
+  populates function call IDs and long-running tool information.
+
+  Args:
+    llm_request: The original LLM request.
+    llm_response: The LLM response from the model.
+    model_response_event: The base event to populate.
+
+  Returns:
+    The finalized Event with LLM response data merged in.
+  """
+  finalized_event = Event.model_validate({
+      **model_response_event.model_dump(exclude_none=True),
+      **llm_response.model_dump(exclude_none=True),
+  })
+
+  if finalized_event.content:
+    function_calls = finalized_event.get_function_calls()
+    if function_calls:
+      functions.populate_client_function_call_id(finalized_event)
+      finalized_event.long_running_tool_ids = (
+          functions.get_long_running_function_calls(
+              function_calls, llm_request.tools_dict
+          )
+      )
+
+  return finalized_event
+
+
 class BaseLlmFlow(ABC):
   """A basic flow that calls the LLM in a loop until a final response is generated.
 
@@ -941,22 +977,9 @@ class BaseLlmFlow(ABC):
       llm_response: LlmResponse,
       model_response_event: Event,
   ) -> Event:
-    model_response_event = Event.model_validate({
-        **model_response_event.model_dump(exclude_none=True),
-        **llm_response.model_dump(exclude_none=True),
-    })
-
-    if model_response_event.content:
-      function_calls = model_response_event.get_function_calls()
-      if function_calls:
-        functions.populate_client_function_call_id(model_response_event)
-        model_response_event.long_running_tool_ids = (
-            functions.get_long_running_function_calls(
-                function_calls, llm_request.tools_dict
-            )
-        )
-
-    return model_response_event
+    return _finalize_model_response_event(
+        llm_request, llm_response, model_response_event
+    )
 
   async def _handle_control_event_flush(
       self, invocation_context: InvocationContext, llm_response: LlmResponse
