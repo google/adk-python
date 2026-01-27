@@ -51,6 +51,7 @@ async def _create_conformance_test_files(
         state=test_case.test_spec.initial_state,
     )
 
+
     # Run the agent with the user messages
     function_call_name_to_id_map = {}
     for user_message_index, user_message in enumerate(
