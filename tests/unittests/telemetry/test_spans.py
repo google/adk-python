@@ -26,11 +26,21 @@ from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.telemetry.tracing import ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS
 from google.adk.telemetry.tracing import trace_agent_invocation
 from google.adk.telemetry.tracing import trace_call_llm
+from google.adk.telemetry.tracing import trace_generate_content_result
 from google.adk.telemetry.tracing import trace_merged_tool_calls
 from google.adk.telemetry.tracing import trace_send_data
 from google.adk.telemetry.tracing import trace_tool_call
+from google.adk.telemetry.tracing import use_generate_content_span
 from google.adk.tools.base_tool import BaseTool
 from google.genai import types
+from opentelemetry._logs import LogRecord
+from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_CONVERSATION_ID
+from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_OPERATION_NAME
+from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_REQUEST_MODEL
+from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_RESPONSE_FINISH_REASONS
+from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_SYSTEM
+from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_USAGE_INPUT_TOKENS
+from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_USAGE_OUTPUT_TOKENS
 import pytest
 
 
@@ -612,3 +622,142 @@ async def test_trace_send_data_disabling_request_response_content(
       call_obj.args
       for call_obj in mock_span_fixture.set_attribute.call_args_list
   )
+
+
+@pytest.mark.asyncio
+@mock.patch('google.adk.telemetry.tracing.otel_logger')
+@mock.patch('google.adk.telemetry.tracing.tracer')
+@mock.patch(
+    'google.adk.telemetry.tracing._guess_gemini_system_name',
+    return_value='test_system',
+)
+@pytest.mark.parametrize('capture_content', [True, False])
+async def test_generate_content_span(
+    mock_guess_system_name,
+    mock_tracer,
+    mock_otel_logger,
+    monkeypatch,
+    capture_content,
+):
+  """Test native generate_content span creation with attributes and logs."""
+  # Arrange
+  monkeypatch.setenv(
+      'OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT',
+      str(capture_content).lower(),
+  )
+  monkeypatch.setattr(
+      'google.adk.telemetry.tracing._instrumented_with_opentelemetry_instrumentation_google_genai',
+      lambda: False,
+  )
+
+  agent = LlmAgent(name='test_agent', model='not-a-gemini-model')
+  invocation_context = await _create_invocation_context(agent)
+
+  system_instruction = types.Content(
+      parts=[types.Part.from_text(text='You are a helpful assistant.')],
+  )
+  user_content1 = types.Content(role='user', parts=[types.Part(text='Hello')])
+  user_content2 = types.Content(role='user', parts=[types.Part(text='World')])
+
+  model_content = types.Content(
+      role='model', parts=[types.Part(text='Response')]
+  )
+
+  llm_request = LlmRequest(
+      model='some-model',
+      contents=[user_content1, user_content2],
+      config=types.GenerateContentConfig(system_instruction=system_instruction),
+  )
+  llm_response = LlmResponse(
+      content=model_content,
+      finish_reason=types.FinishReason.STOP,
+      usage_metadata=types.GenerateContentResponseUsageMetadata(
+          prompt_token_count=10,
+          candidates_token_count=20,
+      ),
+  )
+
+  model_response_event = mock.MagicMock()
+  model_response_event.id = 'event-123'
+
+  mock_span = (
+      mock_tracer.start_as_current_span.return_value.__enter__.return_value
+  )
+
+  # Act
+  with use_generate_content_span(
+      llm_request, invocation_context, model_response_event
+  ) as span:
+    assert span is mock_span
+
+    trace_generate_content_result(span, llm_response)
+
+  # Assert Span
+  mock_tracer.start_as_current_span.assert_called_once_with(
+      'generate_content some-model'
+  )
+
+  mock_span.set_attribute.assert_any_call(GEN_AI_SYSTEM, 'test_system')
+  mock_span.set_attribute.assert_any_call(
+      GEN_AI_OPERATION_NAME, 'generate_content'
+  )
+  mock_span.set_attribute.assert_any_call(GEN_AI_REQUEST_MODEL, 'some-model')
+  mock_span.set_attribute.assert_any_call(
+      GEN_AI_RESPONSE_FINISH_REASONS, ['stop']
+  )
+  mock_span.set_attribute.assert_any_call(GEN_AI_USAGE_INPUT_TOKENS, 10)
+  mock_span.set_attribute.assert_any_call(GEN_AI_USAGE_OUTPUT_TOKENS, 20)
+
+  mock_span.set_attributes.assert_called_once_with({
+      GEN_AI_CONVERSATION_ID: invocation_context.session.id,
+      'gcp.vertex.agent.event_id': 'event-123',
+  })
+
+  # Assert Logs
+  assert mock_otel_logger.emit.call_count == 4
+
+  expected_system_body = {
+      'content': (
+          system_instruction.model_dump() if capture_content else '<elided>'
+      )
+  }
+  expected_user1_body = {
+      'content': user_content1.model_dump() if capture_content else '<elided>'
+  }
+  expected_user2_body = {
+      'content': user_content2.model_dump() if capture_content else '<elided>'
+  }
+  expected_choice_body = {
+      'content': model_content.model_dump() if capture_content else '<elided>',
+      'index': 0,
+      'finish_reason': 'STOP',
+  }
+
+  log_records: list[LogRecord] = [
+      call.args[0] for call in mock_otel_logger.emit.call_args_list
+  ]
+
+  system_log = next(
+      (lr for lr in log_records if lr.event_name == 'gen_ai.system.message'),
+      None,
+  )
+  assert system_log is not None
+  assert system_log.body == expected_system_body
+  assert system_log.attributes == {GEN_AI_SYSTEM: 'test_system'}
+
+  user_logs = [
+      lr for lr in log_records if lr.event_name == 'gen_ai.user.message'
+  ]
+  assert len(user_logs) == 2
+  assert expected_user1_body == user_logs[0].body
+  assert expected_user2_body == user_logs[1].body
+  for log in user_logs:
+    assert log.attributes == {GEN_AI_SYSTEM: 'test_system'}
+
+  choice_log = next(
+      (lr for lr in log_records if lr.event_name == 'gen_ai.choice'),
+      None,
+  )
+  assert choice_log is not None
+  assert choice_log.body == expected_choice_body
+  assert choice_log.attributes == {GEN_AI_SYSTEM: 'test_system'}

@@ -600,23 +600,37 @@ def get_file_diff_for_release(
 
 
 def get_changed_files_summary(
-    repo_owner: str, repo_name: str, start_tag: str, end_tag: str
+    repo_owner: str,
+    repo_name: str,
+    start_tag: str,
+    end_tag: str,
+    local_repo_path: Optional[str] = None,
 ) -> Dict[str, Any]:
   """Gets a summary of changed files between two releases without patches.
 
-  This is a lighter-weight version of get_changed_files_between_releases
-  that only returns file paths and metadata, without the actual diff content.
-  Use this for planning which files to analyze.
+  This function uses local git commands when local_repo_path is provided,
+  which avoids the GitHub API's 300-file limit for large comparisons.
+  Falls back to GitHub API if local_repo_path is not provided or invalid.
 
   Args:
       repo_owner: The name of the repository owner.
       repo_name: The name of the repository.
       start_tag: The older tag (base) for the comparison.
       end_tag: The newer tag (head) for the comparison.
+      local_repo_path: Optional absolute path to local git repo. If provided
+          and valid, uses git diff instead of GitHub API to get complete
+          file list (avoids 300-file limit).
 
   Returns:
       A dictionary containing the status and a summary of changed files.
   """
+  # Use local git if valid path is provided (avoids GitHub API 300-file limit)
+  if local_repo_path and os.path.isdir(os.path.join(local_repo_path, ".git")):
+    return _get_changed_files_from_local_git(
+        local_repo_path, start_tag, end_tag, repo_owner, repo_name
+    )
+
+  # Fall back to GitHub API (limited to 300 files)
   url = f"{GITHUB_BASE_URL}/repos/{repo_owner}/{repo_name}/compare/{start_tag}...{end_tag}"
 
   try:
@@ -654,8 +668,140 @@ def get_changed_files_summary(
             f"https://github.com/{repo_owner}/{repo_name}"
             f"/compare/{start_tag}...{end_tag}"
         ),
+        "note": (
+            (
+                "Using GitHub API which is limited to 300 files. "
+                "Provide local_repo_path to get complete file list."
+            )
+            if len(formatted_files) >= 300
+            else None
+        ),
     }
   except requests.exceptions.HTTPError as e:
     return error_response(f"HTTP Error: {e}")
   except requests.exceptions.RequestException as e:
     return error_response(f"Request Error: {e}")
+
+
+def _get_changed_files_from_local_git(
+    local_repo_path: str,
+    start_tag: str,
+    end_tag: str,
+    repo_owner: str,
+    repo_name: str,
+) -> Dict[str, Any]:
+  """Gets changed files using local git commands (no file limit).
+
+  Args:
+      local_repo_path: Path to local git repository.
+      start_tag: The older tag (base) for the comparison.
+      end_tag: The newer tag (head) for the comparison.
+      repo_owner: Repository owner for compare URL.
+      repo_name: Repository name for compare URL.
+
+  Returns:
+      A dictionary containing the status and a summary of changed files.
+  """
+  try:
+    # Fetch tags to ensure we have them
+    subprocess.run(
+        ["git", "fetch", "--tags"],
+        cwd=local_repo_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    # Get list of changed files with their status
+    diff_result = subprocess.run(
+        ["git", "diff", "--name-status", f"{start_tag}...{end_tag}"],
+        cwd=local_repo_path,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    # Get numstat for additions/deletions
+    numstat_result = subprocess.run(
+        ["git", "diff", "--numstat", f"{start_tag}...{end_tag}"],
+        cwd=local_repo_path,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    # Parse numstat output (additions, deletions, filename)
+    file_stats: Dict[str, Dict[str, int]] = {}
+    for line in numstat_result.stdout.strip().split("\n"):
+      if not line:
+        continue
+      parts = line.split("\t")
+      if len(parts) >= 3:
+        additions = int(parts[0]) if parts[0] != "-" else 0
+        deletions = int(parts[1]) if parts[1] != "-" else 0
+        filename = parts[2]
+        file_stats[filename] = {
+            "additions": additions,
+            "deletions": deletions,
+            "changes": additions + deletions,
+        }
+
+    # Parse name-status output and combine with numstat
+    status_map = {
+        "A": "added",
+        "D": "removed",
+        "M": "modified",
+        "R": "renamed",
+        "C": "copied",
+    }
+
+    files_by_dir: Dict[str, List[Dict[str, Any]]] = {}
+    formatted_files = []
+
+    for line in diff_result.stdout.strip().split("\n"):
+      if not line:
+        continue
+      parts = line.split("\t")
+      if len(parts) >= 2:
+        status_code = parts[0][0]  # First char is the status
+        filename = parts[-1]  # Last part is filename (handles renames)
+
+        stats = file_stats.get(
+            filename,
+            {
+                "additions": 0,
+                "deletions": 0,
+                "changes": 0,
+            },
+        )
+
+        file_info = {
+            "relative_path": filename,
+            "status": status_map.get(status_code, "modified"),
+            "additions": stats["additions"],
+            "deletions": stats["deletions"],
+            "changes": stats["changes"],
+        }
+        formatted_files.append(file_info)
+
+        # Group by top-level directory
+        dir_parts = filename.split("/")
+        top_dir = dir_parts[0] if dir_parts else "root"
+        if top_dir not in files_by_dir:
+          files_by_dir[top_dir] = []
+        files_by_dir[top_dir].append(file_info)
+
+    return {
+        "status": "success",
+        "total_files": len(formatted_files),
+        "files": formatted_files,
+        "files_by_directory": files_by_dir,
+        "compare_url": (
+            f"https://github.com/{repo_owner}/{repo_name}"
+            f"/compare/{start_tag}...{end_tag}"
+        ),
+    }
+  except subprocess.CalledProcessError as e:
+    return error_response(f"Git command failed: {e.stderr}")
+  except (OSError, ValueError) as e:
+    return error_response(f"Error getting changed files: {e}")
