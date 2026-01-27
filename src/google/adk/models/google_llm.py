@@ -58,7 +58,7 @@ https://google.github.io/adk-docs/agents/models/#error-code-429-resource_exhaust
 
 
 class _ResourceExhaustedError(ClientError):
-  """Represents an resources exhausted error received from the Model."""
+  """Represents a resources exhausted error received from the Model."""
 
   def __init__(
       self,
