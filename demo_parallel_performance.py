@@ -8,6 +8,7 @@ LLM evaluation calls using asyncio.gather().
 from __future__ import annotations
 
 import asyncio
+from collections import defaultdict
 import time
 from typing import Optional
 
@@ -55,10 +56,8 @@ async def parallel_evaluation(
   all_results = await asyncio.gather(*tasks)
 
   # Group by invocation
-  results_by_invocation = {}
+  results_by_invocation = defaultdict(list)
   for idx, result in zip(invocation_indices, all_results):
-    if idx not in results_by_invocation:
-      results_by_invocation[idx] = []
     results_by_invocation[idx].append(result)
 
   return [
@@ -84,19 +83,19 @@ async def main():
 
   # Test serial approach
   print("Testing SERIAL approach (old)...")
-  start_time = time.time()
+  start_time = time.perf_counter()
   serial_results = await serial_evaluation(num_invocations, num_samples, delay)
-  serial_time = time.time() - start_time
+  serial_time = time.perf_counter() - start_time
   print(f"✓ Completed in {serial_time:.2f}s")
   print()
 
   # Test parallel approach
   print("Testing PARALLEL approach (new)...")
-  start_time = time.time()
+  start_time = time.perf_counter()
   parallel_results = await parallel_evaluation(
       num_invocations, num_samples, delay
   )
-  parallel_time = time.time() - start_time
+  parallel_time = time.perf_counter() - start_time
   print(f"✓ Completed in {parallel_time:.2f}s")
   print()
 

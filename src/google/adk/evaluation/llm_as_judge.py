@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from abc import abstractmethod
 import asyncio
+from collections import defaultdict
 from typing import Optional
 
 from google.genai import types as genai_types
@@ -148,11 +149,9 @@ class LlmAsJudge(Evaluator):
             ),
             rubric_scores=auto_rater_score.rubric_scores,
         )
-    # This should not be reached for non-streaming calls, but added for safety
-    return PerInvocationResult(
-        actual_invocation=actual,
-        expected_invocation=expected,
-        eval_status=get_eval_status(None, self._eval_metric.threshold),
+    # If we reach here, the LLM didn't return any response
+    raise RuntimeError(
+        "LLM evaluation failed: no response received from judge model"
     )
 
   @override
@@ -207,10 +206,8 @@ class LlmAsJudge(Evaluator):
     all_results = await asyncio.gather(*tasks)
 
     # Group results by invocation
-    results_by_invocation = {}
+    results_by_invocation = defaultdict(list)
     for invocation_idx, result in zip(invocation_indices, all_results):
-      if invocation_idx not in results_by_invocation:
-        results_by_invocation[invocation_idx] = []
       results_by_invocation[invocation_idx].append(result)
 
     # Aggregate samples for each invocation

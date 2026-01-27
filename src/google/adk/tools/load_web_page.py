@@ -16,8 +16,6 @@ from __future__ import annotations
 
 """Tool for web browse."""
 
-from __future__ import annotations
-
 import requests
 
 
