@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -322,22 +322,29 @@ class DatabaseSessionService(BaseSessionService):
         storage_user_state.state = storage_user_state.state | user_state_delta
 
       # Store the session
+      now = datetime.now(timezone.utc)
+      is_sqlite = self.db_engine.dialect.name == "sqlite"
+      if is_sqlite:
+        now = now.replace(tzinfo=None)
+
       storage_session = schema.StorageSession(
           app_name=app_name,
           user_id=user_id,
           id=session_id,
           state=session_state,
+          create_time=now,
+          update_time=now,
       )
       sql_session.add(storage_session)
       await sql_session.commit()
-
-      await sql_session.refresh(storage_session)
 
       # Merge states for response
       merged_state = _merge_state(
           storage_app_state.state, storage_user_state.state, session_state
       )
-      session = storage_session.to_session(state=merged_state)
+      session = storage_session.to_session(
+          state=merged_state, is_sqlite=is_sqlite
+      )
     return session
 
   @override
@@ -397,7 +404,10 @@ class DatabaseSessionService(BaseSessionService):
 
       # Convert storage session to session
       events = [e.to_event() for e in reversed(storage_events)]
-      session = storage_session.to_session(state=merged_state, events=events)
+      is_sqlite = self.db_engine.dialect.name == "sqlite"
+      session = storage_session.to_session(
+          state=merged_state, events=events, is_sqlite=is_sqlite
+      )
     return session
 
   @override
@@ -440,11 +450,14 @@ class DatabaseSessionService(BaseSessionService):
           user_states_map[storage_user_state.user_id] = storage_user_state.state
 
       sessions = []
+      is_sqlite = self.db_engine.dialect.name == "sqlite"
       for storage_session in results:
         session_state = storage_session.state
         user_state = user_states_map.get(storage_session.user_id, {})
         merged_state = _merge_state(app_state, user_state, session_state)
-        sessions.append(storage_session.to_session(state=merged_state))
+        sessions.append(
+            storage_session.to_session(state=merged_state, is_sqlite=is_sqlite)
+        )
       return ListSessionsResponse(sessions=sessions)
 
   @override
@@ -480,15 +493,6 @@ class DatabaseSessionService(BaseSessionService):
           schema.StorageSession, (session.app_name, session.user_id, session.id)
       )
 
-      if storage_session.update_timestamp_tz > session.last_update_time:
-        raise ValueError(
-            "The last_update_time provided in the session object"
-            f" {datetime.fromtimestamp(session.last_update_time):'%Y-%m-%d %H:%M:%S'} is"
-            " earlier than the update_time in the storage_session"
-            f" {datetime.fromtimestamp(storage_session.update_timestamp_tz):'%Y-%m-%d %H:%M:%S'}."
-            " Please check if it is a stale session."
-        )
-
       # Fetch states from storage
       storage_app_state = await sql_session.get(
           schema.StorageAppState, (session.app_name)
@@ -496,6 +500,29 @@ class DatabaseSessionService(BaseSessionService):
       storage_user_state = await sql_session.get(
           schema.StorageUserState, (session.app_name, session.user_id)
       )
+
+      is_sqlite = self.db_engine.dialect.name == "sqlite"
+      if (
+          storage_session.get_update_timestamp(is_sqlite)
+          > session.last_update_time
+      ):
+        # Reload the session from storage if it has been updated since it was
+        # loaded.
+        app_state = storage_app_state.state if storage_app_state else {}
+        user_state = storage_user_state.state if storage_user_state else {}
+        session_state = storage_session.state
+        session.state = _merge_state(app_state, user_state, session_state)
+
+        stmt = (
+            select(schema.StorageEvent)
+            .filter(schema.StorageEvent.app_name == session.app_name)
+            .filter(schema.StorageEvent.session_id == session.id)
+            .filter(schema.StorageEvent.user_id == session.user_id)
+            .order_by(schema.StorageEvent.timestamp.asc())
+        )
+        result = await sql_session.stream_scalars(stmt)
+        storage_events = [e async for e in result]
+        session.events = [e.to_event() for e in storage_events]
 
       # Extract state delta
       if event.actions and event.actions.state_delta:
@@ -513,7 +540,7 @@ class DatabaseSessionService(BaseSessionService):
         if session_state_delta:
           storage_session.state = storage_session.state | session_state_delta
 
-      if storage_session._dialect_name == "sqlite":
+      if is_sqlite:
         update_time = datetime.fromtimestamp(
             event.timestamp, timezone.utc
         ).replace(tzinfo=None)
@@ -523,10 +550,9 @@ class DatabaseSessionService(BaseSessionService):
       sql_session.add(schema.StorageEvent.from_event(session, event))
 
       await sql_session.commit()
-      await sql_session.refresh(storage_session)
 
       # Update timestamp with commit time
-      session.last_update_time = storage_session.update_timestamp_tz
+      session.last_update_time = storage_session.get_update_timestamp(is_sqlite)
 
     # Also update the in-memory session
     await super().append_event(session=session, event=event)

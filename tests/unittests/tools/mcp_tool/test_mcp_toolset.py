@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,7 +13,9 @@
 # limitations under the License.
 
 import asyncio
+import base64
 from io import StringIO
+import json
 import sys
 import unittest
 from unittest.mock import AsyncMock
@@ -30,9 +32,9 @@ from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnecti
 from google.adk.tools.mcp_tool.mcp_tool import MCPTool
 from google.adk.tools.mcp_tool.mcp_toolset import MCPToolset
 from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
-from google.adk.tools.mcp_tool.mcp_toolset import McpToolsetConfig
-from google.adk.tools.tool_configs import ToolArgsConfig
 from mcp import StdioServerParameters
+from mcp.types import ListResourcesResult
+from mcp.types import Resource
 import pytest
 
 
@@ -248,94 +250,6 @@ class TestMCPToolset:
     )
 
   @pytest.mark.asyncio
-  async def test_get_tools_with_auth_headers(self):
-    """Test get_tools with auth headers."""
-    from fastapi.openapi import models as openapi_models
-    from google.adk.auth.auth_credential import AuthCredentialTypes
-    from google.adk.auth.auth_credential import OAuth2Auth
-
-    mock_tools = [MockMCPTool("tool1")]
-    self.mock_session.list_tools = AsyncMock(
-        return_value=MockListToolsResult(mock_tools)
-    )
-    mock_readonly_context = Mock(spec=ReadonlyContext)
-
-    auth_scheme = openapi_models.HTTPBase(scheme="bearer")
-    auth_credential = AuthCredential(
-        auth_type=AuthCredentialTypes.OAUTH2,
-        oauth2=OAuth2Auth(access_token="test_token"),
-    )
-
-    with patch(
-        "google.adk.tools.mcp_tool.mcp_toolset.CredentialManager"
-    ) as MockCredentialManager:
-      mock_manager_instance = MockCredentialManager.return_value
-      mock_manager_instance.get_auth_credential = AsyncMock(
-          return_value=auth_credential
-      )
-
-      toolset = MCPToolset(
-          connection_params=self.mock_stdio_params,
-          auth_scheme=auth_scheme,
-          auth_credential=auth_credential,
-      )
-      toolset._mcp_session_manager = self.mock_session_manager
-
-      await toolset.get_tools(readonly_context=mock_readonly_context)
-
-      self.mock_session_manager.create_session.assert_called_once()
-      call_args = self.mock_session_manager.create_session.call_args
-      headers = call_args[1]["headers"]
-      assert headers == {"Authorization": "Bearer test_token"}
-
-  @pytest.mark.asyncio
-  async def test_get_tools_with_auth_and_header_provider(self):
-    """Test get_tools with auth and header_provider."""
-    from fastapi.openapi import models as openapi_models
-    from google.adk.auth.auth_credential import AuthCredentialTypes
-    from google.adk.auth.auth_credential import OAuth2Auth
-
-    mock_tools = [MockMCPTool("tool1")]
-    self.mock_session.list_tools = AsyncMock(
-        return_value=MockListToolsResult(mock_tools)
-    )
-    mock_readonly_context = Mock(spec=ReadonlyContext)
-    provided_headers = {"X-Tenant-ID": "test-tenant"}
-    header_provider = Mock(return_value=provided_headers)
-
-    auth_scheme = openapi_models.HTTPBase(scheme="bearer")
-    auth_credential = AuthCredential(
-        auth_type=AuthCredentialTypes.OAUTH2,
-        oauth2=OAuth2Auth(access_token="test_token"),
-    )
-
-    with patch(
-        "google.adk.tools.mcp_tool.mcp_toolset.CredentialManager"
-    ) as MockCredentialManager:
-      mock_manager_instance = MockCredentialManager.return_value
-      mock_manager_instance.get_auth_credential = AsyncMock(
-          return_value=auth_credential
-      )
-
-      toolset = MCPToolset(
-          connection_params=self.mock_stdio_params,
-          auth_scheme=auth_scheme,
-          auth_credential=auth_credential,
-          header_provider=header_provider,
-      )
-      toolset._mcp_session_manager = self.mock_session_manager
-
-      await toolset.get_tools(readonly_context=mock_readonly_context)
-
-      self.mock_session_manager.create_session.assert_called_once()
-      call_args = self.mock_session_manager.create_session.call_args
-      headers = call_args[1]["headers"]
-      assert headers == {
-          "X-Tenant-ID": "test-tenant",
-          "Authorization": "Bearer test_token",
-      }
-
-  @pytest.mark.asyncio
   async def test_close_success(self):
     """Test successful cleanup."""
     toolset = MCPToolset(connection_params=self.mock_stdio_params)
@@ -443,3 +357,135 @@ class TestMCPToolset:
     # Assert that the original tools are not modified
     assert tools[0].name == "tool1"
     assert tools[1].name == "tool2"
+
+  @pytest.mark.asyncio
+  async def test_list_resources(self):
+    """Test listing resources."""
+    resources = [
+        Resource(
+            name="file1.txt", mime_type="text/plain", uri="file:///file1.txt"
+        ),
+        Resource(
+            name="data.json",
+            mime_type="application/json",
+            uri="file:///data.json",
+        ),
+    ]
+    list_resources_result = ListResourcesResult(resources=resources)
+    self.mock_session.list_resources = AsyncMock(
+        return_value=list_resources_result
+    )
+
+    toolset = MCPToolset(connection_params=self.mock_stdio_params)
+    toolset._mcp_session_manager = self.mock_session_manager
+
+    result = await toolset.list_resources()
+
+    assert result == ["file1.txt", "data.json"]
+    self.mock_session.list_resources.assert_called_once()
+
+  @pytest.mark.asyncio
+  async def test_get_resource_info_success(self):
+    """Test getting resource info for an existing resource."""
+    resources = [
+        Resource(
+            name="file1.txt", mime_type="text/plain", uri="file:///file1.txt"
+        ),
+        Resource(
+            name="data.json",
+            mime_type="application/json",
+            uri="file:///data.json",
+        ),
+    ]
+    list_resources_result = ListResourcesResult(resources=resources)
+    self.mock_session.list_resources = AsyncMock(
+        return_value=list_resources_result
+    )
+
+    toolset = MCPToolset(connection_params=self.mock_stdio_params)
+    toolset._mcp_session_manager = self.mock_session_manager
+
+    result = await toolset.get_resource_info("data.json")
+
+    assert result == {
+        "name": "data.json",
+        "mime_type": "application/json",
+        "uri": "file:///data.json",
+    }
+    self.mock_session.list_resources.assert_called_once()
+
+  @pytest.mark.asyncio
+  async def test_get_resource_info_not_found(self):
+    """Test getting resource info for a non-existent resource."""
+    resources = [
+        Resource(
+            name="file1.txt", mime_type="text/plain", uri="file:///file1.txt"
+        ),
+    ]
+    list_resources_result = ListResourcesResult(resources=resources)
+    self.mock_session.list_resources = AsyncMock(
+        return_value=list_resources_result
+    )
+
+    toolset = MCPToolset(connection_params=self.mock_stdio_params)
+    toolset._mcp_session_manager = self.mock_session_manager
+
+    with pytest.raises(
+        ValueError, match="Resource with name 'other.json' not found."
+    ):
+      await toolset.get_resource_info("other.json")
+
+  @pytest.mark.parametrize(
+      "name,mime_type,content,encoding,expected_result",
+      [
+          ("file1.txt", "text/plain", "hello world", None, "hello world"),
+          (
+              "data.json",
+              "application/json",
+              '{"key": "value"}',
+              None,
+              {"key": "value"},
+          ),
+          (
+              "file1_b64.txt",
+              "text/plain",
+              base64.b64encode(b"hello world").decode("ascii"),
+              "base64",
+              "hello world",
+          ),
+          (
+              "data_b64.json",
+              "application/json",
+              base64.b64encode(b'{"key": "value"}').decode("ascii"),
+              "base64",
+              {"key": "value"},
+          ),
+          (
+              "data.bin",
+              "application/octet-stream",
+              base64.b64encode(b"\x01\x02\x03").decode("ascii"),
+              "base64",
+              b"\x01\x02\x03",
+          ),
+      ],
+  )
+  @pytest.mark.asyncio
+  async def test_read_resource(
+      self, name, mime_type, content, encoding, expected_result
+  ):
+    """Test reading various resource types."""
+    get_resource_result = MagicMock()
+    get_resource_result.resource = Resource(
+        name=name, mime_type=mime_type, uri=f"file:///{name}"
+    )
+    get_resource_result.content = content
+    get_resource_result.encoding = encoding
+    self.mock_session.get_resource = AsyncMock(return_value=get_resource_result)
+
+    toolset = MCPToolset(connection_params=self.mock_stdio_params)
+    toolset._mcp_session_manager = self.mock_session_manager
+
+    result = await toolset.read_resource(name)
+
+    assert result == expected_result
+    self.mock_session.get_resource.assert_called_once_with(name=name)

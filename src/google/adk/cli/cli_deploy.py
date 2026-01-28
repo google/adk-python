@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -105,7 +105,8 @@ from vertexai.agent_engines import AdkApp
 
 if {is_config_agent}:
   from google.adk.agents import config_agent_utils
-  root_agent = config_agent_utils.from_config("{agent_folder}/root_agent.yaml")
+  config_path = os.path.join(os.path.dirname(__file__), "root_agent.yaml")
+  root_agent = config_agent_utils.from_config(config_path)
 else:
   from .agent import {adk_app_object}
 
