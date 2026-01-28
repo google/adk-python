@@ -15,17 +15,23 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
 import logging
 import sys
+from typing import Any
+from typing import Awaitable
 from typing import Callable
 from typing import Dict
 from typing import List
 from typing import Optional
 from typing import TextIO
+from typing import TypeVar
 from typing import Union
 import warnings
 
 from mcp import StdioServerParameters
+from mcp.types import ListResourcesResult
 from mcp.types import ListToolsResult
 from pydantic import model_validator
 from typing_extensions import override
@@ -46,6 +52,9 @@ from .mcp_session_manager import StreamableHTTPConnectionParams
 from .mcp_tool import MCPTool
 
 logger = logging.getLogger("google_adk." + __name__)
+
+
+T = TypeVar("T")
 
 
 class McpToolset(BaseToolset):
@@ -140,6 +149,31 @@ class McpToolset(BaseToolset):
     self._auth_credential = auth_credential
     self._require_confirmation = require_confirmation
 
+  async def _execute_with_session(
+      self,
+      coroutine_func: Callable[[Any], Awaitable[T]],
+      error_message: str,
+      readonly_context: Optional[ReadonlyContext] = None,
+  ) -> T:
+    """Creates a session and executes a coroutine with it."""
+    headers = (
+        self._header_provider(readonly_context)
+        if self._header_provider and readonly_context
+        else None
+    )
+    session = await self._mcp_session_manager.create_session(headers=headers)
+    timeout_in_seconds = (
+        self._connection_params.timeout
+        if hasattr(self._connection_params, "timeout")
+        else None
+    )
+    try:
+      return await asyncio.wait_for(
+          coroutine_func(session), timeout=timeout_in_seconds
+      )
+    except Exception as e:
+      raise ConnectionError(f"{error_message}: {e}") from e
+
   @retry_on_errors
   async def get_tools(
       self,
@@ -154,26 +188,12 @@ class McpToolset(BaseToolset):
     Returns:
         List[BaseTool]: A list of tools available under the specified context.
     """
-    headers = (
-        self._header_provider(readonly_context)
-        if self._header_provider and readonly_context
-        else None
-    )
-    # Get session from session manager
-    session = await self._mcp_session_manager.create_session(headers=headers)
-
     # Fetch available tools from the MCP server
-    timeout_in_seconds = (
-        self._connection_params.timeout
-        if hasattr(self._connection_params, "timeout")
-        else None
+    tools_response: ListToolsResult = await self._execute_with_session(
+        lambda session: session.list_tools(),
+        "Failed to get tools from MCP server",
+        readonly_context,
     )
-    try:
-      tools_response: ListToolsResult = await asyncio.wait_for(
-          session.list_tools(), timeout=timeout_in_seconds
-      )
-    except Exception as e:
-      raise ConnectionError("Failed to get tools from MCP server.") from e
 
     # Apply filtering based on context and tool_filter
     tools = []
@@ -190,6 +210,66 @@ class McpToolset(BaseToolset):
       if self._is_tool_selected(mcp_tool, readonly_context):
         tools.append(mcp_tool)
     return tools
+
+  async def read_resource(
+      self, name: str, readonly_context: Optional[ReadonlyContext] = None
+  ) -> Any:
+    """Fetches and returns the content of the named resource.
+
+    This method will handle content decoding based on the MIME type reported by
+    the MCP server (e.g., JSON, text, base64 for binary).
+
+    Args:
+      name: The name of the resource to fetch.
+      readonly_context: Context used to provide headers for the MCP session.
+
+    Returns:
+      The content of the resource, decoded based on MIME type and encoding.
+    """
+    result: Any = await self._execute_with_session(
+        lambda session: session.get_resource(name=name),
+        f"Failed to get resource {name} from MCP server",
+        readonly_context,
+    )
+
+    content = result.content
+    if result.encoding == "base64":
+      decoded_bytes = base64.b64decode(content)
+      if result.resource.mime_type == "application/json":
+        return json.loads(decoded_bytes.decode("utf-8"))
+      if result.resource.mime_type.startswith("text/"):
+        return decoded_bytes.decode("utf-8")
+      return decoded_bytes  # Return as bytes for other binary types
+
+    if result.resource.mime_type == "application/json":
+      return json.loads(content)
+
+    return content
+
+  async def list_resources(
+      self, readonly_context: Optional[ReadonlyContext] = None
+  ) -> list[str]:
+    """Returns a list of resource names available on the MCP server."""
+    result: ListResourcesResult = await self._execute_with_session(
+        lambda session: session.list_resources(),
+        "Failed to list resources from MCP server",
+        readonly_context,
+    )
+    return [resource.name for resource in result.resources]
+
+  async def get_resource_info(
+      self, name: str, readonly_context: Optional[ReadonlyContext] = None
+  ) -> dict[str, Any]:
+    """Returns metadata about a specific resource (name, MIME type, etc.)."""
+    result: ListResourcesResult = await self._execute_with_session(
+        lambda session: session.list_resources(),
+        "Failed to list resources from MCP server",
+        readonly_context,
+    )
+    for resource in result.resources:
+      if resource.name == name:
+        return resource.model_dump(mode="json", exclude_none=True)
+    raise ValueError(f"Resource with name '{name}' not found.")
 
   async def close(self) -> None:
     """Performs cleanup and releases resources held by the toolset.
