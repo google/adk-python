@@ -17,7 +17,6 @@
 from __future__ import annotations
 
 from typing import AsyncGenerator
-from typing import Generator
 
 from google.genai import types
 from typing_extensions import override
@@ -27,7 +26,6 @@ from ...events.event import Event
 from ...models.llm_request import LlmRequest
 from ...utils.output_schema_utils import can_use_output_schema_with_tools
 from ._base_llm_processor import BaseLlmRequestProcessor
-
 
 def _build_basic_request(
     invocation_context: InvocationContext,
@@ -45,11 +43,42 @@ def _build_basic_request(
   agent = invocation_context.agent
   model = agent.canonical_model
   llm_request.model = model if isinstance(model, str) else model.model
+
+  # Preserve http_options propagated from RunConfig
+  run_config_http_options = llm_request.config.http_options
+
   llm_request.config = (
       agent.generate_content_config.model_copy(deep=True)
       if agent.generate_content_config
       else types.GenerateContentConfig()
   )
+
+  if run_config_http_options:
+    # Merge RunConfig http_options back, overriding agent config
+    if not llm_request.config.http_options:
+      llm_request.config.http_options = run_config_http_options
+    else:
+      # Merge headers
+      if run_config_http_options.headers:
+        if not llm_request.config.http_options.headers:
+          llm_request.config.http_options.headers = {}
+        llm_request.config.http_options.headers.update(
+            run_config_http_options.headers
+        )
+
+        # Merge other http_options fields if present in RunConfig.
+        # RunConfig values override agent defaults.
+        # Note: base_url, api_version, base_url_resource_scope are intentionally
+        # excluded as they are configuration-time settings, not request-time.
+        for field in [
+            'timeout',
+            'retry_options',
+            'extra_body',
+        ]:
+          val = getattr(run_config_http_options, field, None)
+          if val is not None:
+            setattr(llm_request.config.http_options, field, val)
+
   # Only set output_schema if no tools are specified. as of now, model don't
   # support output_schema and tools together. we have a workaround to support
   # both output_schema and tools at the same time. see
@@ -99,6 +128,5 @@ class _BasicLlmRequestProcessor(BaseLlmRequestProcessor):
 
     return
     yield  # Generator requires yield statement in function body.
-
 
 request_processor = _BasicLlmRequestProcessor()

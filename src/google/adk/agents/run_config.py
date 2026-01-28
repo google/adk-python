@@ -178,7 +178,6 @@ class StreamingMode(Enum):
   For bidirectional streaming, use runner.run_live() instead of run_async().
   """
 
-
 class RunConfig(BaseModel):
   """Configs for runtime behavior of agents.
 
@@ -192,6 +191,9 @@ class RunConfig(BaseModel):
 
   speech_config: Optional[types.SpeechConfig] = None
   """Speech configuration for the live agent."""
+
+  http_options: Optional[types.HttpOptions] = None
+  """HTTP options for the agent execution (e.g. custom headers)."""
 
   response_modalities: Optional[list[str]] = None
   """The output modalities. If not set, it's default to AUDIO."""

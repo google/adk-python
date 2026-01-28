@@ -148,7 +148,6 @@ _LITELLM_GLOBAL_SYMBOLS = (
     "completion",
 )
 
-
 def _ensure_litellm_imported() -> None:
   """Imports LiteLLM with safe defaults.
 
@@ -175,7 +174,6 @@ def _ensure_litellm_imported() -> None:
   _redirect_litellm_loggers_to_stdout()
   _LITELLM_IMPORTED = True
 
-
 def _map_finish_reason(
     finish_reason: Any,
 ) -> types.FinishReason | None:
@@ -186,7 +184,6 @@ def _map_finish_reason(
     return finish_reason
   finish_reason_str = str(finish_reason).lower()
   return _FINISH_REASON_MAPPING.get(finish_reason_str, types.FinishReason.OTHER)
-
 
 def _get_provider_from_model(model: str) -> str:
   """Extracts the provider name from a LiteLLM model string.
@@ -213,10 +210,8 @@ def _get_provider_from_model(model: str) -> str:
     return "openai"
   return ""
 
-
 # Default MIME type when none can be inferred
 _DEFAULT_MIME_TYPE = "application/octet-stream"
-
 
 def _infer_mime_type_from_uri(uri: str) -> Optional[str]:
   """Attempts to infer MIME type from a URI's path extension.
@@ -258,11 +253,9 @@ def _infer_mime_type_from_uri(uri: str) -> Optional[str]:
     logger.debug("Could not infer MIME type from URI %s: %s", uri, e)
     return None
 
-
 def _looks_like_openai_file_id(file_uri: str) -> bool:
   """Returns True when file_uri resembles an OpenAI/Azure file id."""
   return file_uri.startswith("file-")
-
 
 def _redact_file_uri_for_log(
     file_uri: str, *, display_name: str | None = None
@@ -284,7 +277,6 @@ def _redact_file_uri_for_log(
     return f"{parsed.scheme}://<redacted>/{tail}"
   return f"{parsed.scheme}://<redacted>"
 
-
 def _requires_file_uri_fallback(
     provider: str, model: str, file_uri: str
 ) -> bool:
@@ -297,7 +289,6 @@ def _requires_file_uri_fallback(
     return True
   return False
 
-
 def _decode_inline_text_data(raw_bytes: bytes) -> str:
   """Decodes inline file bytes that represent textual content."""
   try:
@@ -305,7 +296,6 @@ def _decode_inline_text_data(raw_bytes: bytes) -> str:
   except UnicodeDecodeError:
     logger.debug("Falling back to latin-1 decoding for inline file bytes.")
     return raw_bytes.decode("latin-1", errors="replace")
-
 
 def _iter_reasoning_texts(reasoning_value: Any) -> Iterable[str]:
   """Yields textual fragments from provider specific reasoning payloads."""
@@ -344,7 +334,6 @@ def _iter_reasoning_texts(reasoning_value: Any) -> Iterable[str]:
   elif isinstance(reasoning_value, (int, float, bool)):
     yield str(reasoning_value)
 
-
 def _convert_reasoning_value_to_parts(reasoning_value: Any) -> List[types.Part]:
   """Converts provider reasoning payloads into Gemini thought parts."""
   return [
@@ -352,7 +341,6 @@ def _convert_reasoning_value_to_parts(reasoning_value: Any) -> List[types.Part]:
       for text in _iter_reasoning_texts(reasoning_value)
       if text
   ]
-
 
 def _extract_reasoning_value(message: Message | Dict[str, Any]) -> Any:
   """Fetches the reasoning payload from a LiteLLM message or dict."""
@@ -364,12 +352,10 @@ def _extract_reasoning_value(message: Message | Dict[str, Any]) -> Any:
     return message.get("reasoning_content")
   return None
 
-
 class ChatCompletionFileUrlObject(TypedDict, total=False):
   file_data: str
   file_id: str
   format: str
-
 
 class FunctionChunk(BaseModel):
   id: Optional[str]
@@ -377,21 +363,17 @@ class FunctionChunk(BaseModel):
   args: Optional[str]
   index: Optional[int] = 0
 
-
 class TextChunk(BaseModel):
   text: str
 
-
 class ReasoningChunk(BaseModel):
   parts: List[types.Part]
-
 
 class UsageMetadataChunk(BaseModel):
   prompt_tokens: int
   completion_tokens: int
   total_tokens: int
   cached_prompt_tokens: int = 0
-
 
 class LiteLLMClient:
   """Provides acompletion method (for better testability)."""
@@ -444,7 +426,6 @@ class LiteLLMClient:
         **kwargs,
     )
 
-
 def _safe_json_serialize(obj) -> str:
   """Convert any Python object to a JSON-serializable type or string.
 
@@ -461,7 +442,6 @@ def _safe_json_serialize(obj) -> str:
   except (TypeError, OverflowError):
     return str(obj)
 
-
 def _part_has_payload(part: types.Part) -> bool:
   """Checks whether a Part contains usable payload for the model."""
   if part.text:
@@ -471,7 +451,6 @@ def _part_has_payload(part: types.Part) -> bool:
   if part.file_data and (part.file_data.file_uri or part.file_data.data):
     return True
   return False
-
 
 def _append_fallback_user_content_if_missing(
     llm_request: LlmRequest,
@@ -507,7 +486,6 @@ def _append_fallback_user_content_if_missing(
           ],
       )
   )
-
 
 def _extract_cached_prompt_tokens(usage: Any) -> int:
   """Extracts cached prompt tokens from LiteLLM usage.
@@ -560,7 +538,6 @@ def _extract_cached_prompt_tokens(usage: Any) -> int:
     logger.debug("Error extracting cached prompt tokens: %s", e)
 
   return 0
-
 
 async def _content_to_message_param(
     content: types.Content,
@@ -680,7 +657,6 @@ async def _content_to_message_param(
         reasoning_content=reasoning_content or None,
     )
 
-
 def _ensure_tool_results(messages: List[Message]) -> List[Message]:
   """Insert placeholder tool messages for missing tool results.
 
@@ -740,7 +716,6 @@ def _ensure_tool_results(messages: List[Message]) -> List[Message]:
     )
 
   return healed_messages
-
 
 async def _get_content(
     parts: Iterable[types.Part],
@@ -891,7 +866,6 @@ async def _get_content(
 
   return content_objects
 
-
 def _is_ollama_chat_provider(
     model: Optional[str], custom_llm_provider: Optional[str]
 ) -> bool:
@@ -904,7 +878,6 @@ def _is_ollama_chat_provider(
   if model and model.strip().lower().startswith("ollama_chat"):
     return True
   return False
-
 
 def _flatten_ollama_content(
     content: OpenAIMessageContent | str | None,
@@ -945,7 +918,6 @@ def _flatten_ollama_content(
     return json.dumps(blocks)
   except TypeError:
     return str(blocks)
-
 
 def _normalize_ollama_chat_messages(
     messages: list[Message],
@@ -991,7 +963,6 @@ def _normalize_ollama_chat_messages(
     normalized_messages.append(message_copy)
 
   return normalized_messages
-
 
 def _build_tool_call_from_json_dict(
     candidate: Any, *, index: int
@@ -1040,7 +1011,6 @@ def _build_tool_call_from_json_dict(
 
   return tool_call
 
-
 def _parse_tool_calls_from_text(
     text_block: str,
 ) -> tuple[list[ChatCompletionMessageToolCall], Optional[str]]:
@@ -1083,7 +1053,6 @@ def _parse_tool_calls_from_text(
 
   return tool_calls, remainder or None
 
-
 def _split_message_content_and_tool_calls(
     message: Message,
 ) -> tuple[Optional[OpenAIMessageContent], list[ChatCompletionMessageToolCall]]:
@@ -1105,7 +1074,6 @@ def _split_message_content_and_tool_calls(
 
   return content, []
 
-
 def _to_litellm_role(role: Optional[str]) -> Literal["user", "assistant"]:
   """Converts a types.Content role to a litellm role.
 
@@ -1120,7 +1088,6 @@ def _to_litellm_role(role: Optional[str]) -> Literal["user", "assistant"]:
     return "assistant"
   return "user"
 
-
 TYPE_LABELS = {
     "STRING": "string",
     "NUMBER": "number",
@@ -1129,7 +1096,6 @@ TYPE_LABELS = {
     "ARRAY": "array",
     "INTEGER": "integer",
 }
-
 
 def _schema_to_dict(schema: types.Schema | dict[str, Any]) -> dict:
   """Recursively converts a schema object or dict to a pure-python dict.
@@ -1173,7 +1139,6 @@ def _schema_to_dict(schema: types.Schema | dict[str, Any]) -> dict:
     schema_dict["properties"] = new_props
 
   return schema_dict
-
 
 def _function_declaration_to_tool_param(
     function_declaration: types.FunctionDeclaration,
@@ -1226,7 +1191,6 @@ def _function_declaration_to_tool_param(
     tool_params["function"]["parameters"]["required"] = required_fields
 
   return tool_params
-
 
 def _model_response_to_chunk(
     response: ModelResponse,
@@ -1317,7 +1281,6 @@ def _model_response_to_chunk(
         cached_prompt_tokens=_extract_cached_prompt_tokens(response["usage"]),
     ), None
 
-
 def _model_response_to_generate_content_response(
     response: ModelResponse,
 ) -> LlmResponse:
@@ -1370,7 +1333,6 @@ def _model_response_to_generate_content_response(
     )
   return llm_response
 
-
 def _message_to_generate_content_response(
     message: Message,
     *,
@@ -1416,7 +1378,6 @@ def _message_to_generate_content_response(
       partial=is_partial,
       model_version=model_version,
   )
-
 
 def _to_litellm_response_format(
     response_schema: types.SchemaUnion,
@@ -1495,7 +1456,6 @@ def _to_litellm_response_format(
           "schema": schema_dict,
       },
   }
-
 
 async def _get_completion_inputs(
     llm_request: LlmRequest,
@@ -1591,7 +1551,6 @@ async def _get_completion_inputs(
 
   return messages, tools, response_format, generation_params
 
-
 def _build_function_declaration_log(
     func_decl: types.FunctionDeclaration,
 ) -> str:
@@ -1614,7 +1573,6 @@ def _build_function_declaration_log(
   if func_decl.response:
     return_str = str(func_decl.response.model_dump(exclude_none=True))
   return f"{func_decl.name}: {param_str} -> {return_str}"
-
 
 def _build_request_log(req: LlmRequest) -> str:
   """Builds a request log.
@@ -1664,7 +1622,6 @@ Functions:
 -----------------------------------------------------------
 """
 
-
 def _is_litellm_gemini_model(model_string: str) -> bool:
   """Check if the model is a Gemini model accessed via LiteLLM.
 
@@ -1676,7 +1633,6 @@ def _is_litellm_gemini_model(model_string: str) -> bool:
     True if it's a Gemini model accessed via LiteLLM, False otherwise
   """
   return model_string.startswith(("gemini/gemini-", "vertex_ai/gemini-"))
-
 
 def _extract_gemini_model_from_litellm(litellm_model: str) -> str:
   """Extract the pure Gemini model name from a LiteLLM model string.
@@ -1691,7 +1647,6 @@ def _extract_gemini_model_from_litellm(litellm_model: str) -> str:
   if "/" in litellm_model:
     return litellm_model.split("/", 1)[1]
   return litellm_model
-
 
 def _warn_gemini_via_litellm(model_string: str) -> None:
   """Warn if Gemini is being used via LiteLLM.
@@ -1723,7 +1678,6 @@ def _warn_gemini_via_litellm(model_string: str) -> None:
       stacklevel=3,
   )
 
-
 def _redirect_litellm_loggers_to_stdout() -> None:
   """Redirects LiteLLM loggers from stderr to stdout.
 
@@ -1741,7 +1695,6 @@ def _redirect_litellm_loggers_to_stdout() -> None:
           and handler.stream is sys.stderr
       ):
         handler.stream = sys.stdout
-
 
 class LiteLlm(BaseLlm):
   """Wrapper around litellm.
@@ -1835,6 +1788,18 @@ class LiteLlm(BaseLlm):
 
     if generation_params:
       completion_args.update(generation_params)
+
+    if (
+        llm_request.config.http_options
+        and llm_request.config.http_options.headers
+    ):
+      extra_headers = completion_args.get("extra_headers", {})
+      if isinstance(extra_headers, dict):
+        extra_headers = extra_headers.copy()
+      else:
+        extra_headers = {}
+      extra_headers.update(llm_request.config.http_options.headers)
+      completion_args["extra_headers"] = extra_headers
 
     if stream:
       text = ""

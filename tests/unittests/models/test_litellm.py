@@ -3793,3 +3793,100 @@ def test_handles_litellm_logger_names(logger_name):
   finally:
     # Clean up
     test_logger.removeHandler(handler)
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_passes_http_options_headers_as_extra_headers(
+    mock_acompletion, lite_llm_instance
+):
+  """Test that http_options.headers from LlmRequest are forwarded to litellm."""
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role="user", parts=[types.Part.from_text(text="Test prompt")]
+          )
+      ],
+      config=types.GenerateContentConfig(
+          http_options=types.HttpOptions(
+              headers={"X-User-Id": "user-123", "X-Trace-Id": "trace-abc"}
+          )
+      ),
+  )
+
+  async for _ in lite_llm_instance.generate_content_async(llm_request):
+    pass
+
+  mock_acompletion.assert_called_once()
+  _, kwargs = mock_acompletion.call_args
+  assert "extra_headers" in kwargs
+  assert kwargs["extra_headers"]["X-User-Id"] == "user-123"
+  assert kwargs["extra_headers"]["X-Trace-Id"] == "trace-abc"
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_merges_http_options_with_existing_extra_headers(
+    mock_response,
+):
+  """Test that http_options.headers merge with pre-existing extra_headers."""
+  mock_acompletion = AsyncMock(return_value=mock_response)
+  mock_client = MockLLMClient(mock_acompletion, Mock())
+  # Create instance with pre-existing extra_headers via kwargs
+  lite_llm_with_extra = LiteLlm(
+      model="test_model",
+      llm_client=mock_client,
+      extra_headers={"X-Api-Key": "secret-key"},
+  )
+
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role="user", parts=[types.Part.from_text(text="Test prompt")]
+          )
+      ],
+      config=types.GenerateContentConfig(
+          http_options=types.HttpOptions(headers={"X-User-Id": "user-456"})
+      ),
+  )
+
+  async for _ in lite_llm_with_extra.generate_content_async(llm_request):
+    pass
+
+  mock_acompletion.assert_called_once()
+  _, kwargs = mock_acompletion.call_args
+  assert "extra_headers" in kwargs
+  # Both existing and new headers should be present
+  assert kwargs["extra_headers"]["X-Api-Key"] == "secret-key"
+  assert kwargs["extra_headers"]["X-User-Id"] == "user-456"
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_http_options_headers_override_existing(
+    mock_response,
+):
+  """Test that http_options.headers override same-key extra_headers from init."""
+  mock_acompletion = AsyncMock(return_value=mock_response)
+  mock_client = MockLLMClient(mock_acompletion, Mock())
+  lite_llm_with_extra = LiteLlm(
+      model="test_model",
+      llm_client=mock_client,
+      extra_headers={"X-Override-Me": "old-value"},
+  )
+
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role="user", parts=[types.Part.from_text(text="Test prompt")]
+          )
+      ],
+      config=types.GenerateContentConfig(
+          http_options=types.HttpOptions(headers={"X-Override-Me": "new-value"})
+      ),
+  )
+
+  async for _ in lite_llm_with_extra.generate_content_async(llm_request):
+    pass
+
+  mock_acompletion.assert_called_once()
+  _, kwargs = mock_acompletion.call_args
+  # Request-level headers should override init-level headers
+  assert kwargs["extra_headers"]["X-Override-Me"] == "new-value"

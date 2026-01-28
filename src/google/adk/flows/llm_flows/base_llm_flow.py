@@ -520,6 +520,22 @@ class BaseLlmFlow(ABC):
           f'Expected agent to be an LlmAgent, but got {type(agent)}'
       )
 
+    # Propagate http_options from RunConfig to LlmRequest as defaults.
+    # Request-level settings (from callbacks/processors) take precedence.
+    if (
+        invocation_context.run_config
+        and invocation_context.run_config.http_options
+    ):
+      run_opts = invocation_context.run_config.http_options
+      if not llm_request.config.http_options:
+        # Deep-copy to avoid mutating the user's RunConfig across steps.
+        llm_request.config.http_options = run_opts.model_copy(deep=True)
+      elif run_opts.headers:
+        # Merge headers: request-level headers win (use setdefault).
+        if not llm_request.config.http_options.headers:
+          llm_request.config.http_options.headers = {}
+        for key, value in run_opts.headers.items():
+          llm_request.config.http_options.headers.setdefault(key, value)
     # Runs processors.
     for processor in self.request_processors:
       async with Aclosing(

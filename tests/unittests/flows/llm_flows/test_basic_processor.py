@@ -188,3 +188,50 @@ class TestBasicLlmRequestProcessor:
 
     # Should have set the model name
     assert llm_request.model == 'gemini-1.5-flash'
+
+  @pytest.mark.asyncio
+  async def test_preserves_merged_http_options(self):
+    """Test that processor preserves and merges existing http_options."""
+    from google.genai import types
+
+    agent = LlmAgent(
+        name='test_agent',
+        model='gemini-1.5-flash',
+        generate_content_config=types.GenerateContentConfig(
+            http_options=types.HttpOptions(
+                timeout=1000,
+                headers={'Agent-Header': 'agent-val'},
+            )
+        )
+    )
+
+    invocation_context = await _create_invocation_context(agent)
+    llm_request = LlmRequest()
+
+    # Simulate http_options propagated from RunConfig
+    llm_request.config.http_options = types.HttpOptions(
+        timeout=500,  # Should override agent
+        headers={
+            'RunConfig-Header': 'run-val',
+            'Agent-Header': 'run-val-override'
+        }
+    )
+
+    processor = _BasicLlmRequestProcessor()
+
+    # Process the request
+    events = []
+    async for event in processor.run_async(invocation_context, llm_request):
+      events.append(event)
+
+    # Verify timeout from RunConfig wins
+    assert llm_request.config.http_options.timeout == 500
+
+    # Verify headers merged, RunConfig wins
+    assert (
+        llm_request.config.http_options.headers['RunConfig-Header'] == 'run-val'
+    )
+    assert (
+        llm_request.config.http_options.headers['Agent-Header']
+        == 'run-val-override'
+    )
