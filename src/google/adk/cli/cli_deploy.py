@@ -764,14 +764,14 @@ def to_agent_engine(
   app_name = os.path.basename(agent_folder)
   display_name = display_name or app_name
   parent_folder = os.path.dirname(agent_folder)
-  
+
   # Validate folder name is a valid Python identifier for module imports
   if not app_name.isidentifier():
     raise click.ClickException(
         f'Agent folder name "{app_name}" must be a valid identifier '
         'consisting of letters, digits, and underscores.'
     )
-  
+
   adk_app_object = adk_app_object or 'root_agent'
   if adk_app_object not in ['root_agent', 'app']:
     click.echo(
@@ -797,7 +797,7 @@ def to_agent_engine(
     os.chdir(parent_folder)
     did_change_cwd = True
   tmp_app_name = app_name + '_tmp' + datetime.now().strftime('%Y%m%d_%H%M%S')
-  
+
   # Validate temp_folder if provided by user
   if temp_folder:
     if not temp_folder.isidentifier():
@@ -807,7 +807,7 @@ def to_agent_engine(
       )
   else:
     temp_folder = tmp_app_name
-  
+
   agent_src_path = os.path.join(parent_folder, temp_folder)
   click.echo(f'Staging all files in: {agent_src_path}')
   # remove agent_src_path if it exists
