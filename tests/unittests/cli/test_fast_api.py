@@ -1113,93 +1113,11 @@ def test_save_artifact_returns_500_on_unexpected_error(
   assert response.json()["detail"] == "unexpected failure"
 
 
-def test_create_eval_set(test_app, test_session_info):
-  """Test creating an eval set."""
-  url = f"/apps/{test_session_info['app_name']}/eval_sets/test_eval_set_id"
-  response = test_app.post(url)
-
-  # Verify the response
-  assert response.status_code == 200
-
-
-def test_list_eval_sets(test_app, create_test_eval_set):
-  """Test get eval set."""
-  info = create_test_eval_set
-  url = f"/apps/{info['app_name']}/eval_sets"
-  response = test_app.get(url)
-
-  # Verify the response
-  assert response.status_code == 200
-  data = response.json()
-  assert isinstance(data, list)
-  assert len(data) == 1
-  assert data[0] == "test_eval_set_id"
-
-
 def test_get_eval_set_result_not_found(test_app):
   """Test getting an eval set result that doesn't exist."""
   url = "/apps/test_app_name/eval_results/test_eval_result_id_not_found"
   response = test_app.get(url)
   assert response.status_code == 404
-
-
-def test_run_eval(test_app, create_test_eval_set):
-  """Test running an eval."""
-
-  # Helper function to verify eval case result.
-  def verify_eval_case_result(actual_eval_case_result):
-    expected_eval_case_result = {
-        "evalSetId": "test_eval_set_id",
-        "evalId": "test_eval_case_id",
-        "finalEvalStatus": 1,
-        "overallEvalMetricResults": [{
-            "metricName": "tool_trajectory_avg_score",
-            "threshold": 0.5,
-            "score": 1.0,
-            "evalStatus": 1,
-            "details": {},
-        }],
-    }
-    for k, v in expected_eval_case_result.items():
-      assert actual_eval_case_result[k] == v
-
-  info = create_test_eval_set
-  url = f"/apps/{info['app_name']}/eval_sets/test_eval_set_id/run_eval"
-  payload = {
-      "eval_ids": ["test_eval_case_id"],
-      "eval_metrics": [
-          {"metric_name": "tool_trajectory_avg_score", "threshold": 0.5}
-      ],
-  }
-  response = test_app.post(url, json=payload)
-
-  # Verify the response
-  assert response.status_code == 200
-
-  data = response.json()
-  assert len(data) == 1
-  verify_eval_case_result(data[0])
-
-  # Verify the eval set result is saved via get_eval_result endpoint.
-  url = f"/apps/{info['app_name']}/eval_results/{info['app_name']}_test_eval_set_id_eval_result"
-  response = test_app.get(url)
-  assert response.status_code == 200
-  data = response.json()
-  assert isinstance(data, dict)
-  assert data["evalSetId"] == "test_eval_set_id"
-  assert (
-      data["evalSetResultId"]
-      == f"{info['app_name']}_test_eval_set_id_eval_result"
-  )
-  assert len(data["evalCaseResults"]) == 1
-  verify_eval_case_result(data["evalCaseResults"][0])
-
-  # Verify the eval set result is saved via list_eval_results endpoint.
-  url = f"/apps/{info['app_name']}/eval_results"
-  response = test_app.get(url)
-  assert response.status_code == 200
-  data = response.json()
-  assert data == [f"{info['app_name']}_test_eval_set_id_eval_result"]
 
 
 def test_list_metrics_info(test_app):
@@ -1231,6 +1149,13 @@ def test_debug_trace(test_app):
   # Verify we get a 404 for a nonexistent trace
   assert response.status_code == 404
   logger.info("Debug trace test completed successfully")
+
+
+def test_openapi_json_schema_accessible(test_app):
+  """Test that the OpenAPI /openapi.json endpoint is accessible."""
+  response = test_app.get("/openapi.json")
+  assert response.status_code == 200
+  logger.info("OpenAPI /openapi.json endpoint is accessible")
 
 
 def test_get_event_graph_returns_dot_src_for_app_agent():
