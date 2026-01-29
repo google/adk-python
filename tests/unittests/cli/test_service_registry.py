@@ -67,9 +67,7 @@ def test_create_session_service_sqlite_with_kwargs(registry, mock_services):
   registry.create_session_service(
       "sqlite:///test.db", pool_size=10, agents_dir="foo"
   )
-  mock_services["sqlite_session"].assert_called_once_with(
-      db_path="test.db", pool_size=10
-  )
+  mock_services["sqlite_session"].assert_called_once_with(db_path="test.db")
 
 
 def test_create_session_service_postgresql(registry, mock_services):
