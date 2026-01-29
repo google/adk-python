@@ -277,7 +277,7 @@ class EvaluationGenerator:
     invocations = []
     for invocation_id, events in events_by_invocation_id.items():
       final_response = None
-      user_content = ""
+      user_content = None
       invocation_timestamp = 0
       app_details = None
       if (
@@ -306,6 +306,11 @@ class EvaluationGenerator:
               if p.function_call or p.function_response or p.text:
                 events_to_add.append(event)
                 break
+                
+      if user_content is None:
+        # We skip because an evaluation case without user input 
+        # is generally not useful for testing/grading.
+        continue
 
       invocation_events = [
           InvocationEvent(author=e.author, content=e.content)
