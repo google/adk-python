@@ -30,7 +30,7 @@ dependencies = [
   "anyio>=4.9.0, <5.0.0",                                    # For MCP Session Manager
   "authlib>=1.6.6, <2.0.0",                                  # For RestAPI Tool
   "click>=8.1.8, <9.0.0",                                    # For CLI tools
-  "fastapi>=0.115.0, <0.124.0",                              # FastAPI framework
+  "fastapi>=0.124.1, <1.0.0",                                # FastAPI framework
   "google-api-python-client>=2.157.0, <3.0.0",               # Google API client discovery
   "google-auth>=2.47.0",                                     # Google Auth library
   "google-cloud-aiplatform[agent_engines]>=1.132.0, <2.0.0", # For VertexAI integrations, e.g. example store.
@@ -126,6 +126,8 @@ test = [
   "litellm>=1.75.5, <1.80.17",                    # For LiteLLM tests
   "llama-index-readers-file>=0.4.0",              # For retrieval tests
   "openai>=1.100.2",                              # For LiteLLM
+  "opentelemetry-instrumentation-google-genai>=0.3b0, <1.0.0",
+  "pypika>=0.50.0",                               # For crewai->chromadb dependency
   "pytest-asyncio>=0.25.0",
   "pytest-mock>=3.14.0",
   "pytest-xdist>=3.6.1",
@@ -157,6 +159,7 @@ extensions = [
   "llama-index-readers-file>=0.4.0",            # For retrieval using LlamaIndex.
   "llama-index-embeddings-google-genai>=0.3.0", # For files retrieval using LlamaIndex.
   "lxml>=5.3.0",                                # For load_web_page tool.
+  "pypika>=0.50.0",                             # For crewai->chromadb dependency
   "toolbox-adk>=0.5.7, <0.6.0",                 # For tools.toolbox_toolset.ToolboxToolset
 ]
 
@@ -213,9 +216,9 @@ asyncio_mode = "auto"
 
 [tool.mypy]
 python_version = "3.10"
-exclude = "tests/"
+exclude = ["tests/", "contributing/samples/"]
 plugins = ["pydantic.mypy"]
 # Start with non-strict mode, and swtich to strict mode later.
-# strict = true
+strict = true
 disable_error_code = ["import-not-found", "import-untyped", "unused-ignore"]
 follow_imports = "skip"
