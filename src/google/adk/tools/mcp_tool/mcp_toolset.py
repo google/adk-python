@@ -39,6 +39,7 @@ from typing_extensions import override
 from ...agents.readonly_context import ReadonlyContext
 from ...auth.auth_credential import AuthCredential
 from ...auth.auth_schemes import AuthScheme
+from ...auth.auth_tool import AuthConfig
 from ..base_tool import BaseTool
 from ..base_toolset import BaseToolset
 from ..base_toolset import ToolPredicate
@@ -283,6 +284,16 @@ class McpToolset(BaseToolset):
     except Exception as e:
       # Log the error but don't re-raise to avoid blocking shutdown
       print(f"Warning: Error during McpToolset cleanup: {e}", file=self._errlog)
+
+  @override
+  def get_auth_config(self) -> AuthConfig | None:
+    """Returns the auth config for this toolset."""
+    if self._auth_scheme is None:
+      return None
+    return AuthConfig(
+        auth_scheme=self._auth_scheme,
+        raw_auth_credential=self._auth_credential,
+    )
 
   @override
   @classmethod
