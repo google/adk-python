@@ -32,8 +32,11 @@ from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnecti
 from google.adk.tools.mcp_tool.mcp_tool import MCPTool
 from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
 from mcp import StdioServerParameters
+from mcp.types import BlobResourceContents
 from mcp.types import ListResourcesResult
+from mcp.types import ReadResourceResult
 from mcp.types import Resource
+from mcp.types import TextResourceContents
 import pytest
 
 
@@ -435,56 +438,66 @@ class TestMcpToolset:
       await toolset.get_resource_info("other.json")
 
   @pytest.mark.parametrize(
-      "name,mime_type,content,encoding,expected_result",
+      "name,mime_type,content,encoding",
       [
-          ("file1.txt", "text/plain", "hello world", None, "hello world"),
+          ("file1.txt", "text/plain", "hello world", None),
           (
               "data.json",
               "application/json",
               '{"key": "value"}',
               None,
-              {"key": "value"},
           ),
           (
               "file1_b64.txt",
               "text/plain",
               base64.b64encode(b"hello world").decode("ascii"),
               "base64",
-              "hello world",
           ),
           (
               "data_b64.json",
               "application/json",
               base64.b64encode(b'{"key": "value"}').decode("ascii"),
               "base64",
-              {"key": "value"},
           ),
           (
               "data.bin",
               "application/octet-stream",
               base64.b64encode(b"\x01\x02\x03").decode("ascii"),
               "base64",
-              b"\x01\x02\x03",
           ),
       ],
   )
   @pytest.mark.asyncio
-  async def test_read_resource(
-      self, name, mime_type, content, encoding, expected_result
-  ):
+  async def test_read_resource(self, name, mime_type, content, encoding):
     """Test reading various resource types."""
-    get_resource_result = MagicMock()
-    get_resource_result.resource = Resource(
-        name=name, mime_type=mime_type, uri=f"file:///{name}"
+    uri = f"file:///{name}"
+    # Mock list_resources for get_resource_info
+    resources = [Resource(name=name, mime_type=mime_type, uri=uri)]
+    list_resources_result = ListResourcesResult(resources=resources)
+    self.mock_session.list_resources = AsyncMock(
+        return_value=list_resources_result
     )
-    get_resource_result.content = content
-    get_resource_result.encoding = encoding
-    self.mock_session.get_resource = AsyncMock(return_value=get_resource_result)
+
+    # Mock read_resource
+    if encoding == "base64":
+      contents = [
+          BlobResourceContents(uri=uri, mimeType=mime_type, blob=content)
+      ]
+    else:
+      contents = [
+          TextResourceContents(uri=uri, mimeType=mime_type, text=content)
+      ]
+
+    read_resource_result = ReadResourceResult(contents=contents)
+    self.mock_session.read_resource = AsyncMock(
+        return_value=read_resource_result
+    )
 
     toolset = McpToolset(connection_params=self.mock_stdio_params)
     toolset._mcp_session_manager = self.mock_session_manager
 
     result = await toolset.read_resource(name)
 
-    assert result == expected_result
-    self.mock_session.get_resource.assert_called_once_with(name=name)
+    assert result == contents
+    self.mock_session.list_resources.assert_called_once()
+    self.mock_session.read_resource.assert_called_once_with(uri=uri)
