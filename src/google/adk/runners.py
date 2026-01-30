@@ -20,6 +20,7 @@ import logging
 from pathlib import Path
 import queue
 import sys
+import threading
 from typing import Any
 from typing import AsyncGenerator
 from typing import Callable
@@ -118,10 +119,15 @@ class Runner:
       resumability_config: The resumability config for the application.
   """
 
+  # Default maximum number of concurrent compaction tasks allowed.
+  DEFAULT_MAX_CONCURRENT_COMPACTIONS = 10
+
   # Semaphore to limit concurrent event compaction tasks to prevent resource
   # exhaustion under high concurrency. Limits concurrent LLM calls and DB writes.
   # Shared across all Runner instances for global concurrency control.
   _compaction_semaphore: Optional[asyncio.Semaphore] = None
+  # Thread lock to protect semaphore initialization in multi-threaded scenarios
+  _compaction_semaphore_lock = threading.Lock()
 
   app_name: str
   """The app name of the runner."""
@@ -155,7 +161,7 @@ class Runner:
       credential_service: Optional[BaseCredentialService] = None,
       plugin_close_timeout: float = 5.0,
       auto_create_session: bool = False,
-      max_concurrent_compactions: int = 10,
+      max_concurrent_compactions: int = DEFAULT_MAX_CONCURRENT_COMPACTIONS,
   ):
     """Initializes the Runner.
 
@@ -186,7 +192,8 @@ class Runner:
           not found. Defaults to False. If False, a missing session raises
           ValueError with a helpful message.
         max_concurrent_compactions: Maximum number of concurrent event
-          compaction tasks allowed. Defaults to 10. This limit is shared across
+          compaction tasks allowed. Defaults to
+          DEFAULT_MAX_CONCURRENT_COMPACTIONS (10). This limit is shared across
           all Runner instances to prevent resource exhaustion. Higher values
           allow more concurrent compactions but consume more resources (LLM
           API calls, database connections).
@@ -219,6 +226,8 @@ class Runner:
     self._enforce_app_name_alignment()
     # Initialize or update the shared compaction semaphore
     self._initialize_compaction_semaphore(max_concurrent_compactions)
+    # Track background tasks to prevent premature garbage collection
+    self._background_tasks: set[asyncio.Task] = set()
 
   def _validate_runner_params(
       self,
@@ -342,6 +351,9 @@ class Runner:
     with the updated limit (the old one will be garbage collected once all
     pending tasks complete).
 
+    Thread-safe: Uses a threading.Lock to protect against race conditions
+    when multiple Runner instances are created concurrently in different threads.
+
     Args:
         limit: Maximum number of concurrent compaction tasks allowed.
     """
@@ -349,10 +361,10 @@ class Runner:
       raise ValueError(
           f'max_concurrent_compactions must be positive, got {limit}'
       )
-    # Note: We can't use async lock here since this is called from __init__.
-    # The semaphore creation itself is thread-safe, and in practice Runner
-    # instances are created in the same event loop, so this is safe.
-    cls._compaction_semaphore = asyncio.Semaphore(limit)
+    # Use threading lock to ensure thread-safe initialization in multi-threaded
+    # scenarios. We can't use async lock here since this is called from __init__.
+    with cls._compaction_semaphore_lock:
+      cls._compaction_semaphore = asyncio.Semaphore(limit)
 
   def _enforce_app_name_alignment(self) -> None:
     origin_name = self._agent_origin_app_name
@@ -601,7 +613,9 @@ class Runner:
                 logger.warning(
                     'Compaction semaphore not initialized, using default limit.'
                 )
-                self._initialize_compaction_semaphore(10)
+                self._initialize_compaction_semaphore(
+                    self.DEFAULT_MAX_CONCURRENT_COMPACTIONS
+                )
               async with self._compaction_semaphore:
                 await _run_compaction_for_sliding_window(
                     self.app, session, self.session_service
@@ -616,7 +630,9 @@ class Runner:
                   exc_info=True,
               )
 
-          asyncio.create_task(_run_compaction_with_error_handling())
+          task = asyncio.create_task(_run_compaction_with_error_handling())
+          self._background_tasks.add(task)
+          task.add_done_callback(self._background_tasks.discard)
 
     async with Aclosing(_run_with_trace(new_message, invocation_id)) as agen:
       async for event in agen:
@@ -1594,6 +1610,15 @@ class Runner:
     # Close Plugins
     if self.plugin_manager:
       await self.plugin_manager.close()
+
+    # Wait for background compaction tasks to complete
+    if self._background_tasks:
+      logger.debug(
+          'Waiting for %d background compaction tasks to complete...',
+          len(self._background_tasks),
+      )
+      await asyncio.gather(*self._background_tasks, return_exceptions=True)
+      self._background_tasks.clear()
 
     logger.info('Runner closed.')
 

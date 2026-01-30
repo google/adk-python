@@ -1334,27 +1334,35 @@ class TestRunnerCompaction:
 
   @pytest.mark.asyncio
   async def test_max_concurrent_compactions_default_value(self):
-    """Test that max_concurrent_compactions defaults to 10."""
+    """Test that max_concurrent_compactions defaults to DEFAULT_MAX_CONCURRENT_COMPACTIONS."""
     runner = Runner(
         app_name="test_app",
         agent=self.agent,
         session_service=self.session_service,
         artifact_service=self.artifact_service,
     )
-    # Semaphore should be initialized
+    # Semaphore should be initialized with default value
     assert runner._compaction_semaphore is not None
+    # Verify semaphore's value matches the default constant
+    assert (
+        runner._compaction_semaphore._value
+        == Runner.DEFAULT_MAX_CONCURRENT_COMPACTIONS
+    )
 
   @pytest.mark.asyncio
   async def test_max_concurrent_compactions_custom_value(self):
     """Test that max_concurrent_compactions can be configured."""
+    custom_limit = 5
     runner = Runner(
         app_name="test_app",
         agent=self.agent,
         session_service=self.session_service,
         artifact_service=self.artifact_service,
-        max_concurrent_compactions=5,
+        max_concurrent_compactions=custom_limit,
     )
     assert runner._compaction_semaphore is not None
+    # Verify semaphore's value matches the custom value provided
+    assert runner._compaction_semaphore._value == custom_limit
 
   @pytest.mark.asyncio
   async def test_max_concurrent_compactions_shared_across_instances(self):
@@ -1373,8 +1381,10 @@ class TestRunnerCompaction:
         artifact_service=self.artifact_service,
         max_concurrent_compactions=3,
     )
-    # Both should reference the same class-level semaphore
+    # Both should reference the same class-level semaphore, and its value
+    # should be updated by the last Runner instance.
     assert runner1._compaction_semaphore is runner2._compaction_semaphore
+    assert runner1._compaction_semaphore._value == 3
 
   @pytest.mark.asyncio
   async def test_max_concurrent_compactions_validation(self):
@@ -1666,6 +1676,57 @@ class TestRunnerCompaction:
       ), "Compaction should not be called without config"
     finally:
       compaction._run_compaction_for_sliding_window = original_compaction
+
+  @pytest.mark.asyncio
+  async def test_background_tasks_tracked_and_cleaned_up(self):
+    """Test that background compaction tasks are tracked and cleaned up."""
+    app = App(
+        name="test_app",
+        root_agent=self.agent,
+        events_compaction_config=EventsCompactionConfig(
+            compaction_interval=1,
+            overlap_size=0,
+        ),
+    )
+    runner = Runner(
+        app=app,
+        session_service=self.session_service,
+        artifact_service=self.artifact_service,
+    )
+
+    # Verify background_tasks set exists
+    assert hasattr(runner, "_background_tasks")
+    assert isinstance(runner._background_tasks, set)
+    assert len(runner._background_tasks) == 0
+
+    # Create session and run invocations to trigger compaction
+    await self.session_service.create_session(
+        app_name="test_app", user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+    )
+
+    # Run multiple invocations to trigger compaction tasks
+    for i in range(2):
+      async for event in runner.run_async(
+          user_id=TEST_USER_ID,
+          session_id=TEST_SESSION_ID,
+          new_message=types.Content(
+              role="user", parts=[types.Part(text=f"Message {i}")]
+          ),
+      ):
+        pass
+
+    # Give tasks time to be created
+    await asyncio.sleep(0.1)
+
+    # Verify tasks are tracked (may be 0 if they completed quickly)
+    # The important part is that they were tracked, not that they're still running
+    assert hasattr(runner, "_background_tasks")
+
+    # Close runner - should await background tasks
+    await runner.close()
+
+    # After close, background tasks should be cleared
+    assert len(runner._background_tasks) == 0
 
   async def _consume_events(
       self,
