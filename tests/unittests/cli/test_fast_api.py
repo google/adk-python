@@ -1413,12 +1413,6 @@ def test_builder_save_rejects_traversal(builder_test_client, tmp_path):
   assert not (tmp_path / "app" / "tmp" / "escape.yaml").exists()
 
 
-async def _noop_run_async(*args, **kwargs):
-  """A mock that does nothing and yields no events for no-op resume tests."""
-  if False:
-    yield
-
-
 @pytest.mark.parametrize(
     "extra_payload",
     [
