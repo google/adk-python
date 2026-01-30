@@ -32,6 +32,17 @@ import pytest
 from ... import testing_utils
 
 
+@pytest.fixture(autouse=True)
+def cleanup_thread_pools():
+  yield
+  from google.adk.flows.llm_flows import functions
+
+  # Shutdown all pools
+  for pool in functions._TOOL_THREAD_POOLS.values():
+    pool.shutdown(wait=False)
+  functions._TOOL_THREAD_POOLS.clear()
+
+
 class TestIsSyncTool:
   """Tests for the _is_sync_tool helper function."""
 
