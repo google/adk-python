@@ -1414,8 +1414,8 @@ def test_builder_save_rejects_traversal(builder_test_client, tmp_path):
 
 async def _noop_run_async(*args, **kwargs):
   """A mock that does nothing and yields no events for no-op resume tests."""
-  for item in []:
-    yield item
+  if False:
+    yield
 
 
 @pytest.mark.parametrize(
