@@ -178,6 +178,7 @@ class StreamingMode(Enum):
   For bidirectional streaming, use runner.run_live() instead of run_async().
   """
 
+
 class RunConfig(BaseModel):
   """Configs for runtime behavior of agents.
 

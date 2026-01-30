@@ -624,7 +624,6 @@ MULTIPLE_FUNCTION_CALLS_STREAM = [
     ),
 ]
 
-
 STREAM_WITH_EMPTY_CHUNK = [
     ModelResponse(
         choices=[
@@ -3890,3 +3889,88 @@ async def test_generate_content_async_http_options_headers_override_existing(
   _, kwargs = mock_acompletion.call_args
   # Request-level headers should override init-level headers
   assert kwargs["extra_headers"]["X-Override-Me"] == "new-value"
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_passes_http_options_timeout(
+    mock_acompletion, lite_llm_instance
+):
+  """Test that http_options.timeout is forwarded to litellm."""
+
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role="user", parts=[types.Part.from_text(text="Test prompt")]
+          )
+      ],
+      config=types.GenerateContentConfig(
+          http_options=types.HttpOptions(timeout=30000)
+      ),
+  )
+
+  async for _ in lite_llm_instance.generate_content_async(llm_request):
+    pass
+
+  mock_acompletion.assert_called_once()
+  _, kwargs = mock_acompletion.call_args
+  assert "timeout" in kwargs
+  assert kwargs["timeout"] == 30000
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_passes_http_options_retry_options(
+    mock_acompletion, lite_llm_instance
+):
+  """Test that http_options.retry_options is forwarded to litellm."""
+
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role="user", parts=[types.Part.from_text(text="Test prompt")]
+          )
+      ],
+      config=types.GenerateContentConfig(
+          http_options=types.HttpOptions(
+              retry_options=types.HttpRetryOptions(
+                  attempts=3,
+              )
+          )
+      ),
+  )
+
+  async for _ in lite_llm_instance.generate_content_async(llm_request):
+    pass
+
+  mock_acompletion.assert_called_once()
+  _, kwargs = mock_acompletion.call_args
+  assert "num_retries" in kwargs
+  assert kwargs["num_retries"] == 3
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_passes_http_options_extra_body(
+    mock_acompletion, lite_llm_instance
+):
+  """Test that http_options.extra_body is forwarded to litellm."""
+
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role="user", parts=[types.Part.from_text(text="Test prompt")]
+          )
+      ],
+      config=types.GenerateContentConfig(
+          http_options=types.HttpOptions(
+              extra_body={"custom_field": "custom_value", "priority": "high"}
+          )
+      ),
+  )
+
+  async for _ in lite_llm_instance.generate_content_async(llm_request):
+    pass
+
+  mock_acompletion.assert_called_once()
+  _, kwargs = mock_acompletion.call_args
+  assert "extra_body" in kwargs
+  assert kwargs["extra_body"]["custom_field"] == "custom_value"
+  assert kwargs["extra_body"]["priority"] == "high"

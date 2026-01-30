@@ -27,6 +27,7 @@ from ...models.llm_request import LlmRequest
 from ...utils.output_schema_utils import can_use_output_schema_with_tools
 from ._base_llm_processor import BaseLlmRequestProcessor
 
+
 def _build_basic_request(
     invocation_context: InvocationContext,
     llm_request: LlmRequest,
@@ -128,5 +129,6 @@ class _BasicLlmRequestProcessor(BaseLlmRequestProcessor):
 
     return
     yield  # Generator requires yield statement in function body.
+
 
 request_processor = _BasicLlmRequestProcessor()

@@ -202,7 +202,7 @@ class TestBasicLlmRequestProcessor:
                 timeout=1000,
                 headers={'Agent-Header': 'agent-val'},
             )
-        )
+        ),
     )
 
     invocation_context = await _create_invocation_context(agent)
@@ -213,8 +213,8 @@ class TestBasicLlmRequestProcessor:
         timeout=500,  # Should override agent
         headers={
             'RunConfig-Header': 'run-val',
-            'Agent-Header': 'run-val-override'
-        }
+            'Agent-Header': 'run-val-override',
+        },
     )
 
     processor = _BasicLlmRequestProcessor()
