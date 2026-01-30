@@ -307,7 +307,7 @@ class EvaluationGenerator:
                 events_to_add.append(event)
                 break
       if user_content is None:
-        # We skip because an evaluation case without user input 
+        # We skip because an evaluation case without user input
         # is generally not useful for testing/grading.
         continue
 

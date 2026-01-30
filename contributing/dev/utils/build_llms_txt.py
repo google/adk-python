@@ -6,6 +6,7 @@ build_llms_txt.py – produce llms.txt and llms-full.txt
                    – includes Python API reference from HTML files
                    – includes adk-python repository README
 """
+
 from __future__ import annotations
 
 import argparse

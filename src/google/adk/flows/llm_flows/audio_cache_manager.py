@@ -233,11 +233,11 @@ class AudioCacheManager:
 
     input_bytes = sum(
         len(entry.data.data)
-        for entry in (invocation_context.input_realtime_cache or [])
+        for entry in invocation_context.input_realtime_cache or []
     )
     output_bytes = sum(
         len(entry.data.data)
-        for entry in (invocation_context.output_realtime_cache or [])
+        for entry in invocation_context.output_realtime_cache or []
     )
 
     return {
