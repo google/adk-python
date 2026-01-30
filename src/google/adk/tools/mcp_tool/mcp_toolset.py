@@ -215,37 +215,25 @@ class McpToolset(BaseToolset):
   async def read_resource(
       self, name: str, readonly_context: Optional[ReadonlyContext] = None
   ) -> Any:
-    """Fetches and returns the content of the named resource.
-
-    This method will handle content decoding based on the MIME type reported by
-    the MCP server (e.g., JSON, text, base64 for binary).
+    """Fetches and returns a list of contents of the named resource.
 
     Args:
       name: The name of the resource to fetch.
       readonly_context: Context used to provide headers for the MCP session.
 
     Returns:
-      The content of the resource, decoded based on MIME type and encoding.
+      List of contents of the resource.
     """
+    resource_info = await self.get_resource_info(name, readonly_context)
+    if "uri" not in resource_info:
+      raise ValueError(f"Resource '{name}' has no URI.")
+
     result: Any = await self._execute_with_session(
-        lambda session: session.get_resource(name=name),
+        lambda session: session.read_resource(uri=resource_info["uri"]),
         f"Failed to get resource {name} from MCP server",
         readonly_context,
     )
-
-    content = result.content
-    if result.encoding == "base64":
-      decoded_bytes = base64.b64decode(content)
-      if result.resource.mime_type == "application/json":
-        return json.loads(decoded_bytes.decode("utf-8"))
-      if result.resource.mime_type.startswith("text/"):
-        return decoded_bytes.decode("utf-8")
-      return decoded_bytes  # Return as bytes for other binary types
-
-    if result.resource.mime_type == "application/json":
-      return json.loads(content)
-
-    return content
+    return result.contents
 
   async def list_resources(
       self, readonly_context: Optional[ReadonlyContext] = None
