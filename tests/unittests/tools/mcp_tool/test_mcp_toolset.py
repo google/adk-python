@@ -30,11 +30,13 @@ from google.adk.tools.mcp_tool.mcp_session_manager import SseConnectionParams
 from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
 from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
 from google.adk.tools.mcp_tool.mcp_tool import MCPTool
-from google.adk.tools.mcp_tool.mcp_toolset import MCPToolset
 from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
 from mcp import StdioServerParameters
+from mcp.types import BlobResourceContents
 from mcp.types import ListResourcesResult
+from mcp.types import ReadResourceResult
 from mcp.types import Resource
+from mcp.types import TextResourceContents
 import pytest
 
 
@@ -57,8 +59,8 @@ class MockListToolsResult:
     self.tools = tools
 
 
-class TestMCPToolset:
-  """Test suite for MCPToolset class."""
+class TestMcpToolset:
+  """Test suite for McpToolset class."""
 
   def setup_method(self):
     """Set up test fixtures."""
@@ -73,7 +75,7 @@ class TestMCPToolset:
 
   def test_init_basic(self):
     """Test basic initialization with StdioServerParameters."""
-    toolset = MCPToolset(connection_params=self.mock_stdio_params)
+    toolset = McpToolset(connection_params=self.mock_stdio_params)
 
     # Note: StdioServerParameters gets converted to StdioConnectionParams internally
     assert toolset._errlog == sys.stderr
@@ -85,7 +87,7 @@ class TestMCPToolset:
     stdio_params = StdioConnectionParams(
         server_params=self.mock_stdio_params, timeout=10.0
     )
-    toolset = MCPToolset(connection_params=stdio_params)
+    toolset = McpToolset(connection_params=stdio_params)
 
     assert toolset._connection_params == stdio_params
 
@@ -94,7 +96,7 @@ class TestMCPToolset:
     sse_params = SseConnectionParams(
         url="https://example.com/mcp", headers={"Authorization": "Bearer token"}
     )
-    toolset = MCPToolset(connection_params=sse_params)
+    toolset = McpToolset(connection_params=sse_params)
 
     assert toolset._connection_params == sse_params
 
@@ -104,14 +106,14 @@ class TestMCPToolset:
         url="https://example.com/mcp",
         headers={"Content-Type": "application/json"},
     )
-    toolset = MCPToolset(connection_params=http_params)
+    toolset = McpToolset(connection_params=http_params)
 
     assert toolset._connection_params == http_params
 
   def test_init_with_tool_filter_list(self):
     """Test initialization with tool filter as list."""
     tool_filter = ["tool1", "tool2"]
-    toolset = MCPToolset(
+    toolset = McpToolset(
         connection_params=self.mock_stdio_params, tool_filter=tool_filter
     )
 
@@ -132,7 +134,7 @@ class TestMCPToolset:
         oauth2=OAuth2Auth(client_id="test_id", client_secret="test_secret"),
     )
 
-    toolset = MCPToolset(
+    toolset = McpToolset(
         connection_params=self.mock_stdio_params,
         auth_scheme=auth_scheme,
         auth_credential=auth_credential,
@@ -144,7 +146,7 @@ class TestMCPToolset:
   def test_init_missing_connection_params(self):
     """Test initialization with missing connection params raises error."""
     with pytest.raises(ValueError, match="Missing connection params"):
-      MCPToolset(connection_params=None)
+      McpToolset(connection_params=None)
 
   @pytest.mark.asyncio
   async def test_get_tools_basic(self):
@@ -159,7 +161,7 @@ class TestMCPToolset:
         return_value=MockListToolsResult(mock_tools)
     )
 
-    toolset = MCPToolset(connection_params=self.mock_stdio_params)
+    toolset = McpToolset(connection_params=self.mock_stdio_params)
     toolset._mcp_session_manager = self.mock_session_manager
 
     tools = await toolset.get_tools()
@@ -185,7 +187,7 @@ class TestMCPToolset:
     )
 
     tool_filter = ["tool1", "tool3"]
-    toolset = MCPToolset(
+    toolset = McpToolset(
         connection_params=self.mock_stdio_params, tool_filter=tool_filter
     )
     toolset._mcp_session_manager = self.mock_session_manager
@@ -213,7 +215,7 @@ class TestMCPToolset:
       """Filter for file-related tools only."""
       return "file" in tool.name
 
-    toolset = MCPToolset(
+    toolset = McpToolset(
         connection_params=self.mock_stdio_params, tool_filter=file_tools_filter
     )
     toolset._mcp_session_manager = self.mock_session_manager
@@ -235,7 +237,7 @@ class TestMCPToolset:
     expected_headers = {"X-Tenant-ID": "test-tenant"}
     header_provider = Mock(return_value=expected_headers)
 
-    toolset = MCPToolset(
+    toolset = McpToolset(
         connection_params=self.mock_stdio_params,
         header_provider=header_provider,
     )
@@ -252,7 +254,7 @@ class TestMCPToolset:
   @pytest.mark.asyncio
   async def test_close_success(self):
     """Test successful cleanup."""
-    toolset = MCPToolset(connection_params=self.mock_stdio_params)
+    toolset = McpToolset(connection_params=self.mock_stdio_params)
     toolset._mcp_session_manager = self.mock_session_manager
 
     await toolset.close()
@@ -262,7 +264,7 @@ class TestMCPToolset:
   @pytest.mark.asyncio
   async def test_close_with_exception(self):
     """Test cleanup when session manager raises exception."""
-    toolset = MCPToolset(connection_params=self.mock_stdio_params)
+    toolset = McpToolset(connection_params=self.mock_stdio_params)
     toolset._mcp_session_manager = self.mock_session_manager
 
     # Mock close to raise an exception
@@ -287,7 +289,7 @@ class TestMCPToolset:
     stdio_params = StdioConnectionParams(
         server_params=self.mock_stdio_params, timeout=0.01
     )
-    toolset = MCPToolset(connection_params=stdio_params)
+    toolset = McpToolset(connection_params=stdio_params)
     toolset._mcp_session_manager = self.mock_session_manager
 
     async def long_running_list_tools():
@@ -304,7 +306,7 @@ class TestMCPToolset:
   @pytest.mark.asyncio
   async def test_get_tools_retry_decorator(self):
     """Test that get_tools has retry decorator applied."""
-    toolset = MCPToolset(connection_params=self.mock_stdio_params)
+    toolset = McpToolset(connection_params=self.mock_stdio_params)
 
     # Check that the method has the retry decorator
     assert hasattr(toolset.get_tools, "__wrapped__")
@@ -376,7 +378,7 @@ class TestMCPToolset:
         return_value=list_resources_result
     )
 
-    toolset = MCPToolset(connection_params=self.mock_stdio_params)
+    toolset = McpToolset(connection_params=self.mock_stdio_params)
     toolset._mcp_session_manager = self.mock_session_manager
 
     result = await toolset.list_resources()
@@ -402,7 +404,7 @@ class TestMCPToolset:
         return_value=list_resources_result
     )
 
-    toolset = MCPToolset(connection_params=self.mock_stdio_params)
+    toolset = McpToolset(connection_params=self.mock_stdio_params)
     toolset._mcp_session_manager = self.mock_session_manager
 
     result = await toolset.get_resource_info("data.json")
@@ -427,7 +429,7 @@ class TestMCPToolset:
         return_value=list_resources_result
     )
 
-    toolset = MCPToolset(connection_params=self.mock_stdio_params)
+    toolset = McpToolset(connection_params=self.mock_stdio_params)
     toolset._mcp_session_manager = self.mock_session_manager
 
     with pytest.raises(
@@ -436,56 +438,66 @@ class TestMCPToolset:
       await toolset.get_resource_info("other.json")
 
   @pytest.mark.parametrize(
-      "name,mime_type,content,encoding,expected_result",
+      "name,mime_type,content,encoding",
       [
-          ("file1.txt", "text/plain", "hello world", None, "hello world"),
+          ("file1.txt", "text/plain", "hello world", None),
           (
               "data.json",
               "application/json",
               '{"key": "value"}',
               None,
-              {"key": "value"},
           ),
           (
               "file1_b64.txt",
               "text/plain",
               base64.b64encode(b"hello world").decode("ascii"),
               "base64",
-              "hello world",
           ),
           (
               "data_b64.json",
               "application/json",
               base64.b64encode(b'{"key": "value"}').decode("ascii"),
               "base64",
-              {"key": "value"},
           ),
           (
               "data.bin",
               "application/octet-stream",
               base64.b64encode(b"\x01\x02\x03").decode("ascii"),
               "base64",
-              b"\x01\x02\x03",
           ),
       ],
   )
   @pytest.mark.asyncio
-  async def test_read_resource(
-      self, name, mime_type, content, encoding, expected_result
-  ):
+  async def test_read_resource(self, name, mime_type, content, encoding):
     """Test reading various resource types."""
-    get_resource_result = MagicMock()
-    get_resource_result.resource = Resource(
-        name=name, mime_type=mime_type, uri=f"file:///{name}"
+    uri = f"file:///{name}"
+    # Mock list_resources for get_resource_info
+    resources = [Resource(name=name, mime_type=mime_type, uri=uri)]
+    list_resources_result = ListResourcesResult(resources=resources)
+    self.mock_session.list_resources = AsyncMock(
+        return_value=list_resources_result
     )
-    get_resource_result.content = content
-    get_resource_result.encoding = encoding
-    self.mock_session.get_resource = AsyncMock(return_value=get_resource_result)
 
-    toolset = MCPToolset(connection_params=self.mock_stdio_params)
+    # Mock read_resource
+    if encoding == "base64":
+      contents = [
+          BlobResourceContents(uri=uri, mimeType=mime_type, blob=content)
+      ]
+    else:
+      contents = [
+          TextResourceContents(uri=uri, mimeType=mime_type, text=content)
+      ]
+
+    read_resource_result = ReadResourceResult(contents=contents)
+    self.mock_session.read_resource = AsyncMock(
+        return_value=read_resource_result
+    )
+
+    toolset = McpToolset(connection_params=self.mock_stdio_params)
     toolset._mcp_session_manager = self.mock_session_manager
 
     result = await toolset.read_resource(name)
 
-    assert result == expected_result
-    self.mock_session.get_resource.assert_called_once_with(name=name)
+    assert result == contents
+    self.mock_session.list_resources.assert_called_once()
+    self.mock_session.read_resource.assert_called_once_with(uri=uri)
