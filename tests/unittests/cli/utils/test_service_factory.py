@@ -168,7 +168,8 @@ async def test_create_session_service_respects_app_name_mapping(
   assert (agent_dir / ".adk" / "session.db").exists()
 
 
-def test_create_session_service_fallbacks_to_database(
+@pytest.mark.asyncio
+async def test_create_session_service_fallbacks_to_database(
     tmp_path: Path, monkeypatch
 ):
   registry = mock.create_autospec(ServiceRegistry, instance=True, spec_set=True)
@@ -189,6 +190,7 @@ def test_create_session_service_fallbacks_to_database(
       agents_dir=str(tmp_path),
       echo=True,
   )
+  await service.close()
 
 
 def test_create_artifact_service_uses_registry(tmp_path: Path, monkeypatch):

@@ -509,60 +509,61 @@ async def test_append_event_to_stale_session():
       service_type=SessionServiceType.DATABASE
   )
 
-  app_name = 'my_app'
-  user_id = 'user'
-  current_time = datetime.now().astimezone(timezone.utc).timestamp()
+  async with session_service:
+    app_name = 'my_app'
+    user_id = 'user'
+    current_time = datetime.now().astimezone(timezone.utc).timestamp()
 
-  original_session = await session_service.create_session(
-      app_name=app_name, user_id=user_id
-  )
-  event1 = Event(
-      invocation_id='inv1',
-      author='user',
-      timestamp=current_time + 1,
-      actions=EventActions(state_delta={'sk1': 'v1'}),
-  )
-  await session_service.append_event(original_session, event1)
+    original_session = await session_service.create_session(
+        app_name=app_name, user_id=user_id
+    )
+    event1 = Event(
+        invocation_id='inv1',
+        author='user',
+        timestamp=current_time + 1,
+        actions=EventActions(state_delta={'sk1': 'v1'}),
+    )
+    await session_service.append_event(original_session, event1)
 
-  updated_session = await session_service.get_session(
-      app_name=app_name, user_id=user_id, session_id=original_session.id
-  )
-  event2 = Event(
-      invocation_id='inv2',
-      author='user',
-      timestamp=current_time + 2,
-      actions=EventActions(state_delta={'sk2': 'v2'}),
-  )
-  await session_service.append_event(updated_session, event2)
+    updated_session = await session_service.get_session(
+        app_name=app_name, user_id=user_id, session_id=original_session.id
+    )
+    event2 = Event(
+        invocation_id='inv2',
+        author='user',
+        timestamp=current_time + 2,
+        actions=EventActions(state_delta={'sk2': 'v2'}),
+    )
+    await session_service.append_event(updated_session, event2)
 
-  # original_session is now stale
-  assert original_session.last_update_time < updated_session.last_update_time
-  assert len(original_session.events) == 1
-  assert 'sk2' not in original_session.state
+    # original_session is now stale
+    assert original_session.last_update_time < updated_session.last_update_time
+    assert len(original_session.events) == 1
+    assert 'sk2' not in original_session.state
 
-  # Appending another event to stale original_session
-  event3 = Event(
-      invocation_id='inv3',
-      author='user',
-      timestamp=current_time + 3,
-      actions=EventActions(state_delta={'sk3': 'v3'}),
-  )
-  await session_service.append_event(original_session, event3)
+    # Appending another event to stale original_session
+    event3 = Event(
+        invocation_id='inv3',
+        author='user',
+        timestamp=current_time + 3,
+        actions=EventActions(state_delta={'sk3': 'v3'}),
+    )
+    await session_service.append_event(original_session, event3)
 
-  # If we fetch session from DB, it should contain all 3 events and all state
-  # changes.
-  session_final = await session_service.get_session(
-      app_name=app_name, user_id=user_id, session_id=original_session.id
-  )
-  assert len(session_final.events) == 3
-  assert session_final.state.get('sk1') == 'v1'
-  assert session_final.state.get('sk2') == 'v2'
-  assert session_final.state.get('sk3') == 'v3'
-  assert [e.invocation_id for e in session_final.events] == [
-      'inv1',
-      'inv2',
-      'inv3',
-  ]
+    # If we fetch session from DB, it should contain all 3 events and all state
+    # changes.
+    session_final = await session_service.get_session(
+        app_name=app_name, user_id=user_id, session_id=original_session.id
+    )
+    assert len(session_final.events) == 3
+    assert session_final.state.get('sk1') == 'v1'
+    assert session_final.state.get('sk2') == 'v2'
+    assert session_final.state.get('sk3') == 'v3'
+    assert [e.invocation_id for e in session_final.events] == [
+        'inv1',
+        'inv2',
+        'inv3',
+    ]
 
 
 @pytest.mark.asyncio
