@@ -1498,6 +1498,7 @@ class AdkWebServer:
               session_id=req.session_id,
               new_message=req.new_message,
               state_delta=req.state_delta,
+              invocation_id=req.invocation_id,
           )
       ) as agen:
         events = [event async for event in agen]

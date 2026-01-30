@@ -496,7 +496,7 @@ class Runner:
     ) -> AsyncGenerator[Event, None]:
       with tracer.start_as_current_span('invocation'):
         session = await self._get_or_create_session(
-            user_id=cast(str, user_id), session_id=cast(str, session_id)
+            user_id=user_id, session_id=session_id
         )
 
         if not invocation_id and not new_message:
