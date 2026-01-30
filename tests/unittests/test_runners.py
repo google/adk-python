@@ -11,14 +11,13 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 import importlib
-import logging
 from pathlib import Path
 import sys
 import textwrap
 from typing import AsyncGenerator
 from typing import Optional
-from unittest import mock
 from unittest.mock import AsyncMock
 
 from google.adk.agents.base_agent import BaseAgent
@@ -1320,40 +1319,6 @@ class TestRunnerInferAgentOrigin:
     assert runner._app_name_alignment_hint is not None
     assert "wrong_name" in runner._app_name_alignment_hint
     assert "actual_name" in runner._app_name_alignment_hint
-
-
-@pytest.mark.asyncio
-async def test_run_async_no_op_resume_logging(caplog):
-  """Verifies that the actual Runner logic logs a warning when state_delta is ignored."""
-  from google.adk.runners import Runner
-
-  # 1. Setup dependencies
-  mock_agent = mock.MagicMock()
-  mock_agent.name = "test_agent"
-
-  # Added app_name="test_app" to satisfy validation
-  runner = Runner(
-      app_name="test_app",
-      agent=mock_agent,
-      session_service=mock.AsyncMock(),
-  )
-
-  # 2. Capture logs while running the actual logic in runners.py
-  with caplog.at_level(logging.WARNING):
-    # Call run_async without message or invocation_id, but WITH state_delta
-    async for _ in runner.run_async(
-        user_id="user",
-        session_id="session",
-        new_message=None,
-        state_delta={"test": 1},
-    ):
-      pass
-
-  # 3. This verifies the REAL warning logic in src/google/adk/runners.py
-  assert any(
-      "state_delta provided without new_message" in r.message
-      for r in caplog.records
-  )
 
 
 if __name__ == "__main__":

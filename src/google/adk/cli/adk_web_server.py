@@ -369,7 +369,7 @@ def _otel_env_vars_enabled() -> bool:
 
 
 def _setup_gcp_telemetry(
-    internal_exporters: list[SpanProcessor] = None,
+    internal_exporters: list[SpanProcessor] | None = None,
 ):
   if typing.TYPE_CHECKING:
     from ..telemetry.setup import OTelHooks
@@ -411,7 +411,7 @@ def _setup_gcp_telemetry(
 
 
 def _setup_telemetry_from_env(
-    internal_exporters: list[SpanProcessor] = None,
+    internal_exporters: list[SpanProcessor] | None = None,
 ):
   from ..telemetry.setup import maybe_set_otel_providers
 
@@ -507,7 +507,7 @@ class AdkWebServer:
     # Internal properties we want to allow being modified from callbacks.
     self.runners_to_clean: set[str] = set()
     self.current_app_name_ref: SharedValue[str] = SharedValue(value="")
-    self.runner_dict = {}
+    self.runner_dict: dict[str, Runner] = {}
     self.url_prefix = url_prefix
 
   async def get_runner_async(self, app_name: str) -> Runner:
@@ -707,8 +707,8 @@ class AdkWebServer:
       A FastAPI app instance.
     """
     # Properties we don't need to modify from callbacks
-    trace_dict = {}
-    session_trace_dict = {}
+    trace_dict: dict[str, Any] = {}
+    session_trace_dict: dict[str, list[int]] = {}
     # Set up a file system watcher to detect changes in the agents directory.
     observer = Observer()
     setup_observer(observer, self)

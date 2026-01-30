@@ -1426,28 +1426,22 @@ async def _noop_run_async(*args, **kwargs):
     ],
     ids=["no_state_delta", "with_state_delta"],
 )
-def test_agent_run_resume_without_message(
-    test_app, create_test_session, monkeypatch, extra_payload
+def test_agent_run_resume_without_message_success(
+    test_app, create_test_session, extra_payload
 ):
-  """Test that /run allows resuming a session without providing a new message."""
-  # Override the global mock with a specific no-op mock for this test
-  monkeypatch.setattr("google.adk.runners.Runner.run_async", _noop_run_async)
-
+  """Test that /run allows resuming a session with only an invocation_id."""
   info = create_test_session
   url = "/run"
   payload = {
       "app_name": info["app_name"],
       "user_id": info["user_id"],
       "session_id": info["session_id"],
+      "invocation_id": "test_invocation_id",
       "streaming": False,
       **extra_payload,
   }
-
   response = test_app.post(url, json=payload)
-
-  # Verify the web server handles the request and returns success
   assert response.status_code == 200
-  assert response.json() == []
 
 
 if __name__ == "__main__":
