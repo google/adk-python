@@ -495,7 +495,7 @@ class Runner:
     ) -> AsyncGenerator[Event, None]:
       with tracer.start_as_current_span('invocation'):
         session = await self._get_or_create_session(
-            user_id=user_id, session_id=session_id
+            user_id=cast(str, user_id), session_id=cast(str, session_id)
         )
 
         if not invocation_id and not new_message:
@@ -504,14 +504,6 @@ class Runner:
               'invocation_id to resume a previous invocation. '
               f'Session: {session_id}, User: {user_id}'
           )
-          logger.info(
-              'Performing no-op resume for session %s: no new_message or '
-              'invocation_id.',
-              session_id,
-          )
-          # If nothing is provided, this is a no-op resume. We return early
-          # without yielding any events.
-          return
 
         if invocation_id:
           if (
