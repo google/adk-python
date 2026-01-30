@@ -412,9 +412,10 @@ class TestMCPSessionManager:
     assert len(manager._sessions) == 0
 
     # Error should be logged via logger.warning
-    mock_logger.warning.assert_called()
-    warning_call = str(mock_logger.warning.call_args)
-    assert "Warning: Error during MCP session cleanup" in warning_call
+    mock_logger.warning.assert_called_once()
+    args, kwargs = mock_logger.warning.call_args
+    assert "Error during MCP session cleanup for session1" in args[0]
+    assert kwargs.get("exc_info")
 
   @pytest.mark.asyncio
   @patch("google.adk.tools.mcp_tool.mcp_session_manager.stdio_client")

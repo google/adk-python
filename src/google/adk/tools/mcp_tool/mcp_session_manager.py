@@ -435,7 +435,7 @@ class MCPSessionManager:
         except Exception as e:
           # Log the error but don't re-raise to avoid blocking shutdown
           logger.warning(
-              f'Warning: Error during MCP session cleanup for:{session_key}',
+              f'Error during MCP session cleanup for {session_key}',
               exc_info=True,
           )
         finally:
