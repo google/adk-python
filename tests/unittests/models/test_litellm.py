@@ -24,6 +24,7 @@ from unittest.mock import AsyncMock
 from unittest.mock import Mock
 import warnings
 
+from google.adk.models.lite_llm import _append_fallback_user_content_if_missing
 from google.adk.models.lite_llm import _content_to_message_param
 from google.adk.models.lite_llm import _FILE_ID_REQUIRED_PROVIDERS
 from google.adk.models.lite_llm import _FINISH_REASON_MAPPING
@@ -988,6 +989,28 @@ async def test_generate_content_async_adds_fallback_user_message(
   assert llm_request.contents[-1].parts[0].text == (
       "Handle the requests as specified in the System Instruction."
   )
+
+
+def test_append_fallback_user_content_ignores_function_response_parts():
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role="user",
+              parts=[
+                  types.Part.from_function_response(
+                      name="add", response={"result": 6}
+                  )
+              ],
+          )
+      ]
+  )
+
+  _append_fallback_user_content_if_missing(llm_request)
+
+  assert len(llm_request.contents) == 1
+  assert len(llm_request.contents[0].parts) == 1
+  assert llm_request.contents[0].parts[0].function_response is not None
+  assert llm_request.contents[0].parts[0].text is None
 
 
 litellm_append_user_content_test_cases = [
