@@ -48,6 +48,7 @@ from google.adk.sessions.session import Session
 from google.adk.sessions.state import State
 from google.genai import types
 from pydantic import BaseModel
+from pydantic import Field
 import pytest
 
 # Configure logging to help diagnose server startup issues
@@ -155,9 +156,9 @@ class _MockEvalCaseResult(BaseModel):
   user_id: str
   session_id: str
   eval_set_file: str
-  eval_metric_results: list = []
-  overall_eval_metric_results: list = []
-  eval_metric_result_per_invocation: list = []
+  eval_metric_results: list = Field(default_factory=list)
+  overall_eval_metric_results: list = Field(default_factory=list)
+  eval_metric_result_per_invocation: list = Field(default_factory=list)
 
 
 #################################################
