@@ -2338,6 +2338,55 @@ async def test_get_content_file_uri_file_id_required_falls_back_to_text(
         ("azure", "azure/gpt-4"),
     ],
 )
+@pytest.mark.parametrize(
+    "file_uri,mime_type,expected_type",
+    [
+        pytest.param(
+            "https://example.com/image.png",
+            "image/png",
+            "image_url",
+            id="image",
+        ),
+        pytest.param(
+            "https://example.com/video.mp4",
+            "video/mp4",
+            "video_url",
+            id="video",
+        ),
+        pytest.param(
+            "https://example.com/audio.mp3",
+            "audio/mpeg",
+            "audio_url",
+            id="audio",
+        ),
+    ],
+)
+async def test_get_content_file_uri_media_url_file_id_required_uses_url_type(
+    provider, model, file_uri, mime_type, expected_type
+):
+  parts = [
+      types.Part(
+          file_data=types.FileData(
+              file_uri=file_uri,
+              mime_type=mime_type,
+          )
+      )
+  ]
+  content = await _get_content(parts, provider=provider, model=model)
+  assert content == [{
+      "type": expected_type,
+      expected_type: {"url": file_uri},
+  }]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "provider,model",
+    [
+        ("openai", "openai/gpt-4o"),
+        ("azure", "azure/gpt-4"),
+    ],
+)
 async def test_get_content_file_uri_file_id_required_preserves_file_id(
     provider, model
 ):
@@ -2351,6 +2400,53 @@ async def test_get_content_file_uri_file_id_required_preserves_file_id(
   ]
   content = await _get_content(parts, provider=provider, model=model)
   assert content == [{"type": "file", "file": {"file_id": "file-abc123"}}]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "provider,model",
+    [
+        ("openai", "openai/gpt-4o"),
+        ("azure", "azure/gpt-4"),
+    ],
+)
+async def test_get_content_file_uri_http_pdf_file_id_required_falls_back_to_text(
+    provider, model
+):
+  file_uri = "https://example.com/document.pdf"
+  parts = [
+      types.Part(
+          file_data=types.FileData(
+              file_uri=file_uri,
+              mime_type="application/pdf",
+              display_name="document.pdf",
+          )
+      )
+  ]
+  content = await _get_content(parts, provider=provider, model=model)
+  assert content == [
+      {"type": "text", "text": '[File reference: "document.pdf"]'}
+  ]
+
+
+@pytest.mark.asyncio
+async def test_get_content_file_uri_http_pdf_non_file_id_provider_uses_file():
+  file_uri = "https://example.com/document.pdf"
+  parts = [
+      types.Part(
+          file_data=types.FileData(
+              file_uri=file_uri,
+              mime_type="application/pdf",
+          )
+      )
+  ]
+  content = await _get_content(
+      parts, provider="vertex_ai", model="vertex_ai/gemini-2.5-flash"
+  )
+  assert content == [{
+      "type": "file",
+      "file": {"file_id": file_uri, "format": "application/pdf"},
+  }]
 
 
 @pytest.mark.asyncio
