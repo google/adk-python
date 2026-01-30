@@ -497,6 +497,8 @@ def _part_has_payload(part: types.Part) -> bool:
     return True
   if part.file_data and (part.file_data.file_uri or part.file_data.data):
     return True
+  if part.function_response:
+    return True
   return False
 
 
