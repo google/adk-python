@@ -155,9 +155,9 @@ class _MockEvalCaseResult(BaseModel):
   user_id: str
   session_id: str
   eval_set_file: str
-  eval_metric_results: list = {}
-  overall_eval_metric_results: list = ({},)
-  eval_metric_result_per_invocation: list = {}
+  eval_metric_results: list = []
+  overall_eval_metric_results: list = []
+  eval_metric_result_per_invocation: list = []
 
 
 #################################################
