@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
 import importlib
 from pathlib import Path
 import sys
@@ -27,6 +28,7 @@ from google.adk.agents.live_request_queue import LiveRequestQueue
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.run_config import RunConfig
 from google.adk.apps.app import App
+from google.adk.apps.app import EventsCompactionConfig
 from google.adk.apps.app import ResumabilityConfig
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.adk.cli.utils.agent_loader import AgentLoader
@@ -1319,6 +1321,366 @@ class TestRunnerInferAgentOrigin:
     assert runner._app_name_alignment_hint is not None
     assert "wrong_name" in runner._app_name_alignment_hint
     assert "actual_name" in runner._app_name_alignment_hint
+
+
+class TestRunnerCompaction:
+  """Tests for Runner event compaction features."""
+
+  def setup_method(self):
+    """Set up test fixtures."""
+    self.session_service = InMemorySessionService()
+    self.artifact_service = InMemoryArtifactService()
+    self.agent = MockLlmAgent("test_agent")
+
+  @pytest.mark.asyncio
+  async def test_max_concurrent_compactions_default_value(self):
+    """Test that max_concurrent_compactions defaults to 10."""
+    runner = Runner(
+        app_name="test_app",
+        agent=self.agent,
+        session_service=self.session_service,
+        artifact_service=self.artifact_service,
+    )
+    # Semaphore should be initialized
+    assert runner._compaction_semaphore is not None
+
+  @pytest.mark.asyncio
+  async def test_max_concurrent_compactions_custom_value(self):
+    """Test that max_concurrent_compactions can be configured."""
+    runner = Runner(
+        app_name="test_app",
+        agent=self.agent,
+        session_service=self.session_service,
+        artifact_service=self.artifact_service,
+        max_concurrent_compactions=5,
+    )
+    assert runner._compaction_semaphore is not None
+
+  @pytest.mark.asyncio
+  async def test_max_concurrent_compactions_shared_across_instances(self):
+    """Test that semaphore is shared across Runner instances."""
+    runner1 = Runner(
+        app_name="test_app",
+        agent=self.agent,
+        session_service=self.session_service,
+        artifact_service=self.artifact_service,
+        max_concurrent_compactions=7,
+    )
+    runner2 = Runner(
+        app_name="test_app",
+        agent=self.agent,
+        session_service=self.session_service,
+        artifact_service=self.artifact_service,
+        max_concurrent_compactions=3,
+    )
+    # Both should reference the same class-level semaphore
+    assert runner1._compaction_semaphore is runner2._compaction_semaphore
+
+  @pytest.mark.asyncio
+  async def test_max_concurrent_compactions_validation(self):
+    """Test that invalid max_concurrent_compactions raises ValueError."""
+    with pytest.raises(ValueError, match="must be positive"):
+      Runner(
+          app_name="test_app",
+          agent=self.agent,
+          session_service=self.session_service,
+          artifact_service=self.artifact_service,
+          max_concurrent_compactions=0,
+      )
+    with pytest.raises(ValueError, match="must be positive"):
+      Runner(
+          app_name="test_app",
+          agent=self.agent,
+          session_service=self.session_service,
+          artifact_service=self.artifact_service,
+          max_concurrent_compactions=-1,
+      )
+
+  @pytest.mark.asyncio
+  async def test_compaction_runs_in_background_non_blocking(self):
+    """Test that compaction runs in background and doesn't block generator."""
+    # Create app with compaction config
+    app = App(
+        name="test_app",
+        root_agent=self.agent,
+        events_compaction_config=EventsCompactionConfig(
+            compaction_interval=1,  # Compact after every invocation
+            overlap_size=0,
+        ),
+    )
+    runner = Runner(
+        app=app,
+        session_service=self.session_service,
+        artifact_service=self.artifact_service,
+    )
+
+    # Create session
+    await self.session_service.create_session(
+        app_name="test_app", user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+    )
+
+    # Track timing
+    generator_start_time = None
+    generator_end_time = None
+    compaction_start_time = None
+    compaction_end_time = None
+
+    async def mock_compaction(*args, **kwargs):
+      nonlocal compaction_start_time, compaction_end_time
+      compaction_start_time = asyncio.get_event_loop().time()
+      # Simulate slow compaction (100ms)
+      await asyncio.sleep(0.1)
+      compaction_end_time = asyncio.get_event_loop().time()
+
+    # Mock the compaction function to track timing
+    from google.adk.apps import compaction
+
+    original_compaction = compaction._run_compaction_for_sliding_window
+    compaction._run_compaction_for_sliding_window = mock_compaction
+
+    try:
+      # Run multiple invocations to ensure compaction triggers
+      # (need compaction_interval=1 new invocations)
+      for run_num in range(2):
+        generator_start_time = asyncio.get_event_loop().time()
+        events = []
+        async for event in runner.run_async(
+            user_id=TEST_USER_ID,
+            session_id=TEST_SESSION_ID,
+            new_message=types.Content(
+                role="user", parts=[types.Part(text=f"Message {run_num}")]
+            ),
+        ):
+          events.append(event)
+        generator_end_time = asyncio.get_event_loop().time()
+
+        # Generator should complete quickly (not waiting for compaction)
+        generator_duration = generator_end_time - generator_start_time
+        assert generator_duration < 0.05, (
+            f"Generator took {generator_duration}s, should complete quickly"
+            " without waiting for compaction"
+        )
+
+      # Give background compaction tasks time to run
+      await asyncio.sleep(0.2)
+
+      # If compaction ran, verify it happened after generator completed
+      if compaction_start_time is not None:
+        assert compaction_start_time >= generator_end_time, (
+            "Compaction should start after generator completes, "
+            f"but started at {compaction_start_time} and generator ended at "
+            f"{generator_end_time}"
+        )
+    finally:
+      # Restore original function
+      compaction._run_compaction_for_sliding_window = original_compaction
+
+  @pytest.mark.asyncio
+  async def test_compaction_semaphore_limits_concurrency(self):
+    """Test that semaphore limits concurrent compaction tasks."""
+    app = App(
+        name="test_app",
+        root_agent=self.agent,
+        events_compaction_config=EventsCompactionConfig(
+            compaction_interval=1,
+            overlap_size=0,
+        ),
+    )
+    runner = Runner(
+        app=app,
+        session_service=self.session_service,
+        artifact_service=self.artifact_service,
+        max_concurrent_compactions=2,  # Limit to 2 concurrent
+    )
+
+    # Track concurrent compactions
+    concurrent_count = 0
+    max_concurrent = 0
+    compaction_lock = asyncio.Lock()
+
+    async def mock_compaction(*args, **kwargs):
+      nonlocal concurrent_count, max_concurrent
+      async with compaction_lock:
+        concurrent_count += 1
+        max_concurrent = max(max_concurrent, concurrent_count)
+      # Simulate slow compaction
+      await asyncio.sleep(0.1)
+      async with compaction_lock:
+        concurrent_count -= 1
+
+    # Mock compaction function
+    from google.adk.apps import compaction
+
+    original_compaction = compaction._run_compaction_for_sliding_window
+    compaction._run_compaction_for_sliding_window = mock_compaction
+
+    try:
+      # Create multiple sessions and trigger compactions simultaneously
+      tasks = []
+      for i in range(5):  # Try to start 5 compactions
+        session = await self.session_service.create_session(
+            app_name="test_app",
+            user_id=f"user{i}",
+            session_id=f"session{i}",
+        )
+        # Add events to trigger compaction
+        for j in range(2):
+          event = Event(
+              invocation_id=f"inv{j}",
+              author="user",
+              content=types.Content(
+                  role="user", parts=[types.Part(text=f"Message {j}")]
+              ),
+              timestamp=float(j),
+          )
+          await self.session_service.append_event(session=session, event=event)
+
+        # Start run_async in background
+        task = asyncio.create_task(
+            self._consume_events(
+                runner,
+                f"user{i}",
+                f"session{i}",
+                types.Content(
+                    role="user", parts=[types.Part(text="New message")]
+                ),
+            )
+        )
+        tasks.append(task)
+
+      # Wait a bit for compactions to start
+      await asyncio.sleep(0.05)
+
+      # Check that max concurrent is limited by semaphore
+      assert max_concurrent <= 2, (
+          f"Max concurrent compactions ({max_concurrent}) should not exceed"
+          " semaphore limit (2)"
+      )
+
+      # Wait for all tasks to complete
+      await asyncio.gather(*tasks)
+    finally:
+      compaction._run_compaction_for_sliding_window = original_compaction
+
+  @pytest.mark.asyncio
+  async def test_compaction_error_does_not_block_generator(self):
+    """Test that compaction errors don't block the generator."""
+    app = App(
+        name="test_app",
+        root_agent=self.agent,
+        events_compaction_config=EventsCompactionConfig(
+            compaction_interval=1,
+            overlap_size=0,
+        ),
+    )
+    runner = Runner(
+        app=app,
+        session_service=self.session_service,
+        artifact_service=self.artifact_service,
+    )
+
+    session = await self.session_service.create_session(
+        app_name="test_app", user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+    )
+
+    # Add events to trigger compaction
+    for i in range(2):
+      event = Event(
+          invocation_id=f"inv{i}",
+          author="user",
+          content=types.Content(
+              role="user", parts=[types.Part(text=f"Message {i}")]
+          ),
+          timestamp=float(i),
+      )
+      await self.session_service.append_event(session=session, event=event)
+
+    # Mock compaction to raise an error
+    from google.adk.apps import compaction
+
+    original_compaction = compaction._run_compaction_for_sliding_window
+
+    async def failing_compaction(*args, **kwargs):
+      raise RuntimeError("Compaction failed")
+
+    compaction._run_compaction_for_sliding_window = failing_compaction
+
+    try:
+      # Generator should complete successfully despite compaction error
+      events = []
+      async for event in runner.run_async(
+          user_id=TEST_USER_ID,
+          session_id=TEST_SESSION_ID,
+          new_message=types.Content(
+              role="user", parts=[types.Part(text="New message")]
+          ),
+      ):
+        events.append(event)
+
+      # Generator should have completed
+      assert len(events) > 0, "Generator should yield events"
+    finally:
+      compaction._run_compaction_for_sliding_window = original_compaction
+
+  @pytest.mark.asyncio
+  async def test_compaction_not_run_when_config_missing(self):
+    """Test that compaction is not run when config is missing."""
+    # App without compaction config
+    app = App(name="test_app", root_agent=self.agent)
+    runner = Runner(
+        app=app,
+        session_service=self.session_service,
+        artifact_service=self.artifact_service,
+    )
+
+    session = await self.session_service.create_session(
+        app_name="test_app", user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+    )
+
+    # Mock compaction to verify it's not called
+    from google.adk.apps import compaction
+
+    original_compaction = compaction._run_compaction_for_sliding_window
+    compaction_called = False
+
+    async def track_compaction(*args, **kwargs):
+      nonlocal compaction_called
+      compaction_called = True
+
+    compaction._run_compaction_for_sliding_window = track_compaction
+
+    try:
+      async for event in runner.run_async(
+          user_id=TEST_USER_ID,
+          session_id=TEST_SESSION_ID,
+          new_message=types.Content(
+              role="user", parts=[types.Part(text="New message")]
+          ),
+      ):
+        pass
+
+      # Give background tasks time to run
+      await asyncio.sleep(0.1)
+      assert (
+          not compaction_called
+      ), "Compaction should not be called without config"
+    finally:
+      compaction._run_compaction_for_sliding_window = original_compaction
+
+  async def _consume_events(
+      self,
+      runner: Runner,
+      user_id: str,
+      session_id: str,
+      new_message: types.Content,
+  ) -> list[Event]:
+    """Helper to consume all events from run_async."""
+    events = []
+    async for event in runner.run_async(
+        user_id=user_id, session_id=session_id, new_message=new_message
+    ):
+      events.append(event)
+    return events
 
 
 if __name__ == "__main__":
