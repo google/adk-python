@@ -88,6 +88,22 @@ def test_live_streaming_function_call_single():
   # Create a custom runner class that collects all events
   class CustomTestRunner(testing_utils.InMemoryRunner):
 
+    def _run_with_loop(self, coro):
+      try:
+        old_loop = asyncio.get_event_loop()
+      except RuntimeError:
+        old_loop = None
+
+      loop = asyncio.new_event_loop()
+      asyncio.set_event_loop(loop)
+      try:
+        loop.run_until_complete(coro)
+      except (asyncio.TimeoutError, asyncio.CancelledError):
+        pass
+      finally:
+        loop.close()
+        asyncio.set_event_loop(old_loop)
+
     def run_live(
         self,
         live_request_queue: LiveRequestQueue,
@@ -108,20 +124,9 @@ def test_live_streaming_function_call_single():
           if len(collected_responses) >= 3:
             return
 
-      try:
-        session = self.session
-        # Create a new event loop to avoid nested event loop issues
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-          loop.run_until_complete(
-              asyncio.wait_for(consume_responses(session), timeout=5.0)
-          )
-        finally:
-          loop.close()
-      except (asyncio.TimeoutError, asyncio.CancelledError):
-        # Return whatever we collected so far
-        pass
+      self._run_with_loop(
+          asyncio.wait_for(consume_responses(self.session), timeout=5.0)
+      )
 
       return collected_responses
 
@@ -203,6 +208,22 @@ def test_live_streaming_function_call_multiple():
   # Use the custom runner
   class CustomTestRunner(testing_utils.InMemoryRunner):
 
+    def _run_with_loop(self, coro):
+      try:
+        old_loop = asyncio.get_event_loop()
+      except RuntimeError:
+        old_loop = None
+
+      loop = asyncio.new_event_loop()
+      asyncio.set_event_loop(loop)
+      try:
+        loop.run_until_complete(coro)
+      except (asyncio.TimeoutError, asyncio.CancelledError):
+        pass
+      finally:
+        loop.close()
+        asyncio.set_event_loop(old_loop)
+
     def run_live(
         self,
         live_request_queue: LiveRequestQueue,
@@ -222,19 +243,9 @@ def test_live_streaming_function_call_multiple():
           if len(collected_responses) >= 3:
             return
 
-      try:
-        session = self.session
-        # Create a new event loop to avoid nested event loop issues
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-          loop.run_until_complete(
-              asyncio.wait_for(consume_responses(session), timeout=5.0)
-          )
-        finally:
-          loop.close()
-      except (asyncio.TimeoutError, asyncio.CancelledError):
-        pass
+      self._run_with_loop(
+          asyncio.wait_for(consume_responses(self.session), timeout=5.0)
+      )
 
       return collected_responses
 
@@ -309,6 +320,22 @@ def test_live_streaming_function_call_parallel():
   # Use the custom runner
   class CustomTestRunner(testing_utils.InMemoryRunner):
 
+    def _run_with_loop(self, coro):
+      try:
+        old_loop = asyncio.get_event_loop()
+      except RuntimeError:
+        old_loop = None
+
+      loop = asyncio.new_event_loop()
+      asyncio.set_event_loop(loop)
+      try:
+        loop.run_until_complete(coro)
+      except (asyncio.TimeoutError, asyncio.CancelledError):
+        pass
+      finally:
+        loop.close()
+        asyncio.set_event_loop(old_loop)
+
     def run_live(
         self,
         live_request_queue: LiveRequestQueue,
@@ -328,19 +355,9 @@ def test_live_streaming_function_call_parallel():
           if len(collected_responses) >= 3:
             return
 
-      try:
-        session = self.session
-        # Create a new event loop to avoid nested event loop issues
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-          loop.run_until_complete(
-              asyncio.wait_for(consume_responses(session), timeout=5.0)
-          )
-        finally:
-          loop.close()
-      except (asyncio.TimeoutError, asyncio.CancelledError):
-        pass
+      self._run_with_loop(
+          asyncio.wait_for(consume_responses(self.session), timeout=5.0)
+      )
 
       return collected_responses
 
@@ -409,6 +426,22 @@ def test_live_streaming_function_call_with_error():
   # Use the custom runner
   class CustomTestRunner(testing_utils.InMemoryRunner):
 
+    def _run_with_loop(self, coro):
+      try:
+        old_loop = asyncio.get_event_loop()
+      except RuntimeError:
+        old_loop = None
+
+      loop = asyncio.new_event_loop()
+      asyncio.set_event_loop(loop)
+      try:
+        loop.run_until_complete(coro)
+      except (asyncio.TimeoutError, asyncio.CancelledError):
+        pass
+      finally:
+        loop.close()
+        asyncio.set_event_loop(old_loop)
+
     def run_live(
         self,
         live_request_queue: LiveRequestQueue,
@@ -428,19 +461,9 @@ def test_live_streaming_function_call_with_error():
           if len(collected_responses) >= 3:
             return
 
-      try:
-        session = self.session
-        # Create a new event loop to avoid nested event loop issues
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-          loop.run_until_complete(
-              asyncio.wait_for(consume_responses(session), timeout=5.0)
-          )
-        finally:
-          loop.close()
-      except (asyncio.TimeoutError, asyncio.CancelledError):
-        pass
+      self._run_with_loop(
+          asyncio.wait_for(consume_responses(self.session), timeout=5.0)
+      )
 
       return collected_responses
 
@@ -500,6 +523,22 @@ def test_live_streaming_function_call_sync_tool():
   # Use the custom runner
   class CustomTestRunner(testing_utils.InMemoryRunner):
 
+    def _run_with_loop(self, coro):
+      try:
+        old_loop = asyncio.get_event_loop()
+      except RuntimeError:
+        old_loop = None
+
+      loop = asyncio.new_event_loop()
+      asyncio.set_event_loop(loop)
+      try:
+        loop.run_until_complete(coro)
+      except (asyncio.TimeoutError, asyncio.CancelledError):
+        pass
+      finally:
+        loop.close()
+        asyncio.set_event_loop(old_loop)
+
     def run_live(
         self,
         live_request_queue: LiveRequestQueue,
@@ -519,19 +558,9 @@ def test_live_streaming_function_call_sync_tool():
           if len(collected_responses) >= 3:
             return
 
-      try:
-        session = self.session
-        # Create a new event loop to avoid nested event loop issues
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-          loop.run_until_complete(
-              asyncio.wait_for(consume_responses(session), timeout=5.0)
-          )
-        finally:
-          loop.close()
-      except (asyncio.TimeoutError, asyncio.CancelledError):
-        pass
+      self._run_with_loop(
+          asyncio.wait_for(consume_responses(self.session), timeout=5.0)
+      )
 
       return collected_responses
 
@@ -600,6 +629,22 @@ def test_live_streaming_simple_streaming_tool():
   # Use the custom runner
   class CustomTestRunner(testing_utils.InMemoryRunner):
 
+    def _run_with_loop(self, coro):
+      try:
+        old_loop = asyncio.get_event_loop()
+      except RuntimeError:
+        old_loop = None
+
+      loop = asyncio.new_event_loop()
+      asyncio.set_event_loop(loop)
+      try:
+        loop.run_until_complete(coro)
+      except (asyncio.TimeoutError, asyncio.CancelledError):
+        pass
+      finally:
+        loop.close()
+        asyncio.set_event_loop(old_loop)
+
     def run_live(
         self,
         live_request_queue: LiveRequestQueue,
@@ -619,19 +664,9 @@ def test_live_streaming_simple_streaming_tool():
           if len(collected_responses) >= 3:
             return
 
-      try:
-        session = self.session
-        # Create a new event loop to avoid nested event loop issues
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-          loop.run_until_complete(
-              asyncio.wait_for(consume_responses(session), timeout=5.0)
-          )
-        finally:
-          loop.close()
-      except (asyncio.TimeoutError, asyncio.CancelledError):
-        pass
+      self._run_with_loop(
+          asyncio.wait_for(consume_responses(self.session), timeout=5.0)
+      )
 
       return collected_responses
 
@@ -712,6 +747,22 @@ def test_live_streaming_video_streaming_tool():
   # Use the custom runner
   class CustomTestRunner(testing_utils.InMemoryRunner):
 
+    def _run_with_loop(self, coro):
+      try:
+        old_loop = asyncio.get_event_loop()
+      except RuntimeError:
+        old_loop = None
+
+      loop = asyncio.new_event_loop()
+      asyncio.set_event_loop(loop)
+      try:
+        loop.run_until_complete(coro)
+      except (asyncio.TimeoutError, asyncio.CancelledError):
+        pass
+      finally:
+        loop.close()
+        asyncio.set_event_loop(old_loop)
+
     def run_live(
         self,
         live_request_queue: LiveRequestQueue,
@@ -731,19 +782,9 @@ def test_live_streaming_video_streaming_tool():
           if len(collected_responses) >= 3:
             return
 
-      try:
-        session = self.session
-        # Create a new event loop to avoid nested event loop issues
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-          loop.run_until_complete(
-              asyncio.wait_for(consume_responses(session), timeout=5.0)
-          )
-        finally:
-          loop.close()
-      except (asyncio.TimeoutError, asyncio.CancelledError):
-        pass
+      self._run_with_loop(
+          asyncio.wait_for(consume_responses(self.session), timeout=5.0)
+      )
 
       return collected_responses
 
@@ -828,6 +869,22 @@ def test_live_streaming_stop_streaming_tool():
   # Use the custom runner
   class CustomTestRunner(testing_utils.InMemoryRunner):
 
+    def _run_with_loop(self, coro):
+      try:
+        old_loop = asyncio.get_event_loop()
+      except RuntimeError:
+        old_loop = None
+
+      loop = asyncio.new_event_loop()
+      asyncio.set_event_loop(loop)
+      try:
+        loop.run_until_complete(coro)
+      except (asyncio.TimeoutError, asyncio.CancelledError):
+        pass
+      finally:
+        loop.close()
+        asyncio.set_event_loop(old_loop)
+
     def run_live(
         self,
         live_request_queue: LiveRequestQueue,
@@ -847,19 +904,9 @@ def test_live_streaming_stop_streaming_tool():
           if len(collected_responses) >= 3:
             return
 
-      try:
-        session = self.session
-        # Create a new event loop to avoid nested event loop issues
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-          loop.run_until_complete(
-              asyncio.wait_for(consume_responses(session), timeout=5.0)
-          )
-        finally:
-          loop.close()
-      except (asyncio.TimeoutError, asyncio.CancelledError):
-        pass
+      self._run_with_loop(
+          asyncio.wait_for(consume_responses(self.session), timeout=5.0)
+      )
 
       return collected_responses
 
@@ -945,6 +992,22 @@ def test_live_streaming_multiple_streaming_tools():
   # Use the custom runner
   class CustomTestRunner(testing_utils.InMemoryRunner):
 
+    def _run_with_loop(self, coro):
+      try:
+        old_loop = asyncio.get_event_loop()
+      except RuntimeError:
+        old_loop = None
+
+      loop = asyncio.new_event_loop()
+      asyncio.set_event_loop(loop)
+      try:
+        loop.run_until_complete(coro)
+      except (asyncio.TimeoutError, asyncio.CancelledError):
+        pass
+      finally:
+        loop.close()
+        asyncio.set_event_loop(old_loop)
+
     def run_live(
         self,
         live_request_queue: LiveRequestQueue,
@@ -964,19 +1027,9 @@ def test_live_streaming_multiple_streaming_tools():
           if len(collected_responses) >= 3:
             return
 
-      try:
-        session = self.session
-        # Create a new event loop to avoid nested event loop issues
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-          loop.run_until_complete(
-              asyncio.wait_for(consume_responses(session), timeout=5.0)
-          )
-        finally:
-          loop.close()
-      except (asyncio.TimeoutError, asyncio.CancelledError):
-        pass
+      self._run_with_loop(
+          asyncio.wait_for(consume_responses(self.session), timeout=5.0)
+      )
 
       return collected_responses
 
@@ -1055,6 +1108,22 @@ def test_live_streaming_buffered_function_call_yielded_during_transcription():
 
   class CustomTestRunner(testing_utils.InMemoryRunner):
 
+    def _run_with_loop(self, coro):
+      try:
+        old_loop = asyncio.get_event_loop()
+      except RuntimeError:
+        old_loop = None
+
+      loop = asyncio.new_event_loop()
+      asyncio.set_event_loop(loop)
+      try:
+        loop.run_until_complete(coro)
+      except (asyncio.TimeoutError, asyncio.CancelledError):
+        pass
+      finally:
+        loop.close()
+        asyncio.set_event_loop(old_loop)
+
     def run_live(
         self,
         live_request_queue: LiveRequestQueue,
@@ -1074,18 +1143,9 @@ def test_live_streaming_buffered_function_call_yielded_during_transcription():
           if len(collected_responses) >= 5:
             return
 
-      try:
-        session = self.session
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-          loop.run_until_complete(
-              asyncio.wait_for(consume_responses(session), timeout=5.0)
-          )
-        finally:
-          loop.close()
-      except (asyncio.TimeoutError, asyncio.CancelledError):
-        pass
+      self._run_with_loop(
+          asyncio.wait_for(consume_responses(self.session), timeout=5.0)
+      )
 
       return collected_responses
 
@@ -1141,6 +1201,22 @@ def test_live_streaming_text_content_persisted_in_session():
 
   class CustomTestRunner(testing_utils.InMemoryRunner):
 
+    def _run_with_loop(self, coro):
+      try:
+        old_loop = asyncio.get_event_loop()
+      except RuntimeError:
+        old_loop = None
+
+      loop = asyncio.new_event_loop()
+      asyncio.set_event_loop(loop)
+      try:
+        loop.run_until_complete(coro)
+      except (asyncio.TimeoutError, asyncio.CancelledError):
+        pass
+      finally:
+        loop.close()
+        asyncio.set_event_loop(old_loop)
+
     def run_live_and_get_session(
         self,
         live_request_queue: LiveRequestQueue,
@@ -1159,24 +1235,15 @@ def test_live_streaming_text_content_persisted_in_session():
           if len(collected_responses) >= 1:
             return
 
-      try:
-        session = self.session
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-          loop.run_until_complete(
-              asyncio.wait_for(consume_responses(session), timeout=5.0)
-          )
-        finally:
-          loop.close()
-      except (asyncio.TimeoutError, asyncio.CancelledError):
-        pass
+      self._run_with_loop(
+          asyncio.wait_for(consume_responses(self.session), timeout=5.0)
+      )
 
       # Get the updated session
       updated_session = self.runner.session_service.get_session_sync(
           app_name=self.app_name,
-          user_id=session.user_id,
-          session_id=session.id,
+          user_id=self.session.user_id,
+          session_id=self.session.id,
       )
       return collected_responses, updated_session
 

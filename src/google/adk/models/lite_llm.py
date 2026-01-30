@@ -93,6 +93,13 @@ _EXCLUDED_PART_FIELD = {"inline_data": {"data"}}
 _LITELLM_STRUCTURED_TYPES = {"json_object", "json_schema"}
 _JSON_DECODER = json.JSONDecoder()
 
+# Mapping of major MIME type prefixes to LiteLLM content types for URL blocks.
+_MEDIA_URL_CONTENT_TYPE_BY_MAJOR_MIME_TYPE = {
+    "image": "image_url",
+    "video": "video_url",
+    "audio": "audio_url",
+}
+
 # Mapping of LiteLLM finish_reason strings to FinishReason enum values
 # Note: tool_calls/function_call map to STOP because:
 # 1. FinishReason.TOOL_CALL enum does not exist (as of google-genai 0.8.0)
@@ -264,6 +271,15 @@ def _looks_like_openai_file_id(file_uri: str) -> bool:
   return file_uri.startswith("file-")
 
 
+def _is_http_url(uri: str) -> bool:
+  """Returns True when `uri` is an HTTP(S) URL."""
+  try:
+    parsed = urlparse(uri)
+  except ValueError:
+    return False
+  return parsed.scheme in ("http", "https")
+
+
 def _redact_file_uri_for_log(
     file_uri: str, *, display_name: str | None = None
 ) -> str:
@@ -305,6 +321,17 @@ def _decode_inline_text_data(raw_bytes: bytes) -> str:
   except UnicodeDecodeError:
     logger.debug("Falling back to latin-1 decoding for inline file bytes.")
     return raw_bytes.decode("latin-1", errors="replace")
+
+
+def _normalize_mime_type(mime_type: str) -> str:
+  """Normalizes MIME types for comparisons."""
+  return mime_type.split(";", 1)[0].strip().lower()
+
+
+def _media_url_content_type(mime_type: str) -> str | None:
+  """Returns the LiteLLM URL content type for known media MIME types."""
+  major_mime_type = _normalize_mime_type(mime_type).split("/", 1)[0]
+  return _MEDIA_URL_CONTENT_TYPE_BY_MAJOR_MIME_TYPE.get(major_mime_type)
 
 
 def _iter_reasoning_texts(reasoning_value: Any) -> Iterable[str]:
@@ -773,7 +800,7 @@ async def _get_content(
         part.inline_data
         and part.inline_data.data
         and part.inline_data.mime_type
-        and part.inline_data.mime_type.startswith("text/")
+        and _normalize_mime_type(part.inline_data.mime_type).startswith("text/")
     ):
       return _decode_inline_text_data(part.inline_data.data)
 
@@ -789,7 +816,8 @@ async def _get_content(
         and part.inline_data.data
         and part.inline_data.mime_type
     ):
-      if part.inline_data.mime_type.startswith("text/"):
+      mime_type = _normalize_mime_type(part.inline_data.mime_type)
+      if mime_type.startswith("text/"):
         decoded_text = _decode_inline_text_data(part.inline_data.data)
         content_objects.append({
             "type": "text",
@@ -797,26 +825,17 @@ async def _get_content(
         })
         continue
       base64_string = base64.b64encode(part.inline_data.data).decode("utf-8")
-      data_uri = f"data:{part.inline_data.mime_type};base64,{base64_string}"
+      data_uri = f"data:{mime_type};base64,{base64_string}"
       # LiteLLM providers extract the MIME type from the data URI; avoid
       # passing a separate `format` field that some backends reject.
 
-      if part.inline_data.mime_type.startswith("image"):
+      url_content_type = _media_url_content_type(mime_type)
+      if url_content_type:
         content_objects.append({
-            "type": "image_url",
-            "image_url": {"url": data_uri},
+            "type": url_content_type,
+            url_content_type: {"url": data_uri},
         })
-      elif part.inline_data.mime_type.startswith("video"):
-        content_objects.append({
-            "type": "video_url",
-            "video_url": {"url": data_uri},
-        })
-      elif part.inline_data.mime_type.startswith("audio"):
-        content_objects.append({
-            "type": "audio_url",
-            "audio_url": {"url": data_uri},
-        })
-      elif part.inline_data.mime_type in _SUPPORTED_FILE_CONTENT_MIME_TYPES:
+      elif mime_type in _SUPPORTED_FILE_CONTENT_MIME_TYPES:
         # OpenAI/Azure require file_id from uploaded file, not inline data
         if provider in _FILE_ID_REQUIRED_PROVIDERS:
           file_response = await litellm.acreate_file(
@@ -849,6 +868,34 @@ async def _get_content(
         })
         continue
 
+      # Determine MIME type: use explicit value, infer from URI, or use default.
+      mime_type = part.file_data.mime_type
+      if not mime_type:
+        mime_type = _infer_mime_type_from_uri(part.file_data.file_uri)
+      if not mime_type and part.file_data.display_name:
+        guessed_mime_type, _ = mimetypes.guess_type(part.file_data.display_name)
+        mime_type = guessed_mime_type
+      if not mime_type:
+        # LiteLLM's Vertex AI backend requires format for GCS URIs.
+        mime_type = _DEFAULT_MIME_TYPE
+        logger.debug(
+            "Could not determine MIME type for file_uri %s, using default: %s",
+            part.file_data.file_uri,
+            mime_type,
+        )
+      mime_type = _normalize_mime_type(mime_type)
+
+      if provider in _FILE_ID_REQUIRED_PROVIDERS and _is_http_url(
+          part.file_data.file_uri
+      ):
+        url_content_type = _media_url_content_type(mime_type)
+        if url_content_type:
+          content_objects.append({
+              "type": url_content_type,
+              url_content_type: {"url": part.file_data.file_uri},
+          })
+          continue
+
       if _requires_file_uri_fallback(provider, model, part.file_data.file_uri):
         logger.debug(
             "File URI %s not supported for provider %s, using text fallback",
@@ -868,21 +915,6 @@ async def _get_content(
       file_object: ChatCompletionFileUrlObject = {
           "file_id": part.file_data.file_uri,
       }
-      # Determine MIME type: use explicit value, infer from URI, or use default
-      mime_type = part.file_data.mime_type
-      if not mime_type:
-        mime_type = _infer_mime_type_from_uri(part.file_data.file_uri)
-      if not mime_type and part.file_data.display_name:
-        guessed_mime_type, _ = mimetypes.guess_type(part.file_data.display_name)
-        mime_type = guessed_mime_type
-      if not mime_type:
-        # LiteLLM's Vertex AI backend requires format for GCS URIs
-        mime_type = _DEFAULT_MIME_TYPE
-        logger.debug(
-            "Could not determine MIME type for file_uri %s, using default: %s",
-            part.file_data.file_uri,
-            mime_type,
-        )
       file_object["format"] = mime_type
       content_objects.append({
           "type": "file",

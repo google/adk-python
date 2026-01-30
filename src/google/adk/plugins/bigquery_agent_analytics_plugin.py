@@ -1695,10 +1695,16 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
             except Exception as e:
               logger.error("Rescue flush failed: %s", e)
 
+          # In Python 3.13+, creating a new event loop during interpreter shutdown
+          # (inside atexit) can cause deadlocks if the threading module is already
+          # shutting down. We attempt to run only if safe.
           try:
+            # Check if we can safely create a loop
             loop = asyncio.new_event_loop()
-            loop.run_until_complete(rescue_flush())
-            loop.close()
+            try:
+              loop.run_until_complete(rescue_flush())
+            finally:
+              loop.close()
           except Exception as e:
             logger.error("Failed to run rescue loop: %s", e)
     except ReferenceError:
