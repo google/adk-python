@@ -182,7 +182,7 @@ def test_progressive_sse_streaming_function_calls():
   # 4: Aggregated function response (both get_weather results executed in
   # parallel)
   # 5: Final model response after FCs
-  assert len(events) == 6
+  assert len(events) == 7
 
   assert events[0].partial
   assert events[0].content.parts[0].text == "Checking weather..."
@@ -208,14 +208,21 @@ def test_progressive_sse_streaming_function_calls():
       events[4].content.parts[0].function_response.response["location"]
       == "Tokyo"
   )
-  assert events[4].content.parts[1].function_response.name == "get_weather"
+
+  assert not events[5].partial
+  assert events[5].content.parts[0].function_response.name == "get_weather"
   assert (
-      events[4].content.parts[1].function_response.response["location"]
+      events[5].content.parts[0].function_response.response["location"]
+      == "Tokyo"
+  )
+  assert events[5].content.parts[1].function_response.name == "get_weather"
+  assert (
+      events[5].content.parts[1].function_response.response["location"]
       == "New York"
   )
 
-  assert not events[5].partial
-  assert events[5].content.parts[0].text == "Task completed."
+  assert not events[6].partial
+  assert events[6].content.parts[0].text == "Task completed."
 
 
 def test_progressive_sse_preserves_part_ordering():

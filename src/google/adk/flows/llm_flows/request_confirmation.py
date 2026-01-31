@@ -27,6 +27,7 @@ from ...agents.readonly_context import ReadonlyContext
 from ...events.event import Event
 from ...models.llm_request import LlmRequest
 from ...tools.tool_confirmation import ToolConfirmation
+from ...utils.context_utils import Aclosing
 from ._base_llm_processor import BaseLlmRequestProcessor
 from .functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
 
@@ -149,9 +150,21 @@ class _RequestConfirmationLlmRequestProcessor(BaseLlmRequestProcessor):
       if not tools_to_resume_with_confirmation:
         continue
 
-      if function_response_event := await functions.handle_function_call_list_async(
+      function_calls_event = Event(
+          invocation_id=invocation_context.invocation_id,
+          author=invocation_context.agent.name,
+          branch=invocation_context.branch,
+          content=types.Content(
+              parts=[
+                  types.Part(function_call=target_func)
+                  for target_func in tools_to_resume_with_args.values()
+              ]
+          ),
+      )
+
+      if function_response_event_async_gen := functions.handle_function_calls_async_gen(
           invocation_context,
-          tools_to_resume_with_args.values(),
+          function_calls_event,
           {
               tool.name: tool
               for tool in await agent.canonical_tools(
@@ -163,7 +176,9 @@ class _RequestConfirmationLlmRequestProcessor(BaseLlmRequestProcessor):
           tools_to_resume_with_confirmation.keys(),
           tools_to_resume_with_confirmation,
       ):
-        yield function_response_event
+        async with Aclosing(function_response_event_async_gen) as agen:
+          async for function_response_event in agen:
+            yield function_response_event
       return
 
 

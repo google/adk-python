@@ -15,6 +15,12 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncGenerator as ABCAsyncGenerator
+from collections.abc import AsyncIterable as ABCAsyncIterable
+from collections.abc import AsyncIterator as ABCAsyncIterator
+from collections.abc import Generator as ABCGenerator
+from collections.abc import Iterable as ABCIterable
+from collections.abc import Iterator as ABCIterator
 from enum import Enum
 import inspect
 import logging
@@ -377,6 +383,42 @@ def _parse_schema_from_parameter(
       _raise_if_schema_unsupported(variant, schema)
       return schema
       # all other generic alias will be invoked in raise branch
+    if origin in {ABCGenerator, ABCIterator, ABCIterable}:
+      schema.type = types.Type.ARRAY
+      item_ann = args[0] if args else Any
+      schema.items = _parse_schema_from_parameter(
+          variant,
+          inspect.Parameter(
+              'item',
+              inspect.Parameter.POSITIONAL_OR_KEYWORD,
+              annotation=item_ann,
+          ),
+          func_name,
+      )
+      if param.default is not inspect.Parameter.empty:
+        if not _is_default_value_compatible(param.default, param.annotation):
+          raise ValueError(default_value_error_msg)
+        schema.default = param.default
+      _raise_if_schema_unsupported(variant, schema)
+      return schema
+    if origin in {ABCAsyncGenerator, ABCAsyncIterator, ABCAsyncIterable}:
+      schema.type = types.Type.ARRAY
+      item_ann = args[0] if args else Any
+      schema.items = _parse_schema_from_parameter(
+          variant,
+          inspect.Parameter(
+              'item',
+              inspect.Parameter.POSITIONAL_OR_KEYWORD,
+              annotation=item_ann,
+          ),
+          func_name,
+      )
+      if param.default is not inspect.Parameter.empty:
+        if not _is_default_value_compatible(param.default, param.annotation):
+          raise ValueError(default_value_error_msg)
+        schema.default = param.default
+      _raise_if_schema_unsupported(variant, schema)
+      return schema
   if (
       inspect.isclass(param.annotation)
       # for user defined class, we only support pydantic model

@@ -23,7 +23,7 @@ from unittest import mock
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.agents.llm_agent import Agent
 from google.adk.events.event import Event
-from google.adk.flows.llm_flows.functions import handle_function_calls_async
+from google.adk.flows.llm_flows.functions import handle_function_calls_async_gen
 from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.tool_context import ToolContext
 from google.genai import types
@@ -93,11 +93,15 @@ async def invoke_tool_with_callbacks(
       content=content,
   )
   tools_dict = {tool.name: tool}
-  return await handle_function_calls_async(
+  gen = handle_function_calls_async_gen(
       invocation_context,
       event,
       tools_dict,
   )
+  result = None
+  async for result_item in gen:
+    result = result_item
+  return result
 
 
 @pytest.mark.asyncio

@@ -317,10 +317,10 @@ class TestAuthLlmRequestProcessor:
   @pytest.mark.asyncio
   @patch('google.adk.auth.auth_preprocessor.AuthHandler')
   @patch('google.adk.auth.auth_tool.AuthConfig.model_validate')
-  @patch('google.adk.flows.llm_flows.functions.handle_function_calls_async')
+  @patch('google.adk.flows.llm_flows.functions.handle_function_calls_async_gen')
   async def test_processes_multiple_auth_responses_and_resumes_tools(
       self,
-      mock_handle_function_calls,
+      handle_function_calls_async_gen,
       mock_auth_config_validate,
       mock_auth_handler_class,
       processor,
@@ -398,7 +398,13 @@ class TestAuthLlmRequestProcessor:
     mock_auth_handler_class.return_value = mock_auth_handler
 
     mock_function_response_event = Mock(spec=Event)
-    mock_handle_function_calls.return_value = mock_function_response_event
+
+    async def mock_function_response_event_agen():
+      yield mock_function_response_event
+
+    handle_function_calls_async_gen.return_value = (
+        mock_function_response_event_agen()
+    )
 
     result = []
     async for event in processor.run_async(
@@ -410,8 +416,8 @@ class TestAuthLlmRequestProcessor:
     assert mock_auth_handler.parse_and_store_auth_response.call_count == 2
 
     # Verify function calls were resumed
-    mock_handle_function_calls.assert_called_once()
-    call_args = mock_handle_function_calls.call_args
+    handle_function_calls_async_gen.assert_called_once()
+    call_args = handle_function_calls_async_gen.call_args
     assert call_args[0][1] == original_event  # The original event
     assert call_args[0][3] == {'tool_id_1', 'tool_id_2'}  # Tools to resume
 

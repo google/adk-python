@@ -27,6 +27,7 @@ from google.genai import types
 import pydantic
 from typing_extensions import override
 
+from ..agents.run_config import StreamingMode
 from ..utils.context_utils import Aclosing
 from ._automatic_function_calling_util import build_function_declaration
 from .base_tool import BaseTool
@@ -187,7 +188,7 @@ You could retry calling this tool, but it is IMPORTANT for you to provide all th
 
     if isinstance(self._require_confirmation, Callable):
       require_confirmation = await self._invoke_callable(
-          self._require_confirmation, args_to_call
+          self._require_confirmation, args_to_call, tool_context
       )
     else:
       require_confirmation = bool(self._require_confirmation)
@@ -215,10 +216,13 @@ You could retry calling this tool, but it is IMPORTANT for you to provide all th
       elif not tool_context.tool_confirmation.confirmed:
         return {'error': 'This tool call is rejected.'}
 
-    return await self._invoke_callable(self.func, args_to_call)
+    return await self._invoke_callable(self.func, args_to_call, tool_context)
 
   async def _invoke_callable(
-      self, target: Callable[..., Any], args_to_call: dict[str, Any]
+      self,
+      target: Callable[..., Any],
+      args_to_call: dict[str, Any],
+      tool_context: ToolContext,
   ) -> Any:
     """Invokes a callable, handling both sync and async cases."""
 
@@ -229,8 +233,47 @@ You could retry calling this tool, but it is IMPORTANT for you to provide all th
         hasattr(target, '__call__')
         and inspect.iscoroutinefunction(target.__call__)
     )
+    unwrapped = inspect.unwrap(target)
+    call_attr = getattr(unwrapped, '__call__', None)
+
+    is_generator = (
+        inspect.isgeneratorfunction(target)
+        or inspect.isgeneratorfunction(unwrapped)
+        or inspect.isgeneratorfunction(call_attr)
+    )
+    is_asyncgen = (
+        inspect.isasyncgenfunction(target)
+        or inspect.isasyncgenfunction(unwrapped)
+        or inspect.isasyncgenfunction(call_attr)
+    )
+
     if is_async:
       return await target(**args_to_call)
+
+    elif is_generator:
+      # if streaming_mode: SSE, return as generator object.
+      if tool_context.run_config.streaming_mode == StreamingMode.SSE:
+        return target(**args_to_call)
+
+      # elif streaming_mode != SSE, return last yields value.
+      res = None
+      for res in target(**args_to_call):
+        if inspect.isawaitable(res):
+          res = await res
+      return res
+
+    elif is_asyncgen:
+      # if streaming_mode: SSE return just async generator object.
+      if tool_context.run_config.streaming_mode == StreamingMode.SSE:
+        return target(**args_to_call)
+
+      # elif streaming_mode != SSE, return last yields value.
+      res = None
+      async for res in target(**args_to_call):
+        if inspect.isawaitable(res):
+          res = await res
+      return res
+
     else:
       return target(**args_to_call)
 
