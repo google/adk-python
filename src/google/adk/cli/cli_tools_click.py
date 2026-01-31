@@ -1917,9 +1917,11 @@ def cli_deploy_agent_engine(
 
   Example:
 
+    \b
     # With Express Mode API Key
     adk deploy agent_engine --api_key=[api_key] my_agent
 
+    \b
     # With Google Cloud Project and Region
     adk deploy agent_engine --project=[project] --region=[region]
       --display_name=[app_name] my_agent
