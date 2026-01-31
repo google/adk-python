@@ -665,6 +665,9 @@ class TraceManager:
 # ==============================================================================
 # HELPER: BATCH PROCESSOR
 # ==============================================================================
+_SHUTDOWN_SENTINEL = object()
+
+
 class BatchProcessor:
   """Handles asynchronous batching and writing of events to BigQuery."""
 
@@ -814,11 +817,18 @@ class BatchProcessor:
               self._queue.get(), timeout=self.flush_interval
           )
 
+        if first_item is _SHUTDOWN_SENTINEL:
+          self._queue.task_done()
+          continue
+
         batch.append(first_item)
 
         while len(batch) < self.batch_size:
           try:
             item = self._queue.get_nowait()
+            if item is _SHUTDOWN_SENTINEL:
+              self._queue.task_done()
+              continue
             batch.append(item)
           except asyncio.QueueEmpty:
             break
@@ -955,6 +965,14 @@ class BatchProcessor:
     """
     self._shutdown = True
     logger.info("BatchProcessor shutting down, draining queue...")
+
+    # Signal the writer to wake up and check shutdown status
+    try:
+      self._queue.put_nowait(_SHUTDOWN_SENTINEL)
+    except asyncio.QueueFull:
+      # If queue is full, the writer is active and will check _shutdown soon
+      pass
+
     if self._batch_processor_task:
       try:
         await asyncio.wait_for(self._batch_processor_task, timeout=timeout)
@@ -1691,52 +1709,50 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     except ReferenceError:
       return
 
-    if True:  # Indentation anchor, logic continues below
+    # Emergency Flush: Rescue any logs remaining in the queue
+    remaining_items = []
+    try:
+      while True:
+        remaining_items.append(batch_processor._queue.get_nowait())
+    except (asyncio.QueueEmpty, AttributeError):
+      pass
 
-      # Emergency Flush: Rescue any logs remaining in the queue
-      remaining_items = []
-      try:
-        while True:
-          remaining_items.append(batch_processor._queue.get_nowait())
-      except (asyncio.QueueEmpty, AttributeError):
-        pass
-
-      if remaining_items:
-        # We need a new loop and client to flush these
-        async def rescue_flush():
-          try:
-            # Create a short-lived client just for this flush
-            try:
-              # Note: This relies on google.auth.default() working in this context.
-              # pylint: disable=g-import-not-at-top
-              from google.cloud.bigquery_storage_v1.services.big_query_write.async_client import BigQueryWriteAsyncClient
-
-              # pylint: enable=g-import-not-at-top
-              client = BigQueryWriteAsyncClient()
-            except Exception as e:
-              logger.warning("Could not create rescue client: %s", e)
-              return
-
-            # Patch batch_processor.write_client temporarily
-            old_client = batch_processor.write_client
-            batch_processor.write_client = client
-            try:
-              # Force a write
-              await batch_processor._write_rows_with_retry(remaining_items)
-              logger.info("Rescued logs flushed successfully.")
-            except Exception as e:
-              logger.error("Failed to flush rescued logs: %s", e)
-            finally:
-              batch_processor.write_client = old_client
-          except Exception as e:
-            logger.error("Rescue flush failed: %s", e)
-
+    if remaining_items:
+      # We need a new loop and client to flush these
+      async def rescue_flush():
         try:
-          loop = asyncio.new_event_loop()
-          loop.run_until_complete(rescue_flush())
-          loop.close()
+          # Create a short-lived client just for this flush
+          try:
+            # Note: This relies on google.auth.default() working in this context.
+            # pylint: disable=g-import-not-at-top
+            from google.cloud.bigquery_storage_v1.services.big_query_write.async_client import BigQueryWriteAsyncClient
+
+            # pylint: enable=g-import-not-at-top
+            client = BigQueryWriteAsyncClient()
+          except Exception as e:
+            logger.warning("Could not create rescue client: %s", e)
+            return
+
+          # Patch batch_processor.write_client temporarily
+          old_client = batch_processor.write_client
+          batch_processor.write_client = client
+          try:
+            # Force a write
+            await batch_processor._write_rows_with_retry(remaining_items)
+            logger.info("Rescued logs flushed successfully.")
+          except Exception as e:
+            logger.error("Failed to flush rescued logs: %s", e)
+          finally:
+            batch_processor.write_client = old_client
         except Exception as e:
-          logger.error("Failed to run rescue loop: %s", e)
+          logger.error("Rescue flush failed: %s", e)
+
+      try:
+        loop = asyncio.new_event_loop()
+        loop.run_until_complete(rescue_flush())
+        loop.close()
+      except Exception as e:
+        logger.error("Failed to run rescue loop: %s", e)
 
   def _ensure_schema_exists(self) -> None:
     """Ensures the BigQuery table exists with the correct schema."""
