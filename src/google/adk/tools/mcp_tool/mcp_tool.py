@@ -151,8 +151,15 @@ class McpTool(BaseAuthenticatedTool):
       self, *, args: dict[str, Any], tool_context: ToolContext
   ) -> Any:
     if isinstance(self._require_confirmation, Callable):
+      args_to_call = args.copy()
+      try:
+        signature = inspect.signature(self._require_confirmation)
+        if "tool_context" in signature.parameters:
+          args_to_call["tool_context"] = tool_context
+      except (TypeError, ValueError):
+        args_to_call = args
       require_confirmation = await self._invoke_callable(
-          self._require_confirmation, args
+          self._require_confirmation, args_to_call
       )
     else:
       require_confirmation = bool(self._require_confirmation)
