@@ -26,6 +26,7 @@ from ...runners import RunConfig
 from ..experimental import a2a_experimental
 from .part_converter import A2APartToGenAIPartConverter
 from .part_converter import convert_a2a_part_to_genai_part
+from .utils import _from_a2a_context_id
 
 
 @a2a_experimental
@@ -70,6 +71,10 @@ def _get_user_id(request: RequestContext) -> str:
   ):
     return request.call_context.user.user_name
 
+  _, user_id, _ = _from_a2a_context_id(request.context_id)
+  if user_id:
+    return user_id
+
   # Get user from context id
   return f'A2A_USER_{request.context_id}'
 
@@ -106,9 +111,11 @@ def convert_a2a_request_to_agent_run_request(
       genai_parts = [genai_parts] if genai_parts else []
     output_parts.extend(genai_parts)
 
+  _, _, session_id = _from_a2a_context_id(request.context_id)
+
   return AgentRunRequest(
       user_id=_get_user_id(request),
-      session_id=request.context_id,
+      session_id=session_id,
       new_message=genai_types.Content(
           role='user',
           parts=output_parts,

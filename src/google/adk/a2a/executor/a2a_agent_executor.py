@@ -49,6 +49,7 @@ from ..converters.request_converter import A2ARequestToAgentRunRequestConverter
 from ..converters.request_converter import AgentRunRequest
 from ..converters.request_converter import convert_a2a_request_to_agent_run_request
 from ..converters.utils import _get_adk_metadata_key
+from ..converters.utils import _to_a2a_context_id
 from ..experimental import a2a_experimental
 from .task_result_aggregator import TaskResultAggregator
 
@@ -135,21 +136,6 @@ class A2aAgentExecutor(AgentExecutor):
     if not context.message:
       raise ValueError('A2A request must have a message')
 
-    # for new task, create a task submitted event
-    if not context.current_task:
-      await event_queue.enqueue_event(
-          TaskStatusUpdateEvent(
-              task_id=context.task_id,
-              status=TaskStatus(
-                  state=TaskState.submitted,
-                  message=context.message,
-                  timestamp=datetime.now(timezone.utc).isoformat(),
-              ),
-              context_id=context.context_id,
-              final=False,
-          )
-      )
-
     # Handle the request and publish updates to the event queue
     try:
       await self._handle_request(context, event_queue)
@@ -194,6 +180,27 @@ class A2aAgentExecutor(AgentExecutor):
 
     # ensure the session exists
     session = await self._prepare_session(context, run_request, runner)
+    response_context_id = self._get_response_context_id(
+        context=context,
+        runner=runner,
+        run_request=run_request,
+        session_id=session.id,
+    )
+
+    # for new task, create a task submitted event
+    if not context.current_task:
+      await event_queue.enqueue_event(
+          TaskStatusUpdateEvent(
+              task_id=context.task_id,
+              status=TaskStatus(
+                  state=TaskState.submitted,
+                  message=context.message,
+                  timestamp=datetime.now(timezone.utc).isoformat(),
+              ),
+              context_id=response_context_id,
+              final=False,
+          )
+      )
 
     # create invocation context
     invocation_context = runner._new_invocation_context(
@@ -210,7 +217,7 @@ class A2aAgentExecutor(AgentExecutor):
                 state=TaskState.working,
                 timestamp=datetime.now(timezone.utc).isoformat(),
             ),
-            context_id=context.context_id,
+            context_id=response_context_id,
             final=False,
             metadata={
                 _get_adk_metadata_key('app_name'): runner.app_name,
@@ -227,7 +234,7 @@ class A2aAgentExecutor(AgentExecutor):
             adk_event,
             invocation_context,
             context.task_id,
-            context.context_id,
+            response_context_id,
             self._config.gen_ai_part_converter,
         ):
           task_result_aggregator.process_event(a2a_event)
@@ -245,7 +252,7 @@ class A2aAgentExecutor(AgentExecutor):
           TaskArtifactUpdateEvent(
               task_id=context.task_id,
               last_chunk=True,
-              context_id=context.context_id,
+              context_id=response_context_id,
               artifact=Artifact(
                   artifact_id=str(uuid.uuid4()),
                   parts=task_result_aggregator.task_status_message.parts,
@@ -260,7 +267,7 @@ class A2aAgentExecutor(AgentExecutor):
                   state=TaskState.completed,
                   timestamp=datetime.now(timezone.utc).isoformat(),
               ),
-              context_id=context.context_id,
+              context_id=response_context_id,
               final=True,
           )
       )
@@ -273,10 +280,25 @@ class A2aAgentExecutor(AgentExecutor):
                   timestamp=datetime.now(timezone.utc).isoformat(),
                   message=task_result_aggregator.task_status_message,
               ),
-              context_id=context.context_id,
+              context_id=response_context_id,
               final=True,
           )
       )
+
+  def _get_response_context_id(
+      self,
+      *,
+      context: RequestContext,
+      runner: Runner,
+      run_request: AgentRunRequest,
+      session_id: str,
+  ) -> str:
+    try:
+      return _to_a2a_context_id(
+          runner.app_name, run_request.user_id, session_id
+      )
+    except ValueError:
+      return context.context_id
 
   async def _prepare_session(
       self,
@@ -284,10 +306,18 @@ class A2aAgentExecutor(AgentExecutor):
       run_request: AgentRunRequest,
       runner: Runner,
   ):
-
     session_id = run_request.session_id
-    # create a new session if not exists
     user_id = run_request.user_id
+    if not session_id:
+      session = await runner.session_service.create_session(
+          app_name=runner.app_name,
+          user_id=user_id,
+          state={},
+      )
+      run_request.session_id = session.id
+      return session
+
+    # create a new session if not exists
     session = await runner.session_service.get_session(
         app_name=runner.app_name,
         user_id=user_id,

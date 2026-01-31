@@ -22,6 +22,7 @@ from a2a.types import Message
 from a2a.types import TaskState
 from a2a.types import TextPart
 from google.adk.a2a.converters.request_converter import AgentRunRequest
+from google.adk.a2a.converters.utils import _to_a2a_context_id
 from google.adk.a2a.executor.a2a_agent_executor import A2aAgentExecutor
 from google.adk.a2a.executor.a2a_agent_executor import A2aAgentExecutorConfig
 from google.adk.events.event import Event
@@ -107,6 +108,10 @@ class TestA2aAgentExecutor:
     # Execute
     await self.executor.execute(self.mock_context, self.mock_event_queue)
 
+    expected_context_id = _to_a2a_context_id(
+        self.mock_runner.app_name, "test-user", "test-session"
+    )
+
     # Verify request converter was called with proper arguments
     self.mock_request_converter.assert_called_once_with(
         self.mock_context, self.mock_a2a_part_converter
@@ -117,7 +122,7 @@ class TestA2aAgentExecutor:
         mock_event,
         mock_invocation_context,
         self.mock_context.task_id,
-        self.mock_context.context_id,
+        expected_context_id,
         self.mock_gen_ai_part_converter,
     )
 
@@ -128,11 +133,13 @@ class TestA2aAgentExecutor:
     ]
     assert submitted_event.status.state == TaskState.submitted
     assert submitted_event.final == False
+    assert submitted_event.context_id == expected_context_id
 
     # Verify working event was enqueued
     working_event = self.mock_event_queue.enqueue_event.call_args_list[1][0][0]
     assert working_event.status.state == TaskState.working
     assert working_event.final == False
+    assert working_event.context_id == expected_context_id
 
     # Verify final event was enqueued with proper message field
     final_event = self.mock_event_queue.enqueue_event.call_args_list[-1][0][0]
@@ -141,6 +148,7 @@ class TestA2aAgentExecutor:
     # are processed, it will publish a status event with the current state
     assert hasattr(final_event.status, "message")
     assert final_event.status.state == TaskState.working
+    assert final_event.context_id == expected_context_id
 
   @pytest.mark.asyncio
   async def test_execute_no_message_error(self):
@@ -190,6 +198,10 @@ class TestA2aAgentExecutor:
     # Execute
     await self.executor.execute(self.mock_context, self.mock_event_queue)
 
+    expected_context_id = _to_a2a_context_id(
+        self.mock_runner.app_name, "test-user", "test-session"
+    )
+
     # Verify request converter was called with proper arguments
     self.mock_request_converter.assert_called_once_with(
         self.mock_context, self.mock_a2a_part_converter
@@ -200,7 +212,7 @@ class TestA2aAgentExecutor:
         mock_event,
         mock_invocation_context,
         self.mock_context.task_id,
-        self.mock_context.context_id,
+        expected_context_id,
         self.mock_gen_ai_part_converter,
     )
 
@@ -208,6 +220,7 @@ class TestA2aAgentExecutor:
     working_event = self.mock_event_queue.enqueue_event.call_args_list[0][0][0]
     assert working_event.status.state == TaskState.working
     assert working_event.final == False
+    assert working_event.context_id == expected_context_id
 
     # Verify final event was enqueued with proper message field
     final_event = self.mock_event_queue.enqueue_event.call_args_list[-1][0][0]
@@ -216,6 +229,7 @@ class TestA2aAgentExecutor:
     # are processed, it will publish a status event with the current state
     assert hasattr(final_event.status, "message")
     assert final_event.status.state == TaskState.working
+    assert final_event.context_id == expected_context_id
 
   @pytest.mark.asyncio
   async def test_prepare_session_new_session(self):
@@ -613,16 +627,8 @@ class TestA2aAgentExecutor:
     # Execute (should not raise since we catch the exception)
     await self.executor.execute(self.mock_context, self.mock_event_queue)
 
-    # Verify both submitted and failure events were enqueued
-    # First call should be submitted event, last should be failure event
-    assert self.mock_event_queue.enqueue_event.call_count >= 2
-
-    # Check submitted event (first)
-    submitted_event = self.mock_event_queue.enqueue_event.call_args_list[0][0][
-        0
-    ]
-    assert submitted_event.status.state == TaskState.submitted
-    assert submitted_event.final == False
+    # Request converter error happens before submitted event is enqueued.
+    assert self.mock_event_queue.enqueue_event.call_count >= 1
 
     # Check failure event (last)
     failure_event = self.mock_event_queue.enqueue_event.call_args_list[-1][0][0]
@@ -846,6 +852,10 @@ class TestA2aAgentExecutor:
           self.mock_context, self.mock_event_queue
       )
 
+      expected_context_id = _to_a2a_context_id(
+          self.mock_runner.app_name, "test-user", "test-session"
+      )
+
       # Verify artifact update event was published
       artifact_events = [
           call[0][0]
@@ -855,7 +865,7 @@ class TestA2aAgentExecutor:
       assert len(artifact_events) == 1
       artifact_event = artifact_events[0]
       assert artifact_event.task_id == "test-task-id"
-      assert artifact_event.context_id == "test-context-id"
+      assert artifact_event.context_id == expected_context_id
       # Check that artifact parts correspond to message parts
       assert len(artifact_event.artifact.parts) == len(test_message.parts)
       assert artifact_event.artifact.parts == test_message.parts
@@ -870,7 +880,7 @@ class TestA2aAgentExecutor:
       final_event = final_events[-1]  # Get the last final event
       assert final_event.status.state == TaskState.completed
       assert final_event.task_id == "test-task-id"
-      assert final_event.context_id == "test-context-id"
+      assert final_event.context_id == expected_context_id
 
   @pytest.mark.asyncio
   async def test_handle_request_with_non_working_state_publishes_status_only(
@@ -939,6 +949,10 @@ class TestA2aAgentExecutor:
           self.mock_context, self.mock_event_queue
       )
 
+      expected_context_id = _to_a2a_context_id(
+          self.mock_runner.app_name, "test-user", "test-session"
+      )
+
       # Verify no artifact update event was published
       artifact_events = [
           call[0][0]
@@ -958,4 +972,4 @@ class TestA2aAgentExecutor:
       assert final_event.status.state == TaskState.auth_required
       assert final_event.status.message == test_message
       assert final_event.task_id == "test-task-id"
-      assert final_event.context_id == "test-context-id"
+      assert final_event.context_id == expected_context_id

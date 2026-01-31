@@ -18,6 +18,7 @@ from unittest.mock import patch
 from a2a.server.agent_execution import RequestContext
 from google.adk.a2a.converters.request_converter import _get_user_id
 from google.adk.a2a.converters.request_converter import convert_a2a_request_to_agent_run_request
+from google.adk.a2a.converters.utils import _to_a2a_context_id
 from google.adk.runners import RunConfig
 from google.genai import types as genai_types
 import pytest
@@ -57,6 +58,16 @@ class TestGetUserId:
 
     # Assert
     assert result == "A2A_USER_test_context"
+
+  def test_get_user_id_from_adk_context_id(self):
+    """Test getting user ID from ADK-formatted context id."""
+    request = Mock(spec=RequestContext)
+    request.call_context = None
+    request.context_id = _to_a2a_context_id("app", "user-123", "session-456")
+
+    result = _get_user_id(request)
+
+    assert result == "user-123"
 
   def test_get_user_id_from_context_when_call_context_has_no_user(self):
     """Test getting user ID from context when call context has no user."""
@@ -129,6 +140,27 @@ class TestGetUserId:
 class TestConvertA2aRequestToAgentRunRequest:
   """Test cases for convert_a2a_request_to_agent_run_request function."""
 
+  def test_convert_a2a_request_with_adk_context_id(self):
+    """Test conversion uses ADK context id for user/session."""
+    mock_message = Mock()
+    mock_message.parts = [Mock()]
+
+    request = Mock(spec=RequestContext)
+    request.message = mock_message
+    request.context_id = _to_a2a_context_id("app", "user-1", "session-1")
+    request.call_context = None
+    request.metadata = {}
+
+    mock_genai_part = genai_types.Part(text="test part")
+    mock_convert_part = Mock(return_value=mock_genai_part)
+
+    result = convert_a2a_request_to_agent_run_request(
+        request, mock_convert_part
+    )
+
+    assert result.user_id == "user-1"
+    assert result.session_id == "session-1"
+
   def test_convert_a2a_request_basic(self):
     """Test basic conversion of A2A request to ADK AgentRunRequest."""
     # Arrange
@@ -164,7 +196,7 @@ class TestConvertA2aRequestToAgentRunRequest:
     # Assert
     assert result is not None
     assert result.user_id == "test_user"
-    assert result.session_id == "test_context_123"
+    assert result.session_id is None
     assert isinstance(result.new_message, genai_types.Content)
     assert result.new_message.role == "user"
     assert result.new_message.parts == [mock_genai_part1, mock_genai_part2]
@@ -213,7 +245,7 @@ class TestConvertA2aRequestToAgentRunRequest:
     # Assert
     assert result is not None
     assert result.user_id == "test_user"
-    assert result.session_id == "test_context_123"
+    assert result.session_id is None
     assert isinstance(result.new_message, genai_types.Content)
     assert result.new_message.role == "user"
     assert result.new_message.parts == [
@@ -261,7 +293,7 @@ class TestConvertA2aRequestToAgentRunRequest:
     # Assert
     assert result is not None
     assert result.user_id == "A2A_USER_test_context_123"
-    assert result.session_id == "test_context_123"
+    assert result.session_id is None
     assert isinstance(result.new_message, genai_types.Content)
     assert result.new_message.role == "user"
     assert result.new_message.parts == []
@@ -328,7 +360,7 @@ class TestConvertA2aRequestToAgentRunRequest:
     # Assert
     assert result is not None
     assert result.user_id == "A2A_USER_session_123"
-    assert result.session_id == "session_123"
+    assert result.session_id is None
     assert isinstance(result.new_message, genai_types.Content)
     assert result.new_message.role == "user"
     assert result.new_message.parts == [mock_genai_part]
@@ -370,7 +402,7 @@ class TestIntegration:
     # Assert
     assert result is not None
     assert result.user_id == "auth_user"  # Should use authenticated user
-    assert result.session_id == "mysession"
+    assert result.session_id is None
     assert isinstance(result.new_message, genai_types.Content)
     assert result.new_message.role == "user"
     assert result.new_message.parts == [mock_genai_part]
@@ -404,7 +436,7 @@ class TestIntegration:
     assert (
         result.user_id == "A2A_USER_test_session_456"
     )  # Should fall back to context ID
-    assert result.session_id == "test_session_456"
+    assert result.session_id is None
     assert isinstance(result.new_message, genai_types.Content)
     assert result.new_message.role == "user"
     assert result.new_message.parts == [mock_genai_part]
