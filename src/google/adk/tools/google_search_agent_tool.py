@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -123,7 +123,7 @@ class GoogleSearchAgentTool(AgentTool):
           last_content = event.content
           last_grounding_metadata = event.grounding_metadata
 
-    if not last_content:
+    if last_content is None or last_content.parts is None:
       return ''
     merged_text = '\n'.join(p.text for p in last_content.parts if p.text)
     if isinstance(self.agent, LlmAgent) and self.agent.output_schema:

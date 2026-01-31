@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -258,25 +258,22 @@ class EvalMetric(EvalBaseModel):
       description="The name of the metric.",
   )
 
-  threshold: float = Field(
-      description=(
-          "A threshold value. Each metric decides how to interpret this"
-          " threshold."
-      ),
-  )
-
-  judge_model_options: Optional[JudgeModelOptions] = Field(
-      deprecated=True,
+  threshold: Optional[float] = Field(
       default=None,
       description=(
-          "[DEPRECATED] This field is deprecated in favor of `criterion`."
-          " Depending on the metric you may want to one of the sub-classes of"
-          " BaseCriterion."
+          "This field will be deprecated soon. Please use `criterion` instead."
+          " A threshold value. Each metric decides how to interpret this"
+          " threshold."
       ),
   )
 
   criterion: Optional[BaseCriterion] = Field(
       default=None, description="""Evaluation criterion used by the metric."""
+  )
+
+  custom_function_path: Optional[str] = Field(
+      default=None,
+      description="""Path to custom function, if this is a custom metric.""",
   )
 
 

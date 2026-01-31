@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -24,6 +24,7 @@ import yaml
 from ...agents.readonly_context import ReadonlyContext
 from ...auth.auth_credential import AuthCredential
 from ...auth.auth_schemes import AuthScheme
+from ...auth.auth_tool import AuthConfig
 from .._gemini_schema_util import _to_snake_case
 from ..base_toolset import BaseToolset
 from ..base_toolset import ToolPredicate
@@ -188,3 +189,13 @@ class APIHubToolset(BaseToolset):
   async def close(self):
     if self._openapi_toolset:
       await self._openapi_toolset.close()
+
+  @override
+  def get_auth_config(self) -> AuthConfig | None:
+    """Returns the auth config for this toolset."""
+    if self._auth_scheme is None:
+      return None
+    return AuthConfig(
+        auth_scheme=self._auth_scheme,
+        raw_auth_credential=self._auth_credential,
+    )

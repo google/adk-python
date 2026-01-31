@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import logging
 import ssl
 from typing import Any
 from typing import Callable
@@ -33,6 +34,8 @@ from typing_extensions import override
 from ....agents.readonly_context import ReadonlyContext
 from ....auth.auth_credential import AuthCredential
 from ....auth.auth_schemes import AuthScheme
+from ....features import FeatureName
+from ....features import is_feature_enabled
 from ..._gemini_schema_util import _to_gemini_schema
 from ..._gemini_schema_util import _to_snake_case
 from ...base_tool import BaseTool
@@ -45,6 +48,8 @@ from .openapi_spec_parser import OperationEndpoint
 from .openapi_spec_parser import ParsedOperation
 from .operation_parser import OperationParser
 from .tool_auth_handler import ToolAuthHandler
+
+logger = logging.getLogger("google_adk." + __name__)
 
 
 def snake_to_lower_camel(snake_case_string: str):
@@ -156,6 +161,7 @@ class RestApiTool(BaseTool):
     self._default_headers: Dict[str, str] = {}
     self._ssl_verify = ssl_verify
     self._header_provider = header_provider
+    self._logger = logger
     if should_parse_operation:
       self._operation_parser = OperationParser(self.operation)
 
@@ -221,10 +227,17 @@ class RestApiTool(BaseTool):
   def _get_declaration(self) -> FunctionDeclaration:
     """Returns the function declaration in the Gemini Schema format."""
     schema_dict = self._operation_parser.get_json_schema()
-    parameters = _to_gemini_schema(schema_dict)
-    function_decl = FunctionDeclaration(
-        name=self.name, description=self.description, parameters=parameters
-    )
+    if is_feature_enabled(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL):
+      function_decl = FunctionDeclaration(
+          name=self.name,
+          description=self.description,
+          parameters_json_schema=schema_dict,
+      )
+    else:
+      parameters = _to_gemini_schema(schema_dict)
+      function_decl = FunctionDeclaration(
+          name=self.name, description=self.description, parameters=parameters
+      )
     return function_decl
 
   def configure_auth_scheme(
@@ -319,6 +332,13 @@ class RestApiTool(BaseTool):
     # Set the custom User-Agent header
     user_agent = f"google-adk/{adk_version} (tool: {self.name})"
     header_params["User-Agent"] = user_agent
+
+    if (
+        self.auth_credential
+        and self.auth_credential.http
+        and self.auth_credential.http.additional_headers
+    ):
+      header_params.update(self.auth_credential.http.additional_headers)
 
     params_map: Dict[str, ApiParameter] = {p.py_name: p for p in parameters}
 
@@ -477,14 +497,40 @@ class RestApiTool(BaseTool):
       if provider_headers:
         request_params.setdefault("headers", {}).update(provider_headers)
 
+    # Log the API request
+    self._logger.debug(
+        "API Request: %s %s",
+        request_params.get("method", "").upper(),
+        request_params.get("url", ""),
+    )
+    self._logger.debug("API Request params: %s", request_params.get("params"))
+    if "json" in request_params:
+      self._logger.debug("API Request body: %s", request_params.get("json"))
+
     response = requests.request(**request_params)
+
+    # Log the API response
+    self._logger.debug(
+        "API Response: %s %s - Status: %d",
+        request_params.get("method", "").upper(),
+        request_params.get("url", ""),
+        response.status_code,
+    )
 
     # Parse API response
     try:
       response.raise_for_status()  # Raise HTTPError for bad responses
-      return response.json()  # Try to decode JSON
+      result = response.json()  # Try to decode JSON
+      self._logger.debug("API Response body: %s", result)
+      return result
     except requests.exceptions.HTTPError:
       error_details = response.content.decode("utf-8")
+      self._logger.warning(
+          "API call failed for tool %s: Status %d - %s",
+          self.name,
+          response.status_code,
+          error_details,
+      )
       return {
           "error": (
               f"Tool {self.name} execution failed. Analyze this execution error"
@@ -494,6 +540,7 @@ class RestApiTool(BaseTool):
           )
       }
     except ValueError:
+      self._logger.debug("API Response (non-JSON): %s", response.text)
       return {"text": response.text}  # Return text if not JSON
 
   def __str__(self):

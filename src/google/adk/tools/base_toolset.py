@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -28,6 +28,7 @@ from typing import TypeVar
 from typing import Union
 
 from ..agents.readonly_context import ReadonlyContext
+from ..auth.auth_tool import AuthConfig
 from .base_tool import BaseTool
 
 if TYPE_CHECKING:
@@ -204,3 +205,21 @@ class BaseToolset(ABC):
       llm_request: The outgoing LLM request, mutable this method.
     """
     pass
+
+  def get_auth_config(self) -> Optional[AuthConfig]:
+    """Returns the auth config for this toolset. ADK will make sure the
+    'exchanged_auth_credential' field in the config is populated with
+    ready-to-use credential (e.g. oauth token for OAuth flow) before calling
+    get_tools method or execute any tools returned by this toolset. Thus toolset
+    can use this credential either for tool listing or tool calling. If tool
+    calling needs a different credential from ADK client, call
+    tool_context.request_credential in the tool.
+
+    Toolsets that support authentication should override this method to return
+    an AuthConfig constructed from their auth_scheme, auth_credential, and
+    optional credential_key parameters.
+
+    Returns:
+      AuthConfig if the toolset has authentication configured, None otherwise.
+    """
+    return None

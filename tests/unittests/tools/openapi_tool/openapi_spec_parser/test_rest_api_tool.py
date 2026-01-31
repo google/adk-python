@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -25,6 +25,12 @@ from fastapi.openapi.models import Operation
 from fastapi.openapi.models import Parameter as OpenAPIParameter
 from fastapi.openapi.models import RequestBody
 from fastapi.openapi.models import Schema as OpenAPISchema
+from google.adk.auth.auth_credential import AuthCredential
+from google.adk.auth.auth_credential import AuthCredentialTypes
+from google.adk.auth.auth_credential import HttpAuth
+from google.adk.auth.auth_credential import HttpCredentials
+from google.adk.features import FeatureName
+from google.adk.features._feature_registry import temporary_feature_override
 from google.adk.sessions.state import State
 from google.adk.tools.openapi_tool.auth.auth_helpers import token_to_scheme_credential
 from google.adk.tools.openapi_tool.common.common import ApiParameter
@@ -199,6 +205,45 @@ class TestRestApiTool:
     assert declaration.name == "test_tool"
     assert declaration.description == "Test description"
     assert isinstance(declaration.parameters, Schema)
+
+  def test_get_declaration_with_json_schema_feature_enabled(
+      self, sample_endpoint, sample_operation
+  ):
+    """Test that _get_declaration uses parameters_json_schema when feature is enabled."""
+    mock_parser = MagicMock(spec=OperationParser)
+    mock_parser.get_json_schema.return_value = {
+        "type": "object",
+        "properties": {
+            "test_param": {"type": "string"},
+        },
+        "required": ["test_param"],
+    }
+
+    tool = RestApiTool(
+        name="test_tool",
+        description="Test description",
+        endpoint=sample_endpoint,
+        operation=sample_operation,
+        should_parse_operation=False,
+    )
+    tool._operation_parser = mock_parser
+
+    with temporary_feature_override(
+        FeatureName.JSON_SCHEMA_FOR_FUNC_DECL, True
+    ):
+      declaration = tool._get_declaration()
+
+    assert isinstance(declaration, FunctionDeclaration)
+    assert declaration.name == "test_tool"
+    assert declaration.description == "Test description"
+    assert declaration.parameters is None
+    assert declaration.parameters_json_schema == {
+        "type": "object",
+        "properties": {
+            "test_param": {"type": "string"},
+        },
+        "required": ["test_param"],
+    }
 
   @patch(
       "google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool.requests.request"
@@ -721,6 +766,35 @@ class TestRestApiTool:
 
     assert request_params["cookies"]["session_id"] == "cookie_value"
 
+  def test_prepare_request_params_quota_project_id(
+      self,
+      sample_endpoint,
+      sample_operation,
+      sample_auth_scheme,
+  ):
+    auth_credential = AuthCredential(
+        auth_type=AuthCredentialTypes.HTTP,
+        http=HttpAuth(
+            scheme="bearer",
+            credentials=HttpCredentials(),
+            additional_headers={"x-goog-user-project": "test-project"},
+        ),
+    )
+    tool = RestApiTool(
+        name="test_tool",
+        description="Test Tool",
+        endpoint=sample_endpoint,
+        operation=sample_operation,
+        auth_credential=auth_credential,
+        auth_scheme=sample_auth_scheme,
+    )
+    params = []
+    kwargs = {}
+
+    request_params = tool._prepare_request_params(params, kwargs)
+
+    assert request_params["headers"]["x-goog-user-project"] == "test-project"
+
   def test_prepare_request_params_multiple_mime_types(
       self, sample_endpoint, sample_auth_credential, sample_auth_scheme
   ):
@@ -974,10 +1048,9 @@ class TestRestApiTool:
     if expected_verify_in_call == "USE_SSL_FIXTURE":
       expected_verify_in_call = mock_ssl_context
 
-    mock_response = mock.create_autospec(
-        requests.Response, instance=True, spec_set=True
-    )
+    mock_response = mock.create_autospec(requests.Response, instance=True)
     mock_response.json.return_value = {"result": "success"}
+    mock_response.configure_mock(status_code=200)
 
     tool = RestApiTool(
         name="test_tool",
@@ -1010,10 +1083,9 @@ class TestRestApiTool:
       sample_auth_credential,
   ):
     """Test that configure_verify updates the verify setting."""
-    mock_response = mock.create_autospec(
-        requests.Response, instance=True, spec_set=True
-    )
+    mock_response = mock.create_autospec(requests.Response, instance=True)
     mock_response.json.return_value = {"result": "success"}
+    mock_response.configure_mock(status_code=200)
 
     tool = RestApiTool(
         name="test_tool",
@@ -1079,10 +1151,9 @@ class TestRestApiTool:
       sample_auth_credential,
   ):
     """Test that header_provider adds headers to the request."""
-    mock_response = mock.create_autospec(
-        requests.Response, instance=True, spec_set=True
-    )
+    mock_response = mock.create_autospec(requests.Response, instance=True)
     mock_response.json.return_value = {"result": "success"}
+    mock_response.configure_mock(status_code=200)
 
     def my_header_provider(context):
       return {"X-Custom-Header": "custom-value", "X-Request-ID": "12345"}
@@ -1118,10 +1189,9 @@ class TestRestApiTool:
       sample_auth_credential,
   ):
     """Test that header_provider receives the tool_context."""
-    mock_response = mock.create_autospec(
-        requests.Response, instance=True, spec_set=True
-    )
+    mock_response = mock.create_autospec(requests.Response, instance=True)
     mock_response.json.return_value = {"result": "success"}
+    mock_response.configure_mock(status_code=200)
 
     received_context = []
 
@@ -1158,10 +1228,9 @@ class TestRestApiTool:
       sample_auth_credential,
   ):
     """Test that call works without header_provider."""
-    mock_response = mock.create_autospec(
-        requests.Response, instance=True, spec_set=True
-    )
+    mock_response = mock.create_autospec(requests.Response, instance=True)
     mock_response.json.return_value = {"result": "success"}
+    mock_response.configure_mock(status_code=200)
 
     tool = RestApiTool(
         name="test_tool",

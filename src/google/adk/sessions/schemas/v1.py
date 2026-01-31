@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -32,7 +32,6 @@ import uuid
 from sqlalchemy import ForeignKeyConstraint
 from sqlalchemy import func
 from sqlalchemy.ext.mutable import MutableDict
-from sqlalchemy.inspection import inspect
 from sqlalchemy.orm import DeclarativeBase
 from sqlalchemy.orm import Mapped
 from sqlalchemy.orm import mapped_column
@@ -106,15 +105,9 @@ class StorageSession(Base):
   def __repr__(self):
     return f"<StorageSession(id={self.id}, update_time={self.update_time})>"
 
-  @property
-  def _dialect_name(self) -> Optional[str]:
-    session = inspect(self).session
-    return session.bind.dialect.name if session else None
-
-  @property
-  def update_timestamp_tz(self) -> datetime:
+  def get_update_timestamp(self, is_sqlite: bool) -> float:
     """Returns the time zone aware update timestamp."""
-    if self._dialect_name == "sqlite":
+    if is_sqlite:
       # SQLite does not support timezone. SQLAlchemy returns a naive datetime
       # object without timezone information. We need to convert it to UTC
       # manually.
@@ -125,6 +118,7 @@ class StorageSession(Base):
       self,
       state: dict[str, Any] | None = None,
       events: list[Event] | None = None,
+      is_sqlite: bool = False,
   ) -> Session:
     """Converts the storage session to a session object."""
     if state is None:
@@ -138,7 +132,7 @@ class StorageSession(Base):
         id=self.id,
         state=state,
         events=events,
-        last_update_time=self.update_timestamp_tz,
+        last_update_time=self.get_update_timestamp(is_sqlite=is_sqlite),
     )
 
 

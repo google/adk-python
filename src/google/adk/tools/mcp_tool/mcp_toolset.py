@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,17 +15,23 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
 import logging
 import sys
+from typing import Any
+from typing import Awaitable
 from typing import Callable
 from typing import Dict
 from typing import List
 from typing import Optional
 from typing import TextIO
+from typing import TypeVar
 from typing import Union
 import warnings
 
 from mcp import StdioServerParameters
+from mcp.types import ListResourcesResult
 from mcp.types import ListToolsResult
 from pydantic import model_validator
 from typing_extensions import override
@@ -33,6 +39,7 @@ from typing_extensions import override
 from ...agents.readonly_context import ReadonlyContext
 from ...auth.auth_credential import AuthCredential
 from ...auth.auth_schemes import AuthScheme
+from ...auth.auth_tool import AuthConfig
 from ..base_tool import BaseTool
 from ..base_toolset import BaseToolset
 from ..base_toolset import ToolPredicate
@@ -46,6 +53,9 @@ from .mcp_session_manager import StreamableHTTPConnectionParams
 from .mcp_tool import MCPTool
 
 logger = logging.getLogger("google_adk." + __name__)
+
+
+T = TypeVar("T")
 
 
 class McpToolset(BaseToolset):
@@ -140,6 +150,31 @@ class McpToolset(BaseToolset):
     self._auth_credential = auth_credential
     self._require_confirmation = require_confirmation
 
+  async def _execute_with_session(
+      self,
+      coroutine_func: Callable[[Any], Awaitable[T]],
+      error_message: str,
+      readonly_context: Optional[ReadonlyContext] = None,
+  ) -> T:
+    """Creates a session and executes a coroutine with it."""
+    headers = (
+        self._header_provider(readonly_context)
+        if self._header_provider and readonly_context
+        else None
+    )
+    session = await self._mcp_session_manager.create_session(headers=headers)
+    timeout_in_seconds = (
+        self._connection_params.timeout
+        if hasattr(self._connection_params, "timeout")
+        else None
+    )
+    try:
+      return await asyncio.wait_for(
+          coroutine_func(session), timeout=timeout_in_seconds
+      )
+    except Exception as e:
+      raise ConnectionError(f"{error_message}: {e}") from e
+
   @retry_on_errors
   async def get_tools(
       self,
@@ -154,26 +189,12 @@ class McpToolset(BaseToolset):
     Returns:
         List[BaseTool]: A list of tools available under the specified context.
     """
-    headers = (
-        self._header_provider(readonly_context)
-        if self._header_provider and readonly_context
-        else None
-    )
-    # Get session from session manager
-    session = await self._mcp_session_manager.create_session(headers=headers)
-
     # Fetch available tools from the MCP server
-    timeout_in_seconds = (
-        self._connection_params.timeout
-        if hasattr(self._connection_params, "timeout")
-        else None
+    tools_response: ListToolsResult = await self._execute_with_session(
+        lambda session: session.list_tools(),
+        "Failed to get tools from MCP server",
+        readonly_context,
     )
-    try:
-      tools_response: ListToolsResult = await asyncio.wait_for(
-          session.list_tools(), timeout=timeout_in_seconds
-      )
-    except Exception as e:
-      raise ConnectionError("Failed to get tools from MCP server.") from e
 
     # Apply filtering based on context and tool_filter
     tools = []
@@ -191,6 +212,54 @@ class McpToolset(BaseToolset):
         tools.append(mcp_tool)
     return tools
 
+  async def read_resource(
+      self, name: str, readonly_context: Optional[ReadonlyContext] = None
+  ) -> Any:
+    """Fetches and returns a list of contents of the named resource.
+
+    Args:
+      name: The name of the resource to fetch.
+      readonly_context: Context used to provide headers for the MCP session.
+
+    Returns:
+      List of contents of the resource.
+    """
+    resource_info = await self.get_resource_info(name, readonly_context)
+    if "uri" not in resource_info:
+      raise ValueError(f"Resource '{name}' has no URI.")
+
+    result: Any = await self._execute_with_session(
+        lambda session: session.read_resource(uri=resource_info["uri"]),
+        f"Failed to get resource {name} from MCP server",
+        readonly_context,
+    )
+    return result.contents
+
+  async def list_resources(
+      self, readonly_context: Optional[ReadonlyContext] = None
+  ) -> list[str]:
+    """Returns a list of resource names available on the MCP server."""
+    result: ListResourcesResult = await self._execute_with_session(
+        lambda session: session.list_resources(),
+        "Failed to list resources from MCP server",
+        readonly_context,
+    )
+    return [resource.name for resource in result.resources]
+
+  async def get_resource_info(
+      self, name: str, readonly_context: Optional[ReadonlyContext] = None
+  ) -> dict[str, Any]:
+    """Returns metadata about a specific resource (name, MIME type, etc.)."""
+    result: ListResourcesResult = await self._execute_with_session(
+        lambda session: session.list_resources(),
+        "Failed to list resources from MCP server",
+        readonly_context,
+    )
+    for resource in result.resources:
+      if resource.name == name:
+        return resource.model_dump(mode="json", exclude_none=True)
+    raise ValueError(f"Resource with name '{name}' not found.")
+
   async def close(self) -> None:
     """Performs cleanup and releases resources held by the toolset.
 
@@ -203,6 +272,16 @@ class McpToolset(BaseToolset):
     except Exception as e:
       # Log the error but don't re-raise to avoid blocking shutdown
       print(f"Warning: Error during McpToolset cleanup: {e}", file=self._errlog)
+
+  @override
+  def get_auth_config(self) -> AuthConfig | None:
+    """Returns the auth config for this toolset."""
+    if self._auth_scheme is None:
+      return None
+    return AuthConfig(
+        auth_scheme=self._auth_scheme,
+        raw_auth_credential=self._auth_credential,
+    )
 
   @override
   @classmethod
