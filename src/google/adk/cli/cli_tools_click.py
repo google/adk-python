@@ -459,6 +459,7 @@ def adk_services_options(*, default_use_local_storage: bool = True):
             Optional. The URI of the session service.
             If set, ADK uses this service.
 
+            \b
             If unset, ADK chooses a default session service (see
             --use_local_storage).
             - Use 'agentengine://<agent_engine>' to connect to Agent Engine
@@ -478,6 +479,7 @@ def adk_services_options(*, default_use_local_storage: bool = True):
             Optional. The URI of the artifact service.
             If set, ADK uses this service.
 
+            \b
             If unset, ADK chooses a default artifact service (see
             --use_local_storage).
             - Use 'gs://<bucket_name>' to connect to the GCS artifact service.
@@ -503,6 +505,7 @@ def adk_services_options(*, default_use_local_storage: bool = True):
         "--memory_service_uri",
         type=str,
         help=textwrap.dedent("""\
+            \b
             Optional. The URI of the memory service.
             - Use 'rag://<rag_corpus_id>' to connect to Vertex AI Rag Memory Service.
             - Use 'agentengine://<agent_engine>' to connect to Agent Engine
