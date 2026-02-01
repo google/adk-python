@@ -159,7 +159,7 @@ class Gemini(BaseLlm):
   Vertex AI, v1alpha for Gemini API).
 
   Sample:
-  ```
+  ```python
   from google.genai import Client, types
 
   live_client = Client(
