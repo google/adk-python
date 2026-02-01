@@ -43,9 +43,6 @@ from .eval_config import get_evaluation_criteria_or_default
 from .eval_metrics import BaseCriterion
 from .eval_metrics import EvalMetric
 from .eval_metrics import EvalMetricResult
-from .eval_metrics import Interval
-from .eval_metrics import MetricInfo
-from .eval_metrics import MetricValueInfo
 from .eval_metrics import PrebuiltMetrics
 from .eval_result import EvalCaseResult
 from .eval_set import EvalSet
@@ -53,6 +50,7 @@ from .eval_sets_manager import EvalSetsManager
 from .evaluator import EvalStatus
 from .in_memory_eval_sets_manager import InMemoryEvalSetsManager
 from .local_eval_sets_manager import convert_eval_set_to_pydantic_schema
+from .metric_defaults import get_default_metric_info
 from .metric_evaluator_registry import _get_default_metric_evaluator_registry
 from .metric_evaluator_registry import MetricEvaluatorRegistry
 from .simulation.user_simulator_provider import UserSimulatorProvider
@@ -85,19 +83,6 @@ EXPECTED_TOOL_USE_COLUMN = "expected_tool_use"
 def load_json(file_path: str) -> Union[Dict, List]:
   with open(file_path, "r") as f:
     return json.load(f)
-
-
-def _get_default_metric_info(
-    metric_name: str, description: str = ""
-) -> MetricInfo:
-  """Returns a default MetricInfo for a metric."""
-  return MetricInfo(
-      metric_name=metric_name,
-      description=description,
-      metric_value_info=MetricValueInfo(
-          interval=Interval(min_value=0.0, max_value=1.0)
-      ),
-  )
 
 
 class _EvalMetricResultWithInvocation(BaseModel):
@@ -181,7 +166,7 @@ class AgentEvaluator:
           metric_info = config.metric_info.model_copy()
           metric_info.metric_name = metric_name
         else:
-          metric_info = _get_default_metric_info(
+          metric_info = get_default_metric_info(
               metric_name=metric_name, description=config.description
           )
         metric_evaluator_registry.register_evaluator(
