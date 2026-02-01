@@ -39,6 +39,7 @@ from typing_extensions import override
 from ...agents.readonly_context import ReadonlyContext
 from ...auth.auth_credential import AuthCredential
 from ...auth.auth_schemes import AuthScheme
+from ...auth.auth_tool import AuthConfig
 from ..base_tool import BaseTool
 from ..base_toolset import BaseToolset
 from ..base_toolset import ToolPredicate
@@ -148,6 +149,82 @@ class McpToolset(BaseToolset):
     self._auth_scheme = auth_scheme
     self._auth_credential = auth_credential
     self._require_confirmation = require_confirmation
+    # Store auth config as instance variable so ADK can populate
+    # exchanged_auth_credential in-place before calling get_tools()
+    self._auth_config: Optional[AuthConfig] = (
+        AuthConfig(
+            auth_scheme=auth_scheme,
+            raw_auth_credential=auth_credential,
+        )
+        if auth_scheme
+        else None
+    )
+
+  def _get_auth_headers(self) -> Optional[Dict[str, str]]:
+    """Build authentication headers from exchanged credential.
+
+    Returns:
+        Dictionary of auth headers, or None if no auth configured.
+    """
+    if not self._auth_config or not self._auth_config.exchanged_auth_credential:
+      return None
+
+    credential = self._auth_config.exchanged_auth_credential
+    headers: Optional[Dict[str, str]] = None
+
+    if credential.oauth2:
+      headers = {"Authorization": f"Bearer {credential.oauth2.access_token}"}
+    elif credential.http:
+      # Handle HTTP authentication schemes
+      if (
+          credential.http.scheme.lower() == "bearer"
+          and credential.http.credentials
+          and credential.http.credentials.token
+      ):
+        headers = {
+            "Authorization": f"Bearer {credential.http.credentials.token}"
+        }
+      elif credential.http.scheme.lower() == "basic":
+        # Handle basic auth
+        if (
+            credential.http.credentials
+            and credential.http.credentials.username
+            and credential.http.credentials.password
+        ):
+          credentials_str = (
+              f"{credential.http.credentials.username}"
+              f":{credential.http.credentials.password}"
+          )
+          encoded_credentials = base64.b64encode(
+              credentials_str.encode()
+          ).decode()
+          headers = {"Authorization": f"Basic {encoded_credentials}"}
+      elif credential.http.credentials and credential.http.credentials.token:
+        # Handle other HTTP schemes with token
+        headers = {
+            "Authorization": (
+                f"{credential.http.scheme} {credential.http.credentials.token}"
+            )
+        }
+    elif credential.api_key:
+      # For API key, use the auth scheme to determine header name
+      if self._auth_config.auth_scheme:
+        from fastapi.openapi.models import APIKeyIn
+
+        if hasattr(self._auth_config.auth_scheme, "in_"):
+          if self._auth_config.auth_scheme.in_ == APIKeyIn.header:
+            headers = {self._auth_config.auth_scheme.name: credential.api_key}
+          else:
+            logger.warning(
+                "McpToolset only supports header-based API key authentication."
+                " Configured location: %s",
+                self._auth_config.auth_scheme.in_,
+            )
+        else:
+          # Default to using scheme name as header
+          headers = {self._auth_config.auth_scheme.name: credential.api_key}
+
+    return headers
 
   async def _execute_with_session(
       self,
@@ -156,12 +233,22 @@ class McpToolset(BaseToolset):
       readonly_context: Optional[ReadonlyContext] = None,
   ) -> T:
     """Creates a session and executes a coroutine with it."""
-    headers = (
-        self._header_provider(readonly_context)
-        if self._header_provider and readonly_context
-        else None
+    headers: Dict[str, str] = {}
+
+    # Add headers from header_provider if available
+    if self._header_provider and readonly_context:
+      provider_headers = self._header_provider(readonly_context)
+      if provider_headers:
+        headers.update(provider_headers)
+
+    # Add auth headers from exchanged credential if available
+    auth_headers = self._get_auth_headers()
+    if auth_headers:
+      headers.update(auth_headers)
+
+    session = await self._mcp_session_manager.create_session(
+        headers=headers if headers else None
     )
-    session = await self._mcp_session_manager.create_session(headers=headers)
     timeout_in_seconds = (
         self._connection_params.timeout
         if hasattr(self._connection_params, "timeout")
@@ -214,37 +301,25 @@ class McpToolset(BaseToolset):
   async def read_resource(
       self, name: str, readonly_context: Optional[ReadonlyContext] = None
   ) -> Any:
-    """Fetches and returns the content of the named resource.
-
-    This method will handle content decoding based on the MIME type reported by
-    the MCP server (e.g., JSON, text, base64 for binary).
+    """Fetches and returns a list of contents of the named resource.
 
     Args:
       name: The name of the resource to fetch.
       readonly_context: Context used to provide headers for the MCP session.
 
     Returns:
-      The content of the resource, decoded based on MIME type and encoding.
+      List of contents of the resource.
     """
+    resource_info = await self.get_resource_info(name, readonly_context)
+    if "uri" not in resource_info:
+      raise ValueError(f"Resource '{name}' has no URI.")
+
     result: Any = await self._execute_with_session(
-        lambda session: session.get_resource(name=name),
+        lambda session: session.read_resource(uri=resource_info["uri"]),
         f"Failed to get resource {name} from MCP server",
         readonly_context,
     )
-
-    content = result.content
-    if result.encoding == "base64":
-      decoded_bytes = base64.b64decode(content)
-      if result.resource.mime_type == "application/json":
-        return json.loads(decoded_bytes.decode("utf-8"))
-      if result.resource.mime_type.startswith("text/"):
-        return decoded_bytes.decode("utf-8")
-      return decoded_bytes  # Return as bytes for other binary types
-
-    if result.resource.mime_type == "application/json":
-      return json.loads(content)
-
-    return content
+    return result.contents
 
   async def list_resources(
       self, readonly_context: Optional[ReadonlyContext] = None
@@ -283,6 +358,16 @@ class McpToolset(BaseToolset):
     except Exception as e:
       # Log the error but don't re-raise to avoid blocking shutdown
       print(f"Warning: Error during McpToolset cleanup: {e}", file=self._errlog)
+
+  @override
+  def get_auth_config(self) -> Optional[AuthConfig]:
+    """Returns the auth config for this toolset.
+
+    ADK will populate exchanged_auth_credential on this config before calling
+    get_tools(). The toolset can then access the ready-to-use credential via
+    self._auth_config.exchanged_auth_credential.
+    """
+    return self._auth_config
 
   @override
   @classmethod
