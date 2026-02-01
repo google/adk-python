@@ -2139,3 +2139,76 @@ async def test_connect_speech_config_remains_none_when_both_are_none(
       # Verify the final speech_config is still None
       assert config_arg.speech_config is None
       assert isinstance(connection, GeminiLlmConnection)
+
+
+@pytest.mark.asyncio
+async def test_custom_api_client_is_used_for_generate_content(
+    llm_request, generate_content_response
+):
+  """Test that custom_api_client is used when provided."""
+  from google.genai import Client
+
+  # Create a mock custom client with proper spec
+  custom_client = mock.MagicMock(spec=Client)
+
+  # Create a mock coroutine that returns the generate_content_response
+  async def mock_coro():
+    return generate_content_response
+
+  custom_client.aio.models.generate_content.return_value = mock_coro()
+
+  # Create Gemini instance with custom_api_client
+  gemini_llm = Gemini(model="gemini-1.5-flash", custom_api_client=custom_client)
+
+  # Execute generate_content_async
+  responses = [
+      resp
+      async for resp in gemini_llm.generate_content_async(
+          llm_request, stream=False
+      )
+  ]
+
+  # Verify that the custom client was used
+  assert len(responses) == 1
+  assert isinstance(responses[0], LlmResponse)
+  custom_client.aio.models.generate_content.assert_called_once()
+
+  # Verify that api_client property returns the custom client
+  assert gemini_llm.api_client is custom_client
+
+
+@pytest.mark.asyncio
+async def test_custom_live_api_client_is_used_for_connect(llm_request):
+  """Test that custom_live_api_client is used when provided."""
+  from google.genai import Client
+
+  # Create a mock custom live client with proper spec
+  custom_live_client = mock.MagicMock(spec=Client)
+  mock_live_session = mock.AsyncMock()
+
+  class MockLiveConnect:
+
+    async def __aenter__(self):
+      return mock_live_session
+
+    async def __aexit__(self, *args):
+      pass
+
+  custom_live_client.aio.live.connect.return_value = MockLiveConnect()
+
+  # Setup live connect config
+  llm_request.live_connect_config = types.LiveConnectConfig()
+
+  # Create Gemini instance with custom_live_api_client
+  gemini_llm = Gemini(
+      model="gemini-1.5-flash", custom_live_api_client=custom_live_client
+  )
+
+  # Execute connect
+  async with gemini_llm.connect(llm_request) as connection:
+    # Verify that the custom live client was used
+    custom_live_client.aio.live.connect.assert_called_once()
+    assert isinstance(connection, GeminiLlmConnection)
+
+  # Verify that _live_api_client property returns the custom client
+  assert gemini_llm._live_api_client is custom_live_client
