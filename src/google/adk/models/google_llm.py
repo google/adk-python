@@ -26,8 +26,10 @@ from typing import Optional
 from typing import TYPE_CHECKING
 from typing import Union
 
+from google.genai import Client
 from google.genai import types
 from google.genai.errors import ClientError
+from pydantic import Field
 from typing_extensions import override
 
 from ..utils._client_labels_utils import get_client_labels
@@ -40,8 +42,6 @@ from .gemini_llm_connection import GeminiLlmConnection
 from .llm_response import LlmResponse
 
 if TYPE_CHECKING:
-  from google.genai import Client
-
   from .llm_request import LlmRequest
 
 logger = logging.getLogger('google_adk.' + __name__)
@@ -86,6 +86,12 @@ class Gemini(BaseLlm):
     model: The name of the Gemini model.
     use_interactions_api: Whether to use the interactions API for model
       invocation.
+    custom_api_client: Custom client for standard API calls. If provided, ADK
+      tracking headers will NOT be automatically added to the constructor, but
+      will be merged into individual request headers.
+    custom_live_api_client: Custom client for Live API streaming. If provided,
+      the api_version must match the backend (v1beta1 for Vertex, v1alpha for
+      Gemini API).
   """
 
   model: str = 'gemini-2.5-flash'
@@ -123,6 +129,49 @@ class Gemini(BaseLlm):
     model=Gemini(
       retry_options=types.HttpRetryOptions(initial_delay=1, attempts=2),
     )
+  )
+  ```
+  """
+
+  custom_api_client: Optional[Client] = Field(
+      default=None, exclude=True, frozen=True, repr=False
+  )
+  """Custom API client for generate_content operations.
+
+  Allows injecting a custom Google GenAI Client instance to override the
+  default api_client. Useful for testing, custom authentication, or using
+  different configurations. When set, this client is used for all
+  generate_content_async and interactions API calls.
+
+  Sample:
+  ```python
+  from google.genai import Client
+
+  custom_client = Client(api_key="custom_key")
+  agent = Agent(
+    model=Gemini(custom_api_client=custom_client)
+  )
+  """
+
+  custom_live_api_client: Optional[Client] = Field(
+      default=None, exclude=True, frozen=True, repr=False
+  )
+  """Custom client for Live API (bi-directional streaming) operations.
+
+  Allows injecting a custom Google GenAI Client for ADK Live streaming. When
+  set, this client is used for all live.connect() calls. The client should be
+  configured with the appropriate API version for your backend (v1beta1 for
+  Vertex AI, v1alpha for Gemini API).
+
+  Sample:
+  ```
+  from google.genai import Client, types
+
+  live_client = Client(
+    http_options=types.HttpOptions(api_version="v1beta1")
+  )
+  agent = Agent(
+    model=Gemini(custom_live_api_client=live_client)
   )
   ```
   """
@@ -298,7 +347,8 @@ class Gemini(BaseLlm):
     Returns:
       The api client.
     """
-    from google.genai import Client
+    if self.custom_api_client:
+      return self.custom_api_client
 
     return Client(
         http_options=types.HttpOptions(
@@ -335,7 +385,8 @@ class Gemini(BaseLlm):
 
   @cached_property
   def _live_api_client(self) -> Client:
-    from google.genai import Client
+    if self.custom_live_api_client:
+      return self.custom_live_api_client
 
     return Client(
         http_options=types.HttpOptions(
