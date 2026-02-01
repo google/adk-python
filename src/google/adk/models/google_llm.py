@@ -86,12 +86,8 @@ class Gemini(BaseLlm):
     model: The name of the Gemini model.
     use_interactions_api: Whether to use the interactions API for model
       invocation.
-    custom_api_client: Custom client for standard API calls. If provided, ADK
-      tracking headers will NOT be automatically added to the constructor, but
-      will be merged into individual request headers.
-    custom_live_api_client: Custom client for Live API streaming. If provided,
-      the api_version must match the backend (v1beta1 for Vertex, v1alpha for
-      Gemini API).
+    custom_api_client: Custom client for standard API calls.
+    custom_live_api_client: Custom client for Live API streaming.
   """
 
   model: str = 'gemini-2.5-flash'
