@@ -43,6 +43,9 @@ from .eval_config import get_evaluation_criteria_or_default
 from .eval_metrics import BaseCriterion
 from .eval_metrics import EvalMetric
 from .eval_metrics import EvalMetricResult
+from .eval_metrics import Interval
+from .eval_metrics import MetricInfo
+from .eval_metrics import MetricValueInfo
 from .eval_metrics import PrebuiltMetrics
 from .eval_result import EvalCaseResult
 from .eval_set import EvalSet
@@ -50,6 +53,8 @@ from .eval_sets_manager import EvalSetsManager
 from .evaluator import EvalStatus
 from .in_memory_eval_sets_manager import InMemoryEvalSetsManager
 from .local_eval_sets_manager import convert_eval_set_to_pydantic_schema
+from .metric_evaluator_registry import _get_default_metric_evaluator_registry
+from .metric_evaluator_registry import MetricEvaluatorRegistry
 from .simulation.user_simulator_provider import UserSimulatorProvider
 
 logger = logging.getLogger("google_adk." + __name__)
@@ -80,6 +85,19 @@ EXPECTED_TOOL_USE_COLUMN = "expected_tool_use"
 def load_json(file_path: str) -> Union[Dict, List]:
   with open(file_path, "r") as f:
     return json.load(f)
+
+
+def _get_default_metric_info(
+    metric_name: str, description: str = ""
+) -> MetricInfo:
+  """Returns a default MetricInfo for a metric."""
+  return MetricInfo(
+      metric_name=metric_name,
+      description=description,
+      metric_value_info=MetricValueInfo(
+          interval=Interval(min_value=0.0, max_value=1.0)
+      ),
+  )
 
 
 class _EvalMetricResultWithInvocation(BaseModel):
@@ -154,6 +172,22 @@ class AgentEvaluator:
         user_simulator_config=eval_config.user_simulator_config
     )
 
+    metric_evaluator_registry = _get_default_metric_evaluator_registry()
+    if eval_config.custom_metrics:
+      from .custom_metric_evaluator import _CustomMetricEvaluator
+
+      for metric_name, config in eval_config.custom_metrics.items():
+        if config.metric_info:
+          metric_info = config.metric_info.model_copy()
+          metric_info.metric_name = metric_name
+        else:
+          metric_info = _get_default_metric_info(
+              metric_name=metric_name, description=config.description
+          )
+        metric_evaluator_registry.register_evaluator(
+            metric_info, _CustomMetricEvaluator
+        )
+
     # Step 1: Perform evals, basically inferencing and evaluation of metrics
     eval_results_by_eval_id = await AgentEvaluator._get_eval_results_by_eval_id(
         agent_for_eval=agent_for_eval,
@@ -161,6 +195,7 @@ class AgentEvaluator:
         eval_metrics=eval_metrics,
         num_runs=num_runs,
         user_simulator_provider=user_simulator_provider,
+        metric_evaluator_registry=metric_evaluator_registry,
     )
 
     # Step 2: Post-process the results!
@@ -536,6 +571,7 @@ class AgentEvaluator:
       eval_metrics: list[EvalMetric],
       num_runs: int,
       user_simulator_provider: UserSimulatorProvider,
+      metric_evaluator_registry: Optional[MetricEvaluatorRegistry] = None,
   ) -> dict[str, list[EvalCaseResult]]:
     """Returns EvalCaseResults grouped by eval case id.
 
@@ -560,6 +596,7 @@ class AgentEvaluator:
             app_name=app_name, eval_set=eval_set
         ),
         user_simulator_provider=user_simulator_provider,
+        metric_evaluator_registry=metric_evaluator_registry,
     )
 
     inference_requests = [
