@@ -21,15 +21,7 @@ from google.adk.evaluation.eval_config import EvalConfig
 from google.adk.evaluation.eval_metrics import BaseCriterion
 from google.adk.evaluation.eval_metrics import EvalMetric
 from google.adk.evaluation.eval_set import EvalSet
-from google.adk.evaluation.metric_evaluator_registry import MetricEvaluatorRegistry
 import pytest
-
-
-@pytest.fixture(autouse=True)
-def restore_metric_registry():
-  original_registry = MetricEvaluatorRegistry._registry.copy()
-  yield
-  MetricEvaluatorRegistry._registry = original_registry
 
 
 def fake_custom_metric(*_args, **_kwargs):

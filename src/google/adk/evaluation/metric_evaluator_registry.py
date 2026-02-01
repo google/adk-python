@@ -47,7 +47,9 @@ logger = logging.getLogger("google_adk." + __name__)
 class MetricEvaluatorRegistry:
   """A registry for metric Evaluators."""
 
-  _registry: dict[str, tuple[type[Evaluator], MetricInfo]] = {}
+  def __init__(self):
+    """Initializes an empty registry."""
+    self._registry: dict[str, tuple[type[Evaluator], MetricInfo]] = {}
 
   def get_evaluator(self, eval_metric: EvalMetric) -> Evaluator:
     """Returns an Evaluator for the given metric.
