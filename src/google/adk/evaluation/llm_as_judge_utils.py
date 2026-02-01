@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import enum
 import statistics
+from typing import Any
 from typing import Optional
 from typing import Union
 
@@ -78,7 +79,7 @@ def get_average_rubric_score(
 class _ToolDeclarations(EvalBaseModel):
   """Internal data model used for serializing Tool declarations."""
 
-  tool_declarations: dict[str, genai_types.ToolListUnion]
+  tool_declarations: dict[str, list[Any]]
 
 
 def get_tool_declarations_as_json_str(

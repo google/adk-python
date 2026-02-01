@@ -149,6 +149,82 @@ class McpToolset(BaseToolset):
     self._auth_scheme = auth_scheme
     self._auth_credential = auth_credential
     self._require_confirmation = require_confirmation
+    # Store auth config as instance variable so ADK can populate
+    # exchanged_auth_credential in-place before calling get_tools()
+    self._auth_config: Optional[AuthConfig] = (
+        AuthConfig(
+            auth_scheme=auth_scheme,
+            raw_auth_credential=auth_credential,
+        )
+        if auth_scheme
+        else None
+    )
+
+  def _get_auth_headers(self) -> Optional[Dict[str, str]]:
+    """Build authentication headers from exchanged credential.
+
+    Returns:
+        Dictionary of auth headers, or None if no auth configured.
+    """
+    if not self._auth_config or not self._auth_config.exchanged_auth_credential:
+      return None
+
+    credential = self._auth_config.exchanged_auth_credential
+    headers: Optional[Dict[str, str]] = None
+
+    if credential.oauth2:
+      headers = {"Authorization": f"Bearer {credential.oauth2.access_token}"}
+    elif credential.http:
+      # Handle HTTP authentication schemes
+      if (
+          credential.http.scheme.lower() == "bearer"
+          and credential.http.credentials
+          and credential.http.credentials.token
+      ):
+        headers = {
+            "Authorization": f"Bearer {credential.http.credentials.token}"
+        }
+      elif credential.http.scheme.lower() == "basic":
+        # Handle basic auth
+        if (
+            credential.http.credentials
+            and credential.http.credentials.username
+            and credential.http.credentials.password
+        ):
+          credentials_str = (
+              f"{credential.http.credentials.username}"
+              f":{credential.http.credentials.password}"
+          )
+          encoded_credentials = base64.b64encode(
+              credentials_str.encode()
+          ).decode()
+          headers = {"Authorization": f"Basic {encoded_credentials}"}
+      elif credential.http.credentials and credential.http.credentials.token:
+        # Handle other HTTP schemes with token
+        headers = {
+            "Authorization": (
+                f"{credential.http.scheme} {credential.http.credentials.token}"
+            )
+        }
+    elif credential.api_key:
+      # For API key, use the auth scheme to determine header name
+      if self._auth_config.auth_scheme:
+        from fastapi.openapi.models import APIKeyIn
+
+        if hasattr(self._auth_config.auth_scheme, "in_"):
+          if self._auth_config.auth_scheme.in_ == APIKeyIn.header:
+            headers = {self._auth_config.auth_scheme.name: credential.api_key}
+          else:
+            logger.warning(
+                "McpToolset only supports header-based API key authentication."
+                " Configured location: %s",
+                self._auth_config.auth_scheme.in_,
+            )
+        else:
+          # Default to using scheme name as header
+          headers = {self._auth_config.auth_scheme.name: credential.api_key}
+
+    return headers
 
   async def _execute_with_session(
       self,
@@ -157,12 +233,22 @@ class McpToolset(BaseToolset):
       readonly_context: Optional[ReadonlyContext] = None,
   ) -> T:
     """Creates a session and executes a coroutine with it."""
-    headers = (
-        self._header_provider(readonly_context)
-        if self._header_provider and readonly_context
-        else None
+    headers: Dict[str, str] = {}
+
+    # Add headers from header_provider if available
+    if self._header_provider and readonly_context:
+      provider_headers = self._header_provider(readonly_context)
+      if provider_headers:
+        headers.update(provider_headers)
+
+    # Add auth headers from exchanged credential if available
+    auth_headers = self._get_auth_headers()
+    if auth_headers:
+      headers.update(auth_headers)
+
+    session = await self._mcp_session_manager.create_session(
+        headers=headers if headers else None
     )
-    session = await self._mcp_session_manager.create_session(headers=headers)
     timeout_in_seconds = (
         self._connection_params.timeout
         if hasattr(self._connection_params, "timeout")
@@ -274,14 +360,14 @@ class McpToolset(BaseToolset):
       print(f"Warning: Error during McpToolset cleanup: {e}", file=self._errlog)
 
   @override
-  def get_auth_config(self) -> AuthConfig | None:
-    """Returns the auth config for this toolset."""
-    if self._auth_scheme is None:
-      return None
-    return AuthConfig(
-        auth_scheme=self._auth_scheme,
-        raw_auth_credential=self._auth_credential,
-    )
+  def get_auth_config(self) -> Optional[AuthConfig]:
+    """Returns the auth config for this toolset.
+
+    ADK will populate exchanged_auth_credential on this config before calling
+    get_tools(). The toolset can then access the ready-to-use credential via
+    self._auth_config.exchanged_auth_credential.
+    """
+    return self._auth_config
 
   @override
   @classmethod

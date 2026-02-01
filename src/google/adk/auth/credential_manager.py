@@ -72,7 +72,7 @@ class CredentialManager:
       )
 
       # Load and prepare credential
-      credential = await manager.load_auth_credential(callback_context)
+      credential = await manager.load_auth_credential(tool_context)
       ```
   """
 
@@ -124,11 +124,16 @@ class CredentialManager:
     """
     self._exchanger_registry.register(credential_type, exchanger_instance)
 
-  async def request_credential(self, callback_context: CallbackContext) -> None:
-    callback_context.request_credential(self._auth_config)
+  async def request_credential(self, context: CallbackContext) -> None:
+    if not hasattr(context, "request_credential"):
+      raise TypeError(
+          "request_credential requires a ToolContext with request_credential"
+          " method, not a plain CallbackContext"
+      )
+    context.request_credential(self._auth_config)
 
   async def get_auth_credential(
-      self, callback_context: CallbackContext
+      self, context: CallbackContext
   ) -> Optional[AuthCredential]:
     """Load and prepare authentication credential through a structured workflow."""
 
@@ -140,14 +145,14 @@ class CredentialManager:
       return self._auth_config.raw_auth_credential
 
     # Step 3: Try to load existing processed credential
-    credential = await self._load_existing_credential(callback_context)
+    credential = await self._load_existing_credential(context)
 
     # Step 4: If no existing credential, load from auth response
     # TODO instead of load from auth response, we can store auth response in
     # credential service.
     was_from_auth_response = False
     if not credential:
-      credential = await self._load_from_auth_response(callback_context)
+      credential = await self._load_from_auth_response(context)
       was_from_auth_response = True
 
     # Step 5: If still no credential available, check if client credentials
@@ -169,38 +174,38 @@ class CredentialManager:
 
     # Step 8: Save credential if it was modified
     if was_from_auth_response or was_exchanged or was_refreshed:
-      await self._save_credential(callback_context, credential)
+      await self._save_credential(context, credential)
 
     return credential
 
   async def _load_existing_credential(
-      self, callback_context: CallbackContext
+      self, context: CallbackContext
   ) -> Optional[AuthCredential]:
     """Load existing credential from credential service."""
 
     # Try loading from credential service first
-    credential = await self._load_from_credential_service(callback_context)
+    credential = await self._load_from_credential_service(context)
     if credential:
       return credential
 
     return None
 
   async def _load_from_credential_service(
-      self, callback_context: CallbackContext
+      self, context: CallbackContext
   ) -> Optional[AuthCredential]:
     """Load credential from credential service if available."""
-    credential_service = callback_context._invocation_context.credential_service
+    credential_service = context._invocation_context.credential_service
     if credential_service:
       # Note: This should be made async in a future refactor
       # For now, assuming synchronous operation
-      return await callback_context.load_credential(self._auth_config)
+      return await context.load_credential(self._auth_config)
     return None
 
   async def _load_from_auth_response(
-      self, callback_context: CallbackContext
+      self, context: CallbackContext
   ) -> Optional[AuthCredential]:
-    """Load credential from auth response in callback context."""
-    return callback_context.get_auth_response(self._auth_config)
+    """Load credential from auth response in context."""
+    return context.get_auth_response(self._auth_config)
 
   async def _exchange_credential(
       self, credential: AuthCredential
@@ -290,15 +295,15 @@ class CredentialManager:
     # Additional validation can be added here
 
   async def _save_credential(
-      self, callback_context: CallbackContext, credential: AuthCredential
+      self, context: CallbackContext, credential: AuthCredential
   ) -> None:
     """Save credential to credential service if available."""
     # Update the exchanged credential in config
     self._auth_config.exchanged_auth_credential = credential
 
-    credential_service = callback_context._invocation_context.credential_service
+    credential_service = context._invocation_context.credential_service
     if credential_service:
-      await callback_context.save_credential(self._auth_config)
+      await context.save_credential(self._auth_config)
 
   async def _populate_auth_scheme(self) -> bool:
     """Auto-discover server metadata and populate missing auth scheme info.
