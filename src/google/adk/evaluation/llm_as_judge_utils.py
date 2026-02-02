@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import enum
 import statistics
+from typing import Any
 from typing import Optional
 from typing import Union
 
@@ -78,7 +79,7 @@ def get_average_rubric_score(
 class _ToolDeclarations(EvalBaseModel):
   """Internal data model used for serializing Tool declarations."""
 
-  tool_declarations: dict[str, genai_types.ToolListUnion]
+  tool_declarations: dict[str, list[Any]]
 
 
 def get_tool_declarations_as_json_str(

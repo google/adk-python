@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -11,6 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+from __future__ import annotations
 
 from typing import Any
 from typing import Dict
@@ -26,9 +28,9 @@ from fastapi.openapi.models import HTTPBearer
 from fastapi.openapi.models import OAuth2
 from fastapi.openapi.models import OpenIdConnect
 from fastapi.openapi.models import Schema
+import httpx
 from pydantic import BaseModel
 from pydantic import ValidationError
-import requests
 
 from ....auth.auth_credential import AuthCredential
 from ....auth.auth_credential import AuthCredentialTypes
@@ -287,14 +289,14 @@ def openid_url_to_scheme_credential(
   Raises:
       ValueError: If the OpenID URL is invalid, fetching fails, or required
         fields are missing.
-      requests.exceptions.RequestException:  If there's an error during the
+      httpx.HTTPStatusError or httpx.RequestError: If there's an error during the
           HTTP request.
   """
   try:
-    response = requests.get(openid_url, timeout=10)
+    response = httpx.get(openid_url, timeout=10)
     response.raise_for_status()
     config_dict = response.json()
-  except requests.exceptions.RequestException as e:
+  except httpx.RequestError as e:
     raise ValueError(
         f"Failed to fetch OpenID configuration from {openid_url}: {e}"
     ) from e

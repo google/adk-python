@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -59,14 +59,14 @@ class TestCredentialManager:
   @pytest.mark.asyncio
   async def test_request_credential(self):
     """Test request_credential method."""
-    auth_config = create_auth_config_mock()
-    callback_context = Mock()
-    callback_context.request_credential = Mock()
+    auth_config = Mock(spec=AuthConfig)
+    tool_context = Mock()
+    tool_context.request_credential = Mock()
 
     manager = CredentialManager(auth_config)
-    await manager.request_credential(callback_context)
+    await manager.request_credential(tool_context)
 
-    callback_context.request_credential.assert_called_once_with(auth_config)
+    tool_context.request_credential.assert_called_once_with(auth_config)
 
   @pytest.mark.asyncio
   async def test_load_auth_credentials_success(self):
@@ -80,7 +80,7 @@ class TestCredentialManager:
     mock_credential = Mock(spec=AuthCredential)
     mock_credential.auth_type = AuthCredentialTypes.API_KEY
 
-    callback_context = Mock()
+    tool_context = Mock()
 
     manager = CredentialManager(auth_config)
 
@@ -97,17 +97,17 @@ class TestCredentialManager:
     )
     manager._save_credential = AsyncMock()
 
-    result = await manager.get_auth_credential(callback_context)
+    result = await manager.get_auth_credential(tool_context)
 
     # Verify all methods were called
     manager._validate_credential.assert_called_once()
     manager._is_credential_ready.assert_called_once()
-    manager._load_existing_credential.assert_called_once_with(callback_context)
-    manager._load_from_auth_response.assert_called_once_with(callback_context)
+    manager._load_existing_credential.assert_called_once_with(tool_context)
+    manager._load_from_auth_response.assert_called_once_with(tool_context)
     manager._exchange_credential.assert_called_once_with(mock_credential)
     manager._refresh_credential.assert_called_once_with(mock_credential)
     manager._save_credential.assert_called_once_with(
-        callback_context, mock_credential
+        tool_context, mock_credential
     )
 
     assert result == mock_credential
@@ -122,7 +122,7 @@ class TestCredentialManager:
     auth_config.auth_scheme = Mock()
     auth_config.auth_scheme.flows = None
 
-    callback_context = Mock()
+    tool_context = Mock()
 
     manager = CredentialManager(auth_config)
 
@@ -132,13 +132,13 @@ class TestCredentialManager:
     manager._load_existing_credential = AsyncMock(return_value=None)
     manager._load_from_auth_response = AsyncMock(return_value=None)
 
-    result = await manager.get_auth_credential(callback_context)
+    result = await manager.get_auth_credential(tool_context)
 
     # Verify methods were called but no credential returned
     manager._validate_credential.assert_called_once()
     manager._is_credential_ready.assert_called_once()
-    manager._load_existing_credential.assert_called_once_with(callback_context)
-    manager._load_from_auth_response.assert_called_once_with(callback_context)
+    manager._load_existing_credential.assert_called_once_with(tool_context)
+    manager._load_from_auth_response.assert_called_once_with(tool_context)
 
     assert result is None
 
@@ -150,12 +150,12 @@ class TestCredentialManager:
     mock_credential.oauth2 = Mock()
     auth_config.exchanged_auth_credential = mock_credential
 
-    callback_context = Mock()
+    tool_context = Mock()
 
     manager = CredentialManager(auth_config)
     manager._load_from_credential_service = AsyncMock(return_value=None)
 
-    result = await manager._load_existing_credential(callback_context)
+    result = await manager._load_existing_credential(tool_context)
 
     assert result is None
 
@@ -167,24 +167,22 @@ class TestCredentialManager:
 
     mock_credential = Mock(spec=AuthCredential)
 
-    callback_context = Mock()
+    tool_context = Mock()
 
     manager = CredentialManager(auth_config)
     manager._load_from_credential_service = AsyncMock(
         return_value=mock_credential
     )
 
-    result = await manager._load_existing_credential(callback_context)
+    result = await manager._load_existing_credential(tool_context)
 
-    manager._load_from_credential_service.assert_called_once_with(
-        callback_context
-    )
+    manager._load_from_credential_service.assert_called_once_with(tool_context)
     assert result == mock_credential
 
   @pytest.mark.asyncio
   async def test_load_from_credential_service_with_service(self):
-    """Test _load_from_credential_service from callback context when credential service is available."""
-    auth_config = create_auth_config_mock()
+    """Test _load_from_credential_service from tool context when credential service is available."""
+    auth_config = Mock(spec=AuthConfig)
 
     mock_credential = Mock(spec=AuthCredential)
 
@@ -195,14 +193,14 @@ class TestCredentialManager:
     invocation_context = Mock()
     invocation_context.credential_service = credential_service
 
-    callback_context = Mock()
-    callback_context._invocation_context = invocation_context
-    callback_context.load_credential = AsyncMock(return_value=mock_credential)
+    tool_context = Mock()
+    tool_context._invocation_context = invocation_context
+    tool_context.load_credential = AsyncMock(return_value=mock_credential)
 
     manager = CredentialManager(auth_config)
-    result = await manager._load_from_credential_service(callback_context)
+    result = await manager._load_from_credential_service(tool_context)
 
-    callback_context.load_credential.assert_called_once_with(auth_config)
+    tool_context.load_credential.assert_called_once_with(auth_config)
     assert result == mock_credential
 
   @pytest.mark.asyncio
@@ -214,11 +212,11 @@ class TestCredentialManager:
     invocation_context = Mock()
     invocation_context.credential_service = None
 
-    callback_context = Mock()
-    callback_context._invocation_context = invocation_context
+    tool_context = Mock()
+    tool_context._invocation_context = invocation_context
 
     manager = CredentialManager(auth_config)
-    result = await manager._load_from_credential_service(callback_context)
+    result = await manager._load_from_credential_service(tool_context)
 
     assert result is None
 
@@ -235,14 +233,14 @@ class TestCredentialManager:
     invocation_context = Mock()
     invocation_context.credential_service = credential_service
 
-    callback_context = Mock()
-    callback_context._invocation_context = invocation_context
-    callback_context.save_credential = AsyncMock()
+    tool_context = Mock()
+    tool_context._invocation_context = invocation_context
+    tool_context.save_credential = AsyncMock()
 
     manager = CredentialManager(auth_config)
-    await manager._save_credential(callback_context, mock_credential)
+    await manager._save_credential(tool_context, mock_credential)
 
-    callback_context.save_credential.assert_called_once_with(auth_config)
+    tool_context.save_credential.assert_called_once_with(auth_config)
     assert auth_config.exchanged_auth_credential == mock_credential
 
   @pytest.mark.asyncio
@@ -256,11 +254,11 @@ class TestCredentialManager:
     invocation_context = Mock()
     invocation_context.credential_service = None
 
-    callback_context = Mock()
-    callback_context._invocation_context = invocation_context
+    tool_context = Mock()
+    tool_context._invocation_context = invocation_context
 
     manager = CredentialManager(auth_config)
-    await manager._save_credential(callback_context, mock_credential)
+    await manager._save_credential(tool_context, mock_credential)
 
     # Should not raise an error, and credential should be set in auth_config
     # even when there's no credential service (config is updated regardless)

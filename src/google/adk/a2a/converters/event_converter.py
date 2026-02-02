@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -131,6 +131,7 @@ def _get_context_metadata(
         _get_adk_metadata_key("session_id"): invocation_context.session.id,
         _get_adk_metadata_key("invocation_id"): event.invocation_id,
         _get_adk_metadata_key("author"): event.author,
+        _get_adk_metadata_key("event_id"): event.id,
     }
 
     # Add optional metadata fields if present
@@ -478,7 +479,6 @@ def _create_status_update_event(
     event: The ADK event.
     task_id: Optional task ID to use for generated events.
     context_id: Optional Context ID to use for generated events.
-
 
   Returns:
     A TaskStatusUpdateEvent with RUNNING state.

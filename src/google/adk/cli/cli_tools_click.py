@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -50,28 +50,44 @@ LOG_LEVELS = click.Choice(
 )
 
 
-def _apply_feature_overrides(enable_features: tuple[str, ...]) -> None:
+def _apply_feature_overrides(
+    *,
+    enable_features: tuple[str, ...] = (),
+    disable_features: tuple[str, ...] = (),
+) -> None:
   """Apply feature overrides from CLI flags.
 
   Args:
     enable_features: Tuple of feature names to enable.
+    disable_features: Tuple of feature names to disable.
   """
+  feature_overrides: dict[str, bool] = {}
+
   for features_str in enable_features:
     for feature_name_str in features_str.split(","):
       feature_name_str = feature_name_str.strip()
-      if not feature_name_str:
-        continue
-      try:
-        feature_name = FeatureName(feature_name_str)
-        override_feature_enabled(feature_name, True)
-      except ValueError:
-        valid_names = ", ".join(f.value for f in FeatureName)
-        click.secho(
-            f"WARNING: Unknown feature name '{feature_name_str}'. "
-            f"Valid names are: {valid_names}",
-            fg="yellow",
-            err=True,
-        )
+      if feature_name_str:
+        feature_overrides[feature_name_str] = True
+
+  for features_str in disable_features:
+    for feature_name_str in features_str.split(","):
+      feature_name_str = feature_name_str.strip()
+      if feature_name_str:
+        feature_overrides[feature_name_str] = False
+
+  # Apply all overrides
+  for feature_name_str, enabled in feature_overrides.items():
+    try:
+      feature_name = FeatureName(feature_name_str)
+      override_feature_enabled(feature_name, enabled)
+    except ValueError:
+      valid_names = ", ".join(f.value for f in FeatureName)
+      click.secho(
+          f"WARNING: Unknown feature name '{feature_name_str}'. "
+          f"Valid names are: {valid_names}",
+          fg="yellow",
+          err=True,
+      )
 
 
 def feature_options():
@@ -88,11 +104,25 @@ def feature_options():
         ),
         multiple=True,
     )
+    @click.option(
+        "--disable_features",
+        help=(
+            "Optional. Comma-separated list of feature names to disable. "
+            "This provides an alternative to environment variables for "
+            "disabling features. Example: "
+            "--disable_features=JSON_SCHEMA_FOR_FUNC_DECL,PROGRESSIVE_SSE_STREAMING"
+        ),
+        multiple=True,
+    )
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
       enable_features = kwargs.pop("enable_features", ())
-      if enable_features:
-        _apply_feature_overrides(enable_features)
+      disable_features = kwargs.pop("disable_features", ())
+      if enable_features or disable_features:
+        _apply_feature_overrides(
+            enable_features=enable_features,
+            disable_features=disable_features,
+        )
       return func(*args, **kwargs)
 
     return wrapper
@@ -1269,7 +1299,7 @@ def cli_web(
 ):
   """Starts a FastAPI server with Web UI for agents.
 
-  AGENTS_DIR: The directory of agents, where each sub-directory is a single
+  AGENTS_DIR: The directory of agents, where each subdirectory is a single
   agent, containing at least `__init__.py` and `agent.py` files.
 
   Example:
@@ -1336,7 +1366,7 @@ def cli_web(
 
 @main.command("api_server")
 @feature_options()
-# The directory of agents, where each sub-directory is a single agent.
+# The directory of agents, where each subdirectory is a single agent.
 # By default, it is the current working directory
 @click.argument(
     "agents_dir",
@@ -1371,7 +1401,7 @@ def cli_api_server(
 ):
   """Starts a FastAPI server for agents.
 
-  AGENTS_DIR: The directory of agents, where each sub-directory is a single
+  AGENTS_DIR: The directory of agents, where each subdirectory is a single
   agent, containing at least `__init__.py` and `agent.py` files.
 
   Example:
@@ -1752,6 +1782,14 @@ def cli_migrate_session(
     help="Optional. Whether to enable Cloud Trace for Agent Engine.",
 )
 @click.option(
+    "--otel_to_cloud",
+    type=bool,
+    is_flag=True,
+    show_default=True,
+    default=None,
+    help="Optional. Whether to enable OpenTelemetry for Agent Engine.",
+)
+@click.option(
     "--display_name",
     type=str,
     show_default=True,
@@ -1829,6 +1867,25 @@ def cli_migrate_session(
         " directory, if any.)"
     ),
 )
+@click.option(
+    "--validate-agent-import/--no-validate-agent-import",
+    default=False,
+    help=(
+        "Optional. Validate that the agent module can be imported before"
+        " deployment. This requires your local environment to have the same"
+        " dependencies as the deployment environment. (default: disabled)"
+    ),
+)
+@click.option(
+    "--skip-agent-import-validation",
+    "skip_agent_import_validation_alias",
+    is_flag=True,
+    default=False,
+    help=(
+        "Optional. Skip pre-deployment import validation of `agent.py`. This is"
+        " the default; use --validate-agent-import to enable validation."
+    ),
+)
 @click.argument(
     "agent",
     type=click.Path(
@@ -1842,6 +1899,7 @@ def cli_deploy_agent_engine(
     staging_bucket: Optional[str],
     agent_engine_id: Optional[str],
     trace_to_cloud: Optional[bool],
+    otel_to_cloud: Optional[bool],
     api_key: Optional[str],
     display_name: str,
     description: str,
@@ -1852,6 +1910,8 @@ def cli_deploy_agent_engine(
     requirements_file: str,
     absolutize_imports: bool,
     agent_engine_config_file: str,
+    validate_agent_import: bool = False,
+    skip_agent_import_validation_alias: bool = False,
 ):
   """Deploys an agent to Agent Engine.
 
@@ -1866,12 +1926,18 @@ def cli_deploy_agent_engine(
   """
   logging.getLogger("vertexai_genai.agentengines").setLevel(logging.INFO)
   try:
+    if validate_agent_import and skip_agent_import_validation_alias:
+      raise click.UsageError(
+          "Do not pass both --validate-agent-import and"
+          " --skip-agent-import-validation."
+      )
     cli_deploy.to_agent_engine(
         agent_folder=agent,
         project=project,
         region=region,
         agent_engine_id=agent_engine_id,
         trace_to_cloud=trace_to_cloud,
+        otel_to_cloud=otel_to_cloud,
         api_key=api_key,
         adk_app_object=adk_app_object,
         display_name=display_name,
@@ -1882,6 +1948,7 @@ def cli_deploy_agent_engine(
         requirements_file=requirements_file,
         absolutize_imports=absolutize_imports,
         agent_engine_config_file=agent_engine_config_file,
+        skip_agent_import_validation=not validate_agent_import,
     )
   except Exception as e:
     click.secho(f"Deploy failed: {e}", fg="red", err=True)
