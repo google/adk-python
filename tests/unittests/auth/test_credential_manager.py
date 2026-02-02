@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import copy
 from unittest.mock import ANY
 from unittest.mock import AsyncMock
 from unittest.mock import Mock
@@ -36,14 +37,48 @@ from google.adk.tools.openapi_tool.auth.credential_exchangers.service_account_ex
 import pytest
 
 
+def deepcopy_auth_config_mock(m):
+    """Deep copy helper for AuthConfig mock."""
+    new_m = Mock(spec=AuthConfig)
+    
+    # Copy attributes if they have been accessed/set on the original mock
+    # We focus on the ones used in tests
+    # Use shallow copy for Mocks to preserve identity for assertions
+    # Use deep copy for real objects to simulate correct behavior
+    
+    if hasattr(m, "auth_scheme"):
+         val = m.auth_scheme
+         if isinstance(val, Mock):
+             new_m.auth_scheme = val
+         else:
+             new_m.auth_scheme = copy.deepcopy(val)
+    
+    if hasattr(m, "raw_auth_credential"):
+         val = m.raw_auth_credential
+         if isinstance(val, Mock):
+             new_m.raw_auth_credential = val
+         else:
+             new_m.raw_auth_credential = copy.deepcopy(val)
+    else:
+         # Set default to None to avoid AttributeError if spec doesn't expose it
+         new_m.raw_auth_credential = None
+         
+    if hasattr(m, "exchanged_auth_credential"):
+         val = m.exchanged_auth_credential
+         if isinstance(val, Mock):
+             new_m.exchanged_auth_credential = val
+         else:
+             new_m.exchanged_auth_credential = copy.deepcopy(val)
+    else:
+         new_m.exchanged_auth_credential = None
+         
+    new_m.model_copy.side_effect = lambda **kwargs: deepcopy_auth_config_mock(new_m)
+    return new_m
+
 def create_auth_config_mock():
-  """Creates a mock AuthConfig that returns itself on model_copy."""
-  # We remove spec=AuthConfig because accessing Pydantic fields on a spec-ed mock
-  # can fail if they are not seen as class attributes or if we need dynamic attributes.
-  m = Mock()
-  m.spec = AuthConfig  # Optional: if we want isinstance to work, but Mock(spec=X) enforces attributes.
-  # Let's just use a plain Mock and configure what we need.
-  m.model_copy.side_effect = lambda **kwargs: m
+  """Creates a mock AuthConfig that returns a deep copy on model_copy."""
+  m = Mock(spec=AuthConfig)
+  m.model_copy.side_effect = lambda **kwargs: deepcopy_auth_config_mock(m)
   return m
 
 
@@ -54,7 +89,7 @@ class TestCredentialManager:
     """Test CredentialManager initialization."""
     auth_config = create_auth_config_mock()
     manager = CredentialManager(auth_config)
-    assert manager._auth_config == auth_config
+    assert manager._auth_config is not auth_config
 
   @pytest.mark.asyncio
   async def test_request_credential(self):
@@ -66,7 +101,7 @@ class TestCredentialManager:
     manager = CredentialManager(auth_config)
     await manager.request_credential(tool_context)
 
-    tool_context.request_credential.assert_called_once_with(auth_config)
+    tool_context.request_credential.assert_called_once_with(manager._auth_config)
 
   @pytest.mark.asyncio
   async def test_load_auth_credentials_success(self):
@@ -200,7 +235,7 @@ class TestCredentialManager:
     manager = CredentialManager(auth_config)
     result = await manager._load_from_credential_service(tool_context)
 
-    tool_context.load_credential.assert_called_once_with(auth_config)
+    tool_context.load_credential.assert_called_once_with(manager._auth_config)
     assert result == mock_credential
 
   @pytest.mark.asyncio
@@ -240,8 +275,8 @@ class TestCredentialManager:
     manager = CredentialManager(auth_config)
     await manager._save_credential(tool_context, mock_credential)
 
-    tool_context.save_credential.assert_called_once_with(auth_config)
-    assert auth_config.exchanged_auth_credential == mock_credential
+    tool_context.save_credential.assert_called_once_with(manager._auth_config)
+    assert manager._auth_config.exchanged_auth_credential == mock_credential
 
   @pytest.mark.asyncio
   async def test_save_credential_no_service(self):
@@ -262,7 +297,7 @@ class TestCredentialManager:
 
     # Should not raise an error, and credential should be set in auth_config
     # even when there's no credential service (config is updated regardless)
-    assert auth_config.exchanged_auth_credential == mock_credential
+    assert manager._auth_config.exchanged_auth_credential == mock_credential
 
   @pytest.mark.asyncio
   async def test_refresh_credential_oauth2(self):
@@ -591,11 +626,7 @@ class TestCredentialManager:
         )
     )
 
-    auth_config = create_auth_config_mock()
-    auth_config.auth_scheme = auth_scheme
-    auth_config.raw_auth_credential = None
-    auth_config.exchanged_auth_credential = None
-
+    auth_config = AuthConfig(auth_scheme=auth_scheme)
     manager = CredentialManager(auth_config)
 
     assert manager._is_client_credentials_flow() is True
@@ -616,11 +647,7 @@ class TestCredentialManager:
         )
     )
 
-    auth_config = create_auth_config_mock()
-    auth_config.auth_scheme = auth_scheme
-    auth_config.raw_auth_credential = None
-    auth_config.exchanged_auth_credential = None
-
+    auth_config = AuthConfig(auth_scheme=auth_scheme)
     manager = CredentialManager(auth_config)
 
     assert manager._is_client_credentials_flow() is False
@@ -636,11 +663,7 @@ class TestCredentialManager:
         grant_types_supported=["authorization_code", "client_credentials"],
     )
 
-    auth_config = create_auth_config_mock()
-    auth_config.auth_scheme = auth_scheme
-    auth_config.raw_auth_credential = None
-    auth_config.exchanged_auth_credential = None
-
+    auth_config = AuthConfig(auth_scheme=auth_scheme)
     manager = CredentialManager(auth_config)
 
     assert manager._is_client_credentials_flow() is True
@@ -656,11 +679,7 @@ class TestCredentialManager:
         grant_types_supported=["authorization_code"],
     )
 
-    auth_config = create_auth_config_mock()
-    auth_config.auth_scheme = auth_scheme
-    auth_config.raw_auth_credential = None
-    auth_config.exchanged_auth_credential = None
-
+    auth_config = AuthConfig(auth_scheme=auth_scheme)
     manager = CredentialManager(auth_config)
 
     assert manager._is_client_credentials_flow() is False
