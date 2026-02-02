@@ -369,14 +369,6 @@ class BaseLlmFlow(ABC):
       while True:
         async with Aclosing(llm_connection.receive()) as agen:
           async for llm_response in agen:
-            if llm_response.live_session_resumption_update:
-              logger.info(
-                  'Update session resumption handle:'
-                  f' {llm_response.live_session_resumption_update}.'
-              )
-              invocation_context.live_session_resumption_handle = (
-                  llm_response.live_session_resumption_update.new_handle
-              )
             model_response_event = Event(
                 id=Event.new_id(),
                 invocation_id=invocation_context.invocation_id,
@@ -742,6 +734,16 @@ class BaseLlmFlow(ABC):
     # Handle session resumption updates for cross-connection resumption.
     # Must be before skip condition - resumption updates have no content.
     if llm_response.live_session_resumption_update:
+      # Update internal handle for auto-resumption within run_live()
+      logger.info(
+          'Update session resumption handle: %s',
+          llm_response.live_session_resumption_update,
+      )
+      invocation_context.live_session_resumption_handle = (
+          llm_response.live_session_resumption_update.new_handle
+      )
+
+      # Expose update in event for application-level cross-connection resumption
       model_response_event.live_session_resumption_update = (
           llm_response.live_session_resumption_update
       )
