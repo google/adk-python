@@ -33,6 +33,11 @@ from .auth_tool import AuthToolArguments
 if TYPE_CHECKING:
   from ..agents.llm_agent import LlmAgent
 
+# Prefix used by toolset auth credential IDs.
+# Auth requests with this prefix are for toolset authentication (before tool
+# listing) and don't require resuming a function call.
+TOOLSET_AUTH_CREDENTIAL_ID_PREFIX = '_adk_toolset_auth_'
+
 
 class _AuthLlmRequestProcessor(BaseLlmRequestProcessor):
   """Handles auth information to build the LLM request."""
@@ -95,6 +100,11 @@ class _AuthLlmRequestProcessor(BaseLlmRequestProcessor):
         if function_call.id not in request_euc_function_call_ids:
           continue
         args = AuthToolArguments.model_validate(function_call.args)
+
+        # Skip toolset auth - auth response is already stored in session state
+        # and we don't need to resume a function call for toolsets
+        if args.function_call_id.startswith(TOOLSET_AUTH_CREDENTIAL_ID_PREFIX):
+          continue
 
         tools_to_resume.add(args.function_call_id)
       if not tools_to_resume:

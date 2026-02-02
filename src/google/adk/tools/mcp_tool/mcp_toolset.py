@@ -15,17 +15,23 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
 import logging
 import sys
+from typing import Any
+from typing import Awaitable
 from typing import Callable
 from typing import Dict
 from typing import List
 from typing import Optional
 from typing import TextIO
+from typing import TypeVar
 from typing import Union
 import warnings
 
 from mcp import StdioServerParameters
+from mcp.types import ListResourcesResult
 from mcp.types import ListToolsResult
 from pydantic import model_validator
 from typing_extensions import override
@@ -33,6 +39,7 @@ from typing_extensions import override
 from ...agents.readonly_context import ReadonlyContext
 from ...auth.auth_credential import AuthCredential
 from ...auth.auth_schemes import AuthScheme
+from ...auth.auth_tool import AuthConfig
 from ..base_tool import BaseTool
 from ..base_toolset import BaseToolset
 from ..base_toolset import ToolPredicate
@@ -46,6 +53,9 @@ from .mcp_session_manager import StreamableHTTPConnectionParams
 from .mcp_tool import MCPTool
 
 logger = logging.getLogger("google_adk." + __name__)
+
+
+T = TypeVar("T")
 
 
 class McpToolset(BaseToolset):
@@ -139,6 +149,117 @@ class McpToolset(BaseToolset):
     self._auth_scheme = auth_scheme
     self._auth_credential = auth_credential
     self._require_confirmation = require_confirmation
+    # Store auth config as instance variable so ADK can populate
+    # exchanged_auth_credential in-place before calling get_tools()
+    self._auth_config: Optional[AuthConfig] = (
+        AuthConfig(
+            auth_scheme=auth_scheme,
+            raw_auth_credential=auth_credential,
+        )
+        if auth_scheme
+        else None
+    )
+
+  def _get_auth_headers(self) -> Optional[Dict[str, str]]:
+    """Build authentication headers from exchanged credential.
+
+    Returns:
+        Dictionary of auth headers, or None if no auth configured.
+    """
+    if not self._auth_config or not self._auth_config.exchanged_auth_credential:
+      return None
+
+    credential = self._auth_config.exchanged_auth_credential
+    headers: Optional[Dict[str, str]] = None
+
+    if credential.oauth2:
+      headers = {"Authorization": f"Bearer {credential.oauth2.access_token}"}
+    elif credential.http:
+      # Handle HTTP authentication schemes
+      if (
+          credential.http.scheme.lower() == "bearer"
+          and credential.http.credentials
+          and credential.http.credentials.token
+      ):
+        headers = {
+            "Authorization": f"Bearer {credential.http.credentials.token}"
+        }
+      elif credential.http.scheme.lower() == "basic":
+        # Handle basic auth
+        if (
+            credential.http.credentials
+            and credential.http.credentials.username
+            and credential.http.credentials.password
+        ):
+          credentials_str = (
+              f"{credential.http.credentials.username}"
+              f":{credential.http.credentials.password}"
+          )
+          encoded_credentials = base64.b64encode(
+              credentials_str.encode()
+          ).decode()
+          headers = {"Authorization": f"Basic {encoded_credentials}"}
+      elif credential.http.credentials and credential.http.credentials.token:
+        # Handle other HTTP schemes with token
+        headers = {
+            "Authorization": (
+                f"{credential.http.scheme} {credential.http.credentials.token}"
+            )
+        }
+    elif credential.api_key:
+      # For API key, use the auth scheme to determine header name
+      if self._auth_config.auth_scheme:
+        from fastapi.openapi.models import APIKeyIn
+
+        if hasattr(self._auth_config.auth_scheme, "in_"):
+          if self._auth_config.auth_scheme.in_ == APIKeyIn.header:
+            headers = {self._auth_config.auth_scheme.name: credential.api_key}
+          else:
+            logger.warning(
+                "McpToolset only supports header-based API key authentication."
+                " Configured location: %s",
+                self._auth_config.auth_scheme.in_,
+            )
+        else:
+          # Default to using scheme name as header
+          headers = {self._auth_config.auth_scheme.name: credential.api_key}
+
+    return headers
+
+  async def _execute_with_session(
+      self,
+      coroutine_func: Callable[[Any], Awaitable[T]],
+      error_message: str,
+      readonly_context: Optional[ReadonlyContext] = None,
+  ) -> T:
+    """Creates a session and executes a coroutine with it."""
+    headers: Dict[str, str] = {}
+
+    # Add headers from header_provider if available
+    if self._header_provider and readonly_context:
+      provider_headers = self._header_provider(readonly_context)
+      if provider_headers:
+        headers.update(provider_headers)
+
+    # Add auth headers from exchanged credential if available
+    auth_headers = self._get_auth_headers()
+    if auth_headers:
+      headers.update(auth_headers)
+
+    session = await self._mcp_session_manager.create_session(
+        headers=headers if headers else None
+    )
+    timeout_in_seconds = (
+        self._connection_params.timeout
+        if hasattr(self._connection_params, "timeout")
+        else None
+    )
+    try:
+      return await asyncio.wait_for(
+          coroutine_func(session), timeout=timeout_in_seconds
+      )
+    except Exception as e:
+      raise ConnectionError(f"{error_message}: {e}") from e
 
   @retry_on_errors
   async def get_tools(
@@ -154,26 +275,12 @@ class McpToolset(BaseToolset):
     Returns:
         List[BaseTool]: A list of tools available under the specified context.
     """
-    headers = (
-        self._header_provider(readonly_context)
-        if self._header_provider and readonly_context
-        else None
-    )
-    # Get session from session manager
-    session = await self._mcp_session_manager.create_session(headers=headers)
-
     # Fetch available tools from the MCP server
-    timeout_in_seconds = (
-        self._connection_params.timeout
-        if hasattr(self._connection_params, "timeout")
-        else None
+    tools_response: ListToolsResult = await self._execute_with_session(
+        lambda session: session.list_tools(),
+        "Failed to get tools from MCP server",
+        readonly_context,
     )
-    try:
-      tools_response: ListToolsResult = await asyncio.wait_for(
-          session.list_tools(), timeout=timeout_in_seconds
-      )
-    except Exception as e:
-      raise ConnectionError("Failed to get tools from MCP server.") from e
 
     # Apply filtering based on context and tool_filter
     tools = []
@@ -191,6 +298,54 @@ class McpToolset(BaseToolset):
         tools.append(mcp_tool)
     return tools
 
+  async def read_resource(
+      self, name: str, readonly_context: Optional[ReadonlyContext] = None
+  ) -> Any:
+    """Fetches and returns a list of contents of the named resource.
+
+    Args:
+      name: The name of the resource to fetch.
+      readonly_context: Context used to provide headers for the MCP session.
+
+    Returns:
+      List of contents of the resource.
+    """
+    resource_info = await self.get_resource_info(name, readonly_context)
+    if "uri" not in resource_info:
+      raise ValueError(f"Resource '{name}' has no URI.")
+
+    result: Any = await self._execute_with_session(
+        lambda session: session.read_resource(uri=resource_info["uri"]),
+        f"Failed to get resource {name} from MCP server",
+        readonly_context,
+    )
+    return result.contents
+
+  async def list_resources(
+      self, readonly_context: Optional[ReadonlyContext] = None
+  ) -> list[str]:
+    """Returns a list of resource names available on the MCP server."""
+    result: ListResourcesResult = await self._execute_with_session(
+        lambda session: session.list_resources(),
+        "Failed to list resources from MCP server",
+        readonly_context,
+    )
+    return [resource.name for resource in result.resources]
+
+  async def get_resource_info(
+      self, name: str, readonly_context: Optional[ReadonlyContext] = None
+  ) -> dict[str, Any]:
+    """Returns metadata about a specific resource (name, MIME type, etc.)."""
+    result: ListResourcesResult = await self._execute_with_session(
+        lambda session: session.list_resources(),
+        "Failed to list resources from MCP server",
+        readonly_context,
+    )
+    for resource in result.resources:
+      if resource.name == name:
+        return resource.model_dump(mode="json", exclude_none=True)
+    raise ValueError(f"Resource with name '{name}' not found.")
+
   async def close(self) -> None:
     """Performs cleanup and releases resources held by the toolset.
 
@@ -203,6 +358,16 @@ class McpToolset(BaseToolset):
     except Exception as e:
       # Log the error but don't re-raise to avoid blocking shutdown
       print(f"Warning: Error during McpToolset cleanup: {e}", file=self._errlog)
+
+  @override
+  def get_auth_config(self) -> Optional[AuthConfig]:
+    """Returns the auth config for this toolset.
+
+    ADK will populate exchanged_auth_credential on this config before calling
+    get_tools(). The toolset can then access the ready-to-use credential via
+    self._auth_config.exchanged_auth_credential.
+    """
+    return self._auth_config
 
   @override
   @classmethod

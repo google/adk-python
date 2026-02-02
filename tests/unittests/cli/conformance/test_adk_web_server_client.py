@@ -225,6 +225,44 @@ async def test_run_agent():
 
 
 @pytest.mark.asyncio
+async def test_run_agent_raises_on_streamed_error():
+  client = AdkWebServerClient()
+
+  class MockStreamResponse:
+
+    def raise_for_status(self):
+      pass
+
+    async def aiter_lines(self):
+      yield 'data: {"error": "boom"}'
+
+    async def __aenter__(self):
+      return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+      pass
+
+  def mock_stream(*_args, **_kwargs):
+    return MockStreamResponse()
+
+  with patch("httpx.AsyncClient") as mock_client_class:
+    mock_client = AsyncMock()
+    mock_client.stream = mock_stream
+    mock_client_class.return_value = mock_client
+
+    request = RunAgentRequest(
+        app_name="test_app",
+        user_id="test_user",
+        session_id="test_session",
+        new_message=types.Content(role="user", parts=[types.Part(text="Hi")]),
+    )
+
+    with pytest.raises(RuntimeError, match="boom"):
+      async for _ in client.run_agent(request):
+        pass
+
+
+@pytest.mark.asyncio
 async def test_close():
   client = AdkWebServerClient()
 
