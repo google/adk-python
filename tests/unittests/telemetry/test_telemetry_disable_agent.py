@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import contextlib
 from unittest import mock
 
 from google.adk.agents.llm_agent import Agent
@@ -35,6 +36,12 @@ async def test_disable_telemetry_prevents_span_creation(monkeypatch):
 
   mock_start = mock.Mock(return_value=context_manager)
   monkeypatch.setattr(tracing.tracer, "start_as_current_span", mock_start)
+  mock_use_generate_content_span = mock.Mock(
+      return_value=contextlib.nullcontext(None)
+  )
+  monkeypatch.setattr(
+      tracing, "use_generate_content_span", mock_use_generate_content_span
+  )
 
   agent = Agent(
       name="agent",
@@ -49,6 +56,7 @@ async def test_disable_telemetry_prevents_span_creation(monkeypatch):
       pass
 
   assert mock_start.call_count == 0
+  assert mock_use_generate_content_span.call_count == 0
 
 
 @pytest.mark.asyncio
@@ -62,6 +70,12 @@ async def test_enabled_telemetry_causes_span_creation(monkeypatch):
 
   mock_start = mock.Mock(return_value=context_manager)
   monkeypatch.setattr(tracing.tracer, "start_as_current_span", mock_start)
+  mock_use_generate_content_span = mock.Mock(
+      return_value=contextlib.nullcontext(None)
+  )
+  monkeypatch.setattr(
+      tracing, "use_generate_content_span", mock_use_generate_content_span
+  )
 
   agent = Agent(
       name="agent",
@@ -76,6 +90,7 @@ async def test_enabled_telemetry_causes_span_creation(monkeypatch):
       pass
 
   assert mock_start.call_count > 0
+  assert mock_use_generate_content_span.call_count > 0
 
 
 @pytest.mark.asyncio

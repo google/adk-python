@@ -1177,9 +1177,12 @@ class BaseLlmFlow(ABC):
 
     try:
       async with Aclosing(response_generator) as agen:
-        with tracing.use_generate_content_span(
-            llm_request, invocation_context, model_response_event
-        ) as span:
+        span_context = contextlib.nullcontext(None)
+        if is_telemetry_enabled(invocation_context.agent):
+          span_context = tracing.use_generate_content_span(
+              llm_request, invocation_context, model_response_event
+          )
+        with span_context as span:
           async for llm_response in agen:
             tracing.trace_generate_content_result(span, llm_response)
             yield llm_response
