@@ -12,21 +12,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .app import App
-from .app import ResumabilityConfig
+"""Durable session persistence module for ADK.
 
+This module provides checkpoint-based durability for long-running agent
+invocations, enabling recovery from failures and migration across hosts.
+"""
 
-# Lazy import for DurableSessionConfig to avoid circular imports
-def __getattr__(name: str):
-  if name == 'DurableSessionConfig':
-    from ..durable.config import DurableSessionConfig
-
-    return DurableSessionConfig
-  raise AttributeError(f'module {__name__!r} has no attribute {name!r}')
-
+from .checkpointable_state import CheckpointableAgentState
+from .config import DurableSessionConfig
+from .stores import BigQueryCheckpointStore
+from .stores import DurableSessionStore
+from .workspace_snapshotter import WorkspaceSnapshotter
 
 __all__ = [
-    'App',
-    'ResumabilityConfig',
-    'DurableSessionConfig',
+    "CheckpointableAgentState",
+    "DurableSessionConfig",
+    "DurableSessionStore",
+    "BigQueryCheckpointStore",
+    "WorkspaceSnapshotter",
 ]

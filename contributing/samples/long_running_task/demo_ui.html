@@ -1,0 +1,832 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ADK Durable Session Demo - Real Checkpoint Visualization</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @keyframes pulse-green {
+            0%, 100% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.7); }
+            50% { box-shadow: 0 0 0 10px rgba(34, 197, 94, 0); }
+        }
+        @keyframes pulse-red {
+            0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7); }
+            50% { box-shadow: 0 0 0 10px rgba(239, 68, 68, 0); }
+        }
+        @keyframes spin-slow {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+        .checkpoint-pulse { animation: pulse-green 1s ease-in-out; }
+        .failure-pulse { animation: pulse-red 0.5s ease-in-out 3; }
+        .spin-slow { animation: spin-slow 3s linear infinite; }
+        .task-card:hover { transform: translateY(-2px); }
+    </style>
+</head>
+<body class="bg-gray-900 text-white min-h-screen">
+    <div class="container mx-auto px-4 py-8 max-w-7xl">
+        <!-- Header -->
+        <div class="text-center mb-8">
+            <h1 class="text-4xl font-bold mb-2 bg-gradient-to-r from-blue-400 via-purple-500 to-pink-500 bg-clip-text text-transparent">
+                ADK Durable Session Demo
+            </h1>
+            <p class="text-gray-400 mb-2">Real Checkpoint-Based Persistence for Long-Running Agent Tasks</p>
+            <div class="inline-flex items-center gap-2 px-4 py-2 bg-green-900/50 rounded-full border border-green-700 text-sm">
+                <span class="w-2 h-2 bg-green-500 rounded-full animate-pulse"></span>
+                <span class="text-green-400">All tasks are REAL - Writing to BigQuery & GCS</span>
+            </div>
+        </div>
+
+        <!-- Real Infrastructure Banner -->
+        <div class="mb-6 p-4 bg-gradient-to-r from-blue-900/50 to-purple-900/50 rounded-xl border border-blue-700">
+            <div class="flex items-center justify-center gap-8 flex-wrap">
+                <div class="flex items-center gap-2">
+                    <span class="text-2xl">🗄️</span>
+                    <div>
+                        <div class="font-semibold text-blue-400">BigQuery</div>
+                        <div class="text-xs text-gray-400">test-project-0728-467323.adk_metadata</div>
+                    </div>
+                </div>
+                <div class="flex items-center gap-2">
+                    <span class="text-2xl">☁️</span>
+                    <div>
+                        <div class="font-semibold text-purple-400">Cloud Storage</div>
+                        <div class="text-xs text-gray-400">gs://test-project-0728-467323-adk-checkpoints</div>
+                    </div>
+                </div>
+                <div class="flex items-center gap-2">
+                    <span class="text-2xl">🔐</span>
+                    <div>
+                        <div class="font-semibold text-green-400">SHA-256 Verified</div>
+                        <div class="text-xs text-gray-400">Checkpoint integrity guaranteed</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Main Grid -->
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+
+            <!-- Left Panel: Task Selection -->
+            <div class="bg-gray-800 rounded-xl p-6">
+                <h2 class="text-xl font-semibold mb-4 flex items-center">
+                    <span class="text-2xl mr-2">🎯</span> Choose a Real Task
+                </h2>
+                <p class="text-sm text-gray-400 mb-4">Each task simulates a real long-running data processing job with actual checkpoints saved to GCP.</p>
+
+                <!-- Task Cards -->
+                <div class="space-y-3 mb-6">
+                    <div class="task-card p-4 bg-gray-700 rounded-lg border-2 border-transparent hover:border-blue-500 cursor-pointer transition-all"
+                         onclick="selectTask('sentiment')" id="task-sentiment">
+                        <div class="flex items-start gap-3">
+                            <span class="text-2xl">😊</span>
+                            <div class="flex-1">
+                                <div class="font-semibold text-blue-400">Sentiment Analysis</div>
+                                <div class="text-xs text-gray-400 mt-1">Analyzes text data to determine emotional tone. Processes customer reviews, social media posts, and feedback.</div>
+                                <div class="text-xs text-gray-500 mt-2">Output: Positive/Negative ratios, key themes, trend analysis</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="task-card p-4 bg-gray-700 rounded-lg border-2 border-transparent hover:border-orange-500 cursor-pointer transition-all"
+                         onclick="selectTask('anomaly')" id="task-anomaly">
+                        <div class="flex items-start gap-3">
+                            <span class="text-2xl">🔍</span>
+                            <div class="flex-1">
+                                <div class="font-semibold text-orange-400">Anomaly Detection</div>
+                                <div class="text-xs text-gray-400 mt-1">Scans datasets for unusual patterns and outliers. Identifies potential fraud, system errors, or data quality issues.</div>
+                                <div class="text-xs text-gray-500 mt-2">Output: Anomaly count, severity levels, root cause hints</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="task-card p-4 bg-gray-700 rounded-lg border-2 border-transparent hover:border-green-500 cursor-pointer transition-all"
+                         onclick="selectTask('trend')" id="task-trend">
+                        <div class="flex items-start gap-3">
+                            <span class="text-2xl">📈</span>
+                            <div class="flex-1">
+                                <div class="font-semibold text-green-400">Trend Analysis</div>
+                                <div class="text-xs text-gray-400 mt-1">Identifies patterns and trends over time. Forecasts future values based on historical data.</div>
+                                <div class="text-xs text-gray-500 mt-2">Output: Growth rates, seasonal patterns, forecasts</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="task-card p-4 bg-gray-700 rounded-lg border-2 border-transparent hover:border-purple-500 cursor-pointer transition-all"
+                         onclick="selectTask('clustering')" id="task-clustering">
+                        <div class="flex items-start gap-3">
+                            <span class="text-2xl">🎨</span>
+                            <div class="flex-1">
+                                <div class="font-semibold text-purple-400">Data Clustering</div>
+                                <div class="text-xs text-gray-400 mt-1">Groups similar data points together. Segments customers, categorizes content, identifies patterns.</div>
+                                <div class="text-xs text-gray-500 mt-2">Output: Cluster count, segment profiles, separation metrics</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Duration Slider -->
+                <div class="mb-4">
+                    <label class="block text-sm text-gray-400 mb-2">Task Duration</label>
+                    <div class="flex items-center gap-3">
+                        <input type="range" id="duration" min="30" max="120" value="60"
+                            class="flex-1 h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer"
+                            oninput="updateDurationLabel()">
+                        <span id="duration-label" class="text-sm font-mono bg-gray-700 px-2 py-1 rounded">60s</span>
+                    </div>
+                    <div class="text-xs text-gray-500 mt-1">Checkpoints saved every 10 seconds</div>
+                </div>
+
+                <!-- Start Button -->
+                <button onclick="startTask()" id="start-btn"
+                    class="w-full bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700 px-4 py-3 rounded-lg font-semibold transition flex items-center justify-center">
+                    <span class="mr-2">▶️</span> Start Real Task
+                </button>
+
+                <p class="text-xs text-center text-gray-500 mt-2">Task will create real checkpoints in BigQuery & GCS</p>
+            </div>
+
+            <!-- Middle Panel: Live Task Monitor -->
+            <div class="bg-gray-800 rounded-xl p-6">
+                <h2 class="text-xl font-semibold mb-4 flex items-center">
+                    <span class="text-2xl mr-2">📊</span> Live Task Monitor
+                </h2>
+
+                <!-- Current Task Info -->
+                <div id="task-info-idle" class="text-center py-8 text-gray-500">
+                    <span class="text-4xl">⏸️</span>
+                    <p class="mt-2">No task running</p>
+                    <p class="text-sm">Select a task and click Start</p>
+                </div>
+
+                <div id="task-info-running" class="hidden">
+                    <!-- Task Header -->
+                    <div id="current-task-header" class="p-4 bg-gray-900 rounded-lg mb-4">
+                        <div class="flex items-center gap-3">
+                            <span id="current-task-icon" class="text-3xl spin-slow">⚙️</span>
+                            <div>
+                                <div id="current-task-name" class="font-semibold text-lg">Task Name</div>
+                                <div id="current-task-desc" class="text-xs text-gray-400">Description</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Session Info -->
+                    <div class="mb-4 p-3 bg-gray-900 rounded-lg text-sm">
+                        <div class="flex justify-between">
+                            <span class="text-gray-400">Session ID:</span>
+                            <span id="session-id" class="font-mono text-blue-400">-</span>
+                        </div>
+                        <div class="flex justify-between mt-1">
+                            <span class="text-gray-400">Status:</span>
+                            <span id="task-status" class="font-semibold">-</span>
+                        </div>
+                        <div class="flex justify-between mt-1">
+                            <span class="text-gray-400">Checkpoints:</span>
+                            <span id="checkpoint-count" class="font-semibold text-green-400">0</span>
+                        </div>
+                    </div>
+
+                    <!-- Progress Bar -->
+                    <div class="mb-4">
+                        <div class="flex justify-between text-sm mb-1">
+                            <span>Processing Progress</span>
+                            <span id="progress-text">0%</span>
+                        </div>
+                        <div class="w-full bg-gray-700 rounded-full h-4 overflow-hidden">
+                            <div id="progress-bar" class="bg-gradient-to-r from-blue-500 via-purple-500 to-pink-500 h-4 rounded-full transition-all duration-500 relative" style="width: 0%">
+                                <div class="absolute inset-0 bg-white/20 animate-pulse"></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Real-time Metrics -->
+                    <div class="grid grid-cols-2 gap-3 mb-4">
+                        <div class="p-3 bg-gray-900 rounded-lg text-center">
+                            <div id="records-count" class="text-2xl font-bold text-blue-400">0</div>
+                            <div class="text-xs text-gray-400">Records Processed</div>
+                        </div>
+                        <div class="p-3 bg-gray-900 rounded-lg text-center">
+                            <div id="insights-count" class="text-2xl font-bold text-green-400">0</div>
+                            <div class="text-xs text-gray-400">Insights Found</div>
+                        </div>
+                    </div>
+
+                    <!-- Last Checkpoint Detail -->
+                    <div id="last-checkpoint-box" class="p-4 bg-green-900/30 rounded-lg border border-green-800 hidden">
+                        <h3 class="font-semibold mb-2 text-green-400 flex items-center">
+                            <span class="mr-2">💾</span> Latest Checkpoint Saved
+                        </h3>
+                        <div class="text-sm space-y-1">
+                            <div class="flex justify-between">
+                                <span class="text-gray-400">Checkpoint #:</span>
+                                <span id="last-cp-seq" class="font-mono font-bold">-</span>
+                            </div>
+                            <div class="flex justify-between">
+                                <span class="text-gray-400">Progress Saved:</span>
+                                <span id="last-cp-progress" class="text-green-400">-</span>
+                            </div>
+                            <div class="flex justify-between">
+                                <span class="text-gray-400">Saved At:</span>
+                                <span id="last-cp-time" class="text-xs">-</span>
+                            </div>
+                            <div class="flex justify-between">
+                                <span class="text-gray-400">Storage:</span>
+                                <span class="text-xs text-blue-400">BigQuery + GCS</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Action Buttons -->
+                <div class="mt-4 space-y-3">
+                    <!-- Simulate Failure -->
+                    <div class="p-4 bg-red-900/30 rounded-lg border border-red-800">
+                        <h3 class="font-semibold mb-1 text-red-400 flex items-center">
+                            <span class="mr-2">💥</span> Simulate Crash
+                        </h3>
+                        <p class="text-xs text-gray-400 mb-2">Simulate a server crash to test checkpoint recovery. The task state is safely stored!</p>
+                        <button onclick="simulateFailure()" id="fail-btn" disabled
+                            class="w-full bg-red-600 hover:bg-red-700 disabled:bg-gray-600 disabled:cursor-not-allowed px-4 py-2 rounded-lg font-semibold transition">
+                            Crash Task Now
+                        </button>
+                    </div>
+
+                    <!-- Resume from Checkpoint -->
+                    <div id="resume-section" class="p-4 bg-blue-900/30 rounded-lg border border-blue-800 hidden">
+                        <h3 class="font-semibold mb-1 text-blue-400 flex items-center">
+                            <span class="mr-2">🔄</span> Recovery Available
+                        </h3>
+                        <p class="text-xs text-gray-400 mb-2">Task crashed but checkpoint was saved! Click below to resume from last checkpoint.</p>
+                        <button onclick="resumeTask()" id="resume-btn"
+                            class="w-full bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded-lg font-semibold transition">
+                            Resume from Checkpoint
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Alerts -->
+                <div id="failure-alert" class="p-4 bg-red-900/50 rounded-lg border-2 border-red-500 hidden mt-4 failure-pulse">
+                    <h3 class="font-semibold text-red-400 flex items-center">
+                        <span class="mr-2">💥</span> Task Crashed!
+                    </h3>
+                    <p class="text-sm text-gray-300 mt-1">Task failed at <span id="fail-progress" class="font-bold">0</span>% progress</p>
+                    <p class="text-sm text-green-400 mt-2 flex items-center">
+                        <span class="mr-1">✅</span> Don't worry! State was saved in checkpoint #<span id="fail-checkpoint">0</span>
+                    </p>
+                </div>
+
+                <div id="resumed-alert" class="p-4 bg-blue-900/50 rounded-lg border-2 border-blue-500 hidden mt-4">
+                    <h3 class="font-semibold text-blue-400 flex items-center">
+                        <span class="mr-2">🔄</span> Successfully Resumed!
+                    </h3>
+                    <p class="text-sm text-gray-300 mt-1">Recovered from checkpoint #<span id="resumed-cp" class="font-bold">0</span></p>
+                    <p class="text-sm text-green-400 mt-1">Continuing from <span id="resumed-progress">0</span>% progress</p>
+                </div>
+
+                <div id="completed-alert" class="p-4 bg-green-900/50 rounded-lg border-2 border-green-500 hidden mt-4">
+                    <h3 class="font-semibold text-green-400 flex items-center">
+                        <span class="mr-2">✅</span> Task Completed!
+                    </h3>
+                    <p class="text-sm text-gray-300 mt-1">Processed <span id="final-records">0</span> records</p>
+                    <p class="text-sm text-gray-300">Found <span id="final-insights">0</span> insights</p>
+                </div>
+
+                <!-- Final Output Section -->
+                <div id="final-output-section" class="hidden mt-4">
+                    <div class="p-5 bg-gradient-to-br from-green-900/40 to-blue-900/40 rounded-xl border border-green-700">
+                        <h3 id="final-output-title" class="text-lg font-bold text-green-400 mb-2 flex items-center">
+                            <span class="mr-2">📊</span> Analysis Results
+                        </h3>
+                        <p id="final-output-summary" class="text-sm text-gray-300 mb-4"></p>
+
+                        <!-- Results Grid -->
+                        <div id="final-output-results" class="grid grid-cols-2 gap-2 mb-4"></div>
+
+                        <!-- Key Findings -->
+                        <div class="mb-4">
+                            <h4 class="font-semibold text-blue-400 mb-2 flex items-center">
+                                <span class="mr-2">💡</span> Key Findings
+                            </h4>
+                            <ul id="final-output-findings" class="text-sm space-y-1"></ul>
+                        </div>
+
+                        <!-- Recommendation -->
+                        <div id="final-output-recommendation-box" class="p-3 bg-yellow-900/30 rounded-lg border border-yellow-700">
+                            <h4 class="font-semibold text-yellow-400 mb-1 flex items-center">
+                                <span class="mr-2">🎯</span> Recommendation
+                            </h4>
+                            <p id="final-output-recommendation" class="text-sm text-gray-300"></p>
+                        </div>
+
+                        <!-- Metadata -->
+                        <div class="mt-3 pt-3 border-t border-gray-700 text-xs text-gray-500">
+                            <span class="mr-4">Session: <span id="final-meta-session" class="font-mono text-blue-400"></span></span>
+                            <span class="mr-4">Checkpoints: <span id="final-meta-checkpoints" class="text-green-400"></span></span>
+                            <span>Completed: <span id="final-meta-time"></span></span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Right Panel: Checkpoint Timeline -->
+            <div class="bg-gray-800 rounded-xl p-6">
+                <h2 class="text-xl font-semibold mb-2 flex items-center">
+                    <span class="text-2xl mr-2">📍</span> Checkpoint Timeline
+                </h2>
+                <p class="text-xs text-gray-400 mb-4">Real checkpoints being written to BigQuery & GCS</p>
+
+                <div id="checkpoint-timeline" class="space-y-3 max-h-[500px] overflow-y-auto pr-2">
+                    <div class="text-center text-gray-500 py-8">
+                        <span class="text-4xl">📭</span>
+                        <p class="mt-2">No checkpoints yet</p>
+                        <p class="text-sm">Start a task to see real checkpoints appear</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- How It Works -->
+        <div class="mt-8 bg-gray-800 rounded-xl p-6">
+            <h2 class="text-xl font-semibold mb-4">🔧 How Durable Checkpointing Works</h2>
+
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-4 text-center">
+                <div class="p-4 bg-gray-900 rounded-lg">
+                    <div class="text-3xl mb-2">1️⃣</div>
+                    <div class="font-semibold text-blue-400">Task Runs</div>
+                    <div class="text-xs text-gray-400 mt-1">Long-running analysis processes data in chunks</div>
+                </div>
+
+                <div class="p-4 bg-gray-900 rounded-lg">
+                    <div class="text-3xl mb-2">2️⃣</div>
+                    <div class="font-semibold text-green-400">Checkpoint Created</div>
+                    <div class="text-xs text-gray-400 mt-1">Every 10s, state is serialized and compressed</div>
+                </div>
+
+                <div class="p-4 bg-gray-900 rounded-lg">
+                    <div class="text-3xl mb-2">3️⃣</div>
+                    <div class="font-semibold text-purple-400">Two-Phase Commit</div>
+                    <div class="text-xs text-gray-400 mt-1">Blob → GCS, then metadata → BigQuery</div>
+                </div>
+
+                <div class="p-4 bg-gray-900 rounded-lg">
+                    <div class="text-3xl mb-2">4️⃣</div>
+                    <div class="font-semibold text-orange-400">Recovery Ready</div>
+                    <div class="text-xs text-gray-400 mt-1">If crash occurs, resume from last checkpoint</div>
+                </div>
+            </div>
+
+            <div class="mt-6 p-4 bg-gray-900 rounded-lg">
+                <h3 class="font-semibold mb-2">📊 Verify in BigQuery</h3>
+                <pre class="text-xs bg-gray-800 p-3 rounded overflow-x-auto"><code>SELECT session_id, checkpoint_seq, created_at, trigger, size_bytes
+FROM `test-project-0728-467323.adk_metadata.checkpoints`
+ORDER BY created_at DESC LIMIT 10;</code></pre>
+            </div>
+        </div>
+
+        <!-- Sessions Table -->
+        <div class="mt-8 bg-gray-800 rounded-xl p-6">
+            <h2 class="text-xl font-semibold mb-4 flex items-center justify-between">
+                <span><span class="text-2xl mr-2">📋</span> Real Sessions in BigQuery</span>
+                <button onclick="loadSessions()" class="text-sm bg-gray-700 hover:bg-gray-600 px-3 py-1 rounded flex items-center gap-1">
+                    <span>🔄</span> Refresh
+                </button>
+            </h2>
+            <p class="text-sm text-gray-400 mb-4">These sessions are stored in BigQuery. Click "Select" to resume any failed session.</p>
+            <div class="overflow-x-auto">
+                <table class="w-full text-sm">
+                    <thead>
+                        <tr class="text-gray-400 border-b border-gray-700">
+                            <th class="text-left py-2 px-3">Session ID</th>
+                            <th class="text-left py-2 px-3">Status</th>
+                            <th class="text-left py-2 px-3">Checkpoints</th>
+                            <th class="text-left py-2 px-3">Last Updated</th>
+                            <th class="text-left py-2 px-3">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="sessions-table">
+                        <tr><td colspan="5" class="text-center py-4 text-gray-500">Loading from BigQuery...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = window.location.origin;
+        let currentSessionId = null;
+        let selectedTaskType = 'sentiment';
+        let pollInterval = null;
+
+        const taskInfo = {
+            sentiment: {
+                icon: '😊',
+                name: 'Sentiment Analysis',
+                desc: 'Analyzing text data for emotional tone and key themes',
+                color: 'blue'
+            },
+            anomaly: {
+                icon: '🔍',
+                name: 'Anomaly Detection',
+                desc: 'Scanning for unusual patterns and outliers in data',
+                color: 'orange'
+            },
+            trend: {
+                icon: '📈',
+                name: 'Trend Analysis',
+                desc: 'Identifying patterns and forecasting future values',
+                color: 'green'
+            },
+            clustering: {
+                icon: '🎨',
+                name: 'Data Clustering',
+                desc: 'Grouping similar data points and identifying segments',
+                color: 'purple'
+            }
+        };
+
+        function selectTask(type) {
+            selectedTaskType = type;
+            // Update UI
+            document.querySelectorAll('.task-card').forEach(card => {
+                card.classList.remove('border-blue-500', 'border-orange-500', 'border-green-500', 'border-purple-500');
+                card.classList.add('border-transparent');
+            });
+            const colors = { sentiment: 'blue', anomaly: 'orange', trend: 'green', clustering: 'purple' };
+            document.getElementById(`task-${type}`).classList.remove('border-transparent');
+            document.getElementById(`task-${type}`).classList.add(`border-${colors[type]}-500`);
+        }
+
+        function updateDurationLabel() {
+            const duration = document.getElementById('duration').value;
+            document.getElementById('duration-label').textContent = duration + 's';
+        }
+
+        async function startTask() {
+            const duration = parseInt(document.getElementById('duration').value);
+            const info = taskInfo[selectedTaskType];
+
+            try {
+                const response = await fetch(`${API_BASE}/api/task/start`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ task_type: selectedTaskType, duration_seconds: duration })
+                });
+
+                const data = await response.json();
+                currentSessionId = data.session_id;
+
+                // Update UI
+                document.getElementById('task-info-idle').classList.add('hidden');
+                document.getElementById('task-info-running').classList.remove('hidden');
+                document.getElementById('session-id').textContent = currentSessionId;
+                document.getElementById('current-task-icon').textContent = info.icon;
+                document.getElementById('current-task-name').textContent = info.name;
+                document.getElementById('current-task-name').className = `font-semibold text-lg text-${info.color}-400`;
+                document.getElementById('current-task-desc').textContent = info.desc;
+
+                document.getElementById('start-btn').disabled = true;
+                document.getElementById('fail-btn').disabled = false;
+                document.getElementById('resume-section').classList.add('hidden');
+                document.getElementById('failure-alert').classList.add('hidden');
+                document.getElementById('resumed-alert').classList.add('hidden');
+                document.getElementById('completed-alert').classList.add('hidden');
+                document.getElementById('last-checkpoint-box').classList.add('hidden');
+                document.getElementById('final-output-section').classList.add('hidden');
+
+                // Reset metrics
+                document.getElementById('progress-bar').style.width = '0%';
+                document.getElementById('progress-text').textContent = '0%';
+                document.getElementById('records-count').textContent = '0';
+                document.getElementById('insights-count').textContent = '0';
+                document.getElementById('checkpoint-count').textContent = '0';
+
+                // Clear timeline
+                document.getElementById('checkpoint-timeline').innerHTML = `
+                    <div class="text-center text-gray-400 py-4">
+                        <span class="animate-pulse text-2xl">⏳</span>
+                        <p class="mt-2">Task started...</p>
+                        <p class="text-xs">First checkpoint in ~10 seconds</p>
+                    </div>
+                `;
+
+                startPolling();
+                loadSessions();
+
+            } catch (error) {
+                alert('Failed to start task: ' + error.message);
+            }
+        }
+
+        async function simulateFailure() {
+            if (!currentSessionId) return;
+
+            try {
+                await fetch(`${API_BASE}/api/task/fail/${currentSessionId}`, { method: 'POST' });
+                document.getElementById('fail-btn').disabled = true;
+            } catch (error) {
+                alert('Failed to trigger failure: ' + error.message);
+            }
+        }
+
+        async function resumeTask() {
+            if (!currentSessionId) return;
+
+            try {
+                const response = await fetch(`${API_BASE}/api/task/resume`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ session_id: currentSessionId })
+                });
+
+                const data = await response.json();
+
+                // Show resumed alert
+                document.getElementById('resumed-alert').classList.remove('hidden');
+                document.getElementById('resumed-cp').textContent = data.resumed_from_checkpoint;
+                document.getElementById('resumed-progress').textContent = Math.round(data.progress);
+                document.getElementById('failure-alert').classList.add('hidden');
+                document.getElementById('resume-section').classList.add('hidden');
+
+                document.getElementById('fail-btn').disabled = false;
+
+                // Add resume marker to timeline
+                addTimelineEvent('resumed', `Recovered from checkpoint #${data.resumed_from_checkpoint}`, data.progress);
+
+                startPolling();
+
+            } catch (error) {
+                alert('Failed to resume task: ' + error.message);
+            }
+        }
+
+        async function pollStatus() {
+            if (!currentSessionId) return;
+
+            try {
+                const response = await fetch(`${API_BASE}/api/task/status/${currentSessionId}`);
+                const data = await response.json();
+
+                updateStatusUI(data);
+
+                if (data.status === 'completed' || data.status === 'failed') {
+                    stopPolling();
+                    document.getElementById('start-btn').disabled = false;
+                    document.getElementById('fail-btn').disabled = true;
+                    document.getElementById('current-task-icon').classList.remove('spin-slow');
+
+                    if (data.status === 'failed') {
+                        document.getElementById('resume-section').classList.remove('hidden');
+                        document.getElementById('failure-alert').classList.remove('hidden');
+                        document.getElementById('fail-progress').textContent = Math.round(data.progress);
+                        document.getElementById('fail-checkpoint').textContent = data.checkpoints?.length || 0;
+                        document.getElementById('final-output-section').classList.add('hidden');
+                        addTimelineEvent('failed', `Task crashed at ${Math.round(data.progress)}%`);
+                    } else if (data.status === 'completed') {
+                        document.getElementById('completed-alert').classList.remove('hidden');
+                        document.getElementById('final-records').textContent = (data.records_processed || 0).toLocaleString();
+                        document.getElementById('final-insights').textContent = data.insights_found || 0;
+                        addTimelineEvent('completed', 'Task completed successfully!');
+
+                        // Display final output
+                        if (data.final_output) {
+                            renderFinalOutput(data.final_output);
+                        }
+                    }
+
+                    loadSessions();
+                }
+
+            } catch (error) {
+                console.error('Poll error:', error);
+            }
+        }
+
+        function updateStatusUI(data) {
+            const statusEl = document.getElementById('task-status');
+            statusEl.textContent = data.status.charAt(0).toUpperCase() + data.status.slice(1);
+            statusEl.className = data.status === 'running' ? 'font-semibold text-green-400' :
+                                data.status === 'failed' ? 'font-semibold text-red-400' :
+                                data.status === 'completed' ? 'font-semibold text-blue-400' : 'font-semibold';
+
+            const progress = Math.round(data.progress || 0);
+            document.getElementById('progress-bar').style.width = `${progress}%`;
+            document.getElementById('progress-text').textContent = `${progress}%`;
+
+            document.getElementById('records-count').textContent = (data.records_processed || 0).toLocaleString();
+            document.getElementById('insights-count').textContent = data.insights_found || 0;
+
+            if (data.checkpoints && data.checkpoints.length > 0) {
+                document.getElementById('checkpoint-count').textContent = data.checkpoints.length;
+                const lastCp = data.checkpoints[data.checkpoints.length - 1];
+
+                document.getElementById('last-checkpoint-box').classList.remove('hidden');
+                document.getElementById('last-cp-seq').textContent = lastCp.seq;
+                document.getElementById('last-cp-progress').textContent = Math.round(lastCp.progress) + '%';
+                document.getElementById('last-cp-time').textContent = new Date(lastCp.time).toLocaleTimeString();
+
+                updateTimeline(data.checkpoints);
+            }
+        }
+
+        function updateTimeline(checkpoints) {
+            const timeline = document.getElementById('checkpoint-timeline');
+
+            const existingEvents = [];
+            timeline.querySelectorAll('.event-marker:not([data-checkpoint])').forEach(el => {
+                existingEvents.push(el.outerHTML);
+            });
+
+            let html = '';
+            checkpoints.forEach((cp, index) => {
+                const isLatest = index === checkpoints.length - 1;
+                html += `
+                    <div class="flex items-start gap-3 event-marker ${isLatest ? 'checkpoint-pulse' : ''}" data-checkpoint="true">
+                        <div class="flex flex-col items-center">
+                            <div class="w-5 h-5 bg-green-500 rounded-full flex items-center justify-center text-xs ${isLatest ? 'ring-4 ring-green-500/30' : ''}">
+                                ${cp.seq}
+                            </div>
+                            ${index < checkpoints.length - 1 ? '<div class="w-0.5 h-8 bg-gray-600"></div>' : ''}
+                        </div>
+                        <div class="flex-1 pb-4">
+                            <div class="flex justify-between items-start">
+                                <span class="font-semibold text-green-400">💾 Checkpoint #${cp.seq}</span>
+                                <span class="text-xs text-gray-500">${new Date(cp.time).toLocaleTimeString()}</span>
+                            </div>
+                            <div class="text-xs text-gray-400 mt-1">Progress: ${Math.round(cp.progress)}% saved</div>
+                            <div class="text-xs text-gray-500">→ BigQuery + GCS</div>
+                        </div>
+                    </div>
+                `;
+            });
+
+            html += existingEvents.join('');
+            timeline.innerHTML = html || '<div class="text-center text-gray-500 py-4">No checkpoints yet</div>';
+        }
+
+        function addTimelineEvent(type, message, progress) {
+            const timeline = document.getElementById('checkpoint-timeline');
+            const colors = { failed: 'red', resumed: 'blue', completed: 'green' };
+            const icons = { failed: '💥', resumed: '🔄', completed: '✅' };
+            const color = colors[type];
+
+            const eventHtml = `
+                <div class="flex items-start gap-3 event-marker ${type === 'failed' ? 'failure-pulse' : ''}">
+                    <div class="flex flex-col items-center">
+                        <div class="w-5 h-5 bg-${color}-500 rounded-full flex items-center justify-center ring-4 ring-${color}-500/30">
+                            <span class="text-xs">${icons[type]}</span>
+                        </div>
+                    </div>
+                    <div class="flex-1 pb-4">
+                        <div class="flex justify-between items-start">
+                            <span class="font-semibold text-${color}-400">${icons[type]} ${type.charAt(0).toUpperCase() + type.slice(1)}</span>
+                            <span class="text-xs text-gray-500">${new Date().toLocaleTimeString()}</span>
+                        </div>
+                        <div class="text-xs text-gray-400 mt-1">${message}</div>
+                    </div>
+                </div>
+            `;
+
+            timeline.insertAdjacentHTML('beforeend', eventHtml);
+            timeline.scrollTop = timeline.scrollHeight;
+        }
+
+        function startPolling() {
+            if (pollInterval) clearInterval(pollInterval);
+            pollInterval = setInterval(pollStatus, 1000);
+            pollStatus();
+        }
+
+        function stopPolling() {
+            if (pollInterval) {
+                clearInterval(pollInterval);
+                pollInterval = null;
+            }
+        }
+
+        async function loadSessions() {
+            try {
+                const response = await fetch(`${API_BASE}/api/sessions`);
+                const data = await response.json();
+
+                const tbody = document.getElementById('sessions-table');
+                if (data.sessions && data.sessions.length > 0) {
+                    tbody.innerHTML = data.sessions.map(s => `
+                        <tr class="border-b border-gray-700 hover:bg-gray-700/50">
+                            <td class="py-2 px-3 font-mono text-xs">${s.session_id}</td>
+                            <td class="py-2 px-3">
+                                <span class="px-2 py-1 rounded text-xs ${
+                                    s.status === 'completed' ? 'bg-green-900 text-green-400' :
+                                    s.status === 'failed' ? 'bg-red-900 text-red-400' :
+                                    s.status === 'active' ? 'bg-blue-900 text-blue-400' : 'bg-gray-700'
+                                }">${s.status}</span>
+                            </td>
+                            <td class="py-2 px-3 text-green-400">${s.checkpoint_seq} saved</td>
+                            <td class="py-2 px-3 text-xs text-gray-400">${s.updated_at ? new Date(s.updated_at).toLocaleString() : '-'}</td>
+                            <td class="py-2 px-3">
+                                ${s.status === 'failed' ? `
+                                    <button onclick="selectSession('${s.session_id}')"
+                                        class="text-xs bg-blue-600 hover:bg-blue-700 px-2 py-1 rounded">
+                                        Resume
+                                    </button>
+                                ` : '-'}
+                            </td>
+                        </tr>
+                    `).join('');
+                } else {
+                    tbody.innerHTML = '<tr><td colspan="5" class="text-center py-4 text-gray-500">No sessions found in BigQuery</td></tr>';
+                }
+            } catch (error) {
+                console.error('Failed to load sessions:', error);
+            }
+        }
+
+        function selectSession(sessionId) {
+            currentSessionId = sessionId;
+            document.getElementById('task-info-idle').classList.add('hidden');
+            document.getElementById('task-info-running').classList.remove('hidden');
+            document.getElementById('session-id').textContent = sessionId;
+            document.getElementById('task-status').textContent = 'Ready to Resume';
+            document.getElementById('task-status').className = 'font-semibold text-yellow-400';
+            document.getElementById('current-task-icon').textContent = '⏸️';
+            document.getElementById('current-task-icon').classList.remove('spin-slow');
+            document.getElementById('current-task-name').textContent = 'Paused Task';
+            document.getElementById('current-task-desc').textContent = 'Click Resume to continue from last checkpoint';
+            document.getElementById('resume-section').classList.remove('hidden');
+            document.getElementById('fail-btn').disabled = true;
+            document.getElementById('final-output-section').classList.add('hidden');
+        }
+
+        function renderFinalOutput(output) {
+            const section = document.getElementById('final-output-section');
+            section.classList.remove('hidden');
+
+            // Title
+            document.getElementById('final-output-title').innerHTML =
+                `<span class="mr-2">📊</span> ${output.title || 'Analysis Results'}`;
+
+            // Summary
+            document.getElementById('final-output-summary').textContent = output.summary || '';
+
+            // Results grid
+            const resultsContainer = document.getElementById('final-output-results');
+            if (output.results) {
+                resultsContainer.innerHTML = Object.entries(output.results).map(([key, value]) => {
+                    const label = key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+                    const displayValue = typeof value === 'number' ? value.toLocaleString() : value;
+                    return `
+                        <div class="p-2 bg-gray-800 rounded text-center">
+                            <div class="text-lg font-bold text-blue-400">${displayValue}</div>
+                            <div class="text-xs text-gray-400">${label}</div>
+                        </div>
+                    `;
+                }).join('');
+            } else {
+                resultsContainer.innerHTML = '';
+            }
+
+            // Key findings
+            const findingsContainer = document.getElementById('final-output-findings');
+            if (output.key_findings && output.key_findings.length > 0) {
+                findingsContainer.innerHTML = output.key_findings.map(finding =>
+                    `<li class="flex items-start gap-2">
+                        <span class="text-green-400 mt-0.5">•</span>
+                        <span class="text-gray-300">${finding}</span>
+                    </li>`
+                ).join('');
+            } else {
+                findingsContainer.innerHTML = '<li class="text-gray-500">No findings available</li>';
+            }
+
+            // Recommendation
+            const recBox = document.getElementById('final-output-recommendation-box');
+            if (output.recommendation) {
+                recBox.classList.remove('hidden');
+                document.getElementById('final-output-recommendation').textContent = output.recommendation;
+            } else {
+                recBox.classList.add('hidden');
+            }
+
+            // Metadata
+            if (output.metadata) {
+                document.getElementById('final-meta-session').textContent =
+                    output.metadata.session_id || currentSessionId;
+                document.getElementById('final-meta-checkpoints').textContent =
+                    output.metadata.checkpoints_created || '-';
+                document.getElementById('final-meta-time').textContent =
+                    output.metadata.completed_at ? new Date(output.metadata.completed_at).toLocaleString() : '-';
+            }
+
+            // Scroll to show the output
+            section.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', () => {
+            selectTask('sentiment');
+            loadSessions();
+        });
+    </script>
+</body>
+</html>

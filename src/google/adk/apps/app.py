@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 from typing import Optional
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
 from pydantic import ConfigDict
@@ -25,6 +26,9 @@ from ..agents.context_cache_config import ContextCacheConfig
 from ..apps.base_events_summarizer import BaseEventsSummarizer
 from ..plugins.base_plugin import BasePlugin
 from ..utils.feature_decorator import experimental
+
+if TYPE_CHECKING:
+  from ..durable.config import DurableSessionConfig
 
 
 def validate_app_name(name: str) -> None:
@@ -116,6 +120,13 @@ class App(BaseModel):
   """
   The config of the resumability for the application.
   If configured, will be applied to all agents in the app.
+  """
+
+  durable_session_config: Optional["DurableSessionConfig"] = None
+  """
+  The config for durable session persistence.
+  If configured, sessions will be checkpointed to external storage (BigQuery +
+  GCS), enabling recovery from failures and migration across hosts.
   """
 
   @model_validator(mode="after")

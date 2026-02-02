@@ -12,21 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .app import App
-from .app import ResumabilityConfig
+"""Checkpoint store implementations for durable sessions."""
 
-
-# Lazy import for DurableSessionConfig to avoid circular imports
-def __getattr__(name: str):
-  if name == 'DurableSessionConfig':
-    from ..durable.config import DurableSessionConfig
-
-    return DurableSessionConfig
-  raise AttributeError(f'module {__name__!r} has no attribute {name!r}')
-
+from .base_checkpoint_store import DurableSessionStore
+from .bigquery_checkpoint_store import BigQueryCheckpointStore
 
 __all__ = [
-    'App',
-    'ResumabilityConfig',
-    'DurableSessionConfig',
+    "DurableSessionStore",
+    "BigQueryCheckpointStore",
 ]
