@@ -164,7 +164,7 @@ extensions = [
   "toolbox-adk>=0.5.7, <0.6.0",                 # For tools.toolbox_toolset.ToolboxToolset
 ]
 
-otel-gcp = ["opentelemetry-instrumentation-google-genai>=0.3b0, <1.0.0"]
+otel-gcp = ["opentelemetry-instrumentation-google-genai>=0.6b0, <1.0.0"]
 
 toolbox = ["toolbox-adk>=0.5.7, <0.6.0"]
 
