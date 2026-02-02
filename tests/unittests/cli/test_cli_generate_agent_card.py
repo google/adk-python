@@ -44,36 +44,21 @@ def mock_agent_card_builder():
 
 
 def test_generate_agent_card_missing_a2a(runner):
-  with patch.dict(
-      "sys.modules", {"google.adk.a2a.utils.agent_card_builder": None}
-  ):
-    # Simulate ImportError by ensuring the module cannot be imported
-    with patch(
-        "builtins.__import__",
-        side_effect=ImportError("No module named 'google.adk.a2a'"),
-    ):
-      # We need to target the specific import in the function
-      # Since it's a local import inside the function, we can mock sys.modules or use side_effect on import
-      # However, patching builtins.__import__ is risky and affects everything.
-      # A better way is to mock the module in sys.modules to raise ImportError on access or just rely on the fact that if it's not there it fails.
-      # But here we want to force failure even if it is installed.
+  # Simulate the module being missing from the environment
+  with patch.dict("sys.modules", {"google.adk.a2a.utils.agent_card_builder": None}):
+    result = runner.invoke(generate_agent_card)
+    
+    assert result.exit_code != 0
+    assert "Error: 'a2a' package is required for this command." in result.stderr
 
-      # Let's try to patch the specific module import path in the function if possible,
-      # but since it is inside the function, we can use patch.dict on sys.modules with a mock that raises ImportError when accessed?
-      # No, that's for import time.
 
-      # Actually, the easiest way to test the ImportError branch is to mock the import itself.
-      # But `from ..a2a.utils.agent_card_builder import AgentCardBuilder` is hard to mock if it exists.
-      pass
-
-  # Alternative: Mock the function `_generate_agent_card_async` to raise ImportError?
-  # No, the import is INSIDE `_generate_agent_card_async`.
-
-  # Let's use a patch on the module where `_generate_agent_card_async` is defined,
-  # but we can't easily patch the import statement itself.
-  # We can use `patch.dict(sys.modules, {'google.adk.a2a.utils.agent_card_builder': None})`
-  # and ensure the previous import is cleared?
-  pass
+def test_generate_agent_card_import_error(runner):
+  # Simulate a generic ImportError during import
+  with patch.dict("sys.modules", {"google.adk.a2a.utils.agent_card_builder": None}):
+     result = runner.invoke(generate_agent_card)
+     
+     assert result.exit_code != 0
+     assert isinstance(result.exception, SystemExit)
 
 
 @patch("google.adk.cli.cli_generate_agent_card.AgentLoader")
@@ -184,34 +169,3 @@ def test_generate_agent_card_agent_error(
   output = json.loads(result.stdout)
   assert len(output) == 1
   assert output[0]["name"] == "agent2"
-
-
-def test_generate_agent_card_import_error(runner):
-  # We need to mock the import failure.
-  # Since the import is inside the function, we can patch `google.adk.cli.cli_generate_agent_card.AgentCardBuilder`
-  # but that's not imported at top level.
-  # We can try to patch `sys.modules` to hide `google.adk.a2a`.
-
-  with patch.dict(
-      "sys.modules", {"google.adk.a2a.utils.agent_card_builder": None}
-  ):
-    # We also need to ensure it tries to import it.
-    # The code does `from ..a2a.utils.agent_card_builder import AgentCardBuilder`
-    # This is a relative import.
-
-    # A reliable way to test ImportError inside a function is to mock the module that contains the function
-    # and replace the class/function being imported with something that raises ImportError? No.
-
-    # Let's just use `patch` on the target module path if we can resolve it.
-    # But it's a local import.
-
-    # Let's try to use `patch.dict` on `sys.modules` and remove the module if it exists.
-    # And we need to make sure `google.adk.cli.cli_generate_agent_card` is re-imported or we are running the function fresh?
-    # The function `_generate_agent_card_async` imports it every time.
-
-    # If we set `sys.modules['google.adk.a2a.utils.agent_card_builder'] = None`, the import might fail or return None.
-    # If it returns None, `from ... import ...` will fail with ImportError or AttributeError.
-    pass
-
-  # Actually, let's skip the ImportError test for now as it's tricky with local imports and existing environment.
-  # The other tests cover the main logic.
