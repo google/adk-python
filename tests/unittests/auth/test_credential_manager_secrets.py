@@ -163,8 +163,9 @@ async def test_exchange_credential_restores_secret():
 
   # We use side_effect to verify the secret at the moment of call, because the object is mutated later
   def check_secret(cred, scheme):
-    assert cred.oauth2.client_secret == client_secret
-    return credential_to_exchange
+      assert cred.oauth2.client_secret == client_secret
+      from google.adk.auth.exchanger.base_credential_exchanger import ExchangeResult
+      return ExchangeResult(credential=credential_to_exchange, was_exchanged=True)
 
   mock_exchanger.exchange.side_effect = check_secret
 

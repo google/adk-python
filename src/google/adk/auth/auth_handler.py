@@ -45,23 +45,12 @@ class AuthHandler:
   ) -> AuthCredential:
     exchanger = OAuth2CredentialExchanger()
 
-    # Restore secret if needed
     credential = self.auth_config.exchanged_auth_credential
 
-    # Retrieve secret directly from manager to avoid modifying the credential object
-    if credential and credential.oauth2 and credential.oauth2.client_id:
-      client_secret = CredentialManager.get_client_secret(
-          credential.oauth2.client_id
-      )
-      if client_secret:
-        with CredentialManager.restore_client_secret(credential, client_secret):
-          res = await exchanger.exchange(
+    with CredentialManager.restore_client_secret(credential):
+      res = await exchanger.exchange(
               credential, self.auth_config.auth_scheme
-          )
-          return res.credential
-
-    # Fallback if no secret found or not needed
-    res = await exchanger.exchange(credential, self.auth_config.auth_scheme)
+      )
     return res.credential
 
   async def parse_and_store_auth_response(self, state: State) -> None:
