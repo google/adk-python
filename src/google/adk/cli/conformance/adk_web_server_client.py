@@ -1,6 +1,6 @@
 """HTTP client for interacting with the ADK web server."""
 
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -228,6 +228,7 @@ class AdkWebServerClient:
       ValueError: If mode is provided but test_case_dir or user_message_index is None
       httpx.HTTPStatusError: If the request fails
       json.JSONDecodeError: If event data cannot be parsed
+      RuntimeError: If the server streams an error payload
     """
     # Add recording parameters to state_delta for conformance tests
     if mode:
@@ -262,6 +263,8 @@ class AdkWebServerClient:
         async for line in response.aiter_lines():
           if line.startswith("data:") and (data := line[5:].strip()):
             event_data = json.loads(data)
+            if isinstance(event_data, dict) and "error" in event_data:
+              raise RuntimeError(event_data["error"])
             yield Event.model_validate(event_data)
           else:
             logger.debug("Non data line received: %s", line)

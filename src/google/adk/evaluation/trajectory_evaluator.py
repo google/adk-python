@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -26,10 +26,6 @@ from .eval_case import ConversationScenario
 from .eval_case import get_all_tool_calls
 from .eval_case import Invocation
 from .eval_metrics import EvalMetric
-from .eval_metrics import Interval
-from .eval_metrics import MetricInfo
-from .eval_metrics import MetricValueInfo
-from .eval_metrics import PrebuiltMetrics
 from .eval_metrics import ToolTrajectoryCriterion
 from .evaluator import EvalStatus
 from .evaluator import EvaluationResult
@@ -98,22 +94,6 @@ class TrajectoryEvaluator(Evaluator):
     else:
       self._threshold = threshold
       self._match_type = ToolTrajectoryCriterion.MatchType.EXACT
-
-  @staticmethod
-  def get_metric_info() -> MetricInfo:
-    return MetricInfo(
-        metric_name=PrebuiltMetrics.TOOL_TRAJECTORY_AVG_SCORE.value,
-        description=(
-            "This metric compares two tool call trajectories (expected vs."
-            " actual) for the same user interaction. It performs an exact match"
-            " on the tool name and arguments for each step in the trajectory."
-            " A score of 1.0 indicates a perfect match, while 0.0 indicates a"
-            " mismatch. Higher values are better."
-        ),
-        metric_value_info=MetricValueInfo(
-            interval=Interval(min_value=0.0, max_value=1.0)
-        ),
-    )
 
   @override
   def evaluate_invocations(

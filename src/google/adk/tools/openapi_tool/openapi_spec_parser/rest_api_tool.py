@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import logging
 import ssl
 from typing import Any
 from typing import Callable
@@ -27,12 +28,14 @@ from typing import Union
 from fastapi.openapi.models import Operation
 from fastapi.openapi.models import Schema
 from google.genai.types import FunctionDeclaration
-import requests
+import httpx
 from typing_extensions import override
 
 from ....agents.readonly_context import ReadonlyContext
 from ....auth.auth_credential import AuthCredential
 from ....auth.auth_schemes import AuthScheme
+from ....features import FeatureName
+from ....features import is_feature_enabled
 from ..._gemini_schema_util import _to_gemini_schema
 from ..._gemini_schema_util import _to_snake_case
 from ...base_tool import BaseTool
@@ -45,6 +48,8 @@ from .openapi_spec_parser import OperationEndpoint
 from .openapi_spec_parser import ParsedOperation
 from .operation_parser import OperationParser
 from .tool_auth_handler import ToolAuthHandler
+
+logger = logging.getLogger("google_adk." + __name__)
 
 
 def snake_to_lower_camel(snake_case_string: str):
@@ -156,6 +161,7 @@ class RestApiTool(BaseTool):
     self._default_headers: Dict[str, str] = {}
     self._ssl_verify = ssl_verify
     self._header_provider = header_provider
+    self._logger = logger
     if should_parse_operation:
       self._operation_parser = OperationParser(self.operation)
 
@@ -221,10 +227,17 @@ class RestApiTool(BaseTool):
   def _get_declaration(self) -> FunctionDeclaration:
     """Returns the function declaration in the Gemini Schema format."""
     schema_dict = self._operation_parser.get_json_schema()
-    parameters = _to_gemini_schema(schema_dict)
-    function_decl = FunctionDeclaration(
-        name=self.name, description=self.description, parameters=parameters
-    )
+    if is_feature_enabled(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL):
+      function_decl = FunctionDeclaration(
+          name=self.name,
+          description=self.description,
+          parameters_json_schema=schema_dict,
+      )
+    else:
+      parameters = _to_gemini_schema(schema_dict)
+      function_decl = FunctionDeclaration(
+          name=self.name, description=self.description, parameters=parameters
+      )
     return function_decl
 
   def configure_auth_scheme(
@@ -299,7 +312,7 @@ class RestApiTool(BaseTool):
 
     Returns:
         A dictionary containing the  request parameters for the API call. This
-        initializes a requests.request() call.
+        initializes an httpx.AsyncClient.request() call.
 
     Example:
         self._prepare_request_params({"input_id": "test-id"})
@@ -319,6 +332,13 @@ class RestApiTool(BaseTool):
     # Set the custom User-Agent header
     user_agent = f"google-adk/{adk_version} (tool: {self.name})"
     header_params["User-Agent"] = user_agent
+
+    if (
+        self.auth_credential
+        and self.auth_credential.http
+        and self.auth_credential.http.additional_headers
+    ):
+      header_params.update(self.auth_credential.http.additional_headers)
 
     params_map: Dict[str, ApiParameter] = {p.py_name: p for p in parameters}
 
@@ -477,14 +497,28 @@ class RestApiTool(BaseTool):
       if provider_headers:
         request_params.setdefault("headers", {}).update(provider_headers)
 
-    response = requests.request(**request_params)
+    response = await _request(**request_params)
+
+    # Log the API response
+    self._logger.debug(
+        "API Response: %s %s - Status: %d",
+        request_params.get("method", "").upper(),
+        request_params.get("url", ""),
+        response.status_code,
+    )
 
     # Parse API response
     try:
-      response.raise_for_status()  # Raise HTTPError for bad responses
+      response.raise_for_status()  # Raise HTTPStatusError for bad responses
       return response.json()  # Try to decode JSON
-    except requests.exceptions.HTTPError:
+    except httpx.HTTPStatusError:
       error_details = response.content.decode("utf-8")
+      self._logger.warning(
+          "API call failed for tool %s: Status %d - %s",
+          self.name,
+          response.status_code,
+          error_details,
+      )
       return {
           "error": (
               f"Tool {self.name} execution failed. Analyze this execution error"
@@ -494,6 +528,7 @@ class RestApiTool(BaseTool):
           )
       }
     except ValueError:
+      self._logger.debug("API Response (non-JSON): %s", response.text)
       return {"text": response.text}  # Return text if not JSON
 
   def __str__(self):
@@ -509,3 +544,10 @@ class RestApiTool(BaseTool):
         f' auth_scheme="{self.auth_scheme}",'
         f' auth_credential="{self.auth_credential}")'
     )
+
+
+async def _request(**request_params) -> httpx.Response:
+  async with httpx.AsyncClient(
+      verify=request_params.pop("verify", True)
+  ) as client:
+    return await client.request(**request_params)

@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -36,6 +36,7 @@ from google.genai import types
 from pydantic import BaseModel
 from typing_extensions import override
 
+from ..utils._google_client_headers import get_tracking_headers
 from .base_llm import BaseLlm
 from .llm_response import LlmResponse
 
@@ -345,4 +346,5 @@ class Claude(AnthropicLlm):
     return AsyncAnthropicVertex(
         project_id=os.environ["GOOGLE_CLOUD_PROJECT"],
         region=os.environ["GOOGLE_CLOUD_LOCATION"],
+        default_headers=get_tracking_headers(),
     )

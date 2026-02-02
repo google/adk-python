@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -389,6 +389,31 @@ async def test_anthropic_llm_generate_content_async(
       assert len(responses) == 1
       assert isinstance(responses[0], LlmResponse)
       assert responses[0].content.parts[0].text == "Hello, how can I help you?"
+
+
+def test_claude_vertex_client_uses_tracking_headers():
+  """Tests that Claude vertex client is called with tracking headers."""
+  with mock.patch.object(
+      anthropic_llm, "AsyncAnthropicVertex", autospec=True
+  ) as mock_anthropic_vertex:
+    with mock.patch.dict(
+        os.environ,
+        {
+            "GOOGLE_CLOUD_PROJECT": "test-project",
+            "GOOGLE_CLOUD_LOCATION": "us-central1",
+        },
+    ):
+      instance = Claude(model="claude-3-5-sonnet-v2@20241022")
+      _ = instance._anthropic_client
+      mock_anthropic_vertex.assert_called_once()
+      _, kwargs = mock_anthropic_vertex.call_args
+      assert "default_headers" in kwargs
+      assert "x-goog-api-client" in kwargs["default_headers"]
+      assert "user-agent" in kwargs["default_headers"]
+      assert (
+          f"google-adk/{adk_version.__version__}"
+          in kwargs["default_headers"]["user-agent"]
+      )
 
 
 @pytest.mark.asyncio

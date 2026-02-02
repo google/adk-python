@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -56,6 +56,7 @@ class TestEventConverter:
     self.mock_invocation_context.artifact_service = self.mock_artifact_service
 
     self.mock_event = Mock(spec=Event)
+    self.mock_event.id = None
     self.mock_event.invocation_id = "test-invocation-id"
     self.mock_event.author = "test-author"
     self.mock_event.branch = None
@@ -130,6 +131,7 @@ class TestEventConverter:
         f"{ADK_METADATA_KEY_PREFIX}session_id",
         f"{ADK_METADATA_KEY_PREFIX}invocation_id",
         f"{ADK_METADATA_KEY_PREFIX}author",
+        f"{ADK_METADATA_KEY_PREFIX}event_id",
     ]
 
     for key in expected_keys:

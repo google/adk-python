@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -222,6 +222,44 @@ async def test_run_agent():
     assert all(isinstance(event, Event) for event in events)
     assert events[0].invocation_id == "test_invocation_1"
     assert events[1].invocation_id == "test_invocation_2"
+
+
+@pytest.mark.asyncio
+async def test_run_agent_raises_on_streamed_error():
+  client = AdkWebServerClient()
+
+  class MockStreamResponse:
+
+    def raise_for_status(self):
+      pass
+
+    async def aiter_lines(self):
+      yield 'data: {"error": "boom"}'
+
+    async def __aenter__(self):
+      return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+      pass
+
+  def mock_stream(*_args, **_kwargs):
+    return MockStreamResponse()
+
+  with patch("httpx.AsyncClient") as mock_client_class:
+    mock_client = AsyncMock()
+    mock_client.stream = mock_stream
+    mock_client_class.return_value = mock_client
+
+    request = RunAgentRequest(
+        app_name="test_app",
+        user_id="test_user",
+        session_id="test_session",
+        new_message=types.Content(role="user", parts=[types.Part(text="Hi")]),
+    )
+
+    with pytest.raises(RuntimeError, match="boom"):
+      async for _ in client.run_agent(request):
+        pass
 
 
 @pytest.mark.asyncio

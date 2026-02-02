@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -24,11 +24,8 @@ from ..utils.feature_decorator import experimental
 from .eval_case import Invocation
 from .eval_case import InvocationEvents
 from .eval_metrics import EvalMetric
-from .eval_metrics import Interval
-from .eval_metrics import MetricInfo
-from .eval_metrics import MetricValueInfo
-from .eval_metrics import PrebuiltMetrics
 from .eval_metrics import RubricsBasedCriterion
+from .eval_rubrics import Rubric
 from .llm_as_judge_utils import get_text_from_content
 from .llm_as_judge_utils import get_tool_calls_and_responses_as_json_str
 from .llm_as_judge_utils import get_tool_declarations_as_json_str
@@ -256,41 +253,33 @@ class RubricBasedFinalResponseQualityV1Evaluator(RubricBasedEvaluator):
   """
 
   criterion_type: ClassVar[type[RubricsBasedCriterion]] = RubricsBasedCriterion
+  RUBRIC_TYPE: ClassVar[str] = "FINAL_RESPONSE_QUALITY"
 
   def __init__(self, eval_metric: EvalMetric):
     super().__init__(
         eval_metric,
         criterion_type=RubricBasedFinalResponseQualityV1Evaluator.criterion_type,
+        rubric_type=RubricBasedFinalResponseQualityV1Evaluator.RUBRIC_TYPE,
     )
     self._auto_rater_prompt_template = (
         _RUBRIC_BASED_FINAL_RESPONSE_QUALITY_V1_PROMPT
     )
 
-  @staticmethod
-  def get_metric_info() -> MetricInfo:
-    return MetricInfo(
-        metric_name=PrebuiltMetrics.RUBRIC_BASED_FINAL_RESPONSE_QUALITY_V1.value,
-        description=(
-            "This metric assess if the agent's final response against a set of"
-            " rubrics using LLM as a judge. Value range for this metric is"
-            " [0,1], with values closer to 1 more desirable."
-        ),
-        metric_value_info=MetricValueInfo(
-            interval=Interval(min_value=0.0, max_value=1.0)
-        ),
-    )
-
   @override
   def format_auto_rater_prompt(
-      self, actual_invocation: Invocation, _: Optional[Invocation]
+      self,
+      actual_invocation: Invocation,
+      _: Optional[Invocation],
   ) -> str:
     """Returns the autorater prompt."""
-
+    self.create_effective_rubrics_list(actual_invocation.rubrics)
     user_input = get_text_from_content(actual_invocation.user_content)
     final_response = get_text_from_content(actual_invocation.final_response)
-    rubrics = "\n*  ".join(
-        [r.rubric_content.text_property for r in self._rubrics]
-    )
+
+    rubrics_text = "\n".join([
+        f"*  {r.rubric_content.text_property}"
+        for r in self._effective_rubrics_list
+    ])
 
     developer_instructions = ""
     tool_declarations = "Agent has no tools."
@@ -317,7 +306,7 @@ class RubricBasedFinalResponseQualityV1Evaluator(RubricBasedEvaluator):
         user_input=user_input,
         response_steps=response_steps,
         final_response=final_response,
-        rubrics=rubrics,
+        rubrics=rubrics_text,
     )
 
     return auto_rater_prompt
