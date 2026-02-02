@@ -51,6 +51,7 @@ from pydantic import BaseModel
 from pydantic import Field
 from typing_extensions import override
 
+from ..utils._google_client_headers import merge_tracking_headers
 from .base_llm import BaseLlm
 from .llm_request import LlmRequest
 from .llm_response import LlmResponse
@@ -1699,6 +1700,18 @@ Functions:
 """
 
 
+def _is_litellm_vertex_model(model_string: str) -> bool:
+  """Check if the model is a Vertex AI model accessed via LiteLLM.
+
+  Args:
+    model_string: A LiteLLM model string (e.g., "vertex_ai/gemini-2.5-flash")
+
+  Returns:
+    True if it's a Vertex AI model accessed via LiteLLM, False otherwise
+  """
+  return model_string.startswith("vertex_ai/")
+
+
 def _is_litellm_gemini_model(model_string: str) -> bool:
   """Check if the model is a Gemini model accessed via LiteLLM.
 
@@ -1866,6 +1879,14 @@ class LiteLlm(BaseLlm):
         "response_format": response_format,
     }
     completion_args.update(self._additional_args)
+
+    # merge headers
+    if _is_litellm_vertex_model(effective_model) or _is_litellm_gemini_model(
+        effective_model
+    ):
+      completion_args["headers"] = merge_tracking_headers(
+          completion_args.get("headers")
+      )
 
     if generation_params:
       completion_args.update(generation_params)

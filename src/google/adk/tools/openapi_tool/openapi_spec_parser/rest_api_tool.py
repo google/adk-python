@@ -28,7 +28,7 @@ from typing import Union
 from fastapi.openapi.models import Operation
 from fastapi.openapi.models import Schema
 from google.genai.types import FunctionDeclaration
-import requests
+import httpx
 from typing_extensions import override
 
 from ....agents.readonly_context import ReadonlyContext
@@ -312,7 +312,7 @@ class RestApiTool(BaseTool):
 
     Returns:
         A dictionary containing the  request parameters for the API call. This
-        initializes a requests.request() call.
+        initializes an httpx.AsyncClient.request() call.
 
     Example:
         self._prepare_request_params({"input_id": "test-id"})
@@ -497,17 +497,7 @@ class RestApiTool(BaseTool):
       if provider_headers:
         request_params.setdefault("headers", {}).update(provider_headers)
 
-    # Log the API request
-    self._logger.debug(
-        "API Request: %s %s",
-        request_params.get("method", "").upper(),
-        request_params.get("url", ""),
-    )
-    self._logger.debug("API Request params: %s", request_params.get("params"))
-    if "json" in request_params:
-      self._logger.debug("API Request body: %s", request_params.get("json"))
-
-    response = requests.request(**request_params)
+    response = await _request(**request_params)
 
     # Log the API response
     self._logger.debug(
@@ -519,11 +509,9 @@ class RestApiTool(BaseTool):
 
     # Parse API response
     try:
-      response.raise_for_status()  # Raise HTTPError for bad responses
-      result = response.json()  # Try to decode JSON
-      self._logger.debug("API Response body: %s", result)
-      return result
-    except requests.exceptions.HTTPError:
+      response.raise_for_status()  # Raise HTTPStatusError for bad responses
+      return response.json()  # Try to decode JSON
+    except httpx.HTTPStatusError:
       error_details = response.content.decode("utf-8")
       self._logger.warning(
           "API call failed for tool %s: Status %d - %s",
@@ -556,3 +544,10 @@ class RestApiTool(BaseTool):
         f' auth_scheme="{self.auth_scheme}",'
         f' auth_credential="{self.auth_credential}")'
     )
+
+
+async def _request(**request_params) -> httpx.Response:
+  async with httpx.AsyncClient(
+      verify=request_params.pop("verify", True)
+  ) as client:
+    return await client.request(**request_params)

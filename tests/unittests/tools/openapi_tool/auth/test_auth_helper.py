@@ -36,8 +36,8 @@ from google.adk.tools.openapi_tool.auth.auth_helpers import openid_url_to_scheme
 from google.adk.tools.openapi_tool.auth.auth_helpers import service_account_dict_to_scheme_credential
 from google.adk.tools.openapi_tool.auth.auth_helpers import service_account_scheme_credential
 from google.adk.tools.openapi_tool.auth.auth_helpers import token_to_scheme_credential
+import httpx
 import pytest
-import requests
 
 
 def test_token_to_scheme_credential_api_key_header():
@@ -272,7 +272,7 @@ def test_openid_dict_to_scheme_credential_missing_credential_fields():
     openid_dict_to_scheme_credential(config_dict, scopes, credential_dict)
 
 
-@patch("requests.get")
+@patch("httpx.get")
 def test_openid_url_to_scheme_credential(mock_get):
   mock_response = {
       "authorization_endpoint": "auth_url",
@@ -303,7 +303,7 @@ def test_openid_url_to_scheme_credential(mock_get):
   mock_get.assert_called_once_with("openid_url", timeout=10)
 
 
-@patch("requests.get")
+@patch("httpx.get")
 def test_openid_url_to_scheme_credential_no_openid_url(mock_get):
   mock_response = {
       "authorization_endpoint": "auth_url",
@@ -326,9 +326,9 @@ def test_openid_url_to_scheme_credential_no_openid_url(mock_get):
   assert scheme.openIdConnectUrl == "openid_url"
 
 
-@patch("requests.get")
+@patch("httpx.get")
 def test_openid_url_to_scheme_credential_request_exception(mock_get):
-  mock_get.side_effect = requests.exceptions.RequestException("Test Error")
+  mock_get.side_effect = httpx.RequestError("Test Error", request=None)
   credential_dict = {"client_id": "client_id", "client_secret": "client_secret"}
 
   with pytest.raises(
@@ -337,7 +337,7 @@ def test_openid_url_to_scheme_credential_request_exception(mock_get):
     openid_url_to_scheme_credential("openid_url", [], credential_dict)
 
 
-@patch("requests.get")
+@patch("httpx.get")
 def test_openid_url_to_scheme_credential_invalid_json(mock_get):
   mock_get.return_value.json.side_effect = ValueError("Invalid JSON")
   mock_get.return_value.raise_for_status.return_value = None
