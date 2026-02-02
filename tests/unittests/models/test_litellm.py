@@ -24,6 +24,7 @@ from unittest.mock import AsyncMock
 from unittest.mock import Mock
 import warnings
 
+from google.adk.models.lite_llm import _append_fallback_user_content_if_missing
 from google.adk.models.lite_llm import _content_to_message_param
 from google.adk.models.lite_llm import _FILE_ID_REQUIRED_PROVIDERS
 from google.adk.models.lite_llm import _FINISH_REASON_MAPPING
@@ -36,6 +37,7 @@ from google.adk.models.lite_llm import _MISSING_TOOL_RESULT_MESSAGE
 from google.adk.models.lite_llm import _model_response_to_chunk
 from google.adk.models.lite_llm import _model_response_to_generate_content_response
 from google.adk.models.lite_llm import _parse_tool_calls_from_text
+from google.adk.models.lite_llm import _part_has_payload
 from google.adk.models.lite_llm import _redirect_litellm_loggers_to_stdout
 from google.adk.models.lite_llm import _schema_to_dict
 from google.adk.models.lite_llm import _split_message_content_and_tool_calls
@@ -1048,6 +1050,150 @@ def test_maybe_append_user_content(
   lite_llm_instance._maybe_append_user_content(llm_request)
 
   assert len(llm_request.contents) == expected_output
+
+
+# Tests for _part_has_payload function
+class TestPartHasPayload:
+
+  def test_part_has_payload_with_text(self):
+    part = types.Part.from_text(text="Hello")
+    assert _part_has_payload(part) is True
+
+  def test_part_has_payload_with_empty_text(self):
+    part = types.Part.from_text(text="")
+    assert _part_has_payload(part) is False
+
+  def test_part_has_payload_with_inline_data(self):
+    part = types.Part.from_bytes(data=b"test", mime_type="text/plain")
+    assert _part_has_payload(part) is True
+
+  def test_part_has_payload_with_function_response(self):
+    part = types.Part.from_function_response(
+        name="test_function",
+        response={"result": "success"},
+    )
+    assert _part_has_payload(part) is True
+
+  def test_part_has_payload_with_function_response_empty_dict(self):
+    part = types.Part.from_function_response(
+        name="test_function",
+        response={},
+    )
+    # Empty dict is falsy, so this should return False
+    assert _part_has_payload(part) is False
+
+  def test_part_has_payload_with_empty_part(self):
+    part = types.Part()
+    assert _part_has_payload(part) is False
+
+
+class TestAppendFallbackUserContentIfMissing:
+
+  def test_no_fallback_when_user_content_has_function_response(self):
+    """Verify fallback is not added when user message has function_response."""
+    llm_request = LlmRequest(
+        contents=[
+            types.Content(
+                role="user",
+                parts=[
+                    types.Part.from_function_response(
+                        name="test_function",
+                        response={"result": "success"},
+                    )
+                ],
+            )
+        ]
+    )
+
+    _append_fallback_user_content_if_missing(llm_request)
+
+    # Should not add fallback message since function_response has payload
+    assert len(llm_request.contents) == 1
+    assert len(llm_request.contents[0].parts) == 1
+    assert llm_request.contents[0].parts[0].function_response is not None
+
+  def test_fallback_added_when_user_content_has_empty_function_response(self):
+    """Verify fallback is added when function_response has empty response."""
+    llm_request = LlmRequest(
+        contents=[
+            types.Content(
+                role="user",
+                parts=[
+                    types.Part.from_function_response(
+                        name="test_function",
+                        response={},
+                    )
+                ],
+            )
+        ]
+    )
+
+    _append_fallback_user_content_if_missing(llm_request)
+
+    # Should add fallback message since empty dict is falsy
+    assert len(llm_request.contents) == 1
+    assert len(llm_request.contents[0].parts) == 2
+    assert (
+        llm_request.contents[0].parts[1].text
+        == "Handle the requests as specified in the System Instruction."
+    )
+
+  def test_no_fallback_when_user_content_has_text(self):
+    """Verify fallback is not added when user message has text."""
+    llm_request = LlmRequest(
+        contents=[
+            types.Content(
+                role="user",
+                parts=[types.Part.from_text(text="Hello")],
+            )
+        ]
+    )
+
+    _append_fallback_user_content_if_missing(llm_request)
+
+    assert len(llm_request.contents) == 1
+    assert len(llm_request.contents[0].parts) == 1
+    assert llm_request.contents[0].parts[0].text == "Hello"
+
+  def test_fallback_added_when_user_content_is_empty(self):
+    """Verify fallback is added when user message has no parts."""
+    llm_request = LlmRequest(
+        contents=[
+            types.Content(
+                role="user",
+                parts=[],
+            )
+        ]
+    )
+
+    _append_fallback_user_content_if_missing(llm_request)
+
+    assert len(llm_request.contents) == 1
+    assert len(llm_request.contents[0].parts) == 1
+    assert (
+        llm_request.contents[0].parts[0].text
+        == "Handle the requests as specified in the System Instruction."
+    )
+
+  def test_fallback_added_when_no_user_content(self):
+    """Verify fallback user content is added when there's no user role."""
+    llm_request = LlmRequest(
+        contents=[
+            types.Content(
+                role="model",
+                parts=[types.Part.from_text(text="Model response")],
+            )
+        ]
+    )
+
+    _append_fallback_user_content_if_missing(llm_request)
+
+    assert len(llm_request.contents) == 2
+    assert llm_request.contents[1].role == "user"
+    assert (
+        llm_request.contents[1].parts[0].text
+        == "Handle the requests as specified in the System Instruction."
+    )
 
 
 function_declaration_test_cases = [
