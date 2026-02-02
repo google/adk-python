@@ -739,6 +739,15 @@ class BaseLlmFlow(ABC):
       async for event in agen:
         yield event
 
+    # Handle session resumption updates for cross-connection resumption.
+    # Must be before skip condition - resumption updates have no content.
+    if llm_response.live_session_resumption_update:
+      model_response_event.live_session_resumption_update = (
+          llm_response.live_session_resumption_update
+      )
+      yield model_response_event
+      return
+
     # Skip the model response event if there is no content and no error code.
     # This is needed for the code executor to trigger another loop.
     # But don't skip control events like turn_complete or transcription events.
