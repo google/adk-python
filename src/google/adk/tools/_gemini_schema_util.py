@@ -145,6 +145,14 @@ def _sanitize_schema_formats_for_gemini(
     schema: dict[str, Any], preserve_null_type: bool = False
 ) -> dict[str, Any]:
   """Filters the schema to only include fields that are supported by JSONSchema."""
+  # Handle non-dict schemas early
+  if isinstance(schema, list):
+    # Handle array schemas - pass through
+    return schema
+  elif not isinstance(schema, dict):
+    # Handle primitive types - pass through
+    return schema
+
   supported_fields: set[str] = set(_ExtendedJSONSchema.model_fields.keys())
   # Gemini rejects schemas that include `additionalProperties`, so drop it.
   supported_fields.discard("additional_properties")
