@@ -142,7 +142,9 @@ class CredentialManager:
 
     # Step 2: Check if credential is already ready (no processing needed)
     if self._is_credential_ready():
-      return self._auth_config.raw_auth_credential
+      # Return a copy to avoid leaking mutations across invocations/users when
+      # tools share a long-lived AuthConfig instance.
+      return self._auth_config.raw_auth_credential.model_copy(deep=True)
 
     # Step 3: Try to load existing processed credential
     credential = await self._load_existing_credential(context)
@@ -159,7 +161,9 @@ class CredentialManager:
     if not credential:
       # For client credentials flow, use raw credentials directly
       if self._is_client_credentials_flow():
-        credential = self._auth_config.raw_auth_credential
+        # Exchange/refresh steps may mutate the credential object in-place, so
+        # do not operate on the shared tool config.
+        credential = self._auth_config.raw_auth_credential.model_copy(deep=True)
       else:
         # For authorization code flow, return None to trigger user authorization
         return None
@@ -298,12 +302,11 @@ class CredentialManager:
       self, context: CallbackContext, credential: AuthCredential
   ) -> None:
     """Save credential to credential service if available."""
-    # Update the exchanged credential in config
-    self._auth_config.exchanged_auth_credential = credential
-
     credential_service = context._invocation_context.credential_service
     if credential_service:
-      await context.save_credential(self._auth_config)
+      auth_config_to_save = self._auth_config.model_copy(deep=True)
+      auth_config_to_save.exchanged_auth_credential = credential
+      await context.save_credential(auth_config_to_save)
 
   async def _populate_auth_scheme(self) -> bool:
     """Auto-discover server metadata and populate missing auth scheme info.
