@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Bug Fixes
+* Sanitize Agent Engine temp folder names to avoid invalid module imports.
+* Fix Agent Engine template imports for agents in an app/ subdirectory.
+
 ## [1.23.0](https://github.com/google/adk-python/compare/v1.22.1...v1.23.0) (2026-01-22)
 
 ### ⚠ BREAKING CHANGES
@@ -81,8 +87,6 @@
 * Add a `DebugLoggingPlugin` to record human-readable debugging logs ([8973618](https://github.com/google/adk-python/commit/8973618b0b0e90c513873e22af272c147efb4904))
 * Upgrade the sample BigQuery agent model version to `gemini-2.5-flash` ([fd2c0f5](https://github.com/google/adk-python/commit/fd2c0f556b786417a9f6add744827b07e7a06b7d))
 * Import `migration_runner` lazily within the migrate command ([905604f](https://github.com/google/adk-python/commit/905604faac82aca8ae0935eebea288f82985e9c5))
-
-
 
 ## [1.22.1](https://github.com/google/adk-python/compare/v1.22.0...v1.22.1) (2026-01-09)
 

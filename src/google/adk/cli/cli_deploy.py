@@ -36,6 +36,17 @@ _AGENT_ENGINE_REQUIREMENT: Final[str] = (
 )
 
 
+def _sanitize_temp_folder_name(folder_name: str) -> str:
+  if not folder_name:
+    return folder_name
+  sanitized = ''.join(
+      char if char.isalnum() or char == '_' else '_' for char in folder_name
+  )
+  if sanitized and sanitized[0].isdigit():
+    return '_' + sanitized
+  return sanitized
+
+
 def _ensure_agent_engine_dependency(requirements_txt_path: str) -> None:
   """Ensures staged requirements include Agent Engine dependencies."""
   if not os.path.exists(requirements_txt_path):
@@ -111,7 +122,7 @@ if {is_config_agent}:
   config_path = os.path.join(os.path.dirname(__file__), "root_agent.yaml")
   root_agent = config_agent_utils.from_config(config_path)
 else:
-  from .agent import {adk_app_object}
+  from {adk_app_import_module} import {adk_app_object}
 
 if {express_mode}: # Whether or not to use Express Mode
   vertexai.init(api_key=os.environ.get("GOOGLE_API_KEY"))
@@ -915,7 +926,8 @@ def to_agent_engine(
     os.chdir(parent_folder)
     did_change_cwd = True
   tmp_app_name = app_name + '_tmp' + datetime.now().strftime('%Y%m%d_%H%M%S')
-  temp_folder = temp_folder or tmp_app_name
+  raw_temp_folder = temp_folder or tmp_app_name
+  temp_folder = _sanitize_temp_folder_name(raw_temp_folder)
   agent_src_path = os.path.join(parent_folder, temp_folder)
   click.echo(f'Staging all files in: {agent_src_path}')
   # remove agent_src_path if it exists
@@ -1084,6 +1096,17 @@ def to_agent_engine(
       _validate_agent_import(agent_src_path, adk_app_object, is_config_agent)
 
     adk_app_file = os.path.join(temp_folder, f'{adk_app}.py')
+    app_subdir_agent = os.path.join(agent_src_path, 'app', 'agent.py')
+    app_subdir_init = os.path.join(agent_src_path, 'app', '__init__.py')
+    root_agent_file = os.path.join(agent_src_path, 'agent.py')
+    if (
+        os.path.exists(app_subdir_agent)
+        and os.path.exists(app_subdir_init)
+        and not os.path.exists(root_agent_file)
+    ):
+      adk_app_import_module = '.app.agent'
+    else:
+      adk_app_import_module = '.agent'
     if adk_app_object == 'root_agent':
       adk_app_type = 'agent'
     elif adk_app_object == 'app':
@@ -1103,6 +1126,7 @@ def to_agent_engine(
               agent_folder=f'./{temp_folder}',
               adk_app_object=adk_app_object,
               adk_app_type=adk_app_type,
+              adk_app_import_module=adk_app_import_module,
               express_mode=api_key is not None,
           )
       )
