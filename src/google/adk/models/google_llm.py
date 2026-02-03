@@ -192,7 +192,7 @@ class Gemini(BaseLlm):
     if llm_request.config:
       if not llm_request.config.http_options:
         llm_request.config.http_options = types.HttpOptions()
-      llm_request.config.http_options.headers = self._merge_tracking_headers(
+      llm_request.config.http_options.headers = merge_tracking_headers(
           llm_request.config.http_options.headers
       )
 
@@ -303,7 +303,7 @@ class Gemini(BaseLlm):
 
     return Client(
         http_options=types.HttpOptions(
-            headers=self._tracking_headers(),
+            headers=get_tracking_headers(),
             retry_options=self.retry_options,
         )
     )
@@ -315,9 +315,6 @@ class Gemini(BaseLlm):
         if self.api_client.vertexai
         else GoogleLLMVariant.GEMINI_API
     )
-
-  def _tracking_headers(self) -> dict[str, str]:
-    return get_tracking_headers()
 
   @cached_property
   def _live_api_version(self) -> str:
@@ -334,7 +331,7 @@ class Gemini(BaseLlm):
 
     return Client(
         http_options=types.HttpOptions(
-            headers=self._tracking_headers(), api_version=self._live_api_version
+            headers=get_tracking_headers(), api_version=self._live_api_version
         )
     )
 
@@ -358,7 +355,7 @@ class Gemini(BaseLlm):
       if not llm_request.live_connect_config.http_options.headers:
         llm_request.live_connect_config.http_options.headers = {}
       llm_request.live_connect_config.http_options.headers = (
-          self._merge_tracking_headers(
+          merge_tracking_headers(
               llm_request.live_connect_config.http_options.headers
           )
       )
@@ -450,10 +447,6 @@ class Gemini(BaseLlm):
         if isinstance(tool, types.Tool) and tool.computer_use:
           llm_request.config.system_instruction = None
           await self._adapt_computer_use_tool(llm_request)
-
-  def _merge_tracking_headers(self, headers: dict[str, str]) -> dict[str, str]:
-    """Merge tracking headers to the given headers."""
-    return merge_tracking_headers(headers)
 
 
 def _build_function_declaration_log(
