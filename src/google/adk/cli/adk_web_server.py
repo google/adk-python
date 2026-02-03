@@ -870,7 +870,7 @@ class AdkWebServer:
 
       return session
 
-    @app.patch(
+    @app.patch(  # type: ignore[untyped-decorator]
         "/apps/{app_name}/users/{user_id}/sessions/{session_id}/title",
         response_model_exclude_none=True,
     )

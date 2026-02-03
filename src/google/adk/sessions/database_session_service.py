@@ -175,7 +175,7 @@ class DatabaseSessionService(BaseSessionService):
         await sql_session.rollback()
         raise
 
-  async def _prepare_tables(self):
+  async def _prepare_tables(self) -> None:
     """Ensure database tables are ready for use.
 
     This method is called lazily before each database operation. It checks the

@@ -111,7 +111,7 @@ class VertexAiSessionService(BaseSessionService):
 
     reasoning_engine_id = self._get_reasoning_engine_id(app_name)
 
-    config = {'session_state': state} if state else {}
+    config: dict[str, Any] = {'session_state': state} if state else {}
     if title:
       config['display_name'] = title
     config.update(kwargs)
