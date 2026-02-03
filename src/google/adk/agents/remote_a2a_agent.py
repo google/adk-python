@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -134,7 +134,7 @@ class RemoteA2aAgent(BaseAgent):
     Args:
       name: Agent name (must be unique identifier)
       agent_card: AgentCard object, URL string, or file path string
-      description: Agent description (auto-populated from card if empty)
+      description: Agent description (autopopulated from card if empty)
       httpx_client: Optional shared HTTP client (will create own if not
         provided) [deprecated] Use a2a_client_factory instead.
       timeout: HTTP timeout in seconds

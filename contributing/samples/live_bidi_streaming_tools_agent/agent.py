@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -52,6 +52,8 @@ async def monitor_video_stream(
     input_stream: LiveRequestQueue,
 ) -> AsyncGenerator[str, None]:
   """Monitor how many people are in the video streams."""
+  from google.genai import Client
+
   print("start monitor_video_stream!")
   from google.genai import Client
 

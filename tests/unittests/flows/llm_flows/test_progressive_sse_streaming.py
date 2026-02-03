@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -631,3 +631,144 @@ def test_progressive_sse_handles_empty_function_call():
   args = fc_part.function_call.args
   assert args["num"] == 100
   assert args["s"] == "ADK"
+
+
+class PartialFunctionCallMockModel(BaseLlm):
+  """A mock model that yields partial function call events followed by final."""
+
+  model: str = "partial-fc-mock"
+  tool_call_count: int = 0
+
+  @classmethod
+  def supported_models(cls) -> list[str]:
+    return ["partial-fc-mock"]
+
+  async def generate_content_async(
+      self, llm_request: LlmRequest, stream: bool = False
+  ) -> AsyncGenerator[LlmResponse, None]:
+    """Yield partial FC events then final, simulating streaming behavior."""
+
+    # Check if this is a follow-up call (after function response)
+    has_function_response = False
+    for content in llm_request.contents:
+      for part in content.parts or []:
+        if part.function_response:
+          has_function_response = True
+          break
+
+    if has_function_response:
+      # Final response after function execution
+      yield LlmResponse(
+          content=types.Content(
+              role="model",
+              parts=[types.Part.from_text(text="Function executed once.")],
+          ),
+          partial=False,
+      )
+      return
+
+    # First call: yield partial FC events then final
+    # Partial event 1
+    yield LlmResponse(
+        content=types.Content(
+            role="model",
+            parts=[
+                types.Part.from_function_call(
+                    name="track_execution", args={"call_id": "partial_1"}
+                )
+            ],
+        ),
+        partial=True,
+    )
+
+    # Partial event 2
+    yield LlmResponse(
+        content=types.Content(
+            role="model",
+            parts=[
+                types.Part.from_function_call(
+                    name="track_execution", args={"call_id": "partial_2"}
+                )
+            ],
+        ),
+        partial=True,
+    )
+
+    # Final aggregated event (only this should trigger execution)
+    yield LlmResponse(
+        content=types.Content(
+            role="model",
+            parts=[
+                types.Part.from_function_call(
+                    name="track_execution", args={"call_id": "final"}
+                )
+            ],
+        ),
+        partial=False,
+        finish_reason=types.FinishReason.STOP,
+    )
+
+
+def test_partial_function_calls_not_executed_in_none_streaming_mode():
+  """Test that partial function call events are skipped regardless of mode."""
+  execution_log = []
+
+  def track_execution(call_id: str) -> str:
+    """A tool that logs each execution to verify call count."""
+    execution_log.append(call_id)
+    return f"Executed: {call_id}"
+
+  mock_model = PartialFunctionCallMockModel()
+
+  agent = Agent(
+      name="partial_fc_test_agent",
+      model=mock_model,
+      tools=[track_execution],
+  )
+
+  # Use StreamingMode.NONE to verify partial FCs are still skipped
+  run_config = RunConfig(streaming_mode=StreamingMode.NONE)
+
+  runner = InMemoryRunner(agent=agent)
+
+  session = runner.session_service.create_session_sync(
+      app_name=runner.app_name, user_id="test_user"
+  )
+
+  events = []
+  for event in runner.run(
+      user_id="test_user",
+      session_id=session.id,
+      new_message=types.Content(
+          role="user",
+          parts=[types.Part.from_text(text="Test partial FC handling")],
+      ),
+      run_config=run_config,
+  ):
+    events.append(event)
+
+  # Verify the tool was only executed once (from the final event)
+  assert (
+      len(execution_log) == 1
+  ), f"Expected 1 execution, got {len(execution_log)}: {execution_log}"
+  assert (
+      execution_log[0] == "final"
+  ), f"Expected 'final' execution, got: {execution_log[0]}"
+
+  # Verify partial events were yielded but not executed
+  partial_events = [e for e in events if e.partial]
+  assert (
+      len(partial_events) == 2
+  ), f"Expected 2 partial events, got {len(partial_events)}"
+
+  # Verify there's a function response event (from the final FC execution)
+  function_response_events = [
+      e
+      for e in events
+      if e.content
+      and e.content.parts
+      and any(p.function_response for p in e.content.parts)
+  ]
+  assert (
+      len(function_response_events) == 1
+  ), f"Expected 1 function response event, got {len(function_response_events)}"

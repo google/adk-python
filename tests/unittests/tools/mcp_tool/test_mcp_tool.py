@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -18,7 +18,10 @@ from unittest.mock import patch
 
 from google.adk.auth.auth_credential import AuthCredential
 from google.adk.auth.auth_credential import AuthCredentialTypes
+from google.adk.auth.auth_credential import HttpAuth
+from google.adk.auth.auth_credential import HttpCredentials
 from google.adk.auth.auth_credential import OAuth2Auth
+from google.adk.auth.auth_credential import ServiceAccount
 from google.adk.features import FeatureName
 from google.adk.features._feature_registry import temporary_feature_override
 from google.adk.tools.mcp_tool.mcp_session_manager import MCPSessionManager
@@ -259,6 +262,240 @@ class TestMCPTool:
     assert headers == {"Authorization": "Bearer test_access_token"}
 
   @pytest.mark.asyncio
+  async def test_get_headers_oauth2(self):
+    """Test header generation for OAuth2 credentials."""
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+    )
+
+    oauth2_auth = OAuth2Auth(access_token="test_token")
+    credential = AuthCredential(
+        auth_type=AuthCredentialTypes.OAUTH2, oauth2=oauth2_auth
+    )
+
+    tool_context = Mock(spec=ToolContext)
+    headers = await tool._get_headers(tool_context, credential)
+
+    assert headers == {"Authorization": "Bearer test_token"}
+
+  @pytest.mark.asyncio
+  async def test_get_headers_http_bearer(self):
+    """Test header generation for HTTP Bearer credentials."""
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+    )
+
+    http_auth = HttpAuth(
+        scheme="bearer", credentials=HttpCredentials(token="bearer_token")
+    )
+    credential = AuthCredential(
+        auth_type=AuthCredentialTypes.HTTP, http=http_auth
+    )
+
+    tool_context = Mock(spec=ToolContext)
+    headers = await tool._get_headers(tool_context, credential)
+
+    assert headers == {"Authorization": "Bearer bearer_token"}
+
+  @pytest.mark.asyncio
+  async def test_get_headers_http_basic(self):
+    """Test header generation for HTTP Basic credentials."""
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+    )
+
+    http_auth = HttpAuth(
+        scheme="basic",
+        credentials=HttpCredentials(username="user", password="pass"),
+    )
+    credential = AuthCredential(
+        auth_type=AuthCredentialTypes.HTTP, http=http_auth
+    )
+
+    tool_context = Mock(spec=ToolContext)
+    headers = await tool._get_headers(tool_context, credential)
+
+    # Should create Basic auth header with base64 encoded credentials
+    import base64
+
+    expected_encoded = base64.b64encode(b"user:pass").decode()
+    assert headers == {"Authorization": f"Basic {expected_encoded}"}
+
+  @pytest.mark.asyncio
+  async def test_get_headers_api_key_with_valid_header_scheme(self):
+    """Test header generation for API Key credentials with header-based auth scheme."""
+    from fastapi.openapi.models import APIKey
+    from fastapi.openapi.models import APIKeyIn
+    from google.adk.auth.auth_schemes import AuthSchemeType
+
+    # Create auth scheme for header-based API key
+    auth_scheme = APIKey(**{
+        "type": AuthSchemeType.apiKey,
+        "in": APIKeyIn.header,
+        "name": "X-Custom-API-Key",
+    })
+    auth_credential = AuthCredential(
+        auth_type=AuthCredentialTypes.API_KEY, api_key="my_api_key"
+    )
+
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+        auth_scheme=auth_scheme,
+        auth_credential=auth_credential,
+    )
+
+    tool_context = Mock(spec=ToolContext)
+    headers = await tool._get_headers(tool_context, auth_credential)
+
+    assert headers == {"X-Custom-API-Key": "my_api_key"}
+
+  @pytest.mark.asyncio
+  async def test_get_headers_api_key_with_query_scheme_raises_error(self):
+    """Test that API Key with query-based auth scheme raises ValueError."""
+    from fastapi.openapi.models import APIKey
+    from fastapi.openapi.models import APIKeyIn
+    from google.adk.auth.auth_schemes import AuthSchemeType
+
+    # Create auth scheme for query-based API key (not supported)
+    auth_scheme = APIKey(**{
+        "type": AuthSchemeType.apiKey,
+        "in": APIKeyIn.query,
+        "name": "api_key",
+    })
+    auth_credential = AuthCredential(
+        auth_type=AuthCredentialTypes.API_KEY, api_key="my_api_key"
+    )
+
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+        auth_scheme=auth_scheme,
+        auth_credential=auth_credential,
+    )
+
+    tool_context = Mock(spec=ToolContext)
+
+    with pytest.raises(
+        ValueError,
+        match="McpTool only supports header-based API key authentication",
+    ):
+      await tool._get_headers(tool_context, auth_credential)
+
+  @pytest.mark.asyncio
+  async def test_get_headers_api_key_with_cookie_scheme_raises_error(self):
+    """Test that API Key with cookie-based auth scheme raises ValueError."""
+    from fastapi.openapi.models import APIKey
+    from fastapi.openapi.models import APIKeyIn
+    from google.adk.auth.auth_schemes import AuthSchemeType
+
+    # Create auth scheme for cookie-based API key (not supported)
+    auth_scheme = APIKey(**{
+        "type": AuthSchemeType.apiKey,
+        "in": APIKeyIn.cookie,
+        "name": "session_id",
+    })
+    auth_credential = AuthCredential(
+        auth_type=AuthCredentialTypes.API_KEY, api_key="my_api_key"
+    )
+
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+        auth_scheme=auth_scheme,
+        auth_credential=auth_credential,
+    )
+
+    tool_context = Mock(spec=ToolContext)
+
+    with pytest.raises(
+        ValueError,
+        match="McpTool only supports header-based API key authentication",
+    ):
+      await tool._get_headers(tool_context, auth_credential)
+
+  @pytest.mark.asyncio
+  async def test_get_headers_api_key_without_auth_config_raises_error(self):
+    """Test that API Key without auth config raises ValueError."""
+    # Create tool without auth scheme/config
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+    )
+
+    credential = AuthCredential(
+        auth_type=AuthCredentialTypes.API_KEY, api_key="my_api_key"
+    )
+    tool_context = Mock(spec=ToolContext)
+
+    with pytest.raises(
+        ValueError,
+        match="Cannot find corresponding auth scheme for API key credential",
+    ):
+      await tool._get_headers(tool_context, credential)
+
+  @pytest.mark.asyncio
+  async def test_get_headers_api_key_without_credentials_manager_raises_error(
+      self,
+  ):
+    """Test that API Key without credentials manager raises ValueError."""
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+    )
+
+    # Manually set credentials manager to None to simulate error condition
+    tool._credentials_manager = None
+
+    credential = AuthCredential(
+        auth_type=AuthCredentialTypes.API_KEY, api_key="my_api_key"
+    )
+    tool_context = Mock(spec=ToolContext)
+
+    with pytest.raises(
+        ValueError,
+        match="Cannot find corresponding auth scheme for API key credential",
+    ):
+      await tool._get_headers(tool_context, credential)
+
+  @pytest.mark.asyncio
+  async def test_get_headers_no_credential(self):
+    """Test header generation with no credentials."""
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+    )
+
+    tool_context = Mock(spec=ToolContext)
+    headers = await tool._get_headers(tool_context, None)
+
+    assert headers is None
+
+  @pytest.mark.asyncio
+  async def test_get_headers_service_account(self):
+    """Test header generation for service account credentials."""
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+    )
+
+    # Create service account credential
+    service_account = ServiceAccount(scopes=["test"])
+    credential = AuthCredential(
+        auth_type=AuthCredentialTypes.SERVICE_ACCOUNT,
+        service_account=service_account,
+    )
+
+    tool_context = Mock(spec=ToolContext)
+    headers = await tool._get_headers(tool_context, credential)
+
+    # Should return None as service account credentials are not supported for direct header generation
+    assert headers is None
+
+  @pytest.mark.asyncio
   async def test_run_async_impl_with_api_key_header_auth(self):
     """Test running tool with API key header authentication end-to-end."""
     from fastapi.openapi.models import APIKey
@@ -313,6 +550,65 @@ class TestMCPTool:
 
     # Check that the method has the retry decorator
     assert hasattr(tool._run_async_impl, "__wrapped__")
+
+  @pytest.mark.asyncio
+  async def test_get_headers_http_custom_scheme(self):
+    """Test header generation for custom HTTP scheme."""
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+    )
+
+    http_auth = HttpAuth(
+        scheme="custom", credentials=HttpCredentials(token="custom_token")
+    )
+    credential = AuthCredential(
+        auth_type=AuthCredentialTypes.HTTP, http=http_auth
+    )
+
+    tool_context = Mock(spec=ToolContext)
+    headers = await tool._get_headers(tool_context, credential)
+
+    assert headers == {"Authorization": "custom custom_token"}
+
+  @pytest.mark.asyncio
+  async def test_get_headers_api_key_error_logging(self):
+    """Test that API key errors are logged correctly."""
+    from fastapi.openapi.models import APIKey
+    from fastapi.openapi.models import APIKeyIn
+    from google.adk.auth.auth_schemes import AuthSchemeType
+
+    # Create auth scheme for query-based API key (not supported)
+    auth_scheme = APIKey(**{
+        "type": AuthSchemeType.apiKey,
+        "in": APIKeyIn.query,
+        "name": "api_key",
+    })
+    auth_credential = AuthCredential(
+        auth_type=AuthCredentialTypes.API_KEY, api_key="my_api_key"
+    )
+
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+        auth_scheme=auth_scheme,
+        auth_credential=auth_credential,
+    )
+
+    tool_context = Mock(spec=ToolContext)
+
+    # Test with logging
+    with patch("google.adk.tools.mcp_tool.mcp_tool.logger") as mock_logger:
+      with pytest.raises(ValueError):
+        await tool._get_headers(tool_context, auth_credential)
+
+      # Verify error was logged
+      mock_logger.error.assert_called_once()
+      logged_message = mock_logger.error.call_args[0][0]
+      assert (
+          "McpTool only supports header-based API key authentication"
+          in logged_message
+      )
 
   @pytest.mark.asyncio
   async def test_run_async_require_confirmation_true_no_confirmation(self):
