@@ -693,6 +693,158 @@ methods to `SessionService` interface for framework-level protection.
 
 ---
 
+---
+
+## Comment 4: Cross-Process Durability Clarification
+
+**From:** ADK Team
+**Date:** 2026-02-02
+
+**Reference:** Section 1.2 - "Cross-process durability: state lost if the process dies"
+
+**Comment:**
+> "Could you elaborate on this? I think agent state is persisted in the event and the event will be persisted in the selected session service."
+
+---
+
+### Response
+
+You're correct that session events are persisted in the SessionService. Let me clarify what "state lost" means in the context of long-running tasks.
+
+#### What IS Preserved (SessionService Events)
+
+| Data | Preserved? | Location |
+|------|------------|----------|
+| User messages | Yes | Session events |
+| Agent responses | Yes | Session events |
+| Tool call records | Yes | Session events (tool name, args, result) |
+| LLM conversation context | Yes | Replayable from events |
+
+#### What May NOT Be Preserved (or Not Usable)
+
+| Data | Preserved? | Issue |
+|------|------------|-------|
+| In-flight tool execution | **No** | Process dies mid-tool-call |
+| External job handles | **Partial** | Job ID in event, but no reconciliation structure |
+| Multi-step operation progress | **No** | "I'm on step 3 of 7" not tracked |
+| Agent's execution plan | **No** | Task graph, priorities, dependencies |
+| Partial aggregated results | **No** | "Scanned 30 of 50 tables, found X so far" |
+| Workspace files in progress | **No** | Draft reports, intermediate artifacts |
+
+#### Concrete Example: 50-Table PII Scan
+
+**Scenario:** Agent is scanning 50 BigQuery tables for PII. Process dies after completing 30 tables.
+
+**With SessionService only:**
+
+```
+Events stored:
+  - User: "Scan all tables for PII"
+  - Agent: "I'll scan these 50 tables..."
+  - ToolCall: scan_table("table_1") → {findings: [...]}
+  - ToolCall: scan_table("table_2") → {findings: [...]}
+  ...
+  - ToolCall: scan_table("table_30") → {findings: [...]}
+  - [PROCESS DIES HERE]
+```
+
+On restart:
+- Events replay to LLM ✓
+- LLM sees 30 tool calls completed ✓
+- But: **LLM must re-deduce** which tables remain
+- But: **No structured job ledger** for reconciliation
+- But: **Aggregated findings** must be re-computed from events
+- Risk: **LLM may miscount** or re-scan tables
+
+**With Checkpoint + SessionService:**
+
+```
+Checkpoint stored:
+  {
+    "job_ledger": {
+      "table_1": {"status": "complete", "findings": 3},
+      "table_2": {"status": "complete", "findings": 0},
+      ...
+      "table_30": {"status": "complete", "findings": 5},
+      "table_31": {"status": "pending"},
+      ...
+      "table_50": {"status": "pending"}
+    },
+    "aggregated_findings": {
+      "total_tables_scanned": 30,
+      "total_findings": 47,
+      "findings_by_type": {"email": 20, "ssn": 15, "phone": 12}
+    },
+    "execution_plan": {
+      "current_phase": "scanning",
+      "next_table_index": 31
+    }
+  }
+```
+
+On restart:
+- Load checkpoint ✓
+- Know exactly which tables remain ✓
+- Reconcile with BigQuery job states ✓
+- Continue with aggregated state intact ✓
+- No LLM re-deduction needed ✓
+
+#### The Key Distinction
+
+| Aspect | Session Events | Checkpoint State |
+|--------|----------------|------------------|
+| Purpose | LLM conversation context | Execution state recovery |
+| Structure | Append-only event stream | Point-in-time snapshot |
+| Recovery mode | Replay events to LLM | Load structured state |
+| External jobs | Tool call records | Reconcilable job ledger |
+| Aggregations | Must re-compute from events | Pre-computed, ready to use |
+| Reliability | LLM must re-deduce state | Deterministic restoration |
+
+#### When Session Events Are Sufficient
+
+Session events alone work well for:
+- Short conversations (< 5 min)
+- Simple tool calls (no external async jobs)
+- Stateless operations (each tool call independent)
+- Human-in-the-loop flows (human provides continuity)
+
+#### When Checkpoints Add Value
+
+Checkpoints are valuable for:
+- Long-running operations (hours/days)
+- External async jobs (BigQuery, Cloud Build, ML training)
+- Multi-step plans with dependencies
+- Aggregated/computed state (partial results)
+- Deterministic recovery (no LLM re-deduction)
+
+---
+
+### Suggested Design Doc Update
+
+Revise Section 1.2 limitation description:
+
+**From:**
+> "Cross-process durability: state lost if the process dies"
+
+**To:**
+> "Cross-process durability: While session events persist conversation history, structured execution state (job ledgers, aggregated results, execution plans) is not captured in a form that enables deterministic recovery. On restart, the LLM must re-deduce state from event history, which may be unreliable for complex multi-step operations."
+
+Add clarification table to Section 1.2:
+
+```markdown
+**Clarification: Session Events vs. Checkpoint State**
+
+| Recovery Need | Session Events | Checkpoint |
+|---------------|----------------|------------|
+| Conversation context | ✓ Sufficient | ✓ |
+| External job reconciliation | ✗ Manual | ✓ Structured ledger |
+| Multi-step progress tracking | ✗ LLM re-deduces | ✓ Explicit state |
+| Aggregated partial results | ✗ Re-compute | ✓ Pre-computed |
+| Deterministic recovery | ✗ LLM-dependent | ✓ Guaranteed |
+```
+
+---
+
 ## Updated Open Questions for ADK Team
 
 1. **Table naming**: Should checkpoint tables use a prefix (`durable_sessions`) or separate dataset?
@@ -703,3 +855,4 @@ methods to `SessionService` interface for framework-level protection.
 6. **Shared bucket**: Can checkpoints share a GCS bucket with artifacts, or should they be separate?
 7. **Framework-level leasing**: Should `Runner` have optional built-in lease management? Or should `SessionService` have lease methods?
 8. **Lease backend standardization**: If leasing becomes a framework feature, what backends should be supported (BQ, Firestore, Redis, DB row locks)?
+9. **Event-based recovery**: Is there interest in adding structured "execution state" events to SessionService as an alternative to separate checkpoints?
