@@ -287,3 +287,248 @@ Yes, recommended. Use the same dataset with different table prefixes:
 2. **Unified service**: Is there interest in a `DurableSessionService` wrapper that manages both?
 3. **Event integration**: Should checkpoint events be mirrored to SessionService for audit trail?
 4. **BigQuerySessionService**: Does it already have any checkpoint-like capabilities we should leverage?
+
+---
+
+## Comment 2: GcsArtifactService for Large Blobs
+
+**From:** ADK Team
+**Date:** 2026-02-02
+
+**Comment:**
+> "In ADK, ArtifactService is designed for large blobs. Have you checked that? We have a GcsArtifactService in the core library."
+
+---
+
+### Response
+
+Thank you for pointing this out. Yes, I've reviewed `GcsArtifactService` (`src/google/adk/artifacts/gcs_artifact_service.py`) and the `BaseArtifactService` interface. This is a valid consideration.
+
+#### Current ArtifactService Capabilities
+
+| Feature | GcsArtifactService |
+|---------|-------------------|
+| Storage backend | GCS bucket |
+| Key structure | `{app_name}/{user_id}/{session_id}/{filename}/{version}` |
+| Versioning | Monotonic integer versions (0, 1, 2, ...) |
+| Data type | `types.Part` (inline_data, text, file_data) |
+| Metadata | Custom metadata dict on blob |
+| Operations | save, load, list, delete, list_versions |
+
+#### Checkpoint Blob Requirements
+
+| Requirement | ArtifactService Support | Gap |
+|-------------|------------------------|-----|
+| Store bytes/JSON blobs | Yes (`types.Part.from_bytes`) | None |
+| Session-scoped storage | Yes | None |
+| Version tracking | Yes (monotonic) | Checkpoint uses `checkpoint_seq` |
+| Custom metadata | Yes | Need SHA-256, trigger, size_bytes |
+| Two-phase commit | **No** | Critical gap |
+| Atomic visibility with BQ | **No** | Critical gap |
+| Workspace tar.gz bundles | Partially (as bytes) | None |
+| Integrity verification | **No** | Need SHA-256 on read |
+
+#### Key Gaps
+
+**1. Two-Phase Commit Semantics**
+
+The checkpoint pattern requires:
+```
+Phase 1: Upload blob to GCS (may fail, invisible)
+Phase 2: Insert metadata to BigQuery (makes checkpoint visible)
+```
+
+`GcsArtifactService.save_artifact()` uploads and returns immediately. There's no coordination with an external metadata store. A partial upload becomes immediately "visible" via `load_artifact()`.
+
+**2. Atomic Visibility with BigQuery Metadata**
+
+Checkpoints must be invisible until both:
+- GCS blob exists AND
+- BigQuery metadata row exists
+
+`GcsArtifactService` doesn't have this concept - artifacts are visible as soon as they're uploaded.
+
+**3. SHA-256 Integrity Verification**
+
+Checkpoints require integrity verification on read:
+```python
+# On read
+blob = gcs.download(uri)
+if sha256(blob) != metadata.sha256:
+    raise CheckpointCorruptionError()
+```
+
+`GcsArtifactService` doesn't compute or verify checksums.
+
+**4. Key Structure Mismatch**
+
+| Service | Key Pattern |
+|---------|-------------|
+| ArtifactService | `{app}/{user}/{session}/{filename}/{version}` |
+| CheckpointStore | `{session_id}/{checkpoint_seq}/state.json` |
+
+Checkpoints don't have `app_name`, `user_id`, or `filename` - they're keyed purely by `session_id` + `checkpoint_seq`.
+
+---
+
+### Potential Approaches
+
+#### Option A: Use GcsArtifactService as Underlying Storage (Adapt)
+
+```python
+class BigQueryCheckpointStore(DurableSessionStore):
+    def __init__(self, artifact_service: GcsArtifactService, ...):
+        self._artifact_service = artifact_service
+
+    async def write_checkpoint(self, session_id, seq, state_blob, ...):
+        # Phase 1: Use artifact service for GCS upload
+        version = await self._artifact_service.save_artifact(
+            app_name="checkpoints",
+            user_id="system",
+            session_id=session_id,
+            filename=f"checkpoint_{seq}",
+            artifact=types.Part.from_bytes(state_blob, mime_type="application/json"),
+            custom_metadata={"sha256": sha256(state_blob)},
+        )
+
+        # Phase 2: Insert BQ metadata (makes checkpoint visible)
+        await self._insert_bq_metadata(session_id, seq, ...)
+```
+
+**Pros:**
+- Reuses existing GCS infrastructure
+- Consistent with ADK patterns
+- Less code duplication
+
+**Cons:**
+- Awkward key mapping (`app_name="checkpoints"`, `user_id="system"`)
+- Still need custom two-phase commit logic
+- Still need SHA-256 verification layer
+- Version semantics don't match (artifact version vs checkpoint_seq)
+
+#### Option B: Direct GCS Client (Current Design)
+
+```python
+class BigQueryCheckpointStore(DurableSessionStore):
+    def __init__(self, gcs_bucket: str, ...):
+        self._gcs_client = storage.Client()
+        self._bucket = self._gcs_client.bucket(gcs_bucket)
+
+    async def write_checkpoint(self, session_id, seq, state_blob, ...):
+        # Phase 1: Direct GCS upload with preconditions
+        blob = self._bucket.blob(f"{session_id}/{seq}/state.json")
+        blob.upload_from_string(
+            state_blob,
+            if_generation_match=0,  # Fail if exists (idempotency)
+        )
+
+        # Phase 2: Insert BQ metadata
+        await self._insert_bq_metadata(session_id, seq, ...)
+```
+
+**Pros:**
+- Full control over GCS operations
+- Clean key structure
+- Native support for preconditions (`if_generation_match`)
+- Simpler code path
+
+**Cons:**
+- Doesn't leverage existing ArtifactService
+- Separate GCS client initialization
+
+#### Option C: Extend ArtifactService Interface
+
+Add checkpoint-specific methods to `BaseArtifactService`:
+
+```python
+class BaseArtifactService(ABC):
+    # Existing methods...
+
+    # New: Checkpoint-specific operations
+    async def save_checkpoint_blob(
+        self,
+        *,
+        session_id: str,
+        checkpoint_seq: int,
+        blob: bytes,
+        sha256: str,
+    ) -> str:
+        """Save a checkpoint blob and return GCS URI."""
+        ...
+
+    async def load_checkpoint_blob(
+        self,
+        *,
+        session_id: str,
+        checkpoint_seq: int,
+        expected_sha256: str,
+    ) -> bytes:
+        """Load and verify checkpoint blob."""
+        ...
+```
+
+**Pros:**
+- Unified artifact/checkpoint interface
+- Extensible for future blob types
+
+**Cons:**
+- Modifies core ADK interface
+- Checkpoint semantics may not fit all artifact backends
+- Two-phase commit still external
+
+---
+
+### Recommendation
+
+**Option B (Direct GCS Client)** is recommended for v1 because:
+
+1. **Simpler implementation**: No adapter layer or key mapping
+2. **Full control**: Native GCS preconditions for idempotency
+3. **Clean semantics**: Checkpoint keys match checkpoint concepts
+4. **No interface changes**: Doesn't require modifying BaseArtifactService
+
+However, we should:
+- Document the relationship with ArtifactService
+- Consider Option A or C for v2 if there's desire for unification
+- Ensure both can share the same GCS bucket if needed
+
+---
+
+### Suggested Design Doc Updates
+
+Add to Section 15 (Alternatives Considered):
+
+```markdown
+| Alternative | Why not (v1) |
+|-------------|--------------|
+| Use GcsArtifactService for checkpoint blobs | Key structure mismatch; no two-phase commit support; no SHA-256 verification; would require adapter layer |
+```
+
+Add to Section 5.3 (Integration with Existing ADK Services):
+
+```markdown
+### Relationship to ArtifactService
+
+ADK's `ArtifactService` (`GcsArtifactService`, `FileArtifactService`, etc.) is designed for
+user/session-scoped file artifacts with versioning.
+
+Checkpoints have different requirements:
+- Two-phase commit with BigQuery metadata
+- SHA-256 integrity verification
+- Different key structure (session_id/checkpoint_seq)
+
+For v1, `CheckpointStore` uses direct GCS client access. Future versions may consider
+unifying with `ArtifactService` if the interface can be extended to support checkpoint
+semantics.
+```
+
+---
+
+## Updated Open Questions for ADK Team
+
+1. **Table naming**: Should checkpoint tables use a prefix (`durable_sessions`) or separate dataset?
+2. **Unified service**: Is there interest in a `DurableSessionService` wrapper that manages both SessionService and CheckpointStore?
+3. **Event integration**: Should checkpoint events be mirrored to SessionService for audit trail?
+4. **BigQuerySessionService**: Does it already have any checkpoint-like capabilities we should leverage?
+5. **ArtifactService unification**: Should we extend `BaseArtifactService` with checkpoint-specific methods in v2?
+6. **Shared bucket**: Can checkpoints share a GCS bucket with artifacts, or should they be separate?
