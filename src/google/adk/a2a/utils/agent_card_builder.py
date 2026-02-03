@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import Dict
 from typing import List
@@ -32,6 +33,8 @@ from ...agents.parallel_agent import ParallelAgent
 from ...agents.sequential_agent import SequentialAgent
 from ...tools.example_tool import ExampleTool
 from ..experimental import a2a_experimental
+
+logger = logging.getLogger('google_adk.' + __name__)
 
 
 @a2a_experimental
@@ -157,8 +160,8 @@ async def _build_sub_agent_skills(agent: BaseAgent) -> List[AgentSkill]:
         sub_agent_skills.append(aggregated_skill)
     except Exception as e:
       # Log warning but continue with other sub-agents
-      print(
-          f'Warning: Failed to build skills for sub-agent {sub_agent.name}: {e}'
+      logger.warning(
+          'Failed to build skills for sub-agent %s: %s', sub_agent.name, e
       )
       continue
 
@@ -502,7 +505,7 @@ async def _extract_examples_from_agent(
       if isinstance(tool, ExampleTool):
         return _convert_example_tool_examples(tool)
   except Exception as e:
-    print(f'Warning: Failed to extract examples from tools: {e}')
+    logger.warning('Failed to extract examples from tools: %s', e)
 
   # If no example_tool found, try to extract examples from instruction
   if agent.instruction:
