@@ -48,13 +48,13 @@ dependencies = [
   "httpx>=0.27.0, <1.0.0",                                   # HTTP client library
   "jsonschema>=4.23.0, <5.0.0",                              # Agent Builder config validation
   "mcp>=1.23.0, <2.0.0",                                     # For MCP Toolset
-  "opentelemetry-api>=1.37.0, <=1.37.0",                     # OpenTelemetry - limit upper version for sdk and api to not risk breaking changes from unstable _logs package.
+  "opentelemetry-api>=1.36.0, <1.40.0",                      # OpenTelemetry - keep below 1.40.0 to reduce risk of breaking changes around log-signal APIs.
   "opentelemetry-exporter-gcp-logging>=1.9.0a0, <2.0.0",
   "opentelemetry-exporter-gcp-monitoring>=1.9.0a0, <2.0.0",
   "opentelemetry-exporter-gcp-trace>=1.9.0, <2.0.0",
   "opentelemetry-exporter-otlp-proto-http>=1.36.0",
   "opentelemetry-resourcedetector-gcp>=1.9.0a0, <2.0.0",
-  "opentelemetry-sdk>=1.37.0, <=1.37.0",
+  "opentelemetry-sdk>=1.36.0, <1.40.0",
   "pyarrow>=14.0.0",
   "pydantic>=2.0, <3.0.0",                                   # For data validation/models
   "python-dateutil>=2.9.0.post0, <3.0.0",                    # For Vertext AI Session Service
