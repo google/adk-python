@@ -188,7 +188,7 @@ class StreamingResponseAggregator:
       self._current_fc_id = fc.id
 
     # Process each partial argument
-    for partial_arg in getattr(fc, 'partial_args', []):
+    for partial_arg in fc.partial_args or []:
       json_path = partial_arg.json_path
       if not json_path:
         continue
@@ -203,8 +203,7 @@ class StreamingResponseAggregator:
         self._set_value_by_json_path(json_path, value)
 
     # Check if function call is complete
-    fc_will_continue = getattr(fc, 'will_continue', False)
-    if not fc_will_continue:
+    if not fc.will_continue:
       # Function call complete, flush it
       self._flush_text_buffer_to_sequence()
       self._flush_function_call_to_sequence()
@@ -216,9 +215,13 @@ class StreamingResponseAggregator:
       part: The part containing a function call
     """
     fc = part.function_call
+    if not fc:
+      return
 
-    # Check if this is a streaming FC (has partialArgs)
-    if hasattr(fc, 'partial_args') and fc.partial_args:
+    # Check if this is a streaming FC (has partialArgs or will_continue=True)
+    # The first chunk of a streaming function call may have will_continue=True
+    # but no partial_args yet, so we need to check both conditions.
+    if fc.partial_args or fc.will_continue:
       # Streaming function call arguments
 
       # Save thought_signature from the part (first chunk should have it)
