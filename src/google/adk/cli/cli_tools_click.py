@@ -1867,6 +1867,25 @@ def cli_migrate_session(
         " directory, if any.)"
     ),
 )
+@click.option(
+    "--validate-agent-import/--no-validate-agent-import",
+    default=False,
+    help=(
+        "Optional. Validate that the agent module can be imported before"
+        " deployment. This requires your local environment to have the same"
+        " dependencies as the deployment environment. (default: disabled)"
+    ),
+)
+@click.option(
+    "--skip-agent-import-validation",
+    "skip_agent_import_validation_alias",
+    is_flag=True,
+    default=False,
+    help=(
+        "Optional. Skip pre-deployment import validation of `agent.py`. This is"
+        " the default; use --validate-agent-import to enable validation."
+    ),
+)
 @click.argument(
     "agent",
     type=click.Path(
@@ -1891,6 +1910,8 @@ def cli_deploy_agent_engine(
     requirements_file: str,
     absolutize_imports: bool,
     agent_engine_config_file: str,
+    validate_agent_import: bool = False,
+    skip_agent_import_validation_alias: bool = False,
 ):
   """Deploys an agent to Agent Engine.
 
@@ -1905,6 +1926,11 @@ def cli_deploy_agent_engine(
   """
   logging.getLogger("vertexai_genai.agentengines").setLevel(logging.INFO)
   try:
+    if validate_agent_import and skip_agent_import_validation_alias:
+      raise click.UsageError(
+          "Do not pass both --validate-agent-import and"
+          " --skip-agent-import-validation."
+      )
     cli_deploy.to_agent_engine(
         agent_folder=agent,
         project=project,
@@ -1922,6 +1948,7 @@ def cli_deploy_agent_engine(
         requirements_file=requirements_file,
         absolutize_imports=absolutize_imports,
         agent_engine_config_file=agent_engine_config_file,
+        skip_agent_import_validation=not validate_agent_import,
     )
   except Exception as e:
     click.secho(f"Deploy failed: {e}", fg="red", err=True)

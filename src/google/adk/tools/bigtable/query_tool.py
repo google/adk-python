@@ -16,6 +16,7 @@ from __future__ import annotations
 
 """Tool to execute SQL queries against Bigtable."""
 import json
+import logging
 from typing import Any
 from typing import Dict
 from typing import List
@@ -26,6 +27,8 @@ from google.cloud import bigtable
 from . import client
 from ..tool_context import ToolContext
 from .settings import BigtableToolSettings
+
+logger = logging.getLogger("google_adk." + __name__)
 
 DEFAULT_MAX_EXECUTED_QUERY_RESULT_ROWS = 50
 
@@ -112,7 +115,7 @@ def execute_sql(
     return result
 
   except Exception as ex:
-    print(ex)
+    logger.error("Bigtable query failed: %s", ex)
     return {
         "status": "ERROR",
         "error_details": str(ex),

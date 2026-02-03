@@ -221,13 +221,29 @@ def _rearrange_events_for_latest_function_response(
 
 
 def _is_part_invisible(p: types.Part) -> bool:
-  """Returns whether a part is invisible for LLM context."""
-  return getattr(p, 'thought', False) or not (
+  """Returns whether a part is invisible for LLM context.
+
+  A part is invisible if:
+  - It has no meaningful content (text, inline_data, file_data, function_call,
+    function_response, executable_code, or code_execution_result), OR
+  - It is marked as a thought AND does not contain function_call or
+    function_response
+
+  Function calls and responses are never invisible, even if marked as thought,
+  because they represent actions that need to be executed or results that need
+  to be processed.
+
+  Args:
+    p: The part to check.
+  """
+  # Function calls and responses are never invisible, even if marked as thought
+  if p.function_call or p.function_response:
+    return False
+
+  return p.thought or not (
       p.text
       or p.inline_data
       or p.file_data
-      or p.function_call
-      or p.function_response
       or p.executable_code
       or p.code_execution_result
   )
