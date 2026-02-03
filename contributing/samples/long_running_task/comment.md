@@ -524,6 +524,175 @@ semantics.
 
 ---
 
+---
+
+## Comment 3: Leasing as General Requirement
+
+**From:** ADK Team
+**Date:** 2026-02-02
+
+**Reference:** Section 7.3 - "We must ensure only one runner resumes a session at a time"
+
+**Comment:**
+> "This is not only applicable to resume. `Runner.run_async` also requires this. Leasing is a general requirement for app developers."
+
+---
+
+### Response
+
+This is an important clarification. You're correct that session-level concurrency control is a **general requirement**, not specific to durable session resume.
+
+#### Expanded Scope of Leasing
+
+| Scenario | Concurrency Risk | Current ADK Handling |
+|----------|------------------|---------------------|
+| Multiple `run_async()` on same session | Race conditions, duplicate tool calls | App developer responsibility |
+| Resume after pause | Duplicate resume attempts | App developer responsibility |
+| Pub/Sub event redelivery | Multiple runners wake on same event | App developer responsibility |
+| Horizontal scaling | Multiple instances claim same session | App developer responsibility |
+
+The design doc incorrectly scoped leasing as a "durable session" concern. In reality:
+
+```
+Leasing requirement = ANY scenario where multiple runners might access the same session
+```
+
+#### Current State in ADK
+
+Looking at `Runner.run_async()` in `src/google/adk/runners.py`:
+
+```python
+async def run_async(
+    self,
+    *,
+    user_id: str,
+    session_id: str,
+    new_message: types.Content,
+    ...
+) -> AsyncGenerator[Event, None]:
+    # No built-in lease acquisition
+    # App developer must ensure single-runner-per-session
+```
+
+There's no built-in lease mechanism. App developers must implement their own concurrency control.
+
+#### Implications for Design
+
+**Option A: Leasing in Durable Layer Only (Current Design)**
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    ADK Application                           │
+├─────────────────────────────────────────────────────────────┤
+│  Runner.run_async()          │  CheckpointStore             │
+│  - No built-in leasing       │  - Has lease management      │
+│  - App manages concurrency   │  - Protects resume only      │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Pros:** Non-breaking, durable sessions get protection
+**Cons:** Inconsistent; regular sessions still unprotected
+
+**Option B: Leasing in Runner (Framework-Level)**
+
+```python
+class Runner:
+    def __init__(self, ..., lease_manager: Optional[LeaseManager] = None):
+        self._lease_manager = lease_manager
+
+    async def run_async(self, ..., session_id: str, ...):
+        if self._lease_manager:
+            lease = await self._lease_manager.acquire(session_id)
+            if not lease:
+                raise SessionLeaseDeniedError(session_id)
+        try:
+            # ... execute agent logic
+        finally:
+            if self._lease_manager:
+                await self._lease_manager.release(session_id)
+```
+
+**Pros:** Consistent protection for all sessions
+**Cons:** Breaking change; requires lease manager configuration
+
+**Option C: Leasing in SessionService (Storage-Level)**
+
+```python
+class BaseSessionService(ABC):
+    @abstractmethod
+    async def acquire_session_lease(
+        self, session_id: str, lease_id: str, ttl_seconds: int
+    ) -> bool: ...
+
+    @abstractmethod
+    async def release_session_lease(
+        self, session_id: str, lease_id: str
+    ) -> None: ...
+```
+
+**Pros:** Unified with session storage; natural fit
+**Cons:** Requires changes to all SessionService implementations
+
+---
+
+### Recommendation
+
+**Short-term (v1):** Keep leasing in `CheckpointStore` for durable sessions, but:
+- Update design doc to acknowledge this is a subset of a broader need
+- Document that app developers need their own concurrency control for non-durable sessions
+
+**Medium-term (v2):** Consider adding leasing to `SessionService` interface:
+- `BigQuerySessionService` already has infrastructure for this
+- `DatabaseSessionService` can use row-level locks
+- `InMemorySessionService` can use asyncio locks
+
+**Long-term:** Consider Runner-level lease integration as opt-in feature.
+
+---
+
+### Suggested Design Doc Updates
+
+**Update Section 7.3 Title:**
+
+From:
+> "7.3 Leasing & optimistic concurrency"
+
+To:
+> "7.3 Leasing & optimistic concurrency (session-level)"
+
+**Add Clarification Paragraph:**
+
+```markdown
+### 7.3 Leasing & Optimistic Concurrency
+
+**Note:** Session-level concurrency control is a general ADK requirement, not
+specific to durable sessions. Any scenario where multiple runners might access
+the same session requires leasing:
+
+- Multiple `run_async()` calls on the same session
+- Resume after pause (durable or in-process)
+- Event-driven wake-up with potential redelivery
+- Horizontal scaling with shared session storage
+
+Currently, ADK leaves session leasing to app developers. The durable session
+layer provides lease management for checkpoint-protected sessions, but this
+does not cover all concurrency scenarios.
+
+**Future consideration:** Add optional `LeaseManager` to `Runner` or lease
+methods to `SessionService` interface for framework-level protection.
+```
+
+**Add to Section 18 (Open Questions):**
+
+```markdown
+| Question | Risk Level | Notes |
+|----------|------------|-------|
+| Framework-level leasing | Medium | Should Runner have built-in lease support? Would require LeaseManager abstraction |
+| SessionService lease methods | Medium | Natural fit but requires interface changes |
+```
+
+---
+
 ## Updated Open Questions for ADK Team
 
 1. **Table naming**: Should checkpoint tables use a prefix (`durable_sessions`) or separate dataset?
@@ -532,3 +701,5 @@ semantics.
 4. **BigQuerySessionService**: Does it already have any checkpoint-like capabilities we should leverage?
 5. **ArtifactService unification**: Should we extend `BaseArtifactService` with checkpoint-specific methods in v2?
 6. **Shared bucket**: Can checkpoints share a GCS bucket with artifacts, or should they be separate?
+7. **Framework-level leasing**: Should `Runner` have optional built-in lease management? Or should `SessionService` have lease methods?
+8. **Lease backend standardization**: If leasing becomes a framework feature, what backends should be supported (BQ, Firestore, Redis, DB row locks)?
