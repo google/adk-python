@@ -245,3 +245,39 @@ def test_migrate_from_sqlalchemy_pickle_with_async_driver_urls(tmp_path):
   assert session_res.id == "async_session"
 
   dest_session.close()
+
+
+def _assert_update_timestamp_tz_is_utc_timestamp(schema_module) -> None:
+  engine = create_engine("sqlite:///:memory:")
+  schema_module.Base.metadata.create_all(engine)
+  SessionLocal = sessionmaker(bind=engine)
+
+  update_time = datetime(2026, 1, 1, 0, 0, 0)
+  storage_session = schema_module.StorageSession(
+      app_name="app",
+      user_id="user",
+      id="sid",
+      state={},
+      create_time=update_time,
+      update_time=update_time,
+  )
+
+  with SessionLocal() as db:
+    db.add(storage_session)
+    db.commit()
+
+    fetched = db.get(schema_module.StorageSession, ("app", "user", "sid"))
+    assert fetched is not None
+    assert isinstance(fetched.update_timestamp_tz, float)
+    assert (
+        fetched.update_timestamp_tz
+        == update_time.replace(tzinfo=timezone.utc).timestamp()
+    )
+
+
+def test_v1_storage_session_update_timestamp_tz() -> None:
+  _assert_update_timestamp_tz_is_utc_timestamp(v1)
+
+
+def test_v0_storage_session_update_timestamp_tz() -> None:
+  _assert_update_timestamp_tz_is_utc_timestamp(v0)

@@ -38,6 +38,7 @@ from google.genai import types
 from sqlalchemy import Boolean
 from sqlalchemy import ForeignKeyConstraint
 from sqlalchemy import func
+from sqlalchemy import inspect
 from sqlalchemy import Text
 from sqlalchemy.dialects import mysql
 from sqlalchemy.ext.mutable import MutableDict
@@ -129,6 +130,20 @@ class StorageSession(Base):
 
   def __repr__(self):
     return f"<StorageSession(id={self.id}, update_time={self.update_time})>"
+
+  @property
+  def update_timestamp_tz(self) -> float:
+    """Returns the update timestamp as a POSIX timestamp.
+
+    This is a compatibility alias for callers that used the pre-`main` API.
+    """
+    sqlalchemy_session = inspect(self).session
+    is_sqlite = bool(
+        sqlalchemy_session
+        and sqlalchemy_session.bind
+        and sqlalchemy_session.bind.dialect.name == "sqlite"
+    )
+    return self.get_update_timestamp(is_sqlite=is_sqlite)
 
   def get_update_timestamp(self, is_sqlite: bool) -> float:
     """Returns the time zone aware update timestamp."""
