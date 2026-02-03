@@ -186,12 +186,12 @@ class VertexAiSessionService(BaseSessionService):
       update_timestamp = get_session_response.update_time.timestamp()
       title = getattr(get_session_response, 'display_name', None)
       session = Session(
-            app_name=app_name,
-            user_id=user_id,
-            id=session_id,
-            state=getattr(get_session_response, 'session_state', None) or {},
-            last_update_time=update_timestamp,
-            title=title,
+          app_name=app_name,
+          user_id=user_id,
+          id=session_id,
+          state=getattr(get_session_response, 'session_state', None) or {},
+          last_update_time=update_timestamp,
+          title=title,
       )
       # Preserve the entire event stream that Vertex returns rather than trying
       # to discard events written milliseconds after the session resource was
