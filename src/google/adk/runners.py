@@ -125,9 +125,12 @@ class Runner:
   # Semaphore to limit concurrent event compaction tasks to prevent resource
   # exhaustion under high concurrency. Limits concurrent LLM calls and DB writes.
   # Shared across all Runner instances for global concurrency control.
+  # Initialized lazily in async context to avoid RuntimeError when no event loop.
   _compaction_semaphore: Optional[asyncio.Semaphore] = None
   # Thread lock to protect semaphore initialization in multi-threaded scenarios
   _compaction_semaphore_lock = threading.Lock()
+  # Stores the configured max concurrent compactions limit for lazy initialization
+  _max_concurrent_compactions_limit: int = DEFAULT_MAX_CONCURRENT_COMPACTIONS
 
   app_name: str
   """The app name of the runner."""
@@ -224,8 +227,29 @@ class Runner:
     ) = self._infer_agent_origin(self.agent)
     self._app_name_alignment_hint: Optional[str] = None
     self._enforce_app_name_alignment()
-    # Initialize or update the shared compaction semaphore
-    self._initialize_compaction_semaphore(max_concurrent_compactions)
+    # Store the configured max concurrent compactions limit for lazy initialization
+    # Validate the limit here to fail fast on invalid configuration
+    if max_concurrent_compactions <= 0:
+      raise ValueError(
+          'max_concurrent_compactions must be positive, got'
+          f' {max_concurrent_compactions}'
+      )
+    # Warn if limit is changed after semaphore is already created, as the
+    # semaphore will retain its original value until recreated
+    if (
+        Runner._compaction_semaphore is not None
+        and Runner._max_concurrent_compactions_limit
+        != max_concurrent_compactions
+    ):
+      logger.warning(
+          'max_concurrent_compactions changed from %d to %d, but compaction'
+          ' semaphore already exists with the old limit. The new limit will'
+          ' take effect after the semaphore is recreated (e.g., in a new'
+          ' process).',
+          Runner._max_concurrent_compactions_limit,
+          max_concurrent_compactions,
+      )
+    Runner._max_concurrent_compactions_limit = max_concurrent_compactions
     # Track background tasks to prevent premature garbage collection
     self._background_tasks: set[asyncio.Task] = set()
 
@@ -343,28 +367,30 @@ class Runner:
     return origin_name, origin_dir
 
   @classmethod
-  def _initialize_compaction_semaphore(cls, limit: int) -> None:
-    """Initializes or updates the shared compaction semaphore.
+  def _get_or_create_compaction_semaphore(cls) -> asyncio.Semaphore:
+    """Gets or lazily creates the shared compaction semaphore.
 
     This method ensures the class-level semaphore is initialized with the
-    specified limit. If a semaphore already exists, it creates a new one
-    with the updated limit (the old one will be garbage collected once all
-    pending tasks complete).
+    configured limit. The semaphore is created lazily on first use within
+    an async context to avoid RuntimeError when no event loop is running.
 
-    Thread-safe: Uses a threading.Lock to protect against race conditions
-    when multiple Runner instances are created concurrently in different threads.
+    Thread-safe: Uses double-checked locking pattern for efficient access.
+    The first check avoids lock overhead in the common case (semaphore exists).
 
-    Args:
-        limit: Maximum number of concurrent compaction tasks allowed.
+    Returns:
+        The shared asyncio.Semaphore for compaction concurrency control.
     """
-    if limit <= 0:
-      raise ValueError(
-          f'max_concurrent_compactions must be positive, got {limit}'
-      )
-    # Use threading lock to ensure thread-safe initialization in multi-threaded
-    # scenarios. We can't use async lock here since this is called from __init__.
+    # Fast path: semaphore already exists, no lock needed
+    if cls._compaction_semaphore is not None:
+      return cls._compaction_semaphore
+    # Slow path: need to create semaphore, use lock for thread safety
     with cls._compaction_semaphore_lock:
-      cls._compaction_semaphore = asyncio.Semaphore(limit)
+      # Double-check after acquiring lock to prevent multiple creations
+      if cls._compaction_semaphore is None:
+        cls._compaction_semaphore = asyncio.Semaphore(
+            cls._max_concurrent_compactions_limit
+        )
+      return cls._compaction_semaphore
 
   def _enforce_app_name_alignment(self) -> None:
     origin_name = self._agent_origin_app_name
@@ -608,15 +634,10 @@ class Runner:
 
           async def _run_compaction_with_error_handling():
             try:
-              # Ensure semaphore is initialized (should always be after __init__)
-              if self._compaction_semaphore is None:
-                logger.warning(
-                    'Compaction semaphore not initialized, using default limit.'
-                )
-                self._initialize_compaction_semaphore(
-                    self.DEFAULT_MAX_CONCURRENT_COMPACTIONS
-                )
-              async with self._compaction_semaphore:
+              # Get or lazily create the semaphore within async context to avoid
+              # RuntimeError when Runner is created before event loop starts
+              semaphore = self._get_or_create_compaction_semaphore()
+              async with semaphore:
                 await _run_compaction_for_sliding_window(
                     self.app, session, self.session_service
                 )

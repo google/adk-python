@@ -1331,6 +1331,11 @@ class TestRunnerCompaction:
     self.session_service = InMemorySessionService()
     self.artifact_service = InMemoryArtifactService()
     self.agent = MockLlmAgent("test_agent")
+    # Reset class-level state for test isolation
+    Runner._compaction_semaphore = None
+    Runner._max_concurrent_compactions_limit = (
+        Runner.DEFAULT_MAX_CONCURRENT_COMPACTIONS
+    )
 
   @pytest.mark.asyncio
   async def test_max_concurrent_compactions_default_value(self):
@@ -1341,13 +1346,16 @@ class TestRunnerCompaction:
         session_service=self.session_service,
         artifact_service=self.artifact_service,
     )
-    # Semaphore should be initialized with default value
-    assert runner._compaction_semaphore is not None
-    # Verify semaphore's value matches the default constant
+    # Limit should be stored for lazy initialization
     assert (
-        runner._compaction_semaphore._value
+        Runner._max_concurrent_compactions_limit
         == Runner.DEFAULT_MAX_CONCURRENT_COMPACTIONS
     )
+    # Semaphore is lazily initialized, trigger it
+    semaphore = runner._get_or_create_compaction_semaphore()
+    assert semaphore is not None
+    # Verify semaphore's value matches the default constant
+    assert semaphore._value == Runner.DEFAULT_MAX_CONCURRENT_COMPACTIONS
 
   @pytest.mark.asyncio
   async def test_max_concurrent_compactions_custom_value(self):
@@ -1360,9 +1368,13 @@ class TestRunnerCompaction:
         artifact_service=self.artifact_service,
         max_concurrent_compactions=custom_limit,
     )
-    assert runner._compaction_semaphore is not None
+    # Limit should be stored for lazy initialization
+    assert Runner._max_concurrent_compactions_limit == custom_limit
+    # Semaphore is lazily initialized, trigger it
+    semaphore = runner._get_or_create_compaction_semaphore()
+    assert semaphore is not None
     # Verify semaphore's value matches the custom value provided
-    assert runner._compaction_semaphore._value == custom_limit
+    assert semaphore._value == custom_limit
 
   @pytest.mark.asyncio
   async def test_max_concurrent_compactions_shared_across_instances(self):
@@ -1381,10 +1393,15 @@ class TestRunnerCompaction:
         artifact_service=self.artifact_service,
         max_concurrent_compactions=3,
     )
-    # Both should reference the same class-level semaphore, and its value
-    # should be updated by the last Runner instance.
-    assert runner1._compaction_semaphore is runner2._compaction_semaphore
-    assert runner1._compaction_semaphore._value == 3
+    # The limit should be updated by the last Runner instance
+    assert Runner._max_concurrent_compactions_limit == 3
+    # Trigger lazy initialization from first runner
+    semaphore1 = runner1._get_or_create_compaction_semaphore()
+    # Both should reference the same class-level semaphore
+    semaphore2 = runner2._get_or_create_compaction_semaphore()
+    assert semaphore1 is semaphore2
+    # Semaphore value should reflect the limit at initialization time
+    assert semaphore1._value == 3
 
   @pytest.mark.asyncio
   async def test_max_concurrent_compactions_validation(self):
@@ -1405,6 +1422,44 @@ class TestRunnerCompaction:
           artifact_service=self.artifact_service,
           max_concurrent_compactions=-1,
       )
+
+  @pytest.mark.asyncio
+  async def test_max_concurrent_compactions_warns_on_change_after_init(
+      self, caplog
+  ):
+    """Test that changing limit after semaphore creation logs a warning."""
+    import logging
+
+    # Create first runner and initialize semaphore
+    runner1 = Runner(
+        app_name="test_app",
+        agent=self.agent,
+        session_service=self.session_service,
+        artifact_service=self.artifact_service,
+        max_concurrent_compactions=10,
+    )
+    # Trigger lazy initialization of semaphore
+    runner1._get_or_create_compaction_semaphore()
+
+    # Create second runner with different limit - should log warning
+    with caplog.at_level(logging.WARNING):
+      runner2 = Runner(
+          app_name="test_app",
+          agent=self.agent,
+          session_service=self.session_service,
+          artifact_service=self.artifact_service,
+          max_concurrent_compactions=5,
+      )
+
+    # Verify warning was logged
+    assert any(
+        "max_concurrent_compactions changed from 10 to 5" in record.message
+        for record in caplog.records
+    ), "Expected warning about limit change not found in logs"
+
+    # Semaphore should still have the original value (10)
+    semaphore = runner2._get_or_create_compaction_semaphore()
+    assert semaphore._value == 10
 
   @pytest.mark.asyncio
   async def test_compaction_runs_in_background_non_blocking(self):
