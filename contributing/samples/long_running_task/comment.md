@@ -819,6 +819,242 @@ Checkpoints are valuable for:
 
 ---
 
+### End-to-End Concrete Example: Enterprise PII Compliance Audit
+
+Let me walk through a complete scenario showing what the checkpoint approach enables that event logging alone cannot.
+
+#### Scenario Setup
+
+**Task:** Scan 100 BigQuery tables across 5 datasets for PII (emails, SSNs, phone numbers) to generate a compliance report.
+
+**Environment:**
+- Cloud Run with 60-minute timeout
+- Each table scan takes 2-10 minutes (BigQuery job)
+- Total expected runtime: ~8 hours
+- Multiple Cloud Run instances may be involved
+
+**User Request:**
+```
+"Scan all tables in the customer_data, transactions, analytics,
+logs, and marketing datasets for PII. Generate a compliance report
+with findings by table and recommendations."
+```
+
+---
+
+#### Timeline: What Happens
+
+```
+Hour 0:00 - Agent starts
+  - Discovers 100 tables across 5 datasets
+  - Creates execution plan: scan tables, aggregate findings, generate report
+  - Begins scanning tables
+
+Hour 2:30 - Progress checkpoint
+  - 35 tables scanned
+  - 127 PII findings so far
+  - 15 BigQuery jobs completed, 2 running, 83 pending
+
+Hour 3:15 - PROCESS DIES (Cloud Run timeout/crash)
+  - 2 BigQuery jobs still running in the cloud
+  - Agent process terminated
+```
+
+---
+
+#### Path A: Event Logging Only (Current ADK)
+
+**Events stored in SessionService:**
+```json
+[
+  {"type": "user_message", "content": "Scan all tables..."},
+  {"type": "agent_message", "content": "I'll scan 100 tables..."},
+  {"type": "tool_call", "tool": "submit_bq_scan", "args": {"table": "customer_data.users"}, "result": {"job_id": "job_001", "status": "submitted"}},
+  {"type": "tool_call", "tool": "get_job_result", "args": {"job_id": "job_001"}, "result": {"findings": [{"type": "email", "column": "contact_email", "count": 15000}]}},
+  {"type": "tool_call", "tool": "submit_bq_scan", "args": {"table": "customer_data.orders"}, "result": {"job_id": "job_002", "status": "submitted"}},
+  // ... 70 more tool call events ...
+  {"type": "tool_call", "tool": "submit_bq_scan", "args": {"table": "analytics.events"}, "result": {"job_id": "job_037", "status": "submitted"}},
+  // PROCESS DIES - no more events
+]
+```
+
+**On Restart (New Cloud Run Instance):**
+
+1. **Events replay to LLM** - LLM sees conversation history ✓
+
+2. **LLM must re-deduce state:**
+   ```
+   LLM thinking: "Looking at these events... I see job_001 through job_037
+   were submitted. Some have results, some don't. Let me figure out what's done..."
+   ```
+
+3. **Problems:**
+
+   | Problem | Impact |
+   |---------|--------|
+   | **Job status unknown** | job_036, job_037 may have completed while process was dead - LLM doesn't know |
+   | **No structured ledger** | LLM must parse 70+ events to determine table status |
+   | **Aggregation lost** | "127 findings so far" must be re-counted from events |
+   | **May re-submit jobs** | LLM might re-scan tables it already scanned |
+   | **May miss completed jobs** | Jobs that finished during downtime have results waiting |
+   | **Non-deterministic** | Different LLM calls may reach different conclusions |
+
+4. **Likely LLM Response:**
+   ```
+   "I see we were scanning tables for PII. Let me check what's been done...
+   [Spends tokens re-parsing events]
+   I think tables 1-35 are done. Let me continue with table 36...
+
+   Actually, I'm not sure if job_036 completed. Let me re-submit it to be safe."
+   ```
+
+5. **Result:**
+   - Duplicate BigQuery jobs (wasted cost)
+   - Inconsistent findings count
+   - Report may have duplicates or gaps
+   - ~30 minutes spent "figuring out" state
+
+---
+
+#### Path B: Checkpoint + Event Logging (Proposed)
+
+**Checkpoint stored (in addition to events):**
+```json
+{
+  "checkpoint_seq": 15,
+  "created_at": "2026-02-02T05:30:00Z",
+
+  "execution_plan": {
+    "phase": "scanning",
+    "total_tables": 100,
+    "tables_completed": 35,
+    "tables_in_progress": 2,
+    "tables_pending": 63
+  },
+
+  "job_ledger": {
+    "job_001": {"table": "customer_data.users", "status": "complete", "findings": 3},
+    "job_002": {"table": "customer_data.orders", "status": "complete", "findings": 0},
+    // ... jobs 3-35: complete ...
+    "job_036": {"table": "analytics.sessions", "status": "running", "submitted_at": "2026-02-02T05:28:00Z"},
+    "job_037": {"table": "analytics.events", "status": "running", "submitted_at": "2026-02-02T05:29:00Z"}
+  },
+
+  "aggregated_findings": {
+    "total_findings": 127,
+    "by_type": {"email": 45, "ssn": 32, "phone": 28, "address": 22},
+    "by_dataset": {"customer_data": 67, "transactions": 35, "analytics": 25},
+    "tables_with_pii": ["customer_data.users", "customer_data.profiles", "..."]
+  },
+
+  "pending_tables": [
+    "analytics.pageviews",
+    "logs.access_logs",
+    // ... 63 more tables ...
+  ]
+}
+```
+
+**On Restart (New Cloud Run Instance):**
+
+1. **Load checkpoint** - Deterministic state restoration ✓
+
+2. **Reconcile with BigQuery:**
+   ```python
+   # Automatic reconciliation
+   for job_id, job_meta in checkpoint["job_ledger"].items():
+       if job_meta["status"] == "running":
+           actual_status = bq_client.get_job(job_id).state
+           if actual_status == "DONE":
+               # Job completed while we were dead - fetch results
+               results = fetch_results(job_id)
+               update_findings(results)
+               job_meta["status"] = "complete"
+   ```
+
+3. **Result of reconciliation:**
+   ```
+   Checkpoint loaded: 35 tables complete, 2 in-progress
+   Reconciliation: job_036 DONE (found 5 PII), job_037 DONE (found 2 PII)
+   Updated state: 37 tables complete, 134 total findings
+   Remaining: 63 tables
+
+   Resuming scan from table 38...
+   ```
+
+4. **Agent continues seamlessly:**
+   - No duplicate jobs
+   - No re-parsing events
+   - Findings aggregation intact
+   - Deterministic, reliable
+   - Resume took ~5 seconds
+
+---
+
+#### Side-by-Side Comparison
+
+| Aspect | Events Only | Checkpoint + Events |
+|--------|-------------|---------------------|
+| **Recovery time** | ~30 min (LLM re-parsing) | ~5 sec (load + reconcile) |
+| **Duplicate jobs** | Likely (LLM uncertainty) | None (ledger prevents) |
+| **Missed job results** | Possible | None (reconciliation catches) |
+| **Findings accuracy** | May have errors | Exact (pre-aggregated) |
+| **Token cost** | High (re-process events) | Low (structured state) |
+| **Determinism** | No (LLM-dependent) | Yes (explicit state) |
+| **Total runtime** | ~10 hours (retries, confusion) | ~8 hours (clean resume) |
+
+---
+
+#### What Checkpoint Enables That Events Cannot
+
+1. **Authoritative Job Reconciliation**
+   ```
+   Events: "job_036 was submitted" (but is it done now?)
+   Checkpoint: "job_036 status=running" → reconcile → "actually DONE, here are results"
+   ```
+
+2. **Pre-Aggregated State**
+   ```
+   Events: Count findings from 70 tool_call results
+   Checkpoint: {"total_findings": 127, "by_type": {...}}
+   ```
+
+3. **Explicit Execution Plan**
+   ```
+   Events: LLM must re-deduce "what was I doing?"
+   Checkpoint: {"phase": "scanning", "tables_completed": 35, "tables_pending": 63}
+   ```
+
+4. **Idempotent Resume**
+   ```
+   Events: May or may not re-submit jobs (LLM decides)
+   Checkpoint: Never re-submits (ledger tracks all jobs)
+   ```
+
+5. **Multi-Instance Coordination**
+   ```
+   Events: Two instances might both try to continue
+   Checkpoint: Lease ensures only one instance resumes
+   ```
+
+---
+
+#### Cost Impact Example
+
+| Metric | Events Only | Checkpoint |
+|--------|-------------|------------|
+| BigQuery jobs submitted | 115 (15 duplicates) | 100 (exact) |
+| BQ job cost @ $5/job | $575 | $500 |
+| Cloud Run time | 10 hours | 8 hours |
+| Cloud Run cost @ $0.10/hr | $1.00 | $0.80 |
+| LLM tokens for recovery | ~50,000 | ~1,000 |
+| LLM cost @ $0.01/1K | $0.50 | $0.01 |
+| **Total extra cost** | **$75.50** | **$0** |
+
+For enterprise workloads running daily, this adds up significantly.
+
+---
+
 ### Suggested Design Doc Update
 
 Revise Section 1.2 limitation description:
