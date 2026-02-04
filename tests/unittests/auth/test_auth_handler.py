@@ -348,10 +348,12 @@ class TestGenerateAuthRequest:
         exchanged_auth_credential=oauth2_credentials_with_auth_uri.model_copy(
             deep=True
         ),
+        credential_key="my_tool_tokens",
     )
     handler = AuthHandler(config)
     result = handler.generate_auth_request()
 
+    assert result.credential_key == "my_tool_tokens"
     assert (
         result.exchanged_auth_credential.oauth2.auth_uri
         == oauth2_credentials_with_auth_uri.oauth2.auth_uri
@@ -399,6 +401,31 @@ class TestGenerateAuthRequest:
 
     assert mock_generate_auth_uri.called
     assert result.exchanged_auth_credential == mock_credential
+
+  @patch("google.adk.auth.auth_handler.AuthHandler.generate_auth_uri")
+  def test_preserves_credential_key_on_generated_request(
+      self, mock_generate_auth_uri, oauth2_auth_scheme, oauth2_credentials
+  ):
+    """Test that AuthHandler preserves an explicit credential_key."""
+    mock_generate_auth_uri.return_value = AuthCredential(
+        auth_type=AuthCredentialTypes.OAUTH2,
+        oauth2=OAuth2Auth(
+            client_id="mock_client_id",
+            client_secret="mock_client_secret",
+            auth_uri="https://example.com/generated",
+            state="generated_state",
+        ),
+    )
+
+    config = AuthConfig(
+        auth_scheme=oauth2_auth_scheme,
+        raw_auth_credential=oauth2_credentials,
+        credential_key="my_tool_tokens",
+    )
+    handler = AuthHandler(config)
+    result = handler.generate_auth_request()
+
+    assert result.credential_key == "my_tool_tokens"
 
 
 class TestGetAuthResponse:
