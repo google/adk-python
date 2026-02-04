@@ -24,6 +24,7 @@ from unittest.mock import AsyncMock
 from unittest.mock import Mock
 import warnings
 
+from google.adk.models.lite_llm import _append_fallback_user_content_if_missing
 from google.adk.models.lite_llm import _content_to_message_param
 from google.adk.models.lite_llm import _FILE_ID_REQUIRED_PROVIDERS
 from google.adk.models.lite_llm import _FINISH_REASON_MAPPING
@@ -988,6 +989,28 @@ async def test_generate_content_async_adds_fallback_user_message(
   assert llm_request.contents[-1].parts[0].text == (
       "Handle the requests as specified in the System Instruction."
   )
+
+
+def test_append_fallback_user_content_ignores_function_response_parts():
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role="user",
+              parts=[
+                  types.Part.from_function_response(
+                      name="add", response={"result": 6}
+                  )
+              ],
+          )
+      ]
+  )
+
+  _append_fallback_user_content_if_missing(llm_request)
+
+  assert len(llm_request.contents) == 1
+  assert len(llm_request.contents[0].parts) == 1
+  assert llm_request.contents[0].parts[0].function_response is not None
+  assert llm_request.contents[0].parts[0].text is None
 
 
 litellm_append_user_content_test_cases = [
@@ -2338,6 +2361,55 @@ async def test_get_content_file_uri_file_id_required_falls_back_to_text(
         ("azure", "azure/gpt-4"),
     ],
 )
+@pytest.mark.parametrize(
+    "file_uri,mime_type,expected_type",
+    [
+        pytest.param(
+            "https://example.com/image.png",
+            "image/png",
+            "image_url",
+            id="image",
+        ),
+        pytest.param(
+            "https://example.com/video.mp4",
+            "video/mp4",
+            "video_url",
+            id="video",
+        ),
+        pytest.param(
+            "https://example.com/audio.mp3",
+            "audio/mpeg",
+            "audio_url",
+            id="audio",
+        ),
+    ],
+)
+async def test_get_content_file_uri_media_url_file_id_required_uses_url_type(
+    provider, model, file_uri, mime_type, expected_type
+):
+  parts = [
+      types.Part(
+          file_data=types.FileData(
+              file_uri=file_uri,
+              mime_type=mime_type,
+          )
+      )
+  ]
+  content = await _get_content(parts, provider=provider, model=model)
+  assert content == [{
+      "type": expected_type,
+      expected_type: {"url": file_uri},
+  }]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "provider,model",
+    [
+        ("openai", "openai/gpt-4o"),
+        ("azure", "azure/gpt-4"),
+    ],
+)
 async def test_get_content_file_uri_file_id_required_preserves_file_id(
     provider, model
 ):
@@ -2351,6 +2423,53 @@ async def test_get_content_file_uri_file_id_required_preserves_file_id(
   ]
   content = await _get_content(parts, provider=provider, model=model)
   assert content == [{"type": "file", "file": {"file_id": "file-abc123"}}]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "provider,model",
+    [
+        ("openai", "openai/gpt-4o"),
+        ("azure", "azure/gpt-4"),
+    ],
+)
+async def test_get_content_file_uri_http_pdf_file_id_required_falls_back_to_text(
+    provider, model
+):
+  file_uri = "https://example.com/document.pdf"
+  parts = [
+      types.Part(
+          file_data=types.FileData(
+              file_uri=file_uri,
+              mime_type="application/pdf",
+              display_name="document.pdf",
+          )
+      )
+  ]
+  content = await _get_content(parts, provider=provider, model=model)
+  assert content == [
+      {"type": "text", "text": '[File reference: "document.pdf"]'}
+  ]
+
+
+@pytest.mark.asyncio
+async def test_get_content_file_uri_http_pdf_non_file_id_provider_uses_file():
+  file_uri = "https://example.com/document.pdf"
+  parts = [
+      types.Part(
+          file_data=types.FileData(
+              file_uri=file_uri,
+              mime_type="application/pdf",
+          )
+      )
+  ]
+  content = await _get_content(
+      parts, provider="vertex_ai", model="vertex_ai/gemini-2.5-flash"
+  )
+  assert content == [{
+      "type": "file",
+      "file": {"file_id": file_uri, "format": "application/pdf"},
+  }]
 
 
 @pytest.mark.asyncio

@@ -14,10 +14,13 @@
 from __future__ import annotations
 
 from datetime import datetime
+import importlib
 import json
 import os
 import shutil
 import subprocess
+import sys
+import traceback
 from typing import Final
 from typing import Optional
 import warnings
@@ -465,6 +468,122 @@ def _validate_gcloud_extra_args(
       )
 
 
+def _validate_agent_import(
+    agent_src_path: str,
+    adk_app_object: str,
+    is_config_agent: bool,
+) -> None:
+  """Validates that the agent module can be imported successfully.
+
+  This pre-deployment validation catches common issues like missing
+  dependencies or import errors in custom BaseLlm implementations before
+  the agent is deployed to Agent Engine. This provides clearer error
+  messages and prevents deployments that would fail at runtime.
+
+  Args:
+    agent_src_path: Path to the staged agent source code.
+    adk_app_object: The Python object name to import ('root_agent' or 'app').
+    is_config_agent: Whether this is a config-based agent.
+
+  Raises:
+    click.ClickException: If the agent module cannot be imported.
+  """
+  if is_config_agent:
+    # Config agents are loaded from YAML, skip Python import validation
+    return
+
+  agent_module_path = os.path.join(agent_src_path, 'agent.py')
+  if not os.path.exists(agent_module_path):
+    raise click.ClickException(
+        f'Agent module not found at {agent_module_path}. '
+        'Please ensure your agent folder contains an agent.py file.'
+    )
+
+  # Add the parent directory to sys.path temporarily for import resolution
+  parent_dir = os.path.dirname(agent_src_path)
+  module_name = os.path.basename(agent_src_path)
+
+  original_sys_path = sys.path.copy()
+  original_sys_modules_keys = set(sys.modules.keys())
+  try:
+    # Add parent directory to path so imports work correctly
+    if parent_dir not in sys.path:
+      sys.path.insert(0, parent_dir)
+    try:
+      module = importlib.import_module(f'{module_name}.agent')
+    except ImportError as e:
+      error_msg = str(e)
+      tb = traceback.format_exc()
+
+      # Check for common issues
+      if 'BaseLlm' in tb or 'base_llm' in tb.lower():
+        raise click.ClickException(
+            'Failed to import agent module due to a BaseLlm-related error:\n'
+            f'{error_msg}\n\n'
+            'This error often occurs when deploying agents with custom LLM '
+            'implementations. Please ensure:\n'
+            '1. All custom LLM classes are defined in files within your agent '
+            'folder\n'
+            '2. All required dependencies are listed in requirements.txt\n'
+            '3. Import paths use relative imports (e.g., "from .my_llm import '
+            'MyLlm")\n'
+            '4. Your custom BaseLlm class and its dependencies are installed\n'
+            '\n'
+            'If this failure is expected (e.g., missing local dependencies), '
+            'disable agent import validation by omitting '
+            '--validate-agent-import (default) or passing '
+            '--skip-agent-import-validation (or --no-validate-agent-import).'
+        ) from e
+      else:
+        raise click.ClickException(
+            f'Failed to import agent module:\n{error_msg}\n\n'
+            'Please ensure all dependencies are listed in requirements.txt '
+            'and all imports are resolvable.\n\n'
+            f'Full traceback:\n{tb}\n\n'
+            'If this failure is expected (e.g., missing local dependencies), '
+            'disable agent import validation by omitting '
+            '--validate-agent-import (default) or passing '
+            '--skip-agent-import-validation (or --no-validate-agent-import).'
+        ) from e
+    except Exception as e:
+      tb = traceback.format_exc()
+      raise click.ClickException(
+          f'Error while loading agent module:\n{e}\n\n'
+          'Please check your agent code for errors.\n\n'
+          f'Full traceback:\n{tb}\n\n'
+          'If this failure is expected (e.g., missing local dependencies), '
+          'disable agent import validation by omitting '
+          '--validate-agent-import (default) or passing '
+          '--skip-agent-import-validation (or --no-validate-agent-import).'
+      ) from e
+
+    # Check that the expected object exists
+    if not hasattr(module, adk_app_object):
+      available_attrs = [
+          attr for attr in dir(module) if not attr.startswith('_')
+      ]
+      raise click.ClickException(
+          f"Agent module does not export '{adk_app_object}'. "
+          f'Available exports: {available_attrs}\n\n'
+          'Please ensure your agent.py exports either "root_agent" or "app".'
+      )
+
+    click.echo(
+        'Agent module validation successful: '
+        f'found "{adk_app_object}" in agent.py'
+    )
+
+  finally:
+    # Restore original sys.path
+    sys.path[:] = original_sys_path
+    # Clean up modules introduced by validation.
+    for key in list(sys.modules.keys()):
+      if key in original_sys_modules_keys:
+        continue
+      if key == module_name or key.startswith(f'{module_name}.'):
+        sys.modules.pop(key, None)
+
+
 def _get_service_option_by_adk_version(
     adk_version: str,
     session_uri: Optional[str],
@@ -702,6 +821,7 @@ def to_agent_engine(
     requirements_file: Optional[str] = None,
     env_file: Optional[str] = None,
     agent_engine_config_file: Optional[str] = None,
+    skip_agent_import_validation: bool = True,
 ):
   """Deploys an agent to Vertex AI Agent Engine.
 
@@ -761,6 +881,11 @@ def to_agent_engine(
     agent_engine_config_file (str): The filepath to the agent engine config file
       to use. If not specified, the `.agent_engine_config.json` file in the
       `agent_folder` will be used.
+    skip_agent_import_validation (bool): Optional. Default is True. If True,
+      skip the
+      pre-deployment import validation of `agent.py`. This can be useful when
+      the local environment does not have the same dependencies as the
+      deployment environment.
   """
   app_name = os.path.basename(agent_folder)
   display_name = display_name or app_name
@@ -952,6 +1077,11 @@ def to_agent_engine(
     if os.path.exists(config_root_agent_file):
       click.echo(f'Config agent detected: {config_root_agent_file}')
       is_config_agent = True
+
+    # Validate that the agent module can be imported before deployment.
+    if not skip_agent_import_validation:
+      click.echo('Validating agent module...')
+      _validate_agent_import(agent_src_path, adk_app_object, is_config_agent)
 
     adk_app_file = os.path.join(temp_folder, f'{adk_app}.py')
     if adk_app_object == 'root_agent':

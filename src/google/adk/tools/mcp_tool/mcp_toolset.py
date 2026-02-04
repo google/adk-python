@@ -39,6 +39,7 @@ from typing_extensions import override
 from ...agents.readonly_context import ReadonlyContext
 from ...auth.auth_credential import AuthCredential
 from ...auth.auth_schemes import AuthScheme
+from ...auth.auth_tool import AuthConfig
 from ..base_tool import BaseTool
 from ..base_toolset import BaseToolset
 from ..base_toolset import ToolPredicate
@@ -214,37 +215,25 @@ class McpToolset(BaseToolset):
   async def read_resource(
       self, name: str, readonly_context: Optional[ReadonlyContext] = None
   ) -> Any:
-    """Fetches and returns the content of the named resource.
-
-    This method will handle content decoding based on the MIME type reported by
-    the MCP server (e.g., JSON, text, base64 for binary).
+    """Fetches and returns a list of contents of the named resource.
 
     Args:
       name: The name of the resource to fetch.
       readonly_context: Context used to provide headers for the MCP session.
 
     Returns:
-      The content of the resource, decoded based on MIME type and encoding.
+      List of contents of the resource.
     """
+    resource_info = await self.get_resource_info(name, readonly_context)
+    if "uri" not in resource_info:
+      raise ValueError(f"Resource '{name}' has no URI.")
+
     result: Any = await self._execute_with_session(
-        lambda session: session.get_resource(name=name),
+        lambda session: session.read_resource(uri=resource_info["uri"]),
         f"Failed to get resource {name} from MCP server",
         readonly_context,
     )
-
-    content = result.content
-    if result.encoding == "base64":
-      decoded_bytes = base64.b64decode(content)
-      if result.resource.mime_type == "application/json":
-        return json.loads(decoded_bytes.decode("utf-8"))
-      if result.resource.mime_type.startswith("text/"):
-        return decoded_bytes.decode("utf-8")
-      return decoded_bytes  # Return as bytes for other binary types
-
-    if result.resource.mime_type == "application/json":
-      return json.loads(content)
-
-    return content
+    return result.contents
 
   async def list_resources(
       self, readonly_context: Optional[ReadonlyContext] = None
@@ -283,6 +272,16 @@ class McpToolset(BaseToolset):
     except Exception as e:
       # Log the error but don't re-raise to avoid blocking shutdown
       print(f"Warning: Error during McpToolset cleanup: {e}", file=self._errlog)
+
+  @override
+  def get_auth_config(self) -> AuthConfig | None:
+    """Returns the auth config for this toolset."""
+    if self._auth_scheme is None:
+      return None
+    return AuthConfig(
+        auth_scheme=self._auth_scheme,
+        raw_auth_credential=self._auth_credential,
+    )
 
   @override
   @classmethod

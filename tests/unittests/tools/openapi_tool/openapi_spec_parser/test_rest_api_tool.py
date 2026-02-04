@@ -1048,10 +1048,9 @@ class TestRestApiTool:
     if expected_verify_in_call == "USE_SSL_FIXTURE":
       expected_verify_in_call = mock_ssl_context
 
-    mock_response = mock.create_autospec(
-        requests.Response, instance=True, spec_set=True
-    )
+    mock_response = mock.create_autospec(requests.Response, instance=True)
     mock_response.json.return_value = {"result": "success"}
+    mock_response.configure_mock(status_code=200)
 
     tool = RestApiTool(
         name="test_tool",
@@ -1084,10 +1083,9 @@ class TestRestApiTool:
       sample_auth_credential,
   ):
     """Test that configure_verify updates the verify setting."""
-    mock_response = mock.create_autospec(
-        requests.Response, instance=True, spec_set=True
-    )
+    mock_response = mock.create_autospec(requests.Response, instance=True)
     mock_response.json.return_value = {"result": "success"}
+    mock_response.configure_mock(status_code=200)
 
     tool = RestApiTool(
         name="test_tool",
@@ -1153,10 +1151,9 @@ class TestRestApiTool:
       sample_auth_credential,
   ):
     """Test that header_provider adds headers to the request."""
-    mock_response = mock.create_autospec(
-        requests.Response, instance=True, spec_set=True
-    )
+    mock_response = mock.create_autospec(requests.Response, instance=True)
     mock_response.json.return_value = {"result": "success"}
+    mock_response.configure_mock(status_code=200)
 
     def my_header_provider(context):
       return {"X-Custom-Header": "custom-value", "X-Request-ID": "12345"}
@@ -1192,10 +1189,9 @@ class TestRestApiTool:
       sample_auth_credential,
   ):
     """Test that header_provider receives the tool_context."""
-    mock_response = mock.create_autospec(
-        requests.Response, instance=True, spec_set=True
-    )
+    mock_response = mock.create_autospec(requests.Response, instance=True)
     mock_response.json.return_value = {"result": "success"}
+    mock_response.configure_mock(status_code=200)
 
     received_context = []
 
@@ -1232,10 +1228,9 @@ class TestRestApiTool:
       sample_auth_credential,
   ):
     """Test that call works without header_provider."""
-    mock_response = mock.create_autospec(
-        requests.Response, instance=True, spec_set=True
-    )
+    mock_response = mock.create_autospec(requests.Response, instance=True)
     mock_response.json.return_value = {"result": "success"}
+    mock_response.configure_mock(status_code=200)
 
     tool = RestApiTool(
         name="test_tool",

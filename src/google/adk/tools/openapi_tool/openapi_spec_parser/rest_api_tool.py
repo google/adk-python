@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import logging
 import ssl
 from typing import Any
 from typing import Callable
@@ -47,6 +48,8 @@ from .openapi_spec_parser import OperationEndpoint
 from .openapi_spec_parser import ParsedOperation
 from .operation_parser import OperationParser
 from .tool_auth_handler import ToolAuthHandler
+
+logger = logging.getLogger("google_adk." + __name__)
 
 
 def snake_to_lower_camel(snake_case_string: str):
@@ -158,6 +161,7 @@ class RestApiTool(BaseTool):
     self._default_headers: Dict[str, str] = {}
     self._ssl_verify = ssl_verify
     self._header_provider = header_provider
+    self._logger = logger
     if should_parse_operation:
       self._operation_parser = OperationParser(self.operation)
 
@@ -493,14 +497,40 @@ class RestApiTool(BaseTool):
       if provider_headers:
         request_params.setdefault("headers", {}).update(provider_headers)
 
+    # Log the API request
+    self._logger.debug(
+        "API Request: %s %s",
+        request_params.get("method", "").upper(),
+        request_params.get("url", ""),
+    )
+    self._logger.debug("API Request params: %s", request_params.get("params"))
+    if "json" in request_params:
+      self._logger.debug("API Request body: %s", request_params.get("json"))
+
     response = requests.request(**request_params)
+
+    # Log the API response
+    self._logger.debug(
+        "API Response: %s %s - Status: %d",
+        request_params.get("method", "").upper(),
+        request_params.get("url", ""),
+        response.status_code,
+    )
 
     # Parse API response
     try:
       response.raise_for_status()  # Raise HTTPError for bad responses
-      return response.json()  # Try to decode JSON
+      result = response.json()  # Try to decode JSON
+      self._logger.debug("API Response body: %s", result)
+      return result
     except requests.exceptions.HTTPError:
       error_details = response.content.decode("utf-8")
+      self._logger.warning(
+          "API call failed for tool %s: Status %d - %s",
+          self.name,
+          response.status_code,
+          error_details,
+      )
       return {
           "error": (
               f"Tool {self.name} execution failed. Analyze this execution error"
@@ -510,6 +540,7 @@ class RestApiTool(BaseTool):
           )
       }
     except ValueError:
+      self._logger.debug("API Response (non-JSON): %s", response.text)
       return {"text": response.text}  # Return text if not JSON
 
   def __str__(self):
