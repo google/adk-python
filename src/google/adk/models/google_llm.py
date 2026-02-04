@@ -30,7 +30,8 @@ from google.genai import types
 from google.genai.errors import ClientError
 from typing_extensions import override
 
-from ..utils._client_labels_utils import get_client_labels
+from ..utils._google_client_headers import get_tracking_headers
+from ..utils._google_client_headers import merge_tracking_headers
 from ..utils.context_utils import Aclosing
 from ..utils.streaming_utils import StreamingResponseAggregator
 from ..utils.variant_utils import GoogleLLMVariant
@@ -316,13 +317,7 @@ class Gemini(BaseLlm):
     )
 
   def _tracking_headers(self) -> dict[str, str]:
-    labels = get_client_labels()
-    header_value = ' '.join(labels)
-    tracking_headers = {
-        'x-goog-api-client': header_value,
-        'user-agent': header_value,
-    }
-    return tracking_headers
+    return get_tracking_headers()
 
   @cached_property
   def _live_api_version(self) -> str:
@@ -362,8 +357,10 @@ class Gemini(BaseLlm):
     ):
       if not llm_request.live_connect_config.http_options.headers:
         llm_request.live_connect_config.http_options.headers = {}
-      llm_request.live_connect_config.http_options.headers.update(
-          self._tracking_headers()
+      llm_request.live_connect_config.http_options.headers = (
+          self._merge_tracking_headers(
+              llm_request.live_connect_config.http_options.headers
+          )
       )
       llm_request.live_connect_config.http_options.api_version = (
           self._live_api_version
@@ -456,20 +453,7 @@ class Gemini(BaseLlm):
 
   def _merge_tracking_headers(self, headers: dict[str, str]) -> dict[str, str]:
     """Merge tracking headers to the given headers."""
-    headers = headers or {}
-    for key, tracking_header_value in self._tracking_headers().items():
-      custom_value = headers.get(key, None)
-      if not custom_value:
-        headers[key] = tracking_header_value
-        continue
-
-      # Merge tracking headers with existing headers and avoid duplicates.
-      value_parts = tracking_header_value.split(' ')
-      for custom_value_part in custom_value.split(' '):
-        if custom_value_part not in value_parts:
-          value_parts.append(custom_value_part)
-      headers[key] = ' '.join(value_parts)
-    return headers
+    return merge_tracking_headers(headers)
 
 
 def _build_function_declaration_log(

@@ -70,6 +70,7 @@ class OpenAPIToolset(BaseToolset):
       spec_str_type: Literal["json", "yaml"] = "json",
       auth_scheme: Optional[AuthScheme] = None,
       auth_credential: Optional[AuthCredential] = None,
+      credential_key: Optional[str] = None,
       tool_filter: Optional[Union[ToolPredicate, List[str]]] = None,
       tool_name_prefix: Optional[str] = None,
       ssl_verify: Optional[Union[bool, str, ssl.SSLContext]] = None,
@@ -108,6 +109,8 @@ class OpenAPIToolset(BaseToolset):
       auth_credential: The auth credential to use for all tools. Use
         AuthCredential or use helpers in
         ``google.adk.tools.openapi_tool.auth.auth_helpers``
+      credential_key: Optional stable key used for interactive auth and
+        credential caching across all tools in this toolset.
       tool_filter: The filter used to filter the tools in the toolset. It can be
         either a tool predicate or a list of tool names of the tools to expose.
       tool_name_prefix: The prefix to prepend to the names of the tools returned
@@ -131,12 +134,25 @@ class OpenAPIToolset(BaseToolset):
     self._header_provider = header_provider
     self._auth_scheme = auth_scheme
     self._auth_credential = auth_credential
+    # Store auth config as instance variable so ADK can populate
+    # exchanged_auth_credential in-place before calling get_tools()
+    self._auth_config: Optional[AuthConfig] = (
+        AuthConfig(
+            auth_scheme=auth_scheme,
+            raw_auth_credential=auth_credential,
+            credential_key=credential_key,
+        )
+        if auth_scheme
+        else None
+    )
     if not spec_dict:
       spec_dict = self._load_spec(spec_str, spec_str_type)
     self._ssl_verify = ssl_verify
     self._tools: Final[List[RestApiTool]] = list(self._parse(spec_dict))
     if auth_scheme or auth_credential:
       self._configure_auth_all(auth_scheme, auth_credential)
+    if credential_key:
+      self._configure_credential_key_all(credential_key)
 
   def _configure_auth_all(
       self, auth_scheme: AuthScheme, auth_credential: AuthCredential
@@ -148,6 +164,11 @@ class OpenAPIToolset(BaseToolset):
         tool.configure_auth_scheme(auth_scheme)
       if auth_credential:
         tool.configure_auth_credential(auth_credential)
+
+  def _configure_credential_key_all(self, credential_key: str):
+    """Configure credential key for all tools."""
+    for tool in self._tools:
+      tool.configure_credential_key(credential_key)
 
   def configure_ssl_verify_all(
       self, ssl_verify: Optional[Union[bool, str, ssl.SSLContext]] = None
@@ -216,11 +237,12 @@ class OpenAPIToolset(BaseToolset):
     pass
 
   @override
-  def get_auth_config(self) -> AuthConfig | None:
-    """Returns the auth config for this toolset."""
-    if self._auth_scheme is None:
-      return None
-    return AuthConfig(
-        auth_scheme=self._auth_scheme,
-        raw_auth_credential=self._auth_credential,
+  def get_auth_config(self) -> Optional[AuthConfig]:
+    """Returns the auth config for this toolset.
+
+    Note: This returns a copy so any exchanged credentials populated by the ADK
+    framework do not persist on the toolset instance across invocations.
+    """
+    return (
+        self._auth_config.model_copy(deep=True) if self._auth_config else None
     )

@@ -113,6 +113,8 @@ class DatabaseSessionService(BaseSessionService):
         connect_args = dict(engine_kwargs.get("connect_args", {}))
         connect_args.setdefault("check_same_thread", False)
         engine_kwargs["connect_args"] = connect_args
+      elif url.get_backend_name() != "sqlite":
+        engine_kwargs.setdefault("pool_pre_ping", True)
 
       db_engine = create_async_engine(db_url, **engine_kwargs)
       if db_engine.dialect.name == "sqlite":
