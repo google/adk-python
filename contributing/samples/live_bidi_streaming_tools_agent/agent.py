@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -18,7 +18,6 @@ from typing import AsyncGenerator
 from google.adk.agents import LiveRequestQueue
 from google.adk.agents.llm_agent import Agent
 from google.adk.tools.function_tool import FunctionTool
-from google.genai import Client
 from google.genai import types as genai_types
 
 
@@ -53,7 +52,11 @@ async def monitor_video_stream(
     input_stream: LiveRequestQueue,
 ) -> AsyncGenerator[str, None]:
   """Monitor how many people are in the video streams."""
+  from google.genai import Client
+
   print("start monitor_video_stream!")
+  from google.genai import Client
+
   client = Client(vertexai=False)
   prompt_text = (
       "Count the number of people in this image. Just respond with a numeric"
@@ -87,7 +90,7 @@ async def monitor_video_stream(
 
       # Call the model to generate content based on the provided image and prompt
       response = client.models.generate_content(
-          model="gemini-2.0-flash-exp",
+          model="gemini-2.5-flash",
           contents=contents,
           config=genai_types.GenerateContentConfig(
               system_instruction=(
@@ -121,9 +124,11 @@ def stop_streaming(function_name: str):
 
 
 root_agent = Agent(
-    # find supported models here: https://google.github.io/adk-docs/get-started/streaming/quickstart-streaming/
-    model="gemini-2.0-flash-live-preview-04-09",  # for Vertex project
-    # model="gemini-live-2.5-flash-preview",  # for AI studio key
+    # see https://docs.cloud.google.com/vertex-ai/generative-ai/docs/migrate
+    # for vertex model names
+    model="gemini-live-2.5-flash-native-audio",  # vertex
+    # see https://ai.google.dev/gemini-api/docs/models for AIS model names
+    # model='gemini-2.5-flash-native-audio-latest',  # for AI studio
     name="video_streaming_agent",
     instruction="""
       You are a monitoring agent. You can do video monitoring and stock price monitoring
