@@ -258,20 +258,12 @@ class EvalMetric(EvalBaseModel):
       description="The name of the metric.",
   )
 
-  threshold: float = Field(
-      description=(
-          "A threshold value. Each metric decides how to interpret this"
-          " threshold."
-      ),
-  )
-
-  judge_model_options: Optional[JudgeModelOptions] = Field(
-      deprecated=True,
+  threshold: Optional[float] = Field(
       default=None,
       description=(
-          "[DEPRECATED] This field is deprecated in favor of `criterion`."
-          " Depending on the metric you may want to one of the sub-classes of"
-          " BaseCriterion."
+          "This field will be deprecated soon. Please use `criterion` instead."
+          " A threshold value. Each metric decides how to interpret this"
+          " threshold."
       ),
   )
 
