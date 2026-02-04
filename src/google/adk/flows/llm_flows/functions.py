@@ -26,6 +26,7 @@ import threading
 from typing import Any
 from typing import AsyncGenerator
 from typing import cast
+from typing import Dict
 from typing import Optional
 from typing import TYPE_CHECKING
 import uuid
@@ -34,6 +35,7 @@ from google.genai import types
 
 from ...agents.active_streaming_tool import ActiveStreamingTool
 from ...agents.invocation_context import InvocationContext
+from ...auth.auth_tool import AuthConfig
 from ...auth.auth_tool import AuthToolArguments
 from ...events.event import Event
 from ...events.event_actions import EventActions
@@ -211,38 +213,74 @@ def get_long_running_function_calls(
   return long_running_tool_ids
 
 
-def generate_auth_event(
+def build_auth_request_event(
     invocation_context: InvocationContext,
-    function_response_event: Event,
-) -> Optional[Event]:
-  if not function_response_event.actions.requested_auth_configs:
-    return None
+    auth_requests: Dict[str, AuthConfig],
+    *,
+    author: Optional[str] = None,
+    role: Optional[str] = None,
+) -> Event:
+  """Builds an auth request event with function calls for each auth request.
+
+  This is a shared helper used by both tool-level auth (when a tool requests
+  auth during execution) and toolset-level auth (before tool listing).
+
+  Args:
+    invocation_context: The invocation context.
+    auth_requests: Dict mapping function_call_id to AuthConfig.
+    author: The event author. Defaults to agent name.
+    role: The content role. Defaults to None.
+
+  Returns:
+    Event with auth request function calls.
+  """
   parts = []
   long_running_tool_ids = set()
-  for (
-      function_call_id,
-      auth_config,
-  ) in function_response_event.actions.requested_auth_configs.items():
 
+  for function_call_id, auth_config in auth_requests.items():
     request_euc_function_call = types.FunctionCall(
         name=REQUEST_EUC_FUNCTION_CALL_NAME,
+        id=generate_client_function_call_id(),
         args=AuthToolArguments(
             function_call_id=function_call_id,
             auth_config=auth_config,
         ).model_dump(exclude_none=True, by_alias=True),
     )
-    request_euc_function_call.id = generate_client_function_call_id()
     long_running_tool_ids.add(request_euc_function_call.id)
     parts.append(types.Part(function_call=request_euc_function_call))
 
   return Event(
       invocation_id=invocation_context.invocation_id,
-      author=invocation_context.agent.name,
+      author=author or invocation_context.agent.name,
       branch=invocation_context.branch,
-      content=types.Content(
-          parts=parts, role=function_response_event.content.role
-      ),
+      content=types.Content(parts=parts, role=role),
       long_running_tool_ids=long_running_tool_ids,
+  )
+
+
+def generate_auth_event(
+    invocation_context: InvocationContext,
+    function_response_event: Event,
+) -> Optional[Event]:
+  """Generates an auth request event from a function response event.
+
+  This is used for tool-level auth where a tool requests credentials during
+  execution.
+
+  Args:
+    invocation_context: The invocation context.
+    function_response_event: The function response event with auth requests.
+
+  Returns:
+    Event with auth request function calls, or None if no auth requested.
+  """
+  if not function_response_event.actions.requested_auth_configs:
+    return None
+
+  return build_auth_request_event(
+      invocation_context,
+      function_response_event.actions.requested_auth_configs,
+      role=function_response_event.content.role,
   )
 
 
