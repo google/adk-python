@@ -35,6 +35,7 @@ from typing import TYPE_CHECKING
 from google.genai import types
 from google.genai.models import Models
 from opentelemetry import _logs
+from opentelemetry import context as otel_context
 from opentelemetry import trace
 from opentelemetry._logs import LogRecord
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_AGENT_DESCRIPTION
@@ -444,7 +445,8 @@ def use_generate_content_span(
       _is_gemini_agent(invocation_context.agent)
       and _instrumented_with_opentelemetry_instrumentation_google_genai()
   ):
-    yield None
+    with _use_extra_generate_content_attributes(common_attributes):
+      yield
   else:
     with _use_native_generate_content_span(
         llm_request=llm_request,
@@ -490,6 +492,33 @@ def _instrumented_with_opentelemetry_instrumentation_google_genai() -> bool:
     maybe_wrapped_function = wrapped  # pyright: ignore[reportAny]
 
   return False
+
+
+@contextmanager
+def _use_extra_generate_content_attributes(
+    extra_attributes: Mapping[str, AttributeValue],
+):
+  try:
+    from opentelemetry.instrumentation.google_genai import GENERATE_CONTENT_EXTRA_ATTRIBUTES_CONTEXT_KEY
+  except (ImportError, AttributeError):
+    logger.warning(
+        'opentelemetry-instrumentor-google-genai is installed but has'
+        ' insufficient version,'
+        + ' so some tracing dependent features may not work properly.'
+        + ' Please upgrade to version to 0.6b0 or above.'
+    )
+    yield
+    return
+
+  tok = otel_context.attach(
+      otel_context.set_value(
+          GENERATE_CONTENT_EXTRA_ATTRIBUTES_CONTEXT_KEY, extra_attributes
+      )
+  )
+  try:
+    yield
+  finally:
+    otel_context.detach(tok)
 
 
 def _is_gemini_agent(agent: BaseAgent) -> bool:
