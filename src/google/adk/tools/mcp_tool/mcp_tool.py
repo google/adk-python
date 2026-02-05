@@ -151,8 +151,31 @@ class McpTool(BaseAuthenticatedTool):
       self, *, args: dict[str, Any], tool_context: ToolContext
   ) -> Any:
     if isinstance(self._require_confirmation, Callable):
+      args_to_call = args.copy()
+      try:
+        signature = inspect.signature(self._require_confirmation)
+        valid_params = set(signature.parameters.keys())
+        has_kwargs = any(
+            param.kind == inspect.Parameter.VAR_KEYWORD
+            for param in signature.parameters.values()
+        )
+
+        if "tool_context" in valid_params or has_kwargs:
+          args_to_call["tool_context"] = tool_context
+
+        # Filter args_to_call only if there's no **kwargs
+        if not has_kwargs:
+          # Add tool_context to valid_params if it was added to args_to_call
+          if "tool_context" in args_to_call:
+            valid_params.add("tool_context")
+          args_to_call = {
+              k: v for k, v in args_to_call.items() if k in valid_params
+          }
+      except ValueError:
+        args_to_call = args
+
       require_confirmation = await self._invoke_callable(
-          self._require_confirmation, args
+          self._require_confirmation, args_to_call
       )
     else:
       require_confirmation = bool(self._require_confirmation)
