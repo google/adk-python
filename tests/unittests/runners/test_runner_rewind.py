@@ -130,14 +130,14 @@ class TestRunnerRewind:
         rewind_before_invocation_id="invocation2",
     )
 
-    # 3. Verify state and artifacts are rewinded
+    # 3. Verify state and artifacts are rewound
     session = await runner.session_service.get_session(
         app_name=runner.app_name, user_id=user_id, session_id=session_id
     )
     # After rewind before invocation2, only event1 state delta should apply.
     assert session.state["k1"] == "v1"
     assert not session.state["k2"]
-    # f1 should be rewinded to v0
+    # f1 should be rewound to v0
     assert await runner.artifact_service.load_artifact(
         app_name=runner.app_name,
         user_id=user_id,
@@ -226,7 +226,7 @@ class TestRunnerRewind:
         rewind_before_invocation_id="invocation3",
     )
 
-    # 3. Verify state and artifacts are rewinded
+    # 3. Verify state and artifacts are rewound
     session = await runner.session_service.get_session(
         app_name=runner.app_name, user_id=user_id, session_id=session_id
     )

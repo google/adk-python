@@ -31,6 +31,24 @@ from pydantic import model_validator
 logger = logging.getLogger('google_adk.' + __name__)
 
 
+class ToolThreadPoolConfig(BaseModel):
+  """Configuration for the tool thread pool executor.
+
+  Attributes:
+    max_workers: Maximum number of worker threads in the pool. Defaults to 4.
+  """
+
+  model_config = ConfigDict(
+      extra='forbid',
+  )
+
+  max_workers: int = Field(
+      default=4,
+      description='Maximum number of worker threads in the pool.',
+      ge=1,
+  )
+
+
 class StreamingMode(Enum):
   """Streaming modes for agent execution.
 
@@ -231,6 +249,53 @@ class RunConfig(BaseModel):
 
   save_live_blob: bool = False
   """Saves live video and audio data to session and artifact service."""
+
+  tool_thread_pool_config: Optional[ToolThreadPoolConfig] = None
+  """Configuration for running tools in a thread pool for live mode.
+
+  When set, tool executions will run in a separate thread pool executor
+  instead of the main event loop. When None (default), tools run in the
+  main event loop.
+
+  This helps keep the event loop responsive for:
+  - User interruptions to be processed immediately
+  - Model responses to continue being received
+
+  Both sync and async tools are supported. Async tools are run in a new event
+  loop within the background thread, which helps catch blocking I/O mistakenly
+  used inside async functions.
+
+  IMPORTANT - GIL (Global Interpreter Lock) Considerations:
+
+  Thread pool HELPS with (GIL is released):
+  - Blocking I/O: time.sleep(), network calls, file I/O, database queries
+  - C extensions: numpy, hashlib, image processing libraries
+  - Async functions containing blocking I/O (common user mistake)
+
+  Thread pool does NOT help with (GIL is held):
+  - Pure Python CPU-bound code: loops, calculations, recursive algorithms
+  - The GIL prevents true parallel execution for Python bytecode
+
+  For CPU-intensive Python code, consider alternatives:
+  - Use C extensions that release the GIL
+  - Break work into chunks with periodic `await asyncio.sleep(0)`
+  - Use multiprocessing (ProcessPoolExecutor) for true parallelism
+
+  Example:
+    ```python
+    from google.adk.agents.run_config import RunConfig, ToolThreadPoolConfig
+
+    # Enable thread pool with default settings
+    run_config = RunConfig(
+        tool_thread_pool_config=ToolThreadPoolConfig(),
+    )
+
+    # Enable thread pool with custom max_workers
+    run_config = RunConfig(
+        tool_thread_pool_config=ToolThreadPoolConfig(max_workers=8),
+    )
+    ```
+  """
 
   save_live_audio: bool = Field(
       default=False,

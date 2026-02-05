@@ -14,7 +14,7 @@
 
 """Pub/Sub Tools (Experimental).
 
-Pub/Sub Tools under this module are hand crafted and customized while the tools
+Pub/Sub Tools under this module are handcrafted and customized while the tools
 under google.adk.tools.google_api_tool are auto generated based on API
 definition. The rationales to have customized tool are:
 

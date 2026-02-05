@@ -16,10 +16,12 @@ from datetime import datetime
 from datetime import timezone
 import enum
 import sqlite3
+from unittest import mock
 
 from google.adk.errors.already_exists_error import AlreadyExistsError
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
+from google.adk.sessions import database_session_service
 from google.adk.sessions.base_session_service import GetSessionConfig
 from google.adk.sessions.database_session_service import DatabaseSessionService
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
@@ -59,6 +61,51 @@ async def session_service(request, tmp_path):
   yield service
   if isinstance(service, DatabaseSessionService):
     await service.close()
+
+
+def test_database_session_service_enables_pool_pre_ping_by_default():
+  captured_kwargs = {}
+
+  def fake_create_async_engine(_db_url: str, **kwargs):
+    captured_kwargs.update(kwargs)
+    fake_engine = mock.Mock()
+    fake_engine.dialect.name = 'postgresql'
+    fake_engine.sync_engine = mock.Mock()
+    return fake_engine
+
+  with mock.patch.object(
+      database_session_service,
+      'create_async_engine',
+      side_effect=fake_create_async_engine,
+  ):
+    database_session_service.DatabaseSessionService(
+        'postgresql+psycopg2://user:pass@localhost:5432/db'
+    )
+
+  assert captured_kwargs.get('pool_pre_ping') is True
+
+
+def test_database_session_service_respects_pool_pre_ping_override():
+  captured_kwargs = {}
+
+  def fake_create_async_engine(_db_url: str, **kwargs):
+    captured_kwargs.update(kwargs)
+    fake_engine = mock.Mock()
+    fake_engine.dialect.name = 'postgresql'
+    fake_engine.sync_engine = mock.Mock()
+    return fake_engine
+
+  with mock.patch.object(
+      database_session_service,
+      'create_async_engine',
+      side_effect=fake_create_async_engine,
+  ):
+    database_session_service.DatabaseSessionService(
+        'postgresql+psycopg2://user:pass@localhost:5432/db',
+        pool_pre_ping=False,
+    )
+
+  assert captured_kwargs.get('pool_pre_ping') is False
 
 
 @pytest.mark.asyncio
@@ -504,26 +551,66 @@ async def test_session_last_update_time_updates_on_event(session_service):
 
 
 @pytest.mark.asyncio
-async def test_get_session_with_config(session_service):
-  app_name = 'my_app'
-  user_id = 'user'
-
-  session = await session_service.create_session(
-      app_name=app_name, user_id=user_id
+async def test_append_event_to_stale_session():
+  session_service = get_session_service(
+      service_type=SessionServiceType.DATABASE
   )
-  original_update_time = session.last_update_time
 
-  event = Event(invocation_id='invocation', author='user')
-  await session_service.append_event(session=session, event=event)
+  async with session_service:
+    app_name = 'my_app'
+    user_id = 'user'
+    current_time = datetime.now().astimezone(timezone.utc).timestamp()
 
-  assert session.last_update_time >= event.timestamp
+    original_session = await session_service.create_session(
+        app_name=app_name, user_id=user_id
+    )
+    event1 = Event(
+        invocation_id='inv1',
+        author='user',
+        timestamp=current_time + 1,
+        actions=EventActions(state_delta={'sk1': 'v1'}),
+    )
+    await session_service.append_event(original_session, event1)
 
-  refreshed_session = await session_service.get_session(
-      app_name=app_name, user_id=user_id, session_id=session.id
-  )
-  assert refreshed_session is not None
-  assert refreshed_session.last_update_time >= event.timestamp
-  assert refreshed_session.last_update_time > original_update_time
+    updated_session = await session_service.get_session(
+        app_name=app_name, user_id=user_id, session_id=original_session.id
+    )
+    event2 = Event(
+        invocation_id='inv2',
+        author='user',
+        timestamp=current_time + 2,
+        actions=EventActions(state_delta={'sk2': 'v2'}),
+    )
+    await session_service.append_event(updated_session, event2)
+
+    # original_session is now stale
+    assert original_session.last_update_time < updated_session.last_update_time
+    assert len(original_session.events) == 1
+    assert 'sk2' not in original_session.state
+
+    # Appending another event to stale original_session
+    event3 = Event(
+        invocation_id='inv3',
+        author='user',
+        timestamp=current_time + 3,
+        actions=EventActions(state_delta={'sk3': 'v3'}),
+    )
+    await session_service.append_event(original_session, event3)
+
+    # If we fetch session from DB, it should contain all 3 events and all state
+    # changes.
+    session_final = await session_service.get_session(
+        app_name=app_name, user_id=user_id, session_id=original_session.id
+    )
+    assert len(session_final.events) == 3
+    assert session_final.state.get('sk1') == 'v1'
+    assert session_final.state.get('sk2') == 'v2'
+    assert session_final.state.get('sk3') == 'v3'
+    assert [e.invocation_id for e in session_final.events] == [
+        'inv1',
+        'inv2',
+        'inv3',
+    ]
 
 
 @pytest.mark.asyncio
@@ -603,3 +690,216 @@ async def test_partial_events_are_not_persisted(session_service):
       app_name=app_name, user_id=user_id, session_id=session.id
   )
   assert len(session_got.events) == 0
+
+
+# ---------------------------------------------------------------------------
+# Rollback tests – verify _rollback_on_exception_session explicitly rolls back
+# on errors
+# ---------------------------------------------------------------------------
+class _RollbackSpySession:
+  """Wraps an AsyncSession to spy on rollback() and optionally fail commit()."""
+
+  def __init__(self, real_session, *, fail_commit=False):
+    self._real = real_session
+    self._fail_commit = fail_commit
+    self.rollback_called = False
+
+  async def __aenter__(self):
+    self._real = await self._real.__aenter__()
+    return self
+
+  async def __aexit__(self, *args):
+    return await self._real.__aexit__(*args)
+
+  async def commit(self):
+    if self._fail_commit:
+      raise RuntimeError('simulated commit failure')
+    return await self._real.commit()
+
+  async def rollback(self):
+    self.rollback_called = True
+    return await self._real.rollback()
+
+  def __getattr__(self, name):
+    return getattr(self._real, name)
+
+
+@pytest.mark.asyncio
+async def test_create_session_calls_rollback_on_commit_failure():
+  """Verifies that a commit failure during create_session triggers an explicit
+  rollback() call via _rollback_on_exception_session, not just a close()."""
+  service = DatabaseSessionService('sqlite+aiosqlite:///:memory:')
+  try:
+    # Ensure tables are initialized.
+    await service.create_session(
+        app_name='app', user_id='user', session_id='good'
+    )
+
+    original_factory = service.database_session_factory
+    spy_sessions = []
+
+    def _spy_factory():
+      spy = _RollbackSpySession(original_factory(), fail_commit=True)
+      spy_sessions.append(spy)
+      return spy
+
+    service.database_session_factory = _spy_factory
+
+    with pytest.raises(RuntimeError, match='simulated commit failure'):
+      await service.create_session(
+          app_name='app', user_id='user', session_id='should_fail'
+      )
+
+    # The key assertion: rollback() must have been called explicitly.
+    assert len(spy_sessions) == 1
+    assert spy_sessions[0].rollback_called, (
+        'rollback() was not called – _rollback_on_exception_session is not'
+        ' protecting this path'
+    )
+
+    # Restore and verify the failed session was not persisted.
+    service.database_session_factory = original_factory
+    assert (
+        await service.get_session(
+            app_name='app', user_id='user', session_id='should_fail'
+        )
+        is None
+    )
+  finally:
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_append_event_calls_rollback_on_commit_failure():
+  """Verifies that a commit failure during append_event triggers an explicit
+  rollback() call via _rollback_on_exception_session."""
+  service = DatabaseSessionService('sqlite+aiosqlite:///:memory:')
+  try:
+    session = await service.create_session(
+        app_name='app', user_id='user', session_id='s1'
+    )
+
+    # Successfully append one event first.
+    event1 = Event(
+        invocation_id='inv1',
+        author='user',
+        actions=EventActions(state_delta={'key1': 'value1'}),
+    )
+    await service.append_event(session, event1)
+
+    original_factory = service.database_session_factory
+    spy_sessions = []
+
+    def _spy_factory():
+      spy = _RollbackSpySession(original_factory(), fail_commit=True)
+      spy_sessions.append(spy)
+      return spy
+
+    service.database_session_factory = _spy_factory
+
+    event2 = Event(
+        invocation_id='inv2',
+        author='user',
+        actions=EventActions(state_delta={'key2': 'value2'}),
+    )
+    with pytest.raises(RuntimeError, match='simulated commit failure'):
+      await service.append_event(session, event2)
+
+    assert len(spy_sessions) == 1
+    assert spy_sessions[0].rollback_called, (
+        'rollback() was not called – _rollback_on_exception_session is not'
+        ' protecting this path'
+    )
+
+    # Restore and verify only the first event was persisted.
+    service.database_session_factory = original_factory
+    got = await service.get_session(
+        app_name='app', user_id='user', session_id='s1'
+    )
+    assert len(got.events) == 1
+    assert got.events[0].invocation_id == 'inv1'
+  finally:
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_delete_session_calls_rollback_on_commit_failure():
+  """Verifies that a commit failure during delete_session triggers an explicit
+  rollback() call via _rollback_on_exception_session."""
+  service = DatabaseSessionService('sqlite+aiosqlite:///:memory:')
+  try:
+    await service.create_session(
+        app_name='app', user_id='user', session_id='s1'
+    )
+
+    original_factory = service.database_session_factory
+    spy_sessions = []
+
+    def _spy_factory():
+      spy = _RollbackSpySession(original_factory(), fail_commit=True)
+      spy_sessions.append(spy)
+      return spy
+
+    service.database_session_factory = _spy_factory
+
+    with pytest.raises(RuntimeError, match='simulated commit failure'):
+      await service.delete_session(
+          app_name='app', user_id='user', session_id='s1'
+      )
+
+    assert len(spy_sessions) == 1
+    assert spy_sessions[0].rollback_called, (
+        'rollback() was not called – _rollback_on_exception_session is not'
+        ' protecting this path'
+    )
+
+    # Restore and verify the session still exists (delete was rolled back).
+    service.database_session_factory = original_factory
+    got = await service.get_session(
+        app_name='app', user_id='user', session_id='s1'
+    )
+    assert got is not None
+  finally:
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_service_recovers_after_multiple_failures():
+  """After several consecutive commit failures, every single one must trigger
+  a rollback() call and the service must remain functional afterward."""
+  service = DatabaseSessionService('sqlite+aiosqlite:///:memory:')
+  try:
+    await service.create_session(
+        app_name='app', user_id='user', session_id='seed'
+    )
+
+    original_factory = service.database_session_factory
+    spy_sessions = []
+
+    def _spy_factory():
+      spy = _RollbackSpySession(original_factory(), fail_commit=True)
+      spy_sessions.append(spy)
+      return spy
+
+    service.database_session_factory = _spy_factory
+
+    num_failures = 5
+    for i in range(num_failures):
+      with pytest.raises(RuntimeError, match='simulated commit failure'):
+        await service.create_session(
+            app_name='app', user_id='user', session_id=f'fail_{i}'
+        )
+
+    # Every failure must have triggered a rollback.
+    assert len(spy_sessions) == num_failures
+    for i, spy in enumerate(spy_sessions):
+      assert spy.rollback_called, f'rollback() was not called on failure #{i}'
+
+    # Restore and verify the service is still healthy.
+    service.database_session_factory = original_factory
+    session = await service.create_session(
+        app_name='app', user_id='user', session_id='recovered'
+    )
+    assert session.id == 'recovered'
+  finally:
+    await service.close()

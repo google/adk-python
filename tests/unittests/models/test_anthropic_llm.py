@@ -391,6 +391,31 @@ async def test_anthropic_llm_generate_content_async(
       assert responses[0].content.parts[0].text == "Hello, how can I help you?"
 
 
+def test_claude_vertex_client_uses_tracking_headers():
+  """Tests that Claude vertex client is called with tracking headers."""
+  with mock.patch.object(
+      anthropic_llm, "AsyncAnthropicVertex", autospec=True
+  ) as mock_anthropic_vertex:
+    with mock.patch.dict(
+        os.environ,
+        {
+            "GOOGLE_CLOUD_PROJECT": "test-project",
+            "GOOGLE_CLOUD_LOCATION": "us-central1",
+        },
+    ):
+      instance = Claude(model="claude-3-5-sonnet-v2@20241022")
+      _ = instance._anthropic_client
+      mock_anthropic_vertex.assert_called_once()
+      _, kwargs = mock_anthropic_vertex.call_args
+      assert "default_headers" in kwargs
+      assert "x-goog-api-client" in kwargs["default_headers"]
+      assert "user-agent" in kwargs["default_headers"]
+      assert (
+          f"google-adk/{adk_version.__version__}"
+          in kwargs["default_headers"]["user-agent"]
+      )
+
+
 @pytest.mark.asyncio
 async def test_generate_content_async_with_max_tokens(
     llm_request, generate_content_response, generate_llm_response

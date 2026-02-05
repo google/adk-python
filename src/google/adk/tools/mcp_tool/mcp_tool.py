@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import base64
 import inspect
 import logging
 from typing import Any
@@ -23,6 +24,7 @@ from typing import Optional
 from typing import Union
 import warnings
 
+from fastapi.openapi.models import APIKeyIn
 from google.genai.types import FunctionDeclaration
 from mcp.types import Tool as McpBaseTool
 from typing_extensions import override
@@ -37,7 +39,6 @@ from .._gemini_schema_util import _to_gemini_schema
 from ..base_authenticated_tool import BaseAuthenticatedTool
 #  import
 from ..tool_context import ToolContext
-from .mcp_auth_utils import get_mcp_auth_headers
 from .mcp_session_manager import MCPSessionManager
 from .mcp_session_manager import retry_on_errors
 
@@ -150,8 +151,31 @@ class McpTool(BaseAuthenticatedTool):
       self, *, args: dict[str, Any], tool_context: ToolContext
   ) -> Any:
     if isinstance(self._require_confirmation, Callable):
+      args_to_call = args.copy()
+      try:
+        signature = inspect.signature(self._require_confirmation)
+        valid_params = set(signature.parameters.keys())
+        has_kwargs = any(
+            param.kind == inspect.Parameter.VAR_KEYWORD
+            for param in signature.parameters.values()
+        )
+
+        if "tool_context" in valid_params or has_kwargs:
+          args_to_call["tool_context"] = tool_context
+
+        # Filter args_to_call only if there's no **kwargs
+        if not has_kwargs:
+          # Add tool_context to valid_params if it was added to args_to_call
+          if "tool_context" in args_to_call:
+            valid_params.add("tool_context")
+          args_to_call = {
+              k: v for k, v in args_to_call.items() if k in valid_params
+          }
+      except ValueError:
+        args_to_call = args
+
       require_confirmation = await self._invoke_callable(
-          self._require_confirmation, args
+          self._require_confirmation, args_to_call
       )
     else:
       require_confirmation = bool(self._require_confirmation)
@@ -194,12 +218,7 @@ class McpTool(BaseAuthenticatedTool):
         Any: The response from the tool.
     """
     # Extract headers from credential for session pooling
-    auth_scheme = (
-        self._auth_config.auth_scheme
-        if hasattr(self, "_auth_config") and self._auth_config
-        else None
-    )
-    auth_headers = get_mcp_auth_headers(auth_scheme, credential)
+    auth_headers = await self._get_headers(tool_context, credential)
     dynamic_headers = None
     if self._header_provider:
       dynamic_headers = self._header_provider(
@@ -220,6 +239,90 @@ class McpTool(BaseAuthenticatedTool):
 
     response = await session.call_tool(self._mcp_tool.name, arguments=args)
     return response.model_dump(exclude_none=True, mode="json")
+
+  async def _get_headers(
+      self, tool_context: ToolContext, credential: AuthCredential
+  ) -> Optional[dict[str, str]]:
+    """Extracts authentication headers from credentials.
+
+    Args:
+        tool_context: The tool context of the current invocation.
+        credential: The authentication credential to process.
+
+    Returns:
+        Dictionary of headers to add to the request, or None if no auth.
+
+    Raises:
+        ValueError: If API key authentication is configured for non-header location.
+    """
+    headers: Optional[dict[str, str]] = None
+    if credential:
+      if credential.oauth2:
+        headers = {"Authorization": f"Bearer {credential.oauth2.access_token}"}
+      elif credential.http:
+        # Handle HTTP authentication schemes
+        if (
+            credential.http.scheme.lower() == "bearer"
+            and credential.http.credentials.token
+        ):
+          headers = {
+              "Authorization": f"Bearer {credential.http.credentials.token}"
+          }
+        elif credential.http.scheme.lower() == "basic":
+          # Handle basic auth
+          if (
+              credential.http.credentials.username
+              and credential.http.credentials.password
+          ):
+
+            credentials = f"{credential.http.credentials.username}:{credential.http.credentials.password}"
+            encoded_credentials = base64.b64encode(
+                credentials.encode()
+            ).decode()
+            headers = {"Authorization": f"Basic {encoded_credentials}"}
+        elif credential.http.credentials.token:
+          # Handle other HTTP schemes with token
+          headers = {
+              "Authorization": (
+                  f"{credential.http.scheme} {credential.http.credentials.token}"
+              )
+          }
+      elif credential.api_key:
+        if (
+            not self._credentials_manager
+            or not self._credentials_manager._auth_config
+        ):
+          error_msg = (
+              "Cannot find corresponding auth scheme for API key credential"
+              f" {credential}"
+          )
+          logger.error(error_msg)
+          raise ValueError(error_msg)
+        elif (
+            self._credentials_manager._auth_config.auth_scheme.in_
+            != APIKeyIn.header
+        ):
+          error_msg = (
+              "McpTool only supports header-based API key authentication."
+              " Configured location:"
+              f" {self._credentials_manager._auth_config.auth_scheme.in_}"
+          )
+          logger.error(error_msg)
+          raise ValueError(error_msg)
+        else:
+          headers = {
+              self._credentials_manager._auth_config.auth_scheme.name: (
+                  credential.api_key
+              )
+          }
+      elif credential.service_account:
+        # Service accounts should be exchanged for access tokens before reaching this point
+        logger.warning(
+            "Service account credentials should be exchanged before MCP"
+            " session creation"
+        )
+
+    return headers
 
 
 class MCPTool(McpTool):

@@ -89,7 +89,7 @@ criterion to be used.
 In the sample below, `tool_trajectory_avg_score`, `response_match_score` and
 `final_response_match_v2` are the standard eval metric names, represented as
 keys in the dictionary. The values in the dictionary are the corresponding
-criterions. For the first two metrics, we use simple threshold as the criterion,
+criteria. For the first two metrics, we use simple threshold as the criterion,
 the third one uses `LlmAsAJudgeCriterion`.
 {
   "criteria": {

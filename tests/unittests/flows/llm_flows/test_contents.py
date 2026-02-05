@@ -790,3 +790,144 @@ async def test_code_execution_result_not_in_first_part_is_not_skipped():
       and part.code_execution_result.output == "42"
       for part in llm_request.contents[1].parts
   )
+
+
+@pytest.mark.asyncio
+async def test_function_call_with_thought_not_filtered():
+  """Test that function calls marked as thought are not filtered out.
+
+  Some models (e.g., Gemini 3 Flash Preview) may mark function calls as
+  thought=True. These should still be included in the context because they
+  represent actions that need to be executed.
+  """
+  agent = Agent(model="gemini-2.5-flash", name="test_agent")
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  # Create event with function call marked as thought (as Gemini 3 Flash does)
+  function_call = types.FunctionCall(
+      id="fc_123",
+      name="test_tool",
+      args={"query": "test"},
+  )
+  fc_part = types.Part(function_call=function_call)
+  # Simulate model marking function call as thought
+  fc_part.thought = True
+
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("Call the tool"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.Content(
+              role="model",
+              parts=[
+                  types.Part(text="Let me think about this", thought=True),
+                  fc_part,  # Function call with thought=True
+                  types.Part(text="Planning next steps", thought=True),
+              ],
+          ),
+      ),
+      Event(
+          invocation_id="inv3",
+          author="test_agent",
+          content=types.Content(
+              role="user",
+              parts=[
+                  types.Part(
+                      function_response=types.FunctionResponse(
+                          id="fc_123",
+                          name="test_tool",
+                          response={"result": "success"},
+                      )
+                  )
+              ],
+          ),
+      ),
+  ]
+  invocation_context.session.events = events
+
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  # Verify all 3 contents are present (user, model with FC, function response)
+  assert len(llm_request.contents) == 3
+
+  # Verify the function call is included (not filtered out)
+  model_content = llm_request.contents[1]
+  assert model_content.role == "model"
+  fc_parts = [p for p in model_content.parts if p.function_call]
+  assert len(fc_parts) == 1
+  assert fc_parts[0].function_call.name == "test_tool"
+  assert fc_parts[0].function_call.id == "fc_123"
+
+
+@pytest.mark.asyncio
+async def test_function_response_with_thought_not_filtered():
+  """Test that function responses marked as thought are not filtered out."""
+  agent = Agent(model="gemini-2.5-flash", name="test_agent")
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  function_call = types.FunctionCall(
+      id="fc_456",
+      name="calc_tool",
+      args={"x": 1, "y": 2},
+  )
+  function_response = types.FunctionResponse(
+      id="fc_456",
+      name="calc_tool",
+      response={"result": 3},
+  )
+  fr_part = types.Part(function_response=function_response)
+  # Simulate marking function response as thought
+  fr_part.thought = True
+
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("Calculate 1+2"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.Content(
+              role="model",
+              parts=[types.Part(function_call=function_call)],
+          ),
+      ),
+      Event(
+          invocation_id="inv3",
+          author="test_agent",
+          content=types.Content(
+              role="user",
+              parts=[fr_part],  # Function response with thought=True
+          ),
+      ),
+  ]
+  invocation_context.session.events = events
+
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  # Verify all 3 contents are present
+  assert len(llm_request.contents) == 3
+
+  # Verify the function response is included (not filtered out)
+  fr_content = llm_request.contents[2]
+  fr_parts = [p for p in fr_content.parts if p.function_response]
+  assert len(fr_parts) == 1
+  assert fr_parts[0].function_response.name == "calc_tool"

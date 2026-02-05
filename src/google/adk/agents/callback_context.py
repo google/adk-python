@@ -177,6 +177,25 @@ class CallbackContext(ReadonlyContext):
         auth_config, self
     )
 
+  def get_auth_response(
+      self, auth_config: AuthConfig
+  ) -> Optional[AuthCredential]:
+    """Gets the auth response credential from session state.
+
+    This method retrieves an authentication credential that was previously
+    stored in session state after a user completed an OAuth flow or other
+    authentication process.
+
+    Args:
+      auth_config: The authentication configuration for the credential.
+
+    Returns:
+      The auth credential from the auth response, or None if not found.
+    """
+    from ..auth.auth_handler import AuthHandler
+
+    return AuthHandler(auth_config).get_auth_response(self.state)
+
   async def add_session_to_memory(self) -> None:
     """Triggers memory generation for the current session.
 

@@ -52,7 +52,7 @@ class VertexAiRagMemoryService(BaseMemoryService):
           or ``{rag_corpus_id}``
         similarity_top_k: The number of contexts to retrieve.
         vector_distance_threshold: Only returns contexts with vector distance
-          smaller than the threshold..
+          smaller than the threshold.
     """
     self._vertex_rag_store = types.VertexRagStore(
         rag_resources=[
