@@ -115,11 +115,10 @@ class ToolboxToolset(BaseToolset):
 
     # Attempt to find the function declaration in other common attributes
     # expected from toolbox libraries.
-    declaration = None
-    if hasattr(tool, "function_declaration"):
-        declaration = tool.function_declaration
-    elif hasattr(tool, "declaration"):
-        declaration = tool.declaration
+    declaration = (
+        getattr(tool, "function_declaration", None)
+        or getattr(tool, "declaration", None)
+    )
     
     # If we found a declaration, we need to ensure _get_declaration returns it.
     if declaration:
