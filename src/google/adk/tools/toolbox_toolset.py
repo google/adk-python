@@ -104,7 +104,35 @@ class ToolboxToolset(BaseToolset):
   async def get_tools(
       self, readonly_context: Optional[ReadonlyContext] = None
   ) -> list[BaseTool]:
-    return await self._delegate.get_tools(readonly_context)
+    tools = await self._delegate.get_tools(readonly_context)
+    return [self._adapt_tool(tool) for tool in tools]
+
+  def _adapt_tool(self, tool: BaseTool) -> BaseTool:
+    """Adapts a tool to ensure it's compatible with ADK."""
+    # If the tool already has a working _get_declaration, return it as is.
+    if tool._get_declaration() is not None:
+      return tool
+
+    # Attempt to find the function declaration in other common attributes
+    # expected from toolbox libraries.
+    declaration = None
+    if hasattr(tool, "function_declaration"):
+        declaration = tool.function_declaration
+    elif hasattr(tool, "declaration"):
+        declaration = tool.declaration
+    
+    # If we found a declaration, we need to ensure _get_declaration returns it.
+    if declaration:
+        # We can't easily subclass at runtime without potential issues, 
+        # so we patch the instance method.
+        # Create a closure to capture the declaration
+        def _get_declaration_shim():
+            return declaration
+        
+        # Bind the shim to the instance
+        tool._get_declaration = _get_declaration_shim
+    
+    return tool
 
   @override
   async def close(self):
