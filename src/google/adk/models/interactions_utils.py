@@ -56,6 +56,33 @@ logger = logging.getLogger('google_adk.' + __name__)
 _NEW_LINE = '\n'
 
 
+def _merge_text_with_overlap(existing: str, incoming: str) -> str:
+  """Merge streamed text fragments while avoiding overlap duplication."""
+  if not existing:
+    return incoming
+  if not incoming:
+    return existing
+
+  max_overlap = min(len(existing), len(incoming))
+  for size in range(max_overlap, 0, -1):
+    if existing.endswith(incoming[:size]):
+      return existing + incoming[size:]
+  return existing + incoming
+
+
+def _append_delta_text_part(aggregated_parts: list[types.Part], text: str):
+  """Append text to aggregated parts, merging with trailing text if present."""
+  if not text:
+    return
+
+  if aggregated_parts and aggregated_parts[-1].text is not None:
+    merged_text = _merge_text_with_overlap(aggregated_parts[-1].text, text)
+    aggregated_parts[-1] = types.Part.from_text(text=merged_text)
+    return
+
+  aggregated_parts.append(types.Part.from_text(text=text))
+
+
 def convert_part_to_interaction_content(part: types.Part) -> Optional[dict]:
   """Convert a types.Part to an interaction content dict.
 
@@ -487,8 +514,8 @@ def convert_interaction_event_to_llm_response(
     if delta_type == 'text':
       text = delta.text or ''
       if text:
+        _append_delta_text_part(aggregated_parts, text)
         part = types.Part.from_text(text=text)
-        aggregated_parts.append(part)
         return LlmResponse(
             content=types.Content(role='model', parts=[part]),
             partial=True,
@@ -539,18 +566,15 @@ def convert_interaction_event_to_llm_response(
         )
 
   elif event_type == 'content.stop':
-    # Content streaming finished, return aggregated content
-    if aggregated_parts:
-      return LlmResponse(
-          content=types.Content(role='model', parts=list(aggregated_parts)),
-          partial=False,
-          turn_complete=False,
-          interaction_id=interaction_id,
-      )
+    # Content.stop is a stream boundary marker.
+    # Final content emission happens at interaction.status_update or stream end
+    # to avoid duplicate final responses.
+    return None
 
   elif event_type == 'interaction':
-    # Final interaction event with complete data
-    return convert_interaction_to_llm_response(event)
+    # We intentionally do not emit from this event in streaming mode because
+    # interaction outputs can duplicate already aggregated content deltas.
+    return None
 
   elif event_type == 'interaction.status_update':
     status = getattr(event, 'status', None)
@@ -992,6 +1016,7 @@ async def generate_content_via_interactions(
     )
 
     aggregated_parts: list[types.Part] = []
+    has_emitted_turn_complete = False
     async for event in responses:
       # Log the streaming event
       logger.debug(build_interactions_event_log(event))
@@ -1003,10 +1028,13 @@ async def generate_content_via_interactions(
           event, aggregated_parts, current_interaction_id
       )
       if llm_response:
+        if llm_response.turn_complete:
+          has_emitted_turn_complete = True
         yield llm_response
 
-    # Final aggregated response
-    if aggregated_parts:
+    # Final aggregated response fallback if the stream never emitted a
+    # completion event (e.g., missing interaction.status_update).
+    if aggregated_parts and not has_emitted_turn_complete:
       yield LlmResponse(
           content=types.Content(role='model', parts=aggregated_parts),
           partial=False,

@@ -14,7 +14,9 @@
 
 """Tests for interactions_utils.py conversion functions."""
 
+import asyncio
 import json
+from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 
 from google.adk.models import interactions_utils
@@ -759,3 +761,102 @@ class TestGetLatestUserContents:
     assert len(result) == 2
     assert result[0].parts[0].text == 'Great'
     assert result[1].parts[0].text == 'Tell me more'
+
+
+class TestGenerateContentViaInteractionsStreaming:
+  """Tests for streaming generation via interactions API."""
+
+  def test_emits_single_final_response_with_status_update(self):
+    """Ensures no duplicate final response is emitted in streaming mode."""
+    delta_1 = MagicMock()
+    delta_1.event_type = 'content.delta'
+    delta_1.id = 'interaction_1'
+    delta_1.delta = MagicMock(type='text', text='Hello ')
+
+    delta_2 = MagicMock()
+    delta_2.event_type = 'content.delta'
+    delta_2.id = 'interaction_1'
+    delta_2.delta = MagicMock(type='text', text='world')
+
+    status_update = MagicMock()
+    status_update.event_type = 'interaction.status_update'
+    status_update.id = 'interaction_1'
+    status_update.status = 'completed'
+
+    async def _stream_events():
+      for event in [delta_1, delta_2, status_update]:
+        yield event
+
+    api_client = MagicMock()
+    api_client.aio.interactions.create = AsyncMock(
+        return_value=_stream_events()
+    )
+
+    llm_request = LlmRequest(
+        model='gemini-2.5-flash',
+        contents=[types.Content(role='user', parts=[types.Part(text='hi')])],
+    )
+
+    async def _collect_responses():
+      return [
+          response
+          async for response in
+          interactions_utils.generate_content_via_interactions(
+              api_client=api_client, llm_request=llm_request, stream=True
+          )
+      ]
+
+    responses = asyncio.run(_collect_responses())
+
+    assert len(responses) == 3
+    assert responses[0].partial is True
+    assert responses[1].partial is True
+    assert responses[2].turn_complete is True
+    assert responses[2].content.parts[0].text == 'Hello world'
+
+  def test_merges_overlapping_text_deltas_in_final_response(self):
+    """Ensures overlapping text chunks are merged without duplication."""
+    delta_1 = MagicMock()
+    delta_1.event_type = 'content.delta'
+    delta_1.id = 'interaction_2'
+    delta_1.delta = MagicMock(type='text', text='Hello wor')
+
+    delta_2 = MagicMock()
+    delta_2.event_type = 'content.delta'
+    delta_2.id = 'interaction_2'
+    delta_2.delta = MagicMock(type='text', text='world')
+
+    content_stop = MagicMock()
+    content_stop.event_type = 'content.stop'
+    content_stop.id = 'interaction_2'
+
+    async def _stream_events():
+      for event in [delta_1, delta_2, content_stop]:
+        yield event
+
+    api_client = MagicMock()
+    api_client.aio.interactions.create = AsyncMock(
+        return_value=_stream_events()
+    )
+
+    llm_request = LlmRequest(
+        model='gemini-2.5-flash',
+        contents=[types.Content(role='user', parts=[types.Part(text='hi')])],
+    )
+
+    async def _collect_responses():
+      return [
+          response
+          async for response in
+          interactions_utils.generate_content_via_interactions(
+              api_client=api_client, llm_request=llm_request, stream=True
+          )
+      ]
+
+    responses = asyncio.run(_collect_responses())
+
+    assert len(responses) == 3
+    final_response = responses[-1]
+    assert final_response.turn_complete is True
+    assert final_response.content.parts[0].text == 'Hello world'
+

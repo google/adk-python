@@ -90,7 +90,8 @@ class Event(LlmResponse):
     if self.actions.skip_summarization or self.long_running_tool_ids:
       return True
     return (
-        not self.get_function_calls()
+        self.turn_complete is not False
+        and not self.get_function_calls()
         and not self.get_function_responses()
         and not self.partial
         and not self.has_trailing_code_execution_result()
