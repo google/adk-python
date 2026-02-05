@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import inspect
 import logging
@@ -21,14 +22,18 @@ from typing import Any
 from typing import Callable
 from typing import Dict
 from typing import Optional
+from typing import Protocol
+from typing import runtime_checkable
 from typing import Union
 import warnings
 
 from fastapi.openapi.models import APIKeyIn
 from google.genai.types import FunctionDeclaration
+from mcp.shared.session import ProgressFnT
 from mcp.types import Tool as McpBaseTool
 from typing_extensions import override
 
+from ...agents.callback_context import CallbackContext
 from ...agents.readonly_context import ReadonlyContext
 from ...auth.auth_credential import AuthCredential
 from ...auth.auth_schemes import AuthScheme
@@ -37,12 +42,73 @@ from ...features import FeatureName
 from ...features import is_feature_enabled
 from .._gemini_schema_util import _to_gemini_schema
 from ..base_authenticated_tool import BaseAuthenticatedTool
-#  import
 from ..tool_context import ToolContext
 from .mcp_session_manager import MCPSessionManager
 from .mcp_session_manager import retry_on_errors
 
 logger = logging.getLogger("google_adk." + __name__)
+
+
+@runtime_checkable
+class ProgressCallbackFactory(Protocol):
+  """Factory protocol for creating per-tool progress callbacks.
+
+  This protocol allows users to create different progress callbacks for
+  different tools based on tool name and runtime context. The factory receives
+  the tool name, a CallbackContext for accessing and modifying session state,
+  and additional keyword arguments for forward compatibility.
+
+  Example usage::
+
+    def my_callback_factory(
+        tool_name: str,
+        *,
+        callback_context: CallbackContext | None = None,
+        **kwargs
+    ) -> ProgressFnT | None:
+      session_id = callback_context.session.id if callback_context else "N/A"
+
+      async def callback(progress, total, message):
+        print(f"[{tool_name}] Session {session_id}: {progress}/{total}")
+        # Can modify state in the callback
+        if callback_context:
+          callback_context.state['last_progress'] = progress
+
+      return callback
+
+    toolset = McpToolset(
+        connection_params=...,
+        progress_callback=my_callback_factory,
+    )
+
+  Note:
+    The **kwargs parameter is required for forward compatibility. Future
+    versions may pass additional parameters. Implementations should accept
+    **kwargs even if they don't use them.
+  """
+
+  def __call__(
+      self,
+      tool_name: str,
+      *,
+      callback_context: Optional[CallbackContext] = None,
+      **kwargs: Any,
+  ) -> Optional[ProgressFnT]:
+    """Create a progress callback for a specific tool.
+
+    Args:
+      tool_name: The name of the MCP tool.
+      callback_context: The callback context providing access to session,
+        state, artifacts, and other runtime information. Allows modifying
+        state via ctx.state['key'] = value. May be None if not available.
+      **kwargs: Additional keyword arguments for future extensibility.
+        Implementations should accept **kwargs for forward compatibility.
+
+    Returns:
+      A progress callback function, or None if no callback is needed
+      for this tool.
+    """
+    ...
 
 
 class McpTool(BaseAuthenticatedTool):
@@ -66,6 +132,9 @@ class McpTool(BaseAuthenticatedTool):
       header_provider: Optional[
           Callable[[ReadonlyContext], Dict[str, str]]
       ] = None,
+      progress_callback: Optional[
+          Union[ProgressFnT, ProgressCallbackFactory]
+      ] = None,
   ):
     """Initializes an McpTool.
 
@@ -81,6 +150,17 @@ class McpTool(BaseAuthenticatedTool):
           or a callable that takes the function's arguments and returns a
           boolean. If the callable returns True, the tool will require
           confirmation from the user.
+        header_provider: Optional function to provide dynamic headers.
+        progress_callback: Optional callback to receive progress notifications
+          from MCP server during long-running tool execution. Can be either:
+
+          - A ``ProgressFnT`` callback that receives (progress, total, message).
+            This callback will be used for all invocations.
+
+          - A ``ProgressCallbackFactory`` that creates per-invocation callbacks.
+            The factory receives (tool_name, callback_context, **kwargs) and
+            returns a ProgressFnT or None. This allows callbacks to access
+            and modify runtime context like session state.
 
     Raises:
         ValueError: If mcp_tool or mcp_session_manager is None.
@@ -98,6 +178,7 @@ class McpTool(BaseAuthenticatedTool):
     self._mcp_session_manager = mcp_session_manager
     self._require_confirmation = require_confirmation
     self._header_provider = header_provider
+    self._progress_callback = progress_callback
 
   @override
   def _get_declaration(self) -> FunctionDeclaration:
@@ -237,8 +318,49 @@ class McpTool(BaseAuthenticatedTool):
         headers=final_headers
     )
 
-    response = await session.call_tool(self._mcp_tool.name, arguments=args)
+    # Resolve progress callback (may be a factory that needs runtime context)
+    resolved_callback = self._resolve_progress_callback(tool_context)
+
+    response = await session.call_tool(
+        self._mcp_tool.name,
+        arguments=args,
+        progress_callback=resolved_callback,
+    )
     return response.model_dump(exclude_none=True, mode="json")
+
+  def _resolve_progress_callback(
+      self, tool_context: ToolContext
+  ) -> Optional[ProgressFnT]:
+    """Resolve the progress callback for the current invocation.
+
+    If progress_callback is a ProgressCallbackFactory, call it to create
+    a callback with runtime context. Otherwise, return the callback directly.
+
+    Args:
+      tool_context: The tool context for the current invocation.
+
+    Returns:
+      The resolved progress callback, or None if not configured.
+    """
+    if (
+        not hasattr(self, "_progress_callback")
+        or self._progress_callback is None
+    ):
+      return None
+
+    # Determine if callback is a factory by checking if it's a coroutine
+    # function. ProgressFnT is an async function, while ProgressCallbackFactory
+    # is a sync function that returns an async function.
+    if asyncio.iscoroutinefunction(self._progress_callback):
+      return self._progress_callback
+
+    # If it's a regular callable (not async), treat it as a factory
+    if callable(self._progress_callback) and not inspect.iscoroutinefunction(
+        self._progress_callback
+    ):
+      return self._progress_callback(self.name, callback_context=tool_context)
+
+    return self._progress_callback
 
   async def _get_headers(
       self, tool_context: ToolContext, credential: AuthCredential
@@ -253,7 +375,8 @@ class McpTool(BaseAuthenticatedTool):
         Dictionary of headers to add to the request, or None if no auth.
 
     Raises:
-        ValueError: If API key authentication is configured for non-header location.
+        ValueError: If API key authentication is configured for non-header
+        location.
     """
     headers: Optional[dict[str, str]] = None
     if credential:
@@ -284,7 +407,8 @@ class McpTool(BaseAuthenticatedTool):
           # Handle other HTTP schemes with token
           headers = {
               "Authorization": (
-                  f"{credential.http.scheme} {credential.http.credentials.token}"
+                  f"{credential.http.scheme}"
+                  f" {credential.http.credentials.token}"
               )
           }
       elif credential.api_key:
