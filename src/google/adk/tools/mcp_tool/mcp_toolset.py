@@ -31,6 +31,7 @@ from typing import Union
 import warnings
 
 from mcp import StdioServerParameters
+from mcp.shared.session import ProgressFnT
 from mcp.types import ListResourcesResult
 from mcp.types import ListToolsResult
 from pydantic import model_validator
@@ -51,6 +52,7 @@ from .mcp_session_manager import SseConnectionParams
 from .mcp_session_manager import StdioConnectionParams
 from .mcp_session_manager import StreamableHTTPConnectionParams
 from .mcp_tool import MCPTool
+from .mcp_tool import ProgressCallbackFactory
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -72,7 +74,8 @@ class McpToolset(BaseToolset):
             command='npx',
             args=["-y", "@modelcontextprotocol/server-filesystem"],
         ),
-        tool_filter=['read_file', 'list_directory']  # Optional: filter specific tools
+        tool_filter=['read_file', 'list_directory']  # Optional: filter specific
+        tools
     )
 
     # Use in an agent
@@ -106,18 +109,21 @@ class McpToolset(BaseToolset):
       header_provider: Optional[
           Callable[[ReadonlyContext], Dict[str, str]]
       ] = None,
+      progress_callback: Optional[
+          Union[ProgressFnT, ProgressCallbackFactory]
+      ] = None,
   ):
     """Initializes the McpToolset.
 
     Args:
       connection_params: The connection parameters to the MCP server. Can be:
-        ``StdioConnectionParams`` for using local mcp server (e.g. using ``npx`` or
-        ``python3``); or ``SseConnectionParams`` for a local/remote SSE server; or
-        ``StreamableHTTPConnectionParams`` for local/remote Streamable http
-        server. Note, ``StdioServerParameters`` is also supported for using local
-        mcp server (e.g. using ``npx`` or ``python3`` ), but it does not support
-        timeout, and we recommend to use ``StdioConnectionParams`` instead when
-        timeout is needed.
+        ``StdioConnectionParams`` for using local mcp server (e.g. using ``npx``
+        or ``python3``); or ``SseConnectionParams`` for a local/remote SSE
+        server; or ``StreamableHTTPConnectionParams`` for local/remote
+        Streamable http server. Note, ``StdioServerParameters`` is also
+        supported for using local mcp server (e.g. using ``npx`` or ``python3``
+        ), but it does not support timeout, and we recommend to use
+        ``StdioConnectionParams`` instead when timeout is needed.
       tool_filter: Optional filter to select specific tools. Can be either: - A
         list of tool names to include - A ToolPredicate function for custom
         filtering logic
@@ -126,11 +132,22 @@ class McpToolset(BaseToolset):
       errlog: TextIO stream for error logging.
       auth_scheme: The auth scheme of the tool for tool calling
       auth_credential: The auth credential of the tool for tool calling
-      require_confirmation: Whether tools in this toolset require
-        confirmation. Can be a single boolean or a callable to apply to all
-        tools.
+      require_confirmation: Whether tools in this toolset require confirmation.
+        Can be a single boolean or a callable to apply to all tools.
       header_provider: A callable that takes a ReadonlyContext and returns a
         dictionary of headers to be used for the MCP session.
+      progress_callback: Optional callback to receive progress notifications
+        from MCP server during long-running tool execution. Can be either:
+
+        - A ``ProgressFnT`` callback that receives (progress, total, message).
+          This callback will be shared by all tools in the toolset.
+
+        - A ``ProgressCallbackFactory`` that creates per-tool callbacks. The
+          factory receives (tool_name, callback_context, **kwargs) and returns
+          a ProgressFnT or None. This allows different tools to have different
+          progress handling logic and access/modify session state via the
+          CallbackContext. The **kwargs parameter allows for future
+          extensibility.
     """
     super().__init__(tool_filter=tool_filter, tool_name_prefix=tool_name_prefix)
 
@@ -140,6 +157,7 @@ class McpToolset(BaseToolset):
     self._connection_params = connection_params
     self._errlog = errlog
     self._header_provider = header_provider
+    self._progress_callback = progress_callback
 
     # Create the session manager that will handle the MCP connection
     self._mcp_session_manager = MCPSessionManager(
@@ -270,7 +288,7 @@ class McpToolset(BaseToolset):
 
     Args:
         readonly_context: Context used to filter tools available to the agent.
-            If None, all tools in the toolset are returned.
+          If None, all tools in the toolset are returned.
 
     Returns:
         List[BaseTool]: A list of tools available under the specified context.
@@ -292,6 +310,9 @@ class McpToolset(BaseToolset):
           auth_credential=self._auth_credential,
           require_confirmation=self._require_confirmation,
           header_provider=self._header_provider,
+          progress_callback=self._progress_callback
+          if hasattr(self, "_progress_callback")
+          else None,
       )
 
       if self._is_tool_selected(mcp_tool, readonly_context):
