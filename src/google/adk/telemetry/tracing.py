@@ -52,6 +52,7 @@ from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_A
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_USAGE_INPUT_TOKENS
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_USAGE_OUTPUT_TOKENS
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GenAiSystemValues
+from opentelemetry.semconv._incubating.attributes.user_attributes import USER_ID
 from opentelemetry.semconv.schemas import Schemas
 from opentelemetry.trace import Span
 from opentelemetry.util.types import AnyValue
@@ -438,8 +439,11 @@ def use_generate_content_span(
   """
 
   common_attributes = {
+      GEN_AI_AGENT_NAME: invocation_context.agent.name,
       GEN_AI_CONVERSATION_ID: invocation_context.session.id,
+      USER_ID: invocation_context.session.user_id,
       'gcp.vertex.agent.event_id': model_response_event.id,
+      'gcp.vertex.agent.invocation_id': invocation_context.invocation_id,
   }
   if (
       _is_gemini_agent(invocation_context.agent)

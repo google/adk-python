@@ -34,6 +34,7 @@ from google.adk.telemetry.tracing import use_generate_content_span
 from google.adk.tools.base_tool import BaseTool
 from google.genai import types
 from opentelemetry._logs import LogRecord
+from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_AGENT_NAME
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_CONVERSATION_ID
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_OPERATION_NAME
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_REQUEST_MODEL
@@ -41,6 +42,7 @@ from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_A
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_SYSTEM
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_USAGE_INPUT_TOKENS
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_USAGE_OUTPUT_TOKENS
+from opentelemetry.semconv._incubating.attributes.user_attributes import USER_ID
 import pytest
 
 
@@ -709,8 +711,11 @@ async def test_generate_content_span(
   mock_span.set_attribute.assert_any_call(GEN_AI_USAGE_OUTPUT_TOKENS, 20)
 
   mock_span.set_attributes.assert_called_once_with({
+      GEN_AI_AGENT_NAME: invocation_context.agent.name,
       GEN_AI_CONVERSATION_ID: invocation_context.session.id,
+      USER_ID: invocation_context.session.user_id,
       'gcp.vertex.agent.event_id': 'event-123',
+      'gcp.vertex.agent.invocation_id': invocation_context.invocation_id,
   })
 
   # Assert Logs
