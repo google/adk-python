@@ -624,7 +624,7 @@ class TestLocalEvalSetsManager:
     updated_eval_case = EvalCase(eval_id=eval_case_id, conversation=[])
 
     mocker.patch(
-        "google.adk.evaluation.local_eval_sets_manager.LocalEvalSetsManager.get_eval_case",
+        "google.adk.evaluation.local_eval_sets_manager.LocalEvalSetsManager.get_eval_set",
         return_value=None,
     )
 
@@ -708,7 +708,7 @@ class TestLocalEvalSetsManager:
     eval_case_id = "test_eval_case"
 
     mocker.patch(
-        "google.adk.evaluation.local_eval_sets_manager.LocalEvalSetsManager.get_eval_case",
+        "google.adk.evaluation.local_eval_sets_manager.LocalEvalSetsManager.get_eval_set",
         return_value=None,
     )
     mock_write_eval_set_to_path = mocker.patch(
