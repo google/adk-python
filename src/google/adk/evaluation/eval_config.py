@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -89,7 +89,7 @@ criterion to be used.
 In the sample below, `tool_trajectory_avg_score`, `response_match_score` and
 `final_response_match_v2` are the standard eval metric names, represented as
 keys in the dictionary. The values in the dictionary are the corresponding
-criterions. For the first two metrics, we use simple threshold as the criterion,
+criteria. For the first two metrics, we use simple threshold as the criterion,
 the third one uses `LlmAsAJudgeCriterion`.
 {
   "criteria": {

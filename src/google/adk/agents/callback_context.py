@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -176,6 +176,25 @@ class CallbackContext(ReadonlyContext):
     return await self._invocation_context.credential_service.load_credential(
         auth_config, self
     )
+
+  def get_auth_response(
+      self, auth_config: AuthConfig
+  ) -> Optional[AuthCredential]:
+    """Gets the auth response credential from session state.
+
+    This method retrieves an authentication credential that was previously
+    stored in session state after a user completed an OAuth flow or other
+    authentication process.
+
+    Args:
+      auth_config: The authentication configuration for the credential.
+
+    Returns:
+      The auth credential from the auth response, or None if not found.
+    """
+    from ..auth.auth_handler import AuthHandler
+
+    return AuthHandler(auth_config).get_auth_response(self.state)
 
   async def add_session_to_memory(self) -> None:
     """Triggers memory generation for the current session.

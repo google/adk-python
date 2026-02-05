@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -49,7 +49,7 @@ def upgrade(source_db_url: str, dest_db_url: str):
   LATEST_VERSION.
 
   If multiple migration steps are required, intermediate results are stored in
-  temporary SQLite database files. This means a multi-step migration
+  temporary SQLite database files. This means a multistep migration
   between other database types (e.g. PostgreSQL to PostgreSQL) will use
   SQLite for intermediate steps.
 

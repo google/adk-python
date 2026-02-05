@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import base64
 import copy
+import importlib.util
 import json
 import logging
 import mimetypes
@@ -32,6 +33,7 @@ from typing import List
 from typing import Literal
 from typing import Optional
 from typing import Tuple
+from typing import TYPE_CHECKING
 from typing import TypedDict
 from typing import Union
 from urllib.parse import urlparse
@@ -39,30 +41,51 @@ import uuid
 import warnings
 
 from google.genai import types
-import litellm
-from litellm import acompletion
-from litellm import ChatCompletionAssistantMessage
-from litellm import ChatCompletionAssistantToolCall
-from litellm import ChatCompletionMessageToolCall
-from litellm import ChatCompletionSystemMessage
-from litellm import ChatCompletionToolMessage
-from litellm import ChatCompletionUserMessage
-from litellm import completion
-from litellm import CustomStreamWrapper
-from litellm import Function
-from litellm import Message
-from litellm import ModelResponse
-from litellm import OpenAIMessageContent
+
+if not TYPE_CHECKING and importlib.util.find_spec("litellm") is None:
+  raise ImportError(
+      "LiteLLM support requires: pip install google-adk[extensions]"
+  )
+
 from pydantic import BaseModel
 from pydantic import Field
 from typing_extensions import override
 
+from ..utils._google_client_headers import merge_tracking_headers
 from .base_llm import BaseLlm
 from .llm_request import LlmRequest
 from .llm_response import LlmResponse
 
-# This will add functions to prompts if functions are provided.
-litellm.add_function_to_prompt = True
+if TYPE_CHECKING:
+  import litellm
+  from litellm import acompletion
+  from litellm import ChatCompletionAssistantMessage
+  from litellm import ChatCompletionAssistantToolCall
+  from litellm import ChatCompletionMessageToolCall
+  from litellm import ChatCompletionSystemMessage
+  from litellm import ChatCompletionToolMessage
+  from litellm import ChatCompletionUserMessage
+  from litellm import completion
+  from litellm import CustomStreamWrapper
+  from litellm import Function
+  from litellm import Message
+  from litellm import ModelResponse
+  from litellm import OpenAIMessageContent
+else:
+  litellm = None
+  acompletion = None
+  ChatCompletionAssistantMessage = None
+  ChatCompletionAssistantToolCall = None
+  ChatCompletionMessageToolCall = None
+  ChatCompletionSystemMessage = None
+  ChatCompletionToolMessage = None
+  ChatCompletionUserMessage = None
+  completion = None
+  CustomStreamWrapper = None
+  Function = None
+  Message = None
+  ModelResponse = None
+  OpenAIMessageContent = None
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -70,6 +93,13 @@ _NEW_LINE = "\n"
 _EXCLUDED_PART_FIELD = {"inline_data": {"data"}}
 _LITELLM_STRUCTURED_TYPES = {"json_object", "json_schema"}
 _JSON_DECODER = json.JSONDecoder()
+
+# Mapping of major MIME type prefixes to LiteLLM content types for URL blocks.
+_MEDIA_URL_CONTENT_TYPE_BY_MAJOR_MIME_TYPE = {
+    "image": "image_url",
+    "video": "video_url",
+    "audio": "audio_url",
+}
 
 # Mapping of LiteLLM finish_reason strings to FinishReason enum values
 # Note: tool_calls/function_call map to STOP because:
@@ -108,6 +138,50 @@ _MISSING_TOOL_RESULT_MESSAGE = (
     "Error: Missing tool result (tool execution may have been interrupted "
     "before a response was recorded)."
 )
+
+_LITELLM_IMPORTED = False
+_LITELLM_GLOBAL_SYMBOLS = (
+    "ChatCompletionAssistantMessage",
+    "ChatCompletionAssistantToolCall",
+    "ChatCompletionMessageToolCall",
+    "ChatCompletionSystemMessage",
+    "ChatCompletionToolMessage",
+    "ChatCompletionUserMessage",
+    "CustomStreamWrapper",
+    "Function",
+    "Message",
+    "ModelResponse",
+    "OpenAIMessageContent",
+    "acompletion",
+    "completion",
+)
+
+
+def _ensure_litellm_imported() -> None:
+  """Imports LiteLLM with safe defaults.
+
+  LiteLLM defaults to DEV mode, which autoloads a local `.env` at import time.
+  ADK should not implicitly load `.env` just because LiteLLM is installed.
+
+  Users can opt into LiteLLM's default behavior by setting LITELLM_MODE=DEV.
+  """
+  global _LITELLM_IMPORTED
+  if _LITELLM_IMPORTED:
+    return
+
+  # https://github.com/BerriAI/litellm/blob/main/litellm/__init__.py#L80-L82
+  os.environ.setdefault("LITELLM_MODE", "PRODUCTION")
+
+  import litellm as litellm_module
+
+  litellm_module.add_function_to_prompt = True
+
+  globals()["litellm"] = litellm_module
+  for symbol in _LITELLM_GLOBAL_SYMBOLS:
+    globals()[symbol] = getattr(litellm_module, symbol)
+
+  _redirect_litellm_loggers_to_stdout()
+  _LITELLM_IMPORTED = True
 
 
 def _map_finish_reason(
@@ -198,6 +272,15 @@ def _looks_like_openai_file_id(file_uri: str) -> bool:
   return file_uri.startswith("file-")
 
 
+def _is_http_url(uri: str) -> bool:
+  """Returns True when `uri` is an HTTP(S) URL."""
+  try:
+    parsed = urlparse(uri)
+  except ValueError:
+    return False
+  return parsed.scheme in ("http", "https")
+
+
 def _redact_file_uri_for_log(
     file_uri: str, *, display_name: str | None = None
 ) -> str:
@@ -239,6 +322,17 @@ def _decode_inline_text_data(raw_bytes: bytes) -> str:
   except UnicodeDecodeError:
     logger.debug("Falling back to latin-1 decoding for inline file bytes.")
     return raw_bytes.decode("latin-1", errors="replace")
+
+
+def _normalize_mime_type(mime_type: str) -> str:
+  """Normalizes MIME types for comparisons."""
+  return mime_type.split(";", 1)[0].strip().lower()
+
+
+def _media_url_content_type(mime_type: str) -> str | None:
+  """Returns the LiteLLM URL content type for known media MIME types."""
+  major_mime_type = _normalize_mime_type(mime_type).split("/", 1)[0]
+  return _MEDIA_URL_CONTENT_TYPE_BY_MAJOR_MIME_TYPE.get(major_mime_type)
 
 
 def _iter_reasoning_texts(reasoning_value: Any) -> Iterable[str]:
@@ -344,6 +438,7 @@ class LiteLLMClient:
     Returns:
       The model response as a message.
     """
+    _ensure_litellm_imported()
 
     return await acompletion(
         model=model,
@@ -367,6 +462,7 @@ class LiteLLMClient:
     Returns:
       The response from the model.
     """
+    _ensure_litellm_imported()
 
     return completion(
         model=model,
@@ -401,6 +497,8 @@ def _part_has_payload(part: types.Part) -> bool:
   if part.inline_data and part.inline_data.data:
     return True
   if part.file_data and (part.file_data.file_uri or part.file_data.data):
+    return True
+  if part.function_response:
     return True
   return False
 
@@ -513,6 +611,7 @@ async def _content_to_message_param(
   Returns:
     A litellm Message, a list of litellm Messages.
   """
+  _ensure_litellm_imported()
 
   tool_messages: list[Message] = []
   non_tool_parts: list[types.Part] = []
@@ -622,6 +721,8 @@ def _ensure_tool_results(messages: List[Message]) -> List[Message]:
   if not messages:
     return messages
 
+  _ensure_litellm_imported()
+
   healed_messages: List[Message] = []
   pending_tool_call_ids: List[str] = []
 
@@ -691,6 +792,7 @@ async def _get_content(
   Returns:
     The litellm content.
   """
+  _ensure_litellm_imported()
 
   parts_list = list(parts)
   if len(parts_list) == 1:
@@ -701,7 +803,7 @@ async def _get_content(
         part.inline_data
         and part.inline_data.data
         and part.inline_data.mime_type
-        and part.inline_data.mime_type.startswith("text/")
+        and _normalize_mime_type(part.inline_data.mime_type).startswith("text/")
     ):
       return _decode_inline_text_data(part.inline_data.data)
 
@@ -717,7 +819,8 @@ async def _get_content(
         and part.inline_data.data
         and part.inline_data.mime_type
     ):
-      if part.inline_data.mime_type.startswith("text/"):
+      mime_type = _normalize_mime_type(part.inline_data.mime_type)
+      if mime_type.startswith("text/"):
         decoded_text = _decode_inline_text_data(part.inline_data.data)
         content_objects.append({
             "type": "text",
@@ -725,26 +828,17 @@ async def _get_content(
         })
         continue
       base64_string = base64.b64encode(part.inline_data.data).decode("utf-8")
-      data_uri = f"data:{part.inline_data.mime_type};base64,{base64_string}"
+      data_uri = f"data:{mime_type};base64,{base64_string}"
       # LiteLLM providers extract the MIME type from the data URI; avoid
       # passing a separate `format` field that some backends reject.
 
-      if part.inline_data.mime_type.startswith("image"):
+      url_content_type = _media_url_content_type(mime_type)
+      if url_content_type:
         content_objects.append({
-            "type": "image_url",
-            "image_url": {"url": data_uri},
+            "type": url_content_type,
+            url_content_type: {"url": data_uri},
         })
-      elif part.inline_data.mime_type.startswith("video"):
-        content_objects.append({
-            "type": "video_url",
-            "video_url": {"url": data_uri},
-        })
-      elif part.inline_data.mime_type.startswith("audio"):
-        content_objects.append({
-            "type": "audio_url",
-            "audio_url": {"url": data_uri},
-        })
-      elif part.inline_data.mime_type in _SUPPORTED_FILE_CONTENT_MIME_TYPES:
+      elif mime_type in _SUPPORTED_FILE_CONTENT_MIME_TYPES:
         # OpenAI/Azure require file_id from uploaded file, not inline data
         if provider in _FILE_ID_REQUIRED_PROVIDERS:
           file_response = await litellm.acreate_file(
@@ -777,6 +871,34 @@ async def _get_content(
         })
         continue
 
+      # Determine MIME type: use explicit value, infer from URI, or use default.
+      mime_type = part.file_data.mime_type
+      if not mime_type:
+        mime_type = _infer_mime_type_from_uri(part.file_data.file_uri)
+      if not mime_type and part.file_data.display_name:
+        guessed_mime_type, _ = mimetypes.guess_type(part.file_data.display_name)
+        mime_type = guessed_mime_type
+      if not mime_type:
+        # LiteLLM's Vertex AI backend requires format for GCS URIs.
+        mime_type = _DEFAULT_MIME_TYPE
+        logger.debug(
+            "Could not determine MIME type for file_uri %s, using default: %s",
+            part.file_data.file_uri,
+            mime_type,
+        )
+      mime_type = _normalize_mime_type(mime_type)
+
+      if provider in _FILE_ID_REQUIRED_PROVIDERS and _is_http_url(
+          part.file_data.file_uri
+      ):
+        url_content_type = _media_url_content_type(mime_type)
+        if url_content_type:
+          content_objects.append({
+              "type": url_content_type,
+              url_content_type: {"url": part.file_data.file_uri},
+          })
+          continue
+
       if _requires_file_uri_fallback(provider, model, part.file_data.file_uri):
         logger.debug(
             "File URI %s not supported for provider %s, using text fallback",
@@ -796,21 +918,6 @@ async def _get_content(
       file_object: ChatCompletionFileUrlObject = {
           "file_id": part.file_data.file_uri,
       }
-      # Determine MIME type: use explicit value, infer from URI, or use default
-      mime_type = part.file_data.mime_type
-      if not mime_type:
-        mime_type = _infer_mime_type_from_uri(part.file_data.file_uri)
-      if not mime_type and part.file_data.display_name:
-        guessed_mime_type, _ = mimetypes.guess_type(part.file_data.display_name)
-        mime_type = guessed_mime_type
-      if not mime_type:
-        # LiteLLM's Vertex AI backend requires format for GCS URIs
-        mime_type = _DEFAULT_MIME_TYPE
-        logger.debug(
-            "Could not determine MIME type for file_uri %s, using default: %s",
-            part.file_data.file_uri,
-            mime_type,
-        )
       file_object["format"] = mime_type
       content_objects.append({
           "type": "file",
@@ -925,6 +1032,7 @@ def _build_tool_call_from_json_dict(
     candidate: Any, *, index: int
 ) -> Optional[ChatCompletionMessageToolCall]:
   """Creates a tool call object from JSON content embedded in text."""
+  _ensure_litellm_imported()
 
   if not isinstance(candidate, dict):
     return None
@@ -972,10 +1080,11 @@ def _parse_tool_calls_from_text(
     text_block: str,
 ) -> tuple[list[ChatCompletionMessageToolCall], Optional[str]]:
   """Extracts inline JSON tool calls from LiteLLM text responses."""
-
   tool_calls = []
   if not text_block:
     return tool_calls, None
+
+  _ensure_litellm_imported()
 
   remainder_segments = []
   cursor = 0
@@ -1014,7 +1123,6 @@ def _split_message_content_and_tool_calls(
     message: Message,
 ) -> tuple[Optional[OpenAIMessageContent], list[ChatCompletionMessageToolCall]]:
   """Returns message content and tool calls, parsing inline JSON when needed."""
-
   existing_tool_calls = message.get("tool_calls") or []
   normalized_tool_calls = (
       list(existing_tool_calls) if existing_tool_calls else []
@@ -1180,6 +1288,7 @@ def _model_response_to_chunk(
   Yields:
     A tuple of text or function or usage metadata chunk and finish reason.
   """
+  _ensure_litellm_imported()
 
   message = None
   if response.get("choices", None):
@@ -1255,6 +1364,7 @@ def _model_response_to_generate_content_response(
   Returns:
     The LlmResponse.
   """
+  _ensure_litellm_imported()
 
   message = None
   finish_reason = None
@@ -1313,6 +1423,7 @@ def _message_to_generate_content_response(
   Returns:
     The LlmResponse.
   """
+  _ensure_litellm_imported()
 
   parts: List[types.Part] = []
   if not thought_parts:
@@ -1440,6 +1551,8 @@ async def _get_completion_inputs(
     The litellm inputs (message list, tool dictionary, response format and
     generation params).
   """
+  _ensure_litellm_imported()
+
   # Determine provider for file handling
   provider = _get_provider_from_model(model)
 
@@ -1587,6 +1700,18 @@ Functions:
 """
 
 
+def _is_litellm_vertex_model(model_string: str) -> bool:
+  """Check if the model is a Vertex AI model accessed via LiteLLM.
+
+  Args:
+    model_string: A LiteLLM model string (e.g., "vertex_ai/gemini-2.5-flash")
+
+  Returns:
+    True if it's a Vertex AI model accessed via LiteLLM, False otherwise
+  """
+  return model_string.startswith("vertex_ai/")
+
+
 def _is_litellm_gemini_model(model_string: str) -> bool:
   """Check if the model is a Gemini model accessed via LiteLLM.
 
@@ -1665,11 +1790,6 @@ def _redirect_litellm_loggers_to_stdout() -> None:
         handler.stream = sys.stdout
 
 
-# Redirect LiteLLM loggers to stdout immediately after import to ensure
-# INFO-level logs are not incorrectly treated as errors in cloud environments.
-_redirect_litellm_loggers_to_stdout()
-
-
 class LiteLlm(BaseLlm):
   """Wrapper around litellm.
 
@@ -1732,6 +1852,7 @@ class LiteLlm(BaseLlm):
     Yields:
       LlmResponse: The model response.
     """
+    _ensure_litellm_imported()
 
     self._maybe_append_user_content(llm_request)
     _append_fallback_user_content_if_missing(llm_request)
@@ -1758,6 +1879,14 @@ class LiteLlm(BaseLlm):
         "response_format": response_format,
     }
     completion_args.update(self._additional_args)
+
+    # merge headers
+    if _is_litellm_vertex_model(effective_model) or _is_litellm_gemini_model(
+        effective_model
+    ):
+      completion_args["headers"] = merge_tracking_headers(
+          completion_args.get("headers")
+      )
 
     if generation_params:
       completion_args.update(generation_params)
