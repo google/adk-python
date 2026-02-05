@@ -35,7 +35,6 @@ from sqlalchemy.ext.asyncio import AsyncSession as DatabaseSessionFactory
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import StaticPool
 from typing_extensions import override
-from tzlocal import get_localzone
 
 from . import _session_util
 from ..errors.already_exists_error import AlreadyExistsError
@@ -133,10 +132,6 @@ class DatabaseSessionService(BaseSessionService):
       raise ValueError(
           f"Failed to create database engine for URL '{db_url}'"
       ) from e
-
-    # Get the local timezone
-    local_timezone = get_localzone()
-    logger.info("Local timezone: %s", local_timezone)
 
     self.db_engine: AsyncEngine = db_engine
 
