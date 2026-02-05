@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -35,13 +35,13 @@ class BaseEventsSummarizer(abc.ABC):
     If compaction failed, return None. Otherwise, compact into a content and
     return it.
 
-    This method will summarize the events and return a new summray event
+    This method will summarize the events and return a new summary event
     indicating the range of events it summarized.
 
     Args:
       events: Events to compact.
 
     Returns:
-      The new compacted event, or None if no compaction happended.
+      The new compacted event, or None if no compaction happened.
     """
     raise NotImplementedError()

@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -17,18 +17,21 @@ from __future__ import annotations
 import math
 import os
 from typing import Optional
+from typing import TYPE_CHECKING
 
 from google.genai import types as genai_types
 import pandas as pd
 from typing_extensions import override
-from vertexai import Client as VertexAiClient
-from vertexai import types as vertexai_types
 
+from .eval_case import ConversationScenario
 from .eval_case import Invocation
 from .evaluator import EvalStatus
 from .evaluator import EvaluationResult
 from .evaluator import Evaluator
 from .evaluator import PerInvocationResult
+
+if TYPE_CHECKING:
+  from vertexai import types as vertexai_types
 
 _ERROR_MESSAGE_SUFFIX = """
 You should specify both project id and location. This metric uses Vertex Gen AI
@@ -53,23 +56,40 @@ class _VertexAiEvalFacade(Evaluator):
   """
 
   def __init__(
-      self, threshold: float, metric_name: vertexai_types.PrebuiltMetric
+      self,
+      threshold: float,
+      metric_name: vertexai_types.PrebuiltMetric,
+      expected_invocations_required=False,
   ):
     self._threshold = threshold
     self._metric_name = metric_name
+    self._expected_invocations_required = expected_invocations_required
 
   @override
   def evaluate_invocations(
       self,
       actual_invocations: list[Invocation],
-      expected_invocations: list[Invocation],
+      expected_invocations: Optional[list[Invocation]] = None,
+      conversation_scenario: Optional[ConversationScenario] = None,
   ) -> EvaluationResult:
+    if self._expected_invocations_required and expected_invocations is None:
+      raise ValueError("expected_invocations is needed by this metric.")
+    del conversation_scenario  # not supported for per-invocation evaluation.
+
+    # If expected_invocation are not required by the metric and if they are not
+    # supplied, we provide a list of None.
+    expected_invocations = (
+        [None] * len(actual_invocations)
+        if expected_invocations is None
+        else expected_invocations
+    )
+
     total_score = 0.0
     num_invocations = 0
     per_invocation_results = []
     for actual, expected in zip(actual_invocations, expected_invocations):
-      prompt = self._get_text(expected.user_content)
-      reference = self._get_text(expected.final_response)
+      prompt = self._get_text(actual.user_content)
+      reference = self._get_text(expected.final_response) if expected else None
       response = self._get_text(actual.final_response)
       eval_case = {
           "prompt": prompt,
@@ -139,15 +159,25 @@ class _VertexAiEvalFacade(Evaluator):
     """
     project_id = os.environ.get("GOOGLE_CLOUD_PROJECT", None)
     location = os.environ.get("GOOGLE_CLOUD_LOCATION", None)
+    api_key = os.environ.get("GOOGLE_API_KEY", None)
 
-    if not project_id:
-      raise ValueError("Missing project id." + _ERROR_MESSAGE_SUFFIX)
-    if not location:
-      raise ValueError("Missing location." + _ERROR_MESSAGE_SUFFIX)
+    from ..dependencies.vertexai import vertexai
 
-    client = VertexAiClient(project=project_id, location=location)
+    if api_key:
+      client = vertexai.Client(api_key=api_key)
+    elif project_id or location:
+      if not project_id:
+        raise ValueError("Missing project id." + _ERROR_MESSAGE_SUFFIX)
+      if not location:
+        raise ValueError("Missing location." + _ERROR_MESSAGE_SUFFIX)
+      client = vertexai.Client(project=project_id, location=location)
+    else:
+      raise ValueError(
+          "Either API Key or Google cloud Project id and location should be"
+          " specified."
+      )
 
     return client.evals.evaluate(
-        dataset=vertexai_types.EvaluationDataset(eval_dataset_df=dataset),
+        dataset=vertexai.types.EvaluationDataset(eval_dataset_df=dataset),
         metrics=metrics,
     )

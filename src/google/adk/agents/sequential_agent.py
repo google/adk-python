@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -72,10 +72,6 @@ class SequentialAgent(BaseAgent):
           agent_state = SequentialAgentState(current_sub_agent=sub_agent.name)
           ctx.set_agent_state(self.name, agent_state=agent_state)
           yield self._create_agent_state_event(ctx)
-
-        # Reset the sub-agent's state in the context to ensure that each
-        # sub-agent starts fresh.
-        ctx.set_agent_state(sub_agent.name)
 
       async with Aclosing(sub_agent.run_async(ctx)) as agen:
         async for event in agen:

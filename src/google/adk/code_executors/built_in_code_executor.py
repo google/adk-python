@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -19,7 +19,7 @@ from typing_extensions import override
 
 from ..agents.invocation_context import InvocationContext
 from ..models import LlmRequest
-from ..utils.model_name_utils import is_gemini_2_model
+from ..utils.model_name_utils import is_gemini_2_or_above
 from .base_code_executor import BaseCodeExecutor
 from .code_execution_utils import CodeExecutionInput
 from .code_execution_utils import CodeExecutionResult
@@ -42,7 +42,7 @@ class BuiltInCodeExecutor(BaseCodeExecutor):
 
   def process_llm_request(self, llm_request: LlmRequest) -> None:
     """Pre-process the LLM request for Gemini 2.0+ models to use the code execution tool."""
-    if is_gemini_2_model(llm_request.model):
+    if is_gemini_2_or_above(llm_request.model):
       llm_request.config = llm_request.config or types.GenerateContentConfig()
       llm_request.config.tools = llm_request.config.tools or []
       llm_request.config.tools.append(

@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -29,7 +29,7 @@ class SecretManagerClient:
 
   This class provides a simplified interface for retrieving secrets from
   Secret Manager, handling authentication using either a service account
-  JSON keyfile (passed as a string) or a pre-existing authorization token.
+  JSON keyfile (passed as a string) or a preexisting authorization token.
 
   Attributes:
       _credentials:  Google Cloud credentials object (ServiceAccountCredentials

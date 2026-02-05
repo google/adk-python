@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -17,7 +17,7 @@ import random
 
 from dotenv import load_dotenv
 from google.adk import Agent
-from google.adk.tools.google_search_tool import google_search
+from google.adk.tools.google_search_tool import GoogleSearchTool
 from google.adk.tools.tool_context import ToolContext
 from google.adk.tools.vertex_ai_search_tool import VertexAiSearchTool
 
@@ -57,7 +57,9 @@ root_agent = Agent(
     """,
     tools=[
         roll_die,
-        VertexAiSearchTool(data_store_id=VERTEXAI_DATASTORE_ID),
-        google_search,
+        VertexAiSearchTool(
+            data_store_id=VERTEXAI_DATASTORE_ID, bypass_multi_tools_limit=True
+        ),
+        GoogleSearchTool(bypass_multi_tools_limit=True),
     ],
 )

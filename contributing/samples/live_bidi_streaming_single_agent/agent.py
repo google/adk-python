@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,7 +14,7 @@
 
 import random
 
-from google.adk.agents.agent import Agent
+from google.adk.agents.llm_agent import Agent
 from google.adk.tools.tool_context import ToolContext
 from google.genai import types
 
@@ -65,8 +65,11 @@ async def check_prime(nums: list[int]) -> str:
 
 
 root_agent = Agent(
-    # model='gemini-2.0-flash-live-preview-04-09',  # for Vertex project
-    model='gemini-2.0-flash-live-001',  # for AI studio key
+    # see https://docs.cloud.google.com/vertex-ai/generative-ai/docs/migrate
+    # for vertex model names
+    model='gemini-live-2.5-flash-native-audio',  # vertex
+    # see https://ai.google.dev/gemini-api/docs/models for AIS model names
+    # model='gemini-2.5-flash-native-audio-latest',  # for AI studio
     name='roll_dice_agent',
     description=(
         'hello world agent that can roll a dice of 6 sides and check prime'

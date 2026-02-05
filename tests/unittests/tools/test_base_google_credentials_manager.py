@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -107,7 +107,7 @@ class TestGoogleCredentialsManager:
     """Test that existing non-oauth credentials are returned immediately.
 
     When credentials are of non-oauth type, no refresh or OAuth flow
-    is triggered irrespective of whether it is valid or not.
+    is triggered irrespective of whether or not it is valid.
     """
     # Create mock credentials that are already valid
     mock_creds = Mock(spec=AuthCredentials)

@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -139,6 +139,23 @@ async def test_openid_connect_no_auth_response(
 
 
 @pytest.mark.asyncio
+async def test_openid_connect_uses_explicit_credential_key(
+    openid_connect_scheme, openid_connect_credential
+):
+  tool_context = create_mock_tool_context()
+  handler = ToolAuthHandler(
+      tool_context,
+      openid_connect_scheme,
+      openid_connect_credential,
+      credential_key='my_tool_tokens',
+  )
+  result = await handler.prepare_auth_credentials()
+  assert result.state == 'pending'
+  requested = tool_context.actions.requested_auth_configs['test-fc-id']
+  assert requested.credential_key == 'my_tool_tokens'
+
+
+@pytest.mark.asyncio
 async def test_openid_connect_with_auth_response(
     openid_connect_scheme, openid_connect_credential, monkeypatch
 ):
@@ -150,11 +167,11 @@ async def test_openid_connect_with_auth_response(
   tool_context = create_mock_tool_context()
 
   mock_auth_handler = MagicMock()
-  returned_credentail = AuthCredential(
+  returned_credential = AuthCredential(
       auth_type=AuthCredentialTypes.OPEN_ID_CONNECT,
       oauth2=OAuth2Auth(auth_response_uri='test_auth_response_uri'),
   )
-  mock_auth_handler.get_auth_response.return_value = returned_credentail
+  mock_auth_handler.get_auth_response.return_value = returned_credential
   mock_auth_handler_path = 'google.adk.tools.tool_context.AuthHandler'
   monkeypatch.setattr(
       mock_auth_handler_path, lambda *args, **kwargs: mock_auth_handler
@@ -176,7 +193,7 @@ async def test_openid_connect_with_auth_response(
   stored_credential = credential_store.get_credential(
       openid_connect_scheme, openid_connect_credential
   )
-  assert stored_credential == returned_credentail
+  assert stored_credential == returned_credential
   mock_auth_handler.get_auth_response.assert_called_once()
 
 

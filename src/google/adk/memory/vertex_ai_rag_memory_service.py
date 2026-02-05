@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -24,7 +24,6 @@ from typing import TYPE_CHECKING
 
 from google.genai import types
 from typing_extensions import override
-from vertexai.preview import rag
 
 from . import _utils
 from .base_memory_service import BaseMemoryService
@@ -53,7 +52,7 @@ class VertexAiRagMemoryService(BaseMemoryService):
           or ``{rag_corpus_id}``
         similarity_top_k: The number of contexts to retrieve.
         vector_distance_threshold: Only returns contexts with vector distance
-          smaller than the threshold..
+          smaller than the threshold.
     """
     self._vertex_rag_store = types.VertexRagStore(
         rag_resources=[
@@ -93,6 +92,8 @@ class VertexAiRagMemoryService(BaseMemoryService):
     if not self._vertex_rag_store.rag_resources:
       raise ValueError("Rag resources must be set.")
 
+    from ..dependencies.vertexai import rag
+
     for rag_resource in self._vertex_rag_store.rag_resources:
       rag.upload_file(
           corpus_name=rag_resource.rag_corpus,
@@ -109,6 +110,7 @@ class VertexAiRagMemoryService(BaseMemoryService):
       self, *, app_name: str, user_id: str, query: str
   ) -> SearchMemoryResponse:
     """Searches for sessions that match the query using rag.retrieval_query."""
+    from ..dependencies.vertexai import rag
     from ..events.event import Event
 
     response = rag.retrieval_query(

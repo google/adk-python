@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -32,16 +32,14 @@ from ..models.llm_response import LlmResponse
 from ..models.registry import LLMRegistry
 from ..utils.context_utils import Aclosing
 from ..utils.feature_decorator import experimental
+from ._retry_options_utils import add_default_retry_options_if_not_present
 from .app_details import AppDetails
+from .eval_case import ConversationScenario
 from .eval_case import Invocation
 from .eval_case import InvocationEvent
 from .eval_case import InvocationEvents
 from .eval_metrics import EvalMetric
 from .eval_metrics import HallucinationsCriterion
-from .eval_metrics import Interval
-from .eval_metrics import MetricInfo
-from .eval_metrics import MetricValueInfo
-from .eval_metrics import PrebuiltMetrics
 from .evaluator import EvalStatus
 from .evaluator import EvaluationResult
 from .evaluator import Evaluator
@@ -58,10 +56,10 @@ Your task is to segment the provided response sentence by sentence so that we co
 
 **Instructions:**
 1. Overall, you should decompose the whole provided response into individual sentences. You should make sure the output covers ALL the sentences in the provided response block.
-2. You should COPY each sentence as it is, WORD BY WORD. DO NOT modify the sentence or the surrounding punctuations.
+2. You should COPY each sentence as it is, WORD BY WORD. DO NOT modify the sentence or the surrounding punctuation.
 3. If there are bullet points in the response, you should segment each bullet point into DIFFERENT sentences. If one bullet point has sub bullet points, you should further decompose sub bullet points into DIFFERENT sentences.
 For example, if there are responses like "it has three criteria: * aaa. * bbb. * ccc", you should segment them into FOUR sentences: "it has three criteria", "aaa", "bbb", "ccc". Bullet points could start with numbers (1/2/3/etc) or symbols like "*", "-" etc.
-4. When encoutering tables, you should include the whole table in ONE sentence output.
+4. When encountering tables, you should include the whole table in ONE sentence output.
 5. Each sentence should be meaningful to further analyze on. DO NOT ONLY put symbols themselves into a sentence.
 6. You should ONLY output segmented sentences in the provided response. DO NOT make up any new sentences.
 
@@ -297,28 +295,16 @@ class HallucinationsV1Evaluator(Evaluator):
     self.segmenter_prompt = _HALLUCINATIONS_V1_SEGMENTER_PROMPT
     self.sentence_validator_prompt = _HALLUCINATIONS_V1_VALIDATOR_PROMPT
     self._model = self._judge_model_options.judge_model
-    self._model_config = self._judge_model_options.judge_model_config
+    self._model_config = (
+        self._judge_model_options.judge_model_config
+        or genai_types.GenerateContentConfig()
+    )
 
   def _setup_auto_rater(self) -> BaseLlm:
     model_id = self._judge_model_options.judge_model
     llm_registry = LLMRegistry()
     llm_class = llm_registry.resolve(model_id)
     return llm_class(model=model_id)
-
-  @staticmethod
-  def get_metric_info() -> MetricInfo:
-    return MetricInfo(
-        metric_name=PrebuiltMetrics.HALLUCINATIONS_V1.value,
-        description=(
-            "This metric assesses whether a model response contains any false,"
-            " contradictory, or unsupported claims using a LLM as judge. Value"
-            " range for this metric is [0,1], with values closer to 1 more"
-            " desirable."
-        ),
-        metric_value_info=MetricValueInfo(
-            interval=Interval(min_value=0.0, max_value=1.0)
-        ),
-    )
 
   def _create_context_for_step(
       self,
@@ -395,7 +381,8 @@ class HallucinationsV1Evaluator(Evaluator):
         },
         {
           "name": "get_weather",
-          "description": '''Gets the weather of the given place at the given time.
+          "description": '''Gets the weather of the given place at the given
+          time.
 
     Args:
       location: The location for which to retrieve weather information.
@@ -408,7 +395,8 @@ class HallucinationsV1Evaluator(Evaluator):
             "type": "object",
             "properties": {
               "location": {
-                "description": "The location for which to retrieve weather information.",
+                "description": "The location for which to retrieve weather
+                information.",
                 "type": "string"
               },
               "time": {
@@ -524,6 +512,7 @@ class HallucinationsV1Evaluator(Evaluator):
         ],
         config=self._model_config,
     )
+    add_default_retry_options_if_not_present(segmenter_llm_request)
     try:
       async with Aclosing(
           self._judge_model.generate_content_async(segmenter_llm_request)
@@ -557,6 +546,7 @@ class HallucinationsV1Evaluator(Evaluator):
         ],
         config=self._model_config,
     )
+    add_default_retry_options_if_not_present(validator_llm_request)
     try:
       async with Aclosing(
           self._judge_model.generate_content_async(validator_llm_request)
@@ -694,7 +684,7 @@ class HallucinationsV1Evaluator(Evaluator):
     if not valid_results:
       return EvaluationResult(
           overall_score=None,
-          overall_eval_status=EvalStatus.FAILED,
+          overall_eval_status=EvalStatus.NOT_EVALUATED,
           per_invocation_results=per_invocation_results,
       )
 
@@ -711,8 +701,19 @@ class HallucinationsV1Evaluator(Evaluator):
   async def evaluate_invocations(
       self,
       actual_invocations: list[Invocation],
-      expected_invocations: list[Invocation],
+      expected_invocations: Optional[list[Invocation]] = None,
+      conversation_scenario: Optional[ConversationScenario] = None,
   ) -> EvaluationResult:
+    del conversation_scenario  # not used by this metric.
+
+    # expected_invocations are not required by the metric and if they are not
+    # supplied, we provide a list of None to rest of the code.
+    expected_invocations = (
+        [None] * len(actual_invocations)
+        if expected_invocations is None
+        else expected_invocations
+    )
+
     per_invocation_results = []
     for actual, expected in zip(actual_invocations, expected_invocations):
       step_evaluations = self._get_steps_to_evaluate(actual)

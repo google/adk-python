@@ -52,7 +52,7 @@
               "response": {
                 "status": "ok",
                 "target_agent_name": "research_assistant",
-                "message": "Transfered to research_assistant"
+                "message": "Transferred to research_assistant"
               }
             }
           }
@@ -165,7 +165,7 @@
               "response": {
                 "status": "ok",
                 "target_agent_name": "spark_assistant",
-                "message": "Transfered to spark_assistant"
+                "message": "Transferred to spark_assistant"
               }
             }
           }

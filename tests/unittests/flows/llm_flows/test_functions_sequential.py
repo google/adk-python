@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -64,13 +64,13 @@ def test_sequential_calls():
   assert testing_utils.simplify_contents(mockModel.requests[0].contents) == [
       ('user', 'test')
   ]
-  # 3 items: user content, functaion call / response for the 1st call
+  # 3 items: user content, function call / response for the 1st call
   assert testing_utils.simplify_contents(mockModel.requests[1].contents) == [
       ('user', 'test'),
       ('model', function_call({'x': 1})),
       ('user', function_response({'result': 2})),
   ]
-  # 5 items: user content, functaion call / response for two calls
+  # 5 items: user content, function call / response for two calls
   assert testing_utils.simplify_contents(mockModel.requests[2].contents) == [
       ('user', 'test'),
       ('model', function_call({'x': 1})),
@@ -78,7 +78,7 @@ def test_sequential_calls():
       ('model', function_call({'x': 2})),
       ('user', function_response({'result': 3})),
   ]
-  # 7 items: user content, functaion call / response for three calls
+  # 7 items: user content, function call / response for three calls
   assert testing_utils.simplify_contents(mockModel.requests[3].contents) == [
       ('user', 'test'),
       ('model', function_call({'x': 1})),

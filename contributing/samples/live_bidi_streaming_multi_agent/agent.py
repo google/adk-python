@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,6 +16,7 @@ import random
 
 from google.adk.agents.llm_agent import Agent
 from google.adk.examples.example import Example
+from google.adk.models.google_llm import Gemini
 from google.adk.tools.example_tool import ExampleTool
 from google.genai import types
 
@@ -28,6 +29,20 @@ def roll_die(sides: int) -> int:
 
 roll_agent = Agent(
     name="roll_agent",
+    model=Gemini(
+        # see https://docs.cloud.google.com/vertex-ai/generative-ai/docs/migrate
+        # for vertex model names
+        model="gemini-live-2.5-flash-native-audio",  # vertex
+        # see https://ai.google.dev/gemini-api/docs/models for AIS model names
+        # model='gemini-2.5-flash-native-audio-latest',  # for AI studio
+        speech_config=types.SpeechConfig(
+            voice_config=types.VoiceConfig(
+                prebuilt_voice_config=types.PrebuiltVoiceConfig(
+                    voice_name="Kore",
+                )
+            )
+        ),
+    ),
     description="Handles rolling dice of different sizes.",
     instruction="""
       You are responsible for rolling dice based on the user's request.
@@ -69,6 +84,20 @@ def check_prime(nums: list[int]) -> str:
 
 prime_agent = Agent(
     name="prime_agent",
+    model=Gemini(
+        # see https://docs.cloud.google.com/vertex-ai/generative-ai/docs/migrate
+        # for vertex model names
+        model="gemini-live-2.5-flash-native-audio",  # vertex
+        # see https://ai.google.dev/gemini-api/docs/models for AIS model names
+        # model='gemini-2.5-flash-native-audio-latest',  # for AI studio
+        speech_config=types.SpeechConfig(
+            voice_config=types.VoiceConfig(
+                prebuilt_voice_config=types.PrebuiltVoiceConfig(
+                    voice_name="Puck",
+                )
+            )
+        ),
+    ),
     description="Handles checking if numbers are prime.",
     instruction="""
       You are responsible for checking whether numbers are prime.
@@ -100,8 +129,20 @@ def get_current_weather(location: str):
 
 root_agent = Agent(
     # find supported models here: https://google.github.io/adk-docs/get-started/streaming/quickstart-streaming/
-    model="gemini-2.0-flash-live-preview-04-09",  # for Vertex project
-    # model="gemini-live-2.5-flash-preview",  # for AI studio key
+    model=Gemini(
+        # see https://docs.cloud.google.com/vertex-ai/generative-ai/docs/migrate
+        # for vertex model names
+        model="gemini-live-2.5-flash-native-audio",  # vertex
+        # see https://ai.google.dev/gemini-api/docs/models for AIS model names
+        # model='gemini-2.5-flash-native-audio-latest',  # for AI studio
+        speech_config=types.SpeechConfig(
+            voice_config=types.VoiceConfig(
+                prebuilt_voice_config=types.PrebuiltVoiceConfig(
+                    voice_name="Zephyr",
+                )
+            )
+        ),
+    ),
     name="root_agent",
     instruction="""
       You are a helpful assistant that can check time, roll dice and check if numbers are prime.

@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -93,6 +93,4 @@ async def test_process_llm_request_failure_with_multiple_tools_gemini_1_models()
     await tool.process_llm_request(
         tool_context=tool_context, llm_request=llm_request
     )
-  assert 'can not be used with other tools in Gemini 1.x.' in str(
-      exc_info.value
-  )
+  assert 'cannot be used with other tools in Gemini 1.x.' in str(exc_info.value)

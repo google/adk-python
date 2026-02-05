@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -64,7 +64,8 @@ async def test_with_description():
   ):
     pass
 
-  assert request.config.system_instruction == "\n\n".join([
-      'You are an agent. Your internal name is "agent".',
-      ' The description about you is "test description"',
-  ])
+  assert (
+      request.config.system_instruction
+      == """\
+You are an agent. Your internal name is "agent". The description about you is "test description"."""
+  )

@@ -2,7 +2,7 @@
 agent_class: LlmAgent
 name: CriticAgent
 model: gemini-2.5-pro
-description: Reviews the current draft, providing critique if clear improvements are needed, otherwise signals completion.
+description: Reviews the current draft, providing critique if clear improvements are needed; otherwise, signals completion.
 instruction: |
   You are a Constructive Critic AI reviewing a document draft (typically at least 10 sentences). Your goal is balanced feedback.
 
@@ -12,7 +12,7 @@ instruction: |
   ```
 
   **Task:**
-  Review the document for the following cretiria:
+  Review the document for the following criteria:
 
   - content length: at least 10 sentences;
   - clarity: the content must be clear;

@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -389,6 +389,40 @@ class TestInvocationContextWithAppResumablity:
     invocation_context.set_agent_state('agent1')
     assert 'agent1' not in invocation_context.agent_states
     assert 'agent1' not in invocation_context.end_of_agents
+
+  def test_reset_sub_agent_states(self):
+    """Tests that reset_sub_agent_states resets sub-agent states."""
+    sub_sub_agent_1 = BaseAgent(name='sub_sub_agent_1')
+    sub_agent_1 = BaseAgent(name='sub_agent_1', sub_agents=[sub_sub_agent_1])
+    sub_agent_2 = BaseAgent(name='sub_agent_2')
+    root_agent = BaseAgent(
+        name='root_agent', sub_agents=[sub_agent_1, sub_agent_2]
+    )
+
+    invocation_context = self._create_test_invocation_context(
+        ResumabilityConfig(is_resumable=True)
+    )
+    invocation_context.agent = root_agent
+    invocation_context.set_agent_state(
+        'sub_agent_1', agent_state=BaseAgentState()
+    )
+    invocation_context.set_agent_state('sub_agent_2', end_of_agent=True)
+    invocation_context.set_agent_state(
+        'sub_sub_agent_1', agent_state=BaseAgentState()
+    )
+
+    assert 'sub_agent_1' in invocation_context.agent_states
+    assert 'sub_agent_2' in invocation_context.end_of_agents
+    assert 'sub_sub_agent_1' in invocation_context.agent_states
+
+    invocation_context.reset_sub_agent_states('root_agent')
+
+    assert 'sub_agent_1' not in invocation_context.agent_states
+    assert 'sub_agent_1' not in invocation_context.end_of_agents
+    assert 'sub_agent_2' not in invocation_context.agent_states
+    assert 'sub_agent_2' not in invocation_context.end_of_agents
+    assert 'sub_sub_agent_1' not in invocation_context.agent_states
+    assert 'sub_sub_agent_1' not in invocation_context.end_of_agents
 
 
 class TestFindMatchingFunctionCall:

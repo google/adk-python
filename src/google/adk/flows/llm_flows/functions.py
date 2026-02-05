@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,18 +12,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Handles function callings for LLM flow."""
+"""Handles function calling for LLM flow."""
 
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import copy
+import functools
 import inspect
 import logging
 import threading
 from typing import Any
 from typing import AsyncGenerator
 from typing import cast
+from typing import Dict
 from typing import Optional
 from typing import TYPE_CHECKING
 import uuid
@@ -32,6 +35,7 @@ from google.genai import types
 
 from ...agents.active_streaming_tool import ActiveStreamingTool
 from ...agents.invocation_context import InvocationContext
+from ...auth.auth_tool import AuthConfig
 from ...auth.auth_tool import AuthToolArguments
 from ...events.event import Event
 from ...events.event_actions import EventActions
@@ -49,8 +53,112 @@ if TYPE_CHECKING:
 AF_FUNCTION_CALL_ID_PREFIX = 'adk-'
 REQUEST_EUC_FUNCTION_CALL_NAME = 'adk_request_credential'
 REQUEST_CONFIRMATION_FUNCTION_CALL_NAME = 'adk_request_confirmation'
+REQUEST_INPUT_FUNCTION_CALL_NAME = 'adk_request_input'
 
 logger = logging.getLogger('google_adk.' + __name__)
+
+# Global thread pool executors for running tools in background threads.
+# This prevents blocking tools from blocking the event loop in Live API mode.
+# Key is max_workers, value is the executor.
+_TOOL_THREAD_POOLS: dict[int, ThreadPoolExecutor] = {}
+_TOOL_THREAD_POOL_LOCK = threading.Lock()
+
+
+def _get_tool_thread_pool(max_workers: int = 4) -> ThreadPoolExecutor:
+  """Gets or creates a thread pool executor for tool execution.
+
+  Args:
+    max_workers: Maximum number of worker threads in the pool.
+
+  Returns:
+    A ThreadPoolExecutor with the specified max_workers.
+  """
+  if max_workers not in _TOOL_THREAD_POOLS:
+    with _TOOL_THREAD_POOL_LOCK:
+      if max_workers not in _TOOL_THREAD_POOLS:
+        _TOOL_THREAD_POOLS[max_workers] = ThreadPoolExecutor(
+            max_workers=max_workers, thread_name_prefix='adk_tool_executor'
+        )
+  return _TOOL_THREAD_POOLS[max_workers]
+
+
+def _is_sync_tool(tool: BaseTool) -> bool:
+  """Checks if a tool's underlying function is synchronous."""
+  if not hasattr(tool, 'func'):
+    return False
+  func = tool.func
+  return not (
+      inspect.iscoroutinefunction(func)
+      or inspect.isasyncgenfunction(func)
+      or (
+          hasattr(func, '__call__')
+          and inspect.iscoroutinefunction(func.__call__)
+      )
+  )
+
+
+async def _call_tool_in_thread_pool(
+    tool: BaseTool,
+    args: dict[str, Any],
+    tool_context: ToolContext,
+    max_workers: int = 4,
+) -> Any:
+  """Runs a tool in a thread pool to avoid blocking the event loop.
+
+  For sync tools, this runs the tool's function directly in a background thread.
+  For async tools, this creates a new event loop in the background thread and
+  runs the async function there. This helps catch blocking I/O (like time.sleep,
+  network calls, file I/O) that was mistakenly used inside async functions.
+
+  Note: Due to Python's GIL, this does NOT help with pure Python CPU-bound code.
+  Thread pool only helps when the GIL is released (blocking I/O, C extensions).
+
+  Args:
+    tool: The tool to execute.
+    args: Arguments to pass to the tool.
+    tool_context: The tool context.
+    max_workers: Maximum number of worker threads in the pool.
+
+  Returns:
+    The result of running the tool.
+  """
+  from ...tools.function_tool import FunctionTool
+
+  loop = asyncio.get_running_loop()
+  executor = _get_tool_thread_pool(max_workers)
+
+  if _is_sync_tool(tool):
+    # For sync FunctionTool, call the underlying function directly
+    def run_sync_tool():
+      if isinstance(tool, FunctionTool):
+        args_to_call = tool._preprocess_args(args)
+        signature = inspect.signature(tool.func)
+        valid_params = {param for param in signature.parameters}
+        if 'tool_context' in valid_params:
+          args_to_call['tool_context'] = tool_context
+        args_to_call = {
+            k: v for k, v in args_to_call.items() if k in valid_params
+        }
+        return tool.func(**args_to_call)
+      else:
+        # For other sync tool types, we can't easily run them in thread pool
+        return None
+
+    result = await loop.run_in_executor(executor, run_sync_tool)
+    if result is not None:
+      return result
+  else:
+    # For async tools, run them in a new event loop in a background thread.
+    # This helps when async functions contain blocking I/O (common user mistake)
+    # that would otherwise block the main event loop.
+    def run_async_tool_in_new_loop():
+      # Create a new event loop for this thread
+      return asyncio.run(tool.run_async(args=args, tool_context=tool_context))
+
+    return await loop.run_in_executor(executor, run_async_tool_in_new_loop)
+
+  # Fall back to normal async execution for non-FunctionTool sync tools
+  return await tool.run_async(args=args, tool_context=tool_context)
 
 
 def generate_client_function_call_id() -> str:
@@ -105,38 +213,74 @@ def get_long_running_function_calls(
   return long_running_tool_ids
 
 
-def generate_auth_event(
+def build_auth_request_event(
     invocation_context: InvocationContext,
-    function_response_event: Event,
-) -> Optional[Event]:
-  if not function_response_event.actions.requested_auth_configs:
-    return None
+    auth_requests: Dict[str, AuthConfig],
+    *,
+    author: Optional[str] = None,
+    role: Optional[str] = None,
+) -> Event:
+  """Builds an auth request event with function calls for each auth request.
+
+  This is a shared helper used by both tool-level auth (when a tool requests
+  auth during execution) and toolset-level auth (before tool listing).
+
+  Args:
+    invocation_context: The invocation context.
+    auth_requests: Dict mapping function_call_id to AuthConfig.
+    author: The event author. Defaults to agent name.
+    role: The content role. Defaults to None.
+
+  Returns:
+    Event with auth request function calls.
+  """
   parts = []
   long_running_tool_ids = set()
-  for (
-      function_call_id,
-      auth_config,
-  ) in function_response_event.actions.requested_auth_configs.items():
 
+  for function_call_id, auth_config in auth_requests.items():
     request_euc_function_call = types.FunctionCall(
         name=REQUEST_EUC_FUNCTION_CALL_NAME,
+        id=generate_client_function_call_id(),
         args=AuthToolArguments(
             function_call_id=function_call_id,
             auth_config=auth_config,
         ).model_dump(exclude_none=True, by_alias=True),
     )
-    request_euc_function_call.id = generate_client_function_call_id()
     long_running_tool_ids.add(request_euc_function_call.id)
     parts.append(types.Part(function_call=request_euc_function_call))
 
   return Event(
       invocation_id=invocation_context.invocation_id,
-      author=invocation_context.agent.name,
+      author=author or invocation_context.agent.name,
       branch=invocation_context.branch,
-      content=types.Content(
-          parts=parts, role=function_response_event.content.role
-      ),
+      content=types.Content(parts=parts, role=role),
       long_running_tool_ids=long_running_tool_ids,
+  )
+
+
+def generate_auth_event(
+    invocation_context: InvocationContext,
+    function_response_event: Event,
+) -> Optional[Event]:
+  """Generates an auth request event from a function response event.
+
+  This is used for tool-level auth where a tool requests credentials during
+  execution.
+
+  Args:
+    invocation_context: The invocation context.
+    function_response_event: The function response event with auth requests.
+
+  Returns:
+    Event with auth request function calls, or None if no auth requested.
+  """
+  if not function_response_event.actions.requested_auth_configs:
+    return None
+
+  return build_auth_request_event(
+      invocation_context,
+      function_response_event.actions.requested_auth_configs,
+      role=function_response_event.content.role,
   )
 
 
@@ -275,20 +419,70 @@ async def _execute_single_function_call_async(
     tool_confirmation: Optional[ToolConfirmation] = None,
 ) -> Optional[Event]:
   """Execute a single function call with thread safety for state modifications."""
-  tool, tool_context = _get_tool_and_context(
-      invocation_context,
-      function_call,
-      tools_dict,
-      tool_confirmation,
+
+  async def _run_on_tool_error_callbacks(
+      *,
+      tool: BaseTool,
+      tool_args: dict[str, Any],
+      tool_context: ToolContext,
+      error: Exception,
+  ) -> Optional[dict[str, Any]]:
+    """Runs the on_tool_error_callbacks for the given tool."""
+    error_response = (
+        await invocation_context.plugin_manager.run_on_tool_error_callback(
+            tool=tool,
+            tool_args=tool_args,
+            tool_context=tool_context,
+            error=error,
+        )
+    )
+    if error_response is not None:
+      return error_response
+
+    for callback in agent.canonical_on_tool_error_callbacks:
+      error_response = callback(
+          tool=tool,
+          args=tool_args,
+          tool_context=tool_context,
+          error=error,
+      )
+      if inspect.isawaitable(error_response):
+        error_response = await error_response
+      if error_response is not None:
+        return error_response
+
+    return None
+
+  # Do not use "args" as the variable name, because it is a reserved keyword
+  # in python debugger.
+  # Make a deep copy to avoid being modified.
+  function_args = (
+      copy.deepcopy(function_call.args) if function_call.args else {}
   )
 
-  with tracer.start_as_current_span(f'execute_tool {tool.name}'):
-    # Do not use "args" as the variable name, because it is a reserved keyword
-    # in python debugger.
-    # Make a deep copy to avoid being modified.
-    function_args = (
-        copy.deepcopy(function_call.args) if function_call.args else {}
+  tool_context = _create_tool_context(
+      invocation_context, function_call, tool_confirmation
+  )
+
+  try:
+    tool = _get_tool(function_call, tools_dict)
+  except ValueError as tool_error:
+    tool = BaseTool(name=function_call.name, description='Tool not found')
+    error_response = await _run_on_tool_error_callbacks(
+        tool=tool,
+        tool_args=function_args,
+        tool_context=tool_context,
+        error=tool_error,
     )
+    if error_response is not None:
+      return __build_response_event(
+          tool, error_response, tool_context, invocation_context
+      )
+    else:
+      raise tool_error
+
+  async def _run_with_trace():
+    nonlocal function_args
 
     # Step 1: Check if plugin before_tool_callback overrides the function
     # response.
@@ -317,13 +511,11 @@ async def _execute_single_function_call_async(
             tool, args=function_args, tool_context=tool_context
         )
       except Exception as tool_error:
-        error_response = (
-            await invocation_context.plugin_manager.run_on_tool_error_callback(
-                tool=tool,
-                tool_args=function_args,
-                tool_context=tool_context,
-                error=tool_error,
-            )
+        error_response = await _run_on_tool_error_callbacks(
+            tool=tool,
+            tool_args=function_args,
+            tool_context=tool_context,
+            error=tool_error,
         )
         if error_response is not None:
           function_response = error_response
@@ -362,7 +554,7 @@ async def _execute_single_function_call_async(
       function_response = altered_function_response
 
     if tool.is_long_running:
-      # Allow long running function to return None to not provide function
+      # Allow long-running function to return None to not provide function
       # response.
       if not function_response:
         return None
@@ -375,12 +567,22 @@ async def _execute_single_function_call_async(
     function_response_event = __build_response_event(
         tool, function_response, tool_context, invocation_context
     )
-    trace_tool_call(
-        tool=tool,
-        args=function_args,
-        function_response_event=function_response_event,
-    )
     return function_response_event
+
+  with tracer.start_as_current_span(f'execute_tool {tool.name}'):
+    try:
+      function_response_event = await _run_with_trace()
+      trace_tool_call(
+          tool=tool,
+          args=function_args,
+          function_response_event=function_response_event,
+      )
+      return function_response_event
+    except:
+      trace_tool_call(
+          tool=tool, args=function_args, function_response_event=None
+      )
+      raise
 
 
 async def handle_function_calls_live(
@@ -451,13 +653,17 @@ async def _execute_single_function_call_live(
   tool, tool_context = _get_tool_and_context(
       invocation_context, function_call, tools_dict
   )
-  with tracer.start_as_current_span(f'execute_tool {tool.name}'):
+
+  function_args = (
+      copy.deepcopy(function_call.args) if function_call.args else {}
+  )
+
+  async def _run_with_trace():
+    nonlocal function_args
+
     # Do not use "args" as the variable name, because it is a reserved keyword
     # in python debugger.
     # Make a deep copy to avoid being modified.
-    function_args = (
-        copy.deepcopy(function_call.args) if function_call.args else {}
-    )
     function_response = None
 
     # Handle before_tool_callbacks - iterate through the canonical callback
@@ -511,12 +717,22 @@ async def _execute_single_function_call_live(
     function_response_event = __build_response_event(
         tool, function_response, tool_context, invocation_context
     )
-    trace_tool_call(
-        tool=tool,
-        args=function_args,
-        function_response_event=function_response_event,
-    )
     return function_response_event
+
+  with tracer.start_as_current_span(f'execute_tool {tool.name}'):
+    try:
+      function_response_event = await _run_with_trace()
+      trace_tool_call(
+          tool=tool,
+          args=function_args,
+          function_response_event=function_response_event,
+      )
+      return function_response_event
+    except:
+      trace_tool_call(
+          tool=tool, args=function_args, function_response_event=None
+      )
+      raise
 
 
 async def _process_function_live_helper(
@@ -584,7 +800,7 @@ async def _process_function_live_helper(
       }
   elif hasattr(tool, 'func') and inspect.isasyncgenfunction(tool.func):
     # for streaming tool use case
-    # we require the function to be a async generator function
+    # we require the function to be an async generator function
     async def run_tool_and_update_queue(tool, function_args, tool_context):
       try:
         async with Aclosing(
@@ -633,10 +849,53 @@ async def _process_function_live_helper(
         )
     }
   else:
-    function_response = await __call_tool_async(
-        tool, args=function_args, tool_context=tool_context
-    )
+    # Check if we should run tools in thread pool to avoid blocking event loop
+    thread_pool_config = invocation_context.run_config.tool_thread_pool_config
+    if thread_pool_config is not None:
+      function_response = await _call_tool_in_thread_pool(
+          tool,
+          args=function_args,
+          tool_context=tool_context,
+          max_workers=thread_pool_config.max_workers,
+      )
+    else:
+      function_response = await __call_tool_async(
+          tool, args=function_args, tool_context=tool_context
+      )
   return function_response
+
+
+def _get_tool(
+    function_call: types.FunctionCall, tools_dict: dict[str, BaseTool]
+):
+  """Returns the tool corresponding to the function call."""
+  if function_call.name not in tools_dict:
+    available = list(tools_dict.keys())
+    error_msg = (
+        f"Tool '{function_call.name}' not found.\nAvailable tools:"
+        f" {', '.join(available)}\n\nPossible causes:\n  1. LLM hallucinated"
+        ' the function name - review agent instruction clarity\n  2. Tool not'
+        ' registered - verify agent.tools list\n  3. Name mismatch - check for'
+        ' typos\n\nSuggested fixes:\n  - Review agent instruction to ensure'
+        ' tool usage is clear\n  - Verify tool is included in agent.tools'
+        ' list\n  - Check for typos in function name'
+    )
+    raise ValueError(error_msg)
+
+  return tools_dict[function_call.name]
+
+
+def _create_tool_context(
+    invocation_context: InvocationContext,
+    function_call: types.FunctionCall,
+    tool_confirmation: Optional[ToolConfirmation] = None,
+):
+  """Creates a ToolContext object."""
+  return ToolContext(
+      invocation_context=invocation_context,
+      function_call_id=function_call.id,
+      tool_confirmation=tool_confirmation,
+  )
 
 
 def _get_tool_and_context(
@@ -645,18 +904,13 @@ def _get_tool_and_context(
     tools_dict: dict[str, BaseTool],
     tool_confirmation: Optional[ToolConfirmation] = None,
 ):
-  if function_call.name not in tools_dict:
-    raise ValueError(
-        f'Function {function_call.name} is not found in the tools_dict.'
-    )
-
-  tool_context = ToolContext(
-      invocation_context=invocation_context,
-      function_call_id=function_call.id,
-      tool_confirmation=tool_confirmation,
+  """Returns the tool and tool context corresponding to the function call."""
+  tool = _get_tool(function_call, tools_dict)
+  tool_context = _create_tool_context(
+      invocation_context,
+      function_call,
+      tool_confirmation,
   )
-
-  tool = tools_dict[function_call.name]
 
   return (tool, tool_context)
 
@@ -793,7 +1047,7 @@ def find_matching_function_call(
     )
     for i in range(len(events) - 2, -1, -1):
       event = events[i]
-      # looking for the system long running request euc function call
+      # looking for the system long-running request euc function call
       function_calls = event.get_function_calls()
       if not function_calls:
         continue

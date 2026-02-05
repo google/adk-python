@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -84,7 +84,7 @@ class Event(LlmResponse):
 
     NOTE: This method is ONLY for use by Agent Development Kit.
 
-    Note that when multiple agents participage in one invocation, there could be
+    Note that when multiple agents participate in one invocation, there could be
     one event has `is_final_response()` as True for each participating agent.
     """
     if self.actions.skip_summarization or self.long_running_tool_ids:

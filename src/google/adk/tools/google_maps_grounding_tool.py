@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -53,7 +53,7 @@ class GoogleMapsGroundingTool(BaseTool):
     llm_request.config.tools = llm_request.config.tools or []
     if is_gemini_1_model(llm_request.model):
       raise ValueError(
-          'Google Maps grounding tool can not be used with Gemini 1.x models.'
+          'Google Maps grounding tool cannot be used with Gemini 1.x models.'
       )
     elif is_gemini_model(llm_request.model):
       llm_request.config.tools.append(

@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -36,7 +36,6 @@ class TestBigQueryCredentials:
     to pass them directly without needing to provide client ID/secret.
     """
     # Create a mock auth credentials object
-    # auth_creds = google.auth.credentials.Credentials()
     auth_creds = mock.create_autospec(
         google.auth.credentials.Credentials, instance=True
     )

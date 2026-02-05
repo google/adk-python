@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -66,7 +66,7 @@ class TestContextCacheRequestProcessor:
     )
 
   def create_cache_metadata(
-      self, invocations_used=1, cache_name="test-cache", cached_contents_count=3
+      self, invocations_used=1, cache_name="test-cache", contents_count=3
   ):
     """Helper to create CacheMetadata."""
     return CacheMetadata(
@@ -76,7 +76,7 @@ class TestContextCacheRequestProcessor:
         expire_time=time.time() + 1800,
         fingerprint="test_fingerprint",
         invocations_used=invocations_used,
-        cached_contents_count=cached_contents_count,
+        contents_count=contents_count,
         created_at=time.time() - 600,
     )
 

@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -29,7 +29,7 @@ import requests
 BUG_REPORT_TEMPLATE = read_file(
     Path(__file__).parent / "../../../../.github/ISSUE_TEMPLATE/bug_report.md"
 )
-FREATURE_REQUEST_TEMPLATE = read_file(
+FEATURE_REQUEST_TEMPLATE = read_file(
     Path(__file__).parent
     / "../../../../.github/ISSUE_TEMPLATE/feature_request.md"
 )
@@ -45,7 +45,7 @@ if IS_INTERACTIVE:
 
 
 def list_open_issues(issue_count: int) -> dict[str, Any]:
-  """List most recent `issue_count` numer of open issues in the repo.
+  """List most recent `issue_count` number of open issues in the repo.
 
   Args:
     issue_count: number of issues to return
@@ -75,7 +75,7 @@ def get_issue(issue_number: int) -> dict[str, Any]:
   """Get the details of the specified issue number.
 
   Args:
-    issue_number: issue number of the Github issue.
+    issue_number: issue number of the GitHub issue.
 
   Returns:
     The status of this request, with the issue details when successful.
@@ -92,11 +92,11 @@ def add_comment_to_issue(issue_number: int, comment: str) -> dict[str, any]:
   """Add the specified comment to the given issue number.
 
   Args:
-    issue_number: issue number of the Github issue
+    issue_number: issue number of the GitHub issue
     comment: comment to add
 
   Returns:
-    The the status of this request, with the applied comment when successful.
+    The status of this request, with the applied comment when successful.
   """
   print(f"Attempting to add comment '{comment}' to issue #{issue_number}")
   url = f"{GITHUB_BASE_URL}/repos/{OWNER}/{REPO}/issues/{issue_number}/comments"
@@ -116,10 +116,10 @@ def list_comments_on_issue(issue_number: int) -> dict[str, any]:
   """List all comments on the given issue number.
 
   Args:
-    issue_number: issue number of the Github issue
+    issue_number: issue number of the GitHub issue
 
   Returns:
-    The the status of this request, with the list of comments when successful.
+    The status of this request, with the list of comments when successful.
   """
   print(f"Attempting to list comments on issue #{issue_number}")
   url = f"{GITHUB_BASE_URL}/repos/{OWNER}/{REPO}/issues/{issue_number}/comments"
@@ -145,7 +145,7 @@ root_agent = Agent(
       # 2. CONTEXT & RESOURCES
       * **Repository:** You are operating on the GitHub repository `{OWNER}/{REPO}`.
       * **Bug Report Template:** (`{BUG_REPORT_TEMPLATE}`)
-      * **Feature Request Template:** (`{FREATURE_REQUEST_TEMPLATE}`)
+      * **Feature Request Template:** (`{FEATURE_REQUEST_TEMPLATE}`)
 
       # 3. CORE MISSION
       Your goal is to check if a GitHub issue, identified as either a "bug" or a "feature request,"

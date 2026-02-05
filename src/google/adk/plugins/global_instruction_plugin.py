@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -79,9 +79,8 @@ class GlobalInstructionPlugin(BasePlugin):
       return None
 
     # Resolve the global instruction (handle both string and InstructionProvider)
-    readonly_context = ReadonlyContext(callback_context.invocation_context)
     final_global_instruction = await self._resolve_global_instruction(
-        readonly_context
+        callback_context
     )
 
     if not final_global_instruction:

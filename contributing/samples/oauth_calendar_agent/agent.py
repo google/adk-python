@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -56,7 +56,7 @@ calendar_toolset = CalendarToolset(
 # call right after a function call that request auth
 # see https://github.com/google/adk-python/issues/1944 for details
 def redact_event_content(event_content: str) -> str:
-  """Redact confidential informaiton in the calendar event content
+  """Redact confidential information in the calendar event content
   Args:
       event_content: the content of the calendar event to redact
 
@@ -131,7 +131,7 @@ root_agent = Agent(
     name="calendar_agent",
     instruction="""
       You are a helpful personal calendar assistant.
-      Use the provided tools to search for calendar events (use 10 as limit if user does't specify), and update them.
+      Use the provided tools to search for calendar events (use 10 as limit if user doesn't specify), and update them.
       Use "primary" as the calendarId if users don't specify.
 
       Scenario1:
@@ -159,7 +159,7 @@ root_agent = Agent(
       {userInfo?}
       </User>
 
-      Currnet time: {_time}
+      Current time: {_time}
 """,
     tools=[
         AuthenticatedFunctionTool(

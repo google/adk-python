@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -55,6 +55,14 @@ class TestGoogleApiTool:
     assert tool.description == "Test Tool Description"
     assert tool.is_long_running is False
     assert tool._rest_api_tool == mock_rest_api_tool
+
+  def test_init_with_additional_headers(self, mock_rest_api_tool):
+    """Test GoogleApiTool initialization with additional headers."""
+    headers = {"developer-token": "test-token"}
+
+    GoogleApiTool(mock_rest_api_tool, additional_headers=headers)
+
+    mock_rest_api_tool.set_default_headers.assert_called_once_with(headers)
 
   def test_get_declaration(self, mock_rest_api_tool):
     """Test _get_declaration method."""

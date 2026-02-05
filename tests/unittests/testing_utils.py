@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -274,14 +274,16 @@ class InMemoryRunner:
     )
 
   async def run_async(
-      self, new_message: types.ContentUnion, invocation_id: Optional[str] = None
+      self,
+      new_message: Optional[types.ContentUnion] = None,
+      invocation_id: Optional[str] = None,
   ) -> list[Event]:
     events = []
     async for event in self.runner.run_async(
         user_id=self.session.user_id,
         session_id=self.session.id,
         invocation_id=invocation_id,
-        new_message=get_user_content(new_message),
+        new_message=get_user_content(new_message) if new_message else None,
     ):
       events.append(event)
     return events
@@ -361,7 +363,7 @@ class MockModel(BaseLlm):
   def generate_content(
       self, llm_request: LlmRequest, stream: bool = False
   ) -> Generator[LlmResponse, None, None]:
-    if self.error:
+    if self.error is not None:
       raise self.error
     # Increasement of the index has to happen before the yield.
     self.response_index += 1
@@ -373,6 +375,8 @@ class MockModel(BaseLlm):
   async def generate_content_async(
       self, llm_request: LlmRequest, stream: bool = False
   ) -> AsyncGenerator[LlmResponse, None]:
+    if self.error is not None:
+      raise self.error
     # Increasement of the index has to happen before the yield.
     self.response_index += 1
     self.requests.append(llm_request)
@@ -405,6 +409,10 @@ class MockLlmConnection(BaseLlmConnection):
   async def receive(self) -> AsyncGenerator[LlmResponse, None]:
     """Yield each of the pre-defined LlmResponses."""
     for response in self.llm_responses:
+      # Yield control to allow other tasks (like send_task) to run first.
+      # This ensures user content gets persisted before the mock response
+      # is yielded.
+      await asyncio.sleep(0)
       yield response
 
   async def close(self):

@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -17,6 +17,7 @@ from __future__ import annotations
 from typing import Any
 from typing import Optional
 
+from google.api_core import client_options
 from google.api_core.exceptions import GoogleAPICallError
 import google.auth
 from google.cloud import discoveryengine_v1beta as discoveryengine
@@ -72,15 +73,21 @@ class DiscoveryEngineSearchTool(FunctionTool):
     self._max_results = max_results
 
     credentials, _ = google.auth.default()
+    quota_project_id = getattr(credentials, "quota_project_id", None)
+    options = (
+        client_options.ClientOptions(quota_project_id=quota_project_id)
+        if quota_project_id
+        else None
+    )
     self._discovery_engine_client = discoveryengine.SearchServiceClient(
-        credentials=credentials
+        credentials=credentials, client_options=options
     )
 
   def discovery_engine_search(
       self,
       query: str,
   ) -> dict[str, Any]:
-    """Search the discovery engine.
+    """Search through Vertex AI Search's discovery engine search API.
 
     Args:
       query: The search query.
@@ -113,12 +120,22 @@ class DiscoveryEngineSearchTool(FunctionTool):
       response = self._discovery_engine_client.search(request)
       for item in response.results:
         chunk = item.chunk
-        if not chunk or not chunk.document_metadata:
+        if not chunk:
           continue
 
+        title = ""
+        uri = ""
+        doc_metadata = chunk.document_metadata
+        if doc_metadata:
+          title = doc_metadata.title
+          uri = doc_metadata.uri
+          # Prioritize URI from struct_data if it exists.
+          if doc_metadata.struct_data and "uri" in doc_metadata.struct_data:
+            uri = doc_metadata.struct_data["uri"]
+
         results.append({
-            "title": chunk.document_metadata.title,
-            "url": chunk.document_metadata.uri,
+            "title": title,
+            "url": uri,
             "content": chunk.content,
         })
     except GoogleAPICallError as e:

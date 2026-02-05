@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -34,7 +34,7 @@ class MyCustomAgentConfig(BaseAgentConfig):
   model_config = ConfigDict(
       extra="forbid",
   )
-  agent_class: str = "core_cutom_agent_config.my_agents.MyCustomAgent"
+  agent_class: str = "core_custom_agent_config.my_agents.MyCustomAgent"
   my_field: str = ""
 
 

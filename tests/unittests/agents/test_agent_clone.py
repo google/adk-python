@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -274,7 +274,7 @@ def test_clone_invalid_field():
   """Test that cloning with invalid fields raises an error."""
   original = LlmAgent(name="test_agent", description="Test agent")
 
-  with pytest.raises(ValueError, match="Cannot update non-existent fields"):
+  with pytest.raises(ValueError, match="Cannot update nonexistent fields"):
     original.clone(update={"invalid_field": "value"})
 
 

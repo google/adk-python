@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -46,7 +46,7 @@ root_agent = Agent(
       Use the provided tools to conduct various operations on users' data in Google BigQuery.
 
       Scenario 1:
-      The user wants to query their biguqery datasets
+      The user wants to query their bigquery datasets
       Use bigquery_datasets_list to query user's datasets
 
       Scenario 2:

@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import textwrap
 from unittest.mock import MagicMock
 
 from google.adk.agents.base_agent import BaseAgent
@@ -101,3 +102,22 @@ class TestUnsafeLocalCodeExecutor:
     result = executor.execute_code(mock_invocation_context, code_input)
     assert result.stdout == ""
     assert result.stderr == ""
+
+  def test_execute_code_nested_function_call(
+      self, mock_invocation_context: InvocationContext
+  ):
+    executor = UnsafeLocalCodeExecutor()
+    code_input = CodeExecutionInput(code=(textwrap.dedent("""
+                def helper(name):
+                  return f'hi {name}'
+
+                def run():
+                  print(helper('ada'))
+
+                run()
+                """)))
+
+    result = executor.execute_code(mock_invocation_context, code_input)
+
+    assert result.stderr == ""
+    assert result.stdout == "hi ada\n"

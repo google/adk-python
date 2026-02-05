@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -56,10 +56,17 @@ class CustomRetryPlugin(ReflectAndRetryToolPlugin):
     return result if result.get("status") == "error" else None
 
 
+# Sample query: "guess a number between 1 and 50"
 root_agent = LlmAgent(
     name="hello_world",
     description="Helpful agent",
-    instruction="""Use guess_number_tool to guess a number.""",
+    instruction="""Your goal is to guess a secret positive integer by using the
+    `guess_number_tool`.
+    The tool will provide feedback on each guess.
+    Your objective is to keep guessing until guess_number_tool returns
+    'status: success'.
+    Start by guessing 50, and use the tool's feedback to adjust your guesses
+    and find the target number.""",
     model="gemini-2.5-flash",
     tools=[guess_number_tool],
 )
@@ -70,7 +77,7 @@ app = App(
     root_agent=root_agent,
     plugins=[
         CustomRetryPlugin(
-            max_retries=6, throw_exception_if_retry_exceeded=False
+            max_retries=20, throw_exception_if_retry_exceeded=False
         ),
         LoggingPlugin(),
     ],

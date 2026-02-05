@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,8 +14,6 @@
 
 from __future__ import annotations
 
-from unittest import mock
-
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.evaluation.request_intercepter_plugin import _LLM_REQUEST_ID_KEY
 from google.adk.evaluation.request_intercepter_plugin import _RequestIntercepterPlugin
@@ -26,7 +24,7 @@ from google.genai import types
 
 class TestRequestIntercepterPlugin:
 
-  async def test_intercept_request_and_response(self):
+  async def test_intercept_request_and_response(self, mocker):
     plugin = _RequestIntercepterPlugin(name="test_plugin")
     llm_request = LlmRequest(
         model="test_model",
@@ -37,7 +35,7 @@ class TestRequestIntercepterPlugin:
             )
         ],
     )
-    mock_invocation_context = mock.MagicMock()
+    mock_invocation_context = mocker.MagicMock()
     mock_invocation_context.session.state = {}
     callback_context = CallbackContext(mock_invocation_context)
     llm_response = LlmResponse()

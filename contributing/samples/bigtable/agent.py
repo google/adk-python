@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -29,7 +29,7 @@ CREDENTIALS_TYPE = AuthCredentialTypes.OAUTH2
 tool_settings = BigtableToolSettings()
 
 if CREDENTIALS_TYPE == AuthCredentialTypes.OAUTH2:
-  # Initiaze the tools to do interactive OAuth
+  # Initialize the tools to do interactive OAuth
   # The environment variables OAUTH_CLIENT_ID and OAUTH_CLIENT_SECRET
   # must be set
   credentials_config = BigtableCredentialsConfig(

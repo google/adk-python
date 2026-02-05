@@ -99,7 +99,7 @@ Agent: ✅ Great news! Your reimbursement has been approved by the manager. Proc
 The human-in-the-loop process follows this pattern:
 
 1. **Initial Call**: Root agent delegates approval request to remote approval agent for amounts >$100
-2. **Pending Response**: Remote approval agent returns immediate response with `status: "pending"` and ticket ID and serface the approval request to root agent
+2. **Pending Response**: Remote approval agent returns immediate response with `status: "pending"` and ticket ID and surface the approval request to root agent
 3. **Agent Acknowledgment**: Root agent informs user about pending approval status
 4. **Human Interaction**: Human manager interacts with root agent to review and approve/reject the request
 5. **Updated Response**: Root agent receives updated tool response with approval decision and send it to remote agent

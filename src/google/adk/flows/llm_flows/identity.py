@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -34,10 +34,10 @@ class _IdentityLlmRequestProcessor(BaseLlmRequestProcessor):
       self, invocation_context: InvocationContext, llm_request: LlmRequest
   ) -> AsyncGenerator[Event, None]:
     agent = invocation_context.agent
-    si = [f'You are an agent. Your internal name is "{agent.name}".']
+    si = f'You are an agent. Your internal name is "{agent.name}".'
     if agent.description:
-      si.append(f' The description about you is "{agent.description}"')
-    llm_request.append_instructions(si)
+      si += f' The description about you is "{agent.description}".'
+    llm_request.append_instructions([si])
 
     # Maintain async generator behavior
     if False:  # Ensures it behaves as a generator

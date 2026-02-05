@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,7 +16,7 @@ from google.adk import Agent
 from pydantic import BaseModel
 
 
-class WeahterData(BaseModel):
+class WeatherData(BaseModel):
   temperature: str
   humidity: str
   wind_speed: str
@@ -43,6 +43,6 @@ Here are the data you have for Cupertino
 * wind_speed: 13 mph
 
 """,
-    output_schema=WeahterData,
+    output_schema=WeatherData,
     output_key='weather_data',
 )

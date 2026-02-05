@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -65,7 +65,7 @@ class CodeConfig(BaseModel):
 
   args: Optional[List[ArgumentConfig]] = None
   """Optional. The arguments for the code when `name` refers to a function or a
-  class's contructor.
+  class's constructor.
 
   Examples:
     ```

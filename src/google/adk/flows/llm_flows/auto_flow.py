@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -32,7 +32,7 @@ class AutoFlow(SingleFlow):
   For peer-agent transfers, it's only enabled when all below conditions are met:
 
   - The parent agent is also an LlmAgent.
-  - `disallow_transfer_to_peer` option of this agent is False (default).
+  - `disallow_transfer_to_peers` option of this agent is False (default).
 
   Depending on the target agent type, the transfer may be automatically
   reversed. (see Runner._find_agent_to_run method for which agent will remain
