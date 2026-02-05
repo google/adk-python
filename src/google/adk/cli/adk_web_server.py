@@ -946,6 +946,96 @@ class AdkWebServer:
             detail=str(ve),
         ) from ve
 
+    # TODO - remove after migration
+    @deprecated(
+        "Please use create_eval_set instead. This will be removed in future"
+        " releases."
+    )
+    @app.post(
+        "/apps/{app_name}/eval_sets/{eval_set_id}",
+        response_model_exclude_none=True,
+        tags=[TAG_EVALUATION],
+    )
+    async def create_eval_set_legacy(
+        app_name: str,
+        eval_set_id: str,
+    ):
+      """Creates an eval set, given the id."""
+      await create_eval_set(
+          app_name=app_name,
+          create_eval_set_request=CreateEvalSetRequest(
+              eval_set=EvalSet(eval_set_id=eval_set_id, eval_cases=[])
+          ),
+      )
+
+    # TODO - remove after migration
+    @deprecated(
+        "Please use list_eval_sets instead. This will be removed in future"
+        " releases."
+    )
+    @app.get(
+        "/apps/{app_name}/eval_sets",
+        response_model_exclude_none=True,
+        tags=[TAG_EVALUATION],
+    )
+    async def list_eval_sets_legacy(app_name: str) -> list[str]:
+      list_eval_sets_response = await list_eval_sets(app_name)
+      return list_eval_sets_response.eval_set_ids
+
+    # TODO - remove after migration
+    @deprecated(
+        "Please use run_eval instead. This will be removed in future releases."
+    )
+    @app.post(
+        "/apps/{app_name}/eval_sets/{eval_set_id}/run_eval",
+        response_model_exclude_none=True,
+        tags=[TAG_EVALUATION],
+    )
+    async def run_eval_legacy(
+        app_name: str, eval_set_id: str, req: RunEvalRequest
+    ) -> list[RunEvalResult]:
+      run_eval_response = await run_eval(
+          app_name=app_name, eval_set_id=eval_set_id, req=req
+      )
+      return run_eval_response.run_eval_results
+
+    # TODO - remove after migration
+    @deprecated(
+        "Please use get_eval_result instead. This will be removed in future"
+        " releases."
+    )
+    @app.get(
+        "/apps/{app_name}/eval_results/{eval_result_id}",
+        response_model_exclude_none=True,
+        tags=[TAG_EVALUATION],
+    )
+    async def get_eval_result_legacy(
+        app_name: str,
+        eval_result_id: str,
+    ) -> EvalSetResult:
+      try:
+        return self.eval_set_results_manager.get_eval_set_result(
+            app_name, eval_result_id
+        )
+      except ValueError as ve:
+        raise HTTPException(status_code=404, detail=str(ve)) from ve
+      except ValidationError as ve:
+        raise HTTPException(status_code=500, detail=str(ve)) from ve
+
+    # TODO - remove after migration
+    @deprecated(
+        "Please use list_eval_results instead. This will be removed in future"
+        " releases."
+    )
+    @app.get(
+        "/apps/{app_name}/eval_results",
+        response_model_exclude_none=True,
+        tags=[TAG_EVALUATION],
+    )
+    async def list_eval_results_legacy(app_name: str) -> list[str]:
+      list_eval_results_response = await list_eval_results(app_name)
+      return list_eval_results_response.eval_result_ids
+
     @app.get(
         "/apps/{app_name}/eval-sets",
         response_model_exclude_none=True,
