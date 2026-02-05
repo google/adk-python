@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import inspect
 from unittest.mock import AsyncMock
 from unittest.mock import Mock
 from unittest.mock import patch
@@ -668,6 +669,50 @@ class TestMCPTool:
       mock_super_run_async.assert_called_once_with(
           args=args, tool_context=tool_context
       )
+
+  @pytest.mark.asyncio
+  async def test_run_async_require_confirmation_callable_with_arg_filtering(
+      self,
+  ):
+    """Test require_confirmation=callable with argument filtering."""
+
+    async def _require_confirmation_func(
+        param1: str, tool_context: ToolContext
+    ):
+      return True
+
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+        require_confirmation=_require_confirmation_func,
+    )
+    tool_context = Mock(spec=ToolContext)
+    tool_context.tool_confirmation = None
+    tool_context.request_confirmation = Mock()
+    args = {"param1": "test_value", "extra_arg": 123}
+
+    with patch.object(
+        tool, "_invoke_callable", new_callable=AsyncMock
+    ) as mock_invoke_callable:
+      mock_invoke_callable.return_value = (
+          True  # Mock the return of require_confirmation
+      )
+
+      result = await tool.run_async(args=args, tool_context=tool_context)
+      expected_args_to_call = {
+          "param1": "test_value",
+          "tool_context": tool_context,
+      }
+      mock_invoke_callable.assert_called_once_with(
+          _require_confirmation_func, expected_args_to_call
+      )
+
+      assert result == {
+          "error": (
+              "This tool call requires confirmation, please approve or reject."
+          )
+      }
+      tool_context.request_confirmation.assert_called_once()
 
   @pytest.mark.asyncio
   async def test_run_async_require_confirmation_callable_true_no_confirmation(
