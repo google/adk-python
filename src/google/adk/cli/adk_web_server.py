@@ -1474,17 +1474,7 @@ class AdkWebServer:
                 yield f"data: {sse_event}\n\n"
         except Exception as e:
           logger.exception("Error in event_generator: %s", e)
-          # Yield a proper Event object for the error
-          error_event = Event(
-              author="system",
-              content=types.Content(
-                  role="model", parts=[types.Part(text=f"Error: {e}")]
-              ),
-          )
-          yield (
-              "data:"
-              f" {error_event.model_dump_json(by_alias=True, exclude_none=True)}\n\n"
-          )
+          yield f"data: {json.dumps({'error': str(e)})}\n\n"
 
       # Returns a streaming response with the proper media type for SSE
       return StreamingResponse(
@@ -1551,6 +1541,9 @@ class AdkWebServer:
         modalities: List[Literal["TEXT", "AUDIO"]] = Query(
             default=["AUDIO"]
         ),  # Only allows "TEXT" or "AUDIO"
+        proactive_audio: bool | None = Query(default=None),
+        enable_affective_dialog: bool | None = Query(default=None),
+        enable_session_resumption: bool | None = Query(default=None),
     ) -> None:
       await websocket.accept()
 
@@ -1567,7 +1560,22 @@ class AdkWebServer:
 
       async def forward_events():
         runner = await self.get_runner_async(app_name)
-        run_config = RunConfig(response_modalities=modalities)
+        run_config = RunConfig(
+            response_modalities=modalities,
+            proactivity=(
+                types.ProactivityConfig(proactive_audio=proactive_audio)
+                if proactive_audio is not None
+                else None
+            ),
+            enable_affective_dialog=enable_affective_dialog,
+            session_resumption=(
+                types.SessionResumptionConfig(
+                    transparent=enable_session_resumption
+                )
+                if enable_session_resumption is not None
+                else None
+            ),
+        )
         async with Aclosing(
             runner.run_live(
                 session=session,

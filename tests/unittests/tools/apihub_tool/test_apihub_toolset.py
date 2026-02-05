@@ -14,7 +14,12 @@
 
 from unittest.mock import MagicMock
 
+from fastapi.openapi.models import OAuth2
+from fastapi.openapi.models import OAuthFlowAuthorizationCode
+from fastapi.openapi.models import OAuthFlows
 from google.adk.auth.auth_credential import AuthCredential
+from google.adk.auth.auth_credential import AuthCredentialTypes
+from google.adk.auth.auth_credential import OAuth2Auth
 from google.adk.auth.auth_schemes import AuthScheme
 from google.adk.tools.apihub_tool.apihub_toolset import APIHubToolset
 from google.adk.tools.apihub_tool.clients.apihub_client import BaseAPIHubClient
@@ -67,13 +72,27 @@ def lazy_apihub_toolset():
 # Fixture for auth scheme
 @pytest.fixture
 def mock_auth_scheme():
-  return MagicMock(spec=AuthScheme)
+  return OAuth2(
+      flows=OAuthFlows(
+          authorizationCode=OAuthFlowAuthorizationCode(
+              authorizationUrl='https://example.com/auth',
+              tokenUrl='https://example.com/token',
+              scopes={'read': 'Read access'},
+          )
+      )
+  )
 
 
 # Fixture for auth credential
 @pytest.fixture
 def mock_auth_credential():
-  return MagicMock(spec=AuthCredential)
+  return AuthCredential(
+      auth_type=AuthCredentialTypes.OAUTH2,
+      oauth2=OAuth2Auth(
+          client_id='test_client_id',
+          client_secret='test_client_secret',
+      ),
+  )
 
 
 # Test cases
