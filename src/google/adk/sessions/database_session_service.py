@@ -297,8 +297,7 @@ class DatabaseSessionService(BaseSessionService):
       # Store the session
       now = datetime.now(timezone.utc)
       is_sqlite = self.db_engine.dialect.name == "sqlite"
-      is_postgres = self.db_engine.dialect.name == "postgresql"
-      if is_sqlite or is_postgres:
+      if self.db_engine.dialect.name in ("sqlite", "postgresql"):
         now = now.replace(tzinfo=None)
 
       storage_session = schema.StorageSession(
