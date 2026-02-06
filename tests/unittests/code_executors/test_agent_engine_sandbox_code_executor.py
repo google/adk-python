@@ -17,7 +17,9 @@ from unittest.mock import MagicMock
 from unittest.mock import patch
 
 from google.adk.agents.invocation_context import InvocationContext
-from google.adk.code_executors.agent_engine_sandbox_code_executor import AgentEngineSandboxCodeExecutor
+from google.adk.code_executors.agent_engine_sandbox_code_executor import (
+    AgentEngineSandboxCodeExecutor,
+)
 from google.adk.code_executors.code_execution_utils import CodeExecutionInput
 from google.adk.code_executors.code_execution_utils import File
 import pytest
@@ -227,6 +229,72 @@ class TestAgentEngineSandboxCodeExecutor:
     assert result.stderr == "primary error"
 
   @patch("vertexai.Client")
+  def test_execute_code_msg_out_null_ignores_stdout(
+      self,
+      mock_vertexai_client,
+      mock_invocation_context,
+  ):
+    """Tests that msg_out=None does not fall back to stdout."""
+    # Setup Mocks
+    mock_api_client = MagicMock()
+    mock_vertexai_client.return_value = mock_api_client
+    mock_response = MagicMock()
+    mock_json_output = MagicMock()
+    mock_json_output.mime_type = "application/json"
+    mock_json_output.data = json.dumps(
+        {"msg_out": None, "stdout": "fallback output"}
+    ).encode("utf-8")
+    mock_json_output.metadata = None
+
+    mock_response.outputs = [mock_json_output]
+    mock_api_client.agent_engines.sandboxes.execute_code.return_value = (
+        mock_response
+    )
+
+    # Execute
+    executor = AgentEngineSandboxCodeExecutor(
+        sandbox_resource_name="projects/123/locations/us-central1/reasoningEngines/456/sandboxEnvironments/789"
+    )
+    code_input = CodeExecutionInput(code='print("hello")')
+    result = executor.execute_code(mock_invocation_context, code_input)
+
+    # Assert - msg_out is authoritative even when null
+    assert result.stdout == ""
+
+  @patch("vertexai.Client")
+  def test_execute_code_msg_err_null_ignores_stderr(
+      self,
+      mock_vertexai_client,
+      mock_invocation_context,
+  ):
+    """Tests that msg_err=None does not fall back to stderr."""
+    # Setup Mocks
+    mock_api_client = MagicMock()
+    mock_vertexai_client.return_value = mock_api_client
+    mock_response = MagicMock()
+    mock_json_output = MagicMock()
+    mock_json_output.mime_type = "application/json"
+    mock_json_output.data = json.dumps(
+        {"msg_err": None, "stderr": "fallback error"}
+    ).encode("utf-8")
+    mock_json_output.metadata = None
+
+    mock_response.outputs = [mock_json_output]
+    mock_api_client.agent_engines.sandboxes.execute_code.return_value = (
+        mock_response
+    )
+
+    # Execute
+    executor = AgentEngineSandboxCodeExecutor(
+        sandbox_resource_name="projects/123/locations/us-central1/reasoningEngines/456/sandboxEnvironments/789"
+    )
+    code_input = CodeExecutionInput(code='print("hello")')
+    result = executor.execute_code(mock_invocation_context, code_input)
+
+    # Assert - msg_err is authoritative even when null
+    assert result.stderr == ""
+
+  @patch("vertexai.Client")
   def test_execute_code_partial_response_only_msg_out(
       self,
       mock_vertexai_client,
@@ -323,6 +391,41 @@ class TestAgentEngineSandboxCodeExecutor:
     result = executor.execute_code(mock_invocation_context, code_input)
 
     # Assert - both should be empty strings
+    assert result.stdout == ""
+    assert result.stderr == ""
+
+  @patch("vertexai.Client")
+  def test_execute_code_invalid_json_does_not_raise(
+      self,
+      mock_vertexai_client,
+      mock_invocation_context,
+  ):
+    """Tests that invalid JSON is handled without raising."""
+    # Setup Mocks
+    mock_api_client = MagicMock()
+    mock_vertexai_client.return_value = mock_api_client
+    mock_response = MagicMock()
+    mock_json_output = MagicMock()
+    mock_json_output.mime_type = "application/json"
+    mock_json_output.data = b"{not json}"
+    mock_json_output.metadata = None
+
+    mock_response.outputs = [mock_json_output]
+    mock_api_client.agent_engines.sandboxes.execute_code.return_value = (
+        mock_response
+    )
+
+    # Execute
+    executor = AgentEngineSandboxCodeExecutor(
+        sandbox_resource_name="projects/123/locations/us-central1/reasoningEngines/456/sandboxEnvironments/789"
+    )
+    code_input = CodeExecutionInput(code='print("hello")')
+    try:
+      result = executor.execute_code(mock_invocation_context, code_input)
+    except json.JSONDecodeError as exc:
+      pytest.fail(f"Expected invalid JSON to be handled: {exc}")
+
+    # Assert - invalid JSON yields empty stdout/stderr
     assert result.stdout == ""
     assert result.stderr == ""
 
