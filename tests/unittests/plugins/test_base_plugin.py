@@ -79,6 +79,9 @@ class FullOverridePlugin(BasePlugin):
   async def on_model_error_callback(self, **kwargs) -> str:
     return "overridden_on_model_error"
 
+  async def on_state_change_callback(self, **kwargs) -> str:
+    return "overridden_on_state_change"
+
 
 def test_base_plugin_initialization():
   """Tests that a plugin is initialized with the correct name."""
@@ -169,6 +172,13 @@ async def test_base_plugin_default_callbacks_return_none():
           callback_context=mock_context,
           llm_request=mock_context,
           error=Exception(),
+      )
+      is None
+  )
+  assert (
+      await plugin.on_state_change_callback(
+          callback_context=mock_context,
+          state_delta={},
       )
       is None
   )
@@ -277,4 +287,11 @@ async def test_base_plugin_all_callbacks_can_be_overridden():
           error=mock_error,
       )
       == "overridden_on_model_error"
+  )
+  assert (
+      await plugin.on_state_change_callback(
+          callback_context=mock_callback_context,
+          state_delta={"key": "value"},
+      )
+      == "overridden_on_state_change"
   )

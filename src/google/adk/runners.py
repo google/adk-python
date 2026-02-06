@@ -839,9 +839,19 @@ class Runner:
             _apply_run_config_custom_metadata(
                 modified_event, invocation_context.run_config
             )
-            yield modified_event
+            final_event = modified_event
           else:
-            yield event
+            final_event = event
+          yield final_event
+
+          # Step 3b: Notify plugins of state changes, if any.
+          if final_event.actions.state_delta:
+            from .agents.callback_context import CallbackContext
+
+            await plugin_manager.run_on_state_change_callback(
+                callback_context=CallbackContext(invocation_context),
+                state_delta=dict(final_event.actions.state_delta),
+            )
 
     # Step 4: Run the after_run callbacks to perform global cleanup tasks or
     # finalizing logs and metrics data.
