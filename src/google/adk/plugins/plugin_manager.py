@@ -263,7 +263,7 @@ class PluginManager:
       *,
       callback_context: CallbackContext,
       state_delta: dict[str, Any],
-  ) -> Optional[None]:
+  ) -> Optional[Any]:
     """Runs the `on_state_change_callback` for all plugins."""
     return await self._run_callbacks(
         "on_state_change_callback",

@@ -380,8 +380,8 @@ class BasePlugin(ABC):
     """Callback executed when an event carries state changes.
 
     This callback is invoked after an event with a non-empty
-    ``state_delta`` is yielded from the runner. It is observational:
-    returning a value has no effect on execution flow.
+    ``state_delta`` is yielded from the runner. It is observational, but
+    returning a non-`None` value will short-circuit subsequent plugins.
 
     Args:
       callback_context: The context for the current invocation.
