@@ -235,7 +235,7 @@ class TestOAuth2CredentialUtil:
     assert credential.oauth2.expires_at == expected_expires_at
     assert credential.oauth2.expires_in == 3600
 
-  def test_update_credential_with_tokens_none(self):
+  def test_update_credential_with_tokens_none(self) -> None:
     credential = AuthCredential(
         auth_type=AuthCredentialTypes.API_KEY,
     )
