@@ -360,6 +360,101 @@ class TestMcpToolset:
     assert tools[0].name == "tool1"
     assert tools[1].name == "tool2"
 
+  def test_init_with_progress_callback(self):
+    """Test initialization with progress_callback."""
+
+    async def my_progress_callback(
+        progress: float, total: float | None, message: str | None
+    ) -> None:
+      pass
+
+    toolset = McpToolset(
+        connection_params=self.mock_stdio_params,
+        progress_callback=my_progress_callback,
+    )
+
+    assert toolset._progress_callback == my_progress_callback
+
+  @pytest.mark.asyncio
+  async def test_get_tools_passes_progress_callback_to_mcp_tools(self):
+    """Test that get_tools passes progress_callback to created MCPTool instances."""
+    progress_updates = []
+
+    async def my_progress_callback(
+        progress: float, total: float | None, message: str | None
+    ) -> None:
+      progress_updates.append((progress, total, message))
+
+    mock_tools = [MockMCPTool("tool1"), MockMCPTool("tool2")]
+    self.mock_session.list_tools = AsyncMock(
+        return_value=MockListToolsResult(mock_tools)
+    )
+
+    toolset = McpToolset(
+        connection_params=self.mock_stdio_params,
+        progress_callback=my_progress_callback,
+    )
+    toolset._mcp_session_manager = self.mock_session_manager
+
+    tools = await toolset.get_tools()
+
+    assert len(tools) == 2
+    # Verify each tool has the progress_callback set
+    for tool in tools:
+      assert tool._progress_callback == my_progress_callback
+
+  def test_init_with_progress_callback_factory(self):
+    """Test initialization with a ProgressCallbackFactory."""
+
+    def my_callback_factory(tool_name: str, *, readonly_context=None, **kwargs):
+      async def callback(
+          progress: float, total: float | None, message: str | None
+      ) -> None:
+        pass
+
+      return callback
+
+    toolset = McpToolset(
+        connection_params=self.mock_stdio_params,
+        progress_callback=my_callback_factory,
+    )
+
+    assert toolset._progress_callback == my_callback_factory
+
+  @pytest.mark.asyncio
+  async def test_get_tools_passes_factory_to_mcp_tools(self):
+    """Test that get_tools passes factory directly to MCPTool instances.
+
+    The factory is resolved at runtime in McpTool._run_async_impl, not at
+    tool creation time. This allows the factory to receive ReadonlyContext.
+    """
+
+    def my_callback_factory(tool_name: str, *, readonly_context=None, **kwargs):
+      async def callback(
+          progress: float, total: float | None, message: str | None
+      ) -> None:
+        pass
+
+      return callback
+
+    mock_tools = [MockMCPTool("tool1"), MockMCPTool("tool2")]
+    self.mock_session.list_tools = AsyncMock(
+        return_value=MockListToolsResult(mock_tools)
+    )
+
+    toolset = McpToolset(
+        connection_params=self.mock_stdio_params,
+        progress_callback=my_callback_factory,
+    )
+    toolset._mcp_session_manager = self.mock_session_manager
+
+    tools = await toolset.get_tools()
+
+    assert len(tools) == 2
+    # Factory is passed directly to each tool (resolved at runtime)
+    for tool in tools:
+      assert tool._progress_callback == my_callback_factory
+
   @pytest.mark.asyncio
   async def test_list_resources(self):
     """Test listing resources."""

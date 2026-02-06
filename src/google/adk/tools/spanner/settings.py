@@ -150,7 +150,7 @@ class SpannerVectorStoreSettings(BaseModel):
   """Required. The name of the embedding column to search in the vector store table."""
 
   vector_length: int
-  """Required. The the dimension of the vectors in the `embedding_column`."""
+  """Required. The dimension of the vectors in the `embedding_column`."""
 
   vertex_ai_embedding_model_name: str
   """Required. The Vertex AI embedding model name, which is used to generate embeddings for vector store and vector similarity search.
