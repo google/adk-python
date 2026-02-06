@@ -145,6 +145,16 @@ class APIHubToolset(BaseToolset):
     self._openapi_toolset = None
     self._auth_scheme = auth_scheme
     self._auth_credential = auth_credential
+    # Store auth config as instance variable so ADK can populate
+    # exchanged_auth_credential in-place before calling get_tools()
+    self._auth_config: Optional[AuthConfig] = (
+        AuthConfig(
+            auth_scheme=auth_scheme,
+            raw_auth_credential=auth_credential,
+        )
+        if auth_scheme
+        else None
+    )
 
     if not self._lazy_load_spec:
       self._prepare_toolset()
@@ -191,11 +201,11 @@ class APIHubToolset(BaseToolset):
       await self._openapi_toolset.close()
 
   @override
-  def get_auth_config(self) -> AuthConfig | None:
-    """Returns the auth config for this toolset."""
-    if self._auth_scheme is None:
-      return None
-    return AuthConfig(
-        auth_scheme=self._auth_scheme,
-        raw_auth_credential=self._auth_credential,
-    )
+  def get_auth_config(self) -> Optional[AuthConfig]:
+    """Returns the auth config for this toolset.
+
+    ADK will populate exchanged_auth_credential on this config before calling
+    get_tools(). The toolset can then access the ready-to-use credential via
+    self._auth_config.exchanged_auth_credential.
+    """
+    return self._auth_config
