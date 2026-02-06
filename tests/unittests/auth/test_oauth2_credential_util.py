@@ -240,7 +240,7 @@ class TestOAuth2CredentialUtil:
         auth_type=AuthCredentialTypes.API_KEY,
     )
     tokens = OAuth2Token({"access_token": "new_access_token"})
-    
+
     # Should not raise any exceptions when oauth2 is None
     update_credential_with_tokens(credential, tokens)
     assert credential.oauth2 is None
