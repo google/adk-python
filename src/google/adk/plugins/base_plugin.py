@@ -370,3 +370,25 @@ class BasePlugin(ABC):
       allows the original error to be raised.
     """
     pass
+
+  async def on_state_change_callback(
+      self,
+      *,
+      callback_context: CallbackContext,
+      state_delta: dict[str, Any],
+  ) -> None:
+    """Callback executed when an event carries state changes.
+
+    This callback is invoked after an event with a non-empty
+    ``state_delta`` is yielded from the runner. It is observational:
+    returning a value has no effect on execution flow.
+
+    Args:
+      callback_context: The context for the current invocation.
+      state_delta: A copy of the state changes carried by the event.
+        Mutating this dict does not affect the original state.
+
+    Returns:
+      None
+    """
+    pass

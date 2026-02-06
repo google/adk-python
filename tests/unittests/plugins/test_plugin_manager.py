@@ -91,6 +91,9 @@ class TestPlugin(BasePlugin):
   async def on_model_error_callback(self, **kwargs):
     return await self._handle_callback("on_model_error_callback")
 
+  async def on_state_change_callback(self, **kwargs):
+    return await self._handle_callback("on_state_change_callback")
+
 
 @pytest.fixture
 def service() -> PluginManager:
@@ -252,6 +255,10 @@ async def test_all_callbacks_are_supported(
       llm_request=mock_context,
       error=mock_context,
   )
+  await service.run_on_state_change_callback(
+      callback_context=mock_context,
+      state_delta={"key": "value"},
+  )
 
   # Verify all callbacks were logged
   expected_callbacks = [
@@ -267,6 +274,7 @@ async def test_all_callbacks_are_supported(
       "before_model_callback",
       "after_model_callback",
       "on_model_error_callback",
+      "on_state_change_callback",
   ]
   assert set(plugin1.call_log) == set(expected_callbacks)
 
@@ -317,3 +325,57 @@ async def test_close_with_timeout(plugin1: TestPlugin):
   assert "Failed to close plugins: 'plugin1': TimeoutError" in str(
       excinfo.value
   )
+
+
+# --- on_state_change_callback tests ---
+
+
+@pytest.mark.asyncio
+async def test_run_on_state_change_callback(
+    service: PluginManager, plugin1: TestPlugin
+):
+  """Tests that run_on_state_change_callback invokes the callback and returns None."""
+  service.register_plugin(plugin1)
+  result = await service.run_on_state_change_callback(
+      callback_context=Mock(),
+      state_delta={"key": "value"},
+  )
+  assert result is None
+  assert "on_state_change_callback" in plugin1.call_log
+
+
+@pytest.mark.asyncio
+async def test_run_on_state_change_callback_calls_all_plugins(
+    service: PluginManager, plugin1: TestPlugin, plugin2: TestPlugin
+):
+  """Tests that on_state_change_callback is called on all plugins."""
+  service.register_plugin(plugin1)
+  service.register_plugin(plugin2)
+
+  await service.run_on_state_change_callback(
+      callback_context=Mock(),
+      state_delta={"key": "value"},
+  )
+
+  assert "on_state_change_callback" in plugin1.call_log
+  assert "on_state_change_callback" in plugin2.call_log
+
+
+@pytest.mark.asyncio
+async def test_run_on_state_change_callback_wraps_exceptions(
+    service: PluginManager, plugin1: TestPlugin
+):
+  """Tests that exceptions in on_state_change_callback are wrapped in RuntimeError."""
+  original_exception = ValueError("state change error")
+  plugin1.exceptions_to_raise["on_state_change_callback"] = original_exception
+  service.register_plugin(plugin1)
+
+  with pytest.raises(RuntimeError) as excinfo:
+    await service.run_on_state_change_callback(
+        callback_context=Mock(),
+        state_delta={"key": "value"},
+    )
+
+  assert "Error in plugin 'plugin1'" in str(excinfo.value)
+  assert "on_state_change_callback" in str(excinfo.value)
+  assert excinfo.value.__cause__ is original_exception
