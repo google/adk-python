@@ -344,7 +344,12 @@ class DatabaseSessionService(BaseSessionService):
       )
 
       if config and config.after_timestamp:
-        after_dt = datetime.fromtimestamp(config.after_timestamp)
+        if self.db_engine.dialect.name == "sqlite":
+          after_dt = datetime.fromtimestamp(config.after_timestamp)
+        else:
+          after_dt = datetime.fromtimestamp(
+              config.after_timestamp, timezone.utc
+          )
         stmt = stmt.filter(schema.StorageEvent.timestamp >= after_dt)
 
       stmt = stmt.order_by(schema.StorageEvent.timestamp.desc())
@@ -513,7 +518,7 @@ class DatabaseSessionService(BaseSessionService):
             event.timestamp, timezone.utc
         ).replace(tzinfo=None)
       else:
-        update_time = datetime.fromtimestamp(event.timestamp)
+        update_time = datetime.fromtimestamp(event.timestamp, timezone.utc)
       storage_session.update_time = update_time
       sql_session.add(schema.StorageEvent.from_event(session, event))
 
