@@ -1494,14 +1494,20 @@ def cli_api_server(
     is_flag=True,
     show_default=True,
     default=False,
-    help="Optional. Whether to enable Cloud Trace for cloud run.",
+    help=(
+        "Optional. Whether to enable Cloud Trace export for Cloud Run"
+        " deployments."
+    ),
 )
 @click.option(
     "--otel_to_cloud",
     is_flag=True,
     show_default=True,
     default=False,
-    help="Optional. Whether to enable OpenTelemetry for Agent Engine.",
+    help=(
+        "Optional. Whether to enable OpenTelemetry export to GCP for Cloud Run"
+        " deployments."
+    ),
 )
 @click.option(
     "--with_ui",
