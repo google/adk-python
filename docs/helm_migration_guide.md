@@ -84,8 +84,8 @@ env:
 If your database is a Cloud SQL instance on GKE, add the
 [Cloud SQL Auth Proxy](https://cloud.google.com/sql/docs/postgres/connect-kubernetes-engine)
 as a
-[native sidecar](https://kubernetes.io/docs/concepts/workloads/pods/sidecar-containers/)
-init container (`restartPolicy: Always`). Kubernetes starts it before the
+[native sidecar container](https://kubernetes.io/docs/concepts/workloads/pods/sidecar-containers/)
+by defining it as an `initContainer` with `restartPolicy: Always`. Kubernetes starts it before the
 migration container, keeps it running alongside, and terminates it automatically
 when the migration exits:
 
