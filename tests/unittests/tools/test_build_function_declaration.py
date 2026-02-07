@@ -661,3 +661,120 @@ class TestJsonSchemaFeatureFlagEnabled:
     schema = decl.parameters_json_schema
     assert schema['properties']['name']['default'] == 'World'
     assert 'name' not in schema.get('required', [])
+
+
+# ── Pipe-union (X | Y) tests ──────────────────────────────────────────
+
+
+def test_pipe_union_optional_list():
+  """list[str] | None should parse as ARRAY with nullable=True."""
+
+  def func(a: list[str] | None):
+    pass
+
+  decl = _automatic_function_calling_util.build_function_declaration(
+      func=func, variant=GoogleLLMVariant.VERTEX_AI
+  )
+  prop = decl.parameters.properties['a']
+  assert prop.type == types.Type.ARRAY
+  assert prop.nullable is True
+
+
+def test_pipe_union_optional_dict():
+  """dict[str, int] | None should parse as OBJECT with nullable=True."""
+
+  def func(a: dict[str, int] | None):
+    pass
+
+  decl = _automatic_function_calling_util.build_function_declaration(
+      func=func, variant=GoogleLLMVariant.VERTEX_AI
+  )
+  prop = decl.parameters.properties['a']
+  assert prop.type == types.Type.OBJECT
+  assert prop.nullable is True
+
+
+def test_pipe_union_optional_list_with_default():
+  """list[str] | None = None should parse as ARRAY, nullable, no default."""
+
+  def func(a: list[str] | None = None):
+    pass
+
+  decl = _automatic_function_calling_util.build_function_declaration(
+      func=func, variant=GoogleLLMVariant.VERTEX_AI
+  )
+  prop = decl.parameters.properties['a']
+  assert prop.type == types.Type.ARRAY
+  assert prop.nullable is True
+
+
+def test_pipe_union_simple_primitives():
+  """int | str should produce any_of with two types."""
+
+  def func(a: int | str):
+    pass
+
+  decl = _automatic_function_calling_util.build_function_declaration(
+      func=func, variant=GoogleLLMVariant.VERTEX_AI
+  )
+  prop = decl.parameters.properties['a']
+  assert prop.any_of is not None
+  assert len(prop.any_of) == 2
+
+
+def test_pipe_union_simple_primitives_with_none():
+  """int | str | None should produce any_of + nullable."""
+
+  def func(a: int | str | None):
+    pass
+
+  decl = _automatic_function_calling_util.build_function_declaration(
+      func=func, variant=GoogleLLMVariant.VERTEX_AI
+  )
+  prop = decl.parameters.properties['a']
+  assert prop.any_of is not None
+  assert len(prop.any_of) == 2
+  assert prop.nullable is True
+
+
+def test_pipe_union_complex_multi_type():
+  """list[str] | dict[str, int] should produce any_of (VERTEX_AI)."""
+
+  def func(a: list[str] | dict[str, int]):
+    pass
+
+  decl = _automatic_function_calling_util.build_function_declaration(
+      func=func, variant=GoogleLLMVariant.VERTEX_AI
+  )
+  prop = decl.parameters.properties['a']
+  assert prop.any_of is not None
+  assert len(prop.any_of) == 2
+
+
+def test_pipe_union_complex_falls_back_for_gemini_api():
+  """Complex pipe union for GEMINI_API falls back to pydantic schema."""
+
+  def func(a: list[str] | dict[str, int]):
+    pass
+
+  decl = _automatic_function_calling_util.build_function_declaration(
+      func=func, variant=GoogleLLMVariant.GEMINI_API
+  )
+  # GEMINI_API does not support any_of, so the parser falls back to
+  # pydantic-based json schema generation.
+  assert decl.name == 'func'
+
+
+def test_typing_union_optional_list_still_works():
+  """Regression: typing.Union[list[str], None] must still work."""
+  import typing
+
+  def func(a: typing.Union[list[str], None]):
+    pass
+
+  decl = _automatic_function_calling_util.build_function_declaration(
+      func=func, variant=GoogleLLMVariant.VERTEX_AI
+  )
+  prop = decl.parameters.properties['a']
+  assert prop.type == types.Type.ARRAY
+  assert prop.nullable is True
