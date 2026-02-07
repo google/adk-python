@@ -25,6 +25,7 @@ from unittest.mock import patch
 
 from google.adk.agents.readonly_context import ReadonlyContext
 from google.adk.auth.auth_credential import AuthCredential
+from google.adk.tools.load_mcp_resource_tool import LoadMcpResourceTool
 from google.adk.tools.mcp_tool.mcp_session_manager import MCPSessionManager
 from google.adk.tools.mcp_tool.mcp_session_manager import SseConnectionParams
 from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
@@ -81,6 +82,14 @@ class TestMcpToolset:
     assert toolset._errlog == sys.stderr
     assert toolset._auth_scheme is None
     assert toolset._auth_credential is None
+    assert toolset._use_mcp_resources is False
+
+  def test_init_with_use_mcp_resources(self):
+    """Test initialization with use_mcp_resources."""
+    toolset = McpToolset(
+        connection_params=self.mock_stdio_params, use_mcp_resources=True
+    )
+    assert toolset._use_mcp_resources is True
 
   def test_init_with_stdio_connection_params(self):
     """Test initialization with StdioConnectionParams."""
@@ -161,17 +170,21 @@ class TestMcpToolset:
         return_value=MockListToolsResult(mock_tools)
     )
 
-    toolset = McpToolset(connection_params=self.mock_stdio_params)
+    toolset = McpToolset(
+        connection_params=self.mock_stdio_params, use_mcp_resources=True
+    )
     toolset._mcp_session_manager = self.mock_session_manager
 
     tools = await toolset.get_tools()
 
-    assert len(tools) == 3
-    for tool in tools:
+    assert len(tools) == 4
+    for tool in tools[:3]:
       assert isinstance(tool, MCPTool)
+    assert isinstance(tools[3], LoadMcpResourceTool)
     assert tools[0].name == "tool1"
     assert tools[1].name == "tool2"
     assert tools[2].name == "tool3"
+    assert tools[3].name == "load_mcp_resource"
 
   @pytest.mark.asyncio
   async def test_get_tools_with_list_filter(self):
@@ -338,6 +351,7 @@ class TestMcpToolset:
     toolset = McpToolset(
         connection_params=mock_connection_params,
         tool_name_prefix="my_prefix",
+        use_mcp_resources=True,
     )
 
     # Replace the internal session manager with our mock
@@ -352,13 +366,15 @@ class TestMcpToolset:
     prefixed_tools = await toolset.get_tools_with_prefix()
 
     # Assert that the tools are prefixed correctly
-    assert len(prefixed_tools) == 2
+    assert len(prefixed_tools) == 3
     assert prefixed_tools[0].name == "my_prefix_tool1"
     assert prefixed_tools[1].name == "my_prefix_tool2"
+    assert prefixed_tools[2].name == "my_prefix_load_mcp_resource"
 
     # Assert that the original tools are not modified
     assert tools[0].name == "tool1"
     assert tools[1].name == "tool2"
+    assert tools[2].name == "load_mcp_resource"
 
   def test_init_with_progress_callback(self):
     """Test initialization with progress_callback."""

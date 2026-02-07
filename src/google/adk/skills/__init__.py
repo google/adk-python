@@ -12,5 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# version: major.minor.patch
-__version__ = "1.24.1"
+"""Agent Development Kit - Skills."""
+
+from .models import Frontmatter
+from .models import Resources
+from .models import Script
+from .models import Skill
+from .prompt import format_skills_as_xml
+
+__all__ = [
+    "Frontmatter",
+    "Resources",
+    "Script",
+    "Skill",
+    "format_skills_as_xml",
+]

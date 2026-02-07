@@ -12,5 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# version: major.minor.patch
-__version__ = "1.24.1"
+from google.adk.tools.agent_simulator.agent_simulator_factory import AgentSimulatorFactory
+
+__all__ = ["AgentSimulator"]

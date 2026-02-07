@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.24.1](https://github.com/google/adk-python/compare/v1.24.0...v1.24.1) (2026-02-06)
+
+### Bug Fixes
+
+* Add back deprecated eval endpoint for web until we migrate([ae993e8](https://github.com/google/adk-python/commit/ae993e884f44db276a4116ebb7a11a2fb586dbfe))
+* Update eval dialog colors, and fix a2ui component types ([3686a3a](https://github.com/google/adk-python/commit/3686a3a98f46738549cd7a999f3773b7a6fd1182))
+
 ## [1.24.0](https://github.com/google/adk-python/compare/v1.23.0...v1.24.0) (2026-02-04)
 
 ### ⚠ BREAKING CHANGES
