@@ -19,6 +19,7 @@ import copy
 from datetime import datetime
 from datetime import timezone
 import logging
+import os
 from typing import Any
 from typing import AsyncIterator
 from typing import Optional
@@ -178,6 +179,12 @@ class DatabaseSessionService(BaseSessionService):
     This method is called lazily before each database operation. It checks the
     DB schema version to use and creates the tables (including setting the
     schema version metadata) if needed.
+
+    Alembic integration (opt-in via ``ADK_AUTO_MIGRATE_DB=true``):
+      When enabled, pending Alembic migrations are applied automatically
+      before the application reads or writes data.  When disabled (the
+      default), a ``RuntimeError`` is raised if the database is behind
+      to prevent silent schema mismatches.
     """
     # Check the database schema version and set the _db_schema_version if
     # needed
@@ -235,6 +242,73 @@ class DatabaseSessionService(BaseSessionService):
               )
               sql_session.add(metadata)
               await sql_session.commit()
+
+        # Stamp Alembic baseline for newly created databases so that
+        # future migrations can be tracked without a separate bootstrap
+        # step.
+        await self._ensure_alembic_tracking()
+
+  async def _ensure_alembic_tracking(self) -> None:
+    """Stamp or run Alembic migrations as needed.
+
+    This is called after table creation to ensure the database has
+    Alembic tracking.  Behavior depends on the database state:
+
+    - **V0 or V1 databases without Alembic tracking**: bootstrapped
+      automatically.  V0 databases are migrated to V1 in-place
+      (pickle → JSON events) and then stamped with the Alembic
+      baseline revision.
+    - **Databases with pending Alembic migrations**:
+
+      - If ``ADK_AUTO_MIGRATE_DB=true``: runs migrations automatically.
+      - Otherwise: raises ``RuntimeError`` directing the user to run
+        ``adk migrate upgrade``.
+
+    - **Fresh or up-to-date databases**: stamps the baseline revision
+      (no-op if already tracked).
+    """
+    try:
+      from .alembic_runner import AlembicMigrationRunner
+    except ImportError:
+      logger.debug("Alembic not installed; skipping migration tracking.")
+      return
+
+    db_url = str(self.db_engine.url)
+    runner = AlembicMigrationRunner(db_url)
+
+    if not _schema_check_utils.is_alembic_managed_from_url(db_url):
+      # No alembic_version table — bootstrap it.
+      # For V0 databases this performs an in-place migration to V1.
+      was_v0 = (
+          self._db_schema_version == _schema_check_utils.SCHEMA_VERSION_0_PICKLE
+      )
+      runner.bootstrap_existing_database()
+
+      if was_v0:
+        # The database has been migrated from V0 to V1 in-place.
+        # Refresh the cached schema version so the ORM uses V1
+        # models for subsequent operations.
+        self._db_schema_version = _schema_check_utils.LATEST_SCHEMA_VERSION
+        logger.info(
+            "V0 database migrated to V1 and Alembic tracking established."
+        )
+      return
+
+    if not runner.check_needs_migration():
+      return
+
+    auto_migrate = os.getenv("ADK_AUTO_MIGRATE_DB", "false").lower() == "true"
+
+    if auto_migrate:
+      logger.info("ADK_AUTO_MIGRATE_DB is set. Running migrations...")
+      runner.run_migrations()
+    else:
+      raise RuntimeError(
+          "Database schema is behind the current ADK version."
+          " Run 'adk migrate upgrade --db_url <url>' to apply"
+          " pending migrations, or set the ADK_AUTO_MIGRATE_DB=true"
+          " environment variable to enable automatic migration."
+      )
 
   @override
   async def create_session(

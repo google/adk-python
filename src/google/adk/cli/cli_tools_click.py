@@ -1728,6 +1728,221 @@ def cli_migrate_session(
     click.secho(f"Migration failed: {e}", fg="red", err=True)
 
 
+@migrate.command("upgrade", cls=HelpfulCommand)
+@click.option(
+    "--db_url",
+    required=True,
+    help=(
+        "SQLAlchemy URL of the database to migrate, e.g."
+        " postgresql://user:pass@host/db."
+    ),
+)
+@click.option(
+    "--log_level",
+    type=LOG_LEVELS,
+    default="INFO",
+    help="Optional. Set the logging level.",
+)
+def cli_migrate_upgrade(*, db_url: str, log_level: str):
+  """Runs pending Alembic migrations to bring the database to the latest schema."""
+  logs.setup_adk_logger(getattr(logging, log_level.upper()))
+  try:
+    from sqlalchemy import create_engine
+    from sqlalchemy import inspect as sa_inspect
+
+    from ..sessions.alembic_runner import AlembicMigrationRunner
+    from ..sessions.migration._schema_check_utils import is_alembic_managed
+    from ..sessions.migration._schema_check_utils import to_sync_url
+
+    runner = AlembicMigrationRunner(db_url)
+
+    # Handle existing databases that have ADK tables but no
+    # Alembic tracking (alembic_version table).
+    engine = create_engine(to_sync_url(db_url))
+    try:
+      with engine.connect() as conn:
+        inspector = sa_inspect(conn)
+        has_adk_tables = inspector.has_table("sessions")
+        alembic_managed = is_alembic_managed(inspector, conn)
+    finally:
+      engine.dispose()
+
+    if has_adk_tables and not alembic_managed:
+      click.secho(
+          "Existing ADK database detected without Alembic"
+          " tracking. Bootstrapping...",
+          fg="yellow",
+      )
+      runner.bootstrap_existing_database()
+
+    if runner.check_needs_migration():
+      runner.run_migrations()
+      click.secho("Migration completed successfully.", fg="green")
+    else:
+      click.secho("Database is already up-to-date.", fg="green")
+  except Exception as e:
+    click.secho(f"Migration failed: {e}", fg="red", err=True)
+    raise SystemExit(1)
+
+
+@migrate.command("downgrade", cls=HelpfulCommand)
+@click.option(
+    "--db_url",
+    required=True,
+    help=(
+        "SQLAlchemy URL of the database to downgrade, e.g."
+        " postgresql://user:pass@host/db."
+    ),
+)
+@click.option(
+    "--revision",
+    default="-1",
+    help="Alembic revision target. Use '-1' to roll back one step.",
+)
+@click.option(
+    "--log_level",
+    type=LOG_LEVELS,
+    default="INFO",
+    help="Optional. Set the logging level.",
+)
+def cli_migrate_downgrade(*, db_url: str, revision: str, log_level: str):
+  """Rolls back Alembic migrations by the given revision spec."""
+  logs.setup_adk_logger(getattr(logging, log_level.upper()))
+  try:
+    from ..sessions.alembic_runner import AlembicMigrationRunner
+
+    runner = AlembicMigrationRunner(db_url)
+    runner.downgrade(revision)
+    click.secho(
+        f"Downgrade to '{revision}' completed successfully.",
+        fg="green",
+    )
+  except Exception as e:
+    click.secho(f"Downgrade failed: {e}", fg="red", err=True)
+    raise SystemExit(1)
+
+
+@migrate.command("check", cls=HelpfulCommand)
+@click.option(
+    "--db_url",
+    required=True,
+    help=(
+        "SQLAlchemy URL of the database to check, e.g."
+        " postgresql://user:pass@host/db."
+    ),
+)
+@click.option(
+    "--log_level",
+    type=LOG_LEVELS,
+    default="INFO",
+    help="Optional. Set the logging level.",
+)
+def cli_migrate_check(*, db_url: str, log_level: str):
+  """Checks if the database has pending migrations.
+
+  Exit code 0 means up-to-date, exit code 1 means migrations are pending.
+  """
+  logs.setup_adk_logger(getattr(logging, log_level.upper()))
+  try:
+    from ..sessions.alembic_runner import AlembicMigrationRunner
+
+    runner = AlembicMigrationRunner(db_url)
+    if runner.check_needs_migration():
+      current = runner.get_current_revision()
+      click.secho(
+          f"Migrations pending (current revision: {current}).",
+          fg="yellow",
+      )
+      raise SystemExit(1)
+    else:
+      click.secho("Database is up-to-date.", fg="green")
+  except SystemExit:
+    raise
+  except Exception as e:
+    click.secho(f"Check failed: {e}", fg="red", err=True)
+    raise SystemExit(1)
+
+
+@migrate.command("stamp", cls=HelpfulCommand)
+@click.option(
+    "--db_url",
+    required=True,
+    help=(
+        "SQLAlchemy URL of the database to stamp, e.g."
+        " postgresql://user:pass@host/db."
+    ),
+)
+@click.option(
+    "--log_level",
+    type=LOG_LEVELS,
+    default="INFO",
+    help="Optional. Set the logging level.",
+)
+def cli_migrate_stamp(*, db_url: str, log_level: str):
+  """Bootstraps Alembic tracking for an existing database.
+
+  Detects the current ADK schema version and stamps the appropriate
+  Alembic baseline revision without running any migrations.
+  """
+  logs.setup_adk_logger(getattr(logging, log_level.upper()))
+  try:
+    from ..sessions.alembic_runner import AlembicMigrationRunner
+
+    runner = AlembicMigrationRunner(db_url)
+    runner.bootstrap_existing_database()
+    click.secho("Alembic tracking bootstrapped successfully.", fg="green")
+  except Exception as e:
+    click.secho(f"Stamp failed: {e}", fg="red", err=True)
+    raise SystemExit(1)
+
+
+@migrate.command("generate", cls=HelpfulCommand)
+@click.option(
+    "--db_url",
+    required=True,
+    help=(
+        "SQLAlchemy URL of the database to compare against, e.g."
+        " postgresql://user:pass@host/db."
+    ),
+)
+@click.option(
+    "--message",
+    required=True,
+    help="Short description for the migration (used in filename).",
+)
+@click.option(
+    "--no_autogenerate",
+    is_flag=True,
+    default=False,
+    help="Create an empty template instead of auto-detecting changes.",
+)
+@click.option(
+    "--log_level",
+    type=LOG_LEVELS,
+    default="INFO",
+    help="Optional. Set the logging level.",
+)
+def cli_migrate_generate(
+    *, db_url: str, message: str, no_autogenerate: bool, log_level: str
+):
+  """Generates a new Alembic migration script.
+
+  Compares the current SQLAlchemy models against the database and
+  produces an upgrade/downgrade migration script in
+  sessions/migration/versions/.
+  """
+  logs.setup_adk_logger(getattr(logging, log_level.upper()))
+  try:
+    from ..sessions.alembic_runner import AlembicMigrationRunner
+
+    runner = AlembicMigrationRunner(db_url)
+    path = runner.generate_revision(message, autogenerate=not no_autogenerate)
+    click.secho(f"Generated migration: {path}", fg="green")
+  except Exception as e:
+    click.secho(f"Generate failed: {e}", fg="red", err=True)
+    raise SystemExit(1)
+
+
 @deploy.command("agent_engine")
 @click.option(
     "--api_key",

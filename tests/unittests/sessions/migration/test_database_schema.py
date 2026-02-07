@@ -76,7 +76,7 @@ async def test_new_db_uses_latest_schema(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_existing_v0_db_uses_v0_schema(tmp_path):
+async def test_existing_v0_db_is_auto_migrated_to_v1(tmp_path):
   db_path = tmp_path / 'v0_db.db'
   await create_v0_db(db_path)
   db_url = f'sqlite+aiosqlite:///{db_path}'
@@ -85,9 +85,10 @@ async def test_existing_v0_db_uses_v0_schema(tmp_path):
     await session_service.create_session(
         app_name='my_app', user_id='test_user', session_id='s1'
     )
+    # V0 databases are auto-migrated to V1 by Alembic bootstrap
     assert (
         session_service._db_schema_version
-        == _schema_check_utils.SCHEMA_VERSION_0_PICKLE
+        == _schema_check_utils.LATEST_SCHEMA_VERSION
     )
 
     session = await session_service.get_session(
@@ -95,21 +96,21 @@ async def test_existing_v0_db_uses_v0_schema(tmp_path):
     )
     assert session.id == 's1'
 
-  # Verify schema tables
+  # Verify schema is now V1
   engine = create_async_engine(db_url)
   async with engine.connect() as conn:
     has_metadata_table = await conn.run_sync(
         lambda sync_conn: inspect(sync_conn).has_table('adk_internal_metadata')
     )
-    assert not has_metadata_table
+    assert has_metadata_table
 
-    # Verify events table columns for v0
+    # Verify events table has V1 columns
     event_cols = await conn.run_sync(
         lambda sync_conn: inspect(sync_conn).get_columns('events')
     )
     event_col_names = {c['name'] for c in event_cols}
-    assert 'event_data' not in event_col_names
-    assert 'actions' in event_col_names
+    assert 'event_data' in event_col_names
+    assert 'actions' not in event_col_names
   await engine.dispose()
 
 
