@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -148,6 +148,23 @@ def test_run_cmd_overwrite_reject(
   with pytest.raises(click.Abort):
     cli_create.run_cmd(
         agent_name,
+        model="gemini-2.0-flash-001",
+        google_api_key=None,
+        google_cloud_project=None,
+        google_cloud_region=None,
+        type="code",
+    )
+
+
+def test_run_cmd_invalid_app_name(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+  """Invalid app names should be rejected before creating any files."""
+  monkeypatch.setattr(os, "getcwd", lambda: str(tmp_path))
+
+  with pytest.raises(click.BadParameter, match="Invalid app name"):
+    cli_create.run_cmd(
+        "my-agent",
         model="gemini-2.0-flash-001",
         google_api_key=None,
         google_cloud_project=None,

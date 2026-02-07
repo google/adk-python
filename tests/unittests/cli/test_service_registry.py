@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -63,13 +63,25 @@ def test_create_session_service_sqlite(registry, mock_services):
   mock_services["sqlite_session"].assert_called_once_with(db_path="test.db")
 
 
-def test_create_session_service_sqlite_with_kwargs(registry, mock_services):
-  registry.create_session_service(
-      "sqlite:///test.db", pool_size=10, agents_dir="foo"
+def test_create_session_service_sqlite_ignores_unsupported_kwargs(
+    registry, mock_services, caplog
+):
+  """Test that SqliteSessionService ignores unsupported kwargs and logs warning."""
+  import logging
+
+  with caplog.at_level(logging.WARNING):
+    registry.create_session_service(
+        "sqlite:///test.db", pool_size=10, agents_dir="foo"
+    )
+
+  # SqliteSessionService should only receive db_path, not pool_size
+  mock_services["sqlite_session"].assert_called_once_with(db_path="test.db")
+
+  # Verify warning was logged about ignored kwargs
+  assert (
+      "SqliteSessionService does not support additional kwargs" in caplog.text
   )
-  mock_services["sqlite_session"].assert_called_once_with(
-      db_path="test.db", pool_size=10
-  )
+  assert "pool_size" in caplog.text
 
 
 def test_create_session_service_postgresql(registry, mock_services):

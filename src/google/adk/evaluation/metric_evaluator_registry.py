@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -18,12 +18,21 @@ import logging
 
 from ..errors.not_found_error import NotFoundError
 from ..utils.feature_decorator import experimental
+from .custom_metric_evaluator import _CustomMetricEvaluator
 from .eval_metrics import EvalMetric
 from .eval_metrics import MetricInfo
 from .eval_metrics import PrebuiltMetrics
 from .evaluator import Evaluator
 from .final_response_match_v2 import FinalResponseMatchV2Evaluator
 from .hallucinations_v1 import HallucinationsV1Evaluator
+from .metric_info_providers import FinalResponseMatchV2EvaluatorMetricInfoProvider
+from .metric_info_providers import HallucinationsV1EvaluatorMetricInfoProvider
+from .metric_info_providers import PerTurnUserSimulatorQualityV1MetricInfoProvider
+from .metric_info_providers import ResponseEvaluatorMetricInfoProvider
+from .metric_info_providers import RubricBasedFinalResponseQualityV1EvaluatorMetricInfoProvider
+from .metric_info_providers import RubricBasedToolUseV1EvaluatorMetricInfoProvider
+from .metric_info_providers import SafetyEvaluatorV1MetricInfoProvider
+from .metric_info_providers import TrajectoryEvaluatorMetricInfoProvider
 from .response_evaluator import ResponseEvaluator
 from .rubric_based_final_response_quality_v1 import RubricBasedFinalResponseQualityV1Evaluator
 from .rubric_based_tool_use_quality_v1 import RubricBasedToolUseV1Evaluator
@@ -54,7 +63,13 @@ class MetricEvaluatorRegistry:
     if eval_metric.metric_name not in self._registry:
       raise NotFoundError(f"{eval_metric.metric_name} not found in registry.")
 
-    return self._registry[eval_metric.metric_name][0](eval_metric=eval_metric)
+    evaluator_type = self._registry[eval_metric.metric_name][0]
+    if issubclass(evaluator_type, _CustomMetricEvaluator):
+      return evaluator_type(
+          eval_metric=eval_metric,
+          custom_function_path=eval_metric.custom_function_path,
+      )
+    return evaluator_type(eval_metric=eval_metric)
 
   def register_evaluator(
       self,
@@ -91,44 +106,44 @@ def _get_default_metric_evaluator_registry() -> MetricEvaluatorRegistry:
   metric_evaluator_registry = MetricEvaluatorRegistry()
 
   metric_evaluator_registry.register_evaluator(
-      metric_info=TrajectoryEvaluator.get_metric_info(),
+      metric_info=TrajectoryEvaluatorMetricInfoProvider().get_metric_info(),
       evaluator=TrajectoryEvaluator,
   )
 
   metric_evaluator_registry.register_evaluator(
-      metric_info=ResponseEvaluator.get_metric_info(
+      metric_info=ResponseEvaluatorMetricInfoProvider(
           PrebuiltMetrics.RESPONSE_EVALUATION_SCORE.value
-      ),
+      ).get_metric_info(),
       evaluator=ResponseEvaluator,
   )
   metric_evaluator_registry.register_evaluator(
-      metric_info=ResponseEvaluator.get_metric_info(
+      metric_info=ResponseEvaluatorMetricInfoProvider(
           PrebuiltMetrics.RESPONSE_MATCH_SCORE.value
-      ),
+      ).get_metric_info(),
       evaluator=ResponseEvaluator,
   )
   metric_evaluator_registry.register_evaluator(
-      metric_info=SafetyEvaluatorV1.get_metric_info(),
+      metric_info=SafetyEvaluatorV1MetricInfoProvider().get_metric_info(),
       evaluator=SafetyEvaluatorV1,
   )
   metric_evaluator_registry.register_evaluator(
-      metric_info=FinalResponseMatchV2Evaluator.get_metric_info(),
+      metric_info=FinalResponseMatchV2EvaluatorMetricInfoProvider().get_metric_info(),
       evaluator=FinalResponseMatchV2Evaluator,
   )
   metric_evaluator_registry.register_evaluator(
-      metric_info=RubricBasedFinalResponseQualityV1Evaluator.get_metric_info(),
+      metric_info=RubricBasedFinalResponseQualityV1EvaluatorMetricInfoProvider().get_metric_info(),
       evaluator=RubricBasedFinalResponseQualityV1Evaluator,
   )
   metric_evaluator_registry.register_evaluator(
-      metric_info=HallucinationsV1Evaluator.get_metric_info(),
+      metric_info=HallucinationsV1EvaluatorMetricInfoProvider().get_metric_info(),
       evaluator=HallucinationsV1Evaluator,
   )
   metric_evaluator_registry.register_evaluator(
-      metric_info=RubricBasedToolUseV1Evaluator.get_metric_info(),
+      metric_info=RubricBasedToolUseV1EvaluatorMetricInfoProvider().get_metric_info(),
       evaluator=RubricBasedToolUseV1Evaluator,
   )
   metric_evaluator_registry.register_evaluator(
-      metric_info=PerTurnUserSimulatorQualityV1.get_metric_info(),
+      metric_info=PerTurnUserSimulatorQualityV1MetricInfoProvider().get_metric_info(),
       evaluator=PerTurnUserSimulatorQualityV1,
   )
 

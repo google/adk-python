@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -31,6 +31,7 @@ from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.adk.utils._client_labels_utils import _AGENT_ENGINE_TELEMETRY_ENV_VARIABLE_NAME
 from google.adk.utils._client_labels_utils import _AGENT_ENGINE_TELEMETRY_TAG
+from google.adk.utils._google_client_headers import get_tracking_headers
 from google.adk.utils.variant_utils import GoogleLLMVariant
 from google.genai import types
 from google.genai.errors import ClientError
@@ -469,7 +470,7 @@ async def test_generate_content_async_with_custom_headers(
   """Test that tracking headers are updated when custom headers are provided."""
   # Add custom headers to the request config
   custom_headers = {"custom-header": "custom-value"}
-  tracking_headers = gemini_llm._tracking_headers()
+  tracking_headers = get_tracking_headers()
   for key in tracking_headers:
     custom_headers[key] = "custom " + tracking_headers[key]
   llm_request.config.http_options = types.HttpOptions(headers=custom_headers)
@@ -494,7 +495,7 @@ async def test_generate_content_async_with_custom_headers(
     config_arg = call_args.kwargs["config"]
 
     for key, value in config_arg.http_options.headers.items():
-      tracking_headers = gemini_llm._tracking_headers()
+      tracking_headers = get_tracking_headers()
       if key in tracking_headers:
         assert value == tracking_headers[key] + " custom"
       else:
@@ -545,7 +546,7 @@ async def test_generate_content_async_stream_with_custom_headers(
     config_arg = call_args.kwargs["config"]
 
     expected_headers = custom_headers.copy()
-    expected_headers.update(gemini_llm._tracking_headers())
+    expected_headers.update(get_tracking_headers())
     assert config_arg.http_options.headers == expected_headers
 
     assert len(responses) == 2
@@ -599,7 +600,7 @@ async def test_generate_content_async_patches_tracking_headers(
     assert final_config.http_options is not None
     assert (
         final_config.http_options.headers["x-goog-api-client"]
-        == gemini_llm._tracking_headers()["x-goog-api-client"]
+        == get_tracking_headers()["x-goog-api-client"]
     )
 
     assert len(responses) == 2 if stream else 1
@@ -633,7 +634,7 @@ def test_live_api_client_properties(gemini_llm):
     assert http_options.api_version == "v1beta1"
 
     # Check that tracking headers are included
-    tracking_headers = gemini_llm._tracking_headers()
+    tracking_headers = get_tracking_headers()
     for key, value in tracking_headers.items():
       assert key in http_options.headers
       assert value in http_options.headers[key]
@@ -671,7 +672,7 @@ async def test_connect_with_custom_headers(gemini_llm, llm_request):
 
       # Verify that tracking headers were merged with custom headers
       expected_headers = custom_headers.copy()
-      expected_headers.update(gemini_llm._tracking_headers())
+      expected_headers.update(get_tracking_headers())
       assert config_arg.http_options.headers == expected_headers
 
       # Verify that API version was set
@@ -705,20 +706,27 @@ async def test_connect_without_custom_headers(gemini_llm, llm_request):
 
     mock_live_client.aio.live.connect.return_value = MockLiveConnect()
 
-    async with gemini_llm.connect(llm_request) as connection:
-      # Verify that the connect method was called with the right config
-      mock_live_client.aio.live.connect.assert_called_once()
-      call_args = mock_live_client.aio.live.connect.call_args
-      config_arg = call_args.kwargs["config"]
+    with mock.patch(
+        "google.adk.models.google_llm.GeminiLlmConnection"
+    ) as MockGeminiLlmConnection:
+      async with gemini_llm.connect(llm_request) as connection:
+        # Verify that the connect method was called with the right config
+        mock_live_client.aio.live.connect.assert_called_once()
+        call_args = mock_live_client.aio.live.connect.call_args
+        config_arg = call_args.kwargs["config"]
 
-      # Verify that http_options remains None since no custom headers were provided
-      assert config_arg.http_options is None
+        # Verify that http_options remains None since no custom headers were provided
+        assert config_arg.http_options is None
 
-      # Verify that system instruction and tools were still set
-      assert config_arg.system_instruction is not None
-      assert config_arg.tools == llm_request.config.tools
+        # Verify that system instruction and tools were still set
+        assert config_arg.system_instruction is not None
+        assert config_arg.tools == llm_request.config.tools
 
-      assert isinstance(connection, GeminiLlmConnection)
+        MockGeminiLlmConnection.assert_called_once_with(
+            mock_live_session,
+            api_backend=gemini_llm._api_backend,
+            model_version=llm_request.model,
+        )
 
 
 @pytest.mark.parametrize(

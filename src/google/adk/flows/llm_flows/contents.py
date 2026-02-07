@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -29,6 +29,7 @@ from ._base_llm_processor import BaseLlmRequestProcessor
 from .functions import remove_client_function_call_id
 from .functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
 from .functions import REQUEST_EUC_FUNCTION_CALL_NAME
+from .functions import REQUEST_INPUT_FUNCTION_CALL_NAME
 
 logger = logging.getLogger('google_adk.' + __name__)
 
@@ -220,13 +221,31 @@ def _rearrange_events_for_latest_function_response(
 
 
 def _is_part_invisible(p: types.Part) -> bool:
-  """A part is considered invisble if it's a thought, or has no visible content."""
-  return getattr(p, 'thought', False) or not (
+  """Returns whether a part is invisible for LLM context.
+
+  A part is invisible if:
+  - It has no meaningful content (text, inline_data, file_data, function_call,
+    function_response, executable_code, or code_execution_result), OR
+  - It is marked as a thought AND does not contain function_call or
+    function_response
+
+  Function calls and responses are never invisible, even if marked as thought,
+  because they represent actions that need to be executed or results that need
+  to be processed.
+
+  Args:
+    p: The part to check.
+  """
+  # Function calls and responses are never invisible, even if marked as thought
+  if p.function_call or p.function_response:
+    return False
+
+  return p.thought or not (
       p.text
       or p.inline_data
       or p.file_data
-      or p.function_call
-      or p.function_response
+      or p.executable_code
+      or p.code_execution_result
   )
 
 
@@ -236,9 +255,8 @@ def _contains_empty_content(event: Event) -> bool:
   This can happen to the events that only changed session state.
   When both content and transcriptions are empty, the event will be considered
   as empty. The content is considered empty if none of its parts contain text,
-  inline data, file data, function call, or function response. Parts with
-  only thoughts are also considered empty.
-
+  inline data, file data, function call, function response, executable code, or
+  code execution result. Parts with only thoughts are also considered empty.
 
   Args:
     event: The event to check.
@@ -279,6 +297,7 @@ def _should_include_event_in_context(
       or _is_adk_framework_event(event)
       or _is_auth_event(event)
       or _is_request_confirmation_event(event)
+      or _is_request_input_event(event)
   )
 
 
@@ -520,7 +539,7 @@ def _present_other_agent_message(event: Event) -> Optional[Event]:
     if part.thought:
       # Exclude thoughts from the context.
       continue
-    elif part.text:
+    elif part.text is not None and part.text.strip():
       content.parts.append(
           types.Part(text=f'[{event.author}] said: {part.text}')
       )
@@ -543,11 +562,17 @@ def _present_other_agent_message(event: Event) -> Optional[Event]:
               )
           )
       )
-    # Fallback to the original part for non-text and non-functionCall parts.
-    else:
+    elif (
+        part.inline_data
+        or part.file_data
+        or part.executable_code
+        or part.code_execution_result
+    ):
       content.parts.append(part)
+    else:
+      continue
 
-  # If no meaningful parts were added (only "For context:" remains), return None
+  # Return None when only "For context:" remains.
   if len(content.parts) == 1:
     return None
 
@@ -666,6 +691,11 @@ def _is_request_confirmation_event(event: Event) -> bool:
 def _is_adk_framework_event(event: Event) -> bool:
   """Checks if the event is an ADK framework event."""
   return _is_function_call_event(event, 'adk_framework')
+
+
+def _is_request_input_event(event: Event) -> bool:
+  """Checks if the event is a request input event."""
+  return _is_function_call_event(event, REQUEST_INPUT_FUNCTION_CALL_NAME)
 
 
 def _is_live_model_audio_event_with_inline_data(event: Event) -> bool:
