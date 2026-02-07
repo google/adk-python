@@ -68,8 +68,8 @@ class TestLlmEventSummarizer(unittest.IsolatedAsyncioTestCase):
         content=Content(parts=[Part(text='Summary')]), usage_metadata=None
     )
 
-    self.mock_llm.generate_content_async.return_value = (
-        self._create_async_gen(mock_llm_response)
+    self.mock_llm.generate_content_async.return_value = self._create_async_gen(
+        mock_llm_response
     )
 
     compacted_event = await self.compactor.maybe_summarize_events(events=events)
@@ -113,8 +113,8 @@ class TestLlmEventSummarizer(unittest.IsolatedAsyncioTestCase):
         usage_metadata=usage_metadata,
     )
 
-    self.mock_llm.generate_content_async.return_value = (
-        self._create_async_gen(mock_llm_response)
+    self.mock_llm.generate_content_async.return_value = self._create_async_gen(
+        mock_llm_response
     )
 
     compacted_event = await self.compactor.maybe_summarize_events(events=events)
@@ -131,8 +131,8 @@ class TestLlmEventSummarizer(unittest.IsolatedAsyncioTestCase):
     ]
     mock_llm_response = Mock(content=None, usage_metadata=None)
 
-    self.mock_llm.generate_content_async.return_value = (
-        self._create_async_gen(mock_llm_response)
+    self.mock_llm.generate_content_async.return_value = self._create_async_gen(
+        mock_llm_response
     )
 
     compacted_event = await self.compactor.maybe_summarize_events(events=events)
