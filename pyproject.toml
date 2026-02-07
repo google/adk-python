@@ -143,7 +143,7 @@ docs = [
   "autodoc_pydantic",
   "furo",
   "myst-parser",
-  "sphinx",
+  "sphinx<9.0.0",
   "sphinx-autodoc-typehints",
   "sphinx-rtd-theme",
 ]
