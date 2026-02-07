@@ -22,6 +22,7 @@ located relative to the source tree.
 from __future__ import annotations
 
 from datetime import timezone
+import io
 import json
 import logging
 import os
@@ -44,6 +45,46 @@ from .migration._schema_check_utils import SCHEMA_VERSION_1_JSON
 from .migration._schema_check_utils import to_sync_url
 
 logger = logging.getLogger("google_adk." + __name__)
+
+# Modules that must never be unpickled during V0→V1 migration.
+_PICKLE_BLOCKED_MODULES = frozenset({
+    "os",
+    "posix",
+    "nt",
+    "subprocess",
+    "sys",
+    "builtins",
+    "shutil",
+    "importlib",
+    "signal",
+    "socket",
+    "http",
+    "ctypes",
+    "webbrowser",
+    "code",
+    "codeop",
+    "compile",
+    "compileall",
+})
+
+
+class _RestrictedUnpickler(pickle.Unpickler):
+  """Unpickler that rejects obviously dangerous modules."""
+
+  def find_class(self, module: str, name: str):
+    top_level = module.split(".")[0]
+    if top_level in _PICKLE_BLOCKED_MODULES:
+      raise pickle.UnpicklingError(
+          f"Refusing to unpickle {module}.{name}: "
+          f"module '{top_level}' is blocked."
+      )
+    return super().find_class(module, name)
+
+
+def _restricted_loads(data: bytes) -> object:
+  """Deserialize bytes using a restricted unpickler."""
+  return _RestrictedUnpickler(io.BytesIO(data)).load()
+
 
 _MIGRATION_DIR = pathlib.Path(__file__).parent / "migration"
 _VERSIONS_DIR = _MIGRATION_DIR / "versions"
@@ -396,7 +437,7 @@ class AlembicMigrationRunner:
     if actions_raw is not None:
       try:
         if isinstance(actions_raw, bytes):
-          obj = pickle.loads(actions_raw)  # noqa: S301
+          obj = _restricted_loads(actions_raw)
         else:
           obj = actions_raw
         if hasattr(obj, "model_dump"):
