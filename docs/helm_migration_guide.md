@@ -71,7 +71,7 @@ versions.
 ## Application Configuration
 
 In your application Deployment, disable auto-migration since the Helm hook
-handles it. `false` is the default, so this is optional, but you may to set it for explicitness:
+handles it. `false` is the default, so this is optional, but you may want to set it for explicitness:
 
 ```yaml
 env:
