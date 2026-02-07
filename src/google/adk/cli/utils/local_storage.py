@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """Utilities for local .adk folder persistence."""
+
 from __future__ import annotations
 
 import asyncio
@@ -210,3 +211,22 @@ class PerAgentDatabaseSessionService(BaseSessionService):
   async def append_event(self, session: Session, event: Event) -> Event:
     service = await self._get_service(session.app_name)
     return await service.append_event(session, event)
+
+  @override
+  async def clone_session(
+      self,
+      *,
+      app_name: str,
+      src_user_id: str,
+      src_session_id: Optional[str] = None,
+      new_user_id: Optional[str] = None,
+      new_session_id: Optional[str] = None,
+  ) -> Session:
+    service = await self._get_service(app_name)
+    return await service.clone_session(
+        app_name=app_name,
+        src_user_id=src_user_id,
+        src_session_id=src_session_id,
+        new_user_id=new_user_id,
+        new_session_id=new_session_id,
+    )

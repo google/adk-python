@@ -19,6 +19,7 @@ from pathlib import Path
 from google.adk.cli.utils.local_storage import create_local_database_session_service
 from google.adk.cli.utils.local_storage import create_local_session_service
 from google.adk.cli.utils.local_storage import PerAgentDatabaseSessionService
+from google.adk.events.event import Event
 from google.adk.sessions.sqlite_session_service import SqliteSessionService
 import pytest
 
@@ -90,3 +91,44 @@ def test_create_local_database_session_service_returns_sqlite(
   service = create_local_database_session_service(base_dir=tmp_path)
 
   assert isinstance(service, SqliteSessionService)
+
+
+@pytest.mark.asyncio
+async def test_per_agent_session_service_clone_session(
+    tmp_path: Path,
+) -> None:
+  """Test that clone_session properly routes to per-agent session storage."""
+  agent_a = tmp_path / "agent_a"
+  agent_a.mkdir()
+
+  service = PerAgentDatabaseSessionService(agents_root=tmp_path)
+
+  # Create source session with events
+  source_session = await service.create_session(
+      app_name="agent_a", user_id="user1", state={"key": "value"}
+  )
+  event1 = Event(invocation_id="inv1", author="user")
+  event2 = Event(invocation_id="inv2", author="model")
+  await service.append_event(source_session, event1)
+  await service.append_event(source_session, event2)
+
+  # Clone the session
+  cloned_session = await service.clone_session(
+      app_name="agent_a",
+      src_user_id="user1",
+      src_session_id=source_session.id,
+      new_user_id="user2",
+  )
+
+  # Verify the cloned session
+  assert cloned_session is not None
+  assert cloned_session.id != source_session.id
+  assert cloned_session.app_name == "agent_a"
+  assert cloned_session.user_id == "user2"
+  assert cloned_session.state == {"key": "value"}
+  assert len(cloned_session.events) == 2
+
+  # Verify sessions are isolated to agent_a's database
+  agent_a_sessions = await service.list_sessions(app_name="agent_a")
+  assert len(agent_a_sessions.sessions) == 2
+  assert (agent_a / ".adk" / "session.db").exists()
