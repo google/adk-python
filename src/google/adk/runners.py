@@ -227,29 +227,32 @@ class Runner:
     ) = self._infer_agent_origin(self.agent)
     self._app_name_alignment_hint: Optional[str] = None
     self._enforce_app_name_alignment()
-    # Store the configured max concurrent compactions limit for lazy initialization
-    # Validate the limit here to fail fast on invalid configuration
-    if max_concurrent_compactions <= 0:
-      raise ValueError(
-          'max_concurrent_compactions must be positive, got'
-          f' {max_concurrent_compactions}'
-      )
-    # Warn if limit is changed after semaphore is already created, as the
-    # semaphore will retain its original value until recreated
-    if (
-        Runner._compaction_semaphore is not None
-        and Runner._max_concurrent_compactions_limit
-        != max_concurrent_compactions
-    ):
-      logger.warning(
-          'max_concurrent_compactions changed from %d to %d, but compaction'
-          ' semaphore already exists with the old limit. The new limit will'
-          ' take effect after the semaphore is recreated (e.g., in a new'
-          ' process).',
-          Runner._max_concurrent_compactions_limit,
-          max_concurrent_compactions,
-      )
-    Runner._max_concurrent_compactions_limit = max_concurrent_compactions
+    # Validate and store the configured max concurrent compactions limit.
+    # This is done under a lock to ensure thread safety when multiple Runner
+    # instances are created concurrently.
+    with Runner._compaction_semaphore_lock:
+      # Validate the limit here to fail fast on invalid configuration.
+      if max_concurrent_compactions <= 0:
+        raise ValueError(
+            'max_concurrent_compactions must be positive, got'
+            f' {max_concurrent_compactions}'
+        )
+      # Warn if limit is changed after semaphore is already created, as the
+      # semaphore will retain its original value until recreated.
+      if (
+          Runner._compaction_semaphore is not None
+          and Runner._max_concurrent_compactions_limit
+          != max_concurrent_compactions
+      ):
+        logger.warning(
+            'max_concurrent_compactions changed from %d to %d, but compaction'
+            ' semaphore already exists with the old limit. The new limit will'
+            ' take effect after the semaphore is recreated (e.g., in a new'
+            ' process).',
+            Runner._max_concurrent_compactions_limit,
+            max_concurrent_compactions,
+        )
+      Runner._max_concurrent_compactions_limit = max_concurrent_compactions
     # Track background tasks to prevent premature garbage collection
     self._background_tasks: set[asyncio.Task] = set()
 
