@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from google.adk.evaluation.agent_evaluator import AgentEvaluator
+from google.adk.evaluation.local_eval_set_results_manager import LocalEvalSetResultsManager
 import pytest
 
 
@@ -35,3 +36,27 @@ async def test_with_folder_of_test_files_long_running():
       ),
       num_runs=4,
   )
+
+
+@pytest.mark.asyncio
+async def test_with_single_test_file_saves_eval_set_result(
+    tmp_path,
+):
+  """Persists eval set results with derived app_name when app_name is omitted."""
+  eval_set_results_manager = LocalEvalSetResultsManager(
+      agents_dir=str(tmp_path)
+  )
+  await AgentEvaluator.evaluate(
+      agent_module="tests.integration.fixture.home_automation_agent",
+      eval_dataset_file_path_or_dir=(
+          "tests/integration/fixture/home_automation_agent/simple_test.test.json"
+      ),
+      eval_set_results_manager=eval_set_results_manager,
+  )
+
+  saved_result_files = list(
+      (tmp_path / "home_automation_agent" / ".adk" / "eval_history").glob(
+          "*.evalset_result.json"
+      )
+  )
+  assert saved_result_files
