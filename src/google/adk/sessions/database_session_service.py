@@ -14,11 +14,13 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 import copy
 from datetime import datetime
 from datetime import timezone
 import logging
 from typing import Any
+from typing import AsyncIterator
 from typing import Optional
 
 from sqlalchemy import delete
@@ -33,7 +35,6 @@ from sqlalchemy.ext.asyncio import AsyncSession as DatabaseSessionFactory
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import StaticPool
 from typing_extensions import override
-from tzlocal import get_localzone
 
 from . import _session_util
 from ..errors.already_exists_error import AlreadyExistsError
@@ -111,6 +112,8 @@ class DatabaseSessionService(BaseSessionService):
         connect_args = dict(engine_kwargs.get("connect_args", {}))
         connect_args.setdefault("check_same_thread", False)
         engine_kwargs["connect_args"] = connect_args
+      elif url.get_backend_name() != "sqlite":
+        engine_kwargs.setdefault("pool_pre_ping", True)
 
       db_engine = create_async_engine(db_url, **engine_kwargs)
       if db_engine.dialect.name == "sqlite":
@@ -129,10 +132,6 @@ class DatabaseSessionService(BaseSessionService):
       raise ValueError(
           f"Failed to create database engine for URL '{db_url}'"
       ) from e
-
-    # Get the local timezone
-    local_timezone = get_localzone()
-    logger.info("Local timezone: %s", local_timezone)
 
     self.db_engine: AsyncEngine = db_engine
 
@@ -155,6 +154,23 @@ class DatabaseSessionService(BaseSessionService):
 
   def _get_schema_classes(self) -> _SchemaClasses:
     return _SchemaClasses(self._db_schema_version)
+
+  @asynccontextmanager
+  async def _rollback_on_exception_session(
+      self,
+  ) -> AsyncIterator[DatabaseSessionFactory]:
+    """Yields a database session with guaranteed rollback on errors.
+
+    On normal exit the caller is responsible for committing; on any exception
+    the transaction is explicitly rolled back before the error propagates,
+    preventing connection-pool exhaustion from lingering invalid transactions.
+    """
+    async with self.database_session_factory() as sql_session:
+      try:
+        yield sql_session
+      except BaseException:
+        await sql_session.rollback()
+        raise
 
   async def _prepare_tables(self):
     """Ensure database tables are ready for use.
@@ -204,7 +220,7 @@ class DatabaseSessionService(BaseSessionService):
         self._tables_created = True
 
         if self._db_schema_version == _schema_check_utils.LATEST_SCHEMA_VERSION:
-          async with self.database_session_factory() as sql_session:
+          async with self._rollback_on_exception_session() as sql_session:
             # Check if schema version is set, if not, set it to the latest
             # version
             stmt = select(StorageMetadata).where(
@@ -236,7 +252,7 @@ class DatabaseSessionService(BaseSessionService):
     # 5. Return the session
     await self._prepare_tables()
     schema = self._get_schema_classes()
-    async with self.database_session_factory() as sql_session:
+    async with self._rollback_on_exception_session() as sql_session:
       if session_id and await sql_session.get(
           schema.StorageSession, (app_name, user_id, session_id)
       ):
@@ -313,7 +329,7 @@ class DatabaseSessionService(BaseSessionService):
     # 2. Get all the events based on session id and filtering config
     # 3. Convert and return the session
     schema = self._get_schema_classes()
-    async with self.database_session_factory() as sql_session:
+    async with self._rollback_on_exception_session() as sql_session:
       storage_session = await sql_session.get(
           schema.StorageSession, (app_name, user_id, session_id)
       )
@@ -368,7 +384,7 @@ class DatabaseSessionService(BaseSessionService):
   ) -> ListSessionsResponse:
     await self._prepare_tables()
     schema = self._get_schema_classes()
-    async with self.database_session_factory() as sql_session:
+    async with self._rollback_on_exception_session() as sql_session:
       stmt = select(schema.StorageSession).filter(
           schema.StorageSession.app_name == app_name
       )
@@ -418,7 +434,7 @@ class DatabaseSessionService(BaseSessionService):
   ) -> None:
     await self._prepare_tables()
     schema = self._get_schema_classes()
-    async with self.database_session_factory() as sql_session:
+    async with self._rollback_on_exception_session() as sql_session:
       stmt = delete(schema.StorageSession).where(
           schema.StorageSession.app_name == app_name,
           schema.StorageSession.user_id == user_id,
@@ -440,7 +456,7 @@ class DatabaseSessionService(BaseSessionService):
     # 2. Update session attributes based on event config
     # 3. Store event to table
     schema = self._get_schema_classes()
-    async with self.database_session_factory() as sql_session:
+    async with self._rollback_on_exception_session() as sql_session:
       storage_session = await sql_session.get(
           schema.StorageSession, (session.app_name, session.user_id, session.id)
       )

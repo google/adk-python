@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from google.genai import types as genai_types
 from pydantic import Field
 
@@ -32,8 +34,12 @@ class AgentDetails(EvalBaseModel):
   instructions: str = Field(default="")
   """The instructions set on the Agent."""
 
-  tool_declarations: genai_types.ToolListUnion = Field(default_factory=list)
-  """A list of tools available to the Agent."""
+  tool_declarations: list[Any] = Field(default_factory=list)
+  """A list of tools available to the Agent.
+
+  At runtime, this contains elements of type genai_types.ToolListUnion.
+  We use list[Any] for Pydantic schema generation compatibility.
+  """
 
 
 class AppDetails(EvalBaseModel):
