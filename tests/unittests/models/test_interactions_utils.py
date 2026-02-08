@@ -21,6 +21,7 @@ from google.adk.models import interactions_utils
 from google.adk.models.llm_request import LlmRequest
 from google.genai import types
 import pytest
+from google.adk.events.event import Event
 
 
 class TestConvertPartToInteractionContent:
@@ -759,3 +760,77 @@ class TestGetLatestUserContents:
     assert len(result) == 2
     assert result[0].parts[0].text == 'Great'
     assert result[1].parts[0].text == 'Tell me more'
+
+
+class TestResponseInteractionDeduplication:
+  """Tests for response interaction api deduplication."""
+
+  def test_is_final_response_requires_turn_complete_true(self):
+    """Verify is_final_response() returns False when turn_complete=False."""
+
+    # Case 1: partial=False but turn_complete=False -> should be False
+    event = Event(
+        author='agent',
+        content=types.Content(role='model', parts=[types.Part(text='Hello')]),
+        partial=False,
+        turn_complete=False,  # Turn not complete
+    )
+    assert event.is_final_response() is False
+
+    # Case 2: partial=False and turn_complete=True -> should be True
+    event_final = Event(
+        author='agent',
+        content=types.Content(role='model', parts=[types.Part(text='Hello')]),
+        partial=False,
+        turn_complete=True,  # Turn complete
+    )
+    assert event_final.is_final_response() is True
+
+  def test_no_duplicate_final_response_in_streaming(self):
+    """Verify streaming events don't duplicate the final response."""
+    
+
+    # Simulate the streaming flow
+    aggregated_parts = []
+
+    # Event 1: content.delta (streaming text)
+    delta_event = MagicMock()
+    delta_event.event_type = 'content.delta'
+    delta_event.delta = MagicMock()
+    delta_event.delta.type = 'text'
+    delta_event.delta.text = 'Hello'
+
+    response1 = interactions_utils.convert_interaction_event_to_llm_response(
+        delta_event, aggregated_parts, 'interaction_123'
+    )
+    assert response1.partial is True
+    assert response1.turn_complete is False
+
+    # Event 2: content.stop (content complete but turn not complete)
+    stop_event = MagicMock()
+    stop_event.event_type = 'content.stop'
+
+    response2 = interactions_utils.convert_interaction_event_to_llm_response(
+        stop_event, aggregated_parts, 'interaction_123'
+    )
+    assert response2.partial is False
+    assert response2.turn_complete is False  # Not final yet
+
+    # Event 3: interaction.status_update with completed (final response)
+    status_event = MagicMock()
+    status_event.event_type = 'interaction.status_update'
+    status_event.status = 'completed'
+
+    response3 = interactions_utils.convert_interaction_event_to_llm_response(
+        status_event, aggregated_parts, 'interaction_123'
+    )
+    assert response3.partial is False
+    assert response3.turn_complete is True  # This is the final response
+
+    # Verify: Only response3 should have turn_complete=True
+    # This proves no duplication - there's only ONE final response
+    final_responses = [
+        r for r in [response1, response2, response3] if r.turn_complete
+    ]
+    assert len(final_responses) == 1
+    assert final_responses[0] == response3

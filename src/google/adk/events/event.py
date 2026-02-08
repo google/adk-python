@@ -93,6 +93,7 @@ class Event(LlmResponse):
         not self.get_function_calls()
         and not self.get_function_responses()
         and not self.partial
+        and self.turn_complete
         and not self.has_trailing_code_execution_result()
     )
 

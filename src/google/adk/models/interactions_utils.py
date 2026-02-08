@@ -1005,16 +1005,6 @@ async def generate_content_via_interactions(
       if llm_response:
         yield llm_response
 
-    # Final aggregated response
-    if aggregated_parts:
-      yield LlmResponse(
-          content=types.Content(role='model', parts=aggregated_parts),
-          partial=False,
-          turn_complete=True,
-          finish_reason=types.FinishReason.STOP,
-          interaction_id=current_interaction_id,
-      )
-
   else:
     # Non-streaming mode
     interaction = await api_client.aio.interactions.create(
