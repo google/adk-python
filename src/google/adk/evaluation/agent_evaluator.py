@@ -46,6 +46,7 @@ from .eval_metrics import EvalMetricResult
 from .eval_metrics import PrebuiltMetrics
 from .eval_result import EvalCaseResult
 from .eval_set import EvalSet
+from .eval_set_results_manager import EvalSetResultsManager
 from .eval_sets_manager import EvalSetsManager
 from .evaluator import EvalStatus
 from .in_memory_eval_sets_manager import InMemoryEvalSetsManager
@@ -112,6 +113,8 @@ class AgentEvaluator:
       eval_config: Optional[EvalConfig] = None,
       num_runs: int = NUM_RUNS,
       agent_name: Optional[str] = None,
+      app_name: Optional[str] = None,
+      eval_set_results_manager: Optional[EvalSetResultsManager] = None,
       print_detailed_results: bool = True,
   ):
     """Evaluates an agent using the given EvalSet.
@@ -128,6 +131,10 @@ class AgentEvaluator:
         assessed.
       agent_name: The name of the agent, if trying to evaluate something other
         than root agent. If left empty or none, then root agent is evaluated.
+      app_name: The application name used by eval set results manager while
+        persisting eval set results.
+      eval_set_results_manager: Optional manager used to persist the eval set
+        evaluation result as `*.evalset_result.json`.
       print_detailed_results: Whether to print detailed results for each metric
         evaluation.
     """
@@ -161,6 +168,13 @@ class AgentEvaluator:
         eval_metrics=eval_metrics,
         num_runs=num_runs,
         user_simulator_provider=user_simulator_provider,
+    )
+    AgentEvaluator._maybe_save_eval_set_result(
+        agent_module=agent_module,
+        app_name=app_name,
+        eval_set=eval_set,
+        eval_results_by_eval_id=eval_results_by_eval_id,
+        eval_set_results_manager=eval_set_results_manager,
     )
 
     # Step 2: Post-process the results!
@@ -198,6 +212,8 @@ class AgentEvaluator:
       eval_dataset_file_path_or_dir: str,
       num_runs: int = NUM_RUNS,
       agent_name: Optional[str] = None,
+      app_name: Optional[str] = None,
+      eval_set_results_manager: Optional[EvalSetResultsManager] = None,
       initial_session_file: Optional[str] = None,
       print_detailed_results: bool = True,
   ):
@@ -214,6 +230,10 @@ class AgentEvaluator:
       num_runs: Number of times all entries in the eval dataset should be
         assessed.
       agent_name: The name of the agent.
+      app_name: The application name used by eval set results manager while
+        persisting eval set results.
+      eval_set_results_manager: Optional manager used to persist the eval set
+        evaluation result as `*.evalset_result.json`.
       initial_session_file: File that contains initial session state that is
         needed by all the evals in the eval dataset.
       print_detailed_results: Whether to print detailed results for each metric
@@ -244,6 +264,8 @@ class AgentEvaluator:
           eval_config=eval_config,
           num_runs=num_runs,
           agent_name=agent_name,
+          app_name=app_name,
+          eval_set_results_manager=eval_set_results_manager,
           print_detailed_results=print_detailed_results,
       )
 
@@ -643,6 +665,68 @@ class AgentEvaluator:
               )
           )
     return eval_metric_results
+
+  @staticmethod
+  def _resolve_app_name(
+      agent_module: str, app_name: Optional[str] = None
+  ) -> str:
+    """Returns app_name for storing eval set results."""
+    if app_name:
+      return app_name
+
+    parts = [part for part in agent_module.split(".") if part]
+    if not parts:
+      return agent_module
+    if len(parts) > 1 and parts[-1] == "agent":
+      return parts[-2]
+    return parts[-1]
+
+  @staticmethod
+  def _flatten_eval_results_by_eval_case_order(
+      eval_set: EvalSet,
+      eval_results_by_eval_id: dict[str, list[EvalCaseResult]],
+  ) -> list[EvalCaseResult]:
+    """Returns eval results flattened in eval case order."""
+    flattened_results: list[EvalCaseResult] = []
+    seen_eval_ids = set()
+    for eval_case in eval_set.eval_cases:
+      eval_results = eval_results_by_eval_id.get(eval_case.eval_id, [])
+      if eval_results:
+        flattened_results.extend(eval_results)
+        seen_eval_ids.add(eval_case.eval_id)
+
+    for eval_id, eval_results in eval_results_by_eval_id.items():
+      if eval_id in seen_eval_ids:
+        continue
+      flattened_results.extend(eval_results)
+
+    return flattened_results
+
+  @staticmethod
+  def _maybe_save_eval_set_result(
+      agent_module: str,
+      app_name: Optional[str],
+      eval_set: EvalSet,
+      eval_results_by_eval_id: dict[str, list[EvalCaseResult]],
+      eval_set_results_manager: Optional[EvalSetResultsManager],
+  ) -> None:
+    """Saves eval set result if manager is provided."""
+    if eval_set_results_manager is None:
+      return
+
+    resolved_app_name = AgentEvaluator._resolve_app_name(
+        agent_module=agent_module, app_name=app_name
+    )
+    all_eval_case_results = (
+        AgentEvaluator._flatten_eval_results_by_eval_case_order(
+            eval_set=eval_set, eval_results_by_eval_id=eval_results_by_eval_id
+        )
+    )
+    eval_set_results_manager.save_eval_set_result(
+        app_name=resolved_app_name,
+        eval_set_id=eval_set.eval_set_id,
+        eval_case_results=all_eval_case_results,
+    )
 
   @staticmethod
   def _process_metrics_and_get_failures(
