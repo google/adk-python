@@ -668,13 +668,16 @@ def _resolve_eval_config_file_path(
   """Returns config file path for eval command.
 
   If `config_file_path` is provided, it is used as-is. If omitted and evals are
-  loaded from files, this returns `<eval_set_file_dir>/test_config.json` for the
-  first eval set file. Otherwise, returns None.
+  loaded from a single file, this returns
+  `<eval_set_file_dir>/test_config.json`. Otherwise, returns None.
   """
   if config_file_path:
     return config_file_path
 
   if not eval_set_file_or_id_to_evals:
+    return None
+
+  if len(eval_set_file_or_id_to_evals) != 1:
     return None
 
   first_eval_set = next(iter(eval_set_file_or_id_to_evals))

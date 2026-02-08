@@ -148,6 +148,25 @@ def test_resolve_eval_config_file_path_returns_none_for_eval_set_id() -> None:
   assert resolved_path is None
 
 
+def test_resolve_eval_config_file_path_returns_none_for_multiple_eval_files(
+    tmp_path: Path,
+) -> None:
+  eval_set_file_1 = tmp_path / "sample_1.test.json"
+  eval_set_file_2 = tmp_path / "sample_2.test.json"
+  eval_set_file_1.touch()
+  eval_set_file_2.touch()
+
+  resolved_path = cli_tools_click._resolve_eval_config_file_path(
+      config_file_path=None,
+      eval_set_file_or_id_to_evals={
+          str(eval_set_file_1): [],
+          str(eval_set_file_2): [],
+      },
+  )
+
+  assert resolved_path is None
+
+
 # cli create
 def test_cli_create_cmd_invokes_run_cmd(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
