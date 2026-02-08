@@ -774,7 +774,7 @@ def cli_eval(
   print(f"Using evaluation criteria: {eval_config}")
   eval_metrics = get_eval_metrics_from_config(eval_config)
 
-  root_agent = get_root_agent(agent_module_file_path)
+  root_agent = asyncio.run(get_root_agent(agent_module_file_path))
   app_name = os.path.basename(agent_module_file_path)
   agents_dir = os.path.dirname(agent_module_file_path)
   eval_sets_manager = None
