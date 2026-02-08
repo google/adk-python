@@ -91,11 +91,6 @@ def mock_vertexai_client():
     mock_client = mock.MagicMock()
     # Mock async interface
     mock_client.aio.agent_engines.memories.generate = mock.AsyncMock()
-
-    async def async_iterator_mock(items):
-      for item in items:
-        yield item
-
     mock_client.aio.agent_engines.memories.retrieve = mock.AsyncMock()
     mock_client_constructor.return_value = mock_client
     yield mock_client
@@ -178,9 +173,8 @@ async def test_search_memory(mock_vertexai_client):
 @pytest.mark.asyncio
 async def test_search_memory_empty_results(mock_vertexai_client):
   async def empty_async_iterator():
-    # Empty iterator - yields nothing
-    return
-    yield  # This is unreachable but makes it a generator
+    if False:
+      yield
 
   mock_vertexai_client.aio.agent_engines.memories.retrieve.return_value = (
       empty_async_iterator()
