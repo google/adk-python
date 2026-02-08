@@ -661,6 +661,30 @@ def eval_options():
   return decorator
 
 
+def _resolve_eval_config_file_path(
+    config_file_path: Optional[str],
+    eval_set_file_or_id_to_evals: dict[str, list[str]],
+) -> Optional[str]:
+  """Returns config file path for eval command.
+
+  If `config_file_path` is provided, it is used as-is. If omitted and evals are
+  loaded from files, this returns `<eval_set_file_dir>/test_config.json` for the
+  first eval set file. Otherwise, returns None.
+  """
+  if config_file_path:
+    return config_file_path
+
+  if not eval_set_file_or_id_to_evals:
+    return None
+
+  first_eval_set = next(iter(eval_set_file_or_id_to_evals))
+  if os.path.exists(first_eval_set):
+    eval_set_dir = os.path.dirname(first_eval_set)
+    return os.path.join(eval_set_dir, "test_config.json")
+
+  return None
+
+
 @main.command("eval", cls=HelpfulCommand)
 @feature_options()
 @click.argument(
@@ -770,10 +794,6 @@ def cli_eval(
   except ModuleNotFoundError as mnf:
     raise click.ClickException(MISSING_EVAL_DEPENDENCIES_MESSAGE) from mnf
 
-  eval_config = get_evaluation_criteria_or_default(config_file_path)
-  print(f"Using evaluation criteria: {eval_config}")
-  eval_metrics = get_eval_metrics_from_config(eval_config)
-
   root_agent = get_root_agent(agent_module_file_path)
   app_name = os.path.basename(agent_module_file_path)
   agents_dir = os.path.dirname(agent_module_file_path)
@@ -793,6 +813,13 @@ def cli_eval(
   eval_set_file_or_id_to_evals = parse_and_get_evals_to_run(
       eval_set_file_path_or_id
   )
+  resolved_config_file_path = _resolve_eval_config_file_path(
+      config_file_path=config_file_path,
+      eval_set_file_or_id_to_evals=eval_set_file_or_id_to_evals,
+  )
+  eval_config = get_evaluation_criteria_or_default(resolved_config_file_path)
+  print(f"Using evaluation criteria: {eval_config}")
+  eval_metrics = get_eval_metrics_from_config(eval_config)
 
   # Check if the first entry is a file that exists, if it does then we assume
   # rest of the entries are also files. We enforce this assumption in the if
