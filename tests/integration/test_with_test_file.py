@@ -51,6 +51,7 @@ async def test_with_single_test_file_saves_eval_set_result(
       eval_dataset_file_path_or_dir=(
           "tests/integration/fixture/home_automation_agent/simple_test.test.json"
       ),
+      num_runs=2,
       eval_set_results_manager=eval_set_results_manager,
   )
 
@@ -59,4 +60,4 @@ async def test_with_single_test_file_saves_eval_set_result(
           "*.evalset_result.json"
       )
   )
-  assert saved_result_files
+  assert len(saved_result_files) == 2

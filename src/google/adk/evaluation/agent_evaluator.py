@@ -682,27 +682,6 @@ class AgentEvaluator:
     return parts[-1]
 
   @staticmethod
-  def _flatten_eval_results_by_eval_case_order(
-      eval_set: EvalSet,
-      eval_results_by_eval_id: dict[str, list[EvalCaseResult]],
-  ) -> list[EvalCaseResult]:
-    """Returns eval results flattened in eval case order."""
-    flattened_results: list[EvalCaseResult] = []
-    seen_eval_ids = set()
-    for eval_case in eval_set.eval_cases:
-      eval_results = eval_results_by_eval_id.get(eval_case.eval_id, [])
-      if eval_results:
-        flattened_results.extend(eval_results)
-        seen_eval_ids.add(eval_case.eval_id)
-
-    # Sort remaining eval ids for deterministic output across runs.
-    remaining_eval_ids = sorted(eval_results_by_eval_id.keys() - seen_eval_ids)
-    for eval_id in remaining_eval_ids:
-      flattened_results.extend(eval_results_by_eval_id[eval_id])
-
-    return flattened_results
-
-  @staticmethod
   def _maybe_save_eval_set_result(
       agent_module: str,
       app_name: Optional[str],
@@ -717,16 +696,27 @@ class AgentEvaluator:
     resolved_app_name = AgentEvaluator._resolve_app_name(
         agent_module=agent_module, app_name=app_name
     )
-    all_eval_case_results = (
-        AgentEvaluator._flatten_eval_results_by_eval_case_order(
-            eval_set=eval_set, eval_results_by_eval_id=eval_results_by_eval_id
+    seen_eval_ids = set()
+    for eval_case in eval_set.eval_cases:
+      eval_results = eval_results_by_eval_id.get(eval_case.eval_id, [])
+      for eval_case_result in eval_results:
+        eval_set_results_manager.save_eval_set_result(
+            app_name=resolved_app_name,
+            eval_set_id=eval_set.eval_set_id,
+            eval_case_results=[eval_case_result],
         )
-    )
-    eval_set_results_manager.save_eval_set_result(
-        app_name=resolved_app_name,
-        eval_set_id=eval_set.eval_set_id,
-        eval_case_results=all_eval_case_results,
-    )
+      if eval_results:
+        seen_eval_ids.add(eval_case.eval_id)
+
+    # Save any remaining eval ids in sorted order for deterministic output.
+    remaining_eval_ids = sorted(eval_results_by_eval_id.keys() - seen_eval_ids)
+    for eval_id in remaining_eval_ids:
+      for eval_case_result in eval_results_by_eval_id[eval_id]:
+        eval_set_results_manager.save_eval_set_result(
+            app_name=resolved_app_name,
+            eval_set_id=eval_set.eval_set_id,
+            eval_case_results=[eval_case_result],
+        )
 
   @staticmethod
   def _process_metrics_and_get_failures(

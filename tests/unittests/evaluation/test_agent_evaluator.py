@@ -77,11 +77,24 @@ async def test_evaluate_eval_set_saves_results_with_explicit_app_name(mocker):
       print_detailed_results=False,
   )
 
-  manager.save_eval_set_result.assert_called_once_with(
-      app_name='custom_app',
-      eval_set_id='eval_set_1',
-      eval_case_results=[result_b, result_b_2, result_a],
-  )
+  assert manager.save_eval_set_result.call_count == 3
+  assert manager.save_eval_set_result.call_args_list == [
+      mocker.call(
+          app_name='custom_app',
+          eval_set_id='eval_set_1',
+          eval_case_results=[result_b],
+      ),
+      mocker.call(
+          app_name='custom_app',
+          eval_set_id='eval_set_1',
+          eval_case_results=[result_b_2],
+      ),
+      mocker.call(
+          app_name='custom_app',
+          eval_set_id='eval_set_1',
+          eval_case_results=[result_a],
+      ),
+  ]
 
 
 @pytest.mark.asyncio
