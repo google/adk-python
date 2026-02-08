@@ -34,6 +34,7 @@ from pydantic import ValidationError
 from ..agents.base_agent import BaseAgent
 from ..utils.context_utils import Aclosing
 from .constants import MISSING_EVAL_DEPENDENCIES_MESSAGE
+from .custom_metric_evaluator import _CustomMetricEvaluator
 from .eval_case import get_all_tool_calls
 from .eval_case import IntermediateDataType
 from .eval_case import Invocation
@@ -159,8 +160,6 @@ class AgentEvaluator:
 
     metric_evaluator_registry = _get_default_metric_evaluator_registry()
     if eval_config.custom_metrics:
-      from .custom_metric_evaluator import _CustomMetricEvaluator
-
       for metric_name, config in eval_config.custom_metrics.items():
         if config.metric_info:
           metric_info = config.metric_info.model_copy()
