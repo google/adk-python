@@ -166,7 +166,7 @@ def add_label_to_pr(pr_number: int, label: str) -> dict[str, Any]:
       label: the label to add
 
   Returns:
-      The the status of this request, with the applied label and response when
+      The status of this request, with the applied label and response when
       successful.
   """
   print(f"Attempting to add label '{label}' to PR #{pr_number}")
@@ -201,7 +201,7 @@ def add_comment_to_pr(pr_number: int, comment: str) -> dict[str, Any]:
     comment: the comment to add
 
   Returns:
-    The the status of this request, with the applied comment when successful.
+    The status of this request, with the applied comment when successful.
   """
   print(f"Attempting to add comment '{comment}' to issue #{pr_number}")
 
