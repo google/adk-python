@@ -695,10 +695,10 @@ class AgentEvaluator:
         flattened_results.extend(eval_results)
         seen_eval_ids.add(eval_case.eval_id)
 
-    for eval_id, eval_results in eval_results_by_eval_id.items():
-      if eval_id in seen_eval_ids:
-        continue
-      flattened_results.extend(eval_results)
+    # Sort remaining eval ids for deterministic output across runs.
+    remaining_eval_ids = sorted(eval_results_by_eval_id.keys() - seen_eval_ids)
+    for eval_id in remaining_eval_ids:
+      flattened_results.extend(eval_results_by_eval_id[eval_id])
 
     return flattened_results
 
