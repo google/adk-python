@@ -233,3 +233,93 @@ async def test_evaluate_passes_results_manager_and_app_name(mocker, tmp_path):
       for call in AgentEvaluator.find_config_for_test_file.call_args_list
   }
   assert called_paths == {test_file_1, test_file_2}
+
+
+@pytest.mark.asyncio
+async def test_evaluate_eval_set_keeps_positional_print_detailed_results(
+    mocker,
+):
+  eval_set = SimpleNamespace(
+      eval_set_id='eval_set_1',
+      eval_cases=[SimpleNamespace(eval_id='case_a')],
+  )
+  eval_result = mocker.Mock(name='eval_result')
+
+  mocker.patch.object(
+      AgentEvaluator,
+      '_get_agent_for_eval',
+      new=AsyncMock(return_value=mocker.Mock()),
+  )
+  mocker.patch(
+      'google.adk.evaluation.agent_evaluator.get_eval_metrics_from_config',
+      return_value=[],
+  )
+  mocker.patch.object(
+      AgentEvaluator,
+      '_get_eval_results_by_eval_id',
+      new=AsyncMock(return_value={'case_a': [eval_result]}),
+  )
+  mocker.patch.object(
+      AgentEvaluator,
+      '_get_eval_metric_results_with_invocation',
+      return_value={},
+  )
+  process_mock = mocker.patch.object(
+      AgentEvaluator,
+      '_process_metrics_and_get_failures',
+      return_value=[],
+  )
+
+  await AgentEvaluator.evaluate_eval_set(
+      'pkg.search_agent',
+      eval_set,
+      None,
+      EvalConfig(criteria={}),
+      1,
+      None,
+      False,
+  )
+
+  assert process_mock.call_args.kwargs['print_detailed_results'] is False
+
+
+@pytest.mark.asyncio
+async def test_evaluate_keeps_positional_initial_session_file_and_print_flag(
+    mocker,
+):
+  initial_session_mock = mocker.patch.object(
+      AgentEvaluator,
+      '_get_initial_session',
+      return_value={},
+  )
+  mocker.patch.object(
+      AgentEvaluator,
+      'find_config_for_test_file',
+      return_value=EvalConfig(criteria={}),
+  )
+  mocker.patch.object(
+      AgentEvaluator,
+      '_load_eval_set_from_file',
+      return_value=SimpleNamespace(eval_set_id='eval_set_1'),
+  )
+  evaluate_eval_set_mock = mocker.patch.object(
+      AgentEvaluator,
+      'evaluate_eval_set',
+      new=AsyncMock(),
+  )
+
+  await AgentEvaluator.evaluate(
+      'pkg.search_agent',
+      'some.test.json',
+      1,
+      None,
+      'initial.session.json',
+      False,
+  )
+
+  initial_session_mock.assert_called_once_with('initial.session.json')
+  evaluate_eval_set_mock.assert_awaited_once()
+  assert (
+      evaluate_eval_set_mock.await_args.kwargs['print_detailed_results']
+      is False
+  )

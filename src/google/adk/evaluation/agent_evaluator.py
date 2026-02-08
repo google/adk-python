@@ -113,9 +113,9 @@ class AgentEvaluator:
       eval_config: Optional[EvalConfig] = None,
       num_runs: int = NUM_RUNS,
       agent_name: Optional[str] = None,
+      print_detailed_results: bool = True,
       app_name: Optional[str] = None,
       eval_set_results_manager: Optional[EvalSetResultsManager] = None,
-      print_detailed_results: bool = True,
   ):
     """Evaluates an agent using the given EvalSet.
 
@@ -212,10 +212,10 @@ class AgentEvaluator:
       eval_dataset_file_path_or_dir: str,
       num_runs: int = NUM_RUNS,
       agent_name: Optional[str] = None,
-      app_name: Optional[str] = None,
-      eval_set_results_manager: Optional[EvalSetResultsManager] = None,
       initial_session_file: Optional[str] = None,
       print_detailed_results: bool = True,
+      app_name: Optional[str] = None,
+      eval_set_results_manager: Optional[EvalSetResultsManager] = None,
   ):
     """Evaluates an Agent given eval data.
 
