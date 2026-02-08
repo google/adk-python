@@ -17,6 +17,7 @@ from __future__ import annotations
 import importlib.util
 import logging
 import os
+import statistics
 import sys
 from typing import Any
 from typing import Optional
@@ -34,6 +35,8 @@ from ..evaluation.constants import MISSING_EVAL_DEPENDENCIES_MESSAGE
 from ..evaluation.eval_case import get_all_tool_calls
 from ..evaluation.eval_case import IntermediateDataType
 from ..evaluation.eval_metrics import EvalMetric
+from ..evaluation.eval_metrics import EvalMetricResult
+from ..evaluation.eval_metrics import EvalStatus
 from ..evaluation.eval_metrics import Interval
 from ..evaluation.eval_metrics import MetricInfo
 from ..evaluation.eval_metrics import MetricValueInfo
@@ -130,6 +133,95 @@ def parse_and_get_evals_to_run(
     eval_set_to_evals[eval_set].extend(evals)
 
   return eval_set_to_evals
+
+
+def _generate_final_eval_status(
+    overall_eval_metric_results: list[EvalMetricResult],
+) -> EvalStatus:
+  """Returns final eval status for a case from overall metric results."""
+  final_eval_status = EvalStatus.NOT_EVALUATED
+  for overall_eval_metric_result in overall_eval_metric_results:
+    overall_eval_status = overall_eval_metric_result.eval_status
+    if overall_eval_status == EvalStatus.PASSED:
+      final_eval_status = EvalStatus.PASSED
+    elif overall_eval_status == EvalStatus.NOT_EVALUATED:
+      continue
+    elif overall_eval_status == EvalStatus.FAILED:
+      final_eval_status = EvalStatus.FAILED
+      break
+    else:
+      raise ValueError(f"Unknown eval status: {overall_eval_status}.")
+  return final_eval_status
+
+
+def _aggregate_metric_results(
+    metric_results: list[EvalMetricResult],
+) -> EvalMetricResult:
+  """Aggregates results of the same metric across runs."""
+  if not metric_results:
+    raise ValueError("`metric_results` should not be empty.")
+
+  aggregate_metric_result = metric_results[0].model_copy(deep=True)
+  scores = [m.score for m in metric_results if m.score is not None]
+  if scores:
+    aggregate_metric_result.score = statistics.mean(scores)
+    aggregate_metric_result.eval_status = (
+        EvalStatus.PASSED
+        if aggregate_metric_result.score >= aggregate_metric_result.threshold
+        else EvalStatus.FAILED
+    )
+  else:
+    aggregate_metric_result.score = None
+    aggregate_metric_result.eval_status = EvalStatus.NOT_EVALUATED
+
+  return aggregate_metric_result
+
+
+def aggregate_eval_case_results(
+    eval_results: list[EvalCaseResult],
+) -> list[EvalCaseResult]:
+  """Aggregates EvalCaseResults with the same eval_set_id and eval_id."""
+  eval_results_by_case_id: dict[tuple[str, str], list[EvalCaseResult]] = {}
+  for eval_result in eval_results:
+    key = (eval_result.eval_set_id, eval_result.eval_id)
+    if key not in eval_results_by_case_id:
+      eval_results_by_case_id[key] = []
+    eval_results_by_case_id[key].append(eval_result)
+
+  aggregate_results: list[EvalCaseResult] = []
+  for _, per_case_results in eval_results_by_case_id.items():
+    aggregate_result = per_case_results[0].model_copy(deep=True)
+    metric_results_by_name: dict[str, list[EvalMetricResult]] = {}
+    for per_case_result in per_case_results:
+      for metric_result in per_case_result.overall_eval_metric_results:
+        metric_name = metric_result.metric_name
+        if metric_name not in metric_results_by_name:
+          metric_results_by_name[metric_name] = []
+        metric_results_by_name[metric_name].append(metric_result)
+
+    metric_names_in_order = [
+        metric_result.metric_name
+        for metric_result in aggregate_result.overall_eval_metric_results
+    ]
+    missing_metric_names = sorted(
+        set(metric_results_by_name.keys()) - set(metric_names_in_order)
+    )
+    metric_names_in_order.extend(missing_metric_names)
+
+    aggregate_overall_eval_metric_results: list[EvalMetricResult] = []
+    for metric_name in metric_names_in_order:
+      aggregate_overall_eval_metric_results.append(
+          _aggregate_metric_results(metric_results_by_name[metric_name])
+      )
+    aggregate_result.overall_eval_metric_results = (
+        aggregate_overall_eval_metric_results
+    )
+    aggregate_result.final_eval_status = _generate_final_eval_status(
+        aggregate_overall_eval_metric_results
+    )
+    aggregate_results.append(aggregate_result)
+
+  return sorted(aggregate_results, key=lambda x: (x.eval_set_id, x.eval_id))
 
 
 async def _collect_inferences(
