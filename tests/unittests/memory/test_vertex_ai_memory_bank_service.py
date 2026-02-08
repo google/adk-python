@@ -89,8 +89,14 @@ def mock_vertex_ai_memory_bank_service(
 def mock_vertexai_client():
   with mock.patch('vertexai.Client') as mock_client_constructor:
     mock_client = mock.MagicMock()
-    mock_client.agent_engines.memories.generate = mock.MagicMock()
-    mock_client.agent_engines.memories.retrieve = mock.MagicMock()
+    # Mock async interface
+    mock_client.aio.agent_engines.memories.generate = mock.AsyncMock()
+
+    async def async_iterator_mock(items):
+      for item in items:
+        yield item
+
+    mock_client.aio.agent_engines.memories.retrieve = mock.AsyncMock()
     mock_client_constructor.return_value = mock_client
     yield mock_client
 
@@ -115,7 +121,7 @@ async def test_add_session_to_memory(mock_vertexai_client):
   memory_service = mock_vertex_ai_memory_bank_service()
   await memory_service.add_session_to_memory(MOCK_SESSION)
 
-  mock_vertexai_client.agent_engines.memories.generate.assert_called_once_with(
+  mock_vertexai_client.aio.agent_engines.memories.generate.assert_awaited_once_with(
       name='reasoningEngines/123',
       direct_contents_source={
           'events': [
@@ -136,7 +142,7 @@ async def test_add_empty_session_to_memory(mock_vertexai_client):
   memory_service = mock_vertex_ai_memory_bank_service()
   await memory_service.add_session_to_memory(MOCK_SESSION_WITH_EMPTY_EVENTS)
 
-  mock_vertexai_client.agent_engines.memories.generate.assert_not_called()
+  mock_vertexai_client.aio.agent_engines.memories.generate.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -147,16 +153,19 @@ async def test_search_memory(mock_vertexai_client):
       2024, 12, 12, 12, 12, 12, 123456
   )
 
-  mock_vertexai_client.agent_engines.memories.retrieve.return_value = [
-      retrieved_memory
-  ]
+  async def async_iterator():
+    yield retrieved_memory
+
+  mock_vertexai_client.aio.agent_engines.memories.retrieve.return_value = (
+      async_iterator()
+  )
   memory_service = mock_vertex_ai_memory_bank_service()
 
   result = await memory_service.search_memory(
       app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID, query='query'
   )
 
-  mock_vertexai_client.agent_engines.memories.retrieve.assert_called_once_with(
+  mock_vertexai_client.aio.agent_engines.memories.retrieve.assert_awaited_once_with(
       name='reasoningEngines/123',
       scope={'app_name': MOCK_APP_NAME, 'user_id': MOCK_USER_ID},
       similarity_search_params={'search_query': 'query'},
@@ -168,14 +177,21 @@ async def test_search_memory(mock_vertexai_client):
 
 @pytest.mark.asyncio
 async def test_search_memory_empty_results(mock_vertexai_client):
-  mock_vertexai_client.agent_engines.memories.retrieve.return_value = []
+  async def empty_async_iterator():
+    # Empty iterator - yields nothing
+    return
+    yield  # This is unreachable but makes it a generator
+
+  mock_vertexai_client.aio.agent_engines.memories.retrieve.return_value = (
+      empty_async_iterator()
+  )
   memory_service = mock_vertex_ai_memory_bank_service()
 
   result = await memory_service.search_memory(
       app_name=MOCK_APP_NAME, user_id=MOCK_USER_ID, query='query'
   )
 
-  mock_vertexai_client.agent_engines.memories.retrieve.assert_called_once_with(
+  mock_vertexai_client.aio.agent_engines.memories.retrieve.assert_awaited_once_with(
       name='reasoningEngines/123',
       scope={'app_name': MOCK_APP_NAME, 'user_id': MOCK_USER_ID},
       similarity_search_params={'search_query': 'query'},
