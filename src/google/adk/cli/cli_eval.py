@@ -89,9 +89,7 @@ def get_default_metric_info(
 async def get_root_agent(agent_module_file_path: str) -> BaseAgent:
   """Returns root agent given the agent module."""
   agent_module = _get_agent_module(agent_module_file_path)
-  agent_module_with_agent = (
-      agent_module.agent if hasattr(agent_module, "agent") else agent_module
-  )
+  agent_module_with_agent = getattr(agent_module, "agent", agent_module)
   if hasattr(agent_module_with_agent, "root_agent"):
     return agent_module_with_agent.root_agent
   elif hasattr(agent_module_with_agent, "get_agent_async"):
