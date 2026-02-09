@@ -815,7 +815,7 @@ class ConnectionsClient:
         credentials, _ = default_service_credential(
             scopes=["https://www.googleapis.com/auth/cloud-platform"]
         )
-      except:
+      except google.auth.exceptions.DefaultCredentialsError:
         credentials = None
 
     if not credentials:
