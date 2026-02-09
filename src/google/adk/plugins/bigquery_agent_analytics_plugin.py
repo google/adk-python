@@ -410,6 +410,8 @@ class BigQueryLoggerConfig:
   # Format: "location.connection_id" (e.g. "us.my-connection")
   connection_id: Optional[str] = None
 
+  # Toggle for state change (STATE_DELTA) logging via on_state_change_callback
+  log_state_changes: bool = False
   # Toggle for session metadata (e.g. gchat thread-id)
   log_session_metadata: bool = True
   # Static custom tags (e.g. {"agent_role": "sales"})
@@ -2183,6 +2185,8 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         state_delta: The change in state to log.
         **kwargs: Additional arguments.
     """
+    if not self.config.log_state_changes:
+      return
     await self._log_event(
         "STATE_DELTA",
         callback_context,
@@ -2509,13 +2513,6 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         span_id_override=span_id,
         parent_span_id_override=parent_span_id,
     )
-
-    if tool_context.actions.state_delta:
-      await self._log_event(
-          "STATE_DELTA",
-          tool_context,
-          state_delta=tool_context.actions.state_delta,
-      )
 
   async def on_tool_error_callback(
       self,

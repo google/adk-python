@@ -1560,16 +1560,19 @@ class TestBigQueryAgentAnalyticsPlugin:
     assert content_dict["result"] == {"res": "success"}
 
   @pytest.mark.asyncio
-  async def test_after_tool_callback_state_delta_logging(
+  async def test_after_tool_callback_no_inline_state_delta(
       self, bq_plugin_inst, mock_write_client, tool_context, dummy_arrow_schema
   ):
+    """after_tool_callback does not log STATE_DELTA inline.
+
+    STATE_DELTA is logged exclusively via on_state_change_callback.
+    """
     mock_tool = mock.create_autospec(
         base_tool_lib.BaseTool, instance=True, spec_set=True
     )
     type(mock_tool).name = mock.PropertyMock(return_value="StateTool")
     type(mock_tool).description = mock.PropertyMock(return_value="Sets state")
 
-    # Simulate a tool modifying the state
     tool_context.actions.state_delta["new_key"] = "new_value"
 
     bigquery_agent_analytics_plugin.TraceManager.push_span(tool_context)
@@ -1581,31 +1584,11 @@ class TestBigQueryAgentAnalyticsPlugin:
     )
     await asyncio.sleep(0.01)
 
-    # We should have two events appended: TOOL_COMPLETED and STATE_DELTA
-    assert mock_write_client.append_rows.call_count >= 1
-
-    # Retrieve all flushed events
-    rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
-    assert len(rows) == 2
-
-    # Sort by event_type to reliably access them
-    rows.sort(key=lambda x: x["event_type"])
-
-    state_delta_event = (
-        rows[0] if rows[0]["event_type"] == "STATE_DELTA" else rows[1]
+    # Only TOOL_COMPLETED should be logged
+    log_entry = await _get_captured_event_dict_async(
+        mock_write_client, dummy_arrow_schema
     )
-    tool_event = (
-        rows[1] if rows[1]["event_type"] == "TOOL_COMPLETED" else rows[0]
-    )
-
-    assert state_delta_event["event_type"] == "STATE_DELTA"
-    assert tool_event["event_type"] == "TOOL_COMPLETED"
-
-    # Verify STATE_DELTA payload
-    attributes = json.loads(state_delta_event["attributes"])
-    assert "state_delta" in attributes
-    assert attributes["state_delta"] == {"new_key": "new_value"}
-    assert state_delta_event["content"] is None
+    assert log_entry["event_type"] == "TOOL_COMPLETED"
 
   @pytest.mark.asyncio
   async def test_on_state_change_callback_logs_correctly(
@@ -1615,6 +1598,8 @@ class TestBigQueryAgentAnalyticsPlugin:
       callback_context,
       dummy_arrow_schema,
   ):
+    """STATE_DELTA is logged via on_state_change_callback when enabled."""
+    bq_plugin_inst.config.log_state_changes = True
     state_delta = {"key": "value", "new_key": 123}
     bigquery_agent_analytics_plugin.TraceManager.push_span(callback_context)
     await bq_plugin_inst.on_state_change_callback(
@@ -1625,12 +1610,26 @@ class TestBigQueryAgentAnalyticsPlugin:
         mock_write_client, dummy_arrow_schema
     )
     _assert_common_fields(log_entry, "STATE_DELTA")
-    # content should be None (as raw_content was not passed)
     assert log_entry["content"] is None
 
-    # state_delta should be in attributes
     attributes = json.loads(log_entry["attributes"])
     assert attributes["state_delta"] == state_delta
+
+  @pytest.mark.asyncio
+  async def test_on_state_change_callback_disabled(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      callback_context,
+  ):
+    """STATE_DELTA is not logged when log_state_changes is False (default)."""
+    state_delta = {"key": "value", "new_key": 123}
+    bigquery_agent_analytics_plugin.TraceManager.push_span(callback_context)
+    await bq_plugin_inst.on_state_change_callback(
+        callback_context=callback_context, state_delta=state_delta
+    )
+    await asyncio.sleep(0.01)
+    mock_write_client.append_rows.assert_not_called()
 
   @pytest.mark.asyncio
   async def test_log_event_with_session_metadata(
