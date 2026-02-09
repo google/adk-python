@@ -388,7 +388,8 @@ class TestMCPSessionManager:
     assert len(manager._sessions) == 0
 
   @pytest.mark.asyncio
-  async def test_close_with_errors(self):
+  @patch("google.adk.tools.mcp_tool.mcp_session_manager.logger")
+  async def test_close_with_errors(self, mock_logger):
     """Test cleanup when some sessions fail to close."""
     manager = MCPSessionManager(self.mock_stdio_connection_params)
 
@@ -403,9 +404,6 @@ class TestMCPSessionManager:
     manager._sessions["session1"] = (session1, exit_stack1)
     manager._sessions["session2"] = (session2, exit_stack2)
 
-    custom_errlog = StringIO()
-    manager._errlog = custom_errlog
-
     # Should not raise exception
     await manager.close()
 
@@ -413,10 +411,11 @@ class TestMCPSessionManager:
     exit_stack2.aclose.assert_called_once()
     assert len(manager._sessions) == 0
 
-    # Error should be logged
-    error_output = custom_errlog.getvalue()
-    assert "Warning: Error during MCP session cleanup" in error_output
-    assert "Close error 1" in error_output
+    # Error should be logged via logger.warning
+    mock_logger.warning.assert_called_once()
+    args, kwargs = mock_logger.warning.call_args
+    assert "Error during MCP session cleanup for session1" in args[0]
+    assert kwargs.get("exc_info")
 
   @pytest.mark.asyncio
   @patch("google.adk.tools.mcp_tool.mcp_session_manager.stdio_client")
