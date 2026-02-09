@@ -963,6 +963,44 @@ def test_agent_run_passes_state_delta(test_app, create_test_session):
   assert data[3]["actions"]["stateDelta"] == payload["state_delta"]
 
 
+def test_agent_run_passes_invocation_id(
+    test_app, create_test_session, monkeypatch
+):
+  """Test /run forwards invocation_id for resumable invocations."""
+  info = create_test_session
+  captured_invocation_id: dict[str, Optional[str]] = {"invocation_id": None}
+
+  async def run_async_capture(
+      self,
+      *,
+      user_id: str,
+      session_id: str,
+      invocation_id: Optional[str] = None,
+      new_message: Optional[types.Content] = None,
+      state_delta: Optional[dict[str, Any]] = None,
+      run_config: Optional[RunConfig] = None,
+  ):
+    del self, user_id, session_id, new_message, state_delta, run_config
+    captured_invocation_id["invocation_id"] = invocation_id
+    yield _event_1()
+
+  monkeypatch.setattr(Runner, "run_async", run_async_capture)
+
+  payload = {
+      "app_name": info["app_name"],
+      "user_id": info["user_id"],
+      "session_id": info["session_id"],
+      "new_message": {"role": "user", "parts": [{"text": "Resume run"}]},
+      "streaming": False,
+      "invocation_id": "resume-invocation-id",
+  }
+
+  response = test_app.post("/run", json=payload)
+
+  assert response.status_code == 200
+  assert captured_invocation_id["invocation_id"] == payload["invocation_id"]
+
+
 def test_agent_run_sse_splits_artifact_delta(
     test_app, create_test_session, monkeypatch
 ):
