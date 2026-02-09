@@ -30,20 +30,34 @@ def similarity_search(
     vector_store: MilvusVectorStore,
     filter_expr: Optional[str] = None,
 ) -> str:
-  """Search for similar content in Milvus vector store.
+  # fmt: off
+  """Search the knowledge base for information relevant to the user's query.
 
-  This function is intended to be wrapped by MilvusToolset and exposed
-  to agents as a tool.
+  Use this tool when you need to look up facts, find relevant documents,
+  or answer questions that require knowledge from the vector database.
+  The tool performs semantic similarity search — it finds content whose
+  meaning is closest to the query, not just keyword matches.
 
   Args:
-    query: The search query text.
-    vector_store: The MilvusVectorStore instance (injected by MilvusToolset).
-    filter_expr: Optional Milvus filter expression for pre-filtering
-      results.
+    query (str): A natural-language search query describing what
+      information you are looking for. Be specific and descriptive
+      for better results. For example, use "How does Milvus handle
+      vector indexing?" rather than just "Milvus".
+    filter_expr (str): An optional filter expression to narrow down
+      search results before ranking by similarity. Uses Milvus
+      boolean expression syntax, for example:
+      ``category == "tech"`` or ``year > 2023``. Leave empty if no
+      filtering is needed.
 
   Returns:
-    Search results formatted as a JSON string.
+    str: A JSON-formatted string containing the search results. Each
+      result includes the matched content and a distance score
+      indicating similarity (lower distance means higher similarity
+      for L2/EUCLIDEAN, higher score means higher similarity for
+      COSINE/IP). Returns "No matching results found." if no
+      relevant content exists.
   """
+  # fmt: on
   results = vector_store.search(query=query, filter_expr=filter_expr)
 
   if not results:
