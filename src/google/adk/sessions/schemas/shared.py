@@ -64,4 +64,6 @@ class PreciseTimestamp(TypeDecorator):
   def load_dialect_impl(self, dialect):
     if dialect.name == "mysql":
       return dialect.type_descriptor(mysql.DATETIME(fsp=6))
+    elif dialect.name == "postgresql":
+      return dialect.type_descriptor(postgresql.TIMESTAMP(timezone=True))
     return self.impl
