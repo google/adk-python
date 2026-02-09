@@ -227,6 +227,8 @@ class TestOAuth2CredentialUtil:
         "expires_in": 3600,
     })
 
+    assert credential.oauth2 is not None
+
     update_credential_with_tokens(credential, tokens)
 
     assert credential.oauth2.access_token == "new_access_token"
