@@ -1598,8 +1598,7 @@ class TestBigQueryAgentAnalyticsPlugin:
       callback_context,
       dummy_arrow_schema,
   ):
-    """STATE_DELTA is logged via on_state_change_callback when enabled."""
-    bq_plugin_inst.config.log_state_changes = True
+    """STATE_DELTA is logged via on_state_change_callback."""
     state_delta = {"key": "value", "new_key": 123}
     bigquery_agent_analytics_plugin.TraceManager.push_span(callback_context)
     await bq_plugin_inst.on_state_change_callback(
@@ -1614,22 +1613,6 @@ class TestBigQueryAgentAnalyticsPlugin:
 
     attributes = json.loads(log_entry["attributes"])
     assert attributes["state_delta"] == state_delta
-
-  @pytest.mark.asyncio
-  async def test_on_state_change_callback_disabled(
-      self,
-      bq_plugin_inst,
-      mock_write_client,
-      callback_context,
-  ):
-    """STATE_DELTA is not logged when log_state_changes is False (default)."""
-    state_delta = {"key": "value", "new_key": 123}
-    bigquery_agent_analytics_plugin.TraceManager.push_span(callback_context)
-    await bq_plugin_inst.on_state_change_callback(
-        callback_context=callback_context, state_delta=state_delta
-    )
-    await asyncio.sleep(0.01)
-    mock_write_client.append_rows.assert_not_called()
 
   @pytest.mark.asyncio
   async def test_log_event_with_session_metadata(
