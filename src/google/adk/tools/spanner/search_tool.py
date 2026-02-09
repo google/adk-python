@@ -515,7 +515,7 @@ def similarity_search(
         try:
           # if the json serialization of the row succeeds, use it as is
           json.dumps(row)
-        except:
+        except (TypeError, ValueError, OverflowError):
           row = str(row)
 
         rows.append(row)

@@ -294,11 +294,28 @@ def cli_conformance_record(
         " runs evaluation-based verification."
     ),
 )
+@click.option(
+    "--generate_report",
+    is_flag=True,
+    show_default=True,
+    default=False,
+    help="Optional. Whether to generate a Markdown report of the test results.",
+)
+@click.option(
+    "--report_dir",
+    type=click.Path(file_okay=False, dir_okay=True, resolve_path=True),
+    help=(
+        "Optional. Directory to store the generated report. Defaults to current"
+        " directory."
+    ),
+)
 @click.pass_context
 def cli_conformance_test(
     ctx,
     paths: tuple[str, ...],
     mode: str,
+    generate_report: bool,
+    report_dir: Optional[str] = None,
 ):
   """Run conformance tests to verify agent behavior consistency.
 
@@ -309,7 +326,7 @@ def cli_conformance_test(
   - Contain a spec.yaml file directly (single test case)
   - Contain subdirectories with spec.yaml files (multiple test cases)
 
-  If no paths are provided, defaults to searching the 'tests' folder.
+  If no paths are provided, defaults to searching for the 'tests' folder.
 
   TEST MODES:
 
@@ -329,6 +346,11 @@ def cli_conformance_test(
       generated-recordings.yaml    # Recorded interactions (replay mode)
       generated-session.yaml       # Session data (replay mode)
 
+  REPORT GENERATION:
+
+  Use --generate_report to create a Markdown report of test results.
+  Use --report_dir to specify where the report should be saved.
+
   EXAMPLES:
 
   \b
@@ -346,6 +368,14 @@ def cli_conformance_test(
   \b
   # Run in live mode (when available)
   adk conformance test --mode=live tests/core
+
+  \b
+  # Generate a test report
+  adk conformance test --generate_report
+
+  \b
+  # Generate a test report in a specific directory
+  adk conformance test --generate_report --report_dir=reports
   """
 
   try:
@@ -363,10 +393,18 @@ def cli_conformance_test(
     )
     ctx.exit(1)
 
-  # Convert to Path objects, use default if empty (paths are already resolved by Click)
+  # Convert to Path objects, use default if empty (paths are already resolved
+  # by Click)
   test_paths = [Path(p) for p in paths] if paths else [Path("tests").resolve()]
 
-  asyncio.run(run_conformance_test(test_paths=test_paths, mode=mode.lower()))
+  asyncio.run(
+      run_conformance_test(
+          test_paths=test_paths,
+          mode=mode.lower(),
+          generate_report=generate_report,
+          report_dir=report_dir,
+      )
+  )
 
 
 @main.command("create", cls=HelpfulCommand)
