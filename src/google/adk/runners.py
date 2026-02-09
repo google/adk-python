@@ -774,8 +774,6 @@ class Runner:
       # transcription event.
       buffered_events: list[Event] = []
       is_transcribing: bool = False
-      notified_state_change_event_ids: set[str] = set()
-
       async with Aclosing(execute_fn(invocation_context)) as agen:
         async for event in agen:
           _apply_run_config_custom_metadata(
@@ -846,11 +844,7 @@ class Runner:
           yield final_event
 
           # Step 3b: Notify plugins of state changes, if any.
-          if (
-              final_event.actions.state_delta
-              and final_event.id not in notified_state_change_event_ids
-          ):
-            notified_state_change_event_ids.add(final_event.id)
+          if final_event.actions.state_delta:
             from .agents.callback_context import CallbackContext
 
             await plugin_manager.run_on_state_change_callback(
