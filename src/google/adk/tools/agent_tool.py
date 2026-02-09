@@ -244,6 +244,8 @@ class AgentTool(BaseTool):
         state=state_dict,
     )
 
+    # Aggregate usage metadata from sub-agent execution
+    usage_metadata_list = []
     last_content = None
     async with Aclosing(
         runner.run_async(
@@ -251,6 +253,15 @@ class AgentTool(BaseTool):
         )
     ) as agen:
       async for event in agen:
+        # Collect usage metadata from each event
+        if event.usage_metadata:
+          usage_metadata_list.append(event.usage_metadata)
+        
+        # Also collect tool-level usage from nested events
+        if event.tool_usage_metadata:
+          for tool_name, tool_usage in event.tool_usage_metadata.items():
+            usage_metadata_list.append(tool_usage)
+        
         # Forward state delta to parent session.
         if event.actions.state_delta:
           tool_context.state.update(event.actions.state_delta)
@@ -260,6 +271,13 @@ class AgentTool(BaseTool):
     # Clean up runner resources (especially MCP sessions)
     # to avoid "Attempted to exit cancel scope in a different task" errors
     await runner.close()
+
+    # Aggregate and record usage for this sub-agent
+    if usage_metadata_list:
+      from ..models.llm_response import LlmResponse
+      aggregated_usage = LlmResponse.merge_usage_metadata(usage_metadata_list)
+      if aggregated_usage:
+        tool_context.set_tool_usage(self.agent.name, aggregated_usage)
 
     if last_content is None or last_content.parts is None:
       return ''

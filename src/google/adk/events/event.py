@@ -66,6 +66,19 @@ class Event(LlmResponse):
   conversation history.
   """
 
+  tool_usage_metadata: Optional[dict[str, types.GenerateContentResponseUsageMetadata]] = None
+  """Token usage metadata for tools and sub-agents invoked during this event.
+  
+  Maps tool/agent names to their respective usage metadata, enabling granular
+  cost tracking for nested agent architectures and Vertex AI features.
+  
+  Example:
+    {
+      "vertex_ai_search": UsageMetadata(prompt_token_count=100, ...),
+      "sub_agent_name": UsageMetadata(prompt_token_count=500, ...),
+    }
+  """
+
   # The following are computed fields.
   # Do not assign the ID. It will be assigned by the session.
   id: str = ''

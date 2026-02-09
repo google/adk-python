@@ -143,6 +143,48 @@ class LlmResponse(BaseModel):
   """
 
   @staticmethod
+  def merge_usage_metadata(
+      metadata_list: list[Optional[types.GenerateContentResponseUsageMetadata]]
+  ) -> Optional[types.GenerateContentResponseUsageMetadata]:
+    """Merges multiple usage metadata objects into a single aggregate.
+
+    Args:
+      metadata_list: List of usage metadata objects to merge.
+
+    Returns:
+      Merged usage metadata with cumulative token counts, or None if all inputs
+      are None.
+    """
+    if not metadata_list or all(m is None for m in metadata_list):
+      return None
+
+    total_prompt_tokens = 0
+    total_candidates_tokens = 0
+    total_tokens = 0
+    total_cached_tokens = 0
+
+    for metadata in metadata_list:
+      if metadata:
+        total_prompt_tokens += metadata.prompt_token_count or 0
+        total_candidates_tokens += metadata.candidates_token_count or 0
+        total_tokens += metadata.total_token_count or 0
+        if hasattr(metadata, 'cached_content_token_count'):
+          total_cached_tokens += metadata.cached_content_token_count or 0
+
+    # Create merged metadata
+    merged = types.GenerateContentResponseUsageMetadata(
+        prompt_token_count=total_prompt_tokens,
+        candidates_token_count=total_candidates_tokens,
+        total_token_count=total_tokens,
+    )
+    
+    # Add cached tokens if any were present
+    if total_cached_tokens > 0:
+      merged.cached_content_token_count = total_cached_tokens
+
+    return merged
+
+  @staticmethod
   def create(
       generate_content_response: types.GenerateContentResponse,
   ) -> LlmResponse:
