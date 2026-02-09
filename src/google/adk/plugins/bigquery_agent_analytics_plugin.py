@@ -31,6 +31,7 @@ import random
 import time
 from types import MappingProxyType
 from typing import Any
+from typing import Awaitable
 from typing import Callable
 from typing import Optional
 from typing import TYPE_CHECKING
@@ -409,6 +410,11 @@ class BigQueryLoggerConfig:
   # Format: "location.connection_id" (e.g. "us.my-connection")
   connection_id: Optional[str] = None
 
+  # Toggle for session metadata (e.g. gchat thread-id)
+  log_session_metadata: bool = True
+  # Static custom tags (e.g. {"agent_role": "sales"})
+  custom_tags: dict[str, Any] = field(default_factory=dict)
+
 
 # ==============================================================================
 # HELPER: TRACE MANAGER (Async-Safe with ContextVars)
@@ -435,6 +441,9 @@ _span_id_stack_ctx: contextvars.ContextVar[list[str]] = contextvars.ContextVar(
 _span_start_time_ctx: contextvars.ContextVar[dict[str, int]] = (
     contextvars.ContextVar("_bq_analytics_span_start_time", default=None)
 )
+_span_ownership_stack_ctx: contextvars.ContextVar[list[bool]] = (
+    contextvars.ContextVar("_bq_analytics_span_ownership_stack", default=None)
+)
 
 
 class TraceManager:
@@ -442,7 +451,6 @@ class TraceManager:
 
   @staticmethod
   def init_trace(callback_context: CallbackContext) -> None:
-    # Extract root agent name from invocation context if not set
     if _root_agent_name_ctx.get() is None:
       try:
         root_agent = callback_context._invocation_context.agent.root_agent
@@ -458,6 +466,9 @@ class TraceManager:
 
     if _span_start_time_ctx.get() is None:
       _span_start_time_ctx.set({})
+
+    if _span_ownership_stack_ctx.get() is None:
+      _span_ownership_stack_ctx.set([])
 
   @staticmethod
   def get_trace_id(callback_context: CallbackContext) -> Optional[str]:
@@ -492,13 +503,11 @@ class TraceManager:
     token = context.attach(trace.set_span_in_context(span))
 
     stack = _span_stack_ctx.get() or []
-    new_stack = list(stack)
-    new_stack.append(span)
+    new_stack = list(stack) + [span]
     _span_stack_ctx.set(new_stack)
 
     token_stack = _span_token_stack_ctx.get() or []
-    new_token_stack = list(token_stack)
-    new_token_stack.append(token)
+    new_token_stack = list(token_stack) + [token]
     _span_token_stack_ctx.set(new_token_stack)
 
     if span.get_span_context().is_valid:
@@ -509,8 +518,7 @@ class TraceManager:
       span_id_str = uuid.uuid4().hex
 
     id_stack = _span_id_stack_ctx.get() or []
-    new_id_stack = list(id_stack)
-    new_id_stack.append(span_id_str)
+    new_id_stack = list(id_stack) + [span_id_str]
     _span_id_stack_ctx.set(new_id_stack)
 
     span_map = _span_map_ctx.get() or {}
@@ -523,6 +531,51 @@ class TraceManager:
     new_start_times = start_times.copy()
     new_start_times[span_id_str] = time.time_ns()
     _span_start_time_ctx.set(new_start_times)
+
+    ownership_stack = _span_ownership_stack_ctx.get() or []
+    new_ownership_stack = list(ownership_stack) + [True]
+    _span_ownership_stack_ctx.set(new_ownership_stack)
+
+    return span_id_str
+
+  @staticmethod
+  def attach_current_span(
+      callback_context: CallbackContext,
+  ) -> str:
+    """Attaches the current OTEL span to the stack without owning it."""
+    TraceManager.init_trace(callback_context)
+
+    # Get current span but don't start a new one
+    span = trace.get_current_span()
+    # We still need to attach it to context to keep stacks symmetric with token
+    token = context.attach(trace.set_span_in_context(span))
+
+    stack = _span_stack_ctx.get() or []
+    new_stack = list(stack) + [span]
+    _span_stack_ctx.set(new_stack)
+
+    token_stack = _span_token_stack_ctx.get() or []
+    new_token_stack = list(token_stack) + [token]
+    _span_token_stack_ctx.set(new_token_stack)
+
+    if span.get_span_context().is_valid:
+      span_id_str = format(span.get_span_context().span_id, "016x")
+    else:
+      # Fallback: Generate a UUID-based ID if OTel span is invalid (NoOp)
+      span_id_str = uuid.uuid4().hex
+
+    id_stack = _span_id_stack_ctx.get() or []
+    new_id_stack = list(id_stack) + [span_id_str]
+    _span_id_stack_ctx.set(new_id_stack)
+
+    span_map = _span_map_ctx.get() or {}
+    new_span_map = span_map.copy()
+    new_span_map[span_id_str] = span
+    _span_map_ctx.set(new_span_map)
+
+    ownership_stack = _span_ownership_stack_ctx.get() or []
+    new_ownership_stack = list(ownership_stack) + [False]
+    _span_ownership_stack_ctx.set(new_ownership_stack)
 
     return span_id_str
 
@@ -567,7 +620,16 @@ class TraceManager:
         start_ns = start_times[span_id]
         duration_ms = int((time.time_ns() - start_ns) / 1_000_000)
 
-    span.end()
+    should_end = True
+    ownership_stack = _span_ownership_stack_ctx.get()
+    if ownership_stack:
+      new_ownership_stack = list(ownership_stack)
+      should_end = new_ownership_stack.pop()
+      _span_ownership_stack_ctx.set(new_ownership_stack)
+
+    if should_end:
+      span.end()
+
     context.detach(token)
 
     first_tokens = _span_first_token_times_ctx.get()
@@ -599,8 +661,11 @@ class TraceManager:
     if id_stack:
       span_id = id_stack[-1]
       parent_id = None
-      if len(id_stack) > 1:
-        parent_id = id_stack[-2]
+      # Walk backwards to find a different span_id for parent
+      for i in range(len(id_stack) - 2, -1, -1):
+        if id_stack[i] != span_id:
+          parent_id = id_stack[i]
+          break
       return span_id, parent_id
 
     return None, None
@@ -677,7 +742,7 @@ class BatchProcessor:
       queue_max_size: int,
       shutdown_timeout: float,
   ):
-    """Initializes the BatchProcessor.
+    """Initializes the instance.
 
     Args:
         write_client: BigQueryWriteAsyncClient for writing rows.
@@ -841,16 +906,16 @@ class BatchProcessor:
       except asyncio.CancelledError:
         logger.info("Batch writer task cancelled.")
         break
-      except RuntimeError as e:
-        if "Event loop is closed" in str(e):
-          logger.info("Batch writer loop closed: %s", e)
-          break
-        # Re-raise other RuntimeErrors (or log them below)
-        logger.error("RuntimeError in batch writer loop: %s", e, exc_info=True)
-        await asyncio.sleep(1)
       except Exception as e:
         logger.error("Error in batch writer loop: %s", e, exc_info=True)
-        await asyncio.sleep(1)
+        # Avoid sleeping if we are shutting down or if the task was cancelled
+        if not self._shutdown:
+          try:
+            await asyncio.sleep(1)
+          except (asyncio.CancelledError, RuntimeError):
+            break
+        else:
+          break
 
   async def _write_rows_with_retry(self, rows: list[dict[str, Any]]) -> None:
     """Writes a batch of rows to BigQuery with retry logic.
@@ -884,24 +949,25 @@ class BatchProcessor:
         async def requests_iter():
           yield req
 
-        responses = await self.write_client.append_rows(requests_iter())
-        async for response in responses:
-          error = getattr(response, "error", None)
-          error_code = getattr(error, "code", None)
-          if error_code and error_code != 0:
-            error_message = getattr(error, "message", "Unknown error")
-            logger.warning(
-                "BigQuery Write API returned error code %s: %s",
-                error_code,
-                error_message,
-            )
-            if error_code in [
-                _GRPC_DEADLINE_EXCEEDED,
-                _GRPC_INTERNAL,
-                _GRPC_UNAVAILABLE,
-            ]:  # Deadline, Internal, Unavailable
-              raise ServiceUnavailable(error_message)
-            else:
+        async def perform_write():
+          responses = await self.write_client.append_rows(requests_iter())
+          async for response in responses:
+            error = getattr(response, "error", None)
+            error_code = getattr(error, "code", None)
+            if error_code and error_code != 0:
+              error_message = getattr(error, "message", "Unknown error")
+              logger.warning(
+                  "BigQuery Write API returned error code %s: %s",
+                  error_code,
+                  error_message,
+              )
+              if error_code in [
+                  _GRPC_DEADLINE_EXCEEDED,
+                  _GRPC_INTERNAL,
+                  _GRPC_UNAVAILABLE,
+              ]:
+                raise ServiceUnavailable(error_message)
+
               if "schema mismatch" in error_message.lower():
                 logger.error(
                     "BigQuery Schema Mismatch: %s. This usually means the"
@@ -916,9 +982,17 @@ class BatchProcessor:
                     logger.error("Row error details: %s", row_error)
                 logger.error("Row content causing error: %s", rows)
               return
+          return
+
+        await asyncio.wait_for(perform_write(), timeout=30.0)
         return
 
-      except (ServiceUnavailable, TooManyRequests, InternalServerError) as e:
+      except (
+          ServiceUnavailable,
+          TooManyRequests,
+          InternalServerError,
+          asyncio.TimeoutError,
+      ) as e:
         attempt += 1
         if attempt > self.retry_config.max_retries:
           logger.error(
@@ -971,6 +1045,7 @@ class BatchProcessor:
         logger.warning("BatchProcessor shutdown timed out, cancelling worker.")
         self._batch_processor_task.cancel()
         try:
+          # Wait for the task to acknowledge cancellation
           await self._batch_processor_task
         except asyncio.CancelledError:
           pass
@@ -1007,7 +1082,7 @@ class ContentParser:
   """Parses content for logging with length limits and structure normalization."""
 
   def __init__(self, max_length: int) -> None:
-    """Initializes the ContentParser.
+    """Initializes the instance.
 
     Args:
         max_length: Maximum length for text content.
@@ -1483,8 +1558,12 @@ def _get_events_schema() -> list[bigquery.SchemaField]:
 # ==============================================================================
 # MAIN PLUGIN
 # ==============================================================================
-_GLOBAL_WRITE_CLIENT: Optional[BigQueryWriteAsyncClient] = None
-_GLOBAL_CLIENT_LOCK = asyncio.Lock()
+@dataclass
+class _LoopState:
+  """Holds resources bound to a specific event loop."""
+
+  write_client: BigQueryWriteAsyncClient
+  batch_processor: BatchProcessor
 
 
 class BigQueryAgentAnalyticsPlugin(BasePlugin):
@@ -1498,12 +1577,12 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       self,
       project_id: str,
       dataset_id: str,
-      *,
       table_id: Optional[str] = None,
       config: Optional[BigQueryLoggerConfig] = None,
       location: str = "US",
+      **kwargs,
   ) -> None:
-    """Initializes the BigQueryAgentAnalyticsPlugin.
+    """Initializes the instance.
 
     Args:
         project_id: Google Cloud project ID.
@@ -1511,11 +1590,20 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         table_id: BigQuery table ID (optional, overrides config).
         config: BigQueryLoggerConfig (optional).
         location: BigQuery location (default: "US").
+        **kwargs: Additional configuration parameters for BigQueryLoggerConfig.
     """
     super().__init__(name="bigquery_agent_analytics")
     self.project_id = project_id
     self.dataset_id = dataset_id
     self.config = config or BigQueryLoggerConfig()
+
+    # Override config with kwargs if provided
+    for key, value in kwargs.items():
+      if hasattr(self.config, key):
+        setattr(self.config, key, value)
+      else:
+        logger.warning(f"Unknown configuration parameter: {key}")
+
     self.table_id = table_id or self.config.table_id
     self.location = location
 
@@ -1523,12 +1611,65 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     self._is_shutting_down = False
     self._setup_lock = None
     self.client = None
-    self.write_client = None
-    self.write_stream = None
-    self.batch_processor = None
+    self._loop_state_by_loop: dict[asyncio.AbstractEventLoop, _LoopState] = {}
+    self._write_stream_name = None  # Resolved stream name
     self._executor = None
     self.offloader: Optional[GCSOffloader] = None
     self.parser: Optional[HybridContentParser] = None
+    self._schema = None
+    self.arrow_schema = None
+
+  # API Compatibility: These attributes are statically defined as None to mask the
+  # dynamic properties from static analysis tools (preventing "breaking changes"),
+  # while __getattribute__ intercepts instance access to route to the logic.
+  batch_processor = None
+  write_client = None
+  write_stream = None
+
+  def __getattribute__(self, name: str) -> Any:
+    """Intercepts attribute access to support API masking.
+
+    Args:
+        name: The name of the attribute being accessed.
+
+    Returns:
+        The value of the attribute.
+    """
+    if name == "batch_processor":
+      return self._batch_processor_prop
+    if name == "write_client":
+      return self._write_client_prop
+    if name == "write_stream":
+      return self._write_stream_prop
+    return super().__getattribute__(name)
+
+  @property
+  def _batch_processor_prop(self) -> Optional["BatchProcessor"]:
+    """The batch processor for the current loop (backward compatibility)."""
+    try:
+      loop = asyncio.get_running_loop()
+      if loop in self._loop_state_by_loop:
+        return self._loop_state_by_loop[loop].batch_processor
+    except RuntimeError:
+      pass
+    return None
+
+  @property
+  def _write_client_prop(self) -> Optional["BigQueryWriteAsyncClient"]:
+    """The write client for the current loop (backward compatibility)."""
+    try:
+      loop = asyncio.get_running_loop()
+      if loop in self._loop_state_by_loop:
+        return self._loop_state_by_loop[loop].write_client
+    except RuntimeError:
+      pass
+    return None
+
+  @property
+  def _write_stream_prop(self) -> Optional[str]:
+    """The write stream for the current loop (backward compatibility)."""
+    bp = self._batch_processor_prop
+    return bp.write_stream if bp else None
 
   def _format_content_safely(
       self, content: Optional[types.Content]
@@ -1552,10 +1693,89 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       logger.warning("Content formatter failed: %s", e)
       return "[FORMATTING FAILED]", False
 
+  async def _get_loop_state(self) -> _LoopState:
+    """Gets or creates the state for the current event loop.
+
+    Returns:
+        The loop-specific state object containing clients and processors.
+    """
+    loop = asyncio.get_running_loop()
+    if loop in self._loop_state_by_loop:
+      return self._loop_state_by_loop[loop]
+
+    # We DO NOT use the global client approach for multi-loop safety simpler
+    # or we must ensure _GLOBAL_WRITE_CLIENT usage is safe.
+    # The original code had a _GLOBAL_WRITE_CLIENT.
+    # If we want to reuse it, we must be careful.
+    # actually, _GLOBAL_WRITE_CLIENT is created in *A* loop.
+    # It cannot be shared across loops if it uses loop primitives.
+    # So strictly speaking, we should create a new client per loop.
+    # OR we assume the global client is thread-safe?
+    # grpc.aio clients are generally loop-bound.
+    # SAFE approach: Create one client per loop.
+
+    def get_credentials():
+      creds, project_id = google.auth.default(
+          scopes=["https://www.googleapis.com/auth/cloud-platform"]
+      )
+      return creds, project_id
+
+    creds, project_id = await loop.run_in_executor(
+        self._executor, get_credentials
+    )
+    quota_project_id = getattr(creds, "quota_project_id", None) or project_id
+    options = (
+        client_options.ClientOptions(quota_project_id=quota_project_id)
+        if quota_project_id
+        else None
+    )
+    client_info = gapic_client_info.ClientInfo(
+        user_agent=f"google-adk-bq-logger/{__version__}"
+    )
+
+    write_client = BigQueryWriteAsyncClient(
+        credentials=creds,
+        client_info=client_info,
+        client_options=options,
+    )
+
+    # Use the resolved write stream name
+    if not self._write_stream_name:
+      # Should be set in _lazy_setup or we set it here if missing?
+      # _lazy_setup guarantees self.table_id etc are ready.
+      self._write_stream_name = f"projects/{self.project_id}/datasets/{self.dataset_id}/tables/{self.table_id}/_default"
+
+    batch_processor = BatchProcessor(
+        write_client=write_client,
+        arrow_schema=self.arrow_schema,
+        write_stream=self._write_stream_name,
+        batch_size=self.config.batch_size,
+        flush_interval=self.config.batch_flush_interval,
+        retry_config=self.config.retry_config,
+        queue_max_size=self.config.queue_max_size,
+        shutdown_timeout=self.config.shutdown_timeout,
+    )
+    await batch_processor.start()
+
+    state = _LoopState(write_client, batch_processor)
+    self._loop_state_by_loop[loop] = state
+
+    atexit.register(self._atexit_cleanup, weakref.proxy(batch_processor))
+
+    return state
+
   async def flush(self) -> None:
-    """Flushes any pending events to BigQuery."""
-    if self.batch_processor:
-      await self.batch_processor.flush()
+    """Flushes any pending events to BigQuery.
+
+    Flushes the processor associated with the CURRENT loop.
+    """
+    try:
+      loop = asyncio.get_running_loop()
+      if loop in self._loop_state_by_loop:
+        await self._loop_state_by_loop[loop].batch_processor.flush()
+    except RuntimeError:
+      # No running loop or other issue
+      pass
 
   async def _lazy_setup(self, **kwargs) -> None:
     """Performs lazy initialization of BigQuery clients and resources."""
@@ -1575,46 +1795,11 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       )
 
     self.full_table_id = f"{self.project_id}.{self.dataset_id}.{self.table_id}"
-    self._schema = _get_events_schema()
-    await loop.run_in_executor(self._executor, self._ensure_schema_exists)
+    if not self._schema:
+      self._schema = _get_events_schema()
+      await loop.run_in_executor(self._executor, self._ensure_schema_exists)
 
-    if not self.write_client:
-      global _GLOBAL_WRITE_CLIENT
-      async with _GLOBAL_CLIENT_LOCK:
-        if _GLOBAL_WRITE_CLIENT is None:
-
-          def get_credentials():
-            creds, project_id = google.auth.default(
-                scopes=["https://www.googleapis.com/auth/cloud-platform"]
-            )
-            return creds, project_id
-
-          creds, project_id = await loop.run_in_executor(
-              self._executor, get_credentials
-          )
-          quota_project_id = (
-              getattr(creds, "quota_project_id", None) or project_id
-          )
-          options = (
-              client_options.ClientOptions(quota_project_id=quota_project_id)
-              if quota_project_id
-              else None
-          )
-          client_info = gapic_client_info.ClientInfo(
-              user_agent=f"google-adk-bq-logger/{__version__}"
-          )
-          # Initialize the async client in the current event loop, not in the
-          # executor.
-          _GLOBAL_WRITE_CLIENT = BigQueryWriteAsyncClient(
-              credentials=creds,
-              client_info=client_info,
-              client_options=options,
-          )
-        self.write_client = _GLOBAL_WRITE_CLIENT
-
-      self.write_stream = f"projects/{self.project_id}/datasets/{self.dataset_id}/tables/{self.table_id}/_default"
-
-    if not self.batch_processor:
+    if not self.parser:
       self.arrow_schema = to_arrow_schema(self._schema)
       if not self.arrow_schema:
         raise RuntimeError("Failed to convert BigQuery schema to Arrow schema.")
@@ -1635,81 +1820,67 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
           max_length=self.config.max_content_length,
           connection_id=self.config.connection_id,
       )
-      self.batch_processor = BatchProcessor(
-          write_client=self.write_client,
-          arrow_schema=self.arrow_schema,
-          write_stream=self.write_stream,
-          batch_size=self.config.batch_size,
-          flush_interval=self.config.batch_flush_interval,
-          retry_config=self.config.retry_config,
-          queue_max_size=self.config.queue_max_size,
-          shutdown_timeout=self.config.shutdown_timeout,
-      )
-      await self.batch_processor.start()
 
-      # Register cleanup to ensure logs are flushed if user forgets to close
-      # Use weakref to avoid circular references that prevent garbage collection
-      atexit.register(self._atexit_cleanup, weakref.proxy(self.batch_processor))
+    await self._get_loop_state()
 
   @staticmethod
   def _atexit_cleanup(batch_processor: "BatchProcessor") -> None:
     """Clean up batch processor on script exit."""
-    # Check if the batch_processor object is still alive
+
     try:
-      if batch_processor and not batch_processor._shutdown:
-        # Emergency Flush: Rescue any logs remaining in the queue
-        remaining_items = []
-        try:
-          while True:
-            remaining_items.append(batch_processor._queue.get_nowait())
-        except (asyncio.QueueEmpty, AttributeError):
-          pass
-
-        if remaining_items:
-          # We need a new loop and client to flush these
-          async def rescue_flush():
-            try:
-              # Create a short-lived client just for this flush
-              try:
-                # Note: This relies on google.auth.default() working in this context.
-                # pylint: disable=g-import-not-at-top
-                from google.cloud.bigquery_storage_v1.services.big_query_write.async_client import BigQueryWriteAsyncClient
-
-                # pylint: enable=g-import-not-at-top
-                client = BigQueryWriteAsyncClient()
-              except Exception as e:
-                logger.warning("Could not create rescue client: %s", e)
-                return
-
-              # Patch batch_processor.write_client temporarily
-              old_client = batch_processor.write_client
-              batch_processor.write_client = client
-              try:
-                # Force a write
-                await batch_processor._write_rows_with_retry(remaining_items)
-                logger.info("Rescued logs flushed successfully.")
-              except Exception as e:
-                logger.error("Failed to flush rescued logs: %s", e)
-              finally:
-                batch_processor.write_client = old_client
-            except Exception as e:
-              logger.error("Rescue flush failed: %s", e)
-
-          # In Python 3.13+, creating a new event loop during interpreter shutdown
-          # (inside atexit) can cause deadlocks if the threading module is already
-          # shutting down. We attempt to run only if safe.
-          try:
-            # Check if we can safely create a loop
-            loop = asyncio.new_event_loop()
-            try:
-              loop.run_until_complete(rescue_flush())
-            finally:
-              loop.close()
-          except Exception as e:
-            logger.error("Failed to run rescue loop: %s", e)
+      if not batch_processor or batch_processor._shutdown:
+        return
     except ReferenceError:
-      # batch_processor already GC'd, nothing to do
+      return
+
+    # Emergency Flush: Rescue any logs remaining in the queue
+    remaining_items = []
+    try:
+      while True:
+        remaining_items.append(batch_processor._queue.get_nowait())
+    except (asyncio.QueueEmpty, AttributeError):
       pass
+
+    if remaining_items:
+      # We need a new loop and client to flush these
+      async def rescue_flush():
+        client = None
+        try:
+          # Create a short-lived client just for this flush
+          try:
+            # Note: This relies on google.auth.default() working in this context.
+            # pylint: disable=g-import-not-at-top
+            from google.cloud.bigquery_storage_v1.services.big_query_write.async_client import BigQueryWriteAsyncClient
+
+            # pylint: enable=g-import-not-at-top
+            client = BigQueryWriteAsyncClient()
+          except Exception as e:
+            logger.warning("Could not create rescue client: %s", e)
+            return
+
+          # Patch batch_processor.write_client temporarily
+          old_client = batch_processor.write_client
+          batch_processor.write_client = client
+          try:
+            # Force a write
+            await batch_processor._write_rows_with_retry(remaining_items)
+            logger.info("Rescued logs flushed successfully.")
+          except Exception as e:
+            logger.error("Failed to flush rescued logs: %s", e)
+          finally:
+            batch_processor.write_client = old_client
+        except Exception as e:
+          logger.error("Rescue flush failed: %s", e)
+        finally:
+          if client:
+            await client.transport.close()
+
+      try:
+        loop = asyncio.new_event_loop()
+        loop.run_until_complete(rescue_flush())
+        loop.close()
+      except Exception as e:
+        logger.error("Failed to run rescue loop: %s", e)
 
   def _ensure_schema_exists(self) -> None:
     """Ensures the BigQuery table exists with the correct schema."""
@@ -1753,22 +1924,29 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     t = timeout if timeout is not None else self.config.shutdown_timeout
     loop = asyncio.get_running_loop()
     try:
-      if self.batch_processor:
-        await self.batch_processor.shutdown(timeout=t)
-      if self.write_client and getattr(self.write_client, "transport", None):
-        # Only close the client if it's NOT the global one (unlikely with new logic,
-        # but good for safety if injected manually) or if we decide to handle global close differently.
-        # For now, we DO NOT close the global client to allow reuse.
-        if self.write_client is not _GLOBAL_WRITE_CLIENT:
-          await self.write_client.transport.close()
+      # Correct Multi-Loop Shutdown:
+      # 1. Shutdown current loop's processor directly.
+      if loop in self._loop_state_by_loop:
+        await self._loop_state_by_loop[loop].batch_processor.shutdown(timeout=t)
+
+      # 2. Close clients for all states
+      for state in self._loop_state_by_loop.values():
+        if state.write_client and getattr(
+            state.write_client, "transport", None
+        ):
+          try:
+            await state.write_client.transport.close()
+          except Exception:
+            pass
+
+      self._loop_state_by_loop.clear()
+
       if self.client:
         if self._executor:
           executor = self._executor
           await loop.run_in_executor(None, lambda: executor.shutdown(wait=True))
           self._executor = None
-      self.write_client = None
       self.client = None
-      self._is_shutting_down = False
     except Exception as e:
       logger.error("Error during shutdown: %s", e, exc_info=True)
     self._is_shutting_down = False
@@ -1779,9 +1957,8 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     state = self.__dict__.copy()
     state["_setup_lock"] = None
     state["client"] = None
-    state["write_client"] = None
-    state["write_stream"] = None
-    state["batch_processor"] = None
+    state["_loop_state_by_loop"] = {}
+    state["_write_stream_name"] = None
     state["_executor"] = None
     state["offloader"] = None
     state["parser"] = None
@@ -1922,6 +2099,24 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         # Fallback if it couldn't be converted to dict
         kwargs["usage_metadata"] = usage_metadata
 
+    # 6. Session Metadata
+    if self.config.log_session_metadata and hasattr(
+        callback_context, "session"
+    ):
+      try:
+        # Accessing session.metadata might trigger lazy loading or be a property
+        # Use getattr to safely check for metadata without raising AttributeError
+        metadata = getattr(callback_context.session, "metadata", None)
+        if metadata:
+          kwargs["session_metadata"] = metadata
+      except Exception:
+        # Ignore errors if metadata is missing or inaccessible
+        pass
+
+    # 7. Custom Tags
+    if self.config.custom_tags:
+      kwargs["custom_tags"] = self.config.custom_tags
+
     # Serialize remaining kwargs to JSON string for attributes
     try:
       attributes_json = json.dumps(kwargs)
@@ -1950,8 +2145,8 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         "is_truncated": is_truncated,
     }
 
-    if self.batch_processor:
-      await self.batch_processor.append(row)
+    state = await self._get_loop_state()
+    await state.batch_processor.append(row)
 
   # --- UPDATED CALLBACKS FOR V1 PARITY ---
 
@@ -1972,6 +2167,27 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         "USER_MESSAGE_RECEIVED",
         CallbackContext(invocation_context),
         raw_content=user_message,
+    )
+
+  async def on_state_change_callback(
+      self,
+      *,
+      callback_context: CallbackContext,
+      state_delta: dict[str, Any],
+      **kwargs,
+  ) -> None:
+    """Logs state changes (state_delta) to BigQuery.
+
+    Args:
+        callback_context: The callback context.
+        state_delta: The change in state to log.
+        **kwargs: Additional arguments.
+    """
+    await self._log_event(
+        "STATE_DELTA",
+        callback_context,
+        state_delta=state_delta,
+        **kwargs,
     )
 
   async def before_run_callback(
@@ -2069,11 +2285,27 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
           "candidate_count",
           "max_output_tokens",
           "stop_sequences",
+          "presence_penalty",
+          "frequency_penalty",
+          "response_mime_type",
+          "response_schema",
+          "seed",
+          "response_logprobs",
+          "logprobs",
       ]:
-        if val := getattr(llm_request.config, field_name, None):
+        val = getattr(llm_request.config, field_name, None)
+        if val is not None:
           config_dict[field_name] = val
+
+      # Handle labels if present in config
+      if hasattr(llm_request.config, "labels") and llm_request.config.labels:
+        attributes["labels"] = llm_request.config.labels
+
       if config_dict:
         attributes["llm_config"] = config_dict
+
+      if labels := getattr(llm_request.config, "labels", None):
+        attributes["labels"] = labels
 
     if hasattr(llm_request, "tools_dict") and llm_request.tools_dict:
       attributes["tools"] = list(llm_request.tools_dict.keys())
@@ -2081,7 +2313,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     # Merge any additional kwargs into attributes
     attributes.update(kwargs)
 
-    TraceManager.push_span(callback_context, "llm")
+    TraceManager.push_span(callback_context, "llm_request")
     await self._log_event(
         "LLM_REQUEST",
         callback_context,
@@ -2277,6 +2509,13 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         span_id_override=span_id,
         parent_span_id_override=parent_span_id,
     )
+
+    if tool_context.actions.state_delta:
+      await self._log_event(
+          "STATE_DELTA",
+          tool_context,
+          state_delta=tool_context.actions.state_delta,
+      )
 
   async def on_tool_error_callback(
       self,

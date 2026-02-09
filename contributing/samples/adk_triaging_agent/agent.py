@@ -230,7 +230,7 @@ def change_issue_type(issue_number: int, issue_type: str) -> dict[str, Any]:
     issue_type: issue type to assign
 
   Returns:
-    The the status of this request, with the applied issue type when successful.
+    The status of this request, with the applied issue type when successful.
   """
   print(
       f"Attempting to change issue type '{issue_type}' to issue #{issue_number}"
