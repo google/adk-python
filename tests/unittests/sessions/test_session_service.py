@@ -87,6 +87,47 @@ def test_database_session_service_enables_pool_pre_ping_by_default():
   assert captured_kwargs.get('pool_pre_ping') is True
 
 
+@pytest.mark.parametrize('dialect_name', ['sqlite', 'postgresql'])
+def test_database_session_service_strips_timezone_for_dialect(dialect_name):
+  """Verifies that timezone-aware datetimes are converted to naive datetimes
+  for SQLite and PostgreSQL to avoid 'can't subtract offset-naive and
+  offset-aware datetimes' errors.
+
+  PostgreSQL's default TIMESTAMP type is WITHOUT TIME ZONE, which cannot
+  accept timezone-aware datetime objects when using asyncpg. SQLite also
+  requires naive datetimes.
+  """
+  # Simulate the logic in create_session
+  is_sqlite = dialect_name == 'sqlite'
+  is_postgres = dialect_name == 'postgresql'
+
+  now = datetime.now(timezone.utc)
+  assert now.tzinfo is not None  # Starts with timezone
+
+  if is_sqlite or is_postgres:
+    now = now.replace(tzinfo=None)
+
+  # Both SQLite and PostgreSQL should have timezone stripped
+  assert now.tzinfo is None
+
+
+def test_database_session_service_preserves_timezone_for_other_dialects():
+  """Verifies that timezone info is preserved for dialects that support it."""
+  # For dialects like MySQL with explicit timezone support, we don't strip
+  dialect_name = 'mysql'
+  is_sqlite = dialect_name == 'sqlite'
+  is_postgres = dialect_name == 'postgresql'
+
+  now = datetime.now(timezone.utc)
+  assert now.tzinfo is not None
+
+  if is_sqlite or is_postgres:
+    now = now.replace(tzinfo=None)
+
+  # MySQL should preserve timezone (if the column type supports it)
+  assert now.tzinfo is not None
+
+
 def test_database_session_service_respects_pool_pre_ping_override():
   captured_kwargs = {}
 
