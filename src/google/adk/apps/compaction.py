@@ -24,6 +24,37 @@ from google.adk.sessions.session import Session
 logger = logging.getLogger('google_adk.' + __name__)
 
 
+def should_compact_session(app: App, session: Session) -> bool:
+  """Determines if event compaction should run for a given session.
+  
+  This function evaluates per-session overrides and app-level predicates
+  to decide if compaction should proceed.
+  
+  Args:
+    app: The application instance with compaction configuration.
+    session: The session to evaluate.
+  
+  Returns:
+    True if compaction should run, False otherwise.
+  """
+  if not app.events_compaction_config:
+    return False
+  
+  config = app.events_compaction_config
+  
+  # Check session-level override first (highest priority)
+  compaction_enabled = session.is_compaction_enabled()
+  if compaction_enabled is not None:
+    return compaction_enabled
+  
+  # Check app-level predicate
+  if config.compaction_predicate:
+    return config.compaction_predicate(session)
+  
+  # Default: compaction is enabled
+  return True
+
+
 async def _run_compaction_for_sliding_window(
     app: App, session: Session, session_service: BaseSessionService
 ):

@@ -13,7 +13,9 @@
 # limitations under the License.
 from __future__ import annotations
 
+from typing import Callable
 from typing import Optional
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
 from pydantic import ConfigDict
@@ -25,6 +27,9 @@ from ..agents.context_cache_config import ContextCacheConfig
 from ..apps.base_events_summarizer import BaseEventsSummarizer
 from ..plugins.base_plugin import BasePlugin
 from ..utils.feature_decorator import experimental
+
+if TYPE_CHECKING:
+  from ..sessions.session import Session
 
 
 def validate_app_name(name: str) -> None:
@@ -79,6 +84,26 @@ class EventsCompactionConfig(BaseModel):
   """The number of preceding invocations to include from the
   end of the last compacted range. This creates an overlap between consecutive
   compacted summaries, maintaining context."""
+
+  compaction_predicate: Optional[Callable[[Session], bool]] = None
+  """Optional callable to dynamically determine if compaction should run for a
+  specific session.
+  
+  This enables per-session compaction control based on user metadata, session
+  state, or other runtime conditions. If provided, this predicate is evaluated
+  before each compaction. Return True to allow compaction, False to skip.
+  
+  Example:
+    def should_compact(session: Session) -> bool:
+      # Only compact for non-premium users
+      return session.state.get('user_tier') != 'premium'
+    
+    config = EventsCompactionConfig(
+      compaction_interval=5,
+      overlap_size=1,
+      compaction_predicate=should_compact
+    )
+  """
 
 
 class App(BaseModel):

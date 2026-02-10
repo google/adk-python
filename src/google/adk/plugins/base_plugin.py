@@ -31,6 +31,7 @@ from ..tools.base_tool import BaseTool
 
 if TYPE_CHECKING:
   from ..agents.invocation_context import InvocationContext
+  from ..sessions.session import Session
   from ..tools.tool_context import ToolContext
 
 
@@ -149,6 +150,25 @@ class BasePlugin(ABC):
       An optional `Event` to be returned to the ADK. Returning a value to
       halt execution of the runner and ends the runner with that event. Return
       `None` to proceed normally.
+    """
+    pass
+
+  async def before_session_start(self, *, session: Session) -> None:
+    """Callback executed when a session is loaded/created before invocation.
+    
+    This callback allows plugins to inspect and modify session settings
+    dynamically based on session state or metadata. It's ideal for per-session
+    configuration like enabling/disabling compaction for specific users.
+    
+    Args:
+      session: The session being prepared for the invocation.
+    
+    Example:
+      >>> class PremiumUserPlugin(BasePlugin):
+      ..   async def before_session_start(self, *, session: Session) -> None:
+      ..     # Disable compaction for premium users
+      ..     if session.state.get('user_tier') == 'premium':
+      ..       session.set_compaction_enabled(False)
     """
     pass
 

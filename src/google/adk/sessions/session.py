@@ -48,3 +48,28 @@ class Session(BaseModel):
   call/response, etc."""
   last_update_time: float = 0.0
   """The last update time of the session."""
+
+  def set_compaction_enabled(self, enabled: bool) -> None:
+    """Controls whether event compaction is enabled for this session.
+    
+    This setting overrides the app-level compaction configuration, allowing
+    per-session control of context compression.
+    
+    Args:
+      enabled: True to enable compaction, False to disable it.
+    
+    Example:
+      session.set_compaction_enabled(False)  # Disable for premium users
+    """
+    self.state['_adk_disable_compaction'] = not enabled
+
+  def is_compaction_enabled(self) -> Optional[bool]:
+    """Returns whether compaction is explicitly enabled/disabled for this session.
+    
+    Returns:
+      True if explicitly enabled, False if explicitly disabled, None if not set
+      (will use app-level default).
+    """
+    if '_adk_disable_compaction' in self.state:
+      return not self.state['_adk_disable_compaction']
+    return None

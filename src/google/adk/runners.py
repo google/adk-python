@@ -29,6 +29,7 @@ from typing import Optional
 import warnings
 
 from google.adk.apps.compaction import _run_compaction_for_sliding_window
+from google.adk.apps.compaction import should_compact_session
 from google.adk.artifacts import artifact_util
 from google.genai import types
 
@@ -497,6 +498,11 @@ class Runner:
         session = await self._get_or_create_session(
             user_id=user_id, session_id=session_id
         )
+        
+        # Call before_session_start plugin hooks
+        for plugin in self.plugins:
+          await plugin.before_session_start(session=session)
+        
         if not invocation_id and not new_message:
           raise ValueError(
               'Running an agent requires either a new_message or an '
@@ -552,7 +558,7 @@ class Runner:
         # Run compaction after all events are yielded from the agent.
         # (We don't compact in the middle of an invocation, we only compact at
         # the end of an invocation.)
-        if self.app and self.app.events_compaction_config:
+        if should_compact_session(self.app, session):
           logger.debug('Running event compactor.')
           await _run_compaction_for_sliding_window(
               self.app, session, self.session_service
@@ -573,6 +579,11 @@ class Runner:
     session = await self._get_or_create_session(
         user_id=user_id, session_id=session_id
     )
+    
+    # Call before_session_start plugin hooks
+    for plugin in self.plugins:
+      await plugin.before_session_start(session=session)
+    
     rewind_event_index = -1
     for i, event in enumerate(session.events):
       if event.invocation_id == rewind_before_invocation_id:
@@ -1004,6 +1015,11 @@ class Runner:
       session = await self._get_or_create_session(
           user_id=user_id, session_id=session_id
       )
+    
+    # Call before_session_start plugin hooks
+    for plugin in self.plugins:
+      await plugin.before_session_start(session=session)
+    
     invocation_context = self._new_invocation_context_for_live(
         session,
         live_request_queue=live_request_queue,
