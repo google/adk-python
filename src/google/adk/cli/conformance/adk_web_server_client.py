@@ -27,6 +27,7 @@ from typing import Optional
 
 import httpx
 
+from ...artifacts.base_artifact_service import ArtifactVersion
 from ...events.event import Event
 from ...sessions.session import Session
 from ..adk_web_server import RunAgentRequest
@@ -268,3 +269,38 @@ class AdkWebServerClient:
             yield Event.model_validate(event_data)
           else:
             logger.debug("Non data line received: %s", line)
+
+  async def get_artifact_version_metadata(
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      session_id: str,
+      artifact_name: str,
+      version: int,
+  ) -> ArtifactVersion:
+    """Retrieve metadata for a specific artifact version."""
+    async with self._get_client() as client:
+      response = await client.get((
+          f"/apps/{app_name}/users/{user_id}/sessions/{session_id}"
+          f"/artifacts/{artifact_name}/versions/{version}/metadata"
+      ))
+      response.raise_for_status()
+      return ArtifactVersion.model_validate(response.json())
+
+  async def list_artifact_versions_metadata(
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      session_id: str,
+      artifact_name: str,
+  ) -> list[ArtifactVersion]:
+    """List metadata for all versions of an artifact."""
+    async with self._get_client() as client:
+      response = await client.get((
+          f"/apps/{app_name}/users/{user_id}/sessions/{session_id}"
+          f"/artifacts/{artifact_name}/versions/metadata"
+      ))
+      response.raise_for_status()
+      return [ArtifactVersion.model_validate(item) for item in response.json()]
