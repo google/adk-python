@@ -434,10 +434,9 @@ class MCPSessionManager:
           await exit_stack.aclose()
         except Exception as e:
           # Log the error but don't re-raise to avoid blocking shutdown
-          print(
-              'Warning: Error during MCP session cleanup for'
-              f' {session_key}: {e}',
-              file=self._errlog,
+          logger.warning(
+              f'Error during MCP session cleanup for {session_key}',
+              exc_info=True,
           )
         finally:
           del self._sessions[session_key]

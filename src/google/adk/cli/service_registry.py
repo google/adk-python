@@ -250,9 +250,16 @@ def _register_builtin_services(registry: ServiceRegistry) -> None:
       return memory_session_factory("memory://", **kwargs)
     elif db_path.startswith("/"):
       db_path = db_path[1:]
-    kwargs_copy = kwargs.copy()
-    kwargs_copy.pop("agents_dir", None)
-    return SqliteSessionService(db_path=db_path, **kwargs_copy)
+
+    # SqliteSessionService only accepts db_path, warn if extra kwargs provided
+    ignored_kwargs = {k: v for k, v in kwargs.items() if k != "agents_dir"}
+    if ignored_kwargs:
+      logger.warning(
+          "SqliteSessionService does not support additional kwargs. "
+          "The following parameters will be ignored: %s",
+          list(ignored_kwargs.keys()),
+      )
+    return SqliteSessionService(db_path=db_path)
 
   registry.register_session_service("memory", memory_session_factory)
   registry.register_session_service("agentengine", agentengine_session_factory)

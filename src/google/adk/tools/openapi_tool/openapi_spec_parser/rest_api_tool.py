@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import logging
 import ssl
 from typing import Any
 from typing import Callable
@@ -27,7 +28,7 @@ from typing import Union
 from fastapi.openapi.models import Operation
 from fastapi.openapi.models import Schema
 from google.genai.types import FunctionDeclaration
-import requests
+import httpx
 from typing_extensions import override
 
 from ....agents.readonly_context import ReadonlyContext
@@ -47,6 +48,8 @@ from .openapi_spec_parser import OperationEndpoint
 from .openapi_spec_parser import ParsedOperation
 from .operation_parser import OperationParser
 from .tool_auth_handler import ToolAuthHandler
+
+logger = logging.getLogger("google_adk." + __name__)
 
 
 def snake_to_lower_camel(snake_case_string: str):
@@ -97,6 +100,8 @@ class RestApiTool(BaseTool):
       header_provider: Optional[
           Callable[[ReadonlyContext], Dict[str, str]]
       ] = None,
+      *,
+      credential_key: Optional[str] = None,
   ):
     """Initializes the RestApiTool with the given parameters.
 
@@ -134,6 +139,8 @@ class RestApiTool(BaseTool):
           an argument, allowing dynamic header generation based on the current
           context. Useful for adding custom headers like correlation IDs,
           authentication tokens, or other request metadata.
+        credential_key: Optional stable key used for interactive auth and
+          credential caching.
     """
     # Gemini restrict the length of function name to be less than 64 characters
     self.name = name[:60]
@@ -149,6 +156,7 @@ class RestApiTool(BaseTool):
         else operation
     )
     self.auth_credential, self.auth_scheme = None, None
+    self.credential_key = credential_key
 
     self.configure_auth_credential(auth_credential)
     self.configure_auth_scheme(auth_scheme)
@@ -158,6 +166,7 @@ class RestApiTool(BaseTool):
     self._default_headers: Dict[str, str] = {}
     self._ssl_verify = ssl_verify
     self._header_provider = header_provider
+    self._logger = logger
     if should_parse_operation:
       self._operation_parser = OperationParser(self.operation)
 
@@ -262,6 +271,10 @@ class RestApiTool(BaseTool):
       auth_credential = AuthCredential.model_validate_json(auth_credential)
     self.auth_credential = auth_credential
 
+  def configure_credential_key(self, credential_key: Optional[str] = None):
+    """Configures the credential key for interactive auth / caching."""
+    self.credential_key = credential_key
+
   def configure_ssl_verify(
       self, ssl_verify: Optional[Union[bool, str, ssl.SSLContext]] = None
   ):
@@ -308,7 +321,7 @@ class RestApiTool(BaseTool):
 
     Returns:
         A dictionary containing the  request parameters for the API call. This
-        initializes a requests.request() call.
+        initializes an httpx.AsyncClient.request() call.
 
     Example:
         self._prepare_request_params({"input_id": "test-id"})
@@ -445,7 +458,10 @@ class RestApiTool(BaseTool):
     """
     # Prepare auth credentials for the API call
     tool_auth_handler = ToolAuthHandler.from_tool_context(
-        tool_context, self.auth_scheme, self.auth_credential
+        tool_context,
+        self.auth_scheme,
+        self.auth_credential,
+        credential_key=self.credential_key,
     )
     auth_result = await tool_auth_handler.prepare_auth_credentials()
     auth_state, auth_scheme, auth_credential = (
@@ -493,14 +509,28 @@ class RestApiTool(BaseTool):
       if provider_headers:
         request_params.setdefault("headers", {}).update(provider_headers)
 
-    response = requests.request(**request_params)
+    response = await _request(**request_params)
+
+    # Log the API response
+    self._logger.debug(
+        "API Response: %s %s - Status: %d",
+        request_params.get("method", "").upper(),
+        request_params.get("url", ""),
+        response.status_code,
+    )
 
     # Parse API response
     try:
-      response.raise_for_status()  # Raise HTTPError for bad responses
+      response.raise_for_status()  # Raise HTTPStatusError for bad responses
       return response.json()  # Try to decode JSON
-    except requests.exceptions.HTTPError:
+    except httpx.HTTPStatusError:
       error_details = response.content.decode("utf-8")
+      self._logger.warning(
+          "API call failed for tool %s: Status %d - %s",
+          self.name,
+          response.status_code,
+          error_details,
+      )
       return {
           "error": (
               f"Tool {self.name} execution failed. Analyze this execution error"
@@ -510,6 +540,7 @@ class RestApiTool(BaseTool):
           )
       }
     except ValueError:
+      self._logger.debug("API Response (non-JSON): %s", response.text)
       return {"text": response.text}  # Return text if not JSON
 
   def __str__(self):
@@ -525,3 +556,10 @@ class RestApiTool(BaseTool):
         f' auth_scheme="{self.auth_scheme}",'
         f' auth_credential="{self.auth_credential}")'
     )
+
+
+async def _request(**request_params) -> httpx.Response:
+  async with httpx.AsyncClient(
+      verify=request_params.pop("verify", True)
+  ) as client:
+    return await client.request(**request_params)
