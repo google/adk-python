@@ -1530,5 +1530,23 @@ def test_builder_save_rejects_traversal(builder_test_client, tmp_path):
   assert not (tmp_path / "app" / "tmp" / "escape.yaml").exists()
 
 
+def test_health_endpoint(test_app):
+  """Test the health endpoint."""
+  response = test_app.get("/health")
+  assert response.status_code == 200
+  assert response.json() == {"status": "ok"}
+
+
+def test_version_endpoint(test_app):
+  """Test the version endpoint."""
+  response = test_app.get("/version")
+  assert response.status_code == 200
+  data = response.json()
+  assert "version" in data
+  assert "language" in data
+  assert data["language"] == "python"
+  assert "language_version" in data
+
+
 if __name__ == "__main__":
   pytest.main(["-xvs", __file__])

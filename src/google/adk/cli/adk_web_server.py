@@ -20,6 +20,7 @@ import importlib
 import json
 import logging
 import os
+import sys
 import time
 import traceback
 import typing
@@ -88,6 +89,7 @@ from ..runners import Runner
 from ..sessions.base_session_service import BaseSessionService
 from ..sessions.session import Session
 from ..utils.context_utils import Aclosing
+from ..version import __version__
 from .cli_eval import EVAL_SESSION_ID_PREFIX
 from .utils import cleanup
 from .utils import common
@@ -756,6 +758,18 @@ class AdkWebServer:
           allow_methods=["*"],
           allow_headers=["*"],
       )
+
+    @app.get("/health")
+    async def health() -> dict[str, str]:
+      return {"status": "ok"}
+
+    @app.get("/version")
+    async def version() -> dict[str, str]:
+      return {
+          "version": __version__,
+          "language": "python",
+          "language_version": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
+      }
 
     @app.get("/list-apps")
     async def list_apps(
