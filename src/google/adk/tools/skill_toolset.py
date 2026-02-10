@@ -21,6 +21,8 @@ from typing import Any
 from google.genai import types
 
 from ..agents.readonly_context import ReadonlyContext
+from ..features import experimental
+from ..features import FeatureName
 from ..models.llm_request import LlmRequest
 from ..skills import models
 from ..skills import prompt
@@ -29,6 +31,7 @@ from .base_toolset import BaseToolset
 from .tool_context import ToolContext
 
 
+@experimental(FeatureName.SKILL_TOOLSET)
 class LoadSkillTool(BaseTool):
   """Tool to load a skill's instructions."""
 
@@ -79,6 +82,7 @@ class LoadSkillTool(BaseTool):
     }
 
 
+@experimental(FeatureName.SKILL_TOOLSET)
 class LoadSkillResourceTool(BaseTool):
   """Tool to load resources (references or assets) from a skill."""
 
@@ -167,6 +171,7 @@ class LoadSkillResourceTool(BaseTool):
     }
 
 
+@experimental(FeatureName.SKILL_TOOLSET)
 class SkillToolset(BaseToolset):
   """A toolset for managing and interacting with agent skills."""
 
