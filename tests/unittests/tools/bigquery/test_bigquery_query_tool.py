@@ -1136,6 +1136,33 @@ def test_execute_sql_result_dtype(
   assert result == {"status": "SUCCESS", "rows": tool_result_rows}
 
 
+@mock.patch.dict(os.environ, {}, clear=True)
+@mock.patch.object(bigquery.Client, "query_and_wait", autospec=True)
+@mock.patch.object(bigquery.Client, "query", autospec=True)
+def test_execute_sql_result_dtype_circular_reference(
+    mock_query, mock_query_and_wait
+):
+  """Test execute_sql converts circular values to strings."""
+  credentials = mock.create_autospec(Credentials, instance=True)
+  tool_settings = BigQueryToolConfig()
+  tool_context = mock.create_autospec(ToolContext, instance=True)
+  query_job = mock.create_autospec(bigquery.QueryJob)
+  query_job.statement_type = "SELECT"
+  mock_query.return_value = query_job
+  circular_value = []
+  circular_value.append(circular_value)
+  mock_query_and_wait.return_value = [{"x": circular_value}]
+
+  result = query_tool.execute_sql(
+      "my_project", "SELECT 1", credentials, tool_settings, tool_context
+  )
+
+  assert result == {
+      "status": "SUCCESS",
+      "rows": [{"x": str(circular_value)}],
+  }
+
+
 @mock.patch.object(bq_client_lib, "get_bigquery_client", autospec=True)
 def test_execute_sql_bq_client_creation(mock_get_bigquery_client):
   """Test BigQuery client creation params during execute_sql tool invocation."""

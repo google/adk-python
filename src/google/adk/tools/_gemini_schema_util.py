@@ -142,9 +142,19 @@ def _dereference_schema(schema: dict[str, Any]) -> dict[str, Any]:
 
 
 def _sanitize_schema_formats_for_gemini(
-    schema: dict[str, Any], preserve_null_type: bool = False
-) -> dict[str, Any]:
-  """Filters the schema to only include fields that are supported by JSONSchema."""
+    schema: Any, preserve_null_type: bool = False
+) -> Any:
+  """Filters schemas to only include fields supported by JSONSchema."""
+  if isinstance(schema, list):
+    return [
+        _sanitize_schema_formats_for_gemini(
+            item, preserve_null_type=preserve_null_type
+        )
+        for item in schema
+    ]
+  if not isinstance(schema, dict):
+    return schema
+
   supported_fields: set[str] = set(_ExtendedJSONSchema.model_fields.keys())
   # Gemini rejects schemas that include `additionalProperties`, so drop it.
   supported_fields.discard("additional_properties")
@@ -152,7 +162,7 @@ def _sanitize_schema_formats_for_gemini(
   list_schema_field_names: set[str] = {
       "any_of",  # 'one_of', 'all_of', 'not' to come
   }
-  snake_case_schema = {}
+  snake_case_schema: dict[str, Any] = {}
   dict_schema_field_names: tuple[str, ...] = (
       "properties",
       "defs",

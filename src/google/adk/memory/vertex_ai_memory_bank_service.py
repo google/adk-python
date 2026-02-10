@@ -27,6 +27,8 @@ from .base_memory_service import SearchMemoryResponse
 from .memory_entry import MemoryEntry
 
 if TYPE_CHECKING:
+  import vertexai
+
   from ..sessions.session import Session
 
 logger = logging.getLogger('google_adk.' + __name__)
@@ -88,8 +90,8 @@ class VertexAiMemoryBankService(BaseMemoryService):
             'content': event.content.model_dump(exclude_none=True, mode='json')
         })
     if events:
-      client = self._get_api_client()
-      operation = client.agent_engines.memories.generate(
+      api_client = self._get_api_client()
+      operation = await api_client.agent_engines.memories.generate(
           name='reasoningEngines/' + self._agent_engine_id,
           direct_contents_source={'events': events},
           scope={
@@ -108,22 +110,24 @@ class VertexAiMemoryBankService(BaseMemoryService):
     if not self._agent_engine_id:
       raise ValueError('Agent Engine ID is required for Memory Bank.')
 
-    client = self._get_api_client()
-    retrieved_memories_iterator = client.agent_engines.memories.retrieve(
-        name='reasoningEngines/' + self._agent_engine_id,
-        scope={
-            'app_name': app_name,
-            'user_id': user_id,
-        },
-        similarity_search_params={
-            'search_query': query,
-        },
+    api_client = self._get_api_client()
+    retrieved_memories_iterator = (
+        await api_client.agent_engines.memories.retrieve(
+            name='reasoningEngines/' + self._agent_engine_id,
+            scope={
+                'app_name': app_name,
+                'user_id': user_id,
+            },
+            similarity_search_params={
+                'search_query': query,
+            },
+        )
     )
 
     logger.info('Search memory response received.')
 
-    memory_events = []
-    for retrieved_memory in retrieved_memories_iterator:
+    memory_events: list[MemoryEntry] = []
+    async for retrieved_memory in retrieved_memories_iterator:
       # TODO: add more complex error handling
       logger.debug('Retrieved memory: %s', retrieved_memory)
       memory_events.append(
@@ -138,13 +142,14 @@ class VertexAiMemoryBankService(BaseMemoryService):
       )
     return SearchMemoryResponse(memories=memory_events)
 
-  def _get_api_client(self):
+  def _get_api_client(self) -> vertexai.AsyncClient:
     """Instantiates an API client for the given project and location.
 
     It needs to be instantiated inside each request so that the event loop
     management can be properly propagated.
     Returns:
-      An API client for the given project and location or express mode api key.
+      An async API client for the given project and location or express mode api
+      key.
     """
     import vertexai
 
@@ -152,7 +157,7 @@ class VertexAiMemoryBankService(BaseMemoryService):
         project=self._project,
         location=self._location,
         api_key=self._express_mode_api_key,
-    )
+    ).aio
 
 
 def _should_filter_out_event(content: types.Content) -> bool:
