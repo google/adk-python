@@ -101,7 +101,7 @@ def execute_sql(
           try:
             # if the json serialization of the value succeeds, use it as is
             json.dumps(val)
-          except:
+          except (TypeError, ValueError, OverflowError):
             val = str(val)
           row_values[key] = val
         rows.append(row_values)
