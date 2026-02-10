@@ -189,7 +189,7 @@ class ToolTrajectoryCriterion(BaseCriterion):
       Actual tool calls: [T1, T1.1, T2, T2.1, T2.2, T3, T3.1]
 
       While the tool calls T1, T2 and T3 happened in the "Actual" and in
-      the same order as "Expected", but the the tool calls T4 is missing.
+      the same order as "Expected", but the tool calls T4 is missing.
     """
 
     ANY_ORDER = 2
@@ -215,7 +215,7 @@ class ToolTrajectoryCriterion(BaseCriterion):
       Actual tool calls: [T1, T1.1, T2, T2.1, T2.2, T3, T3.1]
 
       While the tool calls T1, T2 and T3 happened in the "Actual" and in
-      the same order as "Expected", but the the tool calls T4 is missing.
+      the same order as "Expected", but the tool calls T4 is missing.
     """
 
   match_type: MatchType = Field(
@@ -258,20 +258,12 @@ class EvalMetric(EvalBaseModel):
       description="The name of the metric.",
   )
 
-  threshold: float = Field(
-      description=(
-          "A threshold value. Each metric decides how to interpret this"
-          " threshold."
-      ),
-  )
-
-  judge_model_options: Optional[JudgeModelOptions] = Field(
-      deprecated=True,
+  threshold: Optional[float] = Field(
       default=None,
       description=(
-          "[DEPRECATED] This field is deprecated in favor of `criterion`."
-          " Depending on the metric you may want to one of the sub-classes of"
-          " BaseCriterion."
+          "This field will be deprecated soon. Please use `criterion` instead."
+          " A threshold value. Each metric decides how to interpret this"
+          " threshold."
       ),
   )
 

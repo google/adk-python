@@ -135,3 +135,37 @@ def test_execute_sql_error():
         tool_context=tool_context,
     )
     assert result == {"status": "ERROR", "error_details": "Test error"}
+
+
+def test_execute_sql_row_value_circular_reference_fallback():
+  """Test execute_sql converts circular row values to strings."""
+  project = "my_project"
+  instance_id = "my_instance"
+  query = "SELECT * FROM my_table"
+  credentials = mock.create_autospec(Credentials, instance=True)
+  tool_context = mock.create_autospec(ToolContext, instance=True)
+
+  with mock.patch(
+      "google.adk.tools.bigtable.client.get_bigtable_data_client"
+  ) as mock_get_client:
+    mock_client = mock.MagicMock()
+    mock_get_client.return_value = mock_client
+    mock_iterator = mock.create_autospec(ExecuteQueryIterator, instance=True)
+    mock_client.execute_query.return_value = mock_iterator
+    circular_value = []
+    circular_value.append(circular_value)
+    mock_row = mock.MagicMock()
+    mock_row.fields = {"col1": circular_value}
+    mock_iterator.__iter__.return_value = [mock_row]
+
+    result = execute_sql(
+        project_id=project,
+        instance_id=instance_id,
+        credentials=credentials,
+        query=query,
+        settings=BigtableToolSettings(),
+        tool_context=tool_context,
+    )
+
+  assert result["status"] == "SUCCESS"
+  assert result["rows"][0]["col1"] == str(circular_value)

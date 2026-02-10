@@ -79,7 +79,16 @@ async def inject_session_state(
     return ''.join(result)
 
   async def _replace_match(match) -> str:
-    var_name = match.group().lstrip('{').rstrip('}').strip()
+    matched_text = match.group()
+    if matched_text.startswith('{{') and matched_text.endswith('}}'):
+      # Preserve escaped non-placeholder literals (e.g. JSON snippets),
+      # but keep escaped placeholders as literal placeholders.
+      escaped_value = matched_text[2:-2]
+      if _is_escaped_placeholder(escaped_value):
+        return matched_text[1:-1]
+      return matched_text
+
+    var_name = matched_text.lstrip('{').rstrip('}').strip()
     optional = False
     if var_name.endswith('?'):
       optional = True
@@ -122,6 +131,21 @@ async def inject_session_state(
           raise KeyError(f'Context variable not found: `{var_name}`.')
 
   return await _async_sub(r'{+[^{}]*}+', _replace_match, template)
+
+
+def _is_escaped_placeholder(value: str) -> bool:
+  """Checks if escaped braces contain a supported placeholder pattern."""
+  var_name = value.strip()
+  if not var_name:
+    return False
+
+  if var_name.endswith('?'):
+    var_name = var_name.removesuffix('?')
+
+  if var_name.startswith('artifact.'):
+    return True
+
+  return _is_valid_state_name(var_name)
 
 
 def _is_valid_state_name(var_name):
