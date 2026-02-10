@@ -264,6 +264,17 @@ async def to_async_iterator(data):
     yield item
 
 
+class AsyncIterableList(list):
+  """A list that also supports async iteration, mimicking AsyncPager behavior."""
+
+  def __aiter__(self):
+    return self._async_iter()
+
+  async def _async_iter(self):
+    for item in self:
+      yield item
+
+
 class MockAsyncClient:
   """Mocks the API Client."""
 
@@ -300,20 +311,20 @@ class MockAsyncClient:
     if user_id_match:
       user_id = user_id_match.group(1)
       if user_id == 'user_with_pages':
-        return [
+        return AsyncIterableList([
             _convert_to_object(MOCK_SESSION_JSON_PAGE1),
             _convert_to_object(MOCK_SESSION_JSON_PAGE2),
-        ]
-      return [
+        ])
+      return AsyncIterableList([
           _convert_to_object(session)
           for session in self.session_dict.values()
           if session['user_id'] == user_id
-      ]
+      ])
 
     # No user filter, return all sessions
-    return [
+    return AsyncIterableList([
         _convert_to_object(session) for session in self.session_dict.values()
-    ]
+    ])
 
   async def _delete_session(self, name: str):
     session_id = name.split('/')[-1]
