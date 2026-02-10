@@ -395,7 +395,7 @@ def _setup_gcp_telemetry(
           # TODO - use trace_to_cloud here as well once otel_to_cloud is no
           # longer experimental.
           enable_cloud_tracing=True,
-          # TODO - reenable metrics once errors during shutdown are fixed.
+          # TODO - re-enable metrics once errors during shutdown are fixed.
           enable_cloud_metrics=False,
           enable_cloud_logging=True,
           google_auth=(credentials, project_id),
@@ -946,6 +946,7 @@ class AdkWebServer:
             detail=str(ve),
         ) from ve
 
+    # TODO - remove after migration
     @deprecated(
         "Please use create_eval_set instead. This will be removed in future"
         " releases."
@@ -967,6 +968,74 @@ class AdkWebServer:
           ),
       )
 
+    # TODO - remove after migration
+    @deprecated(
+        "Please use list_eval_sets instead. This will be removed in future"
+        " releases."
+    )
+    @app.get(
+        "/apps/{app_name}/eval_sets",
+        response_model_exclude_none=True,
+        tags=[TAG_EVALUATION],
+    )
+    async def list_eval_sets_legacy(app_name: str) -> list[str]:
+      list_eval_sets_response = await list_eval_sets(app_name)
+      return list_eval_sets_response.eval_set_ids
+
+    # TODO - remove after migration
+    @deprecated(
+        "Please use run_eval instead. This will be removed in future releases."
+    )
+    @app.post(
+        "/apps/{app_name}/eval_sets/{eval_set_id}/run_eval",
+        response_model_exclude_none=True,
+        tags=[TAG_EVALUATION],
+    )
+    async def run_eval_legacy(
+        app_name: str, eval_set_id: str, req: RunEvalRequest
+    ) -> list[RunEvalResult]:
+      run_eval_response = await run_eval(
+          app_name=app_name, eval_set_id=eval_set_id, req=req
+      )
+      return run_eval_response.run_eval_results
+
+    # TODO - remove after migration
+    @deprecated(
+        "Please use get_eval_result instead. This will be removed in future"
+        " releases."
+    )
+    @app.get(
+        "/apps/{app_name}/eval_results/{eval_result_id}",
+        response_model_exclude_none=True,
+        tags=[TAG_EVALUATION],
+    )
+    async def get_eval_result_legacy(
+        app_name: str,
+        eval_result_id: str,
+    ) -> EvalSetResult:
+      try:
+        return self.eval_set_results_manager.get_eval_set_result(
+            app_name, eval_result_id
+        )
+      except ValueError as ve:
+        raise HTTPException(status_code=404, detail=str(ve)) from ve
+      except ValidationError as ve:
+        raise HTTPException(status_code=500, detail=str(ve)) from ve
+
+    # TODO - remove after migration
+    @deprecated(
+        "Please use list_eval_results instead. This will be removed in future"
+        " releases."
+    )
+    @app.get(
+        "/apps/{app_name}/eval_results",
+        response_model_exclude_none=True,
+        tags=[TAG_EVALUATION],
+    )
+    async def list_eval_results_legacy(app_name: str) -> list[str]:
+      list_eval_results_response = await list_eval_results(app_name)
+      return list_eval_results_response.eval_result_ids
+
     @app.get(
         "/apps/{app_name}/eval-sets",
         response_model_exclude_none=True,
@@ -981,19 +1050,6 @@ class AdkWebServer:
         logger.warning(e)
 
       return ListEvalSetsResponse(eval_set_ids=eval_sets)
-
-    @deprecated(
-        "Please use list_eval_sets instead. This will be removed in future"
-        " releases."
-    )
-    @app.get(
-        "/apps/{app_name}/eval_sets",
-        response_model_exclude_none=True,
-        tags=[TAG_EVALUATION],
-    )
-    async def list_eval_sets_legacy(app_name: str) -> list[str]:
-      list_eval_sets_response = await list_eval_sets(app_name)
-      return list_eval_sets_response.eval_set_ids
 
     @app.post(
         "/apps/{app_name}/eval-sets/{eval_set_id}/add-session",
@@ -1142,22 +1198,6 @@ class AdkWebServer:
       except NotFoundError as nfe:
         raise HTTPException(status_code=404, detail=str(nfe)) from nfe
 
-    @deprecated(
-        "Please use run_eval instead. This will be removed in future releases."
-    )
-    @app.post(
-        "/apps/{app_name}/eval_sets/{eval_set_id}/run_eval",
-        response_model_exclude_none=True,
-        tags=[TAG_EVALUATION],
-    )
-    async def run_eval_legacy(
-        app_name: str, eval_set_id: str, req: RunEvalRequest
-    ) -> list[RunEvalResult]:
-      run_eval_response = await run_eval(
-          app_name=app_name, eval_set_id=eval_set_id, req=req
-      )
-      return run_eval_response.run_eval_results
-
     @app.post(
         "/apps/{app_name}/eval-sets/{eval_set_id}/run",
         response_model_exclude_none=True,
@@ -1251,28 +1291,6 @@ class AdkWebServer:
       except ValidationError as ve:
         raise HTTPException(status_code=500, detail=str(ve)) from ve
 
-    @deprecated(
-        "Please use get_eval_result instead. This will be removed in future"
-        " releases."
-    )
-    @app.get(
-        "/apps/{app_name}/eval_results/{eval_result_id}",
-        response_model_exclude_none=True,
-        tags=[TAG_EVALUATION],
-    )
-    async def get_eval_result_legacy(
-        app_name: str,
-        eval_result_id: str,
-    ) -> EvalSetResult:
-      try:
-        return self.eval_set_results_manager.get_eval_set_result(
-            app_name, eval_result_id
-        )
-      except ValueError as ve:
-        raise HTTPException(status_code=404, detail=str(ve)) from ve
-      except ValidationError as ve:
-        raise HTTPException(status_code=500, detail=str(ve)) from ve
-
     @app.get(
         "/apps/{app_name}/eval-results",
         response_model_exclude_none=True,
@@ -1284,19 +1302,6 @@ class AdkWebServer:
           app_name
       )
       return ListEvalResultsResponse(eval_result_ids=eval_result_ids)
-
-    @deprecated(
-        "Please use list_eval_results instead. This will be removed in future"
-        " releases."
-    )
-    @app.get(
-        "/apps/{app_name}/eval_results",
-        response_model_exclude_none=True,
-        tags=[TAG_EVALUATION],
-    )
-    async def list_eval_results_legacy(app_name: str) -> list[str]:
-      list_eval_results_response = await list_eval_results(app_name)
-      return list_eval_results_response.eval_result_ids
 
     @app.get(
         "/apps/{app_name}/metrics-info",
@@ -1341,6 +1346,24 @@ class AdkWebServer:
       if not artifact:
         raise HTTPException(status_code=404, detail="Artifact not found")
       return artifact
+
+    @app.get(
+        "/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts/{artifact_name}/versions/metadata",
+        response_model=list[ArtifactVersion],
+        response_model_exclude_none=True,
+    )
+    async def list_artifact_versions_metadata(
+        app_name: str,
+        user_id: str,
+        session_id: str,
+        artifact_name: str,
+    ) -> list[ArtifactVersion]:
+      return await self.artifact_service.list_artifact_versions(
+          app_name=app_name,
+          user_id=user_id,
+          session_id=session_id,
+          filename=artifact_name,
+      )
 
     @app.get(
         "/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts/{artifact_name}/versions/{version_id}",
@@ -1408,6 +1431,31 @@ class AdkWebServer:
       if artifact_version is None:
         raise HTTPException(
             status_code=500, detail="Artifact metadata unavailable"
+        )
+      return artifact_version
+
+    @app.get(
+        "/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts/{artifact_name}/versions/{version_id}/metadata",
+        response_model=ArtifactVersion,
+        response_model_exclude_none=True,
+    )
+    async def get_artifact_version_metadata(
+        app_name: str,
+        user_id: str,
+        session_id: str,
+        artifact_name: str,
+        version_id: int,
+    ) -> ArtifactVersion:
+      artifact_version = await self.artifact_service.get_artifact_version(
+          app_name=app_name,
+          user_id=user_id,
+          session_id=session_id,
+          filename=artifact_name,
+          version=version_id,
+      )
+      if not artifact_version:
+        raise HTTPException(
+            status_code=404, detail="Artifact version not found"
         )
       return artifact_version
 
@@ -1498,6 +1546,7 @@ class AdkWebServer:
               session_id=req.session_id,
               new_message=req.new_message,
               state_delta=req.state_delta,
+              invocation_id=req.invocation_id,
           )
       ) as agen:
         events = [event async for event in agen]
@@ -1559,17 +1608,7 @@ class AdkWebServer:
                 yield f"data: {sse_event}\n\n"
         except Exception as e:
           logger.exception("Error in event_generator: %s", e)
-          # Yield a proper Event object for the error
-          error_event = Event(
-              author="system",
-              content=types.Content(
-                  role="model", parts=[types.Part(text=f"Error: {e}")]
-              ),
-          )
-          yield (
-              "data:"
-              f" {error_event.model_dump_json(by_alias=True, exclude_none=True)}\n\n"
-          )
+          yield f"data: {json.dumps({'error': str(e)})}\n\n"
 
       # Returns a streaming response with the proper media type for SSE
       return StreamingResponse(
@@ -1636,6 +1675,9 @@ class AdkWebServer:
         modalities: List[Literal["TEXT", "AUDIO"]] = Query(
             default=["AUDIO"]
         ),  # Only allows "TEXT" or "AUDIO"
+        proactive_audio: bool | None = Query(default=None),
+        enable_affective_dialog: bool | None = Query(default=None),
+        enable_session_resumption: bool | None = Query(default=None),
     ) -> None:
       await websocket.accept()
 
@@ -1652,7 +1694,22 @@ class AdkWebServer:
 
       async def forward_events():
         runner = await self.get_runner_async(app_name)
-        run_config = RunConfig(response_modalities=modalities)
+        run_config = RunConfig(
+            response_modalities=modalities,
+            proactivity=(
+                types.ProactivityConfig(proactive_audio=proactive_audio)
+                if proactive_audio is not None
+                else None
+            ),
+            enable_affective_dialog=enable_affective_dialog,
+            session_resumption=(
+                types.SessionResumptionConfig(
+                    transparent=enable_session_resumption
+                )
+                if enable_session_resumption is not None
+                else None
+            ),
+        )
         async with Aclosing(
             runner.run_live(
                 session=session,

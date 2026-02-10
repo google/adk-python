@@ -113,6 +113,12 @@ class CacheMetadata(BaseModel):
           f"fingerprint={self.fingerprint[:8]}..."
       )
     cache_id = self.cache_name.split("/")[-1]
+    if self.expire_time is None:
+      return (
+          f"Cache {cache_id}: used {self.invocations_used} invocations, "
+          f"cached {self.contents_count} contents, "
+          "expires unknown"
+      )
     time_until_expiry_minutes = (self.expire_time - time.time()) / 60
     return (
         f"Cache {cache_id}: used {self.invocations_used} invocations, "

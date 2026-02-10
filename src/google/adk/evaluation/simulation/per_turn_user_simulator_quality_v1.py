@@ -171,7 +171,7 @@ def _parse_llm_response(response: str) -> Label:
       response,
   )
 
-  # If there was not match for "is_valid", return NOT_FOUND
+  # If there was no match for "is_valid", return NOT_FOUND
   if is_valid_match is None:
     return Label.NOT_FOUND
 

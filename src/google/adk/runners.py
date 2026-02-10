@@ -760,7 +760,7 @@ class Runner:
     else:
       # Step 2: Otherwise continue with normal execution
       # Note for live/bidi:
-      # the transcription may arrive later then the action(function call
+      # the transcription may arrive later than the action(function call
       # event and thus function response event). In this case, the order of
       # transcription and function call event will be wrong if we just
       # append as it arrives. To address this, we should check if there is
@@ -939,6 +939,9 @@ class Runner:
         audio `Blob` data(`inline_data`).
     *   **Live Model Audio Events with File Data:** Both input and output audio
         data are aggregated into a audio file saved into artifacts. The
+    *   **Live Model Audio Events with File Data:** Both input and output audio
+        data are aggregated into an audio file saved into artifacts. The
+
         reference to the file is saved in the event as `file_data`.
     *   **Usage Metadata:** Events containing token usage.
     *   **Transcription Events:** Both partial and non-partial transcription
@@ -948,7 +951,7 @@ class Runner:
 
     **Events Saved to the Session:**
     *   **Live Model Audio Events with File Data:** Both input and ouput audio
-        data are aggregated into a audio file saved into artifacts. The
+        data are aggregated into an audio file saved into artifacts. The
         reference to the file is saved as event in the `file_data` to session
         if RunConfig.save_live_model_audio_to_session is True.
     *   **Usage Metadata Events:** Saved to the session.
@@ -1099,7 +1102,7 @@ class Runner:
     # If the last event is a function response, should send this response to
     # the agent that returned the corresponding function call regardless the
     # type of the agent. e.g. a remote a2a agent may surface a credential
-    # request as a special long running function tool call.
+    # request as a special long-running function tool call.
     event = find_matching_function_call(session.events)
     if event and event.author:
       return root_agent.find_agent(event.author)
@@ -1474,11 +1477,14 @@ class Runner:
       invocation_context.user_content = new_message
 
     if new_message:
+      deprecated_save_blobs = False
+      if 'save_input_blobs_as_artifacts' in run_config.model_fields_set:
+        deprecated_save_blobs = run_config.save_input_blobs_as_artifacts
       await self._append_new_message_to_session(
           session=session,
           new_message=new_message,
           invocation_context=invocation_context,
-          save_input_blobs_as_artifacts=run_config.save_input_blobs_as_artifacts,
+          save_input_blobs_as_artifacts=deprecated_save_blobs,
           state_delta=state_delta,
       )
 

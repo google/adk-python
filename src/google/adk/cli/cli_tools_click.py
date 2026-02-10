@@ -294,11 +294,28 @@ def cli_conformance_record(
         " runs evaluation-based verification."
     ),
 )
+@click.option(
+    "--generate_report",
+    is_flag=True,
+    show_default=True,
+    default=False,
+    help="Optional. Whether to generate a Markdown report of the test results.",
+)
+@click.option(
+    "--report_dir",
+    type=click.Path(file_okay=False, dir_okay=True, resolve_path=True),
+    help=(
+        "Optional. Directory to store the generated report. Defaults to current"
+        " directory."
+    ),
+)
 @click.pass_context
 def cli_conformance_test(
     ctx,
     paths: tuple[str, ...],
     mode: str,
+    generate_report: bool,
+    report_dir: Optional[str] = None,
 ):
   """Run conformance tests to verify agent behavior consistency.
 
@@ -309,7 +326,7 @@ def cli_conformance_test(
   - Contain a spec.yaml file directly (single test case)
   - Contain subdirectories with spec.yaml files (multiple test cases)
 
-  If no paths are provided, defaults to searching the 'tests' folder.
+  If no paths are provided, defaults to searching for the 'tests' folder.
 
   TEST MODES:
 
@@ -329,6 +346,11 @@ def cli_conformance_test(
       generated-recordings.yaml    # Recorded interactions (replay mode)
       generated-session.yaml       # Session data (replay mode)
 
+  REPORT GENERATION:
+
+  Use --generate_report to create a Markdown report of test results.
+  Use --report_dir to specify where the report should be saved.
+
   EXAMPLES:
 
   \b
@@ -346,6 +368,14 @@ def cli_conformance_test(
   \b
   # Run in live mode (when available)
   adk conformance test --mode=live tests/core
+
+  \b
+  # Generate a test report
+  adk conformance test --generate_report
+
+  \b
+  # Generate a test report in a specific directory
+  adk conformance test --generate_report --report_dir=reports
   """
 
   try:
@@ -363,10 +393,18 @@ def cli_conformance_test(
     )
     ctx.exit(1)
 
-  # Convert to Path objects, use default if empty (paths are already resolved by Click)
+  # Convert to Path objects, use default if empty (paths are already resolved
+  # by Click)
   test_paths = [Path(p) for p in paths] if paths else [Path("tests").resolve()]
 
-  asyncio.run(run_conformance_test(test_paths=test_paths, mode=mode.lower()))
+  asyncio.run(
+      run_conformance_test(
+          test_paths=test_paths,
+          mode=mode.lower(),
+          generate_report=generate_report,
+          report_dir=report_dir,
+      )
+  )
 
 
 @main.command("create", cls=HelpfulCommand)
@@ -459,6 +497,7 @@ def adk_services_options(*, default_use_local_storage: bool = True):
             Optional. The URI of the session service.
             If set, ADK uses this service.
 
+            \b
             If unset, ADK chooses a default session service (see
             --use_local_storage).
             - Use 'agentengine://<agent_engine>' to connect to Agent Engine
@@ -478,6 +517,7 @@ def adk_services_options(*, default_use_local_storage: bool = True):
             Optional. The URI of the artifact service.
             If set, ADK uses this service.
 
+            \b
             If unset, ADK chooses a default artifact service (see
             --use_local_storage).
             - Use 'gs://<bucket_name>' to connect to the GCS artifact service.
@@ -503,6 +543,7 @@ def adk_services_options(*, default_use_local_storage: bool = True):
         "--memory_service_uri",
         type=str,
         help=textwrap.dedent("""\
+            \b
             Optional. The URI of the memory service.
             - Use 'rag://<rag_corpus_id>' to connect to Vertex AI Rag Memory Service.
             - Use 'agentengine://<agent_engine>' to connect to Agent Engine
@@ -1299,7 +1340,7 @@ def cli_web(
 ):
   """Starts a FastAPI server with Web UI for agents.
 
-  AGENTS_DIR: The directory of agents, where each sub-directory is a single
+  AGENTS_DIR: The directory of agents, where each subdirectory is a single
   agent, containing at least `__init__.py` and `agent.py` files.
 
   Example:
@@ -1366,7 +1407,7 @@ def cli_web(
 
 @main.command("api_server")
 @feature_options()
-# The directory of agents, where each sub-directory is a single agent.
+# The directory of agents, where each subdirectory is a single agent.
 # By default, it is the current working directory
 @click.argument(
     "agents_dir",
@@ -1401,7 +1442,7 @@ def cli_api_server(
 ):
   """Starts a FastAPI server for agents.
 
-  AGENTS_DIR: The directory of agents, where each sub-directory is a single
+  AGENTS_DIR: The directory of agents, where each subdirectory is a single
   agent, containing at least `__init__.py` and `agent.py` files.
 
   Example:
@@ -1491,14 +1532,20 @@ def cli_api_server(
     is_flag=True,
     show_default=True,
     default=False,
-    help="Optional. Whether to enable Cloud Trace for cloud run.",
+    help=(
+        "Optional. Whether to enable Cloud Trace export for Cloud Run"
+        " deployments."
+    ),
 )
 @click.option(
     "--otel_to_cloud",
     is_flag=True,
     show_default=True,
     default=False,
-    help="Optional. Whether to enable OpenTelemetry for Agent Engine.",
+    help=(
+        "Optional. Whether to enable OpenTelemetry export to GCP for Cloud Run"
+        " deployments."
+    ),
 )
 @click.option(
     "--with_ui",
@@ -1867,6 +1914,25 @@ def cli_migrate_session(
         " directory, if any.)"
     ),
 )
+@click.option(
+    "--validate-agent-import/--no-validate-agent-import",
+    default=False,
+    help=(
+        "Optional. Validate that the agent module can be imported before"
+        " deployment. This requires your local environment to have the same"
+        " dependencies as the deployment environment. (default: disabled)"
+    ),
+)
+@click.option(
+    "--skip-agent-import-validation",
+    "skip_agent_import_validation_alias",
+    is_flag=True,
+    default=False,
+    help=(
+        "Optional. Skip pre-deployment import validation of `agent.py`. This is"
+        " the default; use --validate-agent-import to enable validation."
+    ),
+)
 @click.argument(
     "agent",
     type=click.Path(
@@ -1891,6 +1957,8 @@ def cli_deploy_agent_engine(
     requirements_file: str,
     absolutize_imports: bool,
     agent_engine_config_file: str,
+    validate_agent_import: bool = False,
+    skip_agent_import_validation_alias: bool = False,
 ):
   """Deploys an agent to Agent Engine.
 
@@ -1905,6 +1973,11 @@ def cli_deploy_agent_engine(
   """
   logging.getLogger("vertexai_genai.agentengines").setLevel(logging.INFO)
   try:
+    if validate_agent_import and skip_agent_import_validation_alias:
+      raise click.UsageError(
+          "Do not pass both --validate-agent-import and"
+          " --skip-agent-import-validation."
+      )
     cli_deploy.to_agent_engine(
         agent_folder=agent,
         project=project,
@@ -1922,6 +1995,7 @@ def cli_deploy_agent_engine(
         requirements_file=requirements_file,
         absolutize_imports=absolutize_imports,
         agent_engine_config_file=agent_engine_config_file,
+        skip_agent_import_validation=not validate_agent_import,
     )
   except Exception as e:
     click.secho(f"Deploy failed: {e}", fg="red", err=True)
