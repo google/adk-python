@@ -323,50 +323,88 @@ def _process_compaction_events(events: list[Event]) -> list[Event]:
   Returns:
     A list of events with compaction applied.
   """
-  # example of compaction events:
-  # [event_1(timestamp=1), event_2(timestamp=2),
-  # compaction_1(event_1, event_2, timestamp=3), event_3(timestamp=4),
-  # compaction_2(event_2, event_3, timestamp=5), event_4(timestamp=6)]
-  # for each compaction event, it only covers the events at most between the
-  # current compaction and the previous compaction. So during compaction, we
-  # don't have to go across compaction boundaries.
-  # Compaction events are always strictly in order based on event timestamp.
-  events_to_process = []
-  last_compaction_start_time = float('inf')
+  # Example:
+  # [event_1(ts=1), event_2(ts=2), compaction_1(1-2), event_3(ts=4),
+  #  compaction_2(2-4), event_4(ts=6)].
+  #
+  # Overlaps are resolved by keeping only non-subsumed compaction summaries.
+  # A summary event is materialized at its compaction end timestamp, and raw
+  # events inside any kept compaction range are filtered out.
+  compaction_infos: list[tuple[int, float, float]] = []
+  for i, event in enumerate(events):
+    if not (event.actions and event.actions.compaction):
+      continue
+    compaction = event.actions.compaction
+    if (
+        compaction.start_timestamp is None
+        or compaction.end_timestamp is None
+        or compaction.compacted_content is None
+    ):
+      continue
+    compaction_infos.append(
+        (i, compaction.start_timestamp, compaction.end_timestamp)
+    )
 
-  # Iterate in reverse to easily handle overlapping compactions.
-  for event in reversed(events):
+  subsumed_compaction_event_indexes: set[int] = set()
+  for event_index, start_ts, end_ts in compaction_infos:
+    for other_index, other_start, other_end in compaction_infos:
+      if other_index == event_index:
+        continue
+      if other_start <= start_ts and other_end >= end_ts:
+        if (
+            other_start < start_ts
+            or other_end > end_ts
+            or other_index > event_index
+        ):
+          subsumed_compaction_event_indexes.add(event_index)
+          break
+
+  compaction_ranges: list[tuple[float, float]] = []
+  processed_items: list[tuple[float, int, Event]] = []
+
+  for i, event in enumerate(events):
     if event.actions and event.actions.compaction:
+      if i in subsumed_compaction_event_indexes:
+        continue
       compaction = event.actions.compaction
       if (
-          compaction.start_timestamp is not None
-          and compaction.end_timestamp is not None
+          compaction.start_timestamp is None
+          or compaction.end_timestamp is None
+          or compaction.compacted_content is None
       ):
-        # Create a new event for the compacted summary.
-        new_event = Event(
-            timestamp=compaction.end_timestamp,
-            author='model',
-            content=compaction.compacted_content,
-            branch=event.branch,
-            invocation_id=event.invocation_id,
-            actions=event.actions,
-        )
-        # Prepend to maintain chronological order in the final list.
-        events_to_process.insert(0, new_event)
-        # Update the boundary for filtering. Events with timestamps greater than
-        # or equal to this start time have been compacted.
-        last_compaction_start_time = min(
-            last_compaction_start_time, compaction.start_timestamp
-        )
-    elif event.timestamp < last_compaction_start_time:
-      # This event is not a compaction and is before the current compaction
-      # range. Prepend to maintain chronological order.
-      events_to_process.insert(0, event)
-    else:
-      # skip the event
-      pass
+        continue
+      compaction_ranges.append(
+          (compaction.start_timestamp, compaction.end_timestamp)
+      )
+      processed_items.append((
+          compaction.end_timestamp,
+          i,
+          Event(
+              timestamp=compaction.end_timestamp,
+              author='model',
+              content=compaction.compacted_content,
+              branch=event.branch,
+              invocation_id=event.invocation_id,
+              actions=event.actions,
+          ),
+      ))
 
-  return events_to_process
+  def _is_timestamp_compacted(ts: float) -> bool:
+    for start_ts, end_ts in compaction_ranges:
+      if start_ts <= ts <= end_ts:
+        return True
+    return False
+
+  for i, event in enumerate(events):
+    if event.actions and event.actions.compaction:
+      continue
+    if _is_timestamp_compacted(event.timestamp):
+      continue
+    processed_items.append((event.timestamp, i, event))
+
+  # Keep chronological order and a stable tie-breaker for equal timestamps.
+  processed_items.sort(key=lambda item: (item[0], item[1]))
+  return [event for _, _, event in processed_items]
 
 
 def _get_contents(
