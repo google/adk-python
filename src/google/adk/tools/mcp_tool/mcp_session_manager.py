@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -434,10 +434,9 @@ class MCPSessionManager:
           await exit_stack.aclose()
         except Exception as e:
           # Log the error but don't re-raise to avoid blocking shutdown
-          print(
-              'Warning: Error during MCP session cleanup for'
-              f' {session_key}: {e}',
-              file=self._errlog,
+          logger.warning(
+              f'Error during MCP session cleanup for {session_key}',
+              exc_info=True,
           )
         finally:
           del self._sessions[session_key]

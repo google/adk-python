@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -29,6 +29,7 @@ from ._base_llm_processor import BaseLlmRequestProcessor
 from .functions import remove_client_function_call_id
 from .functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
 from .functions import REQUEST_EUC_FUNCTION_CALL_NAME
+from .functions import REQUEST_INPUT_FUNCTION_CALL_NAME
 
 logger = logging.getLogger('google_adk.' + __name__)
 
@@ -41,8 +42,16 @@ class _ContentLlmRequestProcessor(BaseLlmRequestProcessor):
       self, invocation_context: InvocationContext, llm_request: LlmRequest
   ) -> AsyncGenerator[Event, None]:
     from ...agents.llm_agent import LlmAgent
+    from ...models.google_llm import Gemini
 
     agent = invocation_context.agent
+    preserve_function_call_ids = False
+    if isinstance(agent, LlmAgent):
+      canonical_model = agent.canonical_model
+      preserve_function_call_ids = (
+          isinstance(canonical_model, Gemini)
+          and canonical_model.use_interactions_api
+      )
 
     # Preserve all contents that were added by instruction processor
     # (since llm_request.contents will be completely reassigned below)
@@ -54,6 +63,7 @@ class _ContentLlmRequestProcessor(BaseLlmRequestProcessor):
           invocation_context.branch,
           invocation_context.session.events,
           agent.name,
+          preserve_function_call_ids=preserve_function_call_ids,
       )
     else:
       # Include current turn context only (no conversation history)
@@ -61,6 +71,7 @@ class _ContentLlmRequestProcessor(BaseLlmRequestProcessor):
           invocation_context.branch,
           invocation_context.session.events,
           agent.name,
+          preserve_function_call_ids=preserve_function_call_ids,
       )
 
     # Add instruction-related contents to proper position in conversation
@@ -220,13 +231,29 @@ def _rearrange_events_for_latest_function_response(
 
 
 def _is_part_invisible(p: types.Part) -> bool:
-  """Returns whether a part is invisible for LLM context."""
-  return getattr(p, 'thought', False) or not (
+  """Returns whether a part is invisible for LLM context.
+
+  A part is invisible if:
+  - It has no meaningful content (text, inline_data, file_data, function_call,
+    function_response, executable_code, or code_execution_result), OR
+  - It is marked as a thought AND does not contain function_call or
+    function_response
+
+  Function calls and responses are never invisible, even if marked as thought,
+  because they represent actions that need to be executed or results that need
+  to be processed.
+
+  Args:
+    p: The part to check.
+  """
+  # Function calls and responses are never invisible, even if marked as thought
+  if p.function_call or p.function_response:
+    return False
+
+  return p.thought or not (
       p.text
       or p.inline_data
       or p.file_data
-      or p.function_call
-      or p.function_response
       or p.executable_code
       or p.code_execution_result
   )
@@ -280,6 +307,7 @@ def _should_include_event_in_context(
       or _is_adk_framework_event(event)
       or _is_auth_event(event)
       or _is_request_confirmation_event(event)
+      or _is_request_input_event(event)
   )
 
 
@@ -342,7 +370,11 @@ def _process_compaction_events(events: list[Event]) -> list[Event]:
 
 
 def _get_contents(
-    current_branch: Optional[str], events: list[Event], agent_name: str = ''
+    current_branch: Optional[str],
+    events: list[Event],
+    agent_name: str = '',
+    *,
+    preserve_function_call_ids: bool = False,
 ) -> list[types.Content]:
   """Get the contents for the LLM request.
 
@@ -352,6 +384,7 @@ def _get_contents(
     current_branch: The current branch of the agent.
     events: Events to process.
     agent_name: The name of the agent.
+    preserve_function_call_ids: Whether to preserve function call ids.
 
   Returns:
     A list of processed contents.
@@ -451,13 +484,18 @@ def _get_contents(
   for event in result_events:
     content = copy.deepcopy(event.content)
     if content:
-      remove_client_function_call_id(content)
+      if not preserve_function_call_ids:
+        remove_client_function_call_id(content)
       contents.append(content)
   return contents
 
 
 def _get_current_turn_contents(
-    current_branch: Optional[str], events: list[Event], agent_name: str = ''
+    current_branch: Optional[str],
+    events: list[Event],
+    agent_name: str = '',
+    *,
+    preserve_function_call_ids: bool = False,
 ) -> list[types.Content]:
   """Get contents for the current turn only (no conversation history).
 
@@ -473,6 +511,7 @@ def _get_current_turn_contents(
     current_branch: The current branch of the agent.
     events: A list of all session events.
     agent_name: The name of the agent.
+    preserve_function_call_ids: Whether to preserve function call ids.
 
   Returns:
     A list of contents for the current turn only, preserving context needed
@@ -484,7 +523,12 @@ def _get_current_turn_contents(
     if _should_include_event_in_context(current_branch, event) and (
         event.author == 'user' or _is_other_agent_reply(agent_name, event)
     ):
-      return _get_contents(current_branch, events[i:], agent_name)
+      return _get_contents(
+          current_branch,
+          events[i:],
+          agent_name,
+          preserve_function_call_ids=preserve_function_call_ids,
+      )
 
   return []
 
@@ -673,6 +717,11 @@ def _is_request_confirmation_event(event: Event) -> bool:
 def _is_adk_framework_event(event: Event) -> bool:
   """Checks if the event is an ADK framework event."""
   return _is_function_call_event(event, 'adk_framework')
+
+
+def _is_request_input_event(event: Event) -> bool:
+  """Checks if the event is a request input event."""
+  return _is_function_call_event(event, REQUEST_INPUT_FUNCTION_CALL_NAME)
 
 
 def _is_live_model_audio_event_with_inline_data(event: Event) -> bool:

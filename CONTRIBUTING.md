@@ -188,6 +188,18 @@ part before or alongside your code PR.
     pytest ./tests/unittests
     ```
 
+    **Alternatively**, use the included `unittests.sh` script which handles
+    environment setup and restoration automatically:
+
+    ```shell
+    ./scripts/unittests.sh
+    ```
+
+    This script will:
+    -   Set up the test environment with minimal dependencies (`test`, `eval`, `a2a`)
+    -   Run the unit tests
+    -   Restore the full development environment (`--all-extras`)
+
 6.  **Auto-format the code:**
 
     **NOTE**: We use `isort` and `pyink` for styles. Use the included

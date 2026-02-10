@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -107,7 +107,7 @@ def execute_sql(
         try:
           # if the json serialization of the row succeeds, use it as is
           json.dumps(row)
-        except:
+        except (TypeError, ValueError, OverflowError):
           row = str(row)
 
         rows.append(row)

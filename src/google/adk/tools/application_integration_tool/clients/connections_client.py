@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -815,7 +815,7 @@ class ConnectionsClient:
         credentials, _ = default_service_credential(
             scopes=["https://www.googleapis.com/auth/cloud-platform"]
         )
-      except:
+      except google.auth.exceptions.DefaultCredentialsError:
         credentials = None
 
     if not credentials:

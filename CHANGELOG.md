@@ -1,5 +1,180 @@
 # Changelog
 
+## [1.24.1](https://github.com/google/adk-python/compare/v1.24.0...v1.24.1) (2026-02-06)
+
+### Bug Fixes
+
+* Add back deprecated eval endpoint for web until we migrate([ae993e8](https://github.com/google/adk-python/commit/ae993e884f44db276a4116ebb7a11a2fb586dbfe))
+* Update eval dialog colors, and fix a2ui component types ([3686a3a](https://github.com/google/adk-python/commit/3686a3a98f46738549cd7a999f3773b7a6fd1182))
+
+## [1.24.0](https://github.com/google/adk-python/compare/v1.23.0...v1.24.0) (2026-02-04)
+
+### ⚠ BREAKING CHANGES
+
+* Breaking: Make credential manager accept `tool_context` instead of `callback_context` ([fe82f3c](https://github.com/google/adk-python/commit/fe82f3cde854e49be13d90b4c02d786d82f8a202))
+
+### Highlights
+
+* **[Web]**
+  * **Consolidated Event View**: Replaced the Event tab with a more intuitive "click-to-expand" interaction on message rows, enabling faster debugging within the chat context
+  * **Enhanced Accessibility**: Added full support for arrow-key navigation for a more seamless, keyboard-centric experience
+  * **Rich Developer Tooling**: Introduced detailed tooltips for function calls, providing instant visibility into arguments, responses, and state changes
+  * **A2UI Integration**: Integrated the **A2UI v0.8** standard catalog to automatically render spec-compliant ADK parts as native UI components directly in the chat
+
+### Features
+
+* **[Core]**
+  * Allow passthrough of `GOOGLE_CLOUD_LOCATION` for Agent Engine deployments ([004e15c](https://github.com/google/adk-python/commit/004e15ccb7c7f683623f8e7d2e77a9d12558c545))
+  * Add interface for agent optimizers ([4ee125a](https://github.com/google/adk-python/commit/4ee125a03856fdb9ed28245bf7f5917c2d9038db))
+  * Pass event ID as metadata when converted into a message ([85434e2](https://github.com/google/adk-python/commit/85434e293f7bd1e3711f190f84d5a36804e4462b))
+  * Restructure the bug report template as per the intake process ([324796b](https://github.com/google/adk-python/commit/324796b4fe05bec3379bfef67071a29552ef355a))
+
+* **[Models]**
+  * Mark Vertex calls made from non-Gemini models ([7d58e0d](https://github.com/google/adk-python/commit/7d58e0d2f375bc80bdfac9cffea2926fd2344b8a))
+
+* **[Evals]**
+  * Allow Vertex AI Client initialization with API Key ([43d6075](https://github.com/google/adk-python/commit/43d6075ea7aa49ddb358732f2219ca9598dd286f))
+  * Remove overall evaluation status calculation from `_CustomMetricEvaluator` and add threshold to custom metric function expected signature ([553e376](https://github.com/google/adk-python/commit/553e376718ceb3d7fb1403231bb720836d71f42c))
+
+* **[Tools]**
+  * Make OpenAPI tool asynchronous ([9290b96](https://github.com/google/adk-python/commit/9290b966267dc02569786f95aab2a3cb78c7004f))
+  * Implement toolset authentication for `McpToolset`, `OpenAPIToolset`, and other toolsets ([798f65d](https://github.com/google/adk-python/commit/798f65df86b1bbe33d864e30c5b1f9e155e89810))
+  * Add framework support for toolset authentication before `get_tools` calls ([ee873ca](https://github.com/google/adk-python/commit/ee873cae2e2df960910d264a4340ce6c0489eb7a))
+  * Support dynamic configuration for `VertexAiSearchTool` ([585ebfd](https://github.com/google/adk-python/commit/585ebfdac7f1b8007b4e4a7e4258ec5de72c78b1))
+  * Add `get_auth_config` method to toolset to expose authentication requirements ([381d44c](https://github.com/google/adk-python/commit/381d44cab437cac027af181ae627e7b260b7561e))
+  * Add methods in `McpToolset` for users to access MCP resources ([8f7d965](https://github.com/google/adk-python/commit/8f7d9659cfc19034af29952fbca765d012169b38))
+  * Improve error message when failing to get tools from MCP ([3480b3b](https://github.com/google/adk-python/commit/3480b3b82d89de69f77637d7ad034827434df45a))
+
+* **[Services]**
+  * Improve `asyncio` loop handling and test cleanup ([00aba2d](https://github.com/google/adk-python/commit/00aba2d884d24fb5244d1de84f8dba9cbc3c07e8))
+
+* **[Live]**
+  * Support running tools in separate threads for live mode ([714c3ad](https://github.com/google/adk-python/commit/714c3ad0477e775fba6696a919a366a293197268))
+
+* **[Observability]**
+  * Add extra attributes to spans generated with `opentelemetry-instrumentation-google-genai` ([e87a843](https://github.com/google/adk-python/commit/e87a8437fb430e0d4c42c73948e3ba1872040a15))
+
+### Bug Fixes
+
+* Ignore `session_db_kwargs` for SQLite session services ([ce07cd8](https://github.com/google/adk-python/commit/ce07cd8144c8498434f68e61ebeb519bf329f778))
+* Resolve `MutualTLSChannelError` by adding `pyopenssl` dependency ([125bc85](https://github.com/google/adk-python/commit/125bc85ac5e1400bc38f7c681f76fa82626c9911))
+* Add `update_timestamp_tz` property to `StorageSession` ([666cebe](https://github.com/google/adk-python/commit/666cebe3693d2981fd5fea6e9e4c65e56dcd3f2b))
+* Do not treat Function Calls and Function Responses as invisible when marked as thoughts ([853a3b0](https://github.com/google/adk-python/commit/853a3b0e143ce27516f0de51e0e0df2af6ecf465))
+* Add pre-deployment validation for agent module imports (credit to @ppgranger, [2ac468e](https://github.com/google/adk-python/commit/2ac468ea7e30ef30c1324ffc86f67dbf32ab7ede))
+* Fix cases where `execution_result_delimiters` have `None` type element ([a16e3cc](https://github.com/google/adk-python/commit/a16e3cc67e1cb391228ba78662547672404ae550))
+* Disable `save_input_blobs_as_artifacts` deprecation warning message for users not setting it ([c34615e](https://github.com/google/adk-python/commit/c34615ecf3c7bbe0f4275f72543774f258c565b4))
+* Fix agent config path handling in generated deployment script ([8012339](https://github.com/google/adk-python/commit/801233902bbd6c0cca63b6fc8c1b0b2531f3f11e))
+* Add `pypika>=0.50.0` to `project.toml` to support `crewai` on Python 3.12+ ([e8f7aa3](https://github.com/google/adk-python/commit/e8f7aa3140d2585ac38ebfe31c5b650383499a20))
+* Update OpenTelemetry dependency versions to relax version constraints for `opentelemetry-api` and `opentelemetry-sdk` ([706a6dd](https://github.com/google/adk-python/commit/706a6dda8144da147bd9fa42ef85bbfa58fec5d3))
+* Enable `pool_pre_ping` by default for non-SQLite database engines ([da73e71](https://github.com/google/adk-python/commit/da73e718efa9557ed33e2fb579de68fcbcf4c7f0))
+* Ensure database sessions are always rolled back on errors ([63a8eba](https://github.com/google/adk-python/commit/63a8eba53f2cb07625eb7cd111ff767e8e0030fa))
+* Reload stale session in `DatabaseSessionService` when storage update time is later than the in-memory session object ([1063fa5](https://github.com/google/adk-python/commit/1063fa532cad59d8e9f7421ce2f523724d49d541))
+* Make credential key generation stable and prevent cross-user credential leaks ([33012e6](https://github.com/google/adk-python/commit/33012e6dda9ef20c7a1dae66a84717de5d782097))
+* Change MCP `read_resource` to return original contents ([ecce7e5](https://github.com/google/adk-python/commit/ecce7e54a688a915a1b9d742c39e4684186729be))
+* Recognize function responses as non-empty parts in LiteLLM ([d0102ec](https://github.com/google/adk-python/commit/d0102ecea331e062190dbb7578a4ef7f4044306e))
+* Handle HTTP/HTTPS URLs for media files in LiteLLM content conversion ([47221cd](https://github.com/google/adk-python/commit/47221cd5c1e778cd4b92ed8d382c639435f5728c))
+* Fix Pydantic schema generation error for `ClientSession` ([131fbd3](https://github.com/google/adk-python/commit/131fbd39482980572487a30fea13236d2badd543))
+* Fix Click’s Wrapping in `adk eval` help message ([3bcd8f7](https://github.com/google/adk-python/commit/3bcd8f7f7a0683f838005bc209f7d39dc93f850b))
+* Stream errors as simple JSON objects in ADK web server SSE endpoint ([798d005](https://github.com/google/adk-python/commit/798d0053c832e7ed52e2e104f8a14f789ba8b17f))
+* Remove print debugging artifact ([0d38a36](https://github.com/google/adk-python/commit/0d38a3683f13bc12dc5d181164b6cd5d72fc260c))
+
+### Improvements
+
+* Check `will_continue` for streaming function calls ([2220d88](https://github.com/google/adk-python/commit/2220d885cda875144b52338b5becf6e5546f3f51))
+* Update ADK web, rework events, and add A2UI capabilities ([37e6507](https://github.com/google/adk-python/commit/37e6507ce4d8750100d914eb1a62014350ef1795))
+* Improve error handling for LiteLLM import in `gemma_llm.py` ([574ec43](https://github.com/google/adk-python/commit/574ec43a175e3bf3a05e73114e8db7196fae7040))
+* Replace proxy methods with utils implementation ([6ff10b2](https://github.com/google/adk-python/commit/6ff10b23be01c1f7dd79d13ac8c679c079140f76), [f82ceb0](https://github.com/google/adk-python/commit/f82ceb0ce75d3efed7c046835ddac76c28210013))
+* Replace print statements with logging in ADK evaluation components ([dd8cd27](https://github.com/google/adk-python/commit/dd8cd27b2ce505ecca50cdfbb1469db01c82b0af))
+* Add sample agent that requires OAuth flow during MCP tool listing, and convert `MCPToolset` to `McpToolset` in unit tests ([2770012](https://github.com/google/adk-python/commit/2770012cecdfc71628a818a75b21faabe828b4e5), [4341839](https://github.com/google/adk-python/commit/43418394202c2d01b0d37f6424bd601148077e27))
+* Ensure `BigQueryAgentAnalyticsPlugin` is shut down after each test ([c0c98d9](https://github.com/google/adk-python/commit/c0c98d94b3161d6bf9fff731e0abfc985b53e653))
+* Add ADK logger in `RestApiTool` ([288c2c4](https://github.com/google/adk-python/commit/288c2c448d77c574dafadf7851a49e6ff59fa7f4))
+* Add GitHub Action check to run `mypy` ([32f9f92](https://github.com/google/adk-python/commit/32f9f92042ab530220ac9d159045c91d311affa7))
+* Add `unittests.sh` script and update `CONTRIBUTING.md` ([025b42c](https://github.com/google/adk-python/commit/025b42c8361ad2078593e3e7fc5301df88a532c7))
+* Extract helper function for LLM request building and response processing ([753084f](https://github.com/google/adk-python/commit/753084fd46c9637488f33b0a05b4d270f6e03a39))
+
+## [1.23.0](https://github.com/google/adk-python/compare/v1.22.1...v1.23.0) (2026-01-22)
+
+### ⚠ BREAKING CHANGES
+
+* Breaking: Use OpenTelemetry for BigQuery plugin tracing, replacing custom `ContextVar` implementation ([ab89d12](https://github.com/google/adk-python/commit/ab89d1283430041afb303834749869e9ee331721))
+
+### Features
+
+* **[Core]**
+  * Add support to automatically create a session if one does not exist ([8e69a58](https://github.com/google/adk-python/commit/8e69a58df4eadeccbb100b7264bb518a46b61fd7))
+  * Remove `@experimental` decorator from `AgentEngineSandboxCodeExecutor` ([135f763](https://github.com/google/adk-python/commit/135f7633253f6a415302142abc3579b664601d5b))
+  * Add `--disable_features` CLI option to override default feature enable state ([53b67ce](https://github.com/google/adk-python/commit/53b67ce6340f3f3f8c3d732f9f7811e445c76359))
+  * Add `otel_to_cloud` flag to `adk deploy agent_engine` command ([21f63f6](https://github.com/google/adk-python/commit/21f63f66ee424501d9a70806277463ef718ae843))
+  * Add `is_computer_use` field to agent information in `adk-web` server ([5923da7](https://github.com/google/adk-python/commit/5923da786eb1aaef6f0bcbc6adc906cbc8bf9b36))
+  * Allow `thinking_config` in `generate_content_config` ([e162bb8](https://github.com/google/adk-python/commit/e162bb8832a806e2380048e39165bf837455f88c))
+  * Convert A2UI messages between A2A `DataPart` metadata and ADK events ([1133ce2](https://github.com/google/adk-python/commit/1133ce219c5a7a9a85222b03e348ba6b13830c8f))
+  * Add `--enable_features` CLI option to override default feature enable state ([79fcddb](https://github.com/google/adk-python/commit/79fcddb39f71a4c1342e63b4d67832b3eccb2652))
+
+* **[Tools]**
+  * Add flush mechanism to `BigQueryAgentAnalyticsPlugin` to ensure pending log events are written to BigQuery ([9579bea](https://github.com/google/adk-python/commit/9579bea05d946b3d8b4bfec35e510725dd371224))
+  * Allow Google Search tool to set a different model ([b57a3d4](https://github.com/google/adk-python/commit/b57a3d43e4656f5a3c5db53addff02b67d1fde26))
+  * Support authentication for MCP tool listing ([e3d542a](https://github.com/google/adk-python/commit/e3d542a5ba3d357407f8cd29cfdd722f583c8564) [19315fe](https://github.com/google/adk-python/commit/19315fe557039fa8bf446525a4830b1c9f40cba9))
+  * Use JSON schema for `base_retrieval_tool`, `load_artifacts_tool`, and `load_memory_tool` declarations when the feature is enabled ([69ad605](https://github.com/google/adk-python/commit/69ad605bc4bbe9a4f018127fd3625169ee70488e))
+  * Use JSON schema for `IntegrationConnectorTool` declaration when the feature is enabled ([2ed6865](https://github.com/google/adk-python/commit/2ed686527ac75ff64128ce7d9b1a3befc2b37c64))
+  * Start and close `ClientSession` in a single task in `McpSessionManager` ([cce430d](https://github.com/google/adk-python/commit/cce430da799766686e65f6cae02ba64e916d5c8a))
+  * Use JSON schema for `RestApiTool` declaration when the feature is enabled ([a5f0d33](https://github.com/google/adk-python/commit/a5f0d333d7f26f2966ed511d5d9def7a1933f0c2))
+
+* **[Evals]**
+  * Update `adk eval` CLI to consume custom metrics by adding `CustomMetricEvaluator` ([ea0934b](https://github.com/google/adk-python/commit/ea0934b9934c1fefd129a1026d6af369f126870e))
+  * Update `EvalConfig` and `EvalMetric` data models to support custom metrics ([6d2f33a](https://github.com/google/adk-python/commit/6d2f33a59cfba358dd758378290125fc2701c411))
+
+* **[Observability]**
+  * Add minimal `generate_content {model.name}` spans and logs for non-Gemini inference and when `opentelemetry-inference-google-genai` dependency is missing ([935c279](https://github.com/google/adk-python/commit/935c279f8281bde99224f03d936b8abe51cbabfc))
+
+* **[Integrations]**
+  * Enhance `TraceManager` asynchronous safety, enrich BigQuery plugin logging, and fix serialization ([a4116a6](https://github.com/google/adk-python/commit/a4116a6cbfadc161982af5dabd55a711d79348b7))
+
+* **[Live]**
+  * Persist user input content to session in live mode ([a04828d](https://github.com/google/adk-python/commit/a04828dd8a848482acbd48acc7da432d0d2cb0aa))
+
+### Bug Fixes
+
+* Recursively extract input/output schema for AgentTool ([bf2b56d](https://github.com/google/adk-python/commit/bf2b56de6d0052e40b6d871b2d22c56e9225e145))
+* Yield buffered `function_call` and `function_response` events during live streaming ([7b25b8f](https://github.com/google/adk-python/commit/7b25b8fb1daf54d7694bf405d545d46d2c012d2b))
+* Update `authlib` and `mcp` dependency versions ([7955177](https://github.com/google/adk-python/commit/7955177fb28b8e5dc19aae8be94015a7b5d9882a))
+* Set `LITELLM_MODE` to `PRODUCTION` before importing LiteLLM to prevent implicit `.env` file loading ([215c2f5](https://github.com/google/adk-python/commit/215c2f506e21a3d8c39551b80f6356943ecae320))
+* Redact sensitive information from URIs in logs ([5257869](https://github.com/google/adk-python/commit/5257869d91a77ebd1381538a85e7fdc3a600da90))
+* Handle asynchronous driver URLs in the migration tool ([4b29d15](https://github.com/google/adk-python/commit/4b29d15b3e5df65f3503daffa6bc7af85159507b))
+* Remove custom metadata from A2A response events ([81eaeb5](https://github.com/google/adk-python/commit/81eaeb5eba6d40cde0cf6147d96921ed1bf7bb31))
+* Handle `None` inferences in eval results ([7d4326c](https://github.com/google/adk-python/commit/7d4326c3606a7ff2ba3c0fdef08d4f6af52ee71e))
+* Mark all parts of a thought event as thought ([f92d4e3](https://github.com/google/adk-python/commit/f92d4e397f37445fe9032a95ce26646a3a69300b))
+* Use `json.dumps` for error messages in SSE events ([6ad18cc](https://github.com/google/adk-python/commit/6ad18cc2fc3a3315a0fc240cb51b3283b53116b4))
+* Use the correct path for config-based agents when deploying to AgentEngine ([83d7bb6](https://github.com/google/adk-python/commit/83d7bb6ef0d952ad04c5d9a61aaf202672c7e17d))
+* Support Generator and Async Generator tool declarations in JSON schema ([19555e7](https://github.com/google/adk-python/commit/19555e7dce6d60c3b960ca0bc2f928c138ac3cc0) [7c28297](https://github.com/google/adk-python/commit/7c282973ea193841fee79f90b8a91c5e02627ccc))
+* Prevent stopping event processing on events with `None` content ([ed2c3eb](https://github.com/google/adk-python/commit/ed2c3ebde9cafbb5e2bf375f44db1e77cee9fb24))
+* Fix `'NoneType'` object is not iterable error ([7db3ce9](https://github.com/google/adk-python/commit/7db3ce9613b1c2c97e6ca3cd8115736516dc1556))
+* Use canonical tools to find streaming tools and register them by `tool.name` ([ec6abf4](https://github.com/google/adk-python/commit/ec6abf401019c39e8e1a8d1b2c7d5cf5e8c7ac56))
+* Initialize `self._auth_config` inside `BaseAuthenticatedTool` to access authentication headers in `McpTool` ([d4da1bb](https://github.com/google/adk-python/commit/d4da1bb7330cdb87c1dcbe0b9023148357a6bd07))
+* Only filter out audio content when sending history ([712b5a3](https://github.com/google/adk-python/commit/712b5a393d44e7b5ce35fc459da98361bae4bb16))
+* Add finish reason mapping and remove custom file URI handling in LiteLLM ([89bed43](https://github.com/google/adk-python/commit/89bed43f5e0c5ad12dd31c716d372145b7e33e78))
+* Convert unsupported inline artifact MIME types to text in `LoadArtifactsTool` ([fdc98d5](https://github.com/google/adk-python/commit/fdc98d5c927bfef021e87cf72103892e4c2ac12a))
+* Pass `log_level` to `uvicorn` in `web` and `api_server` commands ([38d52b2](https://github.com/google/adk-python/commit/38d52b247600fb45a2beeb041c4698e90c00d705))
+* Use the agent name as the author of the audio event ([ab62b1b](https://github.com/google/adk-python/commit/ab62b1bffd7ad2df5809d430ad1823872b8bd67a))
+* Handle `NOT_FOUND` error when fetching Vertex AI sessions ([75231a3](https://github.com/google/adk-python/commit/75231a30f1857d930804769caf88bcc20839dd08))
+* Fix `httpx` client closure during event pagination ([b725045](https://github.com/google/adk-python/commit/b725045e5a1192bc9fd5190cbd2758ab6ff02590))
+
+### Improvements
+
+* Add new conversational analytics API toolset ([82fa10b](https://github.com/google/adk-python/commit/82fa10b71e037b565cb407c82e9e908432dab0ff))
+* Filter out `adk_request_input` event from content list ([295b345](https://github.com/google/adk-python/commit/295b34558774d1f64022009980e3edd8eb79527b))
+* Always skip executing partial function calls ([d62f9c8](https://github.com/google/adk-python/commit/d62f9c896c301aba3a781e868735e16f946a8862))
+* Update comments of request confirmation preprocessor ([1699b09](https://github.com/google/adk-python/commit/1699b090edc9e5b13c34f461c8e664187157c5c0))
+* Fix various typos ([a8f2ddd](https://github.com/google/adk-python/commit/a8f2ddd943301bbf53f49b3a23300ece45803cc0))
+* Update sample live streaming tools agent to use latest live models ([3dd7e3f](https://github.com/google/adk-python/commit/3dd7e3f1b9be05c28adb061864d84c4202a2d922))
+* Make the regex to catch CLI reference strict by adding word boundary anchor ([c222a45](https://github.com/google/adk-python/commit/c222a45ef74f7b55c48dc151ba98cd8c30a15c57))
+* Migrate `ToolboxToolset` to use `toolbox-adk` and align validation ([7dc6adf](https://github.com/google/adk-python/commit/7dc6adf4e563330a09e4cf28d2b1994c24b007d1) [277084e](https://github.com/google/adk-python/commit/277084e31368302e6338b69d456affd35d5fedfe))
+* Always log API backend when connecting to live model ([7b035aa](https://github.com/google/adk-python/commit/7b035aa9fc43a43489aeffea8f877cd7eaa09f35))
+* Add a sample BigQuery agent using BigQuery MCP tools ([672b57f](https://github.com/google/adk-python/commit/672b57f1b76580023d1f348de76227291a9c1012))
+* Add a `DebugLoggingPlugin` to record human-readable debugging logs ([8973618](https://github.com/google/adk-python/commit/8973618b0b0e90c513873e22af272c147efb4904))
+* Upgrade the sample BigQuery agent model version to `gemini-2.5-flash` ([fd2c0f5](https://github.com/google/adk-python/commit/fd2c0f556b786417a9f6add744827b07e7a06b7d))
+* Import `migration_runner` lazily within the migrate command ([905604f](https://github.com/google/adk-python/commit/905604faac82aca8ae0935eebea288f82985e9c5))
+
+
 
 ## [1.22.1](https://github.com/google/adk-python/compare/v1.22.0...v1.22.1) (2026-01-09)
 
@@ -531,7 +706,7 @@
 * Set `max_output_tokens` for the agent builder ([2e2d61b](https://github.com/google/adk-python/commit/2e2d61b6fecb90cd474d6f51255678ff74b67a9b))
 * Set default response modality to AUDIO in run_session ([68402bd](https://github.com/google/adk-python/commit/68402bda49083f2d56f8e8488fe13aa58b3bc18c))
 * Update remote_a2a_agent to better handle streaming events and avoid duplicate responses ([8e5f361](https://github.com/google/adk-python/commit/8e5f36126498f751171bb2639c7f5a9e7dca2558))
-* Update the load_artifacts tool so that the model can reliably call it for follow up questions about the same artifact ([238472d](https://github.com/google/adk-python/commit/238472d083b5aa67551bde733fc47826ff062679))
+* Update the load_artifacts tool so that the model can reliably call it for follow-up questions about the same artifact ([238472d](https://github.com/google/adk-python/commit/238472d083b5aa67551bde733fc47826ff062679))
 * Fix VertexAiSessionService base_url override to preserve initialized http_options ([8110e41](https://github.com/google/adk-python/commit/8110e41b36cceddb8b92ba17cffaacf701706b36), [c51ea0b](https://github.com/google/adk-python/commit/c51ea0b52e63de8e43d3dccb24f9d20987784aa5))
 * Handle `App` instances returned by `agent_loader.load_agent` ([847df16](https://github.com/google/adk-python/commit/847df1638cbf1686aa43e8e094121d4e23e40245))
 
@@ -698,7 +873,7 @@
 * AgentTool returns last content, instead of the content in the last event [bcf0dda](https://github.com/google/adk-python/commit/bcf0dda8bcc221974098f3077007c9e84c63021a)
 * Fix adk deploy docker file permission [ad81aa5](https://github.com/google/adk-python/commit/ad81aa54de1f38df580915b7f47834ea8e5f1004)
 * Updating BaseAgent.clone() and LlmAgent.clone() to properly clone fields that are lists [29bb75f](https://github.com/google/adk-python/commit/29bb75f975fe0c9c9d9a7e534a9c20158e1cbe1e)
-* Make tool description for bigquery `execute_sql` for various write modes self contained [167182b](https://github.com/google/adk-python/commit/167182be0163117f814c70f453d5b2e19bf474df)
+* Make tool description for bigquery `execute_sql` for various write modes self-contained [167182b](https://github.com/google/adk-python/commit/167182be0163117f814c70f453d5b2e19bf474df)
 * Set invocation_id and branch for event generated when both output_schema and tools are used [3f3aa7b](https://github.com/google/adk-python/commit/3f3aa7b32d63cae5750d71bc586c088427c979ea)
 * Rework parallel_agent.py to always aclose async generators [826f554](https://github.com/google/adk-python/commit/826f5547890dc02e707be33a3d6a58b527dac223)
 * Add table metadata info into Spanner tool `get_table_schema` and fix the key usage info [81a53b5](https://github.com/google/adk-python/commit/81a53b53d6336011187a50ae8f1544de9b2764a8)
