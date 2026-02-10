@@ -35,3 +35,14 @@ except ImportError:
       ' VertexAiRagMemoryService please install it. If not, you can ignore this'
       ' warning.'
   )
+
+try:
+  from .milvus_memory_service import MilvusMemoryService
+
+  __all__.append('MilvusMemoryService')
+except ImportError:
+  logger.debug(
+      'pymilvus is not installed. If you want to use the'
+      ' MilvusMemoryService please install it with:'
+      ' pip install "google-adk[milvus]". If not, you can ignore this warning.'
+  )

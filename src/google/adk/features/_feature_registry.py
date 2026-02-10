@@ -38,6 +38,7 @@ class FeatureName(str, Enum):
   GOOGLE_CREDENTIALS_CONFIG = "GOOGLE_CREDENTIALS_CONFIG"
   GOOGLE_TOOL = "GOOGLE_TOOL"
   JSON_SCHEMA_FOR_FUNC_DECL = "JSON_SCHEMA_FOR_FUNC_DECL"
+  MILVUS_MEMORY_SERVICE = "MILVUS_MEMORY_SERVICE"
   MILVUS_TOOLSET = "MILVUS_TOOLSET"
   MILVUS_VECTOR_STORE = "MILVUS_VECTOR_STORE"
   PROGRESSIVE_SSE_STREAMING = "PROGRESSIVE_SSE_STREAMING"
@@ -115,6 +116,9 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
     ),
     FeatureName.JSON_SCHEMA_FOR_FUNC_DECL: FeatureConfig(
         FeatureStage.WIP, default_on=False
+    ),
+    FeatureName.MILVUS_MEMORY_SERVICE: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
     ),
     FeatureName.MILVUS_TOOLSET: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
