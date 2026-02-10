@@ -263,21 +263,17 @@ class DatabaseSessionService(BaseSessionService):
     """
     # Check the database schema version and set the _db_schema_version if
     # needed
-    if self._db_schema_version is not None:
-      return
-
     async with self._db_schema_lock:
       # Double-check after acquiring the lock
-      if self._db_schema_version is not None:
-        return
-      try:
-        async with self.db_engine.connect() as conn:
-          self._db_schema_version = await conn.run_sync(
-              _schema_check_utils.get_db_schema_version_from_connection
-          )
-      except Exception as e:
-        logger.error("Failed to inspect database tables: %s", e)
-        raise
+      if self._db_schema_version is None:
+        try:
+          async with self.db_engine.connect() as conn:
+            self._db_schema_version = await conn.run_sync(
+                _schema_check_utils.get_db_schema_version_from_connection
+            )
+        except Exception as e:
+          logger.error("Failed to inspect database tables: %s", e)
+          raise
 
     # Check if tables are created and create them if not
     if self._tables_created:

@@ -58,7 +58,7 @@ class DynamicJSON(TypeDecorator):
 class PreciseTimestamp(TypeDecorator):
   """Represents a timestamp precise to the microsecond."""
 
-  impl = DateTime
+  impl = DateTime(timezone=True)
   cache_ok = True
 
   def load_dialect_impl(self, dialect):
