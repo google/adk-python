@@ -28,7 +28,7 @@ from .variant_utils import get_google_llm_variant
 from .variant_utils import GoogleLLMVariant
 
 
-def can_use_output_schema_with_tools(model: Union[str, BaseLlm]):
+def can_use_output_schema_with_tools(model: Union[str, BaseLlm]) -> bool:
   """Returns True if output schema with tools is supported."""
   model_string = model if isinstance(model, str) else model.model
 
