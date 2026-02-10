@@ -214,6 +214,39 @@ def trace_tool_call(
   else:
     span.set_attribute('gcp.vertex.agent.tool_response', '{}')
 
+  # Add tool-level usage metadata if available
+  if (
+      function_response_event is not None
+      and function_response_event.tool_usage_metadata
+  ):
+    total_prompt_tokens = 0
+    total_completion_tokens = 0
+    total_tokens = 0
+    
+    for tool_name, usage_metadata in function_response_event.tool_usage_metadata.items():
+      if usage_metadata:
+        total_prompt_tokens += getattr(usage_metadata, 'prompt_token_count', 0) or 0
+        total_completion_tokens += getattr(usage_metadata, 'candidates_token_count', 0) or 0
+        total_tokens += getattr(usage_metadata, 'total_token_count', 0) or 0
+    
+    if total_tokens > 0:
+      span.set_attribute(GEN_AI_USAGE_INPUT_TOKENS, total_prompt_tokens)
+      span.set_attribute(GEN_AI_USAGE_OUTPUT_TOKENS, total_completion_tokens)
+      span.set_attribute('gcp.vertex.agent.tool_usage_total_tokens', total_tokens)
+      
+      # Add detailed breakdown as custom attribute
+      span.set_attribute(
+          'gcp.vertex.agent.tool_usage_breakdown',
+          _safe_json_serialize({
+              name: {
+                  'prompt_tokens': getattr(usage, 'prompt_token_count', 0) or 0,
+                  'completion_tokens': getattr(usage, 'candidates_token_count', 0) or 0,
+                  'total_tokens': getattr(usage, 'total_token_count', 0) or 0,
+              }
+              for name, usage in function_response_event.tool_usage_metadata.items()
+          })
+      )
+
 
 def trace_merged_tool_calls(
     response_event_id: str,

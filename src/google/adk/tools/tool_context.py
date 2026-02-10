@@ -59,10 +59,44 @@ class ToolContext(CallbackContext):
     super().__init__(invocation_context, event_actions=event_actions)
     self.function_call_id = function_call_id
     self.tool_confirmation = tool_confirmation
+    self._tool_usage: dict[str, Any] = {}
 
   @property
   def actions(self) -> EventActions:
     return self._event_actions
+
+  def set_tool_usage(
+      self,
+      tool_name: str,
+      usage_metadata: Any,
+  ) -> None:
+    """Records usage metadata for a tool or sub-agent invocation.
+
+    Args:
+      tool_name: Name of the tool or agent that generated usage.
+      usage_metadata: Usage metadata object (GenerateContentResponseUsageMetadata
+        or dict with token counts).
+    """
+    self._tool_usage[tool_name] = usage_metadata
+
+  def get_tool_usage(self, tool_name: str) -> Optional[Any]:
+    """Retrieves usage metadata for a specific tool.
+
+    Args:
+      tool_name: Name of the tool to retrieve usage for.
+
+    Returns:
+      Usage metadata if recorded, None otherwise.
+    """
+    return self._tool_usage.get(tool_name)
+
+  def get_all_tool_usage(self) -> dict[str, Any]:
+    """Returns all tool usage metadata recorded in this context.
+
+    Returns:
+      Dictionary mapping tool names to their usage metadata.
+    """
+    return self._tool_usage.copy()
 
   def request_credential(self, auth_config: AuthConfig) -> None:
     if not self.function_call_id:

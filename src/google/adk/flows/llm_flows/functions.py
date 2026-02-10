@@ -962,12 +962,16 @@ def __build_response_event(
       parts=[part_function_response],
   )
 
+  # Collect tool usage metadata from tool context
+  tool_usage = tool_context.get_all_tool_usage()
+
   function_response_event = Event(
       invocation_id=invocation_context.invocation_id,
       author=invocation_context.agent.name,
       content=content,
       actions=tool_context.actions,
       branch=invocation_context.branch,
+      tool_usage_metadata=tool_usage if tool_usage else None,
   )
 
   return function_response_event

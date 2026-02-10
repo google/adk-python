@@ -2364,6 +2364,24 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       if usage_dict:
         content_dict["usage"] = usage_dict
 
+    # Add tool-level usage metadata from nested agents and Vertex AI features
+    if hasattr(llm_response, "tool_usage_metadata") and llm_response.tool_usage_metadata:
+      tool_usage_dict = {}
+      for tool_name, tool_usage in llm_response.tool_usage_metadata.items():
+        if tool_usage:
+          tool_usage_entry = {}
+          if hasattr(tool_usage, "prompt_token_count"):
+            tool_usage_entry["prompt"] = tool_usage.prompt_token_count
+          if hasattr(tool_usage, "candidates_token_count"):
+            tool_usage_entry["completion"] = tool_usage.candidates_token_count
+          if hasattr(tool_usage, "total_token_count"):
+            tool_usage_entry["total"] = tool_usage.total_token_count
+          if tool_usage_entry:
+            tool_usage_dict[tool_name] = tool_usage_entry
+      
+      if tool_usage_dict:
+        content_dict["tool_usage"] = tool_usage_dict
+
     if content_dict:
       content_str = content_dict
     else:
