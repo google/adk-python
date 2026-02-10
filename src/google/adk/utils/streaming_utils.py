@@ -32,7 +32,7 @@ class StreamingResponseAggregator:
   individual (partial) model responses, as well as for aggregated content.
   """
 
-  def __init__(self):
+  def __init__(self) -> None:
     self._text = ''
     self._thought_text = ''
     self._usage_metadata = None
@@ -48,9 +48,9 @@ class StreamingResponseAggregator:
     self._current_fc_name: Optional[str] = None
     self._current_fc_args: dict[str, Any] = {}
     self._current_fc_id: Optional[str] = None
-    self._current_thought_signature: Optional[str] = None
+    self._current_thought_signature: Optional[bytes] = None
 
-  def _flush_text_buffer_to_sequence(self):
+  def _flush_text_buffer_to_sequence(self) -> None:
     """Flush current text buffer to parts sequence.
 
     This helper is used in progressive SSE mode to maintain part ordering.
@@ -70,7 +70,7 @@ class StreamingResponseAggregator:
 
   def _get_value_from_partial_arg(
       self, partial_arg: types.PartialArg, json_path: str
-  ):
+  ) -> tuple[Any, bool]:
     """Extract value from a partial argument.
 
     Args:
@@ -80,7 +80,7 @@ class StreamingResponseAggregator:
     Returns:
       Tuple of (value, has_value) where has_value indicates if a value exists
     """
-    value = None
+    value: Any = None
     has_value = False
 
     if partial_arg.string_value is not None:
@@ -95,12 +95,11 @@ class StreamingResponseAggregator:
       path_parts = path_without_prefix.split('.')
 
       # Try to get existing value
-      existing_value = self._current_fc_args
+      existing_value: Any = self._current_fc_args
       for part in path_parts:
         if isinstance(existing_value, dict) and part in existing_value:
           existing_value = existing_value[part]
         else:
-          existing_value = None
           break
 
       # Append to existing string or set new value
@@ -121,7 +120,7 @@ class StreamingResponseAggregator:
 
     return value, has_value
 
-  def _set_value_by_json_path(self, json_path: str, value: Any):
+  def _set_value_by_json_path(self, json_path: str, value: Any) -> None:
     """Set a value in _current_fc_args using JSONPath notation.
 
     Args:
@@ -147,7 +146,7 @@ class StreamingResponseAggregator:
     # Set the final value
     current[path_parts[-1]] = value
 
-  def _flush_function_call_to_sequence(self):
+  def _flush_function_call_to_sequence(self) -> None:
     """Flush current function call to parts sequence.
 
     This creates a complete FunctionCall part from accumulated partial args.
@@ -175,7 +174,7 @@ class StreamingResponseAggregator:
       self._current_fc_id = None
       self._current_thought_signature = None
 
-  def _process_streaming_function_call(self, fc: types.FunctionCall):
+  def _process_streaming_function_call(self, fc: types.FunctionCall) -> None:
     """Process a streaming function call with partialArgs.
 
     Args:
@@ -208,14 +207,14 @@ class StreamingResponseAggregator:
       self._flush_text_buffer_to_sequence()
       self._flush_function_call_to_sequence()
 
-  def _process_function_call_part(self, part: types.Part):
+  def _process_function_call_part(self, part: types.Part) -> None:
     """Process a function call part (streaming or non-streaming).
 
     Args:
       part: The part containing a function call
     """
     fc = part.function_call
-    if not fc:
+    if fc is None:
       return
 
     # Check if this is a streaming FC (has partialArgs or will_continue=True)
@@ -298,10 +297,11 @@ class StreamingResponseAggregator:
         and llm_response.content.parts[0].text
     ):
       part0 = llm_response.content.parts[0]
+      part_text = part0.text or ''
       if part0.thought:
-        self._thought_text += part0.text
+        self._thought_text += part_text
       else:
-        self._text += part0.text
+        self._text += part_text
       llm_response.partial = True
     elif (self._thought_text or self._text) and (
         not llm_response.content
@@ -382,3 +382,5 @@ class StreamingResponseAggregator:
           else candidate.finish_message,
           usage_metadata=self._usage_metadata,
       )
+
+    return None

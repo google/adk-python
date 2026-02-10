@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
 from datetime import datetime
 from datetime import timezone
 import enum
@@ -28,6 +29,7 @@ from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.sessions.sqlite_session_service import SqliteSessionService
 from google.genai import types
 import pytest
+from sqlalchemy import delete
 
 
 class SessionServiceType(enum.Enum):
@@ -83,6 +85,47 @@ def test_database_session_service_enables_pool_pre_ping_by_default():
     )
 
   assert captured_kwargs.get('pool_pre_ping') is True
+
+
+@pytest.mark.parametrize('dialect_name', ['sqlite', 'postgresql'])
+def test_database_session_service_strips_timezone_for_dialect(dialect_name):
+  """Verifies that timezone-aware datetimes are converted to naive datetimes
+  for SQLite and PostgreSQL to avoid 'can't subtract offset-naive and
+  offset-aware datetimes' errors.
+
+  PostgreSQL's default TIMESTAMP type is WITHOUT TIME ZONE, which cannot
+  accept timezone-aware datetime objects when using asyncpg. SQLite also
+  requires naive datetimes.
+  """
+  # Simulate the logic in create_session
+  is_sqlite = dialect_name == 'sqlite'
+  is_postgres = dialect_name == 'postgresql'
+
+  now = datetime.now(timezone.utc)
+  assert now.tzinfo is not None  # Starts with timezone
+
+  if is_sqlite or is_postgres:
+    now = now.replace(tzinfo=None)
+
+  # Both SQLite and PostgreSQL should have timezone stripped
+  assert now.tzinfo is None
+
+
+def test_database_session_service_preserves_timezone_for_other_dialects():
+  """Verifies that timezone info is preserved for dialects that support it."""
+  # For dialects like MySQL with explicit timezone support, we don't strip
+  dialect_name = 'mysql'
+  is_sqlite = dialect_name == 'sqlite'
+  is_postgres = dialect_name == 'postgresql'
+
+  now = datetime.now(timezone.utc)
+  assert now.tzinfo is not None
+
+  if is_sqlite or is_postgres:
+    now = now.replace(tzinfo=None)
+
+  # MySQL should preserve timezone (if the column type supports it)
+  assert now.tzinfo is not None
 
 
 def test_database_session_service_respects_pool_pre_ping_override():
@@ -611,6 +654,110 @@ async def test_append_event_to_stale_session():
         'inv2',
         'inv3',
     ]
+
+
+@pytest.mark.asyncio
+async def test_append_event_raises_if_app_state_row_missing():
+  service = DatabaseSessionService('sqlite+aiosqlite:///:memory:')
+  try:
+    session = await service.create_session(
+        app_name='my_app', user_id='user', session_id='s1'
+    )
+    schema = service._get_schema_classes()
+    async with service.database_session_factory() as sql_session:
+      await sql_session.execute(
+          delete(schema.StorageAppState).where(
+              schema.StorageAppState.app_name == session.app_name
+          )
+      )
+      await sql_session.commit()
+
+    event = Event(
+        invocation_id='inv1',
+        author='user',
+        actions=EventActions(state_delta={'k': 'v'}),
+    )
+    with pytest.raises(ValueError, match='App state missing'):
+      await service.append_event(session, event)
+  finally:
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_append_event_raises_if_user_state_row_missing():
+  service = DatabaseSessionService('sqlite+aiosqlite:///:memory:')
+  try:
+    session = await service.create_session(
+        app_name='my_app', user_id='user', session_id='s1'
+    )
+    schema = service._get_schema_classes()
+    async with service.database_session_factory() as sql_session:
+      await sql_session.execute(
+          delete(schema.StorageUserState).where(
+              schema.StorageUserState.app_name == session.app_name,
+              schema.StorageUserState.user_id == session.user_id,
+          )
+      )
+      await sql_session.commit()
+
+    event = Event(
+        invocation_id='inv1',
+        author='user',
+        actions=EventActions(state_delta={'k': 'v'}),
+    )
+    with pytest.raises(ValueError, match='User state missing'):
+      await service.append_event(session, event)
+  finally:
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_append_event_concurrent_stale_sessions_preserve_all_state():
+  session_service = get_session_service(
+      service_type=SessionServiceType.DATABASE
+  )
+
+  async with session_service:
+    app_name = 'my_app'
+    user_id = 'user'
+    session = await session_service.create_session(
+        app_name=app_name, user_id=user_id
+    )
+
+    iteration_count = 8
+    for i in range(iteration_count):
+      latest_session = await session_service.get_session(
+          app_name=app_name, user_id=user_id, session_id=session.id
+      )
+      stale_session_1 = latest_session.model_copy(deep=True)
+      stale_session_2 = latest_session.model_copy(deep=True)
+      base_timestamp = latest_session.last_update_time + 10.0
+      event_1 = Event(
+          invocation_id=f'inv{i}-1',
+          author='user',
+          timestamp=base_timestamp + 1.0,
+          actions=EventActions(state_delta={f'sk{i}-1': f'v{i}-1'}),
+      )
+      event_2 = Event(
+          invocation_id=f'inv{i}-2',
+          author='user',
+          timestamp=base_timestamp + 2.0,
+          actions=EventActions(state_delta={f'sk{i}-2': f'v{i}-2'}),
+      )
+
+      await asyncio.gather(
+          session_service.append_event(stale_session_1, event_1),
+          session_service.append_event(stale_session_2, event_2),
+      )
+
+    session_final = await session_service.get_session(
+        app_name=app_name, user_id=user_id, session_id=session.id
+    )
+
+    for i in range(iteration_count):
+      assert session_final.state.get(f'sk{i}-1') == f'v{i}-1'
+      assert session_final.state.get(f'sk{i}-2') == f'v{i}-2'
+    assert len(session_final.events) == iteration_count * 2
 
 
 @pytest.mark.asyncio

@@ -14,16 +14,16 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 import functools
 import os
-from typing import Callable
+from typing import Any
 from typing import cast
 from typing import Optional
 from typing import TypeVar
-from typing import Union
 import warnings
 
-T = TypeVar("T", bound=Union[Callable, type])
+T = TypeVar("T")
 
 
 def _is_truthy_env(var_name: str) -> bool:
@@ -39,8 +39,8 @@ def _make_feature_decorator(
     default_message: str,
     block_usage: bool = False,
     bypass_env_var: Optional[str] = None,
-) -> Callable:
-  def decorator_factory(message_or_obj=None):
+) -> Callable[..., Any]:
+  def decorator_factory(message_or_obj: Any = None) -> Any:
     # Case 1: Used as @decorator without parentheses
     # message_or_obj is the decorated class/function
     if message_or_obj is not None and (
@@ -68,10 +68,11 @@ def _create_decorator(
     msg = f"[{label.upper()}] {obj_name}: {message}"
 
     if isinstance(obj, type):  # decorating a class
-      orig_init = obj.__init__
+      cls = cast(type[Any], obj)
+      orig_init = cast(Any, cls).__init__
 
       @functools.wraps(orig_init)
-      def new_init(self, *args, **kwargs):
+      def new_init(self: Any, *args: Any, **kwargs: Any) -> Any:
         # Check if usage should be bypassed via environment variable at call time
         should_bypass = bypass_env_var is not None and _is_truthy_env(
             bypass_env_var
@@ -86,13 +87,14 @@ def _create_decorator(
           warnings.warn(msg, category=UserWarning, stacklevel=2)
         return orig_init(self, *args, **kwargs)
 
-      obj.__init__ = new_init  # type: ignore[attr-defined]
-      return cast(T, obj)
+      cast(Any, cls).__init__ = new_init
+      return cast(T, cls)
 
     elif callable(obj):  # decorating a function or method
+      func = cast(Callable[..., Any], obj)
 
-      @functools.wraps(obj)
-      def wrapper(*args, **kwargs):
+      @functools.wraps(func)
+      def wrapper(*args: Any, **kwargs: Any) -> Any:
         # Check if usage should be bypassed via environment variable at call time
         should_bypass = bypass_env_var is not None and _is_truthy_env(
             bypass_env_var
@@ -105,7 +107,7 @@ def _create_decorator(
           raise RuntimeError(msg)
         else:
           warnings.warn(msg, category=UserWarning, stacklevel=2)
-        return obj(*args, **kwargs)
+        return func(*args, **kwargs)
 
       return cast(T, wrapper)
 
