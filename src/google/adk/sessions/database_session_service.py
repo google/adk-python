@@ -370,8 +370,7 @@ class DatabaseSessionService(BaseSessionService):
       # Store the session
       now = datetime.now(timezone.utc)
       is_sqlite = self.db_engine.dialect.name == _SQLITE_DIALECT
-      is_postgresql = self.db_engine.dialect.name == _POSTGRESQL_DIALECT
-      if is_sqlite or is_postgresql:
+      if is_sqlite:
         now = now.replace(tzinfo=None)
 
       storage_session = schema.StorageSession(
@@ -628,7 +627,7 @@ class DatabaseSessionService(BaseSessionService):
               event.timestamp, timezone.utc
           ).replace(tzinfo=None)
         else:
-          update_time = datetime.fromtimestamp(event.timestamp)
+          update_time = datetime.fromtimestamp(event.timestamp, timezone.utc)
         storage_session.update_time = update_time
         sql_session.add(schema.StorageEvent.from_event(session, event))
 
