@@ -1494,6 +1494,14 @@ class Runner:
           state_delta=state_delta,
       )
 
+      if state_delta:
+        from .agents.callback_context import CallbackContext
+
+        await invocation_context.plugin_manager.run_on_state_change_callback(
+            callback_context=CallbackContext(invocation_context),
+            state_delta=dict(state_delta),
+        )
+
   def _collect_toolset(self, agent: BaseAgent) -> set[BaseToolset]:
     toolsets = set()
     if isinstance(agent, LlmAgent):

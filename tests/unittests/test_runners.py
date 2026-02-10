@@ -146,6 +146,7 @@ class MockPlugin(BasePlugin):
     self.enable_user_message_callback = False
     self.enable_event_callback = False
     self.user_content_seen_in_before_run_callback = None
+    self.state_change_deltas: list[dict] = []
 
   async def on_user_message_callback(
       self,
@@ -168,6 +169,9 @@ class MockPlugin(BasePlugin):
     self.user_content_seen_in_before_run_callback = (
         invocation_context.user_content
     )
+
+  async def on_state_change_callback(self, *, callback_context, state_delta, **kwargs):
+    self.state_change_deltas.append(state_delta)
 
   async def on_event_callback(
       self, *, invocation_context: InvocationContext, event: Event
@@ -852,6 +856,49 @@ class TestRunnerWithPlugins:
         plugin_close_timeout=10.0,
     )
     assert runner.plugin_manager._close_timeout == 10.0
+
+  @pytest.mark.asyncio
+  async def test_state_delta_in_run_async_triggers_on_state_change_callback(
+      self,
+  ):
+    """Test that caller-supplied state_delta triggers on_state_change_callback."""
+    await self.session_service.create_session(
+        app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+    )
+    state_delta = {"lang": "en", "theme": "dark"}
+    events = []
+    async for event in self.runner.run_async(
+        user_id=TEST_USER_ID,
+        session_id=TEST_SESSION_ID,
+        new_message=types.Content(
+            role="user", parts=[types.Part(text="Hello")]
+        ),
+        state_delta=state_delta,
+    ):
+      events.append(event)
+
+    assert len(self.plugin.state_change_deltas) >= 1
+    assert self.plugin.state_change_deltas[0] == state_delta
+
+  @pytest.mark.asyncio
+  async def test_no_state_delta_does_not_trigger_on_state_change_callback(
+      self,
+  ):
+    """Test that on_state_change_callback is not called when no state_delta is provided."""
+    await self.session_service.create_session(
+        app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+    )
+    events = []
+    async for event in self.runner.run_async(
+        user_id=TEST_USER_ID,
+        session_id=TEST_SESSION_ID,
+        new_message=types.Content(
+            role="user", parts=[types.Part(text="Hello")]
+        ),
+    ):
+      events.append(event)
+
+    assert len(self.plugin.state_change_deltas) == 0
 
   @pytest.mark.filterwarnings(
       "ignore:The `plugins` argument is deprecated:DeprecationWarning"
