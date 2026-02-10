@@ -683,12 +683,12 @@ class DatabaseSessionService(BaseSessionService):
               storage_session.state | state_deltas["session"]
           )
 
-        if is_sqlite:
-          update_time = datetime.fromtimestamp(
-              event.timestamp, timezone.utc
-          ).replace(tzinfo=None)
-        else:
-          update_time = datetime.fromtimestamp(event.timestamp)
+        # Convert event timestamp to a UTC datetime.  SQLite and PostgreSQL
+        # use TIMESTAMP WITHOUT TIME ZONE, so the tzinfo must be stripped to
+        # avoid asyncpg DataError / SQLite comparison issues.
+        update_time = datetime.fromtimestamp(event.timestamp, timezone.utc)
+        if is_sqlite or self.db_engine.dialect.name == _POSTGRESQL_DIALECT:
+          update_time = update_time.replace(tzinfo=None)
         storage_session.update_time = update_time
         sql_session.add(schema.StorageEvent.from_event(session, event))
 

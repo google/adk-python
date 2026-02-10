@@ -119,12 +119,15 @@ class StorageSession(Base):
     )
     return self.get_update_timestamp(is_sqlite=is_sqlite)
 
-  def get_update_timestamp(self, is_sqlite: bool) -> float:
-    """Returns the time zone aware update timestamp."""
-    if is_sqlite:
-      # SQLite does not support timezone. SQLAlchemy returns a naive datetime
-      # object without timezone information. We need to convert it to UTC
-      # manually.
+  def get_update_timestamp(self, is_sqlite: bool = False) -> float:
+    """Returns the update timestamp as a POSIX float.
+
+    Naive datetimes (returned by SQLite and PostgreSQL which use
+    ``TIMESTAMP WITHOUT TIME ZONE``) are interpreted as UTC.  Timezone-aware
+    datetimes (MySQL, MariaDB) are used directly.
+    """
+    if self.update_time.tzinfo is None:
+      # Naive datetimes from SQLite / PostgreSQL are stored as UTC.
       return self.update_time.replace(tzinfo=timezone.utc).timestamp()
     return self.update_time.timestamp()
 
