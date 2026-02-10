@@ -187,6 +187,47 @@ def test_similarity_search_error(
   assert "Test Exception" in result["error_details"]
 
 
+@mock.patch.object(utils, "embed_contents")
+@mock.patch.object(client, "get_spanner_client")
+def test_similarity_search_circular_row_fallback_to_string(
+    mock_get_spanner_client,
+    mock_embed_contents,
+    mock_spanner_ids,
+    mock_credentials,
+):
+  """Test similarity_search stringifies rows with circular references."""
+  mock_spanner_client = MagicMock()
+  mock_instance = MagicMock()
+  mock_database = MagicMock()
+  mock_snapshot = MagicMock()
+  circular_row = []
+  circular_row.append(circular_row)
+  mock_embed_contents.return_value = [[0.1, 0.2, 0.3]]
+  mock_snapshot.execute_sql.return_value = iter([circular_row])
+  mock_database.snapshot.return_value.__enter__.return_value = mock_snapshot
+  mock_database.database_dialect = DatabaseDialect.GOOGLE_STANDARD_SQL
+  mock_instance.database.return_value = mock_database
+  mock_spanner_client.instance.return_value = mock_instance
+  mock_get_spanner_client.return_value = mock_spanner_client
+
+  result = search_tool.similarity_search(
+      project_id=mock_spanner_ids["project_id"],
+      instance_id=mock_spanner_ids["instance_id"],
+      database_id=mock_spanner_ids["database_id"],
+      table_name=mock_spanner_ids["table_name"],
+      query="test query",
+      embedding_column_to_search="embedding_col",
+      columns=["col1"],
+      embedding_options={
+          "vertex_ai_embedding_model_name": "text-embedding-005"
+      },
+      credentials=mock_credentials,
+  )
+
+  assert result["status"] == "SUCCESS", result
+  assert result["rows"] == [str(circular_row)]
+
+
 @mock.patch.object(client, "get_spanner_client")
 def test_similarity_search_postgresql_knn_success(
     mock_get_spanner_client, mock_spanner_ids, mock_credentials

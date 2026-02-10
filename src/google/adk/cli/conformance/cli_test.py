@@ -25,13 +25,13 @@ import click
 from google.genai import types
 
 from ..adk_web_server import RunAgentRequest
+from ._generate_markdown_utils import generate_markdown_report
 from ._generated_file_utils import load_recorded_session
 from ._generated_file_utils import load_test_case
 from ._replay_validators import compare_events
 from ._replay_validators import compare_session
 from .adk_web_server_client import AdkWebServerClient
 from .test_case import TestCase
-from .test_case import TestSpec
 
 
 @dataclass
@@ -42,6 +42,7 @@ class _TestResult:
   name: str
   success: bool
   error_message: Optional[str] = None
+  description: Optional[str] = None
 
 
 @dataclass
@@ -62,7 +63,7 @@ class _ConformanceTestSummary:
 
 
 class ConformanceTestRunner:
-  """Runs conformance tests in replay mode."""
+  """Runs conformance tests."""
 
   def __init__(
       self,
@@ -193,6 +194,7 @@ class ConformanceTestRunner:
           name=test_case.name,
           success=False,
           error_message="No final session available for comparison",
+          description=test_case.test_spec.description,
       )
 
     # Load recorded session data for comparison
@@ -203,6 +205,7 @@ class ConformanceTestRunner:
           name=test_case.name,
           success=False,
           error_message="No recorded session found for replay comparison",
+          description=test_case.test_spec.description,
       )
 
     # Compare events and session
@@ -224,6 +227,7 @@ class ConformanceTestRunner:
         name=test_case.name,
         success=success,
         error_message="\n\n".join(error_messages) if error_messages else None,
+        description=test_case.test_spec.description,
     )
 
   async def _run_test_case_replay(self, test_case: TestCase) -> _TestResult:
@@ -245,6 +249,7 @@ class ConformanceTestRunner:
             name=test_case.name,
             success=False,
             error_message=f"Replay verification failed: {e}",
+            description=test_case.test_spec.description,
         )
 
       # Validate results and return test result
@@ -265,6 +270,7 @@ class ConformanceTestRunner:
           name=test_case.name,
           success=False,
           error_message=f"Test setup failed: {e}",
+          description=test_case.test_spec.description,
       )
 
   async def run_all_tests(self) -> _ConformanceTestSummary:
@@ -295,6 +301,7 @@ Found {len(test_cases)} test cases to run in {self.mode} mode
             name=test_case.name,
             success=False,
             error_message="Live mode not yet implemented",
+            description=test_case.test_spec.description,
         )
       results.append(result)
       _print_test_case_result(result)
@@ -311,6 +318,8 @@ Found {len(test_cases)} test cases to run in {self.mode} mode
 async def run_conformance_test(
     test_paths: list[Path],
     mode: str = "replay",
+    generate_report: bool = False,
+    report_dir: Optional[str] = None,
 ) -> None:
   """Run conformance tests."""
   _print_test_header(mode)
@@ -318,6 +327,9 @@ async def run_conformance_test(
   async with AdkWebServerClient() as client:
     runner = ConformanceTestRunner(test_paths, client, mode)
     summary = await runner.run_all_tests()
+
+  if generate_report:
+    generate_markdown_report(summary, report_dir)
 
   _print_test_summary(summary)
 
