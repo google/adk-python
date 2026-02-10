@@ -1068,19 +1068,6 @@ class AdkWebServer:
 
       return ListEvalSetsResponse(eval_set_ids=eval_sets)
 
-    @deprecated(
-        "Please use list_eval_sets instead. This will be removed in future"
-        " releases."
-    )
-    @app.get(
-        "/apps/{app_name}/eval_sets_legacy",
-        response_model_exclude_none=True,
-        tags=[TAG_EVALUATION],
-    )
-    async def list_eval_sets_legacy(app_name: str) -> list[str]:
-      list_eval_sets_response = await list_eval_sets(app_name)
-      return list_eval_sets_response.eval_set_ids
-
     @app.post(
         "/apps/{app_name}/eval-sets/{eval_set_id}/add-session",
         response_model_exclude_none=True,
@@ -1228,22 +1215,6 @@ class AdkWebServer:
       except NotFoundError as nfe:
         raise HTTPException(status_code=404, detail=str(nfe)) from nfe
 
-    @deprecated(
-        "Please use run_eval instead. This will be removed in future releases."
-    )
-    @app.post(
-        "/apps/{app_name}/eval_sets/{eval_set_id}/run_eval",
-        response_model_exclude_none=True,
-        tags=[TAG_EVALUATION],
-    )
-    async def run_eval_legacy(
-        app_name: str, eval_set_id: str, req: RunEvalRequest
-    ) -> list[RunEvalResult]:
-      run_eval_response = await run_eval(
-          app_name=app_name, eval_set_id=eval_set_id, req=req
-      )
-      return run_eval_response.run_eval_results
-
     @app.post(
         "/apps/{app_name}/eval-sets/{eval_set_id}/run",
         response_model_exclude_none=True,
@@ -1337,28 +1308,6 @@ class AdkWebServer:
       except ValidationError as ve:
         raise HTTPException(status_code=500, detail=str(ve)) from ve
 
-    @deprecated(
-        "Please use get_eval_result instead. This will be removed in future"
-        " releases."
-    )
-    @app.get(
-        "/apps/{app_name}/eval_results/{eval_result_id}",
-        response_model_exclude_none=True,
-        tags=[TAG_EVALUATION],
-    )
-    async def get_eval_result_legacy(
-        app_name: str,
-        eval_result_id: str,
-    ) -> EvalSetResult:
-      try:
-        return self.eval_set_results_manager.get_eval_set_result(
-            app_name, eval_result_id
-        )
-      except ValueError as ve:
-        raise HTTPException(status_code=404, detail=str(ve)) from ve
-      except ValidationError as ve:
-        raise HTTPException(status_code=500, detail=str(ve)) from ve
-
     @app.get(
         "/apps/{app_name}/eval-results",
         response_model_exclude_none=True,
@@ -1370,19 +1319,6 @@ class AdkWebServer:
           app_name
       )
       return ListEvalResultsResponse(eval_result_ids=eval_result_ids)
-
-    @deprecated(
-        "Please use list_eval_results instead. This will be removed in future"
-        " releases."
-    )
-    @app.get(
-        "/apps/{app_name}/eval_results",
-        response_model_exclude_none=True,
-        tags=[TAG_EVALUATION],
-    )
-    async def list_eval_results_legacy(app_name: str) -> list[str]:
-      list_eval_results_response = await list_eval_results(app_name)
-      return list_eval_results_response.eval_result_ids
 
     @app.get(
         "/apps/{app_name}/metrics-info",
