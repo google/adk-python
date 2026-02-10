@@ -115,6 +115,7 @@ class AuthHandler:
           exchanged_auth_credential=self.auth_config.raw_auth_credential.model_copy(
               deep=True
           ),
+          credential_key=self.auth_config.credential_key,
       )
 
     # Check for client_id and client_secret
@@ -133,6 +134,7 @@ class AuthHandler:
         auth_scheme=self.auth_config.auth_scheme,
         raw_auth_credential=self.auth_config.raw_auth_credential,
         exchanged_auth_credential=exchanged_credential,
+        credential_key=self.auth_config.credential_key,
     )
 
   def generate_auth_uri(

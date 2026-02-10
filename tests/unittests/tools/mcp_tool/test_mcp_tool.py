@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import inspect
 from unittest.mock import AsyncMock
 from unittest.mock import Mock
 from unittest.mock import patch
@@ -224,7 +225,7 @@ class TestMCPTool:
     )
     # Fix: call_tool uses 'arguments' parameter, not positional args
     self.mock_session.call_tool.assert_called_once_with(
-        "test_tool", arguments=args
+        "test_tool", arguments=args, progress_callback=None
     )
 
   @pytest.mark.asyncio
@@ -670,6 +671,50 @@ class TestMCPTool:
       )
 
   @pytest.mark.asyncio
+  async def test_run_async_require_confirmation_callable_with_arg_filtering(
+      self,
+  ):
+    """Test require_confirmation=callable with argument filtering."""
+
+    async def _require_confirmation_func(
+        param1: str, tool_context: ToolContext
+    ):
+      return True
+
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+        require_confirmation=_require_confirmation_func,
+    )
+    tool_context = Mock(spec=ToolContext)
+    tool_context.tool_confirmation = None
+    tool_context.request_confirmation = Mock()
+    args = {"param1": "test_value", "extra_arg": 123}
+
+    with patch.object(
+        tool, "_invoke_callable", new_callable=AsyncMock
+    ) as mock_invoke_callable:
+      mock_invoke_callable.return_value = (
+          True  # Mock the return of require_confirmation
+      )
+
+      result = await tool.run_async(args=args, tool_context=tool_context)
+      expected_args_to_call = {
+          "param1": "test_value",
+          "tool_context": tool_context,
+      }
+      mock_invoke_callable.assert_called_once_with(
+          _require_confirmation_func, expected_args_to_call
+      )
+
+      assert result == {
+          "error": (
+              "This tool call requires confirmation, please approve or reject."
+          )
+      }
+      tool_context.request_confirmation.assert_called_once()
+
+  @pytest.mark.asyncio
   async def test_run_async_require_confirmation_callable_true_no_confirmation(
       self,
   ):
@@ -733,7 +778,7 @@ class TestMCPTool:
         headers=expected_headers
     )
     self.mock_session.call_tool.assert_called_once_with(
-        "test_tool", arguments=args
+        "test_tool", arguments=args, progress_callback=None
     )
 
   @pytest.mark.asyncio
@@ -776,5 +821,99 @@ class TestMCPTool:
         "X-Tenant-ID": "test-tenant",
     }
     self.mock_session.call_tool.assert_called_once_with(
-        "test_tool", arguments=args
+        "test_tool", arguments=args, progress_callback=None
     )
+
+  def test_init_with_progress_callback(self):
+    """Test initialization with progress_callback."""
+
+    async def my_progress_callback(
+        progress: float, total: float | None, message: str | None
+    ) -> None:
+      pass
+
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+        progress_callback=my_progress_callback,
+    )
+
+    assert tool._progress_callback == my_progress_callback
+
+  @pytest.mark.asyncio
+  async def test_run_async_impl_with_progress_callback(self):
+    """Test running tool with progress_callback."""
+    progress_updates = []
+
+    async def my_progress_callback(
+        progress: float, total: float | None, message: str | None
+    ) -> None:
+      progress_updates.append((progress, total, message))
+
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+        progress_callback=my_progress_callback,
+    )
+
+    # Mock the session response
+    mcp_response = CallToolResult(
+        content=[TextContent(type="text", text="success")]
+    )
+    self.mock_session.call_tool = AsyncMock(return_value=mcp_response)
+
+    tool_context = Mock(spec=ToolContext)
+    args = {"param1": "test_value"}
+
+    result = await tool._run_async_impl(
+        args=args, tool_context=tool_context, credential=None
+    )
+
+    assert result == mcp_response.model_dump(exclude_none=True, mode="json")
+    self.mock_session_manager.create_session.assert_called_once_with(
+        headers=None
+    )
+    # Verify progress_callback was passed to call_tool
+    self.mock_session.call_tool.assert_called_once_with(
+        "test_tool", arguments=args, progress_callback=my_progress_callback
+    )
+
+  @pytest.mark.asyncio
+  async def test_run_async_impl_with_progress_callback_factory(self):
+    """Test running tool with progress_callback factory that receives context."""
+    factory_calls = []
+
+    def my_callback_factory(tool_name: str, *, callback_context=None, **kwargs):
+      factory_calls.append((tool_name, callback_context))
+
+      async def callback(
+          progress: float, total: float | None, message: str | None
+      ) -> None:
+        pass
+
+      return callback
+
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+        progress_callback=my_callback_factory,
+    )
+
+    # Mock the session response
+    mcp_response = CallToolResult(
+        content=[TextContent(type="text", text="success")]
+    )
+    self.mock_session.call_tool = AsyncMock(return_value=mcp_response)
+
+    tool_context = Mock(spec=ToolContext)
+    args = {"param1": "test_value"}
+
+    await tool._run_async_impl(
+        args=args, tool_context=tool_context, credential=None
+    )
+
+    # Verify factory was called with tool name and tool_context as callback_context
+    assert len(factory_calls) == 1
+    assert factory_calls[0][0] == "test_tool"
+    # callback_context is the tool_context itself (ToolContext extends CallbackContext)
+    assert factory_calls[0][1] is tool_context

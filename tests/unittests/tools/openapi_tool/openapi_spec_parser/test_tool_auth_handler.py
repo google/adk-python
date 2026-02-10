@@ -139,6 +139,23 @@ async def test_openid_connect_no_auth_response(
 
 
 @pytest.mark.asyncio
+async def test_openid_connect_uses_explicit_credential_key(
+    openid_connect_scheme, openid_connect_credential
+):
+  tool_context = create_mock_tool_context()
+  handler = ToolAuthHandler(
+      tool_context,
+      openid_connect_scheme,
+      openid_connect_credential,
+      credential_key='my_tool_tokens',
+  )
+  result = await handler.prepare_auth_credentials()
+  assert result.state == 'pending'
+  requested = tool_context.actions.requested_auth_configs['test-fc-id']
+  assert requested.credential_key == 'my_tool_tokens'
+
+
+@pytest.mark.asyncio
 async def test_openid_connect_with_auth_response(
     openid_connect_scheme, openid_connect_credential, monkeypatch
 ):

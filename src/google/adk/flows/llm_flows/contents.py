@@ -42,8 +42,16 @@ class _ContentLlmRequestProcessor(BaseLlmRequestProcessor):
       self, invocation_context: InvocationContext, llm_request: LlmRequest
   ) -> AsyncGenerator[Event, None]:
     from ...agents.llm_agent import LlmAgent
+    from ...models.google_llm import Gemini
 
     agent = invocation_context.agent
+    preserve_function_call_ids = False
+    if isinstance(agent, LlmAgent):
+      canonical_model = agent.canonical_model
+      preserve_function_call_ids = (
+          isinstance(canonical_model, Gemini)
+          and canonical_model.use_interactions_api
+      )
 
     # Preserve all contents that were added by instruction processor
     # (since llm_request.contents will be completely reassigned below)
@@ -55,6 +63,7 @@ class _ContentLlmRequestProcessor(BaseLlmRequestProcessor):
           invocation_context.branch,
           invocation_context.session.events,
           agent.name,
+          preserve_function_call_ids=preserve_function_call_ids,
       )
     else:
       # Include current turn context only (no conversation history)
@@ -62,6 +71,7 @@ class _ContentLlmRequestProcessor(BaseLlmRequestProcessor):
           invocation_context.branch,
           invocation_context.session.events,
           agent.name,
+          preserve_function_call_ids=preserve_function_call_ids,
       )
 
     # Add instruction-related contents to proper position in conversation
@@ -360,7 +370,11 @@ def _process_compaction_events(events: list[Event]) -> list[Event]:
 
 
 def _get_contents(
-    current_branch: Optional[str], events: list[Event], agent_name: str = ''
+    current_branch: Optional[str],
+    events: list[Event],
+    agent_name: str = '',
+    *,
+    preserve_function_call_ids: bool = False,
 ) -> list[types.Content]:
   """Get the contents for the LLM request.
 
@@ -370,6 +384,7 @@ def _get_contents(
     current_branch: The current branch of the agent.
     events: Events to process.
     agent_name: The name of the agent.
+    preserve_function_call_ids: Whether to preserve function call ids.
 
   Returns:
     A list of processed contents.
@@ -469,13 +484,18 @@ def _get_contents(
   for event in result_events:
     content = copy.deepcopy(event.content)
     if content:
-      remove_client_function_call_id(content)
+      if not preserve_function_call_ids:
+        remove_client_function_call_id(content)
       contents.append(content)
   return contents
 
 
 def _get_current_turn_contents(
-    current_branch: Optional[str], events: list[Event], agent_name: str = ''
+    current_branch: Optional[str],
+    events: list[Event],
+    agent_name: str = '',
+    *,
+    preserve_function_call_ids: bool = False,
 ) -> list[types.Content]:
   """Get contents for the current turn only (no conversation history).
 
@@ -491,6 +511,7 @@ def _get_current_turn_contents(
     current_branch: The current branch of the agent.
     events: A list of all session events.
     agent_name: The name of the agent.
+    preserve_function_call_ids: Whether to preserve function call ids.
 
   Returns:
     A list of contents for the current turn only, preserving context needed
@@ -502,7 +523,12 @@ def _get_current_turn_contents(
     if _should_include_event_in_context(current_branch, event) and (
         event.author == 'user' or _is_other_agent_reply(agent_name, event)
     ):
-      return _get_contents(current_branch, events[i:], agent_name)
+      return _get_contents(
+          current_branch,
+          events[i:],
+          agent_name,
+          preserve_function_call_ids=preserve_function_call_ids,
+      )
 
   return []
 
