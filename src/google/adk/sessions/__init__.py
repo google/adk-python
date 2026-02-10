@@ -20,6 +20,7 @@ from .vertex_ai_session_service import VertexAiSessionService
 __all__ = [
     'BaseSessionService',
     'DatabaseSessionService',
+    'FirestoreSessionService',
     'InMemorySessionService',
     'Session',
     'State',
@@ -37,5 +38,15 @@ def __getattr__(name: str):
       raise ImportError(
           'DatabaseSessionService requires sqlalchemy>=2.0, please ensure it is'
           ' installed correctly.'
+      ) from e
+  if name == 'FirestoreSessionService':
+    try:
+      from .firestore_session_service import FirestoreSessionService
+
+      return FirestoreSessionService
+    except ImportError as e:
+      raise ImportError(
+          'FirestoreSessionService requires google-cloud-firestore, please'
+          ' install it with: pip install google-cloud-firestore'
       ) from e
   raise AttributeError(f'module {__name__!r} has no attribute {name!r}')

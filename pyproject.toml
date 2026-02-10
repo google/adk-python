@@ -164,6 +164,8 @@ extensions = [
   "toolbox-adk>=0.5.7, <0.6.0",                 # For tools.toolbox_toolset.ToolboxToolset
 ]
 
+firestore = ["google-cloud-firestore>=2.19.0, <3.0.0"]
+
 otel-gcp = ["opentelemetry-instrumentation-google-genai>=0.6b0, <1.0.0"]
 
 toolbox = ["toolbox-adk>=0.5.7, <0.6.0"]
