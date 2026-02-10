@@ -938,10 +938,7 @@ class Runner:
     *   **Live Model Audio Events with Inline Data:** Events containing raw
         audio `Blob` data(`inline_data`).
     *   **Live Model Audio Events with File Data:** Both input and output audio
-        data are aggregated into a audio file saved into artifacts. The
-    *   **Live Model Audio Events with File Data:** Both input and output audio
         data are aggregated into an audio file saved into artifacts. The
-
         reference to the file is saved in the event as `file_data`.
     *   **Usage Metadata:** Events containing token usage.
     *   **Transcription Events:** Both partial and non-partial transcription
