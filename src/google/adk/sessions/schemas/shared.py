@@ -37,6 +37,9 @@ class DynamicJSON(TypeDecorator):
     if dialect.name == "mysql":
       # Use LONGTEXT for MySQL to address the data too long issue
       return dialect.type_descriptor(mysql.LONGTEXT)
+    if dialect.name == "databricks":
+      # Databricks SQL stores JSON as STRING; use Text (the default)
+      return dialect.type_descriptor(Text)
     return dialect.type_descriptor(Text)  # Default to Text for other dialects
 
   def process_bind_param(self, value, dialect: Dialect):
@@ -64,4 +67,7 @@ class PreciseTimestamp(TypeDecorator):
   def load_dialect_impl(self, dialect):
     if dialect.name == "mysql":
       return dialect.type_descriptor(mysql.DATETIME(fsp=6))
+    if dialect.name == "databricks":
+      # Databricks TIMESTAMP type natively supports microsecond precision
+      return dialect.type_descriptor(DateTime)
     return self.impl

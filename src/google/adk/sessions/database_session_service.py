@@ -64,6 +64,7 @@ _SQLITE_DIALECT = "sqlite"
 _MARIADB_DIALECT = "mariadb"
 _MYSQL_DIALECT = "mysql"
 _POSTGRESQL_DIALECT = "postgresql"
+_DATABRICKS_DIALECT = "databricks"
 # Tuple key order for in-process per-session lock maps:
 # (app_name, user_id, session_id).
 _SessionLockKey: TypeAlias = tuple[str, str, str]
