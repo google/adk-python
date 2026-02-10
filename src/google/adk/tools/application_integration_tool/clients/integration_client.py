@@ -253,7 +253,7 @@ class IntegrationClient:
         credentials, project_id = default_service_credential(
             scopes=["https://www.googleapis.com/auth/cloud-platform"]
         )
-      except:
+      except google.auth.exceptions.DefaultCredentialsError:
         credentials = None
       if credentials:
         quota_project_id = getattr(credentials, "quota_project_id", None)

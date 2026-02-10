@@ -323,7 +323,7 @@ def _get_last_valid_json_substring(text: str) -> tuple[bool, str | None]:
   """Attempts to find and return the last valid JSON object in a string.
 
   This function is designed to extract JSON that might be embedded in a larger
-  text, potentially with introductory or concluding remarks. It will always chose
+  text, potentially with introductory or concluding remarks. It will always choose
   the last block of valid json found within the supplied text (if it exists).
 
   Args:
@@ -356,8 +356,8 @@ def _get_last_valid_json_substring(text: str) -> tuple[bool, str | None]:
 
 try:
   from google.adk.models.lite_llm import LiteLlm  # noqa: F401
-except Exception:
-  # LiteLLM not available, Gemma3Ollama will not be defined
+except ImportError as e:
+  logger.debug('LiteLlm not available; Gemma3Ollama will not be defined: %s', e)
   LiteLlm = None
 
 if LiteLlm is not None:

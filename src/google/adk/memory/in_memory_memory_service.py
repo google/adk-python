@@ -13,6 +13,8 @@
 # limitations under the License.
 from __future__ import annotations
 
+from collections.abc import Mapping
+from collections.abc import Sequence
 import re
 import threading
 from typing import TYPE_CHECKING
@@ -28,8 +30,10 @@ if TYPE_CHECKING:
   from ..events.event import Event
   from ..sessions.session import Session
 
+_UNKNOWN_SESSION_ID = '__unknown_session_id__'
 
-def _user_key(app_name: str, user_id: str):
+
+def _user_key(app_name: str, user_id: str) -> str:
   return f'{app_name}/{user_id}'
 
 
@@ -56,7 +60,7 @@ class InMemoryMemoryService(BaseMemoryService):
     """
 
   @override
-  async def add_session_to_memory(self, session: Session):
+  async def add_session_to_memory(self, session: Session) -> None:
     user_key = _user_key(session.app_name, session.user_id)
 
     with self._lock:
@@ -66,6 +70,35 @@ class InMemoryMemoryService(BaseMemoryService):
           for event in session.events
           if event.content and event.content.parts
       ]
+
+  @override
+  async def add_events_to_memory(
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      events: Sequence[Event],
+      session_id: str | None = None,
+      custom_metadata: Mapping[str, object] | None = None,
+  ) -> None:
+    _ = custom_metadata
+    user_key = _user_key(app_name, user_id)
+    scoped_session_id = session_id or _UNKNOWN_SESSION_ID
+    events_to_add = [
+        event for event in events if event.content and event.content.parts
+    ]
+
+    with self._lock:
+      self._session_events[user_key] = self._session_events.get(user_key, {})
+      existing_events = self._session_events[user_key].get(
+          scoped_session_id, []
+      )
+      existing_ids = {event.id for event in existing_events}
+      for event in events_to_add:
+        if event.id not in existing_ids:
+          existing_events.append(event)
+          existing_ids.add(event.id)
+      self._session_events[user_key][scoped_session_id] = existing_events
 
   @override
   async def search_memory(
