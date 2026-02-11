@@ -323,7 +323,7 @@ def _get_last_valid_json_substring(text: str) -> tuple[bool, str | None]:
   """Attempts to find and return the last valid JSON object in a string.
 
   This function is designed to extract JSON that might be embedded in a larger
-  text, potentially with introductory or concluding remarks. It will always chose
+  text, potentially with introductory or concluding remarks. It will always choose
   the last block of valid json found within the supplied text (if it exists).
 
   Args:
