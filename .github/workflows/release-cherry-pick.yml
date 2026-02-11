@@ -1,0 +1,46 @@
+# Cherry-picks a commit from main to the release/candidate branch.
+# Use this to include bug fixes in an in-progress release.
+name: "Release: Cherry-pick"
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit_sha:
+        description: 'Commit SHA to cherry-pick'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  cherry-pick:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: release/candidate
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Cherry-pick commit
+        run: |
+          echo "Cherry-picking ${{ inputs.commit_sha }} to release/candidate"
+          git cherry-pick ${{ inputs.commit_sha }}
+
+      - name: Push changes
+        run: |
+          git push origin release/candidate
+          echo "Successfully cherry-picked commit to release/candidate"
+
+      - name: Trigger Release Please
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run release-please.yml --repo ${{ github.repository }}
+          echo "Triggered Release Please workflow"
