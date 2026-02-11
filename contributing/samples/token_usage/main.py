@@ -72,8 +72,8 @@ async def main():
         )
         total_tokens += event.usage_metadata.total_token_count or 0
         print(
-            'Turn tokens:'
-            f' {event.usage_metadata.total_token_count} (prompt={event.usage_metadata.prompt_token_count},'
+            f'Turn tokens: {event.usage_metadata.total_token_count}'
+            f' (prompt={event.usage_metadata.prompt_token_count},'
             f' candidates={event.usage_metadata.candidates_token_count})'
         )
 

@@ -771,7 +771,9 @@ class AdkWebServer:
       return {
           "version": __version__,
           "language": "python",
-          "language_version": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
+          "language_version": (
+              f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+          ),
       }
 
     @app.get("/list-apps")
