@@ -20,6 +20,7 @@ import importlib
 import json
 import logging
 import os
+import sys
 import time
 import traceback
 import typing
@@ -88,6 +89,7 @@ from ..runners import Runner
 from ..sessions.base_session_service import BaseSessionService
 from ..sessions.session import Session
 from ..utils.context_utils import Aclosing
+from ..version import __version__
 from .cli_eval import EVAL_SESSION_ID_PREFIX
 from .utils import cleanup
 from .utils import common
@@ -492,6 +494,7 @@ class AdkWebServer:
       logo_text: Optional[str] = None,
       logo_image_url: Optional[str] = None,
       url_prefix: Optional[str] = None,
+      auto_create_session: bool = False,
   ):
     self.agent_loader = agent_loader
     self.session_service = session_service
@@ -509,6 +512,7 @@ class AdkWebServer:
     self.current_app_name_ref: SharedValue[str] = SharedValue(value="")
     self.runner_dict = {}
     self.url_prefix = url_prefix
+    self.auto_create_session = auto_create_session
 
   async def get_runner_async(self, app_name: str) -> Runner:
     """Returns the cached runner for the given app."""
@@ -558,6 +562,7 @@ class AdkWebServer:
         session_service=self.session_service,
         memory_service=self.memory_service,
         credential_service=self.credential_service,
+        auto_create_session=self.auto_create_session,
     )
 
   def _instantiate_extra_plugins(self) -> list[BasePlugin]:
@@ -756,6 +761,18 @@ class AdkWebServer:
           allow_methods=["*"],
           allow_headers=["*"],
       )
+
+    @app.get("/health")
+    async def health() -> dict[str, str]:
+      return {"status": "ok"}
+
+    @app.get("/version")
+    async def version() -> dict[str, str]:
+      return {
+          "version": __version__,
+          "language": "python",
+          "language_version": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
+      }
 
     @app.get("/list-apps")
     async def list_apps(
@@ -1348,6 +1365,24 @@ class AdkWebServer:
       return artifact
 
     @app.get(
+        "/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts/{artifact_name}/versions/metadata",
+        response_model=list[ArtifactVersion],
+        response_model_exclude_none=True,
+    )
+    async def list_artifact_versions_metadata(
+        app_name: str,
+        user_id: str,
+        session_id: str,
+        artifact_name: str,
+    ) -> list[ArtifactVersion]:
+      return await self.artifact_service.list_artifact_versions(
+          app_name=app_name,
+          user_id=user_id,
+          session_id=session_id,
+          filename=artifact_name,
+      )
+
+    @app.get(
         "/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts/{artifact_name}/versions/{version_id}",
         response_model_exclude_none=True,
     )
@@ -1413,6 +1448,31 @@ class AdkWebServer:
       if artifact_version is None:
         raise HTTPException(
             status_code=500, detail="Artifact metadata unavailable"
+        )
+      return artifact_version
+
+    @app.get(
+        "/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts/{artifact_name}/versions/{version_id}/metadata",
+        response_model=ArtifactVersion,
+        response_model_exclude_none=True,
+    )
+    async def get_artifact_version_metadata(
+        app_name: str,
+        user_id: str,
+        session_id: str,
+        artifact_name: str,
+        version_id: int,
+    ) -> ArtifactVersion:
+      artifact_version = await self.artifact_service.get_artifact_version(
+          app_name=app_name,
+          user_id=user_id,
+          session_id=session_id,
+          filename=artifact_name,
+          version=version_id,
+      )
+      if not artifact_version:
+        raise HTTPException(
+            status_code=404, detail="Artifact version not found"
         )
       return artifact_version
 

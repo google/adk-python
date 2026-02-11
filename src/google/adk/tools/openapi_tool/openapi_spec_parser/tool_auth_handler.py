@@ -321,7 +321,7 @@ class ToolAuthHandler:
     credential = existing_credential or self.auth_credential
     # fetch credential from adk framework
     # Some auth scheme like OAuth2 AuthCode & OpenIDConnect may require
-    # multi-step exchange:
+    # multistep exchange:
     # client_id , client_secret -> auth_uri -> auth_code -> access_token
     # adk framework supports exchange access_token already
     # for other credential, adk can also get back the credential directly
