@@ -24,11 +24,11 @@ distributed via the `google.adk.tools.bigquery` module. These tools include:
 5. `get_job_info`
   Fetches metadata about a BigQuery job.
 
-5. `execute_sql`
+6. `execute_sql`
 
   Runs or dry-runs a SQL query in BigQuery.
 
-6. `ask_data_insights`
+7. `ask_data_insights`
 
   Natural language-in, natural language-out tool that answers questions
   about structured data in BigQuery. Provides a one-stop solution for generating
@@ -38,18 +38,18 @@ distributed via the `google.adk.tools.bigquery` module. These tools include:
   the official [Conversational Analytics API documentation](https://cloud.google.com/gemini/docs/conversational-analytics-api/overview)
   for instructions.
 
-7. `forecast`
+8. `forecast`
 
   Perform time series forecasting using BigQuery's `AI.FORECAST` function,
   leveraging the TimesFM 2.0 model.
 
-8. `analyze_contribution`
+9. `analyze_contribution`
 
   Perform contribution analysis in BigQuery by creating a temporary
   `CONTRIBUTION_ANALYSIS` model and then querying it with
   `ML.GET_INSIGHTS` to find top contributors for a given metric.
 
-9. `detect_anomalies`
+10. `detect_anomalies`
 
   Perform time series anomaly detection in BigQuery by creating a temporary
   `ARIMA_PLUS` model and then querying it with

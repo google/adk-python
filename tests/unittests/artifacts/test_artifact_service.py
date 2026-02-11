@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -32,6 +32,7 @@ from google.adk.artifacts.base_artifact_service import ArtifactVersion
 from google.adk.artifacts.file_artifact_service import FileArtifactService
 from google.adk.artifacts.gcs_artifact_service import GcsArtifactService
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
+from google.adk.errors.input_validation_error import InputValidationError
 from google.genai import types
 import pytest
 
@@ -732,7 +733,7 @@ async def test_file_save_artifact_rejects_out_of_scope_paths(
   """FileArtifactService prevents path traversal outside of its storage roots."""
   artifact_service = FileArtifactService(root_dir=tmp_path / "artifacts")
   part = types.Part(text="content")
-  with pytest.raises(ValueError):
+  with pytest.raises(InputValidationError):
     await artifact_service.save_artifact(
         app_name="myapp",
         user_id="user123",
@@ -757,7 +758,7 @@ async def test_file_save_artifact_rejects_absolute_path_within_scope(tmp_path):
       / "diagram.png"
   )
   part = types.Part(text="content")
-  with pytest.raises(ValueError):
+  with pytest.raises(InputValidationError):
     await artifact_service.save_artifact(
         app_name="myapp",
         user_id="user123",

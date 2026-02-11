@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,15 +15,15 @@
 from google.adk import Agent
 from google.adk.tools import load_artifacts
 from google.adk.tools.tool_context import ToolContext
-from google.genai import Client
 from google.genai import types
-
-# Only Vertex AI supports image generation for now.
-client = Client()
 
 
 async def generate_image(prompt: str, tool_context: 'ToolContext'):
   """Generates an image based on the prompt."""
+  from google.genai import Client
+
+  # Only Vertex AI supports image generation for now.
+  client = Client()
   response = client.models.generate_images(
       model='imagen-3.0-generate-002',
       prompt=prompt,

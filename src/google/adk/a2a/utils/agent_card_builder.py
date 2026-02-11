@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,26 +14,17 @@
 
 from __future__ import annotations
 
+import logging
 import re
-import sys
 from typing import Dict
 from typing import List
 from typing import Optional
 
-try:
-  from a2a.types import AgentCapabilities
-  from a2a.types import AgentCard
-  from a2a.types import AgentProvider
-  from a2a.types import AgentSkill
-  from a2a.types import SecurityScheme
-except ImportError as e:
-  if sys.version_info < (3, 10):
-    raise ImportError(
-        'A2A requires Python 3.10 or above. Please upgrade your Python version.'
-    ) from e
-  else:
-    raise e
-
+from a2a.types import AgentCapabilities
+from a2a.types import AgentCard
+from a2a.types import AgentProvider
+from a2a.types import AgentSkill
+from a2a.types import SecurityScheme
 
 from ...agents.base_agent import BaseAgent
 from ...agents.llm_agent import LlmAgent
@@ -42,6 +33,8 @@ from ...agents.parallel_agent import ParallelAgent
 from ...agents.sequential_agent import SequentialAgent
 from ...tools.example_tool import ExampleTool
 from ..experimental import a2a_experimental
+
+logger = logging.getLogger('google_adk.' + __name__)
 
 
 @a2a_experimental
@@ -124,7 +117,7 @@ async def _build_llm_agent_skills(agent: LlmAgent) -> List[AgentSkill]:
           id=agent.name,
           name='model',
           description=agent_description,
-          examples=agent_examples,
+          examples=_extract_inputs_from_examples(agent_examples),
           input_modes=_get_input_modes(agent),
           output_modes=_get_output_modes(agent),
           tags=['llm'],
@@ -167,8 +160,8 @@ async def _build_sub_agent_skills(agent: BaseAgent) -> List[AgentSkill]:
         sub_agent_skills.append(aggregated_skill)
     except Exception as e:
       # Log warning but continue with other sub-agents
-      print(
-          f'Warning: Failed to build skills for sub-agent {sub_agent.name}: {e}'
+      logger.warning(
+          'Failed to build skills for sub-agent %s: %s', sub_agent.name, e
       )
       continue
 
@@ -249,7 +242,7 @@ async def _build_non_llm_agent_skills(agent: BaseAgent) -> List[AgentSkill]:
           id=agent.name,
           name=agent_name,
           description=agent_description,
-          examples=agent_examples,
+          examples=_extract_inputs_from_examples(agent_examples),
           input_modes=_get_input_modes(agent),
           output_modes=_get_output_modes(agent),
           tags=[agent_type],
@@ -360,6 +353,7 @@ def _build_llm_agent_description_with_instructions(agent: LlmAgent) -> str:
 
 def _replace_pronouns(text: str) -> str:
   """Replace pronouns and conjugate common verbs for agent description.
+
   (e.g., "You are" -> "I am", "your" -> "my").
   """
   pronoun_map = {
@@ -470,6 +464,33 @@ def _get_default_description(agent: BaseAgent) -> str:
   return 'A custom agent'
 
 
+def _extract_inputs_from_examples(examples: Optional[list[dict]]) -> list[str]:
+  """Extracts only the input strings so they can be added to an AgentSkill."""
+  if examples is None:
+    return []
+
+  extracted_inputs = []
+  for example in examples:
+    example_input = example.get('input')
+    if not example_input:
+      continue
+
+    parts = example_input.get('parts')
+    if parts is not None:
+      part_texts = []
+      for part in parts:
+        text = part.get('text')
+        if text is not None:
+          part_texts.append(text)
+      extracted_inputs.append('\n'.join(part_texts))
+    else:
+      text = example_input.get('text')
+      if text is not None:
+        extracted_inputs.append(text)
+
+  return extracted_inputs
+
+
 async def _extract_examples_from_agent(
     agent: BaseAgent,
 ) -> Optional[List[Dict]]:
@@ -484,7 +505,7 @@ async def _extract_examples_from_agent(
       if isinstance(tool, ExampleTool):
         return _convert_example_tool_examples(tool)
   except Exception as e:
-    print(f'Warning: Failed to extract examples from tools: {e}')
+    logger.warning('Failed to extract examples from tools: %s', e)
 
   # If no example_tool found, try to extract examples from instruction
   if agent.instruction:

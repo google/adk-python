@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -114,7 +114,7 @@ async def test_execute_sql_declaration_read_only(tool_settings):
 
             >>> execute_sql("my_project",
             ... "SELECT island, COUNT(*) AS population "
-            ... "FROM bigquery-public-data.ml_datasets.penguins GROUP BY island")
+            ... "FROM `bigquery-public-data`.`ml_datasets`.`penguins` GROUP BY island")
             {
               "status": "SUCCESS",
               "rows": [
@@ -138,7 +138,7 @@ async def test_execute_sql_declaration_read_only(tool_settings):
             >>> execute_sql(
             ...     "my_project",
             ...     "SELECT island FROM "
-            ...     "bigquery-public-data.ml_datasets.penguins",
+            ...     "`bigquery-public-data`.`ml_datasets`.`penguins`",
             ...     dry_run=True
             ... )
             {
@@ -154,7 +154,7 @@ async def test_execute_sql_declaration_read_only(tool_settings):
                       "tableId": "anon..."
                     },
                     "priority": "INTERACTIVE",
-                    "query": "SELECT island FROM bigquery-public-data.ml_datasets.penguins",
+                    "query": "SELECT island FROM `bigquery-public-data`.`ml_datasets`.`penguins`",
                     "useLegacySql": False,
                     "writeDisposition": "WRITE_TRUNCATE"
                   }
@@ -213,7 +213,7 @@ async def test_execute_sql_declaration_write(tool_settings):
 
             >>> execute_sql("my_project",
             ... "SELECT island, COUNT(*) AS population "
-            ... "FROM bigquery-public-data.ml_datasets.penguins GROUP BY island")
+            ... "FROM `bigquery-public-data`.`ml_datasets`.`penguins` GROUP BY island")
             {
               "status": "SUCCESS",
               "rows": [
@@ -237,7 +237,7 @@ async def test_execute_sql_declaration_write(tool_settings):
             >>> execute_sql(
             ...     "my_project",
             ...     "SELECT island FROM "
-            ...     "bigquery-public-data.ml_datasets.penguins",
+            ...     "`bigquery-public-data`.`ml_datasets`.`penguins`",
             ...     dry_run=True
             ... )
             {
@@ -253,7 +253,7 @@ async def test_execute_sql_declaration_write(tool_settings):
                       "tableId": "anon..."
                     },
                     "priority": "INTERACTIVE",
-                    "query": "SELECT island FROM bigquery-public-data.ml_datasets.penguins",
+                    "query": "SELECT island FROM `bigquery-public-data`.`ml_datasets`.`penguins`",
                     "useLegacySql": False,
                     "writeDisposition": "WRITE_TRUNCATE"
                   }
@@ -268,7 +268,7 @@ async def test_execute_sql_declaration_write(tool_settings):
         Create a table with schema prescribed:
 
             >>> execute_sql("my_project",
-            ... "CREATE TABLE my_project.my_dataset.my_table "
+            ... "CREATE TABLE `my_project`.`my_dataset`.`my_table` "
             ... "(island STRING, population INT64)")
             {
               "status": "SUCCESS",
@@ -278,7 +278,7 @@ async def test_execute_sql_declaration_write(tool_settings):
         Insert data into an existing table:
 
             >>> execute_sql("my_project",
-            ... "INSERT INTO my_project.my_dataset.my_table (island, population) "
+            ... "INSERT INTO `my_project`.`my_dataset`.`my_table` (island, population) "
             ... "VALUES ('Dream', 124), ('Biscoe', 168)")
             {
               "status": "SUCCESS",
@@ -288,9 +288,9 @@ async def test_execute_sql_declaration_write(tool_settings):
         Create a table from the result of a query:
 
             >>> execute_sql("my_project",
-            ... "CREATE TABLE my_project.my_dataset.my_table AS "
+            ... "CREATE TABLE `my_project`.`my_dataset`.`my_table` AS "
             ... "SELECT island, COUNT(*) AS population "
-            ... "FROM bigquery-public-data.ml_datasets.penguins GROUP BY island")
+            ... "FROM `bigquery-public-data`.`ml_datasets`.`penguins` GROUP BY island")
             {
               "status": "SUCCESS",
               "rows": []
@@ -299,7 +299,7 @@ async def test_execute_sql_declaration_write(tool_settings):
         Delete a table:
 
             >>> execute_sql("my_project",
-            ... "DROP TABLE my_project.my_dataset.my_table")
+            ... "DROP TABLE `my_project`.`my_dataset`.`my_table`")
             {
               "status": "SUCCESS",
               "rows": []
@@ -308,8 +308,8 @@ async def test_execute_sql_declaration_write(tool_settings):
         Copy a table to another table:
 
             >>> execute_sql("my_project",
-            ... "CREATE TABLE my_project.my_dataset.my_table_clone "
-            ... "CLONE my_project.my_dataset.my_table")
+            ... "CREATE TABLE `my_project`.`my_dataset`.`my_table_clone` "
+            ... "CLONE `my_project`.`my_dataset`.`my_table`")
             {
               "status": "SUCCESS",
               "rows": []
@@ -319,8 +319,8 @@ async def test_execute_sql_declaration_write(tool_settings):
         table:
 
             >>> execute_sql("my_project",
-            ... "CREATE SNAPSHOT TABLE my_project.my_dataset.my_table_snapshot "
-            ... "CLONE my_project.my_dataset.my_table")
+            ... "CREATE SNAPSHOT TABLE `my_project`.`my_dataset`.`my_table_snapshot` "
+            ... "CLONE `my_project`.`my_dataset`.`my_table`")
             {
               "status": "SUCCESS",
               "rows": []
@@ -329,9 +329,9 @@ async def test_execute_sql_declaration_write(tool_settings):
         Create a BigQuery ML linear regression model:
 
             >>> execute_sql("my_project",
-            ... "CREATE MODEL `my_dataset.my_model` "
+            ... "CREATE MODEL `my_dataset`.`my_model` "
             ... "OPTIONS (model_type='linear_reg', input_label_cols=['body_mass_g']) AS "
-            ... "SELECT * FROM `bigquery-public-data.ml_datasets.penguins` "
+            ... "SELECT * FROM `bigquery-public-data`.`ml_datasets`.`penguins` "
             ... "WHERE body_mass_g IS NOT NULL")
             {
               "status": "SUCCESS",
@@ -341,7 +341,7 @@ async def test_execute_sql_declaration_write(tool_settings):
         Evaluate BigQuery ML model:
 
             >>> execute_sql("my_project",
-            ... "SELECT * FROM ML.EVALUATE(MODEL `my_dataset.my_model`)")
+            ... "SELECT * FROM ML.EVALUATE(MODEL `my_dataset`.`my_model`)")
             {
               "status": "SUCCESS",
               "rows": [{'mean_absolute_error': 227.01223667447218,
@@ -355,8 +355,8 @@ async def test_execute_sql_declaration_write(tool_settings):
         Evaluate BigQuery ML model on custom data:
 
             >>> execute_sql("my_project",
-            ... "SELECT * FROM ML.EVALUATE(MODEL `my_dataset.my_model`, "
-            ... "(SELECT * FROM `my_dataset.my_table`))")
+            ... "SELECT * FROM ML.EVALUATE(MODEL `my_dataset`.`my_model`, "
+            ... "(SELECT * FROM `my_dataset`.`my_table`))")
             {
               "status": "SUCCESS",
               "rows": [{'mean_absolute_error': 227.01223667447218,
@@ -370,8 +370,8 @@ async def test_execute_sql_declaration_write(tool_settings):
         Predict using BigQuery ML model:
 
             >>> execute_sql("my_project",
-            ... "SELECT * FROM ML.PREDICT(MODEL `my_dataset.my_model`, "
-            ... "(SELECT * FROM `my_dataset.my_table`))")
+            ... "SELECT * FROM ML.PREDICT(MODEL `my_dataset`.`my_model`, "
+            ... "(SELECT * FROM `my_dataset`.`my_table`))")
             {
               "status": "SUCCESS",
               "rows": [
@@ -388,7 +388,7 @@ async def test_execute_sql_declaration_write(tool_settings):
 
         Delete a BigQuery ML model:
 
-            >>> execute_sql("my_project", "DROP MODEL `my_dataset.my_model`")
+            >>> execute_sql("my_project", "DROP MODEL `my_dataset`.`my_model`")
             {
               "status": "SUCCESS",
               "rows": []
@@ -450,7 +450,7 @@ async def test_execute_sql_declaration_protected_write(tool_settings):
 
             >>> execute_sql("my_project",
             ... "SELECT island, COUNT(*) AS population "
-            ... "FROM bigquery-public-data.ml_datasets.penguins GROUP BY island")
+            ... "FROM `bigquery-public-data`.`ml_datasets`.`penguins` GROUP BY island")
             {
               "status": "SUCCESS",
               "rows": [
@@ -474,7 +474,7 @@ async def test_execute_sql_declaration_protected_write(tool_settings):
             >>> execute_sql(
             ...     "my_project",
             ...     "SELECT island FROM "
-            ...     "bigquery-public-data.ml_datasets.penguins",
+            ...     "`bigquery-public-data`.`ml_datasets`.`penguins`",
             ...     dry_run=True
             ... )
             {
@@ -490,7 +490,7 @@ async def test_execute_sql_declaration_protected_write(tool_settings):
                       "tableId": "anon..."
                     },
                     "priority": "INTERACTIVE",
-                    "query": "SELECT island FROM bigquery-public-data.ml_datasets.penguins",
+                    "query": "SELECT island FROM `bigquery-public-data`.`ml_datasets`.`penguins`",
                     "useLegacySql": False,
                     "writeDisposition": "WRITE_TRUNCATE"
                   }
@@ -505,7 +505,7 @@ async def test_execute_sql_declaration_protected_write(tool_settings):
         Create a temporary table with schema prescribed:
 
             >>> execute_sql("my_project",
-            ... "CREATE TEMP TABLE my_table (island STRING, population INT64)")
+            ... "CREATE TEMP TABLE `my_table` (island STRING, population INT64)")
             {
               "status": "SUCCESS",
               "rows": []
@@ -514,7 +514,7 @@ async def test_execute_sql_declaration_protected_write(tool_settings):
         Insert data into an existing temporary table:
 
             >>> execute_sql("my_project",
-            ... "INSERT INTO my_table (island, population) "
+            ... "INSERT INTO `my_table` (island, population) "
             ... "VALUES ('Dream', 124), ('Biscoe', 168)")
             {
               "status": "SUCCESS",
@@ -524,9 +524,9 @@ async def test_execute_sql_declaration_protected_write(tool_settings):
         Create a temporary table from the result of a query:
 
             >>> execute_sql("my_project",
-            ... "CREATE TEMP TABLE my_table AS "
+            ... "CREATE TEMP TABLE `my_table` AS "
             ... "SELECT island, COUNT(*) AS population "
-            ... "FROM bigquery-public-data.ml_datasets.penguins GROUP BY island")
+            ... "FROM `bigquery-public-data`.`ml_datasets`.`penguins` GROUP BY island")
             {
               "status": "SUCCESS",
               "rows": []
@@ -534,7 +534,7 @@ async def test_execute_sql_declaration_protected_write(tool_settings):
 
         Delete a temporary table:
 
-            >>> execute_sql("my_project", "DROP TABLE my_table")
+            >>> execute_sql("my_project", "DROP TABLE `my_table`")
             {
               "status": "SUCCESS",
               "rows": []
@@ -543,7 +543,7 @@ async def test_execute_sql_declaration_protected_write(tool_settings):
         Copy a temporary table to another temporary table:
 
             >>> execute_sql("my_project",
-            ... "CREATE TEMP TABLE my_table_clone CLONE my_table")
+            ... "CREATE TEMP TABLE `my_table_clone` CLONE `my_table`")
             {
               "status": "SUCCESS",
               "rows": []
@@ -552,9 +552,9 @@ async def test_execute_sql_declaration_protected_write(tool_settings):
         Create a temporary BigQuery ML linear regression model:
 
             >>> execute_sql("my_project",
-            ... "CREATE TEMP MODEL my_model "
+            ... "CREATE TEMP MODEL `my_model` "
             ... "OPTIONS (model_type='linear_reg', input_label_cols=['body_mass_g']) AS"
-            ... "SELECT * FROM `bigquery-public-data.ml_datasets.penguins` "
+            ... "SELECT * FROM `bigquery-public-data`.`ml_datasets`.`penguins` "
             ... "WHERE body_mass_g IS NOT NULL")
             {
               "status": "SUCCESS",
@@ -563,7 +563,7 @@ async def test_execute_sql_declaration_protected_write(tool_settings):
 
         Evaluate BigQuery ML model:
 
-            >>> execute_sql("my_project", "SELECT * FROM ML.EVALUATE(MODEL my_model)")
+            >>> execute_sql("my_project", "SELECT * FROM ML.EVALUATE(MODEL `my_model`)")
             {
               "status": "SUCCESS",
               "rows": [{'mean_absolute_error': 227.01223667447218,
@@ -577,8 +577,8 @@ async def test_execute_sql_declaration_protected_write(tool_settings):
         Evaluate BigQuery ML model on custom data:
 
             >>> execute_sql("my_project",
-            ... "SELECT * FROM ML.EVALUATE(MODEL my_model, "
-            ... "(SELECT * FROM `my_dataset.my_table`))")
+            ... "SELECT * FROM ML.EVALUATE(MODEL `my_model`, "
+            ... "(SELECT * FROM `my_dataset`.`my_table`))")
             {
               "status": "SUCCESS",
               "rows": [{'mean_absolute_error': 227.01223667447218,
@@ -592,8 +592,8 @@ async def test_execute_sql_declaration_protected_write(tool_settings):
         Predict using BigQuery ML model:
 
             >>> execute_sql("my_project",
-            ... "SELECT * FROM ML.PREDICT(MODEL my_model, "
-            ... "(SELECT * FROM `my_dataset.my_table`))")
+            ... "SELECT * FROM ML.PREDICT(MODEL `my_model`, "
+            ... "(SELECT * FROM `my_dataset`.`my_table`))")
             {
               "status": "SUCCESS",
               "rows": [
@@ -610,7 +610,7 @@ async def test_execute_sql_declaration_protected_write(tool_settings):
 
         Delete a BigQuery ML model:
 
-            >>> execute_sql("my_project", "DROP MODEL my_model")
+            >>> execute_sql("my_project", "DROP MODEL `my_model`")
             {
               "status": "SUCCESS",
               "rows": []
@@ -1134,6 +1134,33 @@ def test_execute_sql_result_dtype(
       project, query, credentials, tool_settings, tool_context
   )
   assert result == {"status": "SUCCESS", "rows": tool_result_rows}
+
+
+@mock.patch.dict(os.environ, {}, clear=True)
+@mock.patch.object(bigquery.Client, "query_and_wait", autospec=True)
+@mock.patch.object(bigquery.Client, "query", autospec=True)
+def test_execute_sql_result_dtype_circular_reference(
+    mock_query, mock_query_and_wait
+):
+  """Test execute_sql converts circular values to strings."""
+  credentials = mock.create_autospec(Credentials, instance=True)
+  tool_settings = BigQueryToolConfig()
+  tool_context = mock.create_autospec(ToolContext, instance=True)
+  query_job = mock.create_autospec(bigquery.QueryJob)
+  query_job.statement_type = "SELECT"
+  mock_query.return_value = query_job
+  circular_value = []
+  circular_value.append(circular_value)
+  mock_query_and_wait.return_value = [{"x": circular_value}]
+
+  result = query_tool.execute_sql(
+      "my_project", "SELECT 1", credentials, tool_settings, tool_context
+  )
+
+  assert result == {
+      "status": "SUCCESS",
+      "rows": [{"x": str(circular_value)}],
+  }
 
 
 @mock.patch.object(bq_client_lib, "get_bigquery_client", autospec=True)
@@ -1710,6 +1737,65 @@ def test_execute_sql_job_labels(
 
 
 @pytest.mark.parametrize(
+    ("write_mode", "dry_run", "query_call_count", "query_and_wait_call_count"),
+    [
+        pytest.param(WriteMode.ALLOWED, False, 0, 1, id="write-allowed"),
+        pytest.param(WriteMode.ALLOWED, True, 1, 0, id="write-allowed-dry-run"),
+        pytest.param(WriteMode.BLOCKED, False, 1, 1, id="write-blocked"),
+        pytest.param(WriteMode.BLOCKED, True, 2, 0, id="write-blocked-dry-run"),
+        pytest.param(WriteMode.PROTECTED, False, 2, 1, id="write-protected"),
+        pytest.param(
+            WriteMode.PROTECTED, True, 3, 0, id="write-protected-dry-run"
+        ),
+    ],
+)
+def test_execute_sql_user_job_labels_augment_internal_labels(
+    write_mode, dry_run, query_call_count, query_and_wait_call_count
+):
+  """Test execute_sql tool augments user job_labels with internal labels."""
+  project = "my_project"
+  query = "SELECT 123 AS num"
+  statement_type = "SELECT"
+  credentials = mock.create_autospec(Credentials, instance=True)
+  user_labels = {"environment": "test", "team": "data"}
+  tool_settings = BigQueryToolConfig(
+      write_mode=write_mode,
+      job_labels=user_labels,
+  )
+  tool_context = mock.create_autospec(ToolContext, instance=True)
+  tool_context.state.get.return_value = None
+
+  with mock.patch.object(bigquery, "Client", autospec=True) as Client:
+    bq_client = Client.return_value
+
+    query_job = mock.create_autospec(bigquery.QueryJob)
+    query_job.statement_type = statement_type
+    bq_client.query.return_value = query_job
+
+    query_tool.execute_sql(
+        project,
+        query,
+        credentials,
+        tool_settings,
+        tool_context,
+        dry_run=dry_run,
+    )
+
+    assert bq_client.query.call_count == query_call_count
+    assert bq_client.query_and_wait.call_count == query_and_wait_call_count
+    # Build expected labels from user_labels + internal label
+    expected_labels = {**user_labels, "adk-bigquery-tool": "execute_sql"}
+    for call_args_list in [
+        bq_client.query.call_args_list,
+        bq_client.query_and_wait.call_args_list,
+    ]:
+      for call_args in call_args_list:
+        _, mock_kwargs = call_args
+        # Verify user labels are preserved and internal label is added
+        assert mock_kwargs["job_config"].labels == expected_labels
+
+
+@pytest.mark.parametrize(
     ("tool_call", "expected_tool_label"),
     [
         pytest.param(
@@ -1847,6 +1933,94 @@ def test_ml_tool_job_labels_w_application_name(tool_call, expected_tool_label):
     ]:
       for call_args in call_args_list:
         _, mock_kwargs = call_args
+        assert mock_kwargs["job_config"].labels == expected_labels
+
+
+@pytest.mark.parametrize(
+    ("tool_call", "expected_labels"),
+    [
+        pytest.param(
+            lambda tool_context: query_tool.forecast(
+                project_id="test-project",
+                history_data="SELECT * FROM `test-dataset.test-table`",
+                timestamp_col="ts_col",
+                data_col="data_col",
+                credentials=mock.create_autospec(Credentials, instance=True),
+                settings=BigQueryToolConfig(
+                    write_mode=WriteMode.ALLOWED,
+                    job_labels={"environment": "prod", "app": "forecaster"},
+                ),
+                tool_context=tool_context,
+            ),
+            {
+                "environment": "prod",
+                "app": "forecaster",
+                "adk-bigquery-tool": "forecast",
+            },
+            id="forecast",
+        ),
+        pytest.param(
+            lambda tool_context: query_tool.analyze_contribution(
+                project_id="test-project",
+                input_data="test-dataset.test-table",
+                dimension_id_cols=["dim1", "dim2"],
+                contribution_metric="SUM(metric)",
+                is_test_col="is_test",
+                credentials=mock.create_autospec(Credentials, instance=True),
+                settings=BigQueryToolConfig(
+                    write_mode=WriteMode.ALLOWED,
+                    job_labels={"environment": "prod", "app": "analyzer"},
+                ),
+                tool_context=tool_context,
+            ),
+            {
+                "environment": "prod",
+                "app": "analyzer",
+                "adk-bigquery-tool": "analyze_contribution",
+            },
+            id="analyze-contribution",
+        ),
+        pytest.param(
+            lambda tool_context: query_tool.detect_anomalies(
+                project_id="test-project",
+                history_data="SELECT * FROM `test-dataset.test-table`",
+                times_series_timestamp_col="ts_timestamp",
+                times_series_data_col="ts_data",
+                credentials=mock.create_autospec(Credentials, instance=True),
+                settings=BigQueryToolConfig(
+                    write_mode=WriteMode.ALLOWED,
+                    job_labels={"environment": "prod", "app": "detector"},
+                ),
+                tool_context=tool_context,
+            ),
+            {
+                "environment": "prod",
+                "app": "detector",
+                "adk-bigquery-tool": "detect_anomalies",
+            },
+            id="detect-anomalies",
+        ),
+    ],
+)
+def test_ml_tool_user_job_labels_augment_internal_labels(
+    tool_call, expected_labels
+):
+  """Test ML tools augment user job_labels with internal labels."""
+
+  with mock.patch.object(bigquery, "Client", autospec=True) as Client:
+    bq_client = Client.return_value
+
+    tool_context = mock.create_autospec(ToolContext, instance=True)
+    tool_context.state.get.return_value = None
+    tool_call(tool_context)
+
+    for call_args_list in [
+        bq_client.query.call_args_list,
+        bq_client.query_and_wait.call_args_list,
+    ]:
+      for call_args in call_args_list:
+        _, mock_kwargs = call_args
+        # Verify user labels are preserved and internal label is added
         assert mock_kwargs["job_config"].labels == expected_labels
 
 
@@ -2014,3 +2188,93 @@ def test_tool_call_doesnt_change_global_settings(tool_call):
 
     # Test settings write mode after
     assert settings.write_mode == WriteMode.ALLOWED
+
+
+@pytest.mark.parametrize(
+    ("tool_call",),
+    [
+        pytest.param(
+            lambda settings, tool_context: query_tool.execute_sql(
+                project_id="test-project",
+                query="SELECT * FROM `test-dataset.test-table`",
+                credentials=mock.create_autospec(Credentials, instance=True),
+                settings=settings,
+                tool_context=tool_context,
+            ),
+            id="execute-sql",
+        ),
+        pytest.param(
+            lambda settings, tool_context: query_tool.forecast(
+                project_id="test-project",
+                history_data="SELECT * FROM `test-dataset.test-table`",
+                timestamp_col="ts_col",
+                data_col="data_col",
+                credentials=mock.create_autospec(Credentials, instance=True),
+                settings=settings,
+                tool_context=tool_context,
+            ),
+            id="forecast",
+        ),
+        pytest.param(
+            lambda settings, tool_context: query_tool.analyze_contribution(
+                project_id="test-project",
+                input_data="test-dataset.test-table",
+                dimension_id_cols=["dim1", "dim2"],
+                contribution_metric="SUM(metric)",
+                is_test_col="is_test",
+                credentials=mock.create_autospec(Credentials, instance=True),
+                settings=settings,
+                tool_context=tool_context,
+            ),
+            id="analyze-contribution",
+        ),
+        pytest.param(
+            lambda settings, tool_context: query_tool.detect_anomalies(
+                project_id="test-project",
+                history_data="SELECT * FROM `test-dataset.test-table`",
+                times_series_timestamp_col="ts_timestamp",
+                times_series_data_col="ts_data",
+                credentials=mock.create_autospec(Credentials, instance=True),
+                settings=settings,
+                tool_context=tool_context,
+            ),
+            id="detect-anomalies",
+        ),
+    ],
+)
+def test_tool_call_doesnt_mutate_job_labels(tool_call):
+  """Test query tools don't mutate job_labels in global settings."""
+  original_labels = {"environment": "test", "team": "data"}
+  settings = BigQueryToolConfig(
+      write_mode=WriteMode.ALLOWED,
+      job_labels=original_labels.copy(),
+  )
+  tool_context = mock.create_autospec(ToolContext, instance=True)
+  tool_context.state.get.return_value = (
+      "test-bq-session-id",
+      "_anonymous_dataset",
+  )
+
+  with mock.patch("google.cloud.bigquery.Client", autospec=False) as Client:
+    # The mock instance
+    bq_client = Client.return_value
+
+    # Simulate the result of query API
+    query_job = mock.create_autospec(bigquery.QueryJob)
+    query_job.destination.dataset_id = "_anonymous_dataset"
+    bq_client.query.return_value = query_job
+    bq_client.query_and_wait.return_value = []
+
+    # Test job_labels before
+    assert settings.job_labels == original_labels
+    assert "adk-bigquery-tool" not in settings.job_labels
+
+    # Call the tool
+    result = tool_call(settings, tool_context)
+
+    # Test successful execution of the tool
+    assert result == {"status": "SUCCESS", "rows": []}
+
+    # Test job_labels remain unchanged after tool call
+    assert settings.job_labels == original_labels
+    assert "adk-bigquery-tool" not in settings.job_labels

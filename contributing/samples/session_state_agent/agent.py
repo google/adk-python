@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -172,7 +172,7 @@ root_agent = Agent(
         'Log all users query with `log_query` tool. Must always remind user you'
         ' cannot answer second query because your setup.'
     ),
-    model='gemini-2.0-flash-001',
+    model='gemini-2.5-flash',
     before_agent_callback=before_agent_callback,
     before_model_callback=before_model_callback,
     after_model_callback=after_model_callback,

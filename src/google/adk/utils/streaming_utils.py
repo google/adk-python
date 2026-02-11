@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+from typing import Any
 from typing import AsyncGenerator
 from typing import Optional
 
@@ -31,10 +32,12 @@ class StreamingResponseAggregator:
   individual (partial) model responses, as well as for aggregated content.
   """
 
-  def __init__(self):
+  def __init__(self) -> None:
     self._text = ''
     self._thought_text = ''
     self._usage_metadata = None
+    self._grounding_metadata: Optional[types.GroundingMetadata] = None
+    self._citation_metadata: Optional[types.CitationMetadata] = None
     self._response = None
 
     # For progressive SSE streaming mode: accumulate parts in order
@@ -43,7 +46,13 @@ class StreamingResponseAggregator:
     self._current_text_is_thought: Optional[bool] = None
     self._finish_reason: Optional[types.FinishReason] = None
 
-  def _flush_text_buffer_to_sequence(self):
+    # For streaming function call arguments
+    self._current_fc_name: Optional[str] = None
+    self._current_fc_args: dict[str, Any] = {}
+    self._current_fc_id: Optional[str] = None
+    self._current_thought_signature: Optional[bytes] = None
+
+  def _flush_text_buffer_to_sequence(self) -> None:
     """Flush current text buffer to parts sequence.
 
     This helper is used in progressive SSE mode to maintain part ordering.
@@ -61,6 +70,173 @@ class StreamingResponseAggregator:
       self._current_text_buffer = ''
       self._current_text_is_thought = None
 
+  def _get_value_from_partial_arg(
+      self, partial_arg: types.PartialArg, json_path: str
+  ) -> tuple[Any, bool]:
+    """Extract value from a partial argument.
+
+    Args:
+      partial_arg: The partial argument object
+      json_path: JSONPath for this argument
+
+    Returns:
+      Tuple of (value, has_value) where has_value indicates if a value exists
+    """
+    value: Any = None
+    has_value = False
+
+    if partial_arg.string_value is not None:
+      # For streaming strings, append chunks to existing value
+      string_chunk = partial_arg.string_value
+      has_value = True
+
+      # Get current value for this path (if any)
+      path_without_prefix = (
+          json_path[2:] if json_path.startswith('$.') else json_path
+      )
+      path_parts = path_without_prefix.split('.')
+
+      # Try to get existing value
+      existing_value: Any = self._current_fc_args
+      for part in path_parts:
+        if isinstance(existing_value, dict) and part in existing_value:
+          existing_value = existing_value[part]
+        else:
+          break
+
+      # Append to existing string or set new value
+      if isinstance(existing_value, str):
+        value = existing_value + string_chunk
+      else:
+        value = string_chunk
+
+    elif partial_arg.number_value is not None:
+      value = partial_arg.number_value
+      has_value = True
+    elif partial_arg.bool_value is not None:
+      value = partial_arg.bool_value
+      has_value = True
+    elif partial_arg.null_value is not None:
+      value = None
+      has_value = True
+
+    return value, has_value
+
+  def _set_value_by_json_path(self, json_path: str, value: Any) -> None:
+    """Set a value in _current_fc_args using JSONPath notation.
+
+    Args:
+      json_path: JSONPath string like "$.location" or "$.location.latitude"
+      value: The value to set
+    """
+    # Remove leading "$." from jsonPath
+    if json_path.startswith('$.'):
+      path = json_path[2:]
+    else:
+      path = json_path
+
+    # Split path into components
+    path_parts = path.split('.')
+
+    # Navigate to the correct location and set the value
+    current = self._current_fc_args
+    for part in path_parts[:-1]:
+      if part not in current:
+        current[part] = {}
+      current = current[part]
+
+    # Set the final value
+    current[path_parts[-1]] = value
+
+  def _flush_function_call_to_sequence(self) -> None:
+    """Flush current function call to parts sequence.
+
+    This creates a complete FunctionCall part from accumulated partial args.
+    """
+    if self._current_fc_name:
+      # Create function call part with accumulated args
+      fc_part = types.Part.from_function_call(
+          name=self._current_fc_name,
+          args=self._current_fc_args.copy(),
+      )
+
+      # Set the ID if provided (directly on the function_call object)
+      if self._current_fc_id and fc_part.function_call:
+        fc_part.function_call.id = self._current_fc_id
+
+      # Set thought_signature if provided (on the Part, not FunctionCall)
+      if self._current_thought_signature:
+        fc_part.thought_signature = self._current_thought_signature
+
+      self._parts_sequence.append(fc_part)
+
+      # Reset FC state
+      self._current_fc_name = None
+      self._current_fc_args = {}
+      self._current_fc_id = None
+      self._current_thought_signature = None
+
+  def _process_streaming_function_call(self, fc: types.FunctionCall) -> None:
+    """Process a streaming function call with partialArgs.
+
+    Args:
+      fc: The function call object with partial_args
+    """
+    # Save function name if present (first chunk)
+    if fc.name:
+      self._current_fc_name = fc.name
+    if fc.id:
+      self._current_fc_id = fc.id
+
+    # Process each partial argument
+    for partial_arg in fc.partial_args or []:
+      json_path = partial_arg.json_path
+      if not json_path:
+        continue
+
+      # Extract value from partial arg
+      value, has_value = self._get_value_from_partial_arg(
+          partial_arg, json_path
+      )
+
+      # Set the value using JSONPath (only if a value was provided)
+      if has_value:
+        self._set_value_by_json_path(json_path, value)
+
+    # Check if function call is complete
+    if not fc.will_continue:
+      # Function call complete, flush it
+      self._flush_text_buffer_to_sequence()
+      self._flush_function_call_to_sequence()
+
+  def _process_function_call_part(self, part: types.Part) -> None:
+    """Process a function call part (streaming or non-streaming).
+
+    Args:
+      part: The part containing a function call
+    """
+    fc = part.function_call
+    if fc is None:
+      return
+
+    # Check if this is a streaming FC (has partialArgs or will_continue=True)
+    # The first chunk of a streaming function call may have will_continue=True
+    # but no partial_args yet, so we need to check both conditions.
+    if fc.partial_args or fc.will_continue:
+      # Streaming function call arguments
+
+      # Save thought_signature from the part (first chunk should have it)
+      if part.thought_signature and not self._current_thought_signature:
+        self._current_thought_signature = part.thought_signature
+      self._process_streaming_function_call(fc)
+    else:
+      # Non-streaming function call (standard format with args)
+      # Skip empty function calls (used as streaming end markers)
+      if fc.name:
+        # Flush any buffered text first, then add the FC part
+        self._flush_text_buffer_to_sequence()
+        self._parts_sequence.append(part)
+
   async def process_response(
       self, response: types.GenerateContentResponse
   ) -> AsyncGenerator[LlmResponse, None]:
@@ -77,6 +253,10 @@ class StreamingResponseAggregator:
     self._response = response
     llm_response = LlmResponse.create(response)
     self._usage_metadata = llm_response.usage_metadata
+    if llm_response.grounding_metadata:
+      self._grounding_metadata = llm_response.grounding_metadata
+    if llm_response.citation_metadata:
+      self._citation_metadata = llm_response.citation_metadata
 
     # ========== Progressive SSE Streaming (new feature) ==========
     # Save finish_reason for final aggregation
@@ -101,8 +281,12 @@ class StreamingResponseAggregator:
             if not self._current_text_buffer:
               self._current_text_is_thought = part.thought
             self._current_text_buffer += part.text
+          elif part.function_call:
+            # Process function call (handles both streaming Args and
+            # non-streaming Args)
+            self._process_function_call_part(part)
           else:
-            # Non-text part (function_call, bytes, etc.)
+            # Other non-text parts (bytes, etc.)
             # Flush any buffered text first, then add the non-text part
             self._flush_text_buffer_to_sequence()
             self._parts_sequence.append(part)
@@ -119,10 +303,11 @@ class StreamingResponseAggregator:
         and llm_response.content.parts[0].text
     ):
       part0 = llm_response.content.parts[0]
+      part_text = part0.text or ''
       if part0.thought:
-        self._thought_text += part0.text
+        self._thought_text += part_text
       else:
-        self._text += part0.text
+        self._text += part_text
       llm_response.partial = True
     elif (self._thought_text or self._text) and (
         not llm_response.content
@@ -155,8 +340,9 @@ class StreamingResponseAggregator:
     if is_feature_enabled(FeatureName.PROGRESSIVE_SSE_STREAMING):
       # Always generate final aggregated response in progressive mode
       if self._response and self._response.candidates:
-        # Flush any remaining text buffer to complete the sequence
+        # Flush any remaining buffers to complete the sequence
         self._flush_text_buffer_to_sequence()
+        self._flush_function_call_to_sequence()
 
         # Use the parts sequence which preserves original ordering
         final_parts = self._parts_sequence
@@ -167,6 +353,8 @@ class StreamingResponseAggregator:
 
           return LlmResponse(
               content=types.ModelContent(parts=final_parts),
+              grounding_metadata=self._grounding_metadata,
+              citation_metadata=self._citation_metadata,
               error_code=None
               if finish_reason == types.FinishReason.STOP
               else finish_reason,
@@ -194,6 +382,8 @@ class StreamingResponseAggregator:
       candidate = self._response.candidates[0]
       return LlmResponse(
           content=types.ModelContent(parts=parts),
+          grounding_metadata=self._grounding_metadata,
+          citation_metadata=self._citation_metadata,
           error_code=None
           if candidate.finish_reason == types.FinishReason.STOP
           else candidate.finish_reason,
@@ -202,3 +392,5 @@ class StreamingResponseAggregator:
           else candidate.finish_message,
           usage_metadata=self._usage_metadata,
       )
+
+    return None

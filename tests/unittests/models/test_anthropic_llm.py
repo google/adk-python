@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -19,7 +19,9 @@ from unittest import mock
 from anthropic import types as anthropic_types
 from google.adk import version as adk_version
 from google.adk.models import anthropic_llm
+from google.adk.models.anthropic_llm import AnthropicLlm
 from google.adk.models.anthropic_llm import Claude
+from google.adk.models.anthropic_llm import content_to_message_param
 from google.adk.models.anthropic_llm import function_declaration_to_tool_param
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
@@ -359,6 +361,62 @@ async def test_generate_content_async(
 
 
 @pytest.mark.asyncio
+async def test_anthropic_llm_generate_content_async(
+    llm_request, generate_content_response, generate_llm_response
+):
+  anthropic_llm_instance = AnthropicLlm(model="claude-sonnet-4-20250514")
+  with mock.patch.object(
+      anthropic_llm_instance, "_anthropic_client"
+  ) as mock_client:
+    with mock.patch.object(
+        anthropic_llm,
+        "message_to_generate_content_response",
+        return_value=generate_llm_response,
+    ):
+      # Create a mock coroutine that returns the generate_content_response.
+      async def mock_coro():
+        return generate_content_response
+
+      # Assign the coroutine to the mocked method
+      mock_client.messages.create.return_value = mock_coro()
+
+      responses = [
+          resp
+          async for resp in anthropic_llm_instance.generate_content_async(
+              llm_request, stream=False
+          )
+      ]
+      assert len(responses) == 1
+      assert isinstance(responses[0], LlmResponse)
+      assert responses[0].content.parts[0].text == "Hello, how can I help you?"
+
+
+def test_claude_vertex_client_uses_tracking_headers():
+  """Tests that Claude vertex client is called with tracking headers."""
+  with mock.patch.object(
+      anthropic_llm, "AsyncAnthropicVertex", autospec=True
+  ) as mock_anthropic_vertex:
+    with mock.patch.dict(
+        os.environ,
+        {
+            "GOOGLE_CLOUD_PROJECT": "test-project",
+            "GOOGLE_CLOUD_LOCATION": "us-central1",
+        },
+    ):
+      instance = Claude(model="claude-3-5-sonnet-v2@20241022")
+      _ = instance._anthropic_client
+      mock_anthropic_vertex.assert_called_once()
+      _, kwargs = mock_anthropic_vertex.call_args
+      assert "default_headers" in kwargs
+      assert "x-goog-api-client" in kwargs["default_headers"]
+      assert "user-agent" in kwargs["default_headers"]
+      assert (
+          f"google-adk/{adk_version.__version__}"
+          in kwargs["default_headers"]["user-agent"]
+      )
+
+
+@pytest.mark.asyncio
 async def test_generate_content_async_with_max_tokens(
     llm_request, generate_content_response, generate_llm_response
 ):
@@ -462,3 +520,81 @@ def test_part_to_message_block_with_multiple_content_items():
   assert isinstance(result, dict)
   # Multiple text items should be joined with newlines
   assert result["content"] == "First part\nSecond part"
+
+
+content_to_message_param_test_cases = [
+    (
+        "user_role_with_text_and_image",
+        Content(
+            role="user",
+            parts=[
+                Part.from_text(text="What's in this image?"),
+                Part(
+                    inline_data=types.Blob(
+                        mime_type="image/jpeg", data=b"fake_image_data"
+                    )
+                ),
+            ],
+        ),
+        "user",
+        2,  # Expected content length
+        False,  # Should not log warning
+    ),
+    (
+        "model_role_with_text_and_image",
+        Content(
+            role="model",
+            parts=[
+                Part.from_text(text="I see a cat."),
+                Part(
+                    inline_data=types.Blob(
+                        mime_type="image/png", data=b"fake_image_data"
+                    )
+                ),
+            ],
+        ),
+        "assistant",
+        1,  # Image filtered out, only text remains
+        True,  # Should log warning
+    ),
+    (
+        "assistant_role_with_text_and_image",
+        Content(
+            role="assistant",
+            parts=[
+                Part.from_text(text="Here's what I found."),
+                Part(
+                    inline_data=types.Blob(
+                        mime_type="image/webp", data=b"fake_image_data"
+                    )
+                ),
+            ],
+        ),
+        "assistant",
+        1,  # Image filtered out, only text remains
+        True,  # Should log warning
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "_, content, expected_role, expected_content_length, should_log_warning",
+    content_to_message_param_test_cases,
+    ids=[case[0] for case in content_to_message_param_test_cases],
+)
+def test_content_to_message_param_with_images(
+    _, content, expected_role, expected_content_length, should_log_warning
+):
+  """Test content_to_message_param handles images correctly based on role."""
+  with mock.patch("google.adk.models.anthropic_llm.logger") as mock_logger:
+    result = content_to_message_param(content)
+
+    assert result["role"] == expected_role
+    assert len(result["content"]) == expected_content_length
+
+    if should_log_warning:
+      mock_logger.warning.assert_called_once_with(
+          "Image data is not supported in Claude for assistant turns."
+      )
+    else:
+      mock_logger.warning.assert_not_called()

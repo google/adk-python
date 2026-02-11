@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -38,6 +38,7 @@ class IntegrationClient:
       self,
       project: str,
       location: str,
+      connection_template_override: Optional[str] = None,
       integration: Optional[str] = None,
       triggers: Optional[List[str]] = None,
       connection: Optional[str] = None,
@@ -50,6 +51,8 @@ class IntegrationClient:
     Args:
         project: The Google Cloud project ID.
         location: The Google Cloud location (e.g., us-central1).
+        connection_template_override: Overrides `ExecuteConnection` default
+          integration name.
         integration: The integration name.
         triggers: The list of trigger IDs for the integration.
         connection: The connection name.
@@ -62,6 +65,7 @@ class IntegrationClient:
     """
     self.project = project
     self.location = location
+    self.connection_template_override = connection_template_override
     self.integration = integration
     self.triggers = triggers
     self.connection = connection
@@ -71,6 +75,7 @@ class IntegrationClient:
     self.actions = actions if actions is not None else []
     self.service_account_json = service_account_json
     self.credential_cache = None
+    self._quota_project_id = None
 
   def get_openapi_spec_for_integration(self):
     """Gets the OpenAPI spec for the integration.
@@ -88,6 +93,8 @@ class IntegrationClient:
           "Content-Type": "application/json",
           "Authorization": f"Bearer {self._get_access_token()}",
       }
+      if not self.service_account_json:
+        headers["x-goog-user-project"] = self._quota_project_id or self.project
       data = {
           "apiTriggerResources": [
               {
@@ -130,7 +137,7 @@ class IntegrationClient:
         Exception: For any other unexpected errors.
     """
     # Application Integration needs to be provisioned in the same region as connection and an integration with name "ExecuteConnection" and trigger "api_trigger/ExecuteConnection" should be created as per the documentation.
-    integration_name = "ExecuteConnection"
+    integration_name = self.connection_template_override or "ExecuteConnection"
     connections_client = ConnectionsClient(
         self.project,
         self.location,
@@ -243,11 +250,14 @@ class IntegrationClient:
       )
     else:
       try:
-        credentials, _ = default_service_credential(
+        credentials, project_id = default_service_credential(
             scopes=["https://www.googleapis.com/auth/cloud-platform"]
         )
-      except:
+      except google.auth.exceptions.DefaultCredentialsError:
         credentials = None
+      if credentials:
+        quota_project_id = getattr(credentials, "quota_project_id", None)
+        self._quota_project_id = quota_project_id or project_id
 
     if not credentials:
       raise ValueError(

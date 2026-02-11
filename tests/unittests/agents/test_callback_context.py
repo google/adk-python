@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -321,3 +321,127 @@ class TestCallbackContext:
         version=None,
     )
     assert result == test_artifact
+
+
+class TestCallbackContextAddSessionToMemory:
+  """Test the add_session_to_memory method in CallbackContext."""
+
+  @pytest.mark.asyncio
+  async def test_add_session_to_memory_success(self, mock_invocation_context):
+    """Test that add_session_to_memory calls the memory service correctly."""
+    memory_service = AsyncMock()
+    mock_invocation_context.memory_service = memory_service
+
+    context = CallbackContext(mock_invocation_context)
+    await context.add_session_to_memory()
+
+    memory_service.add_session_to_memory.assert_called_once_with(
+        mock_invocation_context.session
+    )
+
+  @pytest.mark.asyncio
+  async def test_add_session_to_memory_no_service_raises(
+      self, mock_invocation_context
+  ):
+    """Test that add_session_to_memory raises ValueError when memory service is None."""
+    mock_invocation_context.memory_service = None
+
+    context = CallbackContext(mock_invocation_context)
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"Cannot add session to memory: memory service is not available\."
+        ),
+    ):
+      await context.add_session_to_memory()
+
+  @pytest.mark.asyncio
+  async def test_add_session_to_memory_passes_through_service_exceptions(
+      self, mock_invocation_context
+  ):
+    """Test that add_session_to_memory passes through exceptions from the memory service."""
+    memory_service = AsyncMock()
+    memory_service.add_session_to_memory.side_effect = Exception(
+        "Memory service error"
+    )
+    mock_invocation_context.memory_service = memory_service
+
+    context = CallbackContext(mock_invocation_context)
+
+    with pytest.raises(Exception, match="Memory service error"):
+      await context.add_session_to_memory()
+
+
+class TestCallbackContextAddEventsToMemory:
+  """Tests add_events_to_memory in CallbackContext."""
+
+  @pytest.mark.asyncio
+  async def test_add_events_to_memory_success(self, mock_invocation_context):
+    """Tests that add_events_to_memory calls the memory service correctly."""
+    memory_service = AsyncMock()
+    mock_invocation_context.memory_service = memory_service
+    test_event = MagicMock()
+
+    context = CallbackContext(mock_invocation_context)
+    await context.add_events_to_memory(
+        events=[test_event],
+        custom_metadata={"ttl": "6000s"},
+    )
+
+    memory_service.add_events_to_memory.assert_called_once_with(
+        app_name=mock_invocation_context.session.app_name,
+        user_id=mock_invocation_context.session.user_id,
+        session_id=mock_invocation_context.session.id,
+        events=[test_event],
+        custom_metadata={"ttl": "6000s"},
+    )
+
+  @pytest.mark.asyncio
+  async def test_add_events_to_memory_no_service_raises(
+      self, mock_invocation_context
+  ):
+    """Tests that add_events_to_memory raises ValueError with no service."""
+    mock_invocation_context.memory_service = None
+
+    context = CallbackContext(mock_invocation_context)
+
+    with pytest.raises(
+        ValueError,
+        match=r"Cannot add events to memory: memory service is not available\.",
+    ):
+      await context.add_events_to_memory(events=[MagicMock()])
+
+
+class TestToolContextAddSessionToMemory:
+  """Test the add_session_to_memory method in ToolContext."""
+
+  @pytest.mark.asyncio
+  async def test_add_session_to_memory_success(self, mock_invocation_context):
+    """Test that ToolContext.add_session_to_memory calls the memory service correctly."""
+    memory_service = AsyncMock()
+    mock_invocation_context.memory_service = memory_service
+
+    tool_context = ToolContext(mock_invocation_context)
+    await tool_context.add_session_to_memory()
+
+    memory_service.add_session_to_memory.assert_called_once_with(
+        mock_invocation_context.session
+    )
+
+  @pytest.mark.asyncio
+  async def test_add_session_to_memory_no_service_raises(
+      self, mock_invocation_context
+  ):
+    """Test that ToolContext.add_session_to_memory raises ValueError when memory service is None."""
+    mock_invocation_context.memory_service = None
+
+    tool_context = ToolContext(mock_invocation_context)
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"Cannot add session to memory: memory service is not available\."
+        ),
+    ):
+      await tool_context.add_session_to_memory()

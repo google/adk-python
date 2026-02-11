@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -144,6 +144,32 @@ async def test_inject_session_state_with_invalid_state_name_returns_original():
       instruction_template, invocation_context
   )
   assert populated_instruction == "Hello {invalid-key}!"
+
+
+@pytest.mark.asyncio
+async def test_inject_session_state_with_escaped_braces_returns_literal():
+  instruction_template = "Code sample: {{user_name}}. Value: {user_name}."
+  invocation_context = await _create_test_readonly_context(
+      state={"user_name": "Foo"}
+  )
+
+  populated_instruction = await instructions_utils.inject_session_state(
+      instruction_template, invocation_context
+  )
+  assert populated_instruction == "Code sample: {user_name}. Value: Foo."
+
+
+@pytest.mark.asyncio
+async def test_inject_session_state_with_escaped_non_placeholder_keeps_double_braces():
+  instruction_template = "Literal template: {{'key2': 'value2'}}."
+  invocation_context = await _create_test_readonly_context(
+      state={"user_name": "Foo"}
+  )
+
+  populated_instruction = await instructions_utils.inject_session_state(
+      instruction_template, invocation_context
+  )
+  assert populated_instruction == "Literal template: {{'key2': 'value2'}}."
 
 
 @pytest.mark.asyncio

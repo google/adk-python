@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -136,6 +136,23 @@ async def test_openid_connect_no_auth_response(
   result = await handler.prepare_auth_credentials()
   assert result.state == 'pending'
   assert result.auth_credential == openid_connect_credential
+
+
+@pytest.mark.asyncio
+async def test_openid_connect_uses_explicit_credential_key(
+    openid_connect_scheme, openid_connect_credential
+):
+  tool_context = create_mock_tool_context()
+  handler = ToolAuthHandler(
+      tool_context,
+      openid_connect_scheme,
+      openid_connect_credential,
+      credential_key='my_tool_tokens',
+  )
+  result = await handler.prepare_auth_credentials()
+  assert result.state == 'pending'
+  requested = tool_context.actions.requested_auth_configs['test-fc-id']
+  assert requested.credential_key == 'my_tool_tokens'
 
 
 @pytest.mark.asyncio
