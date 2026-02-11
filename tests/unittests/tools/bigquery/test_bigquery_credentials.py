@@ -139,8 +139,8 @@ class TestBigQueryCredentials:
     with pytest.raises(
         ValueError,
         match=(
-            "Must provide either credentials or client_id and client_secret"
-            " pair"
+            "Must provide one of credentials, external_access_token_key, or"
+            " client_id and client_secret pair"
         ),
     ):
       BigQueryCredentialsConfig(client_id="test_client_id")
@@ -150,8 +150,8 @@ class TestBigQueryCredentials:
     with pytest.raises(
         ValueError,
         match=(
-            "Must provide either credentials or client_id and client_secret"
-            " pair"
+            "Must provide one of credentials, external_access_token_key, or"
+            " client_id and client_secret pair"
         ),
     ):
       BigQueryCredentialsConfig(client_secret="test_client_secret")
@@ -165,8 +165,8 @@ class TestBigQueryCredentials:
     with pytest.raises(
         ValueError,
         match=(
-            "Must provide either credentials or client_id and client_secret"
-            " pair"
+            "Must provide one of credentials, external_access_token_key, or"
+            " client_id and client_secret pair"
         ),
     ):
       BigQueryCredentialsConfig()
