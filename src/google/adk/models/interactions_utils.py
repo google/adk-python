@@ -69,12 +69,17 @@ def convert_part_to_interaction_content(part: types.Part) -> Optional[dict]:
   if part.text is not None:
     return {'type': 'text', 'text': part.text}
   elif part.function_call is not None:
-    return {
+    result: dict[str, Any] = {
         'type': 'function_call',
         'id': part.function_call.id or '',
         'name': part.function_call.name,
         'arguments': part.function_call.args or {},
     }
+    if part.thought_signature is not None:
+      result['thought_signature'] = base64.b64encode(
+          part.thought_signature
+      ).decode('utf-8')
+    return result
   elif part.function_response is not None:
     # Convert the function response to a string for the interactions API
     # The interactions API expects result to be either a string or items list
@@ -306,12 +311,18 @@ def convert_interaction_output_to_part(output: Output) -> Optional[types.Part]:
         output.name,
         output.id,
     )
+    thought_signature = None
+    thought_sig_value = getattr(output, 'thought_signature', None)
+    if thought_sig_value and isinstance(thought_sig_value, str):
+      # Decode base64 string back to bytes
+      thought_signature = base64.b64decode(thought_sig_value)
     return types.Part(
         function_call=types.FunctionCall(
             id=output.id,
             name=output.name,
             args=output.arguments or {},
-        )
+        ),
+        thought_signature=thought_signature,
     )
   elif output_type == 'function_result':
     result = output.result
@@ -503,12 +514,18 @@ def convert_interaction_event_to_llm_response(
       # the correct interaction_id. If we yield here, interaction_id may be
       # None because SSE streams the id later in the 'interaction' event.
       if delta.name:
+        thought_signature = None
+        thought_sig_value = getattr(delta, 'thought_signature', None)
+        if thought_sig_value and isinstance(thought_sig_value, str):
+          # Decode base64 string back to bytes
+          thought_signature = base64.b64decode(thought_sig_value)
         part = types.Part(
             function_call=types.FunctionCall(
                 id=delta.id or '',
                 name=delta.name,
                 args=delta.arguments or {},
-            )
+            ),
+            thought_signature=thought_signature,
         )
         aggregated_parts.append(part)
         # Return None - function_call will be in the final aggregated response
