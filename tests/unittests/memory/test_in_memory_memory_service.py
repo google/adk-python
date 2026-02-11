@@ -119,6 +119,116 @@ async def test_add_session_to_memory():
 
 
 @pytest.mark.asyncio
+async def test_add_events_to_memory_with_explicit_events():
+  """Tests that add_events_to_memory can ingest an explicit event list."""
+  memory_service = InMemoryMemoryService()
+  await memory_service.add_events_to_memory(
+      app_name=MOCK_SESSION_1.app_name,
+      user_id=MOCK_SESSION_1.user_id,
+      session_id=MOCK_SESSION_1.id,
+      events=[MOCK_SESSION_1.events[0]],
+  )
+
+  user_key = f'{MOCK_APP_NAME}/{MOCK_USER_ID}'
+  session_memory = memory_service._session_events[user_key]
+  assert len(session_memory[MOCK_SESSION_1.id]) == 1
+  assert session_memory[MOCK_SESSION_1.id][0].id == 'event-1a'
+
+
+@pytest.mark.asyncio
+async def test_add_events_to_memory_without_session_id_uses_default_bucket():
+  """Tests add_events_to_memory when no session_id is provided."""
+  memory_service = InMemoryMemoryService()
+  await memory_service.add_events_to_memory(
+      app_name=MOCK_SESSION_1.app_name,
+      user_id=MOCK_SESSION_1.user_id,
+      events=[MOCK_SESSION_1.events[0]],
+  )
+
+  user_key = f'{MOCK_APP_NAME}/{MOCK_USER_ID}'
+  session_memory = memory_service._session_events[user_key]
+  assert len(session_memory) == 1
+  unknown_session_events = next(iter(session_memory.values()))
+  assert len(unknown_session_events) == 1
+  assert unknown_session_events[0].id == 'event-1a'
+
+
+@pytest.mark.asyncio
+async def test_add_events_to_memory_alias_is_supported():
+  """Tests that add_events_to_memory remains a compatibility alias."""
+  memory_service = InMemoryMemoryService()
+  await memory_service.add_events_to_memory(
+      app_name=MOCK_SESSION_1.app_name,
+      user_id=MOCK_SESSION_1.user_id,
+      session_id=MOCK_SESSION_1.id,
+      events=[MOCK_SESSION_1.events[0]],
+  )
+
+  user_key = f'{MOCK_APP_NAME}/{MOCK_USER_ID}'
+  session_memory = memory_service._session_events[user_key]
+  assert [event.id for event in session_memory[MOCK_SESSION_1.id]] == [
+      'event-1a'
+  ]
+
+
+@pytest.mark.asyncio
+async def test_add_events_to_memory_appends_without_replacing():
+  """Tests that add_events_to_memory appends events rather than replacing."""
+  memory_service = InMemoryMemoryService()
+  await memory_service.add_session_to_memory(MOCK_SESSION_1)
+
+  new_event = Event(
+      id='event-1d',
+      invocation_id='inv-6',
+      author='user',
+      timestamp=12348,
+      content=types.Content(parts=[types.Part(text='A new fact.')]),
+  )
+  await memory_service.add_events_to_memory(
+      app_name=MOCK_SESSION_1.app_name,
+      user_id=MOCK_SESSION_1.user_id,
+      session_id=MOCK_SESSION_1.id,
+      events=[new_event],
+  )
+
+  user_key = f'{MOCK_APP_NAME}/{MOCK_USER_ID}'
+  session_memory = memory_service._session_events[user_key]
+  assert [event.id for event in session_memory[MOCK_SESSION_1.id]] == [
+      'event-1a',
+      'event-1c',
+      'event-1d',
+  ]
+
+
+@pytest.mark.asyncio
+async def test_add_events_to_memory_deduplicates_event_ids():
+  """Tests that duplicate event IDs are not appended multiple times."""
+  memory_service = InMemoryMemoryService()
+  await memory_service.add_session_to_memory(MOCK_SESSION_1)
+
+  duplicate_event = Event(
+      id='event-1a',
+      invocation_id='inv-7',
+      author='user',
+      timestamp=12349,
+      content=types.Content(parts=[types.Part(text='Updated duplicate text.')]),
+  )
+  await memory_service.add_events_to_memory(
+      app_name=MOCK_SESSION_1.app_name,
+      user_id=MOCK_SESSION_1.user_id,
+      session_id=MOCK_SESSION_1.id,
+      events=[duplicate_event],
+  )
+
+  user_key = f'{MOCK_APP_NAME}/{MOCK_USER_ID}'
+  session_memory = memory_service._session_events[user_key]
+  assert [event.id for event in session_memory[MOCK_SESSION_1.id]] == [
+      'event-1a',
+      'event-1c',
+  ]
+
+
+@pytest.mark.asyncio
 async def test_add_session_with_no_events_to_memory():
   """Tests that adding a session with no events does not cause an error."""
   memory_service = InMemoryMemoryService()
