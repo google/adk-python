@@ -25,6 +25,7 @@ from google.adk.auth.auth_credential import OAuth2Auth
 from google.adk.auth.auth_credential import ServiceAccount
 from google.adk.features import FeatureName
 from google.adk.features._feature_registry import temporary_feature_override
+from google.adk.tools.mcp_tool import mcp_tool
 from google.adk.tools.mcp_tool.mcp_session_manager import MCPSessionManager
 from google.adk.tools.mcp_tool.mcp_tool import MCPTool
 from google.adk.tools.tool_context import ToolContext
@@ -225,7 +226,7 @@ class TestMCPTool:
     )
     # Fix: call_tool uses 'arguments' parameter, not positional args
     self.mock_session.call_tool.assert_called_once_with(
-        "test_tool", arguments=args, progress_callback=None
+        "test_tool", arguments=args, progress_callback=None, meta=None
     )
 
   @pytest.mark.asyncio
@@ -261,6 +262,55 @@ class TestMCPTool:
     call_args = self.mock_session_manager.create_session.call_args
     headers = call_args[1]["headers"]
     assert headers == {"Authorization": "Bearer test_access_token"}
+
+  @patch.object(mcp_tool, "propagate", autospec=True)
+  @pytest.mark.asyncio
+  async def test_run_async_impl_with_trace_context(self, mock_propagate):
+    """Test running tool with trace context injection."""
+    mock_propagator = Mock()
+
+    def inject_context(carrier, context=None) -> None:
+      carrier["traceparent"] = (
+          "00-1234567890abcdef1234567890abcdef-1234567890abcdef-01"
+      )
+      carrier["tracestate"] = "foo=bar"
+      carrier["baggage"] = "baz=qux"
+
+    mock_propagator.inject.side_effect = inject_context
+    mock_propagate.get_global_textmap.return_value = mock_propagator
+
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+    )
+
+    mcp_response = CallToolResult(
+        content=[TextContent(type="text", text="success")]
+    )
+    self.mock_session.call_tool = AsyncMock(return_value=mcp_response)
+
+    tool_context = Mock(spec=ToolContext)
+    args = {"param1": "test_value"}
+
+    await tool._run_async_impl(
+        args=args, tool_context=tool_context, credential=None
+    )
+
+    self.mock_session_manager.create_session.assert_called_once_with(
+        headers=None
+    )
+    self.mock_session.call_tool.assert_called_once_with(
+        "test_tool",
+        arguments=args,
+        progress_callback=None,
+        meta={
+            "traceparent": (
+                "00-1234567890abcdef1234567890abcdef-1234567890abcdef-01"
+            ),
+            "tracestate": "foo=bar",
+            "baggage": "baz=qux",
+        },
+    )
 
   @pytest.mark.asyncio
   async def test_get_headers_oauth2(self):
@@ -778,7 +828,7 @@ class TestMCPTool:
         headers=expected_headers
     )
     self.mock_session.call_tool.assert_called_once_with(
-        "test_tool", arguments=args, progress_callback=None
+        "test_tool", arguments=args, progress_callback=None, meta=None
     )
 
   @pytest.mark.asyncio
@@ -821,7 +871,7 @@ class TestMCPTool:
         "X-Tenant-ID": "test-tenant",
     }
     self.mock_session.call_tool.assert_called_once_with(
-        "test_tool", arguments=args, progress_callback=None
+        "test_tool", arguments=args, progress_callback=None, meta=None
     )
 
   def test_init_with_progress_callback(self):
@@ -875,7 +925,10 @@ class TestMCPTool:
     )
     # Verify progress_callback was passed to call_tool
     self.mock_session.call_tool.assert_called_once_with(
-        "test_tool", arguments=args, progress_callback=my_progress_callback
+        "test_tool",
+        arguments=args,
+        progress_callback=my_progress_callback,
+        meta=None,
     )
 
   @pytest.mark.asyncio
