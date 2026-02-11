@@ -494,6 +494,7 @@ class AdkWebServer:
       logo_text: Optional[str] = None,
       logo_image_url: Optional[str] = None,
       url_prefix: Optional[str] = None,
+      auto_create_session: bool = False,
   ):
     self.agent_loader = agent_loader
     self.session_service = session_service
@@ -511,6 +512,7 @@ class AdkWebServer:
     self.current_app_name_ref: SharedValue[str] = SharedValue(value="")
     self.runner_dict = {}
     self.url_prefix = url_prefix
+    self.auto_create_session = auto_create_session
 
   async def get_runner_async(self, app_name: str) -> Runner:
     """Returns the cached runner for the given app."""
@@ -560,6 +562,7 @@ class AdkWebServer:
         session_service=self.session_service,
         memory_service=self.memory_service,
         credential_service=self.credential_service,
+        auto_create_session=self.auto_create_session,
     )
 
   def _instantiate_extra_plugins(self) -> list[BasePlugin]:

@@ -14,13 +14,13 @@
 
 """Tests for interactions_utils.py conversion functions."""
 
+import base64
 import json
 from unittest.mock import MagicMock
 
 from google.adk.models import interactions_utils
 from google.adk.models.llm_request import LlmRequest
 from google.genai import types
-import pytest
 
 
 class TestConvertPartToInteractionContent:
@@ -60,6 +60,42 @@ class TestConvertPartToInteractionContent:
     result = interactions_utils.convert_part_to_interaction_content(part)
     assert result['id'] == ''
     assert result['name'] == 'get_weather'
+
+  def test_function_call_part_with_thought_signature(self):
+    """Test converting a function call Part with thought_signature."""
+    part = types.Part(
+        function_call=types.FunctionCall(
+            id='call_456',
+            name='my_tool',
+            args={'doc': 'content'},
+        ),
+        thought_signature=b'test_signature_bytes',
+    )
+    result = interactions_utils.convert_part_to_interaction_content(part)
+    assert result['type'] == 'function_call'
+    assert result['id'] == 'call_456'
+    assert result['name'] == 'my_tool'
+    assert result['arguments'] == {'doc': 'content'}
+    # thought_signature should be base64 encoded
+    assert 'thought_signature' in result
+
+    assert (
+        base64.b64decode(result['thought_signature']) == b'test_signature_bytes'
+    )
+
+  def test_function_call_part_without_thought_signature(self):
+    """Test converting a function call Part without thought_signature."""
+    part = types.Part(
+        function_call=types.FunctionCall(
+            id='call_789',
+            name='other_tool',
+            args={},
+        )
+    )
+    result = interactions_utils.convert_part_to_interaction_content(part)
+    assert result['type'] == 'function_call'
+    # thought_signature should not be present
+    assert 'thought_signature' not in result
 
   def test_function_response_dict(self):
     """Test converting a function response Part with dict response."""
@@ -183,8 +219,6 @@ class TestConvertPartToInteractionContent:
 
   def test_thought_only_part(self):
     """Test converting a thought-only Part with signature."""
-    import base64
-
     signature_bytes = b'test-thought-signature'
     part = types.Part(thought=True, thought_signature=signature_bytes)
     result = interactions_utils.convert_part_to_interaction_content(part)
@@ -442,6 +476,39 @@ class TestConvertInteractionOutputToPart:
     assert result.function_call.id == 'call_123'
     assert result.function_call.name == 'get_weather'
     assert result.function_call.args == {'city': 'London'}
+
+  def test_function_call_output_with_thought_signature(self):
+    """Test converting function call output with thought_signature."""
+    output = MagicMock(
+        spec=['type', 'id', 'name', 'arguments', 'thought_signature']
+    )
+    output.type = 'function_call'
+    output.id = 'call_sig_123'
+    output.name = 'gemini3_tool'
+    output.arguments = {'content': 'hello'}
+    # thought_signature is base64 encoded in the output
+    output.thought_signature = base64.b64encode(b'gemini3_signature').decode(
+        'utf-8'
+    )
+    result = interactions_utils.convert_interaction_output_to_part(output)
+    assert result.function_call.id == 'call_sig_123'
+    assert result.function_call.name == 'gemini3_tool'
+    assert result.function_call.args == {'content': 'hello'}
+    # thought_signature should be decoded back to bytes
+    assert result.thought_signature == b'gemini3_signature'
+
+  def test_function_call_output_without_thought_signature(self):
+    """Test converting function call output without thought_signature."""
+    output = MagicMock(spec=['type', 'id', 'name', 'arguments'])
+    output.type = 'function_call'
+    output.id = 'call_no_sig'
+    output.name = 'regular_tool'
+    output.arguments = {}
+    result = interactions_utils.convert_interaction_output_to_part(output)
+    assert result.function_call.id == 'call_no_sig'
+    assert result.function_call.name == 'regular_tool'
+    # thought_signature should be None
+    assert result.thought_signature is None
 
   def test_function_result_output_with_items_list(self):
     """Test converting function result output with items list.
@@ -759,3 +826,132 @@ class TestGetLatestUserContents:
     assert len(result) == 2
     assert result[0].parts[0].text == 'Great'
     assert result[1].parts[0].text == 'Tell me more'
+
+
+class TestConvertInteractionEventToLlmResponse:
+  """Tests for convert_interaction_event_to_llm_response."""
+
+  def test_text_delta_event(self):
+    """Test converting a text delta event."""
+    event = MagicMock()
+    event.event_type = 'content.delta'
+    event.delta = MagicMock()
+    event.delta.type = 'text'
+    event.delta.text = 'Hello world'
+
+    aggregated_parts = []
+    result = interactions_utils.convert_interaction_event_to_llm_response(
+        event, aggregated_parts, interaction_id='int_123'
+    )
+
+    assert result is not None
+    assert result.partial
+    assert result.content.parts[0].text == 'Hello world'
+    assert result.interaction_id == 'int_123'
+    assert len(aggregated_parts) == 1
+
+  def test_function_call_delta_with_thought_signature(self):
+    """Test converting a function call delta with thought_signature."""
+    event = MagicMock()
+    event.event_type = 'content.delta'
+    event.delta = MagicMock(
+        spec=['type', 'id', 'name', 'arguments', 'thought_signature']
+    )
+    event.delta.type = 'function_call'
+    event.delta.id = 'fc_delta_123'
+    event.delta.name = 'streaming_tool'
+    event.delta.arguments = {'param': 'value'}
+    # thought_signature is base64 encoded in the delta
+    event.delta.thought_signature = base64.b64encode(b'delta_signature').decode(
+        'utf-8'
+    )
+
+    aggregated_parts = []
+    result = interactions_utils.convert_interaction_event_to_llm_response(
+        event, aggregated_parts, interaction_id='int_456'
+    )
+
+    # Function calls return None (added to aggregated_parts only)
+    assert result is None
+    assert len(aggregated_parts) == 1
+    fc_part = aggregated_parts[0]
+    assert fc_part.function_call.id == 'fc_delta_123'
+    assert fc_part.function_call.name == 'streaming_tool'
+    assert fc_part.function_call.args == {'param': 'value'}
+    # thought_signature should be decoded back to bytes
+    assert fc_part.thought_signature == b'delta_signature'
+
+  def test_function_call_delta_without_thought_signature(self):
+    """Test converting a function call delta without thought_signature."""
+    event = MagicMock()
+    event.event_type = 'content.delta'
+    event.delta = MagicMock(spec=['type', 'id', 'name', 'arguments'])
+    event.delta.type = 'function_call'
+    event.delta.id = 'fc_no_sig'
+    event.delta.name = 'regular_tool'
+    event.delta.arguments = {}
+
+    aggregated_parts = []
+    result = interactions_utils.convert_interaction_event_to_llm_response(
+        event, aggregated_parts, interaction_id='int_789'
+    )
+
+    # Function calls return None
+    assert result is None
+    assert len(aggregated_parts) == 1
+    fc_part = aggregated_parts[0]
+    assert fc_part.function_call.name == 'regular_tool'
+    # thought_signature should be None
+    assert fc_part.thought_signature is None
+
+  def test_function_call_delta_without_name_skipped(self):
+    """Test that function call delta without name is skipped."""
+    event = MagicMock()
+    event.event_type = 'content.delta'
+    event.delta = MagicMock(spec=['type', 'id', 'name', 'arguments'])
+    event.delta.type = 'function_call'
+    event.delta.id = 'fc_no_name'
+    event.delta.name = None  # No name
+    event.delta.arguments = {}
+
+    aggregated_parts = []
+    result = interactions_utils.convert_interaction_event_to_llm_response(
+        event, aggregated_parts, interaction_id='int_000'
+    )
+
+    # Should be skipped (no name)
+    assert result is None
+    assert not aggregated_parts
+
+  def test_image_delta_with_data(self):
+    """Test converting an image delta with inline data."""
+    event = MagicMock()
+    event.event_type = 'content.delta'
+    event.delta = MagicMock()
+    event.delta.type = 'image'
+    event.delta.data = b'image_bytes'
+    event.delta.uri = None
+    event.delta.mime_type = 'image/png'
+
+    aggregated_parts = []
+    result = interactions_utils.convert_interaction_event_to_llm_response(
+        event, aggregated_parts, interaction_id='int_img'
+    )
+
+    assert result is not None
+    assert not result.partial
+    assert result.content.parts[0].inline_data.data == b'image_bytes'
+    assert len(aggregated_parts) == 1
+
+  def test_unknown_event_type_returns_none(self):
+    """Test that unknown event types return None."""
+    event = MagicMock()
+    event.event_type = 'some_unknown_event'  # Unknown event type
+
+    aggregated_parts = []
+    result = interactions_utils.convert_interaction_event_to_llm_response(
+        event, aggregated_parts, interaction_id='int_other'
+    )
+
+    assert result is None
+    assert not aggregated_parts
