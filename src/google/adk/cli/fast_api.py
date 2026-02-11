@@ -91,6 +91,7 @@ def get_fast_api_app(
     extra_plugins: Optional[list[str]] = None,
     logo_text: Optional[str] = None,
     logo_image_url: Optional[str] = None,
+    auto_create_session: bool = False,
 ) -> FastAPI:
 
   # Set up eval managers.
@@ -153,6 +154,7 @@ def get_fast_api_app(
       logo_text=logo_text,
       logo_image_url=logo_image_url,
       url_prefix=url_prefix,
+      auto_create_session=auto_create_session,
   )
 
   # Callbacks & other optional args for when constructing the FastAPI instance

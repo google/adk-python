@@ -327,10 +327,11 @@ def trace_call_llm(
     span.set_attribute('gcp.vertex.agent.llm_response', '{}')
 
   if llm_response.usage_metadata is not None:
-    span.set_attribute(
-        'gen_ai.usage.input_tokens',
-        llm_response.usage_metadata.prompt_token_count,
-    )
+    if llm_response.usage_metadata.prompt_token_count is not None:
+      span.set_attribute(
+          'gen_ai.usage.input_tokens',
+          llm_response.usage_metadata.prompt_token_count,
+      )
     if llm_response.usage_metadata.candidates_token_count is not None:
       span.set_attribute(
           'gen_ai.usage.output_tokens',

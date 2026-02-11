@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from collections.abc import Sequence
 from typing import Any
 from typing import Optional
 from typing import TYPE_CHECKING
@@ -28,6 +30,7 @@ if TYPE_CHECKING:
   from ..artifacts.base_artifact_service import ArtifactVersion
   from ..auth.auth_credential import AuthCredential
   from ..auth.auth_tool import AuthConfig
+  from ..events.event import Event
   from ..events.event_actions import EventActions
   from ..sessions.state import State
   from .invocation_context import InvocationContext
@@ -218,4 +221,33 @@ class CallbackContext(ReadonlyContext):
       )
     await self._invocation_context.memory_service.add_session_to_memory(
         self._invocation_context.session
+    )
+
+  async def add_events_to_memory(
+      self,
+      *,
+      events: Sequence[Event],
+      custom_metadata: Mapping[str, object] | None = None,
+  ) -> None:
+    """Adds an explicit list of events to the memory service.
+
+    Uses this callback's current session identifiers as memory scope.
+
+    Args:
+      events: Explicit events to add to memory.
+      custom_metadata: Optional standard metadata for memory generation.
+
+    Raises:
+      ValueError: If memory service is not available.
+    """
+    if self._invocation_context.memory_service is None:
+      raise ValueError(
+          "Cannot add events to memory: memory service is not available."
+      )
+    await self._invocation_context.memory_service.add_events_to_memory(
+        app_name=self._invocation_context.session.app_name,
+        user_id=self._invocation_context.session.user_id,
+        session_id=self._invocation_context.session.id,
+        events=events,
+        custom_metadata=custom_metadata,
     )
