@@ -159,7 +159,7 @@ def _adk_agent(
 
 
 class _UserAgent(base_agent.BaseAgent):
-  """An agent that wraps the provided environment and simulates an user."""
+  """An agent that wraps the provided environment and simulates a user."""
 
   env: Env
 

@@ -469,7 +469,7 @@ class LlmAgent(BaseAgent):
         self.__maybe_save_output_to_state(event)
         yield event
         if ctx.should_pause_invocation(event):
-          # Do not pause immediately, wait until the long running tool call is
+          # Do not pause immediately, wait until the long-running tool call is
           # executed.
           should_pause = True
     if should_pause:
@@ -479,7 +479,7 @@ class LlmAgent(BaseAgent):
       events = ctx._get_events(current_invocation=True, current_branch=True)
       if events and any(ctx.should_pause_invocation(e) for e in events[-2:]):
         return
-      # Only yield an end state if the last event is no longer a long running
+      # Only yield an end state if the last event is no longer a long-running
       # tool call.
       ctx.set_agent_state(self.name, end_of_agent=True)
       yield self._create_agent_state_event(ctx)
