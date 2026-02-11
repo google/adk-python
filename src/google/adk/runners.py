@@ -39,7 +39,6 @@ from .agents.context_cache_config import ContextCacheConfig
 from .agents.invocation_context import InvocationContext
 from .agents.invocation_context import new_invocation_context_id
 from .agents.live_request_queue import LiveRequestQueue
-from .agents.llm_agent import LlmAgent
 from .agents.run_config import RunConfig
 from .apps.app import App
 from .apps.app import ResumabilityConfig
@@ -1143,8 +1142,8 @@ class Runner:
     """
     agent = agent_to_run
     while agent:
-      if not isinstance(agent, LlmAgent):
-        # Only LLM-based Agent can provide agent transfer capability.
+      if not hasattr(agent, 'disallow_transfer_to_parent'):
+        # Only agents with transfer capability can transfer.
         return False
       if agent.disallow_transfer_to_parent:
         return False
@@ -1393,7 +1392,7 @@ class Runner:
     run_config = run_config or RunConfig()
     invocation_id = invocation_id or new_invocation_context_id()
 
-    if run_config.support_cfc and isinstance(self.agent, LlmAgent):
+    if run_config.support_cfc and hasattr(self.agent, 'canonical_model'):
       model_name = self.agent.canonical_model.model
       if not model_name.startswith('gemini-2'):
         raise ValueError(
@@ -1487,7 +1486,7 @@ class Runner:
 
   def _collect_toolset(self, agent: BaseAgent) -> set[BaseToolset]:
     toolsets = set()
-    if isinstance(agent, LlmAgent):
+    if hasattr(agent, 'tools'):
       for tool_union in agent.tools:
         if isinstance(tool_union, BaseToolset):
           toolsets.add(tool_union)

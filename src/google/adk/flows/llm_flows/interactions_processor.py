@@ -46,12 +46,11 @@ class InteractionsRequestProcessor(BaseLlmRequestProcessor):
     Yields:
         Event: No events are yielded by this processor
     """
-    from ...agents.llm_agent import LlmAgent
     from ...models.google_llm import Gemini
 
     agent = invocation_context.agent
     # Only process if using Gemini with interactions API
-    if not isinstance(agent, LlmAgent):
+    if not hasattr(agent, 'canonical_model'):
       return
     model = agent.canonical_model
     if not isinstance(model, Gemini):
