@@ -267,10 +267,7 @@ async def to_async_iterator(data):
 class AsyncIterableList(list):
   """A list that also supports async iteration, mimicking AsyncPager behavior."""
 
-  def __aiter__(self):
-    return self._async_iter()
-
-  async def _async_iter(self):
+  async def __aiter__(self):
     for item in self:
       yield item
 
