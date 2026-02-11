@@ -31,6 +31,7 @@ class MockStrategy:
       tool_context: Any,
       tool_connection_map: Optional[ToolConnectionMap],
       state_store: Dict[str, Any],
+      environment_data: Optional[str] = None,
   ) -> Dict[str, Any]:
     """Generates a mock response for a tool call."""
     raise NotImplementedError()
@@ -52,6 +53,7 @@ class TracingMockStrategy(MockStrategy):
       tool_context: Any,
       tool_connection_map: Optional[ToolConnectionMap],
       state_store: Dict[str, Any],
+      environment_data: Optional[str] = None,
   ) -> Dict[str, Any]:
     # TODO: Implement tracing LLM-based mocking.
     return {"status": "error", "error_message": "Not implemented"}
