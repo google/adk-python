@@ -168,6 +168,50 @@ async def test_trace_call_llm(monkeypatch, mock_span_fixture):
 
 
 @pytest.mark.asyncio
+async def test_trace_call_llm_with_no_usage_metadata(
+    monkeypatch, mock_span_fixture
+):
+  """Test trace_call_llm handles usage metadata with None token counts."""
+  monkeypatch.setattr(
+      'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
+  )
+
+  agent = LlmAgent(name='test_agent')
+  invocation_context = await _create_invocation_context(agent)
+  llm_request = LlmRequest(
+      model='gemini-pro',
+      contents=[
+          types.Content(
+              role='user',
+              parts=[types.Part(text='Hello, how are you?')],
+          ),
+      ],
+      config=types.GenerateContentConfig(
+          top_p=0.95,
+          max_output_tokens=1024,
+      ),
+  )
+  llm_response = LlmResponse(
+      turn_complete=True,
+      finish_reason=types.FinishReason.STOP,
+      usage_metadata=types.GenerateContentResponseUsageMetadata(),
+  )
+  trace_call_llm(invocation_context, 'test_event_id', llm_request, llm_response)
+
+  expected_calls = [
+      mock.call('gen_ai.system', 'gcp.vertex.agent'),
+      mock.call('gen_ai.request.top_p', 0.95),
+      mock.call('gen_ai.request.max_tokens', 1024),
+      mock.call('gcp.vertex.agent.llm_response', mock.ANY),
+      mock.call('gen_ai.response.finish_reasons', ['stop']),
+  ]
+  assert mock_span_fixture.set_attribute.call_count == 10
+  mock_span_fixture.set_attribute.assert_has_calls(
+      expected_calls, any_order=True
+  )
+
+
+@pytest.mark.asyncio
 async def test_trace_call_llm_with_binary_content(
     monkeypatch, mock_span_fixture
 ):

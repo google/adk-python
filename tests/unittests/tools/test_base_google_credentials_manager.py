@@ -14,17 +14,22 @@
 
 
 import json
+from unittest.mock import create_autospec
 from unittest.mock import Mock
 from unittest.mock import patch
 
 from google.adk.auth.auth_tool import AuthConfig
+from google.adk.tools import _google_credentials
+from google.adk.tools._google_credentials import BaseGoogleCredentialsConfig
 from google.adk.tools._google_credentials import GoogleCredentialsManager
 from google.adk.tools.bigquery.bigquery_credentials import BIGQUERY_TOKEN_CACHE_KEY
 from google.adk.tools.bigquery.bigquery_credentials import BigQueryCredentialsConfig
 from google.adk.tools.tool_context import ToolContext
 from google.auth.credentials import Credentials as AuthCredentials
 from google.auth.exceptions import RefreshError
+from google.auth.transport import requests
 # Mock the Google OAuth and API dependencies
+from google.oauth2 import credentials
 from google.oauth2.credentials import Credentials as OAuthCredentials
 import pytest
 
@@ -45,9 +50,8 @@ class TestGoogleCredentialsManager:
     agent framework, handling OAuth flows and state management.
     Now includes state dictionary for testing caching behavior.
     """
-    context = Mock(spec=ToolContext)
-    context.get_auth_response = Mock(return_value=None)
-    context.request_credential = Mock()
+    context = create_autospec(ToolContext, instance=True)
+    context.get_auth_response.return_value = None
     context.state = {}
     return context
 
@@ -82,7 +86,7 @@ class TestGoogleCredentialsManager:
     should be needed. This is the optimal happy path scenario.
     """
     # Create mock credentials that are already valid
-    mock_creds = Mock(spec=credentials_class)
+    mock_creds = create_autospec(credentials_class, instance=True)
     mock_creds.valid = True
     manager.credentials_config.credentials = mock_creds
 
@@ -110,7 +114,7 @@ class TestGoogleCredentialsManager:
     is triggered irrespective of whether or not it is valid.
     """
     # Create mock credentials that are already valid
-    mock_creds = Mock(spec=AuthCredentials)
+    mock_creds = create_autospec(AuthCredentials, instance=True)
     mock_creds.valid = valid
     manager.credentials_config.credentials = mock_creds
 
@@ -146,10 +150,12 @@ class TestGoogleCredentialsManager:
     mock_tool_context.state[BIGQUERY_TOKEN_CACHE_KEY] = mock_cached_creds_json
 
     # Mock the Credentials.from_authorized_user_info method
-    with patch(
-        "google.oauth2.credentials.Credentials.from_authorized_user_info"
+    with patch.object(
+        credentials.Credentials,
+        "from_authorized_user_info",
+        autospec=True,
     ) as mock_from_json:
-      mock_creds = Mock(spec=OAuthCredentials)
+      mock_creds = create_autospec(OAuthCredentials, instance=True)
       mock_creds.valid = True
       mock_from_json.return_value = mock_creds
 
@@ -184,7 +190,7 @@ class TestGoogleCredentialsManager:
     mock_tool_context.request_credential.assert_called_once()
 
   @pytest.mark.asyncio
-  @patch("google.auth.transport.requests.Request")
+  @patch.object(requests, "Request", autospec=True)
   async def test_refresh_cached_credentials_success(
       self, mock_request_class, manager, mock_tool_context
   ):
@@ -215,7 +221,7 @@ class TestGoogleCredentialsManager:
     mock_tool_context.state[BIGQUERY_TOKEN_CACHE_KEY] = mock_cached_creds_json
 
     # Create expired cached credentials with refresh token
-    mock_cached_creds = Mock(spec=OAuthCredentials)
+    mock_cached_creds = create_autospec(OAuthCredentials, instance=True)
     mock_cached_creds.valid = False
     mock_cached_creds.expired = True
     mock_cached_creds.refresh_token = "valid_refresh_token"
@@ -225,11 +231,13 @@ class TestGoogleCredentialsManager:
     def mock_refresh(request):
       mock_cached_creds.valid = True
 
-    mock_cached_creds.refresh = Mock(side_effect=mock_refresh)
+    mock_cached_creds.refresh.side_effect = mock_refresh
 
     # Mock the Credentials.from_authorized_user_info method
-    with patch(
-        "google.oauth2.credentials.Credentials.from_authorized_user_info"
+    with patch.object(
+        credentials.Credentials,
+        "from_authorized_user_info",
+        autospec=True,
     ) as mock_from_json:
       mock_from_json.return_value = mock_cached_creds
 
@@ -253,7 +261,7 @@ class TestGoogleCredentialsManager:
       assert result == mock_cached_creds
 
   @pytest.mark.asyncio
-  @patch("google.auth.transport.requests.Request")
+  @patch.object(requests, "Request", autospec=True)
   async def test_get_valid_credentials_with_refresh_success(
       self, mock_request_class, manager, mock_tool_context
   ):
@@ -263,7 +271,7 @@ class TestGoogleCredentialsManager:
     users from having to re-authenticate for every expired token.
     """
     # Create expired credentials with refresh token
-    mock_creds = Mock(spec=OAuthCredentials)
+    mock_creds = create_autospec(OAuthCredentials, instance=True)
     mock_creds.valid = False
     mock_creds.expired = True
     mock_creds.refresh_token = "refresh_token"
@@ -272,7 +280,7 @@ class TestGoogleCredentialsManager:
     def mock_refresh(request):
       mock_creds.valid = True
 
-    mock_creds.refresh = Mock(side_effect=mock_refresh)
+    mock_creds.refresh.side_effect = mock_refresh
     manager.credentials_config.credentials = mock_creds
 
     result = await manager.get_valid_credentials(mock_tool_context)
@@ -283,7 +291,7 @@ class TestGoogleCredentialsManager:
     assert manager.credentials_config.credentials == mock_creds
 
   @pytest.mark.asyncio
-  @patch("google.auth.transport.requests.Request")
+  @patch.object(requests, "Request", autospec=True)
   async def test_get_valid_credentials_with_refresh_failure(
       self, mock_request_class, manager, mock_tool_context
   ):
@@ -293,11 +301,11 @@ class TestGoogleCredentialsManager:
     gracefully fall back to requesting a new OAuth flow.
     """
     # Create expired credentials that fail to refresh
-    mock_creds = Mock(spec=OAuthCredentials)
+    mock_creds = create_autospec(OAuthCredentials, instance=True)
     mock_creds.valid = False
     mock_creds.expired = True
     mock_creds.refresh_token = "expired_refresh_token"
-    mock_creds.refresh = Mock(side_effect=RefreshError("Refresh failed"))
+    mock_creds.refresh.side_effect = RefreshError("Refresh failed")
     manager.credentials_config.credentials = mock_creds
 
     result = await manager.get_valid_credentials(mock_tool_context)
@@ -323,7 +331,7 @@ class TestGoogleCredentialsManager:
     mock_tool_context.get_auth_response.return_value = mock_auth_response
 
     # Create a mock credentials instance that will represent our created credentials
-    mock_creds = Mock(spec=OAuthCredentials)
+    mock_creds = create_autospec(OAuthCredentials, instance=True)
     # Make the JSON match what a real Credentials object would produce
     mock_creds_json = (
         '{"token": "new_access_token", "refresh_token": "new_refresh_token",'
@@ -335,9 +343,11 @@ class TestGoogleCredentialsManager:
     mock_creds.to_json.return_value = mock_creds_json
 
     # Use the full module path as it appears in the project structure
-    with patch(
-        "google.adk.tools._google_credentials.google.oauth2.credentials.Credentials",
+    with patch.object(
+        credentials,
+        "Credentials",
         return_value=mock_creds,
+        autospec=True,
     ) as mock_credentials_class:
       result = await manager.get_valid_credentials(mock_tool_context)
 
@@ -397,7 +407,7 @@ class TestGoogleCredentialsManager:
     mock_tool_context.get_auth_response.return_value = mock_auth_response
 
     # Create the mock credentials instance that will be returned by the constructor
-    mock_creds = Mock(spec=OAuthCredentials)
+    mock_creds = create_autospec(OAuthCredentials, instance=True)
     # Make sure our mock JSON matches the structure that real Credentials objects produce
     mock_creds_json = (
         '{"token": "cached_access_token", "refresh_token":'
@@ -411,9 +421,11 @@ class TestGoogleCredentialsManager:
     mock_creds.valid = True
 
     # Use the correct module path - without the 'src.' prefix
-    with patch(
-        "google.adk.tools._google_credentials.google.oauth2.credentials.Credentials",
+    with patch.object(
+        credentials,
+        "Credentials",
         return_value=mock_creds,
+        autospec=True,
     ) as mock_credentials_class:
       # Complete OAuth flow with first manager
       result1 = await manager1.get_valid_credentials(mock_tool_context)
@@ -431,10 +443,12 @@ class TestGoogleCredentialsManager:
     mock_tool_context.get_auth_response.return_value = None
 
     # Mock the from_authorized_user_info method for the second manager
-    with patch(
-        "google.adk.tools._google_credentials.google.oauth2.credentials.Credentials.from_authorized_user_info"
+    with patch.object(
+        credentials.Credentials,
+        "from_authorized_user_info",
+        autospec=True,
     ) as mock_from_json:
-      mock_cached_creds = Mock(spec=OAuthCredentials)
+      mock_cached_creds = create_autospec(OAuthCredentials, instance=True)
       mock_cached_creds.valid = True
       mock_from_json.return_value = mock_cached_creds
 
@@ -462,3 +476,79 @@ class TestGoogleCredentialsManager:
           else json.loads(actual_json_arg)
       )
       assert actual_data == expected_data
+
+  @pytest.mark.asyncio
+  async def test_get_valid_credentials_with_external_access_token_key(
+      self, mock_tool_context
+  ):
+    """Test get_valid_credentials with external_access_token_key."""
+    config = BaseGoogleCredentialsConfig(
+        external_access_token_key="my_access_token"
+    )
+    manager = GoogleCredentialsManager(config)
+    mock_tool_context.state["my_access_token"] = "external_token"
+
+    with patch.object(
+        credentials,
+        "Credentials",
+        autospec=True,
+    ) as mock_credentials_class:
+      mock_creds = create_autospec(OAuthCredentials, instance=True)
+      mock_credentials_class.return_value = mock_creds
+      result = await manager.get_valid_credentials(mock_tool_context)
+
+      mock_credentials_class.assert_called_once_with(token="external_token")
+      assert result == mock_creds
+
+  @pytest.mark.asyncio
+  async def test_get_valid_credentials_with_external_access_token_key_not_found(
+      self, mock_tool_context
+  ):
+    """Test get_valid_creds with external_access_token_key when token is not in state."""
+    config = BaseGoogleCredentialsConfig(
+        external_access_token_key="my_access_token"
+    )
+    manager = GoogleCredentialsManager(config)
+    with pytest.raises(
+        ValueError,
+        match=(
+            "external_access_token_key is provided but no access token found in"
+            " tool_context.state with key my_access_token."
+        ),
+    ):
+      await manager.get_valid_credentials(mock_tool_context)
+
+  def test_validation_credentials_and_external_key(self):
+    """Test validation failure with both credentials and external_access_token_key."""
+    with pytest.raises(
+        ValueError,
+        match=(
+            "If credentials are provided, external_access_token_key, client_id,"
+            " client_secret, and scopes must not be provided."
+        ),
+    ):
+      BaseGoogleCredentialsConfig(
+          credentials=create_autospec(OAuthCredentials, instance=True),
+          external_access_token_key="some_key",
+      )
+
+  def test_validation_external_key_and_client_id(self):
+    """Test validation failure with both external_access_token_key and client_id."""
+    with pytest.raises(
+        ValueError,
+        match=(
+            "If external_access_token_key is provided, client_id,"
+            " client_secret, and scopes must not be provided."
+        ),
+    ):
+      BaseGoogleCredentialsConfig(
+          external_access_token_key="some_key", client_id="test_id"
+      )
+
+  def test_validation_only_one_config_provided(self):
+    """Test validation passes with only one config option."""
+    BaseGoogleCredentialsConfig(
+        credentials=create_autospec(OAuthCredentials, instance=True)
+    )
+    BaseGoogleCredentialsConfig(external_access_token_key="some_key")
+    BaseGoogleCredentialsConfig(client_id="id", client_secret="secret")

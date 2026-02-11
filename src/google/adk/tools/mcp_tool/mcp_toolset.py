@@ -139,17 +139,14 @@ class McpToolset(BaseToolset):
       header_provider: A callable that takes a ReadonlyContext and returns a
         dictionary of headers to be used for the MCP session.
       progress_callback: Optional callback to receive progress notifications
-        from MCP server during long-running tool execution. Can be either:
-
-        - A ``ProgressFnT`` callback that receives (progress, total, message).
-          This callback will be shared by all tools in the toolset.
-
-        - A ``ProgressCallbackFactory`` that creates per-tool callbacks. The
-          factory receives (tool_name, callback_context, **kwargs) and returns
-          a ProgressFnT or None. This allows different tools to have different
-          progress handling logic and access/modify session state via the
-          CallbackContext. The **kwargs parameter allows for future
-          extensibility.
+        from MCP server during long-running tool execution. Can be either:  - A
+        ``ProgressFnT`` callback that receives (progress, total, message). This
+        callback will be shared by all tools in the toolset.  - A
+        ``ProgressCallbackFactory`` that creates per-tool callbacks. The factory
+        receives (tool_name, callback_context, **kwargs) and returns a
+        ProgressFnT or None. This allows different tools to have different
+        progress handling logic and access/modify session state via the
+        CallbackContext. The **kwargs parameter allows for future extensibility.
       use_mcp_resources: Whether the agent should have access to MCP resources.
         This will add a `load_mcp_resource` tool to the toolset and include
         available resources in the agent context. Defaults to False.
@@ -284,6 +281,9 @@ class McpToolset(BaseToolset):
           coroutine_func(session), timeout=timeout_in_seconds
       )
     except Exception as e:
+      logger.exception(
+          f"Exception during MCP session execution: {error_message}: {e}"
+      )
       raise ConnectionError(f"{error_message}: {e}") from e
 
   @retry_on_errors
