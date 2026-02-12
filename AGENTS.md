@@ -187,8 +187,7 @@ uv venv --python "python3.11" ".venv" source .venv/bin/activate
 
 uv sync --all-extras ```
 
-**Minimal setup for testing only (matches CI):** `bash uv sync --extra test
---extra eval --extra a2a`
+**Minimal setup for testing only (matches CI):** `bash uv sync --extra test`
 
 **Virtual Environment Usage (Required):** - **Always use** `.venv/bin/python` or
 `.venv/bin/pytest` directly - **Or activate** with `source .venv/bin/activate`
@@ -363,7 +362,7 @@ catching issues with the public API.
 **Quick start:** Run all tests with: `bash pytest tests/unittests`
 
 **Recommended:** Match CI configuration before submitting PRs: `bash uv sync
---extra test --extra eval --extra a2a && pytest tests/unittests`
+--extra test && pytest tests/unittests`
 
 **Additional options:** ```bash
 
