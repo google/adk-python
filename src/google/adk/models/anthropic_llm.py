@@ -218,17 +218,14 @@ def _update_type_string(value_dict: dict[str, Any]):
   if "type" in value_dict:
     value_dict["type"] = value_dict["type"].lower()
 
+  if "properties" in value_dict:
+    for _, value in value_dict["properties"].items():
+      _update_type_string(value)
+
   if "items" in value_dict:
     # 'type' field could exist for items as well, this would be the case if
     # items represent primitive types.
     _update_type_string(value_dict["items"])
-
-    if "properties" in value_dict["items"]:
-      # There could be properties as well on the items, especially if the items
-      # are complex object themselves. We recursively traverse each individual
-      # property as well and fix the "type" value.
-      for _, value in value_dict["items"]["properties"].items():
-        _update_type_string(value)
 
 
 def function_declaration_to_tool_param(

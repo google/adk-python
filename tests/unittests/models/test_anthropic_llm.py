@@ -276,6 +276,69 @@ function_declaration_test_cases = [
         ),
     ),
     (
+        "function_with_nested_object_parameter",
+        types.FunctionDeclaration(
+            name="update_profile",
+            description="Updates a user profile.",
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "profile": types.Schema(
+                        type=types.Type.OBJECT,
+                        description="The profile data",
+                        properties={
+                            "name": types.Schema(
+                                type=types.Type.STRING,
+                                description="Full name",
+                            ),
+                            "address": types.Schema(
+                                type=types.Type.OBJECT,
+                                description="Mailing address",
+                                properties={
+                                    "city": types.Schema(
+                                        type=types.Type.STRING,
+                                    ),
+                                    "state": types.Schema(
+                                        type=types.Type.STRING,
+                                    ),
+                                },
+                            ),
+                        },
+                    ),
+                },
+                required=["profile"],
+            ),
+        ),
+        anthropic_types.ToolParam(
+            name="update_profile",
+            description="Updates a user profile.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "profile": {
+                        "type": "object",
+                        "description": "The profile data",
+                        "properties": {
+                            "name": {
+                                "type": "string",
+                                "description": "Full name",
+                            },
+                            "address": {
+                                "type": "object",
+                                "description": "Mailing address",
+                                "properties": {
+                                    "city": {"type": "string"},
+                                    "state": {"type": "string"},
+                                },
+                            },
+                        },
+                    },
+                },
+                "required": ["profile"],
+            },
+        ),
+    ),
+    (
         "function_with_parameters_json_schema",
         types.FunctionDeclaration(
             name="search_database",
