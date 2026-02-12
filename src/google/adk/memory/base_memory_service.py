@@ -17,6 +17,8 @@ from __future__ import annotations
 
 from abc import ABC
 from abc import abstractmethod
+from collections.abc import Mapping
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
@@ -25,6 +27,7 @@ from pydantic import Field
 from .memory_entry import MemoryEntry
 
 if TYPE_CHECKING:
+  from ..events.event import Event
   from ..sessions.session import Session
 
 
@@ -41,15 +44,15 @@ class SearchMemoryResponse(BaseModel):
 class BaseMemoryService(ABC):
   """Base class for memory services.
 
-  The service provides functionalities to ingest sessions into memory so that
-  the memory can be used for user queries.
+  The service provides functionality to ingest conversation history into memory
+  so that it can be used for user queries.
   """
 
   @abstractmethod
   async def add_session_to_memory(
       self,
       session: Session,
-  ):
+  ) -> None:
     """Adds a session to the memory service.
 
     A session may be added multiple times during its lifetime.
@@ -57,6 +60,38 @@ class BaseMemoryService(ABC):
     Args:
         session: The session to add.
     """
+
+  async def add_events_to_memory(
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      events: Sequence[Event],
+      session_id: str | None = None,
+      custom_metadata: Mapping[str, object] | None = None,
+  ) -> None:
+    """Adds an explicit list of events to the memory service.
+
+    This is intended for cases where callers want to persist only a subset of
+    events (e.g., the latest turn), rather than re-ingesting the full session.
+
+    Implementations should treat `events` as an incremental update (delta) and
+    must not assume it represents the full session.
+    Implementations may ignore `session_id` if it is not applicable.
+
+    Args:
+      app_name: The application name for memory scope.
+      user_id: The user ID for memory scope.
+      events: The events to add to memory.
+      session_id: Optional session ID for memory scope/partitioning.
+      custom_metadata: Optional, portable metadata for memory generation. Prefer
+        this for service-specific fields (e.g., TTL) that may later become
+        first-class API parameters.
+    """
+    raise NotImplementedError(
+        "This memory service does not support adding event deltas. "
+        "Call add_session_to_memory(session) to ingest the full session."
+    )
 
   @abstractmethod
   async def search_memory(

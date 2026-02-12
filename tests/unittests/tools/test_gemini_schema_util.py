@@ -579,6 +579,20 @@ class TestToGeminiSchema:
         "null",
     ]
 
+  def test_sanitize_schema_formats_for_gemini_with_list_property_value(self):
+    schema = {
+        "type": "object",
+        "properties": {
+            "required": ["sql"],
+            "sql": {"type": "string"},
+        },
+    }
+
+    sanitized = _sanitize_schema_formats_for_gemini(schema)
+
+    assert sanitized["properties"]["required"] == ["sql"]
+    assert sanitized["properties"]["sql"]["type"] == "string"
+
   def test_sanitize_schema_formats_for_gemini_nullable(self):
     openapi_schema = {
         "properties": {
