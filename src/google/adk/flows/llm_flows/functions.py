@@ -784,6 +784,9 @@ async def _process_function_live_helper(
               and function_name in invocation_context.active_streaming_tools
           ):
             invocation_context.active_streaming_tools[function_name].task = None
+            invocation_context.active_streaming_tools[function_name].stream = (
+                None
+            )
 
         function_response = {
             'status': f'Successfully stopped streaming function {function_name}'

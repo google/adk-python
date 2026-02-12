@@ -1051,9 +1051,7 @@ class Runner:
             logger.debug(
                 'Register streaming tool with input stream: %s', tool.name
             )
-            active_streaming_tool = ActiveStreamingTool(
-                stream=LiveRequestQueue()
-            )
+            active_streaming_tool = ActiveStreamingTool()
             invocation_context.active_streaming_tools[tool.name] = (
                 active_streaming_tool
             )

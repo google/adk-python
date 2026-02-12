@@ -13,7 +13,9 @@
 # limitations under the License.
 
 import asyncio
+from typing import Any
 from typing import AsyncGenerator
+from typing import Awaitable
 
 from google.adk.agents.live_request_queue import LiveRequestQueue
 from google.adk.agents.llm_agent import Agent
@@ -1273,3 +1275,225 @@ def test_live_streaming_text_content_persisted_in_session():
       f'Expected user text content "{user_text}" to be persisted in session. '
       f'Session events: {[e.content for e in session.events]}'
   )
+
+
+def _collect_function_call_names(events):
+  """Extract the set of function call names from a list of events."""
+  return {fc.name for event in events for fc in event.get_function_calls()}
+
+
+class _LiveTestRunner(testing_utils.InMemoryRunner):
+  """Test runner with custom event loop management for live streaming tests."""
+
+  def _run_with_loop(self, coro: Awaitable[Any]) -> None:
+    """Run a coroutine in a new event loop, suppressing timeouts."""
+    try:
+      old_loop = asyncio.get_event_loop()
+    except RuntimeError:
+      old_loop = None
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+      loop.run_until_complete(coro)
+    except (asyncio.TimeoutError, asyncio.CancelledError):
+      pass
+    finally:
+      loop.close()
+      asyncio.set_event_loop(old_loop)
+
+  def run_live(
+      self,
+      live_request_queue: LiveRequestQueue,
+      max_responses: int = 3,
+  ) -> list[testing_utils.Event]:
+    """Run live and collect up to max_responses events."""
+    collected = []
+
+    async def consume(session: testing_utils.Session):
+      async for response in self.runner.run_live(
+          session=session,
+          live_request_queue=live_request_queue,
+      ):
+        collected.append(response)
+        if len(collected) >= max_responses:
+          return
+
+    self._run_with_loop(asyncio.wait_for(consume(self.session), timeout=5.0))
+    return collected
+
+
+def test_input_streaming_tool_stream_is_none_before_model_calls():
+  """Test that input-streaming tools have stream=None until the model calls them."""
+  # Add a text response before the function call so we can observe stream
+  # state between registration and tool invocation.
+  text_response = LlmResponse(
+      content=types.Content(
+          role='model',
+          parts=[types.Part(text='Processing...')],
+      ),
+      turn_complete=False,
+  )
+  function_call = types.Part.from_function_call(
+      name='monitor_video_stream', args={}
+  )
+  call_response = LlmResponse(
+      content=types.Content(role='model', parts=[function_call]),
+      turn_complete=False,
+  )
+  done_response = LlmResponse(turn_complete=True)
+
+  mock_model = testing_utils.MockModel.create(
+      [text_response, call_response, done_response]
+  )
+
+  stream_state_during_call = None
+
+  async def monitor_video_stream(input_stream: LiveRequestQueue):
+    """Record whether input_stream was provided."""
+    nonlocal stream_state_during_call
+    stream_state_during_call = input_stream is not None
+    yield 'monitoring started'
+
+  root_agent = Agent(
+      name='root_agent',
+      model=mock_model,
+      tools=[monitor_video_stream],
+  )
+
+  runner = _LiveTestRunner(root_agent=root_agent)
+
+  # Capture the invocation context to inspect stream state.
+  captured_context = None
+  original_method = runner.runner._new_invocation_context_for_live
+
+  def capturing_method(*args, **kwargs):
+    nonlocal captured_context
+    ctx = original_method(*args, **kwargs)
+    captured_context = ctx
+    return ctx
+
+  runner.runner._new_invocation_context_for_live = capturing_method
+
+  live_request_queue = LiveRequestQueue()
+  live_request_queue.send_realtime(
+      blob=types.Blob(data=b'test_data', mime_type='audio/pcm')
+  )
+
+  # Collect events and capture stream state before the tool is called.
+  collected = []
+  stream_states_before_call = []
+
+  async def consume(session: testing_utils.Session):
+    async for response in runner.runner.run_live(
+        session=session,
+        live_request_queue=live_request_queue,
+    ):
+      collected.append(response)
+      # On a non-function-call event, the tool is registered but not
+      # yet invoked — capture the stream value at that point.
+      active = (
+          captured_context.active_streaming_tools if captured_context else {}
+      )
+      if (
+          not stream_states_before_call
+          and not response.get_function_calls()
+          and 'monitor_video_stream' in active
+      ):
+        stream_states_before_call.append(active['monitor_video_stream'].stream)
+      if len(collected) >= 4:
+        return
+
+  runner._run_with_loop(asyncio.wait_for(consume(runner.session), timeout=5.0))
+
+  # Before the model calls the tool, stream should be None.
+  assert (
+      stream_states_before_call
+  ), 'Stream state was never observed before the tool call'
+  assert (
+      stream_states_before_call[0] is None
+  ), 'Expected stream to be None before the model calls the tool'
+  # When the model calls the tool, input_stream should be provided.
+  assert (
+      stream_state_during_call is True
+  ), 'Expected input_stream to be provided to the streaming tool when called'
+
+
+def test_stop_streaming_resets_stream_to_none():
+  """Test that stop_streaming sets stream back to None."""
+  start_call = types.Part.from_function_call(
+      name='monitor_stock_price', args={'stock_symbol': 'GOOG'}
+  )
+  stop_call = types.Part.from_function_call(
+      name='stop_streaming', args={'function_name': 'monitor_stock_price'}
+  )
+
+  response1 = LlmResponse(
+      content=types.Content(role='model', parts=[start_call]),
+      turn_complete=False,
+  )
+  response2 = LlmResponse(
+      content=types.Content(role='model', parts=[stop_call]),
+      turn_complete=False,
+  )
+  response3 = LlmResponse(turn_complete=True)
+
+  mock_model = testing_utils.MockModel.create([response1, response2, response3])
+
+  async def monitor_stock_price(stock_symbol: str):
+    """Yield periodic price updates for the given stock symbol."""
+    yield f'Monitoring {stock_symbol}'
+    while True:
+      await asyncio.sleep(0.1)
+      yield f'{stock_symbol} price update'
+
+  def stop_streaming(function_name: str):
+    """Stop a running streaming tool by name."""
+    pass
+
+  root_agent = Agent(
+      name='root_agent',
+      model=mock_model,
+      tools=[monitor_stock_price, stop_streaming],
+  )
+
+  runner = _LiveTestRunner(root_agent=root_agent)
+
+  # Capture invocation context to verify stream is reset.
+  captured_context = None
+  original_method = runner.runner._new_invocation_context_for_live
+
+  def capturing_method(*args, **kwargs):
+    nonlocal captured_context
+    ctx = original_method(*args, **kwargs)
+    captured_context = ctx
+    return ctx
+
+  runner.runner._new_invocation_context_for_live = capturing_method
+
+  live_request_queue = LiveRequestQueue()
+  live_request_queue.send_realtime(
+      blob=types.Blob(data=b'Monitor GOOG then stop', mime_type='audio/pcm')
+  )
+
+  res_events = runner.run_live(live_request_queue, max_responses=4)
+
+  # Verify both function calls were processed.
+  call_names = _collect_function_call_names(res_events)
+  assert (
+      'monitor_stock_price' in call_names
+  ), 'Expected monitor_stock_price function call.'
+  assert (
+      'stop_streaming' in call_names
+  ), 'Expected stop_streaming function call.'
+
+  # Verify that stop_streaming reset the stream to None.
+  assert (
+      captured_context is not None
+  ), 'Expected invocation context to be captured'
+  active_tools = captured_context.active_streaming_tools or {}
+  assert (
+      'monitor_stock_price' in active_tools
+  ), 'Expected monitor_stock_price in active_streaming_tools'
+  assert (
+      active_tools['monitor_stock_price'].stream is None
+  ), 'Expected stream to be reset to None after stop_streaming'
