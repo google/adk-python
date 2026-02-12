@@ -135,11 +135,9 @@ class ServiceAccountCredentialExchanger(BaseAuthCredentialExchanger):
       if sa_config.use_default_credential:
         token = google_id_token.fetch_id_token(Request(), audience)
       else:
-        id_creds = (
-            service_account.IDTokenCredentials.from_service_account_info(
-                sa_config.service_account_credential.model_dump(),
-                target_audience=audience,
-            )
+        id_creds = service_account.IDTokenCredentials.from_service_account_info(
+            sa_config.service_account_credential.model_dump(),
+            target_audience=audience,
         )
         id_creds.refresh(Request())
         token = id_creds.token

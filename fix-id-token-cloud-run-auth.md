@@ -59,3 +59,61 @@ mcp_toolset = McpToolset(
     auth_credential=auth_credential,
 )
 ```
+
+## PR Description (ready to paste)
+
+### Summary
+
+Cloud Run-protected MCP endpoints require an OIDC ID token, but service-account
+exchange always returned an OAuth access token. This change adds an opt-in ID
+token path for service account auth and keeps existing access-token behavior as
+the default.
+
+### Testing Plan
+
+- Run formatter (`autoformat.sh` equivalent on Windows shell):
+  - `.\.venv\Scripts\python.exe -m isort src\google\adk\auth\auth_credential.py src\google\adk\tools\openapi_tool\auth\credential_exchangers\service_account_exchanger.py tests\unittests\tools\openapi_tool\auth\credential_exchangers\test_service_account_exchanger.py`
+  - `.\.venv\Scripts\python.exe -m pyink --config pyproject.toml src\google\adk\auth\auth_credential.py src\google\adk\tools\openapi_tool\auth\credential_exchangers\service_account_exchanger.py tests\unittests\tools\openapi_tool\auth\credential_exchangers\test_service_account_exchanger.py`
+- Run focused unit tests:
+  - `.\.venv\Scripts\python.exe -m pytest tests\unittests\tools\openapi_tool\auth\credential_exchangers\test_service_account_exchanger.py -q`
+- Run related broader tests:
+  - `.\.venv\Scripts\python.exe -m pytest tests\unittests\tools\openapi_tool\auth\ tests\unittests\auth\test_credential_manager.py tests\unittests\tools\mcp_tool\test_mcp_tool.py -q`
+
+### Unit Test Evidence
+
+- Focused exchanger tests: **11 passed in 1.59s**
+- Broader auth + MCP tests: **126 passed, 336 warnings in 2.64s**
+
+### Manual E2E Evidence (MCP + Cloud Run auth)
+
+> Note: This local workspace currently has no Cloud Run endpoint configured
+> (`MCP_URL` and `GOOGLE_CLOUD_PROJECT` are empty), so this section is prepared
+> for final evidence capture in your Cloud environment.
+
+Please attach in the PR:
+
+1. A screenshot of `adk web` prompt/response where the MCP tool call succeeds.
+2. Console logs proving successful authenticated call (no 401).
+3. The exact agent config used (`use_id_token=True`, `audience=<cloud-run-url>`).
+
+Suggested log snippet to include:
+
+```text
+HTTP Request: POST https://<service>.run.app/mcp "HTTP/1.1 200 OK"
+... tool call result ...
+```
+
+### Docs Impact
+
+- This introduces user-facing auth fields (`use_id_token`, `audience`) for
+  service-account auth flow.
+- Recommended follow-up: open/update a docs PR in `google/adk-docs` to document
+  Cloud Run authenticated MCP setup with ID token usage.
+
+### Review Request
+
+- Request review from ADK auth/tooling maintainers.
+- Suggested focus areas:
+  - Backward compatibility of service-account access-token flow.
+  - Correctness of ID-token exchange for ADC and explicit service-account keys.
+  - Error messaging when `audience` is missing.

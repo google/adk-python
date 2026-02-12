@@ -313,9 +313,7 @@ def test_exchange_id_token_missing_audience(
   )
 
   with pytest.raises(AuthCredentialMissingError) as exc_info:
-    service_account_exchanger.exchange_credential(
-        auth_scheme, auth_credential
-    )
+    service_account_exchanger.exchange_credential(auth_scheme, auth_credential)
   assert "audience" in str(exc_info.value).lower()
 
 
@@ -339,7 +337,5 @@ def test_exchange_id_token_failure(
   )
 
   with pytest.raises(AuthCredentialMissingError) as exc_info:
-    service_account_exchanger.exchange_credential(
-        auth_scheme, auth_credential
-    )
+    service_account_exchanger.exchange_credential(auth_scheme, auth_credential)
   assert "Failed to fetch ID token" in str(exc_info.value)
