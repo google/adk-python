@@ -352,6 +352,38 @@ class Runner:
         'auto_create_session=True when constructing the runner.'
     )
 
+  def update_agent(self, agent: BaseAgent) -> None:
+    """Updates the runner's agent reference.
+    
+    This method allows updating the agent used by the runner without creating
+    a new Runner instance. Useful for hot-reload scenarios where agent
+    configuration (e.g., instructions, tools, model) changes at runtime.
+    
+    Note: This updates the runner's default agent. For one-time overrides
+    in run_live(), you can also pass the agent parameter directly to run_live().
+    
+    Args:
+      agent: The new agent to use.
+    
+    Example:
+      # Initial setup
+      runner = Runner(app_name="voice_app", agent=create_agent(), ...)
+      
+      # Later, when instructions change
+      updated_agent = create_agent()  # Loads latest config
+      runner.update_agent(updated_agent)
+      
+      # Or use directly in run_live
+      runner.run_live(..., agent=create_agent())
+    """
+    self.agent = agent
+    # Re-infer agent origin for the new agent
+    self._agent_origin_app_name, self._agent_origin_dir = (
+        self._infer_agent_origin(agent)
+    )
+    self._enforce_app_name_alignment()
+    logger.info('Updated runner agent to: %s', agent.name)
+
   async def _get_or_create_session(
       self, *, user_id: str, session_id: str
   ) -> Session:
@@ -927,6 +959,7 @@ class Runner:
       live_request_queue: LiveRequestQueue,
       run_config: Optional[RunConfig] = None,
       session: Optional[Session] = None,
+      agent: Optional[BaseAgent] = None,
   ) -> AsyncGenerator[Event, None]:
     """Runs the agent in live mode (experimental feature).
 
@@ -968,6 +1001,11 @@ class Runner:
         run_config: The run config for the agent.
         session: The session to use. This parameter is deprecated, please use
           `user_id` and `session_id` instead.
+        agent: Optional agent to use for this invocation. If provided, this
+          agent will be used instead of the runner's default agent. This allows
+          for dynamic agent updates without creating a new Runner instance.
+          Useful for hot-reload scenarios where agent configuration (e.g.,
+          instructions) changes at runtime.
 
     Yields:
         AsyncGenerator[Event, None]: An asynchronous generator that yields
@@ -1003,13 +1041,18 @@ class Runner:
       session = await self._get_or_create_session(
           user_id=user_id, session_id=session_id
       )
+    
+    # Use the provided agent or fall back to the runner's agent
+    # This allows for dynamic agent updates without creating a new Runner
+    active_agent = agent if agent is not None else self.agent
+    
     invocation_context = self._new_invocation_context_for_live(
         session,
         live_request_queue=live_request_queue,
         run_config=run_config,
     )
 
-    root_agent = self.agent
+    root_agent = active_agent
     invocation_context.agent = self._find_agent_to_run(session, root_agent)
 
     # Pre-processing for live streaming tools

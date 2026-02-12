@@ -1713,6 +1713,34 @@ class AdkWebServer:
 
       async def forward_events():
         runner = await self.get_runner_async(app_name)
+        
+        # Reload the agent to pick up any configuration changes
+        # This ensures dynamic updates (e.g., instructions from config manager)
+        # are reflected in the live session without restarting the server
+        if self.reload_agents:
+          try:
+            # Force reload the agent from disk
+            self.agent_loader.remove_agent_from_cache(app_name)
+            agent_or_app = self.agent_loader.load_agent(app_name)
+            
+            if isinstance(agent_or_app, App):
+              reloaded_agent = agent_or_app.root_agent
+            else:
+              reloaded_agent = agent_or_app
+            
+            logger.info(
+                'Reloaded agent %s for live session (instructions may have updated)',
+                app_name
+            )
+          except Exception as e:
+            logger.warning(
+                'Failed to reload agent %s, using cached version: %s',
+                app_name, e
+            )
+            reloaded_agent = None
+        else:
+          reloaded_agent = None
+        
         run_config = RunConfig(
             response_modalities=modalities,
             proactivity=(
@@ -1734,6 +1762,7 @@ class AdkWebServer:
                 session=session,
                 live_request_queue=live_request_queue,
                 run_config=run_config,
+                agent=reloaded_agent,  # Pass the reloaded agent
             )
         ) as agen:
           async for event in agen:

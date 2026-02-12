@@ -395,6 +395,14 @@ class AgentLoader(BaseAgentLoader):
     raise ValueError(f"Could not determine agent type for '{agent_name}'.")
 
   def remove_agent_from_cache(self, agent_name: str):
+    """Removes an agent from the cache to force reload on next access.
+    
+    This method is useful for hot-reload scenarios where agent configuration
+    has changed and needs to be reloaded from disk.
+    
+    Args:
+      agent_name: The name of the agent to remove from cache.
+    """
     # Clear module cache for the agent and its submodules
     keys_to_delete = [
         module_name
@@ -405,3 +413,27 @@ class AgentLoader(BaseAgentLoader):
       logger.debug("Deleting module %s", key)
       del sys.modules[key]
     self._agent_cache.pop(agent_name, None)
+    logger.debug("Removed agent %s from cache", agent_name)
+
+  def reload_agent(self, agent_name: str) -> Union[BaseAgent, App]:
+    """Forces a reload of the agent from disk, bypassing the cache.
+    
+    This method is useful for hot-reload scenarios where agent configuration
+    (e.g., instructions loaded from a config manager) has changed at runtime
+    and needs to be refreshed without restarting the application.
+    
+    Args:
+      agent_name: The name of the agent to reload.
+    
+    Returns:
+      The freshly loaded agent or app.
+    
+    Example:
+      # Force reload to pick up instruction changes
+      agent_loader.reload_agent("voice_agent")
+      
+      # Then get the runner which will use the reloaded agent
+      runner = await web_server.get_runner_async("voice_agent")
+    """
+    self.remove_agent_from_cache(agent_name)
+    return self.load_agent(agent_name)
