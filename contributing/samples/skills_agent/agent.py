@@ -14,9 +14,10 @@
 
 """Example agent demonstrating the use of SkillToolset."""
 
-import inspect
+import pathlib
 
 from google.adk import Agent
+from google.adk.skills import load_skill_from_dir
 from google.adk.skills import models
 from google.adk.tools import skill_toolset
 
@@ -39,7 +40,13 @@ greeting_skill = models.Skill(
     ),
 )
 
-my_skill_toolset = skill_toolset.SkillToolset(skills=[greeting_skill])
+weather_skill = load_skill_from_dir(
+    pathlib.Path(__file__).parent / "skills" / "weather_skill"
+)
+
+my_skill_toolset = skill_toolset.SkillToolset(
+    skills=[greeting_skill, weather_skill]
+)
 
 root_agent = Agent(
     model="gemini-2.5-flash",

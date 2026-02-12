@@ -13,6 +13,7 @@
 # limitations under the License.
 
 """ADK knowledge search tool."""
+
 from __future__ import annotations
 
 from typing import Any

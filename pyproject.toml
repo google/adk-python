@@ -89,7 +89,7 @@ dev = [
   "flit>=3.10.0",
   "isort>=6.0.0",
   "mypy>=1.15.0",
-  "pyink>=24.10.0",
+  "pyink>=25.12.0",
   "pylint>=2.6.0",
   # go/keep-sorted end
 ]

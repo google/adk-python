@@ -14,7 +14,6 @@
 
 """Tests for utilities in cli_tool_click."""
 
-
 from __future__ import annotations
 
 import builtins
