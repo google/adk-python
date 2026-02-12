@@ -357,15 +357,12 @@ def _parse_agent_engine_kwargs(
         "Agent engine resource name or resource id cannot be empty."
     )
 
-  # If uri_part is just an ID, load project/location from env
+  # If uri_part is just an ID, defer project/location loading to runtime
   if "/" not in uri_part:
-    project, location = _load_gcp_config(
-        agents_dir, "short-form agent engine IDs"
-    )
+    # Return with agents_dir for lazy resolution at runtime
     return {
-        "project": project,
-        "location": location,
         "agent_engine_id": uri_part,
+        "agents_dir": agents_dir,
     }
 
   # If uri_part is a full resource name, parse it
@@ -385,6 +382,7 @@ def _parse_agent_engine_kwargs(
       "project": parts[1],
       "location": parts[3],
       "agent_engine_id": parts[5],
+      "agents_dir": agents_dir,
   }
 
 

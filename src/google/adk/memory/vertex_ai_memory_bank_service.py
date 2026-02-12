@@ -72,12 +72,15 @@ class VertexAiMemoryBankService(BaseMemoryService):
       agent_engine_id: Optional[str] = None,
       *,
       express_mode_api_key: Optional[str] = None,
+      agents_dir: Optional[str] = None,
   ):
     """Initializes a VertexAiMemoryBankService.
 
     Args:
-      project: The project ID of the Memory Bank to use.
-      location: The location of the Memory Bank to use.
+      project: The project ID of the Memory Bank to use. If not provided, will
+        be resolved lazily at runtime from environment variables or .env files.
+      location: The location of the Memory Bank to use. If not provided, will
+        be resolved lazily at runtime from environment variables or .env files.
       agent_engine_id: The ID of the agent engine to use for the Memory Bank,
         e.g. '456' in
         'projects/my-project/locations/us-central1/reasoningEngines/456'. To
@@ -88,13 +91,15 @@ class VertexAiMemoryBankService(BaseMemoryService):
         be used. It will only be used if GOOGLE_GENAI_USE_VERTEXAI is true. Do
         not use Google AI Studio API key for this field. For more details, visit
         https://cloud.google.com/vertex-ai/generative-ai/docs/start/express-mode/overview
+      agents_dir: The directory containing agent configurations and .env files.
+        Used for lazy resolution of project/location when not explicitly provided.
     """
     self._project = project
     self._location = location
     self._agent_engine_id = agent_engine_id
-    self._express_mode_api_key = get_express_mode_api_key(
-        project, location, express_mode_api_key
-    )
+    self._agents_dir = agents_dir
+    self._config_resolved = False
+    self._express_mode_api_key = express_mode_api_key
 
     if agent_engine_id and '/' in agent_engine_id:
       logger.warning(
@@ -168,6 +173,9 @@ class VertexAiMemoryBankService(BaseMemoryService):
 
   @override
   async def search_memory(self, *, app_name: str, user_id: str, query: str):
+    # Lazily resolve project/location on first use
+    self._resolve_config()
+    
     if not self._agent_engine_id:
       raise ValueError('Agent Engine ID is required for Memory Bank.')
 
@@ -203,7 +211,56 @@ class VertexAiMemoryBankService(BaseMemoryService):
       )
     return SearchMemoryResponse(memories=memory_events)
 
-  def _get_api_client(self) -> vertexai.AsyncClient:
+  def _resolve_config(self) -> None:
+    """Lazily resolves project and location if not provided at initialization.
+    
+    This method is called on first use to resolve GCP configuration from:
+    1. Explicit environment variables (highest priority)
+    2. agents_dir root .env file
+    3. Parent directory .env files (walking upward)
+    
+    Raises:
+      ValueError: If project or location cannot be resolved.
+    """
+    if self._config_resolved:
+      return
+    
+    import os
+    
+    # If both are already set (either at init or via environment), we're done
+    if self._project and self._location:
+      self._config_resolved = True
+      self._express_mode_api_key = get_express_mode_api_key(
+          self._project, self._location, self._express_mode_api_key
+      )
+      return
+    
+    # Try to load from environment and .env files
+    if self._agents_dir:
+      # Load from agents_dir root
+      from ..cli.utils import envs
+      envs.load_dotenv_for_agent("", self._agents_dir)
+    
+    # Resolve from environment after loading .env
+    self._project = self._project or os.environ.get("GOOGLE_CLOUD_PROJECT")
+    self._location = self._location or os.environ.get("GOOGLE_CLOUD_LOCATION")
+    
+    if not self._project or not self._location:
+      error_msg = (
+          "GOOGLE_CLOUD_PROJECT and GOOGLE_CLOUD_LOCATION must be set. "
+          "You can set them via:\n"
+          "  1. Environment variables: GOOGLE_CLOUD_PROJECT and GOOGLE_CLOUD_LOCATION\n"
+          "  2. .env file in your agents_dir\n"
+          "  3. Use full resource name: agentengine://projects/{project}/locations/{location}/reasoningEngines/{id}"
+      )
+      raise ValueError(error_msg)
+    
+    self._config_resolved = True
+    self._express_mode_api_key = get_express_mode_api_key(
+        self._project, self._location, self._express_mode_api_key
+    )
+
+  def _get_api_client(self):
     """Instantiates an API client for the given project and location.
 
     It needs to be instantiated inside each request so that the event loop

@@ -55,12 +55,15 @@ class VertexAiSessionService(BaseSessionService):
       agent_engine_id: Optional[str] = None,
       *,
       express_mode_api_key: Optional[str] = None,
+      agents_dir: Optional[str] = None,
   ):
     """Initializes the VertexAiSessionService.
 
     Args:
-      project: The project id of the project to use.
-      location: The location of the project to use.
+      project: The project id of the project to use. If not provided, will be
+        resolved lazily at runtime from environment variables or .env files.
+      location: The location of the project to use. If not provided, will be
+        resolved lazily at runtime from environment variables or .env files.
       agent_engine_id: The resource ID of the agent engine to use.
       express_mode_api_key: The API key to use for Express Mode. If not
         provided, the API key from the GOOGLE_API_KEY environment variable will
@@ -68,13 +71,15 @@ class VertexAiSessionService(BaseSessionService):
         Do not use Google AI Studio API key for this field. For more details,
         visit
         https://cloud.google.com/vertex-ai/generative-ai/docs/start/express-mode/overview
+      agents_dir: The directory containing agent configurations and .env files.
+        Used for lazy resolution of project/location when not explicitly provided.
     """
     self._project = project
     self._location = location
     self._agent_engine_id = agent_engine_id
-    self._express_mode_api_key = get_express_mode_api_key(
-        project, location, express_mode_api_key
-    )
+    self._agents_dir = agents_dir
+    self._config_resolved = False
+    self._express_mode_api_key = express_mode_api_key
 
   @override
   async def create_session(
@@ -100,6 +105,8 @@ class VertexAiSessionService(BaseSessionService):
     Returns:
       The created session.
     """
+    # Lazily resolve project/location on first use
+    self._resolve_config(app_name)
 
     if session_id:
       raise ValueError(
@@ -139,6 +146,9 @@ class VertexAiSessionService(BaseSessionService):
       session_id: str,
       config: Optional[GetSessionConfig] = None,
   ) -> Optional[Session]:
+    # Lazily resolve project/location on first use
+    self._resolve_config(app_name)
+    
     reasoning_engine_id = self._get_reasoning_engine_id(app_name)
     session_resource_name = (
         f'reasoningEngines/{reasoning_engine_id}/sessions/{session_id}'
@@ -203,6 +213,9 @@ class VertexAiSessionService(BaseSessionService):
   async def list_sessions(
       self, *, app_name: str, user_id: Optional[str] = None
   ) -> ListSessionsResponse:
+    # Lazily resolve project/location on first use
+    self._resolve_config(app_name)
+    
     reasoning_engine_id = self._get_reasoning_engine_id(app_name)
 
     async with self._get_api_client() as api_client:
@@ -231,6 +244,9 @@ class VertexAiSessionService(BaseSessionService):
   async def delete_session(
       self, *, app_name: str, user_id: str, session_id: str
   ) -> None:
+    # Lazily resolve project/location on first use
+    self._resolve_config(app_name)
+    
     reasoning_engine_id = self._get_reasoning_engine_id(app_name)
 
     async with self._get_api_client() as api_client:
@@ -248,6 +264,9 @@ class VertexAiSessionService(BaseSessionService):
   async def append_event(self, session: Session, event: Event) -> Event:
     # Update the in-memory session.
     await super().append_event(session=session, event=event)
+
+    # Lazily resolve project/location on first use
+    self._resolve_config(session.app_name)
 
     reasoning_engine_id = self._get_reasoning_engine_id(session.app_name)
 
@@ -322,6 +341,64 @@ class VertexAiSessionService(BaseSessionService):
       )
 
     return match.groups()[-1]
+
+  def _resolve_config(self, app_name: Optional[str] = None) -> None:
+    """Lazily resolves project and location if not provided at initialization.
+    
+    This method is called on first use to resolve GCP configuration from:
+    1. Explicit environment variables (highest priority)
+    2. Agent-specific .env file (if app_name and agents_dir provided)
+    3. agents_dir root .env file
+    4. Parent directory .env files (walking upward)
+    
+    Args:
+      app_name: Optional app name to load agent-specific .env files.
+    
+    Raises:
+      ValueError: If project or location cannot be resolved.
+    """
+    if self._config_resolved:
+      return
+    
+    import os
+    
+    # If both are already set (either at init or via environment), we're done
+    if self._project and self._location:
+      self._config_resolved = True
+      self._express_mode_api_key = get_express_mode_api_key(
+          self._project, self._location, self._express_mode_api_key
+      )
+      return
+    
+    # Try to load from environment and .env files
+    if self._agents_dir and app_name:
+      # Load agent-specific .env
+      from ..cli.utils import envs
+      envs.load_dotenv_for_agent(app_name, self._agents_dir)
+    elif self._agents_dir:
+      # Load from agents_dir root
+      from ..cli.utils import envs
+      envs.load_dotenv_for_agent("", self._agents_dir)
+    
+    # Resolve from environment after loading .env
+    self._project = self._project or os.environ.get("GOOGLE_CLOUD_PROJECT")
+    self._location = self._location or os.environ.get("GOOGLE_CLOUD_LOCATION")
+    
+    if not self._project or not self._location:
+      error_msg = (
+          "GOOGLE_CLOUD_PROJECT and GOOGLE_CLOUD_LOCATION must be set. "
+          "You can set them via:\n"
+          "  1. Environment variables: GOOGLE_CLOUD_PROJECT and GOOGLE_CLOUD_LOCATION\n"
+          "  2. .env file in your agent directory\n"
+          "  3. .env file in your agents_dir\n"
+          "  4. Use full resource name: agentengine://projects/{project}/locations/{location}/reasoningEngines/{id}"
+      )
+      raise ValueError(error_msg)
+    
+    self._config_resolved = True
+    self._express_mode_api_key = get_express_mode_api_key(
+        self._project, self._location, self._express_mode_api_key
+    )
 
   def _api_client_http_options_override(
       self,
