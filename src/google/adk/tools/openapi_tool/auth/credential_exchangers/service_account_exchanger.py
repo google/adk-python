@@ -20,6 +20,7 @@ from typing import Optional
 
 import google.auth
 from google.auth.transport.requests import Request
+from google.oauth2 import id_token as google_id_token
 from google.oauth2 import service_account
 import google.oauth2.credentials
 
@@ -73,27 +74,50 @@ class ServiceAccountCredentialExchanger(BaseAuthCredentialExchanger):
       )
 
     try:
-      if auth_credential.service_account.use_default_credential:
-        credentials, project_id = google.auth.default(
-            scopes=["https://www.googleapis.com/auth/cloud-platform"],
-        )
-        quota_project_id = (
-            getattr(credentials, "quota_project_id", None) or project_id
-        )
-      else:
-        config = auth_credential.service_account
-        credentials = service_account.Credentials.from_service_account_info(
-            config.service_account_credential.model_dump(), scopes=config.scopes
-        )
-        quota_project_id = None
+      config = auth_credential.service_account
+      token_kind = getattr(config, "token_kind", "access_token")
+      request = Request()
 
-      credentials.refresh(Request())
+      quota_project_id = None
+      token = None
+
+      if token_kind == "id_token":
+        audience = getattr(config, "audience", None)
+        if config.use_default_credential:
+          token = google_id_token.fetch_id_token(request, audience)
+        else:
+          id_creds = (
+              service_account.IDTokenCredentials.from_service_account_info(
+                  config.service_account_credential.model_dump(),
+                  target_audience=audience,
+              )
+          )
+          id_creds.refresh(request)
+          token = id_creds.token
+      else:
+        if auth_credential.service_account.use_default_credential:
+          credentials, project_id = google.auth.default(
+              scopes=["https://www.googleapis.com/auth/cloud-platform"],
+          )
+          quota_project_id = (
+              getattr(credentials, "quota_project_id", None) or project_id
+          )
+        else:
+          config = auth_credential.service_account
+          credentials = service_account.Credentials.from_service_account_info(
+              config.service_account_credential.model_dump(),
+              scopes=config.scopes,
+          )
+          quota_project_id = None
+
+        credentials.refresh(Request())
+        token = credentials.token
 
       updated_credential = AuthCredential(
           auth_type=AuthCredentialTypes.HTTP,  # Store as a bearer token
           http=HttpAuth(
               scheme="bearer",
-              credentials=HttpCredentials(token=credentials.token),
+              credentials=HttpCredentials(token=token),
               additional_headers={
                   "x-goog-user-project": quota_project_id,
               }

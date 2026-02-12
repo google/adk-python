@@ -25,6 +25,7 @@ from google.adk.auth.auth_schemes import AuthSchemeType
 from google.adk.tools.openapi_tool.auth.credential_exchangers.base_credential_exchanger import AuthCredentialMissingError
 from google.adk.tools.openapi_tool.auth.credential_exchangers.service_account_exchanger import ServiceAccountCredentialExchanger
 import google.auth
+import google.oauth2.id_token
 import pytest
 
 
@@ -218,3 +219,123 @@ def test_exchange_credential_exchange_failure(
     service_account_exchanger.exchange_credential(auth_scheme, auth_credential)
   assert "Failed to exchange service account token" in str(exc_info.value)
   mock_from_service_account_info.assert_called_once()
+
+
+def test_exchange_credential_use_default_credential_id_token_success(
+    service_account_exchanger, auth_scheme, monkeypatch
+):
+  """Test successful exchange using ADC with an ID token (OIDC) for a target audience."""
+  mock_google_auth_default = MagicMock()
+  monkeypatch.setattr(google.auth, "default", mock_google_auth_default)
+
+  mock_fetch_id_token = MagicMock(return_value="mock_id_token")
+  monkeypatch.setattr(
+      google.oauth2.id_token,
+      "fetch_id_token",
+      mock_fetch_id_token,
+  )
+  monkeypatch.setattr(
+      "google.adk.tools.openapi_tool.auth.credential_exchangers.service_account_exchanger.google_id_token.fetch_id_token",
+      mock_fetch_id_token,
+  )
+
+  auth_credential = AuthCredential(
+      auth_type=AuthCredentialTypes.SERVICE_ACCOUNT,
+      service_account=ServiceAccount(
+          use_default_credential=True,
+          scopes=[
+              "https://www.googleapis.com/auth/cloud-platform"
+          ],  # unused in id_token mode, but required by model today
+          token_kind="id_token",
+          audience="https://my-service-abc.a.run.app",
+      ),
+  )
+
+  result = service_account_exchanger.exchange_credential(
+      auth_scheme, auth_credential
+  )
+
+  assert result.auth_type == AuthCredentialTypes.HTTP
+  assert result.http.scheme == "bearer"
+  assert result.http.credentials.token == "mock_id_token"
+  assert not result.http.additional_headers
+
+  mock_fetch_id_token.assert_called_once()
+  # Can we test this?
+  # mock_fetch_id_token.assert_called_once_with(ANY_REQUEST_OBJECT, "https://my-service-abc.a.run.app")
+  mock_google_auth_default.assert_not_called()
+
+
+def test_exchange_credential_service_account_id_token_success(
+    service_account_exchanger, auth_scheme, monkeypatch
+):
+  """Test successful exchange using SA JSON key with an ID token (OIDC) for a target audience."""
+  mock_id_creds = MagicMock()
+  mock_id_creds.token = "mock_id_token"
+  mock_id_creds.refresh = MagicMock()
+
+  mock_from_info = MagicMock(return_value=mock_id_creds)
+
+  # Patch IDTokenCredentials factory (NOT Credentials.from_service_account_info)
+  target_path = (
+      "google.adk.tools.openapi_tool.auth.credential_exchangers."
+      "service_account_exchanger.service_account.IDTokenCredentials."
+      "from_service_account_info"
+  )
+  monkeypatch.setattr(target_path, mock_from_info)
+
+  auth_credential = AuthCredential(
+      auth_type=AuthCredentialTypes.SERVICE_ACCOUNT,
+      service_account=ServiceAccount(
+          service_account_credential=ServiceAccountCredential(
+              type_="service_account",
+              project_id="your_project_id",
+              private_key_id="your_private_key_id",
+              private_key="-----BEGIN PRIVATE KEY-----...",
+              client_email="...@....iam.gserviceaccount.com",
+              client_id="your_client_id",
+              auth_uri="https://accounts.google.com/o/oauth2/auth",
+              token_uri="https://oauth2.googleapis.com/token",
+              auth_provider_x509_cert_url=(
+                  "https://www.googleapis.com/oauth2/v1/certs"
+              ),
+              client_x509_cert_url=(
+                  "https://www.googleapis.com/robot/v1/metadata/x509/..."
+              ),
+              universe_domain="googleapis.com",
+          ),
+          scopes=[
+              "https://www.googleapis.com/auth/cloud-platform"
+          ],  # unused in id_token mode but required today
+          token_kind="id_token",
+          audience="https://my-service-abc.a.run.app",
+      ),
+  )
+
+  result = service_account_exchanger.exchange_credential(
+      auth_scheme, auth_credential
+  )
+
+  assert result.auth_type == AuthCredentialTypes.HTTP
+  assert result.http.scheme == "bearer"
+  assert result.http.credentials.token == "mock_id_token"
+  assert not result.http.additional_headers
+
+  # Verify we used the IDTokenCredentials path with the correct target_audience
+  mock_from_info.assert_called_once()
+  _, kwargs = mock_from_info.call_args
+  assert kwargs["target_audience"] == "https://my-service-abc.a.run.app"
+
+  mock_id_creds.refresh.assert_called_once()
+
+
+def test_service_account_id_token_requires_audience():
+  """ServiceAccount validation: id_token requires audience."""
+  with pytest.raises(ValueError) as exc_info:
+    ServiceAccount(
+        use_default_credential=True,
+        scopes=["https://www.googleapis.com/auth/cloud-platform"],
+        token_kind="id_token",
+        audience=None,
+    )
+  assert "audience" in str(exc_info.value)

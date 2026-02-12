@@ -25,6 +25,7 @@ from pydantic import alias_generators
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
+from pydantic import model_validator
 
 
 class BaseModelWithConfig(BaseModel):
@@ -149,6 +150,21 @@ class ServiceAccount(BaseModelWithConfig):
   service_account_credential: Optional[ServiceAccountCredential] = None
   scopes: List[str]
   use_default_credential: Optional[bool] = False
+  token_kind: Literal["access_token", "id_token"] = "access_token"
+  audience: Optional[str] = None
+
+  @model_validator(mode="before")
+  @classmethod
+  def _validate_before(cls, data: Any) -> Any:
+    if isinstance(data, dict):
+      token_kind = data.get("token_kind", "access_token")
+      audience = data.get("audience")
+      if token_kind == "id_token" and not audience:
+        raise ValueError(
+            "service_account.audience is required when"
+            " service_account.token_kind='id_token'"
+        )
+    return data
 
 
 class AuthCredentialTypes(str, Enum):
