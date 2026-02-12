@@ -69,6 +69,7 @@ class SessionContext:
     self._sse_read_timeout = sse_read_timeout
     self._is_stdio = is_stdio
     self._session: Optional[ClientSession] = None
+    self._mcp_session_id: Optional[str] = None
     self._ready_event = asyncio.Event()
     self._close_event = asyncio.Event()
     self._task: Optional[asyncio.Task] = None
@@ -78,6 +79,11 @@ class SessionContext:
   def session(self) -> Optional[ClientSession]:
     """Get the managed ClientSession, if available."""
     return self._session
+
+  @property
+  def mcp_session_id(self) -> Optional[str]:
+    """Get the MCP session ID returned by the server during initialization."""
+    return self._mcp_session_id
 
   async def start(self) -> ClientSession:
     """Start the runner and wait for the session to be ready.
@@ -178,8 +184,21 @@ class SessionContext:
                   else None,
               )
           )
-        await asyncio.wait_for(session.initialize(), timeout=self._timeout)
+        
+        # Initialize the session and capture the response
+        init_result = await asyncio.wait_for(
+            session.initialize(), timeout=self._timeout
+        )
         logger.debug('Session has been successfully initialized')
+        
+        # Extract mcp-session-id from initialization result if present
+        # The MCP protocol returns this in the InitializeResult's meta field
+        if hasattr(init_result, '_meta') and init_result._meta:
+          self._mcp_session_id = init_result._meta.get('mcp-session-id')
+          if self._mcp_session_id:
+            logger.debug(
+                'Captured mcp-session-id from server: %s', self._mcp_session_id
+            )
 
         self._session = session
         self._ready_event.set()

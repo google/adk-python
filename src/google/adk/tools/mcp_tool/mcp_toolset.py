@@ -394,6 +394,23 @@ class McpToolset(BaseToolset):
       # Log the error but don't re-raise to avoid blocking shutdown
       print(f"Warning: Error during McpToolset cleanup: {e}", file=self._errlog)
 
+  def get_session_info(self) -> dict[str, Any]:
+    """Returns information about the current MCP session state.
+    
+    This is useful for debugging and understanding session reuse.
+    
+    Returns:
+        Dictionary with session information including active session keys
+        and mcp-session-id values.
+    """
+    session_info = {}
+    for key, (_, _, _, mcp_id) in self._mcp_session_manager._sessions.items():
+      session_info[key] = {
+          'mcp_session_id': mcp_id,
+          'active': True
+      }
+    return session_info
+
   @override
   def get_auth_config(self) -> Optional[AuthConfig]:
     """Returns the auth config for this toolset.
