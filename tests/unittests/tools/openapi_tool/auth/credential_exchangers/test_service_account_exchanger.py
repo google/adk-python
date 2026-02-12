@@ -218,3 +218,128 @@ def test_exchange_credential_exchange_failure(
     service_account_exchanger.exchange_credential(auth_scheme, auth_credential)
   assert "Failed to exchange service account token" in str(exc_info.value)
   mock_from_service_account_info.assert_called_once()
+
+
+def test_exchange_id_token_with_default_credential(
+    service_account_exchanger, auth_scheme, monkeypatch
+):
+  """Test fetching an ID token using application default credentials."""
+  monkeypatch.setattr(
+      "google.adk.tools.openapi_tool.auth.credential_exchangers."
+      "service_account_exchanger.google_id_token.fetch_id_token",
+      MagicMock(return_value="mock_id_token"),
+  )
+
+  auth_credential = AuthCredential(
+      auth_type=AuthCredentialTypes.SERVICE_ACCOUNT,
+      service_account=ServiceAccount(
+          use_default_credential=True,
+          use_id_token=True,
+          audience="https://my-service-xyz.run.app",
+      ),
+  )
+
+  result = service_account_exchanger.exchange_credential(
+      auth_scheme, auth_credential
+  )
+
+  assert result.auth_type == AuthCredentialTypes.HTTP
+  assert result.http.scheme == "bearer"
+  assert result.http.credentials.token == "mock_id_token"
+
+
+def test_exchange_id_token_with_explicit_service_account(
+    service_account_exchanger, auth_scheme, monkeypatch
+):
+  """Test fetching an ID token using explicit service account credentials."""
+  mock_id_creds = MagicMock()
+  mock_id_creds.token = "mock_sa_id_token"
+  mock_id_creds.refresh = MagicMock()
+
+  monkeypatch.setattr(
+      "google.adk.tools.openapi_tool.auth.credential_exchangers."
+      "service_account_exchanger.service_account."
+      "IDTokenCredentials.from_service_account_info",
+      MagicMock(return_value=mock_id_creds),
+  )
+
+  auth_credential = AuthCredential(
+      auth_type=AuthCredentialTypes.SERVICE_ACCOUNT,
+      service_account=ServiceAccount(
+          service_account_credential=ServiceAccountCredential(
+              type_="service_account",
+              project_id="your_project_id",
+              private_key_id="your_private_key_id",
+              private_key="-----BEGIN PRIVATE KEY-----...",
+              client_email="...@....iam.gserviceaccount.com",
+              client_id="your_client_id",
+              auth_uri="https://accounts.google.com/o/oauth2/auth",
+              token_uri="https://oauth2.googleapis.com/token",
+              auth_provider_x509_cert_url=(
+                  "https://www.googleapis.com/oauth2/v1/certs"
+              ),
+              client_x509_cert_url=(
+                  "https://www.googleapis.com/robot/v1/metadata/x509/..."
+              ),
+              universe_domain="googleapis.com",
+          ),
+          scopes=["https://www.googleapis.com/auth/cloud-platform"],
+          use_id_token=True,
+          audience="https://my-service-xyz.run.app",
+      ),
+  )
+
+  result = service_account_exchanger.exchange_credential(
+      auth_scheme, auth_credential
+  )
+
+  assert result.auth_type == AuthCredentialTypes.HTTP
+  assert result.http.scheme == "bearer"
+  assert result.http.credentials.token == "mock_sa_id_token"
+  mock_id_creds.refresh.assert_called_once()
+
+
+def test_exchange_id_token_missing_audience(
+    service_account_exchanger, auth_scheme
+):
+  """Test that missing audience raises an error when use_id_token is True."""
+  auth_credential = AuthCredential(
+      auth_type=AuthCredentialTypes.SERVICE_ACCOUNT,
+      service_account=ServiceAccount(
+          use_default_credential=True,
+          use_id_token=True,
+          # audience intentionally omitted
+      ),
+  )
+
+  with pytest.raises(AuthCredentialMissingError) as exc_info:
+    service_account_exchanger.exchange_credential(
+        auth_scheme, auth_credential
+    )
+  assert "audience" in str(exc_info.value).lower()
+
+
+def test_exchange_id_token_failure(
+    service_account_exchanger, auth_scheme, monkeypatch
+):
+  """Test error handling when ID token fetch fails."""
+  monkeypatch.setattr(
+      "google.adk.tools.openapi_tool.auth.credential_exchangers."
+      "service_account_exchanger.google_id_token.fetch_id_token",
+      MagicMock(side_effect=Exception("metadata server unavailable")),
+  )
+
+  auth_credential = AuthCredential(
+      auth_type=AuthCredentialTypes.SERVICE_ACCOUNT,
+      service_account=ServiceAccount(
+          use_default_credential=True,
+          use_id_token=True,
+          audience="https://my-service-xyz.run.app",
+      ),
+  )
+
+  with pytest.raises(AuthCredentialMissingError) as exc_info:
+    service_account_exchanger.exchange_credential(
+        auth_scheme, auth_credential
+    )
+  assert "Failed to fetch ID token" in str(exc_info.value)

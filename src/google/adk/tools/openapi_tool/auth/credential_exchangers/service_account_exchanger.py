@@ -20,6 +20,7 @@ from typing import Optional
 
 import google.auth
 from google.auth.transport.requests import Request
+from google.oauth2 import id_token as google_id_token
 from google.oauth2 import service_account
 import google.oauth2.credentials
 
@@ -51,12 +52,17 @@ class ServiceAccountCredentialExchanger(BaseAuthCredentialExchanger):
     to fetch an access token. Otherwise, the default service credential will be
     used for fetching an access token.
 
+    When ``use_id_token`` is set on the service account config, an OIDC ID
+    token is fetched instead.  This is needed for identity-aware services
+    like Cloud Run, Cloud Functions, or IAP-protected resources.
+
     Args:
         auth_scheme: The auth scheme.
         auth_credential: The auth credential.
 
     Returns:
-        An AuthCredential in HTTPBearer format, containing the access token.
+        An AuthCredential in HTTPBearer format, containing the access token
+        (or ID token when ``use_id_token`` is set).
     """
     if (
         auth_credential is None
@@ -73,6 +79,11 @@ class ServiceAccountCredentialExchanger(BaseAuthCredentialExchanger):
       )
 
     try:
+      # When use_id_token is set, fetch an OIDC ID token instead of an
+      # access token.  Cloud Run and similar services need this.
+      if auth_credential.service_account.use_id_token:
+        return self._fetch_id_token(auth_credential.service_account)
+
       if auth_credential.service_account.use_default_credential:
         credentials, project_id = google.auth.default(
             scopes=["https://www.googleapis.com/auth/cloud-platform"],
@@ -103,7 +114,44 @@ class ServiceAccountCredentialExchanger(BaseAuthCredentialExchanger):
       )
       return updated_credential
 
+    except AuthCredentialMissingError:
+      raise
     except Exception as e:
       raise AuthCredentialMissingError(
           f"Failed to exchange service account token: {e}"
+      ) from e
+
+  def _fetch_id_token(self, sa_config) -> AuthCredential:
+    """Fetches an OIDC ID token for identity-aware services."""
+    audience = sa_config.audience
+    if not audience:
+      raise AuthCredentialMissingError(
+          "The `audience` field is required on ServiceAccount when"
+          " `use_id_token=True`. Set it to the URL of the target service"
+          " (e.g. 'https://my-service-xyz.run.app')."
+      )
+
+    try:
+      if sa_config.use_default_credential:
+        token = google_id_token.fetch_id_token(Request(), audience)
+      else:
+        id_creds = (
+            service_account.IDTokenCredentials.from_service_account_info(
+                sa_config.service_account_credential.model_dump(),
+                target_audience=audience,
+            )
+        )
+        id_creds.refresh(Request())
+        token = id_creds.token
+
+      return AuthCredential(
+          auth_type=AuthCredentialTypes.HTTP,
+          http=HttpAuth(
+              scheme="bearer",
+              credentials=HttpCredentials(token=token),
+          ),
+      )
+    except Exception as e:
+      raise AuthCredentialMissingError(
+          f"Failed to fetch ID token for audience '{audience}': {e}"
       ) from e

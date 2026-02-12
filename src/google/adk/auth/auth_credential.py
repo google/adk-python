@@ -147,8 +147,13 @@ class ServiceAccount(BaseModelWithConfig):
   """Represents Google Service Account configuration."""
 
   service_account_credential: Optional[ServiceAccountCredential] = None
-  scopes: List[str]
+  scopes: List[str] = []
   use_default_credential: Optional[bool] = False
+  # Set use_id_token=True and provide audience to fetch an OIDC ID token
+  # instead of an access token.  Required for identity-aware services like
+  # Cloud Run, Cloud Functions, or IAP-protected resources.
+  use_id_token: Optional[bool] = False
+  audience: Optional[str] = None
 
 
 class AuthCredentialTypes(str, Enum):
