@@ -573,18 +573,15 @@ def _get_current_turn_contents(
 
 
 def _is_direct_transfer(event : Event) -> bool:
-  "Weather the event is direct transfer event"
+  "Check whether the event is a direct transfer event."
+  
   return bool(
-    event.actions.transfer_to_agent 
+    event.actions.transfer_to_agent
     or (
-      event.content.parts 
-      or (
-          event.content
-          and event.content.parts
-          and any(
-              p.function_call and p.function_call.name == 'transfer_to_agent'
-              for p in event.content.parts
-          )
+      event.content.parts
+      and any(
+          p.function_call and p.function_call.name == 'transfer_to_agent'
+          for p in event.content.parts
       )
     )
   )
