@@ -1322,10 +1322,10 @@ class _LiveTestRunner(testing_utils.InMemoryRunner):
     return collected
 
 
-def test_input_streaming_tool_stream_is_none_before_model_calls():
-  """Test that input-streaming tools have stream=None until the model calls them."""
-  # Add a text response before the function call so we can observe stream
-  # state between registration and tool invocation.
+def test_input_streaming_tool_registered_lazily_with_stream():
+  """Test that input-streaming tools are registered lazily when called and receive a stream."""
+  # A text response before the function call lets us observe that the
+  # tool is NOT registered before the model calls it.
   text_response = LlmResponse(
       content=types.Content(
           role='model',
@@ -1362,7 +1362,7 @@ def test_input_streaming_tool_stream_is_none_before_model_calls():
 
   runner = _LiveTestRunner(root_agent=root_agent)
 
-  # Capture the invocation context to inspect stream state.
+  # Capture the invocation context to inspect registration state.
   captured_context = None
   original_method = runner.runner._new_invocation_context_for_live
 
@@ -1379,39 +1379,39 @@ def test_input_streaming_tool_stream_is_none_before_model_calls():
       blob=types.Blob(data=b'test_data', mime_type='audio/pcm')
   )
 
-  # Collect events and capture stream state before the tool is called.
+  # Collect events and check that the tool is NOT registered before
+  # the model calls it.
   collected = []
-  stream_states_before_call = []
+  not_registered_before_call = None
 
   async def consume(session: testing_utils.Session):
+    nonlocal not_registered_before_call
     async for response in runner.runner.run_live(
         session=session,
         live_request_queue=live_request_queue,
     ):
       collected.append(response)
-      # On a non-function-call event, the tool is registered but not
-      # yet invoked — capture the stream value at that point.
+      # On the first non-function-call event, verify the tool is not
+      # yet registered (lazy registration).
       active = (
-          captured_context.active_streaming_tools if captured_context else {}
+          captured_context.active_streaming_tools if captured_context else None
       )
       if (
-          not stream_states_before_call
+          not_registered_before_call is None
           and not response.get_function_calls()
-          and 'monitor_video_stream' in active
       ):
-        stream_states_before_call.append(active['monitor_video_stream'].stream)
+        not_registered_before_call = (
+            active is None or 'monitor_video_stream' not in active
+        )
       if len(collected) >= 4:
         return
 
   runner._run_with_loop(asyncio.wait_for(consume(runner.session), timeout=5.0))
 
-  # Before the model calls the tool, stream should be None.
+  # Tool should not be registered before the model calls it.
   assert (
-      stream_states_before_call
-  ), 'Stream state was never observed before the tool call'
-  assert (
-      stream_states_before_call[0] is None
-  ), 'Expected stream to be None before the model calls the tool'
+      not_registered_before_call is True
+  ), 'Expected tool to NOT be registered before the model calls it'
   # When the model calls the tool, input_stream should be provided.
   assert (
       stream_state_during_call is True
@@ -1458,17 +1458,20 @@ def test_stop_streaming_resets_stream_to_none():
 
   runner = _LiveTestRunner(root_agent=root_agent)
 
-  # Capture invocation context to verify stream is reset.
-  captured_context = None
-  original_method = runner.runner._new_invocation_context_for_live
+  # Capture the child invocation context (created by _create_invocation_context
+  # inside base_agent.run_live) to inspect active_streaming_tools.
+  # We cannot use the parent context from _new_invocation_context_for_live
+  # because model_copy creates a separate child object.
+  captured_child_context = None
+  original_create = root_agent._create_invocation_context
 
-  def capturing_method(*args, **kwargs):
-    nonlocal captured_context
-    ctx = original_method(*args, **kwargs)
-    captured_context = ctx
+  def capturing_create(*args, **kwargs):
+    nonlocal captured_child_context
+    ctx = original_create(*args, **kwargs)
+    captured_child_context = ctx
     return ctx
 
-  runner.runner._new_invocation_context_for_live = capturing_method
+  root_agent._create_invocation_context = capturing_create
 
   live_request_queue = LiveRequestQueue()
   live_request_queue.send_realtime(
@@ -1488,9 +1491,9 @@ def test_stop_streaming_resets_stream_to_none():
 
   # Verify that stop_streaming reset the stream to None.
   assert (
-      captured_context is not None
-  ), 'Expected invocation context to be captured'
-  active_tools = captured_context.active_streaming_tools or {}
+      captured_child_context is not None
+  ), 'Expected child invocation context to be captured'
+  active_tools = captured_child_context.active_streaming_tools or {}
   assert (
       'monitor_stock_price' in active_tools
   ), 'Expected monitor_stock_price in active_streaming_tools'
@@ -1499,11 +1502,18 @@ def test_stop_streaming_resets_stream_to_none():
   ), 'Expected stream to be reset to None after stop_streaming'
 
 
-def test_output_streaming_tool_registered_at_startup():
-  """Test that output-streaming tools (async generators without LiveRequestQueue) are registered at startup."""
-  response1 = LlmResponse(turn_complete=True)
+def test_output_streaming_tool_registered_lazily_without_stream():
+  """Test that output-streaming tools are registered lazily when called, with stream=None."""
+  function_call = types.Part.from_function_call(
+      name='monitor_stock_price', args={'stock_symbol': 'GOOG'}
+  )
+  response1 = LlmResponse(
+      content=types.Content(role='model', parts=[function_call]),
+      turn_complete=False,
+  )
+  response2 = LlmResponse(turn_complete=True)
 
-  mock_model = testing_utils.MockModel.create([response1])
+  mock_model = testing_utils.MockModel.create([response1, response2])
 
   async def monitor_stock_price(stock_symbol: str):
     """Yield periodic price updates."""
@@ -1517,31 +1527,33 @@ def test_output_streaming_tool_registered_at_startup():
 
   runner = _LiveTestRunner(root_agent=root_agent)
 
-  # Capture invocation context to verify registration.
-  captured_context = None
-  original_method = runner.runner._new_invocation_context_for_live
+  # Capture the child invocation context (created by _create_invocation_context
+  # inside base_agent.run_live) to inspect active_streaming_tools.
+  captured_child_context = None
+  original_create = root_agent._create_invocation_context
 
-  def capturing_method(*args, **kwargs):
-    nonlocal captured_context
-    ctx = original_method(*args, **kwargs)
-    captured_context = ctx
+  def capturing_create(*args, **kwargs):
+    nonlocal captured_child_context
+    ctx = original_create(*args, **kwargs)
+    captured_child_context = ctx
     return ctx
 
-  runner.runner._new_invocation_context_for_live = capturing_method
+  root_agent._create_invocation_context = capturing_create
 
   live_request_queue = LiveRequestQueue()
   live_request_queue.send_realtime(
       blob=types.Blob(data=b'test', mime_type='audio/pcm')
   )
 
-  runner.run_live(live_request_queue, max_responses=1)
+  runner.run_live(live_request_queue, max_responses=3)
 
-  # Output-streaming tool should be registered with stream=None.
-  assert captured_context is not None
-  active_tools = captured_context.active_streaming_tools or {}
+  # After the model calls the tool, it should be registered with
+  # stream=None (output-streaming tools don't consume the live stream).
+  assert captured_child_context is not None
+  active_tools = captured_child_context.active_streaming_tools or {}
   assert (
       'monitor_stock_price' in active_tools
-  ), 'Expected output-streaming tool to be registered at startup'
+  ), 'Expected output-streaming tool to be registered when called'
   assert (
       active_tools['monitor_stock_price'].stream is None
   ), 'Expected stream to be None for output-streaming tool'

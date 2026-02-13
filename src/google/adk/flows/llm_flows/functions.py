@@ -825,11 +825,21 @@ async def _process_function_live_helper(
         run_tool_and_update_queue(tool, function_args, tool_context)
     )
 
-    # The tool is already registered in active_streaming_tools by
-    # runners.py at startup (all async-generator tools are registered
-    # there). Just attach the background task.
     async with streaming_lock:
-      invocation_context.active_streaming_tools[tool.name].task = task
+
+      if invocation_context.active_streaming_tools is None:
+        invocation_context.active_streaming_tools = {}
+      if tool.name in invocation_context.active_streaming_tools:
+        invocation_context.active_streaming_tools[tool.name].task = task
+      else:
+        # Register the streaming tool lazily when the model calls it.
+        # For input-streaming tools (those with `input_stream:
+        # LiveRequestQueue`), _call_live will set .stream to a new
+        # LiveRequestQueue so _send_to_model starts duplicating data.
+        invocation_context.active_streaming_tools[tool.name] = (
+            ActiveStreamingTool(task=task)
+        )
+        logger.debug('Lazily registered streaming tool: %s', tool.name)
 
     # Immediately return a pending response.
     # This is required by current live model.

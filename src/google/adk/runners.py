@@ -32,7 +32,6 @@ from google.adk.apps.compaction import _run_compaction_for_sliding_window
 from google.adk.artifacts import artifact_util
 from google.genai import types
 
-from .agents.active_streaming_tool import ActiveStreamingTool
 from .agents.base_agent import BaseAgent
 from .agents.base_agent import BaseAgentState
 from .agents.context_cache_config import ContextCacheConfig
@@ -1011,42 +1010,6 @@ class Runner:
 
     root_agent = self.agent
     invocation_context.agent = self._find_agent_to_run(session, root_agent)
-
-    # Pre-processing for live streaming tools
-    # Inspect the tool's parameters to find if it uses LiveRequestQueue
-    invocation_context.active_streaming_tools = {}
-    # For shell agents, there is no canonical_tools method so we should skip.
-    if hasattr(invocation_context.agent, 'canonical_tools'):
-      import inspect
-
-      # Use canonical_tools to get properly wrapped BaseTool instances
-      canonical_tools = await invocation_context.agent.canonical_tools(
-          invocation_context
-      )
-      # Register all async-generator tools as streaming tools.
-      # A streaming tool is any tool whose underlying function is an
-      # async generator (i.e. uses `yield`). There are two sub-types:
-      #   1. Input-streaming tools: accept a `input_stream:
-      #      LiveRequestQueue` parameter to consume the live audio/video
-      #      stream. The stream is created lazily in `_call_live` when
-      #      the model actually calls the tool.
-      #   2. Output-streaming tools: async generators that yield results
-      #      over time but don't consume the live stream. They are run
-      #      as background tasks when called.
-      # Both types are registered here with `stream=None`. The
-      # distinction between them is made at call time.
-      for tool in canonical_tools:
-        callable_to_inspect = tool.func if hasattr(tool, 'func') else tool
-        if not callable(callable_to_inspect):
-          continue
-        if inspect.isasyncgenfunction(callable_to_inspect):
-          if not invocation_context.active_streaming_tools:
-            invocation_context.active_streaming_tools = {}
-          logger.debug('Register streaming tool: %s', tool.name)
-          active_streaming_tool = ActiveStreamingTool()
-          invocation_context.active_streaming_tools[tool.name] = (
-              active_streaming_tool
-          )
 
     async def execute(ctx: InvocationContext) -> AsyncGenerator[Event]:
       async with Aclosing(ctx.agent.run_live(ctx)) as agen:
