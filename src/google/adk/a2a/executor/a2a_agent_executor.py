@@ -175,7 +175,7 @@ class A2aAgentExecutor(AgentExecutor):
                   message=Message(
                       message_id=str(uuid.uuid4()),
                       role=Role.agent,
-                      parts=[TextPart(text='Task was cancelled')],
+                      parts=[TextPart(text='Task was canceled')],
                   ),
               ),
               context_id=context.context_id,
