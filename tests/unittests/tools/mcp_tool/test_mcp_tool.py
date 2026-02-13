@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import sys
+import inspect
 from unittest.mock import AsyncMock
 from unittest.mock import Mock
 from unittest.mock import patch
@@ -23,38 +23,17 @@ from google.adk.auth.auth_credential import HttpAuth
 from google.adk.auth.auth_credential import HttpCredentials
 from google.adk.auth.auth_credential import OAuth2Auth
 from google.adk.auth.auth_credential import ServiceAccount
+from google.adk.features import FeatureName
+from google.adk.features._feature_registry import temporary_feature_override
+from google.adk.tools.mcp_tool import mcp_tool
+from google.adk.tools.mcp_tool.mcp_session_manager import MCPSessionManager
+from google.adk.tools.mcp_tool.mcp_tool import MCPTool
+from google.adk.tools.tool_context import ToolContext
+from google.genai.types import FunctionDeclaration
+from google.genai.types import Type
+from mcp.types import CallToolResult
+from mcp.types import TextContent
 import pytest
-
-# Skip all tests in this module if Python version is less than 3.10
-pytestmark = pytest.mark.skipif(
-    sys.version_info < (3, 10), reason="MCP tool requires Python 3.10+"
-)
-
-# Import dependencies with version checking
-try:
-  from google.adk.tools.mcp_tool.mcp_session_manager import MCPSessionManager
-  from google.adk.tools.mcp_tool.mcp_tool import MCPTool
-  from google.adk.tools.tool_context import ToolContext
-  from google.genai.types import FunctionDeclaration
-  from google.genai.types import Type
-  from mcp.types import CallToolResult
-  from mcp.types import TextContent
-except ImportError as e:
-  if sys.version_info < (3, 10):
-    # Create dummy classes to prevent NameError during test collection
-    # Tests will be skipped anyway due to pytestmark
-    class DummyClass:
-      pass
-
-    MCPSessionManager = DummyClass
-    MCPTool = DummyClass
-    ToolContext = DummyClass
-    FunctionDeclaration = DummyClass
-    Type = DummyClass
-    CallToolResult = DummyClass
-    TextContent = DummyClass
-  else:
-    raise e
 
 
 # Mock MCP Tool from mcp.types
@@ -154,17 +133,16 @@ class TestMCPTool:
     assert declaration.description == "Test tool description"
     assert declaration.parameters is not None
 
-  def test_get_declaration_with_json_schema_for_func_decl_enabled(
-      self, monkeypatch
-  ):
+  def test_get_declaration_with_json_schema_for_func_decl_enabled(self):
     """Test function declaration generation with json schema for func decl enabled."""
     tool = MCPTool(
         mcp_tool=self.mock_mcp_tool,
         mcp_session_manager=self.mock_session_manager,
     )
 
-    with monkeypatch.context() as m:
-      m.setenv("ADK_ENABLE_JSON_SCHEMA_FOR_FUNC_DECL", "true")
+    with temporary_feature_override(
+        FeatureName.JSON_SCHEMA_FOR_FUNC_DECL, True
+    ):
       declaration = tool._get_declaration()
 
     assert isinstance(declaration, FunctionDeclaration)
@@ -176,7 +154,7 @@ class TestMCPTool:
     assert declaration.response_json_schema is None
 
   def test_get_declaration_with_output_schema_and_json_schema_for_func_decl_enabled(
-      self, monkeypatch
+      self,
   ):
     """Test function declaration generation with an output schema and json schema for func decl enabled."""
     output_schema = {
@@ -194,8 +172,9 @@ class TestMCPTool:
         mcp_session_manager=self.mock_session_manager,
     )
 
-    with monkeypatch.context() as m:
-      m.setenv("ADK_ENABLE_JSON_SCHEMA_FOR_FUNC_DECL", "true")
+    with temporary_feature_override(
+        FeatureName.JSON_SCHEMA_FOR_FUNC_DECL, True
+    ):
       declaration = tool._get_declaration()
 
     assert isinstance(declaration, FunctionDeclaration)
@@ -203,7 +182,7 @@ class TestMCPTool:
     assert declaration.response_json_schema == output_schema
 
   def test_get_declaration_with_empty_output_schema_and_json_schema_for_func_decl_enabled(
-      self, monkeypatch
+      self,
   ):
     """Test function declaration with an empty output schema and json schema for func decl enabled."""
     tool = MCPTool(
@@ -211,8 +190,9 @@ class TestMCPTool:
         mcp_session_manager=self.mock_session_manager,
     )
 
-    with monkeypatch.context() as m:
-      m.setenv("ADK_ENABLE_JSON_SCHEMA_FOR_FUNC_DECL", "true")
+    with temporary_feature_override(
+        FeatureName.JSON_SCHEMA_FOR_FUNC_DECL, True
+    ):
       declaration = tool._get_declaration()
 
     assert declaration.response is None
@@ -246,7 +226,7 @@ class TestMCPTool:
     )
     # Fix: call_tool uses 'arguments' parameter, not positional args
     self.mock_session.call_tool.assert_called_once_with(
-        "test_tool", arguments=args
+        "test_tool", arguments=args, progress_callback=None, meta=None
     )
 
   @pytest.mark.asyncio
@@ -282,6 +262,55 @@ class TestMCPTool:
     call_args = self.mock_session_manager.create_session.call_args
     headers = call_args[1]["headers"]
     assert headers == {"Authorization": "Bearer test_access_token"}
+
+  @patch.object(mcp_tool, "propagate", autospec=True)
+  @pytest.mark.asyncio
+  async def test_run_async_impl_with_trace_context(self, mock_propagate):
+    """Test running tool with trace context injection."""
+    mock_propagator = Mock()
+
+    def inject_context(carrier, context=None) -> None:
+      carrier["traceparent"] = (
+          "00-1234567890abcdef1234567890abcdef-1234567890abcdef-01"
+      )
+      carrier["tracestate"] = "foo=bar"
+      carrier["baggage"] = "baz=qux"
+
+    mock_propagator.inject.side_effect = inject_context
+    mock_propagate.get_global_textmap.return_value = mock_propagator
+
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+    )
+
+    mcp_response = CallToolResult(
+        content=[TextContent(type="text", text="success")]
+    )
+    self.mock_session.call_tool = AsyncMock(return_value=mcp_response)
+
+    tool_context = Mock(spec=ToolContext)
+    args = {"param1": "test_value"}
+
+    await tool._run_async_impl(
+        args=args, tool_context=tool_context, credential=None
+    )
+
+    self.mock_session_manager.create_session.assert_called_once_with(
+        headers=None
+    )
+    self.mock_session.call_tool.assert_called_once_with(
+        "test_tool",
+        arguments=args,
+        progress_callback=None,
+        meta={
+            "traceparent": (
+                "00-1234567890abcdef1234567890abcdef-1234567890abcdef-01"
+            ),
+            "tracestate": "foo=bar",
+            "baggage": "baz=qux",
+        },
+    )
 
   @pytest.mark.asyncio
   async def test_get_headers_oauth2(self):
@@ -692,6 +721,50 @@ class TestMCPTool:
       )
 
   @pytest.mark.asyncio
+  async def test_run_async_require_confirmation_callable_with_arg_filtering(
+      self,
+  ):
+    """Test require_confirmation=callable with argument filtering."""
+
+    async def _require_confirmation_func(
+        param1: str, tool_context: ToolContext
+    ):
+      return True
+
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+        require_confirmation=_require_confirmation_func,
+    )
+    tool_context = Mock(spec=ToolContext)
+    tool_context.tool_confirmation = None
+    tool_context.request_confirmation = Mock()
+    args = {"param1": "test_value", "extra_arg": 123}
+
+    with patch.object(
+        tool, "_invoke_callable", new_callable=AsyncMock
+    ) as mock_invoke_callable:
+      mock_invoke_callable.return_value = (
+          True  # Mock the return of require_confirmation
+      )
+
+      result = await tool.run_async(args=args, tool_context=tool_context)
+      expected_args_to_call = {
+          "param1": "test_value",
+          "tool_context": tool_context,
+      }
+      mock_invoke_callable.assert_called_once_with(
+          _require_confirmation_func, expected_args_to_call
+      )
+
+      assert result == {
+          "error": (
+              "This tool call requires confirmation, please approve or reject."
+          )
+      }
+      tool_context.request_confirmation.assert_called_once()
+
+  @pytest.mark.asyncio
   async def test_run_async_require_confirmation_callable_true_no_confirmation(
       self,
   ):
@@ -755,7 +828,7 @@ class TestMCPTool:
         headers=expected_headers
     )
     self.mock_session.call_tool.assert_called_once_with(
-        "test_tool", arguments=args
+        "test_tool", arguments=args, progress_callback=None, meta=None
     )
 
   @pytest.mark.asyncio
@@ -798,5 +871,102 @@ class TestMCPTool:
         "X-Tenant-ID": "test-tenant",
     }
     self.mock_session.call_tool.assert_called_once_with(
-        "test_tool", arguments=args
+        "test_tool", arguments=args, progress_callback=None, meta=None
     )
+
+  def test_init_with_progress_callback(self):
+    """Test initialization with progress_callback."""
+
+    async def my_progress_callback(
+        progress: float, total: float | None, message: str | None
+    ) -> None:
+      pass
+
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+        progress_callback=my_progress_callback,
+    )
+
+    assert tool._progress_callback == my_progress_callback
+
+  @pytest.mark.asyncio
+  async def test_run_async_impl_with_progress_callback(self):
+    """Test running tool with progress_callback."""
+    progress_updates = []
+
+    async def my_progress_callback(
+        progress: float, total: float | None, message: str | None
+    ) -> None:
+      progress_updates.append((progress, total, message))
+
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+        progress_callback=my_progress_callback,
+    )
+
+    # Mock the session response
+    mcp_response = CallToolResult(
+        content=[TextContent(type="text", text="success")]
+    )
+    self.mock_session.call_tool = AsyncMock(return_value=mcp_response)
+
+    tool_context = Mock(spec=ToolContext)
+    args = {"param1": "test_value"}
+
+    result = await tool._run_async_impl(
+        args=args, tool_context=tool_context, credential=None
+    )
+
+    assert result == mcp_response.model_dump(exclude_none=True, mode="json")
+    self.mock_session_manager.create_session.assert_called_once_with(
+        headers=None
+    )
+    # Verify progress_callback was passed to call_tool
+    self.mock_session.call_tool.assert_called_once_with(
+        "test_tool",
+        arguments=args,
+        progress_callback=my_progress_callback,
+        meta=None,
+    )
+
+  @pytest.mark.asyncio
+  async def test_run_async_impl_with_progress_callback_factory(self):
+    """Test running tool with progress_callback factory that receives context."""
+    factory_calls = []
+
+    def my_callback_factory(tool_name: str, *, callback_context=None, **kwargs):
+      factory_calls.append((tool_name, callback_context))
+
+      async def callback(
+          progress: float, total: float | None, message: str | None
+      ) -> None:
+        pass
+
+      return callback
+
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+        progress_callback=my_callback_factory,
+    )
+
+    # Mock the session response
+    mcp_response = CallToolResult(
+        content=[TextContent(type="text", text="success")]
+    )
+    self.mock_session.call_tool = AsyncMock(return_value=mcp_response)
+
+    tool_context = Mock(spec=ToolContext)
+    args = {"param1": "test_value"}
+
+    await tool._run_async_impl(
+        args=args, tool_context=tool_context, credential=None
+    )
+
+    # Verify factory was called with tool name and tool_context as callback_context
+    assert len(factory_calls) == 1
+    assert factory_calls[0][0] == "test_tool"
+    # callback_context is the tool_context itself (ToolContext extends CallbackContext)
+    assert factory_calls[0][1] is tool_context

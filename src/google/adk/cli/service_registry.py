@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -250,9 +250,16 @@ def _register_builtin_services(registry: ServiceRegistry) -> None:
       return memory_session_factory("memory://", **kwargs)
     elif db_path.startswith("/"):
       db_path = db_path[1:]
-    kwargs_copy = kwargs.copy()
-    kwargs_copy.pop("agents_dir", None)
-    return SqliteSessionService(db_path=db_path, **kwargs_copy)
+
+    # SqliteSessionService only accepts db_path, warn if extra kwargs provided
+    ignored_kwargs = {k: v for k, v in kwargs.items() if k != "agents_dir"}
+    if ignored_kwargs:
+      logger.warning(
+          "SqliteSessionService does not support additional kwargs. "
+          "The following parameters will be ignored: %s",
+          list(ignored_kwargs.keys()),
+      )
+    return SqliteSessionService(db_path=db_path)
 
   registry.register_session_service("memory", memory_session_factory)
   registry.register_session_service("agentengine", agentengine_session_factory)
@@ -271,18 +278,14 @@ def _register_builtin_services(registry: ServiceRegistry) -> None:
 
     kwargs_copy = kwargs.copy()
     kwargs_copy.pop("agents_dir", None)
+    kwargs_copy.pop("per_agent", None)
     parsed_uri = urlparse(uri)
     bucket_name = parsed_uri.netloc
     return GcsArtifactService(bucket_name=bucket_name, **kwargs_copy)
 
-  def file_artifact_factory(uri: str, **kwargs):
+  def file_artifact_factory(uri: str, **_):
     from ..artifacts.file_artifact_service import FileArtifactService
 
-    per_agent = kwargs.get("per_agent", False)
-    if per_agent:
-      raise ValueError(
-          "file:// artifact URIs are not supported in multi-agent mode."
-      )
     parsed_uri = urlparse(uri)
     if parsed_uri.netloc not in ("", "localhost"):
       raise ValueError(

@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -19,6 +19,7 @@ from unittest import mock
 from anthropic import types as anthropic_types
 from google.adk import version as adk_version
 from google.adk.models import anthropic_llm
+from google.adk.models.anthropic_llm import AnthropicLlm
 from google.adk.models.anthropic_llm import Claude
 from google.adk.models.anthropic_llm import content_to_message_param
 from google.adk.models.anthropic_llm import function_declaration_to_tool_param
@@ -357,6 +358,62 @@ async def test_generate_content_async(
       assert len(responses) == 1
       assert isinstance(responses[0], LlmResponse)
       assert responses[0].content.parts[0].text == "Hello, how can I help you?"
+
+
+@pytest.mark.asyncio
+async def test_anthropic_llm_generate_content_async(
+    llm_request, generate_content_response, generate_llm_response
+):
+  anthropic_llm_instance = AnthropicLlm(model="claude-sonnet-4-20250514")
+  with mock.patch.object(
+      anthropic_llm_instance, "_anthropic_client"
+  ) as mock_client:
+    with mock.patch.object(
+        anthropic_llm,
+        "message_to_generate_content_response",
+        return_value=generate_llm_response,
+    ):
+      # Create a mock coroutine that returns the generate_content_response.
+      async def mock_coro():
+        return generate_content_response
+
+      # Assign the coroutine to the mocked method
+      mock_client.messages.create.return_value = mock_coro()
+
+      responses = [
+          resp
+          async for resp in anthropic_llm_instance.generate_content_async(
+              llm_request, stream=False
+          )
+      ]
+      assert len(responses) == 1
+      assert isinstance(responses[0], LlmResponse)
+      assert responses[0].content.parts[0].text == "Hello, how can I help you?"
+
+
+def test_claude_vertex_client_uses_tracking_headers():
+  """Tests that Claude vertex client is called with tracking headers."""
+  with mock.patch.object(
+      anthropic_llm, "AsyncAnthropicVertex", autospec=True
+  ) as mock_anthropic_vertex:
+    with mock.patch.dict(
+        os.environ,
+        {
+            "GOOGLE_CLOUD_PROJECT": "test-project",
+            "GOOGLE_CLOUD_LOCATION": "us-central1",
+        },
+    ):
+      instance = Claude(model="claude-3-5-sonnet-v2@20241022")
+      _ = instance._anthropic_client
+      mock_anthropic_vertex.assert_called_once()
+      _, kwargs = mock_anthropic_vertex.call_args
+      assert "default_headers" in kwargs
+      assert "x-goog-api-client" in kwargs["default_headers"]
+      assert "user-agent" in kwargs["default_headers"]
+      assert (
+          f"google-adk/{adk_version.__version__}"
+          in kwargs["default_headers"]["user-agent"]
+      )
 
 
 @pytest.mark.asyncio

@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -25,11 +25,11 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
 
     steps:
     - name: Checkout code
-      uses: actions/checkout@v5
+      uses: actions/checkout@v6
 
     - name: Set up Python ${{ matrix.python-version }}
       uses: actions/setup-python@v6
@@ -37,7 +37,7 @@ jobs:
         python-version: ${{ matrix.python-version }}
 
     - name: Install the latest version of uv
-      uses: astral-sh/setup-uv@v6
+      uses: astral-sh/setup-uv@v7
 
     - name: Install dependencies
       run: |
@@ -48,14 +48,6 @@ jobs:
     - name: Run unit tests with pytest
       run: |
         source .venv/bin/activate
-        if [[ "${{ matrix.python-version }}" == "3.9" ]]; then
-          pytest tests/unittests \
-            --ignore=tests/unittests/a2a \
-            --ignore=tests/unittests/tools/mcp_tool \
-            --ignore=tests/unittests/artifacts/test_artifact_service.py \
-            --ignore=tests/unittests/tools/google_api_tool/test_googleapi_to_openapi_converter.py
-        else
-          pytest tests/unittests \
-            --ignore=tests/unittests/artifacts/test_artifact_service.py \
-            --ignore=tests/unittests/tools/google_api_tool/test_googleapi_to_openapi_converter.py
-        fi
+        pytest tests/unittests \
+          --ignore=tests/unittests/artifacts/test_artifact_service.py \
+          --ignore=tests/unittests/tools/google_api_tool/test_googleapi_to_openapi_converter.py

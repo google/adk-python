@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -113,6 +113,12 @@ class CacheMetadata(BaseModel):
           f"fingerprint={self.fingerprint[:8]}..."
       )
     cache_id = self.cache_name.split("/")[-1]
+    if self.expire_time is None:
+      return (
+          f"Cache {cache_id}: used {self.invocations_used} invocations, "
+          f"cached {self.contents_count} contents, "
+          "expires unknown"
+      )
     time_until_expiry_minutes = (self.expire_time - time.time()) / 60
     return (
         f"Cache {cache_id}: used {self.invocations_used} invocations, "

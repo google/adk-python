@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -293,19 +293,23 @@ async def test_run_cli_save_session(
 
 def test_create_artifact_service_defaults_to_file(tmp_path: Path) -> None:
   """Service factory should default to FileArtifactService when URI is unset."""
-  service = create_artifact_service_from_options(base_dir=tmp_path)
+  service = create_artifact_service_from_options(
+      base_dir=tmp_path,
+      use_local_storage=True,
+  )
   assert isinstance(service, FileArtifactService)
   expected_root = Path(tmp_path) / ".adk" / "artifacts"
   assert service.root_dir == expected_root
   assert expected_root.exists()
 
 
-def test_create_artifact_service_per_agent_uses_shared_root(
+def test_create_artifact_service_uses_shared_root(
     tmp_path: Path,
 ) -> None:
-  """Multi-agent mode should still use a single file artifact service."""
+  """Artifact service should use a single file artifact service."""
   service = create_artifact_service_from_options(
-      base_dir=tmp_path, per_agent=True
+      base_dir=tmp_path,
+      use_local_storage=True,
   )
   assert isinstance(service, FileArtifactService)
   expected_root = Path(tmp_path) / ".adk" / "artifacts"
@@ -330,17 +334,6 @@ def test_create_artifact_service_accepts_file_uri(tmp_path: Path) -> None:
   assert isinstance(service, FileArtifactService)
   assert service.root_dir == custom_root
   assert custom_root.exists()
-
-
-def test_create_artifact_service_file_uri_rejects_per_agent(tmp_path: Path):
-  """file:// URIs are incompatible with per-agent mode."""
-  custom_root = tmp_path / "custom"
-  with pytest.raises(ValueError, match="multi-agent"):
-    create_artifact_service_from_options(
-        base_dir=tmp_path,
-        artifact_service_uri=custom_root.as_uri(),
-        per_agent=True,
-    )
 
 
 @pytest.mark.asyncio
