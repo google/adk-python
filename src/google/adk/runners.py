@@ -1023,38 +1023,30 @@ class Runner:
       canonical_tools = await invocation_context.agent.canonical_tools(
           invocation_context
       )
+      # Register all async-generator tools as streaming tools.
+      # A streaming tool is any tool whose underlying function is an
+      # async generator (i.e. uses `yield`). There are two sub-types:
+      #   1. Input-streaming tools: accept a `input_stream:
+      #      LiveRequestQueue` parameter to consume the live audio/video
+      #      stream. The stream is created lazily in `_call_live` when
+      #      the model actually calls the tool.
+      #   2. Output-streaming tools: async generators that yield results
+      #      over time but don't consume the live stream. They are run
+      #      as background tasks when called.
+      # Both types are registered here with `stream=None`. The
+      # distinction between them is made at call time.
       for tool in canonical_tools:
-        # We use `inspect.signature()` to examine the tool's underlying function (`tool.func`).
-        # This approach is deliberately chosen over `typing.get_type_hints()` for robustness.
-        #
-        # The Problem with `get_type_hints()`:
-        # `get_type_hints()` attempts to resolve forward-referenced (string-based) type
-        # annotations. This resolution can easily fail with a `NameError` (e.g., "Union not found")
-        # if the type isn't available in the scope where `get_type_hints()` is called.
-        # This is a common and brittle issue in framework code that inspects functions
-        # defined in separate user modules.
-        #
-        # Why `inspect.signature()` is Better Here:
-        # `inspect.signature()` does NOT resolve the annotations; it retrieves the raw
-        # annotation object as it was defined on the function. This allows us to
-        # perform a direct and reliable identity check (`param.annotation is LiveRequestQueue`)
-        # without risking a `NameError`.
         callable_to_inspect = tool.func if hasattr(tool, 'func') else tool
-        # Ensure the target is actually callable before inspecting to avoid errors.
         if not callable(callable_to_inspect):
           continue
-        for param in inspect.signature(callable_to_inspect).parameters.values():
-          if param.annotation is LiveRequestQueue:
-            if not invocation_context.active_streaming_tools:
-              invocation_context.active_streaming_tools = {}
-
-            logger.debug(
-                'Register streaming tool with input stream: %s', tool.name
-            )
-            active_streaming_tool = ActiveStreamingTool()
-            invocation_context.active_streaming_tools[tool.name] = (
-                active_streaming_tool
-            )
+        if inspect.isasyncgenfunction(callable_to_inspect):
+          if not invocation_context.active_streaming_tools:
+            invocation_context.active_streaming_tools = {}
+          logger.debug('Register streaming tool: %s', tool.name)
+          active_streaming_tool = ActiveStreamingTool()
+          invocation_context.active_streaming_tools[tool.name] = (
+              active_streaming_tool
+          )
 
     async def execute(ctx: InvocationContext) -> AsyncGenerator[Event]:
       async with Aclosing(ctx.agent.run_live(ctx)) as agen:

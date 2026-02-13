@@ -1497,3 +1497,51 @@ def test_stop_streaming_resets_stream_to_none():
   assert (
       active_tools['monitor_stock_price'].stream is None
   ), 'Expected stream to be reset to None after stop_streaming'
+
+
+def test_output_streaming_tool_registered_at_startup():
+  """Test that output-streaming tools (async generators without LiveRequestQueue) are registered at startup."""
+  response1 = LlmResponse(turn_complete=True)
+
+  mock_model = testing_utils.MockModel.create([response1])
+
+  async def monitor_stock_price(stock_symbol: str):
+    """Yield periodic price updates."""
+    yield f'price for {stock_symbol}'
+
+  root_agent = Agent(
+      name='root_agent',
+      model=mock_model,
+      tools=[monitor_stock_price],
+  )
+
+  runner = _LiveTestRunner(root_agent=root_agent)
+
+  # Capture invocation context to verify registration.
+  captured_context = None
+  original_method = runner.runner._new_invocation_context_for_live
+
+  def capturing_method(*args, **kwargs):
+    nonlocal captured_context
+    ctx = original_method(*args, **kwargs)
+    captured_context = ctx
+    return ctx
+
+  runner.runner._new_invocation_context_for_live = capturing_method
+
+  live_request_queue = LiveRequestQueue()
+  live_request_queue.send_realtime(
+      blob=types.Blob(data=b'test', mime_type='audio/pcm')
+  )
+
+  runner.run_live(live_request_queue, max_responses=1)
+
+  # Output-streaming tool should be registered with stream=None.
+  assert captured_context is not None
+  active_tools = captured_context.active_streaming_tools or {}
+  assert (
+      'monitor_stock_price' in active_tools
+  ), 'Expected output-streaming tool to be registered at startup'
+  assert (
+      active_tools['monitor_stock_price'].stream is None
+  ), 'Expected stream to be None for output-streaming tool'
