@@ -749,7 +749,14 @@ class BaseLlmFlow(ABC):
         and not llm_response.input_transcription
         and not llm_response.output_transcription
         and not llm_response.usage_metadata
+        and not llm_response.setup_complete
     ):
+      return
+
+    # Handle setup complete events
+    if llm_response.setup_complete:
+      model_response_event.setup_complete = llm_response.setup_complete
+      yield model_response_event
       return
 
     # Handle transcription events ONCE per llm_response, outside the event loop

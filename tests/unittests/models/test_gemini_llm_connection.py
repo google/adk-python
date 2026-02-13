@@ -252,6 +252,7 @@ async def test_receive_transcript_finished_on_interrupt(
 
   message1 = mock.Mock()
   message1.usage_metadata = None
+  message1.setup_complete = None
   message1.server_content = mock.Mock()
   message1.server_content.model_turn = None
   message1.server_content.interrupted = False
@@ -266,6 +267,7 @@ async def test_receive_transcript_finished_on_interrupt(
 
   message2 = mock.Mock()
   message2.usage_metadata = None
+  message2.setup_complete = None
   message2.server_content = mock.Mock()
   message2.server_content.model_turn = None
   message2.server_content.interrupted = False
@@ -280,6 +282,7 @@ async def test_receive_transcript_finished_on_interrupt(
 
   message3 = mock.Mock()
   message3.usage_metadata = None
+  message3.setup_complete = None
   message3.server_content = mock.Mock()
   message3.server_content.model_turn = None
   message3.server_content.interrupted = True
@@ -326,6 +329,7 @@ async def test_receive_transcript_finished_on_generation_complete(
 
   message1 = mock.Mock()
   message1.usage_metadata = None
+  message1.setup_complete = None
   message1.server_content = mock.Mock()
   message1.server_content.model_turn = None
   message1.server_content.interrupted = False
@@ -340,6 +344,7 @@ async def test_receive_transcript_finished_on_generation_complete(
 
   message2 = mock.Mock()
   message2.usage_metadata = None
+  message2.setup_complete = None
   message2.server_content = mock.Mock()
   message2.server_content.model_turn = None
   message2.server_content.interrupted = False
@@ -354,6 +359,7 @@ async def test_receive_transcript_finished_on_generation_complete(
 
   message3 = mock.Mock()
   message3.usage_metadata = None
+  message3.setup_complete = None
   message3.server_content = mock.Mock()
   message3.server_content.model_turn = None
   message3.server_content.interrupted = False
@@ -399,6 +405,7 @@ async def test_receive_transcript_finished_on_turn_complete(
 
   message1 = mock.Mock()
   message1.usage_metadata = None
+  message1.setup_complete = None
   message1.server_content = mock.Mock()
   message1.server_content.model_turn = None
   message1.server_content.interrupted = False
@@ -413,6 +420,7 @@ async def test_receive_transcript_finished_on_turn_complete(
 
   message2 = mock.Mock()
   message2.usage_metadata = None
+  message2.setup_complete = None
   message2.server_content = mock.Mock()
   message2.server_content.model_turn = None
   message2.server_content.interrupted = False
@@ -427,6 +435,7 @@ async def test_receive_transcript_finished_on_turn_complete(
 
   message3 = mock.Mock()
   message3.usage_metadata = None
+  message3.setup_complete = None
   message3.server_content = mock.Mock()
   message3.server_content.model_turn = None
   message3.server_content.interrupted = False
@@ -471,6 +480,7 @@ async def test_receive_handles_input_transcription_fragments(
   """Test receive handles input transcription fragments correctly."""
   message1 = mock.Mock()
   message1.usage_metadata = None
+  message1.setup_complete = None
   message1.server_content = mock.Mock()
   message1.server_content.model_turn = None
   message1.server_content.interrupted = False
@@ -485,6 +495,7 @@ async def test_receive_handles_input_transcription_fragments(
 
   message2 = mock.Mock()
   message2.usage_metadata = None
+  message2.setup_complete = None
   message2.server_content = mock.Mock()
   message2.server_content.model_turn = None
   message2.server_content.interrupted = False
@@ -499,6 +510,7 @@ async def test_receive_handles_input_transcription_fragments(
 
   message3 = mock.Mock()
   message3.usage_metadata = None
+  message3.setup_complete = None
   message3.server_content = mock.Mock()
   message3.server_content.model_turn = None
   message3.server_content.interrupted = False
@@ -540,6 +552,7 @@ async def test_receive_handles_output_transcription_fragments(
   """Test receive handles output transcription fragments correctly."""
   message1 = mock.Mock()
   message1.usage_metadata = None
+  message1.setup_complete = None
   message1.server_content = mock.Mock()
   message1.server_content.model_turn = None
   message1.server_content.interrupted = False
@@ -554,6 +567,7 @@ async def test_receive_handles_output_transcription_fragments(
 
   message2 = mock.Mock()
   message2.usage_metadata = None
+  message2.setup_complete = None
   message2.server_content = mock.Mock()
   message2.server_content.model_turn = None
   message2.server_content.interrupted = False
@@ -568,6 +582,7 @@ async def test_receive_handles_output_transcription_fragments(
 
   message3 = mock.Mock()
   message3.usage_metadata = None
+  message3.setup_complete = None
   message3.server_content = mock.Mock()
   message3.server_content.model_turn = None
   message3.server_content.interrupted = False
@@ -774,3 +789,27 @@ async def test_send_history_filters_various_audio_mime_types(
 
   # No content should be sent since the only part is audio
   mock_gemini_session.send.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_receive_setup_complete(gemini_connection, mock_gemini_session):
+  """Test receive handles setup_complete signal."""
+
+  # Create a mock message simulating BidiGenerateContentSetupComplete
+  message = mock.Mock()
+  message.setup_complete = True
+  message.usage_metadata = None
+  message.server_content = None
+  message.tool_call = None
+  message.session_resumption_update = None
+
+  async def mock_receive_generator():
+    yield message
+
+  receive_mock = mock.Mock(return_value=mock_receive_generator())
+  mock_gemini_session.receive = receive_mock
+
+  responses = [resp async for resp in gemini_connection.receive()]
+
+  assert len(responses) == 1
+  assert responses[0].setup_complete is True

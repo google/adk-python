@@ -171,6 +171,8 @@ class GeminiLlmConnection(BaseLlmConnection):
       # partial content and emit responses as needed.
       async for message in agen:
         logger.debug('Got LLM Live message: %s', message)
+        if message.setup_complete:
+          yield LlmResponse(setup_complete=True)
         if message.usage_metadata:
           # Tracks token usage data per model.
           yield LlmResponse(

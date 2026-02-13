@@ -46,6 +46,8 @@ class LlmResponse(BaseModel):
     output_transcription: Audio transcription of model output.
     avg_logprobs: Average log probability of the generated tokens.
     logprobs_result: Detailed log probabilities for chosen and top candidate tokens.
+    setup_complete: Indicates whether the initial model setup is complete.
+      Only used for Gemini Live streaming mode.
   """
 
   model_config = ConfigDict(
@@ -78,6 +80,12 @@ class LlmResponse(BaseModel):
   """Indicates whether the response from the model is complete.
 
   Only used for streaming mode.
+  """
+
+  setup_complete: Optional[bool] = None
+  """Indicates whether the initial model setup is complete.
+
+  Only used for Gemini Live streaming mode.
   """
 
   finish_reason: Optional[types.FinishReason] = None

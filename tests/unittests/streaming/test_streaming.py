@@ -54,6 +54,41 @@ def test_streaming():
   ), 'Expected at least one response, but got an empty list.'
 
 
+def test_live_streaming_setup_complete():
+  """Test live streaming with setup complete event."""
+  # Create LLM responses: setup complete followed by turn completion
+  response1 = LlmResponse(
+      setup_complete=True,
+  )
+  response2 = LlmResponse(
+      turn_complete=True,
+  )
+
+  mock_model = testing_utils.MockModel.create([response1, response2])
+
+  root_agent = Agent(
+      name='root_agent',
+      model=mock_model,
+      tools=[],
+  )
+
+  runner = testing_utils.InMemoryRunner(root_agent=root_agent)
+  live_request_queue = LiveRequestQueue()
+  res_events = runner.run_live(live_request_queue)
+
+  assert res_events is not None, 'Expected a list of events, got None.'
+  assert len(res_events) >= 1, 'Expected at least one event.'
+
+  # Check that we got a setup complete event
+  setup_complete_found = False
+  for event in res_events:
+    if event.setup_complete:
+      setup_complete_found = True
+      break
+
+  assert setup_complete_found, 'Expected a setup complete event.'
+
+
 def test_live_streaming_function_call_single():
   """Test live streaming with a single function call response."""
   # Create a function call response
