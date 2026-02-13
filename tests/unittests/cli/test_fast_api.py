@@ -290,6 +290,48 @@ def mock_artifact_service():
       })
       return version
 
+    def add_artifact(
+        self,
+        *,
+        app_name: str,
+        user_id: str,
+        session_id: str,
+        filename: str,
+        artifact: types.Part,
+        custom_metadata: Optional[dict[str, Any]] = None,
+        canonical_uri: Optional[str] = None,
+        mime_type: Optional[str] = None,
+    ) -> int:
+      """Synchronous helper for tests to add artifacts."""
+      key = _artifact_key(app_name, user_id, session_id, filename)
+      entries = artifacts.setdefault(key, [])
+      version = len(entries)
+      artifact_version = ArtifactVersion(
+          version=version,
+          canonical_uri=(
+              canonical_uri
+              or _canonical_uri(
+                  app_name, user_id, session_id, filename, version
+              )
+          ),
+          custom_metadata=custom_metadata or {},
+      )
+      if mime_type:
+        artifact_version.mime_type = mime_type
+      elif artifact.inline_data is not None:
+        artifact_version.mime_type = artifact.inline_data.mime_type
+      elif artifact.text is not None:
+        artifact_version.mime_type = "text/plain"
+      elif artifact.file_data is not None:
+        artifact_version.mime_type = artifact.file_data.mime_type
+
+      entries.append({
+          "version": version,
+          "artifact": artifact,
+          "metadata": artifact_version,
+      })
+      return version
+
     async def load_artifact(
         self, app_name, user_id, session_id, filename, version=None
     ):
@@ -321,6 +363,15 @@ def mock_artifact_service():
       if key not in artifacts:
         return []
       return [entry["version"] for entry in artifacts[key]]
+
+    async def list_artifact_versions(
+        self, app_name, user_id, session_id, filename
+    ):
+      """List all artifact versions with metadata."""
+      key = _artifact_key(app_name, user_id, session_id, filename)
+      if key not in artifacts:
+        return []
+      return [entry["metadata"] for entry in artifacts[key]]
 
     async def delete_artifact(self, app_name, user_id, session_id, filename):
       """Delete an artifact."""
@@ -963,6 +1014,44 @@ def test_agent_run_passes_state_delta(test_app, create_test_session):
   assert data[3]["actions"]["stateDelta"] == payload["state_delta"]
 
 
+def test_agent_run_passes_invocation_id(
+    test_app, create_test_session, monkeypatch
+):
+  """Test /run forwards invocation_id for resumable invocations."""
+  info = create_test_session
+  captured_invocation_id: dict[str, Optional[str]] = {"invocation_id": None}
+
+  async def run_async_capture(
+      self,
+      *,
+      user_id: str,
+      session_id: str,
+      invocation_id: Optional[str] = None,
+      new_message: Optional[types.Content] = None,
+      state_delta: Optional[dict[str, Any]] = None,
+      run_config: Optional[RunConfig] = None,
+  ):
+    del self, user_id, session_id, new_message, state_delta, run_config
+    captured_invocation_id["invocation_id"] = invocation_id
+    yield _event_1()
+
+  monkeypatch.setattr(Runner, "run_async", run_async_capture)
+
+  payload = {
+      "app_name": info["app_name"],
+      "user_id": info["user_id"],
+      "session_id": info["session_id"],
+      "new_message": {"role": "user", "parts": [{"text": "Resume run"}]},
+      "streaming": False,
+      "invocation_id": "resume-invocation-id",
+  }
+
+  response = test_app.post("/run", json=payload)
+
+  assert response.status_code == 200
+  assert captured_invocation_id["invocation_id"] == payload["invocation_id"]
+
+
 def test_agent_run_sse_splits_artifact_delta(
     test_app, create_test_session, monkeypatch
 ):
@@ -1153,6 +1242,69 @@ def test_save_artifact_returns_500_on_unexpected_error(
   response = test_app.post(url, json=payload)
   assert response.status_code == 500
   assert response.json()["detail"] == "unexpected failure"
+
+
+def test_get_artifact_version_metadata(
+    test_app, create_test_session, mock_artifact_service
+):
+  """Test retrieving metadata for a specific artifact version."""
+  info = create_test_session
+  mock_artifact_service.add_artifact(
+      app_name=info["app_name"],
+      user_id=info["user_id"],
+      session_id=info["session_id"],
+      filename="report.txt",
+      artifact=types.Part(text="hello"),
+      custom_metadata={"foo": "bar"},
+      mime_type="text/plain",
+  )
+
+  url = (
+      f"/apps/{info['app_name']}/users/{info['user_id']}/sessions/"
+      f"{info['session_id']}/artifacts/report.txt/versions/0/metadata"
+  )
+  response = test_app.get(url)
+
+  assert response.status_code == 200
+  data = response.json()
+  assert data["version"] == 0
+  assert data["customMetadata"] == {"foo": "bar"}
+  assert data["mimeType"] == "text/plain"
+
+
+def test_list_artifact_versions_metadata(
+    test_app, create_test_session, mock_artifact_service
+):
+  """Test listing metadata for all versions of an artifact."""
+  info = create_test_session
+  mock_artifact_service.add_artifact(
+      app_name=info["app_name"],
+      user_id=info["user_id"],
+      session_id=info["session_id"],
+      filename="report.txt",
+      artifact=types.Part(text="v0"),
+  )
+  mock_artifact_service.add_artifact(
+      app_name=info["app_name"],
+      user_id=info["user_id"],
+      session_id=info["session_id"],
+      filename="report.txt",
+      artifact=types.Part(text="v1"),
+      custom_metadata={"foo": "bar"},
+  )
+
+  url = (
+      f"/apps/{info['app_name']}/users/{info['user_id']}/sessions/"
+      f"{info['session_id']}/artifacts/report.txt/versions/metadata"
+  )
+  response = test_app.get(url)
+
+  assert response.status_code == 200
+  data = response.json()
+  assert isinstance(data, list)
+  assert len(data) == 2
+  assert data[1]["version"] == 1
+  assert data[1]["customMetadata"] == {"foo": "bar"}
 
 
 def test_get_eval_set_result_not_found(test_app):
@@ -1376,6 +1528,24 @@ def test_builder_save_rejects_traversal(builder_test_client, tmp_path):
   assert response.json() is False
   assert not (tmp_path / "escape.yaml").exists()
   assert not (tmp_path / "app" / "tmp" / "escape.yaml").exists()
+
+
+def test_health_endpoint(test_app):
+  """Test the health endpoint."""
+  response = test_app.get("/health")
+  assert response.status_code == 200
+  assert response.json() == {"status": "ok"}
+
+
+def test_version_endpoint(test_app):
+  """Test the version endpoint."""
+  response = test_app.get("/version")
+  assert response.status_code == 200
+  data = response.json()
+  assert "version" in data
+  assert "language" in data
+  assert data["language"] == "python"
+  assert "language_version" in data
 
 
 if __name__ == "__main__":

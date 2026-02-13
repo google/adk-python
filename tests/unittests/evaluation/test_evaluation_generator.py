@@ -353,8 +353,10 @@ class TestGenerateInferencesForSingleUserInvocation:
 
     events = [
         event
-        async for event in EvaluationGenerator._generate_inferences_for_single_user_invocation(
-            runner, "test_user", "test_session", user_content
+        async for event in (
+            EvaluationGenerator._generate_inferences_for_single_user_invocation(
+                runner, "test_user", "test_session", user_content
+            )
         )
     ]
 

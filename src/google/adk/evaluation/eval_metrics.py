@@ -189,7 +189,7 @@ class ToolTrajectoryCriterion(BaseCriterion):
       Actual tool calls: [T1, T1.1, T2, T2.1, T2.2, T3, T3.1]
 
       While the tool calls T1, T2 and T3 happened in the "Actual" and in
-      the same order as "Expected", but the the tool calls T4 is missing.
+      the same order as "Expected", but the tool calls T4 is missing.
     """
 
     ANY_ORDER = 2
@@ -215,7 +215,7 @@ class ToolTrajectoryCriterion(BaseCriterion):
       Actual tool calls: [T1, T1.1, T2, T2.1, T2.2, T3, T3.1]
 
       While the tool calls T1, T2 and T3 happened in the "Actual" and in
-      the same order as "Expected", but the the tool calls T4 is missing.
+      the same order as "Expected", but the tool calls T4 is missing.
     """
 
   match_type: MatchType = Field(
