@@ -170,7 +170,7 @@ class A2aAgentExecutor(AgentExecutor):
           TaskStatusUpdateEvent(
               task_id=context.task_id,
               status=TaskStatus(
-                  state=TaskState.failed,
+                  state=TaskState.canceled,
                   timestamp=datetime.now(timezone.utc).isoformat(),
                   message=Message(
                       message_id=str(uuid.uuid4()),
