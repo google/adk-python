@@ -20,6 +20,7 @@ from google.adk.evaluation.eval_metrics import EvalMetric
 from google.adk.evaluation.eval_metrics import PrebuiltMetrics
 from google.adk.evaluation.eval_metrics import ToolTrajectoryCriterion
 from google.adk.evaluation.evaluator import EvalStatus
+from google.adk.evaluation.trajectory_evaluator import ANY
 from google.adk.evaluation.trajectory_evaluator import TrajectoryEvaluator
 from google.genai import types as genai_types
 from pydantic import ValidationError
@@ -462,3 +463,258 @@ def test_evaluate_invocations_no_invocations(evaluator: TrajectoryEvaluator):
   assert result.overall_score is None
   assert result.overall_eval_status == EvalStatus.NOT_EVALUATED
   assert not result.per_invocation_results
+
+
+# --- Wildcard (ANY) argument matching tests ---
+
+
+def test_any_wildcard_matches_any_single_arg_value(
+    evaluator: TrajectoryEvaluator,
+):
+  """Tests that ANY as an arg value matches any actual value."""
+  actual = Invocation(
+      user_content=_USER_CONTENT,
+      intermediate_data=IntermediateData(
+          tool_uses=[
+              genai_types.FunctionCall(
+                  name="search", args={"query": "hello world"}
+              )
+          ]
+      ),
+  )
+  expected = Invocation(
+      user_content=_USER_CONTENT,
+      intermediate_data=IntermediateData(
+          tool_uses=[
+              genai_types.FunctionCall(name="search", args={"query": ANY})
+          ]
+      ),
+  )
+  result = evaluator.evaluate_invocations([actual], [expected])
+  assert result.overall_score == 1.0
+
+
+def test_any_wildcard_full_args_matches_any_args(
+    evaluator: TrajectoryEvaluator,
+):
+  """Tests that {ANY: ANY} matches any args dict entirely."""
+  actual = Invocation(
+      user_content=_USER_CONTENT,
+      intermediate_data=IntermediateData(
+          tool_uses=[
+              genai_types.FunctionCall(
+                  name="search", args={"query": "test", "limit": 10}
+              )
+          ]
+      ),
+  )
+  expected = Invocation(
+      user_content=_USER_CONTENT,
+      intermediate_data=IntermediateData(
+          tool_uses=[genai_types.FunctionCall(name="search", args={ANY: ANY})]
+      ),
+  )
+  result = evaluator.evaluate_invocations([actual], [expected])
+  assert result.overall_score == 1.0
+
+
+def test_any_wildcard_mixed_exact_and_wildcard_args(
+    evaluator: TrajectoryEvaluator,
+):
+  """Tests mixing ANY wildcard and exact values in the same args dict."""
+  actual = Invocation(
+      user_content=_USER_CONTENT,
+      intermediate_data=IntermediateData(
+          tool_uses=[
+              genai_types.FunctionCall(
+                  name="search", args={"query": "anything", "limit": 10}
+              )
+          ]
+      ),
+  )
+  expected = Invocation(
+      user_content=_USER_CONTENT,
+      intermediate_data=IntermediateData(
+          tool_uses=[
+              genai_types.FunctionCall(
+                  name="search", args={"query": ANY, "limit": 10}
+              )
+          ]
+      ),
+  )
+  result = evaluator.evaluate_invocations([actual], [expected])
+  assert result.overall_score == 1.0
+
+
+def test_any_wildcard_mixed_fails_when_exact_arg_mismatches(
+    evaluator: TrajectoryEvaluator,
+):
+  """Tests that a non-ANY arg still requires exact match."""
+  actual = Invocation(
+      user_content=_USER_CONTENT,
+      intermediate_data=IntermediateData(
+          tool_uses=[
+              genai_types.FunctionCall(
+                  name="search", args={"query": "anything", "limit": 99}
+              )
+          ]
+      ),
+  )
+  expected = Invocation(
+      user_content=_USER_CONTENT,
+      intermediate_data=IntermediateData(
+          tool_uses=[
+              genai_types.FunctionCall(
+                  name="search", args={"query": ANY, "limit": 10}
+              )
+          ]
+      ),
+  )
+  result = evaluator.evaluate_invocations([actual], [expected])
+  assert result.overall_score == 0.0
+
+
+def test_any_wildcard_does_not_match_wrong_tool_name(
+    evaluator: TrajectoryEvaluator,
+):
+  """Tests that tool name must still match even with {ANY: ANY} args."""
+  actual = Invocation(
+      user_content=_USER_CONTENT,
+      intermediate_data=IntermediateData(
+          tool_uses=[genai_types.FunctionCall(name="wrong_tool", args={"a": 1})]
+      ),
+  )
+  expected = Invocation(
+      user_content=_USER_CONTENT,
+      intermediate_data=IntermediateData(
+          tool_uses=[genai_types.FunctionCall(name="search", args={ANY: ANY})]
+      ),
+  )
+  result = evaluator.evaluate_invocations([actual], [expected])
+  assert result.overall_score == 0.0
+
+
+def test_any_wildcard_fails_with_extra_actual_keys(
+    evaluator: TrajectoryEvaluator,
+):
+  """Tests that per-key wildcard still requires matching key sets."""
+  actual = Invocation(
+      user_content=_USER_CONTENT,
+      intermediate_data=IntermediateData(
+          tool_uses=[
+              genai_types.FunctionCall(
+                  name="search", args={"query": "test", "extra": "val"}
+              )
+          ]
+      ),
+  )
+  expected = Invocation(
+      user_content=_USER_CONTENT,
+      intermediate_data=IntermediateData(
+          tool_uses=[
+              genai_types.FunctionCall(name="search", args={"query": ANY})
+          ]
+      ),
+  )
+  result = evaluator.evaluate_invocations([actual], [expected])
+  assert result.overall_score == 0.0
+
+
+def test_any_wildcard_with_in_order_match(
+    in_order_evaluator: TrajectoryEvaluator,
+):
+  """Tests that ANY wildcard works with IN_ORDER match type."""
+  actual = Invocation(
+      user_content=_USER_CONTENT,
+      intermediate_data=IntermediateData(
+          tool_uses=[
+              genai_types.FunctionCall(name="t1", args={"q": "dynamic_value"}),
+              genai_types.FunctionCall(name="t2", args={"x": 42}),
+          ]
+      ),
+  )
+  expected = Invocation(
+      user_content=_USER_CONTENT,
+      intermediate_data=IntermediateData(
+          tool_uses=[
+              genai_types.FunctionCall(name="t1", args={"q": ANY}),
+              genai_types.FunctionCall(name="t2", args={ANY: ANY}),
+          ]
+      ),
+  )
+  result = in_order_evaluator.evaluate_invocations([actual], [expected])
+  assert result.overall_score == 1.0
+
+
+def test_any_wildcard_with_any_order_match(
+    any_order_evaluator: TrajectoryEvaluator,
+):
+  """Tests that ANY wildcard works with ANY_ORDER match type."""
+  actual = Invocation(
+      user_content=_USER_CONTENT,
+      intermediate_data=IntermediateData(
+          tool_uses=[
+              genai_types.FunctionCall(name="t2", args={"x": 42}),
+              genai_types.FunctionCall(name="t1", args={"q": "unpredictable"}),
+          ]
+      ),
+  )
+  expected = Invocation(
+      user_content=_USER_CONTENT,
+      intermediate_data=IntermediateData(
+          tool_uses=[
+              genai_types.FunctionCall(name="t1", args={"q": ANY}),
+              genai_types.FunctionCall(name="t2", args={ANY: ANY}),
+          ]
+      ),
+  )
+  result = any_order_evaluator.evaluate_invocations([actual], [expected])
+  assert result.overall_score == 1.0
+
+
+def test_any_wildcard_full_args_matches_none_args(
+    evaluator: TrajectoryEvaluator,
+):
+  """Tests that {ANY: ANY} matches when actual args is None."""
+  actual = Invocation(
+      user_content=_USER_CONTENT,
+      intermediate_data=IntermediateData(
+          tool_uses=[genai_types.FunctionCall(name="t1", args=None)]
+      ),
+  )
+  expected = Invocation(
+      user_content=_USER_CONTENT,
+      intermediate_data=IntermediateData(
+          tool_uses=[genai_types.FunctionCall(name="t1", args={ANY: ANY})]
+      ),
+  )
+  result = evaluator.evaluate_invocations([actual], [expected])
+  assert result.overall_score == 1.0
+
+
+def test_any_wildcard_per_key_fails_when_actual_missing_key(
+    evaluator: TrajectoryEvaluator,
+):
+  """Tests that per-key ANY fails when actual args is missing an expected key."""
+  actual = Invocation(
+      user_content=_USER_CONTENT,
+      intermediate_data=IntermediateData(
+          tool_uses=[
+              genai_types.FunctionCall(
+                  name="search", args={"query": "test"}
+              )
+          ]
+      ),
+  )
+  expected = Invocation(
+      user_content=_USER_CONTENT,
+      intermediate_data=IntermediateData(
+          tool_uses=[
+              genai_types.FunctionCall(
+                  name="search", args={"query": ANY, "limit": ANY}
+              )
+          ]
+      ),
+  )
+  result = evaluator.evaluate_invocations([actual], [expected])
+  assert result.overall_score == 0.0

@@ -34,6 +34,22 @@ from .evaluator import PerInvocationResult
 
 logger = logging.getLogger("google_adk." + __name__)
 
+ANY = "__ANY__"
+"""Sentinel value for wildcard argument matching in trajectory evaluation.
+
+Use this as a value in expected FunctionCall args to match any actual value
+for that argument key, similar to Mockito's any() matcher.
+
+Examples:
+  Match any value for a specific argument::
+
+    FunctionCall(name="search", args={"query": ANY})
+
+  Match any arguments (skip args comparison entirely)::
+
+    FunctionCall(name="search", args={ANY: ANY})
+"""
+
 
 class TrajectoryEvaluator(Evaluator):
   """Evaluates tool use trajectories for accuracy.
@@ -163,6 +179,55 @@ class TrajectoryEvaluator(Evaluator):
 
     return 1.0 if tool_use_match_status else 0.0
 
+  @staticmethod
+  def _tool_call_matches(
+      actual: genai_types.FunctionCall,
+      expected: genai_types.FunctionCall,
+  ) -> bool:
+    """Checks if an actual tool call matches an expected tool call.
+
+    Supports wildcard matching via the ``ANY`` sentinel value. When the
+    expected args dict is ``{ANY: ANY}``, all arguments are accepted.
+    Individual arg values set to ``ANY`` match any actual value for that
+    key while still requiring other keys to match exactly.
+
+    Args:
+      actual: The tool call that actually happened.
+      expected: The tool call that was expected to happen.
+
+    Returns:
+      True if the actual tool call matches the expected one.
+    """
+    if actual.name != expected.name:
+      return False
+
+    expected_args = expected.args
+    actual_args = actual.args
+
+    # Both None / empty — treat as equal.
+    if not expected_args and not actual_args:
+      return True
+
+    # Full wildcard: skip args comparison entirely.
+    if expected_args == {ANY: ANY}:
+      return True
+
+    # One is None while the other is not (and not full wildcard).
+    if expected_args is None or actual_args is None:
+      return expected_args == actual_args
+
+    # Per-key comparison with possible per-value wildcards.
+    if actual_args.keys() != expected_args.keys():
+      return False
+
+    for key, expected_value in expected_args.items():
+      if expected_value == ANY:
+        continue
+      if actual_args[key] != expected_value:
+        return False
+
+    return True
+
   def _are_tool_calls_in_order_match(
       self,
       actual_tool_calls: list[genai_types.FunctionCall],
@@ -191,10 +256,7 @@ class TrajectoryEvaluator(Evaluator):
     try:
       current_expected = next(expected_it)
       for actual in actual_tool_calls:
-        if (
-            actual.name == current_expected.name
-            and actual.args == current_expected.args
-        ):
+        if self._tool_call_matches(actual, current_expected):
           current_expected = next(expected_it)
     except StopIteration:
       return True
@@ -229,7 +291,7 @@ class TrajectoryEvaluator(Evaluator):
     for expected in expected_tool_calls:
       found = False
       for i, actual in enumerate(actual_tool_calls_copy):
-        if actual.name == expected.name and actual.args == expected.args:
+        if self._tool_call_matches(actual, expected):
           actual_tool_calls_copy.pop(i)
           found = True
           break
@@ -260,7 +322,7 @@ class TrajectoryEvaluator(Evaluator):
       return False
 
     for actual, expected in zip(actual_tool_calls, expected_tool_calls):
-      if actual.name != expected.name or actual.args != expected.args:
+      if not self._tool_call_matches(actual, expected):
         return False
 
     return True
