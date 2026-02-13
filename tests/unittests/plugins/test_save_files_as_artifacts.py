@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -172,43 +172,6 @@ class TestSaveFilesAsArtifactsPlugin:
         == "gs://mock-bucket/file2.jpg/versions/0"
     )
     assert result.parts[4].file_data.display_name == "file2.jpg"
-
-  @pytest.mark.asyncio
-  async def test_unsupported_canonical_uri_keeps_inline_data(self):
-    """Fallback to inline data when artifact URI is not model-accessible."""
-    inline_data = types.Blob(
-        display_name="local_only.png",
-        data=b"image data",
-        mime_type="image/png",
-    )
-
-    artifact_service = self.mock_context.artifact_service
-    original_side_effect = artifact_service.get_artifact_version.side_effect
-
-    async def _memory_only_version(**kwargs):
-      return ArtifactVersion(
-          version=kwargs.get("version", 0),
-          canonical_uri=(
-              "memory://apps/test_app/users/test_user/sessions/test_session/"
-              "artifacts/local_only.png/versions/0"
-          ),
-          mime_type="image/png",
-      )
-
-    artifact_service.get_artifact_version.side_effect = _memory_only_version
-
-    try:
-      user_message = types.Content(parts=[types.Part(inline_data=inline_data)])
-      result = await self.plugin.on_user_message_callback(
-          invocation_context=self.mock_context, user_message=user_message
-      )
-
-      assert result
-      assert len(result.parts) == 2
-      assert result.parts[0].text == '[Uploaded Artifact: "local_only.png"]'
-      assert result.parts[1].inline_data == inline_data
-    finally:
-      artifact_service.get_artifact_version.side_effect = original_side_effect
 
   @pytest.mark.asyncio
   async def test_no_artifact_service(self):

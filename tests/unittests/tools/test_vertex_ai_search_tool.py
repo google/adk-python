@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import logging
+
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.sequential_agent import SequentialAgent
 from google.adk.models.llm_request import LlmRequest
@@ -23,6 +25,10 @@ from google.adk.utils.model_name_utils import is_gemini_1_model
 from google.adk.utils.model_name_utils import is_gemini_model
 from google.genai import types
 import pytest
+
+VERTEX_SEARCH_TOOL_LOGGER_NAME = (
+    'google_adk.google.adk.tools.vertex_ai_search_tool'
+)
 
 
 async def _create_tool_context() -> ToolContext:
@@ -121,12 +127,34 @@ class TestVertexAiSearchTool:
     tool = VertexAiSearchTool(data_store_id='test_data_store')
     assert tool.data_store_id == 'test_data_store'
     assert tool.search_engine_id is None
+    assert tool.data_store_specs is None
 
   def test_init_with_search_engine_id(self):
     """Test initialization with search engine ID."""
     tool = VertexAiSearchTool(search_engine_id='test_search_engine')
     assert tool.search_engine_id == 'test_search_engine'
     assert tool.data_store_id is None
+    assert tool.data_store_specs is None
+
+  def test_init_with_engine_and_specs(self):
+    """Test initialization with search engine ID and specs."""
+    specs = [
+        types.VertexAISearchDataStoreSpec(
+            dataStore=(
+                'projects/p/locations/l/collections/c/dataStores/spec_store'
+            )
+        )
+    ]
+    engine_id = (
+        'projects/p/locations/l/collections/c/engines/test_search_engine'
+    )
+    tool = VertexAiSearchTool(
+        search_engine_id=engine_id,
+        data_store_specs=specs,
+    )
+    assert tool.search_engine_id == engine_id
+    assert tool.data_store_id is None
+    assert tool.data_store_specs == specs
 
   def test_init_with_neither_raises_error(self):
     """Test that initialization without either ID raises ValueError."""
@@ -146,10 +174,34 @@ class TestVertexAiSearchTool:
           data_store_id='test_data_store', search_engine_id='test_search_engine'
       )
 
+  def test_init_with_specs_but_no_engine_raises_error(self):
+    """Test that specs without engine ID raises ValueError."""
+    specs = [
+        types.VertexAISearchDataStoreSpec(
+            dataStore=(
+                'projects/p/locations/l/collections/c/dataStores/spec_store'
+            )
+        )
+    ]
+    with pytest.raises(
+        ValueError,
+        match=(
+            'search_engine_id must be specified if data_store_specs is'
+            ' specified'
+        ),
+    ):
+      VertexAiSearchTool(
+          data_store_id='test_data_store', data_store_specs=specs
+      )
+
   @pytest.mark.asyncio
-  async def test_process_llm_request_with_simple_gemini_model(self):
+  async def test_process_llm_request_with_simple_gemini_model(self, caplog):
     """Test processing LLM request with simple Gemini model name."""
-    tool = VertexAiSearchTool(data_store_id='test_data_store')
+    caplog.set_level(logging.DEBUG, logger=VERTEX_SEARCH_TOOL_LOGGER_NAME)
+
+    tool = VertexAiSearchTool(
+        data_store_id='test_data_store', filter='f', max_results=5
+    )
     tool_context = await _create_tool_context()
 
     llm_request = LlmRequest(
@@ -162,17 +214,56 @@ class TestVertexAiSearchTool:
 
     assert llm_request.config.tools is not None
     assert len(llm_request.config.tools) == 1
-    assert llm_request.config.tools[0].retrieval is not None
-    assert llm_request.config.tools[0].retrieval.vertex_ai_search is not None
+    retrieval_tool = llm_request.config.tools[0]
+    assert retrieval_tool.retrieval is not None
+    assert retrieval_tool.retrieval.vertex_ai_search is not None
+    assert (
+        retrieval_tool.retrieval.vertex_ai_search.datastore == 'test_data_store'
+    )
+    assert retrieval_tool.retrieval.vertex_ai_search.engine is None
+    assert retrieval_tool.retrieval.vertex_ai_search.filter == 'f'
+    assert retrieval_tool.retrieval.vertex_ai_search.max_results == 5
+
+    # Verify debug log
+    debug_records = [
+        r
+        for r in caplog.records
+        if 'Adding Vertex AI Search tool config' in r.message
+    ]
+    assert len(debug_records) == 1
+    log_message = debug_records[0].getMessage()
+    assert 'datastore=test_data_store' in log_message
+    assert 'engine=None' in log_message
+    assert 'filter=f' in log_message
+    assert 'max_results=5' in log_message
+    assert 'data_store_specs=None' in log_message
 
   @pytest.mark.asyncio
-  async def test_process_llm_request_with_path_based_gemini_model(self):
+  async def test_process_llm_request_with_path_based_gemini_model(self, caplog):
     """Test processing LLM request with path-based Gemini model name."""
-    tool = VertexAiSearchTool(data_store_id='test_data_store')
+    caplog.set_level(logging.DEBUG, logger=VERTEX_SEARCH_TOOL_LOGGER_NAME)
+
+    specs = [
+        types.VertexAISearchDataStoreSpec(
+            dataStore=(
+                'projects/p/locations/l/collections/c/dataStores/spec_store'
+            )
+        )
+    ]
+    engine_id = 'projects/p/locations/l/collections/c/engines/test_engine'
+    tool = VertexAiSearchTool(
+        search_engine_id=engine_id,
+        data_store_specs=specs,
+        filter='f2',
+        max_results=10,
+    )
     tool_context = await _create_tool_context()
 
     llm_request = LlmRequest(
-        model='projects/265104255505/locations/us-central1/publishers/google/models/gemini-2.0-flash-001',
+        model=(
+            'projects/265104255505/locations/us-central1/publishers/'
+            'google/models/gemini-2.0-flash-001'
+        ),
         config=types.GenerateContentConfig(),
     )
 
@@ -182,8 +273,28 @@ class TestVertexAiSearchTool:
 
     assert llm_request.config.tools is not None
     assert len(llm_request.config.tools) == 1
-    assert llm_request.config.tools[0].retrieval is not None
-    assert llm_request.config.tools[0].retrieval.vertex_ai_search is not None
+    retrieval_tool = llm_request.config.tools[0]
+    assert retrieval_tool.retrieval is not None
+    assert retrieval_tool.retrieval.vertex_ai_search is not None
+    assert retrieval_tool.retrieval.vertex_ai_search.datastore is None
+    assert retrieval_tool.retrieval.vertex_ai_search.engine == engine_id
+    assert retrieval_tool.retrieval.vertex_ai_search.filter == 'f2'
+    assert retrieval_tool.retrieval.vertex_ai_search.max_results == 10
+    assert retrieval_tool.retrieval.vertex_ai_search.data_store_specs == specs
+
+    # Verify debug log
+    debug_records = [
+        r
+        for r in caplog.records
+        if 'Adding Vertex AI Search tool config' in r.message
+    ]
+    assert len(debug_records) == 1
+    log_message = debug_records[0].getMessage()
+    assert 'datastore=None' in log_message
+    assert f'engine={engine_id}' in log_message
+    assert 'filter=f2' in log_message
+    assert 'max_results=10' in log_message
+    assert 'data_store_specs=1 spec(s): [spec_store]' in log_message
 
   @pytest.mark.asyncio
   async def test_process_llm_request_with_gemini_1_and_other_tools_raises_error(
@@ -291,9 +402,11 @@ class TestVertexAiSearchTool:
 
   @pytest.mark.asyncio
   async def test_process_llm_request_with_gemini_2_and_other_tools_succeeds(
-      self,
+      self, caplog
   ):
     """Test that Gemini 2.x with other tools succeeds."""
+    caplog.set_level(logging.DEBUG, logger=VERTEX_SEARCH_TOOL_LOGGER_NAME)
+
     tool = VertexAiSearchTool(data_store_id='test_data_store')
     tool_context = await _create_tool_context()
 
@@ -316,5 +429,130 @@ class TestVertexAiSearchTool:
     assert llm_request.config.tools is not None
     assert len(llm_request.config.tools) == 2
     assert llm_request.config.tools[0] == existing_tool
-    assert llm_request.config.tools[1].retrieval is not None
-    assert llm_request.config.tools[1].retrieval.vertex_ai_search is not None
+    retrieval_tool = llm_request.config.tools[1]
+    assert retrieval_tool.retrieval is not None
+    assert retrieval_tool.retrieval.vertex_ai_search is not None
+    assert (
+        retrieval_tool.retrieval.vertex_ai_search.datastore == 'test_data_store'
+    )
+
+    # Verify debug log
+    debug_records = [
+        r
+        for r in caplog.records
+        if 'Adding Vertex AI Search tool config' in r.message
+    ]
+    assert len(debug_records) == 1
+    log_message = debug_records[0].getMessage()
+    assert 'datastore=test_data_store' in log_message
+    assert 'engine=None' in log_message
+    assert 'filter=None' in log_message
+    assert 'max_results=None' in log_message
+    assert 'data_store_specs=None' in log_message
+
+  @pytest.mark.asyncio
+  async def test_subclass_with_dynamic_filter(self):
+    """Test subclassing to provide dynamic filter based on context."""
+
+    class DynamicFilterSearchTool(VertexAiSearchTool):
+      """Custom search tool with dynamic filter."""
+
+      def _build_vertex_ai_search_config(self, ctx):
+        user_id = ctx.state.get('user_id', 'default_user')
+        return types.VertexAISearch(
+            datastore=self.data_store_id,
+            engine=self.search_engine_id,
+            filter=f"user_id = '{user_id}'",
+            max_results=self.max_results,
+        )
+
+    tool = DynamicFilterSearchTool(data_store_id='test_data_store')
+    tool_context = await _create_tool_context()
+    tool_context.state['user_id'] = 'test_user_123'
+
+    llm_request = LlmRequest(
+        model='gemini-2.5-pro', config=types.GenerateContentConfig()
+    )
+
+    await tool.process_llm_request(
+        tool_context=tool_context, llm_request=llm_request
+    )
+
+    assert llm_request.config.tools is not None
+    assert len(llm_request.config.tools) == 1
+    retrieval_tool = llm_request.config.tools[0]
+    assert retrieval_tool.retrieval is not None
+    assert retrieval_tool.retrieval.vertex_ai_search is not None
+    # Verify the filter was dynamically set
+    assert (
+        retrieval_tool.retrieval.vertex_ai_search.filter
+        == "user_id = 'test_user_123'"
+    )
+
+  @pytest.mark.asyncio
+  async def test_subclass_with_dynamic_max_results(self):
+    """Test subclassing to provide dynamic max_results based on context."""
+
+    class DynamicMaxResultsSearchTool(VertexAiSearchTool):
+      """Custom search tool with dynamic max_results."""
+
+      def _build_vertex_ai_search_config(self, ctx):
+        # Use a larger max_results for premium users
+        is_premium = ctx.state.get('is_premium', False)
+        dynamic_max_results = 20 if is_premium else 5
+        return types.VertexAISearch(
+            datastore=self.data_store_id,
+            engine=self.search_engine_id,
+            filter=self.filter,
+            max_results=dynamic_max_results,
+        )
+
+    tool = DynamicMaxResultsSearchTool(
+        data_store_id='test_data_store', max_results=10
+    )
+    tool_context = await _create_tool_context()
+    tool_context.state['is_premium'] = True
+
+    llm_request = LlmRequest(
+        model='gemini-2.5-pro', config=types.GenerateContentConfig()
+    )
+
+    await tool.process_llm_request(
+        tool_context=tool_context, llm_request=llm_request
+    )
+
+    retrieval_tool = llm_request.config.tools[0]
+    # Verify max_results was dynamically set to premium value
+    assert retrieval_tool.retrieval.vertex_ai_search.max_results == 20
+
+  @pytest.mark.asyncio
+  async def test_subclass_receives_readonly_context(self):
+    """Test that subclass receives the context correctly."""
+    received_contexts = []
+
+    class ContextCapturingSearchTool(VertexAiSearchTool):
+      """Custom search tool that captures the context."""
+
+      def _build_vertex_ai_search_config(self, ctx):
+        received_contexts.append(ctx)
+        return types.VertexAISearch(
+            datastore=self.data_store_id,
+            engine=self.search_engine_id,
+            filter=self.filter,
+            max_results=self.max_results,
+        )
+
+    tool = ContextCapturingSearchTool(data_store_id='test_data_store')
+    tool_context = await _create_tool_context()
+
+    llm_request = LlmRequest(
+        model='gemini-2.5-pro', config=types.GenerateContentConfig()
+    )
+
+    await tool.process_llm_request(
+        tool_context=tool_context, llm_request=llm_request
+    )
+
+    # Verify the context was passed to _build_vertex_ai_search_config
+    assert len(received_contexts) == 1
+    assert received_contexts[0] is tool_context

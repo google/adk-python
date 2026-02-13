@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -344,7 +344,8 @@ async def analyze_cache_performance_from_sessions(
       print(
           "     Cache Utilization:"
           f" {cached_analysis['cache_utilization_ratio_percent']:.1f}%"
-          f" ({cached_analysis['requests_with_cache_hits']}/{cached_analysis['total_requests']} requests)"
+          f" ({cached_analysis['requests_with_cache_hits']}/{cached_analysis['total_requests']}"
+          " requests)"
       )
       print(
           "     Avg Cached Tokens/Request:"
@@ -383,7 +384,8 @@ async def analyze_cache_performance_from_sessions(
       print(
           "     Cache Utilization:"
           f" {uncached_analysis['cache_utilization_ratio_percent']:.1f}%"
-          f" ({uncached_analysis['requests_with_cache_hits']}/{uncached_analysis['total_requests']} requests)"
+          f" ({uncached_analysis['requests_with_cache_hits']}/{uncached_analysis['total_requests']}"
+          " requests)"
       )
       print(
           "     Avg Cached Tokens/Request:"

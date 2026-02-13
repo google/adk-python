@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -21,8 +21,8 @@ import json
 import logging
 import time
 from typing import Optional
+from typing import TYPE_CHECKING
 
-from google.genai import Client
 from google.genai import types
 
 from ..utils.feature_decorator import experimental
@@ -31,6 +31,9 @@ from .llm_request import LlmRequest
 from .llm_response import LlmResponse
 
 logger = logging.getLogger("google_adk." + __name__)
+
+if TYPE_CHECKING:
+  from google.genai import Client
 
 
 @experimental

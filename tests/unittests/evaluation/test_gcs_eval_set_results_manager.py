@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -11,6 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+import json
 
 from google.adk.errors.not_found_error import NotFoundError
 from google.adk.evaluation._eval_set_results_manager_utils import _sanitize_eval_set_result_name
@@ -158,6 +160,33 @@ class TestGcsEvalSetResultsManager:
     eval_set_result = create_eval_set_result(
         app_name, eval_set_id, eval_case_results
     )
+    retrieved_eval_set_result = (
+        gcs_eval_set_results_manager.get_eval_set_result(
+            app_name, eval_set_result.eval_set_result_id
+        )
+    )
+    assert retrieved_eval_set_result == eval_set_result
+
+  def test_get_eval_set_result_double_encoded_legacy(
+      self, gcs_eval_set_results_manager, mocker
+  ):
+    mocker.patch("time.time", return_value=12345678)
+    app_name = "test_app"
+    eval_set_id = "test_eval_set"
+    eval_case_results = _get_test_eval_case_results()
+    eval_set_result = create_eval_set_result(
+        app_name, eval_set_id, eval_case_results
+    )
+
+    blob_name = gcs_eval_set_results_manager._get_eval_set_result_blob_name(
+        app_name, eval_set_result.eval_set_result_id
+    )
+    blob = gcs_eval_set_results_manager.bucket.blob(blob_name)
+    double_encoded_json = json.dumps(eval_set_result.model_dump_json())
+    blob.upload_from_string(
+        double_encoded_json, content_type="application/json"
+    )
+
     retrieved_eval_set_result = (
         gcs_eval_set_results_manager.get_eval_set_result(
             app_name, eval_set_result.eval_set_result_id

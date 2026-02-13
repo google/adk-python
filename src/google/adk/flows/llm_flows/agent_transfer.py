@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -24,9 +24,8 @@ from typing_extensions import override
 from ...agents.invocation_context import InvocationContext
 from ...events.event import Event
 from ...models.llm_request import LlmRequest
-from ...tools.function_tool import FunctionTool
 from ...tools.tool_context import ToolContext
-from ...tools.transfer_to_agent_tool import transfer_to_agent
+from ...tools.transfer_to_agent_tool import TransferToAgentTool
 from ._base_llm_processor import BaseLlmRequestProcessor
 
 if typing.TYPE_CHECKING:
@@ -41,22 +40,25 @@ class _AgentTransferLlmRequestProcessor(BaseLlmRequestProcessor):
   async def run_async(
       self, invocation_context: InvocationContext, llm_request: LlmRequest
   ) -> AsyncGenerator[Event, None]:
-    from ...agents.llm_agent import LlmAgent
-
-    if not isinstance(invocation_context.agent, LlmAgent):
+    if not hasattr(invocation_context.agent, 'disallow_transfer_to_parent'):
       return
 
     transfer_targets = _get_transfer_targets(invocation_context.agent)
     if not transfer_targets:
       return
 
+    transfer_to_agent_tool = TransferToAgentTool(
+        agent_names=[agent.name for agent in transfer_targets]
+    )
+
     llm_request.append_instructions([
-        _build_target_agents_instructions(
-            invocation_context.agent, transfer_targets
+        _build_transfer_instructions(
+            transfer_to_agent_tool.name,
+            invocation_context.agent,
+            transfer_targets,
         )
     ])
 
-    transfer_to_agent_tool = FunctionTool(func=transfer_to_agent)
     tool_context = ToolContext(invocation_context)
     await transfer_to_agent_tool.process_llm_request(
         tool_context=tool_context, llm_request=llm_request
@@ -79,11 +81,27 @@ Agent description: {target_agent.description}
 line_break = '\n'
 
 
-def _build_target_agents_instructions(
-    agent: LlmAgent, target_agents: list[BaseAgent]
+def _build_transfer_instructions(
+    tool_name: str,
+    agent: 'LlmAgent',
+    target_agents: list['BaseAgent'],
 ) -> str:
+  """Build instructions for agent transfer.
+
+  This function generates the instruction text that guides the LLM on how to
+  use the transfer tool to delegate to other agents.
+
+  Args:
+    tool_name: The name of the transfer tool (e.g., 'transfer_to_agent').
+    agent: The current agent that may initiate transfers.
+    target_agents: List of agents that can be transferred to.
+
+  Returns:
+    Instruction text for the LLM about agent transfers.
+  """
   # Build list of available agent names for the NOTE
-  # target_agents already includes parent agent if applicable, so no need to add it again
+  # target_agents already includes parent agent if applicable,
+  # so no need to add it again
   available_agent_names = [target_agent.name for target_agent in target_agents]
 
   # Sort for consistency
@@ -101,15 +119,16 @@ You have a list of other agents to transfer to:
     _build_target_agents_info(target_agent) for target_agent in target_agents
 ])}
 
-If you are the best to answer the question according to your description, you
-can answer it.
+If you are the best to answer the question according to your description,
+you can answer it.
 
 If another agent is better for answering the question according to its
-description, call `{_TRANSFER_TO_AGENT_FUNCTION_NAME}` function to transfer the
-question to that agent. When transferring, do not generate any text other than
-the function call.
+description, call `{tool_name}` function to transfer the question to that
+agent. When transferring, do not generate any text other than the function
+call.
 
-**NOTE**: the only available agents for `{_TRANSFER_TO_AGENT_FUNCTION_NAME}` function are {formatted_agent_names}.
+**NOTE**: the only available agents for `{tool_name}` function are
+{formatted_agent_names}.
 """
 
   if agent.parent_agent and not agent.disallow_transfer_to_parent:
@@ -119,16 +138,13 @@ If neither you nor the other agents are best for the question, transfer to your 
   return si
 
 
-_TRANSFER_TO_AGENT_FUNCTION_NAME = transfer_to_agent.__name__
-
-
 def _get_transfer_targets(agent: LlmAgent) -> list[BaseAgent]:
-  from ...agents.llm_agent import LlmAgent
-
   result = []
   result.extend(agent.sub_agents)
 
-  if not agent.parent_agent or not isinstance(agent.parent_agent, LlmAgent):
+  if not agent.parent_agent or not hasattr(
+      agent.parent_agent, 'disallow_transfer_to_parent'
+  ):
     return result
 
   if not agent.disallow_transfer_to_parent:
