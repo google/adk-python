@@ -76,10 +76,20 @@ class Context(ReadonlyContext):
     """The function call id of the current tool call."""
     return self._function_call_id
 
+  @function_call_id.setter
+  def function_call_id(self, value: str | None) -> None:
+    """Sets the function call id of the current tool call."""
+    self._function_call_id = value
+
   @property
   def tool_confirmation(self) -> ToolConfirmation | None:
     """The tool confirmation of the current tool call."""
     return self._tool_confirmation
+
+  @tool_confirmation.setter
+  def tool_confirmation(self, value: ToolConfirmation | None) -> None:
+    """Sets the tool confirmation of the current tool call."""
+    self._tool_confirmation = value
 
   @property
   @override
