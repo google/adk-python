@@ -15,16 +15,18 @@ jobs:
     # - New issues (need component labeling)
     # - Issues labeled with "planned" (need owner assignment)
     if: >-
-      github.event_name == 'schedule' ||
-      github.event.action == 'opened' ||
-      github.event.label.name == 'planned'
+      github.repository == 'google/adk-python' && (
+        github.event_name == 'schedule' ||
+        github.event.action == 'opened' ||
+        github.event.label.name == 'planned'
+      )
     permissions:
       issues: write
       contents: read
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: Set up Python
         uses: actions/setup-python@v6

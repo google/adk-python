@@ -72,7 +72,7 @@ type.
 
 1.  Follow https://developers.google.com/workspace/guides/configure-oauth-consent
     to add scope "https://www.googleapis.com/auth/bigtable.admin" and
-    "https://www.googleapis.com/auth/bigtable.data" as declaration, this is used
+    "https://www.googleapis.com/auth/bigtable.data" as a declaration, this is used
     for review purpose.
 
 1.  Follow

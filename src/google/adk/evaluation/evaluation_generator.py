@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import copy
 import importlib
+import logging
 from typing import Any
 from typing import AsyncGenerator
 from typing import Optional
@@ -48,6 +49,8 @@ from .request_intercepter_plugin import _RequestIntercepterPlugin
 from .simulation.user_simulator import Status as UserSimulatorStatus
 from .simulation.user_simulator import UserSimulator
 from .simulation.user_simulator_provider import UserSimulatorProvider
+
+logger = logging.getLogger("google_adk." + __name__)
 
 _USER_AUTHOR = "user"
 _DEFAULT_AUTHOR = "agent"
@@ -117,7 +120,7 @@ class EvaluationGenerator:
 
     with open(session_path, "r") as f:
       session_data = Session.model_validate_json(f.read())
-      print("loaded session", session_path)
+      logger.info("Loaded session %s", session_path)
 
     for data in eval_dataset:
       # load session data from session_path

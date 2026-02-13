@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -56,8 +56,9 @@ class LlmAgentConfig(BaseAgentConfig):
       description=(
           'Optional. LlmAgent.model. Provide a model name string (e.g.'
           ' "gemini-2.0-flash"). If not set, the model will be inherited from'
-          ' the ancestor. To construct a model instance from code, use'
-          ' model_code.'
+          ' the ancestor or fall back to the system default (gemini-2.5-flash'
+          ' unless overridden via LlmAgent.set_default_model). To construct a'
+          ' model instance from code, use model_code.'
       ),
   )
 

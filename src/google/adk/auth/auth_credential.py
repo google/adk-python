@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -18,6 +18,7 @@ from enum import Enum
 from typing import Any
 from typing import Dict
 from typing import List
+from typing import Literal
 from typing import Optional
 
 from pydantic import alias_generators
@@ -60,6 +61,7 @@ class HttpAuth(BaseModelWithConfig):
   # Examples: 'basic', 'bearer'
   scheme: str
   credentials: HttpCredentials
+  additional_headers: Optional[Dict[str, str]] = None
 
 
 class OAuth2Auth(BaseModelWithConfig):
@@ -80,6 +82,14 @@ class OAuth2Auth(BaseModelWithConfig):
   expires_at: Optional[int] = None
   expires_in: Optional[int] = None
   audience: Optional[str] = None
+  token_endpoint_auth_method: Optional[
+      Literal[
+          "client_secret_basic",
+          "client_secret_post",
+          "client_secret_jwt",
+          "private_key_jwt",
+      ]
+  ] = "client_secret_basic"
 
 
 class ServiceAccountCredential(BaseModelWithConfig):

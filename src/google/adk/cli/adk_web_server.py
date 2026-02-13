@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -20,6 +20,7 @@ import importlib
 import json
 import logging
 import os
+import sys
 import time
 import traceback
 import typing
@@ -88,6 +89,7 @@ from ..runners import Runner
 from ..sessions.base_session_service import BaseSessionService
 from ..sessions.session import Session
 from ..utils.context_utils import Aclosing
+from ..version import __version__
 from .cli_eval import EVAL_SESSION_ID_PREFIX
 from .utils import cleanup
 from .utils import common
@@ -103,6 +105,36 @@ _EVAL_SET_FILE_EXTENSION = ".evalset.json"
 
 TAG_DEBUG = "Debug"
 TAG_EVALUATION = "Evaluation"
+
+_REGEX_PREFIX = "regex:"
+
+
+def _parse_cors_origins(
+    allow_origins: list[str],
+) -> tuple[list[str], Optional[str]]:
+  """Parse allow_origins into literal origins and a combined regex pattern.
+
+  Args:
+    allow_origins: List of origin strings. Entries prefixed with 'regex:' are
+      treated as regex patterns; all others are treated as literal origins.
+
+  Returns:
+    A tuple of (literal_origins, combined_regex) where combined_regex is None
+    if no regex patterns were provided, or a single pattern joining all regex
+    patterns with '|'.
+  """
+  literal_origins = []
+  regex_patterns = []
+  for origin in allow_origins:
+    if origin.startswith(_REGEX_PREFIX):
+      pattern = origin[len(_REGEX_PREFIX) :]
+      if pattern:
+        regex_patterns.append(pattern)
+    else:
+      literal_origins.append(origin)
+
+  combined_regex = "|".join(regex_patterns) if regex_patterns else None
+  return literal_origins, combined_regex
 
 
 class ApiServerSpanExporter(export_lib.SpanExporter):
@@ -175,7 +207,7 @@ class RunAgentRequest(common.BaseModel):
   new_message: types.Content
   streaming: bool = False
   state_delta: Optional[dict[str, Any]] = None
-  # for resume long running functions
+  # for resume long-running functions
   invocation_id: Optional[str] = None
 
 
@@ -300,6 +332,7 @@ class AppInfo(common.BaseModel):
   root_agent_name: str
   description: str
   language: Literal["yaml", "python"]
+  is_computer_use: bool = False
 
 
 class ListAppsResponse(common.BaseModel):
@@ -313,11 +346,9 @@ def _setup_telemetry(
   # TODO - remove the else branch here once maybe_set_otel_providers is no
   # longer experimental.
   if otel_to_cloud:
-    _setup_gcp_telemetry_experimental(internal_exporters=internal_exporters)
+    _setup_gcp_telemetry(internal_exporters=internal_exporters)
   elif _otel_env_vars_enabled():
-    _setup_telemetry_from_env_experimental(
-        internal_exporters=internal_exporters
-    )
+    _setup_telemetry_from_env(internal_exporters=internal_exporters)
   else:
     # Old logic - to be removed when above leaves experimental.
     tracer_provider = TracerProvider()
@@ -339,7 +370,7 @@ def _otel_env_vars_enabled() -> bool:
   ])
 
 
-def _setup_gcp_telemetry_experimental(
+def _setup_gcp_telemetry(
     internal_exporters: list[SpanProcessor] = None,
 ):
   if typing.TYPE_CHECKING:
@@ -366,7 +397,7 @@ def _setup_gcp_telemetry_experimental(
           # TODO - use trace_to_cloud here as well once otel_to_cloud is no
           # longer experimental.
           enable_cloud_tracing=True,
-          # TODO - reenable metrics once errors during shutdown are fixed.
+          # TODO - re-enable metrics once errors during shutdown are fixed.
           enable_cloud_metrics=False,
           enable_cloud_logging=True,
           google_auth=(credentials, project_id),
@@ -381,7 +412,7 @@ def _setup_gcp_telemetry_experimental(
   _setup_instrumentation_lib_if_installed()
 
 
-def _setup_telemetry_from_env_experimental(
+def _setup_telemetry_from_env(
     internal_exporters: list[SpanProcessor] = None,
 ):
   from ..telemetry.setup import maybe_set_otel_providers
@@ -463,6 +494,7 @@ class AdkWebServer:
       logo_text: Optional[str] = None,
       logo_image_url: Optional[str] = None,
       url_prefix: Optional[str] = None,
+      auto_create_session: bool = False,
   ):
     self.agent_loader = agent_loader
     self.session_service = session_service
@@ -480,6 +512,7 @@ class AdkWebServer:
     self.current_app_name_ref: SharedValue[str] = SharedValue(value="")
     self.runner_dict = {}
     self.url_prefix = url_prefix
+    self.auto_create_session = auto_create_session
 
   async def get_runner_async(self, app_name: str) -> Runner:
     """Returns the cached runner for the given app."""
@@ -529,6 +562,7 @@ class AdkWebServer:
         session_service=self.session_service,
         memory_service=self.memory_service,
         credential_service=self.credential_service,
+        auto_create_session=self.auto_create_session,
     )
 
   def _instantiate_extra_plugins(self) -> list[BasePlugin]:
@@ -664,13 +698,15 @@ class AdkWebServer:
     Args:
       lifespan: The lifespan of the FastAPI app.
       allow_origins: The origins that are allowed to make cross-origin requests.
+        Entries can be literal origins (e.g., 'https://example.com') or regex
+        patterns prefixed with 'regex:' (e.g., 'regex:https://.*\\.example\\.com').
       web_assets_dir: The directory containing the web assets to serve.
       setup_observer: Callback for setting up the file system observer.
       tear_down_observer: Callback for cleaning up the file system observer.
       register_processors: Callback for additional Span processors to be added
         to the TracerProvider.
-      otel_to_cloud: EXPERIMENTAL. Whether to enable Cloud Trace
-      and Cloud Logging integrations.
+      otel_to_cloud: Whether to enable Cloud Trace and Cloud Logging
+        integrations.
 
     Returns:
       A FastAPI app instance.
@@ -716,13 +752,29 @@ class AdkWebServer:
     app = FastAPI(lifespan=internal_lifespan)
 
     if allow_origins:
+      literal_origins, combined_regex = _parse_cors_origins(allow_origins)
       app.add_middleware(
           CORSMiddleware,
-          allow_origins=allow_origins,
+          allow_origins=literal_origins,
+          allow_origin_regex=combined_regex,
           allow_credentials=True,
           allow_methods=["*"],
           allow_headers=["*"],
       )
+
+    @app.get("/health")
+    async def health() -> dict[str, str]:
+      return {"status": "ok"}
+
+    @app.get("/version")
+    async def version() -> dict[str, str]:
+      return {
+          "version": __version__,
+          "language": "python",
+          "language_version": (
+              f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+          ),
+      }
 
     @app.get("/list-apps")
     async def list_apps(
@@ -741,6 +793,11 @@ class AdkWebServer:
       if event_dict is None:
         raise HTTPException(status_code=404, detail="Trace not found")
       return event_dict
+
+    @app.get("/apps/{app_name}")
+    async def get_app_info(app_name: str) -> Any:
+      runner = await self.get_runner_async(app_name)
+      return runner.app
 
     @app.get("/debug/trace/session/{session_id}", tags=[TAG_DEBUG])
     async def get_session_trace(session_id: str) -> Any:
@@ -913,6 +970,7 @@ class AdkWebServer:
             detail=str(ve),
         ) from ve
 
+    # TODO - remove after migration
     @deprecated(
         "Please use create_eval_set instead. This will be removed in future"
         " releases."
@@ -934,6 +992,74 @@ class AdkWebServer:
           ),
       )
 
+    # TODO - remove after migration
+    @deprecated(
+        "Please use list_eval_sets instead. This will be removed in future"
+        " releases."
+    )
+    @app.get(
+        "/apps/{app_name}/eval_sets",
+        response_model_exclude_none=True,
+        tags=[TAG_EVALUATION],
+    )
+    async def list_eval_sets_legacy(app_name: str) -> list[str]:
+      list_eval_sets_response = await list_eval_sets(app_name)
+      return list_eval_sets_response.eval_set_ids
+
+    # TODO - remove after migration
+    @deprecated(
+        "Please use run_eval instead. This will be removed in future releases."
+    )
+    @app.post(
+        "/apps/{app_name}/eval_sets/{eval_set_id}/run_eval",
+        response_model_exclude_none=True,
+        tags=[TAG_EVALUATION],
+    )
+    async def run_eval_legacy(
+        app_name: str, eval_set_id: str, req: RunEvalRequest
+    ) -> list[RunEvalResult]:
+      run_eval_response = await run_eval(
+          app_name=app_name, eval_set_id=eval_set_id, req=req
+      )
+      return run_eval_response.run_eval_results
+
+    # TODO - remove after migration
+    @deprecated(
+        "Please use get_eval_result instead. This will be removed in future"
+        " releases."
+    )
+    @app.get(
+        "/apps/{app_name}/eval_results/{eval_result_id}",
+        response_model_exclude_none=True,
+        tags=[TAG_EVALUATION],
+    )
+    async def get_eval_result_legacy(
+        app_name: str,
+        eval_result_id: str,
+    ) -> EvalSetResult:
+      try:
+        return self.eval_set_results_manager.get_eval_set_result(
+            app_name, eval_result_id
+        )
+      except ValueError as ve:
+        raise HTTPException(status_code=404, detail=str(ve)) from ve
+      except ValidationError as ve:
+        raise HTTPException(status_code=500, detail=str(ve)) from ve
+
+    # TODO - remove after migration
+    @deprecated(
+        "Please use list_eval_results instead. This will be removed in future"
+        " releases."
+    )
+    @app.get(
+        "/apps/{app_name}/eval_results",
+        response_model_exclude_none=True,
+        tags=[TAG_EVALUATION],
+    )
+    async def list_eval_results_legacy(app_name: str) -> list[str]:
+      list_eval_results_response = await list_eval_results(app_name)
+      return list_eval_results_response.eval_result_ids
+
     @app.get(
         "/apps/{app_name}/eval-sets",
         response_model_exclude_none=True,
@@ -948,19 +1074,6 @@ class AdkWebServer:
         logger.warning(e)
 
       return ListEvalSetsResponse(eval_set_ids=eval_sets)
-
-    @deprecated(
-        "Please use list_eval_sets instead. This will be removed in future"
-        " releases."
-    )
-    @app.get(
-        "/apps/{app_name}/eval_sets",
-        response_model_exclude_none=True,
-        tags=[TAG_EVALUATION],
-    )
-    async def list_eval_sets_legacy(app_name: str) -> list[str]:
-      list_eval_sets_response = await list_eval_sets(app_name)
-      return list_eval_sets_response.eval_set_ids
 
     @app.post(
         "/apps/{app_name}/eval-sets/{eval_set_id}/add-session",
@@ -1109,22 +1222,6 @@ class AdkWebServer:
       except NotFoundError as nfe:
         raise HTTPException(status_code=404, detail=str(nfe)) from nfe
 
-    @deprecated(
-        "Please use run_eval instead. This will be removed in future releases."
-    )
-    @app.post(
-        "/apps/{app_name}/eval_sets/{eval_set_id}/run_eval",
-        response_model_exclude_none=True,
-        tags=[TAG_EVALUATION],
-    )
-    async def run_eval_legacy(
-        app_name: str, eval_set_id: str, req: RunEvalRequest
-    ) -> list[RunEvalResult]:
-      run_eval_response = await run_eval(
-          app_name=app_name, eval_set_id=eval_set_id, req=req
-      )
-      return run_eval_response.run_eval_results
-
     @app.post(
         "/apps/{app_name}/eval-sets/{eval_set_id}/run",
         response_model_exclude_none=True,
@@ -1218,28 +1315,6 @@ class AdkWebServer:
       except ValidationError as ve:
         raise HTTPException(status_code=500, detail=str(ve)) from ve
 
-    @deprecated(
-        "Please use get_eval_result instead. This will be removed in future"
-        " releases."
-    )
-    @app.get(
-        "/apps/{app_name}/eval_results/{eval_result_id}",
-        response_model_exclude_none=True,
-        tags=[TAG_EVALUATION],
-    )
-    async def get_eval_result_legacy(
-        app_name: str,
-        eval_result_id: str,
-    ) -> EvalSetResult:
-      try:
-        return self.eval_set_results_manager.get_eval_set_result(
-            app_name, eval_result_id
-        )
-      except ValueError as ve:
-        raise HTTPException(status_code=404, detail=str(ve)) from ve
-      except ValidationError as ve:
-        raise HTTPException(status_code=500, detail=str(ve)) from ve
-
     @app.get(
         "/apps/{app_name}/eval-results",
         response_model_exclude_none=True,
@@ -1251,19 +1326,6 @@ class AdkWebServer:
           app_name
       )
       return ListEvalResultsResponse(eval_result_ids=eval_result_ids)
-
-    @deprecated(
-        "Please use list_eval_results instead. This will be removed in future"
-        " releases."
-    )
-    @app.get(
-        "/apps/{app_name}/eval_results",
-        response_model_exclude_none=True,
-        tags=[TAG_EVALUATION],
-    )
-    async def list_eval_results_legacy(app_name: str) -> list[str]:
-      list_eval_results_response = await list_eval_results(app_name)
-      return list_eval_results_response.eval_result_ids
 
     @app.get(
         "/apps/{app_name}/metrics-info",
@@ -1308,6 +1370,24 @@ class AdkWebServer:
       if not artifact:
         raise HTTPException(status_code=404, detail="Artifact not found")
       return artifact
+
+    @app.get(
+        "/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts/{artifact_name}/versions/metadata",
+        response_model=list[ArtifactVersion],
+        response_model_exclude_none=True,
+    )
+    async def list_artifact_versions_metadata(
+        app_name: str,
+        user_id: str,
+        session_id: str,
+        artifact_name: str,
+    ) -> list[ArtifactVersion]:
+      return await self.artifact_service.list_artifact_versions(
+          app_name=app_name,
+          user_id=user_id,
+          session_id=session_id,
+          filename=artifact_name,
+      )
 
     @app.get(
         "/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts/{artifact_name}/versions/{version_id}",
@@ -1375,6 +1455,31 @@ class AdkWebServer:
       if artifact_version is None:
         raise HTTPException(
             status_code=500, detail="Artifact metadata unavailable"
+        )
+      return artifact_version
+
+    @app.get(
+        "/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts/{artifact_name}/versions/{version_id}/metadata",
+        response_model=ArtifactVersion,
+        response_model_exclude_none=True,
+    )
+    async def get_artifact_version_metadata(
+        app_name: str,
+        user_id: str,
+        session_id: str,
+        artifact_name: str,
+        version_id: int,
+    ) -> ArtifactVersion:
+      artifact_version = await self.artifact_service.get_artifact_version(
+          app_name=app_name,
+          user_id=user_id,
+          session_id=session_id,
+          filename=artifact_name,
+          version=version_id,
+      )
+      if not artifact_version:
+        raise HTTPException(
+            status_code=404, detail="Artifact version not found"
         )
       return artifact_version
 
@@ -1465,6 +1570,7 @@ class AdkWebServer:
               session_id=req.session_id,
               new_message=req.new_message,
               state_delta=req.state_delta,
+              invocation_id=req.invocation_id,
           )
       ) as agen:
         events = [event async for event in agen]
@@ -1499,18 +1605,34 @@ class AdkWebServer:
               )
           ) as agen:
             async for event in agen:
-              # Format as SSE data
-              sse_event = event.model_dump_json(
-                  exclude_none=True, by_alias=True
-              )
-              logger.debug(
-                  "Generated event in agent run streaming: %s", sse_event
-              )
-              yield f"data: {sse_event}\n\n"
+              # ADK Web renders artifacts from `actions.artifactDelta`
+              # during part processing *and* during action processing
+              # 1) the original event with `artifactDelta` cleared (content)
+              # 2) a content-less "action-only" event carrying `artifactDelta`
+              events_to_stream = [event]
+              if (
+                  event.actions.artifact_delta
+                  and event.content
+                  and event.content.parts
+              ):
+                content_event = event.model_copy(deep=True)
+                content_event.actions.artifact_delta = {}
+                artifact_event = event.model_copy(deep=True)
+                artifact_event.content = None
+                events_to_stream = [content_event, artifact_event]
+
+              for event_to_stream in events_to_stream:
+                sse_event = event_to_stream.model_dump_json(
+                    exclude_none=True,
+                    by_alias=True,
+                )
+                logger.debug(
+                    "Generated event in agent run streaming: %s", sse_event
+                )
+                yield f"data: {sse_event}\n\n"
         except Exception as e:
           logger.exception("Error in event_generator: %s", e)
-          # You might want to yield an error event here
-          yield f'data: {{"error": "{str(e)}"}}\n\n'
+          yield f"data: {json.dumps({'error': str(e)})}\n\n"
 
       # Returns a streaming response with the proper media type for SSE
       return StreamingResponse(
@@ -1575,8 +1697,11 @@ class AdkWebServer:
         user_id: str,
         session_id: str,
         modalities: List[Literal["TEXT", "AUDIO"]] = Query(
-            default=["TEXT", "AUDIO"]
+            default=["AUDIO"]
         ),  # Only allows "TEXT" or "AUDIO"
+        proactive_audio: bool | None = Query(default=None),
+        enable_affective_dialog: bool | None = Query(default=None),
+        enable_session_resumption: bool | None = Query(default=None),
     ) -> None:
       await websocket.accept()
 
@@ -1593,9 +1718,27 @@ class AdkWebServer:
 
       async def forward_events():
         runner = await self.get_runner_async(app_name)
+        run_config = RunConfig(
+            response_modalities=modalities,
+            proactivity=(
+                types.ProactivityConfig(proactive_audio=proactive_audio)
+                if proactive_audio is not None
+                else None
+            ),
+            enable_affective_dialog=enable_affective_dialog,
+            session_resumption=(
+                types.SessionResumptionConfig(
+                    transparent=enable_session_resumption
+                )
+                if enable_session_resumption is not None
+                else None
+            ),
+        )
         async with Aclosing(
             runner.run_live(
-                session=session, live_request_queue=live_request_queue
+                session=session,
+                live_request_queue=live_request_queue,
+                run_config=run_config,
             )
         ) as agen:
           async for event in agen:
@@ -1625,7 +1768,8 @@ class AdkWebServer:
         for task in done:
           task.result()
       except WebSocketDisconnect:
-        logger.info("Client disconnected during process_messages.")
+        # Disconnection could happen when receive or send text via websocket
+        logger.info("Client disconnected during live session.")
       except Exception as e:
         logger.exception("Error during live websocket communication: %s", e)
         traceback.print_exc()

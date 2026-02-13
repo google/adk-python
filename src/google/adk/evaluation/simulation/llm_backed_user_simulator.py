@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -20,6 +20,7 @@ from typing import Optional
 
 from google.genai import types as genai_types
 from pydantic import Field
+from pydantic import field_validator
 from typing_extensions import override
 
 from ...events.event import Event
@@ -40,7 +41,7 @@ logger = logging.getLogger("google_adk." + __name__)
 _AUTHOR_USER = "user"
 _STOP_SIGNAL = "</finished>"
 
-_USER_AGENT_INSTRUCTIONS_TEMPLATE = """You are a Simulated User designed to test an AI Agent.
+_DEFAULT_USER_AGENT_INSTRUCTIONS = """You are a Simulated User designed to test an AI Agent.
 
 Your single most important job is to react logically to the Agent's last message.
 The Conversation Plan is your canonical grounding, not a script; your response MUST be dictated by what the Agent just said.
@@ -126,6 +127,38 @@ prompt is also counted as an invocation.
 (Not recommended) If you don't want a limit, you can set the value to -1.""",
   )
 
+  custom_instructions: Optional[str] = Field(
+      default=None,
+      description="""Custom instructions for the LlmBackedUserSimulator. The
+instructions must contain the following formatting placeholders:
+* {stop_signal} : text to be generated when the user simulator decides that the
+  conversation is over.
+* {conversation_plan} : the overall plan for the conversation that the user
+  simulator must follow.
+* {conversation_history} : the conversation between the user and the agent so
+  far.""",
+  )
+
+  @field_validator("custom_instructions")
+  @classmethod
+  def validate_custom_instructions(cls, value: Optional[str]) -> Optional[str]:
+    if value is None:
+      return value
+    if not all(
+        placeholder in value
+        for placeholder in [
+            "{stop_signal}",
+            "{conversation_plan}",
+            "{conversation_history}",
+        ]
+    ):
+      raise ValueError(
+          "custom_instructions must contain each of the following formatting"
+          " placeholders:"
+          " {stop_signal}, {conversation_plan}, {conversation_history}"
+      )
+    return value
+
 
 @experimental
 class LlmBackedUserSimulator(UserSimulator):
@@ -147,6 +180,11 @@ class LlmBackedUserSimulator(UserSimulator):
     llm_registry = LLMRegistry()
     llm_class = llm_registry.resolve(self._config.model)
     self._llm = llm_class(model=self._config.model)
+    self._instructions = (
+        self._config.custom_instructions
+        if self._config.custom_instructions
+        else _DEFAULT_USER_AGENT_INSTRUCTIONS
+    )
 
   @classmethod
   def _summarize_conversation(
@@ -183,7 +221,7 @@ class LlmBackedUserSimulator(UserSimulator):
       # first invocation - send the static starting prompt
       return self._conversation_scenario.starting_prompt
 
-    user_agent_instructions = _USER_AGENT_INSTRUCTIONS_TEMPLATE.format(
+    user_agent_instructions = self._instructions.format(
         stop_signal=_STOP_SIGNAL,
         conversation_plan=self._conversation_scenario.conversation_plan,
         conversation_history=rewritten_dialogue,
