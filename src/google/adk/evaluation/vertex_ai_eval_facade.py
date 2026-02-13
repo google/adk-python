@@ -159,18 +159,25 @@ class _VertexAiEvalFacade(Evaluator):
     """
     project_id = os.environ.get("GOOGLE_CLOUD_PROJECT", None)
     location = os.environ.get("GOOGLE_CLOUD_LOCATION", None)
+    api_key = os.environ.get("GOOGLE_API_KEY", None)
 
-    if not project_id:
-      raise ValueError("Missing project id." + _ERROR_MESSAGE_SUFFIX)
-    if not location:
-      raise ValueError("Missing location." + _ERROR_MESSAGE_SUFFIX)
+    from ..dependencies.vertexai import vertexai
 
-    from vertexai import Client
-    from vertexai import types as vertexai_types
-
-    client = Client(project=project_id, location=location)
+    if api_key:
+      client = vertexai.Client(api_key=api_key)
+    elif project_id or location:
+      if not project_id:
+        raise ValueError("Missing project id." + _ERROR_MESSAGE_SUFFIX)
+      if not location:
+        raise ValueError("Missing location." + _ERROR_MESSAGE_SUFFIX)
+      client = vertexai.Client(project=project_id, location=location)
+    else:
+      raise ValueError(
+          "Either API Key or Google cloud Project id and location should be"
+          " specified."
+      )
 
     return client.evals.evaluate(
-        dataset=vertexai_types.EvaluationDataset(eval_dataset_df=dataset),
+        dataset=vertexai.types.EvaluationDataset(eval_dataset_df=dataset),
         metrics=metrics,
     )

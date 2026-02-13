@@ -40,9 +40,7 @@ class _AgentTransferLlmRequestProcessor(BaseLlmRequestProcessor):
   async def run_async(
       self, invocation_context: InvocationContext, llm_request: LlmRequest
   ) -> AsyncGenerator[Event, None]:
-    from ...agents.llm_agent import LlmAgent
-
-    if not isinstance(invocation_context.agent, LlmAgent):
+    if not hasattr(invocation_context.agent, 'disallow_transfer_to_parent'):
       return
 
     transfer_targets = _get_transfer_targets(invocation_context.agent)
@@ -54,7 +52,7 @@ class _AgentTransferLlmRequestProcessor(BaseLlmRequestProcessor):
     )
 
     llm_request.append_instructions([
-        _build_target_agents_instructions(
+        _build_transfer_instructions(
             transfer_to_agent_tool.name,
             invocation_context.agent,
             transfer_targets,
@@ -83,11 +81,24 @@ Agent description: {target_agent.description}
 line_break = '\n'
 
 
-def _build_target_agents_instructions(
+def _build_transfer_instructions(
     tool_name: str,
-    agent: LlmAgent,
-    target_agents: list[BaseAgent],
+    agent: 'LlmAgent',
+    target_agents: list['BaseAgent'],
 ) -> str:
+  """Build instructions for agent transfer.
+
+  This function generates the instruction text that guides the LLM on how to
+  use the transfer tool to delegate to other agents.
+
+  Args:
+    tool_name: The name of the transfer tool (e.g., 'transfer_to_agent').
+    agent: The current agent that may initiate transfers.
+    target_agents: List of agents that can be transferred to.
+
+  Returns:
+    Instruction text for the LLM about agent transfers.
+  """
   # Build list of available agent names for the NOTE
   # target_agents already includes parent agent if applicable,
   # so no need to add it again
@@ -128,12 +139,12 @@ If neither you nor the other agents are best for the question, transfer to your 
 
 
 def _get_transfer_targets(agent: LlmAgent) -> list[BaseAgent]:
-  from ...agents.llm_agent import LlmAgent
-
   result = []
   result.extend(agent.sub_agents)
 
-  if not agent.parent_agent or not isinstance(agent.parent_agent, LlmAgent):
+  if not agent.parent_agent or not hasattr(
+      agent.parent_agent, 'disallow_transfer_to_parent'
+  ):
     return result
 
   if not agent.disallow_transfer_to_parent:

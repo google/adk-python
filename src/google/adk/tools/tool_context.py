@@ -14,93 +14,17 @@
 
 from __future__ import annotations
 
-from typing import Any
-from typing import Optional
-from typing import TYPE_CHECKING
-
+# Keep CallbackContext for backward compatibility
 from ..agents.callback_context import CallbackContext
+from ..agents.context import Context
+# Keep AuthCredential for backward compatibility
 from ..auth.auth_credential import AuthCredential
+# Keep AuthHandler for backward compatibility
 from ..auth.auth_handler import AuthHandler
+# Keep AuthConfig for backward compatibility
 from ..auth.auth_tool import AuthConfig
+# Keep ToolConfirmation for backward compatibility
 from .tool_confirmation import ToolConfirmation
 
-if TYPE_CHECKING:
-  from ..agents.invocation_context import InvocationContext
-  from ..events.event_actions import EventActions
-  from ..memory.base_memory_service import SearchMemoryResponse
-
-
-class ToolContext(CallbackContext):
-  """The context of the tool.
-
-  This class provides the context for a tool invocation, including access to
-  the invocation context, function call ID, event actions, and authentication
-  response. It also provides methods for requesting credentials, retrieving
-  authentication responses, listing artifacts, and searching memory.
-
-  Attributes:
-    invocation_context: The invocation context of the tool.
-    function_call_id: The function call id of the current tool call. This id was
-      returned in the function call event from LLM to identify a function call.
-      If LLM didn't return this id, ADK will assign one to it. This id is used
-      to map function call response to the original function call.
-    event_actions: The event actions of the current tool call.
-    tool_confirmation: The tool confirmation of the current tool call.
-  """
-
-  def __init__(
-      self,
-      invocation_context: InvocationContext,
-      *,
-      function_call_id: Optional[str] = None,
-      event_actions: Optional[EventActions] = None,
-      tool_confirmation: Optional[ToolConfirmation] = None,
-  ):
-    super().__init__(invocation_context, event_actions=event_actions)
-    self.function_call_id = function_call_id
-    self.tool_confirmation = tool_confirmation
-
-  @property
-  def actions(self) -> EventActions:
-    return self._event_actions
-
-  def request_credential(self, auth_config: AuthConfig) -> None:
-    if not self.function_call_id:
-      raise ValueError('function_call_id is not set.')
-    self._event_actions.requested_auth_configs[self.function_call_id] = (
-        AuthHandler(auth_config).generate_auth_request()
-    )
-
-  def get_auth_response(self, auth_config: AuthConfig) -> AuthCredential:
-    return AuthHandler(auth_config).get_auth_response(self.state)
-
-  def request_confirmation(
-      self,
-      *,
-      hint: Optional[str] = None,
-      payload: Optional[Any] = None,
-  ) -> None:
-    """Requests confirmation for the given function call.
-
-    Args:
-      hint: A hint to the user on how to confirm the tool call.
-      payload: The payload used to confirm the tool call.
-    """
-    if not self.function_call_id:
-      raise ValueError('function_call_id is not set.')
-    self._event_actions.requested_tool_confirmations[self.function_call_id] = (
-        ToolConfirmation(
-            hint=hint,
-            payload=payload,
-        )
-    )
-
-  async def search_memory(self, query: str) -> SearchMemoryResponse:
-    """Searches the memory of the current user."""
-    if self._invocation_context.memory_service is None:
-      raise ValueError('Memory service is not available.')
-    return await self._invocation_context.memory_service.search_memory(
-        app_name=self._invocation_context.app_name,
-        user_id=self._invocation_context.user_id,
-        query=query,
-    )
+# ToolContext is unified into Context
+ToolContext = Context
