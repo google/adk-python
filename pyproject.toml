@@ -111,7 +111,6 @@ eval = [
   "google-cloud-aiplatform[evaluation]>=1.100.0",
   "pandas>=2.2.3",
   "rouge-score>=0.1.2",
-  "scipy<1.16; python_version<'3.11'",
   "tabulate>=0.9.0",
   # go/keep-sorted end
 ]
