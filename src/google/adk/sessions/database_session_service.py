@@ -187,9 +187,6 @@ class DatabaseSessionService(BaseSessionService):
     # The current database schema version in use, "None" if not yet checked
     self._db_schema_version: Optional[str] = None
 
-    # Lock to ensure thread-safe schema version check
-    self._db_schema_lock = asyncio.Lock()
-
     # Per-session locks used to serialize append_event calls in this process.
     self._session_locks: dict[_SessionLockKey, asyncio.Lock] = {}
     self._session_lock_ref_count: dict[_SessionLockKey, int] = {}
@@ -261,62 +258,55 @@ class DatabaseSessionService(BaseSessionService):
     DB schema version to use and creates the tables (including setting the
     schema version metadata) if needed.
     """
-    # Check the database schema version and set the _db_schema_version if
-    # needed
-    if self._db_schema_version is not None:
-      return
-
-    async with self._db_schema_lock:
-      # Double-check after acquiring the lock
-      if self._db_schema_version is not None:
-        return
-      try:
-        async with self.db_engine.connect() as conn:
-          self._db_schema_version = await conn.run_sync(
-              _schema_check_utils.get_db_schema_version_from_connection
-          )
-      except Exception as e:
-        logger.error("Failed to inspect database tables: %s", e)
-        raise
-
-    # Check if tables are created and create them if not
+    # Early return if tables are already created
     if self._tables_created:
       return
 
     async with self._table_creation_lock:
       # Double-check after acquiring the lock
-      if not self._tables_created:
-        async with self.db_engine.begin() as conn:
-          if (
-              self._db_schema_version
-              == _schema_check_utils.LATEST_SCHEMA_VERSION
-          ):
-            # Uncomment to recreate DB every time
-            # await conn.run_sync(BaseV1.metadata.drop_all)
-            logger.debug("Using V1 schema tables...")
-            await conn.run_sync(BaseV1.metadata.create_all)
-          else:
-            # await conn.run_sync(BaseV0.metadata.drop_all)
-            logger.debug("Using V0 schema tables...")
-            await conn.run_sync(BaseV0.metadata.create_all)
-        self._tables_created = True
+      if self._tables_created:
+        return
 
-        if self._db_schema_version == _schema_check_utils.LATEST_SCHEMA_VERSION:
-          async with self._rollback_on_exception_session() as sql_session:
-            # Check if schema version is set, if not, set it to the latest
-            # version
-            stmt = select(StorageMetadata).where(
-                StorageMetadata.key == _schema_check_utils.SCHEMA_VERSION_KEY
+      # Check the database schema version and set the _db_schema_version
+      if self._db_schema_version is None:
+        try:
+          async with self.db_engine.connect() as conn:
+            self._db_schema_version = await conn.run_sync(
+                _schema_check_utils.get_db_schema_version_from_connection
             )
-            result = await sql_session.execute(stmt)
-            metadata = result.scalars().first()
-            if not metadata:
-              metadata = StorageMetadata(
-                  key=_schema_check_utils.SCHEMA_VERSION_KEY,
-                  value=_schema_check_utils.LATEST_SCHEMA_VERSION,
-              )
-              sql_session.add(metadata)
-              await sql_session.commit()
+        except Exception as e:
+          logger.error("Failed to inspect database tables: %s", e)
+          raise
+
+      async with self.db_engine.begin() as conn:
+        if self._db_schema_version == _schema_check_utils.LATEST_SCHEMA_VERSION:
+          # Uncomment to recreate DB every time
+          # await conn.run_sync(BaseV1.metadata.drop_all)
+          logger.debug("Using V1 schema tables...")
+          await conn.run_sync(BaseV1.metadata.create_all)
+        else:
+          # await conn.run_sync(BaseV0.metadata.drop_all)
+          logger.debug("Using V0 schema tables...")
+          await conn.run_sync(BaseV0.metadata.create_all)
+
+      if self._db_schema_version == _schema_check_utils.LATEST_SCHEMA_VERSION:
+        async with self._rollback_on_exception_session() as sql_session:
+          # Check if schema version is set, if not, set it to the latest
+          # version
+          stmt = select(StorageMetadata).where(
+              StorageMetadata.key == _schema_check_utils.SCHEMA_VERSION_KEY
+          )
+          result = await sql_session.execute(stmt)
+          metadata = result.scalars().first()
+          if not metadata:
+            metadata = StorageMetadata(
+                key=_schema_check_utils.SCHEMA_VERSION_KEY,
+                value=_schema_check_utils.LATEST_SCHEMA_VERSION,
+            )
+            sql_session.add(metadata)
+            await sql_session.commit()
+
+      self._tables_created = True
 
   @override
   async def create_session(
