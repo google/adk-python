@@ -51,7 +51,7 @@ LLMRegistry.register(DemoFailThenSucceedModel)
 
 async def main():
   # Agent with the failing-then-succeed model
-  agent = LlmAgent(name="resilient-agent", model="demo-fail-succeed")
+  agent = LlmAgent(name="resilient_agent", model="demo-fail-succeed")
 
   # Build services and runner in-memory
   artifact_service = InMemoryArtifactService()
