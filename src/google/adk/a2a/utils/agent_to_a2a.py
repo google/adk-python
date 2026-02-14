@@ -33,6 +33,9 @@ from ...sessions.in_memory_session_service import InMemorySessionService
 from ..executor.a2a_agent_executor import A2aAgentExecutor
 from ..experimental import a2a_experimental
 from .agent_card_builder import AgentCardBuilder
+from .url_utils import build_public_url
+from .url_utils import normalize_path
+from .url_utils import normalize_public_url
 
 
 def _load_agent_card(
@@ -77,6 +80,8 @@ def to_a2a(
     host: str = "localhost",
     port: int = 8000,
     protocol: str = "http",
+    path: str = "/",
+    http_url: Optional[str] = None,
     agent_card: Optional[Union[AgentCard, str]] = None,
     runner: Optional[Runner] = None,
 ) -> Starlette:
@@ -87,6 +92,10 @@ def to_a2a(
       host: The host for the A2A RPC URL (default: "localhost")
       port: The port for the A2A RPC URL (default: 8000)
       protocol: The protocol for the A2A RPC URL (default: "http")
+      path: The URL path prefix used to expose this A2A app (default: "/").
+      http_url: Optional public URL where this agent is accessible. When
+                provided, this value overrides host/port/protocol for the
+                published agent card URL.
       agent_card: Optional pre-built AgentCard object or path to agent card
                   JSON. If not provided, will be built automatically from the
                   agent.
@@ -122,6 +131,7 @@ def to_a2a(
 
   # Create A2A components
   task_store = InMemoryTaskStore()
+  normalized_path = normalize_path(path)
 
   agent_executor = A2aAgentExecutor(
       runner=runner or create_runner,
@@ -132,7 +142,11 @@ def to_a2a(
   )
 
   # Use provided agent card or build one from the agent
-  rpc_url = f"{protocol}://{host}:{port}/"
+  rpc_url = (
+      normalize_public_url(http_url)
+      if http_url
+      else build_public_url(protocol, host, port, normalized_path)
+  )
   provided_agent_card = _load_agent_card(agent_card)
 
   card_builder = AgentCardBuilder(
@@ -158,9 +172,13 @@ def to_a2a(
     )
 
     # Add A2A routes to the main app
-    a2a_app.add_routes_to_app(
-        app,
-    )
+    if normalized_path == "/":
+      a2a_app.add_routes_to_app(app)
+      return
+
+    routed_app = Starlette()
+    a2a_app.add_routes_to_app(routed_app)
+    app.mount(normalized_path, routed_app)
 
   # Store the setup function to be called during startup
   app.add_event_handler("startup", setup_a2a)

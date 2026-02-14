@@ -33,6 +33,7 @@ from ...agents.parallel_agent import ParallelAgent
 from ...agents.sequential_agent import SequentialAgent
 from ...tools.example_tool import ExampleTool
 from ..experimental import a2a_experimental
+from .url_utils import normalize_public_url
 
 logger = logging.getLogger('google_adk.' + __name__)
 
@@ -61,7 +62,11 @@ class AgentCardBuilder:
       raise ValueError('Agent cannot be None or empty.')
 
     self._agent = agent
-    self._rpc_url = rpc_url or 'http://localhost:80/a2a'
+    self._rpc_url = (
+        normalize_public_url(rpc_url)
+        if rpc_url
+        else normalize_public_url('http://localhost:80/a2a')
+    )
     self._capabilities = capabilities or AgentCapabilities()
     self._doc_url = doc_url
     self._provider = provider
@@ -79,7 +84,7 @@ class AgentCardBuilder:
           name=self._agent.name,
           description=self._agent.description or 'An ADK Agent',
           doc_url=self._doc_url,
-          url=f"{self._rpc_url.rstrip('/')}",
+          url=self._rpc_url,
           version=self._agent_version,
           capabilities=self._capabilities,
           skills=all_skills,
