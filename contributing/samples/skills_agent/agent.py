@@ -19,7 +19,6 @@ import pathlib
 from google.adk import Agent
 from google.adk.skills import load_skill_from_dir
 from google.adk.skills import models
-from google.adk.skills.prompt import DEFAULT_SKILL_SYSTEM_INSTRUCTION
 from google.adk.tools import skill_toolset
 
 greeting_skill = models.Skill(
@@ -53,7 +52,7 @@ root_agent = Agent(
     model="gemini-2.5-flash",
     name="skill_user_agent",
     description="An agent that can use specialized skills.",
-    instruction=DEFAULT_SKILL_SYSTEM_INSTRUCTION,
+    instruction=skill_toolset.DEFAULT_SKILL_SYSTEM_INSTRUCTION,
     tools=[
         my_skill_toolset,
     ],
