@@ -70,6 +70,22 @@ async def test_send_realtime_default_behavior(
 
 
 @pytest.mark.asyncio
+async def test_send_realtime_audiostreamend(
+    gemini_connection, mock_gemini_session
+):
+  """Test send_realtime with LiveClientRealtimeInput(audio_stream_end=True)."""
+  input_signal = types.LiveClientRealtimeInput(audio_stream_end=True)
+  await gemini_connection.send_realtime(input_signal)
+
+  # Should call send_realtime_input with audio_stream_end=True
+  mock_gemini_session.send_realtime_input.assert_called_once_with(
+      audio_stream_end=True
+  )
+  # Should not call .send function
+  mock_gemini_session.send.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_send_history(gemini_connection, mock_gemini_session):
   """Test send_history method."""
   history = [
