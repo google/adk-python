@@ -23,12 +23,41 @@ from google.genai import types
 from ..agents.readonly_context import ReadonlyContext
 from ..features import experimental
 from ..features import FeatureName
-from ..models.llm_request import LlmRequest
 from ..skills import models
 from ..skills import prompt
 from .base_tool import BaseTool
 from .base_toolset import BaseToolset
 from .tool_context import ToolContext
+
+
+@experimental(FeatureName.SKILL_TOOLSET)
+class ListSkillsTool(BaseTool):
+  """Tool to list all available skills."""
+
+  def __init__(self, toolset: "SkillToolset"):
+    super().__init__(
+        name="list_skills",
+        description=(
+            "Lists all available skills with their names and descriptions."
+        ),
+    )
+    self._toolset = toolset
+
+  def _get_declaration(self) -> types.FunctionDeclaration | None:
+    return types.FunctionDeclaration(
+        name=self.name,
+        description=self.description,
+        parameters_json_schema={
+            "type": "object",
+            "properties": {},
+        },
+    )
+
+  async def run_async(
+      self, *, args: dict[str, Any], tool_context: ToolContext
+  ) -> Any:
+    skill_frontmatters = self._toolset._list_skills()
+    return prompt.format_skills_as_xml(skill_frontmatters)
 
 
 @experimental(FeatureName.SKILL_TOOLSET)
@@ -179,6 +208,7 @@ class SkillToolset(BaseToolset):
     super().__init__()
     self._skills = {skill.name: skill for skill in skills}
     self._tools = [
+        ListSkillsTool(self),
         LoadSkillTool(self),
         LoadSkillResourceTool(self),
     ]
@@ -196,33 +226,3 @@ class SkillToolset(BaseToolset):
   def _list_skills(self) -> list[models.Frontmatter]:
     """Lists the frontmatter of all available skills."""
     return [s.frontmatter for s in self._skills.values()]
-
-  async def process_llm_request(
-      self,
-      *,
-      tool_context: ToolContext,
-      llm_request: LlmRequest,
-  ) -> None:
-    """Adds available skills to the system instruction."""
-
-    skill_frontmatters = self._list_skills()
-
-    # Append the skill instruction into the system instruction
-    skills_xml = prompt.format_skills_as_xml(skill_frontmatters)
-    skill_si = f"""
-You can use specialized 'skills' to help you with complex tasks. Each skill has a name and a description listed below:
-{skills_xml}
-
-Skills are folders of instructions and resources that extend your capabilities for specialized tasks. Each skill folder contains:
-- **SKILL.md** (required): The main instruction file with skill metadata and detailed markdown instructions.
-- **references/** (Optional): Additional documentation or examples for skill usage.
-- **assets/** (Optional): Templates, scripts or other resources used by the skill.
-
-This is very important:
-
-1. If a skill seems relevant to the current user query, you MUST use the `load_skill` tool with `name="<SKILL_NAME>"` to read its full instructions before proceeding.
-2. Once you have read the instructions, follow them exactly as documented before replying to the user. For example, If the instruction lists multiple steps, please make sure you complete all of them in order.
-3. The `load_skill_resource` tool is for viewing files within a skill's directory (e.g., `references/*`, `assets/*`). Do NOT use other tools to access these files.
-"""
-
-    llm_request.append_instructions([skill_si])

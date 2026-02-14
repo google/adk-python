@@ -86,11 +86,38 @@ class BaseMemoryService(ABC):
       session_id: Optional session ID for memory scope/partitioning.
       custom_metadata: Optional, portable metadata for memory generation. Prefer
         this for service-specific fields (e.g., TTL) that may later become
-        first-class API parameters.
+        first-class API parameters. Supported keys are
+        implementation-defined by each memory service.
     """
     raise NotImplementedError(
         "This memory service does not support adding event deltas. "
         "Call add_session_to_memory(session) to ingest the full session."
+    )
+
+  async def add_memory(
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      memories: Sequence[str],
+      custom_metadata: Mapping[str, object] | None = None,
+  ) -> None:
+    """Adds explicit memory items directly to the memory service.
+
+    This is intended for services that support direct memory writes in addition
+    to event-based memory generation.
+
+    Args:
+      app_name: The application name for memory scope.
+      user_id: The user ID for memory scope.
+      memories: Explicit memory items to add.
+      custom_metadata: Optional, portable metadata for memory writes. Supported
+        keys are implementation-defined by each memory service.
+    """
+    raise NotImplementedError(
+        "This memory service does not support direct memory writes. "
+        "Call add_events_to_memory(...) or add_session_to_memory(session) "
+        "instead."
     )
 
   @abstractmethod
