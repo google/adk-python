@@ -164,13 +164,22 @@ class LlmResiliencePlugin(BasePlugin):
     # Let the original error propagate if all attempts failed
     return None
 
+  def _get_invocation_context(self, callback_context: CallbackContext | InvocationContext):
+    # Accept both Context (CallbackContext alias) and InvocationContext for flexibility in tests
+    if isinstance(callback_context, InvocationContext):
+      return callback_context
+    # Fallback for Context which wraps InvocationContext
+    ic = getattr(callback_context, "_invocation_context", None)
+    if ic is None:
+      raise TypeError("callback_context must be Context or InvocationContext")
+    return ic
+
   async def _retry_same_model(
-      self, *, callback_context: CallbackContext, llm_request: LlmRequest
+      self, *, callback_context: CallbackContext | InvocationContext, llm_request: LlmRequest
   ) -> Optional[LlmResponse]:
+    invocation_context = self._get_invocation_context(callback_context)
     # Determine streaming mode
-    streaming_mode = getattr(
-        callback_context._invocation_context.run_config, "streaming_mode", None
-    )
+    streaming_mode = getattr(invocation_context.run_config, "streaming_mode", None)
     stream = False
     try:
       # Only SSE streaming is supported in generate_content_async
@@ -180,7 +189,7 @@ class LlmResiliencePlugin(BasePlugin):
     except Exception:
       pass
 
-    agent = callback_context._invocation_context.agent
+    agent = invocation_context.agent
     llm = agent.canonical_model
 
     backoff = self.backoff_initial
@@ -212,12 +221,11 @@ class LlmResiliencePlugin(BasePlugin):
     return None
 
   async def _try_fallbacks(
-      self, *, callback_context: CallbackContext, llm_request: LlmRequest
+      self, *, callback_context: CallbackContext | InvocationContext, llm_request: LlmRequest
   ) -> Optional[LlmResponse]:
+    invocation_context = self._get_invocation_context(callback_context)
     # Determine streaming mode
-    streaming_mode = getattr(
-        callback_context._invocation_context.run_config, "streaming_mode", None
-    )
+    streaming_mode = getattr(invocation_context.run_config, "streaming_mode", None)
     stream = False
     try:
       from ..agents.run_config import StreamingMode
@@ -249,18 +257,34 @@ class LlmResiliencePlugin(BasePlugin):
       self, *, llm, llm_request: LlmRequest, stream: bool
   ) -> LlmResponse:
     """Calls the given llm and returns the final non-partial LlmResponse."""
+    import inspect
     final: Optional[LlmResponse] = None
-    agen = llm.generate_content_async(llm_request, stream=stream)
-    try:
-      async for resp in agen:
-        # Keep the latest response; in streaming mode, last one is non-partial
-        final = resp
-    finally:
-      # If the generator is an async generator, ensure it's closed properly
+    agen_or_coro = llm.generate_content_async(llm_request, stream=stream)
+
+    # If the provider raised before first yield, this may be a coroutine; handle gracefully
+    if inspect.isasyncgen(agen_or_coro) or hasattr(agen_or_coro, "__aiter__"):
+      agen = agen_or_coro
       try:
-        await agen.aclose()  # type: ignore[attr-defined]
-      except Exception:
-        pass
+        async for resp in agen:
+          # Keep the latest response; in streaming mode, last one is non-partial
+          final = resp
+      finally:
+        # If the generator is an async generator, ensure it's closed properly
+        try:
+          await agen.aclose()  # type: ignore[attr-defined]
+        except Exception:
+          pass
+    else:
+      # Await the coroutine; some LLMs may return a single response
+      result = await agen_or_coro
+      if isinstance(result, LlmResponse):
+        final = result
+      elif isinstance(result, types.Content):
+        final = LlmResponse(content=result, partial=False)
+      else:
+        # Unknown return type
+        raise TypeError("LLM generate_content_async returned unsupported type")
+
     if final is None:
       # Edge case: provider yielded nothing. Create a minimal error response.
       return LlmResponse(partial=False)
