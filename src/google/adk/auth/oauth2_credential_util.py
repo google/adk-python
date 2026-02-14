@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 import logging
 from typing import Optional
 from typing import Tuple
@@ -98,6 +99,17 @@ def create_oauth2_session(
 
 
 @experimental
+def normalize_oauth2_tokens(tokens: object) -> OAuth2Token:
+  """Validates and normalizes token payload returned by OAuth libraries."""
+  if not isinstance(tokens, Mapping):
+    raise ValueError(
+        "OAuth2 token response must be a dict-like object, got "
+        f"{type(tokens).__name__}."
+    )
+  return tokens  # type: ignore[return-value]
+
+
+@experimental
 def update_credential_with_tokens(
     auth_credential: AuthCredential, tokens: OAuth2Token
 ) -> None:
@@ -107,6 +119,7 @@ def update_credential_with_tokens(
       auth_credential: The authentication credential to update.
       tokens: The OAuth2Token object containing new token information.
   """
+  tokens = normalize_oauth2_tokens(tokens)
   auth_credential.oauth2.access_token = tokens.get("access_token")
   auth_credential.oauth2.refresh_token = tokens.get("refresh_token")
   auth_credential.oauth2.expires_at = (

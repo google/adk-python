@@ -23,6 +23,7 @@ from typing import Optional
 from google.adk.auth.auth_credential import AuthCredential
 from google.adk.auth.auth_schemes import AuthScheme
 from google.adk.auth.oauth2_credential_util import create_oauth2_session
+from google.adk.auth.oauth2_credential_util import normalize_oauth2_tokens
 from google.adk.auth.oauth2_credential_util import update_credential_with_tokens
 from google.adk.utils.feature_decorator import experimental
 from google.auth.transport.requests import Request
@@ -115,6 +116,7 @@ class OAuth2CredentialRefresher(BaseCredentialRefresher):
               url=token_endpoint,
               refresh_token=auth_credential.oauth2.refresh_token,
           )
+          tokens = normalize_oauth2_tokens(tokens)
           update_credential_with_tokens(auth_credential, tokens)
           logger.debug("Successfully refreshed OAuth2 tokens")
         except Exception as e:

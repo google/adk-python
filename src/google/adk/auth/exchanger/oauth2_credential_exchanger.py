@@ -25,6 +25,7 @@ from google.adk.auth.auth_schemes import AuthScheme
 from google.adk.auth.auth_schemes import OAuthGrantType
 from google.adk.auth.auth_schemes import OpenIdConnectWithConfig
 from google.adk.auth.oauth2_credential_util import create_oauth2_session
+from google.adk.auth.oauth2_credential_util import normalize_oauth2_tokens
 from google.adk.auth.oauth2_credential_util import update_credential_with_tokens
 from google.adk.utils.feature_decorator import experimental
 from typing_extensions import override
@@ -193,19 +194,35 @@ class OAuth2CredentialExchanger(BaseCredentialExchanger):
       return ExchangeResult(auth_credential, False)
 
     try:
-      tokens = client.fetch_token(
-          token_endpoint,
-          authorization_response=self._normalize_auth_uri(
+      token_auth_method = (
+          auth_credential.oauth2.token_endpoint_auth_method
+          if auth_credential.oauth2
+          else None
+      )
+      fetch_token_kwargs = {
+          'authorization_response': self._normalize_auth_uri(
               auth_credential.oauth2.auth_response_uri
           ),
-          code=auth_credential.oauth2.auth_code,
-          grant_type=OAuthGrantType.AUTHORIZATION_CODE,
-          client_id=auth_credential.oauth2.client_id,
-      )
+          'code': auth_credential.oauth2.auth_code,
+          'grant_type': OAuthGrantType.AUTHORIZATION_CODE,
+      }
+      # For client_secret_post, Authlib already includes client_id in POST body
+      # from OAuth2Session. Passing client_id again can duplicate parameters.
+      if token_auth_method != 'client_secret_post':
+        fetch_token_kwargs['client_id'] = auth_credential.oauth2.client_id
+
+      tokens = client.fetch_token(token_endpoint, **fetch_token_kwargs)
+      tokens = normalize_oauth2_tokens(tokens)
       update_credential_with_tokens(auth_credential, tokens)
       logger.debug("Successfully exchanged authorization code for access token")
     except Exception as e:
-      logger.error("Failed to exchange authorization code: %s", e)
+      logger.error(
+          "Failed to exchange authorization code (token_endpoint_auth_method=%s): %s",
+          auth_credential.oauth2.token_endpoint_auth_method
+          if auth_credential.oauth2
+          else None,
+          e,
+      )
       return ExchangeResult(auth_credential, False)
 
     return ExchangeResult(auth_credential, True)
