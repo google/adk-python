@@ -86,6 +86,23 @@ async def test_send_realtime_audiostreamend(
 
 
 @pytest.mark.asyncio
+async def test_send_realtime_unsupported_liveClientRealtimeInput(
+    gemini_connection, mock_gemini_session, caplog
+):
+  """Test send_realtime with unsupported LiveClientRealtimeInput."""
+  input_signal = types.LiveClientRealtimeInput()
+
+  with caplog.at_level('WARNING'):
+    await gemini_connection.send_realtime(input_signal)
+
+  # Should log a warning
+  assert 'Unary LiveClientRealtimeInput not fully supported yet.' in caplog.text
+  # Should not call send_realtime_input or send
+  mock_gemini_session.send_realtime_input.assert_not_called()
+  mock_gemini_session.send.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_send_history(gemini_connection, mock_gemini_session):
   """Test send_history method."""
   history = [
