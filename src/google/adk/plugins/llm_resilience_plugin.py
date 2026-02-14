@@ -27,7 +27,6 @@ except Exception:  # pragma: no cover - httpx might not be installed in all envs
 from google.genai import types
 
 from ..agents.callback_context import CallbackContext
-from ..agents.invocation_context import InvocationContext
 from ..models.llm_request import LlmRequest
 from ..models.llm_response import LlmResponse
 from ..models.registry import LLMRegistry
