@@ -163,14 +163,15 @@ class LlmResiliencePlugin(BasePlugin):
     # Let the original error propagate if all attempts failed
     return None
 
-  def _get_invocation_context(self, callback_context: CallbackContext | InvocationContext):
-    # Accept both Context (CallbackContext alias) and InvocationContext for flexibility in tests
-    if isinstance(callback_context, InvocationContext):
+  def _get_invocation_context(self, callback_context):
+    # Accept both Context (CallbackContext alias) and InvocationContext via duck typing
+    # If this looks like an InvocationContext (has agent and run_config), use it directly
+    if hasattr(callback_context, "agent") and hasattr(callback_context, "run_config"):
       return callback_context
-    # Fallback for Context which wraps InvocationContext
+    # Otherwise expect a Context-like object exposing the private _invocation_context
     ic = getattr(callback_context, "_invocation_context", None)
     if ic is None:
-      raise TypeError("callback_context must be Context or InvocationContext")
+      raise TypeError("callback_context must be Context or InvocationContext-like")
     return ic
 
   async def _retry_same_model(
