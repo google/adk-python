@@ -520,12 +520,11 @@ class BaseLlmFlow(ABC):
   async def _preprocess_async(
       self, invocation_context: InvocationContext, llm_request: LlmRequest
   ) -> AsyncGenerator[Event, None]:
-    from ...agents.llm_agent import LlmAgent
-
     agent = invocation_context.agent
-    if not isinstance(agent, LlmAgent):
+    if not hasattr(agent, 'tools') or not hasattr(agent, 'canonical_model'):
       raise TypeError(
-          f'Expected agent to be an LlmAgent, but got {type(agent)}'
+          'Expected agent to have tools and canonical_model attributes,'
+          f' but got {type(agent)}'
       )
 
     # Runs processors.
@@ -973,8 +972,6 @@ class BaseLlmFlow(ABC):
       llm_request: LlmRequest,
       model_response_event: Event,
   ) -> Optional[LlmResponse]:
-    from ...agents.llm_agent import LlmAgent
-
     agent = invocation_context.agent
 
     callback_context = CallbackContext(
@@ -1010,8 +1007,6 @@ class BaseLlmFlow(ABC):
       llm_response: LlmResponse,
       model_response_event: Event,
   ) -> Optional[LlmResponse]:
-    from ...agents.llm_agent import LlmAgent
-
     agent = invocation_context.agent
 
     # Add grounding metadata to the response if needed.
@@ -1130,12 +1125,11 @@ class BaseLlmFlow(ABC):
       A generator of LlmResponse.
     """
 
-    from ...agents.llm_agent import LlmAgent
-
     agent = invocation_context.agent
-    if not isinstance(agent, LlmAgent):
+    if not hasattr(agent, 'canonical_on_model_error_callbacks'):
       raise TypeError(
-          f'Expected agent to be an LlmAgent, but got {type(agent)}'
+          'Expected agent to have canonical_on_model_error_callbacks'
+          f' attribute, but got {type(agent)}'
       )
 
     async def _run_on_model_error_callbacks(
@@ -1190,6 +1184,10 @@ class BaseLlmFlow(ABC):
         raise model_error
 
   def __get_llm(self, invocation_context: InvocationContext) -> BaseLlm:
-    from ...agents.llm_agent import LlmAgent
-
-    return cast(LlmAgent, invocation_context.agent).canonical_model
+    agent = invocation_context.agent
+    if not hasattr(agent, 'canonical_model'):
+      raise TypeError(
+          'Expected agent to have canonical_model attribute,'
+          f' but got {type(agent)}'
+      )
+    return agent.canonical_model

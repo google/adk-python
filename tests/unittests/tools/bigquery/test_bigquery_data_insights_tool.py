@@ -89,6 +89,12 @@ def test_ask_data_insights_success(mock_get_stream):
   assert result["response"] == "Final formatted string from stream"
   mock_get_stream.assert_called_once()
 
+  # Verify that the correct headers and client ID were passed to _get_stream
+  args, _ = mock_get_stream.call_args
+  headers = args[2]
+  assert headers["X-Goog-API-Client"] == "GOOGLE_ADK"
+  assert headers["Authorization"] == "Bearer fake-token"
+
 
 @mock.patch.object(data_insights_tool, "_get_stream")
 def test_ask_data_insights_handles_exception(mock_get_stream):

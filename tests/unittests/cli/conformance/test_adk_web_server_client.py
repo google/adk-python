@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
+from google.adk.artifacts.base_artifact_service import ArtifactVersion
 from google.adk.cli.adk_web_server import RunAgentRequest
 from google.adk.cli.conformance.adk_web_server_client import AdkWebServerClient
 from google.adk.events.event import Event
@@ -260,6 +261,84 @@ async def test_run_agent_raises_on_streamed_error():
     with pytest.raises(RuntimeError, match="boom"):
       async for _ in client.run_agent(request):
         pass
+
+
+@pytest.mark.asyncio
+async def test_get_artifact_version_metadata():
+  client = AdkWebServerClient()
+  mock_response = MagicMock()
+  mock_response.json.return_value = {
+      "version": 2,
+      "canonicalUri": (
+          "artifact://apps/app/users/user/sessions/session/"
+          "artifacts/report/versions/2"
+      ),
+      "customMetadata": {"foo": "bar"},
+      "createTime": 123.4,
+      "mimeType": "text/plain",
+  }
+
+  with patch("httpx.AsyncClient") as mock_client_class:
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_response
+    mock_client_class.return_value = mock_client
+
+    metadata = await client.get_artifact_version_metadata(
+        app_name="app",
+        user_id="user",
+        session_id="session",
+        artifact_name="report",
+        version=2,
+    )
+
+    assert isinstance(metadata, ArtifactVersion)
+    assert metadata.version == 2
+    assert metadata.custom_metadata == {"foo": "bar"}
+    mock_client.get.assert_called_once_with(
+        "/apps/app/users/user/sessions/session/artifacts/report/versions/2/metadata"
+    )
+    mock_response.raise_for_status.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_list_artifact_versions_metadata():
+  client = AdkWebServerClient()
+  mock_response = MagicMock()
+  mock_response.json.return_value = [
+      {
+          "version": 0,
+          "canonicalUri": "artifact://.../versions/0",
+          "customMetadata": {},
+          "createTime": 100.0,
+      },
+      {
+          "version": 1,
+          "canonicalUri": "artifact://.../versions/1",
+          "customMetadata": {"foo": "bar"},
+          "createTime": 200.0,
+          "mimeType": "application/json",
+      },
+  ]
+
+  with patch("httpx.AsyncClient") as mock_client_class:
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_response
+    mock_client_class.return_value = mock_client
+
+    metadata_list = await client.list_artifact_versions_metadata(
+        app_name="app",
+        user_id="user",
+        session_id="session",
+        artifact_name="report",
+    )
+
+    assert len(metadata_list) == 2
+    assert all(isinstance(item, ArtifactVersion) for item in metadata_list)
+    assert metadata_list[1].custom_metadata == {"foo": "bar"}
+    mock_client.get.assert_called_once_with(
+        "/apps/app/users/user/sessions/session/artifacts/report/versions/metadata"
+    )
+    mock_response.raise_for_status.assert_called_once()
 
 
 @pytest.mark.asyncio

@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+from google.adk.features._feature_registry import FeatureName
+from google.adk.features._feature_registry import temporary_feature_override
 from google.adk.utils import streaming_utils
 from google.genai import types
 import pytest
@@ -200,3 +202,105 @@ class TestStreamingResponseAggregator:
 
     closed_response = aggregator.close()
     assert closed_response is None
+
+  @pytest.mark.asyncio
+  @pytest.mark.parametrize(
+      "test_id, use_progressive_sse, metadata_type",
+      [
+          ("grounding_default", False, "grounding"),
+          ("grounding_progressive", True, "grounding"),
+          ("citation_default", False, "citation"),
+          ("citation_progressive", True, "citation"),
+      ],
+  )
+  async def test_close_preserves_metadata(
+      self, test_id, use_progressive_sse, metadata_type
+  ):
+    """close() should carry metadata into the aggregated response."""
+    aggregator = streaming_utils.StreamingResponseAggregator()
+
+    metadata = None
+    response1 = None
+    response2 = None
+
+    if metadata_type == "grounding":
+      metadata = types.GroundingMetadata(
+          grounding_chunks=[
+              types.GroundingChunk(
+                  retrieved_context=types.GroundingChunkRetrievedContext(
+                      uri="https://example.com/doc1",
+                      title="Source",
+                  )
+              )
+          ],
+      )
+      response1 = types.GenerateContentResponse(
+          candidates=[
+              types.Candidate(
+                  content=types.Content(parts=[types.Part(text="Hello ")]),
+                  grounding_metadata=metadata,
+              )
+          ]
+      )
+      response2 = types.GenerateContentResponse(
+          candidates=[
+              types.Candidate(
+                  content=types.Content(parts=[types.Part(text="World!")]),
+                  finish_reason=types.FinishReason.STOP,
+                  grounding_metadata=metadata,
+              )
+          ]
+      )
+    elif metadata_type == "citation":
+      metadata = types.CitationMetadata(
+          citations=[
+              types.Citation(
+                  start_index=0,
+                  end_index=10,
+                  uri="https://example.com/source",
+                  title="Source",
+              )
+          ]
+      )
+      response1 = types.GenerateContentResponse(
+          candidates=[
+              types.Candidate(
+                  content=types.Content(parts=[types.Part(text="Cited text")]),
+              )
+          ]
+      )
+      response2 = types.GenerateContentResponse(
+          candidates=[
+              types.Candidate(
+                  content=types.Content(parts=[]),
+                  finish_reason=types.FinishReason.STOP,
+                  citation_metadata=metadata,
+              )
+          ]
+      )
+
+    async def run_test():
+      async for _ in aggregator.process_response(response1):
+        pass
+      async for _ in aggregator.process_response(response2):
+        pass
+
+      closed_response = aggregator.close()
+      assert closed_response is not None
+      if use_progressive_sse:
+        assert closed_response.partial is False
+
+      if metadata_type == "grounding":
+        assert closed_response.grounding_metadata is not None
+        assert len(closed_response.grounding_metadata.grounding_chunks) == 1
+      elif metadata_type == "citation":
+        assert closed_response.citation_metadata is not None
+        assert len(closed_response.citation_metadata.citations) == 1
+
+    if use_progressive_sse:
+      with temporary_feature_override(
+          FeatureName.PROGRESSIVE_SSE_STREAMING, True
+      ):
+        await run_test()
+    else:
+      await run_test()

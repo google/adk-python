@@ -1419,6 +1419,14 @@ def cli_web(
 @fast_api_common_options()
 @adk_services_options(default_use_local_storage=True)
 @deprecated_adk_services_options()
+@click.option(
+    "--auto_create_session",
+    is_flag=True,
+    default=False,
+    help=(
+        "Automatically create a session if it doesn't exist when calling /run."
+    ),
+)
 def cli_api_server(
     agents_dir: str,
     eval_storage_uri: Optional[str] = None,
@@ -1439,6 +1447,7 @@ def cli_api_server(
     a2a: bool = False,
     reload_agents: bool = False,
     extra_plugins: Optional[list[str]] = None,
+    auto_create_session: bool = False,
 ):
   """Starts a FastAPI server for agents.
 
@@ -1471,6 +1480,7 @@ def cli_api_server(
           url_prefix=url_prefix,
           reload_agents=reload_agents,
           extra_plugins=extra_plugins,
+          auto_create_session=auto_create_session,
       ),
       host=host,
       port=port,
