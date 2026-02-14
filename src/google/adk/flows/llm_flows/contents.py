@@ -577,7 +577,8 @@ def _is_direct_transfer(event : Event) -> bool:
   return bool(
     event.actions.transfer_to_agent
     or (
-      event.content.parts
+      event.content
+      and event.content.parts
       and any(
           p.function_call and p.function_call.name == 'transfer_to_agent'
           for p in event.content.parts
