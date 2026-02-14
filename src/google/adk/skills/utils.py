@@ -36,9 +36,15 @@ def _load_dir(directory: pathlib.Path) -> dict[str, str]:
   files = {}
   if directory.exists() and directory.is_dir():
     for file_path in directory.rglob("*"):
+      if "__pycache__" in file_path.parts:
+        continue
       if file_path.is_file():
         relative_path = file_path.relative_to(directory)
-        files[str(relative_path)] = file_path.read_text(encoding="utf-8")
+        try:
+          files[str(relative_path)] = file_path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+          # Binary files or non-UTF-8 files are skipped for text content.
+          continue
   return files
 
 

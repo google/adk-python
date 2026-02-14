@@ -35,6 +35,7 @@ from google.genai import types
 
 from ...agents.active_streaming_tool import ActiveStreamingTool
 from ...agents.invocation_context import InvocationContext
+from ...agents.live_request_queue import LiveRequestQueue
 from ...auth.auth_tool import AuthConfig
 from ...auth.auth_tool import AuthToolArguments
 from ...events.event import Event
@@ -62,6 +63,18 @@ logger = logging.getLogger('google_adk.' + __name__)
 # Key is max_workers, value is the executor.
 _TOOL_THREAD_POOLS: dict[int, ThreadPoolExecutor] = {}
 _TOOL_THREAD_POOL_LOCK = threading.Lock()
+
+
+def _is_live_request_queue_annotation(param: inspect.Parameter) -> bool:
+  """Check whether a parameter is annotated as LiveRequestQueue.
+
+  Handles both the class itself and the string form produced by
+  ``from __future__ import annotations``.
+  """
+  ann = param.annotation
+  return ann is LiveRequestQueue or (
+      isinstance(ann, str) and ann == 'LiveRequestQueue'
+  )
 
 
 def _get_tool_thread_pool(max_workers: int = 4) -> ThreadPoolExecutor:
@@ -833,13 +846,24 @@ async def _process_function_live_helper(
         invocation_context.active_streaming_tools[tool.name].task = task
       else:
         # Register the streaming tool lazily when the model calls it.
-        # For input-streaming tools (those with `input_stream:
-        # LiveRequestQueue`), _call_live will set .stream to a new
-        # LiveRequestQueue so _send_to_model starts duplicating data.
         invocation_context.active_streaming_tools[tool.name] = (
             ActiveStreamingTool(task=task)
         )
         logger.debug('Lazily registered streaming tool: %s', tool.name)
+
+      # For input-streaming tools (those with `input_stream:
+      # LiveRequestQueue`), create a dedicated LiveRequestQueue so
+      # _send_to_model starts duplicating data to it. This also
+      # handles re-invocation after stop_streaming reset .stream
+      # to None.
+      sig = inspect.signature(tool.func)
+      if (
+          'input_stream' in sig.parameters
+          and _is_live_request_queue_annotation(sig.parameters['input_stream'])
+      ):
+        invocation_context.active_streaming_tools[tool.name].stream = (
+            LiveRequestQueue()
+        )
 
     # Immediately return a pending response.
     # This is required by current live model.

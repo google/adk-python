@@ -486,3 +486,33 @@ class TestContextMemoryMethods:
         match=r"Cannot add events to memory: memory service is not available\.",
     ):
       await context.add_events_to_memory(events=[MagicMock()])
+
+  @pytest.mark.asyncio
+  async def test_add_memory_forwards_metadata(self, mock_invocation_context):
+    """Tests that add_memory forwards memories and metadata."""
+    memory_service = AsyncMock()
+    mock_invocation_context.memory_service = memory_service
+    memories = ["fact one"]
+    metadata = {"ttl": "6000s"}
+
+    context = Context(mock_invocation_context)
+    await context.add_memory(memories=memories, custom_metadata=metadata)
+
+    memory_service.add_memory.assert_called_once_with(
+        app_name=mock_invocation_context.session.app_name,
+        user_id=mock_invocation_context.session.user_id,
+        memories=memories,
+        custom_metadata=metadata,
+    )
+
+  async def test_add_memory_no_service_raises(self, mock_invocation_context):
+    """Test that add_memory raises ValueError when no service."""
+    mock_invocation_context.memory_service = None
+
+    context = Context(mock_invocation_context)
+
+    with pytest.raises(
+        ValueError,
+        match=r"Cannot add memory: memory service is not available\.",
+    ):
+      await context.add_memory(memories=["fact one"])
