@@ -204,7 +204,7 @@ class RunAgentRequest(common.BaseModel):
   app_name: str
   user_id: str
   session_id: str
-  new_message: types.Content
+  new_message: Optional[types.Content] = None
   streaming: bool = False
   state_delta: Optional[dict[str, Any]] = None
   # for resume long-running functions
@@ -793,6 +793,11 @@ class AdkWebServer:
       if event_dict is None:
         raise HTTPException(status_code=404, detail="Trace not found")
       return event_dict
+
+    @app.get("/apps/{app_name}")
+    async def get_app_info(app_name: str) -> Any:
+      runner = await self.get_runner_async(app_name)
+      return runner.app
 
     @app.get("/debug/trace/session/{session_id}", tags=[TAG_DEBUG])
     async def get_session_trace(session_id: str) -> Any:

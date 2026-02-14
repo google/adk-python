@@ -12,11 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""LiteLLM sample agent for SSE text streaming."""
+
 from __future__ import annotations
 
-from .context import Context
-# Keep ReadonlyContext for backward compatibility
-from .readonly_context import ReadonlyContext
+from google.adk import Agent
+from google.adk.models.lite_llm import LiteLlm
 
-# CallbackContext is unified into Context
-CallbackContext = Context
+root_agent = Agent(
+    name='litellm_streaming_agent',
+    model=LiteLlm(model='gemini/gemini-2.5-flash'),
+    description='A LiteLLM agent used for streaming text responses.',
+    instruction='You are a verbose assistant',
+)

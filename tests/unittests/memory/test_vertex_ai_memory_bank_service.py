@@ -19,6 +19,7 @@ from typing import Optional
 from unittest import mock
 
 from google.adk.events.event import Event
+from google.adk.memory import vertex_ai_memory_bank_service as memory_service_module
 from google.adk.memory.vertex_ai_memory_bank_service import VertexAiMemoryBankService
 from google.adk.sessions.session import Session
 from google.genai import types
@@ -34,6 +35,10 @@ def _supports_generate_memories_metadata() -> bool:
       'metadata'
       in vertex_common_types.GenerateAgentEngineMemoriesConfig.model_fields
   )
+
+
+def _supports_create_memory_metadata() -> bool:
+  return 'metadata' in vertex_common_types.AgentEngineMemoryConfig.model_fields
 
 
 class _AsyncListIterator:
@@ -114,11 +119,58 @@ def mock_vertex_ai_memory_bank_service(
   )
 
 
+def test_build_generate_memories_config_uses_runtime_config_keys():
+  with (
+      mock.patch.object(
+          memory_service_module,
+          '_get_generate_memories_config_keys',
+          return_value=frozenset({'wait_for_completion', 'new_generate_key'}),
+      ),
+      mock.patch.object(
+          memory_service_module,
+          '_supports_generate_memories_metadata',
+          return_value=False,
+      ),
+  ):
+    config = memory_service_module._build_generate_memories_config(
+        {'new_generate_key': 'value'}
+    )
+
+  assert config == {
+      'wait_for_completion': False,
+      'new_generate_key': 'value',
+  }
+
+
+def test_build_create_memory_config_uses_runtime_config_keys():
+  with (
+      mock.patch.object(
+          memory_service_module,
+          '_get_create_memory_config_keys',
+          return_value=frozenset({'wait_for_completion', 'new_create_key'}),
+      ),
+      mock.patch.object(
+          memory_service_module,
+          '_supports_create_memory_metadata',
+          return_value=False,
+      ),
+  ):
+    config = memory_service_module._build_create_memory_config(
+        {'new_create_key': 'value'}
+    )
+
+  assert config == {
+      'wait_for_completion': False,
+      'new_create_key': 'value',
+  }
+
+
 @pytest.fixture
 def mock_vertexai_client():
   with mock.patch('vertexai.Client') as mock_client_constructor:
     mock_async_client = mock.MagicMock()
     mock_async_client.agent_engines.memories.generate = mock.AsyncMock()
+    mock_async_client.agent_engines.memories.create = mock.AsyncMock()
     mock_async_client.agent_engines.memories.retrieve = mock.AsyncMock()
 
     mock_client = mock.MagicMock()
@@ -237,6 +289,7 @@ async def test_add_events_to_memory_without_session_id(
       ]
   )
   vertex_common_types.GenerateAgentEngineMemoriesConfig(**generate_config)
+  mock_vertexai_client.agent_engines.memories.create.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -373,6 +426,86 @@ async def test_add_events_to_memory_with_filtered_events_skips_rpc(
   )
 
   mock_vertexai_client.agent_engines.memories.generate.assert_not_called()
+  mock_vertexai_client.agent_engines.memories.create.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_add_memory_calls_create(
+    mock_vertexai_client,
+):
+  memory_service = mock_vertex_ai_memory_bank_service()
+  await memory_service.add_memory(
+      app_name=MOCK_SESSION.app_name,
+      user_id=MOCK_SESSION.user_id,
+      memories=['fact one', 'fact two'],
+      custom_metadata={
+          'ttl': '6000s',
+          'source': 'agent',
+      },
+  )
+
+  expected_config = {
+      'wait_for_completion': False,
+      'ttl': '6000s',
+  }
+  if _supports_create_memory_metadata():
+    expected_config['metadata'] = {'source': {'string_value': 'agent'}}
+
+  mock_vertexai_client.agent_engines.memories.generate.assert_not_called()
+  mock_vertexai_client.agent_engines.memories.create.assert_has_awaits([
+      mock.call(
+          name='reasoningEngines/123',
+          fact='fact one',
+          scope={'app_name': MOCK_APP_NAME, 'user_id': MOCK_USER_ID},
+          config=expected_config,
+      ),
+      mock.call(
+          name='reasoningEngines/123',
+          fact='fact two',
+          scope={'app_name': MOCK_APP_NAME, 'user_id': MOCK_USER_ID},
+          config=expected_config,
+      ),
+  ])
+  assert mock_vertexai_client.agent_engines.memories.create.await_count == 2
+
+  create_config = (
+      mock_vertexai_client.agent_engines.memories.create.call_args.kwargs[
+          'config'
+      ]
+  )
+  vertex_common_types.AgentEngineMemoryConfig(**create_config)
+
+
+@pytest.mark.asyncio
+async def test_add_memory_missing_memories_raises(
+    mock_vertexai_client,
+):
+  memory_service = mock_vertex_ai_memory_bank_service()
+  with pytest.raises(
+      ValueError, match=r'memories must contain at least one entry'
+  ):
+    await memory_service.add_memory(
+        app_name=MOCK_SESSION.app_name,
+        user_id=MOCK_SESSION.user_id,
+        memories=[],
+    )
+  mock_vertexai_client.agent_engines.memories.generate.assert_not_called()
+  mock_vertexai_client.agent_engines.memories.create.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_add_memory_with_invalid_memory_type_raises(
+    mock_vertexai_client,
+):
+  memory_service = mock_vertex_ai_memory_bank_service()
+  with pytest.raises(TypeError, match=r'memories\[0\] must be a string'):
+    await memory_service.add_memory(
+        app_name=MOCK_SESSION.app_name,
+        user_id=MOCK_SESSION.user_id,
+        memories=[123],
+    )
+  mock_vertexai_client.agent_engines.memories.generate.assert_not_called()
+  mock_vertexai_client.agent_engines.memories.create.assert_not_called()
 
 
 @pytest.mark.asyncio
