@@ -24,7 +24,7 @@ from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.adk.models.registry import LLMRegistry
 from google.adk.plugins.llm_resilience_plugin import LlmResiliencePlugin
-from google.adk.tests.unittests.testing_utils import create_invocation_context
+from ..testing_utils import create_invocation_context
 from google.genai import types
 
 
