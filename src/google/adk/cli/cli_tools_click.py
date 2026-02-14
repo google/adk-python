@@ -710,6 +710,13 @@ def eval_options():
 @click.argument("eval_set_file_path_or_id", nargs=-1)
 @click.option("--config_file_path", help="Optional. The path to config file.")
 @click.option(
+    "--num_runs",
+    type=click.IntRange(min=1),
+    default=1,
+    show_default=True,
+    help="Optional. Number of times to run each eval case.",
+)
+@click.option(
     "--print_detailed_results",
     is_flag=True,
     show_default=True,
@@ -721,6 +728,7 @@ def cli_eval(
     agent_module_file_path: str,
     eval_set_file_path_or_id: list[str],
     config_file_path: str,
+    num_runs: int,
     print_detailed_results: bool,
     eval_storage_uri: Optional[str] = None,
     log_level: str = "INFO",
@@ -789,6 +797,7 @@ def cli_eval(
     from ..evaluation.base_eval_service import InferenceRequest
     from ..evaluation.custom_metric_evaluator import _CustomMetricEvaluator
     from ..evaluation.eval_config import get_eval_metrics_from_config
+    from ..evaluation.eval_config import discover_eval_config_for_test_file
     from ..evaluation.eval_config import get_evaluation_criteria_or_default
     from ..evaluation.eval_result import EvalCaseResult
     from ..evaluation.evaluator import EvalStatus
@@ -808,9 +817,12 @@ def cli_eval(
   except ModuleNotFoundError as mnf:
     raise click.ClickException(MISSING_EVAL_DEPENDENCIES_MESSAGE) from mnf
 
-  eval_config = get_evaluation_criteria_or_default(config_file_path)
-  print(f"Using evaluation criteria: {eval_config}")
-  eval_metrics = get_eval_metrics_from_config(eval_config)
+  eval_metrics_by_eval_set_id = {}
+  global_eval_metrics = None
+  if config_file_path:
+    eval_config = get_evaluation_criteria_or_default(config_file_path)
+    print(f"Using evaluation criteria: {eval_config}")
+    global_eval_metrics = get_eval_metrics_from_config(eval_config)
 
   root_agent = get_root_agent(agent_module_file_path)
   app_name = os.path.basename(agent_module_file_path)
@@ -854,6 +866,18 @@ def cli_eval(
             f"`{eval_set_file_path}` should be a valid eval set file."
         ) from fne
 
+      eval_config_for_eval_set = (
+          get_evaluation_criteria_or_default(config_file_path)
+          if config_file_path
+          else discover_eval_config_for_test_file(eval_set_file_path)
+      )
+      print(
+          f"Using evaluation criteria for {eval_set_file_path}:"
+          f" {eval_config_for_eval_set}"
+      )
+      eval_metrics_by_eval_set_id[eval_set.eval_set_id] = (
+          get_eval_metrics_from_config(eval_config_for_eval_set)
+      )
       eval_sets_manager.create_eval_set(
           app_name=app_name, eval_set_id=eval_set.eval_set_id
       )
@@ -873,6 +897,10 @@ def cli_eval(
       )
   else:
     # We assume that what we have are eval set ids instead.
+    if global_eval_metrics is None:
+      eval_config = get_evaluation_criteria_or_default(config_file_path)
+      print(f"Using evaluation criteria: {eval_config}")
+      global_eval_metrics = get_eval_metrics_from_config(eval_config)
     eval_sets_manager = (
         eval_sets_manager
         if eval_storage_uri
@@ -888,6 +916,7 @@ def cli_eval(
               inference_config=InferenceConfig(),
           )
       )
+      eval_metrics_by_eval_set_id[eval_set_id_key] = global_eval_metrics
 
   user_simulator_provider = UserSimulatorProvider(
       user_simulator_config=eval_config.user_simulator_config
@@ -920,18 +949,31 @@ def cli_eval(
         metric_evaluator_registry=metric_evaluator_registry,
     )
 
+    repeated_inference_requests = inference_requests * num_runs
     inference_results = asyncio.run(
         _collect_inferences(
-            inference_requests=inference_requests, eval_service=eval_service
-        )
-    )
-    eval_results = asyncio.run(
-        _collect_eval_results(
-            inference_results=inference_results,
+            inference_requests=repeated_inference_requests,
             eval_service=eval_service,
-            eval_metrics=eval_metrics,
         )
     )
+    eval_results = []
+    for eval_set_id, eval_metrics in eval_metrics_by_eval_set_id.items():
+      inference_results_for_eval_set = [
+          inference_result
+          for inference_result in inference_results
+          if inference_result.eval_set_id == eval_set_id
+      ]
+      if not inference_results_for_eval_set:
+        continue
+      eval_results.extend(
+          asyncio.run(
+              _collect_eval_results(
+                  inference_results=inference_results_for_eval_set,
+                  eval_service=eval_service,
+                  eval_metrics=eval_metrics,
+              )
+          )
+      )
   except ModuleNotFoundError as mnf:
     raise click.ClickException(MISSING_EVAL_DEPENDENCIES_MESSAGE) from mnf
 

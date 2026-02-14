@@ -180,6 +180,17 @@ def get_evaluation_criteria_or_default(
   return _DEFAULT_EVAL_CONFIG
 
 
+def discover_eval_config_for_test_file(test_file_path: str) -> EvalConfig:
+  """Returns EvalConfig for a test file via adjacent test_config.json lookup.
+
+  The lookup checks for a `test_config.json` in the same directory as the test
+  file, and falls back to the default criteria if not found.
+  """
+  test_folder = os.path.dirname(test_file_path)
+  config_path = os.path.join(test_folder, "test_config.json")
+  return get_evaluation_criteria_or_default(config_path)
+
+
 def get_eval_metrics_from_config(eval_config: EvalConfig) -> list[EvalMetric]:
   """Returns a list of EvalMetrics mapped from the EvalConfig."""
   eval_metric_list = []

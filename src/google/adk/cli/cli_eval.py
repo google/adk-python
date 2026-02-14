@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import logging
 import os
@@ -24,7 +25,7 @@ from typing import Optional
 import click
 from google.genai import types as genai_types
 
-from ..agents.llm_agent import Agent
+from ..agents.base_agent import BaseAgent
 from ..evaluation.base_eval_service import BaseEvalService
 from ..evaluation.base_eval_service import EvaluateConfig
 from ..evaluation.base_eval_service import EvaluateRequest
@@ -86,11 +87,28 @@ def get_default_metric_info(
   )
 
 
-def get_root_agent(agent_module_file_path: str) -> Agent:
-  """Returns root agent given the agent module."""
+def get_root_agent(agent_module_file_path: str) -> BaseAgent:
+  """Returns root agent given the agent module.
+
+  Supports modules exporting either `root_agent` or `get_agent_async`.
+  """
   agent_module = _get_agent_module(agent_module_file_path)
-  root_agent = agent_module.agent.root_agent
-  return root_agent
+  agent_module_with_agent = (
+      agent_module.agent if hasattr(agent_module, "agent") else agent_module
+  )
+  if hasattr(agent_module_with_agent, "root_agent"):
+    return agent_module_with_agent.root_agent
+
+  if hasattr(agent_module_with_agent, "get_agent_async"):
+    result = asyncio.run(agent_module_with_agent.get_agent_async())
+    if isinstance(result, tuple):
+      root_agent, _ = result
+      return root_agent
+    return result
+
+  raise ValueError(
+      "Module does not have a root_agent or get_agent_async method."
+  )
 
 
 def try_get_reset_func(agent_module_file_path: str) -> Any:

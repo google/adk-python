@@ -38,6 +38,7 @@ from .eval_case import get_all_tool_calls
 from .eval_case import IntermediateDataType
 from .eval_case import Invocation
 from .eval_config import EvalConfig
+from .eval_config import discover_eval_config_for_test_file
 from .eval_config import get_eval_metrics_from_config
 from .eval_config import get_evaluation_criteria_or_default
 from .eval_metrics import BaseCriterion
@@ -46,6 +47,7 @@ from .eval_metrics import EvalMetricResult
 from .eval_metrics import PrebuiltMetrics
 from .eval_result import EvalCaseResult
 from .eval_set import EvalSet
+from .eval_set_results_manager import EvalSetResultsManager
 from .eval_sets_manager import EvalSetsManager
 from .evaluator import EvalStatus
 from .in_memory_eval_sets_manager import InMemoryEvalSetsManager
@@ -100,9 +102,7 @@ class AgentEvaluator:
   @staticmethod
   def find_config_for_test_file(test_file: str) -> EvalConfig:
     """Find the test_config.json file in the same folder as the test file."""
-    test_folder = os.path.dirname(test_file)
-    config_path = os.path.join(test_folder, "test_config.json")
-    return get_evaluation_criteria_or_default(config_path)
+    return discover_eval_config_for_test_file(test_file)
 
   @staticmethod
   async def evaluate_eval_set(
@@ -113,6 +113,7 @@ class AgentEvaluator:
       num_runs: int = NUM_RUNS,
       agent_name: Optional[str] = None,
       print_detailed_results: bool = True,
+      eval_set_results_manager: Optional[EvalSetResultsManager] = None,
   ):
     """Evaluates an agent using the given EvalSet.
 
@@ -130,6 +131,8 @@ class AgentEvaluator:
         than root agent. If left empty or none, then root agent is evaluated.
       print_detailed_results: Whether to print detailed results for each metric
         evaluation.
+      eval_set_results_manager: Optional results manager for persisting eval
+        outputs.
     """
     if criteria:
       logger.warning(
@@ -161,6 +164,7 @@ class AgentEvaluator:
         eval_metrics=eval_metrics,
         num_runs=num_runs,
         user_simulator_provider=user_simulator_provider,
+        eval_set_results_manager=eval_set_results_manager,
     )
 
     # Step 2: Post-process the results!
@@ -200,6 +204,7 @@ class AgentEvaluator:
       agent_name: Optional[str] = None,
       initial_session_file: Optional[str] = None,
       print_detailed_results: bool = True,
+      eval_set_results_manager: Optional[EvalSetResultsManager] = None,
   ):
     """Evaluates an Agent given eval data.
 
@@ -218,6 +223,8 @@ class AgentEvaluator:
         needed by all the evals in the eval dataset.
       print_detailed_results: Whether to print detailed results for each metric
         evaluation.
+      eval_set_results_manager: Optional results manager for persisting eval
+        outputs.
     """
     test_files = []
     if isinstance(eval_dataset_file_path_or_dir, str) and os.path.isdir(
@@ -245,6 +252,7 @@ class AgentEvaluator:
           num_runs=num_runs,
           agent_name=agent_name,
           print_detailed_results=print_detailed_results,
+          eval_set_results_manager=eval_set_results_manager,
       )
 
   @staticmethod
@@ -536,6 +544,7 @@ class AgentEvaluator:
       eval_metrics: list[EvalMetric],
       num_runs: int,
       user_simulator_provider: UserSimulatorProvider,
+      eval_set_results_manager: Optional[EvalSetResultsManager] = None,
   ) -> dict[str, list[EvalCaseResult]]:
     """Returns EvalCaseResults grouped by eval case id.
 
@@ -560,6 +569,7 @@ class AgentEvaluator:
             app_name=app_name, eval_set=eval_set
         ),
         user_simulator_provider=user_simulator_provider,
+        eval_set_results_manager=eval_set_results_manager,
     )
 
     inference_requests = [
