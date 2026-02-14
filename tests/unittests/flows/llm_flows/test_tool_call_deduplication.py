@@ -120,4 +120,3 @@ def test_dedupe_identical_tool_calls_within_one_step():
       if p.function_response is not None
   ]
   assert function_responses == [{"result": 1}, {"result": 1}]
-

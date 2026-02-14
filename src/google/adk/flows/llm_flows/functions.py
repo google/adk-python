@@ -570,10 +570,13 @@ async def _execute_single_function_call_async(
 
       return function_response
 
-    should_dedupe = bool(
-        invocation_context.run_config
-        and invocation_context.run_config.dedupe_tool_calls
-    ) or tool.is_long_running
+    should_dedupe = (
+        bool(
+            invocation_context.run_config
+            and invocation_context.run_config.dedupe_tool_calls
+        )
+        or tool.is_long_running
+    )
     function_response, cache_hit = (
         await invocation_context.get_or_execute_deduped_tool_call(
             tool_name=tool.name,
@@ -744,10 +747,13 @@ async def _execute_single_function_call_live(
       function_response = await _execute_tool_pipeline()
       cache_hit = False
     else:
-      should_dedupe = bool(
-          invocation_context.run_config
-          and invocation_context.run_config.dedupe_tool_calls
-      ) or tool.is_long_running
+      should_dedupe = (
+          bool(
+              invocation_context.run_config
+              and invocation_context.run_config.dedupe_tool_calls
+          )
+          or tool.is_long_running
+      )
       function_response, cache_hit = (
           await invocation_context.get_or_execute_deduped_tool_call(
               tool_name=tool.name,
