@@ -18,6 +18,7 @@ from .models import Frontmatter
 from .models import Resources
 from .models import Script
 from .models import Skill
+from .prompt import DEFAULT_SKILL_SYSTEM_INSTRUCTION
 from .utils import load_skill_from_dir
 
 __all__ = [
@@ -25,5 +26,6 @@ __all__ = [
     "Resources",
     "Script",
     "Skill",
+    "DEFAULT_SKILL_SYSTEM_INSTRUCTION",
     "load_skill_from_dir",
 ]
