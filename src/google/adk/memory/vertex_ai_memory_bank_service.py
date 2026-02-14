@@ -202,6 +202,12 @@ class VertexAiMemoryBankService(BaseMemoryService):
       custom_metadata: Optional service-specific metadata for generate config.
     """
     _ = session_id
+    logger.debug(
+        'Vertex memory add_events_to_memory called. app_name=%s user_id=%s events=%d',
+        app_name,
+        user_id,
+        len(events),
+    )
     await self._add_events_to_memory_from_events(
         app_name=app_name,
         user_id=user_id,
@@ -238,6 +244,7 @@ class VertexAiMemoryBankService(BaseMemoryService):
       raise ValueError('Agent Engine ID is required for Memory Bank.')
 
     direct_events = []
+    input_event_count = len(events_to_process)
     for event in events_to_process:
       if _should_filter_out_event(event.content):
         continue
@@ -248,6 +255,13 @@ class VertexAiMemoryBankService(BaseMemoryService):
     if direct_events:
       api_client = self._get_api_client()
       config = _build_generate_memories_config(custom_metadata)
+      logger.debug(
+          'Generating memories in Vertex Memory Bank. app_name=%s user_id=%s direct_events=%d filtered_events=%d',
+          app_name,
+          user_id,
+          len(direct_events),
+          input_event_count - len(direct_events),
+      )
       operation = await api_client.agent_engines.memories.generate(
           name='reasoningEngines/' + self._agent_engine_id,
           direct_contents_source={'events': direct_events},
@@ -260,7 +274,12 @@ class VertexAiMemoryBankService(BaseMemoryService):
       logger.info('Generate memory response received.')
       logger.debug('Generate memory response: %s', operation)
     else:
-      logger.info('No events to add to memory.')
+      logger.info(
+          'No events to add to memory after filtering. app_name=%s user_id=%s input_events=%d',
+          app_name,
+          user_id,
+          input_event_count,
+      )
 
   async def _add_memories_via_create(
       self,

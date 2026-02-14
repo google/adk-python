@@ -108,6 +108,12 @@ class VertexAiSessionService(BaseSessionService):
       )
 
     reasoning_engine_id = self._get_reasoning_engine_id(app_name)
+    logger.debug(
+        'Creating Vertex session. app_name=%s user_id=%s reasoning_engine_id=%s',
+        app_name,
+        user_id,
+        reasoning_engine_id,
+    )
 
     config = {'session_state': state} if state else {}
     config.update(kwargs)
@@ -140,6 +146,13 @@ class VertexAiSessionService(BaseSessionService):
       config: Optional[GetSessionConfig] = None,
   ) -> Optional[Session]:
     reasoning_engine_id = self._get_reasoning_engine_id(app_name)
+    logger.debug(
+        'Fetching Vertex session. app_name=%s user_id=%s session_id=%s reasoning_engine_id=%s',
+        app_name,
+        user_id,
+        session_id,
+        reasoning_engine_id,
+    )
     session_resource_name = (
         f'reasoningEngines/{reasoning_engine_id}/sessions/{session_id}'
     )
@@ -204,6 +217,12 @@ class VertexAiSessionService(BaseSessionService):
       self, *, app_name: str, user_id: Optional[str] = None
   ) -> ListSessionsResponse:
     reasoning_engine_id = self._get_reasoning_engine_id(app_name)
+    logger.debug(
+        'Listing Vertex sessions. app_name=%s user_id=%s reasoning_engine_id=%s',
+        app_name,
+        user_id,
+        reasoning_engine_id,
+    )
 
     async with self._get_api_client() as api_client:
       sessions = []
@@ -250,6 +269,14 @@ class VertexAiSessionService(BaseSessionService):
     await super().append_event(session=session, event=event)
 
     reasoning_engine_id = self._get_reasoning_engine_id(session.app_name)
+    logger.debug(
+        'Appending event to Vertex session. app_name=%s user_id=%s session_id=%s author=%s has_content=%s',
+        session.app_name,
+        session.user_id,
+        session.id,
+        event.author,
+        bool(event.content),
+    )
 
     config = {}
     if event.content:

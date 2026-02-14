@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from collections.abc import Sequence
+import logging
 from typing import Any
 from typing import TYPE_CHECKING
 
@@ -35,6 +36,8 @@ if TYPE_CHECKING:
   from ..sessions.state import State
   from ..tools.tool_confirmation import ToolConfirmation
   from .invocation_context import InvocationContext
+
+logger = logging.getLogger('google_adk.' + __name__)
 
 
 class Context(ReadonlyContext):
@@ -329,6 +332,13 @@ class Context(ReadonlyContext):
       raise ValueError(
           "Cannot add session to memory: memory service is not available."
       )
+    logger.debug(
+        'Adding session to memory. app_name=%s user_id=%s session_id=%s events=%d',
+        self._invocation_context.session.app_name,
+        self._invocation_context.session.user_id,
+        self._invocation_context.session.id,
+        len(self._invocation_context.session.events),
+    )
     await self._invocation_context.memory_service.add_session_to_memory(
         self._invocation_context.session
     )
@@ -355,6 +365,13 @@ class Context(ReadonlyContext):
       raise ValueError(
           "Cannot add events to memory: memory service is not available."
       )
+    logger.debug(
+        'Adding explicit events to memory. app_name=%s user_id=%s session_id=%s events=%d',
+        self._invocation_context.session.app_name,
+        self._invocation_context.session.user_id,
+        self._invocation_context.session.id,
+        len(events),
+    )
     await self._invocation_context.memory_service.add_events_to_memory(
         app_name=self._invocation_context.session.app_name,
         user_id=self._invocation_context.session.user_id,
