@@ -113,8 +113,8 @@ async def main():
       updated_tool_output_data = {
           "status": "approved",
           "ticketId": ticket_id,
-          "approver_feedback": "Approved by manager at " + str(
-              asyncio.get_event_loop().time()
+          "approver_feedback": (
+              "Approved by manager at " + str(asyncio.get_event_loop().time())
           ),
       }
 

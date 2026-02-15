@@ -1,5 +1,49 @@
 # Changelog
 
+## [1.25.0](https://github.com/google/adk-python/compare/v1.24.1...v1.25.0) (2026-02-11)
+
+### Features
+
+* **[Core]**
+  * Add a demo for the simple prompt optimizer for the optimization interface ([0abf4cd](https://github.com/google/adk-python/commit/0abf4cd2c7103a071506c9398455a3bd66fe5da5))
+  * Add `--auto_create_session` flag to `adk api_server` CLI ([40c15d0](https://github.com/google/adk-python/commit/40c15d059599472b40f48272a464eb3cb7345fc6))
+  * Add `add_events_to_memory` facade for event-delta ([59e8897](https://github.com/google/adk-python/commit/59e88972ae4f10274444593db0607f40cfcc597e))
+  * Add post-invocation token-threshold compaction with event retention ([a88e864](https://github.com/google/adk-python/commit/a88e8647558a9b9d0bfdf38d2d8de058e3ba0596))
+  * Add report generation to `adk conformance test` command ([43c437e](https://github.com/google/adk-python/commit/43c437e38b9109b68a81de886d1901e4d8f87a01))
+
+* **[Models]**
+  * Add base_url option to Gemini LLM class ([781f605](https://github.com/google/adk-python/commit/781f605a1e5de6d77b69d7e7b9835ec6fc8de4bf))
+
+* **[Tools]**
+  * Enhance google credentials config to support externally passed access token ([3cf43e3](https://github.com/google/adk-python/commit/3cf43e3842d9987499ea70d6f63d6e1c4d4a07db))
+  * Update agent simulator by improving prompts and add environment data ([7af1858](https://github.com/google/adk-python/commit/7af1858f46b66fa4471c5ba7943385f2d23d08d3))
+  * Add a load MCP resource tool ([e25227d](https://github.com/google/adk-python/commit/e25227da5e91a8c1192af709f8e8bb2a471ded92))
+  * Add SkillToolset to adk ([8d02792](https://github.com/google/adk-python/commit/8d0279251ce4fad6f0c84bd7777eb5a74f7ba07a))
+
+* **[Web]**
+  * Add `/health` and `/version` endpoints to ADK web server ([25ec2c6](https://github.com/google/adk-python/commit/25ec2c6b614cf8d185ff6dbdac5697a210be68da))
+
+### Bug Fixes
+
+* Use async iteration for VertexAiSessionService.list_sessions pagination ([758d337](https://github.com/google/adk-python/commit/758d337c76d877e3174c35f06551cc9beb1def06))
+* Fix event loop closed bug in McpSessionManager ([4aa4751](https://github.com/google/adk-python/commit/4aa475145f196fb35fe97290dd9f928548bc737f))
+* Preserve thought_signature in function call conversions for interactions API integration ([2010569](https://github.com/google/adk-python/commit/20105690100d9c2f69c061ac08be5e94c50dc39c))
+* Propagate grounding and citation metadata in streaming responses ([e6da417](https://github.com/google/adk-python/commit/e6da4172924ecc36ffc2535199c450a2a51c7bcc))
+* Add endpoints to get/list artifact version metadata ([e0b9712](https://github.com/google/adk-python/commit/e0b9712a492bf84ac17679095b333642a79b8ee6))
+* Support escaped curly braces in instruction templates ([7c7d25a](https://github.com/google/adk-python/commit/7c7d25a4a6e4389e23037e70b8efdcd5341f44ea))
+* Strip timezone for PostgreSQL timestamps in DatabaseSessionService ([19b6076](https://github.com/google/adk-python/commit/19b607684f15ce2b6ffd60382211ba5600705743))
+* Prompt token may be None in streaming mode ([32ee07d](https://github.com/google/adk-python/commit/32ee07df01f10dbee0e98ca9d412440a7fe9163d))
+* Pass invocation_id from `/run` endpoint to `Runner.run_async` ([d2dba27](https://github.com/google/adk-python/commit/d2dba27134f833e5d929fdf363ada9364cc852f9))
+* Conditionally preserve function call IDs in LLM requests ([663cb75](https://github.com/google/adk-python/commit/663cb75b3288d8d0649412e1009329502b21cbbc))
+* Migrate VertexAiMemoryBankService to use the async Vertex AI client ([64a44c2](https://github.com/google/adk-python/commit/64a44c28974de77cf8934f9c3d1bc03691b90e7b))
+* Handle list values in Gemini schema sanitization ([fd8a9e3](https://github.com/google/adk-python/commit/fd8a9e3962cca4f422beb7316cbe732edf726d51))
+* Used logger to log instead of print in MCP ([6bc70a6](https://github.com/google/adk-python/commit/6bc70a6bab79b679a4b18ad146b3450fb9014475))
+
+### Improvements
+
+* Replace check of instance for LlmAgent with hasAttribute check ([7110336](https://github.com/google/adk-python/commit/7110336788662abb8c9bbbb0a53a50cc09130d5e))
+* Log exception details before re-raising in MCP session execution ([de79bf1](https://github.com/google/adk-python/commit/de79bf12b564a4eefc7e6a2568dbe0f08bb6efeb))
+
 ## [1.24.1](https://github.com/google/adk-python/compare/v1.24.0...v1.24.1) (2026-02-06)
 
 ### Bug Fixes

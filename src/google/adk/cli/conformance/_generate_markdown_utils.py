@@ -17,22 +17,27 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 from typing import Optional
 from typing import TYPE_CHECKING
 
 import click
-
-from ... import version
 
 if TYPE_CHECKING:
   from .cli_test import _ConformanceTestSummary
 
 
 def generate_markdown_report(
-    summary: _ConformanceTestSummary, report_dir: Optional[str]
+    version_data: dict[str, Any],
+    summary: _ConformanceTestSummary,
+    report_dir: Optional[str],
 ) -> None:
   """Generates a Markdown report of the test results."""
-  report_name = f"python_{'_'.join(version.__version__.split('.'))}_report.md"
+  server_version = version_data.get("version", "Unknown")
+  language = version_data.get("language", "Unknown")
+  language_version = version_data.get("language_version", "Unknown")
+
+  report_name = f"python_{'_'.join(server_version.split('.'))}_report.md"
   if not report_dir:
     report_path = Path(report_name)
   else:
@@ -44,7 +49,8 @@ def generate_markdown_report(
 
     # Summary
     f.write("## Summary\n\n")
-    f.write(f"- **ADK Version**: {version.__version__}\n")
+    f.write(f"- **ADK Version**: {server_version}\n")
+    f.write(f"- **Language**: {language} {language_version}\n")
     f.write(f"- **Total Tests**: {summary.total_tests}\n")
     f.write(f"- **Passed**: {summary.passed_tests}\n")
     f.write(f"- **Failed**: {summary.failed_tests}\n")

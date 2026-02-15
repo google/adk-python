@@ -45,6 +45,7 @@ from .utils import envs
 from .utils import evals
 from .utils.agent_change_handler import AgentChangeEventHandler
 from .utils.agent_loader import AgentLoader
+from .utils.base_agent_loader import BaseAgentLoader
 from .utils.service_factory import create_artifact_service_from_options
 from .utils.service_factory import create_memory_service_from_options
 from .utils.service_factory import create_session_service_from_options
@@ -72,6 +73,7 @@ def __getattr__(name: str):
 def get_fast_api_app(
     *,
     agents_dir: str,
+    agent_loader: Optional[BaseAgentLoader] = None,
     session_service_uri: Optional[str] = None,
     session_db_kwargs: Optional[Mapping[str, Any]] = None,
     artifact_service_uri: Optional[str] = None,
@@ -93,6 +95,52 @@ def get_fast_api_app(
     logo_image_url: Optional[str] = None,
     auto_create_session: bool = False,
 ) -> FastAPI:
+  """Constructs and returns a FastAPI application for serving ADK agents.
+
+  This function orchestrates the initialization of core ADK services (Session,
+  Artifact, Memory, and Credential) based on the provided configuration,
+  configures the ADK Web Server, and optionally enables advanced features
+  like Agent-to-Agent (A2A) protocol support and cloud telemetry.
+
+  Args:
+    agents_dir: The root directory containing agent definitions. This path is
+      used to discover agents, load custom service registrations (via
+      services.py/yaml), and as a base for local storage.
+    agent_loader: An optional custom loader for retrieving agent instances. If
+      not provided, a default AgentLoader targeting agents_dir is used.
+    session_service_uri: A URI defining the backend for session persistence.
+      Supports schemes like 'memory://', 'sqlite://', 'postgresql://',
+      'mysql://', or 'agentengine://'. Defaults to per-agent local SQLite
+      storage if None.
+    session_db_kwargs: Optional keyword arguments for custom session service
+      initialization. These are passed to the service factory along with the
+      URI.
+    artifact_service_uri: URI for the artifact service. Uses local artifact
+      service if None.
+    memory_service_uri: URI for the memory service. Uses local memory service if
+      None.
+    use_local_storage: Whether to use local storage for session and artifacts.
+    eval_storage_uri: URI for evaluation storage. If provided, uses GCS
+      managers.
+    allow_origins: List of allowed origins for CORS.
+    web: Whether to enable the web UI and serve its assets.
+    a2a: Whether to enable Agent-to-Agent (A2A) protocol support.
+    host: Host address for the server (defaults to 127.0.0.1).
+    port: Port number for the server (defaults to 8000).
+    url_prefix: Optional prefix for all URL routes.
+    trace_to_cloud: Whether to export traces to Google Cloud Trace.
+    otel_to_cloud: Whether to export OpenTelemetry data to Google Cloud.
+    reload_agents: Whether to watch for file changes and reload agents.
+    lifespan: Optional FastAPI lifespan context manager.
+    extra_plugins: List of extra plugin names to load.
+    logo_text: Text to display in the web UI logo area.
+    logo_image_url: URL for an image to display in the web UI logo area.
+    auto_create_session: Whether to automatically create a session when
+      not found.
+
+  Returns:
+    The configured FastAPI application instance.
+  """
 
   # Set up eval managers.
   if eval_storage_uri:
@@ -105,8 +153,10 @@ def get_fast_api_app(
     eval_sets_manager = LocalEvalSetsManager(agents_dir=agents_dir)
     eval_set_results_manager = LocalEvalSetResultsManager(agents_dir=agents_dir)
 
-  # initialize Agent Loader
-  agent_loader = AgentLoader(agents_dir)
+  # initialize Agent Loader if not passed as argument
+  if agent_loader is None:
+    agent_loader = AgentLoader(agents_dir)
+
   # Load services.py from agents_dir for custom service registration.
   load_services_module(agents_dir)
 

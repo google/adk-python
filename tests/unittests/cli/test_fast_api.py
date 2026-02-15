@@ -18,9 +18,7 @@ import logging
 import os
 from pathlib import Path
 import signal
-import sys
 import tempfile
-import time
 from typing import Any
 from typing import Optional
 from unittest.mock import AsyncMock
@@ -38,14 +36,12 @@ from google.adk.errors.input_validation_error import InputValidationError
 from google.adk.evaluation.eval_case import EvalCase
 from google.adk.evaluation.eval_case import Invocation
 from google.adk.evaluation.eval_result import EvalSetResult
-from google.adk.evaluation.eval_set import EvalSet
 from google.adk.evaluation.in_memory_eval_sets_manager import InMemoryEvalSetsManager
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.sessions.session import Session
-from google.adk.sessions.state import State
 from google.genai import types
 from pydantic import BaseModel
 import pytest
@@ -1528,6 +1524,23 @@ def test_builder_save_rejects_traversal(builder_test_client, tmp_path):
   assert response.json() is False
   assert not (tmp_path / "escape.yaml").exists()
   assert not (tmp_path / "app" / "tmp" / "escape.yaml").exists()
+
+
+def test_agent_run_resume_without_message_success(
+    test_app, create_test_session
+):
+  """Test that /run allows resuming a session with only an invocation_id, without a new message."""
+  info = create_test_session
+  url = "/run"
+  payload = {
+      "app_name": info["app_name"],
+      "user_id": info["user_id"],
+      "session_id": info["session_id"],
+      "invocation_id": "test_invocation_id",
+      "streaming": False,
+  }
+  response = test_app.post(url, json=payload)
+  assert response.status_code == 200
 
 
 def test_health_endpoint(test_app):
