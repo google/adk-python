@@ -398,7 +398,20 @@ def test_trace_tool_call_with_scalar_response(
       mock.call('gcp.vertex.agent.llm_response', '{}'),
   ]
 
-  assert mock_span_fixture.set_attribute.call_count == len(expected_calls)
+  receipt_calls = [
+      call_obj
+      for call_obj in mock_span_fixture.set_attribute.call_args_list
+      if call_obj.args[0] == 'gcp.vertex.agent.tool_call_receipt'
+  ]
+  assert len(receipt_calls) == 1
+  receipt = json.loads(receipt_calls[0].args[1])
+  assert receipt['schema_version'] == '1'
+  assert receipt['tool_name'] == mock_tool_fixture.name
+  assert receipt['tool_call_id'] == test_tool_call_id
+  assert receipt['outcome'] == 'success'
+  assert len(receipt['args_sha256']) == 64
+
+  assert mock_span_fixture.set_attribute.call_count == len(expected_calls) + 1
   mock_span_fixture.set_attribute.assert_has_calls(
       expected_calls, any_order=True
   )
@@ -457,10 +470,73 @@ def test_trace_tool_call_with_dict_response(
       mock.call('gcp.vertex.agent.llm_response', '{}'),
   ]
 
-  assert mock_span_fixture.set_attribute.call_count == len(expected_calls)
+  receipt_calls = [
+      call_obj
+      for call_obj in mock_span_fixture.set_attribute.call_args_list
+      if call_obj.args[0] == 'gcp.vertex.agent.tool_call_receipt'
+  ]
+  assert len(receipt_calls) == 1
+  receipt = json.loads(receipt_calls[0].args[1])
+  assert receipt['schema_version'] == '1'
+  assert receipt['tool_name'] == mock_tool_fixture.name
+  assert receipt['tool_call_id'] == test_tool_call_id
+  assert receipt['outcome'] == 'success'
+  assert len(receipt['args_sha256']) == 64
+
+  assert mock_span_fixture.set_attribute.call_count == len(expected_calls) + 1
   mock_span_fixture.set_attribute.assert_has_calls(
       expected_calls, any_order=True
   )
+
+
+def test_trace_tool_call_receipt_is_deterministic(
+    monkeypatch,
+    mock_span_fixture,
+    mock_tool_fixture,
+    mock_event_fixture,
+):
+  monkeypatch.setattr(
+      'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
+  )
+
+  mock_event_fixture.content = types.Content(
+      role='user',
+      parts=[
+          types.Part(
+              function_response=types.FunctionResponse(
+                  id='receipt-call',
+                  name='test_function_1',
+                  response={'ok': True},
+              )
+          ),
+      ],
+  )
+  mock_event_fixture.id = 'receipt-event'
+
+  trace_tool_call(
+      tool=mock_tool_fixture,
+      args={'b': 2, 'a': 1},
+      function_response_event=mock_event_fixture,
+  )
+  first_receipt = next(
+      call_obj.args[1]
+      for call_obj in mock_span_fixture.set_attribute.call_args_list
+      if call_obj.args[0] == 'gcp.vertex.agent.tool_call_receipt'
+  )
+
+  mock_span_fixture.set_attribute.reset_mock()
+  trace_tool_call(
+      tool=mock_tool_fixture,
+      args={'a': 1, 'b': 2},
+      function_response_event=mock_event_fixture,
+  )
+  second_receipt = next(
+      call_obj.args[1]
+      for call_obj in mock_span_fixture.set_attribute.call_args_list
+      if call_obj.args[0] == 'gcp.vertex.agent.tool_call_receipt'
+  )
+
+  assert first_receipt == second_receipt
 
 
 def test_trace_merged_tool_calls_sets_correct_attributes(
@@ -604,6 +680,12 @@ def test_trace_tool_call_disabling_request_response_content(
       call_obj.args
       for call_obj in mock_span_fixture.set_attribute.call_args_list
   )
+  receipt_calls = [
+      call_obj
+      for call_obj in mock_span_fixture.set_attribute.call_args_list
+      if call_obj.args[0] == 'gcp.vertex.agent.tool_call_receipt'
+  ]
+  assert len(receipt_calls) == 1
 
 
 def test_trace_merged_tool_disabling_request_response_content(

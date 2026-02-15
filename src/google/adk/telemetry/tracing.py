@@ -26,6 +26,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from collections.abc import Mapping
 from contextlib import contextmanager
+import hashlib
 import json
 import logging
 import os
@@ -116,6 +117,50 @@ def _safe_json_serialize(obj) -> str:
     return '<not serializable>'
 
 
+def _stable_json_serialize(obj: Any) -> str:
+  """Serializes with stable key ordering for deterministic receipts."""
+  return json.dumps(
+      obj,
+      ensure_ascii=False,
+      sort_keys=True,
+      separators=(',', ':'),
+      default=lambda _: '<not serializable>',
+  )
+
+
+def _build_tool_call_receipt(
+    tool: BaseTool,
+    args: dict[str, Any],
+    function_response_event: Event | None,
+) -> dict[str, str]:
+  """Builds a deterministic receipt for tool call tracing."""
+  tool_call_id = '<not specified>'
+  outcome = 'unknown'
+  if (
+      function_response_event is not None
+      and function_response_event.content is not None
+      and function_response_event.content.parts
+  ):
+    function_response = function_response_event.content.parts[0].function_response
+    if function_response is not None:
+      if function_response.id is not None:
+        tool_call_id = function_response.id
+      if function_response.response is not None:
+        outcome = 'success'
+
+  args_hash = hashlib.sha256(
+      _stable_json_serialize(args).encode('utf-8')
+  ).hexdigest()
+  return {
+      'schema_version': '1',
+      'tool_name': tool.name,
+      'tool_type': tool.__class__.__name__,
+      'tool_call_id': tool_call_id,
+      'args_sha256': args_hash,
+      'outcome': outcome,
+  }
+
+
 def trace_agent_invocation(
     span: trace.Span, agent: BaseAgent, ctx: InvocationContext
 ) -> None:
@@ -183,6 +228,17 @@ def trace_tool_call(
     )
   else:
     span.set_attribute('gcp.vertex.agent.tool_call_args', '{}')
+
+  span.set_attribute(
+      'gcp.vertex.agent.tool_call_receipt',
+      _stable_json_serialize(
+          _build_tool_call_receipt(
+              tool=tool,
+              args=args,
+              function_response_event=function_response_event,
+          )
+      ),
+  )
 
   # Tracing tool response
   tool_call_id = '<not specified>'
