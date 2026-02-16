@@ -45,7 +45,8 @@ class OperationParser:
   def __init__(
       self,
       operation: Union[Operation, Dict[str, Any], str],
-      should_parse=True,
+      should_parse: bool = True,
+      *,
       preserve_property_names: bool = False,
   ):
     """Initializes the OperationParser with an OpenApiOperation.
