@@ -943,7 +943,10 @@ class Runner:
     for event in session.events:
       if event.invocation_id != invocation_id or event.author != 'user':
         continue
-      if event.content == new_message and event.actions.state_delta == expected_state_delta:
+      if (
+          event.content == new_message
+          and event.actions.state_delta == expected_state_delta
+      ):
         return True
     return False
 
