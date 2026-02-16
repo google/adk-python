@@ -30,6 +30,7 @@ from fastapi.openapi.models import Schema
 from ..._gemini_schema_util import _to_snake_case
 from ..common.common import ApiParameter
 from ..common.common import PydocHelper
+from ..common.common import rename_python_keywords
 
 
 class OperationParser:
@@ -42,13 +43,20 @@ class OperationParser:
   """
 
   def __init__(
-      self, operation: Union[Operation, Dict[str, Any], str], should_parse=True
+      self,
+      operation: Union[Operation, Dict[str, Any], str],
+      should_parse=True,
+      preserve_property_names: bool = False,
   ):
     """Initializes the OperationParser with an OpenApiOperation.
 
     Args:
         operation: The OpenApiOperation object or a dictionary to process.
         should_parse: Whether to parse the operation during initialization.
+        preserve_property_names: If True, preserve the original property names
+          from the OpenAPI spec instead of converting them to snake_case.
+          Useful for APIs that expect camelCase or other non-snake_case
+          parameter names.
     """
     if isinstance(operation, dict):
       self._operation = Operation.model_validate(operation)
@@ -57,6 +65,7 @@ class OperationParser:
     else:
       self._operation = operation
 
+    self._preserve_property_names = preserve_property_names
     self._params: List[ApiParameter] = []
     self._return_value: Optional[ApiParameter] = None
     if should_parse:
@@ -92,6 +101,11 @@ class OperationParser:
         # param.required can be None
         required = param.required if param.required is not None else False
 
+        py_name = (
+            rename_python_keywords(original_name)
+            if self._preserve_property_names
+            else ''
+        )
         self._params.append(
             ApiParameter(
                 original_name=original_name,
@@ -99,6 +113,7 @@ class OperationParser:
                 param_schema=schema,
                 description=description,
                 required=required,
+                py_name=py_name,
             )
         )
 
@@ -120,12 +135,18 @@ class OperationParser:
       if schema and schema.type == 'object':
         properties = schema.properties or {}
         for prop_name, prop_details in properties.items():
+          py_name = (
+              rename_python_keywords(prop_name)
+              if self._preserve_property_names
+              else ''
+          )
           self._params.append(
               ApiParameter(
                   original_name=prop_name,
                   param_location='body',
                   param_schema=prop_details,
                   description=prop_details.description,
+                  py_name=py_name,
               )
           )
 
