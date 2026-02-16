@@ -290,6 +290,92 @@ async def test_session_auto_creation():
 
 
 @pytest.mark.asyncio
+async def test_append_new_message_to_session_skips_duplicate_retry_message():
+  session_service = InMemorySessionService()
+  runner = Runner(
+      app_name="test_app",
+      agent=MockLlmAgent("root_agent"),
+      session_service=session_service,
+      artifact_service=InMemoryArtifactService(),
+  )
+  session = await session_service.create_session(
+      app_name="test_app",
+      user_id="test_user",
+  )
+  user_message = types.Content(
+      role="user",
+      parts=[types.Part(text="retry message")],
+  )
+  invocation_context = runner._new_invocation_context(
+      session,
+      invocation_id="inv-retry",
+      new_message=user_message,
+      run_config=RunConfig(),
+  )
+
+  await runner._append_new_message_to_session(
+      session=session,
+      new_message=user_message,
+      invocation_context=invocation_context,
+  )
+  await runner._append_new_message_to_session(
+      session=session,
+      new_message=user_message,
+      invocation_context=invocation_context,
+  )
+
+  matched_events = [
+      event
+      for event in session.events
+      if event.author == "user"
+      and event.invocation_id == "inv-retry"
+      and event.content == user_message
+  ]
+  assert len(matched_events) == 1
+
+
+@pytest.mark.asyncio
+async def test_append_new_message_to_session_keeps_non_duplicate_messages():
+  session_service = InMemorySessionService()
+  runner = Runner(
+      app_name="test_app",
+      agent=MockLlmAgent("root_agent"),
+      session_service=session_service,
+      artifact_service=InMemoryArtifactService(),
+  )
+  session = await session_service.create_session(
+      app_name="test_app",
+      user_id="test_user",
+  )
+  invocation_context = runner._new_invocation_context(
+      session,
+      invocation_id="inv-retry",
+      new_message=types.Content(role="user", parts=[types.Part(text="first")]),
+      run_config=RunConfig(),
+  )
+  first_message = types.Content(role="user", parts=[types.Part(text="first")])
+  second_message = types.Content(role="user", parts=[types.Part(text="second")])
+
+  await runner._append_new_message_to_session(
+      session=session,
+      new_message=first_message,
+      invocation_context=invocation_context,
+  )
+  await runner._append_new_message_to_session(
+      session=session,
+      new_message=second_message,
+      invocation_context=invocation_context,
+  )
+
+  matched_events = [
+      event
+      for event in session.events
+      if event.author == "user" and event.invocation_id == "inv-retry"
+  ]
+  assert len(matched_events) == 2
+
+
+@pytest.mark.asyncio
 async def test_rewind_auto_create_session_on_missing_session():
   """When auto_create_session=True, rewind should create session if missing.
 

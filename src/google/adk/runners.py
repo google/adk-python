@@ -896,6 +896,19 @@ class Runner:
         new_message.parts[i] = types.Part(
             text=f'Uploaded file: {file_name}. It is saved into artifacts'
         )
+
+    if self._has_duplicate_user_event_for_invocation(
+        session=session,
+        invocation_id=invocation_context.invocation_id,
+        new_message=new_message,
+        state_delta=state_delta,
+    ):
+      logger.info(
+          'Skipping duplicate user event append for invocation_id=%s',
+          invocation_context.invocation_id,
+      )
+      return
+
     # Appends only. We do not yield the event because it's not from the model.
     if state_delta:
       event = Event(
@@ -917,6 +930,22 @@ class Runner:
       event.branch = function_call.branch
 
     await self.session_service.append_event(session=session, event=event)
+
+  def _has_duplicate_user_event_for_invocation(
+      self,
+      *,
+      session: Session,
+      invocation_id: str,
+      new_message: types.Content,
+      state_delta: Optional[dict[str, Any]],
+  ) -> bool:
+    expected_state_delta = state_delta or {}
+    for event in session.events:
+      if event.invocation_id != invocation_id or event.author != 'user':
+        continue
+      if event.content == new_message and event.actions.state_delta == expected_state_delta:
+        return True
+    return False
 
   async def run_live(
       self,
