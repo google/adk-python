@@ -237,6 +237,7 @@ class OpenAPIToolset(BaseToolset):
           o,
           ssl_verify=self._ssl_verify,
           header_provider=self._header_provider,
+          preserve_property_names=self._preserve_property_names,
       )
       logger.info("Parsed tool: %s", tool.name)
       tools.append(tool)

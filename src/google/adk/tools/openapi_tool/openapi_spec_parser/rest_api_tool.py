@@ -181,6 +181,7 @@ class RestApiTool(BaseTool):
       header_provider: Optional[
           Callable[[ReadonlyContext], Dict[str, str]]
       ] = None,
+      preserve_property_names: bool = False,
   ) -> "RestApiTool":
     """Initializes the RestApiTool from a ParsedOperation object.
 
@@ -192,12 +193,17 @@ class RestApiTool(BaseTool):
           an argument, allowing dynamic header generation based on the current
           context. Useful for adding custom headers like correlation IDs,
           authentication tokens, or other request metadata.
+        preserve_property_names: If True, preserve original property names
+          from the OpenAPI spec instead of converting to snake_case.
 
     Returns:
         A RestApiTool object.
     """
     operation_parser = OperationParser.load(
-        parsed.operation, parsed.parameters, parsed.return_value
+        parsed.operation,
+        parsed.parameters,
+        parsed.return_value,
+        preserve_property_names=preserve_property_names,
     )
 
     tool_name = _to_snake_case(operation_parser.get_function_name())

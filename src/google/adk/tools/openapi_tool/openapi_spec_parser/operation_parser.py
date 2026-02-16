@@ -81,8 +81,14 @@ class OperationParser:
       operation: Union[Operation, Dict[str, Any]],
       params: List[ApiParameter],
       return_value: Optional[ApiParameter] = None,
+      *,
+      preserve_property_names: bool = False,
   ) -> 'OperationParser':
-    parser = cls(operation, should_parse=False)
+    parser = cls(
+        operation,
+        should_parse=False,
+        preserve_property_names=preserve_property_names,
+    )
     parser._params = params
     parser._return_value = return_value
     return parser
