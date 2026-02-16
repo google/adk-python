@@ -376,6 +376,65 @@ async def test_append_new_message_to_session_keeps_non_duplicate_messages():
 
 
 @pytest.mark.asyncio
+async def test_append_new_message_to_session_state_delta_deduping():
+  session_service = InMemorySessionService()
+  runner = Runner(
+      app_name="test_app",
+      agent=MockLlmAgent("root_agent"),
+      session_service=session_service,
+      artifact_service=InMemoryArtifactService(),
+  )
+  session = await session_service.create_session(
+      app_name="test_app",
+      user_id="test_user",
+  )
+  user_message = types.Content(role="user", parts=[types.Part(text="same message")])
+  invocation_context = runner._new_invocation_context(
+      session,
+      invocation_id="inv-state-delta",
+      new_message=user_message,
+      run_config=RunConfig(),
+  )
+
+  await runner._append_new_message_to_session(
+      session=session,
+      new_message=user_message,
+      invocation_context=invocation_context,
+      state_delta={"attempt": 1},
+  )
+  await runner._append_new_message_to_session(
+      session=session,
+      new_message=user_message,
+      invocation_context=invocation_context,
+      state_delta={"attempt": 1},
+  )
+  await runner._append_new_message_to_session(
+      session=session,
+      new_message=user_message,
+      invocation_context=invocation_context,
+      state_delta={"attempt": 2},
+  )
+  await runner._append_new_message_to_session(
+      session=session,
+      new_message=user_message,
+      invocation_context=invocation_context,
+      state_delta=None,
+  )
+
+  matched_events = [
+      event
+      for event in session.events
+      if event.author == "user"
+      and event.invocation_id == "inv-state-delta"
+      and event.content == user_message
+  ]
+  assert len(matched_events) == 3
+  assert matched_events[0].actions.state_delta == {"attempt": 1}
+  assert matched_events[1].actions.state_delta == {"attempt": 2}
+  assert matched_events[2].actions.state_delta == {}
+
+
+@pytest.mark.asyncio
 async def test_rewind_auto_create_session_on_missing_session():
   """When auto_create_session=True, rewind should create session if missing.
 
