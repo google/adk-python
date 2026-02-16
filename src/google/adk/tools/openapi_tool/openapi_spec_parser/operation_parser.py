@@ -86,6 +86,12 @@ class OperationParser:
     parser._return_value = return_value
     return parser
 
+  def _get_py_name(self, original_name: str) -> str:
+    """Determines the Python parameter name based on preserve_property_names."""
+    if self._preserve_property_names:
+      return rename_python_keywords(original_name)
+    return ''
+
   def _process_operation_parameters(self):
     """Processes parameters from the OpenAPI operation."""
     parameters = self._operation.parameters or []
@@ -101,11 +107,6 @@ class OperationParser:
         # param.required can be None
         required = param.required if param.required is not None else False
 
-        py_name = (
-            rename_python_keywords(original_name)
-            if self._preserve_property_names
-            else ''
-        )
         self._params.append(
             ApiParameter(
                 original_name=original_name,
@@ -113,7 +114,7 @@ class OperationParser:
                 param_schema=schema,
                 description=description,
                 required=required,
-                py_name=py_name,
+                py_name=self._get_py_name(original_name),
             )
         )
 
@@ -135,18 +136,13 @@ class OperationParser:
       if schema and schema.type == 'object':
         properties = schema.properties or {}
         for prop_name, prop_details in properties.items():
-          py_name = (
-              rename_python_keywords(prop_name)
-              if self._preserve_property_names
-              else ''
-          )
           self._params.append(
               ApiParameter(
                   original_name=prop_name,
                   param_location='body',
                   param_schema=prop_details,
                   description=prop_details.description,
-                  py_name=py_name,
+                  py_name=self._get_py_name(prop_name),
               )
           )
 
