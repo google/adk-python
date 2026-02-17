@@ -1642,10 +1642,10 @@ class TestBigQueryAgentAnalyticsPlugin:
       dummy_arrow_schema,
   ):
     """Test that session metadata is logged when enabled."""
-    # Setup session metadata
-    metadata = {"thread_id": "gchat-123", "key": "val"}
-    type(callback_context.session).metadata = mock.PropertyMock(
-        return_value=metadata
+    # Setup session state with user metadata
+    session = callback_context._invocation_context.session
+    type(session).state = mock.PropertyMock(
+        return_value={"thread_id": "gchat-123", "customer_id": "cust-42"}
     )
 
     # Ensure config enabled (default is True)
@@ -1662,7 +1662,14 @@ class TestBigQueryAgentAnalyticsPlugin:
     )
 
     attributes = json.loads(log_entry["attributes"])
-    assert attributes["session_metadata"] == metadata
+    meta = attributes["session_metadata"]
+    assert meta["session_id"] == session.id
+    assert meta["app_name"] == session.app_name
+    assert meta["user_id"] == session.user_id
+    assert meta["state"] == {
+        "thread_id": "gchat-123",
+        "customer_id": "cust-42",
+    }
 
   @pytest.mark.asyncio
   async def test_log_event_with_custom_tags(
@@ -3132,7 +3139,12 @@ class TestEnrichAttributes:
 
   def _make_callback_context(self):
     ctx = mock.MagicMock()
-    ctx.session.metadata = {"env": "test"}
+    session = mock.MagicMock()
+    session.id = "sess-001"
+    session.app_name = "test-app"
+    session.user_id = "user-001"
+    session.state = {"env": "test"}
+    ctx._invocation_context.session = session
     return ctx
 
   def test_adds_root_agent_name(self):
@@ -3171,7 +3183,11 @@ class TestEnrichAttributes:
         return_value="agent",
     ):
       attrs = plugin._enrich_attributes(ed, ctx)
-    assert attrs["session_metadata"] == {"env": "test"}
+    meta = attrs["session_metadata"]
+    assert meta["session_id"] == "sess-001"
+    assert meta["app_name"] == "test-app"
+    assert meta["user_id"] == "user-001"
+    assert meta["state"] == {"env": "test"}
 
   def test_session_metadata_when_disabled(self):
     """Should not add session_metadata when log_session_metadata is False."""

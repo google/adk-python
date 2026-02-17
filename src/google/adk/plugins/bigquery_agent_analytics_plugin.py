@@ -1975,13 +1975,19 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       else:
         attrs["usage_metadata"] = event_data.usage_metadata
 
-    if self.config.log_session_metadata and hasattr(
-        callback_context, "session"
-    ):
+    if self.config.log_session_metadata:
       try:
-        metadata = getattr(callback_context.session, "metadata", None)
-        if metadata:
-          attrs["session_metadata"] = metadata
+        session = callback_context._invocation_context.session
+        session_meta = {
+            "session_id": session.id,
+            "app_name": session.app_name,
+            "user_id": session.user_id,
+        }
+        # Include session state if non-empty (contains user-set metadata
+        # like gchat thread-id, customer_id, etc.)
+        if session.state:
+          session_meta["state"] = dict(session.state)
+        attrs["session_metadata"] = session_meta
       except Exception:
         pass
 
