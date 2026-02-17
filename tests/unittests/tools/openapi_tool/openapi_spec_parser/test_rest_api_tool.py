@@ -41,6 +41,7 @@ from google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool import snak
 from google.adk.tools.tool_context import ToolContext
 from google.genai.types import FunctionDeclaration
 from google.genai.types import Schema
+import httpx
 import pytest
 import requests
 
@@ -246,7 +247,7 @@ class TestRestApiTool:
     }
 
   @patch(
-      "google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool.requests.request"
+      "google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool._request"
   )
   @pytest.mark.asyncio
   async def test_call_success(
@@ -278,7 +279,7 @@ class TestRestApiTool:
     assert result == {"result": "success"}
 
   @patch(
-      "google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool.requests.request"
+      "google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool._request"
   )
   @pytest.mark.asyncio
   async def test_call_http_failure(
@@ -293,8 +294,15 @@ class TestRestApiTool:
     mock_response = MagicMock()
     mock_response.status_code = 500
     mock_response.content = b"Internal Server Error"
-    mock_response.raise_for_status.side_effect = requests.exceptions.HTTPError(
-        "500 Server Error"
+
+    # Create a proper HTTPStatusError with request and response
+    mock_http_request = MagicMock(spec=httpx.Request)
+    mock_response.raise_for_status = MagicMock(
+        side_effect=httpx.HTTPStatusError(
+            "500 Server Error",
+            request=mock_http_request,
+            response=mock_response,
+        )
     )
     mock_request.return_value = mock_response
 
@@ -321,7 +329,7 @@ class TestRestApiTool:
     }
 
   @patch(
-      "google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool.requests.request"
+      "google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool._request"
   )
   @pytest.mark.asyncio
   async def test_call_auth_pending(
@@ -359,7 +367,7 @@ class TestRestApiTool:
       }
 
   @patch(
-      "google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool.requests.request"
+      "google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool._request"
   )
   @pytest.mark.asyncio
   async def test_call_with_required_param_defaults(
@@ -1052,6 +1060,11 @@ class TestRestApiTool:
     mock_response.json.return_value = {"result": "success"}
     mock_response.configure_mock(status_code=200)
 
+    mock_client = mock.create_autospec(
+        httpx.AsyncClient, instance=True, spec_set=True
+    )
+    mock_client.request = AsyncMock(return_value=mock_response)
+
     tool = RestApiTool(
         name="test_tool",
         description="Test Tool",
@@ -1063,14 +1076,15 @@ class TestRestApiTool:
     )
 
     with patch.object(
-        requests, "request", return_value=mock_response, autospec=True
+        httpx, "AsyncClient", return_value=mock_client, autospec=True
     ) as mock_request:
+
       await tool.call(args={}, tool_context=mock_tool_context)
 
       assert mock_request.called
       _, call_kwargs = mock_request.call_args
       if expected_verify_in_call is None:
-        assert "verify" not in call_kwargs
+        assert "verify" not in call_kwargs or call_kwargs["verify"] is True
       else:
         assert call_kwargs["verify"] == expected_verify_in_call
 
@@ -1087,6 +1101,11 @@ class TestRestApiTool:
     mock_response.json.return_value = {"result": "success"}
     mock_response.configure_mock(status_code=200)
 
+    mock_client = mock.create_autospec(
+        httpx.AsyncClient, instance=True, spec_set=True
+    )
+    mock_client.request = AsyncMock(return_value=mock_response)
+
     tool = RestApiTool(
         name="test_tool",
         description="Test Tool",
@@ -1100,7 +1119,7 @@ class TestRestApiTool:
     tool.configure_ssl_verify(ca_bundle_path)
 
     with patch.object(
-        requests, "request", return_value=mock_response
+        httpx, "AsyncClient", return_value=mock_client, autospec=True
     ) as mock_request:
       await tool.call(args={}, tool_context=mock_tool_context)
 
@@ -1169,13 +1188,14 @@ class TestRestApiTool:
     )
 
     with patch.object(
-        requests, "request", return_value=mock_response, autospec=True
+        httpx.AsyncClient, "request", return_value=mock_response, autospec=True
     ) as mock_request:
       await tool.call(args={}, tool_context=mock_tool_context)
 
       # Verify the headers were added to the request
       assert mock_request.called
       _, call_kwargs = mock_request.call_args
+
       assert call_kwargs["headers"]["X-Custom-Header"] == "custom-value"
       assert call_kwargs["headers"]["X-Request-ID"] == "12345"
 
@@ -1210,7 +1230,7 @@ class TestRestApiTool:
     )
 
     with patch.object(
-        requests, "request", return_value=mock_response, autospec=True
+        httpx.AsyncClient, "request", return_value=mock_response, autospec=True
     ):
       await tool.call(args={}, tool_context=mock_tool_context)
 
@@ -1242,7 +1262,7 @@ class TestRestApiTool:
     )
 
     with patch.object(
-        requests, "request", return_value=mock_response, autospec=True
+        httpx.AsyncClient, "request", return_value=mock_response, autospec=True
     ):
       result = await tool.call(args={}, tool_context=mock_tool_context)
 

@@ -36,7 +36,6 @@ class BigQueryCredentialsConfig(BaseGoogleCredentialsConfig):
     if not self.scopes:
       self.scopes = BIGQUERY_DEFAULT_SCOPE
 
-    # Set the token cache key
     self._token_cache_key = BIGQUERY_TOKEN_CACHE_KEY
 
     return self
