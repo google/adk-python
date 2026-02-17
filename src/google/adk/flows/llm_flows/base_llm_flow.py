@@ -19,6 +19,7 @@ import asyncio
 import datetime
 import inspect
 import logging
+from typing import Any
 from typing import AsyncGenerator
 from typing import cast
 from typing import Optional
@@ -75,6 +76,225 @@ DEFAULT_TASK_COMPLETION_DELAY = 1.0
 
 # Statistics configuration
 DEFAULT_ENABLE_CACHE_STATISTICS = False
+
+# Guardrail constants
+MAX_CONSECUTIVE_REFUSED_FUNCTION_CALLS = 3
+"""Max consecutive FCs after hitting maximum_remote_calls before guardrail."""
+
+_GUARDRAIL_INSTRUCTION = (
+    '\n\n**IMPORTANT: You have reached the maximum number of function '
+    'calls allowed. You MUST provide a final text response to the user '
+    'now. DO NOT attempt to call any more functions. Summarize what you '
+    'have learned so far and provide a helpful response based on the '
+    'information already gathered.**'
+)
+"""System instruction added during guardrail to force text response."""
+
+
+class GuardrailContext:
+  """Manages guardrail state coordination between flow methods."""
+
+  def __init__(self, session_state: dict[str, Any]):
+    self._state = session_state
+    self._active_key = '_adk_guardrail_active'
+    self._processed_key = '_adk_guardrail_processed'
+
+  @property
+  def is_active(self) -> bool:
+    """True if guardrail should be applied to next LLM call."""
+    return self._state.get(self._active_key, False)
+
+  @property
+  def is_processed(self) -> bool:
+    """True if preprocessing already handled guardrail."""
+    return self._state.get(self._processed_key, False)
+
+  def activate(self) -> None:
+    """Mark guardrail as active for next LLM call."""
+    self._state[self._active_key] = True
+
+  def mark_processed(self) -> None:
+    """Mark that preprocessing handled guardrail."""
+    self._state[self._processed_key] = True
+
+  def clear_active(self) -> None:
+    """Clear active flag only."""
+    self._state.pop(self._active_key, None)
+
+  def clear_processed(self) -> None:
+    """Clear processed flag only."""
+    self._state.pop(self._processed_key, None)
+
+  def clear(self) -> None:
+    """Clear all guardrail flags."""
+    self.clear_active()
+    self.clear_processed()
+
+  def __repr__(self) -> str:
+    """Return debug representation."""
+    return (
+        f'GuardrailContext(active={self.is_active}, '
+        f'processed={self.is_processed})'
+    )
+
+
+def _count_function_call_events(
+    invocation_context: InvocationContext,
+) -> Optional[int]:
+  """Count FC events in current invocation. Returns None on error."""
+  try:
+    events = invocation_context._get_events(
+        current_invocation=True, current_branch=True
+    )
+    return sum(1 for e in events if e.get_function_calls())
+  except (AttributeError, KeyError, TypeError, ValueError) as ex:
+    logger.error('Error counting FC events: %s', ex, exc_info=True)
+    return None
+
+
+def _event_has_function_calls(event: Optional[Event]) -> Optional[bool]:
+  """Check if event has FCs. Returns None on error."""
+  if not event:
+    return False
+  try:
+    return event.get_function_calls()
+  except (AttributeError, TypeError, ValueError) as ex:
+    logger.error('Error checking FCs in event: %s', ex, exc_info=True)
+    return None
+
+
+def _check_afc_disabled(
+    afc_config: Optional[types.AutomaticFunctionCallingConfig],
+) -> bool:
+  """Check if AFC is explicitly disabled."""
+  if not afc_config:
+    return False
+  if afc_config.disable:
+    logger.warning('AFC disabled. Stopping loop.')
+    return True
+  return False
+
+
+def _check_max_calls_invalid(
+    afc_config: Optional[types.AutomaticFunctionCallingConfig],
+) -> bool:
+  """Check if maximum_remote_calls is invalid (<= 0)."""
+  if not afc_config or afc_config.maximum_remote_calls is None:
+    return False
+  if afc_config.maximum_remote_calls <= 0:
+    logger.warning(
+        'max_remote_calls %s <= 0. Disabling AFC.',
+        afc_config.maximum_remote_calls,
+    )
+    return True
+  return False
+
+
+def _should_stop_afc_loop(
+    llm_request: LlmRequest,
+    invocation_context: InvocationContext,
+    last_event: Optional[Event],
+    count_current_event: bool = False,
+    consecutive_refused_fcs: int = 0,
+    guardrail_in_progress: bool = False,
+) -> tuple[bool, int]:
+  """Check if AFC loop should stop.
+
+  Args:
+    llm_request: LLM request with config.
+    invocation_context: Invocation context with session.
+    last_event: Last event from current step.
+    count_current_event: If True, include current event (pre-execution check).
+    consecutive_refused_fcs: Count of consecutive refused FCs.
+    guardrail_in_progress: True if in guardrail final iteration.
+
+  Returns:
+    (should_stop, new_consecutive_count): stop decision and updated count.
+  """
+  afc_config: Optional[types.AutomaticFunctionCallingConfig] = (
+      llm_request.config and llm_request.config.automatic_function_calling
+  )
+  if not afc_config:
+    return False, 0
+
+  # Check AFC disabled or invalid config
+  if _check_afc_disabled(afc_config):
+    return True, 0
+  if _check_max_calls_invalid(afc_config):
+    return True, 0
+
+  # Check maximum_remote_calls limit
+  if afc_config.maximum_remote_calls is not None:
+    max_calls = afc_config.maximum_remote_calls
+
+    # Count FC events, fail safe on error
+    function_call_count = _count_function_call_events(invocation_context)
+    if function_call_count is None:
+      logger.error('FC count failed. Stopping AFC loop (fail safe).')
+      return True, consecutive_refused_fcs
+
+    # Pre-execution check: prevent execution if would exceed limit
+    if count_current_event:
+      has_function_calls = _event_has_function_calls(last_event)
+      if has_function_calls is None:
+        logger.error('FC check failed. Preventing execution (fail safe).')
+        return True, 0
+
+      if has_function_calls and function_call_count > max_calls:
+        logger.warning(
+            'Would exceed max_remote_calls=%s. Not executing FCs.', max_calls
+        )
+        return True, 0
+      return False, 0
+
+    # Loop continuation check: guardrail for consecutive refused FCs
+    if not last_event:
+      return False, 0
+
+    has_function_calls = _event_has_function_calls(last_event)
+    if has_function_calls is None:
+      logger.error('FC check in loop failed. Stopping AFC (fail safe).')
+      return True, consecutive_refused_fcs
+
+    if has_function_calls:
+      # Check if at or over limit (>= not >)
+      if function_call_count >= max_calls:
+        new_count = consecutive_refused_fcs + 1
+        logger.debug(
+            'LLM returned FCs after limit (%d/%d). max=%d, count=%d',
+            new_count,
+            MAX_CONSECUTIVE_REFUSED_FUNCTION_CALLS,
+            max_calls,
+            function_call_count,
+        )
+
+        # Don't re-trigger if in guardrail final iteration
+        if guardrail_in_progress:
+          logger.warning(
+              'Guardrail final iteration has FCs (count=%d). '
+              'The outer loop will terminate after this iteration.',
+              new_count,
+          )
+          return False, new_count
+
+        if new_count >= MAX_CONSECUTIVE_REFUSED_FUNCTION_CALLS:
+          logger.info(
+              'Guardrail triggered: %d consecutive FCs after max=%d. '
+              'Forcing text response.',
+              new_count,
+              max_calls,
+          )
+          return True, new_count
+        # Under threshold, continue with incremented count
+        return False, new_count
+      else:
+        # FCs within limit - reset counter
+        return False, 0
+    else:
+      # No FCs - preserve count to prevent bypass via alternation
+      return False, consecutive_refused_fcs
+
+  return False, 0
 
 
 def _finalize_model_response_event(
@@ -421,16 +641,120 @@ class BaseLlmFlow(ABC):
       self, invocation_context: InvocationContext
   ) -> AsyncGenerator[Event, None]:
     """Runs the flow."""
-    while True:
-      last_event = None
-      async with Aclosing(self._run_one_step_async(invocation_context)) as agen:
-        async for event in agen:
-          last_event = event
-          yield event
-      if not last_event or last_event.is_final_response() or last_event.partial:
-        if last_event and last_event.partial:
-          logger.warning('The last event is partial, which is not expected.')
-        break
+    # Build llm_request once for config checks
+    llm_request: LlmRequest = LlmRequest()
+    agent: BaseAgent = invocation_context.agent
+    llm_request.config = (
+        agent.generate_content_config.model_copy(deep=True)
+        if agent.generate_content_config
+        else types.GenerateContentConfig()
+    )
+
+    consecutive_refused_fcs: int = 0
+    guardrail_triggered: bool = False
+
+    guardrail = GuardrailContext(invocation_context.session.state)
+    invocation_context._guardrail = guardrail
+
+    try:
+      while True:
+        last_event: Optional[Event] = None
+        async with Aclosing(
+            self._run_one_step_async(invocation_context)
+        ) as agen:
+          async for event in agen:
+            last_event = event
+            yield event
+
+        # If we just completed the guardrail final iteration, handle it first
+        # BEFORE checking is_final_response() to ensure we log the result
+        if guardrail_triggered:
+          if not last_event or not last_event.content:
+            logger.warning(
+                'Guardrail yielded no response. User may not have received '
+                'closing message.'
+            )
+          else:
+            # Check if the final iteration also returned function calls
+            try:
+              has_fcs = last_event.get_function_calls()
+            except (AttributeError, TypeError, ValueError) as ex:
+              logger.error(
+                  'Error checking function calls in guardrail iteration: %s',
+                  ex,
+                  exc_info=True,
+              )
+              has_fcs = False
+
+            # Extract any text content even if there are also function calls
+            text_content = ''
+            if last_event.content and last_event.content.parts:
+              text_content = '\n'.join(
+                  [p.text for p in last_event.content.parts if p.text]
+              )
+
+            if has_fcs:
+              if text_content:
+                logger.info(
+                    'Guardrail: LLM returned text response (also included '
+                    'function calls which were ignored).'
+                )
+              else:
+                logger.warning(
+                    'Guardrail: LLM still returned only function calls'
+                    ' despite tools being disabled. User will not receive'
+                    ' response.'
+                )
+            elif not text_content:
+              logger.warning('Guardrail: LLM returned empty response.')
+          break
+
+        # Break if there's no event or it's a final response
+        if (
+            not last_event
+            or last_event.is_final_response()
+            or last_event.partial
+        ):
+          if last_event and last_event.partial:
+            logger.warning('The last event is partial, which is not expected.')
+          break
+
+        # Check if we should stop AFC loop based on config and guardrail
+        # This includes: disable flag check, maximum_remote_calls limit,
+        # and infinite loop prevention via consecutive refusal tracking.
+        # Returns (should_stop, updated_consecutive_count)
+        should_stop, consecutive_refused_fcs = _should_stop_afc_loop(
+            llm_request,
+            invocation_context,
+            last_event,
+            count_current_event=False,
+            consecutive_refused_fcs=consecutive_refused_fcs,
+            guardrail_in_progress=guardrail_triggered,
+        )
+        if should_stop:
+          # Don't re-trigger guardrail if already in final iteration
+          if guardrail_triggered:
+            logger.warning(
+                'LLM returned function calls even during guardrail final '
+                'iteration (count=%d). Ending AFC loop.',
+                consecutive_refused_fcs,
+            )
+            break
+
+          # Check if this is guardrail trigger (vs normal stop)
+          if consecutive_refused_fcs >= MAX_CONSECUTIVE_REFUSED_FUNCTION_CALLS:
+            logger.info(
+                'Guardrail: removing tools for final LLM call to force text.'
+            )
+            guardrail_triggered = True
+            guardrail.activate()
+            # Continue to next iteration (don't break)
+          else:
+            # Normal stop (AFC disabled or max_calls <= 0)
+            break
+    finally:
+      # Cleanup: ensure guardrail cleared even if loop exits early
+      guardrail.clear()
 
   async def _run_one_step_async(
       self,
@@ -447,6 +771,17 @@ class BaseLlmFlow(ABC):
         yield event
     if invocation_context.end_invocation:
       return
+
+    # Final enforcement: ensure AFC disabled after all processors
+    guardrail = getattr(
+        invocation_context, '_guardrail', None
+    ) or GuardrailContext(invocation_context.session.state)
+    if guardrail.is_processed:
+      if llm_request.config and llm_request.config.automatic_function_calling:
+        llm_request.config.automatic_function_calling.disable = True
+      if llm_request.config:
+        llm_request.config.tools = None
+      guardrail.clear_processed()
 
     # Resume the LLM agent based on the last event from the current branch.
     # 1. User content: continue the normal flow
@@ -552,6 +887,25 @@ class BaseLlmFlow(ABC):
     # because the built-in tools cannot be used together with other tools.
     # TODO(b/448114567): Remove once the workaround is no longer needed.
     if not agent.tools:
+      return
+
+    # Skip adding tools if guardrail is active
+    guardrail = getattr(
+        invocation_context, '_guardrail', None
+    ) or GuardrailContext(invocation_context.session.state)
+    if guardrail.is_active:
+      logger.info('Guardrail: skipping tools, disabling AFC for text response')
+      guardrail.mark_processed()
+      if llm_request.config and llm_request.config.automatic_function_calling:
+        llm_request.config.automatic_function_calling.disable = True
+
+      # Add system instruction to force text response
+      if llm_request.config.system_instruction:
+        llm_request.config.system_instruction += _GUARDRAIL_INSTRUCTION
+      else:
+        llm_request.config.system_instruction = _GUARDRAIL_INSTRUCTION.strip()
+
+      guardrail.clear_active()
       return
 
     multiple_tools = len(agent.tools) > 1
@@ -704,6 +1058,18 @@ class BaseLlmFlow(ABC):
       if model_response_event.partial:
         return
 
+      # Check if AFC should be disabled - skip function call execution
+      # Returns (should_stop, _) - we ignore the counter for execution checks
+      should_stop, _ = _should_stop_afc_loop(
+          llm_request,
+          invocation_context,
+          model_response_event,
+          count_current_event=True,
+      )
+      if should_stop:
+        # AFC is disabled or limit reached - don't execute function calls
+        return
+
       async with Aclosing(
           self._postprocess_handle_function_calls_async(
               invocation_context, model_response_event, llm_request
@@ -793,6 +1159,18 @@ class BaseLlmFlow(ABC):
 
     # Handles function calls.
     if model_response_event.get_function_calls():
+      # Check if AFC should be disabled - skip function call execution
+      # Returns (should_stop, _) - we ignore the counter for execution checks
+      should_stop, _ = _should_stop_afc_loop(
+          llm_request,
+          invocation_context,
+          model_response_event,
+          count_current_event=True,
+      )
+      if should_stop:
+        # AFC is disabled or limit reached - don't execute function calls
+        return
+
       function_response_event = await functions.handle_function_calls_live(
           invocation_context, model_response_event, llm_request.tools_dict
       )
