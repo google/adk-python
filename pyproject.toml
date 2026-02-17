@@ -32,7 +32,7 @@ dependencies = [
   "click>=8.1.8, <9.0.0",                                    # For CLI tools
   "fastapi>=0.124.1, <1.0.0",                                # FastAPI framework
   "google-api-python-client>=2.157.0, <3.0.0",               # Google API client discovery
-  "google-auth>=2.47.0",                                     # Google Auth library
+  "google-auth[pyopenssl]>=2.47.0",                          # Google Auth library
   "google-cloud-aiplatform[agent_engines]>=1.132.0, <2.0.0", # For VertexAI integrations, e.g. example store.
   "google-cloud-bigquery-storage>=2.0.0",
   "google-cloud-bigquery>=2.2.0",
@@ -48,13 +48,13 @@ dependencies = [
   "httpx>=0.27.0, <1.0.0",                                   # HTTP client library
   "jsonschema>=4.23.0, <5.0.0",                              # Agent Builder config validation
   "mcp>=1.23.0, <2.0.0",                                     # For MCP Toolset
-  "opentelemetry-api>=1.37.0, <=1.37.0",                     # OpenTelemetry - limit upper version for sdk and api to not risk breaking changes from unstable _logs package.
+  "opentelemetry-api>=1.36.0, <1.40.0",                      # OpenTelemetry - keep below 1.40.0 to reduce risk of breaking changes around log-signal APIs.
   "opentelemetry-exporter-gcp-logging>=1.9.0a0, <2.0.0",
   "opentelemetry-exporter-gcp-monitoring>=1.9.0a0, <2.0.0",
   "opentelemetry-exporter-gcp-trace>=1.9.0, <2.0.0",
   "opentelemetry-exporter-otlp-proto-http>=1.36.0",
   "opentelemetry-resourcedetector-gcp>=1.9.0a0, <2.0.0",
-  "opentelemetry-sdk>=1.37.0, <=1.37.0",
+  "opentelemetry-sdk>=1.36.0, <1.40.0",
   "pyarrow>=14.0.0",
   "pydantic>=2.0, <3.0.0",                                   # For data validation/models
   "python-dateutil>=2.9.0.post0, <3.0.0",                    # For Vertext AI Session Service
@@ -89,7 +89,7 @@ dev = [
   "flit>=3.10.0",
   "isort>=6.0.0",
   "mypy>=1.15.0",
-  "pyink>=24.10.0",
+  "pyink>=25.12.0",
   "pylint>=2.6.0",
   # go/keep-sorted end
 ]
@@ -111,7 +111,6 @@ eval = [
   "google-cloud-aiplatform[evaluation]>=1.100.0",
   "pandas>=2.2.3",
   "rouge-score>=0.1.2",
-  "scipy<1.16; python_version<'3.11'",
   "tabulate>=0.9.0",
   # go/keep-sorted end
 ]
@@ -143,7 +142,7 @@ docs = [
   "autodoc_pydantic",
   "furo",
   "myst-parser",
-  "sphinx",
+  "sphinx<9.0.0",
   "sphinx-autodoc-typehints",
   "sphinx-rtd-theme",
 ]
@@ -219,7 +218,6 @@ asyncio_mode = "auto"
 python_version = "3.10"
 exclude = ["tests/", "contributing/samples/"]
 plugins = ["pydantic.mypy"]
-# Start with non-strict mode, and swtich to strict mode later.
 strict = true
 disable_error_code = ["import-not-found", "import-untyped", "unused-ignore"]
 follow_imports = "skip"

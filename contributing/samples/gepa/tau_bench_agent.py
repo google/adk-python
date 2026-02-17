@@ -23,6 +23,7 @@ cd tau-bench/
 pip install -e . --quiet
 ```
 """
+
 from __future__ import annotations
 
 from typing import Any
@@ -103,7 +104,7 @@ class _ADKAgent(tool_calling_agent.ToolCallingAgent):
       max_num_steps: The maximum number of steps to run the agent.
 
     Returns:
-      The result of the solve.
+      The result of the solve function.
 
     Raises:
       - ValueError: If the LLM inference failed.

@@ -35,6 +35,7 @@ from google.genai import types
 
 from ...agents.active_streaming_tool import ActiveStreamingTool
 from ...agents.invocation_context import InvocationContext
+from ...agents.live_request_queue import LiveRequestQueue
 from ...auth.auth_tool import AuthConfig
 from ...auth.auth_tool import AuthToolArguments
 from ...events.event import Event
@@ -62,6 +63,18 @@ logger = logging.getLogger('google_adk.' + __name__)
 # Key is max_workers, value is the executor.
 _TOOL_THREAD_POOLS: dict[int, ThreadPoolExecutor] = {}
 _TOOL_THREAD_POOL_LOCK = threading.Lock()
+
+
+def _is_live_request_queue_annotation(param: inspect.Parameter) -> bool:
+  """Check whether a parameter is annotated as LiveRequestQueue.
+
+  Handles both the class itself and the string form produced by
+  ``from __future__ import annotations``.
+  """
+  ann = param.annotation
+  return ann is LiveRequestQueue or (
+      isinstance(ann, str) and ann == 'LiveRequestQueue'
+  )
 
 
 def _get_tool_thread_pool(max_workers: int = 4) -> ThreadPoolExecutor:
@@ -570,19 +583,16 @@ async def _execute_single_function_call_async(
     return function_response_event
 
   with tracer.start_as_current_span(f'execute_tool {tool.name}'):
+    function_response_event = None
     try:
       function_response_event = await _run_with_trace()
+      return function_response_event
+    finally:
       trace_tool_call(
           tool=tool,
           args=function_args,
           function_response_event=function_response_event,
       )
-      return function_response_event
-    except:
-      trace_tool_call(
-          tool=tool, args=function_args, function_response_event=None
-      )
-      raise
 
 
 async def handle_function_calls_live(
@@ -720,19 +730,16 @@ async def _execute_single_function_call_live(
     return function_response_event
 
   with tracer.start_as_current_span(f'execute_tool {tool.name}'):
+    function_response_event = None
     try:
       function_response_event = await _run_with_trace()
+      return function_response_event
+    finally:
       trace_tool_call(
           tool=tool,
           args=function_args,
           function_response_event=function_response_event,
       )
-      return function_response_event
-    except:
-      trace_tool_call(
-          tool=tool, args=function_args, function_response_event=None
-      )
-      raise
 
 
 async def _process_function_live_helper(
@@ -790,6 +797,9 @@ async def _process_function_live_helper(
               and function_name in invocation_context.active_streaming_tools
           ):
             invocation_context.active_streaming_tools[function_name].task = None
+            invocation_context.active_streaming_tools[function_name].stream = (
+                None
+            )
 
         function_response = {
             'status': f'Successfully stopped streaming function {function_name}'
@@ -828,16 +838,31 @@ async def _process_function_live_helper(
         run_tool_and_update_queue(tool, function_args, tool_context)
     )
 
-    # Register streaming tool using original logic
     async with streaming_lock:
+
       if invocation_context.active_streaming_tools is None:
         invocation_context.active_streaming_tools = {}
-
       if tool.name in invocation_context.active_streaming_tools:
         invocation_context.active_streaming_tools[tool.name].task = task
       else:
+        # Register the streaming tool lazily when the model calls it.
         invocation_context.active_streaming_tools[tool.name] = (
             ActiveStreamingTool(task=task)
+        )
+        logger.debug('Lazily registered streaming tool: %s', tool.name)
+
+      # For input-streaming tools (those with `input_stream:
+      # LiveRequestQueue`), create a dedicated LiveRequestQueue so
+      # _send_to_model starts duplicating data to it. This also
+      # handles re-invocation after stop_streaming reset .stream
+      # to None.
+      sig = inspect.signature(tool.func)
+      if (
+          'input_stream' in sig.parameters
+          and _is_live_request_queue_annotation(sig.parameters['input_stream'])
+      ):
+        invocation_context.active_streaming_tools[tool.name].stream = (
+            LiveRequestQueue()
         )
 
     # Immediately return a pending response.

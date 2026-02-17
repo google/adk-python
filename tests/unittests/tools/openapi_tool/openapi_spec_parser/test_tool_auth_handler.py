@@ -139,6 +139,23 @@ async def test_openid_connect_no_auth_response(
 
 
 @pytest.mark.asyncio
+async def test_openid_connect_uses_explicit_credential_key(
+    openid_connect_scheme, openid_connect_credential
+):
+  tool_context = create_mock_tool_context()
+  handler = ToolAuthHandler(
+      tool_context,
+      openid_connect_scheme,
+      openid_connect_credential,
+      credential_key='my_tool_tokens',
+  )
+  result = await handler.prepare_auth_credentials()
+  assert result.state == 'pending'
+  requested = tool_context.actions.requested_auth_configs['test-fc-id']
+  assert requested.credential_key == 'my_tool_tokens'
+
+
+@pytest.mark.asyncio
 async def test_openid_connect_with_auth_response(
     openid_connect_scheme, openid_connect_credential, monkeypatch
 ):
@@ -155,7 +172,7 @@ async def test_openid_connect_with_auth_response(
       oauth2=OAuth2Auth(auth_response_uri='test_auth_response_uri'),
   )
   mock_auth_handler.get_auth_response.return_value = returned_credential
-  mock_auth_handler_path = 'google.adk.tools.tool_context.AuthHandler'
+  mock_auth_handler_path = 'google.adk.auth.auth_handler.AuthHandler'
   monkeypatch.setattr(
       mock_auth_handler_path, lambda *args, **kwargs: mock_auth_handler
   )

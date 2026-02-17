@@ -2038,8 +2038,34 @@ class LiteLlm(BaseLlm):
     return [
         # For OpenAI models (e.g., "openai/gpt-4o")
         r"openai/.*",
+        # For Azure OpenAI models (e.g., "azure/gpt-4o")
+        r"azure/.*",
+        # For Azure AI models (e.g., "azure_ai/command-r-plus")
+        r"azure_ai/.*",
         # For Groq models via Groq API (e.g., "groq/llama3-70b-8192")
         r"groq/.*",
         # For Anthropic models (e.g., "anthropic/claude-3-opus-20240229")
         r"anthropic/.*",
+        # For AWS Bedrock models (e.g., "bedrock/anthropic.claude-3-sonnet")
+        r"bedrock/.*",
+        # For Ollama models excluding Gemma3 (handled by Gemma3Ollama)
+        r"ollama/(?!gemma3).*",
+        # For Ollama chat models (e.g., "ollama_chat/llama3")
+        r"ollama_chat/.*",
+        # For Together AI models (e.g., "together_ai/meta-llama/Llama-3-70b")
+        r"together_ai/.*",
+        # For Vertex AI non-Gemini models (e.g., "vertex_ai/claude-3-sonnet")
+        r"vertex_ai/.*",
+        # For Mistral AI models (e.g., "mistral/mistral-large-latest")
+        r"mistral/.*",
+        # For DeepSeek models (e.g., "deepseek/deepseek-chat")
+        r"deepseek/.*",
+        # For Fireworks AI models (e.g., "fireworks_ai/llama-v3-70b")
+        r"fireworks_ai/.*",
+        # For Cohere models (e.g., "cohere/command-r-plus")
+        r"cohere/.*",
+        # For Databricks models (e.g., "databricks/dbrx-instruct")
+        r"databricks/.*",
+        # For AI21 models (e.g., "ai21/jamba-1.5-large")
+        r"ai21/.*",
     ]

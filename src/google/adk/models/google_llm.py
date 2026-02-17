@@ -91,6 +91,9 @@ class Gemini(BaseLlm):
 
   model: str = 'gemini-2.5-flash'
 
+  base_url: Optional[str] = None
+  """The base URL for the AI platform service endpoint."""
+
   speech_config: Optional[types.SpeechConfig] = None
 
   use_interactions_api: bool = False
@@ -305,6 +308,7 @@ class Gemini(BaseLlm):
         http_options=types.HttpOptions(
             headers=self._tracking_headers(),
             retry_options=self.retry_options,
+            base_url=self.base_url,
         )
     )
 
