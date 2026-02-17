@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -72,8 +72,8 @@ async def main():
         )
         total_tokens += event.usage_metadata.total_token_count or 0
         print(
-            'Turn tokens:'
-            f' {event.usage_metadata.total_token_count} (prompt={event.usage_metadata.prompt_token_count},'
+            f'Turn tokens: {event.usage_metadata.total_token_count}'
+            f' (prompt={event.usage_metadata.prompt_token_count},'
             f' candidates={event.usage_metadata.candidates_token_count})'
         )
 

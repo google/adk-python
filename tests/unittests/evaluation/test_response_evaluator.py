@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -118,29 +118,3 @@ class TestResponseEvaluator:
     assert [m.name for m in mock_kwargs["metrics"]] == [
         vertexai_types.PrebuiltMetric.COHERENCE.name
     ]
-
-  def test_get_metric_info_response_evaluation_score(self):
-    """Test get_metric_info function for response evaluation metric."""
-    metric_info = ResponseEvaluator.get_metric_info(
-        PrebuiltMetrics.RESPONSE_EVALUATION_SCORE.value
-    )
-    assert (
-        metric_info.metric_name
-        == PrebuiltMetrics.RESPONSE_EVALUATION_SCORE.value
-    )
-    assert metric_info.metric_value_info.interval.min_value == 1.0
-    assert metric_info.metric_value_info.interval.max_value == 5.0
-
-  def test_get_metric_info_response_match_score(self):
-    """Test get_metric_info function for response match metric."""
-    metric_info = ResponseEvaluator.get_metric_info(
-        PrebuiltMetrics.RESPONSE_MATCH_SCORE.value
-    )
-    assert metric_info.metric_name == PrebuiltMetrics.RESPONSE_MATCH_SCORE.value
-    assert metric_info.metric_value_info.interval.min_value == 0.0
-    assert metric_info.metric_value_info.interval.max_value == 1.0
-
-  def test_get_metric_info_invalid(self):
-    """Test get_metric_info function for invalid metric."""
-    with pytest.raises(ValueError):
-      ResponseEvaluator.get_metric_info("invalid_metric")

@@ -1,6 +1,6 @@
 # Contributing Resources
 
-This folder host resources for ADK contributors, for example, testing samples etc.
+This folder hosts resources for ADK contributors, for example, testing samples etc.
 
 ## Samples
 
@@ -13,4 +13,4 @@ Samples folder host samples to test different features. The samples are usually 
 The [adk_project_overview_and_architecture.md](adk_project_overview_and_architecture.md) describes the ADK project overview and its technical architecture from high-level.
 
 This is helpful for contributors to understand the project and design philosophy.
- It can also be feed into LLMs for vibe-coding.
+ It can also be fed into LLMs for vibe-coding.

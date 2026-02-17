@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -120,9 +120,7 @@ class _CodeExecutionRequestProcessor(BaseLlmRequestProcessor):
   async def run_async(
       self, invocation_context: InvocationContext, llm_request: LlmRequest
   ) -> AsyncGenerator[Event, None]:
-    from ...agents.llm_agent import LlmAgent
-
-    if not isinstance(invocation_context.agent, LlmAgent):
+    if not hasattr(invocation_context.agent, 'code_executor'):
       return
     if not invocation_context.agent.code_executor:
       return
@@ -175,9 +173,7 @@ async def _run_pre_processor(
     llm_request: LlmRequest,
 ) -> AsyncGenerator[Event, None]:
   """Pre-process the user message by adding the user message to the Colab notebook."""
-  from ...agents.llm_agent import LlmAgent
-
-  if not isinstance(invocation_context.agent, LlmAgent):
+  if not hasattr(invocation_context.agent, 'code_executor'):
     return
 
   agent = invocation_context.agent

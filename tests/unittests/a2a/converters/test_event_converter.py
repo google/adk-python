@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -56,6 +56,7 @@ class TestEventConverter:
     self.mock_invocation_context.artifact_service = self.mock_artifact_service
 
     self.mock_event = Mock(spec=Event)
+    self.mock_event.id = None
     self.mock_event.invocation_id = "test-invocation-id"
     self.mock_event.author = "test-author"
     self.mock_event.branch = None
@@ -130,6 +131,7 @@ class TestEventConverter:
         f"{ADK_METADATA_KEY_PREFIX}session_id",
         f"{ADK_METADATA_KEY_PREFIX}invocation_id",
         f"{ADK_METADATA_KEY_PREFIX}author",
+        f"{ADK_METADATA_KEY_PREFIX}event_id",
     ]
 
     for key in expected_keys:
@@ -773,13 +775,9 @@ class TestA2AToEventConverters:
     from google.adk.a2a.converters.event_converter import convert_a2a_task_to_event
 
     # Create mock message and task
-    mock_message = Mock(spec=Message)
-    mock_status = Mock()
-    mock_status.message = mock_message
-    mock_task = Mock(spec=Task)
-    mock_task.artifacts = None
-    mock_task.status = mock_status
-    mock_task.history = []
+    mock_message = Mock(spec=Message, parts=[Mock()])
+    mock_status = Mock(message=mock_message)
+    mock_task = Mock(spec=Task, artifacts=None, status=mock_status, history=[])
 
     # Mock the convert_a2a_message_to_event function to raise an exception
     with patch(
@@ -798,11 +796,9 @@ class TestA2AToEventConverters:
     # Create mock parts and message with valid genai Part
     mock_a2a_part = Mock()
     mock_genai_part = genai_types.Part(text="test content")
-    mock_convert_part = Mock()
-    mock_convert_part.return_value = mock_genai_part
+    mock_convert_part = Mock(return_value=mock_genai_part)
 
-    mock_message = Mock(spec=Message)
-    mock_message.parts = [mock_a2a_part]
+    mock_message = Mock(spec=Message, parts=[mock_a2a_part])
 
     result = convert_a2a_message_to_event(
         mock_message,
@@ -829,11 +825,9 @@ class TestA2AToEventConverters:
     mock_a2a_part = Mock()
     mock_genai_part1 = genai_types.Part(text="part 1")
     mock_genai_part2 = genai_types.Part(text="part 2")
-    mock_convert_part = Mock()
-    mock_convert_part.return_value = [mock_genai_part1, mock_genai_part2]
+    mock_convert_part = Mock(return_value=[mock_genai_part1, mock_genai_part2])
 
-    mock_message = Mock(spec=Message)
-    mock_message.parts = [mock_a2a_part]
+    mock_message = Mock(spec=Message, parts=[mock_a2a_part])
 
     # Act
     result = convert_a2a_message_to_event(
@@ -855,13 +849,10 @@ class TestA2AToEventConverters:
     from google.adk.a2a.converters.event_converter import convert_a2a_message_to_event
 
     # Create mock parts and message
-    mock_a2a_part = Mock()
-    mock_message = Mock(spec=Message)
-    mock_message.parts = [mock_a2a_part]
+    mock_message = Mock(spec=Message, parts=[Mock()])
 
     # Mock the part conversion to return None to simulate long-running tool detection logic
-    mock_convert_part = Mock()
-    mock_convert_part.return_value = None
+    mock_convert_part = Mock(return_value=None)
 
     # Patch the long-running tool detection since the main logic is in the actual conversion
     with patch(
@@ -884,8 +875,7 @@ class TestA2AToEventConverters:
     """Test conversion with empty parts list."""
     from google.adk.a2a.converters.event_converter import convert_a2a_message_to_event
 
-    mock_message = Mock(spec=Message)
-    mock_message.parts = []
+    mock_message = Mock(spec=Message, parts=[])
 
     result = convert_a2a_message_to_event(
         mock_message, "test-author", self.mock_invocation_context
@@ -910,11 +900,9 @@ class TestA2AToEventConverters:
 
     # Setup mock to return None (conversion failure)
     mock_a2a_part = Mock()
-    mock_convert_part = Mock()
-    mock_convert_part.return_value = None
+    mock_convert_part = Mock(return_value=None)
 
-    mock_message = Mock(spec=Message)
-    mock_message.parts = [mock_a2a_part]
+    mock_message = Mock(spec=Message, parts=[mock_a2a_part])
 
     result = convert_a2a_message_to_event(
         mock_message,
@@ -939,14 +927,14 @@ class TestA2AToEventConverters:
     mock_a2a_part2 = Mock()
     mock_genai_part = genai_types.Part(text="successful conversion")
 
-    mock_convert_part = Mock()
-    mock_convert_part.side_effect = [
-        Exception("Conversion failed"),  # First part fails
-        mock_genai_part,  # Second part succeeds
-    ]
+    mock_convert_part = Mock(
+        side_effect=[
+            Exception("Conversion failed"),  # First part fails
+            mock_genai_part,  # Second part succeeds
+        ]
+    )
 
-    mock_message = Mock(spec=Message)
-    mock_message.parts = [mock_a2a_part1, mock_a2a_part2]
+    mock_message = Mock(spec=Message, parts=[mock_a2a_part1, mock_a2a_part2])
 
     result = convert_a2a_message_to_event(
         mock_message,
@@ -967,13 +955,10 @@ class TestA2AToEventConverters:
     from google.adk.a2a.converters.event_converter import convert_a2a_message_to_event
 
     # Create mock parts and message
-    mock_a2a_part = Mock()
-    mock_message = Mock(spec=Message)
-    mock_message.parts = [mock_a2a_part]
+    mock_message = Mock(spec=Message, parts=[Mock()])
 
     # Mock the part conversion to return None
-    mock_convert_part = Mock()
-    mock_convert_part.return_value = None
+    mock_convert_part = Mock(return_value=None)
 
     result = convert_a2a_message_to_event(
         mock_message,
@@ -994,8 +979,7 @@ class TestA2AToEventConverters:
     """Test conversion with default author and no invocation context."""
     from google.adk.a2a.converters.event_converter import convert_a2a_message_to_event
 
-    mock_message = Mock(spec=Message)
-    mock_message.parts = []
+    mock_message = Mock(spec=Message, parts=[])
 
     # Mock UUID generation
     mock_uuid.return_value = "generated-uuid"

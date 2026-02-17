@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -17,7 +17,7 @@ from __future__ import annotations
 import pickle
 from unittest import mock
 
-from google.adk.sessions.database_session_service import DynamicPickleType
+from google.adk.sessions.schemas.v0 import DynamicPickleType
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.dialects import mysql

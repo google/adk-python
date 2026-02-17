@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -23,13 +23,49 @@ from pydantic import alias_generators
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
+from pydantic import model_validator
 
+from ..agents.common_configs import CodeConfig
 from ..evaluation.eval_metrics import EvalMetric
 from .eval_metrics import BaseCriterion
+from .eval_metrics import MetricInfo
 from .eval_metrics import Threshold
 from .simulation.user_simulator import BaseUserSimulatorConfig
 
 logger = logging.getLogger("google_adk." + __name__)
+
+
+class CustomMetricConfig(BaseModel):
+  """Configuration for a custom metric."""
+
+  model_config = ConfigDict(
+      alias_generator=alias_generators.to_camel,
+      populate_by_name=True,
+  )
+
+  code_config: CodeConfig = Field(
+      description=(
+          "Code config for the custom metric, used to locate the custom metric"
+          " function."
+      )
+  )
+  metric_info: Optional[MetricInfo] = Field(
+      default=None,
+      description="Metric info for the custom metric.",
+  )
+  description: str = Field(
+      default="",
+      description="Description for the custom metric info.",
+  )
+
+  @model_validator(mode="after")
+  def check_code_config_args(self) -> "CustomMetricConfig":
+    """Checks that the code config does not have args."""
+    if self.code_config.args:
+      raise ValueError(
+          "args field in CodeConfig for custom metric is not supported."
+      )
+    return self
 
 
 class EvalConfig(BaseModel):
@@ -53,7 +89,7 @@ criterion to be used.
 In the sample below, `tool_trajectory_avg_score`, `response_match_score` and
 `final_response_match_v2` are the standard eval metric names, represented as
 keys in the dictionary. The values in the dictionary are the corresponding
-criterions. For the first two metrics, we use simple threshold as the criterion,
+criteria. For the first two metrics, we use simple threshold as the criterion,
 the third one uses `LlmAsAJudgeCriterion`.
 {
   "criteria": {
@@ -67,6 +103,49 @@ the third one uses `LlmAsAJudgeCriterion`.
           }
         }
     },
+  }
+}
+""",
+  )
+
+  custom_metrics: Optional[dict[str, CustomMetricConfig]] = Field(
+      default=None,
+      description="""A dictionary mapping custom metric names to
+a CustomMetricConfig object.
+
+If a metric name in `criteria` is also present in `custom_metrics`, the
+`code_config` in `CustomMetricConfig` will be used to locate the custom metric
+implementation.
+
+The `metric` field in `CustomMetricConfig` can be used to provide metric
+information like `min_value`, `max_value`, and `description`. If `metric`
+is not provided, a default `MetricInfo` will be created, using
+`description` from `CustomMetricConfig` if provided, and default values
+for `min_value` (0.0) and `max_value` (1.0).
+
+Example:
+{
+  "criteria": {
+    "my_custom_metric": 0.5,
+    "my_simple_metric": 0.8
+  },
+  "custom_metrics": {
+    "my_simple_metric": {
+      "code_config": {
+        "name": "path.to.my.simple.metric.function"
+      }
+    },
+    "my_custom_metric": {
+      "code_config": {
+        "name": "path.to.my.custom.metric.function"
+      },
+      "metric": {
+        "metric_name": "my_custom_metric",
+        "min_value": -10.0,
+        "max_value": 10.0,
+        "description": "My custom metric."
+      }
+    }
   }
 }
 """,
@@ -106,12 +185,19 @@ def get_eval_metrics_from_config(eval_config: EvalConfig) -> list[EvalMetric]:
   eval_metric_list = []
   if eval_config.criteria:
     for metric_name, criterion in eval_config.criteria.items():
+      custom_function_path = None
+      if eval_config.custom_metrics and (
+          config := eval_config.custom_metrics.get(metric_name)
+      ):
+        custom_function_path = config.code_config.name
+
       if isinstance(criterion, float):
         eval_metric_list.append(
             EvalMetric(
                 metric_name=metric_name,
                 threshold=criterion,
                 criterion=BaseCriterion(threshold=criterion),
+                custom_function_path=custom_function_path,
             )
         )
       elif isinstance(criterion, BaseCriterion):
@@ -120,6 +206,7 @@ def get_eval_metrics_from_config(eval_config: EvalConfig) -> list[EvalMetric]:
                 metric_name=metric_name,
                 threshold=criterion.threshold,
                 criterion=criterion,
+                custom_function_path=custom_function_path,
             )
         )
       else:

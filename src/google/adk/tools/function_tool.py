@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -325,9 +325,12 @@ You could retry calling this tool, but it is IMPORTANT for you to provide all th
   ) -> Any:
     args_to_call = args.copy()
     signature = inspect.signature(self.func)
+    # For input-streaming tools, the stream is created during
+    # registration in _process_function_live_helper. Pass it here.
     if (
         self.name in invocation_context.active_streaming_tools
         and invocation_context.active_streaming_tools[self.name].stream
+        is not None
     ):
       args_to_call['input_stream'] = invocation_context.active_streaming_tools[
           self.name

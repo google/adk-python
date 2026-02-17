@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -109,11 +109,10 @@ response_processor = _NlPlanningResponse()
 def _get_planner(
     invocation_context: InvocationContext,
 ) -> Optional[BasePlanner]:
-  from ...agents.llm_agent import Agent
   from ...planners.base_planner import BasePlanner
 
   agent = invocation_context.agent
-  if not isinstance(agent, Agent):
+  if not hasattr(agent, 'planner'):
     return None
   if not agent.planner:
     return None

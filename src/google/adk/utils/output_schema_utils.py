@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -28,7 +28,7 @@ from .variant_utils import get_google_llm_variant
 from .variant_utils import GoogleLLMVariant
 
 
-def can_use_output_schema_with_tools(model: Union[str, BaseLlm]):
+def can_use_output_schema_with_tools(model: Union[str, BaseLlm]) -> bool:
   """Returns True if output schema with tools is supported."""
   model_string = model if isinstance(model, str) else model.model
 

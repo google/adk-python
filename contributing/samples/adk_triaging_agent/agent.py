@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -230,7 +230,7 @@ def change_issue_type(issue_number: int, issue_type: str) -> dict[str, Any]:
     issue_type: issue type to assign
 
   Returns:
-    The the status of this request, with the applied issue type when successful.
+    The status of this request, with the applied issue type when successful.
   """
   print(
       f"Attempting to change issue type '{issue_type}' to issue #{issue_number}"
