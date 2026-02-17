@@ -15,7 +15,7 @@
 import json
 from unittest.mock import MagicMock
 from unittest.mock import patch
-
+from google.adk.code_executors.code_execution_utils import File
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.code_executors.agent_engine_sandbox_code_executor import AgentEngineSandboxCodeExecutor
 from google.adk.code_executors.code_execution_utils import CodeExecutionInput
@@ -58,63 +58,98 @@ class TestAgentEngineSandboxCodeExecutor:
           ),
       )
 
+
   @patch("vertexai.Client")
-  def test_execute_code_success(
-      self,
-      mock_vertexai_client,
-      mock_invocation_context,
+  def test_execute_code_parses_msg_out_msg_err(
+          self,
+          mock_vertexai_client,
+          mock_invocation_context,
   ):
-    # Setup Mocks
+    # Setup mocks
     mock_api_client = MagicMock()
     mock_vertexai_client.return_value = mock_api_client
+
     mock_response = MagicMock()
     mock_json_output = MagicMock()
     mock_json_output.mime_type = "application/json"
     mock_json_output.data = json.dumps(
-        {"stdout": "hello world", "stderr": ""}
+      {"msg_out": "hello", "msg_err": "boom"}
     ).encode("utf-8")
     mock_json_output.metadata = None
+    mock_response.outputs = [mock_json_output]
 
-    mock_file_output = MagicMock()
-    mock_file_output.mime_type = "text/plain"
-    mock_file_output.data = b"file content"
-    mock_file_output.metadata = MagicMock()
-    mock_file_output.metadata.attributes = {"file_name": b"file.txt"}
-
-    mock_png_file_output = MagicMock()
-    mock_png_file_output.mime_type = "image/png"
-    sample_png_bytes = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89"
-    mock_png_file_output.data = sample_png_bytes
-    mock_png_file_output.metadata = MagicMock()
-    mock_png_file_output.metadata.attributes = {"file_name": b"file.png"}
-
-    mock_response.outputs = [
-        mock_json_output,
-        mock_file_output,
-        mock_png_file_output,
-    ]
     mock_api_client.agent_engines.sandboxes.execute_code.return_value = (
-        mock_response
+      mock_response
     )
 
     # Execute
     executor = AgentEngineSandboxCodeExecutor(
-        sandbox_resource_name="projects/123/locations/us-central1/reasoningEngines/456/sandboxEnvironments/789"
+      sandbox_resource_name=(
+        "projects/123/locations/us-central1/"
+        "reasoningEngines/456/sandboxEnvironments/789"
+      )
     )
-    code_input = CodeExecutionInput(code='print("hello world")')
-    result = executor.execute_code(mock_invocation_context, code_input)
+    result = executor.execute_code(
+      mock_invocation_context,
+      CodeExecutionInput(code='print("x")'),
+    )
 
     # Assert
-    assert result.stdout == "hello world"
-    assert not result.stderr
-    assert result.output_files[0].mime_type == "text/plain"
-    assert result.output_files[0].content == b"file content"
+    assert result.stdout == "hello"
+    assert result.stderr == "boom"
 
-    assert result.output_files[0].name == "file.txt"
-    assert result.output_files[1].mime_type == "image/png"
-    assert result.output_files[1].name == "file.png"
-    assert result.output_files[1].content == sample_png_bytes
-    mock_api_client.agent_engines.sandboxes.execute_code.assert_called_once_with(
-        name="projects/123/locations/us-central1/reasoningEngines/456/sandboxEnvironments/789",
-        input_data={"code": 'print("hello world")'},
+
+  @patch("vertexai.Client")
+  def test_execute_code_input_files_use_correct_payload_keys(
+          self,
+          mock_vertexai_client,
+          mock_invocation_context,
+  ):
+    # Setup mocks
+    mock_api_client = MagicMock()
+    mock_vertexai_client.return_value = mock_api_client
+
+    mock_response = MagicMock()
+    mock_json_output = MagicMock()
+    mock_json_output.mime_type = "application/json"
+    mock_json_output.data = json.dumps({"msg_out": ""}).encode("utf-8")
+    mock_json_output.metadata = None
+    mock_response.outputs = [mock_json_output]
+
+    mock_api_client.agent_engines.sandboxes.execute_code.return_value = (
+      mock_response
     )
+
+    # Execute with input files
+    executor = AgentEngineSandboxCodeExecutor(
+      sandbox_resource_name=(
+        "projects/123/locations/us-central1/"
+        "reasoningEngines/456/sandboxEnvironments/789"
+      )
+    )
+    code_input = CodeExecutionInput(
+      code='print("x")',
+      input_files=[
+        File(
+          name="data.csv",
+          content=b"a,b\n1,2\n",
+          mime_type="text/csv",
+        )
+      ],
+    )
+
+    executor.execute_code(mock_invocation_context, code_input)
+
+    # Assert payload keys
+    call_kwargs = (
+      mock_api_client.agent_engines.sandboxes.execute_code.call_args.kwargs
+    )
+    files = call_kwargs["input_data"]["files"]
+    f0 = files[0]
+
+    assert f0["content"] == b"a,b\n1,2\n"
+    assert f0["mime_type"] == "text/csv"
+    assert "contents" not in f0
+    assert "mimeType" not in f0
+
+

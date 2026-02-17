@@ -111,8 +111,8 @@ class AgentEngineSandboxCodeExecutor(BaseCodeExecutor):
       input_data['files'] = [
           {
               'name': f.name,
-              'contents': f.content,
-              'mimeType': f.mime_type,
+              'content': f.content, #using 'contents' / 'mimeType' causes uploaded files to be ignored silently
+              'mime_type': f.mime_type, #since the sandbox API expects 'content' and 'mime_type'
           }
           for f in code_execution_input.input_files
       ]
@@ -134,8 +134,10 @@ class AgentEngineSandboxCodeExecutor(BaseCodeExecutor):
           or 'file_name' not in output.metadata.attributes
       ):
         json_output_data = json.loads(output.data.decode('utf-8'))
-        stdout = json_output_data.get('stdout', '')
-        stderr = json_output_data.get('stderr', '')
+        # sandbox returns output as msg_out & msg err
+        # fall back to stdout & stderr for backward compatibility
+        stdout = json_output_data.get("msg_out", json_output_data.get("stdout", ""))
+        stderr = json_output_data.get("msg_err", json_output_data.get("stderr", ""))
       else:
         file_name = ''
         if (
