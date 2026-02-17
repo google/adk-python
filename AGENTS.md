@@ -24,7 +24,7 @@ agentic architectures that range from simple tasks to complex workflows.
     interacts with various services like session management, artifact storage,
     and memory, and integrates with application-wide plugins. The runner
     provides different execution modes: `run_async` for asynchronous execution
-    in production, `run_live` for bi-directional streaming interaction, and
+    in production, `run_live` for bidirectional streaming interaction, and
     `run` for synchronous execution suitable for local testing and debugging. At
     the end of each invocation, it can perform event compaction to manage
     session history size.
@@ -187,8 +187,7 @@ uv venv --python "python3.11" ".venv" source .venv/bin/activate
 
 uv sync --all-extras ```
 
-**Minimal setup for testing only (matches CI):** `bash uv sync --extra test
---extra eval --extra a2a`
+**Minimal setup for testing only (matches CI):** `bash uv sync --extra test`
 
 **Virtual Environment Usage (Required):** - **Always use** `.venv/bin/python` or
 `.venv/bin/pytest` directly - **Or activate** with `source .venv/bin/activate`
@@ -316,7 +315,7 @@ navigation and refactoring.
 immediately after the license header, before any other imports.
 
 ```python
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -363,7 +362,7 @@ catching issues with the public API.
 **Quick start:** Run all tests with: `bash pytest tests/unittests`
 
 **Recommended:** Match CI configuration before submitting PRs: `bash uv sync
---extra test --extra eval --extra a2a && pytest tests/unittests`
+--extra test && pytest tests/unittests`
 
 **Additional options:** ```bash
 

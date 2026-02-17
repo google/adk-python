@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -68,7 +68,7 @@ class BasePlugin(ABC):
   callback in the chain. For example, if a plugin modifies the tool input with
   before_tool_callback, the modified tool input will be passed to the
   before_tool_callback of the next plugin, and further passed to the agent
-  callbacks if not short circuited.
+  callbacks if not short-circuited.
 
   To use a plugin, implement the desired callback methods and pass an instance
   of your custom plugin class to the ADK Runner.

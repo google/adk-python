@@ -9,11 +9,12 @@ on:
 
 jobs:
   upload-adk-docs-to-vertex-ai-search:
+    if: github.repository == 'google/adk-python'
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: Clone adk-docs repository
         run: git clone https://github.com/google/adk-docs.git /tmp/adk-docs
@@ -28,7 +29,7 @@ jobs:
 
       - name: Authenticate to Google Cloud
         id: auth
-        uses: 'google-github-actions/auth@v2'
+        uses: 'google-github-actions/auth@v3'
         with:
           credentials_json: '${{ secrets.ADK_GCP_SA_KEY }}'
 

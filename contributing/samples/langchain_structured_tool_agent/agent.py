@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,6 +15,7 @@
 """
 This agent aims to test the Langchain tool with Langchain's StructuredTool
 """
+
 from google.adk.agents.llm_agent import Agent
 from google.adk.tools.langchain_tool import LangchainTool
 from langchain_core.tools import tool

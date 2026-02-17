@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -353,8 +353,10 @@ class TestGenerateInferencesForSingleUserInvocation:
 
     events = [
         event
-        async for event in EvaluationGenerator._generate_inferences_for_single_user_invocation(
-            runner, "test_user", "test_session", user_content
+        async for event in (
+            EvaluationGenerator._generate_inferences_for_single_user_invocation(
+                runner, "test_user", "test_session", user_content
+            )
         )
     ]
 
