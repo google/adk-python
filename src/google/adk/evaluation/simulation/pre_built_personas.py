@@ -509,7 +509,7 @@ class _PreBuiltPersonas(enum.Enum):
   )
 
 
-def _get_default_persona_registry() -> UserPersonaRegistry:
+def get_default_persona_registry() -> UserPersonaRegistry:
   registry = UserPersonaRegistry()
 
   registry.register_persona(
@@ -523,6 +523,3 @@ def _get_default_persona_registry() -> UserPersonaRegistry:
   )
 
   return registry
-
-
-DEFAULT_USER_PERSONA_REGISTRY = _get_default_persona_registry()

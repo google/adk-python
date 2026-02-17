@@ -20,7 +20,7 @@ from pydantic import Field
 from pydantic import field_validator
 
 from .common import EvalBaseModel
-from .simulation.pre_built_personas import DEFAULT_USER_PERSONA_REGISTRY
+from .simulation.pre_built_personas import get_default_persona_registry
 from .simulation.user_simulator_personas import UserPersona
 
 
@@ -62,7 +62,7 @@ class ConversationScenario(EvalBaseModel):
       cls, value: Optional[UserPersona | str]
   ) -> Optional[UserPersona]:
     if value is not None and isinstance(value, str):
-      return DEFAULT_USER_PERSONA_REGISTRY.get_persona(value)
+      return get_default_persona_registry().get_persona(value)
     return value
 
 

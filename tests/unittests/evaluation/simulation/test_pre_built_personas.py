@@ -12,9 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from google.adk.evaluation.simulation import pre_built_personas
+from google.adk.evaluation.simulation.pre_built_personas import get_default_persona_registry
 
 
 def test_get_default_persona_registry():
   """Tests that the default persona registry can be loaded."""
-  assert pre_built_personas.DEFAULT_USER_PERSONA_REGISTRY is not None
+  assert get_default_persona_registry() is not None
