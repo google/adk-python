@@ -108,6 +108,7 @@ community = [
 
 eval = [
   # go/keep-sorted start
+  "Jinja2>=3.1.4,<4.0.0",                         # For eval template rendering
   "google-cloud-aiplatform[evaluation]>=1.100.0",
   "pandas>=2.2.3",
   "rouge-score>=0.1.2",
