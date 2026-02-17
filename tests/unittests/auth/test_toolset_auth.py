@@ -31,7 +31,6 @@ from google.adk.auth.auth_credential import OAuth2Auth
 from google.adk.auth.auth_preprocessor import TOOLSET_AUTH_CREDENTIAL_ID_PREFIX
 from google.adk.auth.auth_tool import AuthConfig
 from google.adk.auth.auth_tool import AuthToolArguments
-from google.adk.flows.llm_flows.base_llm_flow import _resolve_toolset_auth
 from google.adk.flows.llm_flows.base_llm_flow import BaseLlmFlow
 from google.adk.flows.llm_flows.base_llm_flow import TOOLSET_AUTH_CREDENTIAL_ID_PREFIX as FLOW_PREFIX
 from google.adk.flows.llm_flows.functions import build_auth_request_event
@@ -120,6 +119,14 @@ class TestResolveToolsetAuth:
     agent.tools = []
     return agent
 
+  @pytest.fixture
+  def flow(self):
+    """Create a BaseLlmFlow instance for testing."""
+    # BaseLlmFlow is abstract, but we can still test _resolve_toolset_auth
+    flow = Mock(spec=BaseLlmFlow)
+    flow._resolve_toolset_auth = BaseLlmFlow._resolve_toolset_auth
+    return flow
+
   @pytest.mark.asyncio
   async def test_no_tools_returns_no_events(
       self, mock_invocation_context, mock_agent
@@ -127,8 +134,9 @@ class TestResolveToolsetAuth:
     """Test that no events are yielded when agent has no tools."""
     mock_agent.tools = []
 
+    flow = BaseLlmFlow.__new__(BaseLlmFlow)
     events = []
-    async for event in _resolve_toolset_auth(
+    async for event in flow._resolve_toolset_auth(
         mock_invocation_context, mock_agent
     ):
       events.append(event)
@@ -144,8 +152,9 @@ class TestResolveToolsetAuth:
     toolset = MockToolset(auth_config=None)
     mock_agent.tools = [toolset]
 
+    flow = BaseLlmFlow.__new__(BaseLlmFlow)
     events = []
-    async for event in _resolve_toolset_auth(
+    async for event in flow._resolve_toolset_auth(
         mock_invocation_context, mock_agent
     ):
       events.append(event)
@@ -175,8 +184,9 @@ class TestResolveToolsetAuth:
       mock_manager.get_auth_credential = AsyncMock(return_value=mock_credential)
       MockCredentialManager.return_value = mock_manager
 
+      flow = BaseLlmFlow.__new__(BaseLlmFlow)
       events = []
-      async for event in _resolve_toolset_auth(
+      async for event in flow._resolve_toolset_auth(
           mock_invocation_context, mock_agent
       ):
         events.append(event)
@@ -203,8 +213,9 @@ class TestResolveToolsetAuth:
       mock_manager.get_auth_credential = AsyncMock(return_value=None)
       MockCredentialManager.return_value = mock_manager
 
+      flow = BaseLlmFlow.__new__(BaseLlmFlow)
       events = []
-      async for event in _resolve_toolset_auth(
+      async for event in flow._resolve_toolset_auth(
           mock_invocation_context, mock_agent
       ):
         events.append(event)
@@ -247,8 +258,9 @@ class TestResolveToolsetAuth:
       mock_manager.get_auth_credential = AsyncMock(return_value=None)
       MockCredentialManager.return_value = mock_manager
 
+      flow = BaseLlmFlow.__new__(BaseLlmFlow)
       events = []
-      async for event in _resolve_toolset_auth(
+      async for event in flow._resolve_toolset_auth(
           mock_invocation_context, mock_agent
       ):
         events.append(event)

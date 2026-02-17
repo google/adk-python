@@ -113,331 +113,6 @@ def _finalize_model_response_event(
   return finalized_event
 
 
-async def _resolve_toolset_auth(
-    invocation_context: InvocationContext,
-    agent: LlmAgent,
-) -> AsyncGenerator[Event, None]:
-  """Resolves authentication for toolsets before tool listing.
-
-  For each toolset with auth configured via get_auth_config():
-  - If credential is available, populate auth_config.exchanged_auth_credential
-  - If credential is not available, yield auth request event and interrupt
-
-  Args:
-    invocation_context: The invocation context.
-    agent: The LLM agent.
-
-  Yields:
-    Auth request events if any toolset needs authentication.
-  """
-  if not agent.tools:
-    return
-
-  pending_auth_requests: dict[str, AuthConfig] = {}
-  callback_context = CallbackContext(invocation_context)
-
-  for tool_union in agent.tools:
-    if not isinstance(tool_union, BaseToolset):
-      continue
-
-    auth_config = tool_union.get_auth_config()
-    if not auth_config:
-      continue
-
-    try:
-      credential = await CredentialManager(auth_config).get_auth_credential(
-          callback_context
-      )
-    except ValueError as e:
-      # Validation errors from CredentialManager should be logged but not
-      # block the flow - the toolset may still work without auth
-      logger.warning(
-          'Failed to get auth credential for toolset %s: %s',
-          type(tool_union).__name__,
-          e,
-      )
-      credential = None
-
-    if credential:
-      # Populate in-place for toolset to use in get_tools()
-      auth_config.exchanged_auth_credential = credential
-    else:
-      # Need auth - will interrupt
-      toolset_id = (
-          f'{TOOLSET_AUTH_CREDENTIAL_ID_PREFIX}{type(tool_union).__name__}'
-      )
-      pending_auth_requests[toolset_id] = auth_config
-
-  if not pending_auth_requests:
-    return
-
-  # Build auth requests dict with generated auth requests
-  auth_requests = {
-      credential_id: AuthHandler(auth_config).generate_auth_request()
-      for credential_id, auth_config in pending_auth_requests.items()
-  }
-
-  # Yield event with auth requests using the shared helper
-  yield build_auth_request_event(
-      invocation_context,
-      auth_requests,
-      author=agent.name,
-  )
-
-  # Interrupt invocation
-  invocation_context.end_invocation = True
-
-
-async def _handle_before_model_callback(
-    invocation_context: InvocationContext,
-    llm_request: LlmRequest,
-    model_response_event: Event,
-) -> Optional[LlmResponse]:
-  """Runs before-model callbacks (plugins then agent callbacks).
-
-  Args:
-    invocation_context: The invocation context.
-    llm_request: The LLM request being built.
-    model_response_event: The model response event for callback context.
-
-  Returns:
-    An LlmResponse if a callback short-circuits the LLM call, else None.
-  """
-  agent = invocation_context.agent
-
-  callback_context = CallbackContext(
-      invocation_context, event_actions=model_response_event.actions
-  )
-
-  # First run callbacks from the plugins.
-  callback_response = (
-      await invocation_context.plugin_manager.run_before_model_callback(
-          callback_context=callback_context,
-          llm_request=llm_request,
-      )
-  )
-  if callback_response:
-    return callback_response
-
-  # If no overrides are provided from the plugins, further run the canonical
-  # callbacks.
-  if not agent.canonical_before_model_callbacks:
-    return
-  for callback in agent.canonical_before_model_callbacks:
-    callback_response = callback(
-        callback_context=callback_context, llm_request=llm_request
-    )
-    if inspect.isawaitable(callback_response):
-      callback_response = await callback_response
-    if callback_response:
-      return callback_response
-
-
-async def _handle_after_model_callback(
-    invocation_context: InvocationContext,
-    llm_response: LlmResponse,
-    model_response_event: Event,
-) -> Optional[LlmResponse]:
-  """Runs after-model callbacks (plugins then agent callbacks).
-
-  Also handles grounding metadata injection when google_search_agent is
-  among the agent's tools.
-
-  Args:
-    invocation_context: The invocation context.
-    llm_response: The LLM response to process.
-    model_response_event: The model response event for callback context.
-
-  Returns:
-    An altered LlmResponse if a callback modifies it, else None.
-  """
-  agent = invocation_context.agent
-
-  # Add grounding metadata to the response if needed.
-  # TODO(b/448114567): Remove this function once the workaround is no longer needed.
-  async def _maybe_add_grounding_metadata(
-      response: Optional[LlmResponse] = None,
-  ) -> Optional[LlmResponse]:
-    readonly_context = ReadonlyContext(invocation_context)
-    if (tools := invocation_context.canonical_tools_cache) is None:
-      tools = await agent.canonical_tools(readonly_context)
-      invocation_context.canonical_tools_cache = tools
-
-    if not any(tool.name == 'google_search_agent' for tool in tools):
-      return response
-    ground_metadata = invocation_context.session.state.get(
-        'temp:_adk_grounding_metadata', None
-    )
-    if not ground_metadata:
-      return response
-
-    if not response:
-      response = llm_response
-    response.grounding_metadata = ground_metadata
-    return response
-
-  callback_context = CallbackContext(
-      invocation_context, event_actions=model_response_event.actions
-  )
-
-  # First run callbacks from the plugins.
-  callback_response = (
-      await invocation_context.plugin_manager.run_after_model_callback(
-          callback_context=CallbackContext(invocation_context),
-          llm_response=llm_response,
-      )
-  )
-  if callback_response:
-    return await _maybe_add_grounding_metadata(callback_response)
-
-  # If no overrides are provided from the plugins, further run the canonical
-  # callbacks.
-  if not agent.canonical_after_model_callbacks:
-    return await _maybe_add_grounding_metadata()
-  for callback in agent.canonical_after_model_callbacks:
-    callback_response = callback(
-        callback_context=callback_context, llm_response=llm_response
-    )
-    if inspect.isawaitable(callback_response):
-      callback_response = await callback_response
-    if callback_response:
-      return await _maybe_add_grounding_metadata(callback_response)
-  return await _maybe_add_grounding_metadata()
-
-
-async def _run_and_handle_error(
-    response_generator: AsyncGenerator[LlmResponse, None],
-    invocation_context: InvocationContext,
-    llm_request: LlmRequest,
-    model_response_event: Event,
-) -> AsyncGenerator[LlmResponse, None]:
-  """Wraps an LLM response generator with error callback handling.
-
-  Runs the response generator within a tracing span. If an error occurs,
-  runs on-model-error callbacks (plugins then agent callbacks). If a
-  callback returns a response, that response is yielded instead of
-  re-raising the error.
-
-  Args:
-    response_generator: The async generator producing LLM responses.
-    invocation_context: The invocation context.
-    llm_request: The LLM request.
-    model_response_event: The model response event.
-
-  Yields:
-    LlmResponse objects from the generator.
-
-  Raises:
-    The original model error if no error callback handles it.
-  """
-  agent = invocation_context.agent
-  if not hasattr(agent, 'canonical_on_model_error_callbacks'):
-    raise TypeError(
-        'Expected agent to have canonical_on_model_error_callbacks'
-        f' attribute, but got {type(agent)}'
-    )
-
-  async def _run_on_model_error_callbacks(
-      *,
-      callback_context: CallbackContext,
-      llm_request: LlmRequest,
-      error: Exception,
-  ) -> Optional[LlmResponse]:
-    error_response = (
-        await invocation_context.plugin_manager.run_on_model_error_callback(
-            callback_context=callback_context,
-            llm_request=llm_request,
-            error=error,
-        )
-    )
-    if error_response is not None:
-      return error_response
-
-    for callback in agent.canonical_on_model_error_callbacks:
-      error_response = callback(
-          callback_context=callback_context,
-          llm_request=llm_request,
-          error=error,
-      )
-      if inspect.isawaitable(error_response):
-        error_response = await error_response
-      if error_response is not None:
-        return error_response
-
-    return None
-
-  try:
-    async with Aclosing(response_generator) as agen:
-      with tracing.use_generate_content_span(
-          llm_request, invocation_context, model_response_event
-      ) as span:
-        async for llm_response in agen:
-          tracing.trace_generate_content_result(span, llm_response)
-          yield llm_response
-  except Exception as model_error:
-    callback_context = CallbackContext(
-        invocation_context, event_actions=model_response_event.actions
-    )
-    error_response = await _run_on_model_error_callbacks(
-        callback_context=callback_context,
-        llm_request=llm_request,
-        error=model_error,
-    )
-    if error_response is not None:
-      yield error_response
-    else:
-      raise model_error
-
-
-async def _process_agent_tools(
-    invocation_context: InvocationContext,
-    llm_request: LlmRequest,
-) -> None:
-  """Process the agent's tools and populate ``llm_request.tools_dict``.
-
-  Iterates over the agent's ``tools`` list, converts each tool union
-  (callable, BaseTool, or BaseToolset) into resolved ``BaseTool``
-  instances, and calls ``process_llm_request`` on each to register
-  tool declarations in the request.
-
-  After this function returns, ``llm_request.tools_dict`` maps tool
-  names to ``BaseTool`` instances ready for function call dispatch.
-
-  Args:
-    invocation_context: The invocation context (``agent`` is read
-      from ``invocation_context.agent``).
-    llm_request: The LLM request to populate with tool declarations.
-  """
-  agent = invocation_context.agent
-  if not hasattr(agent, 'tools') or not agent.tools:
-    return
-
-  multiple_tools = len(agent.tools) > 1
-  model = agent.canonical_model
-  for tool_union in agent.tools:
-    tool_context = ToolContext(invocation_context)
-
-    # If it's a toolset, process it first
-    if isinstance(tool_union, BaseToolset):
-      await tool_union.process_llm_request(
-          tool_context=tool_context, llm_request=llm_request
-      )
-
-    from ...agents.llm_agent import _convert_tool_union_to_tools
-
-    # Then process all tools from this tool union
-    tools = await _convert_tool_union_to_tools(
-        tool_union,
-        ReadonlyContext(invocation_context),
-        model,
-        multiple_tools,
-    )
-    for tool in tools:
-      await tool.process_llm_request(
-          tool_context=tool_context, llm_request=llm_request
-      )
-
-
 class BaseLlmFlow(ABC):
   """A basic flow that calls the LLM in a loop until a final response is generated.
 
@@ -863,7 +538,7 @@ class BaseLlmFlow(ABC):
     # Resolve toolset authentication before tool listing.
     # This ensures credentials are ready before get_tools() is called.
     async with Aclosing(
-        _resolve_toolset_auth(invocation_context, agent)
+        self._resolve_toolset_auth(invocation_context, agent)
     ) as agen:
       async for event in agen:
         yield event
@@ -872,7 +547,112 @@ class BaseLlmFlow(ABC):
       return
 
     # Run processors for tools.
-    await _process_agent_tools(invocation_context, llm_request)
+
+    # We may need to wrap some built-in tools if there are other tools
+    # because the built-in tools cannot be used together with other tools.
+    # TODO(b/448114567): Remove once the workaround is no longer needed.
+    if not agent.tools:
+      return
+
+    multiple_tools = len(agent.tools) > 1
+    model = agent.canonical_model
+    for tool_union in agent.tools:
+      tool_context = ToolContext(invocation_context)
+
+      # If it's a toolset, process it first
+      if isinstance(tool_union, BaseToolset):
+        await tool_union.process_llm_request(
+            tool_context=tool_context, llm_request=llm_request
+        )
+
+      from ...agents.llm_agent import _convert_tool_union_to_tools
+
+      # Then process all tools from this tool union
+      tools = await _convert_tool_union_to_tools(
+          tool_union,
+          ReadonlyContext(invocation_context),
+          model,
+          multiple_tools,
+      )
+      for tool in tools:
+        await tool.process_llm_request(
+            tool_context=tool_context, llm_request=llm_request
+        )
+
+  async def _resolve_toolset_auth(
+      self,
+      invocation_context: InvocationContext,
+      agent: LlmAgent,
+  ) -> AsyncGenerator[Event, None]:
+    """Resolves authentication for toolsets before tool listing.
+
+    For each toolset with auth configured via get_auth_config():
+    - If credential is available, populate auth_config.exchanged_auth_credential
+    - If credential is not available, yield auth request event and interrupt
+
+    Args:
+      invocation_context: The invocation context.
+      agent: The LLM agent.
+
+    Yields:
+      Auth request events if any toolset needs authentication.
+    """
+    if not agent.tools:
+      return
+
+    pending_auth_requests: dict[str, AuthConfig] = {}
+    callback_context = CallbackContext(invocation_context)
+
+    for tool_union in agent.tools:
+      if not isinstance(tool_union, BaseToolset):
+        continue
+
+      auth_config = tool_union.get_auth_config()
+      if not auth_config:
+        continue
+
+      try:
+        credential = await CredentialManager(auth_config).get_auth_credential(
+            callback_context
+        )
+      except ValueError as e:
+        # Validation errors from CredentialManager should be logged but not
+        # block the flow - the toolset may still work without auth
+        logger.warning(
+            'Failed to get auth credential for toolset %s: %s',
+            type(tool_union).__name__,
+            e,
+        )
+        credential = None
+
+      if credential:
+        # Populate in-place for toolset to use in get_tools()
+        auth_config.exchanged_auth_credential = credential
+      else:
+        # Need auth - will interrupt
+        toolset_id = (
+            f'{TOOLSET_AUTH_CREDENTIAL_ID_PREFIX}{type(tool_union).__name__}'
+        )
+        pending_auth_requests[toolset_id] = auth_config
+
+    if not pending_auth_requests:
+      return
+
+    # Build auth requests dict with generated auth requests
+    auth_requests = {
+        credential_id: AuthHandler(auth_config).generate_auth_request()
+        for credential_id, auth_config in pending_auth_requests.items()
+    }
+
+    # Yield event with auth requests using the shared helper
+    yield build_auth_request_event(
+        invocation_context,
+        auth_requests,
+        author=agent.name,
+    )
+
+    # Interrupt invocation
+    invocation_context.end_invocation = True
 
   async def _postprocess_async(
       self,
@@ -1101,7 +881,7 @@ class BaseLlmFlow(ABC):
       model_response_event: Event,
   ) -> AsyncGenerator[LlmResponse, None]:
     # Runs before_model_callback if it exists.
-    if response := await _handle_before_model_callback(
+    if response := await self._handle_before_model_callback(
         invocation_context, llm_request, model_response_event
     ):
       yield response
@@ -1126,7 +906,7 @@ class BaseLlmFlow(ABC):
           invocation_context.live_request_queue = LiveRequestQueue()
           responses_generator = self.run_live(invocation_context)
           async with Aclosing(
-              _run_and_handle_error(
+              self._run_and_handle_error(
                   responses_generator,
                   invocation_context,
                   llm_request,
@@ -1135,7 +915,7 @@ class BaseLlmFlow(ABC):
           ) as agen:
             async for llm_response in agen:
               # Runs after_model_callback if it exists.
-              if altered_llm_response := await _handle_after_model_callback(
+              if altered_llm_response := await self._handle_after_model_callback(
                   invocation_context, llm_response, model_response_event
               ):
                 llm_response = altered_llm_response
@@ -1159,7 +939,7 @@ class BaseLlmFlow(ABC):
               == StreamingMode.SSE,
           )
           async with Aclosing(
-              _run_and_handle_error(
+              self._run_and_handle_error(
                   responses_generator,
                   invocation_context,
                   llm_request,
@@ -1175,7 +955,7 @@ class BaseLlmFlow(ABC):
                   span,
               )
               # Runs after_model_callback if it exists.
-              if altered_llm_response := await _handle_after_model_callback(
+              if altered_llm_response := await self._handle_after_model_callback(
                   invocation_context, llm_response, model_response_event
               ):
                 llm_response = altered_llm_response
@@ -1185,6 +965,100 @@ class BaseLlmFlow(ABC):
     async with Aclosing(_call_llm_with_tracing()) as agen:
       async for event in agen:
         yield event
+
+  async def _handle_before_model_callback(
+      self,
+      invocation_context: InvocationContext,
+      llm_request: LlmRequest,
+      model_response_event: Event,
+  ) -> Optional[LlmResponse]:
+    agent = invocation_context.agent
+
+    callback_context = CallbackContext(
+        invocation_context, event_actions=model_response_event.actions
+    )
+
+    # First run callbacks from the plugins.
+    callback_response = (
+        await invocation_context.plugin_manager.run_before_model_callback(
+            callback_context=callback_context,
+            llm_request=llm_request,
+        )
+    )
+    if callback_response:
+      return callback_response
+
+    # If no overrides are provided from the plugins, further run the canonical
+    # callbacks.
+    if not agent.canonical_before_model_callbacks:
+      return
+    for callback in agent.canonical_before_model_callbacks:
+      callback_response = callback(
+          callback_context=callback_context, llm_request=llm_request
+      )
+      if inspect.isawaitable(callback_response):
+        callback_response = await callback_response
+      if callback_response:
+        return callback_response
+
+  async def _handle_after_model_callback(
+      self,
+      invocation_context: InvocationContext,
+      llm_response: LlmResponse,
+      model_response_event: Event,
+  ) -> Optional[LlmResponse]:
+    agent = invocation_context.agent
+
+    # Add grounding metadata to the response if needed.
+    # TODO(b/448114567): Remove this function once the workaround is no longer needed.
+    async def _maybe_add_grounding_metadata(
+        response: Optional[LlmResponse] = None,
+    ) -> Optional[LlmResponse]:
+      readonly_context = ReadonlyContext(invocation_context)
+      if (tools := invocation_context.canonical_tools_cache) is None:
+        tools = await agent.canonical_tools(readonly_context)
+        invocation_context.canonical_tools_cache = tools
+
+      if not any(tool.name == 'google_search_agent' for tool in tools):
+        return response
+      ground_metadata = invocation_context.session.state.get(
+          'temp:_adk_grounding_metadata', None
+      )
+      if not ground_metadata:
+        return response
+
+      if not response:
+        response = llm_response
+      response.grounding_metadata = ground_metadata
+      return response
+
+    callback_context = CallbackContext(
+        invocation_context, event_actions=model_response_event.actions
+    )
+
+    # First run callbacks from the plugins.
+    callback_response = (
+        await invocation_context.plugin_manager.run_after_model_callback(
+            callback_context=CallbackContext(invocation_context),
+            llm_response=llm_response,
+        )
+    )
+    if callback_response:
+      return await _maybe_add_grounding_metadata(callback_response)
+
+    # If no overrides are provided from the plugins, further run the canonical
+    # callbacks.
+    if not agent.canonical_after_model_callbacks:
+      return await _maybe_add_grounding_metadata()
+    for callback in agent.canonical_after_model_callbacks:
+      callback_response = callback(
+          callback_context=callback_context, llm_response=llm_response
+      )
+      if inspect.isawaitable(callback_response):
+        callback_response = await callback_response
+      if callback_response:
+        return await _maybe_add_grounding_metadata(callback_response)
+    return await _maybe_add_grounding_metadata()
 
   def _finalize_model_response_event(
       self,
@@ -1231,6 +1105,83 @@ class BaseLlmFlow(ABC):
     # TODO: Once generation_complete is surfaced on LlmResponse, we can flush
     # model audio here (flush_user_audio=False, flush_model_audio=True).
     return []
+
+  async def _run_and_handle_error(
+      self,
+      response_generator: AsyncGenerator[LlmResponse, None],
+      invocation_context: InvocationContext,
+      llm_request: LlmRequest,
+      model_response_event: Event,
+  ) -> AsyncGenerator[LlmResponse, None]:
+    """Runs the response generator and processes the error with plugins.
+
+    Args:
+      response_generator: The response generator to run.
+      invocation_context: The invocation context.
+      llm_request: The LLM request.
+      model_response_event: The model response event.
+
+    Yields:
+      A generator of LlmResponse.
+    """
+
+    agent = invocation_context.agent
+    if not hasattr(agent, 'canonical_on_model_error_callbacks'):
+      raise TypeError(
+          'Expected agent to have canonical_on_model_error_callbacks'
+          f' attribute, but got {type(agent)}'
+      )
+
+    async def _run_on_model_error_callbacks(
+        *,
+        callback_context: CallbackContext,
+        llm_request: LlmRequest,
+        error: Exception,
+    ) -> Optional[LlmResponse]:
+      error_response = (
+          await invocation_context.plugin_manager.run_on_model_error_callback(
+              callback_context=callback_context,
+              llm_request=llm_request,
+              error=error,
+          )
+      )
+      if error_response is not None:
+        return error_response
+
+      for callback in agent.canonical_on_model_error_callbacks:
+        error_response = callback(
+            callback_context=callback_context,
+            llm_request=llm_request,
+            error=error,
+        )
+        if inspect.isawaitable(error_response):
+          error_response = await error_response
+        if error_response is not None:
+          return error_response
+
+      return None
+
+    try:
+      async with Aclosing(response_generator) as agen:
+        with tracing.use_generate_content_span(
+            llm_request, invocation_context, model_response_event
+        ) as span:
+          async for llm_response in agen:
+            tracing.trace_generate_content_result(span, llm_response)
+            yield llm_response
+    except Exception as model_error:
+      callback_context = CallbackContext(
+          invocation_context, event_actions=model_response_event.actions
+      )
+      error_response = await _run_on_model_error_callbacks(
+          callback_context=callback_context,
+          llm_request=llm_request,
+          error=model_error,
+      )
+      if error_response is not None:
+        yield error_response
+      else:
+        raise model_error
 
   def __get_llm(self, invocation_context: InvocationContext) -> BaseLlm:
     agent = invocation_context.agent
