@@ -154,6 +154,15 @@ class TestRunnerRewind:
         )
         is None
     )
+    rewind_receipt = session.events[-1].actions.rewind_audit_receipt
+    assert rewind_receipt is not None
+    assert rewind_receipt.rewind_before_invocation_id == "invocation2"
+    assert rewind_receipt.boundary_after_invocation_id == "invocation1"
+    assert rewind_receipt.events_before_rewind == 3
+    assert rewind_receipt.events_after_rewind == 1
+    assert rewind_receipt.history_before_hash
+    assert rewind_receipt.history_after_hash
+    assert rewind_receipt.receipt_hash
 
   @pytest.mark.asyncio
   async def test_rewind_async_not_first_invocation(self):
@@ -246,3 +255,38 @@ class TestRunnerRewind:
         session_id=session_id,
         filename="f2",
     ) == types.Part.from_text(text="f2v0")
+
+  @pytest.mark.asyncio
+  async def test_rewind_receipt_hash_is_deterministic(self):
+    """Tests that rewind receipt hashes are stable for the same history."""
+    runner = self.runner
+    user_id = "test_user"
+    session_id = "test_session"
+    session = await runner.session_service.create_session(
+        app_name=runner.app_name, user_id=user_id, session_id=session_id
+    )
+
+    for invocation_id in ("invocation1", "invocation2", "invocation3"):
+      await runner.session_service.append_event(
+          session=session,
+          event=Event(
+              invocation_id=invocation_id,
+              author="agent",
+              actions=EventActions(state_delta={invocation_id: invocation_id}),
+          ),
+      )
+
+    first_receipt = runner._build_rewind_audit_receipt(
+        session=session,
+        rewind_event_index=1,
+        rewind_before_invocation_id="invocation2",
+    )
+    second_receipt = runner._build_rewind_audit_receipt(
+        session=session,
+        rewind_event_index=1,
+        rewind_before_invocation_id="invocation2",
+    )
+
+    assert first_receipt.history_before_hash == second_receipt.history_before_hash
+    assert first_receipt.history_after_hash == second_receipt.history_after_hash
+    assert first_receipt.receipt_hash == second_receipt.receipt_hash

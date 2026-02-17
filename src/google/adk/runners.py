@@ -15,7 +15,9 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import inspect
+import json
 import logging
 from pathlib import Path
 import queue
@@ -47,6 +49,7 @@ from .auth.credential_service.base_credential_service import BaseCredentialServi
 from .code_executors.built_in_code_executor import BuiltInCodeExecutor
 from .events.event import Event
 from .events.event import EventActions
+from .events.event_actions import RewindAuditReceipt
 from .flows.llm_flows import contents
 from .flows.llm_flows.functions import find_matching_function_call
 from .memory.base_memory_service import BaseMemoryService
@@ -594,6 +597,11 @@ class Runner:
     artifact_delta = await self._compute_artifact_delta_for_rewind(
         session, rewind_event_index
     )
+    rewind_audit_receipt = self._build_rewind_audit_receipt(
+        session=session,
+        rewind_event_index=rewind_event_index,
+        rewind_before_invocation_id=rewind_before_invocation_id,
+    )
 
     # Create rewind event
     rewind_event = Event(
@@ -603,12 +611,80 @@ class Runner:
             rewind_before_invocation_id=rewind_before_invocation_id,
             state_delta=state_delta,
             artifact_delta=artifact_delta,
+            rewind_audit_receipt=rewind_audit_receipt,
         ),
     )
 
     logger.info('Rewinding session to invocation: %s', rewind_event)
 
     await self.session_service.append_event(session=session, event=rewind_event)
+
+  def _build_rewind_audit_receipt(
+      self,
+      *,
+      session: Session,
+      rewind_event_index: int,
+      rewind_before_invocation_id: str,
+  ) -> RewindAuditReceipt:
+    """Builds a deterministic audit receipt for a rewind operation."""
+    events_before = session.events
+    events_after = session.events[:rewind_event_index]
+    boundary_after_invocation_id = None
+    if rewind_event_index > 0:
+      boundary_after_invocation_id = (
+          session.events[rewind_event_index - 1].invocation_id
+      )
+
+    history_before_hash = self._hash_rewind_events(events_before)
+    history_after_hash = self._hash_rewind_events(events_after)
+
+    receipt_payload = {
+      'rewind_before_invocation_id': rewind_before_invocation_id,
+      'boundary_after_invocation_id': boundary_after_invocation_id,
+      'events_before_rewind': len(events_before),
+      'events_after_rewind': len(events_after),
+      'history_before_hash': history_before_hash,
+      'history_after_hash': history_after_hash,
+    }
+    receipt_hash = self._hash_rewind_payload(receipt_payload)
+
+    return RewindAuditReceipt(
+        rewind_before_invocation_id=rewind_before_invocation_id,
+        boundary_after_invocation_id=boundary_after_invocation_id,
+        events_before_rewind=len(events_before),
+        events_after_rewind=len(events_after),
+        history_before_hash=history_before_hash,
+        history_after_hash=history_after_hash,
+        receipt_hash=receipt_hash,
+    )
+
+  def _hash_rewind_events(self, events: List[Event]) -> str:
+    """Hashes event summaries for deterministic rewind audit receipts."""
+    summarized_events = []
+    for event in events:
+      summarized_events.append(
+          {
+              'event_id': event.id,
+              'invocation_id': event.invocation_id,
+              'author': event.author,
+              'state_delta': event.actions.state_delta,
+              'artifact_delta': event.actions.artifact_delta,
+              'rewind_before_invocation_id': (
+                  event.actions.rewind_before_invocation_id
+              ),
+          }
+      )
+    return self._hash_rewind_payload({'events': summarized_events})
+
+  def _hash_rewind_payload(self, payload: dict[str, Any]) -> str:
+    """Returns a canonical SHA-256 digest for rewind audit payloads."""
+    canonical_json = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(',', ':'),
+        ensure_ascii=True,
+    )
+    return hashlib.sha256(canonical_json.encode('utf-8')).hexdigest()
 
   async def _compute_state_delta_for_rewind(
       self, session: Session, rewind_event_index: int

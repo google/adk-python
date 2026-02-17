@@ -47,6 +47,38 @@ class EventCompaction(BaseModel):
   """The compacted content of the events."""
 
 
+class RewindAuditReceipt(BaseModel):
+  """Audit receipt metadata emitted for rewind operations."""
+
+  model_config = ConfigDict(
+      extra='forbid',
+      alias_generator=alias_generators.to_camel,
+      populate_by_name=True,
+  )
+  """The pydantic model config."""
+
+  rewind_before_invocation_id: str
+  """The invocation ID that the rewind operation targeted."""
+
+  boundary_after_invocation_id: Optional[str] = None
+  """The last invocation ID retained before the rewind boundary, if any."""
+
+  events_before_rewind: int
+  """The number of events present before appending the rewind event."""
+
+  events_after_rewind: int
+  """The number of pre-existing events retained after rewind filtering."""
+
+  history_before_hash: str
+  """Canonical hash of the full pre-rewind event history."""
+
+  history_after_hash: str
+  """Canonical hash of the retained pre-rewind event history."""
+
+  receipt_hash: str
+  """Tamper-evident hash over the rewind receipt summary."""
+
+
 class EventActions(BaseModel):
   """Represents the actions attached to an event."""
 
@@ -108,3 +140,6 @@ class EventActions(BaseModel):
 
   rewind_before_invocation_id: Optional[str] = None
   """The invocation id to rewind to. This is only set for rewind event."""
+
+  rewind_audit_receipt: Optional[RewindAuditReceipt] = None
+  """Structured receipt proving rewind boundaries and history digests."""
