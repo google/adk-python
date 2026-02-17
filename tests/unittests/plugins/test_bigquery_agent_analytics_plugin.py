@@ -534,7 +534,9 @@ class TestBigQueryAgentAnalyticsPlugin:
   ):
     _ = mock_auth_default
     _ = mock_bq_client
-    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(event_allowlist=["LLM_REQUEST"])
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        event_allowlist=["LLM_REQUEST"]
+    )
     async with managed_plugin(
         PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
     ) as plugin:
@@ -572,7 +574,9 @@ class TestBigQueryAgentAnalyticsPlugin:
   ):
     _ = mock_auth_default
     _ = mock_bq_client
-    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(event_denylist=["USER_MESSAGE_RECEIVED"])
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        event_denylist=["USER_MESSAGE_RECEIVED"]
+    )
     async with managed_plugin(
         PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
     ) as plugin:
@@ -608,7 +612,9 @@ class TestBigQueryAgentAnalyticsPlugin:
     def redact_content(content, event_type):
       return "[REDACTED]"
 
-    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(content_formatter=redact_content)
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        content_formatter=redact_content
+    )
     async with managed_plugin(
         PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
     ) as plugin:
@@ -645,7 +651,9 @@ class TestBigQueryAgentAnalyticsPlugin:
     def error_formatter(content, event_type):
       raise ValueError("Formatter failed")
 
-    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(content_formatter=error_formatter)
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        content_formatter=error_formatter
+    )
     async with managed_plugin(
         PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
     ) as plugin:
@@ -678,7 +686,9 @@ class TestBigQueryAgentAnalyticsPlugin:
   ):
     _ = mock_auth_default
     _ = mock_bq_client
-    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(max_content_length=40)
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        max_content_length=40
+    )
     async with managed_plugin(
         PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
     ) as plugin:
@@ -796,7 +806,9 @@ class TestBigQueryAgentAnalyticsPlugin:
       dummy_arrow_schema,
       mock_asyncio_to_thread,
   ):
-    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(max_content_length=-1)
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        max_content_length=-1
+    )
     async with managed_plugin(
         PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
     ) as plugin:
@@ -894,7 +906,9 @@ class TestBigQueryAgentAnalyticsPlugin:
     _ = mock_bq_client
     _ = mock_to_arrow_schema
     _ = mock_asyncio_to_thread
-    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(max_content_length=-1)
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        max_content_length=-1
+    )
     async with managed_plugin(
         PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
     ) as plugin:
@@ -936,7 +950,9 @@ class TestBigQueryAgentAnalyticsPlugin:
       dummy_arrow_schema,
       mock_asyncio_to_thread,
   ):
-    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(max_content_length=80)
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        max_content_length=80
+    )
     async with managed_plugin(
         PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
     ) as plugin:
@@ -1838,7 +1854,9 @@ class TestBigQueryAgentAnalyticsPlugin:
   ):
     # Setup
     bucket_name = "test-bucket"
-    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(gcs_bucket_name=bucket_name)
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        gcs_bucket_name=bucket_name
+    )
     async with managed_plugin(
         PROJECT_ID, DATASET_ID, table_id=TABLE_ID, config=config
     ) as plugin:
@@ -2067,6 +2085,7 @@ class TestBigQueryAgentAnalyticsPlugin:
     """Verifies that custom objects (Dataclasses) are serialized to dicts."""
     _ = mock_auth_default
     _ = mock_bq_client
+
     @dataclasses.dataclass
     class LocalMissedKPI:
       kpi: str

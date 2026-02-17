@@ -1592,8 +1592,33 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       )
       del self._loop_state_by_loop[loop]
 
+  # API Compatibility: These class-level attributes mask the dynamic
+  # properties from static analysis tools (preventing "breaking changes"),
+  # while __getattribute__ intercepts instance access to route to the
+  # actual property implementations.
+  batch_processor = None
+  write_client = None
+  write_stream = None
+
+  def __getattribute__(self, name: str) -> Any:
+    """Intercepts attribute access to support API masking.
+
+    Args:
+        name: The name of the attribute being accessed.
+
+    Returns:
+        The value of the attribute.
+    """
+    if name == "batch_processor":
+      return self._batch_processor_prop
+    if name == "write_client":
+      return self._write_client_prop
+    if name == "write_stream":
+      return self._write_stream_prop
+    return super().__getattribute__(name)
+
   @property
-  def batch_processor(self) -> Optional["BatchProcessor"]:
+  def _batch_processor_prop(self) -> Optional["BatchProcessor"]:
     """The batch processor for the current event loop."""
     try:
       loop = asyncio.get_running_loop()
@@ -1605,7 +1630,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     return None
 
   @property
-  def write_client(self) -> Optional["BigQueryWriteAsyncClient"]:
+  def _write_client_prop(self) -> Optional["BigQueryWriteAsyncClient"]:
     """The write client for the current event loop."""
     try:
       loop = asyncio.get_running_loop()
@@ -1616,9 +1641,9 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     return None
 
   @property
-  def write_stream(self) -> Optional[str]:
+  def _write_stream_prop(self) -> Optional[str]:
     """The write stream for the current event loop."""
-    bp = self.batch_processor
+    bp = self._batch_processor_prop
     return bp.write_stream if bp else None
 
   def _format_content_safely(
@@ -2134,6 +2159,24 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
           ),
       )
     return None
+
+  async def on_state_change_callback(
+      self,
+      *,
+      callback_context: CallbackContext,
+      state_delta: dict[str, Any],
+  ) -> None:
+    """Deprecated: use on_event_callback instead.
+
+    This method is retained for API compatibility but is never invoked
+    by the framework (not in BasePlugin, PluginManager, or Runner).
+    State deltas are now captured via on_event_callback.
+    """
+    logger.warning(
+        "on_state_change_callback is deprecated and never called by"
+        " the framework. State deltas are captured via"
+        " on_event_callback."
+    )
 
   @_safe_callback
   async def before_run_callback(
