@@ -2042,6 +2042,10 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     trace_id = TraceManager.get_trace_id(callback_context)
     span_id, parent_span_id = self._resolve_span_ids(event_data)
 
+    if not self.parser:
+      logger.warning("Parser not initialized; skipping event %s.", event_type)
+      return
+
     # Update parser's trace/span IDs for GCS pathing (reuse instance)
     self.parser.trace_id = trace_id or "no_trace"
     self.parser.span_id = span_id or "no_span"
