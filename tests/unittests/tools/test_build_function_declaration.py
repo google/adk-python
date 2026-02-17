@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,9 +13,9 @@
 # limitations under the License.
 
 from enum import Enum
-from unittest import mock
 
 from google.adk.features import FeatureName
+from google.adk.features._feature_registry import temporary_feature_override
 from google.adk.tools import _automatic_function_calling_util
 from google.adk.tools.tool_context import ToolContext
 from google.adk.utils.variant_utils import GoogleLLMVariant
@@ -435,11 +435,8 @@ class TestJsonSchemaFeatureFlagEnabled:
   @pytest.fixture(autouse=True)
   def enable_feature_flag(self):
     """Enable the JSON_SCHEMA_FOR_FUNC_DECL feature flag for all tests."""
-    with mock.patch.object(
-        _automatic_function_calling_util,
-        'is_feature_enabled',
-        autospec=True,
-        side_effect=lambda f: f == FeatureName.JSON_SCHEMA_FOR_FUNC_DECL,
+    with temporary_feature_override(
+        FeatureName.JSON_SCHEMA_FOR_FUNC_DECL, True
     ):
       yield
 

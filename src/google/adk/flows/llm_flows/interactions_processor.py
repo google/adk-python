@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """Interactions API processor for LLM requests."""
+
 from __future__ import annotations
 
 import logging
@@ -46,16 +47,16 @@ class InteractionsRequestProcessor(BaseLlmRequestProcessor):
     Yields:
         Event: No events are yielded by this processor
     """
-    from ...agents.llm_agent import LlmAgent
     from ...models.google_llm import Gemini
 
     agent = invocation_context.agent
     # Only process if using Gemini with interactions API
-    if not isinstance(agent, LlmAgent):
+    if not hasattr(agent, 'canonical_model'):
       return
-    if not isinstance(agent.model, Gemini):
+    model = agent.canonical_model
+    if not isinstance(model, Gemini):
       return
-    if not agent.model.use_interactions_api:
+    if not model.use_interactions_api:
       return
     # Extract previous interaction ID from session events
     previous_interaction_id = self._find_previous_interaction_id(

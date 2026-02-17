@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -97,7 +97,8 @@ def test_pubsub_credentials_config_validation_errors(
   with pytest.raises(
       ValueError,
       match=(
-          "Must provide either credentials or client_id and client_secret pair."
+          "Must provide one of credentials, external_access_token_key, or"
+          " client_id and client_secret pair."
       ),
   ):
     PubSubCredentialsConfig(
@@ -121,8 +122,8 @@ def test_pubsub_credentials_config_both_credentials_and_client_provided():
   with pytest.raises(
       ValueError,
       match=(
-          "Cannot provide both existing credentials and"
-          " client_id/client_secret/scopes."
+          "If credentials are provided, external_access_token_key, client_id,"
+          " client_secret, and scopes must not be provided."
       ),
   ):
     PubSubCredentialsConfig(

@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -18,6 +18,7 @@ This package provides an intelligent assistant for building multi-agent systems
 using YAML configurations. It can be used directly as an agent or integrated
 with ADK tools and web interfaces.
 """
+
 from __future__ import annotations
 
 from . import agent  # Import to make agent.root_agent available

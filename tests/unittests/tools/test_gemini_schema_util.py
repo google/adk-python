@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -578,6 +578,20 @@ class TestToGeminiSchema:
         "string",
         "null",
     ]
+
+  def test_sanitize_schema_formats_for_gemini_with_list_property_value(self):
+    schema = {
+        "type": "object",
+        "properties": {
+            "required": ["sql"],
+            "sql": {"type": "string"},
+        },
+    }
+
+    sanitized = _sanitize_schema_formats_for_gemini(schema)
+
+    assert sanitized["properties"]["required"] == ["sql"]
+    assert sanitized["properties"]["sql"]["type"] == "string"
 
   def test_sanitize_schema_formats_for_gemini_nullable(self):
     openapi_schema = {

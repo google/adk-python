@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -23,18 +23,19 @@ from typing_extensions import override
 
 from . import metadata_tool
 from . import query_tool
+from ...features import experimental
+from ...features import FeatureName
 from ...tools.base_tool import BaseTool
 from ...tools.base_toolset import BaseToolset
 from ...tools.base_toolset import ToolPredicate
 from ...tools.google_tool import GoogleTool
-from ...utils.feature_decorator import experimental
 from .bigtable_credentials import BigtableCredentialsConfig
 from .settings import BigtableToolSettings
 
 DEFAULT_BIGTABLE_TOOL_NAME_PREFIX = "bigtable"
 
 
-@experimental
+@experimental(FeatureName.BIGTABLE_TOOLSET)
 class BigtableToolset(BaseToolset):
   """Bigtable Toolset contains tools for interacting with Bigtable data and metadata.
 

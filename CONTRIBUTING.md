@@ -180,13 +180,25 @@ part before or alongside your code PR.
     pytest ./tests/unittests
     ```
 
-    NOTE: for accurate repro of test failure, only include `test`, `eval` and
-    `a2a` as extra dependencies.
+    NOTE: for accurate repro of test failure, only include `test` as extra
+    dependencies.
 
     ```shell
-    uv sync --extra test --extra eval --extra a2a
+    uv sync --extra test
     pytest ./tests/unittests
     ```
+
+    **Alternatively**, use the included `unittests.sh` script which handles
+    environment setup and restoration automatically:
+
+    ```shell
+    ./scripts/unittests.sh
+    ```
+
+    This script will:
+    -   Set up the test environment with minimal dependencies (`test`, `eval`, `a2a`)
+    -   Run the unit tests
+    -   Restore the full development environment (`--all-extras`)
 
 6.  **Auto-format the code:**
 

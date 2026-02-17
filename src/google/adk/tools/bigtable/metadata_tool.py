@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -35,7 +35,7 @@ def list_instances(project_id: str, credentials: Credentials) -> dict:
     bt_client = client.get_bigtable_admin_client(
         project=project_id, credentials=credentials
     )
-    (instances_list, failed_locations_list) = bt_client.list_instances()
+    instances_list, failed_locations_list = bt_client.list_instances()
     if failed_locations_list:
       logging.warning(
           "Failed to list instances from the following locations: %s",

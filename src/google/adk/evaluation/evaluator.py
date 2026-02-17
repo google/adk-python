@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -62,8 +62,8 @@ class Evaluator(ABC):
   def evaluate_invocations(
       self,
       actual_invocations: list[Invocation],
-      expected_invocations: Optional[list[Invocation]],
-      conversation_scenario: Optional[ConversationScenario],
+      expected_invocations: Optional[list[Invocation]] = None,
+      conversation_scenario: Optional[ConversationScenario] = None,
   ) -> EvaluationResult:
     """Returns EvaluationResult after performing evaluations using actual and expected invocations.
 

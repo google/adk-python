@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -96,7 +96,7 @@ def add_comment_to_issue(issue_number: int, comment: str) -> dict[str, any]:
     comment: comment to add
 
   Returns:
-    The the status of this request, with the applied comment when successful.
+    The status of this request, with the applied comment when successful.
   """
   print(f"Attempting to add comment '{comment}' to issue #{issue_number}")
   url = f"{GITHUB_BASE_URL}/repos/{OWNER}/{REPO}/issues/{issue_number}/comments"
@@ -119,7 +119,7 @@ def list_comments_on_issue(issue_number: int) -> dict[str, any]:
     issue_number: issue number of the GitHub issue
 
   Returns:
-    The the status of this request, with the list of comments when successful.
+    The status of this request, with the list of comments when successful.
   """
   print(f"Attempting to list comments on issue #{issue_number}")
   url = f"{GITHUB_BASE_URL}/repos/{OWNER}/{REPO}/issues/{issue_number}/comments"

@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -69,11 +69,12 @@ class _VertexAiEvalFacade(Evaluator):
   def evaluate_invocations(
       self,
       actual_invocations: list[Invocation],
-      expected_invocations: Optional[list[Invocation]],
-      _: Optional[ConversationScenario] = None,
+      expected_invocations: Optional[list[Invocation]] = None,
+      conversation_scenario: Optional[ConversationScenario] = None,
   ) -> EvaluationResult:
     if self._expected_invocations_required and expected_invocations is None:
       raise ValueError("expected_invocations is needed by this metric.")
+    del conversation_scenario  # not supported for per-invocation evaluation.
 
     # If expected_invocation are not required by the metric and if they are not
     # supplied, we provide a list of None.
@@ -158,18 +159,25 @@ class _VertexAiEvalFacade(Evaluator):
     """
     project_id = os.environ.get("GOOGLE_CLOUD_PROJECT", None)
     location = os.environ.get("GOOGLE_CLOUD_LOCATION", None)
+    api_key = os.environ.get("GOOGLE_API_KEY", None)
 
-    if not project_id:
-      raise ValueError("Missing project id." + _ERROR_MESSAGE_SUFFIX)
-    if not location:
-      raise ValueError("Missing location." + _ERROR_MESSAGE_SUFFIX)
+    from ..dependencies.vertexai import vertexai
 
-    from vertexai import Client
-    from vertexai import types as vertexai_types
-
-    client = Client(project=project_id, location=location)
+    if api_key:
+      client = vertexai.Client(api_key=api_key)
+    elif project_id or location:
+      if not project_id:
+        raise ValueError("Missing project id." + _ERROR_MESSAGE_SUFFIX)
+      if not location:
+        raise ValueError("Missing location." + _ERROR_MESSAGE_SUFFIX)
+      client = vertexai.Client(project=project_id, location=location)
+    else:
+      raise ValueError(
+          "Either API Key or Google cloud Project id and location should be"
+          " specified."
+      )
 
     return client.evals.evaluate(
-        dataset=vertexai_types.EvaluationDataset(eval_dataset_df=dataset),
+        dataset=vertexai.types.EvaluationDataset(eval_dataset_df=dataset),
         metrics=metrics,
     )

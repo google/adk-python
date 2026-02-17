@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -159,7 +159,7 @@ def _adk_agent(
 
 
 class _UserAgent(base_agent.BaseAgent):
-  """An agent that wraps the provided environment and simulates an user."""
+  """An agent that wraps the provided environment and simulates a user."""
 
   env: Env
 
