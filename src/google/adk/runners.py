@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -32,14 +32,12 @@ from google.adk.apps.compaction import _run_compaction_for_sliding_window
 from google.adk.artifacts import artifact_util
 from google.genai import types
 
-from .agents.active_streaming_tool import ActiveStreamingTool
 from .agents.base_agent import BaseAgent
 from .agents.base_agent import BaseAgentState
 from .agents.context_cache_config import ContextCacheConfig
 from .agents.invocation_context import InvocationContext
 from .agents.invocation_context import new_invocation_context_id
 from .agents.live_request_queue import LiveRequestQueue
-from .agents.llm_agent import LlmAgent
 from .agents.run_config import RunConfig
 from .apps.app import App
 from .apps.app import ResumabilityConfig
@@ -760,7 +758,7 @@ class Runner:
     else:
       # Step 2: Otherwise continue with normal execution
       # Note for live/bidi:
-      # the transcription may arrive later then the action(function call
+      # the transcription may arrive later than the action(function call
       # event and thus function response event). In this case, the order of
       # transcription and function call event will be wrong if we just
       # append as it arrives. To address this, we should check if there is
@@ -770,7 +768,7 @@ class Runner:
       # identified by checking if the transcription event is partial. When
       # the next transcription event is not partial, it means the previous
       # transcription is finished. Then if there is any buffered function
-      # call event, we should append them after this finished(non-parital)
+      # call event, we should append them after this finished(non-partial)
       # transcription event.
       buffered_events: list[Event] = []
       is_transcribing: bool = False
@@ -789,7 +787,7 @@ class Runner:
               buffered_events.append(event)
               continue
             # Note for live/bidi: for audio response, it's considered as
-            # non-paritla event(event.partial=None)
+            # non-partial event(event.partial=None)
             # event.partial=False and event.partial=None are considered as
             # non-partial event; event.partial=True is considered as partial
             # event.
@@ -815,6 +813,7 @@ class Runner:
                   await self.session_service.append_event(
                       session=session, event=buffered_event
                   )
+                  yield buffered_event  # yield buffered events to caller
                 buffered_events = []
               else:
                 # non-transcription event or empty transcription event, for
@@ -936,8 +935,8 @@ class Runner:
     **Events Yielded to Callers:**
     *   **Live Model Audio Events with Inline Data:** Events containing raw
         audio `Blob` data(`inline_data`).
-    *   **Live Model Audio Events with File Data:** Both input and ouput audio
-        data are aggregated into a audio file saved into artifacts. The
+    *   **Live Model Audio Events with File Data:** Both input and output audio
+        data are aggregated into an audio file saved into artifacts. The
         reference to the file is saved in the event as `file_data`.
     *   **Usage Metadata:** Events containing token usage.
     *   **Transcription Events:** Both partial and non-partial transcription
@@ -947,7 +946,7 @@ class Runner:
 
     **Events Saved to the Session:**
     *   **Live Model Audio Events with File Data:** Both input and ouput audio
-        data are aggregated into a audio file saved into artifacts. The
+        data are aggregated into an audio file saved into artifacts. The
         reference to the file is saved as event in the `file_data` to session
         if RunConfig.save_live_model_audio_to_session is True.
     *   **Usage Metadata Events:** Saved to the session.
@@ -1012,45 +1011,6 @@ class Runner:
     root_agent = self.agent
     invocation_context.agent = self._find_agent_to_run(session, root_agent)
 
-    # Pre-processing for live streaming tools
-    # Inspect the tool's parameters to find if it uses LiveRequestQueue
-    invocation_context.active_streaming_tools = {}
-    # TODO(hangfei): switch to use canonical_tools.
-    # for shell agents, there is no tools associated with it so we should skip.
-    if hasattr(invocation_context.agent, 'tools'):
-      import inspect
-
-      for tool in invocation_context.agent.tools:
-        # We use `inspect.signature()` to examine the tool's underlying function (`tool.func`).
-        # This approach is deliberately chosen over `typing.get_type_hints()` for robustness.
-        #
-        # The Problem with `get_type_hints()`:
-        # `get_type_hints()` attempts to resolve forward-referenced (string-based) type
-        # annotations. This resolution can easily fail with a `NameError` (e.g., "Union not found")
-        # if the type isn't available in the scope where `get_type_hints()` is called.
-        # This is a common and brittle issue in framework code that inspects functions
-        # defined in separate user modules.
-        #
-        # Why `inspect.signature()` is Better Here:
-        # `inspect.signature()` does NOT resolve the annotations; it retrieves the raw
-        # annotation object as it was defined on the function. This allows us to
-        # perform a direct and reliable identity check (`param.annotation is LiveRequestQueue`)
-        # without risking a `NameError`.
-        callable_to_inspect = tool.func if hasattr(tool, 'func') else tool
-        # Ensure the target is actually callable before inspecting to avoid errors.
-        if not callable(callable_to_inspect):
-          continue
-        for param in inspect.signature(callable_to_inspect).parameters.values():
-          if param.annotation is LiveRequestQueue:
-            if not invocation_context.active_streaming_tools:
-              invocation_context.active_streaming_tools = {}
-            active_streaming_tool = ActiveStreamingTool(
-                stream=LiveRequestQueue()
-            )
-            invocation_context.active_streaming_tools[tool.__name__] = (
-                active_streaming_tool
-            )
-
     async def execute(ctx: InvocationContext) -> AsyncGenerator[Event]:
       async with Aclosing(ctx.agent.run_live(ctx)) as agen:
         async for event in agen:
@@ -1091,7 +1051,7 @@ class Runner:
     # If the last event is a function response, should send this response to
     # the agent that returned the corresponding function call regardless the
     # type of the agent. e.g. a remote a2a agent may surface a credential
-    # request as a special long running function tool call.
+    # request as a special long-running function tool call.
     event = find_matching_function_call(session.events)
     if event and event.author:
       return root_agent.find_agent(event.author)
@@ -1135,8 +1095,8 @@ class Runner:
     """
     agent = agent_to_run
     while agent:
-      if not isinstance(agent, LlmAgent):
-        # Only LLM-based Agent can provide agent transfer capability.
+      if not hasattr(agent, 'disallow_transfer_to_parent'):
+        # Only agents with transfer capability can transfer.
         return False
       if agent.disallow_transfer_to_parent:
         return False
@@ -1385,7 +1345,7 @@ class Runner:
     run_config = run_config or RunConfig()
     invocation_id = invocation_id or new_invocation_context_id()
 
-    if run_config.support_cfc and isinstance(self.agent, LlmAgent):
+    if run_config.support_cfc and hasattr(self.agent, 'canonical_model'):
       model_name = self.agent.canonical_model.model
       if not model_name.startswith('gemini-2'):
         raise ValueError(
@@ -1466,17 +1426,20 @@ class Runner:
       invocation_context.user_content = new_message
 
     if new_message:
+      deprecated_save_blobs = False
+      if 'save_input_blobs_as_artifacts' in run_config.model_fields_set:
+        deprecated_save_blobs = run_config.save_input_blobs_as_artifacts
       await self._append_new_message_to_session(
           session=session,
           new_message=new_message,
           invocation_context=invocation_context,
-          save_input_blobs_as_artifacts=run_config.save_input_blobs_as_artifacts,
+          save_input_blobs_as_artifacts=deprecated_save_blobs,
           state_delta=state_delta,
       )
 
   def _collect_toolset(self, agent: BaseAgent) -> set[BaseToolset]:
     toolsets = set()
-    if isinstance(agent, LlmAgent):
+    if hasattr(agent, 'tools'):
       for tool_union in agent.tools:
         if isinstance(tool_union, BaseToolset):
           toolsets.add(tool_union)

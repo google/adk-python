@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -285,7 +285,7 @@ class LlmAgent(BaseAgent):
   """The additional content generation configurations.
 
   NOTE: not all fields are usable, e.g. tools must be configured via `tools`,
-  thinking_config must be configured via `planner` in LlmAgent.
+  thinking_config can be configured here or via the `planner`. If both are set, the planner's configuration takes precedence.
 
   For example: use this config to adjust model temperature, configure safety
   settings, etc.
@@ -469,7 +469,7 @@ class LlmAgent(BaseAgent):
         self.__maybe_save_output_to_state(event)
         yield event
         if ctx.should_pause_invocation(event):
-          # Do not pause immediately, wait until the long running tool call is
+          # Do not pause immediately, wait until the long-running tool call is
           # executed.
           should_pause = True
     if should_pause:
@@ -479,7 +479,7 @@ class LlmAgent(BaseAgent):
       events = ctx._get_events(current_invocation=True, current_branch=True)
       if events and any(ctx.should_pause_invocation(e) for e in events[-2:]):
         return
-      # Only yield an end state if the last event is no longer a long running
+      # Only yield an end state if the last event is no longer a long-running
       # tool call.
       ctx.set_agent_state(self.name, end_of_agent=True)
       yield self._create_agent_state_event(ctx)
@@ -849,8 +849,6 @@ class LlmAgent(BaseAgent):
   ) -> types.GenerateContentConfig:
     if not generate_content_config:
       return types.GenerateContentConfig()
-    if generate_content_config.thinking_config:
-      raise ValueError('Thinking config should be set via LlmAgent.planner.')
     if generate_content_config.tools:
       raise ValueError('All tools must be set via LlmAgent.tools.')
     if generate_content_config.system_instruction:
@@ -862,6 +860,23 @@ class LlmAgent(BaseAgent):
           'Response schema must be set via LlmAgent.output_schema.'
       )
     return generate_content_config
+
+  @override
+  def model_post_init(self, __context: Any) -> None:
+    """Provides a warning if multiple thinking configurations are found."""
+    super().model_post_init(__context)
+
+    # Note: Using getattr to check both locations for thinking_config
+    if getattr(
+        self.generate_content_config, 'thinking_config', None
+    ) and getattr(self.planner, 'thinking_config', None):
+      warnings.warn(
+          'Both `thinking_config` in `generate_content_config` and a '
+          'planner with `thinking_config` are provided. The '
+          "planner's configuration will take precedence.",
+          UserWarning,
+          stacklevel=3,
+      )
 
   @classmethod
   @experimental

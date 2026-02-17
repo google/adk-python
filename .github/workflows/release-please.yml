@@ -1,0 +1,30 @@
+# Runs release-please to create/update a PR with version bump and changelog.
+# Triggered by pushes to release/candidate or manually.
+name: "Release: Please"
+
+on:
+  push:
+    branches:
+      - release/candidate
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    # Skip if this is a release-please PR merge (handled by Release: Finalize)
+    if: "!startsWith(github.event.head_commit.message, 'chore(release')"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: release/candidate
+
+      - uses: googleapis/release-please-action@v4
+        with:
+          token: ${{ secrets.RELEASE_PAT }}
+          config-file: .github/release-please-config.json
+          manifest-file: .github/.release-please-manifest.json
+          target-branch: release/candidate

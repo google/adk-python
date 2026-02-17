@@ -1,0 +1,66 @@
+# Triggers when release-please PR is merged to release/candidate.
+# Creates the final release/v{version} branch and deletes the candidate branch.
+name: "Release: Finalize"
+
+on:
+  pull_request:
+    types: [closed]
+    branches:
+      - release/candidate
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  finalize:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check for release-please PR
+        id: check
+        env:
+          LABELS: ${{ toJson(github.event.pull_request.labels.*.name) }}
+        run: |
+          if echo "$LABELS" | grep -q "autorelease: pending"; then
+            echo "is_release_pr=true" >> $GITHUB_OUTPUT
+          else
+            echo "Not a release-please PR, skipping"
+            echo "is_release_pr=false" >> $GITHUB_OUTPUT
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.check.outputs.is_release_pr == 'true'
+        with:
+          ref: release/candidate
+
+      - name: Extract version from manifest
+        if: steps.check.outputs.is_release_pr == 'true'
+        id: version
+        run: |
+          VERSION=$(jq -r '.["."]' .github/.release-please-manifest.json)
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Extracted version: $VERSION"
+
+      - name: Create release branch
+        if: steps.check.outputs.is_release_pr == 'true'
+        run: |
+          git checkout -b "release/v${{ steps.version.outputs.version }}"
+          git push origin "release/v${{ steps.version.outputs.version }}"
+          echo "Created branch: release/v${{ steps.version.outputs.version }}"
+
+      - name: Delete release/candidate branch
+        if: steps.check.outputs.is_release_pr == 'true'
+        run: |
+          git push origin --delete release/candidate
+          echo "Deleted branch: release/candidate"
+
+      - name: Update PR label to tagged
+        if: steps.check.outputs.is_release_pr == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr edit ${{ github.event.pull_request.number }} \
+            --remove-label "autorelease: pending" \
+            --add-label "autorelease: tagged"
+          echo "Updated PR label to autorelease: tagged"

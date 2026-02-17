@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -115,6 +115,7 @@ class AuthHandler:
           exchanged_auth_credential=self.auth_config.raw_auth_credential.model_copy(
               deep=True
           ),
+          credential_key=self.auth_config.credential_key,
       )
 
     # Check for client_id and client_secret
@@ -133,6 +134,7 @@ class AuthHandler:
         auth_scheme=self.auth_config.auth_scheme,
         raw_auth_credential=self.auth_config.raw_auth_credential,
         exchanged_auth_credential=exchanged_credential,
+        credential_key=self.auth_config.credential_key,
     )
 
   def generate_auth_uri(

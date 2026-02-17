@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -24,6 +24,8 @@ import requests
 
 from . import client
 from .config import BigQueryToolConfig
+
+_GDA_CLIENT_ID = "GOOGLE_ADK"
 
 
 def ask_data_insights(
@@ -129,6 +131,7 @@ def ask_data_insights(
     headers = {
         "Authorization": f"Bearer {credentials.token}",
         "Content-Type": "application/json",
+        "X-Goog-API-Client": _GDA_CLIENT_ID,
     }
     ca_url = f"https://geminidataanalytics.googleapis.com/v1alpha/projects/{project_id}/locations/{location}:chat"
 
@@ -149,7 +152,7 @@ def ask_data_insights(
             "systemInstruction": instructions,
             "options": {"chart": {"image": {"noImage": {}}}},
         },
-        "clientIdEnum": "GOOGLE_ADK",
+        "clientIdEnum": _GDA_CLIENT_ID,
     }
 
     resp = _get_stream(

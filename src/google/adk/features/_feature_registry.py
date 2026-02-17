@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -33,12 +33,15 @@ class FeatureName(str, Enum):
   BIGTABLE_TOOL_SETTINGS = "BIGTABLE_TOOL_SETTINGS"
   BIGTABLE_TOOLSET = "BIGTABLE_TOOLSET"
   COMPUTER_USE = "COMPUTER_USE"
+  DATA_AGENT_TOOL_CONFIG = "DATA_AGENT_TOOL_CONFIG"
+  DATA_AGENT_TOOLSET = "DATA_AGENT_TOOLSET"
   GOOGLE_CREDENTIALS_CONFIG = "GOOGLE_CREDENTIALS_CONFIG"
   GOOGLE_TOOL = "GOOGLE_TOOL"
   JSON_SCHEMA_FOR_FUNC_DECL = "JSON_SCHEMA_FOR_FUNC_DECL"
   PROGRESSIVE_SSE_STREAMING = "PROGRESSIVE_SSE_STREAMING"
   PUBSUB_TOOL_CONFIG = "PUBSUB_TOOL_CONFIG"
   PUBSUB_TOOLSET = "PUBSUB_TOOLSET"
+  SKILL_TOOLSET = "SKILL_TOOLSET"
   SPANNER_TOOLSET = "SPANNER_TOOLSET"
   SPANNER_TOOL_SETTINGS = "SPANNER_TOOL_SETTINGS"
   SPANNER_VECTOR_STORE = "SPANNER_VECTOR_STORE"
@@ -97,6 +100,12 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
     FeatureName.COMPUTER_USE: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
+    FeatureName.DATA_AGENT_TOOL_CONFIG: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
+    FeatureName.DATA_AGENT_TOOLSET: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
     FeatureName.GOOGLE_CREDENTIALS_CONFIG: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
@@ -113,6 +122,9 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
     FeatureName.PUBSUB_TOOLSET: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
+    FeatureName.SKILL_TOOLSET: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
     FeatureName.SPANNER_TOOLSET: FeatureConfig(
