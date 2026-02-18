@@ -18,6 +18,8 @@ from typing import Any
 from typing import Optional
 from typing import TYPE_CHECKING
 
+from typing_extensions import override
+
 from google.genai import types
 
 from ..agents.base_agent import BaseAgent
@@ -66,6 +68,7 @@ class LoggingPlugin(BasePlugin):
     """
     super().__init__(name)
 
+  @override
   async def on_user_message_callback(
       self,
       *,
@@ -87,6 +90,7 @@ class LoggingPlugin(BasePlugin):
       self._log(f"   Branch: {invocation_context.branch}")
     return None
 
+  @override
   async def before_run_callback(
       self, *, invocation_context: InvocationContext
   ) -> Optional[types.Content]:
@@ -99,6 +103,7 @@ class LoggingPlugin(BasePlugin):
     )
     return None
 
+  @override
   async def on_event_callback(
       self, *, invocation_context: InvocationContext, event: Event
   ) -> Optional[Event]:
@@ -122,6 +127,7 @@ class LoggingPlugin(BasePlugin):
 
     return None
 
+  @override
   async def after_run_callback(
       self, *, invocation_context: InvocationContext
   ) -> Optional[None]:
@@ -134,6 +140,7 @@ class LoggingPlugin(BasePlugin):
     )
     return None
 
+  @override
   async def before_agent_callback(
       self, *, agent: BaseAgent, callback_context: CallbackContext
   ) -> Optional[types.Content]:
@@ -145,6 +152,7 @@ class LoggingPlugin(BasePlugin):
       self._log(f"   Branch: {callback_context._invocation_context.branch}")
     return None
 
+  @override
   async def after_agent_callback(
       self, *, agent: BaseAgent, callback_context: CallbackContext
   ) -> Optional[types.Content]:
@@ -154,6 +162,7 @@ class LoggingPlugin(BasePlugin):
     self._log(f"   Invocation ID: {callback_context.invocation_id}")
     return None
 
+  @override
   async def before_model_callback(
       self, *, callback_context: CallbackContext, llm_request: LlmRequest
   ) -> Optional[LlmResponse]:
@@ -179,6 +188,7 @@ class LoggingPlugin(BasePlugin):
 
     return None
 
+  @override
   async def after_model_callback(
       self, *, callback_context: CallbackContext, llm_response: LlmResponse
   ) -> Optional[LlmResponse]:
@@ -206,6 +216,7 @@ class LoggingPlugin(BasePlugin):
 
     return None
 
+  @override
   async def before_tool_callback(
       self,
       *,
@@ -221,6 +232,7 @@ class LoggingPlugin(BasePlugin):
     self._log(f"   Arguments: {self._format_args(tool_args)}")
     return None
 
+  @override
   async def after_tool_callback(
       self,
       *,
@@ -237,6 +249,7 @@ class LoggingPlugin(BasePlugin):
     self._log(f"   Result: {self._format_args(result)}")
     return None
 
+  @override
   async def on_model_error_callback(
       self,
       *,
@@ -251,6 +264,7 @@ class LoggingPlugin(BasePlugin):
 
     return None
 
+  @override
   async def on_tool_error_callback(
       self,
       *,
