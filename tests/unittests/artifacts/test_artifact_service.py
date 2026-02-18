@@ -859,9 +859,9 @@ async def test_save_text_dict_shaped_artifact(
   assert loaded is not None
   # GCS/File services may return text as inline_data bytes; accept either form.
   if loaded.text is not None:
-      assert loaded.text == "Hello, World!"
+    assert loaded.text == "Hello, World!"
   else:
-      assert (
-          loaded.inline_data is not None
-          and loaded.inline_data.data == b"Hello, World!"
-      )
+    assert (
+        loaded.inline_data is not None
+        and loaded.inline_data.data == b"Hello, World!"
+    )
