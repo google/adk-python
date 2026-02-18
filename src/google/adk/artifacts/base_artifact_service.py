@@ -70,7 +70,7 @@ class BaseArtifactService(ABC):
       app_name: str,
       user_id: str,
       filename: str,
-      artifact: types.Part,
+      artifact: types.Part | dict[str, Any],
       session_id: Optional[str] = None,
       custom_metadata: Optional[dict[str, Any]] = None,
   ) -> int:
@@ -84,10 +84,11 @@ class BaseArtifactService(ABC):
       app_name: The app name.
       user_id: The user ID.
       filename: The filename of the artifact.
-      artifact: The artifact to save. If the artifact consists of `file_data`,
-        the artifact service assumes its content has been uploaded separately,
-        and this method will associate the `file_data` with the artifact if
-        necessary.
+      artifact: The artifact to save. Can be a types.Part object or a
+        dict-shaped (serialized) artifact that will be converted to types.Part.
+        If the artifact consists of `file_data`, the artifact service assumes
+        its content has been uploaded separately, and this method will associate
+        the `file_data` with the artifact if necessary.
       session_id: The session ID. If `None`, the artifact is user-scoped.
       custom_metadata: custom metadata to associate with the artifact.
 

@@ -61,10 +61,14 @@ class GcsArtifactService(BaseArtifactService):
       app_name: str,
       user_id: str,
       filename: str,
-      artifact: types.Part,
+      artifact: types.Part | dict[str, Any],
       session_id: Optional[str] = None,
       custom_metadata: Optional[dict[str, Any]] = None,
   ) -> int:
+    # Convert dict-shaped artifact to types.Part if necessary
+    if isinstance(artifact, dict):
+      artifact = types.Part.model_validate(artifact)
+    
     return await asyncio.to_thread(
         self._save_artifact,
         app_name,

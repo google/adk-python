@@ -314,7 +314,7 @@ class FileArtifactService(BaseArtifactService):
       app_name: str,
       user_id: str,
       filename: str,
-      artifact: types.Part,
+      artifact: types.Part | dict[str, Any],
       session_id: Optional[str] = None,
       custom_metadata: Optional[dict[str, Any]] = None,
   ) -> int:
@@ -326,6 +326,10 @@ class FileArtifactService(BaseArtifactService):
     computed scope root; absolute paths or inputs that traverse outside that
     root (for example ``"../../secret.txt"``) raise ``ValueError``.
     """
+    # Convert dict-shaped artifact to types.Part if necessary
+    if isinstance(artifact, dict):
+      artifact = types.Part.model_validate(artifact)
+    
     return await asyncio.to_thread(
         self._save_artifact_sync,
         user_id,

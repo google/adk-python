@@ -232,8 +232,8 @@ class SaveArtifactRequest(common.BaseModel):
   """Request payload for saving a new artifact."""
 
   filename: str = Field(description="Artifact filename.")
-  artifact: types.Part = Field(
-      description="Artifact payload encoded as google.genai.types.Part."
+  artifact: types.Part | dict[str, Any] = Field(
+      description="Artifact payload encoded as google.genai.types.Part or as a dict-shaped artifact."
   )
   custom_metadata: Optional[dict[str, Any]] = Field(
       default=None,
