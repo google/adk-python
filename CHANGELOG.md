@@ -1,4 +1,57 @@
-# Changelog
+ Changelog
+
+## [1.26.0](https://github.com/google/adk-python/compare/v1.25.0...v1.26.0) (2026-02-18)
+
+### Features
+
+* **[Core]**
+  * Add generate/create modes for Vertex AI Memory Bank writes ([811e50a](https://github.com/google/adk-python/commit/811e50a0cbb181d502b9837711431ef78fca3f34))
+
+* **[Evals]**
+  * Introduce user personas to the ADK evaluation framework ([6a808c6](https://github.com/google/adk-python/commit/6a808c60b38ad7140ddeb222887c6accc63edce9))
+
+* **[Models]**
+  * Expand LiteLLM supported models and add registry tests ([d5332f4](https://github.com/google/adk-python/commit/d5332f44347f44d60360e14205a2342a0c990d66))
+
+* **[Tools]**
+  * Add native support for `id_token` in OAuth2 credentials ([33f7d11](https://github.com/google/adk-python/commit/33f7d118b377b60f998c92944d2673679fddbc6e))
+
+### Bug Fixes
+
+* Increase Pydantic lower version to 2.7.0 ([dbd6420](https://github.com/google/adk-python/commit/dbd64207aebea8c5af19830a9a02d4c05d1d9469))
+* Replace the global `DEFAULT_USER_PERSONA_REGISTRY` with a function call to `get_default_persona_registry` ([2703613](https://github.com/google/adk-python/commit/2703613572a38bf4f9e25569be2ee678dc91b5b5))
+* Include list of skills in every message and remove `list_skills` tool from system instruction ([4285f85](https://github.com/google/adk-python/commit/4285f852d54670390b19302ed38306bccc0a7cee))
+* Improve BigQuery Agent Analytics plugin reliability and code quality ([ea03487](https://github.com/google/adk-python/commit/ea034877ec15eef1be8f9a4be9fcd95446a3dc21))
+* Fix pickling lock errors in `McpSessionManager` ([4e2d615](https://github.com/google/adk-python/commit/4e2d6159ae3552954aaae295fef3e09118502898))
+* Handle `UnicodeDecodeError` when loading skills in ADK ([3fbc27f](https://github.com/google/adk-python/commit/3fbc27fa4ddb58b2b69ee1bea1e3a7b2514bd725))
+* Check both `input_stream` parameter name and its annotation for streaming tool detection and centralize input-stream creation in registration ([d56cb41](https://github.com/google/adk-python/commit/d56cb4142c5040b6e7d13beb09123b8a59341384))
+* Fix race condition in table creation for `DatabaseSessionService` ([fbe9ecc](https://github.com/google/adk-python/commit/fbe9eccd05e628daa67059ba2e6a0d03966b240d))
+* Allow session resume without a new message in the web UI ([30b2ed3](https://github.com/google/adk-python/commit/30b2ed3ef8ee6d3633743c0db00533683d3342d8))
+* Only relay the `LiveRequest` after tools are invoked ([b53bc55](https://github.com/google/adk-python/commit/b53bc555cceaa11dc53b42c9ca1d650592fb4365))
+
+### Improvements
+
+* Set a maximum number of rows for BigQuery query results in the sample agent ([6a53f41](https://github.com/google/adk-python/commit/6a53f414d3c82962551098d8428dd5ef220673bd))
+* Extract reusable private methods ([e1e0d63](https://github.com/google/adk-python/commit/e1e0d6361675e7b9a2c9b2523e3a72e2e5e7ce05), [976a238](https://github.com/google/adk-python/commit/976a238544330528b4f9f4bea6c4e75ec13b33e1), [42eeaef](https://github.com/google/adk-python/commit/42eeaef2b34c860f126c79c552435458614255ad), [706f9fe](https://github.com/google/adk-python/commit/706f9fe74db0197e19790ca542d372ce46d0ae87))
+* Breaking: Colocate default skill system instruction with `SkillToolset` ([fc1f1db](https://github.com/google/adk-python/commit/fc1f1db00562a79cd6c742cfd00f6267295c29a8))
+* Make skill instruction optimizable and adaptable to user tasks ([21be6ad](https://github.com/google/adk-python/commit/21be6adcb86722a585b26f600c45c85e593b4ee0))
+* Replace `isinstance` call with `hasattr` call ([1d4b0f9](https://github.com/google/adk-python/commit/1d4b0f9ff5cd523eb6417de35c2164849ca522d0))
+* Export `Context` class ([186371f](https://github.com/google/adk-python/commit/186371f01ede3ddc5fd848184ba916eedb0dd63b))
+* Lazy register all streaming tools ([ede925b](https://github.com/google/adk-python/commit/ede925b5025972cffcfaf178b2f81679fabbe90f))
+* Register all streaming tools at the runner ([5269a6b](https://github.com/google/adk-python/commit/5269a6b1d6cf96fbc9568d7093c921a4d7bcc7ca))
+* Unify `CallbackContext` and `ToolContext` into the `Context` class ([647d3b1](https://github.com/google/adk-python/commit/647d3b16a3ae2ddb5410b78b25b7494bf4c51681))
+* Add LiteLLM streaming sample ([4f71b45](https://github.com/google/adk-python/commit/4f71b45425f9dd82b6fa2f03c29282d746068f20))
+* Expose an endpoint for detailed app information ([9562cd6](https://github.com/google/adk-python/commit/9562cd664b521b14c580f533b6ad62865a4f40cd))
+* Add `X-Goog-API-Client` header to GDA API requests ([d85932f](https://github.com/google/adk-python/commit/d85932faa3549bb1f51620523e04fa3261e4ab55))
+* Remove `scipy` from eval dependencies ([4000c02](https://github.com/google/adk-python/commit/4000c0251d356717ce53d14b2d1b4b8bc51133c6))
+* Only use `--extra test` for unit tests ([845818b](https://github.com/google/adk-python/commit/845818be44dd2424fe7bdf19cfd49523a1a2a9b0))
+* Add `load_skill_from_dir()` method to load skills from a directory ([9f7d5b3](https://github.com/google/adk-python/commit/9f7d5b3f1476234e552b783415527cc4bac55b39))
+* Introduce a unified `Context` ([b7f9110](https://github.com/google/adk-python/commit/b7f9110b5213e93e001f50d844c57cfdfb2ea11c))
+
+
+### Documentation
+
+* add `thinking_config` in `generate_content_config` in example agent ([c6b1c74](https://github.com/google/adk-python/commit/c6b1c74321faf62cc52d2518eb9ea0dcef050cde))
 
 ## [1.25.0](https://github.com/google/adk-python/compare/v1.24.1...v1.25.0) (2026-02-11)
 
