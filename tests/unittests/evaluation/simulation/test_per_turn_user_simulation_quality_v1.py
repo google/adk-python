@@ -26,7 +26,10 @@ from google.adk.evaluation.llm_as_judge_utils import Label
 from google.adk.evaluation.simulation.per_turn_user_simulator_quality_v1 import _format_conversation_history
 from google.adk.evaluation.simulation.per_turn_user_simulator_quality_v1 import _parse_llm_response
 from google.adk.evaluation.simulation.per_turn_user_simulator_quality_v1 import PerTurnUserSimulatorQualityV1
+from google.adk.evaluation.simulation.user_simulator_personas import UserBehavior
+from google.adk.evaluation.simulation.user_simulator_personas import UserPersona
 from google.adk.models.llm_response import LlmResponse
+from google.genai import types
 from google.genai import types as genai_types
 import pytest
 
@@ -150,6 +153,54 @@ def test_parse_llm_response_label_valid(response_text):
     "is_valid": "invalid",
   }
   ```""",
+        """```json
+  {
+    "criteria": [
+      {
+        "name": "TEST_NAME",
+        "reasoning": "test_resonining",
+        "passes": False
+      }
+    ],
+    "is_valid": "almost",
+  }
+  ```""",
+        """```json
+  {
+    "criteria": [
+      {
+        "name": "TEST_NAME",
+        "reasoning": "test_resonining",
+        "passes": False
+      }
+    ],
+    "is_valid": "partially_valid",
+  }
+  ```""",
+        """```json
+  {
+    "criteria": [
+      {
+        "name": "TEST_NAME",
+        "reasoning": "test_resonining",
+        "passes": False
+      }
+    ],
+    "is_valid": "partially valid",
+  }
+  ```""",
+        """```json
+  {
+    "criteria": [
+      {
+        "name": "TEST_NAME",
+        "reasoning": "test_resonining",
+        "passes": False
+      }
+    ],
+    "is_valid": "partially",
+  }
+  ```""",
     ],
 )
 def test_parse_llm_response_label_invalid(response_text):
@@ -158,16 +209,16 @@ def test_parse_llm_response_label_invalid(response_text):
 
 
 def create_test_template() -> str:
-  return """This is a test template with stop signal: `{stop_signal}`.
+  return """This is a test template with stop signal: `{{stop_signal}}`.
 
 # Conversation Plan
-{conversation_plan}
+{{conversation_plan}}
 
 # Conversation History
-{conversation_history}
+{{conversation_history}}
 
 # Generated User Response
-{generated_user_response}
+{{generated_user_response}}
 """.strip()
 
 
@@ -189,18 +240,19 @@ def _create_test_evaluator(
           ),
       ),
   )
-  evaluator._prompt_template = create_test_template()
   return evaluator
 
 
 def _create_test_conversation_scenario(
     conversation_plan: str = "test conversation plan",
     starting_prompt: str = "test starting prompt",
+    user_persona: UserPersona = None,
 ) -> ConversationScenario:
   """Returns a ConversationScenario."""
   return ConversationScenario(
       starting_prompt=starting_prompt,
       conversation_plan=conversation_plan,
+      user_persona=user_persona,
   )
 
 
@@ -243,48 +295,28 @@ def _create_test_invocations(
   return invocations
 
 
-def test_format_llm_prompt():
-  evaluator = _create_test_evaluator(stop_signal="test stop signal")
+def test_format_llm_prompt_raises_error_if_previous_invocations_is_none():
+  evaluator = _create_test_evaluator()
+  with pytest.raises(
+      ValueError, match="Previous invocations should have a set value"
+  ):
+    evaluator._format_llm_prompt(
+        invocation=_create_test_invocation("1"),
+        conversation_scenario=_create_test_conversation_scenario(),
+        previous_invocations=None,
+    )
 
-  starting_prompt = "first user prompt."
-  conversation_scenario = _create_test_conversation_scenario(
-      conversation_plan="test conversation plan.",
-      starting_prompt=starting_prompt,
-  )
-  invocation_history = _create_test_invocations([
-      starting_prompt,
-      "first agent response.",
-      "second user prompt.",
-      "second agent response.",
-      "third user prompt.",
-      "third agent response.",
-  ])
 
-  prompt = evaluator._format_llm_prompt(
-      invocation=invocation_history[-1],
-      conversation_scenario=conversation_scenario,
-      previous_invocations=invocation_history[:-1],
-  )
-
-  assert (
-      prompt == """This is a test template with stop signal: `test stop signal`.
-
-# Conversation Plan
-test conversation plan.
-
-# Conversation History
-user: first user prompt.
-
-model: first agent response.
-
-user: second user prompt.
-
-model: second agent response.
-
-# Generated User Response
-third user prompt.
-""".strip()
-  )
+def test_format_llm_prompt_raises_error_if_conversation_scenario_is_none():
+  evaluator = _create_test_evaluator()
+  with pytest.raises(
+      ValueError, match="Conversation scenario should have a set value"
+  ):
+    evaluator._format_llm_prompt(
+        invocation=_create_test_invocation("1"),
+        conversation_scenario=None,
+        previous_invocations=[],
+    )
 
 
 def test_convert_llm_response_to_score_pass():
@@ -417,6 +449,19 @@ def test_aggregate_samples_failure():
 
   assert aggregation_result.score == 0.0
   assert aggregation_result.eval_status == EvalStatus.FAILED
+
+
+def test_format_conversation_history_with_none_values():
+  """Tests that _format_conversation_history handles None values."""
+  invocations = [
+      Invocation(
+          invocation_id="1",
+          user_content=types.Content(),
+          final_response=None,
+      )
+  ]
+  formatted_history = _format_conversation_history(invocations)
+  assert formatted_history == ""
 
 
 def test_format_conversation_history():

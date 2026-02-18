@@ -1,0 +1,46 @@
+# Starts the release process by creating a release/candidate branch.
+# Triggers release-please to generate a changelog PR.
+name: "Release: Cut"
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit_sha:
+        description: 'Commit SHA to cut from (leave empty for latest main)'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  cut-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.commit_sha || 'main' }}
+
+      - name: Check for existing release/candidate branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if git ls-remote --exit-code --heads origin release/candidate &>/dev/null; then
+            echo "Error: release/candidate branch already exists"
+            echo "Please finalize or delete the existing release candidate before starting a new one"
+            exit 1
+          fi
+
+      - name: Create and push release/candidate branch
+        run: |
+          git checkout -b release/candidate
+          git push origin release/candidate
+          echo "Created branch: release/candidate"
+
+      - name: Trigger Release Please
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run release-please.yml --repo ${{ github.repository }}
+          echo "Triggered Release Please workflow"

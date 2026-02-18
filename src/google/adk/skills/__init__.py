@@ -18,12 +18,12 @@ from .models import Frontmatter
 from .models import Resources
 from .models import Script
 from .models import Skill
-from .prompt import format_skills_as_xml
+from .utils import load_skill_from_dir
 
 __all__ = [
     "Frontmatter",
     "Resources",
     "Script",
     "Skill",
-    "format_skills_as_xml",
+    "load_skill_from_dir",
 ]

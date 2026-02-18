@@ -131,7 +131,7 @@ class AgentSimulatorConfig(BaseModel):
   simulation_model_configuration: genai_types.GenerateContentConfig = Field(
       default_factory=lambda: genai_types.GenerateContentConfig(
           thinking_config=genai_types.ThinkingConfig(
-              include_thoughts=True,
+              include_thoughts=False,
               thinking_budget=10240,
           )
       ),
@@ -141,6 +141,11 @@ class AgentSimulatorConfig(BaseModel):
   tracing_path: Optional[str] = None
   """The path to the tracing file to be used for mocking. Only used if the
   mock_strategy_type is MOCK_STRATEGY_TRACING."""
+
+  environment_data: Optional[str] = None
+  """Environment-specific data (e.g., a minimal database dump in JSON string
+   format). This data is passed directly to mock strategies for contextual
+   mock generation."""
 
   @field_validator("tool_simulation_configs")
   @classmethod

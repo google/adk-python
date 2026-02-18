@@ -14,7 +14,7 @@
 
 from unittest import mock
 
-from google.adk.models import llm_request
+from google.adk.models import llm_request as llm_request_model
 from google.adk.skills import models
 from google.adk.tools import skill_toolset
 from google.adk.tools import tool_context
@@ -124,32 +124,23 @@ def test_list_skills(mock_skill1, mock_skill2):
 async def test_get_tools(mock_skill1, mock_skill2):
   toolset = skill_toolset.SkillToolset([mock_skill1, mock_skill2])
   tools = await toolset.get_tools()
-  assert len(tools) == 2
-  assert isinstance(tools[0], skill_toolset.LoadSkillTool)
-  assert isinstance(tools[1], skill_toolset.LoadSkillResourceTool)
+  assert len(tools) == 3
+  assert isinstance(tools[0], skill_toolset.ListSkillsTool)
+  assert isinstance(tools[1], skill_toolset.LoadSkillTool)
+  assert isinstance(tools[2], skill_toolset.LoadSkillResourceTool)
 
 
 @pytest.mark.asyncio
-async def test_process_llm_request(
+@pytest.mark.asyncio
+async def test_list_skills_tool(
     mock_skill1, mock_skill2, tool_context_instance
 ):
   toolset = skill_toolset.SkillToolset([mock_skill1, mock_skill2])
-  mock_llm_request = llm_request.LlmRequest()
-  mock_llm_request.config.system_instruction = "existing instruction"
-  await toolset.process_llm_request(
-      tool_context=tool_context_instance, llm_request=mock_llm_request
-  )
-  assert "<available_skills>" in mock_llm_request.config.system_instruction
-  assert (
-      "You can use specialized 'skills'"
-      in mock_llm_request.config.system_instruction
-  )
-  assert (
-      "skills are folders" in mock_llm_request.config.system_instruction.lower()
-  )
-  assert mock_llm_request.config.system_instruction.startswith(
-      "existing instruction"
-  )
+  tool = skill_toolset.ListSkillsTool(toolset)
+  result = await tool.run_async(args={}, tool_context=tool_context_instance)
+  assert "<available_skills>" in result
+  assert "skill1" in result
+  assert "skill2" in result
 
 
 @pytest.mark.asyncio
@@ -259,3 +250,23 @@ async def test_load_resource_run_async(
   tool = skill_toolset.LoadSkillResourceTool(toolset)
   result = await tool.run_async(args=args, tool_context=tool_context_instance)
   assert result == expected_result
+
+
+@pytest.mark.asyncio
+async def test_process_llm_request(
+    mock_skill1, mock_skill2, tool_context_instance
+):
+  toolset = skill_toolset.SkillToolset([mock_skill1, mock_skill2])
+  llm_req = mock.create_autospec(llm_request_model.LlmRequest, instance=True)
+
+  await toolset.process_llm_request(
+      tool_context=tool_context_instance, llm_request=llm_req
+  )
+
+  llm_req.append_instructions.assert_called_once()
+  args, _ = llm_req.append_instructions.call_args
+  instructions = args[0]
+  assert len(instructions) == 1
+  assert "<available_skills>" in instructions[0]
+  assert "skill1" in instructions[0]
+  assert "skill2" in instructions[0]
