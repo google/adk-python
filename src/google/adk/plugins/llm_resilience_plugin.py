@@ -17,7 +17,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
-from typing import Iterable, Optional
+from typing import Iterable
+from typing import Optional
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+  from ..agents.invocation_context import InvocationContext
 
 try:
   import httpx
@@ -166,20 +171,29 @@ class LlmResiliencePlugin(BasePlugin):
   def _get_invocation_context(self, callback_context):
     # Accept both Context (CallbackContext alias) and InvocationContext via duck typing
     # If this looks like an InvocationContext (has agent and run_config), use it directly
-    if hasattr(callback_context, "agent") and hasattr(callback_context, "run_config"):
+    if hasattr(callback_context, "agent") and hasattr(
+        callback_context, "run_config"
+    ):
       return callback_context
     # Otherwise expect a Context-like object exposing the private _invocation_context
     ic = getattr(callback_context, "_invocation_context", None)
     if ic is None:
-      raise TypeError("callback_context must be Context or InvocationContext-like")
+      raise TypeError(
+          "callback_context must be Context or InvocationContext-like"
+      )
     return ic
 
   async def _retry_same_model(
-      self, *, callback_context: CallbackContext | InvocationContext, llm_request: LlmRequest
+      self,
+      *,
+      callback_context: CallbackContext | InvocationContext,
+      llm_request: LlmRequest,
   ) -> Optional[LlmResponse]:
     invocation_context = self._get_invocation_context(callback_context)
     # Determine streaming mode
-    streaming_mode = getattr(invocation_context.run_config, "streaming_mode", None)
+    streaming_mode = getattr(
+        invocation_context.run_config, "streaming_mode", None
+    )
     stream = False
     try:
       # Only SSE streaming is supported in generate_content_async
@@ -204,7 +218,7 @@ class LlmResiliencePlugin(BasePlugin):
 
       try:
         final_response = await self._call_llm_and_get_final(
-          llm=llm, llm_request=llm_request, stream=stream
+            llm=llm, llm_request=llm_request, stream=stream
         )
         logger.info(
             "LLM retry succeeded on attempt %s for agent %s",
@@ -221,11 +235,16 @@ class LlmResiliencePlugin(BasePlugin):
     return None
 
   async def _try_fallbacks(
-      self, *, callback_context: CallbackContext | InvocationContext, llm_request: LlmRequest
+      self,
+      *,
+      callback_context: CallbackContext | InvocationContext,
+      llm_request: LlmRequest,
   ) -> Optional[LlmResponse]:
     invocation_context = self._get_invocation_context(callback_context)
     # Determine streaming mode
-    streaming_mode = getattr(invocation_context.run_config, "streaming_mode", None)
+    streaming_mode = getattr(
+        invocation_context.run_config, "streaming_mode", None
+    )
     stream = False
     try:
       from ..agents.run_config import StreamingMode
@@ -242,13 +261,14 @@ class LlmResiliencePlugin(BasePlugin):
         final_response = await self._call_llm_and_get_final(
             llm=fallback_llm, llm_request=llm_request, stream=stream
         )
-        logger.info(
-            "LLM fallback succeeded with model '%s'", model_name
-        )
+        logger.info("LLM fallback succeeded with model '%s'", model_name)
         return final_response
       except Exception as e:
         logger.warning(
-            "LLM fallback model '%s' failed: %s", model_name, repr(e), exc_info=False
+            "LLM fallback model '%s' failed: %s",
+            model_name,
+            repr(e),
+            exc_info=False,
         )
         continue
     return None
@@ -258,6 +278,7 @@ class LlmResiliencePlugin(BasePlugin):
   ) -> LlmResponse:
     """Calls the given llm and returns the final non-partial LlmResponse."""
     import inspect
+
     final: Optional[LlmResponse] = None
     agen_or_coro = llm.generate_content_async(llm_request, stream=stream)
 

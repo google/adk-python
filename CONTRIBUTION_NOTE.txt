@@ -1,0 +1,92 @@
+LlmResiliencePlugin Contribution Note
+=====================================
+
+What we implemented
+-------------------
+1) New plugin:
+   - Added src/google/adk/plugins/llm_resilience_plugin.py
+   - Provides retry + backoff + jitter + optional model fallbacks for LLM errors.
+
+2) Plugin export:
+   - Updated src/google/adk/plugins/__init__.py
+   - Exported LlmResiliencePlugin in __all__ for discoverability.
+
+3) Unit tests:
+   - Added tests/unittests/plugins/test_llm_resilience_plugin.py
+   - Covered:
+     - retry success on same model
+     - fallback model after retries
+     - non-transient errors bubbling correctly
+
+4) Usage sample:
+   - Added samples/resilient_agent.py
+   - Demonstrates plugin setup and recovery behavior.
+
+5) PR narrative and testing evidence:
+   - Updated PR_BODY.md to match repository PR template:
+     - issue/description
+     - testing plan
+     - manual E2E output
+     - checklist
+
+
+Why this contribution is meaningful
+-----------------------------------
+1) Solves a real reliability gap:
+   Production agents frequently face transient failures (timeouts, 429, 5xx).
+   This change centralizes resilience behavior and removes repeated ad-hoc retry code.
+
+2) Low-risk architecture:
+   The feature is plugin-based and opt-in.
+   Existing users are unaffected unless they configure the plugin.
+
+3) Practical for maintainers and users:
+   Includes tests and a runnable sample, reducing review friction and making adoption easier.
+
+4) Aligns with ADK extensibility:
+   Keeps resilience logic at the plugin layer without changing core runner/flow behavior.
+
+
+Key design reasons
+------------------
+1) on_model_error_callback hook:
+   Best fit for intercepting model failures and deciding retry/fallback behavior.
+
+2) Exponential backoff with jitter:
+   Reduces retry storms and aligns with standard distributed-system reliability practices.
+
+3) Model fallback support:
+   Improves chance of successful completion when a single provider/model is degraded.
+
+4) Robust provider response handling:
+   Supports async-generator and coroutine style returns to handle provider differences.
+
+5) Type-safety/cycle-safe update:
+   Added TYPE_CHECKING import pattern for InvocationContext to avoid runtime issues.
+
+
+Validation performed
+--------------------
+1) Formatting:
+   - isort applied to changed Python files
+   - pyink applied to changed Python files
+
+2) Unit tests:
+   - Command:
+     .venv/Scripts/python -m pytest tests/unittests/plugins/test_llm_resilience_plugin.py -v
+   - Result: 3 passed
+
+3) Manual E2E sample run:
+   - Command:
+     .venv/Scripts/python samples/resilient_agent.py
+   - Observed:
+     LLM retry attempt 1 failed: TimeoutError('Simulated transient failure')
+     Collected 1 events
+     MODEL: Recovered on retry!
+
+
+Scope and limitations
+---------------------
+- This PR focuses on LLM call resilience only.
+- Live bidirectional streaming paths are out of scope for this change.
+- Future enhancements can add per-exception policies and circuit-breaker style controls.

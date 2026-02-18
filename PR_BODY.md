@@ -1,70 +1,90 @@
 # feat(plugins): LlmResiliencePlugin – configurable retries/backoff and model fallbacks
 
-## Motivation
-Production agents need first-class resilience to transient LLM/API failures (timeouts, 429/5xx). Today, retry/fallback logic is ad-hoc and duplicated across projects. This PR introduces a plugin-based, opt-in resilience layer for LLM calls that aligns with ADK's extensibility philosophy and addresses recurring requests:
+### Link to Issue or Description of Change
 
-- #1214 Add built-in retry mechanism
-- #2561 Retry mechanism gaps for common network errors (httpx…)
-- Discussions: #2292, #3199 on fallbacks and max retries
+**1. Link to an existing issue (if applicable):**
 
-## Summary
-Adds a new plugin `LlmResiliencePlugin` which intercepts model errors and performs:
-- Configurable retries with exponential backoff + jitter
-- Transient error detection (HTTP 429/500/502/503/504, httpx timeouts/connect errors, asyncio timeouts)
-- Optional model fallbacks (try a sequence of models if primary continues to fail)
-- Works for standard `generate_content_async` flows; supports SSE streaming by consuming to final response
+- Closes: N/A
+- Related: #1214
+- Related: #2561
+- Related discussions: #2292, #3199
 
-No core runner changes; this is a pure plugin. Default behavior remains unchanged unless the plugin is configured.
+**2. Or, if no issue exists, describe the change:**
 
-## Implementation Details
-- File: `src/google/adk/plugins/llm_resilience_plugin.py`
-- Hooks into `on_model_error_callback` to decide whether to handle an error
-- Retries use exponential backoff with jitter (configurable):
-  - `max_retries`, `backoff_initial`, `backoff_multiplier`, `max_backoff`, `jitter`
-- Fallbacks use `LLMRegistry.new_llm(model)` to instantiate alternative models on failure
-- Robust handling of provider return types:
-  - Async generator (iterates until final non-partial response)
-  - Coroutine (some providers may return a single `LlmResponse`)
-- Avoids circular imports using duck-typed access to InvocationContext (works with Context alias)
-- Maintains clean separation; no modification to runners or flows
+**Problem:**
+Production agents need first-class resilience to transient LLM/API failures
+(timeouts, HTTP 429/5xx). Today, retry/fallback logic is often ad-hoc and
+duplicated across projects.
 
-## Tests
-- `tests/unittests/plugins/test_llm_resilience_plugin.py`
-  - `test_retry_success_on_same_model`: transient error triggers retry → success
-  - `test_fallback_model_used_after_retries`: failing primary uses fallback model → success
-  - `test_non_transient_error_bubbles`: non-transient error is ignored by plugin (propagate)
+**Solution:**
+Introduce an opt-in plugin, `LlmResiliencePlugin`, that handles transient LLM
+errors with configurable retries (exponential backoff + jitter) and optional
+model fallbacks, without modifying core runner/flow logic.
 
-All tests in this module pass locally:
+### Summary
 
+- Added `src/google/adk/plugins/llm_resilience_plugin.py`.
+- Exported `LlmResiliencePlugin` in `src/google/adk/plugins/__init__.py`.
+- Added unit tests in
+  `tests/unittests/plugins/test_llm_resilience_plugin.py`:
+  - `test_retry_success_on_same_model`
+  - `test_fallback_model_used_after_retries`
+  - `test_non_transient_error_bubbles`
+- Added `samples/resilient_agent.py` demo.
+
+### Testing Plan
+
+**Unit Tests:**
+
+- [x] I have added or updated unit tests for my change.
+- [x] All unit tests pass locally.
+
+Command run:
+
+```shell
+.venv/Scripts/python -m pytest tests/unittests/plugins/test_llm_resilience_plugin.py -v
 ```
-PYTHONPATH=src pytest -q tests/unittests/plugins/test_llm_resilience_plugin.py
-# 3 passed
+
+Result summary:
+
+```text
+collected 3 items
+tests/unittests/plugins/test_llm_resilience_plugin.py::TestLlmResiliencePlugin::test_fallback_model_used_after_retries PASSED
+tests/unittests/plugins/test_llm_resilience_plugin.py::TestLlmResiliencePlugin::test_non_transient_error_bubbles PASSED
+tests/unittests/plugins/test_llm_resilience_plugin.py::TestLlmResiliencePlugin::test_retry_success_on_same_model PASSED
+3 passed
 ```
 
-## Sample
-- `samples/resilient_agent.py` demonstrates configuring the plugin with an in-memory runner and a demo model that fails once then succeeds.
+**Manual End-to-End (E2E) Tests:**
 
 Run sample:
 
+```shell
+.venv/Scripts/python samples/resilient_agent.py
 ```
-PYTHONPATH=$(pwd)/src python samples/resilient_agent.py
+
+Observed output:
+
+```text
+LLM retry attempt 1 failed: TimeoutError('Simulated transient failure')
+Collected 1 events
+MODEL: Recovered on retry!
 ```
 
-## Backwards Compatibility
-- Non-breaking: users opt-in by passing the plugin into `Runner(..., plugins=[LlmResiliencePlugin(...)])`
-- No changes to public APIs beyond exporting the plugin in `google.adk.plugins`
+### Checklist
 
-## Limitations & Future Work
-- Focused on LLM failures. Tool-level resilience is addressed by `ReflectAndRetryToolPlugin`.
-- Circuit-breaking and per-exception policies could be added in a follow-up (`dev_3` item).
-- Live bidi streaming not yet handled by this plugin; future work may extend to `BaseLlmConnection` flows.
+- [x] I have read the [CONTRIBUTING.md](https://github.com/google/adk-python/blob/main/CONTRIBUTING.md) document.
+- [x] I have performed a self-review of my own code.
+- [x] I have commented my code, particularly in hard-to-understand areas.
+- [x] I have added tests that prove my fix is effective or that my feature works.
+- [x] New and existing unit tests pass locally with my changes.
+- [x] I have manually tested my changes end-to-end.
+- [x] Any dependent changes have been merged and published in downstream modules. (N/A; no dependent changes)
 
-## Docs
-- Exported via `google.adk.plugins.__all__` to ease discovery
-- Included inline docstrings and sample; can be integrated into the docs site in a separate PR
+### Additional context
 
-## Checklist
-- [x] Unit tests for new behavior
-- [x] Sample demonstrating usage
-- [x] No changes to core runner/flow logic
-- [x] Code formatted and linted per repository standards
+- Non-breaking: users opt in via
+  `Runner(..., plugins=[LlmResiliencePlugin(...)])`.
+- Transient detection currently targets common HTTP/timeouts and can be extended
+  in follow-ups (e.g., per-exception policy, circuit breaking).
+- Live bidirectional streaming paths are out of scope for this PR.

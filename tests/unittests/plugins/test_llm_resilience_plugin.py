@@ -15,7 +15,8 @@
 from __future__ import annotations
 
 import asyncio
-from typing import AsyncGenerator, Optional
+from typing import AsyncGenerator
+from typing import Optional
 from unittest import IsolatedAsyncioTestCase
 
 from google.adk.agents.llm_agent import LlmAgent
@@ -24,8 +25,9 @@ from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.adk.models.registry import LLMRegistry
 from google.adk.plugins.llm_resilience_plugin import LlmResiliencePlugin
-from ..testing_utils import create_invocation_context
 from google.genai import types
+
+from ..testing_utils import create_invocation_context
 
 
 class AlwaysFailModel(BaseLlm):
@@ -63,6 +65,7 @@ class SimpleSuccessModel(BaseLlm):
 
 
 class TestLlmResiliencePlugin(IsolatedAsyncioTestCase):
+
   @classmethod
   def setUpClass(cls):
     # Register test models in the registry once
@@ -77,19 +80,25 @@ class TestLlmResiliencePlugin(IsolatedAsyncioTestCase):
 
     # Build a minimal request
     llm_request = LlmRequest(
-        contents=[types.Content(role="user", parts=[types.Part.from_text(text="hi")])]
+        contents=[
+            types.Content(role="user", parts=[types.Part.from_text(text="hi")])
+        ]
     )
 
     # Simulate an initial transient error (e.g., 429/timeout)
     result = await plugin.on_model_error_callback(
-        callback_context=invocation_context, llm_request=llm_request, error=asyncio.TimeoutError()
+        callback_context=invocation_context,
+        llm_request=llm_request,
+        error=asyncio.TimeoutError(),
     )
 
     self.assertIsNotNone(result)
     self.assertIsInstance(result, LlmResponse)
     self.assertFalse(result.partial)
     self.assertIsNotNone(result.content)
-    self.assertEqual(result.content.parts[0].text.strip(), "final response from mock")
+    self.assertEqual(
+        result.content.parts[0].text.strip(), "final response from mock"
+    )
 
   async def test_fallback_model_used_after_retries(self):
     # Agent starts with a failing string model; plugin will fallback to "mock"
@@ -98,18 +107,26 @@ class TestLlmResiliencePlugin(IsolatedAsyncioTestCase):
     plugin = LlmResiliencePlugin(max_retries=1, fallback_models=["mock"])
 
     llm_request = LlmRequest(
-        contents=[types.Content(role="user", parts=[types.Part.from_text(text="hello")])]
+        contents=[
+            types.Content(
+                role="user", parts=[types.Part.from_text(text="hello")]
+            )
+        ]
     )
 
     # Trigger resilience with a transient error
     result = await plugin.on_model_error_callback(
-        callback_context=invocation_context, llm_request=llm_request, error=asyncio.TimeoutError()
+        callback_context=invocation_context,
+        llm_request=llm_request,
+        error=asyncio.TimeoutError(),
     )
 
     self.assertIsNotNone(result)
     self.assertIsInstance(result, LlmResponse)
     self.assertFalse(result.partial)
-    self.assertEqual(result.content.parts[0].text.strip(), "final response from mock")
+    self.assertEqual(
+        result.content.parts[0].text.strip(), "final response from mock"
+    )
 
   async def test_non_transient_error_bubbles(self):
     # Agent with success model, but error is non-transient → plugin should ignore
@@ -118,7 +135,11 @@ class TestLlmResiliencePlugin(IsolatedAsyncioTestCase):
     plugin = LlmResiliencePlugin(max_retries=2)
 
     llm_request = LlmRequest(
-        contents=[types.Content(role="user", parts=[types.Part.from_text(text="hello")])]
+        contents=[
+            types.Content(
+                role="user", parts=[types.Part.from_text(text="hello")]
+            )
+        ]
     )
 
     class NonTransientError(RuntimeError):
@@ -127,6 +148,8 @@ class TestLlmResiliencePlugin(IsolatedAsyncioTestCase):
     # Non-transient error: status code not transient and not Timeout
     # The plugin should return None so that the original error propagates
     result = await plugin.on_model_error_callback(
-        callback_context=invocation_context, llm_request=llm_request, error=NonTransientError("boom")
+        callback_context=invocation_context,
+        llm_request=llm_request,
+        error=NonTransientError("boom"),
     )
     self.assertIsNone(result)
