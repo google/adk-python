@@ -15,7 +15,7 @@ jobs:
     steps:
       - name: Validate branch
         run: |
-          if [[ ! "${{ github.ref_name }}" =~ ^release/v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+          if [[ ! "${GITHUB_REF_NAME}" =~ ^release/v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "Error: Must run from a release/v* branch (e.g., release/v0.3.0)"
             exit 1
           fi
@@ -23,7 +23,7 @@ jobs:
       - name: Extract version
         id: version
         run: |
-          VERSION="${{ github.ref_name }}"
+          VERSION="${GITHUB_REF_NAME}"
           VERSION="${VERSION#release/v}"
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Publishing version: $VERSION"
@@ -51,9 +51,10 @@ jobs:
       - name: Create merge-back PR
         env:
           GH_TOKEN: ${{ secrets.RELEASE_PAT }}
+          STEPS_VERSION_OUTPUTS_VERSION: ${{ steps.version.outputs.version }}
         run: |
           gh pr create \
             --base main \
-            --head "${{ github.ref_name }}" \
-            --title "chore: merge release v${{ steps.version.outputs.version }} to main" \
-            --body "Syncs version bump and CHANGELOG from release v${{ steps.version.outputs.version }} to main."
+            --head "${GITHUB_REF_NAME}" \
+            --title "chore: merge release v${STEPS_VERSION_OUTPUTS_VERSION} to main" \
+            --body "Syncs version bump and CHANGELOG from release v${STEPS_VERSION_OUTPUTS_VERSION} to main."

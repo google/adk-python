@@ -30,8 +30,10 @@ jobs:
 
       - name: Cherry-pick commit
         run: |
-          echo "Cherry-picking ${{ inputs.commit_sha }} to release/candidate"
-          git cherry-pick ${{ inputs.commit_sha }}
+          echo "Cherry-picking ${INPUTS_COMMIT_SHA} to release/candidate"
+          git cherry-pick ${INPUTS_COMMIT_SHA}
+        env:
+          INPUTS_COMMIT_SHA: ${{ inputs.commit_sha }}
 
       - name: Push changes
         run: |

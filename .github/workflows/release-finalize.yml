@@ -45,9 +45,11 @@ jobs:
       - name: Create release branch
         if: steps.check.outputs.is_release_pr == 'true'
         run: |
-          git checkout -b "release/v${{ steps.version.outputs.version }}"
-          git push origin "release/v${{ steps.version.outputs.version }}"
-          echo "Created branch: release/v${{ steps.version.outputs.version }}"
+          git checkout -b "release/v${STEPS_VERSION_OUTPUTS_VERSION}"
+          git push origin "release/v${STEPS_VERSION_OUTPUTS_VERSION}"
+          echo "Created branch: release/v${STEPS_VERSION_OUTPUTS_VERSION}"
+        env:
+          STEPS_VERSION_OUTPUTS_VERSION: ${{ steps.version.outputs.version }}
 
       - name: Delete release/candidate branch
         if: steps.check.outputs.is_release_pr == 'true'
