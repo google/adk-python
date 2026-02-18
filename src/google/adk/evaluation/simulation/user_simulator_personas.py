@@ -21,12 +21,10 @@ from pydantic import BaseModel
 from pydantic import Field
 
 from ...errors.not_found_error import NotFoundError
-from ...utils.feature_decorator import experimental
 
 logger = logging.getLogger("google_adk." + __name__)
 
 
-@experimental
 class UserBehavior(BaseModel):
   """Container for the behavior of a persona."""
 
@@ -64,7 +62,6 @@ class UserBehavior(BaseModel):
     return "\n".join(f"  * {v}" for v in self.violation_rubrics)
 
 
-@experimental
 class UserPersona(BaseModel):
   """Container for a persona."""
 
@@ -90,7 +87,6 @@ class UserPersona(BaseModel):
   )
 
 
-@experimental
 class UserPersonaRegistry:
   """A registry for UserPersona instances."""
 
