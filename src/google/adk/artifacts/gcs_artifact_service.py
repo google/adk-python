@@ -221,7 +221,8 @@ class GcsArtifactService(BaseArtifactService):
           data=artifact.inline_data.data,
           content_type=artifact.inline_data.mime_type,
       )
-    elif artifact.text:
+    elif artifact.text is not None:
+      blob.metadata = {**(blob.metadata or {}), "_adk_is_text": "true"}
       blob.upload_from_string(
           data=artifact.text,
           content_type="text/plain",
@@ -260,15 +261,20 @@ class GcsArtifactService(BaseArtifactService):
     blob_name = self._get_blob_name(
         app_name, user_id, filename, version, session_id
     )
-    blob = self.bucket.blob(blob_name)
+    blob = self.bucket.get_blob(blob_name)
+    if not blob:
+      return None
 
     artifact_bytes = blob.download_as_bytes()
     if not artifact_bytes:
       return None
-    artifact = types.Part.from_bytes(
+
+    if blob.metadata and blob.metadata.get("_adk_is_text") == "true":
+      return types.Part(text=artifact_bytes.decode("utf-8"))
+
+    return types.Part.from_bytes(
         data=artifact_bytes, mime_type=blob.content_type
     )
-    return artifact
 
   def _list_artifact_keys(
       self, app_name: str, user_id: str, session_id: Optional[str]

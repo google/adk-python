@@ -766,3 +766,35 @@ async def test_file_save_artifact_rejects_absolute_path_within_scope(tmp_path):
         filename=str(absolute_in_scope),
         artifact=part,
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "service_type",
+    [
+        ArtifactServiceType.IN_MEMORY,
+        ArtifactServiceType.GCS,
+        ArtifactServiceType.FILE,
+    ],
+)
+async def test_save_load_text_artifact(service_type, artifact_service_factory):
+  """Tests that text artifacts retain .text after round-trip save/load."""
+  artifact_service = artifact_service_factory(service_type)
+  artifact = types.Part.from_text(text='{"key": "value"}')
+
+  await artifact_service.save_artifact(
+      app_name="app0",
+      user_id="user0",
+      session_id="123",
+      filename="data.json",
+      artifact=artifact,
+  )
+  loaded = await artifact_service.load_artifact(
+      app_name="app0",
+      user_id="user0",
+      session_id="123",
+      filename="data.json",
+  )
+  assert loaded is not None
+  assert loaded.text == '{"key": "value"}'
+  assert loaded.inline_data is None
