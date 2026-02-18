@@ -24,4 +24,5 @@ __all__ = [
     'LoggingPlugin',
     'PluginManager',
     'ReflectAndRetryToolPlugin',
+    "FallbackPlugin",
 ]
