@@ -28,6 +28,9 @@ from .base_plugin import BasePlugin
 logger: logging.Logger = logging.getLogger("google_adk." + __name__)
 tracer = trace.get_tracer("google.adk.plugins.fallback_plugin", __version__)
 
+_FALLBACK_ATTEMPTS_MAX_SIZE = 100
+_FALLBACK_ATTEMPTS_PRUNE_COUNT = 50
+
 
 class FallbackPlugin(BasePlugin):
   """Plugin that implements transparent model fallback on specific HTTP errors.
@@ -68,7 +71,7 @@ class FallbackPlugin(BasePlugin):
       name: str = "fallback_plugin",
       root_model: Optional[str] = None,
       fallback_model: Optional[str] = None,
-      error_status: list[int] = [429, 504],  # noqa: B006
+      error_status: Optional[list[int]] = None,  # noqa: B006
   ) -> None:
     """Initializes the FallbackPlugin.
 
@@ -87,7 +90,8 @@ class FallbackPlugin(BasePlugin):
     super().__init__(name=name)
     self.root_model = root_model
     self.fallback_model = fallback_model
-    self.error_status = error_status
+    self.error_status = error_status if error_status is not None else [429, 504]
+    self._error_status_set = {str(s) for s in self.error_status}
 
     # Maps id(callback_context) -> number of fallback attempts for that context.
     self._fallback_attempts: dict[int, int] = {}
@@ -168,9 +172,7 @@ class FallbackPlugin(BasePlugin):
     """
     context_id = id(callback_context)
 
-    if llm_response.error_code and str(llm_response.error_code) in [
-        str(code) for code in self.error_status
-    ]:
+    if llm_response.error_code and str(llm_response.error_code) in self._error_status_set:
       logger.warning(
           "Model call failed with error code %s. Error message: %s",
           llm_response.error_code,
@@ -201,8 +203,8 @@ class FallbackPlugin(BasePlugin):
         logger.warning("No fallback model configured, cannot retry.")
 
     # Prune the tracking dict to avoid unbounded memory growth.
-    if len(self._fallback_attempts) > 100:
-      oldest_keys = list(self._fallback_attempts.keys())[:50]
+    if len(self._fallback_attempts) > _FALLBACK_ATTEMPTS_MAX_SIZE:
+      oldest_keys = list(self._fallback_attempts.keys())[:_FALLBACK_ATTEMPTS_PRUNE_COUNT]
       for key in oldest_keys:
         del self._fallback_attempts[key]
 

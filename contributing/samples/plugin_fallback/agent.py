@@ -54,7 +54,7 @@ def roll_die(sides: int) -> dict[str, Any]:
 
 
 root_agent = LlmAgent(
-    model="gemini-2.0-flash",
+    model="gemini-3-flash-preview",
     name="fallback_demo_agent",
     description="A simple agent that demonstrates the FallbackPlugin.",
     instruction="""

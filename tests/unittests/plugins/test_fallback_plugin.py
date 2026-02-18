@@ -82,8 +82,8 @@ class TestFallbackPluginInitialization:
         """Test plugin initialization with custom parameter values."""
         plugin = FallbackPlugin(
             name="my_fallback",
-                root_model="gemini-3-flash-preview",
-                fallback_model="gemini-2.5-flash",
+            root_model="gemini-3-flash-preview",
+            fallback_model="gemini-2.5-flash",
             error_status=[429, 503, 504],
         )
 
@@ -438,9 +438,9 @@ class TestMemoryManagement:
             callback_context=new_ctx, llm_response=llm_response
         )
 
-        # After cleanup the dict should have at most 52 entries
-        # (101 entries → remove first 50 → 51 remain + the current call increments once more)
-        assert len(plugin._fallback_attempts) <= 52
+        # After cleanup the dict should have 51 entries
+        # (101 entries → remove first 50 → 51 remain)
+        assert len(plugin._fallback_attempts) == 51
 
     @pytest.mark.asyncio
     async def test_no_pruning_when_below_limit(self, default_plugin):
