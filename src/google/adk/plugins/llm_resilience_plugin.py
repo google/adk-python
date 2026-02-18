@@ -168,13 +168,28 @@ class LlmResiliencePlugin(BasePlugin):
     # Let the original error propagate if all attempts failed
     return None
 
-  def _get_invocation_context(self, callback_context):
-    # Accept both Context (CallbackContext alias) and InvocationContext via duck typing
+  def _get_invocation_context(
+      self, callback_context: CallbackContext | InvocationContext
+  ) -> InvocationContext:
+    """Extract InvocationContext from callback_context.
+
+    Accepts both Context (CallbackContext alias) and InvocationContext via
+    duck typing.
+
+    Args:
+      callback_context: The callback context passed to the plugin.
+
+    Returns:
+      The underlying InvocationContext.
+
+    Raises:
+      TypeError: If callback_context is not a recognized type.
+    """
     # If this looks like an InvocationContext (has agent and run_config), use it directly
     if hasattr(callback_context, "agent") and hasattr(
         callback_context, "run_config"
     ):
-      return callback_context
+      return callback_context  # type: ignore[return-value]
     # Otherwise expect a Context-like object exposing the private _invocation_context
     ic = getattr(callback_context, "_invocation_context", None)
     if ic is None:
@@ -200,7 +215,7 @@ class LlmResiliencePlugin(BasePlugin):
       from ..agents.run_config import StreamingMode  # local import to avoid cycles
 
       stream = streaming_mode == StreamingMode.SSE
-    except Exception:
+    except ImportError:
       pass
 
     agent = invocation_context.agent
@@ -250,7 +265,7 @@ class LlmResiliencePlugin(BasePlugin):
       from ..agents.run_config import StreamingMode
 
       stream = streaming_mode == StreamingMode.SSE
-    except Exception:
+    except ImportError:
       pass
 
     for model_name in self.fallback_models:

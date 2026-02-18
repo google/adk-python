@@ -26,7 +26,10 @@ from google.genai import types
 
 class DemoFailThenSucceedModel(BaseLlm):
   model: str = "demo-fail-succeed"
-  attempts: int = 0
+
+  def __init__(self, **kwargs):
+    super().__init__(**kwargs)
+    self._attempts: int = 0  # Instance variable for proper state management
 
   @classmethod
   def supported_models(cls) -> list[str]:
@@ -36,8 +39,8 @@ class DemoFailThenSucceedModel(BaseLlm):
       self, llm_request: LlmRequest, stream: bool = False
   ):
     # Fail for the first attempt, then succeed
-    self.attempts += 1
-    if self.attempts < 2:
+    self._attempts += 1
+    if self._attempts < 2:
       raise TimeoutError("Simulated transient failure")
     yield LlmResponse(
         content=types.Content(
