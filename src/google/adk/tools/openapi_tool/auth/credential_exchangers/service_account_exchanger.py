@@ -86,6 +86,9 @@ class ServiceAccountCredentialExchanger(BaseAuthCredentialExchanger):
         if config.use_default_credential:
           token = google_id_token.fetch_id_token(request, audience)
         else:
+          if config.service_account_credential is None:
+            raise ValueError("service_account_credential is required when use_default_credential is False")
+          
           id_creds = (
               service_account.IDTokenCredentials.from_service_account_info(
                   config.service_account_credential.model_dump(),
@@ -95,7 +98,7 @@ class ServiceAccountCredentialExchanger(BaseAuthCredentialExchanger):
           id_creds.refresh(request)
           token = id_creds.token
       else:
-        if auth_credential.service_account.use_default_credential:
+        if config.use_default_credential:
           credentials, project_id = google.auth.default(
               scopes=["https://www.googleapis.com/auth/cloud-platform"],
           )
@@ -103,7 +106,9 @@ class ServiceAccountCredentialExchanger(BaseAuthCredentialExchanger):
               getattr(credentials, "quota_project_id", None) or project_id
           )
         else:
-          config = auth_credential.service_account
+          if config.service_account_credential is None:
+            raise ValueError("service_account_credential is required when use_default_credential is False")
+
           credentials = service_account.Credentials.from_service_account_info(
               config.service_account_credential.model_dump(),
               scopes=config.scopes,
