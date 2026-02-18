@@ -766,3 +766,102 @@ async def test_file_save_artifact_rejects_absolute_path_within_scope(tmp_path):
         filename=str(absolute_in_scope),
         artifact=part,
     )
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "service_type",
+    [
+        ArtifactServiceType.IN_MEMORY,
+        ArtifactServiceType.GCS,
+        ArtifactServiceType.FILE,
+    ],
+)
+async def test_save_load_dict_shaped_artifact(
+    service_type, artifact_service_factory
+):
+  """Tests saving and loading dict-shaped artifacts.
+  
+  This tests the fix for accepting dict-shaped (serialized) artifacts
+  in the save_artifact method. Dict-shaped artifacts are commonly used
+  when artifacts are stored/retrieved from JSON or other serialization formats.
+  """
+  artifact_service = artifact_service_factory(service_type)
+  # Create a dict-shaped artifact by serializing a real Part instance
+  part = types.Part.from_bytes(data=b"test_data", mime_type="text/plain")
+  dict_artifact = part.model_dump(exclude_none=True)
+
+  app_name = "app0"
+  user_id = "user0"
+  session_id = "123"
+  filename = "dict_file.txt"
+
+  # Save the dict-shaped artifact
+  version = await artifact_service.save_artifact(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session_id,
+      filename=filename,
+      artifact=dict_artifact,
+  )
+  assert version == 0
+
+  # Load and verify the artifact
+  loaded = await artifact_service.load_artifact(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session_id,
+      filename=filename,
+  )
+  assert loaded is not None
+  assert loaded.inline_data is not None
+  assert loaded.inline_data.mime_type == "text/plain"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "service_type",
+    [
+        ArtifactServiceType.IN_MEMORY,
+        ArtifactServiceType.GCS,
+        ArtifactServiceType.FILE,
+    ],
+)
+async def test_save_text_dict_shaped_artifact(
+    service_type, artifact_service_factory
+):
+  """Tests saving and loading dict-shaped artifacts with text content."""
+  artifact_service = artifact_service_factory(service_type)
+  # Create a dict-shaped artifact by serializing a real Part instance
+  part = types.Part(text="Hello, World!")
+  dict_artifact = part.model_dump(exclude_none=True)
+
+  app_name = "app0"
+  user_id = "user0"
+  session_id = "123"
+  filename = "text_file.txt"
+
+  # Save the dict-shaped artifact
+  await artifact_service.save_artifact(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session_id,
+      filename=filename,
+      artifact=dict_artifact,
+  )
+
+  # Load and verify the artifact
+  loaded = await artifact_service.load_artifact(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session_id,
+      filename=filename,
+  )
+  assert loaded is not None
+  # GCS/File services may return text as inline_data bytes; accept either form.
+  if loaded.text is not None:
+      assert loaded.text == "Hello, World!"
+  else:
+      assert (
+          loaded.inline_data is not None
+          and loaded.inline_data.data == b"Hello, World!"
+      )

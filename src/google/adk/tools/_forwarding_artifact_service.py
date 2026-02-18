@@ -42,10 +42,12 @@ class ForwardingArtifactService(BaseArtifactService):
       app_name: str,
       user_id: str,
       filename: str,
-      artifact: types.Part,
+      artifact: types.Part | dict[str, Any],
       session_id: Optional[str] = None,
       custom_metadata: Optional[dict[str, Any]] = None,
   ) -> int:
+    # Delegate to parent tool context, which will handle conversion in the
+    # concrete artifact service implementation.
     return await self.tool_context.save_artifact(
         filename=filename,
         artifact=artifact,

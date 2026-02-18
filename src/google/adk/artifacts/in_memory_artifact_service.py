@@ -99,10 +99,13 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
       app_name: str,
       user_id: str,
       filename: str,
-      artifact: types.Part,
+      artifact: types.Part | dict[str, Any],
       session_id: Optional[str] = None,
       custom_metadata: Optional[dict[str, Any]] = None,
   ) -> int:
+    # Convert dict-shaped artifact to types.Part if necessary
+    artifact = self._convert_artifact_if_dict(artifact)
+    
     path = self._artifact_path(app_name, user_id, filename, session_id)
     if path not in self.artifacts:
       self.artifacts[path] = []

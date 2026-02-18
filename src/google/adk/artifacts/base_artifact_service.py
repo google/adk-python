@@ -63,6 +63,23 @@ class ArtifactVersion(BaseModel):
 class BaseArtifactService(ABC):
   """Abstract base class for artifact services."""
 
+  @staticmethod
+  def _convert_artifact_if_dict(
+      artifact: types.Part | dict[str, Any],
+  ) -> types.Part:
+    """Converts a dict-shaped artifact to types.Part if necessary.
+
+    Args:
+      artifact: The artifact to convert. Can be a types.Part or dict.
+
+    Returns:
+      A types.Part object. If input is already a Part, returns as-is.
+      If input is a dict, converts it to Part via model_validate.
+    """
+    if isinstance(artifact, dict):
+      return types.Part.model_validate(artifact)
+    return artifact
+
   @abstractmethod
   async def save_artifact(
       self,
@@ -70,7 +87,7 @@ class BaseArtifactService(ABC):
       app_name: str,
       user_id: str,
       filename: str,
-      artifact: types.Part,
+      artifact: types.Part | dict[str, Any],
       session_id: Optional[str] = None,
       custom_metadata: Optional[dict[str, Any]] = None,
   ) -> int:
@@ -84,10 +101,11 @@ class BaseArtifactService(ABC):
       app_name: The app name.
       user_id: The user ID.
       filename: The filename of the artifact.
-      artifact: The artifact to save. If the artifact consists of `file_data`,
-        the artifact service assumes its content has been uploaded separately,
-        and this method will associate the `file_data` with the artifact if
-        necessary.
+      artifact: The artifact to save. Can be a types.Part object or a
+        dict-shaped (serialized) artifact that will be converted to types.Part.
+        If the artifact consists of `file_data`, the artifact service assumes
+        its content has been uploaded separately, and this method will associate
+        the `file_data` with the artifact if necessary.
       session_id: The session ID. If `None`, the artifact is user-scoped.
       custom_metadata: custom metadata to associate with the artifact.
 

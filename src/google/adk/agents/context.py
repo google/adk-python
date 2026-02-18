@@ -136,14 +136,15 @@ class Context(ReadonlyContext):
   async def save_artifact(
       self,
       filename: str,
-      artifact: types.Part,
+      artifact: types.Part | dict[str, Any],
       custom_metadata: dict[str, Any] | None = None,
   ) -> int:
     """Saves an artifact and records it as delta for the current session.
 
     Args:
       filename: The filename of the artifact.
-      artifact: The artifact to save.
+      artifact: The artifact to save. Can be a types.Part object or a
+        dict-shaped (serialized) artifact.
       custom_metadata: Custom metadata to associate with the artifact.
 
     Returns:
