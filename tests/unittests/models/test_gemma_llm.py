@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from google.adk import models
 from google.adk.models.gemma_llm import Gemma
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
@@ -509,9 +510,16 @@ def test_process_response_last_json_object():
 # Tests for Gemma3Ollama (only run when LiteLLM is installed)
 try:
   from google.adk.models.gemma_llm import Gemma3Ollama
+  from google.adk.models.lite_llm import LiteLlm
 
   def test_gemma3_ollama_supported_models():
     assert Gemma3Ollama.supported_models() == [r"ollama/gemma3.*"]
+
+  def test_gemma3_ollama_registry_resolution():
+    assert models.LLMRegistry.resolve("ollama/gemma3:12b") is Gemma3Ollama
+
+  def test_non_gemma_ollama_registry_resolution():
+    assert models.LLMRegistry.resolve("ollama/llama3.2") is LiteLlm
 
   @pytest.mark.parametrize(
       "model_arg,expected_model",
