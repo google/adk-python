@@ -55,8 +55,8 @@ def mock_callback_context(mock_invocation_context):
 @pytest.fixture
 def default_plugin():
     return FallbackPlugin(
-        root_model="gemini-1.5-flash",
-        fallback_model="gemini-1.5-pro",
+        root_model="gemini-3-flash-preview",
+        fallback_model="gemini-2.5-flash",
     )
 
 
@@ -82,14 +82,14 @@ class TestFallbackPluginInitialization:
         """Test plugin initialization with custom parameter values."""
         plugin = FallbackPlugin(
             name="my_fallback",
-            root_model="gemini-1.5-flash",
-            fallback_model="gemini-1.5-pro",
+                root_model="gemini-3-flash-preview",
+                fallback_model="gemini-2.5-flash",
             error_status=[429, 503, 504],
         )
 
         assert plugin.name == "my_fallback"
-        assert plugin.root_model == "gemini-1.5-flash"
-        assert plugin.fallback_model == "gemini-1.5-pro"
+        assert plugin.root_model == "gemini-3-flash-preview"
+        assert plugin.fallback_model == "gemini-2.5-flash"
         assert plugin.error_status == [429, 503, 504]
         assert plugin._fallback_attempts == {}
 
@@ -124,43 +124,43 @@ class TestBeforeModelCallback:
         )
 
         assert result is None
-        assert llm_request.model == "gemini-1.5-flash"
+        assert llm_request.model == "gemini-3-flash-preview"
 
     @pytest.mark.asyncio
     async def test_does_not_override_model_when_already_root(
         self, default_plugin, mock_callback_context
     ):
         """Plugin should leave the model unchanged when it is already root_model."""
-        llm_request = LlmRequest(model="gemini-1.5-flash")
+        llm_request = LlmRequest(model="gemini-3-flash-preview")
 
         result = await default_plugin.before_model_callback(
             callback_context=mock_callback_context, llm_request=llm_request
         )
 
         assert result is None
-        assert llm_request.model == "gemini-1.5-flash"
+        assert llm_request.model == "gemini-3-flash-preview"
 
     @pytest.mark.asyncio
     async def test_no_root_model_configured_leaves_model_unchanged(
         self, mock_callback_context
     ):
         """When no root_model is configured the request model must not change."""
-        plugin = FallbackPlugin(fallback_model="gemini-1.5-pro")
-        llm_request = LlmRequest(model="gemini-1.5-flash")
+        plugin = FallbackPlugin(fallback_model="gemini-2.5-flash")
+        llm_request = LlmRequest(model="gemini-3-flash-preview")
 
         result = await plugin.before_model_callback(
             callback_context=mock_callback_context, llm_request=llm_request
         )
 
         assert result is None
-        assert llm_request.model == "gemini-1.5-flash"
+        assert llm_request.model == "gemini-3-flash-preview"
 
     @pytest.mark.asyncio
     async def test_initializes_fallback_counter_on_first_call(
         self, default_plugin, mock_callback_context
     ):
         """A new context should receive a zero-initialised fallback counter."""
-        llm_request = LlmRequest(model="gemini-1.5-flash")
+        llm_request = LlmRequest(model="gemini-3-flash-preview")
         context_id = id(mock_callback_context)
 
         assert context_id not in default_plugin._fallback_attempts
@@ -179,21 +179,21 @@ class TestBeforeModelCallback:
         context_id = id(mock_callback_context)
         default_plugin._fallback_attempts[context_id] = 1  # Simulate active fallback
 
-        llm_request = LlmRequest(model="gemini-1.5-pro")  # fallback model is set
+        llm_request = LlmRequest(model="gemini-3-flash-preview")  # fallback model is set
 
         await default_plugin.before_model_callback(
             callback_context=mock_callback_context, llm_request=llm_request
         )
 
         # Model should remain as the fallback model (not reset to root)
-        assert llm_request.model == "gemini-1.5-pro"
+        assert llm_request.model == "gemini-3-flash-preview"
 
     @pytest.mark.asyncio
     async def test_returns_none_to_allow_normal_processing(
         self, default_plugin, mock_callback_context
     ):
         """before_model_callback must return None to continue the chain."""
-        llm_request = LlmRequest(model="gemini-1.5-flash")
+        llm_request = LlmRequest(model="gemini-3-flash-preview")
 
         result = await default_plugin.before_model_callback(
             callback_context=mock_callback_context, llm_request=llm_request
@@ -242,8 +242,8 @@ class TestAfterModelCallback:
         assert result is None
         assert llm_response.custom_metadata is not None
         assert llm_response.custom_metadata["fallback_triggered"] is True
-        assert llm_response.custom_metadata["original_model"] == "gemini-1.5-flash"
-        assert llm_response.custom_metadata["fallback_model"] == "gemini-1.5-pro"
+        assert llm_response.custom_metadata["original_model"] == "gemini-3-flash-preview"
+        assert llm_response.custom_metadata["fallback_model"] == "gemini-2.5-flash"
         assert llm_response.custom_metadata["error_code"] == "429"
 
     @pytest.mark.asyncio
@@ -331,7 +331,7 @@ class TestAfterModelCallback:
         self, mock_callback_context
     ):
         """When no fallback_model is configured no metadata should be written."""
-        plugin = FallbackPlugin(root_model="gemini-1.5-flash")  # No fallback_model
+        plugin = FallbackPlugin(root_model="gemini-3-flash-preview")  # No fallback_model
         llm_response = LlmResponse(error_code="429", error_message="Rate limit")
 
         await plugin.after_model_callback(
@@ -366,8 +366,8 @@ class TestAfterModelCallback:
     ):
         """error_status integers should match string error_code values."""
         plugin = FallbackPlugin(
-            root_model="gemini-1.5-flash",
-            fallback_model="gemini-1.5-pro",
+            root_model="gemini-3-flash-preview",
+            fallback_model="gemini-3-flash-preview",
             error_status=[429],
         )
         llm_response = LlmResponse(error_code="429", error_message="Rate limit")
@@ -417,8 +417,8 @@ class TestMemoryManagement:
     async def test_old_entries_pruned_when_limit_exceeded(self):
         """When more than 100 contexts are tracked the oldest 50 are removed."""
         plugin = FallbackPlugin(
-            root_model="gemini-1.5-flash",
-            fallback_model="gemini-1.5-pro",
+            root_model="gemini-3-flash-preview",
+            fallback_model="gemini-3-flash-preview",
         )
 
         # Pre-populate with 100 fake context IDs
@@ -477,23 +477,23 @@ class TestNonPersistentFallback:
         # First call: simulate fallback in progress
         ctx1_id = id(ctx1)
         default_plugin._fallback_attempts[ctx1_id] = 1
-        llm_request = LlmRequest(model="gemini-1.5-pro")
+        llm_request = LlmRequest(model="gemini-3-flash-preview")
 
         await default_plugin.before_model_callback(
             callback_context=ctx1, llm_request=llm_request
         )
         # Model should NOT be reset because a fallback is in progress
-        assert llm_request.model == "gemini-1.5-pro"
+        assert llm_request.model == "gemini-3-flash-preview"
 
         # Second call: brand new context (simulates a new request)
         ctx2 = Mock(spec=CallbackContext)
-        llm_request2 = LlmRequest(model="gemini-1.5-pro")
+        llm_request2 = LlmRequest(model="gemini-3-flash-preview")
 
         await default_plugin.before_model_callback(
             callback_context=ctx2, llm_request=llm_request2
         )
         # Fresh context → counter is 0 → model should be reset to root
-        assert llm_request2.model == "gemini-1.5-flash"
+        assert llm_request2.model == "gemini-3-flash-preview"
 
     @pytest.mark.asyncio
     async def test_full_round_trip_error_then_new_request(
@@ -506,11 +506,11 @@ class TestNonPersistentFallback:
           3. A new context's before_model_callback resets to root_model.
         """
         # Step 1: before – initialise the context
-        llm_request = LlmRequest(model="gemini-1.5-pro")
+        llm_request = LlmRequest(model="gemini-3-flash-preview")
         await default_plugin.before_model_callback(
             callback_context=mock_callback_context, llm_request=llm_request
         )
-        assert llm_request.model == "gemini-1.5-flash"
+        assert llm_request.model == "gemini-3-flash-preview"
 
         # Step 2: after – error triggers fallback tracking
         llm_response = LlmResponse(error_code="429", error_message="Rate limit")
@@ -525,4 +525,4 @@ class TestNonPersistentFallback:
         await default_plugin.before_model_callback(
             callback_context=new_ctx, llm_request=llm_request_new
         )
-        assert llm_request_new.model == "gemini-1.5-flash"
+        assert llm_request_new.model == "gemini-3-flash-preview"

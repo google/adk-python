@@ -65,8 +65,8 @@ root_agent = LlmAgent(
 )
 
 fallback_plugin = FallbackPlugin(
-    root_model="gemini-2.0-flash",
-    fallback_model="gemini-1.5-pro",
+    root_model="gemini-3-flash-preview",
+    fallback_model="gemini-2.5-pro",
     error_status=[429, 504],
 )
 
