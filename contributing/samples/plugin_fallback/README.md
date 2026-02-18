@@ -38,8 +38,8 @@ configured, the following keys are written to `LlmResponse.custom_metadata`:
 from google.adk.plugins.fallback_plugin import FallbackPlugin
 
 fallback_plugin = FallbackPlugin(
-    root_model="gemini-2.0-flash",     # Primary model, always tried first.
-    fallback_model="gemini-1.5-pro",   # Backup model recorded in metadata.
+    root_model="gemini-3-flash-preview",     # Primary model, always tried first.
+    fallback_model="gemini-2.5-pro",   # Backup model recorded in metadata.
     error_status=[429, 504],           # HTTP codes that trigger fallback (default).
 )
 ```
@@ -63,7 +63,7 @@ from google.adk.apps import App
 from google.adk.plugins.fallback_plugin import FallbackPlugin
 
 root_agent = LlmAgent(
-    model="gemini-2.0-flash",
+    model="gemini-3-flash-preview",
     name="my_agent",
     instruction="You are a helpful assistant.",
 )
@@ -73,8 +73,8 @@ app = App(
     name="my_app",
     plugins=[
         FallbackPlugin(
-            root_model="gemini-2.0-flash",
-            fallback_model="gemini-1.5-pro",
+            root_model="gemini-3-flash-preview",
+            fallback_model="gemini-2.5-pro",
         )
     ],
 )
