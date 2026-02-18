@@ -266,8 +266,6 @@ class GcsArtifactService(BaseArtifactService):
       return None
 
     artifact_bytes = blob.download_as_bytes()
-    if not artifact_bytes:
-      return None
 
     if blob.metadata and blob.metadata.get("_adk_is_text") == "true":
       return types.Part(text=artifact_bytes.decode("utf-8"))

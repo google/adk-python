@@ -777,10 +777,16 @@ async def test_file_save_artifact_rejects_absolute_path_within_scope(tmp_path):
         ArtifactServiceType.FILE,
     ],
 )
-async def test_save_load_text_artifact(service_type, artifact_service_factory):
+@pytest.mark.parametrize(
+    "text_content",
+    ['{"key": "value"}', "some other text"],
+)
+async def test_save_load_text_artifact(
+    service_type, artifact_service_factory, text_content
+):
   """Tests that text artifacts retain .text after round-trip save/load."""
   artifact_service = artifact_service_factory(service_type)
-  artifact = types.Part.from_text(text='{"key": "value"}')
+  artifact = types.Part.from_text(text=text_content)
 
   await artifact_service.save_artifact(
       app_name="app0",
@@ -796,5 +802,38 @@ async def test_save_load_text_artifact(service_type, artifact_service_factory):
       filename="data.json",
   )
   assert loaded is not None
-  assert loaded.text == '{"key": "value"}'
+  assert loaded.text == text_content
+  assert loaded.inline_data is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "service_type",
+    [
+        ArtifactServiceType.GCS,
+        ArtifactServiceType.FILE,
+    ],
+)
+async def test_save_load_empty_text_artifact(
+    service_type, artifact_service_factory
+):
+  """Tests that empty text artifacts survive round-trip save/load."""
+  artifact_service = artifact_service_factory(service_type)
+  artifact = types.Part.from_text(text="")
+
+  await artifact_service.save_artifact(
+      app_name="app0",
+      user_id="user0",
+      session_id="123",
+      filename="empty.txt",
+      artifact=artifact,
+  )
+  loaded = await artifact_service.load_artifact(
+      app_name="app0",
+      user_id="user0",
+      session_id="123",
+      filename="empty.txt",
+  )
+  assert loaded is not None
+  assert loaded.text == ""
   assert loaded.inline_data is None
