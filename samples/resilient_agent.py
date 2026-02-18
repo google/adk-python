@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import asyncio
+from typing import ClassVar
 
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
@@ -26,10 +27,9 @@ from google.genai import types
 
 class DemoFailThenSucceedModel(BaseLlm):
   model: str = "demo-fail-succeed"
-
-  def __init__(self, **kwargs):
-    super().__init__(**kwargs)
-    self._attempts: int = 0  # Instance variable for proper state management
+  attempts: ClassVar[int] = (
+      0  # Class variable for shared state across instances
+  )
 
   @classmethod
   def supported_models(cls) -> list[str]:
@@ -39,8 +39,8 @@ class DemoFailThenSucceedModel(BaseLlm):
       self, llm_request: LlmRequest, stream: bool = False
   ):
     # Fail for the first attempt, then succeed
-    self._attempts += 1
-    if self._attempts < 2:
+    DemoFailThenSucceedModel.attempts += 1
+    if DemoFailThenSucceedModel.attempts < 2:
       raise TimeoutError("Simulated transient failure")
     yield LlmResponse(
         content=types.Content(
