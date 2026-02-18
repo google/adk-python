@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 from typing import Any
+from typing import TYPE_CHECKING
 
 from google.genai import types
 
@@ -29,6 +30,9 @@ from .base_tool import BaseTool
 from .base_toolset import BaseToolset
 from .tool_context import ToolContext
 
+if TYPE_CHECKING:
+  from ..models.llm_request import LlmRequest
+
 DEFAULT_SKILL_SYSTEM_INSTRUCTION = """You can use specialized 'skills' to help you with complex tasks. You MUST use the skill tools to interact with these skills.
 
 Skills are folders of instructions and resources that extend your capabilities for specialized tasks. Each skill folder contains:
@@ -38,10 +42,9 @@ Skills are folders of instructions and resources that extend your capabilities f
 
 This is very important:
 
-1. Use the `list_skills` tool to discover available skills.
-2. If a skill seems relevant to the current user query, you MUST use the `load_skill` tool with `name="<SKILL_NAME>"` to read its full instructions before proceeding.
-3. Once you have read the instructions, follow them exactly as documented before replying to the user. For example, If the instruction lists multiple steps, please make sure you complete all of them in order.
-4. The `load_skill_resource` tool is for viewing files within a skill's directory (e.g., `references/*`, `assets/*`). Do NOT use other tools to access these files.
+1. If a skill seems relevant to the current user query, you MUST use the `load_skill` tool with `name="<SKILL_NAME>"` to read its full instructions before proceeding.
+2. Once you have read the instructions, follow them exactly as documented before replying to the user. For example, If the instruction lists multiple steps, please make sure you complete all of them in order.
+3. The `load_skill_resource` tool is for viewing files within a skill's directory (e.g., `references/*`, `assets/*`). Do NOT use other tools to access these files.
 """
 
 
@@ -241,3 +244,11 @@ class SkillToolset(BaseToolset):
   def _list_skills(self) -> list[models.Frontmatter]:
     """Lists the frontmatter of all available skills."""
     return [s.frontmatter for s in self._skills.values()]
+
+  async def process_llm_request(
+      self, *, tool_context: ToolContext, llm_request: LlmRequest
+  ) -> None:
+    """Processes the outgoing LLM request to include available skills."""
+    skill_frontmatters = self._list_skills()
+    skills_xml = prompt.format_skills_as_xml(skill_frontmatters)
+    llm_request.append_instructions([skills_xml])

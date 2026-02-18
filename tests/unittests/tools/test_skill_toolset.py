@@ -14,6 +14,7 @@
 
 from unittest import mock
 
+from google.adk.models import llm_request as llm_request_model
 from google.adk.skills import models
 from google.adk.tools import skill_toolset
 from google.adk.tools import tool_context
@@ -249,3 +250,23 @@ async def test_load_resource_run_async(
   tool = skill_toolset.LoadSkillResourceTool(toolset)
   result = await tool.run_async(args=args, tool_context=tool_context_instance)
   assert result == expected_result
+
+
+@pytest.mark.asyncio
+async def test_process_llm_request(
+    mock_skill1, mock_skill2, tool_context_instance
+):
+  toolset = skill_toolset.SkillToolset([mock_skill1, mock_skill2])
+  llm_req = mock.create_autospec(llm_request_model.LlmRequest, instance=True)
+
+  await toolset.process_llm_request(
+      tool_context=tool_context_instance, llm_request=llm_req
+  )
+
+  llm_req.append_instructions.assert_called_once()
+  args, _ = llm_req.append_instructions.call_args
+  instructions = args[0]
+  assert len(instructions) == 1
+  assert "<available_skills>" in instructions[0]
+  assert "skill1" in instructions[0]
+  assert "skill2" in instructions[0]
