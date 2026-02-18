@@ -789,7 +789,7 @@ async def test_save_load_dict_shaped_artifact(
   # Create a dict-shaped artifact by serializing a real Part instance
   part = types.Part.from_bytes(data=b"test_data", mime_type="text/plain")
   dict_artifact = part.model_dump(exclude_none=True)
-
+  
   app_name = "app0"
   user_id = "user0"
   session_id = "123"

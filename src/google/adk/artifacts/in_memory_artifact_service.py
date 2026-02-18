@@ -104,7 +104,8 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
       custom_metadata: Optional[dict[str, Any]] = None,
   ) -> int:
     # Convert dict-shaped artifact to types.Part if necessary
-    artifact = self._convert_artifact_if_dict(artifact)
+    if isinstance(artifact, dict):
+      artifact = types.Part.model_validate(artifact)
     
     path = self._artifact_path(app_name, user_id, filename, session_id)
     if path not in self.artifacts:
