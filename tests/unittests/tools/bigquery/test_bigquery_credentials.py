@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -36,7 +36,6 @@ class TestBigQueryCredentials:
     to pass them directly without needing to provide client ID/secret.
     """
     # Create a mock auth credentials object
-    # auth_creds = google.auth.credentials.Credentials()
     auth_creds = mock.create_autospec(
         google.auth.credentials.Credentials, instance=True
     )
@@ -140,8 +139,8 @@ class TestBigQueryCredentials:
     with pytest.raises(
         ValueError,
         match=(
-            "Must provide either credentials or client_id and client_secret"
-            " pair"
+            "Must provide one of credentials, external_access_token_key, or"
+            " client_id and client_secret pair"
         ),
     ):
       BigQueryCredentialsConfig(client_id="test_client_id")
@@ -151,8 +150,8 @@ class TestBigQueryCredentials:
     with pytest.raises(
         ValueError,
         match=(
-            "Must provide either credentials or client_id and client_secret"
-            " pair"
+            "Must provide one of credentials, external_access_token_key, or"
+            " client_id and client_secret pair"
         ),
     ):
       BigQueryCredentialsConfig(client_secret="test_client_secret")
@@ -166,8 +165,8 @@ class TestBigQueryCredentials:
     with pytest.raises(
         ValueError,
         match=(
-            "Must provide either credentials or client_id and client_secret"
-            " pair"
+            "Must provide one of credentials, external_access_token_key, or"
+            " client_id and client_secret pair"
         ),
     ):
       BigQueryCredentialsConfig()

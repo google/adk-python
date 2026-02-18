@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -116,13 +116,6 @@ class SaveFilesAsArtifactsPlugin(BasePlugin):
         )
         if file_part:
           new_parts.append(file_part)
-        else:
-          logger.debug(
-              'Artifact %s is not exposed via a model-accessible URI; keeping'
-              ' inline data in user message.',
-              file_name,
-          )
-          new_parts.append(part)
 
         modified = True
         logger.info(f'Successfully saved artifact: {file_name}')

@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,7 +16,9 @@ from __future__ import annotations
 
 import json
 import logging
+import ssl
 from typing import Any
+from typing import Callable
 from typing import Dict
 from typing import Final
 from typing import List
@@ -30,6 +32,7 @@ import yaml
 from ....agents.readonly_context import ReadonlyContext
 from ....auth.auth_credential import AuthCredential
 from ....auth.auth_schemes import AuthScheme
+from ....auth.auth_tool import AuthConfig
 from ...base_toolset import BaseToolset
 from ...base_toolset import ToolPredicate
 from .openapi_spec_parser import OpenApiSpecParser
@@ -67,7 +70,13 @@ class OpenAPIToolset(BaseToolset):
       spec_str_type: Literal["json", "yaml"] = "json",
       auth_scheme: Optional[AuthScheme] = None,
       auth_credential: Optional[AuthCredential] = None,
+      credential_key: Optional[str] = None,
       tool_filter: Optional[Union[ToolPredicate, List[str]]] = None,
+      tool_name_prefix: Optional[str] = None,
+      ssl_verify: Optional[Union[bool, str, ssl.SSLContext]] = None,
+      header_provider: Optional[
+          Callable[[ReadonlyContext], Dict[str, str]]
+      ] = None,
   ):
     """Initializes the OpenAPIToolset.
 
@@ -100,15 +109,50 @@ class OpenAPIToolset(BaseToolset):
       auth_credential: The auth credential to use for all tools. Use
         AuthCredential or use helpers in
         ``google.adk.tools.openapi_tool.auth.auth_helpers``
+      credential_key: Optional stable key used for interactive auth and
+        credential caching across all tools in this toolset.
       tool_filter: The filter used to filter the tools in the toolset. It can be
         either a tool predicate or a list of tool names of the tools to expose.
+      tool_name_prefix: The prefix to prepend to the names of the tools returned
+        by the toolset. Useful when multiple OpenAPI specs have tools with
+        similar names.
+      ssl_verify: SSL certificate verification option for all tools. Can be:
+        - None: Use default verification (True)
+        - True: Verify SSL certificates using system CA
+        - False: Disable SSL verification (insecure, not recommended)
+        - str: Path to a CA bundle file or directory for custom CA
+        - ssl.SSLContext: Custom SSL context for advanced configuration
+        This is useful for enterprise environments where requests go through
+        a TLS-intercepting proxy with a custom CA certificate.
+      header_provider: A callable that returns a dictionary of headers to be
+        included in API requests. The callable receives the ReadonlyContext as
+        an argument, allowing dynamic header generation based on the current
+        context. Useful for adding custom headers like correlation IDs,
+        authentication tokens, or other request metadata.
     """
-    super().__init__(tool_filter=tool_filter)
+    super().__init__(tool_filter=tool_filter, tool_name_prefix=tool_name_prefix)
+    self._header_provider = header_provider
+    self._auth_scheme = auth_scheme
+    self._auth_credential = auth_credential
+    # Store auth config as instance variable so ADK can populate
+    # exchanged_auth_credential in-place before calling get_tools()
+    self._auth_config: Optional[AuthConfig] = (
+        AuthConfig(
+            auth_scheme=auth_scheme,
+            raw_auth_credential=auth_credential,
+            credential_key=credential_key,
+        )
+        if auth_scheme
+        else None
+    )
     if not spec_dict:
       spec_dict = self._load_spec(spec_str, spec_str_type)
+    self._ssl_verify = ssl_verify
     self._tools: Final[List[RestApiTool]] = list(self._parse(spec_dict))
     if auth_scheme or auth_credential:
       self._configure_auth_all(auth_scheme, auth_credential)
+    if credential_key:
+      self._configure_credential_key_all(credential_key)
 
   def _configure_auth_all(
       self, auth_scheme: AuthScheme, auth_credential: AuthCredential
@@ -120,6 +164,31 @@ class OpenAPIToolset(BaseToolset):
         tool.configure_auth_scheme(auth_scheme)
       if auth_credential:
         tool.configure_auth_credential(auth_credential)
+
+  def _configure_credential_key_all(self, credential_key: str):
+    """Configure credential key for all tools."""
+    for tool in self._tools:
+      tool.configure_credential_key(credential_key)
+
+  def configure_ssl_verify_all(
+      self, ssl_verify: Optional[Union[bool, str, ssl.SSLContext]] = None
+  ):
+    """Configure SSL certificate verification for all tools.
+
+    This is useful for enterprise environments where requests go through a
+    TLS-intercepting proxy with a custom CA certificate.
+
+    Args:
+        ssl_verify: SSL certificate verification option. Can be:
+          - None: Use default verification (True)
+          - True: Verify SSL certificates using system CA
+          - False: Disable SSL verification (insecure, not recommended)
+          - str: Path to a CA bundle file or directory for custom CA
+          - ssl.SSLContext: Custom SSL context for advanced configuration
+    """
+    self._ssl_verify = ssl_verify
+    for tool in self._tools:
+      tool.configure_ssl_verify(ssl_verify)
 
   @override
   async def get_tools(
@@ -154,7 +223,11 @@ class OpenAPIToolset(BaseToolset):
 
     tools = []
     for o in operations:
-      tool = RestApiTool.from_parsed_operation(o)
+      tool = RestApiTool.from_parsed_operation(
+          o,
+          ssl_verify=self._ssl_verify,
+          header_provider=self._header_provider,
+      )
       logger.info("Parsed tool: %s", tool.name)
       tools.append(tool)
     return tools
@@ -162,3 +235,14 @@ class OpenAPIToolset(BaseToolset):
   @override
   async def close(self):
     pass
+
+  @override
+  def get_auth_config(self) -> Optional[AuthConfig]:
+    """Returns the auth config for this toolset.
+
+    Note: This returns a copy so any exchanged credentials populated by the ADK
+    framework do not persist on the toolset instance across invocations.
+    """
+    return (
+        self._auth_config.model_copy(deep=True) if self._auth_config else None
+    )

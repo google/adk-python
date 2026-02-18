@@ -19,7 +19,7 @@ The computer use agent consists of:
 Install the required Python packages from the requirements file:
 
 ```bash
-uv pip install -r internal/samples/computer_use/requirements.txt
+uv pip install -r contributing/samples/computer_use/requirements.txt
 ```
 
 ### 2. Install Playwright Dependencies
@@ -45,7 +45,7 @@ playwright install chromium
 To start the computer use agent, run the following command from the project root:
 
 ```bash
-adk web internal/samples
+adk web contributing/samples
 ```
 
 This will start the ADK web interface where you can interact with the computer_use agent.

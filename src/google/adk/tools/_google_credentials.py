@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -33,11 +33,12 @@ from ..auth.auth_credential import AuthCredential
 from ..auth.auth_credential import AuthCredentialTypes
 from ..auth.auth_credential import OAuth2Auth
 from ..auth.auth_tool import AuthConfig
-from ..utils.feature_decorator import experimental
+from ..features import experimental
+from ..features import FeatureName
 from .tool_context import ToolContext
 
 
-@experimental
+@experimental(FeatureName.GOOGLE_CREDENTIALS_CONFIG)
 class BaseGoogleCredentialsConfig(BaseModel):
   """Base Google Credentials Configuration for Google API tools (Experimental).
 
@@ -74,6 +75,12 @@ class BaseGoogleCredentialsConfig(BaseModel):
   consider setting below client_id, client_secret and scope for end users to go
   through oauth flow, so that agent can access the user data.
   """
+  external_access_token_key: Optional[str] = None
+  """ The key to retrieve access token from tool_context.state.
+  If provided, the credential manager will fetch access token from
+  tool_context.state using this key, and use it for authentication.
+  This field is mutually exclusive with credentials.
+  """
   client_id: Optional[str] = None
   """the oauth client ID to use."""
   client_secret: Optional[str] = None
@@ -86,17 +93,28 @@ class BaseGoogleCredentialsConfig(BaseModel):
 
   @model_validator(mode="after")
   def __post_init__(self) -> BaseGoogleCredentialsConfig:
-    """Validate that either credentials or client ID/secret are provided."""
-    if not self.credentials and (not self.client_id or not self.client_secret):
+    """Validate that only one of credentials, external_access_token_key or client_id/secret are provided."""
+    if self.credentials:
+      if (
+          self.external_access_token_key
+          or self.client_id
+          or self.client_secret
+          or self.scopes
+      ):
+        raise ValueError(
+            "If credentials are provided, external_access_token_key, client_id,"
+            " client_secret, and scopes must not be provided."
+        )
+    elif self.external_access_token_key:
+      if self.client_id or self.client_secret or self.scopes:
+        raise ValueError(
+            "If external_access_token_key is provided, client_id,"
+            " client_secret, and scopes must not be provided."
+        )
+    elif not self.client_id or not self.client_secret:
       raise ValueError(
-          "Must provide either credentials or client_id and client_secret pair."
-      )
-    if self.credentials and (
-        self.client_id or self.client_secret or self.scopes
-    ):
-      raise ValueError(
-          "Cannot provide both existing credentials and"
-          " client_id/client_secret/scopes."
+          "Must provide one of credentials, external_access_token_key, or"
+          " client_id and client_secret pair."
       )
 
     if self.credentials and isinstance(
@@ -139,6 +157,19 @@ class GoogleCredentialsManager:
     Returns:
         Valid Credentials object, or None if OAuth flow is needed
     """
+    # If external_access_token_key is provided, retrieve token from state
+    if self.credentials_config.external_access_token_key:
+      access_token = tool_context.state.get(
+          self.credentials_config.external_access_token_key
+      )
+      if access_token:
+        return google.oauth2.credentials.Credentials(token=access_token)
+      else:
+        raise ValueError(
+            "external_access_token_key is provided but no access token found in"
+            " tool_context.state with key"
+            f" {self.credentials_config.external_access_token_key}."
+        )
     # First, try to get credentials from the tool context
     creds_json = (
         tool_context.state.get(self.credentials_config._token_cache_key, None)

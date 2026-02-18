@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,6 +13,7 @@
 # limitations under the License.
 
 """Tests for enhanced error messages in function tool handling."""
+
 from google.adk.flows.llm_flows.functions import _get_tool
 from google.adk.tools import BaseTool
 from google.genai import types

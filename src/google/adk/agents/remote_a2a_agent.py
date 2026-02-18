@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -26,39 +26,29 @@ from typing import Union
 from urllib.parse import urlparse
 import uuid
 
-try:
-  from a2a.client import Client as A2AClient
-  from a2a.client import ClientEvent as A2AClientEvent
-  from a2a.client.card_resolver import A2ACardResolver
-  from a2a.client.client import ClientConfig as A2AClientConfig
-  from a2a.client.client_factory import ClientFactory as A2AClientFactory
-  from a2a.client.errors import A2AClientError
-  from a2a.types import AgentCard
-  from a2a.types import Message as A2AMessage
-  from a2a.types import Part as A2APart
-  from a2a.types import Role
-  from a2a.types import TaskArtifactUpdateEvent as A2ATaskArtifactUpdateEvent
-  from a2a.types import TaskState
-  from a2a.types import TaskStatusUpdateEvent as A2ATaskStatusUpdateEvent
-  from a2a.types import TransportProtocol as A2ATransport
-except ImportError as e:
-  import sys
-
-  if sys.version_info < (3, 10):
-    raise ImportError(
-        "A2A requires Python 3.10 or above. Please upgrade your Python version."
-    ) from e
-  else:
-    raise e
+from a2a.client import Client as A2AClient
+from a2a.client import ClientEvent as A2AClientEvent
+from a2a.client.card_resolver import A2ACardResolver
+from a2a.client.client import ClientConfig as A2AClientConfig
+from a2a.client.client_factory import ClientFactory as A2AClientFactory
+from a2a.client.errors import A2AClientHTTPError
+from a2a.client.middleware import ClientCallContext
+from a2a.types import AgentCard
+from a2a.types import Message as A2AMessage
+from a2a.types import Part as A2APart
+from a2a.types import Role
+from a2a.types import TaskArtifactUpdateEvent as A2ATaskArtifactUpdateEvent
+from a2a.types import TaskState
+from a2a.types import TaskStatusUpdateEvent as A2ATaskStatusUpdateEvent
+from a2a.types import TransportProtocol as A2ATransport
+from google.genai import types as genai_types
+import httpx
 
 try:
   from a2a.utils.constants import AGENT_CARD_WELL_KNOWN_PATH
 except ImportError:
   # Fallback for older versions of a2a-sdk.
   AGENT_CARD_WELL_KNOWN_PATH = "/.well-known/agent.json"
-
-from google.genai import types as genai_types
-import httpx
 
 from ..a2a.converters.event_converter import convert_a2a_message_to_event
 from ..a2a.converters.event_converter import convert_a2a_task_to_event
@@ -136,6 +126,7 @@ class RemoteA2aAgent(BaseAgent):
       a2a_request_meta_provider: Optional[
           Callable[[InvocationContext, A2AMessage], dict[str, Any]]
       ] = None,
+      full_history_when_stateless: bool = False,
       **kwargs: Any,
   ) -> None:
     """Initialize RemoteA2aAgent.
@@ -143,7 +134,7 @@ class RemoteA2aAgent(BaseAgent):
     Args:
       name: Agent name (must be unique identifier)
       agent_card: AgentCard object, URL string, or file path string
-      description: Agent description (auto-populated from card if empty)
+      description: Agent description (autopopulated from card if empty)
       httpx_client: Optional shared HTTP client (will create own if not
         provided) [deprecated] Use a2a_client_factory instead.
       timeout: HTTP timeout in seconds
@@ -152,6 +143,10 @@ class RemoteA2aAgent(BaseAgent):
       a2a_request_meta_provider: Optional callable that takes InvocationContext
         and A2AMessage and returns a metadata object to attach to the A2A
         request.
+      full_history_when_stateless: If True, stateless agents (those that do not
+        return Tasks or context IDs) will receive all session events on every
+        request. If False, the default behavior of sending only events since the
+        last reply from the agent will be used.
       **kwargs: Additional arguments passed to BaseAgent
 
     Raises:
@@ -178,6 +173,7 @@ class RemoteA2aAgent(BaseAgent):
     self._a2a_part_converter = a2a_part_converter
     self._a2a_client_factory: Optional[A2AClientFactory] = a2a_client_factory
     self._a2a_request_meta_provider = a2a_request_meta_provider
+    self._full_history_when_stateless = full_history_when_stateless
 
     # Validate and store agent card reference
     if isinstance(agent_card, AgentCard):
@@ -352,6 +348,13 @@ class RemoteA2aAgent(BaseAgent):
 
     return a2a_message
 
+  def _is_remote_response(self, event: Event) -> bool:
+    return (
+        event.author == self.name
+        and event.custom_metadata
+        and event.custom_metadata.get(A2A_METADATA_PREFIX + "response", False)
+    )
+
   def _construct_message_parts_from_session(
       self, ctx: InvocationContext
   ) -> tuple[list[A2APart], Optional[str]]:
@@ -369,13 +372,20 @@ class RemoteA2aAgent(BaseAgent):
 
     events_to_process = []
     for event in reversed(ctx.session.events):
-      if event.author == self.name:
+      if self._is_remote_response(event):
         # stop on content generated by current a2a agent given it should already
         # be in remote session
         if event.custom_metadata:
           metadata = event.custom_metadata
           context_id = metadata.get(A2A_METADATA_PREFIX + "context_id")
-        break
+        # Historical note: this behavior originally always applied, regardless
+        # of whether the agent was stateful or stateless. However, only stateful
+        # agents can be expected to have previous events in the remote session.
+        # For backwards compatibility, we maintain this behavior when
+        # _full_history_when_stateless is false (the default) or if the agent
+        # is stateful (i.e. returned a context ID).
+        if not self._full_history_when_stateless or context_id:
+          break
       events_to_process.append(event)
 
     for event in reversed(events_to_process):
@@ -417,11 +427,24 @@ class RemoteA2aAgent(BaseAgent):
           # This is the initial response for a streaming task or the complete
           # response for a non-streaming task, which is the full task state.
           # We process this to get the initial message.
-          event = convert_a2a_task_to_event(task, self.name, ctx)
+          event = convert_a2a_task_to_event(
+              task, self.name, ctx, self._a2a_part_converter
+          )
           # for streaming task, we update the event with the task status.
           # We update the event as Thought updates.
-          if task and task.status and task.status.state == TaskState.submitted:
-            event.content.parts[0].thought = True
+          if (
+              task
+              and task.status
+              and task.status.state
+              in (
+                  TaskState.submitted,
+                  TaskState.working,
+              )
+              and event.content is not None
+              and event.content.parts
+          ):
+            for part in event.content.parts:
+              part.thought = True
         elif (
             isinstance(update, A2ATaskStatusUpdateEvent)
             and update.status
@@ -429,12 +452,12 @@ class RemoteA2aAgent(BaseAgent):
         ):
           # This is a streaming task status update with a message.
           event = convert_a2a_message_to_event(
-              update.status.message, self.name, ctx
+              update.status.message, self.name, ctx, self._a2a_part_converter
           )
-          if event.content and update.status.state in [
+          if event.content is not None and update.status.state in (
               TaskState.submitted,
               TaskState.working,
-          ]:
+          ):
             for part in event.content.parts:
               part.thought = True
         elif isinstance(update, A2ATaskArtifactUpdateEvent) and (
@@ -447,7 +470,9 @@ class RemoteA2aAgent(BaseAgent):
           # signals:
           # 1. append: True for partial updates, False for full updates.
           # 2. last_chunk: True for full updates, False for partial updates.
-          event = convert_a2a_task_to_event(task, self.name, ctx)
+          event = convert_a2a_task_to_event(
+              task, self.name, ctx, self._a2a_part_converter
+          )
         else:
           # This is a streaming update without a message (e.g. status change)
           # or a partial artifact update. We don't emit an event for these
@@ -463,7 +488,9 @@ class RemoteA2aAgent(BaseAgent):
 
       # Otherwise, it's a regular A2AMessage for non-streaming responses.
       elif isinstance(a2a_response, A2AMessage):
-        event = convert_a2a_message_to_event(a2a_response, self.name, ctx)
+        event = convert_a2a_message_to_event(
+            a2a_response, self.name, ctx, self._a2a_part_converter
+        )
         event.custom_metadata = event.custom_metadata or {}
 
         if a2a_response.context_id:
@@ -538,6 +565,7 @@ class RemoteA2aAgent(BaseAgent):
       async for a2a_response in self._a2a_client.send_message(
           request=a2a_request,
           request_metadata=request_metadata,
+          context=ClientCallContext(state=ctx.session.state),
       ):
         logger.debug(build_a2a_response_log(a2a_response))
 
@@ -562,6 +590,24 @@ class RemoteA2aAgent(BaseAgent):
           )
 
         yield event
+
+    except A2AClientHTTPError as e:
+      error_message = f"A2A request failed: {e}"
+      logger.error(error_message)
+      yield Event(
+          author=self.name,
+          error_message=error_message,
+          invocation_id=ctx.invocation_id,
+          branch=ctx.branch,
+          custom_metadata={
+              A2A_METADATA_PREFIX
+              + "request": a2a_request.model_dump(
+                  exclude_none=True, by_alias=True
+              ),
+              A2A_METADATA_PREFIX + "error": error_message,
+              A2A_METADATA_PREFIX + "status_code": str(e.status_code),
+          },
+      )
 
     except Exception as e:
       error_message = f"A2A request failed: {e}"

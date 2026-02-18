@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -43,10 +43,16 @@ def adk_to_mcp_tool_type(tool: BaseTool) -> mcp_types.Tool:
       print(mcp_tool)
   """
   tool_declaration = tool._get_declaration()
-  if not tool_declaration or not tool_declaration.parameters:
+  if not tool_declaration:
     input_schema = {}
-  else:
+  elif tool_declaration.parameters_json_schema:
+    # Use JSON schema directly if available
+    input_schema = tool_declaration.parameters_json_schema
+  elif tool_declaration.parameters:
+    # Convert from Schema object
     input_schema = gemini_to_json_schema(tool_declaration.parameters)
+  else:
+    input_schema = {}
   return mcp_types.Tool(
       name=tool.name,
       description=tool.description,

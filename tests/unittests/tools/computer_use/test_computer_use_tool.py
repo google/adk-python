@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -47,7 +47,7 @@ class TestComputerUseTool:
   @pytest.fixture
   def mock_computer_function(self):
     """Fixture providing a mock computer function."""
-    # Create a real async function instead of AsyncMock for Python 3.9 compatibility
+    # Create a real async function instead of AsyncMock for better test control
     calls = []
 
     async def mock_func(*args, **kwargs):

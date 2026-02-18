@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -38,7 +38,9 @@ BIGQUERY_AGENT_NAME = "adk_sample_bigquery_agent"
 # tool read-only) or PROTECTED (only allows writes in the anonymous dataset of a
 # BigQuery session) write mode.
 tool_config = BigQueryToolConfig(
-    write_mode=WriteMode.ALLOWED, application_name=BIGQUERY_AGENT_NAME
+    write_mode=WriteMode.ALLOWED,
+    application_name=BIGQUERY_AGENT_NAME,
+    max_query_result_rows=50,
 )
 
 if CREDENTIALS_TYPE == AuthCredentialTypes.OAUTH2:
@@ -56,6 +58,17 @@ elif CREDENTIALS_TYPE == AuthCredentialTypes.SERVICE_ACCOUNT:
   # https://cloud.google.com/iam/docs/service-account-creds#user-managed-keys
   creds, _ = google.auth.load_credentials_from_file("service_account_key.json")
   credentials_config = BigQueryCredentialsConfig(credentials=creds)
+elif CREDENTIALS_TYPE == AuthCredentialTypes.HTTP:
+  # Initialize the tools to use the externally provided access token. One such
+  # use case is creating an authorization resource `AUTH_ID` in Gemini
+  # Enterprise and using it to register an ADK agent deployed to Vertex AI
+  # Agent Engine with Gemini Enterprise. See for more details:
+  # https://docs.cloud.google.com/gemini/enterprise/docs/register-and-manage-an-adk-agent.
+  # This access token will be passed to the agent via the tool context, with
+  # the key `AUTH_ID`.
+  credentials_config = BigQueryCredentialsConfig(
+      external_access_token_key="AUTH_ID"
+  )
 else:
   # Initialize the tools to use the application default credentials.
   # https://cloud.google.com/docs/authentication/provide-credentials-adc
@@ -71,7 +84,7 @@ bigquery_toolset = BigQueryToolset(
 # The variable name `root_agent` determines what your root agent is for the
 # debug CLI
 root_agent = LlmAgent(
-    model="gemini-2.0-flash",
+    model="gemini-2.5-flash",
     name=BIGQUERY_AGENT_NAME,
     description=(
         "Agent to answer questions about BigQuery data and models and execute"

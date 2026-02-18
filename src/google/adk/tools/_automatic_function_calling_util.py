@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,12 +14,15 @@
 
 from __future__ import annotations
 
+import collections.abc
 import inspect
 from types import FunctionType
 import typing
 from typing import Any
 from typing import Callable
 from typing import Dict
+from typing import get_args
+from typing import get_origin
 from typing import Optional
 from typing import Union
 
@@ -30,6 +33,9 @@ from pydantic import create_model
 from pydantic import fields as pydantic_fields
 
 from . import _function_parameter_parse_util
+from . import _function_tool_declarations
+from ..features import FeatureName
+from ..features import is_feature_enabled
 from ..utils.variant_utils import GoogleLLMVariant
 
 _py_type_2_schema_type = {
@@ -196,6 +202,20 @@ def build_function_declaration(
     ignore_params: Optional[list[str]] = None,
     variant: GoogleLLMVariant = GoogleLLMVariant.GEMINI_API,
 ) -> types.FunctionDeclaration:
+  # ========== Pydantic-based function tool declaration (new feature) ==========
+  if is_feature_enabled(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL):
+    declaration = (
+        _function_tool_declarations.build_function_declaration_with_json_schema(
+            func, ignore_params=ignore_params
+        )
+    )
+    # Add response schema only for VERTEX_AI
+    # TODO(b/421991354): Remove this check once the bug is fixed.
+    if variant != GoogleLLMVariant.VERTEX_AI:
+      declaration.response_json_schema = None
+    return declaration
+
+  # ========== ADK defined function tool declaration (old behavior) ==========
   signature = inspect.signature(func)
   should_update_signature = False
   new_func = None
@@ -296,20 +316,59 @@ def from_function_with_options(
 ) -> 'types.FunctionDeclaration':
 
   parameters_properties = {}
-  for name, param in inspect.signature(func).parameters.items():
-    if param.kind in (
-        inspect.Parameter.POSITIONAL_OR_KEYWORD,
-        inspect.Parameter.KEYWORD_ONLY,
-        inspect.Parameter.POSITIONAL_ONLY,
-    ):
-      # This snippet catches the case when type hints are stored as strings
-      if isinstance(param.annotation, str):
-        param = param.replace(annotation=typing.get_type_hints(func)[name])
+  parameters_json_schema = {}
+  try:
+    annotation_under_future = typing.get_type_hints(func)
+  except TypeError:
+    # This can happen if func is a mock object
+    annotation_under_future = {}
+  try:
+    for name, param in inspect.signature(func).parameters.items():
+      if param.kind in (
+          inspect.Parameter.POSITIONAL_OR_KEYWORD,
+          inspect.Parameter.KEYWORD_ONLY,
+          inspect.Parameter.POSITIONAL_ONLY,
+      ):
+        param = _function_parameter_parse_util._handle_params_as_deferred_annotations(
+            param, annotation_under_future, name
+        )
 
-      schema = _function_parameter_parse_util._parse_schema_from_parameter(
-          variant, param, func.__name__
-      )
-      parameters_properties[name] = schema
+        schema = _function_parameter_parse_util._parse_schema_from_parameter(
+            variant, param, func.__name__
+        )
+        parameters_properties[name] = schema
+  except ValueError:
+    # If the function has complex parameter types that fail in _parse_schema_from_parameter,
+    # we try to generate a json schema for the parameter using pydantic.TypeAdapter.
+    parameters_properties = {}
+    for name, param in inspect.signature(func).parameters.items():
+      if param.kind in (
+          inspect.Parameter.POSITIONAL_OR_KEYWORD,
+          inspect.Parameter.KEYWORD_ONLY,
+          inspect.Parameter.POSITIONAL_ONLY,
+      ):
+        try:
+          if param.annotation == inspect.Parameter.empty:
+            param = param.replace(annotation=Any)
+
+          param = _function_parameter_parse_util._handle_params_as_deferred_annotations(
+              param, annotation_under_future, name
+          )
+
+          _function_parameter_parse_util._raise_for_invalid_enum_value(param)
+
+          json_schema_dict = _function_parameter_parse_util._generate_json_schema_for_parameter(
+              param
+          )
+
+          parameters_json_schema[name] = types.Schema.model_validate(
+              json_schema_dict
+          )
+        except Exception as e:
+          _function_parameter_parse_util._raise_for_unsupported_param(
+              param, func.__name__, e
+          )
+
   declaration = types.FunctionDeclaration(
       name=func.__name__,
       description=func.__doc__,
@@ -324,10 +383,30 @@ def from_function_with_options(
             declaration.parameters
         )
     )
+  elif parameters_json_schema:
+    declaration.parameters = types.Schema(
+        type='OBJECT',
+        properties=parameters_json_schema,
+    )
+
   if variant == GoogleLLMVariant.GEMINI_API:
     return declaration
 
   return_annotation = inspect.signature(func).return_annotation
+
+  # Handle AsyncGenerator and Generator return types (streaming tools)
+  # AsyncGenerator[YieldType, SendType] -> use YieldType as response schema
+  # Generator[YieldType, SendType, ReturnType] -> use YieldType as response schema
+  origin = get_origin(return_annotation)
+  if origin is not None and (
+      origin is collections.abc.AsyncGenerator
+      or origin is collections.abc.Generator
+  ):
+    type_args = get_args(return_annotation)
+    if type_args:
+      # First type argument is the yield type
+      yield_type = type_args[0]
+      return_annotation = yield_type
 
   # Handle functions with no return annotation
   if return_annotation is inspect._empty:
@@ -372,17 +451,35 @@ def from_function_with_options(
       inspect.Parameter.POSITIONAL_OR_KEYWORD,
       annotation=return_annotation,
   )
-  # This snippet catches the case when type hints are stored as strings
   if isinstance(return_value.annotation, str):
     return_value = return_value.replace(
         annotation=typing.get_type_hints(func)['return']
     )
 
-  declaration.response = (
-      _function_parameter_parse_util._parse_schema_from_parameter(
-          variant,
-          return_value,
-          func.__name__,
+  response_schema: Optional[types.Schema] = None
+  response_json_schema: Optional[Union[Dict[str, Any], types.Schema]] = None
+  try:
+    response_schema = (
+        _function_parameter_parse_util._parse_schema_from_parameter(
+            variant,
+            return_value,
+            func.__name__,
+        )
+    )
+  except ValueError:
+    try:
+      response_json_schema = (
+          _function_parameter_parse_util._generate_json_schema_for_parameter(
+              return_value
+          )
       )
-  )
+      response_json_schema = types.Schema.model_validate(response_json_schema)
+    except Exception as e:
+      _function_parameter_parse_util._raise_for_unsupported_param(
+          return_value, func.__name__, e
+      )
+  if response_schema:
+    declaration.response = response_schema
+  elif response_json_schema:
+    declaration.response = response_json_schema
   return declaration

@@ -7,7 +7,7 @@ This sample tests and demos the OAuth support in ADK via two tools:
 *   1. list_calendar_events
 
     This is a customized tool that calls Google Calendar API to list calendar
-    events. It pass in the client id and client secrete to ADK and then get back
+    events. It passes in the client id and client secret to ADK and then get back
     the access token from ADK. And then it uses the access token to call
     calendar api.
 
