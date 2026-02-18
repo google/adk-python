@@ -328,8 +328,9 @@ async def run_conformance_test(
     runner = ConformanceTestRunner(test_paths, client, mode)
     summary = await runner.run_all_tests()
 
-  if generate_report:
-    generate_markdown_report(summary, report_dir)
+    if generate_report:
+      version_data = await client.get_version_data()
+      generate_markdown_report(version_data, summary, report_dir)
 
   _print_test_summary(summary)
 

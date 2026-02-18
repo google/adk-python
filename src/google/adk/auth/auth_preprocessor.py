@@ -15,7 +15,6 @@
 from __future__ import annotations
 
 from typing import AsyncGenerator
-from typing import TYPE_CHECKING
 
 from typing_extensions import override
 
@@ -30,9 +29,6 @@ from .auth_handler import AuthHandler
 from .auth_tool import AuthConfig
 from .auth_tool import AuthToolArguments
 
-if TYPE_CHECKING:
-  from ..agents.llm_agent import LlmAgent
-
 # Prefix used by toolset auth credential IDs.
 # Auth requests with this prefix are for toolset authentication (before tool
 # listing) and don't require resuming a function call.
@@ -46,10 +42,8 @@ class _AuthLlmRequestProcessor(BaseLlmRequestProcessor):
   async def run_async(
       self, invocation_context: InvocationContext, llm_request: LlmRequest
   ) -> AsyncGenerator[Event, None]:
-    from ..agents.llm_agent import LlmAgent
-
     agent = invocation_context.agent
-    if not isinstance(agent, LlmAgent):
+    if not hasattr(agent, 'canonical_tools'):
       return
     events = invocation_context.session.events
     if not events:

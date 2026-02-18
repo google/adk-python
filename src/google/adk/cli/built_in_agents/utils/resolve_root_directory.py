@@ -13,6 +13,7 @@
 # limitations under the License.
 
 """Working directory helper tool to resolve path context issues."""
+
 from __future__ import annotations
 
 import os

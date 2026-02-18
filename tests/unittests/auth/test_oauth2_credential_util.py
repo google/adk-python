@@ -227,6 +227,8 @@ class TestOAuth2CredentialUtil:
         "expires_in": 3600,
     })
 
+    assert credential.oauth2 is not None
+
     update_credential_with_tokens(credential, tokens)
 
     assert credential.oauth2.access_token == "new_access_token"
@@ -234,3 +236,13 @@ class TestOAuth2CredentialUtil:
     assert credential.oauth2.id_token == "some_id_token"
     assert credential.oauth2.expires_at == expected_expires_at
     assert credential.oauth2.expires_in == 3600
+
+  def test_update_credential_with_tokens_none(self) -> None:
+    credential = AuthCredential(
+        auth_type=AuthCredentialTypes.API_KEY,
+    )
+    tokens = OAuth2Token({"access_token": "new_access_token"})
+
+    # Should not raise any exceptions when oauth2 is None
+    update_credential_with_tokens(credential, tokens)
+    assert credential.oauth2 is None

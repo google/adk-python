@@ -31,6 +31,7 @@ from fastapi.openapi.models import APIKeyIn
 from google.genai.types import FunctionDeclaration
 from mcp.shared.session import ProgressFnT
 from mcp.types import Tool as McpBaseTool
+from opentelemetry import propagate
 from typing_extensions import override
 
 from ...agents.callback_context import CallbackContext
@@ -313,6 +314,12 @@ class McpTool(BaseAuthenticatedTool):
       headers.update(dynamic_headers)
     final_headers = headers if headers else None
 
+    # Propagate trace context in the _meta field as sprcified by MCP protocol.
+    # See https://agentclientprotocol.com/protocol/extensibility#the-meta-field
+    trace_carrier: Dict[str, str] = {}
+    propagate.get_global_textmap().inject(carrier=trace_carrier)
+    meta_trace_context = trace_carrier if trace_carrier else None
+
     # Get the session from the session manager
     session = await self._mcp_session_manager.create_session(
         headers=final_headers
@@ -325,6 +332,7 @@ class McpTool(BaseAuthenticatedTool):
         self._mcp_tool.name,
         arguments=args,
         progress_callback=resolved_callback,
+        meta=meta_trace_context,
     )
     return response.model_dump(exclude_none=True, mode="json")
 

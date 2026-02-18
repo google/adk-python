@@ -138,29 +138,29 @@ def set_device_info(
 
 
 def get_temperature(location: str) -> int:
-  """Get the current temperature in celsius of a location (e.g., 'Living Room', 'Bedroom', 'Kitchen').
+  """Get the current temperature in Celsius of a location (e.g., 'Living Room', 'Bedroom', 'Kitchen').
 
   Args:
       location (str): The location for which to retrieve the temperature (e.g.,
         'Living Room', 'Bedroom', 'Kitchen').
 
   Returns:
-      int: The current temperature in celsius in the specified location, or
+      int: The current temperature in Celsius in the specified location, or
       'Location not found' if the location does not exist.
   """
   return TEMPERATURE_DB.get(location, "Location not found")
 
 
 def set_temperature(location: str, temperature: int) -> str:
-  """Set the desired temperature in celsius for a location.
+  """Set the desired temperature in Celsius for a location.
 
-  Acceptable range of temperature: 18-30 celsius. If it's out of the range, do
+  Acceptable range of temperature: 18-30 Celsius. If it's out of the range, do
   not call this tool.
 
   Args:
       location (str): The location where the temperature should be set.
-      temperature (int): The desired temperature as integer to set in celsius.
-        Acceptable range: 18-30 celsius.
+      temperature (int): The desired temperature as integer to set in Celsius.
+        Acceptable range: 18-30 Celsius.
 
   Returns:
       str: A message indicating whether the temperature was successfully set.
