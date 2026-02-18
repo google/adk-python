@@ -46,10 +46,8 @@ class ForwardingArtifactService(BaseArtifactService):
       session_id: Optional[str] = None,
       custom_metadata: Optional[dict[str, Any]] = None,
   ) -> int:
-    # Convert dict-shaped artifact to types.Part if necessary
-    if isinstance(artifact, dict):
-      artifact = types.Part.model_validate(artifact)
-    
+    # Delegate to parent tool context, which will handle conversion in the
+    # concrete artifact service implementation.
     return await self.tool_context.save_artifact(
         filename=filename,
         artifact=artifact,

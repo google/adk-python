@@ -327,8 +327,7 @@ class FileArtifactService(BaseArtifactService):
     root (for example ``"../../secret.txt"``) raise ``ValueError``.
     """
     # Convert dict-shaped artifact to types.Part if necessary
-    if isinstance(artifact, dict):
-      artifact = types.Part.model_validate(artifact)
+    artifact = self._convert_artifact_if_dict(artifact)
     
     return await asyncio.to_thread(
         self._save_artifact_sync,

@@ -63,6 +63,23 @@ class ArtifactVersion(BaseModel):
 class BaseArtifactService(ABC):
   """Abstract base class for artifact services."""
 
+  @staticmethod
+  def _convert_artifact_if_dict(
+      artifact: types.Part | dict[str, Any],
+  ) -> types.Part:
+    """Converts a dict-shaped artifact to types.Part if necessary.
+
+    Args:
+      artifact: The artifact to convert. Can be a types.Part or dict.
+
+    Returns:
+      A types.Part object. If input is already a Part, returns as-is.
+      If input is a dict, converts it to Part via model_validate.
+    """
+    if isinstance(artifact, dict):
+      return types.Part.model_validate(artifact)
+    return artifact
+
   @abstractmethod
   async def save_artifact(
       self,

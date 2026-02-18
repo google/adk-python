@@ -66,8 +66,7 @@ class GcsArtifactService(BaseArtifactService):
       custom_metadata: Optional[dict[str, Any]] = None,
   ) -> int:
     # Convert dict-shaped artifact to types.Part if necessary
-    if isinstance(artifact, dict):
-      artifact = types.Part.model_validate(artifact)
+    artifact = self._convert_artifact_if_dict(artifact)
     
     return await asyncio.to_thread(
         self._save_artifact,
