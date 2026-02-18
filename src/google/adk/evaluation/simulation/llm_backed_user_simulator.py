@@ -31,6 +31,8 @@ from ...utils.feature_decorator import experimental
 from .._retry_options_utils import add_default_retry_options_if_not_present
 from ..conversation_scenarios import ConversationScenario
 from ..evaluator import Evaluator
+from .llm_backed_user_simulator_prompts import get_llm_backed_user_simulator_prompt
+from .llm_backed_user_simulator_prompts import is_valid_user_simulator_template
 from .user_simulator import BaseUserSimulatorConfig
 from .user_simulator import NextUserMessage
 from .user_simulator import Status
@@ -40,63 +42,6 @@ logger = logging.getLogger("google_adk." + __name__)
 
 _AUTHOR_USER = "user"
 _STOP_SIGNAL = "</finished>"
-
-_DEFAULT_USER_AGENT_INSTRUCTIONS = """You are a Simulated User designed to test an AI Agent.
-
-Your single most important job is to react logically to the Agent's last message.
-The Conversation Plan is your canonical grounding, not a script; your response MUST be dictated by what the Agent just said.
-
-# Primary Operating Loop
-
-You MUST follow this three-step process while thinking:
-
-Step 1: Analyze what the Agent just said or did. Specifically, is the Agent asking you a question, reporting a successful or unsuccessful operation, or saying something incorrect or unexpected?
-
-Step 2: Choose one action based on your analysis:
-* ANSWER any questions the Agent asked.
-* ADVANCE to the next request as per the Conversation Plan if the Agent succeeds in satisfying your current request.
-* INTERVENE if the Agent is yet to complete your current request and the Conversation Plan requires you to modify it.
-* CORRECT the Agent if it is making a mistake or failing.
-* END the conversation if any of the below stopping conditions are met:
-  - The Agent has completed all your requests from the Conversation Plan.
-  - The Agent has failed to fulfill a request *more than once*.
-  - The Agent has performed an incorrect operation and informs you that it is unable to correct it.
-  - The Agent ends the conversation on its own by transferring you to a *human/live agent* (NOT another AI Agent).
-
-Step 3: Formulate a response based on the chosen action and the below Action Protocols and output it.
-
-# Action Protocols
-
-**PROTOCOL: ANSWER**
-* Only answer the Agent's questions using information from the Conversation Plan.
-* Do NOT provide any additional information the Agent did not explicitly ask for.
-* If you do not have the information requested by the Agent, inform the Agent. Do NOT make up information that is not in the Conversation Plan.
-* Do NOT advance to the next request in the Conversation Plan.
-
-**PROTOCOL: ADVANCE**
-* Make the next request from the Conversation Plan.
-* Skip redundant requests already fulfilled by the Agent.
-
-**PROTOCOL: INTERVENE**
-* Change your current request as directed by the Conversation Plan with natural phrasing.
-
-**PROTOCOL: CORRECT**
-* Challenge illogical or incorrect statements made by the Agent.
-* If the Agent did an incorrect operation, ask the Agent to fix it.
-* If this is the FIRST time the Agent failed to satisfy your request, ask the Agent to try again.
-
-**PROTOCOL: END**
-* End the conversation only when any of the stopping conditions are met; do NOT end prematurely.
-* Output `{stop_signal}` to indicate that the conversation with the AI Agents is over.
-
-# Conversation Plan
-
-{conversation_plan}
-
-# Conversation History
-
-{conversation_history}
-"""
 
 
 class LlmBackedUserSimulatorConfig(BaseUserSimulatorConfig):
@@ -130,13 +75,15 @@ prompt is also counted as an invocation.
   custom_instructions: Optional[str] = Field(
       default=None,
       description="""Custom instructions for the LlmBackedUserSimulator. The
-instructions must contain the following formatting placeholders:
-* {stop_signal} : text to be generated when the user simulator decides that the
+instructions must contain the following formatting placeholders following Jinja syntax:
+* {{ stop_signal }} : text to be generated when the user simulator decides that the
   conversation is over.
-* {conversation_plan} : the overall plan for the conversation that the user
+* {{ conversation_plan }} : the overall plan for the conversation that the user
   simulator must follow.
-* {conversation_history} : the conversation between the user and the agent so
-  far.""",
+* {{ conversation_history }} : the conversation between the user and the agent so
+  far.
+* {{ persona }} : Only needed if specifying user_persona in the conversation scenario.
+""",
   )
 
   @field_validator("custom_instructions")
@@ -144,18 +91,18 @@ instructions must contain the following formatting placeholders:
   def validate_custom_instructions(cls, value: Optional[str]) -> Optional[str]:
     if value is None:
       return value
-    if not all(
-        placeholder in value
-        for placeholder in [
-            "{stop_signal}",
-            "{conversation_plan}",
-            "{conversation_history}",
-        ]
+    if not is_valid_user_simulator_template(
+        value,
+        required_params=[
+            "stop_signal",
+            "conversation_plan",
+            "conversation_history",
+        ],
     ):
       raise ValueError(
           "custom_instructions must contain each of the following formatting"
-          " placeholders:"
-          " {stop_signal}, {conversation_plan}, {conversation_history}"
+          " placeholders using Jinja syntax: {{ stop_signal }}, {{"
+          " conversation_plan }}, {{ conversation_history }}"
       )
     return value
 
@@ -180,11 +127,7 @@ class LlmBackedUserSimulator(UserSimulator):
     llm_registry = LLMRegistry()
     llm_class = llm_registry.resolve(self._config.model)
     self._llm = llm_class(model=self._config.model)
-    self._instructions = (
-        self._config.custom_instructions
-        if self._config.custom_instructions
-        else _DEFAULT_USER_AGENT_INSTRUCTIONS
-    )
+    self._user_persona = self._conversation_scenario.user_persona
 
   @classmethod
   def _summarize_conversation(
@@ -221,10 +164,12 @@ class LlmBackedUserSimulator(UserSimulator):
       # first invocation - send the static starting prompt
       return self._conversation_scenario.starting_prompt
 
-    user_agent_instructions = self._instructions.format(
-        stop_signal=_STOP_SIGNAL,
+    user_agent_instructions = get_llm_backed_user_simulator_prompt(
         conversation_plan=self._conversation_scenario.conversation_plan,
         conversation_history=rewritten_dialogue,
+        stop_signal=_STOP_SIGNAL,
+        custom_instructions=self._config.custom_instructions,
+        user_persona=self._user_persona,
     )
 
     llm_request = LlmRequest(

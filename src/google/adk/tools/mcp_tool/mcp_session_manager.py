@@ -500,6 +500,30 @@ class MCPSessionManager:
             )
         raise ConnectionError(f'Failed to create MCP session: {e}') from e
 
+  def __getstate__(self):
+    """Custom pickling to exclude non-picklable runtime objects."""
+    state = self.__dict__.copy()
+    # Remove unpicklable entries or those that shouldn't persist across pickle
+    state['_sessions'] = {}
+    state['_session_lock_map'] = {}
+
+    # Locks and file-like objects cannot be pickled
+    state.pop('_lock_map_lock', None)
+    state.pop('_errlog', None)
+
+    return state
+
+  def __setstate__(self, state):
+    """Custom unpickling to restore state."""
+    self.__dict__.update(state)
+    # Re-initialize members that were not pickled
+    self._sessions = {}
+    self._session_lock_map = {}
+    self._lock_map_lock = threading.Lock()
+    # If _errlog was removed during pickling, default to sys.stderr
+    if not hasattr(self, '_errlog') or self._errlog is None:
+      self._errlog = sys.stderr
+
   async def close(self):
     """Closes all sessions and cleans up resources."""
     async with self._session_lock:

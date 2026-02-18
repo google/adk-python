@@ -56,7 +56,7 @@ dependencies = [
   "opentelemetry-resourcedetector-gcp>=1.9.0a0, <2.0.0",
   "opentelemetry-sdk>=1.36.0, <1.40.0",
   "pyarrow>=14.0.0",
-  "pydantic>=2.0, <3.0.0",                                   # For data validation/models
+  "pydantic>=2.7.0, <3.0.0",                                 # For data validation/models
   "python-dateutil>=2.9.0.post0, <3.0.0",                    # For Vertext AI Session Service
   "python-dotenv>=1.0.0, <2.0.0",                            # To manage environment variables
   "requests>=2.32.4, <3.0.0",
@@ -108,6 +108,7 @@ community = [
 
 eval = [
   # go/keep-sorted start
+  "Jinja2>=3.1.4,<4.0.0",                         # For eval template rendering
   "google-cloud-aiplatform[evaluation]>=1.100.0",
   "pandas>=2.2.3",
   "rouge-score>=0.1.2",
