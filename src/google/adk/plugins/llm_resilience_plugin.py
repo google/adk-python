@@ -215,7 +215,7 @@ class LlmResiliencePlugin(BasePlugin):
       from ..agents.run_config import StreamingMode  # local import to avoid cycles
 
       stream = streaming_mode == StreamingMode.SSE
-    except ImportError:
+    except (ImportError, AttributeError):
       pass
 
     agent = invocation_context.agent
@@ -265,7 +265,7 @@ class LlmResiliencePlugin(BasePlugin):
       from ..agents.run_config import StreamingMode
 
       stream = streaming_mode == StreamingMode.SSE
-    except ImportError:
+    except (ImportError, AttributeError):
       pass
 
     for model_name in self.fallback_models:
