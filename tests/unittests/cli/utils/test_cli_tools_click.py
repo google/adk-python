@@ -763,7 +763,7 @@ def test_cli_add_eval_case_with_session(tmp_path: Path):
     eval_set_data = json.load(f)
   assert len(eval_set_data["eval_cases"]) == 1
   eval_case = eval_set_data["eval_cases"][0]
-  assert eval_case["eval_id"] == "0a1a5048"
+  assert eval_case["eval_id"] == "734909ff"
   assert eval_case["session_input"]["app_name"] == "test_app_add_2"
 
 

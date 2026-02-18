@@ -607,6 +607,39 @@ class TestMCPSessionManager:
     exit_stack2.aclose.assert_not_called()
     assert len(manager._sessions) == 0
 
+  @pytest.mark.asyncio
+  async def test_pickle_mcp_session_manager(self):
+    """Verify that MCPSessionManager can be pickled and unpickled."""
+    import pickle
+
+    manager = MCPSessionManager(self.mock_stdio_connection_params)
+
+    # Access the lock to ensure it's initialized
+    lock = manager._session_lock
+    assert isinstance(lock, asyncio.Lock)
+
+    # Add a mock session to verify it's cleared on pickling
+    manager._sessions["test"] = (Mock(), Mock(), asyncio.get_running_loop())
+
+    # Pickle and unpickle
+    pickled = pickle.dumps(manager)
+    unpickled = pickle.loads(pickled)
+
+    # Verify basics are restored
+    assert unpickled._connection_params == manager._connection_params
+
+    # Verify transient/unpicklable members are re-initialized or cleared
+    assert unpickled._sessions == {}
+    assert unpickled._session_lock_map == {}
+    assert isinstance(unpickled._lock_map_lock, type(manager._lock_map_lock))
+    assert unpickled._lock_map_lock is not manager._lock_map_lock
+    assert unpickled._errlog == sys.stderr
+
+    # Verify we can still get a lock in the new instance
+    new_lock = unpickled._session_lock
+    assert isinstance(new_lock, asyncio.Lock)
+    assert new_lock is not lock
+
 
 @pytest.mark.asyncio
 async def test_retry_on_errors_decorator():
