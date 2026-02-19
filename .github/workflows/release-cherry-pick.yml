@@ -1,5 +1,5 @@
-# Cherry-picks a commit from main to the release/candidate branch.
-# Use this to include bug fixes in an in-progress release.
+# Step 3 (optional): Cherry-picks a commit from main to the release/candidate branch.
+# Use between step 1 and step 4 to include bug fixes in an in-progress release.
 name: "Release: Cherry-pick"
 
 on:
@@ -42,5 +42,5 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh workflow run release-please.yml --repo ${{ github.repository }}
+          gh workflow run release-please.yml --repo ${{ github.repository }} --ref release/candidate
           echo "Triggered Release Please workflow"
