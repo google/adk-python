@@ -631,20 +631,20 @@ class Runner:
     events_after = session.events[:rewind_event_index]
     boundary_after_invocation_id = None
     if rewind_event_index > 0:
-      boundary_after_invocation_id = (
-          session.events[rewind_event_index - 1].invocation_id
-      )
+      boundary_after_invocation_id = session.events[
+          rewind_event_index - 1
+      ].invocation_id
 
     history_before_hash = self._hash_rewind_events(events_before)
     history_after_hash = self._hash_rewind_events(events_after)
 
     receipt_payload = {
-      'rewind_before_invocation_id': rewind_before_invocation_id,
-      'boundary_after_invocation_id': boundary_after_invocation_id,
-      'events_before_rewind': len(events_before),
-      'events_after_rewind': len(events_after),
-      'history_before_hash': history_before_hash,
-      'history_after_hash': history_after_hash,
+        'rewind_before_invocation_id': rewind_before_invocation_id,
+        'boundary_after_invocation_id': boundary_after_invocation_id,
+        'events_before_rewind': len(events_before),
+        'events_after_rewind': len(events_after),
+        'history_before_hash': history_before_hash,
+        'history_after_hash': history_after_hash,
     }
     receipt_hash = self._hash_rewind_payload(receipt_payload)
 
@@ -662,18 +662,16 @@ class Runner:
     """Hashes event summaries for deterministic rewind audit receipts."""
     summarized_events = []
     for event in events:
-      summarized_events.append(
-          {
-              'event_id': event.id,
-              'invocation_id': event.invocation_id,
-              'author': event.author,
-              'state_delta': event.actions.state_delta,
-              'artifact_delta': event.actions.artifact_delta,
-              'rewind_before_invocation_id': (
-                  event.actions.rewind_before_invocation_id
-              ),
-          }
-      )
+      summarized_events.append({
+          'event_id': event.id,
+          'invocation_id': event.invocation_id,
+          'author': event.author,
+          'state_delta': event.actions.state_delta,
+          'artifact_delta': event.actions.artifact_delta,
+          'rewind_before_invocation_id': (
+              event.actions.rewind_before_invocation_id
+          ),
+      })
     return self._hash_rewind_payload({'events': summarized_events})
 
   def _hash_rewind_payload(self, payload: dict[str, Any]) -> str:

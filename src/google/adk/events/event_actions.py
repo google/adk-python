@@ -47,7 +47,7 @@ class EventCompaction(BaseModel):
   """The compacted content of the events."""
 
 
-class RewindAuditReceipt(BaseModel):
+class RewindAuditReceipt(BaseModel):  # type: ignore[misc]
   """Audit receipt metadata emitted for rewind operations."""
 
   model_config = ConfigDict(

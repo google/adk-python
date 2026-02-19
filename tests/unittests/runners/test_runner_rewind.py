@@ -287,6 +287,8 @@ class TestRunnerRewind:
         rewind_before_invocation_id="invocation2",
     )
 
-    assert first_receipt.history_before_hash == second_receipt.history_before_hash
+    assert (
+        first_receipt.history_before_hash == second_receipt.history_before_hash
+    )
     assert first_receipt.history_after_hash == second_receipt.history_after_hash
     assert first_receipt.receipt_hash == second_receipt.receipt_hash
