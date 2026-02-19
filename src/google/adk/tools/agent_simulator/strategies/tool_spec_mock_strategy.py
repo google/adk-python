@@ -35,6 +35,8 @@ _TOOL_SPEC_MOCK_PROMPT_TEMPLATE = """
   realistic JSON response for a tool call, maintaining consistency based
   on a shared state.
 
+  {environment_data_snippet}
+
   Here is the map of how tools connect via stateful parameters:
   {tool_connection_map_json}
 
@@ -53,15 +55,35 @@ _TOOL_SPEC_MOCK_PROMPT_TEMPLATE = """
   2.  If it's a "consuming" tool, check the provided arguments against
       the state store. If an ID is provided that does not exist in the
       state, return a realistic error (e.g., a 404 Not Found error).
-      Otherwise, use the data from the state to generate the response.
+      Otherwise, use the data from the state and the provided environment data
+      to generate the response.
   3.  If it's a "creating" tool, generate a new, unique ID for the
       stateful parameter (e.g., a random string for a ticket_id). Include
       this new ID in your response. I will then update the state with it.
-  4.  Generate a convincing, valid JSON object that mocks the tool's
+  4.  Leverage the provided environment data (if any) to make your response
+      more realistic and consistent with the simulated environment.
+  5.  Generate a convincing, valid JSON object that mocks the tool's
       response. The response must be only the JSON object, without any
       additional text or formatting.
-  5.  The response must start with '{{' and end with '}}'.
+  6.  The response must start with '{{' and end with '}}'.
   """
+
+
+def _find_value_by_key(data: Any, target_key: str) -> Optional[Any]:
+  """Recursively searches for a value by key in a nested structure."""
+  if isinstance(data, dict):
+    if target_key in data:
+      return data[target_key]
+    for key, value in data.items():
+      result = _find_value_by_key(value, target_key)
+      if result is not None:
+        return result
+  elif isinstance(data, list):
+    for item in data:
+      result = _find_value_by_key(item, target_key)
+      if result is not None:
+        return result
+  return None
 
 
 class ToolSpecMockStrategy(MockStrategy):
@@ -83,6 +105,7 @@ class ToolSpecMockStrategy(MockStrategy):
       tool_context: Any,
       tool_connection_map: Optional[ToolConnectionMap],
       state_store: Dict[str, Any],
+      environment_data: Optional[str] = None,
   ) -> Dict[str, Any]:
     declaration = tool._get_declaration()
     if not declaration:
@@ -97,10 +120,23 @@ class ToolSpecMockStrategy(MockStrategy):
         else "''"
     )
     state_store_json = json.dumps(state_store, indent=2)
-    tool_schema_json = json.dumps(declaration.model_dump(), indent=2)
+    tool_schema_json = json.dumps(
+        declaration.model_dump(exclude_none=True), indent=2
+    )
     tool_arguments_json = json.dumps(args, indent=2)
 
+    environment_data_snippet = ""
+    if environment_data:
+      environment_data_snippet = f"""
+        Here is relevant environment data (e.g., database snippet, context information):
+        <environment_data>
+        {environment_data}
+        </environment_data>
+        Use this information to generate more realistic responses.
+      """
+
     prompt = _TOOL_SPEC_MOCK_PROMPT_TEMPLATE.format(
+        environment_data_snippet=environment_data_snippet,
         tool_connection_map_json=tool_connection_map_json,
         state_store_json=state_store_json,
         tool_name=tool.name,
@@ -133,16 +169,33 @@ class ToolSpecMockStrategy(MockStrategy):
       clean_json_text = re.sub(r"^```[a-zA-Z]*\n", "", response_text)
       clean_json_text = re.sub(r"\n```$", "", clean_json_text)
       mock_response = json.loads(clean_json_text.strip())
-      # After getting the response, update the state if this was a creating tool.
+      # Determine if the current tool is mutative by checking the connection map.
+      is_mutative = False
       if tool_connection_map:
+        all_creating_tools = {
+            tool_name
+            for param in tool_connection_map.stateful_parameters
+            for tool_name in param.creating_tools
+        }
+        if tool.name in all_creating_tools:
+          is_mutative = True
+
+      # After getting the response, update the state if this was a mutative tool.
+      if is_mutative:
         for param_info in tool_connection_map.stateful_parameters:
           param_name = param_info.parameter_name
+          # Only update the state for the specific parameter this tool
+          # creates/modifies.
           if tool.name in param_info.creating_tools:
-            if param_name in mock_response:
-              param_value = mock_response[param_name]
+            param_value = _find_value_by_key(mock_response, param_name)
+            if param_value is not None:
               if param_name not in state_store:
                 state_store[param_name] = {}
+              # Store the entire response as the new state for this entity.
+              # This correctly captures creations and modifications (like
+              # cancellation).
               state_store[param_name][param_value] = mock_response
+
       return mock_response
     except json.JSONDecodeError:
       return {

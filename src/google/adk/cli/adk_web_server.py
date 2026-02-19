@@ -204,7 +204,7 @@ class RunAgentRequest(common.BaseModel):
   app_name: str
   user_id: str
   session_id: str
-  new_message: types.Content
+  new_message: Optional[types.Content] = None
   streaming: bool = False
   state_delta: Optional[dict[str, Any]] = None
   # for resume long-running functions
@@ -494,6 +494,7 @@ class AdkWebServer:
       logo_text: Optional[str] = None,
       logo_image_url: Optional[str] = None,
       url_prefix: Optional[str] = None,
+      auto_create_session: bool = False,
   ):
     self.agent_loader = agent_loader
     self.session_service = session_service
@@ -511,6 +512,7 @@ class AdkWebServer:
     self.current_app_name_ref: SharedValue[str] = SharedValue(value="")
     self.runner_dict = {}
     self.url_prefix = url_prefix
+    self.auto_create_session = auto_create_session
 
   async def get_runner_async(self, app_name: str) -> Runner:
     """Returns the cached runner for the given app."""
@@ -560,6 +562,7 @@ class AdkWebServer:
         session_service=self.session_service,
         memory_service=self.memory_service,
         credential_service=self.credential_service,
+        auto_create_session=self.auto_create_session,
     )
 
   def _instantiate_extra_plugins(self) -> list[BasePlugin]:
@@ -768,7 +771,9 @@ class AdkWebServer:
       return {
           "version": __version__,
           "language": "python",
-          "language_version": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
+          "language_version": (
+              f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+          ),
       }
 
     @app.get("/list-apps")
@@ -788,6 +793,11 @@ class AdkWebServer:
       if event_dict is None:
         raise HTTPException(status_code=404, detail="Trace not found")
       return event_dict
+
+    @app.get("/apps/{app_name}")
+    async def get_app_info(app_name: str) -> Any:
+      runner = await self.get_runner_async(app_name)
+      return runner.app
 
     @app.get("/debug/trace/session/{session_id}", tags=[TAG_DEBUG])
     async def get_session_trace(session_id: str) -> Any:

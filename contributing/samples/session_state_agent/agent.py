@@ -18,7 +18,6 @@ This agent illustrate how session state will be cached in context and persisted
 in session state.
 """
 
-
 import logging
 from typing import Optional
 

@@ -13,6 +13,7 @@
 # limitations under the License.
 
 """Configuration file reader tool for existing YAML configs."""
+
 from __future__ import annotations
 
 from pathlib import Path

@@ -65,6 +65,7 @@ class AgentSimulatorEngine:
     )
     self._state_store = {}
     self._random_generator = random.Random()
+    self._environment_data = config.environment_data
 
   async def simulate(
       self, tool: BaseTool, args: Dict[str, Any], tool_context: Any
@@ -128,5 +129,10 @@ class AgentSimulatorEngine:
         self._config.simulation_model_configuration,
     )
     return await mock_strategy.mock(
-        tool, args, tool_context, self._tool_connection_map, self._state_store
+        tool,
+        args,
+        tool_context,
+        self._tool_connection_map,
+        self._state_store,
+        self._environment_data,
     )

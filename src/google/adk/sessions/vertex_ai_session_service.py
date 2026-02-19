@@ -215,7 +215,7 @@ class VertexAiSessionService(BaseSessionService):
           config=config,
       )
 
-      for api_session in sessions_iterator:
+      async for api_session in sessions_iterator:
         sessions.append(
             Session(
                 app_name=app_name,
