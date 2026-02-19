@@ -38,7 +38,9 @@ BIGQUERY_AGENT_NAME = "adk_sample_bigquery_agent"
 # tool read-only) or PROTECTED (only allows writes in the anonymous dataset of a
 # BigQuery session) write mode.
 tool_config = BigQueryToolConfig(
-    write_mode=WriteMode.ALLOWED, application_name=BIGQUERY_AGENT_NAME
+    write_mode=WriteMode.ALLOWED,
+    application_name=BIGQUERY_AGENT_NAME,
+    max_query_result_rows=50,
 )
 
 if CREDENTIALS_TYPE == AuthCredentialTypes.OAUTH2:

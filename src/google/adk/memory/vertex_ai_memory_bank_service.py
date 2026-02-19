@@ -17,6 +17,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from collections.abc import Sequence
 from datetime import datetime
+from functools import lru_cache
 import logging
 from typing import Optional
 from typing import TYPE_CHECKING
@@ -37,7 +38,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger('google_adk.' + __name__)
 
-_GENERATE_MEMORIES_CONFIG_KEYS = frozenset({
+_GENERATE_MEMORIES_CONFIG_FALLBACK_KEYS = frozenset({
     'disable_consolidation',
     'disable_memory_revisions',
     'http_options',
@@ -46,6 +47,21 @@ _GENERATE_MEMORIES_CONFIG_KEYS = frozenset({
     'revision_expire_time',
     'revision_labels',
     'revision_ttl',
+    'wait_for_completion',
+})
+
+_CREATE_MEMORY_CONFIG_FALLBACK_KEYS = frozenset({
+    'description',
+    'disable_memory_revisions',
+    'display_name',
+    'expire_time',
+    'http_options',
+    'metadata',
+    'revision_labels',
+    'revision_expire_time',
+    'revision_ttl',
+    'topics',
+    'ttl',
     'wait_for_completion',
 })
 
@@ -60,6 +76,61 @@ def _supports_generate_memories_metadata() -> bool:
       'metadata'
       in vertex_common_types.GenerateAgentEngineMemoriesConfig.model_fields
   )
+
+
+def _supports_create_memory_metadata() -> bool:
+  """Returns whether installed Vertex SDK supports create config.metadata."""
+  try:
+    from vertexai._genai.types import common as vertex_common_types
+  except ImportError:
+    return False
+  return 'metadata' in vertex_common_types.AgentEngineMemoryConfig.model_fields
+
+
+@lru_cache(maxsize=1)
+def _get_generate_memories_config_keys() -> frozenset[str]:
+  """Returns supported config keys for memories.generate.
+
+  Uses SDK runtime model fields when available and falls back to a static
+  allowlist to preserve compatibility when introspection is unavailable.
+  """
+  try:
+    from vertexai._genai.types import common as vertex_common_types
+  except ImportError:
+    return _GENERATE_MEMORIES_CONFIG_FALLBACK_KEYS
+
+  try:
+    model_fields = (
+        vertex_common_types.GenerateAgentEngineMemoriesConfig.model_fields
+    )
+  except AttributeError:
+    return _GENERATE_MEMORIES_CONFIG_FALLBACK_KEYS
+
+  if not isinstance(model_fields, Mapping):
+    return _GENERATE_MEMORIES_CONFIG_FALLBACK_KEYS
+  return frozenset(model_fields.keys())
+
+
+@lru_cache(maxsize=1)
+def _get_create_memory_config_keys() -> frozenset[str]:
+  """Returns supported config keys for memories.create.
+
+  Uses SDK runtime model fields when available and falls back to a static
+  allowlist to preserve compatibility when introspection is unavailable.
+  """
+  try:
+    from vertexai._genai.types import common as vertex_common_types
+  except ImportError:
+    return _CREATE_MEMORY_CONFIG_FALLBACK_KEYS
+
+  try:
+    model_fields = vertex_common_types.AgentEngineMemoryConfig.model_fields
+  except AttributeError:
+    return _CREATE_MEMORY_CONFIG_FALLBACK_KEYS
+
+  if not isinstance(model_fields, Mapping):
+    return _CREATE_MEMORY_CONFIG_FALLBACK_KEYS
+  return frozenset(model_fields.keys())
 
 
 class VertexAiMemoryBankService(BaseMemoryService):
@@ -122,11 +193,37 @@ class VertexAiMemoryBankService(BaseMemoryService):
       session_id: str | None = None,
       custom_metadata: Mapping[str, object] | None = None,
   ) -> None:
+    """Adds events to Vertex AI Memory Bank via memories.generate.
+
+    Args:
+      app_name: The application name for memory scope.
+      user_id: The user ID for memory scope.
+      events: The events to process for memory generation.
+      session_id: Optional session ID. Currently unused.
+      custom_metadata: Optional service-specific metadata for generate config.
+    """
     _ = session_id
     await self._add_events_to_memory_from_events(
         app_name=app_name,
         user_id=user_id,
         events_to_process=events,
+        custom_metadata=custom_metadata,
+    )
+
+  @override
+  async def add_memory(
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      memories: Sequence[MemoryEntry],
+      custom_metadata: Mapping[str, object] | None = None,
+  ) -> None:
+    """Adds explicit memory items via Vertex memories.create."""
+    await self._add_memories_via_create(
+        app_name=app_name,
+        user_id=user_id,
+        memories=memories,
         custom_metadata=custom_metadata,
     )
 
@@ -165,6 +262,43 @@ class VertexAiMemoryBankService(BaseMemoryService):
       logger.debug('Generate memory response: %s', operation)
     else:
       logger.info('No events to add to memory.')
+
+  async def _add_memories_via_create(
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      memories: Sequence[MemoryEntry],
+      custom_metadata: Mapping[str, object] | None = None,
+  ) -> None:
+    """Adds direct memory items without server-side extraction."""
+    if not self._agent_engine_id:
+      raise ValueError('Agent Engine ID is required for Memory Bank.')
+
+    normalized_memories = _normalize_memories_for_create(memories)
+    api_client = self._get_api_client()
+    for index, memory in enumerate(normalized_memories):
+      memory_fact = _memory_entry_to_fact(memory, index=index)
+      memory_metadata = _merge_custom_metadata_for_memory(
+          custom_metadata=custom_metadata,
+          memory=memory,
+      )
+      memory_revision_labels = _revision_labels_for_memory(memory)
+      config = _build_create_memory_config(
+          memory_metadata,
+          memory_revision_labels=memory_revision_labels,
+      )
+      operation = await api_client.agent_engines.memories.create(
+          name='reasoningEngines/' + self._agent_engine_id,
+          fact=memory_fact,
+          scope={
+              'app_name': app_name,
+              'user_id': user_id,
+          },
+          config=config,
+      )
+      logger.info('Create memory response received.')
+      logger.debug('Create memory response: %s', operation)
 
   @override
   async def search_memory(self, *, app_name: str, user_id: str, query: str):
@@ -237,6 +371,7 @@ def _build_generate_memories_config(
   """Builds a valid memories.generate config from caller metadata."""
   config: dict[str, object] = {'wait_for_completion': False}
   supports_metadata = _supports_generate_memories_metadata()
+  config_keys = _get_generate_memories_config_keys()
   if not custom_metadata:
     return config
 
@@ -267,7 +402,7 @@ def _build_generate_memories_config(
             ' mapping.'
         )
       continue
-    if key in _GENERATE_MEMORIES_CONFIG_KEYS:
+    if key in config_keys:
       if value is None:
         continue
       config[key] = value
@@ -302,6 +437,208 @@ def _build_generate_memories_config(
       sorted(metadata_by_key.keys()),
   )
   return config
+
+
+def _build_create_memory_config(
+    custom_metadata: Mapping[str, object] | None,
+    *,
+    memory_revision_labels: Mapping[str, str] | None = None,
+) -> dict[str, object]:
+  """Builds a valid memories.create config from caller metadata."""
+  config: dict[str, object] = {'wait_for_completion': False}
+  supports_metadata = _supports_create_memory_metadata()
+  config_keys = _get_create_memory_config_keys()
+  supports_revision_labels = 'revision_labels' in config_keys
+
+  if custom_metadata:
+    logger.debug('Memory creation metadata: %s', custom_metadata)
+
+  metadata_by_key: dict[str, object] = {}
+  custom_revision_labels: dict[str, str] = {}
+  for key, value in (custom_metadata or {}).items():
+    if key == 'metadata':
+      if value is None:
+        continue
+      if not supports_metadata:
+        logger.warning(
+            'Ignoring metadata because installed Vertex SDK does not support'
+            ' create config.metadata.'
+        )
+        continue
+      if isinstance(value, Mapping):
+        config['metadata'] = _build_vertex_metadata(value)
+      else:
+        logger.warning(
+            'Ignoring metadata because custom_metadata["metadata"] is not a'
+            ' mapping.'
+        )
+      continue
+    if key == 'revision_labels':
+      if value is None:
+        continue
+      extracted_labels = _extract_revision_labels(
+          value,
+          source='custom_metadata["revision_labels"]',
+      )
+      if extracted_labels:
+        custom_revision_labels.update(extracted_labels)
+      continue
+    if key in config_keys:
+      if value is None:
+        continue
+      config[key] = value
+    else:
+      metadata_by_key[key] = value
+
+  if metadata_by_key:
+    if not supports_metadata:
+      logger.warning(
+          'Ignoring custom metadata keys %s because installed Vertex SDK does '
+          'not support create config.metadata.',
+          sorted(metadata_by_key.keys()),
+      )
+    else:
+      existing_metadata = config.get('metadata')
+      if existing_metadata is None:
+        config['metadata'] = _build_vertex_metadata(metadata_by_key)
+      elif isinstance(existing_metadata, Mapping):
+        merged_metadata = dict(existing_metadata)
+        merged_metadata.update(_build_vertex_metadata(metadata_by_key))
+        config['metadata'] = merged_metadata
+      else:
+        logger.warning(
+            'Ignoring custom metadata keys %s because config.metadata is not a'
+            ' mapping.',
+            sorted(metadata_by_key.keys()),
+        )
+
+  revision_labels = dict(custom_revision_labels)
+  if memory_revision_labels:
+    revision_labels.update(memory_revision_labels)
+  if revision_labels:
+    if supports_revision_labels:
+      config['revision_labels'] = revision_labels
+    else:
+      logger.warning(
+          'Ignoring revision labels %s because installed Vertex SDK does not '
+          'support create config.revision_labels.',
+          sorted(revision_labels.keys()),
+      )
+  return config
+
+
+def _normalize_memories_for_create(
+    memories: Sequence[MemoryEntry],
+) -> list[MemoryEntry]:
+  """Validates add_memory inputs."""
+  if isinstance(memories, str):
+    raise TypeError('memories must be a sequence of memory items.')
+  if not isinstance(memories, Sequence):
+    raise TypeError('memories must be a sequence of memory items.')
+
+  validated_memories: list[MemoryEntry] = []
+  for index, raw_memory in enumerate(memories):
+    if not isinstance(raw_memory, MemoryEntry):
+      raise TypeError(f'memories[{index}] must be a MemoryEntry.')
+    validated_memories.append(raw_memory)
+  if not validated_memories:
+    raise ValueError('memories must contain at least one entry.')
+  return validated_memories
+
+
+def _memory_entry_to_fact(
+    memory: MemoryEntry,
+    *,
+    index: int,
+) -> str:
+  """Builds a memories.create fact payload from MemoryEntry text content."""
+  if _should_filter_out_event(memory.content):
+    raise ValueError(f'memories[{index}] must include text.')
+
+  text_parts: list[str] = []
+  for part in memory.content.parts:
+    if part.inline_data or part.file_data:
+      raise ValueError(
+          f'memories[{index}] must include text only; inline_data and '
+          'file_data are not supported.'
+      )
+
+    if not part.text:
+      continue
+    stripped_text = part.text.strip()
+    if stripped_text:
+      text_parts.append(stripped_text)
+
+  if not text_parts:
+    raise ValueError(f'memories[{index}] must include non-whitespace text.')
+  return '\n'.join(text_parts)
+
+
+def _merge_custom_metadata_for_memory(
+    *,
+    custom_metadata: Mapping[str, object] | None,
+    memory: MemoryEntry,
+) -> Mapping[str, object] | None:
+  """Merges write-level metadata with MemoryEntry metadata."""
+  merged_metadata: dict[str, object] = {}
+
+  if custom_metadata:
+    merged_metadata.update(dict(custom_metadata))
+  if memory.custom_metadata:
+    merged_metadata.update(memory.custom_metadata)
+
+  if not merged_metadata:
+    return None
+  return merged_metadata
+
+
+def _revision_labels_for_memory(
+    memory: MemoryEntry,
+) -> Mapping[str, str] | None:
+  """Builds revision labels from MemoryEntry revision metadata."""
+  revision_labels: dict[str, str] = {}
+  if memory.author is not None:
+    revision_labels['author'] = memory.author
+  if memory.timestamp is not None:
+    revision_labels['timestamp'] = memory.timestamp
+
+  if not revision_labels:
+    return None
+  return revision_labels
+
+
+def _extract_revision_labels(
+    value: object,
+    *,
+    source: str,
+) -> Mapping[str, str] | None:
+  """Extracts revision labels from config metadata."""
+  if not isinstance(value, Mapping):
+    logger.warning('Ignoring %s because it is not a mapping.', source)
+    return None
+
+  revision_labels: dict[str, str] = {}
+  for key, label_value in value.items():
+    if not isinstance(key, str):
+      logger.warning(
+          'Ignoring revision label with non-string key %r from %s.',
+          key,
+          source,
+      )
+      continue
+    if not isinstance(label_value, str):
+      logger.warning(
+          'Ignoring revision label %s from %s because its value is not a '
+          'string.',
+          key,
+          source,
+      )
+      continue
+    revision_labels[key] = label_value
+
+  if not revision_labels:
+    return None
+  return revision_labels
 
 
 def _build_vertex_metadata(

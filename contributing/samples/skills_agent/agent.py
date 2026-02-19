@@ -52,9 +52,7 @@ root_agent = Agent(
     model="gemini-2.5-flash",
     name="skill_user_agent",
     description="An agent that can use specialized skills.",
-    instruction=(
-        "You are a helpful assistant that can leverage skills to perform tasks."
-    ),
+    instruction=skill_toolset.DEFAULT_SKILL_SYSTEM_INSTRUCTION,
     tools=[
         my_skill_toolset,
     ],

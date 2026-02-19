@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.25.1](https://github.com/google/adk-python/compare/v1.25.0...v1.25.1) (2026-02-18)
+
+### Bug Fixes
+
+* Fix pickling lock errors in McpSessionManager ([4e2d615](https://github.com/google/adk-python/commit/4e2d6159ae3552954aaae295fef3e09118502898))
+
 ## [1.25.0](https://github.com/google/adk-python/compare/v1.24.1...v1.25.0) (2026-02-11)
 
 ### Features
