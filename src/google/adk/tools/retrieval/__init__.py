@@ -13,9 +13,11 @@
 # limitations under the License.
 
 from .base_retrieval_tool import BaseRetrievalTool
+from .callable_retrieval import CallableRetrieval
 
 __all__ = [
     "BaseRetrievalTool",
+    "CallableRetrieval",
     "FilesRetrieval",
     "LlamaIndexRetrieval",
     "VertexAiRagRetrieval",
