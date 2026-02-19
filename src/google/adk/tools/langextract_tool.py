@@ -226,22 +226,17 @@ class LangExtractTool(BaseTool):
         config.model_dump()
     )
 
-    examples = []
-    if langextract_config.examples:
-      examples = config_agent_utils.resolve_fully_qualified_name(
-          langextract_config.examples
+    init_kwargs = langextract_config.model_dump()
+    if examples_path := init_kwargs.get('examples'):
+      init_kwargs['examples'] = (
+          config_agent_utils.resolve_fully_qualified_name(
+              examples_path
+          )
       )
+    else:
+      init_kwargs['examples'] = []
 
-    return cls(
-        name=langextract_config.name,
-        description=langextract_config.description,
-        examples=examples,
-        model_id=langextract_config.model_id,
-        api_key=langextract_config.api_key,
-        extraction_passes=langextract_config.extraction_passes,
-        max_workers=langextract_config.max_workers,
-        max_char_buffer=langextract_config.max_char_buffer,
-    )
+    return cls(**init_kwargs)
 
 
 class LangExtractToolConfig(BaseToolConfig):

@@ -19,6 +19,8 @@ import pytest
 
 pytest.importorskip('langextract', reason='Requires langextract')
 
+from google.adk.features import FeatureName
+from google.adk.features._feature_registry import temporary_feature_override
 from google.adk.tools.langextract_tool import LangExtractTool
 from google.adk.tools.langextract_tool import LangExtractToolConfig
 
@@ -71,18 +73,32 @@ def test_langextract_tool_custom_initialization():
   assert tool._max_char_buffer == 8000
 
 
-def test_langextract_tool_get_declaration():
+@pytest.mark.parametrize('json_schema_enabled', [True, False])
+def test_langextract_tool_get_declaration(json_schema_enabled):
   """Test that _get_declaration returns the correct schema."""
-  tool = LangExtractTool()
-  declaration = tool._get_declaration()
-  assert declaration is not None
-  assert declaration.name == 'langextract'
-  assert declaration.parameters is not None
-  props = declaration.parameters.properties
-  assert 'text' in props
-  assert 'prompt_description' in props
-  assert 'text' in declaration.parameters.required
-  assert 'prompt_description' in declaration.parameters.required
+  with temporary_feature_override(
+      FeatureName.JSON_SCHEMA_FOR_FUNC_DECL, json_schema_enabled
+  ):
+    tool = LangExtractTool()
+    declaration = tool._get_declaration()
+    assert declaration is not None
+    assert declaration.name == 'langextract'
+
+    if json_schema_enabled:
+      params = declaration.parameters_json_schema
+      assert params is not None
+      props = params['properties']
+      required = params['required']
+    else:
+      params = declaration.parameters
+      assert params is not None
+      props = params.properties
+      required = params.required
+
+    assert 'text' in props
+    assert 'prompt_description' in props
+    assert 'text' in required
+    assert 'prompt_description' in required
 
 
 @pytest.mark.asyncio
