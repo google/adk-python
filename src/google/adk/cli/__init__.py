@@ -13,3 +13,8 @@
 # limitations under the License.
 
 from .cli_tools_click import main
+from .fast_api import get_fast_api_app
+
+__all__ = [
+    'get_fast_api_app',
+]
