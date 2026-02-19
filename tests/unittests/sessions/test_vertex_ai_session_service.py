@@ -300,20 +300,20 @@ class MockAsyncClient:
     if user_id_match:
       user_id = user_id_match.group(1)
       if user_id == 'user_with_pages':
-        return [
+        return to_async_iterator([
             _convert_to_object(MOCK_SESSION_JSON_PAGE1),
             _convert_to_object(MOCK_SESSION_JSON_PAGE2),
-        ]
-      return [
+        ])
+      return to_async_iterator([
           _convert_to_object(session)
           for session in self.session_dict.values()
           if session['user_id'] == user_id
-      ]
+      ])
 
     # No user filter, return all sessions
-    return [
-        _convert_to_object(session) for session in self.session_dict.values()
-    ]
+    return to_async_iterator(
+        [_convert_to_object(session) for session in self.session_dict.values()]
+    )
 
   async def _delete_session(self, name: str):
     session_id = name.split('/')[-1]

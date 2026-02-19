@@ -178,6 +178,35 @@ def test_add_contents_empty_contents(
     mock_spanner_database.batch.assert_not_called()
 
 
+@mock.patch.object(spanner_utils.client, "get_spanner_client", autospec=True)
+def test_execute_sql_circular_row_fallback_to_string(mock_get_spanner_client):
+  """Test execute_sql stringifies rows with circular references."""
+  mock_spanner_client = mock.MagicMock()
+  mock_instance = mock.MagicMock()
+  mock_database = mock.MagicMock()
+  mock_snapshot = mock.MagicMock()
+  circular_row = []
+  circular_row.append(circular_row)
+  mock_snapshot.execute_sql.return_value = iter([circular_row])
+  mock_database.snapshot.return_value.__enter__.return_value = mock_snapshot
+  mock_database.database_dialect = DatabaseDialect.GOOGLE_STANDARD_SQL
+  mock_instance.database.return_value = mock_database
+  mock_spanner_client.instance.return_value = mock_instance
+  mock_get_spanner_client.return_value = mock_spanner_client
+
+  result = spanner_utils.execute_sql(
+      project_id="test-project",
+      instance_id="test-instance",
+      database_id="test-database",
+      query="SELECT 1",
+      credentials=mock.Mock(),
+      settings=SpannerToolSettings(),
+      tool_context=mock.Mock(),
+  )
+
+  assert result == {"status": "SUCCESS", "rows": [str(circular_row)]}
+
+
 @mock.patch.object(spanner_utils, "embed_contents", autospec=True)
 def test_add_contents_additional_columns_list_mismatch(
     mock_embed_contents, spanner_tool_settings, mock_spanner_client

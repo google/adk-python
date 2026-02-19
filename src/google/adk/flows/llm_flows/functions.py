@@ -26,6 +26,7 @@ import threading
 from typing import Any
 from typing import AsyncGenerator
 from typing import cast
+from typing import Dict
 from typing import Optional
 from typing import TYPE_CHECKING
 import uuid
@@ -34,6 +35,8 @@ from google.genai import types
 
 from ...agents.active_streaming_tool import ActiveStreamingTool
 from ...agents.invocation_context import InvocationContext
+from ...agents.live_request_queue import LiveRequestQueue
+from ...auth.auth_tool import AuthConfig
 from ...auth.auth_tool import AuthToolArguments
 from ...events.event import Event
 from ...events.event_actions import EventActions
@@ -60,6 +63,18 @@ logger = logging.getLogger('google_adk.' + __name__)
 # Key is max_workers, value is the executor.
 _TOOL_THREAD_POOLS: dict[int, ThreadPoolExecutor] = {}
 _TOOL_THREAD_POOL_LOCK = threading.Lock()
+
+
+def _is_live_request_queue_annotation(param: inspect.Parameter) -> bool:
+  """Check whether a parameter is annotated as LiveRequestQueue.
+
+  Handles both the class itself and the string form produced by
+  ``from __future__ import annotations``.
+  """
+  ann = param.annotation
+  return ann is LiveRequestQueue or (
+      isinstance(ann, str) and ann == 'LiveRequestQueue'
+  )
 
 
 def _get_tool_thread_pool(max_workers: int = 4) -> ThreadPoolExecutor:
@@ -211,38 +226,74 @@ def get_long_running_function_calls(
   return long_running_tool_ids
 
 
-def generate_auth_event(
+def build_auth_request_event(
     invocation_context: InvocationContext,
-    function_response_event: Event,
-) -> Optional[Event]:
-  if not function_response_event.actions.requested_auth_configs:
-    return None
+    auth_requests: Dict[str, AuthConfig],
+    *,
+    author: Optional[str] = None,
+    role: Optional[str] = None,
+) -> Event:
+  """Builds an auth request event with function calls for each auth request.
+
+  This is a shared helper used by both tool-level auth (when a tool requests
+  auth during execution) and toolset-level auth (before tool listing).
+
+  Args:
+    invocation_context: The invocation context.
+    auth_requests: Dict mapping function_call_id to AuthConfig.
+    author: The event author. Defaults to agent name.
+    role: The content role. Defaults to None.
+
+  Returns:
+    Event with auth request function calls.
+  """
   parts = []
   long_running_tool_ids = set()
-  for (
-      function_call_id,
-      auth_config,
-  ) in function_response_event.actions.requested_auth_configs.items():
 
+  for function_call_id, auth_config in auth_requests.items():
     request_euc_function_call = types.FunctionCall(
         name=REQUEST_EUC_FUNCTION_CALL_NAME,
+        id=generate_client_function_call_id(),
         args=AuthToolArguments(
             function_call_id=function_call_id,
             auth_config=auth_config,
         ).model_dump(exclude_none=True, by_alias=True),
     )
-    request_euc_function_call.id = generate_client_function_call_id()
     long_running_tool_ids.add(request_euc_function_call.id)
     parts.append(types.Part(function_call=request_euc_function_call))
 
   return Event(
       invocation_id=invocation_context.invocation_id,
-      author=invocation_context.agent.name,
+      author=author or invocation_context.agent.name,
       branch=invocation_context.branch,
-      content=types.Content(
-          parts=parts, role=function_response_event.content.role
-      ),
+      content=types.Content(parts=parts, role=role),
       long_running_tool_ids=long_running_tool_ids,
+  )
+
+
+def generate_auth_event(
+    invocation_context: InvocationContext,
+    function_response_event: Event,
+) -> Optional[Event]:
+  """Generates an auth request event from a function response event.
+
+  This is used for tool-level auth where a tool requests credentials during
+  execution.
+
+  Args:
+    invocation_context: The invocation context.
+    function_response_event: The function response event with auth requests.
+
+  Returns:
+    Event with auth request function calls, or None if no auth requested.
+  """
+  if not function_response_event.actions.requested_auth_configs:
+    return None
+
+  return build_auth_request_event(
+      invocation_context,
+      function_response_event.actions.requested_auth_configs,
+      role=function_response_event.content.role,
   )
 
 
@@ -532,19 +583,16 @@ async def _execute_single_function_call_async(
     return function_response_event
 
   with tracer.start_as_current_span(f'execute_tool {tool.name}'):
+    function_response_event = None
     try:
       function_response_event = await _run_with_trace()
+      return function_response_event
+    finally:
       trace_tool_call(
           tool=tool,
           args=function_args,
           function_response_event=function_response_event,
       )
-      return function_response_event
-    except:
-      trace_tool_call(
-          tool=tool, args=function_args, function_response_event=None
-      )
-      raise
 
 
 async def handle_function_calls_live(
@@ -682,19 +730,16 @@ async def _execute_single_function_call_live(
     return function_response_event
 
   with tracer.start_as_current_span(f'execute_tool {tool.name}'):
+    function_response_event = None
     try:
       function_response_event = await _run_with_trace()
+      return function_response_event
+    finally:
       trace_tool_call(
           tool=tool,
           args=function_args,
           function_response_event=function_response_event,
       )
-      return function_response_event
-    except:
-      trace_tool_call(
-          tool=tool, args=function_args, function_response_event=None
-      )
-      raise
 
 
 async def _process_function_live_helper(
@@ -752,6 +797,9 @@ async def _process_function_live_helper(
               and function_name in invocation_context.active_streaming_tools
           ):
             invocation_context.active_streaming_tools[function_name].task = None
+            invocation_context.active_streaming_tools[function_name].stream = (
+                None
+            )
 
         function_response = {
             'status': f'Successfully stopped streaming function {function_name}'
@@ -790,16 +838,31 @@ async def _process_function_live_helper(
         run_tool_and_update_queue(tool, function_args, tool_context)
     )
 
-    # Register streaming tool using original logic
     async with streaming_lock:
+
       if invocation_context.active_streaming_tools is None:
         invocation_context.active_streaming_tools = {}
-
       if tool.name in invocation_context.active_streaming_tools:
         invocation_context.active_streaming_tools[tool.name].task = task
       else:
+        # Register the streaming tool lazily when the model calls it.
         invocation_context.active_streaming_tools[tool.name] = (
             ActiveStreamingTool(task=task)
+        )
+        logger.debug('Lazily registered streaming tool: %s', tool.name)
+
+      # For input-streaming tools (those with `input_stream:
+      # LiveRequestQueue`), create a dedicated LiveRequestQueue so
+      # _send_to_model starts duplicating data to it. This also
+      # handles re-invocation after stop_streaming reset .stream
+      # to None.
+      sig = inspect.signature(tool.func)
+      if (
+          'input_stream' in sig.parameters
+          and _is_live_request_queue_annotation(sig.parameters['input_stream'])
+      ):
+        invocation_context.active_streaming_tools[tool.name].stream = (
+            LiveRequestQueue()
         )
 
     # Immediately return a pending response.

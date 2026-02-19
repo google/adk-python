@@ -41,6 +41,7 @@ class FeatureName(str, Enum):
   PROGRESSIVE_SSE_STREAMING = "PROGRESSIVE_SSE_STREAMING"
   PUBSUB_TOOL_CONFIG = "PUBSUB_TOOL_CONFIG"
   PUBSUB_TOOLSET = "PUBSUB_TOOLSET"
+  SKILL_TOOLSET = "SKILL_TOOLSET"
   SPANNER_TOOLSET = "SPANNER_TOOLSET"
   SPANNER_TOOL_SETTINGS = "SPANNER_TOOL_SETTINGS"
   SPANNER_VECTOR_STORE = "SPANNER_VECTOR_STORE"
@@ -121,6 +122,9 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
     FeatureName.PUBSUB_TOOLSET: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
+    FeatureName.SKILL_TOOLSET: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
     FeatureName.SPANNER_TOOLSET: FeatureConfig(

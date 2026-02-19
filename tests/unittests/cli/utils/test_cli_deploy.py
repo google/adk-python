@@ -14,7 +14,6 @@
 
 """Tests for utilities in cli_deploy."""
 
-
 from __future__ import annotations
 
 import importlib
@@ -83,7 +82,9 @@ def agent_dir(tmp_path: Path) -> Callable[[bool, bool], Path]:
   def _factory(include_requirements: bool, include_env: bool) -> Path:
     base = tmp_path / "agent"
     base.mkdir()
-    (base / "agent.py").write_text("# dummy agent")
+    (base / "agent.py").write_text(
+        "# dummy agent\nroot_agent = 'dummy_agent'\n"
+    )
     (base / "__init__.py").touch()
     if include_requirements:
       (base / "requirements.txt").write_text("pytest\n")
@@ -305,6 +306,110 @@ def test_to_agent_engine_happy_path(
   assert str(rmtree_recorder.get_last_call_args()[0]) == str(tmp_dir)
 
 
+def test_to_agent_engine_skips_agent_import_validation_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+) -> None:
+  """It should skip agent.py import validation by default."""
+  validate_recorder = _Recorder()
+
+  def _validate_agent_import(*args: Any, **kwargs: Any) -> None:
+    validate_recorder(*args, **kwargs)
+    raise AssertionError("_validate_agent_import should not be called")
+
+  monkeypatch.setattr(
+      cli_deploy, "_validate_agent_import", _validate_agent_import
+  )
+
+  fake_vertexai = types.ModuleType("vertexai")
+
+  class _FakeAgentEngines:
+
+    def create(self, *, config: Dict[str, Any]) -> Any:
+      del config
+      return types.SimpleNamespace(
+          api_resource=types.SimpleNamespace(
+              name="projects/p/locations/l/reasoningEngines/e"
+          )
+      )
+
+  class _FakeVertexClient:
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+      del args
+      del kwargs
+      self.agent_engines = _FakeAgentEngines()
+
+  fake_vertexai.Client = _FakeVertexClient
+  monkeypatch.setitem(sys.modules, "vertexai", fake_vertexai)
+
+  src_dir = agent_dir(False, False)
+  cli_deploy.to_agent_engine(
+      agent_folder=str(src_dir),
+      temp_folder="tmp",
+      adk_app="my_adk_app",
+      trace_to_cloud=True,
+      project="my-gcp-project",
+      region="us-central1",
+      display_name="My Test Agent",
+      description="A test agent.",
+  )
+
+  assert validate_recorder.calls == []
+
+
+def test_to_agent_engine_validates_agent_import_when_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_dir: Callable[[bool, bool], Path],
+) -> None:
+  """It should run agent.py import validation when enabled."""
+  validate_recorder = _Recorder()
+
+  def _validate_agent_import(*args: Any, **kwargs: Any) -> None:
+    validate_recorder(*args, **kwargs)
+
+  monkeypatch.setattr(
+      cli_deploy, "_validate_agent_import", _validate_agent_import
+  )
+
+  fake_vertexai = types.ModuleType("vertexai")
+
+  class _FakeAgentEngines:
+
+    def create(self, *, config: Dict[str, Any]) -> Any:
+      del config
+      return types.SimpleNamespace(
+          api_resource=types.SimpleNamespace(
+              name="projects/p/locations/l/reasoningEngines/e"
+          )
+      )
+
+  class _FakeVertexClient:
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+      del args
+      del kwargs
+      self.agent_engines = _FakeAgentEngines()
+
+  fake_vertexai.Client = _FakeVertexClient
+  monkeypatch.setitem(sys.modules, "vertexai", fake_vertexai)
+
+  src_dir = agent_dir(False, False)
+  cli_deploy.to_agent_engine(
+      agent_folder=str(src_dir),
+      temp_folder="tmp",
+      adk_app="my_adk_app",
+      trace_to_cloud=True,
+      project="my-gcp-project",
+      region="us-central1",
+      display_name="My Test Agent",
+      description="A test agent.",
+      skip_agent_import_validation=False,
+  )
+
+  assert len(validate_recorder.calls) == 1
+
+
 @pytest.mark.parametrize("include_requirements", [True, False])
 def test_to_gke_happy_path(
     monkeypatch: pytest.MonkeyPatch,
@@ -407,3 +512,145 @@ def test_to_gke_happy_path(
 
   # 4. Verify cleanup
   assert str(rmtree_recorder.get_last_call_args()[0]) == str(tmp_path)
+
+
+# _validate_agent_import tests
+class TestValidateAgentImport:
+  """Tests for the _validate_agent_import function."""
+
+  def test_skips_config_agents(self, tmp_path: Path) -> None:
+    """Config agents should skip validation."""
+    # This should not raise even with no agent.py file
+    cli_deploy._validate_agent_import(
+        str(tmp_path), "root_agent", is_config_agent=True
+    )
+
+  def test_raises_on_missing_agent_module(self, tmp_path: Path) -> None:
+    """Should raise when agent.py is missing."""
+    with pytest.raises(click.ClickException) as exc_info:
+      cli_deploy._validate_agent_import(
+          str(tmp_path), "root_agent", is_config_agent=False
+      )
+    assert "Agent module not found" in str(exc_info.value)
+
+  def test_raises_on_missing_export(self, tmp_path: Path) -> None:
+    """Should raise when the expected export is missing."""
+    agent_file = tmp_path / "agent.py"
+    agent_file.write_text("some_other_var = 'hello'\n")
+    (tmp_path / "__init__.py").touch()
+
+    with pytest.raises(click.ClickException) as exc_info:
+      cli_deploy._validate_agent_import(
+          str(tmp_path), "root_agent", is_config_agent=False
+      )
+    assert "does not export 'root_agent'" in str(exc_info.value)
+    assert "some_other_var" in str(exc_info.value)
+
+  def test_success_with_root_agent_export(self, tmp_path: Path) -> None:
+    """Should succeed when root_agent is exported."""
+    agent_file = tmp_path / "agent.py"
+    agent_file.write_text("root_agent = 'my_agent'\n")
+    (tmp_path / "__init__.py").touch()
+
+    # Should not raise
+    cli_deploy._validate_agent_import(
+        str(tmp_path), "root_agent", is_config_agent=False
+    )
+
+  def test_success_with_app_export(self, tmp_path: Path) -> None:
+    """Should succeed when app is exported."""
+    agent_file = tmp_path / "agent.py"
+    agent_file.write_text("app = 'my_app'\n")
+    (tmp_path / "__init__.py").touch()
+
+    # Should not raise
+    cli_deploy._validate_agent_import(
+        str(tmp_path), "app", is_config_agent=False
+    )
+
+  def test_success_with_relative_imports(self, tmp_path: Path) -> None:
+    """Should succeed when agent.py uses relative imports."""
+    (tmp_path / "helper.py").write_text("VALUE = 'my_agent'\n")
+    (tmp_path / "__init__.py").touch()
+    (tmp_path / "agent.py").write_text(
+        "from .helper import VALUE\n\nroot_agent = VALUE\n"
+    )
+
+    cli_deploy._validate_agent_import(
+        str(tmp_path), "root_agent", is_config_agent=False
+    )
+
+  def test_raises_on_import_error(self, tmp_path: Path) -> None:
+    """Should raise with helpful message on ImportError."""
+    agent_file = tmp_path / "agent.py"
+    agent_file.write_text("from nonexistent_module import something\n")
+    (tmp_path / "__init__.py").touch()
+
+    with pytest.raises(click.ClickException) as exc_info:
+      cli_deploy._validate_agent_import(
+          str(tmp_path), "root_agent", is_config_agent=False
+      )
+    assert "Failed to import agent module" in str(exc_info.value)
+    assert "nonexistent_module" in str(exc_info.value)
+
+  def test_raises_on_basellm_import_error(self, tmp_path: Path) -> None:
+    """Should provide specific guidance for BaseLlm import errors."""
+    agent_file = tmp_path / "agent.py"
+    agent_file.write_text(
+        "from google.adk.models.base_llm import NonexistentBaseLlm\n"
+    )
+    (tmp_path / "__init__.py").touch()
+
+    with pytest.raises(click.ClickException) as exc_info:
+      cli_deploy._validate_agent_import(
+          str(tmp_path), "root_agent", is_config_agent=False
+      )
+    assert "BaseLlm-related error" in str(exc_info.value)
+    assert "custom LLM" in str(exc_info.value)
+
+  def test_raises_on_syntax_error(self, tmp_path: Path) -> None:
+    """Should raise on syntax errors in agent.py."""
+    agent_file = tmp_path / "agent.py"
+    agent_file.write_text("def invalid syntax here:\n")
+    (tmp_path / "__init__.py").touch()
+
+    with pytest.raises(click.ClickException) as exc_info:
+      cli_deploy._validate_agent_import(
+          str(tmp_path), "root_agent", is_config_agent=False
+      )
+    assert "Error while loading agent module" in str(exc_info.value)
+
+  def test_cleans_up_sys_modules(self, tmp_path: Path) -> None:
+    """Should clean up sys.modules after validation."""
+    agent_file = tmp_path / "agent.py"
+    agent_file.write_text("root_agent = 'my_agent'\n")
+    (tmp_path / "__init__.py").touch()
+
+    module_name = tmp_path.name
+    agent_module_key = f"{module_name}.agent"
+
+    # Ensure module is not in sys.modules before
+    assert module_name not in sys.modules
+    assert agent_module_key not in sys.modules
+
+    cli_deploy._validate_agent_import(
+        str(tmp_path), "root_agent", is_config_agent=False
+    )
+
+    # Ensure module is cleaned up after
+    assert module_name not in sys.modules
+    assert agent_module_key not in sys.modules
+
+  def test_restores_sys_path(self, tmp_path: Path) -> None:
+    """Should restore sys.path after validation."""
+    agent_file = tmp_path / "agent.py"
+    agent_file.write_text("root_agent = 'my_agent'\n")
+    (tmp_path / "__init__.py").touch()
+
+    original_path = sys.path.copy()
+
+    cli_deploy._validate_agent_import(
+        str(tmp_path), "root_agent", is_config_agent=False
+    )
+
+    assert sys.path == original_path

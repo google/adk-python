@@ -25,6 +25,8 @@ import requests
 from . import client
 from .config import BigQueryToolConfig
 
+_GDA_CLIENT_ID = "GOOGLE_ADK"
+
 
 def ask_data_insights(
     project_id: str,
@@ -129,6 +131,7 @@ def ask_data_insights(
     headers = {
         "Authorization": f"Bearer {credentials.token}",
         "Content-Type": "application/json",
+        "X-Goog-API-Client": _GDA_CLIENT_ID,
     }
     ca_url = f"https://geminidataanalytics.googleapis.com/v1alpha/projects/{project_id}/locations/{location}:chat"
 
@@ -149,7 +152,7 @@ def ask_data_insights(
             "systemInstruction": instructions,
             "options": {"chart": {"image": {"noImage": {}}}},
         },
-        "clientIdEnum": "GOOGLE_ADK",
+        "clientIdEnum": _GDA_CLIENT_ID,
     }
 
     resp = _get_stream(

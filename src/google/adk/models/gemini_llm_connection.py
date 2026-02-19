@@ -142,7 +142,7 @@ class GeminiLlmConnection(BaseLlmConnection):
   def __build_full_text_response(self, text: str):
     """Builds a full text response.
 
-    The text should not partial and the returned LlmResponse is not be
+    The text should not be partial and the returned LlmResponse is not
     partial.
 
     Args:

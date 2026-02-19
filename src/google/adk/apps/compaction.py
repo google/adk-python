@@ -16,12 +16,234 @@ from __future__ import annotations
 
 import logging
 
-from google.adk.apps.app import App
-from google.adk.apps.llm_event_summarizer import LlmEventSummarizer
-from google.adk.sessions.base_session_service import BaseSessionService
-from google.adk.sessions.session import Session
+from ..events.event import Event
+from ..sessions.base_session_service import BaseSessionService
+from ..sessions.session import Session
+from .app import App
+from .llm_event_summarizer import LlmEventSummarizer
 
 logger = logging.getLogger('google_adk.' + __name__)
+
+
+def _count_text_chars_in_event(event: Event) -> int:
+  """Returns the number of text characters in an event's content."""
+  total_chars = 0
+  if event.content and event.content.parts:
+    for part in event.content.parts:
+      if part.text:
+        total_chars += len(part.text)
+  return total_chars
+
+
+def _is_compaction_subsumed(
+    *,
+    start_timestamp: float,
+    end_timestamp: float,
+    event_index: int,
+    compactions: list[tuple[int, float, float, Event]],
+) -> bool:
+  """Returns True if a compaction range is fully contained by another.
+
+  If two compactions have identical ranges, the earlier event is treated as
+  subsumed by the later event.
+  """
+  for other_index, other_start, other_end, _ in compactions:
+    if other_index == event_index:
+      continue
+    if other_start <= start_timestamp and other_end >= end_timestamp:
+      if (
+          other_start < start_timestamp
+          or other_end > end_timestamp
+          or other_index > event_index
+      ):
+        return True
+  return False
+
+
+def _estimate_prompt_token_count(events: list[Event]) -> int | None:
+  """Returns an approximate prompt token count from session events.
+
+  This estimate is compaction-aware: it counts compaction summaries and only
+  counts raw events that would remain visible after applying compaction ranges.
+  """
+  compactions: list[tuple[int, float, float, Event]] = []
+  for i, event in enumerate(events):
+    if not (event.actions and event.actions.compaction):
+      continue
+    compaction = event.actions.compaction
+    if (
+        compaction.start_timestamp is None
+        or compaction.end_timestamp is None
+        or compaction.compacted_content is None
+    ):
+      continue
+    compactions.append((
+        i,
+        compaction.start_timestamp,
+        compaction.end_timestamp,
+        Event(
+            timestamp=compaction.end_timestamp,
+            author='model',
+            content=compaction.compacted_content,
+            branch=event.branch,
+            invocation_id=event.invocation_id,
+            actions=event.actions,
+        ),
+    ))
+
+  effective_compactions = [
+      (i, start, end, summary_event)
+      for i, start, end, summary_event in compactions
+      if not _is_compaction_subsumed(
+          start_timestamp=start,
+          end_timestamp=end,
+          event_index=i,
+          compactions=compactions,
+      )
+  ]
+  compaction_ranges = [
+      (start, end) for _, start, end, _ in effective_compactions
+  ]
+
+  def _is_timestamp_compacted(ts: float) -> bool:
+    for start_ts, end_ts in compaction_ranges:
+      if start_ts <= ts <= end_ts:
+        return True
+    return False
+
+  total_chars = 0
+  for _, _, _, summary_event in effective_compactions:
+    total_chars += _count_text_chars_in_event(summary_event)
+
+  for event in events:
+    if event.actions and event.actions.compaction:
+      continue
+    if _is_timestamp_compacted(event.timestamp):
+      continue
+    total_chars += _count_text_chars_in_event(event)
+
+  if total_chars <= 0:
+    return None
+
+  # Rough estimate: 4 characters per token.
+  return total_chars // 4
+
+
+def _latest_prompt_token_count(events: list[Event]) -> int | None:
+  """Returns the most recently observed prompt token count, if available."""
+  for event in reversed(events):
+    if (
+        event.usage_metadata
+        and event.usage_metadata.prompt_token_count is not None
+    ):
+      return event.usage_metadata.prompt_token_count
+  return _estimate_prompt_token_count(events)
+
+
+def _latest_compaction_event(events: list[Event]) -> Event | None:
+  """Returns the compaction event with the greatest covered end timestamp."""
+  latest_event = None
+  latest_end = 0.0
+  for event in events:
+    if (
+        event.actions
+        and event.actions.compaction
+        and event.actions.compaction.end_timestamp is not None
+    ):
+      end_ts = event.actions.compaction.end_timestamp
+      if end_ts is not None and end_ts >= latest_end:
+        latest_end = end_ts
+        latest_event = event
+  return latest_event
+
+
+def _latest_compaction_end_timestamp(events: list[Event]) -> float:
+  """Returns the end timestamp of the most recent compaction event."""
+  latest_event = _latest_compaction_event(events)
+  if not latest_event or not latest_event.actions.compaction:
+    return 0.0
+  if latest_event.actions.compaction.end_timestamp is None:
+    return 0.0
+  return latest_event.actions.compaction.end_timestamp
+
+
+async def _run_compaction_for_token_threshold(
+    app: App, session: Session, session_service: BaseSessionService
+):
+  """Runs post-invocation compaction based on a token threshold.
+
+  If triggered, this compacts older raw events and keeps the last
+  `event_retention_size` raw events un-compacted.
+  """
+  config = app.events_compaction_config
+  if not config:
+    return False
+  if config.token_threshold is None or config.event_retention_size is None:
+    return False
+
+  prompt_token_count = _latest_prompt_token_count(session.events)
+  if prompt_token_count is None or prompt_token_count < config.token_threshold:
+    return False
+
+  latest_compaction_event = _latest_compaction_event(session.events)
+  last_compacted_end_timestamp = 0.0
+  if (
+      latest_compaction_event
+      and latest_compaction_event.actions
+      and latest_compaction_event.actions.compaction
+      and latest_compaction_event.actions.compaction.end_timestamp is not None
+  ):
+    last_compacted_end_timestamp = (
+        latest_compaction_event.actions.compaction.end_timestamp
+    )
+  candidate_events = [
+      e
+      for e in session.events
+      if not (e.actions and e.actions.compaction)
+      and e.timestamp > last_compacted_end_timestamp
+  ]
+
+  if len(candidate_events) <= config.event_retention_size:
+    return False
+
+  if config.event_retention_size == 0:
+    events_to_compact = candidate_events
+  else:
+    events_to_compact = candidate_events[: -config.event_retention_size]
+  if not events_to_compact:
+    return False
+
+  # Rolling summary: if a previous compaction exists, seed the next summary with
+  # the previous compaction summary content so new compactions can subsume older
+  # ones while still keeping `event_retention_size` raw events visible.
+  if (
+      latest_compaction_event
+      and latest_compaction_event.actions
+      and latest_compaction_event.actions.compaction
+      and latest_compaction_event.actions.compaction.start_timestamp is not None
+      and latest_compaction_event.actions.compaction.compacted_content
+      is not None
+  ):
+    seed_event = Event(
+        timestamp=latest_compaction_event.actions.compaction.start_timestamp,
+        author='model',
+        content=latest_compaction_event.actions.compaction.compacted_content,
+        branch=latest_compaction_event.branch,
+        invocation_id=Event.new_id(),
+    )
+    events_to_compact = [seed_event] + events_to_compact
+
+  if not config.summarizer:
+    config.summarizer = LlmEventSummarizer(llm=app.root_agent.canonical_model)
+
+  compaction_event = await config.summarizer.maybe_summarize_events(
+      events=events_to_compact
+  )
+  if compaction_event:
+    await session_service.append_event(session=session, event=compaction_event)
+    logger.debug('Token-threshold event compactor finished.')
+    return True
+  return False
 
 
 async def _run_compaction_for_sliding_window(
@@ -109,6 +331,18 @@ async def _run_compaction_for_sliding_window(
   events = session.events
   if not events:
     return None
+
+  # Prefer token-threshold compaction if configured and triggered.
+  if (
+      app.events_compaction_config
+      and app.events_compaction_config.token_threshold is not None
+  ):
+    token_compacted = await _run_compaction_for_token_threshold(
+        app, session, session_service
+    )
+    if token_compacted:
+      return None
+
   # Find the last compaction event and its range.
   last_compacted_end_timestamp = 0.0
   for event in reversed(events):

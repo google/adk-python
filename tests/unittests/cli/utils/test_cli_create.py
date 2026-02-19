@@ -14,7 +14,6 @@
 
 """Tests for utilities in cli_create."""
 
-
 from __future__ import annotations
 
 import os
