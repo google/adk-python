@@ -388,7 +388,9 @@ async def test_append_new_message_to_session_state_delta_deduping():
       app_name="test_app",
       user_id="test_user",
   )
-  user_message = types.Content(role="user", parts=[types.Part(text="same message")])
+  user_message = types.Content(
+      role="user", parts=[types.Part(text="same message")]
+  )
   invocation_context = runner._new_invocation_context(
       session,
       invocation_id="inv-state-delta",
