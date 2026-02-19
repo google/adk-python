@@ -18,6 +18,7 @@ from google.adk.utils.model_name_utils import extract_model_name
 from google.adk.utils.model_name_utils import is_gemini_1_model
 from google.adk.utils.model_name_utils import is_gemini_2_or_above
 from google.adk.utils.model_name_utils import is_gemini_model
+from google.adk.utils.model_name_utils import is_gemini_model_id_check_disabled
 
 
 class TestExtractModelName:
@@ -318,3 +319,15 @@ class TestModelNameUtilsIntegration:
           f'Inconsistent Gemini 2.0+ classification for {simple_model} vs'
           f' {path_model}'
       )
+
+
+class TestGeminiModelIdCheckFlag:
+  """Tests for Gemini model-id check override flag."""
+
+  def test_default_is_disabled(self, monkeypatch):
+    monkeypatch.delenv('ADK_DISABLE_GEMINI_MODEL_ID_CHECK', raising=False)
+    assert is_gemini_model_id_check_disabled() is False
+
+  def test_true_enables_check_bypass(self, monkeypatch):
+    monkeypatch.setenv('ADK_DISABLE_GEMINI_MODEL_ID_CHECK', 'true')
+    assert is_gemini_model_id_check_disabled() is True
