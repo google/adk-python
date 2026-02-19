@@ -557,8 +557,9 @@ def _get_current_turn_contents(
   # Find the latest event that starts the current turn and process from there
   for i in range(len(events) - 1, -1, -1):
     event = events[i]
-    if (_should_include_event_in_context(current_branch, event)
-        and (event.author == "user" or _is_other_agent_reply(agent_name, event))
+    if (
+        _should_include_event_in_context(current_branch, event)
+        and (event.author == 'user' or _is_other_agent_reply(agent_name, event))
         and not _is_direct_transfer(event)
     ):
       return _get_contents(
@@ -571,19 +572,19 @@ def _get_current_turn_contents(
   return []
 
 
-def _is_direct_transfer(event : Event) -> bool:
-  "Check whether the event is a direct transfer event."
-  
+def _is_direct_transfer(event: Event) -> bool:
+  'Check whether the event is a direct transfer event.'
+
   return bool(
-    event.actions.transfer_to_agent
-    or (
-      event.content
-      and event.content.parts
-      and any(
-          p.function_call and p.function_call.name == 'transfer_to_agent'
-          for p in event.content.parts
+      event.actions.transfer_to_agent
+      or (
+          event.content
+          and event.content.parts
+          and any(
+              p.function_call and p.function_call.name == 'transfer_to_agent'
+              for p in event.content.parts
+          )
       )
-    )
   )
 
 
