@@ -65,6 +65,11 @@ _CREATE_MEMORY_CONFIG_FALLBACK_KEYS = frozenset({
     'wait_for_completion',
 })
 
+_ENABLE_CONSOLIDATION_KEY = 'enable_consolidation'
+# Vertex docs for GenerateMemoriesRequest.DirectMemoriesSource allow
+# at most 5 direct_memories per request.
+_MAX_DIRECT_MEMORIES_PER_GENERATE_CALL = 5
+
 
 def _supports_generate_memories_metadata() -> bool:
   """Returns whether installed Vertex SDK supports config.metadata."""
@@ -160,6 +165,11 @@ class VertexAiMemoryBankService(BaseMemoryService):
         not use Google AI Studio API key for this field. For more details, visit
         https://cloud.google.com/vertex-ai/generative-ai/docs/start/express-mode/overview
     """
+    if not agent_engine_id:
+      raise ValueError(
+          'agent_engine_id is required for VertexAiMemoryBankService.'
+      )
+
     self._project = project
     self._location = location
     self._agent_engine_id = agent_engine_id
@@ -219,7 +229,22 @@ class VertexAiMemoryBankService(BaseMemoryService):
       memories: Sequence[MemoryEntry],
       custom_metadata: Mapping[str, object] | None = None,
   ) -> None:
-    """Adds explicit memory items via Vertex memories.create."""
+    """Adds explicit memory items using Vertex Memory Bank.
+
+    By default, this writes directly via `memories.create`.
+    If `custom_metadata["enable_consolidation"]` is set to True, this uses
+    `memories.generate` with `direct_memories_source` so provided memories are
+    consolidated server-side.
+    """
+    if _is_consolidation_enabled(custom_metadata):
+      await self._add_memories_via_generate_direct_memories_source(
+          app_name=app_name,
+          user_id=user_id,
+          memories=memories,
+          custom_metadata=custom_metadata,
+      )
+      return
+
     await self._add_memories_via_create(
         app_name=app_name,
         user_id=user_id,
@@ -235,9 +260,6 @@ class VertexAiMemoryBankService(BaseMemoryService):
       events_to_process: Sequence[Event],
       custom_metadata: Mapping[str, object] | None = None,
   ) -> None:
-    if not self._agent_engine_id:
-      raise ValueError('Agent Engine ID is required for Memory Bank.')
-
     direct_events = []
     for event in events_to_process:
       if _should_filter_out_event(event.content):
@@ -272,9 +294,6 @@ class VertexAiMemoryBankService(BaseMemoryService):
       custom_metadata: Mapping[str, object] | None = None,
   ) -> None:
     """Adds direct memory items without server-side extraction."""
-    if not self._agent_engine_id:
-      raise ValueError('Agent Engine ID is required for Memory Bank.')
-
     normalized_memories = _normalize_memories_for_create(memories)
     api_client = self._get_api_client()
     for index, memory in enumerate(normalized_memories):
@@ -300,11 +319,41 @@ class VertexAiMemoryBankService(BaseMemoryService):
       logger.info('Create memory response received.')
       logger.debug('Create memory response: %s', operation)
 
+  async def _add_memories_via_generate_direct_memories_source(
+      self,
+      *,
+      app_name: str,
+      user_id: str,
+      memories: Sequence[MemoryEntry],
+      custom_metadata: Mapping[str, object] | None = None,
+  ) -> None:
+    """Adds memories via generate API with direct_memories_source."""
+    normalized_memories = _normalize_memories_for_create(memories)
+    memory_texts = [
+        _memory_entry_to_fact(m, index=i)
+        for i, m in enumerate(normalized_memories)
+    ]
+    api_client = self._get_api_client()
+    config = _build_generate_memories_config(custom_metadata)
+    for memory_batch in _iter_memory_batches(memory_texts):
+      operation = await api_client.agent_engines.memories.generate(
+          name='reasoningEngines/' + self._agent_engine_id,
+          direct_memories_source={
+              'direct_memories': [
+                  {'fact': memory_text} for memory_text in memory_batch
+              ]
+          },
+          scope={
+              'app_name': app_name,
+              'user_id': user_id,
+          },
+          config=config,
+      )
+      logger.info('Generate direct memory response received.')
+      logger.debug('Generate direct memory response: %s', operation)
+
   @override
   async def search_memory(self, *, app_name: str, user_id: str, query: str):
-    if not self._agent_engine_id:
-      raise ValueError('Agent Engine ID is required for Memory Bank.')
-
     api_client = self._get_api_client()
     retrieved_memories_iterator = (
         await api_client.agent_engines.memories.retrieve(
@@ -379,6 +428,8 @@ def _build_generate_memories_config(
 
   metadata_by_key: dict[str, object] = {}
   for key, value in custom_metadata.items():
+    if key == _ENABLE_CONSOLIDATION_KEY:
+      continue
     if key == 'ttl':
       if value is None:
         continue
@@ -456,6 +507,8 @@ def _build_create_memory_config(
   metadata_by_key: dict[str, object] = {}
   custom_revision_labels: dict[str, str] = {}
   for key, value in (custom_metadata or {}).items():
+    if key == _ENABLE_CONSOLIDATION_KEY:
+      continue
     if key == 'metadata':
       if value is None:
         continue
@@ -639,6 +692,32 @@ def _extract_revision_labels(
   if not revision_labels:
     return None
   return revision_labels
+
+
+def _is_consolidation_enabled(
+    custom_metadata: Mapping[str, object] | None,
+) -> bool:
+  """Returns whether direct memories should be consolidated via generate API."""
+  if not custom_metadata:
+    return False
+  enable_consolidation = custom_metadata.get(_ENABLE_CONSOLIDATION_KEY)
+  if enable_consolidation is None:
+    return False
+  if not isinstance(enable_consolidation, bool):
+    raise TypeError(
+        f'custom_metadata["{_ENABLE_CONSOLIDATION_KEY}"] must be a bool.'
+    )
+  return enable_consolidation
+
+
+def _iter_memory_batches(memories: Sequence[str]) -> Sequence[Sequence[str]]:
+  """Returns memory slices that comply with direct_memories limits."""
+  memory_batches: list[Sequence[str]] = []
+  for index in range(0, len(memories), _MAX_DIRECT_MEMORIES_PER_GENERATE_CALL):
+    memory_batches.append(
+        memories[index : index + _MAX_DIRECT_MEMORIES_PER_GENERATE_CALL]
+    )
+  return memory_batches
 
 
 def _build_vertex_metadata(
