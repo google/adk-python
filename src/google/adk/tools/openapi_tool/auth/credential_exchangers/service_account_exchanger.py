@@ -86,6 +86,14 @@ class ServiceAccountCredentialExchanger(BaseAuthCredentialExchanger):
         if config.use_default_credential:
           token = google_id_token.fetch_id_token(request, audience)
         else:
+          if (
+              config.service_account_credential is None
+          ):  # redundant check to compensate for mypy narrowing issues...
+            raise AuthCredentialMissingError(
+                "service_account_credential is required when"
+                " use_default_credential is False"
+            )
+
           id_creds = (
               service_account.IDTokenCredentials.from_service_account_info(
                   config.service_account_credential.model_dump(),
@@ -103,6 +111,14 @@ class ServiceAccountCredentialExchanger(BaseAuthCredentialExchanger):
               getattr(credentials, "quota_project_id", None) or project_id
           )
         else:
+          if (
+              config.service_account_credential is None
+          ):  # redundant check to compensate for mypy narrowing issues...
+            raise AuthCredentialMissingError(
+                "service_account_credential is required when"
+                " use_default_credential is False"
+            )
+
           credentials = service_account.Credentials.from_service_account_info(
               config.service_account_credential.model_dump(),
               scopes=config.scopes,

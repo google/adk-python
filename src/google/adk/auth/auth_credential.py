@@ -154,19 +154,6 @@ class ServiceAccount(BaseModelWithConfig):
   token_kind: Literal["access_token", "id_token"] = "access_token"
   audience: Optional[str] = None
 
-  @model_validator(mode="before")
-  @classmethod
-  def _validate_before(cls, data: Any) -> Any:
-    if isinstance(data, dict):
-      token_kind = data.get("token_kind", "access_token")
-      audience = data.get("audience")
-      if token_kind == "id_token" and not audience:
-        raise ValueError(
-            "service_account.audience is required when"
-            " service_account.token_kind='id_token'"
-        )
-    return data
-
 
 class AuthCredentialTypes(str, Enum):
   """Represents the type of authentication credential."""
