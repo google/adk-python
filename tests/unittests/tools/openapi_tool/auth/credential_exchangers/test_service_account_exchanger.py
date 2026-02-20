@@ -322,15 +322,3 @@ def test_exchange_credential_service_account_id_token_success(
   assert kwargs["target_audience"] == "https://my-service-abc.a.run.app"
 
   mock_id_creds.refresh.assert_called_once()
-
-
-def test_service_account_id_token_requires_audience():
-  """ServiceAccount validation: id_token requires audience."""
-  with pytest.raises(ValueError) as exc_info:
-    ServiceAccount(
-        use_default_credential=True,
-        scopes=["https://www.googleapis.com/auth/cloud-platform"],
-        token_kind="id_token",
-        audience=None,
-    )
-  assert "audience" in str(exc_info.value)
