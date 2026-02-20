@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 import inspect
 import logging
@@ -589,24 +590,27 @@ class LlmAgent(BaseAgent):
       return global_instruction, True
 
   async def canonical_tools(
-      self, ctx: ReadonlyContext = None
+      self, ctx: Optional[ReadonlyContext] = None
   ) -> list[BaseTool]:
     """The resolved self.tools field as a list of BaseTool based on the context.
 
     This method is only for use by Agent Development Kit.
     """
-    resolved_tools = []
     # We may need to wrap some built-in tools if there are other tools
     # because the built-in tools cannot be used together with other tools.
     # TODO(b/448114567): Remove once the workaround is no longer needed.
     multiple_tools = len(self.tools) > 1
     model = self.canonical_model
-    for tool_union in self.tools:
-      resolved_tools.extend(
-          await _convert_tool_union_to_tools(
-              tool_union, ctx, model, multiple_tools
-          )
-      )
+
+    results = await asyncio.gather(*(
+        _convert_tool_union_to_tools(tool_union, ctx, model, multiple_tools)
+        for tool_union in self.tools
+    ))
+
+    resolved_tools = []
+    for tools in results:
+      resolved_tools.extend(tools)
+
     return resolved_tools
 
   @property
