@@ -1494,7 +1494,7 @@ def cli_api_server(
     "cloud_run",
     context_settings={
         "allow_extra_args": True,
-        "allow_interspersed_args": False,
+        "allow_interspersed_args": True,
     },
 )
 @click.option(
