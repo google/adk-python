@@ -45,6 +45,7 @@ from google.adk.models.lite_llm import _to_litellm_role
 from google.adk.models.lite_llm import FunctionChunk
 from google.adk.models.lite_llm import LiteLlm
 from google.adk.models.lite_llm import LiteLLMClient
+from google.adk.models.lite_llm import ReasoningChunk
 from google.adk.models.lite_llm import TextChunk
 from google.adk.models.lite_llm import UsageMetadataChunk
 from google.adk.models.llm_request import LlmRequest
@@ -57,6 +58,7 @@ from litellm.types.utils import ChatCompletionDeltaToolCall
 from litellm.types.utils import Choices
 from litellm.types.utils import Delta
 from litellm.types.utils import ModelResponse
+from litellm.types.utils import ModelResponseStream
 from litellm.types.utils import StreamingChoices
 from pydantic import BaseModel
 from pydantic import Field
@@ -129,7 +131,7 @@ FILE_BYTES_TEST_CASES = [
 ]
 
 STREAMING_MODEL_RESPONSE = [
-    ModelResponse(
+    ModelResponseStream(
         model="test_model",
         choices=[
             StreamingChoices(
@@ -141,7 +143,7 @@ STREAMING_MODEL_RESPONSE = [
             )
         ],
     ),
-    ModelResponse(
+    ModelResponseStream(
         model="test_model",
         choices=[
             StreamingChoices(
@@ -153,7 +155,7 @@ STREAMING_MODEL_RESPONSE = [
             )
         ],
     ),
-    ModelResponse(
+    ModelResponseStream(
         model="test_model",
         choices=[
             StreamingChoices(
@@ -165,7 +167,7 @@ STREAMING_MODEL_RESPONSE = [
             )
         ],
     ),
-    ModelResponse(
+    ModelResponseStream(
         model="test_model",
         choices=[
             StreamingChoices(
@@ -187,7 +189,7 @@ STREAMING_MODEL_RESPONSE = [
             )
         ],
     ),
-    ModelResponse(
+    ModelResponseStream(
         model="test_model",
         choices=[
             StreamingChoices(
@@ -209,7 +211,7 @@ STREAMING_MODEL_RESPONSE = [
             )
         ],
     ),
-    ModelResponse(
+    ModelResponseStream(
         model="test_model",
         choices=[
             StreamingChoices(
@@ -532,7 +534,7 @@ def test_schema_to_dict_filters_none_enum_values():
 
 
 MULTIPLE_FUNCTION_CALLS_STREAM = [
-    ModelResponse(
+    ModelResponseStream(
         choices=[
             StreamingChoices(
                 finish_reason=None,
@@ -553,7 +555,7 @@ MULTIPLE_FUNCTION_CALLS_STREAM = [
             )
         ]
     ),
-    ModelResponse(
+    ModelResponseStream(
         choices=[
             StreamingChoices(
                 finish_reason=None,
@@ -574,7 +576,7 @@ MULTIPLE_FUNCTION_CALLS_STREAM = [
             )
         ]
     ),
-    ModelResponse(
+    ModelResponseStream(
         choices=[
             StreamingChoices(
                 finish_reason=None,
@@ -595,7 +597,7 @@ MULTIPLE_FUNCTION_CALLS_STREAM = [
             )
         ]
     ),
-    ModelResponse(
+    ModelResponseStream(
         choices=[
             StreamingChoices(
                 finish_reason=None,
@@ -616,7 +618,7 @@ MULTIPLE_FUNCTION_CALLS_STREAM = [
             )
         ]
     ),
-    ModelResponse(
+    ModelResponseStream(
         choices=[
             StreamingChoices(
                 finish_reason="tool_calls",
@@ -627,7 +629,7 @@ MULTIPLE_FUNCTION_CALLS_STREAM = [
 
 
 STREAM_WITH_EMPTY_CHUNK = [
-    ModelResponse(
+    ModelResponseStream(
         choices=[
             StreamingChoices(
                 finish_reason=None,
@@ -648,7 +650,7 @@ STREAM_WITH_EMPTY_CHUNK = [
             )
         ]
     ),
-    ModelResponse(
+    ModelResponseStream(
         choices=[
             StreamingChoices(
                 finish_reason=None,
@@ -670,7 +672,7 @@ STREAM_WITH_EMPTY_CHUNK = [
         ]
     ),
     # This is the problematic empty chunk that should be ignored.
-    ModelResponse(
+    ModelResponseStream(
         choices=[
             StreamingChoices(
                 finish_reason=None,
@@ -691,7 +693,7 @@ STREAM_WITH_EMPTY_CHUNK = [
             )
         ]
     ),
-    ModelResponse(
+    ModelResponseStream(
         choices=[StreamingChoices(finish_reason="tool_calls", delta=Delta())]
     ),
 ]
@@ -727,7 +729,7 @@ def mock_response():
 # indices all 0
 # finish_reason stop instead of tool_calls
 NON_COMPLIANT_MULTIPLE_FUNCTION_CALLS_STREAM = [
-    ModelResponse(
+    ModelResponseStream(
         choices=[
             StreamingChoices(
                 finish_reason=None,
@@ -748,7 +750,7 @@ NON_COMPLIANT_MULTIPLE_FUNCTION_CALLS_STREAM = [
             )
         ]
     ),
-    ModelResponse(
+    ModelResponseStream(
         choices=[
             StreamingChoices(
                 finish_reason=None,
@@ -769,7 +771,7 @@ NON_COMPLIANT_MULTIPLE_FUNCTION_CALLS_STREAM = [
             )
         ]
     ),
-    ModelResponse(
+    ModelResponseStream(
         choices=[
             StreamingChoices(
                 finish_reason=None,
@@ -790,7 +792,7 @@ NON_COMPLIANT_MULTIPLE_FUNCTION_CALLS_STREAM = [
             )
         ]
     ),
-    ModelResponse(
+    ModelResponseStream(
         choices=[
             StreamingChoices(
                 finish_reason=None,
@@ -811,7 +813,7 @@ NON_COMPLIANT_MULTIPLE_FUNCTION_CALLS_STREAM = [
             )
         ]
     ),
-    ModelResponse(
+    ModelResponseStream(
         choices=[
             StreamingChoices(
                 finish_reason="stop",
@@ -2707,7 +2709,7 @@ def test_to_litellm_role():
             "stop",
         ),
         (
-            ModelResponse(
+            ModelResponseStream(
                 choices=[
                     StreamingChoices(
                         finish_reason=None,
@@ -2729,10 +2731,10 @@ def test_to_litellm_role():
                 ]
             ),
             [FunctionChunk(id="1", name="test_function", args='{"key": "va')],
-            UsageMetadataChunk(
-                prompt_tokens=0, completion_tokens=0, total_tokens=0
-            ),
             None,
+            # LiteLLM 1.81+ defaults finish_reason to "stop" for partial chunks,
+            # older versions return None. Both are valid for streaming chunks.
+            (None, "stop"),
         ),
         (
             ModelResponse(choices=[{"finish_reason": "tool_calls"}]),
@@ -2813,6 +2815,38 @@ def test_to_litellm_role():
             ),
             "tool_calls",
         ),
+        (
+            ModelResponseStream(
+                choices=[
+                    StreamingChoices(
+                        finish_reason=None,
+                        delta=Delta(role="assistant", content="Hello"),
+                    )
+                ]
+            ),
+            [TextChunk(text="Hello")],
+            None,
+            (None, "stop"),
+        ),
+        (
+            ModelResponseStream(
+                choices=[
+                    StreamingChoices(
+                        finish_reason="stop",
+                        delta=Delta(
+                            role="assistant", reasoning_content="thinking..."
+                        ),
+                    )
+                ]
+            ),
+            [
+                ReasoningChunk(
+                    parts=[types.Part(text="thinking...", thought=True)]
+                )
+            ],
+            None,
+            "stop",
+        ),
     ],
 )
 def test_model_response_to_chunk(
@@ -2836,13 +2870,48 @@ def test_model_response_to_chunk(
     else:
       assert isinstance(chunk, type(expected_chunk))
       assert chunk == expected_chunk
-    assert finished == expected_finished
+    if isinstance(expected_finished, tuple):
+      assert finished in expected_finished
+    else:
+      assert finished == expected_finished
 
   if expected_usage_chunk is None:
     assert usage_chunk is None
   else:
     assert usage_chunk is not None
     assert usage_chunk == expected_usage_chunk
+
+
+def test_model_response_to_chunk_does_not_mutate_delta_object():
+  """Verify that _model_response_to_chunk doesn't mutate the Delta object.
+
+  In real streaming responses, LiteLLM's StreamingChoices only has 'delta'
+  (message is explicitly popped in StreamingChoices constructor). The delta
+  object itself carries reasoning_content when present.
+  """
+  delta = Delta(
+      role="assistant", content="Hello", reasoning_content="thinking..."
+  )
+  response = ModelResponseStream(
+      choices=[StreamingChoices(delta=delta, finish_reason=None)]
+  )
+
+  chunks = [chunk for chunk, _ in _model_response_to_chunk(response) if chunk]
+
+  assert (
+      ReasoningChunk(parts=[types.Part(text="thinking...", thought=True)])
+      in chunks
+  )
+  assert TextChunk(text="Hello") in chunks
+
+  # Verify we don't accidentally mutate the original delta object.
+  assert delta.content == "Hello"
+  assert delta.reasoning_content == "thinking..."
+
+
+def test_model_response_to_chunk_rejects_dict_response():
+  with pytest.raises(TypeError):
+    list(_model_response_to_chunk({"choices": []}))
 
 
 @pytest.mark.asyncio
@@ -3056,7 +3125,7 @@ async def test_generate_content_async_stream_sets_finish_reason(
     mock_completion, lite_llm_instance
 ):
   mock_completion.return_value = iter([
-      ModelResponse(
+      ModelResponseStream(
           model="test_model",
           choices=[
               StreamingChoices(
@@ -3065,7 +3134,7 @@ async def test_generate_content_async_stream_sets_finish_reason(
               )
           ],
       ),
-      ModelResponse(
+      ModelResponseStream(
           model="test_model",
           choices=[
               StreamingChoices(
@@ -3074,7 +3143,7 @@ async def test_generate_content_async_stream_sets_finish_reason(
               )
           ],
       ),
-      ModelResponse(
+      ModelResponseStream(
           model="test_model",
           choices=[StreamingChoices(finish_reason="stop", delta=Delta())],
       ),
@@ -3107,7 +3176,7 @@ async def test_generate_content_async_stream_with_usage_metadata(
 
   streaming_model_response_with_usage_metadata = [
       *STREAMING_MODEL_RESPONSE,
-      ModelResponse(
+      ModelResponseStream(
           usage={
               "prompt_tokens": 10,
               "completion_tokens": 5,
@@ -3176,7 +3245,7 @@ async def test_generate_content_async_stream_with_usage_metadata(
   """Tests that cached prompt tokens are propagated in streaming mode."""
   streaming_model_response_with_usage_metadata = [
       *STREAMING_MODEL_RESPONSE,
-      ModelResponse(
+      ModelResponseStream(
           usage={
               "prompt_tokens": 10,
               "completion_tokens": 5,
@@ -3657,7 +3726,7 @@ async def test_finish_reason_propagation(
 async def test_finish_reason_unknown_maps_to_other(
     mock_acompletion, lite_llm_instance
 ):
-  """Test that unknown finish_reason values map to FinishReason.OTHER."""
+  """Test that unmapped finish_reason values map to FinishReason.OTHER."""
   mock_response = ModelResponse(
       choices=[
           Choices(
@@ -3665,7 +3734,9 @@ async def test_finish_reason_unknown_maps_to_other(
                   role="assistant",
                   content="Test response",
               ),
-              finish_reason="unknown_reason_type",
+              # LiteLLM validates finish_reason to a known set. Use a value that
+              # LiteLLM accepts but ADK does not explicitly map.
+              finish_reason="eos",
           )
       ]
   )
