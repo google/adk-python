@@ -230,11 +230,6 @@ def test_exchange_credential_use_default_credential_id_token_success(
 
   mock_fetch_id_token = MagicMock(return_value="mock_id_token")
   monkeypatch.setattr(
-      google.oauth2.id_token,
-      "fetch_id_token",
-      mock_fetch_id_token,
-  )
-  monkeypatch.setattr(
       "google.adk.tools.openapi_tool.auth.credential_exchangers.service_account_exchanger.google_id_token.fetch_id_token",
       mock_fetch_id_token,
   )
