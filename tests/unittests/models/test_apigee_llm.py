@@ -19,6 +19,7 @@ from unittest import mock
 from unittest.mock import AsyncMock
 
 from google.adk.models.apigee_llm import ApigeeLlm
+from google.adk.models.apigee_llm import CompletionsHTTPClient
 from google.adk.models.llm_request import LlmRequest
 from google.genai import types
 from google.genai.types import Content
@@ -441,7 +442,6 @@ async def test_model_string_parsing_and_client_initialization(
 @pytest.mark.parametrize(
     'invalid_model_string',
     [
-        'apigee/openai/v1/gpt',
         'apigee/',  # Missing model_id
         'apigee',  # Invalid format
         'gemini-pro',  # Invalid format
@@ -455,3 +455,175 @@ async def test_invalid_model_strings_raise_value_error(invalid_model_string):
       ValueError, match=f'Invalid model string: {invalid_model_string}'
   ):
     ApigeeLlm(model=invalid_model_string, proxy_url=PROXY_URL)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'model',
+    [
+        'apigee/openai/gpt-4o',
+        'apigee/openai/v1/gpt-4o',
+        'apigee/openai/v1/gpt-3.5-turbo',
+    ],
+)
+async def test_validate_model_for_chat_completion_providers(model):
+  """Tests that new providers like OpenAI are accepted."""
+  # Should not raise ValueError
+  ApigeeLlm(model=model, proxy_url=PROXY_URL)
+
+
+@pytest.mark.parametrize(
+    ('model', 'api_type', 'expected_api_type'),
+    [
+        # Default case (input defaults to UNKNOWN)
+        (
+            'apigee/openai/gpt-4o',
+            ApigeeLlm.ApiType.UNKNOWN,
+            ApigeeLlm.ApiType.CHAT_COMPLETIONS,
+        ),
+        (
+            'apigee/openai/v1/gpt-3.5-turbo',
+            ApigeeLlm.ApiType.UNKNOWN,
+            ApigeeLlm.ApiType.CHAT_COMPLETIONS,
+        ),
+        (
+            'apigee/gemini/v1/gemini-pro',
+            ApigeeLlm.ApiType.UNKNOWN,
+            ApigeeLlm.ApiType.GENAI,
+        ),
+        (
+            'apigee/vertex_ai/gemini-pro',
+            ApigeeLlm.ApiType.UNKNOWN,
+            ApigeeLlm.ApiType.GENAI,
+        ),
+        (
+            'apigee/vertex_ai/v1beta/gemini-1.5-pro',
+            ApigeeLlm.ApiType.UNKNOWN,
+            ApigeeLlm.ApiType.GENAI,
+        ),
+        # Override by setting the ApiType
+        (
+            'apigee/gemini/pro',
+            ApigeeLlm.ApiType.CHAT_COMPLETIONS,
+            ApigeeLlm.ApiType.CHAT_COMPLETIONS,
+        ),
+        (
+            'apigee/gemini/pro',
+            ApigeeLlm.ApiType.GENAI,
+            ApigeeLlm.ApiType.GENAI,
+        ),
+        (
+            'apigee/openai/gpt-4o',
+            ApigeeLlm.ApiType.CHAT_COMPLETIONS,
+            ApigeeLlm.ApiType.CHAT_COMPLETIONS,
+        ),
+        (
+            'apigee/openai/gpt-4o',
+            ApigeeLlm.ApiType.GENAI,
+            ApigeeLlm.ApiType.GENAI,
+        ),
+        # Override by setting the ApiType as a string
+        (
+            'apigee/gemini/pro',
+            'chat_completions',
+            ApigeeLlm.ApiType.CHAT_COMPLETIONS,
+        ),
+        (
+            'apigee/gemini/pro',
+            'genai',
+            ApigeeLlm.ApiType.GENAI,
+        ),
+        (
+            'apigee/openai/gpt-4o',
+            'chat_completions',
+            ApigeeLlm.ApiType.CHAT_COMPLETIONS,
+        ),
+        (
+            'apigee/openai/gpt-4o',
+            'genai',
+            ApigeeLlm.ApiType.GENAI,
+        ),
+    ],
+)
+def test_api_type_resolution(model, api_type, expected_api_type):
+  """Tests that api_type is resolved correctly."""
+  llm = ApigeeLlm(
+      model=model,
+      proxy_url=PROXY_URL,
+      api_type=api_type,
+  )
+  assert llm._api_type == expected_api_type
+
+
+@pytest.mark.parametrize(
+    ('input_value', 'expected_type'),
+    [
+        ('chat_completions', ApigeeLlm.ApiType.CHAT_COMPLETIONS),
+        ('genai', ApigeeLlm.ApiType.GENAI),
+        ('unknown', ApigeeLlm.ApiType.UNKNOWN),
+        ('', ApigeeLlm.ApiType.UNKNOWN),
+        (None, ApigeeLlm.ApiType.UNKNOWN),
+    ],
+)
+def test_apitype_creation(input_value, expected_type):
+  """Tests the creation of ApiType enum members."""
+  assert ApigeeLlm.ApiType(input_value) == expected_type
+
+
+def test_apitype_creation_invalid():
+  """Tests that invalid ApiType raises ValueError."""
+  with pytest.raises(ValueError):
+    ApigeeLlm.ApiType('invalid')
+
+
+def test_invalid_api_type_raises_error():
+  """Tests that invalid string for api_type raises ValueError."""
+  with pytest.raises(ValueError):
+    ApigeeLlm(
+        model='apigee/gemini-pro',
+        proxy_url=PROXY_URL,
+        api_type='invalid_type',
+    )
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_dispatch_to_completions_client(
+    llm_request,
+):
+  """Tests that generate_content_async uses CompletionsHTTPClient for OpenAI models."""
+  llm_request.model = 'apigee/openai/gpt-4o'
+  with (
+      mock.patch.object(
+          CompletionsHTTPClient,
+          'generate_content_async',
+      ) as mock_completions_generate_content,
+      mock.patch('google.genai.Client') as mock_genai_client,
+  ):
+    apigee_llm = ApigeeLlm(model='apigee/openai/gpt-4o', proxy_url=PROXY_URL)
+    _ = [
+        r
+        async for r in apigee_llm.generate_content_async(
+            llm_request, stream=False
+        )
+    ]
+    mock_completions_generate_content.assert_called_once()
+    mock_genai_client.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'model',
+    [
+        'apigee/openai/gpt-4o',
+        'apigee/openai/v1/gpt-3.5-turbo',
+    ],
+)
+async def test_api_key_injection_openai(model):
+  """Tests that api_key is injected for OpenAI models."""
+  apigee_llm = ApigeeLlm(
+      model=model,
+      proxy_url=PROXY_URL,
+      custom_headers={'Authorization': 'Bearer sk-test-key'},
+  )
+  client = apigee_llm._completions_http_client
+  assert client._headers['Authorization'] == 'Bearer sk-test-key'
