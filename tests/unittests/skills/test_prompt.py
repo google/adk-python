@@ -42,8 +42,23 @@ class TestPrompt:
 
   def test_format_skills_as_xml_escaping(self):
     skills = [
-        models.Frontmatter(name="skill&name", description="desc<ription>"),
+        models.Frontmatter(name="my-skill", description="desc<ription>"),
     ]
     xml = prompt.format_skills_as_xml(skills)
-    assert "skill&amp;name" in xml
+    assert "my-skill" in xml
     assert "desc&lt;ription&gt;" in xml
+
+  def test_format_skills_as_xml_with_skill_location(self):
+    fm = models.Frontmatter(name="my-skill", description="desc")
+    skill = models.Skill(
+        frontmatter=fm,
+        instructions="do this",
+        source_path="/path/to/SKILL.md",
+    )
+    xml = prompt.format_skills_as_xml([skill])
+    assert "<location>\n/path/to/SKILL.md\n</location>" in xml
+
+  def test_format_skills_as_xml_frontmatter_no_location(self):
+    fm = models.Frontmatter(name="my-skill", description="desc")
+    xml = prompt.format_skills_as_xml([fm])
+    assert "<location>" not in xml

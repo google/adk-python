@@ -19,6 +19,8 @@ from .models import Resources
 from .models import Script
 from .models import Skill
 from .utils import load_skill_from_dir
+from .utils import read_skill_properties
+from .utils import validate_skill_dir
 
 __all__ = [
     "Frontmatter",
@@ -26,4 +28,6 @@ __all__ = [
     "Script",
     "Skill",
     "load_skill_from_dir",
+    "read_skill_properties",
+    "validate_skill_dir",
 ]

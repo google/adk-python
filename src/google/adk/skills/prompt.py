@@ -18,19 +18,22 @@ from __future__ import annotations
 
 import html
 from typing import List
+from typing import Union
 
 from . import models
 
 
-def format_skills_as_xml(skills: List[models.Frontmatter]) -> str:
+def format_skills_as_xml(
+    skills: List[Union[models.Frontmatter, models.Skill]],
+) -> str:
   """Formats available skills into a standard XML string.
 
   Args:
-    skills: A list of skill frontmatter objects.
+    skills: A list of skill frontmatter or full skill objects.
 
   Returns:
       XML string with <available_skills> block containing each skill's
-      name and description.
+      name, description, and optionally source location.
   """
 
   if not skills:
@@ -38,14 +41,22 @@ def format_skills_as_xml(skills: List[models.Frontmatter]) -> str:
 
   lines = ["<available_skills>"]
 
-  for skill in skills:
+  for item in skills:
+    source_path = None
+    if isinstance(item, models.Skill):
+      source_path = item.source_path
+
     lines.append("<skill>")
     lines.append("<name>")
-    lines.append(html.escape(skill.name))
+    lines.append(html.escape(item.name))
     lines.append("</name>")
     lines.append("<description>")
-    lines.append(html.escape(skill.description))
+    lines.append(html.escape(item.description))
     lines.append("</description>")
+    if source_path is not None:
+      lines.append("<location>")
+      lines.append(html.escape(source_path))
+      lines.append("</location>")
     lines.append("</skill>")
 
   lines.append("</available_skills>")

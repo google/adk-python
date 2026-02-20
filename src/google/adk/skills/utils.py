@@ -23,6 +23,15 @@ import yaml
 
 from . import models
 
+_ALLOWED_FRONTMATTER_KEYS = frozenset({
+    "name",
+    "description",
+    "license",
+    "allowed-tools",
+    "metadata",
+    "compatibility",
+})
+
 
 def _load_dir(directory: pathlib.Path) -> dict[str, str]:
   """Recursively load files from a directory into a dictionary.
@@ -48,21 +57,21 @@ def _load_dir(directory: pathlib.Path) -> dict[str, str]:
   return files
 
 
-def load_skill_from_dir(skill_dir: Union[str, pathlib.Path]) -> models.Skill:
-  """Load a complete skill from a directory.
+def _parse_skill_md(
+    skill_dir: pathlib.Path,
+) -> tuple[dict, str, pathlib.Path]:
+  """Parse SKILL.md from a skill directory.
 
   Args:
-    skill_dir: Path to the skill directory.
+    skill_dir: Resolved path to the skill directory.
 
   Returns:
-    Skill object with all components loaded.
+    Tuple of (parsed_frontmatter_dict, body_string, skill_md_path).
 
   Raises:
-    FileNotFoundError: If the skill directory or SKILL.md is not found.
+    FileNotFoundError: If the directory or SKILL.md is not found.
     ValueError: If SKILL.md is invalid.
   """
-  skill_dir = pathlib.Path(skill_dir).resolve()
-
   if not skill_dir.is_dir():
     raise FileNotFoundError(f"Skill directory '{skill_dir}' not found.")
 
@@ -95,8 +104,36 @@ def load_skill_from_dir(skill_dir: Union[str, pathlib.Path]) -> models.Skill:
   if not isinstance(parsed, dict):
     raise ValueError("SKILL.md frontmatter must be a YAML mapping")
 
-  # Frontmatter class handles required field validation
-  frontmatter = models.Frontmatter(**parsed)
+  return parsed, body, skill_md
+
+
+def load_skill_from_dir(skill_dir: Union[str, pathlib.Path]) -> models.Skill:
+  """Load a complete skill from a directory.
+
+  Args:
+    skill_dir: Path to the skill directory.
+
+  Returns:
+    Skill object with all components loaded.
+
+  Raises:
+    FileNotFoundError: If the skill directory or SKILL.md is not found.
+    ValueError: If SKILL.md is invalid or the skill name does not match
+      the directory name.
+  """
+  skill_dir = pathlib.Path(skill_dir).resolve()
+
+  parsed, body, skill_md = _parse_skill_md(skill_dir)
+
+  # Use model_validate to handle aliases like allowed-tools
+  frontmatter = models.Frontmatter.model_validate(parsed)
+
+  # Validate that skill name matches the directory name
+  if skill_dir.name != frontmatter.name:
+    raise ValueError(
+        f"Skill name '{frontmatter.name}' does not match directory"
+        f" name '{skill_dir.name}'."
+    )
 
   references = _load_dir(skill_dir / "references")
   assets = _load_dir(skill_dir / "assets")
@@ -115,4 +152,83 @@ def load_skill_from_dir(skill_dir: Union[str, pathlib.Path]) -> models.Skill:
       frontmatter=frontmatter,
       instructions=body,
       resources=resources,
+      source_path=str(skill_md),
   )
+
+
+def validate_skill_dir(
+    skill_dir: Union[str, pathlib.Path],
+) -> list[str]:
+  """Validate a skill directory without fully loading it.
+
+  Checks that the directory exists, contains a valid SKILL.md with correct
+  frontmatter, and that the skill name matches the directory name.
+
+  Args:
+    skill_dir: Path to the skill directory.
+
+  Returns:
+    List of problem strings. Empty list means the skill is valid.
+  """
+  problems: list[str] = []
+  skill_dir = pathlib.Path(skill_dir).resolve()
+
+  if not skill_dir.exists():
+    return [f"Directory '{skill_dir}' does not exist."]
+  if not skill_dir.is_dir():
+    return [f"'{skill_dir}' is not a directory."]
+
+  skill_md = None
+  for name in ("SKILL.md", "skill.md"):
+    path = skill_dir / name
+    if path.exists():
+      skill_md = path
+      break
+  if skill_md is None:
+    return [f"SKILL.md not found in '{skill_dir}'."]
+
+  try:
+    parsed, _, _ = _parse_skill_md(skill_dir)
+  except (FileNotFoundError, ValueError) as e:
+    return [str(e)]
+
+  unknown = set(parsed.keys()) - _ALLOWED_FRONTMATTER_KEYS
+  if unknown:
+    problems.append(f"Unknown frontmatter fields: {sorted(unknown)}")
+
+  try:
+    frontmatter = models.Frontmatter.model_validate(parsed)
+  except Exception as e:
+    problems.append(f"Frontmatter validation error: {e}")
+    return problems
+
+  if skill_dir.name != frontmatter.name:
+    problems.append(
+        f"Skill name '{frontmatter.name}' does not match directory"
+        f" name '{skill_dir.name}'."
+    )
+
+  return problems
+
+
+def read_skill_properties(
+    skill_dir: Union[str, pathlib.Path],
+) -> models.Frontmatter:
+  """Read only the frontmatter properties from a skill directory.
+
+  This is a lightweight alternative to ``load_skill_from_dir`` when you
+  only need the skill metadata without loading instructions or resources.
+
+  Args:
+    skill_dir: Path to the skill directory.
+
+  Returns:
+    Frontmatter object with the skill's metadata.
+
+  Raises:
+    FileNotFoundError: If the directory or SKILL.md is not found.
+    ValueError: If the frontmatter is invalid.
+  """
+  skill_dir = pathlib.Path(skill_dir).resolve()
+  parsed, _, _ = _parse_skill_md(skill_dir)
+  return models.Frontmatter.model_validate(parsed)

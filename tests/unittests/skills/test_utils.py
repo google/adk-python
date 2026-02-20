@@ -15,6 +15,8 @@
 """Unit tests for skill utilities."""
 
 from google.adk.skills import load_skill_from_dir
+from google.adk.skills import read_skill_properties
+from google.adk.skills import validate_skill_dir
 import pytest
 
 
@@ -54,3 +56,145 @@ Test instructions
   assert skill.resources.get_reference("ref1.md") == "ref1 content"
   assert skill.resources.get_asset("asset1.txt") == "asset1 content"
   assert skill.resources.get_script("script1.sh").src == "echo hello"
+
+
+def test_allowed_tools_yaml_key(tmp_path):
+  """Tests that allowed-tools YAML key loads correctly."""
+  skill_dir = tmp_path / "my-skill"
+  skill_dir.mkdir()
+
+  skill_md = """---
+name: my-skill
+description: A skill
+allowed-tools: "some-tool-*"
+---
+Instructions here
+"""
+  (skill_dir / "SKILL.md").write_text(skill_md)
+
+  skill = load_skill_from_dir(skill_dir)
+  assert skill.frontmatter.allowed_tools == "some-tool-*"
+
+
+def test_name_directory_mismatch(tmp_path):
+  """Tests that name-directory mismatch raises ValueError."""
+  skill_dir = tmp_path / "wrong-dir"
+  skill_dir.mkdir()
+
+  skill_md = """---
+name: my-skill
+description: A skill
+---
+Body
+"""
+  (skill_dir / "SKILL.md").write_text(skill_md)
+
+  with pytest.raises(ValueError, match="does not match directory"):
+    load_skill_from_dir(skill_dir)
+
+
+def test_source_path_set(tmp_path):
+  """Tests that source_path is set after loading."""
+  skill_dir = tmp_path / "my-skill"
+  skill_dir.mkdir()
+
+  skill_md = """---
+name: my-skill
+description: A skill
+---
+Body
+"""
+  (skill_dir / "SKILL.md").write_text(skill_md)
+
+  skill = load_skill_from_dir(skill_dir)
+  assert skill.source_path is not None
+  assert skill.source_path.endswith("SKILL.md")
+
+
+def test_validate_skill_dir_valid(tmp_path):
+  """Tests validate_skill_dir with a valid skill."""
+  skill_dir = tmp_path / "my-skill"
+  skill_dir.mkdir()
+
+  skill_md = """---
+name: my-skill
+description: A skill
+---
+Body
+"""
+  (skill_dir / "SKILL.md").write_text(skill_md)
+
+  problems = validate_skill_dir(skill_dir)
+  assert problems == []
+
+
+def test_validate_skill_dir_missing_dir(tmp_path):
+  """Tests validate_skill_dir with missing directory."""
+  problems = validate_skill_dir(tmp_path / "nonexistent")
+  assert len(problems) == 1
+  assert "does not exist" in problems[0]
+
+
+def test_validate_skill_dir_missing_skill_md(tmp_path):
+  """Tests validate_skill_dir with missing SKILL.md."""
+  skill_dir = tmp_path / "my-skill"
+  skill_dir.mkdir()
+
+  problems = validate_skill_dir(skill_dir)
+  assert len(problems) == 1
+  assert "SKILL.md not found" in problems[0]
+
+
+def test_validate_skill_dir_name_mismatch(tmp_path):
+  """Tests validate_skill_dir catches name-directory mismatch."""
+  skill_dir = tmp_path / "wrong-dir"
+  skill_dir.mkdir()
+
+  skill_md = """---
+name: my-skill
+description: A skill
+---
+Body
+"""
+  (skill_dir / "SKILL.md").write_text(skill_md)
+
+  problems = validate_skill_dir(skill_dir)
+  assert any("does not match" in p for p in problems)
+
+
+def test_validate_skill_dir_unknown_fields(tmp_path):
+  """Tests validate_skill_dir detects unknown frontmatter fields."""
+  skill_dir = tmp_path / "my-skill"
+  skill_dir.mkdir()
+
+  skill_md = """---
+name: my-skill
+description: A skill
+unknown-field: something
+---
+Body
+"""
+  (skill_dir / "SKILL.md").write_text(skill_md)
+
+  problems = validate_skill_dir(skill_dir)
+  assert any("Unknown frontmatter" in p for p in problems)
+
+
+def test_read_skill_properties(tmp_path):
+  """Tests read_skill_properties basic usage."""
+  skill_dir = tmp_path / "my-skill"
+  skill_dir.mkdir()
+
+  skill_md = """---
+name: my-skill
+description: A cool skill
+license: MIT
+---
+Body content
+"""
+  (skill_dir / "SKILL.md").write_text(skill_md)
+
+  fm = read_skill_properties(skill_dir)
+  assert fm.name == "my-skill"
+  assert fm.description == "A cool skill"
+  assert fm.license == "MIT"
