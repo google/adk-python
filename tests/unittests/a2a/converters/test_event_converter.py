@@ -14,6 +14,7 @@
 
 from unittest.mock import Mock
 from unittest.mock import patch
+import uuid
 
 from a2a.types import DataPart
 from a2a.types import Message
@@ -176,6 +177,20 @@ class TestEventConverter:
     with pytest.raises(ValueError) as exc_info:
       _get_context_metadata(self.mock_event, None)
     assert "Invocation context cannot be None" in str(exc_info.value)
+
+  def test_event_new_id_uses_uuid4(self):
+    """Event IDs must be collision-safe random UUID4 values."""
+    event_id = Event.new_id()
+    parsed = uuid.UUID(event_id)
+
+    assert parsed.version == 4
+
+  def test_event_ids_are_unique_for_same_author(self):
+    """Events from the same author should not reuse normalized-name IDs."""
+    events = [Event(author="same_author") for _ in range(64)]
+    ids = {event.id for event in events}
+
+    assert len(ids) == len(events)
 
   def test_create_artifact_id(self):
     """Test artifact ID creation."""
