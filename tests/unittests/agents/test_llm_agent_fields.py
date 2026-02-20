@@ -451,6 +451,27 @@ class TestCanonicalTools:
     assert tools[0].name == 'vertex_ai_search'
     assert tools[0].__class__.__name__ == 'VertexAiSearchTool'
 
+  async def test_multiple_tools_resolution(self):
+    """Test that multiple tools are resolved correctly."""
+
+    def _tool_1():
+      pass
+
+    def _tool_2():
+      pass
+
+    agent = LlmAgent(
+        name='test_agent',
+        model='gemini-pro',
+        tools=[_tool_1, _tool_2],
+    )
+    ctx = await _create_readonly_context(agent)
+    tools = await agent.canonical_tools(ctx)
+
+    assert len(tools) == 2
+    assert tools[0].name == '_tool_1'
+    assert tools[1].name == '_tool_2'
+
 
 # Tests for multi-provider model support via string model names
 @pytest.mark.parametrize(
