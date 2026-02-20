@@ -689,14 +689,12 @@ async def test_run_async_assertions_use_refetched_session_snapshot():
       app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
   )
 
-  _ = [
-      event
-      async for event in runner.run_async(
-          user_id=TEST_USER_ID,
-          session_id=TEST_SESSION_ID,
-          new_message=types.Content(role="user", parts=[types.Part(text="hi")]),
-      )
-  ]
+  async for _ in runner.run_async(
+      user_id=TEST_USER_ID,
+      session_id=TEST_SESSION_ID,
+      new_message=types.Content(role="user", parts=[types.Part(text="hi")]),
+  ):
+    pass
 
   # InMemorySessionService returns copies; the original handle is stale after run_async.
   assert len(created_session.events) == 0
