@@ -241,6 +241,7 @@ async def test_execute_with_input_args(toolset_with_executor, mock_ctx):
   call_args = toolset_with_executor._code_executor.execute_code.call_args
   code_input = call_args[0][1]
   assert "sys.argv" in code_input.code
+  assert "shlex.split" in code_input.code
   assert "-t stdio -c python eval.xml" in code_input.code
 
 

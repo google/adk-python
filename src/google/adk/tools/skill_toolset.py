@@ -392,25 +392,28 @@ class ExecuteSkillScriptTool(BaseTool):
       # Python script: execute directly, inject sys.argv if args
       if input_args:
         return (
-            "import sys\n"
-            f"sys.argv = [{script_name!r}] + {input_args!r}.split()\n"
+            "import sys, shlex\n"
+            f"sys.argv = [{script_name!r}]"
+            f" + shlex.split({input_args!r})\n"
             + script_src
         )
       return script_src
     elif ext in ("sh", "bash"):
-      # Shell script: wrap in subprocess.run
+      # Shell script: wrap in subprocess.run.
+      # Args are passed as separate list elements after the script
+      # name to avoid shell injection — bash -c receives the script
+      # source, and $0/$1/... get the positional parameters.
       return (
-          "import subprocess\n"
+          "import subprocess, shlex\n"
           "_result = subprocess.run(\n"
-          f"    ['bash', '-c', {script_src!r}"
-          + (f" + ' ' + {input_args!r}" if input_args else "")
-          + f"],\n"
-          f"    capture_output=True, text=True,\n"
-          f")\n"
-          f"print(_result.stdout, end='')\n"
-          f"if _result.stderr:\n"
-          f"    import sys\n"
-          f"    print(_result.stderr, end='', file=sys.stderr)\n"
+          f"    ['bash', '-c', {script_src!r},"
+          f" {script_name!r}]"
+          + (f" + shlex.split({input_args!r})" if input_args else "")
+          + ",\n"
+          "    capture_output=True, text=True,\n"
+          "    check=True,\n"
+          ")\n"
+          "print(_result.stdout, end='')\n"
       )
     return None
 

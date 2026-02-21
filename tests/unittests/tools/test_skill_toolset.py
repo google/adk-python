@@ -473,11 +473,12 @@ async def test_execute_script_shell_success(mock_skill1):
   assert result["status"] == "success"
   assert result["stdout"] == "setup\n"
 
-  # Verify the code wraps in subprocess.run
+  # Verify the code wraps in subprocess.run with check=True
   call_args = executor.execute_code.call_args
   code_input = call_args[0][1]
   assert "subprocess.run" in code_input.code
   assert "bash" in code_input.code
+  assert "check=True" in code_input.code
 
 
 @pytest.mark.asyncio
@@ -499,6 +500,7 @@ async def test_execute_script_with_input_args_python(mock_skill1):
   call_args = executor.execute_code.call_args
   code_input = call_args[0][1]
   assert "sys.argv" in code_input.code
+  assert "shlex.split" in code_input.code
   assert "--verbose --count 3" in code_input.code
 
 
@@ -520,6 +522,7 @@ async def test_execute_script_with_input_args_shell(mock_skill1):
 
   call_args = executor.execute_code.call_args
   code_input = call_args[0][1]
+  assert "shlex.split" in code_input.code
   assert "--force" in code_input.code
 
 
