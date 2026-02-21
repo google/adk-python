@@ -14,11 +14,11 @@
 
 """Agent Development Kit - Skills."""
 
+from ._utils import _load_skill_from_dir as load_skill_from_dir
 from .models import Frontmatter
 from .models import Resources
 from .models import Script
 from .models import Skill
-from .utils import load_skill_from_dir
 
 __all__ = [
     "Frontmatter",
