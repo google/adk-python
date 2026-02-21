@@ -24,7 +24,6 @@ from typing_extensions import override
 from . import data_insights_tool
 from . import metadata_tool
 from . import query_tool
-from . import search_tool
 from ...features import experimental
 from ...features import FeatureName
 from ...tools.base_tool import BaseTool
@@ -88,7 +87,6 @@ class BigQueryToolset(BaseToolset):
             query_tool.analyze_contribution,
             query_tool.detect_anomalies,
             data_insights_tool.ask_data_insights,
-            search_tool.search_catalog,
         ]
     ]
 
