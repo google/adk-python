@@ -39,12 +39,13 @@ Skills are folders of instructions and resources that extend your capabilities f
 - **SKILL.md** (required): The main instruction file with skill metadata and detailed markdown instructions.
 - **references/** (Optional): Additional documentation or examples for skill usage.
 - **assets/** (Optional): Templates, scripts or other resources used by the skill.
+- **scripts/** (Optional): Executable scripts that can be run via bash.
 
 This is very important:
 
 1. If a skill seems relevant to the current user query, you MUST use the `load_skill` tool with `name="<SKILL_NAME>"` to read its full instructions before proceeding.
 2. Once you have read the instructions, follow them exactly as documented before replying to the user. For example, If the instruction lists multiple steps, please make sure you complete all of them in order.
-3. The `load_skill_resource` tool is for viewing files within a skill's directory (e.g., `references/*`, `assets/*`). Do NOT use other tools to access these files.
+3. The `load_skill_resource` tool is for viewing files within a skill's directory (e.g., `references/*`, `assets/*`, `scripts/*`). Do NOT use other tools to access these files.
 """
 
 
@@ -74,8 +75,8 @@ class ListSkillsTool(BaseTool):
   async def run_async(
       self, *, args: dict[str, Any], tool_context: ToolContext
   ) -> Any:
-    skill_frontmatters = self._toolset._list_skills()
-    return prompt.format_skills_as_xml(skill_frontmatters)
+    skills = self._toolset._list_skills()
+    return prompt.format_skills_as_xml(skills)
 
 
 @experimental(FeatureName.SKILL_TOOLSET)
@@ -131,14 +132,14 @@ class LoadSkillTool(BaseTool):
 
 @experimental(FeatureName.SKILL_TOOLSET)
 class LoadSkillResourceTool(BaseTool):
-  """Tool to load resources (references or assets) from a skill."""
+  """Tool to load resources (references, assets, or scripts) from a skill."""
 
   def __init__(self, toolset: "SkillToolset"):
     super().__init__(
         name="load_skill_resource",
         description=(
-            "Loads a resource file (from references/ or assets/) from within a"
-            " skill."
+            "Loads a resource file (from references/, assets/, or"
+            " scripts/) from within a skill."
         ),
     )
     self._toolset = toolset
@@ -158,7 +159,8 @@ class LoadSkillResourceTool(BaseTool):
                     "type": "string",
                     "description": (
                         "The relative path to the resource (e.g.,"
-                        " 'references/my_doc.md' or 'assets/template.txt')."
+                        " 'references/my_doc.md', 'assets/template.txt',"
+                        " or 'scripts/setup.sh')."
                     ),
                 },
             },
@@ -197,9 +199,16 @@ class LoadSkillResourceTool(BaseTool):
     elif resource_path.startswith("assets/"):
       asset_name = resource_path[len("assets/") :]
       content = skill.resources.get_asset(asset_name)
+    elif resource_path.startswith("scripts/"):
+      script_name = resource_path[len("scripts/") :]
+      script = skill.resources.get_script(script_name)
+      if script is not None:
+        content = script.src
     else:
       return {
-          "error": "Path must start with 'references/' or 'assets/'.",
+          "error": (
+              "Path must start with 'references/', 'assets/', or 'scripts/'."
+          ),
           "error_code": "INVALID_RESOURCE_PATH",
       }
 
@@ -222,8 +231,19 @@ class LoadSkillResourceTool(BaseTool):
 class SkillToolset(BaseToolset):
   """A toolset for managing and interacting with agent skills."""
 
-  def __init__(self, skills: list[models.Skill]):
+  def __init__(
+      self,
+      skills: list[models.Skill],
+  ):
     super().__init__()
+
+    # Check for duplicate skill names
+    seen: set[str] = set()
+    for skill in skills:
+      if skill.name in seen:
+        raise ValueError(f"Duplicate skill name '{skill.name}'.")
+      seen.add(skill.name)
+
     self._skills = {skill.name: skill for skill in skills}
     self._tools = [
         ListSkillsTool(self),
@@ -241,14 +261,17 @@ class SkillToolset(BaseToolset):
     """Retrieves a skill by name."""
     return self._skills.get(name)
 
-  def _list_skills(self) -> list[models.Frontmatter]:
-    """Lists the frontmatter of all available skills."""
-    return [s.frontmatter for s in self._skills.values()]
+  def _list_skills(self) -> list[models.Skill]:
+    """Lists all available skills."""
+    return list(self._skills.values())
 
   async def process_llm_request(
       self, *, tool_context: ToolContext, llm_request: LlmRequest
   ) -> None:
     """Processes the outgoing LLM request to include available skills."""
-    skill_frontmatters = self._list_skills()
-    skills_xml = prompt.format_skills_as_xml(skill_frontmatters)
-    llm_request.append_instructions([skills_xml])
+    skills = self._list_skills()
+    skills_xml = prompt.format_skills_as_xml(skills)
+    instructions = []
+    instructions.append(DEFAULT_SKILL_SYSTEM_INSTRUCTION)
+    instructions.append(skills_xml)
+    llm_request.append_instructions(instructions)
