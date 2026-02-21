@@ -19,6 +19,7 @@ from typing import AsyncGenerator
 from typing import TYPE_CHECKING
 
 from google.genai import types
+from pydantic import ValidationError
 from typing_extensions import override
 
 from . import functions
@@ -81,13 +82,35 @@ class _RequestConfirmationLlmRequestProcessor(BaseLlmRequestProcessor):
           # ADK client must send a resuming run request with a function response
           # that always encapsulate the confirmation result with a 'response'
           # key
-          tool_confirmation = ToolConfirmation.model_validate(
-              json.loads(function_response.response['response'])
-          )
+          try:
+            tool_confirmation = ToolConfirmation.model_validate(
+                json.loads(function_response.response['response'])
+            )
+          except (
+              json.JSONDecodeError,
+              TypeError,
+              ValidationError,
+          ) as parse_err:
+            logger.warning(
+                'Malformed tool confirmation payload for'
+                ' function_response_id=%s: %s',
+                function_response.id,
+                parse_err,
+            )
+            tool_confirmation = ToolConfirmation(confirmed=False)
         else:
-          tool_confirmation = ToolConfirmation.model_validate(
-              function_response.response
-          )
+          try:
+            tool_confirmation = ToolConfirmation.model_validate(
+                function_response.response
+            )
+          except ValidationError as parse_err:
+            logger.warning(
+                'Malformed tool confirmation payload for'
+                ' function_response_id=%s: %s',
+                function_response.id,
+                parse_err,
+            )
+            tool_confirmation = ToolConfirmation(confirmed=False)
         request_confirmation_function_responses[function_response.id] = (
             tool_confirmation
         )

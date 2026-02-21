@@ -224,6 +224,37 @@ class TestHITLConfirmationFlowWithSingleAgent(BaseHITLTest):
         == expected_parts_final
     )
 
+  @pytest.mark.asyncio
+  async def test_malformed_confirmation_payload_is_rejected_fail_closed(
+      self,
+      runner: testing_utils.InMemoryRunner,
+      agent: LlmAgent,
+  ):
+    """Malformed confirmation payloads must fail closed and reject tool calls."""
+    initial_events = await runner.run_async(testing_utils.UserContent("test"))
+    ask_for_confirmation_function_call_id = (
+        initial_events[1].content.parts[0].function_call.id
+    )
+
+    malformed_confirmation = testing_utils.UserContent(
+        Part(
+            function_response=FunctionResponse(
+                id=ask_for_confirmation_function_call_id,
+                name=REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+                response={"response": "{not-json"},
+            )
+        )
+    )
+
+    events = await runner.run_async(malformed_confirmation)
+    simplified = testing_utils.simplify_events(copy.deepcopy(events))
+    assert simplified[0][1] == Part(
+        function_response=FunctionResponse(
+            name=agent.tools[0].name,
+            response={"error": "This tool call is rejected."},
+        )
+    )
+
 
 class TestHITLConfirmationFlowWithCustomPayloadSchema(BaseHITLTest):
   """Tests the HITL confirmation flow with a single agent, for custom confirmation payload schema."""
