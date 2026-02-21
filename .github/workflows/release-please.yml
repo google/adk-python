@@ -1,5 +1,5 @@
 # Runs release-please to create/update a PR with version bump and changelog.
-# Triggered by pushes to release/candidate or manually.
+# Triggered automatically by step 1 (cut) or step 3 (cherry-pick).
 name: "Release: Please"
 
 on:
@@ -18,11 +18,25 @@ jobs:
     if: "!startsWith(github.event.head_commit.message, 'chore(release')"
     runs-on: ubuntu-latest
     steps:
+      - name: Check if release/candidate still exists
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh api repos/${{ github.repository }}/branches/release/candidate --silent 2>/dev/null; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "release/candidate branch no longer exists, skipping"
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
       - uses: actions/checkout@v4
+        if: steps.check.outputs.exists == 'true'
         with:
           ref: release/candidate
 
       - uses: googleapis/release-please-action@v4
+        if: steps.check.outputs.exists == 'true'
         with:
           token: ${{ secrets.RELEASE_PAT }}
           config-file: .github/release-please-config.json

@@ -1,5 +1,5 @@
-# Builds and publishes the package to PyPI from a release branch.
-# Creates a merge-back PR to sync release changes to main.
+# Step 6: Builds and publishes the package to PyPI from a release/v{version} branch.
+# Creates a merge-back PR (step 7) to sync release changes to main.
 name: "Release: Publish to PyPi"
 
 on:

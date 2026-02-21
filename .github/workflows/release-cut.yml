@@ -1,5 +1,5 @@
-# Starts the release process by creating a release/candidate branch.
-# Triggers release-please to generate a changelog PR.
+# Step 1: Starts the release process by creating a release/candidate branch.
+# Generates a changelog PR for review (step 2).
 name: "Release: Cut"
 
 on:
@@ -42,5 +42,5 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh workflow run release-please.yml --repo ${{ github.repository }}
+          gh workflow run release-please.yml --repo ${{ github.repository }} --ref release/candidate
           echo "Triggered Release Please workflow"

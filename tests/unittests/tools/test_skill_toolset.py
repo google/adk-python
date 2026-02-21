@@ -14,7 +14,7 @@
 
 from unittest import mock
 
-from google.adk.models import llm_request
+from google.adk.models import llm_request as llm_request_model
 from google.adk.skills import models
 from google.adk.tools import skill_toolset
 from google.adk.tools import tool_context
@@ -39,6 +39,7 @@ def mock_skill1(mock_skill1_frontmatter):
   """Fixture for skill1."""
   skill = mock.create_autospec(models.Skill, instance=True)
   skill.name = "skill1"
+  skill.description = "Skill 1 description"
   skill.instructions = "instructions for skill1"
   skill.frontmatter = mock_skill1_frontmatter
   skill.resources = mock.MagicMock(
@@ -55,8 +56,14 @@ def mock_skill1(mock_skill1_frontmatter):
       return "asset content 1"
     return None
 
+  def get_script(name):
+    if name == "setup.sh":
+      return models.Script(src="echo setup")
+    return None
+
   skill.resources.get_reference.side_effect = get_ref
   skill.resources.get_asset.side_effect = get_asset
+  skill.resources.get_script.side_effect = get_script
   return skill
 
 
@@ -78,6 +85,7 @@ def mock_skill2(mock_skill2_frontmatter):
   """Fixture for skill2."""
   skill = mock.create_autospec(models.Skill, instance=True)
   skill.name = "skill2"
+  skill.description = "Skill 2 description"
   skill.instructions = "instructions for skill2"
   skill.frontmatter = mock_skill2_frontmatter
   skill.resources = mock.MagicMock(
@@ -114,42 +122,33 @@ def test_get_skill(mock_skill1, mock_skill2):
 
 def test_list_skills(mock_skill1, mock_skill2):
   toolset = skill_toolset.SkillToolset([mock_skill1, mock_skill2])
-  frontmatters = toolset._list_skills()
-  assert len(frontmatters) == 2
-  assert mock_skill1.frontmatter in frontmatters
-  assert mock_skill2.frontmatter in frontmatters
+  skills = toolset._list_skills()
+  assert len(skills) == 2
+  assert mock_skill1 in skills
+  assert mock_skill2 in skills
 
 
 @pytest.mark.asyncio
 async def test_get_tools(mock_skill1, mock_skill2):
   toolset = skill_toolset.SkillToolset([mock_skill1, mock_skill2])
   tools = await toolset.get_tools()
-  assert len(tools) == 2
-  assert isinstance(tools[0], skill_toolset.LoadSkillTool)
-  assert isinstance(tools[1], skill_toolset.LoadSkillResourceTool)
+  assert len(tools) == 3
+  assert isinstance(tools[0], skill_toolset.ListSkillsTool)
+  assert isinstance(tools[1], skill_toolset.LoadSkillTool)
+  assert isinstance(tools[2], skill_toolset.LoadSkillResourceTool)
 
 
 @pytest.mark.asyncio
-async def test_process_llm_request(
+@pytest.mark.asyncio
+async def test_list_skills_tool(
     mock_skill1, mock_skill2, tool_context_instance
 ):
   toolset = skill_toolset.SkillToolset([mock_skill1, mock_skill2])
-  mock_llm_request = llm_request.LlmRequest()
-  mock_llm_request.config.system_instruction = "existing instruction"
-  await toolset.process_llm_request(
-      tool_context=tool_context_instance, llm_request=mock_llm_request
-  )
-  assert "<available_skills>" in mock_llm_request.config.system_instruction
-  assert (
-      "You can use specialized 'skills'"
-      in mock_llm_request.config.system_instruction
-  )
-  assert (
-      "skills are folders" in mock_llm_request.config.system_instruction.lower()
-  )
-  assert mock_llm_request.config.system_instruction.startswith(
-      "existing instruction"
-  )
+  tool = skill_toolset.ListSkillsTool(toolset)
+  result = await tool.run_async(args={}, tool_context=tool_context_instance)
+  assert "<available_skills>" in result
+  assert "skill1" in result
+  assert "skill2" in result
 
 
 @pytest.mark.asyncio
@@ -213,6 +212,14 @@ async def test_load_skill_run_async(
             },
         ),
         (
+            {"skill_name": "skill1", "path": "scripts/setup.sh"},
+            {
+                "skill_name": "skill1",
+                "path": "scripts/setup.sh",
+                "content": "echo setup",
+            },
+        ),
+        (
             {"skill_name": "nonexistent", "path": "references/ref1.md"},
             {
                 "error": "Skill 'nonexistent' not found.",
@@ -232,7 +239,10 @@ async def test_load_skill_run_async(
         (
             {"skill_name": "skill1", "path": "invalid/path.txt"},
             {
-                "error": "Path must start with 'references/' or 'assets/'.",
+                "error": (
+                    "Path must start with 'references/', 'assets/',"
+                    " or 'scripts/'."
+                ),
                 "error_code": "INVALID_RESOURCE_PATH",
             },
         ),
@@ -259,3 +269,42 @@ async def test_load_resource_run_async(
   tool = skill_toolset.LoadSkillResourceTool(toolset)
   result = await tool.run_async(args=args, tool_context=tool_context_instance)
   assert result == expected_result
+
+
+@pytest.mark.asyncio
+async def test_process_llm_request(
+    mock_skill1, mock_skill2, tool_context_instance
+):
+  toolset = skill_toolset.SkillToolset([mock_skill1, mock_skill2])
+  llm_req = mock.create_autospec(llm_request_model.LlmRequest, instance=True)
+
+  await toolset.process_llm_request(
+      tool_context=tool_context_instance, llm_request=llm_req
+  )
+
+  llm_req.append_instructions.assert_called_once()
+  args, _ = llm_req.append_instructions.call_args
+  instructions = args[0]
+  assert len(instructions) == 2
+  assert instructions[0] == skill_toolset.DEFAULT_SKILL_SYSTEM_INSTRUCTION
+  assert "<available_skills>" in instructions[1]
+  assert "skill1" in instructions[1]
+  assert "skill2" in instructions[1]
+
+
+def test_duplicate_skill_name_raises(mock_skill1):
+  skill_dup = mock.create_autospec(models.Skill, instance=True)
+  skill_dup.name = "skill1"
+  with pytest.raises(ValueError, match="Duplicate skill name"):
+    skill_toolset.SkillToolset([mock_skill1, skill_dup])
+
+
+@pytest.mark.asyncio
+async def test_scripts_resource_not_found(mock_skill1, tool_context_instance):
+  toolset = skill_toolset.SkillToolset([mock_skill1])
+  tool = skill_toolset.LoadSkillResourceTool(toolset)
+  result = await tool.run_async(
+      args={"skill_name": "skill1", "path": "scripts/nonexistent.sh"},
+      tool_context=tool_context_instance,
+  )
+  assert result["error_code"] == "RESOURCE_NOT_FOUND"

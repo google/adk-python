@@ -18,6 +18,8 @@ from google.adk.evaluation import conversation_scenarios
 from google.adk.evaluation.simulation.llm_backed_user_simulator import LlmBackedUserSimulator
 from google.adk.evaluation.simulation.llm_backed_user_simulator import LlmBackedUserSimulatorConfig
 from google.adk.evaluation.simulation.user_simulator import Status
+from google.adk.evaluation.simulation.user_simulator_personas import UserBehavior
+from google.adk.evaluation.simulation.user_simulator_personas import UserPersona
 from google.adk.events.event import Event
 from google.genai import types
 from pydantic import ValidationError
@@ -94,7 +96,7 @@ def test_llm_backed_user_simulator_config_validation():
   config = LlmBackedUserSimulatorConfig(custom_instructions=None)
   assert config.custom_instructions is None
   valid_instructions = (
-      "{stop_signal} {conversation_plan} {conversation_history}"
+      "{{ stop_signal }} {{ conversation_plan }} {{ conversation_history }}"
   )
   config = LlmBackedUserSimulatorConfig(custom_instructions=valid_instructions)
   assert config.custom_instructions == valid_instructions
@@ -145,14 +147,53 @@ def conversation_scenario():
 
 
 @pytest.fixture
+def user_persona():
+  """Provides a test user persona."""
+  return UserPersona(
+      id="test_persona",
+      description="A test persona",
+      behaviors=[
+          UserBehavior(
+              name="polite",
+              description="is polite",
+              behavior_instructions=["Always say please and thank you."],
+              violation_rubrics=["is rude"],
+          )
+      ],
+  )
+
+
+@pytest.fixture
+def conversation_scenario_with_persona(user_persona):
+  """Provides a test conversation scenario with a user persona."""
+  return conversation_scenarios.ConversationScenario(
+      starting_prompt="Hello",
+      conversation_plan="test plan with persona",
+      user_persona=user_persona,
+  )
+
+
+@pytest.fixture
 def simulator(mock_llm_agent, conversation_scenario):
   """Provides an LlmBackedUserSimulator instance for testing."""
   config = LlmBackedUserSimulatorConfig(
       model="test-model",
-      model_configuration=types.GenerateContentConfig(),
   )
   sim = LlmBackedUserSimulator(
       config=config, conversation_scenario=conversation_scenario
+  )
+  sim._invocation_count = 1  # Bypass starting prompt by default for tests
+  return sim
+
+
+@pytest.fixture
+def simulator_with_persona(mock_llm_agent, conversation_scenario_with_persona):
+  """Provides an LlmBackedUserSimulator instance for testing."""
+  config = LlmBackedUserSimulatorConfig(
+      model="test-model",
+  )
+  sim = LlmBackedUserSimulator(
+      config=config, conversation_scenario=conversation_scenario_with_persona
   )
   sim._invocation_count = 1  # Bypass starting prompt by default for tests
   return sim
@@ -253,6 +294,30 @@ class TestLlmBackedUserSimulator:
     )
 
     next_user_message = await simulator.get_next_user_message(
+        events=_INPUT_EVENTS
+    )
+
+    expected_user_message = types.Content(
+        parts=[types.Part(text="I need to book a flight.")], role="user"
+    )
+
+    assert next_user_message.status == Status.SUCCESS
+    assert next_user_message.user_message == expected_user_message
+
+  @pytest.mark.asyncio
+  async def test_get_next_user_message_with_persona_success(
+      self, simulator_with_persona, mock_llm_agent, mocker
+  ):
+    """Tests get_next_user_message when the user message is generated successfully."""
+    mock_llm_response = mocker.MagicMock()
+    mock_llm_response.content = types.Content(
+        parts=[types.Part(text="I need to book a flight.")]
+    )
+    mock_llm_agent.generate_content_async.return_value = to_async_iter(
+        [mock_llm_response]
+    )
+
+    next_user_message = await simulator_with_persona.get_next_user_message(
         events=_INPUT_EVENTS
     )
 
