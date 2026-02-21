@@ -17,6 +17,10 @@
 This agent loads the Anthropic mcp-builder skill and a python-helper
 skill, exercising all skill tools: list_skills, load_skill,
 load_skill_resource, and execute_skill_script.
+
+WARNING: This sample uses UnsafeLocalCodeExecutor, which runs scripts
+in the host process with no sandboxing. For production use, prefer
+ContainerCodeExecutor or VertexAICodeExecutor for isolation.
 """
 
 import pathlib
@@ -31,6 +35,8 @@ _SKILLS_DIR = pathlib.Path(__file__).parent / "skills"
 mcp_builder_skill = load_skill_from_dir(_SKILLS_DIR / "mcp-builder")
 python_helper_skill = load_skill_from_dir(_SKILLS_DIR / "python-helper")
 
+# WARNING: UnsafeLocalCodeExecutor runs code in the host process.
+# For production, use ContainerCodeExecutor or VertexAICodeExecutor.
 my_skill_toolset = SkillToolset(
     skills=[mcp_builder_skill, python_helper_skill],
     code_executor=UnsafeLocalCodeExecutor(),

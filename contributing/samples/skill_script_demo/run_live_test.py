@@ -26,6 +26,7 @@ Usage:
 import asyncio
 import os
 import pathlib
+import subprocess
 import sys
 import traceback
 
@@ -45,9 +46,16 @@ _SKILLS_DIR = pathlib.Path(__file__).parent / "skills"
 # Configure for Vertex AI
 project = os.environ.get("GOOGLE_CLOUD_PROJECT")
 if not project:
-  project = (
-      os.popen("gcloud config get-value project 2>/dev/null").read().strip()
-  )
+  try:
+    result = subprocess.run(
+        ["gcloud", "config", "get-value", "project"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    project = result.stdout.strip()
+  except (FileNotFoundError, subprocess.TimeoutExpired):
+    project = ""
   if project:
     os.environ["GOOGLE_CLOUD_PROJECT"] = project
 

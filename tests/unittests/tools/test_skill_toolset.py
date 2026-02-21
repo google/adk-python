@@ -146,7 +146,6 @@ async def test_get_tools(mock_skill1, mock_skill2):
 
 
 @pytest.mark.asyncio
-@pytest.mark.asyncio
 async def test_list_skills_tool(
     mock_skill1, mock_skill2, tool_context_instance
 ):
@@ -473,12 +472,12 @@ async def test_execute_script_shell_success(mock_skill1):
   assert result["status"] == "success"
   assert result["stdout"] == "setup\n"
 
-  # Verify the code wraps in subprocess.run with check=True
+  # Verify the code wraps in subprocess.run with JSON envelope
   call_args = executor.execute_code.call_args
   code_input = call_args[0][1]
   assert "subprocess.run" in code_input.code
   assert "bash" in code_input.code
-  assert "check=True" in code_input.code
+  assert "__shell_result__" in code_input.code
 
 
 @pytest.mark.asyncio
@@ -598,8 +597,9 @@ async def test_execute_script_execution_error(mock_skill1):
 
 
 @pytest.mark.asyncio
-async def test_execute_script_stderr_sets_error_status(mock_skill1):
-  executor = _make_mock_executor(stdout="", stderr="warning\n")
+async def test_execute_script_stderr_only_sets_error_status(mock_skill1):
+  """stderr with no stdout should report error status."""
+  executor = _make_mock_executor(stdout="", stderr="fatal error\n")
   toolset = skill_toolset.SkillToolset([mock_skill1], code_executor=executor)
   tool = skill_toolset.ExecuteSkillScriptTool(toolset)
   ctx = _make_tool_context_with_agent()
@@ -608,7 +608,23 @@ async def test_execute_script_stderr_sets_error_status(mock_skill1):
       tool_context=ctx,
   )
   assert result["status"] == "error"
-  assert result["stderr"] == "warning\n"
+  assert result["stderr"] == "fatal error\n"
+
+
+@pytest.mark.asyncio
+async def test_execute_script_stderr_with_stdout_sets_warning(mock_skill1):
+  """stderr alongside stdout should report warning status."""
+  executor = _make_mock_executor(stdout="output\n", stderr="deprecation\n")
+  toolset = skill_toolset.SkillToolset([mock_skill1], code_executor=executor)
+  tool = skill_toolset.ExecuteSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+  result = await tool.run_async(
+      args={"skill_name": "skill1", "script_name": "run.py"},
+      tool_context=ctx,
+  )
+  assert result["status"] == "warning"
+  assert result["stdout"] == "output\n"
+  assert result["stderr"] == "deprecation\n"
 
 
 @pytest.mark.asyncio
@@ -627,3 +643,225 @@ async def test_execute_script_execution_error_truncated(mock_skill1):
   # 200 chars of the message + "..." suffix + the prefix
   assert result["error"].endswith("...")
   assert len(result["error"]) < 300
+
+
+@pytest.mark.asyncio
+async def test_execute_script_system_exit_caught(mock_skill1):
+  """sys.exit() in a script should not terminate the process."""
+  executor = _make_mock_executor()
+  executor.execute_code.side_effect = SystemExit(1)
+  toolset = skill_toolset.SkillToolset([mock_skill1], code_executor=executor)
+  tool = skill_toolset.ExecuteSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+  result = await tool.run_async(
+      args={"skill_name": "skill1", "script_name": "run.py"},
+      tool_context=ctx,
+  )
+  assert result["error_code"] == "EXECUTION_ERROR"
+  assert "exited with code 1" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_execute_script_system_exit_zero_is_success(mock_skill1):
+  """sys.exit(0) is a normal termination and should report success."""
+  executor = _make_mock_executor()
+  executor.execute_code.side_effect = SystemExit(0)
+  toolset = skill_toolset.SkillToolset([mock_skill1], code_executor=executor)
+  tool = skill_toolset.ExecuteSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+  result = await tool.run_async(
+      args={"skill_name": "skill1", "script_name": "run.py"},
+      tool_context=ctx,
+  )
+  assert result["status"] == "success"
+  assert "error" not in result
+
+
+@pytest.mark.asyncio
+async def test_execute_script_system_exit_none_is_success(mock_skill1):
+  """sys.exit() with no arg (None) should report success."""
+  executor = _make_mock_executor()
+  executor.execute_code.side_effect = SystemExit(None)
+  toolset = skill_toolset.SkillToolset([mock_skill1], code_executor=executor)
+  tool = skill_toolset.ExecuteSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+  result = await tool.run_async(
+      args={"skill_name": "skill1", "script_name": "run.py"},
+      tool_context=ctx,
+  )
+  assert result["status"] == "success"
+  assert "error" not in result
+
+
+@pytest.mark.asyncio
+async def test_execute_script_shell_includes_timeout(mock_skill1):
+  """Shell wrapper includes timeout in subprocess.run."""
+  executor = _make_mock_executor(stdout="ok\n")
+  toolset = skill_toolset.SkillToolset(
+      [mock_skill1], code_executor=executor, script_timeout=60
+  )
+  tool = skill_toolset.ExecuteSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+  result = await tool.run_async(
+      args={"skill_name": "skill1", "script_name": "setup.sh"},
+      tool_context=ctx,
+  )
+  assert result["status"] == "success"
+  call_args = executor.execute_code.call_args
+  code_input = call_args[0][1]
+  assert "timeout=60" in code_input.code
+
+
+@pytest.mark.asyncio
+async def test_execute_script_extensionless_unsupported(mock_skill1):
+  """Files without extensions should return UNSUPPORTED_SCRIPT_TYPE."""
+  # Add a script with no extension to the mock
+  original_side_effect = mock_skill1.resources.get_script.side_effect
+
+  def get_script_extended(name):
+    if name == "noext":
+      return models.Script(src="print('hi')")
+    return original_side_effect(name)
+
+  mock_skill1.resources.get_script.side_effect = get_script_extended
+
+  executor = _make_mock_executor()
+  toolset = skill_toolset.SkillToolset([mock_skill1], code_executor=executor)
+  tool = skill_toolset.ExecuteSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+  result = await tool.run_async(
+      args={"skill_name": "skill1", "script_name": "noext"},
+      tool_context=ctx,
+  )
+  assert result["error_code"] == "UNSUPPORTED_SCRIPT_TYPE"
+
+
+@pytest.mark.asyncio
+async def test_execute_script_invalid_input_args(mock_skill1):
+  """Unclosed quotes in input_args should return INVALID_INPUT_ARGS."""
+  executor = _make_mock_executor()
+  toolset = skill_toolset.SkillToolset([mock_skill1], code_executor=executor)
+  tool = skill_toolset.ExecuteSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+  result = await tool.run_async(
+      args={
+          "skill_name": "skill1",
+          "script_name": "run.py",
+          "input_args": '--name "unclosed',
+      },
+      tool_context=ctx,
+  )
+  assert result["error_code"] == "INVALID_INPUT_ARGS"
+
+
+# ── Integration tests using real UnsafeLocalCodeExecutor ──
+
+
+def _make_skill_with_script(skill_name, script_name, script):
+  """Creates a minimal mock Skill with a single script."""
+  skill = mock.create_autospec(models.Skill, instance=True)
+  skill.name = skill_name
+  skill.description = f"Test skill {skill_name}"
+  skill.instructions = "test instructions"
+  fm = mock.create_autospec(models.Frontmatter, instance=True)
+  fm.name = skill_name
+  fm.description = f"Test skill {skill_name}"
+  skill.frontmatter = fm
+  skill.resources = mock.MagicMock(
+      spec=["get_reference", "get_asset", "get_script"]
+  )
+
+  def get_script(name):
+    if name == script_name:
+      return script
+    return None
+
+  skill.resources.get_script.side_effect = get_script
+  skill.resources.get_reference.return_value = None
+  skill.resources.get_asset.return_value = None
+  return skill
+
+
+def _make_real_executor_toolset(skills, **kwargs):
+  """Creates a SkillToolset with a real UnsafeLocalCodeExecutor."""
+  from google.adk.code_executors.unsafe_local_code_executor import UnsafeLocalCodeExecutor
+
+  executor = UnsafeLocalCodeExecutor()
+  return skill_toolset.SkillToolset(skills, code_executor=executor, **kwargs)
+
+
+@pytest.mark.asyncio
+async def test_integration_python_stdout():
+  """Real executor: Python script stdout is captured."""
+  script = models.Script(src="print('hello world')")
+  skill = _make_skill_with_script("test_skill", "hello.py", script)
+  toolset = _make_real_executor_toolset([skill])
+  tool = skill_toolset.ExecuteSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+  result = await tool.run_async(
+      args={
+          "skill_name": "test_skill",
+          "script_name": "hello.py",
+      },
+      tool_context=ctx,
+  )
+  assert result["status"] == "success"
+  assert result["stdout"] == "hello world\n"
+  assert result["stderr"] == ""
+
+
+@pytest.mark.asyncio
+async def test_integration_python_sys_exit_zero():
+  """Real executor: sys.exit(0) is treated as success."""
+  script = models.Script(src="import sys; sys.exit(0)")
+  skill = _make_skill_with_script("test_skill", "exit_zero.py", script)
+  toolset = _make_real_executor_toolset([skill])
+  tool = skill_toolset.ExecuteSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+  result = await tool.run_async(
+      args={
+          "skill_name": "test_skill",
+          "script_name": "exit_zero.py",
+      },
+      tool_context=ctx,
+  )
+  assert result["status"] == "success"
+
+
+@pytest.mark.asyncio
+async def test_integration_shell_stdout_and_stderr():
+  """Real executor: shell script preserves both stdout and stderr."""
+  script = models.Script(src="echo output; echo warning >&2")
+  skill = _make_skill_with_script("test_skill", "both.sh", script)
+  toolset = _make_real_executor_toolset([skill])
+  tool = skill_toolset.ExecuteSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+  result = await tool.run_async(
+      args={
+          "skill_name": "test_skill",
+          "script_name": "both.sh",
+      },
+      tool_context=ctx,
+  )
+  assert result["status"] == "warning"
+  assert "output" in result["stdout"]
+  assert "warning" in result["stderr"]
+
+
+@pytest.mark.asyncio
+async def test_integration_shell_stderr_only():
+  """Real executor: shell script with only stderr reports error."""
+  script = models.Script(src="echo failure >&2")
+  skill = _make_skill_with_script("test_skill", "err.sh", script)
+  toolset = _make_real_executor_toolset([skill])
+  tool = skill_toolset.ExecuteSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+  result = await tool.run_async(
+      args={
+          "skill_name": "test_skill",
+          "script_name": "err.sh",
+      },
+      tool_context=ctx,
+  )
+  assert result["status"] == "error"
+  assert "failure" in result["stderr"]

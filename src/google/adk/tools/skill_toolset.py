@@ -16,7 +16,9 @@
 
 from __future__ import annotations
 
+import json
 import logging
+import shlex
 from typing import Any
 from typing import Optional
 from typing import TYPE_CHECKING
@@ -38,6 +40,8 @@ if TYPE_CHECKING:
   from ..models.llm_request import LlmRequest
 
 logger = logging.getLogger("google_adk." + __name__)
+
+_DEFAULT_SCRIPT_TIMEOUT = 300
 
 DEFAULT_SKILL_SYSTEM_INSTRUCTION = """You can use specialized 'skills' to help you with complex tasks. You MUST use the skill tools to interact with these skills.
 
@@ -329,8 +333,22 @@ class ExecuteSkillScriptTool(BaseTool):
           "error_code": "NO_CODE_EXECUTOR",
       }
 
+    # Validate input_args early (before sending to code executor)
+    if input_args:
+      try:
+        shlex.split(input_args)
+      except ValueError as e:
+        return {
+            "error": f"Invalid input_args: {e}",
+            "error_code": "INVALID_INPUT_ARGS",
+        }
+
     # Prepare code based on script extension
-    code = self._prepare_code(script_name, script.src, input_args)
+    timeout = self._toolset._script_timeout
+    code = self._prepare_code(script_name, script.src, input_args, timeout)
+    is_shell = "." in script_name and script_name.rsplit(".", 1)[
+        -1
+    ].lower() in ("sh", "bash")
     if code is None:
       ext = script_name.rsplit(".", 1)[-1] if "." in script_name else ""
       return {
@@ -346,12 +364,56 @@ class ExecuteSkillScriptTool(BaseTool):
           tool_context._invocation_context,
           CodeExecutionInput(code=code),
       )
+      stdout = result.stdout
+      stderr = result.stderr
+      # Shell scripts serialize both streams as JSON
+      # through stdout; parse the envelope if present.
+      if is_shell and stdout:
+        try:
+          parsed = json.loads(stdout)
+          if isinstance(parsed, dict) and parsed.get("__shell_result__"):
+            stdout = parsed.get("stdout", "")
+            stderr = parsed.get("stderr", "")
+            rc = parsed.get("returncode", 0)
+            if rc != 0 and not stderr:
+              stderr = f"Exit code {rc}"
+        except (json.JSONDecodeError, ValueError):
+          pass
+      if stderr and not stdout:
+        status = "error"
+      elif stderr:
+        status = "warning"
+      else:
+        status = "success"
       return {
           "skill_name": skill_name,
           "script_name": script_name,
-          "stdout": result.stdout,
-          "stderr": result.stderr,
-          "status": "error" if result.stderr else "success",
+          "stdout": stdout,
+          "stderr": stderr,
+          "status": status,
+      }
+    except SystemExit as e:
+      # Scripts may call sys.exit(); intercept instead of letting
+      # it terminate the host process.
+      exit_code = e.code if e.code is not None else 0
+      if exit_code == 0:
+        # sys.exit(0) or sys.exit() is a normal termination.
+        return {
+            "skill_name": skill_name,
+            "script_name": script_name,
+            "stdout": "",
+            "stderr": "",
+            "status": "success",
+        }
+      logger.warning(
+          "Script '%s' from skill '%s' called sys.exit(%s)",
+          script_name,
+          skill_name,
+          exit_code,
+      )
+      return {
+          "error": f"Script '{script_name}' exited with code {exit_code}.",
+          "error_code": "EXECUTION_ERROR",
       }
     except Exception as e:
       logger.exception(
@@ -373,6 +435,7 @@ class ExecuteSkillScriptTool(BaseTool):
       script_name: str,
       script_src: str,
       input_args: str,
+      timeout: int = _DEFAULT_SCRIPT_TIMEOUT,
   ) -> str | None:
     """Prepares Python code to execute the script.
 
@@ -380,6 +443,7 @@ class ExecuteSkillScriptTool(BaseTool):
       script_name: The script filename.
       script_src: The script source content.
       input_args: Optional arguments string.
+      timeout: Timeout in seconds for shell subprocess execution.
 
     Returns:
       Python code string to execute, or None if unsupported type.
@@ -388,7 +452,7 @@ class ExecuteSkillScriptTool(BaseTool):
     if "." in script_name:
       ext = script_name.rsplit(".", 1)[-1].lower()
 
-    if ext in ("py", ""):
+    if ext == "py":
       # Python script: execute directly, inject sys.argv if args
       if input_args:
         return (
@@ -400,20 +464,34 @@ class ExecuteSkillScriptTool(BaseTool):
       return script_src
     elif ext in ("sh", "bash"):
       # Shell script: wrap in subprocess.run.
-      # Args are passed as separate list elements after the script
-      # name to avoid shell injection — bash -c receives the script
-      # source, and $0/$1/... get the positional parameters.
+      # Args are passed as separate list elements after the
+      # script name to avoid shell injection.
+      # Both streams are JSON-serialized through stdout since
+      # UnsafeLocalCodeExecutor drops stdout on exception.
+      cmd = f"['bash', '-c', {script_src!r}, {script_name!r}]"
+      if input_args:
+        cmd += f" + shlex.split({input_args!r})"
       return (
-          "import subprocess, shlex\n"
-          "_result = subprocess.run(\n"
-          f"    ['bash', '-c', {script_src!r},"
-          f" {script_name!r}]"
-          + (f" + shlex.split({input_args!r})" if input_args else "")
-          + ",\n"
-          "    capture_output=True, text=True,\n"
-          "    check=True,\n"
-          ")\n"
-          "print(_result.stdout, end='')\n"
+          "import subprocess, shlex, json as _json\n"
+          "try:\n"
+          "    _r = subprocess.run(\n"
+          f"        {cmd},\n"
+          "        capture_output=True, text=True,\n"
+          f"        timeout={timeout!r},\n"
+          "    )\n"
+          "    print(_json.dumps({\n"
+          "        '__shell_result__': True,\n"
+          "        'stdout': _r.stdout,\n"
+          "        'stderr': _r.stderr,\n"
+          "        'returncode': _r.returncode,\n"
+          "    }))\n"
+          "except subprocess.TimeoutExpired as _e:\n"
+          "    print(_json.dumps({\n"
+          "        '__shell_result__': True,\n"
+          "        'stdout': _e.stdout or '',\n"
+          f"        'stderr': 'Timed out after {timeout}s',\n"
+          "        'returncode': -1,\n"
+          "    }))\n"
       )
     return None
 
@@ -427,7 +505,17 @@ class SkillToolset(BaseToolset):
       skills: list[models.Skill],
       *,
       code_executor: Optional[BaseCodeExecutor] = None,
+      script_timeout: int = _DEFAULT_SCRIPT_TIMEOUT,
   ):
+    """Initializes the SkillToolset.
+
+    Args:
+      skills: List of skills to register.
+      code_executor: Optional code executor for script execution.
+      script_timeout: Timeout in seconds for shell script execution
+        via subprocess.run. Defaults to 300 seconds. Does not apply
+        to Python scripts executed via exec().
+    """
     super().__init__()
 
     # Check for duplicate skill names
@@ -439,6 +527,7 @@ class SkillToolset(BaseToolset):
 
     self._skills = {skill.name: skill for skill in skills}
     self._code_executor = code_executor
+    self._script_timeout = script_timeout
     self._tools = [
         ListSkillsTool(self),
         LoadSkillTool(self),
