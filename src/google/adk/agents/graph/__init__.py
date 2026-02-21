@@ -14,6 +14,9 @@ This module contains components for graph-based workflow orchestration:
 - EdgeCallbackContext: Context for edge condition callbacks
 - NodeCallback: Type for node lifecycle callbacks
 - EdgeCallback: Type for edge condition callbacks
+- DynamicNode: Runtime agent selection based on state
+- NestedGraphNode: Hierarchical workflow composition (graph within graph)
+- DynamicParallelGroup: Dynamic concurrent execution with variable agent count
 """
 
 from __future__ import annotations
@@ -43,6 +46,9 @@ from .graph_rewind import rewind_to_node
 from .graph_state import GraphState
 from .graph_state import PydanticJSONEncoder
 from .graph_state import StateReducer
+from .patterns import DynamicNode
+from .patterns import DynamicParallelGroup
+from .patterns import NestedGraphNode
 
 # Sentinel constants for graph boundaries
 START = "__start__"
@@ -74,6 +80,9 @@ __all__ = [
     "export_graph_with_execution",
     "export_execution_timeline",
     "rewind_to_node",
+    "DynamicNode",
+    "NestedGraphNode",
+    "DynamicParallelGroup",
     "START",
     "END",
 ]

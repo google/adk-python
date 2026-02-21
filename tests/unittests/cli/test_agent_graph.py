@@ -9,6 +9,11 @@ import pytest
 
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.graph import GraphAgent, GraphNode, GraphState
+from google.adk.agents.graph.patterns import (
+    DynamicNode,
+    DynamicParallelGroup,
+    NestedGraphNode,
+)
 from google.adk.cli.agent_graph import build_graph, get_agent_graph
 from google.adk.events.event import Event
 from google.genai import types
@@ -107,6 +112,27 @@ class TestGraphAgentVisualization:
     assert "observe" in src
 
   @pytest.mark.asyncio
+  async def test_graph_agent_nested(self):
+    """NestedGraphNode renders inner graph as sub-cluster."""
+    inner_a = SimpleTestAgent(name="inner_step")
+    inner_g = GraphAgent(name="inner")
+    inner_g.add_node(GraphNode(name="is", agent=inner_a))
+    inner_g.set_start("is")
+    inner_g.set_end("is")
+
+    outer = GraphAgent(name="outer")
+    outer.add_node(NestedGraphNode(name="nested", graph_agent=inner_g))
+    outer.set_start("nested")
+    outer.set_end("nested")
+
+    dg = _make_digraph()
+    await build_graph(dg, outer, highlight_pairs=None)
+    src = dg.source
+
+    assert "inner" in src
+    assert "inner_step" in src
+
+  @pytest.mark.asyncio
   async def test_graph_agent_function_node(self):
     """Function-only node rendered as box shape."""
 
@@ -124,6 +150,47 @@ class TestGraphAgentVisualization:
 
     assert "fn_node" in src
     assert "box" in src
+
+  @pytest.mark.asyncio
+  async def test_graph_agent_dynamic_node(self):
+    """DynamicNode rendered as diamond shape."""
+    g = GraphAgent(name="wf")
+    dyn = DynamicNode(
+        name="dispatcher",
+        agent_selector=lambda _: None,
+    )
+    g.add_node(dyn)
+    g.set_start("dispatcher")
+    g.set_end("dispatcher")
+
+    dg = _make_digraph()
+    await build_graph(dg, g, highlight_pairs=None)
+    src = dg.source
+
+    assert "dispatcher" in src
+    assert "diamond" in src
+    assert "(dynamic)" in src
+
+  @pytest.mark.asyncio
+  async def test_graph_agent_dynamic_parallel_group(self):
+    """DynamicParallelGroup rendered as parallelogram shape."""
+    g = GraphAgent(name="wf")
+    dpg = DynamicParallelGroup(
+        name="fan_out",
+        agent_generator=lambda _: [],
+        aggregator=lambda r, _: "",
+    )
+    g.add_node(dpg)
+    g.set_start("fan_out")
+    g.set_end("fan_out")
+
+    dg = _make_digraph()
+    await build_graph(dg, g, highlight_pairs=None)
+    src = dg.source
+
+    assert "fan_out" in src
+    assert "parallelogram" in src
+    assert "(parallel)" in src
 
   @pytest.mark.asyncio
   async def test_get_agent_graph_returns_digraph(self):

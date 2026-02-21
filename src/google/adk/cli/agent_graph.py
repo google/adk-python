@@ -21,6 +21,9 @@ import graphviz
 
 from ..agents.base_agent import BaseAgent
 from ..agents.graph.graph_agent import GraphAgent
+from ..agents.graph.patterns import DynamicNode
+from ..agents.graph.patterns import DynamicParallelGroup
+from ..agents.graph.patterns import NestedGraphNode
 from ..agents.llm_agent import LlmAgent
 from ..agents.loop_agent import LoopAgent
 from ..agents.parallel_agent import ParallelAgent
@@ -43,8 +46,11 @@ def _graph_node_id(node) -> str:
   """Get the graphviz node ID for a GraphNode.
 
   For agent nodes, uses agent.name (matches build_graph's node naming).
-  For function nodes, uses node.name.
+  For NestedGraphNode, uses graph_agent's cluster name.
+  For function/pattern nodes, uses node.name.
   """
+  if isinstance(node, NestedGraphNode):
+    return node.graph_agent.name + ' (Graph Agent)'
   if node.agent is not None:
     return node.agent.name
   return node.name
@@ -207,7 +213,27 @@ async def build_graph(
     elif isinstance(agent, GraphAgent):
       # Render all graph nodes inside the cluster
       for node_name, node in agent.nodes.items():
-        if node.agent is not None:
+        if isinstance(node, NestedGraphNode):
+          await build_graph(child, node.graph_agent, highlight_pairs)
+        elif isinstance(node, DynamicNode):
+          child.node(
+              node_name,
+              node_name + ' (dynamic)',
+              shape='diamond',
+              style='rounded',
+              color=light_gray,
+              fontcolor=light_gray,
+          )
+        elif isinstance(node, DynamicParallelGroup):
+          child.node(
+              node_name,
+              node_name + ' (parallel)',
+              shape='parallelogram',
+              style='rounded',
+              color=light_gray,
+              fontcolor=light_gray,
+          )
+        elif node.agent is not None:
           # Agent node — render inside cluster
           await build_graph(child, node.agent, highlight_pairs)
         else:

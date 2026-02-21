@@ -33,6 +33,8 @@ from google.adk.agents.graph import GraphState
 from google.adk.agents.graph import rewind_to_node
 from google.adk.agents.graph import StateReducer
 from google.adk.agents.graph.graph_agent_state import GraphAgentState
+from google.adk.agents.graph.patterns import DynamicNode
+from google.adk.agents.graph.patterns import NestedGraphNode
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.run_config import RunConfig
 from google.adk.apps import ResumabilityConfig
@@ -2222,9 +2224,7 @@ class TestValidateNodeConfiguration:
     # _validate_node_configuration should log warning
     import logging
 
-    with patch(
-        "google.adk.agents.graph.graph_agent.logger"
-    ) as mock_logger:
+    with patch("google.adk.agents.graph.graph_agent.logger") as mock_logger:
       graph.add_node(node)
       mock_logger.warning.assert_called_once()
 
@@ -2313,7 +2313,9 @@ class TestAddEdgeEdgeCondition:
   def test_invalid_target_type_raises(self):
     """Non-str non-EdgeCondition target raises TypeError."""
     graph = self._make_graph()
-    with pytest.raises(TypeError, match="target_node must be str or EdgeCondition"):
+    with pytest.raises(
+        TypeError, match="target_node must be str or EdgeCondition"
+    ):
       graph.add_edge("src", 42)
 
 
@@ -2335,9 +2337,7 @@ class TestCallbackReturnsEvent:
     async def before_cb(ctx: NodeCallbackContext):
       return Event(
           author="before_cb",
-          content=types.Content(
-              parts=[types.Part(text="before_event")]
-          ),
+          content=types.Content(parts=[types.Part(text="before_event")]),
       )
 
     graph = GraphAgent(name="g", before_node_callback=before_cb)
@@ -2352,9 +2352,7 @@ class TestCallbackReturnsEvent:
     async for event in runner.run_async(
         user_id="u",
         session_id="s",
-        new_message=types.Content(
-            role="user", parts=[types.Part(text="go")]
-        ),
+        new_message=types.Content(role="user", parts=[types.Part(text="go")]),
     ):
       yielded_events.append(event)
 
@@ -2362,7 +2360,9 @@ class TestCallbackReturnsEvent:
     before_texts = [
         e.content.parts[0].text
         for e in yielded_events
-        if e.content and e.content.parts and e.content.parts[0].text == "before_event"
+        if e.content
+        and e.content.parts
+        and e.content.parts[0].text == "before_event"
     ]
     assert len(before_texts) == 1
 
@@ -2373,9 +2373,7 @@ class TestCallbackReturnsEvent:
     async def after_cb(ctx: NodeCallbackContext):
       return Event(
           author="after_cb",
-          content=types.Content(
-              parts=[types.Part(text="after_event")]
-          ),
+          content=types.Content(parts=[types.Part(text="after_event")]),
       )
 
     graph = GraphAgent(name="g", after_node_callback=after_cb)
@@ -2391,16 +2389,16 @@ class TestCallbackReturnsEvent:
     async for event in runner.run_async(
         user_id="u",
         session_id="s",
-        new_message=types.Content(
-            role="user", parts=[types.Part(text="go")]
-        ),
+        new_message=types.Content(role="user", parts=[types.Part(text="go")]),
     ):
       yielded_events.append(event)
 
     after_texts = [
         e.content.parts[0].text
         for e in yielded_events
-        if e.content and e.content.parts and e.content.parts[0].text == "after_event"
+        if e.content
+        and e.content.parts
+        and e.content.parts[0].text == "after_event"
     ]
     assert len(after_texts) == 1
 
@@ -2459,9 +2457,7 @@ def _cov_make_ctx(
       session_service=svc,
       invocation_id="inv-1",
       agent=agent,
-      user_content=types.Content(
-          role="user", parts=[types.Part(text="test")]
-      ),
+      user_content=types.Content(role="user", parts=[types.Part(text="test")]),
   )
   if resumable:
     ctx.resumability_config = ResumabilityConfig(is_resumable=True)
@@ -2488,6 +2484,32 @@ def _cov_linear_graph(name, agents, names):
 
 
 class TestGetNodeAgent:
+
+  def test_nested_graph_node_returns_graph_agent(self):
+    inner = GraphAgent(name="inner")
+    inner_agent = SimpleTestAgent("inner_step", ["inner_ok"])
+    inner.add_node(GraphNode(name="s", agent=inner_agent))
+    inner.set_start("s")
+    inner.set_end("s")
+    nested = NestedGraphNode(name="nest", graph_agent=inner)
+    outer = GraphAgent(name="outer")
+    assert outer._get_node_agent(nested) is inner
+
+  def test_dynamic_node_returns_fallback_agent(self):
+    fallback = SimpleTestAgent("fallback", ["fb_ok"])
+    dyn = DynamicNode(
+        name="dyn", agent_selector=lambda s: None, fallback_agent=fallback
+    )
+    outer = GraphAgent(name="outer")
+    assert outer._get_node_agent(dyn) is fallback
+
+  def test_dynamic_node_no_fallback_returns_none(self):
+    dyn = DynamicNode(
+        name="dyn", agent_selector=lambda s: None, fallback_agent=None
+    )
+    outer = GraphAgent(name="outer")
+    assert outer._get_node_agent(dyn) is None
+
   def test_regular_node_returns_agent(self):
     agent = SimpleTestAgent("a", ["ok"])
     node = GraphNode(name="n", agent=agent)
@@ -2497,14 +2519,19 @@ class TestGetNodeAgent:
 
 @pytest.mark.asyncio
 class TestDomainDataFromSession:
+
   async def test_session_state_populates_domain_data(self):
     agent_a = SimpleTestAgent("a", ["done"])
     graph = _cov_linear_graph("g", [agent_a], ["nA"])
-    ctx = _cov_make_ctx(graph, session_state={"my_key": "my_value", "another": 42})
+    ctx = _cov_make_ctx(
+        graph, session_state={"my_key": "my_value", "another": 42}
+    )
     events = await _cov_collect(graph, ctx)
     final = [
-        e for e in events
-        if e.actions and e.actions.state_delta
+        e
+        for e in events
+        if e.actions
+        and e.actions.state_delta
         and "graph_data" in (e.actions.state_delta or {})
     ]
     assert len(final) == 1
@@ -2526,8 +2553,10 @@ class TestDomainDataFromSession:
     )
     events = await _cov_collect(graph, ctx)
     final = [
-        e for e in events
-        if e.actions and e.actions.state_delta
+        e
+        for e in events
+        if e.actions
+        and e.actions.state_delta
         and "graph_data" in (e.actions.state_delta or {})
     ]
     assert len(final) == 1
@@ -2541,6 +2570,7 @@ class TestDomainDataFromSession:
 @pytest.mark.asyncio
 @pytest.mark.asyncio
 class TestBeforeNodeCallbackException:
+
   async def test_before_callback_failure_continues_execution(self):
     agent_a = SimpleTestAgent("a", ["a_out"])
     graph = _cov_linear_graph("g", [agent_a], ["nA"])
@@ -2558,6 +2588,7 @@ class TestBeforeNodeCallbackException:
 @pytest.mark.asyncio
 @pytest.mark.asyncio
 class TestOutputMapperNoneFallback:
+
   async def test_output_mapper_returning_none_uses_prev_state(self):
     agent_a = SimpleTestAgent("a", ["a_out"])
     graph = GraphAgent(name="g")
@@ -2576,16 +2607,21 @@ class TestOutputMapperNoneFallback:
     events = await _cov_collect(graph, ctx)
     assert agent_a.call_count == 1
     final = [
-        e for e in events
-        if e.actions and e.actions.state_delta
+        e
+        for e in events
+        if e.actions
+        and e.actions.state_delta
         and "graph_data" in (e.actions.state_delta or {})
     ]
     assert len(final) == 1
-    assert final[0].actions.state_delta["graph_data"].get("custom_key") == "a_out"
+    assert (
+        final[0].actions.state_delta["graph_data"].get("custom_key") == "a_out"
+    )
 
 
 @pytest.mark.asyncio
 class TestAfterNodeCallbackException:
+
   async def test_after_callback_failure_continues_execution(self):
     agent_a = SimpleTestAgent("a", ["a_out"])
     agent_b = SimpleTestAgent("b", ["b_out"])
@@ -2603,6 +2639,7 @@ class TestAfterNodeCallbackException:
 
 @pytest.mark.asyncio
 class TestNodeExecutionException:
+
   async def test_node_exception_raises_and_records_metrics(self):
     failing = _CovFailingAgent("fail", "node_error")
     graph = _cov_linear_graph("g", [failing], ["nA"])
@@ -2625,4 +2662,3 @@ class TestConditionEvalLogging:
       assert result is False
       mock_logger.error.assert_called_once()
       assert mock_logger.error.call_args[1].get("exc_info") is True
-

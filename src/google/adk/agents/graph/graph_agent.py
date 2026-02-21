@@ -405,6 +405,13 @@ class GraphAgent(GraphTelemetryMixin, BaseAgent):  # type: ignore[misc]
     """
     if node.agent is not None:
       return node.agent
+    from .patterns import DynamicNode
+    from .patterns import NestedGraphNode
+
+    if isinstance(node, NestedGraphNode):
+      return node.graph_agent
+    if isinstance(node, DynamicNode):
+      return node.fallback_agent
     return None
 
   def _register_node_agents(self, node: "GraphNode") -> None:
