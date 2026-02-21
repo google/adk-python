@@ -20,6 +20,7 @@ from typing import Union
 import graphviz
 
 from ..agents.base_agent import BaseAgent
+from ..agents.graph.graph_agent import GraphAgent
 from ..agents.llm_agent import LlmAgent
 from ..agents.loop_agent import LoopAgent
 from ..agents.parallel_agent import ParallelAgent
@@ -36,6 +37,17 @@ except ModuleNotFoundError:
   retrieval_tool_module_loaded = False
 else:
   retrieval_tool_module_loaded = True
+
+
+def _graph_node_id(node) -> str:
+  """Get the graphviz node ID for a GraphNode.
+
+  For agent nodes, uses agent.name (matches build_graph's node naming).
+  For function nodes, uses node.name.
+  """
+  if node.agent is not None:
+    return node.agent.name
+  return node.name
 
 
 async def build_graph(
@@ -69,6 +81,8 @@ async def build_graph(
         return tool_or_agent.name + ' (Loop Agent)'
       elif isinstance(tool_or_agent, ParallelAgent):
         return tool_or_agent.name + ' (Parallel Agent)'
+      elif isinstance(tool_or_agent, GraphAgent):
+        return tool_or_agent.name + ' (Graph Agent)'
       else:
         return tool_or_agent.name
     elif isinstance(tool_or_agent, BaseTool):
@@ -125,6 +139,8 @@ async def build_graph(
       elif isinstance(tool_or_agent, LoopAgent):
         return True
       elif isinstance(tool_or_agent, ParallelAgent):
+        return True
+      elif isinstance(tool_or_agent, GraphAgent):
         return True
       else:
         return False
@@ -188,6 +204,36 @@ async def build_graph(
         await build_graph(child, sub_agent, highlight_pairs)
         if parent_agent:
           draw_edge(parent_agent.name, sub_agent.name)
+    elif isinstance(agent, GraphAgent):
+      # Render all graph nodes inside the cluster
+      for node_name, node in agent.nodes.items():
+        if node.agent is not None:
+          # Agent node — render inside cluster
+          await build_graph(child, node.agent, highlight_pairs)
+        else:
+          # Function-only node
+          child.node(
+              node_name,
+              node_name,
+              shape='box',
+              style='rounded',
+              color=light_gray,
+              fontcolor=light_gray,
+          )
+      # Draw edges from graph topology
+      for node_name, node in agent.nodes.items():
+        src = _graph_node_id(node)
+        for edge in node.edges:
+          tgt_node = agent.nodes.get(edge.target_node)
+          if tgt_node:
+            dst = _graph_node_id(tgt_node)
+            draw_edge(src, dst)
+      # Connect parent to start node
+      if parent_agent and agent.start_node:
+        sn = agent.nodes.get(agent.start_node)
+        if sn:
+          start_id = _graph_node_id(sn)
+          draw_edge(parent_agent.name, start_id)
     else:
       for sub_agent in agent.sub_agents:
         await build_graph(child, sub_agent, highlight_pairs)
