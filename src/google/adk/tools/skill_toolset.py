@@ -16,12 +16,16 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
+from typing import Optional
 from typing import TYPE_CHECKING
 
 from google.genai import types
 
 from ..agents.readonly_context import ReadonlyContext
+from ..code_executors.base_code_executor import BaseCodeExecutor
+from ..code_executors.code_execution_utils import CodeExecutionInput
 from ..features import experimental
 from ..features import FeatureName
 from ..skills import models
@@ -32,6 +36,8 @@ from .tool_context import ToolContext
 
 if TYPE_CHECKING:
   from ..models.llm_request import LlmRequest
+
+logger = logging.getLogger("google_adk." + __name__)
 
 DEFAULT_SKILL_SYSTEM_INSTRUCTION = """You can use specialized 'skills' to help you with complex tasks. You MUST use the skill tools to interact with these skills.
 
@@ -46,6 +52,7 @@ This is very important:
 1. If a skill seems relevant to the current user query, you MUST use the `load_skill` tool with `name="<SKILL_NAME>"` to read its full instructions before proceeding.
 2. Once you have read the instructions, follow them exactly as documented before replying to the user. For example, If the instruction lists multiple steps, please make sure you complete all of them in order.
 3. The `load_skill_resource` tool is for viewing files within a skill's directory (e.g., `references/*`, `assets/*`, `scripts/*`). Do NOT use other tools to access these files.
+4. Use `execute_skill_script` to run scripts from a skill's `scripts/` directory. Use `load_skill_resource` to view script content first if needed.
 """
 
 
@@ -228,12 +235,195 @@ class LoadSkillResourceTool(BaseTool):
 
 
 @experimental(FeatureName.SKILL_TOOLSET)
+class ExecuteSkillScriptTool(BaseTool):
+  """Tool to execute scripts from a skill's scripts/ directory."""
+
+  def __init__(self, toolset: "SkillToolset"):
+    super().__init__(
+        name="execute_skill_script",
+        description=(
+            "Executes a script from a skill's scripts/ directory"
+            " and returns its output."
+        ),
+    )
+    self._toolset = toolset
+
+  def _get_declaration(self) -> types.FunctionDeclaration | None:
+    return types.FunctionDeclaration(
+        name=self.name,
+        description=self.description,
+        parameters_json_schema={
+            "type": "object",
+            "properties": {
+                "skill_name": {
+                    "type": "string",
+                    "description": "The name of the skill.",
+                },
+                "script_name": {
+                    "type": "string",
+                    "description": (
+                        "The name of the script to execute (e.g.,"
+                        " 'setup.sh' or 'scripts/setup.sh')."
+                    ),
+                },
+                "input_args": {
+                    "type": "string",
+                    "description": (
+                        "Optional space-separated arguments to pass"
+                        " to the script."
+                    ),
+                },
+            },
+            "required": ["skill_name", "script_name"],
+        },
+    )
+
+  async def run_async(
+      self, *, args: dict[str, Any], tool_context: ToolContext
+  ) -> Any:
+    skill_name = args.get("skill_name")
+    script_name = args.get("script_name")
+    input_args = args.get("input_args", "")
+
+    if not skill_name:
+      return {
+          "error": "Skill name is required.",
+          "error_code": "MISSING_SKILL_NAME",
+      }
+    if not script_name:
+      return {
+          "error": "Script name is required.",
+          "error_code": "MISSING_SCRIPT_NAME",
+      }
+
+    # Strip scripts/ prefix for consistency
+    if script_name.startswith("scripts/"):
+      script_name = script_name[len("scripts/") :]
+
+    skill = self._toolset._get_skill(skill_name)
+    if not skill:
+      return {
+          "error": f"Skill '{skill_name}' not found.",
+          "error_code": "SKILL_NOT_FOUND",
+      }
+
+    script = skill.resources.get_script(script_name)
+    if script is None:
+      return {
+          "error": f"Script '{script_name}' not found in skill '{skill_name}'.",
+          "error_code": "SCRIPT_NOT_FOUND",
+      }
+
+    # Resolve code executor: toolset-level first, then agent fallback
+    code_executor = self._toolset._code_executor
+    if code_executor is None:
+      agent = tool_context._invocation_context.agent
+      if hasattr(agent, "code_executor"):
+        code_executor = agent.code_executor
+    if code_executor is None:
+      return {
+          "error": (
+              "No code executor configured. A code executor is"
+              " required to run scripts."
+          ),
+          "error_code": "NO_CODE_EXECUTOR",
+      }
+
+    # Prepare code based on script extension
+    code = self._prepare_code(script_name, script.src, input_args)
+    if code is None:
+      ext = script_name.rsplit(".", 1)[-1] if "." in script_name else ""
+      return {
+          "error": (
+              f"Unsupported script type '.{ext}'. Supported"
+              " types: .py, .sh, .bash"
+          ),
+          "error_code": "UNSUPPORTED_SCRIPT_TYPE",
+      }
+
+    try:
+      result = code_executor.execute_code(
+          tool_context._invocation_context,
+          CodeExecutionInput(code=code),
+      )
+      return {
+          "skill_name": skill_name,
+          "script_name": script_name,
+          "stdout": result.stdout,
+          "stderr": result.stderr,
+          "status": "error" if result.stderr else "success",
+      }
+    except Exception as e:
+      logger.exception(
+          "Error executing script '%s' from skill '%s'",
+          script_name,
+          skill_name,
+      )
+      # Keep the error message short for the LLM; full trace is logged above.
+      short_msg = str(e)
+      if len(short_msg) > 200:
+        short_msg = short_msg[:200] + "..."
+      return {
+          "error": f"Failed to execute script '{script_name}': {short_msg}",
+          "error_code": "EXECUTION_ERROR",
+      }
+
+  def _prepare_code(
+      self,
+      script_name: str,
+      script_src: str,
+      input_args: str,
+  ) -> str | None:
+    """Prepares Python code to execute the script.
+
+    Args:
+      script_name: The script filename.
+      script_src: The script source content.
+      input_args: Optional arguments string.
+
+    Returns:
+      Python code string to execute, or None if unsupported type.
+    """
+    ext = ""
+    if "." in script_name:
+      ext = script_name.rsplit(".", 1)[-1].lower()
+
+    if ext in ("py", ""):
+      # Python script: execute directly, inject sys.argv if args
+      if input_args:
+        return (
+            "import sys\n"
+            f"sys.argv = [{script_name!r}] + {input_args!r}.split()\n"
+            + script_src
+        )
+      return script_src
+    elif ext in ("sh", "bash"):
+      # Shell script: wrap in subprocess.run
+      return (
+          "import subprocess\n"
+          "_result = subprocess.run(\n"
+          f"    ['bash', '-c', {script_src!r}"
+          + (f" + ' ' + {input_args!r}" if input_args else "")
+          + f"],\n"
+          f"    capture_output=True, text=True,\n"
+          f")\n"
+          f"print(_result.stdout, end='')\n"
+          f"if _result.stderr:\n"
+          f"    import sys\n"
+          f"    print(_result.stderr, end='', file=sys.stderr)\n"
+      )
+    return None
+
+
+@experimental(FeatureName.SKILL_TOOLSET)
 class SkillToolset(BaseToolset):
   """A toolset for managing and interacting with agent skills."""
 
   def __init__(
       self,
       skills: list[models.Skill],
+      *,
+      code_executor: Optional[BaseCodeExecutor] = None,
   ):
     super().__init__()
 
@@ -245,10 +435,12 @@ class SkillToolset(BaseToolset):
       seen.add(skill.name)
 
     self._skills = {skill.name: skill for skill in skills}
+    self._code_executor = code_executor
     self._tools = [
         ListSkillsTool(self),
         LoadSkillTool(self),
         LoadSkillResourceTool(self),
+        ExecuteSkillScriptTool(self),
     ]
 
   async def get_tools(
