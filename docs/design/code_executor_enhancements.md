@@ -38,9 +38,50 @@ to the existing API.
 
 ---
 
-## 2. Current State
+## 2. Non-Goals & Invariants
 
-### 2.1 Executor Landscape
+The following are explicitly **out of scope** for this design:
+
+1. **Full sandboxing of `UnsafeLocalCodeExecutor`** — The restricted
+   builtins mechanism (Tier 1, §6.3.1-B) is a best-effort friction layer,
+   not a security boundary. Any determined code can bypass it via
+   `object.__subclasses__()`, `importlib` through `__builtins__`, etc.
+   True isolation requires a process or container boundary.
+
+2. **Idempotent replay of side-effecting code** — The stateful
+   `ContainerCodeExecutor` (Proposal 2) replays prior code blocks.
+   Code with non-idempotent side effects (file writes, network calls,
+   database mutations) is **not supported** in stateful replay mode.
+   The design suppresses stdout but cannot suppress arbitrary I/O.
+   Users must keep side-effecting code in the final block or use the
+   persistent-process approach (Phase 2 / Option A).
+
+3. **Multi-tenant per-execution isolation** — Per-execution isolation
+   (fresh sandbox per call) is the domain of `GkeCodeExecutor` and
+   cloud-hosted executors. Container and local executors share a
+   single execution environment within a session.
+
+4. **Windows support for `LocalSandboxCodeExecutor`** —
+   `resource.setrlimit` and `process_group` are Unix-only. Windows
+   support is deferred to a future iteration.
+
+**Key invariants:**
+
+- `timeout_seconds` is a **per-invocation** parameter, not executor-global
+  state. When a single executor instance is shared across agents/tools,
+  each `execute_code()` call may specify its own timeout via
+  `CodeExecutionInput.timeout_seconds`.
+- Code is appended to stateful history **only after** successful execution.
+  A failing code block is never replayed.
+- Executor instances are not thread-safe unless documented otherwise.
+  Concurrent `execute_code()` calls on the same instance require external
+  synchronization.
+
+---
+
+## 3. Current State
+
+### 3.1 Executor Landscape
 
 | Executor | Stateful | Timeout | Isolation | Dependencies |
 |----------|----------|---------|-----------|-------------|
@@ -51,7 +92,7 @@ to the existing API.
 | `AgentEngineSandboxCodeExecutor` | Allowed | None | Vertex AI Sandbox | `vertexai` |
 | `BuiltInCodeExecutor` | N/A | N/A | Gemini model | `google-genai` |
 
-### 2.2 Base Class Contract
+### 3.2 Base Class Contract
 
 ```python
 class BaseCodeExecutor(BaseModel):
@@ -68,7 +109,7 @@ class BaseCodeExecutor(BaseModel):
     ) -> CodeExecutionResult: ...
 ```
 
-### 2.3 Data Model
+### 3.3 Data Model
 
 ```python
 @dataclasses.dataclass
@@ -84,7 +125,7 @@ class CodeExecutionResult:
     output_files: list[File] = field(default_factory=list)
 ```
 
-### 2.4 How Executors Are Used
+### 3.4 How Executors Are Used
 
 The primary consumer is `_code_execution.py` in the LLM flows layer:
 
@@ -99,9 +140,9 @@ The primary consumer is `_code_execution.py` in the LLM flows layer:
 
 ---
 
-## 3. Proposal 1: Uniform Timeout Support
+## 4. Proposal 1: Uniform Timeout Support
 
-### 3.1 Problem
+### 4.1 Problem
 
 A code execution call can hang indefinitely. This is a denial-of-service
 risk for any production deployment, whether the code comes from an LLM, a
@@ -115,24 +156,55 @@ skill script, or user input.
 | `VertexAiCodeExecutor` | Vertex AI internal timeout (opaque) |
 | `AgentEngineSandboxCodeExecutor` | Vertex AI internal timeout (opaque) |
 
-### 3.2 Design
+### 4.2 Design
 
-#### 3.2.1 Add `timeout_seconds` to `BaseCodeExecutor`
+#### 4.2.1 Add `timeout_seconds` to `CodeExecutionInput`
+
+Timeout is a **per-invocation** concern, not executor-global state. A single
+executor instance may be shared across agents, tools, and concurrent calls
+with different timeout requirements (e.g., a quick validation script vs. a
+long-running data analysis). Placing timeout on the executor would create
+race conditions when multiple callers set different values.
+
+```python
+@dataclasses.dataclass
+class CodeExecutionInput:
+    code: str
+    input_files: list[File] = field(default_factory=list)
+    execution_id: Optional[str] = None
+    timeout_seconds: Optional[int] = None  # NEW
+    """Maximum execution time in seconds. None means no timeout
+    (executor default behavior). Each execute_code() call reads
+    this from its input, not from executor-level state."""
+```
+
+Additionally, a **default** timeout on `BaseCodeExecutor` serves as
+a fallback when callers don't specify one:
 
 ```python
 class BaseCodeExecutor(BaseModel):
-    timeout_seconds: Optional[int] = None
-    """Maximum execution time in seconds. None means no timeout
-    (executor default behavior). Subclasses should enforce this
-    in their execute_code() implementation."""
+    default_timeout_seconds: Optional[int] = None
+    """Default timeout applied when CodeExecutionInput.timeout_seconds
+    is None. Subclasses may override (e.g., GkeCodeExecutor defaults
+    to 300). None means no timeout."""
 ```
 
-**Why `Optional[int]` with `None` default:**
-- Backward compatible — existing code that doesn't set it works unchanged
-- Allows subclasses to define their own defaults
-- `None` means "use executor-specific default or no timeout"
+The effective timeout is resolved as:
+```python
+timeout = (
+    code_execution_input.timeout_seconds
+    ?? self.default_timeout_seconds
+)
+```
 
-#### 3.2.2 `UnsafeLocalCodeExecutor` — Thread-Based Timeout
+**Why per-invocation + executor default:**
+- Backward compatible — existing code that doesn't set it works unchanged
+- Safe for shared executors — no global mutable state
+- Callers can override per-call (e.g., `ExecuteSkillScriptTool` sets
+  `script_timeout`, LLM flows use a different default)
+- Executor subclasses can define their own defaults
+
+#### 4.2.2 `UnsafeLocalCodeExecutor` — Thread-Based Timeout
 
 `exec()` cannot be interrupted from the same thread. The solution is to
 run it in a separate thread with a join timeout:
@@ -141,7 +213,10 @@ run it in a separate thread with a join timeout:
 import threading
 
 def execute_code(self, invocation_context, code_execution_input):
-    timeout = self.timeout_seconds
+    timeout = (
+        code_execution_input.timeout_seconds
+        or self.default_timeout_seconds
+    )
     if timeout is None:
         # No timeout: current behavior (blocking exec)
         return self._execute_inline(code_execution_input)
@@ -179,32 +254,24 @@ def execute_code(self, invocation_context, code_execution_input):
 **Recommendation:** Thread-based timeout for `UnsafeLocalCodeExecutor` is
 sufficient. Document that it provides best-effort timeout only.
 
-#### 3.2.3 `ContainerCodeExecutor` — Docker `exec_run` Timeout
+#### 4.2.3 `ContainerCodeExecutor` — Docker Exec Kill on Timeout
 
-Docker's `exec_run` does not natively support a timeout, but we can use
-the Docker API's exec endpoint with a socket timeout:
+**Problem with thread+join in containers:** Unlike `UnsafeLocalCodeExecutor`
+where a lingering daemon thread is merely wasteful, a runaway process inside
+a shared container consumes CPU/memory and can interfere with subsequent
+executions. The thread+join pattern would leave the container process
+running indefinitely after the join timeout expires.
 
-```python
-def execute_code(self, invocation_context, code_execution_input):
-    timeout = self.timeout_seconds
-
-    exec_result = self._container.exec_run(
-        ['python3', '-c', code_execution_input.code],
-        demux=True,
-        # Docker SDK does not support exec_run timeout directly.
-        # Use socket_timeout on the client instead.
-    )
-    ...
-```
-
-**Better approach:** Use `threading.Timer` to kill the exec if it exceeds
-the timeout:
+**Primary approach: Docker exec kill via `exec_inspect` + PID kill.**
 
 ```python
 import threading
 
 def execute_code(self, invocation_context, code_execution_input):
-    timeout = self.timeout_seconds
+    timeout = (
+        code_execution_input.timeout_seconds
+        or self.default_timeout_seconds
+    )
 
     # Create the exec instance
     exec_id = self._client.api.exec_create(
@@ -212,18 +279,29 @@ def execute_code(self, invocation_context, code_execution_input):
         ['python3', '-c', code_execution_input.code],
     )['Id']
 
-    # Start a timer to kill the exec if it exceeds timeout
+    # Start a timer to kill the exec's PID on timeout
     timer = None
     timed_out = threading.Event()
     if timeout is not None:
-        def _kill():
+        def _kill_exec():
             timed_out.set()
-            # Kill the exec'd process inside the container
-            self._container.exec_run(
-                ['kill', '-9', '-1'],  # kill all procs
-                detach=True,
-            )
-        timer = threading.Timer(timeout, _kill)
+            try:
+                # Get the PID of the exec'd process
+                info = self._client.api.exec_inspect(exec_id)
+                pid = info.get('Pid', 0)
+                if pid > 0:
+                    self._container.exec_run(
+                        ['kill', '-9', str(pid)],
+                        detach=True,
+                    )
+            except Exception:
+                # Fallback: kill all non-init processes
+                self._container.exec_run(
+                    ['sh', '-c',
+                     'kill -9 $(ps -o pid= | grep -v "^\\s*1$")'],
+                    detach=True,
+                )
+        timer = threading.Timer(timeout, _kill_exec)
         timer.start()
 
     try:
@@ -239,27 +317,44 @@ def execute_code(self, invocation_context, code_execution_input):
     # ... parse output as before
 ```
 
-**Alternative — simpler approach:** Wrap `exec_run` in a thread with
-join timeout (same pattern as `UnsafeLocalCodeExecutor`). Simpler, and
-the container process can be cleaned up on next execution.
+**Why targeted PID kill, not `kill -9 -1`:**
+- `kill -9 -1` kills *all* processes in the container, including the
+  init/shell process that keeps the container alive. This would force a
+  container restart on the next call.
+- Targeted kill via `exec_inspect` → PID only terminates the timed-out
+  process, leaving the container healthy for subsequent calls.
+- The fallback (`kill all non-init`) is a safety net if `exec_inspect`
+  fails (e.g., Docker API version mismatch).
 
-**Recommendation:** Use the thread + join approach for consistency across
-executors. Add a follow-up to use Docker's native exec kill for more
-robust cleanup.
+**Alternative — container restart on timeout:** Simpler but more costly.
+Stop and restart the container after timeout. Acceptable if stateful mode
+is not in use (no accumulated state to preserve).
 
-#### 3.2.4 `GkeCodeExecutor` — Already Implemented
+**Recommendation:** Use Docker exec kill as the primary approach. This is
+more robust than thread+join and properly cleans up runaway processes.
+
+#### 4.2.4 `GkeCodeExecutor` — Already Implemented
 
 `GkeCodeExecutor` already has `timeout_seconds: int = 300` applied to the
-K8s watch API. Migrate it to use the base class field:
+K8s watch API. Migrate it to use the base class default field:
 
 ```python
 class GkeCodeExecutor(BaseCodeExecutor):
-    timeout_seconds: int = 300  # Override base default
+    default_timeout_seconds: int = 300  # Override base default
 ```
 
-No behavioral change needed.
+In `execute_code()`, resolve timeout from per-invocation input first:
+```python
+timeout = (
+    code_execution_input.timeout_seconds
+    or self.default_timeout_seconds
+)
+```
 
-#### 3.2.5 Remote Executors (Vertex AI, Agent Engine)
+No behavioral change for existing callers (they don't set per-invocation
+timeout, so the 300s default applies as before).
+
+#### 4.2.5 Remote Executors (Vertex AI, Agent Engine)
 
 These executors delegate to Google Cloud APIs that have their own internal
 timeouts. Adding client-side timeout is still valuable as a safety net:
@@ -268,17 +363,18 @@ timeouts. Adding client-side timeout is still valuable as a safety net:
 - Return `CodeExecutionResult(stderr='...')` on timeout
 - Log a warning that the server-side execution may still be running
 
-### 3.3 Migration Plan
+### 4.3 Migration Plan
 
 | Phase | Action | Risk |
 |-------|--------|------|
-| 1 | Add `timeout_seconds: Optional[int] = None` to `BaseCodeExecutor` | None (backward compatible) |
-| 2 | Implement in `UnsafeLocalCodeExecutor` (thread + join) | Low |
-| 3 | Implement in `ContainerCodeExecutor` (thread + join) | Low |
-| 4 | Migrate `GkeCodeExecutor.timeout_seconds` to use base field | None |
-| 5 | Add client-side timeout to remote executors | Low |
+| 1 | Add `timeout_seconds: Optional[int] = None` to `CodeExecutionInput` | None (backward compatible) |
+| 2 | Add `default_timeout_seconds: Optional[int] = None` to `BaseCodeExecutor` | None (backward compatible) |
+| 3 | Implement in `UnsafeLocalCodeExecutor` (thread + join) | Low |
+| 4 | Implement in `ContainerCodeExecutor` (Docker exec kill) | Low |
+| 5 | Migrate `GkeCodeExecutor.timeout_seconds` to `default_timeout_seconds` | None |
+| 6 | Add client-side timeout to remote executors | Low |
 
-### 3.4 Impact on `ExecuteSkillScriptTool`
+### 4.4 Impact on `ExecuteSkillScriptTool`
 
 Once `BaseCodeExecutor` has native timeout support, the
 `ExecuteSkillScriptTool` can optionally delegate timeout enforcement to
@@ -289,9 +385,9 @@ executor timeout fails.
 
 ---
 
-## 4. Proposal 2: Stateful `ContainerCodeExecutor`
+## 5. Proposal 2: Stateful `ContainerCodeExecutor`
 
-### 4.1 Problem
+### 5.1 Problem
 
 Agents often need multi-step code execution where later steps depend on
 earlier results. For example:
@@ -306,9 +402,9 @@ Currently, each `execute_code()` call in `ContainerCodeExecutor` runs
 `python3 -c <code>` — a fresh Python process with no memory of prior
 calls. Step 2 would fail with `NameError: name 'df' is not defined`.
 
-### 4.2 Design
+### 5.2 Design
 
-#### 4.2.1 Architecture
+#### 5.2.1 Architecture
 
 ```
 ┌─ ContainerCodeExecutor ─────────────────────┐
@@ -415,7 +511,7 @@ No new dependencies.
 Cons: Re-executes entire history on each call — side effects run again.
 Grows linearly with history length.
 
-**Mitigation for side effects:** Wrap prior code in a guard:
+**Mitigation for stdout leakage:** Wrap prior code in a guard:
 
 ```python
 # Only new code produces output; prior blocks set up state silently
@@ -427,7 +523,16 @@ sys.stdout = _old_stdout
 # ... new code block (produces output) ...
 ```
 
-#### 4.2.2 Recommended Approach
+**WARNING — Side-effect replay is NOT mitigated by stdout suppression.**
+Prior blocks that perform file writes, network calls, database mutations,
+or other I/O will re-execute those side effects on every subsequent call.
+Stdout suppression only hides `print()` output — it does not prevent or
+guard against non-idempotent operations. This is a fundamental limitation
+of the cumulative replay approach (Option C). Users must keep
+side-effecting code in the final block or use Option A (persistent
+process) when side effects are unavoidable.
+
+#### 5.2.2 Recommended Approach
 
 **Option A (Persistent Process)** is the most robust for true statefulness
 and is the standard approach used by Jupyter kernels and similar systems.
@@ -439,16 +544,26 @@ Despite its complexity, it provides the best user experience:
 - O(1) cost per call (not O(n) like Option C)
 
 However, implementing a full REPL protocol is a significant engineering
-effort. We recommend a **phased approach**:
+effort.
 
-**Phase 1 (MVP):** Option C (cumulative file) with stdout suppression for
-prior blocks. Simple, works for the common case (data analysis, variable
-setup).
+**Given the severity of the side-effect replay problem (Finding 2), we
+recommend evaluating whether to skip Phase 1 and go directly to
+Option A.** The persistent-process approach eliminates an entire class
+of bugs. If the I/O boundary protocol (sentinel markers for output
+delimiting) can be solved with reasonable complexity, Phase 1 may not
+be worth the technical debt.
 
-**Phase 2 (Full):** Option A (persistent process) with a proper
-execution protocol using sentinel markers for output boundaries.
+**If Phase 1 is pursued as an MVP**, it should be clearly documented as
+limited to **pure computation** (variable setup, data transforms,
+aggregations) and explicitly unsupported for side-effecting code.
 
-#### 4.2.3 Implementation Plan (Phase 1)
+**Phase 1 (MVP, optional):** Option C (cumulative file) with stdout
+suppression. Restricted to pure-computation use cases only.
+
+**Phase 2 (Full, recommended):** Option A (persistent process) with a
+proper execution protocol using sentinel markers for output boundaries.
+
+#### 5.2.3 Implementation Plan (Phase 1, if pursued)
 
 1. **Unfreeze `stateful` in `ContainerCodeExecutor`:**
 
@@ -465,12 +580,15 @@ _code_history: list[str] = []
 
 3. **Modify `execute_code()`:**
 
+**Critical invariant:** Code is appended to history **only after**
+successful execution. A failing code block must never be replayed.
+
 ```python
 def execute_code(self, invocation_context, code_execution_input):
     code = code_execution_input.code
 
     if self.stateful:
-        # Build cumulative script
+        # Build cumulative script from prior SUCCESSFUL blocks
         setup_code = '\n'.join(
             f'# --- Block {i} ---\n{block}'
             for i, block in enumerate(self._code_history)
@@ -483,7 +601,6 @@ def execute_code(self, invocation_context, code_execution_input):
             '_sys.stdout = _sys.__stdout__\n'
             f'{code}\n'
         )
-        self._code_history.append(code)
     else:
         full_code = code
 
@@ -491,7 +608,16 @@ def execute_code(self, invocation_context, code_execution_input):
         ['python3', '-c', full_code],
         demux=True,
     )
-    # ... parse output as before
+
+    # Parse output
+    stdout, stderr = self._parse_exec_output(exec_result)
+    success = (exec_result.exit_code == 0)
+
+    # ONLY append to history after confirmed success
+    if self.stateful and success:
+        self._code_history.append(code)
+
+    return CodeExecutionResult(stdout=stdout, stderr=stderr)
 ```
 
 4. **Add `reset_state()` method:**
@@ -509,7 +635,7 @@ def reset_state(self):
 # Keep optimize_data_file frozen
 ```
 
-#### 4.2.4 Interaction with `execution_id`
+#### 5.2.4 Interaction with `execution_id`
 
 The LLM flow layer uses `execution_id` (from `CodeExecutorContext`) to
 identify stateful sessions. For `ContainerCodeExecutor`:
@@ -522,7 +648,25 @@ identify stateful sessions. For `ContainerCodeExecutor`:
 
 This aligns with how `VertexAiCodeExecutor` uses `session_id`.
 
-### 4.3 Testing Plan
+**Gap: `ExecuteSkillScriptTool` does not wire `execution_id`.**
+
+Currently, `ExecuteSkillScriptTool.run_async()` creates
+`CodeExecutionInput(code=prepared_code)` without setting `execution_id`.
+This means all skill script executions share the same (default) namespace
+in a stateful executor, with no isolation between different skills or
+invocations.
+
+**Action items:**
+1. `ExecuteSkillScriptTool` should generate a deterministic
+   `execution_id` from the skill name + invocation context (e.g.,
+   `f"skill:{skill_name}:{invocation_id}"`)
+2. Pass `execution_id` to `CodeExecutionInput`
+3. This enables future stateful skill scripts where a skill can
+   maintain state across multiple calls within the same session
+
+This is tracked as part of the Phase 2 implementation plan.
+
+### 5.3 Testing Plan
 
 | Test | Description |
 |------|-------------|
@@ -536,9 +680,9 @@ This aligns with how `VertexAiCodeExecutor` uses `session_id`.
 
 ---
 
-## 5. Proposal 3: Security Hardening
+## 6. Proposal 3: Security Hardening
 
-### 5.1 Problem
+### 6.1 Problem
 
 `UnsafeLocalCodeExecutor` is the default executor for local development
 because it requires no external dependencies. But it runs `exec()` in the
@@ -554,7 +698,7 @@ This is a critical security concern when executing:
 - Third-party skill scripts (supply chain risk)
 - User-provided code in multi-tenant deployments
 
-### 5.2 Threat Model
+### 6.2 Threat Model
 
 | Threat | Impact | Current mitigation |
 |--------|--------|--------------------|
@@ -565,17 +709,29 @@ This is a critical security concern when executing:
 | Network exfiltration | Data leak | None |
 | File system manipulation | Data loss / corruption | None |
 
-### 5.3 Design
+### 6.3 Design
 
 We propose a layered approach with three tiers of security:
 
-#### 5.3.1 Tier 1: `UnsafeLocalCodeExecutor` Hardening (Quick Wins)
+#### 6.3.1 Tier 1: `UnsafeLocalCodeExecutor` Hardening (Quick Wins)
 
 These changes improve safety without changing the fundamental architecture:
 
 **A. Timeout support** (covered in Proposal 1)
 
-**B. Restricted builtins:**
+**B. Restricted builtins (best-effort friction, NOT a security boundary):**
+
+**Important caveat:** Builtin/module blocking in `exec()` is trivially
+bypassed. Determined code can reach blocked functionality via:
+- `object.__subclasses__()` → find `os._wrap_close` → access `os.system`
+- `__builtins__.__dict__['__import__']('os')` (if `__builtins__` is a
+  module, not a dict)
+- Encoding tricks, `importlib` via `sys.modules`, etc.
+
+This is explicitly **not a security control** — it is a speed bump that
+catches accidental misuse and makes intentional abuse more visible. True
+isolation requires `LocalSandboxCodeExecutor` (Tier 2) or containers
+(Tier 3).
 
 ```python
 _BLOCKED_BUILTINS = {
@@ -600,7 +756,10 @@ that need `open()` for file I/O). It should be opt-in:
 class UnsafeLocalCodeExecutor(BaseCodeExecutor):
     restrict_builtins: bool = False
     """When True, block dangerous builtins (exec, eval, open,
-    __import__). Default False for backward compatibility."""
+    __import__). This is a best-effort friction layer, NOT a
+    security boundary — determined code can bypass it. Use
+    LocalSandboxCodeExecutor or ContainerCodeExecutor for
+    actual isolation. Default False for backward compatibility."""
 ```
 
 **C. Warning on first use:**
@@ -622,7 +781,7 @@ def execute_code(self, ...):
     ...
 ```
 
-#### 5.3.2 Tier 2: `LocalSandboxCodeExecutor` (New, Recommended)
+#### 6.3.2 Tier 2: `LocalSandboxCodeExecutor` (New, Recommended)
 
 A new executor that provides meaningful isolation without requiring Docker
 or cloud services:
@@ -660,28 +819,34 @@ class LocalSandboxCodeExecutor(BaseCodeExecutor):
                    if k in os.environ}
             env['PATH'] = '/usr/bin:/usr/local/bin'
 
-            # Set resource limits via preexec_fn
-            def set_limits():
-                import resource
-                # CPU time limit
-                resource.setrlimit(
-                    resource.RLIMIT_CPU,
-                    (self.max_cpu_seconds, self.max_cpu_seconds)
-                )
-                # Memory limit
-                mem_bytes = self.max_memory_mb * 1024 * 1024
-                resource.setrlimit(
-                    resource.RLIMIT_AS,
-                    (mem_bytes, mem_bytes)
-                )
+            timeout = (
+                code_execution_input.timeout_seconds
+                or self.default_timeout_seconds
+                or self.max_cpu_seconds
+            )
 
+            # Use process_group (Python 3.11+) instead of
+            # preexec_fn, which is not fork-safe with threads.
+            # process_group=0 places the child in its own
+            # process group, enabling clean group kill on
+            # timeout via os.killpg().
             result = subprocess.run(
-                ['python3', f.name],
+                [
+                    'python3', '-c',
+                    f'import resource; '
+                    f'resource.setrlimit(resource.RLIMIT_CPU, '
+                    f'({self.max_cpu_seconds}, '
+                    f'{self.max_cpu_seconds})); '
+                    f'resource.setrlimit(resource.RLIMIT_AS, '
+                    f'({self.max_memory_mb * 1024 * 1024}, '
+                    f'{self.max_memory_mb * 1024 * 1024})); '
+                    f'exec(open({f.name!r}).read())',
+                ],
                 capture_output=True,
                 text=True,
-                timeout=self.timeout_seconds,
+                timeout=timeout,
                 env=env,
-                preexec_fn=set_limits,  # Unix only
+                process_group=0,  # Python 3.11+, fork-safe
                 cwd=tempfile.gettempdir(),
             )
 
@@ -694,45 +859,75 @@ class LocalSandboxCodeExecutor(BaseCodeExecutor):
 
 **Platform considerations:**
 - `resource.setrlimit` is Unix-only (Linux, macOS)
+- `process_group=0` requires Python 3.11+ (the minimum for ADK)
 - On Windows, use `subprocess.CREATE_NO_WINDOW` and
   `subprocess.Popen` with `creationflags` for job object limits
 - Fallback to timeout-only on platforms without `resource` module
+
+**Why `process_group` instead of `preexec_fn`:**
+- `preexec_fn` is not fork-safe with threads — the Python docs warn
+  that it can deadlock in multi-threaded programs because it runs
+  between `fork()` and `exec()` while all parent thread locks are
+  held. ADK executors may be called from async/threaded contexts.
+- `process_group=0` (Python 3.11+) is fork-safe and places the child
+  in its own process group, enabling clean `os.killpg()` on timeout.
+- Resource limits are set via an inline `-c` wrapper script instead
+  of `preexec_fn`, avoiding the fork-safety issue entirely.
 
 **Dependencies:** None (stdlib only). This is the key advantage over
 `ContainerCodeExecutor`.
 
 **Limitations:**
 - Less isolation than containers (shared filesystem, kernel)
-- `preexec_fn` is not fork-safe with threads (use `process_group` on
-  Python 3.11+)
 - Cannot restrict network access without OS-level firewall rules
+- Requires Python 3.11+ (already the ADK minimum)
 
-#### 5.3.3 Tier 3: Promote `ContainerCodeExecutor` as Default
+#### 6.3.3 Tier 3: Promote `ContainerCodeExecutor` as Default
 
 For production deployments, container-based isolation should be the
 standard recommendation:
 
-**A. Simplify setup:**
+**A. Simplify setup with digest-pinned default image:**
 
 ```python
 # Current: requires explicit image or docker_path
 executor = ContainerCodeExecutor(image='python:3.11-slim')
 
-# Proposed: auto-pull default image
-executor = ContainerCodeExecutor()  # Uses python:3.11-slim
+# Proposed: auto-pull default image (digest-pinned)
+executor = ContainerCodeExecutor()
+```
+
+**Default image should use a digest-pinned or versioned tag**, not a
+mutable tag like `python:3.11-slim`. Mutable tags can change content
+silently (e.g., security patches, Python micro-version bumps), leading
+to non-reproducible behavior across environments and over time.
+
+```python
+# In ContainerCodeExecutor defaults:
+_DEFAULT_IMAGE = (
+    'python:3.11.11-slim@sha256:<pinned-digest>'
+)
+# Updated in ADK releases with tested digests
+```
+
+When an official `adk-code-executor` image is published, the default
+should reference a versioned tag matching the ADK release:
+```python
+_DEFAULT_IMAGE = 'gcr.io/adk/code-executor:0.5.0'
 ```
 
 **B. Pre-built ADK executor image:**
 
 Create an official `adk-code-executor` Docker image with:
-- Python 3.11+ slim base
+- Python 3.11+ slim base (digest-pinned in Dockerfile)
 - Common data science libraries (pandas, numpy, matplotlib)
 - Non-root user
 - Read-only filesystem (writable `/tmp` only)
 - No network access by default (`--network=none`)
+- Versioned tags matching ADK releases
 
 ```dockerfile
-FROM python:3.11-slim
+FROM python:3.11.11-slim@sha256:<pinned-digest>
 RUN pip install --no-cache-dir pandas numpy matplotlib
 RUN useradd -m -s /bin/bash executor
 USER executor
@@ -756,7 +951,7 @@ def __init_container(self):
     )
 ```
 
-### 5.4 Recommendation Matrix
+### 6.4 Recommendation Matrix
 
 | Use Case | Recommended Executor | Why |
 |----------|---------------------|-----|
@@ -767,7 +962,7 @@ def __init_container(self):
 | Production (multi-tenant) | `GkeCodeExecutor` | gVisor, per-execution isolation |
 | Google Cloud | `AgentEngineSandboxCodeExecutor` | Managed, scalable |
 
-### 5.5 Implementation Plan
+### 6.5 Implementation Plan
 
 | Phase | Action | Effort | Risk |
 |-------|--------|--------|------|
@@ -780,9 +975,9 @@ def __init_container(self):
 
 ---
 
-## 6. Cross-Cutting Concerns
+## 7. Cross-Cutting Concerns
 
-### 6.1 `BaseCodeExecutor` API Changes
+### 7.1 `BaseCodeExecutor` API Changes
 
 All three proposals touch `BaseCodeExecutor`. The combined changes:
 
@@ -796,8 +991,9 @@ class BaseCodeExecutor(BaseModel):
     execution_result_delimiters: tuple[str, str] = (...)
 
     # NEW: Proposal 1
-    timeout_seconds: Optional[int] = None
-    """Maximum execution time in seconds. None = no timeout."""
+    default_timeout_seconds: Optional[int] = None
+    """Default timeout applied when CodeExecutionInput.timeout_seconds
+    is None. Subclasses may override. None = no timeout."""
 
     @abc.abstractmethod
     def execute_code(
@@ -805,20 +1001,30 @@ class BaseCodeExecutor(BaseModel):
         invocation_context: InvocationContext,
         code_execution_input: CodeExecutionInput,
     ) -> CodeExecutionResult: ...
+
+
+@dataclasses.dataclass
+class CodeExecutionInput:
+    code: str
+    input_files: list[File] = field(default_factory=list)
+    execution_id: Optional[str] = None
+    timeout_seconds: Optional[int] = None  # NEW: per-invocation
+    """Per-invocation timeout. Overrides executor default when set."""
 ```
 
-### 6.2 Backward Compatibility
+### 7.2 Backward Compatibility
 
 | Change | Backward compatible? | Migration needed? |
 |--------|---------------------|------------------|
-| `timeout_seconds` on base class | Yes (default `None`) | No |
+| `default_timeout_seconds` on base class | Yes (default `None`) | No |
+| `timeout_seconds` on `CodeExecutionInput` | Yes (default `None`) | No |
 | Unfreeze `stateful` on `ContainerCodeExecutor` | Yes (default `False`) | No |
 | `SecurityWarning` on `UnsafeLocalCodeExecutor` | Yes (warning only) | No |
 | New `LocalSandboxCodeExecutor` | Yes (additive) | No |
 | `restrict_builtins` on `UnsafeLocalCodeExecutor` | Yes (default `False`) | No |
 | Default image for `ContainerCodeExecutor` | Breaking (currently requires image/docker_path) | Minor |
 
-### 6.3 Impact on `ExecuteSkillScriptTool`
+### 7.3 Impact on `ExecuteSkillScriptTool`
 
 | Feature | Current workaround | After enhancements |
 |---------|-------------------|-------------------|
@@ -827,7 +1033,7 @@ class BaseCodeExecutor(BaseModel):
 | Isolation | Documentation warning only | `LocalSandboxCodeExecutor` or container |
 | Stateful scripts | Not supported | Available via `ContainerCodeExecutor(stateful=True)` |
 
-### 6.4 Testing Strategy
+### 7.4 Testing Strategy
 
 | Category | Approach |
 |----------|----------|
@@ -839,48 +1045,57 @@ class BaseCodeExecutor(BaseModel):
 
 ---
 
-## 7. Implementation Roadmap
+## 8. Implementation Roadmap
 
-### Phase 1: Timeout (2-3 days)
+### Phase 1: Timeout (3-4 days)
 
-1. Add `timeout_seconds: Optional[int] = None` to `BaseCodeExecutor`
-2. Implement thread-based timeout in `UnsafeLocalCodeExecutor`
-3. Implement thread-based timeout in `ContainerCodeExecutor`
-4. Migrate `GkeCodeExecutor.timeout_seconds` to base class field
-5. Add timeout tests for each executor
-6. Update `ExecuteSkillScriptTool` to set executor timeout when available
+1. Add `timeout_seconds: Optional[int] = None` to `CodeExecutionInput`
+2. Add `default_timeout_seconds: Optional[int] = None` to
+   `BaseCodeExecutor`
+3. Implement thread-based timeout in `UnsafeLocalCodeExecutor`
+4. Implement Docker exec kill timeout in `ContainerCodeExecutor`
+5. Migrate `GkeCodeExecutor.timeout_seconds` to `default_timeout_seconds`
+6. Add timeout tests for each executor
+7. Update `ExecuteSkillScriptTool` to set per-invocation timeout via
+   `CodeExecutionInput.timeout_seconds`
 
 ### Phase 2: Stateful Container (3-5 days)
 
 1. Unfreeze `stateful` on `ContainerCodeExecutor`
 2. Implement cumulative code history with stdout suppression
+   (append-after-success invariant)
 3. Add `execution_id`-based history isolation
-4. Add `reset_state()` method
-5. Add stateful execution tests
-6. Update samples and documentation
+4. Wire `execution_id` in `ExecuteSkillScriptTool`
+5. Add `reset_state()` method
+6. Add stateful execution tests (including failure-does-not-poison test)
+7. Update samples and documentation
+8. Evaluate persistent-process approach (Option A) for Phase 2b
 
 ### Phase 3: Security Hardening (5-7 days)
 
 1. Add `SecurityWarning` to `UnsafeLocalCodeExecutor`
-2. Add `restrict_builtins` option
-3. Implement `LocalSandboxCodeExecutor`
-4. Add default image support to `ContainerCodeExecutor`
+2. Add `restrict_builtins` option (documented as best-effort friction)
+3. Implement `LocalSandboxCodeExecutor` (using `process_group`, not
+   `preexec_fn`)
+4. Add digest-pinned default image to `ContainerCodeExecutor`
 5. Add network isolation defaults to `ContainerCodeExecutor`
-6. Create official `adk-code-executor` Docker image
+6. Create official `adk-code-executor` Docker image (versioned tags)
 7. Update all samples to recommend secure executors
 8. Add security-focused tests
 
-### Total estimated effort: 10-15 days
+### Total estimated effort: 11-16 days
 
 ---
 
-## 8. Open Questions
+## 9. Open Questions
 
-1. **Should `timeout_seconds` be enforced at the base class level?**
-   We could add a wrapper in `BaseCodeExecutor.execute_code()` that
-   enforces the timeout generically, rather than requiring each subclass
-   to implement it. However, this would require the base class to manage
-   threading, which may not be appropriate for remote executors.
+1. **Should we skip Phase 1 (cumulative replay) and go straight to
+   Phase 2 (persistent process) for stateful execution?**
+   The side-effect replay problem is fundamental to Option C. If the
+   persistent-process I/O boundary protocol can be solved with
+   reasonable complexity (e.g., sentinel-delimited output), the MVP
+   phase may not be worth the tech debt. Decision: Evaluate during
+   Phase 2 planning.
 
 2. **Should `LocalSandboxCodeExecutor` support stateful execution?**
    Subprocess-based execution is inherently stateless. Stateful support
@@ -901,7 +1116,7 @@ class BaseCodeExecutor(BaseModel):
 
 ---
 
-## 9. References
+## 10. References
 
 - [BaseCodeExecutor](../../src/google/adk/code_executors/base_code_executor.py)
 - [ContainerCodeExecutor](../../src/google/adk/code_executors/container_code_executor.py)
