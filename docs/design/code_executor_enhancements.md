@@ -351,18 +351,31 @@ def execute_code(self, invocation_context, code_execution_input):
    container. This is the most reliable fallback but destroys
    in-container state.
 
-**Permissions:** `os.kill()` on the host PID requires the ADK process
-to run as the same user that started the container (or as root). This
-is the normal case for local Docker usage. For rootless Docker or
-restricted environments, the container-restart fallback applies.
+**Permissions and user mismatch risk:** `os.kill()` on the host PID
+requires the ADK process to run as the same user that owns the
+container's exec'd process on the host. The current
+`ContainerCodeExecutor` does not set `user=` on `containers.run()`
+(`container_code_executor.py:182`), so the container process runs as
+root. If the ADK process runs as a non-root user (common in
+development), `os.kill(host_pid, SIGKILL)` will raise
+`PermissionError` and the container-restart fallback activates.
+
+This user mismatch is the expected case for default Docker usage,
+so the `PermissionError → container.restart()` path is the **primary
+timeout mechanism in practice**, not an edge case. The `os.kill` path
+becomes primary only when ADK runs as root or the container is
+configured with `user=` matching the host user.
 
 **Recovery after timeout:**
 - **Stateless mode:** No recovery needed. The killed process is gone;
   the next `exec_run` starts a fresh process in the same container.
-- **Stateful mode:** The timed-out block is NOT appended to history
-  (append-after-success invariant). If the container was restarted
-  as fallback, the executor must detect this and replay the
-  accumulated history on the next call.
+- **Stateful mode (Option A / persistent process):** The timed-out
+  block is NOT appended to history (append-after-success invariant).
+  If the persistent REPL was killed or the container was restarted,
+  the executor returns an error with `stderr` indicating state was
+  lost. The caller (LLM flow or skill tool) must handle this —
+  typically by starting a new session. Automatic replay is not
+  attempted because it may re-execute side effects.
 
 #### 4.2.4 `GkeCodeExecutor` — Already Implemented
 
@@ -844,8 +857,17 @@ class LocalSandboxCodeExecutor(BaseCodeExecutor):
     allowed_env_vars: list[str] = []
 
     def execute_code(self, invocation_context, code_execution_input):
+        import platform
         import subprocess
+        import sys
         import tempfile
+
+        # Windows is out of scope (§2 Non-Goals).
+        if platform.system() == 'Windows':
+            raise NotImplementedError(
+                'LocalSandboxCodeExecutor is not supported on '
+                'Windows. Use ContainerCodeExecutor instead.'
+            )
 
         with tempfile.NamedTemporaryFile(
             mode='w', suffix='.py', delete=True
@@ -866,28 +888,32 @@ class LocalSandboxCodeExecutor(BaseCodeExecutor):
             if timeout is None:
                 timeout = self.max_cpu_seconds
 
-            import sys
             # Prefer process_group (3.11+) over preexec_fn
             # (not fork-safe with threads).
             spawn_kwargs = {}
             if sys.version_info >= (3, 11):
                 spawn_kwargs['process_group'] = 0
             else:
-                # Fallback for 3.10; caveat: not fork-safe
+                # Fallback for 3.10; caveat: not fork-safe.
+                # Guard resource import for platforms where
+                # the module is unavailable.
                 def _set_limits():
-                    import resource
-                    resource.setrlimit(
-                        resource.RLIMIT_CPU,
-                        (self.max_cpu_seconds,) * 2,
-                    )
-                    mem = self.max_memory_mb * 1024 * 1024
-                    resource.setrlimit(
-                        resource.RLIMIT_AS, (mem, mem),
-                    )
+                    try:
+                        import resource
+                        resource.setrlimit(
+                            resource.RLIMIT_CPU,
+                            (self.max_cpu_seconds,) * 2,
+                        )
+                        mem = self.max_memory_mb * 1024 * 1024
+                        resource.setrlimit(
+                            resource.RLIMIT_AS, (mem, mem),
+                        )
+                    except (ImportError, OSError):
+                        pass  # timeout-only enforcement
                 spawn_kwargs['preexec_fn'] = _set_limits
 
-            # Guard resource import for platforms where
-            # it is unavailable (falls back to timeout-only).
+            # Inline wrapper sets resource limits in the child
+            # process. Guarded for missing resource module.
             limit_code = (
                 f'try:\n'
                 f'  import resource\n'
@@ -1122,8 +1148,11 @@ is new and has no tests yet.
 | Unit tests | Mock-based tests per executor | **Add `test_container_code_executor.py`**, add `test_local_sandbox_code_executor.py` |
 | Integration tests | Real executor tests (like `ExecuteSkillScriptTool` integration tests) | Add Docker-based container tests (CI-gated) |
 | Timeout tests | Scripts with `time.sleep()` to verify enforcement | Per-executor timeout tests |
+| Timeout kill fallback | Verify `PermissionError` from `os.kill` triggers container restart | Mock `os.kill` to raise `PermissionError`, assert `container.restart()` called and `CodeExecutionResult.stderr` contains timeout message |
+| Timeout kill success | Verify `os.kill(host_pid)` path when permitted | Mock `exec_inspect` to return PID, assert `os.kill` called with correct signal |
 | Security tests | Scripts attempting blocked operations | `restrict_builtins` bypass attempts, env var leakage |
 | Stateful tests | Multi-call sequences verifying variable persistence | Append-after-success, failure-does-not-poison, `execution_id` isolation |
+| Stateful crash recovery | Verify error returned on REPL/container crash | Kill REPL mid-execution, assert error indicates state loss |
 
 ---
 
@@ -1141,17 +1170,23 @@ is new and has no tests yet.
 7. Update `ExecuteSkillScriptTool` to set per-invocation timeout via
    `CodeExecutionInput.timeout_seconds`
 
-### Phase 2: Stateful Container (3-5 days)
+### Phase 2: Stateful Container (5-8 days)
+
+Implement Option A (persistent process) directly, as recommended in
+§5.2.2. This avoids the side-effect replay problems of Option C.
 
 1. Unfreeze `stateful` on `ContainerCodeExecutor`
-2. Implement cumulative code history with stdout suppression
-   (append-after-success invariant)
-3. Add `execution_id`-based history isolation
-4. Wire `execution_id` in `ExecuteSkillScriptTool`
-5. Add `reset_state()` method
-6. Add stateful execution tests (including failure-does-not-poison test)
-7. Update samples and documentation
-8. Evaluate persistent-process approach (Option A) for Phase 2b
+2. Design persistent-process protocol: sentinel-delimited I/O for
+   output boundaries, error detection, and process health checks
+3. Implement persistent Python REPL management (start, send code,
+   read output, detect crash/restart)
+4. Add `execution_id`-based session isolation (one REPL per
+   `execution_id`)
+5. Wire `execution_id` in `ExecuteSkillScriptTool`
+6. Add `reset_state()` method (kills and restarts the REPL)
+7. Add stateful execution tests (variable persistence, crash recovery,
+   `execution_id` isolation)
+8. Update samples and documentation
 
 ### Phase 3: Security Hardening (5-7 days)
 
@@ -1171,13 +1206,12 @@ is new and has no tests yet.
 
 ## 9. Open Questions
 
-1. **Should we skip Phase 1 (cumulative replay) and go straight to
-   Phase 2 (persistent process) for stateful execution?**
-   The side-effect replay problem is fundamental to Option C. If the
-   persistent-process I/O boundary protocol can be solved with
-   reasonable complexity (e.g., sentinel-delimited output), the MVP
-   phase may not be worth the tech debt. Decision: Evaluate during
-   Phase 2 planning.
+1. **What I/O boundary protocol should the persistent REPL use?**
+   The roadmap targets Option A (persistent process) directly. The
+   key design question is how to delimit output for each code block:
+   sentinel strings in stdout, JSON-envelope protocol, or a side
+   channel (e.g., file-based result). Sentinel strings are simplest
+   but can collide with user output. Decision: spike during Phase 2.
 
 2. **Should `LocalSandboxCodeExecutor` support stateful execution?**
    Subprocess-based execution is inherently stateless. Stateful support
@@ -1189,12 +1223,14 @@ is new and has no tests yet.
    `SecurityWarning` and documentation should steer users toward safer
    alternatives for anything beyond local prototyping.
 
-4. **How should `ContainerCodeExecutor` handle container crashes in
-   stateful mode?**
-   If the container crashes (OOM, segfault), the code history is lost.
-   Options: (a) re-create container and replay history, (b) return error
-   and let user restart, (c) persist history to host volume. Recommend
-   (b) for simplicity.
+4. **How should `ContainerCodeExecutor` handle container/REPL crashes
+   in stateful mode?**
+   If the container crashes (OOM, segfault) or the persistent REPL
+   dies, in-process state is lost. The executor returns an error
+   indicating state loss and lets the caller handle recovery (e.g.,
+   start a new session). Automatic replay is not attempted because
+   prior code blocks may have had side effects that should not be
+   re-executed (consistent with §4.2.3 recovery policy).
 
 ---
 
