@@ -333,10 +333,15 @@ def execute_code(self, invocation_context, code_execution_input):
                 self._container.restart(timeout=1)
                 # Re-validate runtime readiness after restart,
                 # mirroring the init-time check (see
-                # container_code_executor.py:190).
-                self._container.exec_run(
+                # container_code_executor.py:169).
+                check = self._container.exec_run(
                     ['python3', '--version']
                 )
+                if check.exit_code != 0:
+                    raise RuntimeError(
+                        f'Post-restart readiness check failed '
+                        f'(exit_code={check.exit_code})'
+                    )
             except Exception as restart_err:
                 cleanup_failed = True
                 logger.error(
