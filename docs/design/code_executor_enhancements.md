@@ -191,9 +191,10 @@ class BaseCodeExecutor(BaseModel):
 
 The effective timeout is resolved as:
 ```python
+input_t = code_execution_input.timeout_seconds
 timeout = (
-    code_execution_input.timeout_seconds
-    ?? self.default_timeout_seconds
+    input_t if input_t is not None
+    else self.default_timeout_seconds
 )
 ```
 
@@ -213,9 +214,10 @@ run it in a separate thread with a join timeout:
 import threading
 
 def execute_code(self, invocation_context, code_execution_input):
+    input_t = code_execution_input.timeout_seconds
     timeout = (
-        code_execution_input.timeout_seconds
-        or self.default_timeout_seconds
+        input_t if input_t is not None
+        else self.default_timeout_seconds
     )
     if timeout is None:
         # No timeout: current behavior (blocking exec)
@@ -268,9 +270,10 @@ running indefinitely after the join timeout expires.
 import threading
 
 def execute_code(self, invocation_context, code_execution_input):
+    input_t = code_execution_input.timeout_seconds
     timeout = (
-        code_execution_input.timeout_seconds
-        or self.default_timeout_seconds
+        input_t if input_t is not None
+        else self.default_timeout_seconds
     )
 
     # Create the exec instance
@@ -279,28 +282,32 @@ def execute_code(self, invocation_context, code_execution_input):
         ['python3', '-c', code_execution_input.code],
     )['Id']
 
-    # Start a timer to kill the exec's PID on timeout
+    # Start a timer to kill the exec on timeout.
+    #
+    # NOTE on PID namespaces: exec_inspect().Pid returns the
+    # host-namespace PID of the exec'd process. Passing that PID
+    # to `kill` inside the container will not match (different PID
+    # namespace). Instead, we use the Docker API to kill from the
+    # host side, or find the container-namespace PID.
     timer = None
     timed_out = threading.Event()
     if timeout is not None:
         def _kill_exec():
             timed_out.set()
             try:
-                # Get the PID of the exec'd process
-                info = self._client.api.exec_inspect(exec_id)
-                pid = info.get('Pid', 0)
-                if pid > 0:
-                    self._container.exec_run(
-                        ['kill', '-9', str(pid)],
-                        detach=True,
-                    )
-            except Exception:
-                # Fallback: kill all non-init processes
+                # Approach: find exec'd process by its command
+                # inside the container's PID namespace, then kill.
+                # `exec_inspect` gives us the command; `pkill -f`
+                # matches it inside the container.
                 self._container.exec_run(
-                    ['sh', '-c',
-                     'kill -9 $(ps -o pid= | grep -v "^\\s*1$")'],
+                    ['pkill', '-9', '-f', 'python3 -c'],
                     detach=True,
                 )
+            except Exception:
+                pass
+            # If the above fails or is insufficient, the next
+            # execute_code() call will detect the zombie and
+            # restart the container.
         timer = threading.Timer(timeout, _kill_exec)
         timer.start()
 
@@ -317,21 +324,34 @@ def execute_code(self, invocation_context, code_execution_input):
     # ... parse output as before
 ```
 
-**Why targeted PID kill, not `kill -9 -1`:**
-- `kill -9 -1` kills *all* processes in the container, including the
-  init/shell process that keeps the container alive. This would force a
-  container restart on the next call.
-- Targeted kill via `exec_inspect` → PID only terminates the timed-out
-  process, leaving the container healthy for subsequent calls.
-- The fallback (`kill all non-init`) is a safety net if `exec_inspect`
-  fails (e.g., Docker API version mismatch).
+**PID namespace considerations:**
+- `exec_inspect(exec_id)['Pid']` returns the **host-namespace** PID.
+  Running `kill <host-pid>` inside the container operates in the
+  **container PID namespace** and will target a different (or
+  non-existent) process. This is a common Docker pitfall.
+- The correct approaches are:
+  1. **`pkill -f` inside container** — Match the exec'd command string
+     within the container's PID namespace. Works for `python3 -c` but
+     may be too broad if multiple execs are running concurrently.
+  2. **Host-side kill via `docker top` + `os.kill`** — Use
+     `container.top()` to map container PIDs to host PIDs, then
+     `os.kill(host_pid, 9)` from the host. More precise but requires
+     host-level permissions.
+  3. **Container restart** — Simplest and most reliable. Acceptable
+     when stateful mode is not in use.
 
-**Alternative — container restart on timeout:** Simpler but more costly.
-Stop and restart the container after timeout. Acceptable if stateful mode
-is not in use (no accumulated state to preserve).
+**Recovery after timeout kill:**
+- **Stateless mode:** No recovery needed. Next `execute_code()` call
+  starts a fresh process in the same container.
+- **Stateful mode (cumulative replay):** The timed-out block is NOT
+  appended to history (append-after-success invariant), so replay
+  remains clean. However, if `pkill` killed a persistent interpreter
+  (Phase 2 / Option A), the executor must detect this and restart
+  it before the next call.
 
-**Recommendation:** Use Docker exec kill as the primary approach. This is
-more robust than thread+join and properly cleans up runaway processes.
+**Recommendation:** Use `pkill -f` as the primary approach for Phase 1.
+Migrate to host-side kill or container restart for more robust cleanup
+in Phase 2 when persistent processes are introduced.
 
 #### 4.2.4 `GkeCodeExecutor` — Already Implemented
 
@@ -345,9 +365,10 @@ class GkeCodeExecutor(BaseCodeExecutor):
 
 In `execute_code()`, resolve timeout from per-invocation input first:
 ```python
+input_t = code_execution_input.timeout_seconds
 timeout = (
-    code_execution_input.timeout_seconds
-    or self.default_timeout_seconds
+    input_t if input_t is not None
+    else self.default_timeout_seconds
 )
 ```
 
@@ -657,9 +678,15 @@ in a stateful executor, with no isolation between different skills or
 invocations.
 
 **Action items:**
-1. `ExecuteSkillScriptTool` should generate a deterministic
-   `execution_id` from the skill name + invocation context (e.g.,
-   `f"skill:{skill_name}:{invocation_id}"`)
+1. `ExecuteSkillScriptTool` should generate a **session-stable**
+   `execution_id` scoped to skill + agent. The key must persist
+   across turns so that stateful code history is preserved:
+   ```python
+   execution_id = f"skill:{skill_name}:{session.id}:{agent_name}"
+   ```
+   Using `invocation_id` would be incorrect here — it changes every
+   turn, defeating statefulness. `session.id` is stable for the
+   lifetime of the conversation.
 2. Pass `execution_id` to `CodeExecutionInput`
 3. This enables future stateful skill scripts where a skill can
    maintain state across multiple calls within the same session
@@ -799,7 +826,7 @@ class LocalSandboxCodeExecutor(BaseCodeExecutor):
     - Optional chroot or tmpdir working directory
     """
 
-    timeout_seconds: int = 30
+    default_timeout_seconds: int = 30
     max_memory_mb: int = 256
     max_cpu_seconds: int = 30
     allowed_env_vars: list[str] = []
@@ -819,35 +846,53 @@ class LocalSandboxCodeExecutor(BaseCodeExecutor):
                    if k in os.environ}
             env['PATH'] = '/usr/bin:/usr/local/bin'
 
+            input_t = code_execution_input.timeout_seconds
             timeout = (
-                code_execution_input.timeout_seconds
-                or self.default_timeout_seconds
-                or self.max_cpu_seconds
+                input_t if input_t is not None
+                else self.default_timeout_seconds
             )
+            if timeout is None:
+                timeout = self.max_cpu_seconds
 
-            # Use process_group (Python 3.11+) instead of
-            # preexec_fn, which is not fork-safe with threads.
-            # process_group=0 places the child in its own
-            # process group, enabling clean group kill on
-            # timeout via os.killpg().
+            import sys
+            # Prefer process_group (3.11+) over preexec_fn
+            # (not fork-safe with threads).
+            spawn_kwargs = {}
+            if sys.version_info >= (3, 11):
+                spawn_kwargs['process_group'] = 0
+            else:
+                # Fallback for 3.10; caveat: not fork-safe
+                def _set_limits():
+                    import resource
+                    resource.setrlimit(
+                        resource.RLIMIT_CPU,
+                        (self.max_cpu_seconds,) * 2,
+                    )
+                    mem = self.max_memory_mb * 1024 * 1024
+                    resource.setrlimit(
+                        resource.RLIMIT_AS, (mem, mem),
+                    )
+                spawn_kwargs['preexec_fn'] = _set_limits
+
+            cmd = [
+                'python3', '-c',
+                f'import resource; '
+                f'resource.setrlimit(resource.RLIMIT_CPU, '
+                f'({self.max_cpu_seconds}, '
+                f'{self.max_cpu_seconds})); '
+                f'resource.setrlimit(resource.RLIMIT_AS, '
+                f'({self.max_memory_mb * 1024 * 1024}, '
+                f'{self.max_memory_mb * 1024 * 1024})); '
+                f'exec(open({f.name!r}).read())',
+            ]
             result = subprocess.run(
-                [
-                    'python3', '-c',
-                    f'import resource; '
-                    f'resource.setrlimit(resource.RLIMIT_CPU, '
-                    f'({self.max_cpu_seconds}, '
-                    f'{self.max_cpu_seconds})); '
-                    f'resource.setrlimit(resource.RLIMIT_AS, '
-                    f'({self.max_memory_mb * 1024 * 1024}, '
-                    f'{self.max_memory_mb * 1024 * 1024})); '
-                    f'exec(open({f.name!r}).read())',
-                ],
+                cmd,
                 capture_output=True,
                 text=True,
                 timeout=timeout,
                 env=env,
-                process_group=0,  # Python 3.11+, fork-safe
                 cwd=tempfile.gettempdir(),
+                **spawn_kwargs,
             )
 
         return CodeExecutionResult(
@@ -859,7 +904,9 @@ class LocalSandboxCodeExecutor(BaseCodeExecutor):
 
 **Platform considerations:**
 - `resource.setrlimit` is Unix-only (Linux, macOS)
-- `process_group=0` requires Python 3.11+ (the minimum for ADK)
+- `process_group=0` requires Python 3.11+ (ADK supports >=3.10, so
+  this must be gated with a version check or use `preexec_fn` as
+  fallback on 3.10)
 - On Windows, use `subprocess.CREATE_NO_WINDOW` and
   `subprocess.Popen` with `creationflags` for job object limits
 - Fallback to timeout-only on platforms without `resource` module
@@ -873,6 +920,8 @@ class LocalSandboxCodeExecutor(BaseCodeExecutor):
   in its own process group, enabling clean `os.killpg()` on timeout.
 - Resource limits are set via an inline `-c` wrapper script instead
   of `preexec_fn`, avoiding the fork-safety issue entirely.
+- On Python 3.10 (ADK minimum is `>=3.10`), fall back to
+  `preexec_fn=set_limits` with a documented caveat about thread safety.
 
 **Dependencies:** None (stdlib only). This is the key advantage over
 `ContainerCodeExecutor`.
@@ -880,7 +929,8 @@ class LocalSandboxCodeExecutor(BaseCodeExecutor):
 **Limitations:**
 - Less isolation than containers (shared filesystem, kernel)
 - Cannot restrict network access without OS-level firewall rules
-- Requires Python 3.11+ (already the ADK minimum)
+- `process_group` requires Python 3.11+; falls back to `preexec_fn`
+  on 3.10 (ADK minimum is `>=3.10` per `pyproject.toml`)
 
 #### 6.3.3 Tier 3: Promote `ContainerCodeExecutor` as Default
 
@@ -1035,13 +1085,21 @@ class CodeExecutionInput:
 
 ### 7.4 Testing Strategy
 
-| Category | Approach |
-|----------|----------|
-| Unit tests | Mock-based tests for each executor (existing pattern) |
-| Integration tests | Real executor tests (like the ones added for `ExecuteSkillScriptTool`) |
-| Timeout tests | Scripts with `time.sleep()` to verify timeout enforcement |
-| Security tests | Scripts attempting blocked operations to verify restrictions |
-| Stateful tests | Multi-call sequences verifying variable persistence |
+**Current test coverage gaps:** Unit tests exist for
+`UnsafeLocalCodeExecutor`, `GkeCodeExecutor`,
+`AgentEngineSandboxCodeExecutor`, `BuiltInCodeExecutor`, and
+`CodeExecutorContext`, but **no unit test file exists for
+`ContainerCodeExecutor`** (`tests/unittests/code_executors/` has no
+`test_container_code_executor.py`). Likewise, `LocalSandboxCodeExecutor`
+is new and has no tests yet.
+
+| Category | Approach | New tests needed |
+|----------|----------|-----------------|
+| Unit tests | Mock-based tests per executor | **Add `test_container_code_executor.py`**, add `test_local_sandbox_code_executor.py` |
+| Integration tests | Real executor tests (like `ExecuteSkillScriptTool` integration tests) | Add Docker-based container tests (CI-gated) |
+| Timeout tests | Scripts with `time.sleep()` to verify enforcement | Per-executor timeout tests |
+| Security tests | Scripts attempting blocked operations | `restrict_builtins` bypass attempts, env var leakage |
+| Stateful tests | Multi-call sequences verifying variable persistence | Append-after-success, failure-does-not-poison, `execution_id` isolation |
 
 ---
 
