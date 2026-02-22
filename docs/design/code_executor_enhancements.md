@@ -397,9 +397,13 @@ def execute_code(self, invocation_context, code_execution_input):
 4. **Unhealthy state on total cleanup failure** — If both `os.kill`
    and `container.restart()` fail, the executor sets `self._healthy
    = False` and returns a distinct error message. Subsequent calls
-   should check `self._healthy` and raise early rather than queueing
-   work against a broken container. Reinitialization (stop + start)
-   is required to recover.
+   check `self._healthy` and raise early rather than queueing work
+   against a broken container. The `_healthy` lifecycle:
+   - Initialized to `True` in `__init__` (alongside container start)
+   - Set to `False` on total cleanup failure (kill + restart both fail)
+   - Set back to `True` after successful reinitialization (new
+     container created + readiness check passed via `cleanup()` then
+     `__init_container()`)
 
 5. **Container restart as last resort** — If `os.kill` fails (e.g.,
    insufficient permissions when Docker runs rootless), restart the
