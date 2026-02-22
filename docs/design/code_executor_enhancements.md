@@ -282,7 +282,7 @@ def execute_code(self, invocation_context, code_execution_input):
     if not self._healthy:
         raise RuntimeError(
             'ContainerCodeExecutor is unhealthy after a failed '
-            'timeout cleanup. Call cleanup() and reinitialize.'
+            'timeout cleanup. Call reinitialize() to recover.'
         )
 
     input_t = code_execution_input.timeout_seconds
@@ -401,9 +401,8 @@ def execute_code(self, invocation_context, code_execution_input):
    against a broken container. The `_healthy` lifecycle:
    - Initialized to `True` in `__init__` (alongside container start)
    - Set to `False` on total cleanup failure (kill + restart both fail)
-   - Set back to `True` after successful reinitialization (new
-     container created + readiness check passed via `cleanup()` then
-     `__init_container()`)
+   - Set back to `True` after successful `reinitialize()` (stops
+     current container, creates new one, passes readiness check)
 
 5. **Container restart as last resort** — If `os.kill` fails (e.g.,
    insufficient permissions when Docker runs rootless), restart the
@@ -1228,9 +1227,14 @@ is new and has no tests yet.
 4. Implement Docker exec kill timeout in `ContainerCodeExecutor`
    (including `_healthy` guard, post-restart readiness validation,
    and post-kill thread join)
-5. Migrate `GkeCodeExecutor.timeout_seconds` to `default_timeout_seconds`
-6. Add timeout tests for each executor
-7. Update `ExecuteSkillScriptTool` to set per-invocation timeout via
+5. Add public `reinitialize()` method to `ContainerCodeExecutor`:
+   stops the current container (if any), creates a new one, runs
+   readiness check, and sets `_healthy = True`. This is the
+   documented recovery path when `_healthy` is `False`. Callable
+   by users or by higher-level retry logic.
+6. Migrate `GkeCodeExecutor.timeout_seconds` to `default_timeout_seconds`
+7. Add timeout tests for each executor
+8. Update `ExecuteSkillScriptTool` to set per-invocation timeout via
    `CodeExecutionInput.timeout_seconds`
 
 ### Phase 2: Stateful Container (5-8 days)
