@@ -344,8 +344,7 @@ class ExecuteSkillScriptTool(BaseTool):
         }
 
     # Prepare code based on script extension
-    timeout = self._toolset._script_timeout
-    code = self._prepare_code(script_name, script.src, input_args, timeout)
+    code = self._prepare_code(script_name, script.src, input_args)
     is_shell = "." in script_name and script_name.rsplit(".", 1)[
         -1
     ].lower() in ("sh", "bash")
@@ -435,7 +434,6 @@ class ExecuteSkillScriptTool(BaseTool):
       script_name: str,
       script_src: str,
       input_args: str,
-      timeout: int = _DEFAULT_SCRIPT_TIMEOUT,
   ) -> str | None:
     """Prepares Python code to execute the script.
 
@@ -443,7 +441,6 @@ class ExecuteSkillScriptTool(BaseTool):
       script_name: The script filename.
       script_src: The script source content.
       input_args: Optional arguments string.
-      timeout: Timeout in seconds for shell subprocess execution.
 
     Returns:
       Python code string to execute, or None if unsupported type.
@@ -468,6 +465,7 @@ class ExecuteSkillScriptTool(BaseTool):
       # script name to avoid shell injection.
       # Both streams are JSON-serialized through stdout since
       # UnsafeLocalCodeExecutor drops stdout on exception.
+      timeout = self._toolset._script_timeout
       cmd = f"['bash', '-c', {script_src!r}, {script_name!r}]"
       if input_args:
         cmd += f" + shlex.split({input_args!r})"
