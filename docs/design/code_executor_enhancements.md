@@ -266,7 +266,15 @@ running indefinitely after the join timeout expires.
 
 **Primary approach: Docker exec kill via `exec_inspect` + PID kill.**
 
+The key constraint is that `exec_start` is a **blocking** call — a
+timer thread cannot unblock it if the in-container kill fails. The
+correct design runs `exec_start` in a worker thread so the caller
+can enforce the timeout via `thread.join(timeout)`, then uses the
+**host-side Docker API** to kill the exec'd process by its host PID.
+
 ```python
+import os
+import signal
 import threading
 
 def execute_code(self, invocation_context, code_execution_input):
@@ -282,76 +290,79 @@ def execute_code(self, invocation_context, code_execution_input):
         ['python3', '-c', code_execution_input.code],
     )['Id']
 
-    # Start a timer to kill the exec on timeout.
-    #
-    # NOTE on PID namespaces: exec_inspect().Pid returns the
-    # host-namespace PID of the exec'd process. Passing that PID
-    # to `kill` inside the container will not match (different PID
-    # namespace). Instead, we use the Docker API to kill from the
-    # host side, or find the container-namespace PID.
-    timer = None
-    timed_out = threading.Event()
-    if timeout is not None:
-        def _kill_exec():
-            timed_out.set()
+    # Run exec_start in a thread so we can enforce timeout
+    # from the calling thread.
+    result_holder = {}
+
+    def _run_exec():
+        result_holder['output'] = (
+            self._client.api.exec_start(exec_id, demux=True)
+        )
+
+    thread = threading.Thread(target=_run_exec, daemon=True)
+    thread.start()
+    thread.join(timeout=timeout)
+
+    if thread.is_alive():
+        # Timeout exceeded — kill from host side.
+        # exec_inspect returns the host-namespace PID, which
+        # is the correct PID for os.kill() on the host.
+        # (Killing from inside the container would require
+        # the container-namespace PID, which is different.)
+        try:
+            info = self._client.api.exec_inspect(exec_id)
+            host_pid = info.get('Pid', 0)
+            if host_pid > 0:
+                os.kill(host_pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass  # Process already exited
+        except Exception:
+            # Last resort: restart the container
             try:
-                # Approach: find exec'd process by its command
-                # inside the container's PID namespace, then kill.
-                # `exec_inspect` gives us the command; `pkill -f`
-                # matches it inside the container.
-                self._container.exec_run(
-                    ['pkill', '-9', '-f', 'python3 -c'],
-                    detach=True,
-                )
+                self._container.restart(timeout=1)
             except Exception:
                 pass
-            # If the above fails or is insufficient, the next
-            # execute_code() call will detect the zombie and
-            # restart the container.
-        timer = threading.Timer(timeout, _kill_exec)
-        timer.start()
 
-    try:
-        output = self._client.api.exec_start(exec_id, demux=True)
-    finally:
-        if timer is not None:
-            timer.cancel()
-
-    if timed_out.is_set():
         return CodeExecutionResult(
             stderr=f'Execution timed out after {timeout}s'
         )
+
+    output = result_holder.get('output')
     # ... parse output as before
 ```
 
-**PID namespace considerations:**
-- `exec_inspect(exec_id)['Pid']` returns the **host-namespace** PID.
-  Running `kill <host-pid>` inside the container operates in the
-  **container PID namespace** and will target a different (or
-  non-existent) process. This is a common Docker pitfall.
-- The correct approaches are:
-  1. **`pkill -f` inside container** — Match the exec'd command string
-     within the container's PID namespace. Works for `python3 -c` but
-     may be too broad if multiple execs are running concurrently.
-  2. **Host-side kill via `docker top` + `os.kill`** — Use
-     `container.top()` to map container PIDs to host PIDs, then
-     `os.kill(host_pid, 9)` from the host. More precise but requires
-     host-level permissions.
-  3. **Container restart** — Simplest and most reliable. Acceptable
-     when stateful mode is not in use.
+**Why this design:**
 
-**Recovery after timeout kill:**
-- **Stateless mode:** No recovery needed. Next `execute_code()` call
-  starts a fresh process in the same container.
-- **Stateful mode (cumulative replay):** The timed-out block is NOT
-  appended to history (append-after-success invariant), so replay
-  remains clean. However, if `pkill` killed a persistent interpreter
-  (Phase 2 / Option A), the executor must detect this and restart
-  it before the next call.
+1. **`exec_start` in a thread + `join(timeout)`** — The caller is
+   never blocked longer than `timeout` seconds, regardless of whether
+   the kill succeeds. This resolves the primary DoS risk.
 
-**Recommendation:** Use `pkill -f` as the primary approach for Phase 1.
-Migrate to host-side kill or container restart for more robust cleanup
-in Phase 2 when persistent processes are introduced.
+2. **Host-side `os.kill(host_pid, SIGKILL)`** — `exec_inspect()`
+   returns the **host-namespace** PID. Using `os.kill()` from the
+   host process operates in the host PID namespace, so the PID
+   matches correctly. This avoids:
+   - The PID namespace mismatch of killing from inside the container
+   - The overbroad pattern matching of `pkill -f` (which can hit
+     concurrent execs or unrelated Python processes)
+   - Dependency on `procps`/`pkill` being installed in the image
+
+3. **Container restart as last resort** — If `os.kill` fails (e.g.,
+   insufficient permissions when Docker runs rootless), restart the
+   container. This is the most reliable fallback but destroys
+   in-container state.
+
+**Permissions:** `os.kill()` on the host PID requires the ADK process
+to run as the same user that started the container (or as root). This
+is the normal case for local Docker usage. For rootless Docker or
+restricted environments, the container-restart fallback applies.
+
+**Recovery after timeout:**
+- **Stateless mode:** No recovery needed. The killed process is gone;
+  the next `exec_run` starts a fresh process in the same container.
+- **Stateful mode:** The timed-out block is NOT appended to history
+  (append-after-success invariant). If the container was restarted
+  as fallback, the executor must detect this and replay the
+  accumulated history on the next call.
 
 #### 4.2.4 `GkeCodeExecutor` — Already Implemented
 
@@ -378,11 +389,19 @@ timeout, so the 300s default applies as before).
 #### 4.2.5 Remote Executors (Vertex AI, Agent Engine)
 
 These executors delegate to Google Cloud APIs that have their own internal
-timeouts. Adding client-side timeout is still valuable as a safety net:
+timeouts. Adding client-side timeout is still valuable as a safety net.
 
-- Wrap the API call in `asyncio.wait_for()` or `threading.Timer`
+Note: The current `execute_code()` implementations in
+`VertexAiCodeExecutor` and `AgentEngineSandboxCodeExecutor` are
+**synchronous** (they call blocking SDK methods), so `asyncio.wait_for()`
+is not applicable. Use the same thread+join pattern as
+`UnsafeLocalCodeExecutor`:
+
+- Run the blocking API call in a daemon thread with `join(timeout)`
 - Return `CodeExecutionResult(stderr='...')` on timeout
 - Log a warning that the server-side execution may still be running
+- If these executors are migrated to async in the future, switch to
+  `asyncio.wait_for()` at that point
 
 ### 4.3 Migration Plan
 
@@ -497,7 +516,7 @@ Cons: Not all Python objects are serializable (e.g., open file handles,
 database connections, generators). Adds `dill` dependency to the container
 image. Serialization/deserialization overhead grows with state size.
 
-**Option C: Shared Globals File (Simple) — RECOMMENDED**
+**Option C: Shared Globals File (Simple)**
 
 Write executed code to a cumulative Python file. Each call appends the new
 code block and re-executes the entire history:
@@ -553,36 +572,29 @@ of the cumulative replay approach (Option C). Users must keep
 side-effecting code in the final block or use Option A (persistent
 process) when side effects are unavoidable.
 
-#### 5.2.2 Recommended Approach
+#### 5.2.2 Recommended Approach: Option A (Persistent Process)
 
-**Option A (Persistent Process)** is the most robust for true statefulness
-and is the standard approach used by Jupyter kernels and similar systems.
-Despite its complexity, it provides the best user experience:
+**Option A is the recommended approach.** It is the most robust for
+true statefulness and is the standard approach used by Jupyter kernels
+and similar systems:
 
 - Variables, imports, and objects persist naturally
 - No re-execution of side effects
 - No serialization issues
 - O(1) cost per call (not O(n) like Option C)
 
-However, implementing a full REPL protocol is a significant engineering
-effort.
+Option C (cumulative replay) has a fundamental side-effect replay
+problem that cannot be fully mitigated. We recommend **going directly
+to Option A** rather than shipping Option C as an interim MVP that
+would accumulate technical debt and user-facing bugs.
 
-**Given the severity of the side-effect replay problem (Finding 2), we
-recommend evaluating whether to skip Phase 1 and go directly to
-Option A.** The persistent-process approach eliminates an entire class
-of bugs. If the I/O boundary protocol (sentinel markers for output
-delimiting) can be solved with reasonable complexity, Phase 1 may not
-be worth the technical debt.
-
-**If Phase 1 is pursued as an MVP**, it should be clearly documented as
-limited to **pure computation** (variable setup, data transforms,
-aggregations) and explicitly unsupported for side-effecting code.
-
-**Phase 1 (MVP, optional):** Option C (cumulative file) with stdout
-suppression. Restricted to pure-computation use cases only.
-
-**Phase 2 (Full, recommended):** Option A (persistent process) with a
-proper execution protocol using sentinel markers for output boundaries.
+If a simpler interim is needed before the persistent-process protocol
+is ready, Option C may be used with the following restrictions:
+- Documented as limited to **pure computation only** (variable setup,
+  data transforms, aggregations)
+- Side-effecting code (file writes, network calls, DB mutations) is
+  explicitly unsupported and will produce incorrect results
+- Clearly labeled as experimental / unstable
 
 #### 5.2.3 Implementation Plan (Phase 1, if pursued)
 
@@ -874,16 +886,24 @@ class LocalSandboxCodeExecutor(BaseCodeExecutor):
                     )
                 spawn_kwargs['preexec_fn'] = _set_limits
 
+            # Guard resource import for platforms where
+            # it is unavailable (falls back to timeout-only).
+            limit_code = (
+                f'try:\n'
+                f'  import resource\n'
+                f'  resource.setrlimit(resource.RLIMIT_CPU, '
+                f'({self.max_cpu_seconds}, '
+                f'{self.max_cpu_seconds}))\n'
+                f'  resource.setrlimit(resource.RLIMIT_AS, '
+                f'({self.max_memory_mb * 1024 * 1024}, '
+                f'{self.max_memory_mb * 1024 * 1024}))\n'
+                f'except (ImportError, OSError):\n'
+                f'  pass\n'
+            )
             cmd = [
                 'python3', '-c',
-                f'import resource; '
-                f'resource.setrlimit(resource.RLIMIT_CPU, '
-                f'({self.max_cpu_seconds}, '
-                f'{self.max_cpu_seconds})); '
-                f'resource.setrlimit(resource.RLIMIT_AS, '
-                f'({self.max_memory_mb * 1024 * 1024}, '
-                f'{self.max_memory_mb * 1024 * 1024})); '
-                f'exec(open({f.name!r}).read())',
+                limit_code
+                + f'exec(open({f.name!r}).read())',
             ]
             result = subprocess.run(
                 cmd,
@@ -903,13 +923,17 @@ class LocalSandboxCodeExecutor(BaseCodeExecutor):
 ```
 
 **Platform considerations:**
-- `resource.setrlimit` is Unix-only (Linux, macOS)
+- `resource.setrlimit` is Unix-only (Linux, macOS). On platforms
+  where `resource` is unavailable, the inline `-c` wrapper must
+  skip the `setrlimit` calls and rely on timeout-only enforcement.
+  The code should guard with `try: import resource; ... except
+  ImportError: pass` in the wrapper script.
 - `process_group=0` requires Python 3.11+ (ADK supports >=3.10, so
   this must be gated with a version check or use `preexec_fn` as
   fallback on 3.10)
-- On Windows, use `subprocess.CREATE_NO_WINDOW` and
-  `subprocess.Popen` with `creationflags` for job object limits
-- Fallback to timeout-only on platforms without `resource` module
+- Windows is out of scope (see §2 Non-Goals). The executor should
+  raise `NotImplementedError` on Windows with a message directing
+  users to `ContainerCodeExecutor`.
 
 **Why `process_group` instead of `preexec_fn`:**
 - `preexec_fn` is not fork-safe with threads — the Python docs warn
