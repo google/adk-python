@@ -470,7 +470,7 @@ class BigQueryLoggerConfig:
   event_allowlist: list[str] | None = None
   event_denylist: list[str] | None = None
   max_content_length: int = 500 * 1024  # Defaults to 500KB per text block
-  table_id: str = "agent_events_v2"
+  table_id: str = "agent_events"
 
   # V2 Configuration
   clustering_fields: list[str] = field(
@@ -1609,7 +1609,7 @@ class EventData:
 
 
 class BigQueryAgentAnalyticsPlugin(BasePlugin):
-  """BigQuery Agent Analytics Plugin (v2.0 using Write API).
+  """BigQuery Agent Analytics Plugin using Write API.
 
   Logs agent events (LLM requests, tool calls, etc.) to BigQuery for analytics.
   Uses the BigQuery Write API for efficient, asynchronous, and reliable logging.
