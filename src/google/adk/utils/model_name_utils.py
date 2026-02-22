@@ -22,6 +22,19 @@ from typing import Optional
 from packaging.version import InvalidVersion
 from packaging.version import Version
 
+from .env_utils import is_env_enabled
+
+_DISABLE_GEMINI_MODEL_ID_CHECK_ENV_VAR = 'ADK_DISABLE_GEMINI_MODEL_ID_CHECK'
+
+
+def is_gemini_model_id_check_disabled() -> bool:
+  """Returns True when Gemini model-id validation should be bypassed.
+
+  This opt-in environment variable is intended for internal usage where model
+  ids may not follow the public ``gemini-*`` naming convention.
+  """
+  return is_env_enabled(_DISABLE_GEMINI_MODEL_ID_CHECK_ENV_VAR)
+
 
 def extract_model_name(model_string: str) -> str:
   """Extract the actual model name from either simple or path-based format.

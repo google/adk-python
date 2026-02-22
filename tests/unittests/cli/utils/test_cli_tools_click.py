@@ -23,6 +23,7 @@ from types import SimpleNamespace
 from typing import Any
 from typing import Dict
 from typing import List
+from typing import Optional
 from typing import Tuple
 from unittest import mock
 
@@ -129,7 +130,7 @@ def test_cli_create_cmd_invokes_run_cmd(
 
 # cli run
 @pytest.mark.parametrize(
-    "cli_args,expected_session_uri,expected_artifact_uri",
+    "cli_args,expected_session_uri,expected_artifact_uri,expected_memory_uri",
     [
         pytest.param(
             [
@@ -137,13 +138,17 @@ def test_cli_create_cmd_invokes_run_cmd(
                 "memory://",
                 "--artifact_service_uri",
                 "memory://",
+                "--memory_service_uri",
+                "memory://",
             ],
+            "memory://",
             "memory://",
             "memory://",
             id="memory_scheme_uris",
         ),
         pytest.param(
             [],
+            None,
             None,
             None,
             id="default_uris_none",
@@ -154,8 +159,9 @@ def test_cli_run_service_uris(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     cli_args: list,
-    expected_session_uri: str,
-    expected_artifact_uri: str,
+    expected_session_uri: Optional[str],
+    expected_artifact_uri: Optional[str],
+    expected_memory_uri: Optional[str],
 ) -> None:
   """`adk run` should forward service URIs correctly to run_cli."""
   agent_dir = tmp_path / "agent"
@@ -186,6 +192,7 @@ def test_cli_run_service_uris(
   coro_locals = captured_locals[0]
   assert coro_locals.get("session_service_uri") == expected_session_uri
   assert coro_locals.get("artifact_service_uri") == expected_artifact_uri
+  assert coro_locals.get("memory_service_uri") == expected_memory_uri
   assert coro_locals["agent_folder_name"] == "agent"
 
 
