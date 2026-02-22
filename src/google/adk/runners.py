@@ -553,7 +553,10 @@ class Runner:
         if self.app and self.app.events_compaction_config:
           logger.debug('Running event compactor.')
           await _run_compaction_for_sliding_window(
-              self.app, session, self.session_service
+              self.app,
+              session,
+              self.session_service,
+              skip_token_compaction=invocation_context.token_compaction_checked,
           )
 
     async with Aclosing(_run_with_trace(new_message, invocation_id)) as agen:
@@ -1362,6 +1365,9 @@ class Runner:
         credential_service=self.credential_service,
         plugin_manager=self.plugin_manager,
         context_cache_config=self.context_cache_config,
+        events_compaction_config=(
+            self.app.events_compaction_config if self.app else None
+        ),
         invocation_id=invocation_id,
         agent=self.agent,
         session=session,

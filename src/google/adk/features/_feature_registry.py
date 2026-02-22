@@ -26,6 +26,8 @@ from ..utils.env_utils import is_env_enabled
 class FeatureName(str, Enum):
   """Feature names."""
 
+  AGENT_CONFIG = "AGENT_CONFIG"
+  AGENT_STATE = "AGENT_STATE"
   AUTHENTICATED_FUNCTION_TOOL = "AUTHENTICATED_FUNCTION_TOOL"
   BASE_AUTHENTICATED_TOOL = "BASE_AUTHENTICATED_TOOL"
   BIG_QUERY_TOOLSET = "BIG_QUERY_TOOLSET"
@@ -79,6 +81,12 @@ class FeatureConfig:
 
 # Central registry: FeatureName -> FeatureConfig
 _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
+    FeatureName.AGENT_CONFIG: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
+    FeatureName.AGENT_STATE: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
     FeatureName.AUTHENTICATED_FUNCTION_TOOL: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
