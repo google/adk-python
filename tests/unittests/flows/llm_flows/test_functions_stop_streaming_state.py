@@ -87,3 +87,51 @@ async def test_stop_streaming_persists_not_found_state():
       ]
       == 'not_found'
   )
+
+
+@pytest.mark.asyncio
+async def test_stop_streaming_persists_pending_state_on_timeout(monkeypatch):
+  async def _slow_cancel() -> None:
+    try:
+      while True:
+        await asyncio.sleep(0.1)
+    except asyncio.CancelledError:
+      await asyncio.sleep(2.0)
+      raise
+
+  task = asyncio.create_task(_slow_cancel())
+  invocation_context = SimpleNamespace(
+      active_streaming_tools={'slow_stream': ActiveStreamingTool(task=task)}
+  )
+  tool_context = SimpleNamespace(state={})
+  streaming_lock = asyncio.Lock()
+
+  async def _fake_wait_for(awaitable, timeout):
+    del awaitable, timeout
+    raise asyncio.TimeoutError
+
+  monkeypatch.setattr(asyncio, 'wait_for', _fake_wait_for)
+
+  function_response = await functions._process_function_live_helper(
+      tool=SimpleNamespace(name='stop_streaming'),
+      tool_context=tool_context,
+      function_call=types.FunctionCall(
+          name='stop_streaming',
+          args={'function_name': 'slow_stream'},
+      ),
+      function_args={'function_name': 'slow_stream'},
+      invocation_context=invocation_context,
+      streaming_lock=streaming_lock,
+  )
+
+  assert function_response == {
+      'status': 'The task is not cancelled yet for slow_stream.'
+  }
+  assert (
+      tool_context.state[functions.LONG_RUNNING_CANCELLATION_STATE_KEY][
+          'slow_stream'
+      ]
+      == 'pending'
+  )
+
+  task.cancel()
