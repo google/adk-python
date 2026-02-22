@@ -278,6 +278,13 @@ import signal
 import threading
 
 def execute_code(self, invocation_context, code_execution_input):
+    # Fail fast if a prior timeout left the executor unhealthy.
+    if not self._healthy:
+        raise RuntimeError(
+            'ContainerCodeExecutor is unhealthy after a failed '
+            'timeout cleanup. Call cleanup() and reinitialize.'
+        )
+
     input_t = code_execution_input.timeout_seconds
     timeout = (
         input_t if input_t is not None
@@ -324,6 +331,12 @@ def execute_code(self, invocation_context, code_execution_input):
             # process is terminated.
             try:
                 self._container.restart(timeout=1)
+                # Re-validate runtime readiness after restart,
+                # mirroring the init-time check (see
+                # container_code_executor.py:190).
+                self._container.exec_run(
+                    ['python3', '--version']
+                )
             except Exception as restart_err:
                 cleanup_failed = True
                 logger.error(
@@ -1209,6 +1222,8 @@ is new and has no tests yet.
    `BaseCodeExecutor`
 3. Implement thread-based timeout in `UnsafeLocalCodeExecutor`
 4. Implement Docker exec kill timeout in `ContainerCodeExecutor`
+   (including `_healthy` guard, post-restart readiness validation,
+   and post-kill thread join)
 5. Migrate `GkeCodeExecutor.timeout_seconds` to `default_timeout_seconds`
 6. Add timeout tests for each executor
 7. Update `ExecuteSkillScriptTool` to set per-invocation timeout via
