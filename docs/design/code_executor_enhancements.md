@@ -48,13 +48,13 @@ The following are explicitly **out of scope** for this design:
    `object.__subclasses__()`, `importlib` through `__builtins__`, etc.
    True isolation requires a process or container boundary.
 
-2. **Idempotent replay of side-effecting code** — The stateful
-   `ContainerCodeExecutor` (Proposal 2) replays prior code blocks.
-   Code with non-idempotent side effects (file writes, network calls,
-   database mutations) is **not supported** in stateful replay mode.
-   The design suppresses stdout but cannot suppress arbitrary I/O.
-   Users must keep side-effecting code in the final block or use the
-   persistent-process approach (Phase 2 / Option A).
+2. **Automatic state recovery after crash** — The stateful
+   `ContainerCodeExecutor` (Proposal 2) uses a persistent REPL
+   (Option A). If the REPL or container crashes, in-process state
+   is lost. The executor reports an error; it does **not** attempt
+   automatic replay of prior code blocks, because prior blocks may
+   have had non-idempotent side effects (file writes, network calls,
+   database mutations) that should not be re-executed.
 
 3. **Multi-tenant per-execution isolation** — Per-execution isolation
    (fresh sandbox per call) is the domain of `GkeCodeExecutor` and
@@ -314,10 +314,13 @@ def execute_code(self, invocation_context, code_execution_input):
             host_pid = info.get('Pid', 0)
             if host_pid > 0:
                 os.kill(host_pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            pass  # Process already exited
-        except Exception:
-            # Last resort: restart the container
+        except ProcessLookupError:
+            pass  # Process already exited — no action needed
+        except (PermissionError, Exception):
+            # os.kill failed (most commonly PermissionError
+            # when container runs as root and ADK does not).
+            # Restart the container to ensure the runaway
+            # process is terminated.
             try:
                 self._container.restart(timeout=1)
             except Exception:
