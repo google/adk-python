@@ -55,6 +55,7 @@ AF_FUNCTION_CALL_ID_PREFIX = 'adk-'
 REQUEST_EUC_FUNCTION_CALL_NAME = 'adk_request_credential'
 REQUEST_CONFIRMATION_FUNCTION_CALL_NAME = 'adk_request_confirmation'
 REQUEST_INPUT_FUNCTION_CALL_NAME = 'adk_request_input'
+LONG_RUNNING_CANCELLATION_STATE_KEY = '_adk_long_running_tool_cancellations'
 
 logger = logging.getLogger('google_adk.' + __name__)
 
@@ -801,6 +802,14 @@ async def _process_function_live_helper(
     invocation_context,
     streaming_lock: asyncio.Lock,
 ):
+  def _record_cancellation_state(function_name: str, status: str) -> None:
+    previous = tool_context.state.get(LONG_RUNNING_CANCELLATION_STATE_KEY)
+    if not isinstance(previous, dict):
+      previous = {}
+    updated = dict(previous)
+    updated[function_name] = status
+    tool_context.state[LONG_RUNNING_CANCELLATION_STATE_KEY] = updated
+
   function_response = None
   # Check if this is a stop_streaming function call
   if (
@@ -840,6 +849,7 @@ async def _process_function_live_helper(
           function_response = {
               'status': f'The task is not cancelled yet for {function_name}.'
           }
+          _record_cancellation_state(function_name, 'pending')
       if not function_response:
         # Clean up the reference under lock
         async with streaming_lock:
@@ -855,10 +865,12 @@ async def _process_function_live_helper(
         function_response = {
             'status': f'Successfully stopped streaming function {function_name}'
         }
+        _record_cancellation_state(function_name, 'cancelled')
     else:
       function_response = {
           'status': f'No active streaming function named {function_name} found'
       }
+      _record_cancellation_state(function_name, 'not_found')
   elif hasattr(tool, 'func') and inspect.isasyncgenfunction(tool.func):
     # for streaming tool use case
     # we require the function to be an async generator function
