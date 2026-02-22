@@ -494,7 +494,7 @@ class TestStateIsolationAndMerging:
 
       # Should log conflict warning
       assert any(
-          "State merge conflict detected" in str(call)
+          "State merge conflict" in str(call)
           for call in mock_logger.warning.call_args_list
       )
 

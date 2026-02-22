@@ -7,6 +7,12 @@ This module contains components for graph-based workflow orchestration:
 - GraphNode: Node wrapper for agents and functions
 - EdgeCondition: Conditional routing between nodes
 - StateReducer: State merge strategies
+- InterruptMode: Human-in-the-loop interrupt modes
+- InterruptService: Dynamic runtime interrupts with queue bounds and metrics
+- InterruptServiceConfig: Configuration for interrupt service
+- InterruptMessage: Message from human to agent
+- QueueStatus: Queue status information
+- SessionMetrics: Per-session interrupt metrics
 - GraphEvent: Typed events for streaming
 - GraphEventType: Event type enumeration
 - GraphStreamMode: Stream mode enumeration
@@ -14,12 +20,6 @@ This module contains components for graph-based workflow orchestration:
 - EdgeCallbackContext: Context for edge condition callbacks
 - NodeCallback: Type for node lifecycle callbacks
 - EdgeCallback: Type for edge condition callbacks
-- InterruptMode: Human-in-the-loop interrupt modes
-- InterruptService: Dynamic runtime interrupts with queue bounds and metrics
-- InterruptServiceConfig: Configuration for interrupt service
-- InterruptMessage: Message from human to agent
-- QueueStatus: Queue status information
-- SessionMetrics: Per-session interrupt metrics
 - DynamicNode: Runtime agent selection based on state
 - NestedGraphNode: Hierarchical workflow composition (graph within graph)
 - DynamicParallelGroup: Dynamic concurrent execution with variable agent count
@@ -27,6 +27,7 @@ This module contains components for graph-based workflow orchestration:
 
 from __future__ import annotations
 
+from .checkpoint_callback import GraphCheckpointCallback
 from .callbacks import create_nested_observability_callback
 from .callbacks import EdgeCallback
 from .callbacks import EdgeCallbackContext
@@ -104,19 +105,20 @@ __all__ = [
     "NodeCallback",
     "EdgeCallback",
     "create_nested_observability_callback",
+    "ParallelNodeGroup",
+    "JoinStrategy",
+    "ErrorPolicy",
     "graph_path_match",
     "state_contains_keys",
     "node_execution_count",
+    "DynamicNode",
+    "NestedGraphNode",
+    "DynamicParallelGroup",
     "export_graph_structure",
     "export_graph_with_execution",
     "export_execution_timeline",
     "rewind_to_node",
-    "ParallelNodeGroup",
-    "JoinStrategy",
-    "ErrorPolicy",
-    "DynamicNode",
-    "NestedGraphNode",
-    "DynamicParallelGroup",
+    "GraphCheckpointCallback",
     "START",
     "END",
 ]

@@ -1,0 +1,88 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/google/adk-python/refs/heads/main/src/google/adk/agents/config_schemas/AgentConfig.json
+
+agent_class: GraphAgent
+name: research_workflow
+description: Research paper writing workflow with advanced features
+
+# Graph configuration
+start_node: research
+end_nodes:
+  - publish
+
+max_iterations: 20
+checkpointing: true
+
+# Interrupt configuration (optional)
+interrupt_config:
+  mode: after  # before|after|both (None = disabled)
+  # Optional: Configure custom interrupt service
+  # interrupt_service:
+  #   name: google.adk.agents.graph.interrupt_service.InterruptService
+
+# Node definitions
+nodes:
+  - name: research
+    sub_agents:
+      - code: agents.researcher
+
+  - name: outline
+    sub_agents:
+      - code: agents.outliner
+
+  - name: draft
+    sub_agents:
+      - code: agents.writer
+
+  - name: review
+    sub_agents:
+      - code: agents.reviewer
+
+  - name: revise
+    sub_agents:
+      - code: agents.reviser
+
+  - name: publish
+    sub_agents:
+      - code: agents.publisher
+
+# Edge definitions with conditional routing and priorities
+edges:
+  # Research -> Outline (always)
+  - source_node: research
+    target_node: outline
+    priority: 1
+
+  # Outline -> Draft (always)
+  - source_node: outline
+    target_node: draft
+    priority: 1
+
+  # Draft -> Review (always)
+  - source_node: draft
+    target_node: review
+    priority: 1
+
+  # Review -> Publish (if approved)
+  - source_node: review
+    target_node: publish
+    condition: "data.get('approved', False) is True"
+    priority: 2
+
+  # Review -> Revise (if not approved)
+  - source_node: review
+    target_node: revise
+    condition: "data.get('approved', False) is False"
+    priority: 1
+
+  # Revise -> Review (retry review after revision)
+  - source_node: revise
+    target_node: review
+    priority: 1
+
+# Parallel execution groups (optional)
+parallel_groups: []
+
+# Callbacks (optional)
+# before_node_callback_ref: module.path.to.before_node_callback
+# after_node_callback_ref: module.path.to.after_node_callback
+# on_edge_condition_callback_ref: module.path.to.on_edge_condition_callback

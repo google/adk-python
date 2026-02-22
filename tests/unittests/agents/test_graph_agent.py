@@ -31,6 +31,8 @@ from google.adk.agents.graph import GraphAgent
 from google.adk.agents.graph import InterruptAction
 from google.adk.agents.graph import GraphNode
 from google.adk.agents.graph import GraphState
+from google.adk.agents.graph import InterruptConfig
+from google.adk.agents.graph import InterruptMode
 from google.adk.agents.graph import rewind_to_node
 from google.adk.agents.graph import StateReducer
 from google.adk.agents.graph.graph_agent import _GRAPH_INTERNAL_KEYS
@@ -1350,6 +1352,62 @@ def test_validate_ast_unsafe_expression_type():
     _parse_condition_string("{x for x in [1, 2]}")
 
 
+def test_condition_eval_exception_returns_false():
+  """Lines 207-209: Exception during eval of valid AST returns False."""
+  from google.adk.agents.graph.graph_agent import _parse_condition_string
+
+  # data['missing_key'] will raise KeyError at eval time
+  fn = _parse_condition_string("data['nonexistent']")
+  state = GraphState(data={})
+  assert fn(state) is False
+
+
+# ---------------------------------------------------------------------------
+# add_parallel_group validation (lines 364-369) and _find_parallel_group (381-382)
+# ---------------------------------------------------------------------------
+
+
+def test_add_parallel_group_unknown_node_raises():
+  """Lines 364-369: group references a node not in graph → ValueError."""
+  from google.adk.agents.graph.parallel import JoinStrategy
+  from google.adk.agents.graph.parallel import ParallelNodeGroup
+
+  graph = GraphAgent(name="g")
+  graph.add_node(GraphNode(name="known", function=lambda s, c: "ok"))
+  group = ParallelNodeGroup(
+      nodes=["known", "ghost_node"],
+      join_strategy=JoinStrategy.WAIT_ALL,
+  )
+  with pytest.raises(ValueError, match="ghost_node"):
+    graph.add_parallel_group("pg1", group)
+
+
+def test_find_parallel_group_returns_group_for_member_node():
+  """Lines 381-382: _find_parallel_group(node_in_group) returns (group_id, group)."""
+  from google.adk.agents.graph.parallel import JoinStrategy
+  from google.adk.agents.graph.parallel import ParallelNodeGroup
+
+  graph = GraphAgent(name="g")
+  graph.add_node(GraphNode(name="n1", function=lambda s, c: "1"))
+  graph.add_node(GraphNode(name="n2", function=lambda s, c: "2"))
+
+  group = ParallelNodeGroup(
+      nodes=["n1", "n2"], join_strategy=JoinStrategy.WAIT_ALL
+  )
+  graph.add_parallel_group("pg", group)
+
+  result = graph._find_parallel_group("n1")
+  assert result is not None
+  group_id, found = result
+  assert group_id == "pg"
+  assert found is group
+
+
+# ---------------------------------------------------------------------------
+# export_graph_with_execution (lines 500-564)
+# ---------------------------------------------------------------------------
+
+
 def test_export_graph_with_execution_history():
   """Lines 500-564: enriches nodes/links with execution data and interrupt markers."""
   graph = GraphAgent(name="g")
@@ -1563,9 +1621,333 @@ def test_get_effective_telemetry_config_merges_own_and_parent():
   assert effective.additional_attributes["parent_key"] == "parent_val"
 
 
+def test_should_trace_methods_return_false_when_telemetry_disabled():
+  """Lines 868-932: all _should_trace_* return False when enabled=False."""
+  from google.adk.agents.graph.graph_agent_config import TelemetryConfig
+
+  graph = GraphAgent(
+      name="g",
+      telemetry_config=TelemetryConfig(enabled=False),
+  )
+
+  assert graph._should_trace_nodes() is False
+  assert graph._should_trace_edges() is False
+  assert graph._should_trace_iterations() is False
+  assert graph._should_trace_parallel_groups() is False
+  assert graph._should_trace_callbacks() is False
+  assert graph._should_trace_interrupts() is False
+
+
+# ---------------------------------------------------------------------------
+# _execute_interrupt_action — all action branches (lines 1976-2065)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_execute_interrupt_action_defer():
+  """Lines 1978-1993: defer saves todo to session state and returns 'continue'."""
+  from google.adk.agents.graph.interrupt import InterruptAction
+
+  graph = GraphAgent(name="g")
+  graph.add_node(GraphNode(name="n", function=lambda s, c: "x"))
+  graph.set_start("n")
+  graph.set_end("n")
+
+  svc = InMemorySessionService()
+  session = Session(id="s", appName="app", userId="u")
+
+  ctx = InvocationContext(
+      session=session,
+      session_service=svc,
+      invocation_id="inv",
+      agent=SimpleTestAgent("a", ["x"]),
+      user_content=None,
+  )
+  state = GraphState()
+  agent_state = GraphAgentState(current_node="n", iteration=1)
+
+  action = InterruptAction(action="defer", parameters={"message": "fix later"})
+  result = await graph._execute_interrupt_action(
+      action, state, ctx, agent_state
+  )
+
+  assert result == "continue"
+  assert len(agent_state.interrupt_todos) == 1
+  assert agent_state.interrupt_todos[0]["message"] == "fix later"
+
+
+@pytest.mark.asyncio
+async def test_execute_interrupt_action_rerun_with_guidance():
+  """Lines 1995-2000: rerun stores guidance in agent_state."""
+  from google.adk.agents.graph.interrupt import InterruptAction
+
+  graph = GraphAgent(name="g")
+  graph.add_node(GraphNode(name="n", function=lambda s, c: "x"))
+  graph.set_start("n")
+  graph.set_end("n")
+
+  svc = InMemorySessionService()
+  ctx = InvocationContext(
+      session=Session(id="s", appName="app", userId="u"),
+      session_service=svc,
+      invocation_id="inv",
+      agent=SimpleTestAgent("a", ["x"]),
+      user_content=None,
+  )
+  state = GraphState()
+  agent_state = GraphAgentState(path=["n"])
+
+  action = InterruptAction(
+      action="rerun", parameters={"guidance": "be thorough"}
+  )
+  result = await graph._execute_interrupt_action(
+      action, state, ctx, agent_state
+  )
+
+  assert result == "rerun"
+  assert agent_state.rerun_guidance == "be thorough"
+
+
+@pytest.mark.asyncio
+async def test_execute_interrupt_action_go_back_success():
+  """Lines 2002-2024: go_back with sufficient path → ('go_back', target_node)."""
+  from google.adk.agents.graph.interrupt import InterruptAction
+
+  graph = GraphAgent(name="g")
+  graph.add_node(GraphNode(name="n", function=lambda s, c: "x"))
+  graph.set_start("n")
+  graph.set_end("n")
+
+  ctx = InvocationContext(
+      session=Session(id="s", appName="app", userId="u"),
+      session_service=InMemorySessionService(),
+      invocation_id="inv",
+      agent=SimpleTestAgent("a", ["x"]),
+      user_content=None,
+  )
+  state = GraphState()
+  state.data["middle"] = "middle output"
+  state.data["end"] = "end output"
+  agent_state = GraphAgentState(path=["start", "middle", "end"])
+
+  action = InterruptAction(action="go_back", parameters={"steps": 2})
+  result = await graph._execute_interrupt_action(
+      action, state, ctx, agent_state
+  )
+
+  assert isinstance(result, tuple)
+  assert result[0] == "go_back"
+  assert result[1] == "start"
+  # Cleared outputs for the two nodes we went back from
+  assert "middle" not in state.data
+  assert "end" not in state.data
+
+
+@pytest.mark.asyncio
+async def test_execute_interrupt_action_go_back_cannot():
+  """Lines 2025-2030: go_back with path too short → warning + 'continue'."""
+  from google.adk.agents.graph.interrupt import InterruptAction
+
+  graph = GraphAgent(name="g")
+  graph.add_node(GraphNode(name="n", function=lambda s, c: "x"))
+  graph.set_start("n")
+  graph.set_end("n")
+
+  ctx = InvocationContext(
+      session=Session(id="s", appName="app", userId="u"),
+      session_service=InMemorySessionService(),
+      invocation_id="inv",
+      agent=SimpleTestAgent("a", ["x"]),
+      user_content=None,
+  )
+  state = GraphState()
+  agent_state = GraphAgentState(path=["only_one"])  # can't go back 5 steps
+
+  action = InterruptAction(action="go_back", parameters={"steps": 5})
+  result = await graph._execute_interrupt_action(
+      action, state, ctx, agent_state
+  )
+
+  assert result == "continue"
+
+
+@pytest.mark.asyncio
+async def test_execute_interrupt_action_update_state():
+  """Lines 2040-2054: update_state merges parameters into state.data."""
+  from google.adk.agents.graph.interrupt import InterruptAction
+
+  graph = GraphAgent(name="g")
+  graph.add_node(GraphNode(name="n", function=lambda s, c: "x"))
+  graph.set_start("n")
+  graph.set_end("n")
+
+  ctx = InvocationContext(
+      session=Session(id="s", appName="app", userId="u"),
+      session_service=InMemorySessionService(),
+      invocation_id="inv",
+      agent=SimpleTestAgent("a", ["x"]),
+      user_content=None,
+  )
+  state = GraphState()
+  agent_state = GraphAgentState()
+
+  action = InterruptAction(
+      action="update_state", parameters={"approved": True, "score": 9}
+  )
+  result = await graph._execute_interrupt_action(
+      action, state, ctx, agent_state
+  )
+
+  assert result == "continue"
+  assert state.data["approved"] is True
+  assert state.data["score"] == 9
+
+
+@pytest.mark.asyncio
+async def test_execute_interrupt_action_update_state_reserved_key_raises():
+  """Lines 2043-2048: reserved key prefix '_' or 'graph_' raises ValueError."""
+  from google.adk.agents.graph.interrupt import InterruptAction
+
+  graph = GraphAgent(name="g")
+  graph.add_node(GraphNode(name="n", function=lambda s, c: "x"))
+  graph.set_start("n")
+  graph.set_end("n")
+
+  ctx = InvocationContext(
+      session=Session(id="s", appName="app", userId="u"),
+      session_service=InMemorySessionService(),
+      invocation_id="inv",
+      agent=SimpleTestAgent("a", ["x"]),
+      user_content=None,
+  )
+  state = GraphState()
+  agent_state = GraphAgentState()
+
+  action = InterruptAction(
+      action="update_state", parameters={"_private": "val"}
+  )
+  with pytest.raises(ValueError, match="reserved key"):
+    await graph._execute_interrupt_action(action, state, ctx, agent_state)
+
+
+@pytest.mark.asyncio
+async def test_execute_interrupt_action_change_condition():
+  """Lines 2056-2061: change_condition stores in agent_state.conditions."""
+  from google.adk.agents.graph.interrupt import InterruptAction
+
+  graph = GraphAgent(name="g")
+  graph.add_node(GraphNode(name="n", function=lambda s, c: "x"))
+  graph.set_start("n")
+  graph.set_end("n")
+
+  ctx = InvocationContext(
+      session=Session(id="s", appName="app", userId="u"),
+      session_service=InMemorySessionService(),
+      invocation_id="inv",
+      agent=SimpleTestAgent("a", ["x"]),
+      user_content=None,
+  )
+  state = GraphState()
+  agent_state = GraphAgentState()
+
+  action = InterruptAction(
+      action="change_condition", parameters={"loop_flag": True}
+  )
+  result = await graph._execute_interrupt_action(
+      action, state, ctx, agent_state
+  )
+
+  assert result == "continue"
+  assert agent_state.conditions["loop_flag"] is True
+
+
+@pytest.mark.asyncio
+async def test_execute_interrupt_action_continue_default():
+  """Lines 2063-2065: unknown / 'continue' action returns 'continue'."""
+  from google.adk.agents.graph.interrupt import InterruptAction
+
+  graph = GraphAgent(name="g")
+  graph.add_node(GraphNode(name="n", function=lambda s, c: "x"))
+  graph.set_start("n")
+  graph.set_end("n")
+
+  ctx = InvocationContext(
+      session=Session(id="s", appName="app", userId="u"),
+      session_service=InMemorySessionService(),
+      invocation_id="inv",
+      agent=SimpleTestAgent("a", ["x"]),
+      user_content=None,
+  )
+  state = GraphState()
+  agent_state = GraphAgentState()
+
+  for action_name in ("continue", "unknown_action_xyz"):
+    action = InterruptAction(action=action_name)
+    result = await graph._execute_interrupt_action(
+        action, state, ctx, agent_state
+    )
+    assert result == "continue", f"Expected 'continue' for action={action_name}"
+
+
 # ---------------------------------------------------------------------------
 # _should_interrupt_before/after with node filter (lines 2078-2097)
 # ---------------------------------------------------------------------------
+
+
+def test_should_interrupt_before_with_specific_node_filter():
+  """Lines 2078-2080: nodes list set — only matching node triggers interrupt."""
+  graph = GraphAgent(
+      name="g",
+      interrupt_config=InterruptConfig(
+          mode=InterruptMode.BEFORE,
+          nodes=["target_node"],
+      ),
+  )
+  assert graph._should_interrupt_before("target_node") is True
+  assert graph._should_interrupt_before("other_node") is False
+
+
+def test_should_interrupt_after_with_specific_node_filter():
+  """Lines 2095-2097: same for AFTER mode."""
+  graph = GraphAgent(
+      name="g",
+      interrupt_config=InterruptConfig(
+          mode=InterruptMode.AFTER,
+          nodes=["watched"],
+      ),
+  )
+  assert graph._should_interrupt_after("watched") is True
+  assert graph._should_interrupt_after("unwatched") is False
+
+
+# ---------------------------------------------------------------------------
+# _parse_config (lines 2119-2170)
+# ---------------------------------------------------------------------------
+
+
+def test_parse_config_extracts_graph_fields():
+  """Lines 2119-2170: all fields from GraphAgentConfig → constructor kwargs."""
+  from google.adk.agents.graph.graph_agent_config import GraphAgentConfig
+  from google.adk.agents.graph.graph_agent_config import GraphNodeConfig
+  from google.adk.agents.graph.graph_agent_config import InterruptConfigYaml
+
+  config = GraphAgentConfig(
+      name="cfg_graph",
+      description="test",
+      start_node="n1",
+      max_iterations=7,
+      checkpointing=True,
+      interrupt_config=InterruptConfigYaml(mode="before"),
+      nodes=[GraphNodeConfig(name="n1")],
+  )
+
+  kwargs = GraphAgent._parse_config(config, "/tmp", {})
+
+  assert kwargs["start_node"] == "n1"
+  assert kwargs["max_iterations"] == 7
+  assert kwargs["checkpointing"] is True
+  assert kwargs["interrupt_config"] is not None
+  assert kwargs["interrupt_config"].mode == InterruptMode.BEFORE
 
 
 def test_parse_config_non_graph_config_passes_through():
@@ -1581,6 +1963,76 @@ def test_parse_config_non_graph_config_passes_through():
 
 # ---------------------------------------------------------------------------
 # from_config (lines 2191-2281)
+# ---------------------------------------------------------------------------
+
+
+def test_from_config_creates_nodes_edges_and_parallel_groups():
+  """Lines 2191-2281: from_config builds a fully functional graph."""
+  from unittest.mock import patch
+
+  from google.adk.agents.graph.graph_agent_config import GraphAgentConfig
+  from google.adk.agents.graph.graph_agent_config import GraphEdgeConfig
+  from google.adk.agents.graph.graph_agent_config import GraphNodeConfig
+  from google.adk.agents.graph.graph_agent_config import ParallelGroupConfig
+
+  # Dummy async function to satisfy GraphNode's agent-or-function requirement.
+  # resolve_code_reference is patched to return this when function_ref is set.
+  async def _dummy_node(state, ctx):
+    return "ok"
+
+  config = GraphAgentConfig(
+      name="from_cfg",
+      description="test",
+      start_node="n1",
+      end_nodes=["n2"],
+      nodes=[
+          GraphNodeConfig(name="n1", function_ref="dummy.n1"),
+          GraphNodeConfig(name="n2", function_ref="dummy.n2"),
+      ],
+      edges=[
+          GraphEdgeConfig(
+              source_node="n1",
+              target_node="n2",
+              condition="data.get('ok') is True",  # exercising _parse_condition_string
+          ),
+      ],
+      parallel_groups=[
+          ParallelGroupConfig(
+              nodes=["n1", "n2"], join_strategy="all", error_policy="fail_fast"
+          ),
+      ],
+  )
+
+  # Patch resolve_code_reference at its source module.
+  # from_config does a local import of it, so we patch the canonical location.
+  with patch(
+      "google.adk.agents.config_agent_utils.resolve_code_reference",
+      return_value=_dummy_node,
+  ):
+    graph = GraphAgent.from_config(config, "/tmp")
+
+  assert isinstance(graph, GraphAgent)
+  assert "n1" in graph.nodes
+  assert "n2" in graph.nodes
+  assert graph.start_node == "n1"
+  assert "n2" in graph.end_nodes
+
+  # Edge with condition was added to n1
+  n1_edges = graph.nodes["n1"].edges
+  assert len(n1_edges) == 1
+  # Condition function should be callable
+  state_ok = GraphState()
+  state_ok.data["ok"] = True
+  assert n1_edges[0].condition(state_ok) is True
+  state_ok.data["ok"] = False
+  assert n1_edges[0].condition(state_ok) is False
+
+  # Parallel group was registered
+  assert len(graph.parallel_groups) == 1
+
+
+# ---------------------------------------------------------------------------
+# before_node_callback (lines 1274-1342) and interrupt_service unregister (1892)
 # ---------------------------------------------------------------------------
 
 
@@ -1645,6 +2097,47 @@ async def test_after_node_callback_receives_node_context():
 
 
 @pytest.mark.asyncio
+async def test_interrupt_service_unregistered_after_graph_run():
+  """Line 1892: interrupt_service.unregister_session called in finally block."""
+  from google.adk.agents.graph.interrupt_service import InterruptService
+
+  interrupt_svc = InterruptService()
+
+  graph = GraphAgent(name="g", interrupt_service=interrupt_svc)
+  graph.add_node(GraphNode(name="n", function=lambda s, c: "x"))
+  graph.set_start("n")
+  graph.set_end("n")
+
+  svc = InMemorySessionService()
+  runner = Runner(app_name="app", agent=graph, session_service=svc)
+  await svc.create_session(app_name="app", user_id="u", session_id="sess")
+
+  # Register so is_active returns True (prevents immediate cancellation)
+  interrupt_svc.register_session("sess")
+
+  async for _ in runner.run_async(
+      user_id="u",
+      session_id="sess",
+      new_message=types.Content(role="user", parts=[types.Part(text="go")]),
+  ):
+    pass
+
+  # After execution completes, session should be unregistered
+  assert not interrupt_svc.is_active(
+      "sess"
+  ), "Session should be unregistered after graph execution completes"
+
+
+# ===========================================================================
+# Coverage gap tests – added to reach 100% on graph_agent.py
+# ===========================================================================
+
+
+# ---------------------------------------------------------------------------
+# export_graph_with_execution – node NOT in execution_history (lines 529-530)
+# ---------------------------------------------------------------------------
+
+
 def test_export_graph_with_execution_node_not_in_history():
   """Lines 529-530: node present in graph but absent from execution_history.
 
@@ -1694,7 +2187,52 @@ async def test_rewind_to_node_session_not_found():
 # ---------------------------------------------------------------------------
 
 
+def test_get_effective_telemetry_config_returns_none_when_no_config():
+  """Line 838: returns None when agent has no telemetry_config and session
+  has no '_telemetry_config' key either."""
+  graph = GraphAgent(name="g")  # No telemetry_config set
+  graph.add_node(GraphNode(name="n", function=lambda s, c: "x"))
+  graph.set_start("n")
+  graph.set_end("n")
+
+  svc = InMemorySessionService()
+  session = Session(id="s", appName="app", userId="u")
+  # No "_telemetry_config" in session.state → parent_config_dict is None/{}
+
+  ctx = InvocationContext(
+      session=session,
+      session_service=svc,
+      invocation_id="inv",
+      agent=SimpleTestAgent("a", ["x"]),
+      user_content=None,
+  )
+
+  result = graph._get_effective_telemetry_config(ctx)
+  assert result is None
+
+
+# ---------------------------------------------------------------------------
+# _check_interrupt_with_telemetry – no interrupt_service → None (line 1051)
+# ---------------------------------------------------------------------------
+
+
 @pytest.mark.asyncio
+async def test_check_interrupt_with_telemetry_no_service_returns_none():
+  """Line 1051: returns None immediately when interrupt_service is not set."""
+  graph = GraphAgent(name="g")  # No interrupt_service
+  graph.add_node(GraphNode(name="n", function=lambda s, c: "x"))
+  graph.set_start("n")
+  graph.set_end("n")
+
+  result = await graph._check_interrupt_with_telemetry("some_session", "before")
+  assert result is None
+
+
+# ---------------------------------------------------------------------------
+# _get_next_node_with_telemetry – edge condition raises (lines 1132-1137)
+# ---------------------------------------------------------------------------
+
+
 @pytest.mark.asyncio
 async def test_edge_condition_exception_propagates():
   """Lines 1132-1137: exception raised inside edge condition is re-raised.
@@ -1770,6 +2308,33 @@ async def test_run_async_stores_telemetry_config_in_agent_state():
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.asyncio
+async def test_execute_interrupt_action_pause_returns_pause_string():
+  """Line 2033: action.action == 'pause' → return 'pause'."""
+  from google.adk.agents.graph.interrupt import InterruptAction
+
+  graph = GraphAgent(name="g")
+  graph.add_node(GraphNode(name="n", function=lambda s, c: "x"))
+  graph.set_start("n")
+  graph.set_end("n")
+
+  ctx = InvocationContext(
+      session=Session(id="s", appName="app", userId="u"),
+      session_service=InMemorySessionService(),
+      invocation_id="inv",
+      agent=SimpleTestAgent("a", ["x"]),
+      user_content=None,
+  )
+  state = GraphState()
+  agent_state = GraphAgentState()
+
+  action = InterruptAction(action="pause")
+  result = await graph._execute_interrupt_action(
+      action, state, ctx, agent_state
+  )
+  assert result == "pause"
+
+
 # ---------------------------------------------------------------------------
 # BEFORE interrupt: go_back tuple (lines 1363-1364, 1391-1394)
 # BEFORE interrupt: rerun → continue (line 1396)
@@ -1779,14 +2344,420 @@ async def test_run_async_stores_telemetry_config_in_agent_state():
 
 
 @pytest.mark.asyncio
+async def test_before_interrupt_go_back_action():
+  """Lines 1363-1364, 1391-1394: BEFORE interrupt with go_back tuple action.
+
+  action_result is a tuple ('go_back', target_node) when path has >= 2 nodes.
+  n1 → n2 → n3 (end). Interrupt fires BEFORE n3 with go_back steps=1.
+  At that point path=["n1","n2"], steps=1 → ("go_back","n1") tuple returned.
+  """
+  from google.adk.agents.graph.interrupt_service import InterruptMessage
+
+  graph = GraphAgent(
+      name="g",
+      interrupt_config=InterruptConfig(mode=InterruptMode.BEFORE),
+      interrupt_service=Mock(),
+  )
+  graph.add_node(GraphNode(name="n1", function=lambda s, c: "x"))
+  graph.add_node(GraphNode(name="n2", function=lambda s, c: "y"))
+  graph.add_node(GraphNode(name="n3", function=lambda s, c: "done"))
+  graph.add_edge("n1", "n2")
+  graph.add_edge("n2", "n3")
+  graph.set_start("n1")
+  graph.set_end("n3")
+
+  call_count = {"n": 0}
+
+  async def patched_check(session_id, mode, effective_config=None):
+    call_count["n"] += 1
+    # Fire interrupt BEFORE n3 (third call: n1→no interrupt, n2→no interrupt, n3→interrupt)
+    if call_count["n"] == 3:
+      return InterruptMessage(
+          "go back to n1!", action="go_back", metadata={"steps": 1}
+      )
+    return None
+
+  graph._check_interrupt_with_telemetry = patched_check
+  graph.interrupt_service.register_session = Mock()
+  graph.interrupt_service.unregister_session = Mock()
+  graph.interrupt_service.is_active = Mock(return_value=True)
+
+  svc = InMemorySessionService()
+  runner = Runner(app_name="app", agent=graph, session_service=svc)
+  await svc.create_session(app_name="app", user_id="u", session_id="s")
+
+  events = []
+  async for event in runner.run_async(
+      user_id="u",
+      session_id="s",
+      new_message=types.Content(role="user", parts=[types.Part(text="go")]),
+  ):
+    events.append(event)
+
+  # BEFORE interrupt should have been yielded with go_back action
+  interrupt_events = [
+      e
+      for e in events
+      if e.content and "INTERRUPT (BEFORE)" in (e.content.parts[0].text or "")
+  ]
+  assert len(interrupt_events) >= 1
+  # go_back fired → should_escalate = False (tuple's first elem is "go_back", not "pause")
+  assert not any(e.actions and e.actions.escalate for e in interrupt_events)
+
+
 @pytest.mark.asyncio
+async def test_before_interrupt_rerun_action():
+  """Line 1396: BEFORE interrupt with rerun → continue (re-executes node)."""
+  from google.adk.agents.graph.interrupt_service import InterruptMessage
+
+  graph = GraphAgent(
+      name="g",
+      interrupt_config=InterruptConfig(mode=InterruptMode.BEFORE),
+      interrupt_service=Mock(),  # Will be patched
+  )
+  graph.add_node(GraphNode(name="n1", function=lambda s, c: "x"))
+  graph.set_start("n1")
+  graph.set_end("n1")
+
+  call_count = {"n": 0}
+
+  async def patched_check(session_id, mode, effective_config=None):
+    call_count["n"] += 1
+    if call_count["n"] == 1:
+      return InterruptMessage("redo", action="rerun")
+    return None
+
+  graph._check_interrupt_with_telemetry = patched_check
+  graph.interrupt_service.wait_if_paused = AsyncMock(return_value=True)
+  graph.interrupt_service.register_session = Mock()
+  graph.interrupt_service.unregister_session = Mock()
+  graph.interrupt_service.is_active = Mock(return_value=True)
+
+  svc = InMemorySessionService()
+  runner = Runner(app_name="app", agent=graph, session_service=svc)
+  await svc.create_session(app_name="app", user_id="u", session_id="s")
+
+  events = []
+  async for event in runner.run_async(
+      user_id="u",
+      session_id="s",
+      new_message=types.Content(role="user", parts=[types.Part(text="go")]),
+  ):
+    events.append(event)
+
+  # Node executed twice (first with rerun, then normally)
+  assert call_count["n"] >= 2
+
+
 @pytest.mark.asyncio
+async def test_before_interrupt_skip_no_next_node_breaks():
+  """Line 1403: BEFORE interrupt skip on end node (no next node) → break loop."""
+  from google.adk.agents.graph.interrupt_service import InterruptMessage
+
+  graph = GraphAgent(
+      name="g",
+      interrupt_config=InterruptConfig(mode=InterruptMode.BEFORE),
+      interrupt_service=Mock(),
+  )
+  # n1 is both start and end node, no outgoing edges → skip with no next → break
+  graph.add_node(GraphNode(name="n1", function=lambda s, c: "x"))
+  graph.set_start("n1")
+  graph.set_end("n1")
+
+  call_count = {"n": 0}
+
+  async def patched_check(session_id, mode, effective_config=None):
+    call_count["n"] += 1
+    if call_count["n"] == 1:
+      return InterruptMessage("skip me", action="skip")
+    return None
+
+  graph._check_interrupt_with_telemetry = patched_check
+  graph.interrupt_service.register_session = Mock()
+  graph.interrupt_service.unregister_session = Mock()
+  graph.interrupt_service.is_active = Mock(return_value=True)
+
+  svc = InMemorySessionService()
+  runner = Runner(app_name="app", agent=graph, session_service=svc)
+  await svc.create_session(app_name="app", user_id="u", session_id="s")
+
+  events = []
+  async for event in runner.run_async(
+      user_id="u",
+      session_id="s",
+      new_message=types.Content(role="user", parts=[types.Part(text="go")]),
+  ):
+    events.append(event)
+
+  # Interrupt event should have been yielded (INTERRUPT BEFORE message)
+  interrupt_events = [
+      e
+      for e in events
+      if e.content and "INTERRUPT" in (e.content.parts[0].text or "")
+  ]
+  assert len(interrupt_events) >= 1
+
+
 @pytest.mark.asyncio
+async def test_before_interrupt_pause_cancelled():
+  """Lines 1407-1414: BEFORE interrupt pause → wait_if_paused returns False → break."""
+  from google.adk.agents.graph.interrupt_service import InterruptMessage
+
+  graph = GraphAgent(
+      name="g",
+      interrupt_config=InterruptConfig(mode=InterruptMode.BEFORE),
+      interrupt_service=Mock(),
+  )
+  graph.add_node(GraphNode(name="n1", function=lambda s, c: "x"))
+  graph.set_start("n1")
+  graph.set_end("n1")
+
+  async def patched_check(session_id, mode, effective_config=None):
+    return InterruptMessage("pause please", action="pause")
+
+  graph._check_interrupt_with_telemetry = patched_check
+  graph.interrupt_service.wait_if_paused = AsyncMock(
+      return_value=False
+  )  # cancelled
+  graph.interrupt_service.register_session = Mock()
+  graph.interrupt_service.unregister_session = Mock()
+  graph.interrupt_service.is_active = Mock(return_value=True)
+
+  svc = InMemorySessionService()
+  runner = Runner(app_name="app", agent=graph, session_service=svc)
+  await svc.create_session(app_name="app", user_id="u", session_id="s")
+
+  events = []
+  async for event in runner.run_async(
+      user_id="u",
+      session_id="s",
+      new_message=types.Content(role="user", parts=[types.Part(text="go")]),
+  ):
+    events.append(event)
+
+  # Loop should have broken (execution stopped after pause cancelled)
+  interrupt_events = [
+      e
+      for e in events
+      if e.content and "INTERRUPT" in (e.content.parts[0].text or "")
+  ]
+  assert len(interrupt_events) >= 1
+
+
 @pytest.mark.asyncio
+async def test_before_interrupt_pause_timeout():
+  """Lines 1415-1416: BEFORE interrupt pause → wait_if_paused raises TimeoutError → break."""
+  from google.adk.agents.graph.interrupt_service import InterruptMessage
+
+  graph = GraphAgent(
+      name="g",
+      interrupt_config=InterruptConfig(mode=InterruptMode.BEFORE),
+      interrupt_service=Mock(),
+  )
+  graph.add_node(GraphNode(name="n1", function=lambda s, c: "x"))
+  graph.set_start("n1")
+  graph.set_end("n1")
+
+  async def patched_check(session_id, mode, effective_config=None):
+    return InterruptMessage("pause", action="pause")
+
+  graph._check_interrupt_with_telemetry = patched_check
+  graph.interrupt_service.wait_if_paused = AsyncMock(
+      side_effect=TimeoutError("timeout")
+  )
+  graph.interrupt_service.register_session = Mock()
+  graph.interrupt_service.unregister_session = Mock()
+  graph.interrupt_service.is_active = Mock(return_value=True)
+
+  svc = InMemorySessionService()
+  runner = Runner(app_name="app", agent=graph, session_service=svc)
+  await svc.create_session(app_name="app", user_id="u", session_id="s")
+
+  events = []
+  async for event in runner.run_async(
+      user_id="u",
+      session_id="s",
+      new_message=types.Content(role="user", parts=[types.Part(text="go")]),
+  ):
+    events.append(event)
+
+  # Should break without error after timeout
+  interrupt_events = [
+      e
+      for e in events
+      if e.content and "INTERRUPT" in (e.content.parts[0].text or "")
+  ]
+  assert len(interrupt_events) >= 1
+
+
+# ---------------------------------------------------------------------------
+# Parallel group already executed → skip (lines 1427-1444)
+# Parallel group no outgoing edges + not end node → ValueError (line 1519)
+# ---------------------------------------------------------------------------
+
+
 @pytest.mark.asyncio
+async def test_parallel_group_skip_on_second_encounter():
+  """Line 1437: parallel group skip where second node is end node with no outgoing edges.
+
+  After the group executes from n_par1 (routing edge n_par1→n_par2), the next
+  iteration sees n_par2, which is also in the group (already executed) → skip
+  path. _get_next_node returns None (n_par2 has no outgoing edges), and n_par2
+  IS an end node → break at line 1437.
+  """
+  from google.adk.agents.graph.parallel import ParallelNodeGroup
+
+  graph = GraphAgent(name="g", max_iterations=10)
+  graph.add_node(GraphNode(name="n_par1", function=lambda s, c: "par1"))
+  graph.add_node(GraphNode(name="n_par2", function=lambda s, c: "par2"))
+
+  group = ParallelNodeGroup(nodes=["n_par1", "n_par2"])
+  graph.add_parallel_group("pg1", group)
+
+  # After the group executes from n_par1, routing goes to n_par2 via this edge.
+  # n_par2 has NO outgoing edges (intentionally omitted).
+  graph.add_edge("n_par1", "n_par2")
+  graph.set_start("n_par1")
+  graph.set_end("n_par2")  # n_par2 is end node → break at line 1437
+
+  svc = InMemorySessionService()
+  runner = Runner(app_name="app", agent=graph, session_service=svc)
+  await svc.create_session(app_name="app", user_id="u", session_id="s")
+
+  events = []
+  async for event in runner.run_async(
+      user_id="u",
+      session_id="s",
+      new_message=types.Content(role="user", parts=[types.Part(text="go")]),
+  ):
+    events.append(event)
+
+  # Graph completed execution through the parallel group and reached the end node
+  assert (
+      len(events) >= 2
+  ), "Expected at least 2 events from parallel group execution"
+
+
 @pytest.mark.asyncio
+async def test_parallel_group_skip_routes_to_next_node():
+  """Lines 1443-1444: skip path where next_node_name is NOT None → routes normally.
+
+  n_par1 → n_par2 → n_after. Group has n_par1 and n_par2.
+  After group executes from n_par1, current = n_par2 (in group, already executed).
+  _get_next_node_with_telemetry(n_par2) → n_after (via edge) → non-None.
+  Lines 1443-1444: current_node_name = n_after, continue.
+  """
+  from google.adk.agents.graph.parallel import ParallelNodeGroup
+
+  graph = GraphAgent(name="g", max_iterations=10)
+  graph.add_node(GraphNode(name="n_par1", function=lambda s, c: "par1"))
+  graph.add_node(GraphNode(name="n_par2", function=lambda s, c: "par2"))
+  graph.add_node(GraphNode(name="n_after", function=lambda s, c: "after"))
+
+  group = ParallelNodeGroup(nodes=["n_par1", "n_par2"])
+  graph.add_parallel_group("pg_route", group)
+
+  # Group executes from n_par1, routes to n_par2 (skip), then skip routes to n_after
+  graph.add_edge("n_par1", "n_par2")
+  graph.add_edge("n_par2", "n_after")
+  graph.set_start("n_par1")
+  graph.set_end("n_after")
+
+  svc = InMemorySessionService()
+  runner = Runner(app_name="app", agent=graph, session_service=svc)
+  await svc.create_session(app_name="app", user_id="u", session_id="s")
+
+  events = []
+  async for event in runner.run_async(
+      user_id="u",
+      session_id="s",
+      new_message=types.Content(role="user", parts=[types.Part(text="go")]),
+  ):
+    events.append(event)
+
+  # Skip path routed n_par2→n_after: verify n_after's output appears in events
+  assert any(
+      e.content and e.content.parts and e.content.parts[0].text == "after"
+      for e in events
+  ), "Expected event with content 'after' from n_after after skip routing"
+
+
 @pytest.mark.asyncio
+async def test_parallel_group_skip_no_outgoing_not_end_raises():
+  """Lines 1439-1442: skip path where next_node_name is None and node is NOT end node.
+
+  n_par1 → n_par2. Group has n_par1 and n_par2.
+  After group executes from n_par1, current = n_par2 (in group, already executed).
+  n_par2 has NO outgoing edges, AND n_par2 is NOT an end node → ValueError 1439-1442.
+  """
+  from google.adk.agents.graph.parallel import ParallelNodeGroup
+
+  graph = GraphAgent(name="g", max_iterations=10)
+  graph.add_node(GraphNode(name="n_par1", function=lambda s, c: "par1"))
+  graph.add_node(GraphNode(name="n_par2", function=lambda s, c: "par2"))
+
+  group = ParallelNodeGroup(nodes=["n_par1", "n_par2"])
+  graph.add_parallel_group("pg_skip_err", group)
+
+  # After group executes from n_par1, routes to n_par2 (skip).
+  # n_par2 has no outgoing edges AND is NOT an end node → ValueError
+  graph.add_edge("n_par1", "n_par2")
+  graph.set_start("n_par1")
+  # Do NOT set n_par2 as end node
+
+  svc = InMemorySessionService()
+  runner = Runner(app_name="app", agent=graph, session_service=svc)
+  await svc.create_session(app_name="app", user_id="u", session_id="s")
+
+  with pytest.raises(ValueError, match="no outgoing edges"):
+    async for _ in runner.run_async(
+        user_id="u",
+        session_id="s",
+        new_message=types.Content(role="user", parts=[types.Part(text="go")]),
+    ):
+      pass
+
+
 @pytest.mark.asyncio
+async def test_parallel_group_no_outgoing_edges_not_end_raises():
+  """Line 1519: parallel group node has no outgoing edges and is not an end node → ValueError.
+
+  After the group executes from n1 (start node), _get_next_node returns None
+  because n1 has no outgoing edges. n1 is NOT an end node → ValueError at
+  line 1519 inside the post-group-execution block.
+  """
+  from google.adk.agents.graph.parallel import ParallelNodeGroup
+
+  graph = GraphAgent(name="g", max_iterations=5)
+  graph.add_node(GraphNode(name="n1", function=lambda s, c: "x"))
+  graph.add_node(GraphNode(name="n2", function=lambda s, c: "y"))
+
+  group = ParallelNodeGroup(nodes=["n1", "n2"])
+  graph.add_parallel_group("pg_noedge", group)
+
+  # n1 has NO outgoing edges → after group executes, next_node = None
+  # n1 is NOT an end node → hits ValueError at line 1519
+  graph.set_start("n1")
+  # Intentionally do NOT add edges or set end nodes
+
+  svc = InMemorySessionService()
+  runner = Runner(app_name="app", agent=graph, session_service=svc)
+  await svc.create_session(app_name="app", user_id="u", session_id="s")
+
+  with pytest.raises(ValueError, match="no outgoing edges"):
+    async for _ in runner.run_async(
+        user_id="u",
+        session_id="s",
+        new_message=types.Content(role="user", parts=[types.Part(text="go")]),
+    ):
+      pass
+
+
+# ---------------------------------------------------------------------------
+# asyncio.CancelledError during node execution (lines 1583-1614)
+# ---------------------------------------------------------------------------
+
+
 @pytest.mark.asyncio
 async def test_cancelled_error_during_node_execution():
   """Lines 1583-1614: asyncio.CancelledError during node execution yields
@@ -1845,8 +2816,161 @@ async def test_cancelled_error_during_node_execution():
 
 
 @pytest.mark.asyncio
+async def test_after_interrupt_go_back_action():
+  """Lines 1738-1739, 1786-1789: AFTER interrupt with go_back tuple action.
+
+  n1 → n2 → n3 (end). Interrupt fires AFTER n2 with go_back steps=1.
+  At that point path=["n1","n2"], steps=1 → ("go_back","n1") tuple returned.
+  """
+  from google.adk.agents.graph.interrupt_service import InterruptMessage
+
+  graph = GraphAgent(
+      name="g",
+      interrupt_config=InterruptConfig(mode=InterruptMode.AFTER),
+      interrupt_service=Mock(),
+  )
+  graph.add_node(GraphNode(name="n1", function=lambda s, c: "x"))
+  graph.add_node(GraphNode(name="n2", function=lambda s, c: "y"))
+  graph.add_node(GraphNode(name="n3", function=lambda s, c: "done"))
+  graph.add_edge("n1", "n2")
+  graph.add_edge("n2", "n3")
+  graph.set_start("n1")
+  graph.set_end("n3")
+
+  call_count = {"n": 0}
+
+  async def patched_check(session_id, mode, effective_config=None):
+    call_count["n"] += 1
+    # Fire AFTER n2 (second call) — path will have ["n1","n2"]
+    if call_count["n"] == 2:
+      return InterruptMessage(
+          "go back to n1!", action="go_back", metadata={"steps": 1}
+      )
+    return None
+
+  graph._check_interrupt_with_telemetry = patched_check
+  graph.interrupt_service.register_session = Mock()
+  graph.interrupt_service.unregister_session = Mock()
+  graph.interrupt_service.is_active = Mock(return_value=True)
+
+  svc = InMemorySessionService()
+  runner = Runner(app_name="app", agent=graph, session_service=svc)
+  await svc.create_session(app_name="app", user_id="u", session_id="s")
+
+  events = []
+  async for event in runner.run_async(
+      user_id="u",
+      session_id="s",
+      new_message=types.Content(role="user", parts=[types.Part(text="go")]),
+  ):
+    events.append(event)
+
+  # AFTER interrupt should have been yielded
+  interrupt_events = [
+      e
+      for e in events
+      if e.content and "INTERRUPT (AFTER)" in (e.content.parts[0].text or "")
+  ]
+  assert len(interrupt_events) >= 1
+  # go_back tuple → should_escalate = False
+  assert not any(e.actions and e.actions.escalate for e in interrupt_events)
+
+
 @pytest.mark.asyncio
+async def test_after_interrupt_pause_cancelled():
+  """Lines 1795-1806: AFTER interrupt pause → wait_if_paused False → break."""
+  from google.adk.agents.graph.interrupt_service import InterruptMessage
+
+  graph = GraphAgent(
+      name="g",
+      interrupt_config=InterruptConfig(mode=InterruptMode.AFTER),
+      interrupt_service=Mock(),
+  )
+  graph.add_node(GraphNode(name="n1", function=lambda s, c: "x"))
+  graph.set_start("n1")
+  graph.set_end("n1")
+
+  async def patched_check(session_id, mode, effective_config=None):
+    return InterruptMessage("pause after", action="pause")
+
+  graph._check_interrupt_with_telemetry = patched_check
+  graph.interrupt_service.wait_if_paused = AsyncMock(
+      return_value=False
+  )  # cancelled
+  graph.interrupt_service.register_session = Mock()
+  graph.interrupt_service.unregister_session = Mock()
+  graph.interrupt_service.is_active = Mock(return_value=True)
+
+  svc = InMemorySessionService()
+  runner = Runner(app_name="app", agent=graph, session_service=svc)
+  await svc.create_session(app_name="app", user_id="u", session_id="s")
+
+  events = []
+  async for event in runner.run_async(
+      user_id="u",
+      session_id="s",
+      new_message=types.Content(role="user", parts=[types.Part(text="go")]),
+  ):
+    events.append(event)
+
+  interrupt_events = [
+      e
+      for e in events
+      if e.content and "INTERRUPT (AFTER)" in (e.content.parts[0].text or "")
+  ]
+  assert len(interrupt_events) >= 1
+
+
 @pytest.mark.asyncio
+async def test_after_interrupt_pause_timeout():
+  """Lines 1807-1810: AFTER interrupt pause → wait_if_paused raises TimeoutError → break."""
+  from google.adk.agents.graph.interrupt_service import InterruptMessage
+
+  graph = GraphAgent(
+      name="g",
+      interrupt_config=InterruptConfig(mode=InterruptMode.AFTER),
+      interrupt_service=Mock(),
+  )
+  graph.add_node(GraphNode(name="n1", function=lambda s, c: "x"))
+  graph.set_start("n1")
+  graph.set_end("n1")
+
+  async def patched_check(session_id, mode, effective_config=None):
+    return InterruptMessage("pause after", action="pause")
+
+  graph._check_interrupt_with_telemetry = patched_check
+  graph.interrupt_service.wait_if_paused = AsyncMock(
+      side_effect=TimeoutError("timed out")
+  )
+  graph.interrupt_service.register_session = Mock()
+  graph.interrupt_service.unregister_session = Mock()
+  graph.interrupt_service.is_active = Mock(return_value=True)
+
+  svc = InMemorySessionService()
+  runner = Runner(app_name="app", agent=graph, session_service=svc)
+  await svc.create_session(app_name="app", user_id="u", session_id="s")
+
+  events = []
+  async for event in runner.run_async(
+      user_id="u",
+      session_id="s",
+      new_message=types.Content(role="user", parts=[types.Part(text="go")]),
+  ):
+    events.append(event)
+
+  interrupt_events = [
+      e
+      for e in events
+      if e.content and "INTERRUPT (AFTER)" in (e.content.parts[0].text or "")
+  ]
+  assert len(interrupt_events) >= 1
+
+
+# ---------------------------------------------------------------------------
+# _parse_config – callback refs resolved (lines 2150, 2158, 2166)
+# ---------------------------------------------------------------------------
+
+
 def test_parse_config_callback_refs_resolved():
   """Lines 2150, 2158, 2166: _parse_config resolves before_node_callback_ref,
   after_node_callback_ref and on_edge_condition_callback_ref via resolve_code_reference.
@@ -2572,6 +3696,56 @@ class TestDomainDataFromSession:
 
 
 @pytest.mark.asyncio
+class TestImmediateCancellation:
+
+  async def test_cancelled_before_first_node(self):
+    agent_a = SimpleTestAgent("a", ["should_not_run"])
+    graph = GraphAgent(name="g")
+    graph.add_node(GraphNode(name="nA", agent=agent_a))
+    graph.set_start("nA")
+    graph.set_end("nA")
+    interrupt_svc = InterruptService()
+    graph.interrupt_service = interrupt_svc
+    interrupt_svc.register_session("test-session")
+    await interrupt_svc.cancel("test-session")
+    ctx = _cov_make_ctx(graph)
+    events = await _cov_collect(graph, ctx)
+    assert agent_a.call_count == 0
+    cancel_events = [
+        e
+        for e in events
+        if e.content
+        and e.content.parts
+        and "cancelled" in (e.content.parts[0].text or "").lower()
+    ]
+    assert len(cancel_events) == 1
+    cancel_ev = cancel_events[0]
+    assert cancel_ev.actions.state_delta["graph_cancelled"] is True
+    assert cancel_ev.actions.state_delta["graph_can_resume"] is True
+
+  async def test_cancelled_at_second_iteration(self):
+    agent_a = SimpleTestAgent("a", ["a_out"])
+    agent_b = SimpleTestAgent("b", ["b_out"])
+    graph = _cov_linear_graph("g", [agent_a, agent_b], ["nA", "nB"])
+    interrupt_svc = InterruptService()
+    graph.interrupt_service = interrupt_svc
+    interrupt_svc.register_session("test-session")
+    call_count = {"n": 0}
+    original_is_active = interrupt_svc.is_active
+
+    def conditional_is_active(session_id):
+      call_count["n"] += 1
+      return call_count["n"] < 2 and original_is_active(session_id)
+
+    with patch.object(
+        interrupt_svc, "is_active", side_effect=conditional_is_active
+    ):
+      ctx = _cov_make_ctx(graph)
+      events = await _cov_collect(graph, ctx)
+    assert agent_a.call_count == 1
+    assert agent_b.call_count == 0
+
+
 @pytest.mark.asyncio
 class TestBeforeNodeCallbackException:
 
@@ -2589,7 +3763,74 @@ class TestBeforeNodeCallbackException:
 
 
 @pytest.mark.asyncio
+class TestCovParallelGroupExecution:
+
+  async def test_parallel_group_yields_events(self):
+    agent_a = SimpleTestAgent("a", ["a_out"])
+    agent_b = SimpleTestAgent("b", ["b_out"])
+    agent_c = SimpleTestAgent("c", ["c_out"])
+    graph = GraphAgent(name="g")
+    graph.add_node(GraphNode(name="nA", agent=agent_a))
+    graph.add_node(GraphNode(name="nB", agent=agent_b))
+    graph.add_node(GraphNode(name="nC", agent=agent_c))
+    graph.add_parallel_group("pg1", ParallelNodeGroup(nodes=["nA", "nB"]))
+    graph.add_edge("nA", "nC")
+    graph.add_edge("nB", "nC")
+    graph.set_start("nA")
+    graph.set_end("nC")
+    ctx = _cov_make_ctx(graph)
+    events = await _cov_collect(graph, ctx)
+    assert agent_a.call_count == 1
+    assert agent_b.call_count == 1
+    assert agent_c.call_count == 1
+
+  async def test_parallel_group_at_end_node(self):
+    agent_a = SimpleTestAgent("a", ["a_out"])
+    agent_b = SimpleTestAgent("b", ["b_out"])
+    graph = GraphAgent(name="g")
+    graph.add_node(GraphNode(name="nA", agent=agent_a))
+    graph.add_node(GraphNode(name="nB", agent=agent_b))
+    graph.add_parallel_group("pg1", ParallelNodeGroup(nodes=["nA", "nB"]))
+    graph.set_start("nA")
+    graph.set_end("nA")
+    graph.set_end("nB")
+    ctx = _cov_make_ctx(graph)
+    events = await _cov_collect(graph, ctx)
+    assert agent_a.call_count == 1
+    assert agent_b.call_count == 1
+
+
 @pytest.mark.asyncio
+class TestCancellationDuringNode:
+
+  async def test_cancelled_mid_node_execution(self):
+    multi_agent = _CovMultiEventAgent("multi", event_count=3)
+    agent_b = SimpleTestAgent("b", ["b_out"])
+    graph = _cov_linear_graph("g", [multi_agent, agent_b], ["nA", "nB"])
+    interrupt_svc = InterruptService()
+    graph.interrupt_service = interrupt_svc
+    interrupt_svc.register_session("test-session")
+    call_count = {"n": 0}
+
+    def staged_is_active(session_id):
+      call_count["n"] += 1
+      return call_count["n"] <= 1
+
+    with patch.object(interrupt_svc, "is_active", side_effect=staged_is_active):
+      ctx = _cov_make_ctx(graph)
+      events = await _cov_collect(graph, ctx)
+    assert agent_b.call_count == 0
+    cancel_events = [
+        e
+        for e in events
+        if e.content
+        and e.content.parts
+        and "cancelled during node" in (e.content.parts[0].text or "").lower()
+    ]
+    assert len(cancel_events) == 1
+    assert cancel_events[0].actions.state_delta["graph_cancelled"] is True
+
+
 @pytest.mark.asyncio
 class TestOutputMapperNoneFallback:
 
@@ -2668,33 +3909,25 @@ class TestConditionEvalLogging:
       assert mock_logger.error.call_args[1].get("exc_info") is True
 
 
-@pytest.mark.asyncio
-class TestImmediateCancellation:
+class TestGraphInternalKeys:
 
-  async def test_cancelled_before_first_node(self):
-    agent_a = SimpleTestAgent("a", ["should_not_run"])
-    graph = GraphAgent(name="g")
-    graph.add_node(GraphNode(name="nA", agent=agent_a))
-    graph.set_start("nA")
-    graph.set_end("nA")
-    interrupt_svc = InterruptService()
-    graph.interrupt_service = interrupt_svc
-    interrupt_svc.register_session("test-session")
-    await interrupt_svc.cancel("test-session")
-    ctx = _cov_make_ctx(graph)
-    events = await _cov_collect(graph, ctx)
-    assert agent_a.call_count == 0
-    cancel_events = [
-        e
-        for e in events
-        if e.content
-        and e.content.parts
-        and "cancelled" in (e.content.parts[0].text or "").lower()
-    ]
-    assert len(cancel_events) == 1
-    cancel_ev = cancel_events[0]
-    assert cancel_ev.actions.state_delta["graph_cancelled"] is True
-    assert cancel_ev.actions.state_delta["graph_can_resume"] is True
+  def test_all_expected_keys_present(self):
+    expected = {
+        "graph_data",
+        "graph_checkpoint",
+        "graph_cancelled",
+        "graph_cancelled_at_node",
+        "graph_task_cancelled",
+        "graph_can_resume",
+        "graph_iterations",
+        "graph_path",
+        "graph_partial_output",
+        "graph_state",
+    }
+    assert _GRAPH_INTERNAL_KEYS == expected
+
+  def test_is_frozenset(self):
+    assert isinstance(_GRAPH_INTERNAL_KEYS, frozenset)
 
   async def test_cancelled_at_second_iteration(self):
     agent_a = SimpleTestAgent("a", ["a_out"])

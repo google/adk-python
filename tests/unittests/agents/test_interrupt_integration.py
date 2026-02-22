@@ -29,6 +29,8 @@ from google.adk.agents.graph.interrupt_reasoner import InterruptReasonerConfig
 from google.adk.agents.graph.interrupt_service import InterruptMessage
 from google.adk.agents.graph.interrupt_service import InterruptService
 from google.adk.agents.invocation_context import InvocationContext
+from google.adk.checkpoints.checkpoint_service import CheckpointService
+from google.adk.checkpoints.checkpoint_service import CheckpointServiceConfig
 from google.adk.events.event import Event
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
@@ -540,6 +542,60 @@ async def test_state_preservation_during_interrupt():
   # Session state should exist and contain graph state
   assert session.state is not None
   assert "graph_data" in session.state
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_integration_with_interrupts():
+  """Test checkpoints work correctly with interrupt system."""
+  interrupt_service = InterruptService()
+  session_service = InMemorySessionService()
+
+  checkpoint_service = CheckpointService(
+      session_service=session_service,
+      artifact_service=None,
+      config=CheckpointServiceConfig(),
+  )
+
+  graph = GraphAgent(
+      name="test_graph",
+      interrupt_service=interrupt_service,
+      interrupt_config=InterruptConfig(mode=InterruptMode.AFTER),
+      checkpointing=True,
+  )
+
+  node_a = GraphNode(name="node_a", agent=MockAgent(name="agent_a"))
+
+  graph.add_node(node_a)
+  graph.set_start("node_a").set_end("node_a")
+
+  runner = Runner(
+      app_name="test_app", agent=graph, session_service=session_service
+  )
+
+  session = await session_service.create_session(
+      app_name="test_app", user_id="test_user", session_id="test_session"
+  )
+
+  interrupt_service.register_session("test_session")
+  await interrupt_service.send_message(
+      "test_session", "Check before checkpoint", action="continue"
+  )
+
+  async for event in runner.run_async(
+      user_id="test_user",
+      session_id="test_session",
+      new_message=types.Content(role="user", parts=[types.Part(text="test")]),
+  ):
+    pass
+
+  # Create checkpoint after interrupt
+  checkpoint = await checkpoint_service.create_checkpoint(
+      session=session,
+      description="After interrupt test",
+  )
+
+  assert checkpoint is not None
+  assert checkpoint.checkpoint_id is not None
 
 
 @pytest.mark.asyncio
