@@ -309,6 +309,7 @@ def execute_code(self, invocation_context, code_execution_input):
         # is the correct PID for os.kill() on the host.
         # (Killing from inside the container would require
         # the container-namespace PID, which is different.)
+        cleanup_failed = False
         try:
             info = self._client.api.exec_inspect(exec_id)
             host_pid = info.get('Pid', 0)
@@ -323,9 +324,34 @@ def execute_code(self, invocation_context, code_execution_input):
             # process is terminated.
             try:
                 self._container.restart(timeout=1)
-            except Exception:
-                pass
+            except Exception as restart_err:
+                cleanup_failed = True
+                logger.error(
+                    'Timeout cleanup failed: could not kill '
+                    'process or restart container: %s',
+                    restart_err,
+                )
+                self._healthy = False
 
+        # Give the worker thread a short window to finish
+        # after kill/restart, so it doesn't leak indefinitely.
+        thread.join(timeout=2)
+        if thread.is_alive():
+            logger.warning(
+                'Worker thread still alive after timeout '
+                'cleanup; daemon thread will linger until '
+                'process exit.'
+            )
+
+        if cleanup_failed:
+            return CodeExecutionResult(
+                stderr=(
+                    f'Execution timed out after {timeout}s '
+                    f'and cleanup failed — executor is '
+                    f'unhealthy. Reinitialize the executor '
+                    f'before further use.'
+                )
+            )
         return CodeExecutionResult(
             stderr=f'Execution timed out after {timeout}s'
         )
@@ -349,7 +375,20 @@ def execute_code(self, invocation_context, code_execution_input):
      concurrent execs or unrelated Python processes)
    - Dependency on `procps`/`pkill` being installed in the image
 
-3. **Container restart as last resort** — If `os.kill` fails (e.g.,
+3. **Post-kill thread join** — After kill/restart, a short
+   `thread.join(timeout=2)` gives the worker thread time to exit
+   cleanly. If it's still alive, a warning is logged. The thread is
+   a daemon, so it will not prevent process exit, but repeated
+   timeout failures without this join could accumulate leaked threads.
+
+4. **Unhealthy state on total cleanup failure** — If both `os.kill`
+   and `container.restart()` fail, the executor sets `self._healthy
+   = False` and returns a distinct error message. Subsequent calls
+   should check `self._healthy` and raise early rather than queueing
+   work against a broken container. Reinitialization (stop + start)
+   is required to recover.
+
+5. **Container restart as last resort** — If `os.kill` fails (e.g.,
    insufficient permissions when Docker runs rootless), restart the
    container. This is the most reliable fallback but destroys
    in-container state.
@@ -1153,6 +1192,8 @@ is new and has no tests yet.
 | Timeout tests | Scripts with `time.sleep()` to verify enforcement | Per-executor timeout tests |
 | Timeout kill fallback | Verify `PermissionError` from `os.kill` triggers container restart | Mock `os.kill` to raise `PermissionError`, assert `container.restart()` called and `CodeExecutionResult.stderr` contains timeout message |
 | Timeout kill success | Verify `os.kill(host_pid)` path when permitted | Mock `exec_inspect` to return PID, assert `os.kill` called with correct signal |
+| Timeout total failure | Verify both `os.kill` and `container.restart()` fail → unhealthy | Mock both to raise, assert `_healthy` is `False` and `stderr` contains "cleanup failed" |
+| Timeout thread leak | Verify post-kill `join(2)` is called and warning logged if thread lingers | Mock thread to stay alive after kill, assert warning logged |
 | Security tests | Scripts attempting blocked operations | `restrict_builtins` bypass attempts, env var leakage |
 | Stateful tests | Multi-call sequences verifying variable persistence | Append-after-success, failure-does-not-poison, `execution_id` isolation |
 | Stateful crash recovery | Verify error returned on REPL/container crash | Kill REPL mid-execution, assert error indicates state loss |
