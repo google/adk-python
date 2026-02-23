@@ -134,8 +134,8 @@ class AgentEngineSandboxCodeExecutor(BaseCodeExecutor):
           or 'file_name' not in output.metadata.attributes
       ):
         json_output_data = json.loads(output.data.decode('utf-8'))
-        stdout = json_output_data.get('stdout', '')
-        stderr = json_output_data.get('stderr', '')
+        stdout = json_output_data.get('msg_out', '')
+        stderr = json_output_data.get('msg_err', '')
       else:
         file_name = ''
         if (

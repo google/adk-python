@@ -15,7 +15,6 @@
 import asyncio
 import json
 import logging
-import os
 from pathlib import Path
 import signal
 import tempfile
@@ -677,6 +676,7 @@ def test_app_with_a2a(
     mock_eval_sets_manager,
     mock_eval_set_results_manager,
     temp_agents_dir_with_a2a,
+    monkeypatch,
 ):
   """Create a TestClient for the FastAPI app with A2A enabled."""
   # Mock A2A related classes
@@ -728,26 +728,22 @@ def test_app_with_a2a(
     mock_a2a_app.return_value = mock_app_instance
 
     # Change to temp directory
-    original_cwd = os.getcwd()
-    os.chdir(temp_agents_dir_with_a2a)
+    monkeypatch.chdir(temp_agents_dir_with_a2a)
 
-    try:
-      app = get_fast_api_app(
-          agents_dir=".",
-          web=True,
-          session_service_uri="",
-          artifact_service_uri="",
-          memory_service_uri="",
-          allow_origins=["*"],
-          a2a=True,
-          host="127.0.0.1",
-          port=8000,
-      )
+    app = get_fast_api_app(
+        agents_dir=".",
+        web=True,
+        session_service_uri="",
+        artifact_service_uri="",
+        memory_service_uri="",
+        allow_origins=["*"],
+        a2a=True,
+        host="127.0.0.1",
+        port=8000,
+    )
 
-      client = TestClient(app)
-      yield client
-    finally:
-      os.chdir(original_cwd)
+    client = TestClient(app)
+    yield client
 
 
 #################################################
@@ -1404,6 +1400,86 @@ def test_a2a_agent_discovery(test_app_with_a2a):
   response = test_app_with_a2a.get("/list-apps")
   assert response.status_code == 200
   logger.info("A2A agent discovery test passed")
+
+
+def test_a2a_request_handler_uses_push_config_store(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+    temp_agents_dir_with_a2a,
+    monkeypatch,
+):
+  """Test A2A request handler gets push config store when supported."""
+  with (
+      patch("signal.signal", return_value=None),
+      patch(
+          "google.adk.cli.fast_api.create_session_service_from_options",
+          return_value=mock_session_service,
+      ),
+      patch(
+          "google.adk.cli.fast_api.create_artifact_service_from_options",
+          return_value=mock_artifact_service,
+      ),
+      patch(
+          "google.adk.cli.fast_api.create_memory_service_from_options",
+          return_value=mock_memory_service,
+      ),
+      patch(
+          "google.adk.cli.fast_api.AgentLoader",
+          return_value=mock_agent_loader,
+      ),
+      patch(
+          "google.adk.cli.fast_api.LocalEvalSetsManager",
+          return_value=mock_eval_sets_manager,
+      ),
+      patch(
+          "google.adk.cli.fast_api.LocalEvalSetResultsManager",
+          return_value=mock_eval_set_results_manager,
+      ),
+      patch("a2a.server.tasks.InMemoryTaskStore") as mock_task_store,
+      patch(
+          "a2a.server.tasks.InMemoryPushNotificationConfigStore"
+      ) as mock_push_config_store_class,
+      patch(
+          "google.adk.a2a.executor.a2a_agent_executor.A2aAgentExecutor"
+      ) as mock_executor,
+      patch(
+          "a2a.server.request_handlers.DefaultRequestHandler"
+      ) as mock_handler,
+      patch("a2a.server.apps.A2AStarletteApplication") as mock_a2a_app,
+  ):
+    mock_task_store_instance = MagicMock()
+    mock_task_store.return_value = mock_task_store_instance
+    mock_push_config_store = MagicMock()
+    mock_push_config_store_class.return_value = mock_push_config_store
+    mock_executor_instance = MagicMock()
+    mock_executor.return_value = mock_executor_instance
+    mock_handler.return_value = MagicMock()
+    mock_a2a_app_instance = MagicMock()
+    mock_a2a_app_instance.routes.return_value = []
+    mock_a2a_app.return_value = mock_a2a_app_instance
+
+    monkeypatch.chdir(temp_agents_dir_with_a2a)
+    _ = get_fast_api_app(
+        agents_dir=".",
+        web=True,
+        session_service_uri="",
+        artifact_service_uri="",
+        memory_service_uri="",
+        allow_origins=["*"],
+        a2a=True,
+        host="127.0.0.1",
+        port=8000,
+    )
+
+    mock_handler.assert_called_once_with(
+        agent_executor=mock_executor_instance,
+        push_config_store=mock_push_config_store,
+        task_store=mock_task_store_instance,
+    )
 
 
 def test_a2a_disabled_by_default(test_app):
