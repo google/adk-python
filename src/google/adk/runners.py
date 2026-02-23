@@ -45,6 +45,7 @@ from .artifacts.base_artifact_service import BaseArtifactService
 from .artifacts.in_memory_artifact_service import InMemoryArtifactService
 from .auth.credential_service.base_credential_service import BaseCredentialService
 from .code_executors.built_in_code_executor import BuiltInCodeExecutor
+from .errors.session_not_found_error import SessionNotFoundError
 from .events.event import Event
 from .events.event import EventActions
 from .flows.llm_flows import contents
@@ -358,7 +359,7 @@ class Runner:
 
     This helper first attempts to retrieve the session. If not found and
     auto_create_session is True, it creates a new session with the provided
-    identifiers. Otherwise, it raises a ValueError with a helpful message.
+    identifiers. Otherwise, it raises a SessionNotFoundError.
 
     Args:
       user_id: The user ID of the session.
@@ -368,7 +369,8 @@ class Runner:
       The existing or newly created `Session`.
 
     Raises:
-      ValueError: If the session is not found and auto_create_session is False.
+      SessionNotFoundError: If the session is not found and
+        auto_create_session is False.
     """
     session = await self.session_service.get_session(
         app_name=self.app_name, user_id=user_id, session_id=session_id
@@ -380,7 +382,7 @@ class Runner:
         )
       else:
         message = self._format_session_not_found_message(session_id)
-        raise ValueError(message)
+        raise SessionNotFoundError(message)
     return session
 
   def run(
