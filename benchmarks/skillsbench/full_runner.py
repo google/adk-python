@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import concurrent.futures
 import io
 import json
 import logging
@@ -160,6 +161,7 @@ class TaskContainerExecutor(BaseCodeExecutor):
 
   _container: object = None
   _client: object = None
+  _cmd_timeout: float = 300.0  # Per-command timeout in seconds
 
   def start(
       self,
@@ -176,6 +178,36 @@ class TaskContainerExecutor(BaseCodeExecutor):
         working_dir="/root",
     )
 
+  def _exec_run_with_timeout(
+      self,
+      cmd: list[str],
+      workdir: str = "/root",
+      timeout: float | None = None,
+  ) -> tuple[int, bytes, bytes]:
+    """Run exec_run in a thread with a timeout.
+
+    Returns (exit_code, stdout_bytes, stderr_bytes).
+    Raises TimeoutError if the command exceeds *timeout*.
+    """
+    timeout = timeout or self._cmd_timeout
+
+    def _run():
+      rc, output = self._container.exec_run(
+          cmd,
+          workdir=workdir,
+          demux=True,
+      )
+      return rc, (output[0] or b""), (output[1] or b"")
+
+    with concurrent.futures.ThreadPoolExecutor(1) as pool:
+      future = pool.submit(_run)
+      try:
+        return future.result(timeout=timeout)
+      except concurrent.futures.TimeoutError:
+        raise TimeoutError(
+            f"Command timed out after {timeout}s: {' '.join(cmd[:3])}"
+        )
+
   @override
   def execute_code(
       self,
@@ -189,13 +221,17 @@ class TaskContainerExecutor(BaseCodeExecutor):
           stderr="Container not started",
       )
     code = code_execution_input.code
-    rc, output = self._container.exec_run(
-        ["python3", "-c", code],
-        workdir="/root",
-        demux=True,
-    )
-    stdout = (output[0] or b"").decode("utf-8", errors="replace")
-    stderr = (output[1] or b"").decode("utf-8", errors="replace")
+    try:
+      rc, out, err = self._exec_run_with_timeout(
+          ["python3", "-c", code],
+      )
+    except TimeoutError as exc:
+      return CodeExecutionResult(
+          stdout="",
+          stderr=str(exc),
+      )
+    stdout = out.decode("utf-8", errors="replace")
+    stderr = err.decode("utf-8", errors="replace")
     return CodeExecutionResult(
         stdout=stdout,
         stderr=stderr,
@@ -228,13 +264,16 @@ class TaskContainerExecutor(BaseCodeExecutor):
     """
     if self._container is None:
       raise RuntimeError("Container not started")
-    rc, output = self._container.exec_run(
-        cmd,
-        workdir=workdir,
-        demux=True,
-    )
-    stdout = (output[0] or b"").decode("utf-8", errors="replace")
-    stderr = (output[1] or b"").decode("utf-8", errors="replace")
+    try:
+      rc, out, err = self._exec_run_with_timeout(
+          cmd,
+          workdir=workdir,
+          timeout=timeout,
+      )
+    except TimeoutError:
+      return -1, f"Command timed out after {timeout or self._cmd_timeout}s"
+    stdout = out.decode("utf-8", errors="replace")
+    stderr = err.decode("utf-8", errors="replace")
     combined = stdout
     if stderr:
       combined = combined + "\n" + stderr if combined else stderr
@@ -507,10 +546,11 @@ def score_task_in_container(
   # Make test.sh executable
   executor.exec_in_container(["chmod", "+x", "/tests/test.sh"])
 
-  # Run test.sh
+  # Run test.sh (longer timeout — installs deps + runs pytest)
   rc, output = executor.exec_in_container(
       ["bash", "/tests/test.sh"],
       workdir="/root",
+      timeout=900.0,
   )
   logger.debug(
       "test.sh for %s exited %d:\n%s",
