@@ -50,7 +50,12 @@ from ..converters.request_converter import AgentRunRequest
 from ..converters.request_converter import convert_a2a_request_to_agent_run_request
 from ..converters.utils import _get_adk_metadata_key
 from ..experimental import a2a_experimental
+from .config import ExecuteInterceptor
+from .executor_context import ExecutorContext
 from .task_result_aggregator import TaskResultAggregator
+from .utils import execute_after_agent_interceptors
+from .utils import execute_after_event_interceptors
+from .utils import execute_before_agent_interceptors
 
 logger = logging.getLogger('google_adk.' + __name__)
 
@@ -69,6 +74,8 @@ class A2aAgentExecutorConfig(BaseModel):
       convert_a2a_request_to_agent_run_request
   )
   event_converter: AdkEventToA2AEventsConverter = convert_event_to_a2a_events
+
+  execute_interceptors: Optional[list[ExecuteInterceptor]] = None
 
 
 @a2a_experimental
@@ -134,6 +141,10 @@ class A2aAgentExecutor(AgentExecutor):
     """
     if not context.message:
       raise ValueError('A2A request must have a message')
+
+    context = await execute_before_agent_interceptors(
+        context, self._config.execute_interceptors
+    )
 
     # for new task, create a task submitted event
     if not context.current_task:
@@ -202,6 +213,13 @@ class A2aAgentExecutor(AgentExecutor):
         run_config=run_request.run_config,
     )
 
+    self._executor_context = ExecutorContext(
+        app_name=runner.app_name,
+        user_id=run_request.user_id,
+        session_id=run_request.session_id,
+        runner=runner,
+    )
+
     # publish the task working event
     await event_queue.enqueue_event(
         TaskStatusUpdateEvent(
@@ -230,6 +248,15 @@ class A2aAgentExecutor(AgentExecutor):
             context.context_id,
             self._config.gen_ai_part_converter,
         ):
+          a2a_event = await execute_after_event_interceptors(
+              a2a_event,
+              self._executor_context,
+              adk_event,
+              self._config.execute_interceptors,
+          )
+          if a2a_event is None:
+            continue
+
           task_result_aggregator.process_event(a2a_event)
           await event_queue.enqueue_event(a2a_event)
 
@@ -253,30 +280,33 @@ class A2aAgentExecutor(AgentExecutor):
           )
       )
       # public the final status update event
-      await event_queue.enqueue_event(
-          TaskStatusUpdateEvent(
-              task_id=context.task_id,
-              status=TaskStatus(
-                  state=TaskState.completed,
-                  timestamp=datetime.now(timezone.utc).isoformat(),
-              ),
-              context_id=context.context_id,
-              final=True,
-          )
+      final_event = TaskStatusUpdateEvent(
+          task_id=context.task_id,
+          status=TaskStatus(
+              state=TaskState.completed,
+              timestamp=datetime.now(timezone.utc).isoformat(),
+          ),
+          context_id=context.context_id,
+          final=True,
       )
     else:
-      await event_queue.enqueue_event(
-          TaskStatusUpdateEvent(
-              task_id=context.task_id,
-              status=TaskStatus(
-                  state=task_result_aggregator.task_state,
-                  timestamp=datetime.now(timezone.utc).isoformat(),
-                  message=task_result_aggregator.task_status_message,
-              ),
-              context_id=context.context_id,
-              final=True,
-          )
+      final_event = TaskStatusUpdateEvent(
+          task_id=context.task_id,
+          status=TaskStatus(
+              state=task_result_aggregator.task_state,
+              timestamp=datetime.now(timezone.utc).isoformat(),
+              message=task_result_aggregator.task_status_message,
+          ),
+          context_id=context.context_id,
+          final=True,
       )
+
+    final_event = await execute_after_agent_interceptors(
+        self._executor_context,
+        final_event,
+        self._config.execute_interceptors,
+    )
+    await event_queue.enqueue_event(final_event)
 
   async def _prepare_session(
       self,
