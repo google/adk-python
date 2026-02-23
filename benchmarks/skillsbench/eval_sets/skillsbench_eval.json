@@ -1,0 +1,230 @@
+{
+  "eval_set_id": "skillsbench-adk-v1",
+  "name": "SkillsBench ADK Evaluation",
+  "description": "8 representative SkillsBench tasks adapted as ADK skills to evaluate SkillToolset with Gemini Flash.",
+  "eval_cases": [
+    {
+      "eval_id": "data_analysis_csv_aggregation",
+      "conversation": [
+        {
+          "invocation_id": "inv-csv-agg-01",
+          "user_content": {
+            "parts": [{"text": "Aggregate the sample employee CSV data by department and show salary statistics for each department."}],
+            "role": "user"
+          },
+          "final_response": {
+            "parts": [{"text": "Group: Engineering\n  count: 3\n  sum: 285000\n  mean: 95000\nGroup: Marketing\n  count: 3\n  sum: 214000\nGroup: Sales\n  count: 2\n  sum: 157000"}],
+            "role": "model"
+          },
+          "intermediate_data": {
+            "tool_uses": [
+              {"name": "list_skills", "args": {}},
+              {"name": "load_skill", "args": {"skill_name": "csv-aggregation"}},
+              {"name": "load_skill_resource", "args": {"skill_name": "csv-aggregation", "resource_type": "references", "resource_id": "sample-data.md"}},
+              {"name": "execute_skill_script", "args": {"skill_name": "csv-aggregation", "script_name": "aggregate.py", "input_args": "group_col=department metric_col=salary"}}
+            ],
+            "tool_responses": [],
+            "intermediate_responses": []
+          },
+          "creation_timestamp": 0.0
+        }
+      ],
+      "creation_timestamp": 0.0
+    },
+    {
+      "eval_id": "file_processing_json_transform",
+      "conversation": [
+        {
+          "invocation_id": "inv-json-tf-01",
+          "user_content": {
+            "parts": [{"text": "Flatten the nested user JSON data into a flat structure with dot-notation keys."}],
+            "role": "user"
+          },
+          "final_response": {
+            "parts": [{"text": "user.name\nuser.age\nuser.address.city\nuser.address.state\nuser.address.zip"}],
+            "role": "model"
+          },
+          "intermediate_data": {
+            "tool_uses": [
+              {"name": "list_skills", "args": {}},
+              {"name": "load_skill", "args": {"skill_name": "json-transform"}},
+              {"name": "load_skill_resource", "args": {"skill_name": "json-transform", "resource_type": "references", "resource_id": "sample-data.md"}},
+              {"name": "execute_skill_script", "args": {"skill_name": "json-transform", "script_name": "transform.py", "input_args": "flatten=true"}}
+            ],
+            "tool_responses": [],
+            "intermediate_responses": []
+          },
+          "creation_timestamp": 0.0
+        }
+      ],
+      "creation_timestamp": 0.0
+    },
+    {
+      "eval_id": "web_scraping_html_extraction",
+      "conversation": [
+        {
+          "invocation_id": "inv-html-ext-01",
+          "user_content": {
+            "parts": [{"text": "Extract all the product data from the HTML page as a table with product name, price, and stock columns."}],
+            "role": "user"
+          },
+          "final_response": {
+            "parts": [{"text": "Product,Price,Stock\nLaptop,999.99,15\nPhone,699.99,42\nTablet,449.99,28"}],
+            "role": "model"
+          },
+          "intermediate_data": {
+            "tool_uses": [
+              {"name": "list_skills", "args": {}},
+              {"name": "load_skill", "args": {"skill_name": "html-extraction"}},
+              {"name": "load_skill_resource", "args": {"skill_name": "html-extraction", "resource_type": "references", "resource_id": "sample-page.md"}},
+              {"name": "execute_skill_script", "args": {"skill_name": "html-extraction", "script_name": "extract.py", "input_args": "target=table"}}
+            ],
+            "tool_responses": [],
+            "intermediate_responses": []
+          },
+          "creation_timestamp": 0.0
+        }
+      ],
+      "creation_timestamp": 0.0
+    },
+    {
+      "eval_id": "api_interaction_rest_client",
+      "conversation": [
+        {
+          "invocation_id": "inv-rest-01",
+          "user_content": {
+            "parts": [{"text": "Use the REST API to fetch the list of users and then get the details for user with ID 2."}],
+            "role": "user"
+          },
+          "final_response": {
+            "parts": [{"text": "Bob\nbob@example.com"}],
+            "role": "model"
+          },
+          "intermediate_data": {
+            "tool_uses": [
+              {"name": "list_skills", "args": {}},
+              {"name": "load_skill", "args": {"skill_name": "rest-client"}},
+              {"name": "load_skill_resource", "args": {"skill_name": "rest-client", "resource_type": "references", "resource_id": "api-docs.md"}},
+              {"name": "execute_skill_script", "args": {"skill_name": "rest-client", "script_name": "request.py", "input_args": "method=GET endpoint=/users"}},
+              {"name": "execute_skill_script", "args": {"skill_name": "rest-client", "script_name": "request.py", "input_args": "method=GET endpoint=/users/2"}}
+            ],
+            "tool_responses": [],
+            "intermediate_responses": []
+          },
+          "creation_timestamp": 0.0
+        }
+      ],
+      "creation_timestamp": 0.0
+    },
+    {
+      "eval_id": "text_transformation_regex_replace",
+      "conversation": [
+        {
+          "invocation_id": "inv-regex-01",
+          "user_content": {
+            "parts": [{"text": "Replace all numbers in the text 'Order 123 has 45 items at $67' with the word NUM."}],
+            "role": "user"
+          },
+          "final_response": {
+            "parts": [{"text": "Result: Order NUM has NUM items at $NUM\nMatches: 3"}],
+            "role": "model"
+          },
+          "intermediate_data": {
+            "tool_uses": [
+              {"name": "list_skills", "args": {}},
+              {"name": "load_skill", "args": {"skill_name": "regex-replace"}},
+              {"name": "execute_skill_script", "args": {"skill_name": "regex-replace", "script_name": "replace.py", "input_args": "pattern=\\d+ replacement=NUM text='Order 123 has 45 items at $67'"}}
+            ],
+            "tool_responses": [],
+            "intermediate_responses": []
+          },
+          "creation_timestamp": 0.0
+        }
+      ],
+      "creation_timestamp": 0.0
+    },
+    {
+      "eval_id": "code_generation_function_scaffold",
+      "conversation": [
+        {
+          "invocation_id": "inv-scaffold-01",
+          "user_content": {
+            "parts": [{"text": "Generate a Python function scaffold for a function called calculate_bmi that takes weight (float) and height (float) and returns a float."}],
+            "role": "user"
+          },
+          "final_response": {
+            "parts": [{"text": "def calculate_bmi(weight: float, height: float) -> float:"}],
+            "role": "model"
+          },
+          "intermediate_data": {
+            "tool_uses": [
+              {"name": "list_skills", "args": {}},
+              {"name": "load_skill", "args": {"skill_name": "function-scaffold"}},
+              {"name": "execute_skill_script", "args": {"skill_name": "function-scaffold", "script_name": "scaffold.py", "input_args": "name=calculate_bmi params=weight:float,height:float returns=float description='Calculate Body Mass Index'"}}
+            ],
+            "tool_responses": [],
+            "intermediate_responses": []
+          },
+          "creation_timestamp": 0.0
+        }
+      ],
+      "creation_timestamp": 0.0
+    },
+    {
+      "eval_id": "math_computation_statistical_calc",
+      "conversation": [
+        {
+          "invocation_id": "inv-stats-01",
+          "user_content": {
+            "parts": [{"text": "Compute descriptive statistics (mean, median, standard deviation) for the dataset: 10, 20, 30, 40, 50, 60, 70, 80, 90, 100."}],
+            "role": "user"
+          },
+          "final_response": {
+            "parts": [{"text": "Mean: 55.00\nMedian: 55.00\nStd Dev: 28.72"}],
+            "role": "model"
+          },
+          "intermediate_data": {
+            "tool_uses": [
+              {"name": "list_skills", "args": {}},
+              {"name": "load_skill", "args": {"skill_name": "statistical-calc"}},
+              {"name": "execute_skill_script", "args": {"skill_name": "statistical-calc", "script_name": "stats.py", "input_args": "data=10,20,30,40,50,60,70,80,90,100"}}
+            ],
+            "tool_responses": [],
+            "intermediate_responses": []
+          },
+          "creation_timestamp": 0.0
+        }
+      ],
+      "creation_timestamp": 0.0
+    },
+    {
+      "eval_id": "system_admin_log_parsing",
+      "conversation": [
+        {
+          "invocation_id": "inv-logs-01",
+          "user_content": {
+            "parts": [{"text": "Analyze the system logs and give me a summary showing the count of each log level (ERROR, WARNING, INFO, DEBUG)."}],
+            "role": "user"
+          },
+          "final_response": {
+            "parts": [{"text": "ERROR: 3\nWARNING: 2\nINFO: 5\nDEBUG: 2"}],
+            "role": "model"
+          },
+          "intermediate_data": {
+            "tool_uses": [
+              {"name": "list_skills", "args": {}},
+              {"name": "load_skill", "args": {"skill_name": "log-parsing"}},
+              {"name": "load_skill_resource", "args": {"skill_name": "log-parsing", "resource_type": "references", "resource_id": "sample-logs.md"}},
+              {"name": "execute_skill_script", "args": {"skill_name": "log-parsing", "script_name": "parse.py", "input_args": "level=ALL format=summary"}}
+            ],
+            "tool_responses": [],
+            "intermediate_responses": []
+          },
+          "creation_timestamp": 0.0
+        }
+      ],
+      "creation_timestamp": 0.0
+    }
+  ],
+  "creation_timestamp": 0.0
+}
