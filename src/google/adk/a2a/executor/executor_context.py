@@ -12,29 +12,38 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Config definition for SequentialAgent."""
-
 from __future__ import annotations
 
-from pydantic import ConfigDict
-from pydantic import Field
-
-from ..agents.base_agent_config import BaseAgentConfig
-from ..features import experimental
-from ..features import FeatureName
+from google.adk.runners import Runner
 
 
-@experimental(FeatureName.AGENT_CONFIG)
-class SequentialAgentConfig(BaseAgentConfig):
-  """The config for the YAML schema of a SequentialAgent."""
+class ExecutorContext:
+  """Context for the executor."""
 
-  model_config = ConfigDict(
-      extra="forbid",
-  )
+  def __init__(
+      self,
+      app_name: str,
+      user_id: str,
+      session_id: str,
+      runner: Runner,
+  ):
+    self._app_name = app_name
+    self._user_id = user_id
+    self._session_id = session_id
+    self._runner = runner
 
-  agent_class: str = Field(
-      default="SequentialAgent",
-      description=(
-          "The value is used to uniquely identify the SequentialAgent class."
-      ),
-  )
+  @property
+  def app_name(self) -> str:
+    return self._app_name
+
+  @property
+  def user_id(self) -> str:
+    return self._user_id
+
+  @property
+  def session_id(self) -> str:
+    return self._session_id
+
+  @property
+  def runner(self) -> Runner:
+    return self._runner
