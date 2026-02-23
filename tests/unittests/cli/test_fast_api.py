@@ -32,6 +32,7 @@ from google.adk.artifacts.base_artifact_service import ArtifactVersion
 from google.adk.cli import fast_api as fast_api_module
 from google.adk.cli.fast_api import get_fast_api_app
 from google.adk.errors.input_validation_error import InputValidationError
+from google.adk.errors.session_not_found_error import SessionNotFoundError
 from google.adk.evaluation.eval_case import EvalCase
 from google.adk.evaluation.eval_case import Invocation
 from google.adk.evaluation.eval_result import EvalSetResult
@@ -451,18 +452,28 @@ def mock_eval_set_results_manager():
   return MockEvalSetResultsManager()
 
 
-@pytest.fixture
-def test_app(
+def _create_test_client(
     mock_session_service,
     mock_artifact_service,
     mock_memory_service,
     mock_agent_loader,
     mock_eval_sets_manager,
     mock_eval_set_results_manager,
+    **app_kwargs,
 ):
-  """Create a TestClient for the FastAPI app without starting a server."""
-
-  # Patch multiple services and signal handlers
+  """Helper to create a TestClient with the given get_fast_api_app overrides."""
+  defaults = dict(
+      agents_dir=".",
+      web=True,
+      session_service_uri="",
+      artifact_service_uri="",
+      memory_service_uri="",
+      allow_origins=["*"],
+      a2a=False,
+      host="127.0.0.1",
+      port=8000,
+  )
+  defaults.update(app_kwargs)
   with (
       patch.object(signal, "signal", autospec=True, return_value=None),
       patch.object(
@@ -502,23 +513,28 @@ def test_app(
           return_value=mock_eval_set_results_manager,
       ),
   ):
-    # Get the FastAPI app, but don't actually run it
-    app = get_fast_api_app(
-        agents_dir=".",
-        web=True,
-        session_service_uri="",
-        artifact_service_uri="",
-        memory_service_uri="",
-        allow_origins=["*"],
-        a2a=False,  # Disable A2A for most tests
-        host="127.0.0.1",
-        port=8000,
-    )
+    app = get_fast_api_app(**defaults)
+    return TestClient(app)
 
-    # Create a TestClient that doesn't start a real server
-    client = TestClient(app)
 
-    return client
+@pytest.fixture
+def test_app(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """Create a TestClient for the FastAPI app without starting a server."""
+  return _create_test_client(
+      mock_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+  )
 
 
 @pytest.fixture
@@ -1106,20 +1122,9 @@ def test_agent_run_sse_yields_error_object_on_exception(
   """Test /run_sse streams an error object if streaming raises."""
   info = create_test_session
 
-  async def run_async_raises(
-      self,
-      *,
-      user_id: str,
-      session_id: str,
-      invocation_id: Optional[str] = None,
-      new_message: Optional[types.Content] = None,
-      state_delta: Optional[dict[str, Any]] = None,
-      run_config: Optional[RunConfig] = None,
-  ):
-    del user_id, session_id, invocation_id, new_message, state_delta, run_config
+  async def run_async_raises(self, **kwargs):
     raise ValueError("boom")
-    if False:  # pylint: disable=using-constant-test
-      yield _event_1()
+    yield  # make it an async generator  # pylint: disable=unreachable
 
   monkeypatch.setattr(Runner, "run_async", run_async_raises)
 
@@ -1635,6 +1640,81 @@ def test_version_endpoint(test_app):
   assert "language" in data
   assert data["language"] == "python"
   assert "language_version" in data
+
+
+@pytest.fixture
+def test_app_auto_session(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """Create a TestClient with auto_create_session=True."""
+  return _create_test_client(
+      mock_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+      web=False,
+      auto_create_session=True,
+  )
+
+
+@pytest.mark.parametrize("endpoint", ["/run", "/run_sse"])
+def test_auto_creates_session(
+    test_app_auto_session, test_session_info, endpoint
+):
+  """Test /run and /run_sse auto-create sessions when auto_create_session=True."""
+  payload = {
+      "app_name": test_session_info["app_name"],
+      "user_id": test_session_info["user_id"],
+      "session_id": "nonexistent_session",
+      "new_message": {"role": "user", "parts": [{"text": "Hello"}]},
+  }
+
+  response = test_app_auto_session.post(endpoint, json=payload)
+  assert response.status_code == 200
+
+  if endpoint == "/run":
+    data = response.json()
+    assert isinstance(data, list)
+    assert len(data) > 0
+  else:
+    sse_events = [
+        json.loads(line.removeprefix("data: "))
+        for line in response.text.splitlines()
+        if line.startswith("data: ")
+    ]
+    assert len(sse_events) > 0
+    assert not any("error" in e for e in sse_events)
+
+
+@pytest.mark.parametrize("endpoint", ["/run", "/run_sse"])
+def test_returns_404_without_auto_create(
+    test_app, test_session_info, monkeypatch, endpoint
+):
+  """Test /run and /run_sse return 404 for missing sessions without auto_create."""
+
+  async def run_async_session_not_found(self, **kwargs):
+    raise SessionNotFoundError(f"Session not found: {kwargs['session_id']}")
+    yield  # make it an async generator  # pylint: disable=unreachable
+
+  monkeypatch.setattr(Runner, "run_async", run_async_session_not_found)
+
+  payload = {
+      "app_name": test_session_info["app_name"],
+      "user_id": test_session_info["user_id"],
+      "session_id": "nonexistent_session",
+      "new_message": {"role": "user", "parts": [{"text": "Hello"}]},
+  }
+
+  response = test_app.post(endpoint, json=payload)
+  assert response.status_code == 404
+  assert "Session not found" in response.json()["detail"]
 
 
 if __name__ == "__main__":
