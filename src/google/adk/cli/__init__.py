@@ -12,10 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from .adk_web_server import AdkWebServer
 from .cli_tools_click import main
 from .fast_api import get_fast_api_app
 
 __all__ = [
+    'AdkWebServer',
     'get_fast_api_app',
     'main',
 ]
