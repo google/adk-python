@@ -57,6 +57,8 @@ from .graph_node import GraphNode
 from .graph_state import GraphState
 from .graph_state import StateReducer
 from .graph_telemetry import GraphTelemetryMixin
+from .parallel import execute_parallel_group
+from .parallel import ParallelNodeGroup
 
 if TYPE_CHECKING:
   from .graph_agent_config import TelemetryConfig
@@ -271,6 +273,10 @@ class GraphAgent(GraphTelemetryMixin, BaseAgent):  # type: ignore[misc]
   end_nodes: List[str] = Field(default_factory=list)
   max_iterations: int = 50  # Prevent infinite loops
   checkpointing: bool = False
+  parallel_groups: Dict[str, Any] = Field(
+      default_factory=dict,
+      description="Parallel node groups for concurrent execution",
+  )
   telemetry_config: Optional[Any] = Field(
       default=None,
       description="Configuration for OpenTelemetry instrumentation",
@@ -670,6 +676,36 @@ class GraphAgent(GraphTelemetryMixin, BaseAgent):  # type: ignore[misc]
 
     return self
 
+  def add_parallel_group(
+      self,
+      group_id: str,
+      group: "ParallelNodeGroup",
+  ) -> "GraphAgent":
+    """Add a parallel node group for concurrent execution.
+
+    Args:
+        group_id: Unique identifier for the group
+        group: ParallelNodeGroup configuration
+
+    Returns:
+        Self for chaining
+
+    Raises:
+        ValueError: If nodes in group not found
+    """
+    for node_name in group.nodes:
+      if node_name not in self.nodes:
+        raise ValueError(f"Node {node_name} not found in graph")
+    self.parallel_groups[group_id] = group
+    return self
+
+  def _find_parallel_group(self, node_name: str) -> Optional[Tuple[str, Any]]:
+    """Find if a node is part of a parallel group."""
+    for group_id, group in self.parallel_groups.items():
+      if node_name in group.nodes:
+        return (group_id, group)
+    return None
+
   # Export methods moved to graph_export.py
   # rewind_to_node moved to graph_rewind.py
 
@@ -929,7 +965,8 @@ class GraphAgent(GraphTelemetryMixin, BaseAgent):  # type: ignore[misc]
           },
       )
 
-    return selected_node
+    next_node: Optional[str] = selected_node
+    return next_node
 
   def _get_resume_state(
       self, agent_state: GraphAgentState
@@ -1231,6 +1268,9 @@ class GraphAgent(GraphTelemetryMixin, BaseAgent):  # type: ignore[misc]
             )
           state = GraphState(data={"input": user_text})
 
+        # Track which parallel groups have been executed
+        executed_parallel_groups = set(agent_state.executed_parallel_groups)
+
         # ADK resumability: resume from saved node or start fresh.
         #
         # Design note: SequentialAgent ONLY emits state events when
@@ -1265,11 +1305,13 @@ class GraphAgent(GraphTelemetryMixin, BaseAgent):  # type: ignore[misc]
           # ADK resumability: reset sub-agent states on cycle revisit
           # (mirrors LoopAgent pattern at loop_agent.py:114)
           # O(1) lookup via node_invocations instead of O(N) path.count()
-          if (
-              len(agent_state.node_invocations.get(current_node_name, [])) > 1
-              and current_node.agent
-          ):
-            ctx.reset_sub_agent_states(current_node.agent.name)
+          if len(agent_state.node_invocations.get(current_node_name, [])) > 1:
+            if current_node.agent:
+              ctx.reset_sub_agent_states(current_node.agent.name)
+            # Reset parallel group tracking so groups can re-execute
+            # in cyclic workflows
+            executed_parallel_groups.clear()
+            agent_state.executed_parallel_groups = []
 
           # Track agent path for nested graph support
           if self.name not in agent_state.agent_path:
@@ -1300,6 +1342,103 @@ class GraphAgent(GraphTelemetryMixin, BaseAgent):  # type: ignore[misc]
             )
             if event:
               yield event
+
+          # Check if current node is part of a parallel group
+          parallel_group_info = self._find_parallel_group(current_node_name)
+          if parallel_group_info:
+            group_id, parallel_group = parallel_group_info
+
+            if group_id in executed_parallel_groups:
+              logger.info(
+                  f"Skipping node '{current_node_name}' - already executed as"
+                  f" part of parallel group '{group_id}'"
+              )
+              next_node_name = self._get_next_node_with_telemetry(
+                  current_node, state
+              )
+              if next_node_name is None:
+                if current_node_name in self.end_nodes:
+                  break
+                else:
+                  raise ValueError(
+                      f"Node {current_node_name} has no outgoing edges and is"
+                      " not an end node"
+                  )
+              current_node_name = next_node_name
+              continue
+
+            logger.info(
+                f"Executing parallel group '{group_id}' with nodes:"
+                f" {parallel_group.nodes}"
+            )
+
+            parallel_start_time = time.time()
+            with graph_tracing.tracer.start_as_current_span(
+                f"parallel_group {group_id}"
+            ) as pg_span:
+              attrs = self._get_telemetry_attributes(
+                  {
+                      graph_tracing.GRAPH_PARALLEL_NODE_COUNT: len(
+                          parallel_group.nodes
+                      ),
+                      graph_tracing.GRAPH_PARALLEL_STRATEGY: (
+                          parallel_group.join_strategy.value
+                      ),
+                      graph_tracing.GRAPH_PARALLEL_WAIT_N: (
+                          parallel_group.wait_n
+                      ),
+                      graph_tracing.GRAPH_AGENT_NAME: self.name,
+                  },
+                  effective_config=effective_config,
+              )
+              for key, value in attrs.items():
+                pg_span.set_attribute(key, value)
+
+              completed_count = 0
+              async for event in execute_parallel_group(
+                  parallel_group,
+                  self.nodes,
+                  state,
+                  ctx,
+                  self._execute_node,
+              ):
+                yield event
+                if event.author != self.name:
+                  completed_count = min(
+                      completed_count + 1, len(parallel_group.nodes)
+                  )
+
+              pg_span.set_attribute(
+                  "graph.parallel.completed_count", completed_count
+              )
+              if self._should_sample(effective_config=effective_config):
+                parallel_latency_ms = (time.time() - parallel_start_time) * 1000
+                graph_tracing.record_parallel_group_execution(
+                    agent_name=self.name,
+                    node_count=len(parallel_group.nodes),
+                    strategy=parallel_group.join_strategy.value,
+                    latency_ms=parallel_latency_ms,
+                    completed_count=completed_count,
+                )
+
+            executed_parallel_groups.add(group_id)
+            agent_state.executed_parallel_groups = list(
+                executed_parallel_groups
+            )
+
+            next_node_name = self._get_next_node_with_telemetry(
+                current_node, state
+            )
+            if next_node_name is None:
+              if current_node_name in self.end_nodes:
+                break
+              else:
+                raise ValueError(
+                    f"Parallel group '{group_id}' has no outgoing edges and"
+                    f" node '{current_node_name}' is not an end node"
+                )
+            current_node_name = next_node_name
+            continue
 
           # Execute node with output tracking
           output_holder: Dict[str, Any] = {"output": ""}
@@ -1654,5 +1793,22 @@ class GraphAgent(GraphTelemetryMixin, BaseAgent):  # type: ignore[misc]
     if hasattr(config, "end_nodes") and config.end_nodes:
       for end_node in config.end_nodes:
         graph.set_end(end_node)
+
+    # Add parallel groups
+    if hasattr(config, "parallel_groups") and config.parallel_groups:
+      from .parallel import ErrorPolicy
+      from .parallel import JoinStrategy
+
+      for pg_config in config.parallel_groups:
+        join_strategy = JoinStrategy(pg_config.join_strategy)
+        error_policy = ErrorPolicy(pg_config.error_policy)
+
+        parallel_group = ParallelNodeGroup(
+            nodes=pg_config.nodes,
+            join_strategy=join_strategy,
+            error_policy=error_policy,
+            wait_n=pg_config.wait_n,
+        )
+        graph.parallel_groups[pg_config.nodes[0]] = parallel_group
 
     return graph

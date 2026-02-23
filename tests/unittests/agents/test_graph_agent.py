@@ -32,7 +32,9 @@ from google.adk.agents.graph import GraphNode
 from google.adk.agents.graph import GraphState
 from google.adk.agents.graph import rewind_to_node
 from google.adk.agents.graph import StateReducer
+from google.adk.agents.graph.graph_agent import _GRAPH_INTERNAL_KEYS
 from google.adk.agents.graph.graph_agent_state import GraphAgentState
+from google.adk.agents.graph.parallel import ParallelNodeGroup
 from google.adk.agents.graph.patterns import DynamicNode
 from google.adk.agents.graph.patterns import NestedGraphNode
 from google.adk.agents.invocation_context import InvocationContext

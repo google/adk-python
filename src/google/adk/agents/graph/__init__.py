@@ -46,6 +46,9 @@ from .graph_rewind import rewind_to_node
 from .graph_state import GraphState
 from .graph_state import PydanticJSONEncoder
 from .graph_state import StateReducer
+from .parallel import ErrorPolicy
+from .parallel import JoinStrategy
+from .parallel import ParallelNodeGroup
 from .patterns import DynamicNode
 from .patterns import DynamicParallelGroup
 from .patterns import NestedGraphNode
@@ -80,6 +83,9 @@ __all__ = [
     "export_graph_with_execution",
     "export_execution_timeline",
     "rewind_to_node",
+    "ParallelNodeGroup",
+    "JoinStrategy",
+    "ErrorPolicy",
     "DynamicNode",
     "NestedGraphNode",
     "DynamicParallelGroup",
