@@ -246,9 +246,9 @@ class TestNonEnglishRougeScoring:
     candidate = "สวัสดี คุณ สบายดี ไหม วันนี้"
     reference = "สวัสดี คุณ อากาศ เป็น อย่างไร"
     rouge_1_score = _calculate_rouge_1_scores(candidate, reference)
-    # Should match "สวัสดี" and "คุณ" (2 out of 5 words each)
-    assert rouge_1_score.fmeasure > 0
-    assert rouge_1_score.fmeasure < 1.0
+    # Tokenizer splits combining marks (e.g. "สวัสดี" → ["สว", "สด"]), yielding
+    # 4 common tokens out of 8 candidate and 9 reference tokens → F = 8/17
+    assert rouge_1_score.fmeasure == pytest.approx(8 / 17)
 
   def test_thai_polite_particle_variation(self):
     """Thai: Same meaning with polite particle should show high match."""
@@ -257,7 +257,7 @@ class TestNonEnglishRougeScoring:
     reference = "สวัสดี ค่ะ"
     rouge_1_score = _calculate_rouge_1_scores(candidate, reference)
     # Should match "สวัสดี" (1 out of 2 words)
-    assert rouge_1_score.fmeasure == pytest.approx(0.5, rel=0.1)
+    assert rouge_1_score.fmeasure == pytest.approx(0.5)
 
   # === Chinese Language Tests ===
 
@@ -271,12 +271,11 @@ class TestNonEnglishRougeScoring:
   def test_chinese_sentence_with_overlap(self):
     """Chinese: Sentences with common words should show partial match."""
     # Space-separated for tokenization
-    candidate = "今天 天气 很好"  # "Today's weather is good"
+    candidate = "今天 天气 很 好"  # "Today's weather is very good"
     reference = "今天 我 很 开心"  # "Today I am happy"
     rouge_1_score = _calculate_rouge_1_scores(candidate, reference)
     # Should match "今天" and "很"
-    assert rouge_1_score.fmeasure > 0
-    assert rouge_1_score.fmeasure < 1.0
+    assert rouge_1_score.fmeasure == pytest.approx(0.5)
 
   def test_chinese_different_sentences(self):
     """Chinese: Completely different sentences should have zero score."""
@@ -318,7 +317,7 @@ class TestNonEnglishRougeScoring:
     reference = "今日 は 仕事 が 忙しい です"  # "Today work is busy"
     rouge_1_score = _calculate_rouge_1_scores(candidate, reference)
     # Should match "今日", "は", "が", "です"
-    assert rouge_1_score.fmeasure > 0.5
+    assert rouge_1_score.fmeasure == pytest.approx(2 / 3)
 
   # === Korean Language Tests ===
 
@@ -335,8 +334,7 @@ class TestNonEnglishRougeScoring:
     reference = "오늘 기분이 좋습니다"  # "Today my mood is good"
     rouge_1_score = _calculate_rouge_1_scores(candidate, reference)
     # Should match "오늘" and "좋습니다"
-    assert rouge_1_score.fmeasure > 0
-    assert rouge_1_score.fmeasure < 1.0
+    assert rouge_1_score.fmeasure == pytest.approx(2 / 3)
 
   # === European Languages (Latin script with accents) ===
 
