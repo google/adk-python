@@ -1491,6 +1491,54 @@ def _message_to_generate_content_response(
   )
 
 
+def _enforce_strict_openai_schema(schema: dict[str, Any]) -> None:
+  """Recursively transforms a JSON schema for OpenAI strict structured outputs.
+
+  OpenAI strict mode requires:
+  1. additionalProperties: false on all object schemas (including nested/$defs).
+  2. All properties listed in 'required' (no optional omissions).
+  3. $ref nodes must have no sibling keywords (e.g., no 'description' next to
+     '$ref').
+
+  This function mutates the schema dict in place.
+
+  Args:
+    schema: A JSON schema dictionary to transform.
+  """
+  if not isinstance(schema, dict):
+    return
+
+  # Strip sibling keywords from $ref nodes (OpenAI rejects them).
+  if "$ref" in schema:
+    for key in list(schema.keys()):
+      if key != "$ref":
+        del schema[key]
+    return
+
+  # Ensure all object schemas have additionalProperties: false and list every
+  # property as required.
+  if schema.get("type") == "object" and "properties" in schema:
+    schema["additionalProperties"] = False
+    schema["required"] = sorted(schema["properties"].keys())
+
+  # Recurse into $defs (Pydantic's nested model definitions).
+  for defn in schema.get("$defs", {}).values():
+    _enforce_strict_openai_schema(defn)
+
+  # Recurse into property schemas.
+  for prop in schema.get("properties", {}).values():
+    _enforce_strict_openai_schema(prop)
+
+  # Recurse into combinators.
+  for key in ("anyOf", "oneOf", "allOf"):
+    for item in schema.get(key, []):
+      _enforce_strict_openai_schema(item)
+
+  # Recurse into array item schemas.
+  if "items" in schema and isinstance(schema["items"], dict):
+    _enforce_strict_openai_schema(schema["items"])
+
+
 def _to_litellm_response_format(
     response_schema: types.SchemaUnion,
     model: str,
@@ -1515,7 +1563,7 @@ def _to_litellm_response_format(
         and schema_type.lower() in _LITELLM_STRUCTURED_TYPES
     ):
       return response_schema
-    schema_dict = dict(response_schema)
+    schema_dict = copy.deepcopy(response_schema)
     if "title" in schema_dict:
       schema_name = str(schema_dict["title"])
   elif isinstance(response_schema, type) and issubclass(
@@ -1526,14 +1574,18 @@ def _to_litellm_response_format(
   elif isinstance(response_schema, BaseModel):
     if isinstance(response_schema, types.Schema):
       # GenAI Schema instances already represent JSON schema definitions.
-      schema_dict = response_schema.model_dump(exclude_none=True, mode="json")
+      schema_dict = copy.deepcopy(
+          response_schema.model_dump(exclude_none=True, mode="json")
+      )
       if "title" in schema_dict:
         schema_name = str(schema_dict["title"])
     else:
       schema_dict = response_schema.__class__.model_json_schema()
       schema_name = response_schema.__class__.__name__
   elif hasattr(response_schema, "model_dump"):
-    schema_dict = response_schema.model_dump(exclude_none=True, mode="json")
+    schema_dict = copy.deepcopy(
+        response_schema.model_dump(exclude_none=True, mode="json")
+    )
     schema_name = response_schema.__class__.__name__
   else:
     logger.warning(
@@ -1551,14 +1603,8 @@ def _to_litellm_response_format(
 
   # OpenAI-compatible format (default) per LiteLLM docs:
   # https://docs.litellm.ai/docs/completion/json_mode
-  if (
-      isinstance(schema_dict, dict)
-      and schema_dict.get("type") == "object"
-      and "additionalProperties" not in schema_dict
-  ):
-    # OpenAI structured outputs require explicit additionalProperties: false.
-    schema_dict = dict(schema_dict)
-    schema_dict["additionalProperties"] = False
+  if isinstance(schema_dict, dict):
+    _enforce_strict_openai_schema(schema_dict)
 
   return {
       "type": "json_schema",

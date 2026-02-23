@@ -26,6 +26,7 @@ import warnings
 
 from google.adk.models.lite_llm import _append_fallback_user_content_if_missing
 from google.adk.models.lite_llm import _content_to_message_param
+from google.adk.models.lite_llm import _enforce_strict_openai_schema
 from google.adk.models.lite_llm import _FILE_ID_REQUIRED_PROVIDERS
 from google.adk.models.lite_llm import _FINISH_REASON_MAPPING
 from google.adk.models.lite_llm import _function_declaration_to_tool_param
@@ -392,6 +393,145 @@ def test_to_litellm_response_format_with_dict_schema_for_openai():
   assert formatted["json_schema"]["name"] == "response"
   assert formatted["json_schema"]["strict"] is True
   assert formatted["json_schema"]["schema"]["additionalProperties"] is False
+
+
+class _InnerModel(BaseModel):
+  value: str = Field(description="A value")
+  optional_field: str | None = Field(default=None, description="Optional")
+
+
+class _OuterModel(BaseModel):
+  inner: _InnerModel = Field(description="Nested model")
+  name: str
+
+
+class _WithList(BaseModel):
+  items: list[_InnerModel] = Field(description="List of items")
+  label: str
+
+
+def test_enforce_strict_openai_schema_adds_additional_properties_recursively():
+  """additionalProperties: false must appear on all object schemas."""
+  schema = _OuterModel.model_json_schema()
+
+  _enforce_strict_openai_schema(schema)
+
+  # Root level
+  assert schema["additionalProperties"] is False
+  # Nested model in $defs
+  inner_def = schema["$defs"]["_InnerModel"]
+  assert inner_def["additionalProperties"] is False
+
+
+def test_enforce_strict_openai_schema_marks_all_properties_required():
+  """All properties must appear in 'required', including optional fields."""
+  schema = _InnerModel.model_json_schema()
+
+  _enforce_strict_openai_schema(schema)
+
+  assert sorted(schema["required"]) == ["optional_field", "value"]
+
+
+def test_enforce_strict_openai_schema_strips_ref_sibling_keywords():
+  """$ref nodes must have no sibling keywords like 'description'."""
+  schema = _OuterModel.model_json_schema()
+  # Pydantic v2 generates {"$ref": "...", "description": "..."} for nested models
+  inner_prop = schema["properties"]["inner"]
+  assert "$ref" in inner_prop, "Expected Pydantic to generate a $ref property"
+  assert len(inner_prop) > 1, "Expected sibling keywords alongside $ref"
+
+  _enforce_strict_openai_schema(schema)
+
+  inner_prop = schema["properties"]["inner"]
+  assert list(inner_prop.keys()) == ["$ref"]
+
+
+def test_enforce_strict_openai_schema_handles_array_items():
+  """Array item schemas should also be recursively transformed."""
+  schema = _WithList.model_json_schema()
+
+  _enforce_strict_openai_schema(schema)
+
+  assert schema["additionalProperties"] is False
+  inner_def = schema["$defs"]["_InnerModel"]
+  assert inner_def["additionalProperties"] is False
+  assert sorted(inner_def["required"]) == ["optional_field", "value"]
+
+
+def test_enforce_strict_openai_schema_preserves_anyof_and_default():
+  """anyOf structure and default value for Optional fields must be preserved."""
+  schema = _InnerModel.model_json_schema()
+
+  _enforce_strict_openai_schema(schema)
+
+  opt_prop = schema["properties"]["optional_field"]
+  assert opt_prop["anyOf"] == [{"type": "string"}, {"type": "null"}]
+  assert opt_prop["default"] is None
+
+
+def test_to_litellm_response_format_dict_input_not_mutated():
+  """Passing a raw dict should not mutate the caller's original dict."""
+  schema = {
+      "type": "object",
+      "properties": {
+          "nested": {
+              "type": "object",
+              "properties": {"x": {"type": "string"}},
+          }
+      },
+  }
+  import copy
+
+  original = copy.deepcopy(schema)
+
+  _to_litellm_response_format(schema, model="gpt-4o")
+
+  assert schema == original, "Caller's input dict was mutated"
+
+
+def test_to_litellm_response_format_instance_input_for_openai():
+  """Passing a BaseModel instance should produce a valid strict schema."""
+  instance = _OuterModel(
+      inner=_InnerModel(value="test", optional_field=None), name="foo"
+  )
+
+  formatted = _to_litellm_response_format(instance, model="gpt-4o")
+
+  assert formatted["type"] == "json_schema"
+  schema = formatted["json_schema"]["schema"]
+  assert schema["additionalProperties"] is False
+  inner_def = schema["$defs"]["_InnerModel"]
+  assert inner_def["additionalProperties"] is False
+  assert sorted(inner_def["required"]) == ["optional_field", "value"]
+
+
+def test_to_litellm_response_format_nested_pydantic_for_openai():
+  """Nested Pydantic model should produce a valid OpenAI strict schema."""
+  formatted = _to_litellm_response_format(_OuterModel, model="gpt-4o")
+
+  assert formatted["type"] == "json_schema"
+  assert formatted["json_schema"]["strict"] is True
+
+  schema = formatted["json_schema"]["schema"]
+  assert schema["additionalProperties"] is False
+  assert sorted(schema["required"]) == ["inner", "name"]
+
+  # $defs inner model must also be strict
+  inner_def = schema["$defs"]["_InnerModel"]
+  assert inner_def["additionalProperties"] is False
+  assert sorted(inner_def["required"]) == ["optional_field", "value"]
+
+
+def test_to_litellm_response_format_nested_pydantic_for_gemini_unchanged():
+  """Gemini models should NOT get the strict OpenAI transformations."""
+  formatted = _to_litellm_response_format(
+      _OuterModel, model="gemini/gemini-2.0-flash"
+  )
+
+  assert formatted["type"] == "json_object"
+  schema = formatted["response_schema"]
+  # Gemini path should pass through the raw Pydantic schema untouched
+  assert schema == _OuterModel.model_json_schema()
 
 
 async def test_get_completion_inputs_uses_openai_format_for_openai_model():
