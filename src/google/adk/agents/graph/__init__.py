@@ -14,6 +14,12 @@ This module contains components for graph-based workflow orchestration:
 - EdgeCallbackContext: Context for edge condition callbacks
 - NodeCallback: Type for node lifecycle callbacks
 - EdgeCallback: Type for edge condition callbacks
+- InterruptMode: Human-in-the-loop interrupt modes
+- InterruptService: Dynamic runtime interrupts with queue bounds and metrics
+- InterruptServiceConfig: Configuration for interrupt service
+- InterruptMessage: Message from human to agent
+- QueueStatus: Queue status information
+- SessionMetrics: Per-session interrupt metrics
 - DynamicNode: Runtime agent selection based on state
 - NestedGraphNode: Hierarchical workflow composition (graph within graph)
 - DynamicParallelGroup: Dynamic concurrent execution with variable agent count
@@ -46,6 +52,17 @@ from .graph_rewind import rewind_to_node
 from .graph_state import GraphState
 from .graph_state import PydanticJSONEncoder
 from .graph_state import StateReducer
+from .interrupt import InterruptAction
+from .interrupt import InterruptConfig
+from .interrupt import InterruptMode
+from .interrupt_reasoner import InterruptDecision
+from .interrupt_reasoner import InterruptReasoner
+from .interrupt_reasoner import InterruptReasonerConfig
+from .interrupt_service import InterruptMessage
+from .interrupt_service import InterruptService
+from .interrupt_service import InterruptServiceConfig
+from .interrupt_service import QueueStatus
+from .interrupt_service import SessionMetrics
 from .parallel import ErrorPolicy
 from .parallel import JoinStrategy
 from .parallel import ParallelNodeGroup
@@ -68,6 +85,17 @@ __all__ = [
     "EdgeCondition",
     "StateReducer",
     "PydanticJSONEncoder",
+    "InterruptMode",
+    "InterruptConfig",
+    "InterruptAction",
+    "InterruptDecision",
+    "InterruptReasoner",
+    "InterruptReasonerConfig",
+    "InterruptService",
+    "InterruptServiceConfig",
+    "InterruptMessage",
+    "QueueStatus",
+    "SessionMetrics",
     "GraphEvent",
     "GraphEventType",
     "GraphStreamMode",

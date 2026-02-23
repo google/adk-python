@@ -161,9 +161,12 @@ async def execute_parallel_group(
       branch_state = GraphState(data=deepcopy(state.data))
       branch_states[node_name] = branch_state
 
-      # Create generator for each node
+      # Create generator for each node with isolated context
       node = nodes[node_name]
-      node_generators[node_name] = execute_node_fn(node, branch_state, ctx)
+      branch_ctx = ctx.model_copy()
+      node_generators[node_name] = execute_node_fn(
+          node, branch_state, branch_ctx
+      )
 
     # Start all executions (ParallelAgent pattern)
     tasks = {
@@ -269,7 +272,7 @@ async def execute_parallel_group(
     if errors and group.error_policy == ErrorPolicy.COLLECT:
       error_msg = f"Errors in parallel execution: {errors}"
       span.set_attribute("parallel.collected_errors", len(errors))
-      raise Exception(error_msg)
+      raise RuntimeError(error_msg)
 
     # Merge branch states back into main state with conflict detection.
     # Only merge keys that actually changed from the pre-branch snapshot

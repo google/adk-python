@@ -532,3 +532,97 @@ async def test_parallel_unchanged_keys_not_overwritten():
   # Both branches' own keys should be present
   assert "writer_only" in graph_data
   assert "reader_only" in graph_data
+
+
+class TestParallelContextIsolation:
+  """Test InvocationContext isolation between parallel branches."""
+
+  @pytest.mark.asyncio
+  async def test_parallel_context_isolation(self):
+    """Verify ctx objects differ between parallel branches (model_copy)."""
+    from google.adk.agents.graph.parallel import execute_parallel_group
+
+    captured_contexts = []
+
+    async def capture_ctx_fn(node, branch_state, ctx):
+      """Capture the ctx object identity for each branch."""
+      captured_contexts.append(id(ctx))
+      yield Event(
+          author=node.name,
+          content=types.Content(parts=[types.Part(text=f"{node.name}_done")]),
+      )
+
+    group = ParallelNodeGroup(
+        nodes=["x", "y"],
+        join_strategy=JoinStrategy.WAIT_ALL,
+    )
+
+    # Create minimal node-like objects
+    class _FakeNode:
+
+      def __init__(self, name):
+        self.name = name
+
+    nodes_map = {"x": _FakeNode("x"), "y": _FakeNode("y")}
+    state = GraphState(data={"key": "val"})
+
+    # We need a real-ish ctx that supports model_copy.
+    # Use a simple pydantic model stand-in.
+    from pydantic import BaseModel
+
+    class FakeCtx(BaseModel):
+      tag: str = "original"
+
+    ctx = FakeCtx()
+
+    events = []
+    async for ev in execute_parallel_group(
+        group, nodes_map, state, ctx, capture_ctx_fn
+    ):
+      events.append(ev)
+
+    # Both branches should have received different ctx objects
+    assert len(captured_contexts) == 2
+    assert (
+        captured_contexts[0] != captured_contexts[1]
+    ), "Parallel branches must receive distinct ctx objects"
+
+
+class TestParallelCollectErrorRaisesRuntimeError:
+  """Test that COLLECT error policy raises RuntimeError."""
+
+  @pytest.mark.asyncio
+  async def test_parallel_collect_error_raises_runtime_error(self):
+    """Verify COLLECT error policy raises RuntimeError, not Exception."""
+    from google.adk.agents.graph.parallel import execute_parallel_group
+
+    async def failing_fn(node, branch_state, ctx):
+      raise ValueError(f"fail_{node.name}")
+      yield  # noqa: unreachable - make it an async generator
+
+    group = ParallelNodeGroup(
+        nodes=["a", "b"],
+        join_strategy=JoinStrategy.WAIT_ALL,
+        error_policy=ErrorPolicy.COLLECT,
+    )
+
+    class _FakeNode:
+
+      def __init__(self, name):
+        self.name = name
+
+    nodes_map = {"a": _FakeNode("a"), "b": _FakeNode("b")}
+    state = GraphState(data={})
+
+    from pydantic import BaseModel
+
+    class FakeCtx(BaseModel):
+      tag: str = "original"
+
+    ctx = FakeCtx()
+
+    with pytest.raises(RuntimeError, match="Errors in parallel execution"):
+      async for _ in execute_parallel_group(
+          group, nodes_map, state, ctx, failing_fn
+      ):
+        pass

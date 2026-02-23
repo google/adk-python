@@ -197,7 +197,12 @@ async def main() -> None:
   fresh_session = await session_service.get_session(
       app_name="react_agent", user_id="user1", session_id=session.id
   )
-  final_data = (fresh_session or session).state.get("graph_data", {})
+  if fresh_session is None:
+    print(
+        "WARNING: session_service.get_session returned None, using stale copy"
+    )
+    fresh_session = session
+  final_data = fresh_session.state.get("graph_data", {})
   final_state = GraphState(data=final_data)
 
   print("\nFinal observation:")

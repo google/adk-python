@@ -166,7 +166,7 @@ async def dynamic_task_dispatcher(
   result = ""
   async for event in agent.run_async(agent_ctx):
     if event.content and event.content.parts:
-      result = event.content.parts[0].text or ""
+      result += event.content.parts[0].text or ""
 
   print(f"   Result: {result[:100]}...")
 
@@ -203,7 +203,7 @@ def build_dynamic_task_queue_graph() -> GraphAgent:
   graph.add_node("task_dispatcher", function=dynamic_task_dispatcher)
 
   # Loop back to dispatcher while tasks remain.
-  # Check task_queue directly (mutated in-place by the function node).
+  # Check task_queue directly (updated via output_mapper return value).
   # The return dict {"tasks_remaining": N} is stored under state.data["task_dispatcher"]
   # by the output mapper, so state.data.get("tasks_remaining") would always be 0.
   graph.add_edge(
@@ -283,7 +283,10 @@ async def main():
   fresh_session = await session_service.get_session(
       app_name="dynamic_queue_demo", user_id="demo_user", session_id=session.id
   )
-  final_session = fresh_session or session
+  if fresh_session is None:
+    print("\n⚠️  Could not retrieve final session state to print statistics.")
+    return
+  final_session = fresh_session
   final_data = final_session.state.get("graph_data", {})
   final_state = GraphState(data=final_data) if final_data else GraphState()
 

@@ -181,7 +181,7 @@ async def run(question: str) -> str:
       # Show node execution trace (from create_nested_observability_callback)
       print(f"  → {text}")
     elif not text.startswith("[GraphMetadata]"):
-      final = text
+      final += text
   return final
 
 

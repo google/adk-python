@@ -595,3 +595,152 @@ async def test_partial_callback_errors_do_not_affect_successful_callbacks():
   callback_events = [e for e in events if e.author == "callback"]
   assert len(callback_events) == 1
   assert "Success: node_b" in callback_events[0].content.parts[0].text
+
+
+@pytest.mark.asyncio
+async def test_parallel_trigger_node_fires_both_callbacks():
+  """Verify both before/after callbacks fire for parallel trigger nodes.
+
+  The trigger node (the node that enters a parallel group) should NOT get
+  before_node_callback (it's a parallel dispatch, not a regular execution)
+  but SHOULD get after_node_callback after the parallel group completes.
+  """
+  from google.adk.agents.graph.parallel import JoinStrategy
+  from google.adk.agents.graph.parallel import ParallelNodeGroup
+
+  invocation_order = []
+
+  async def before_callback(ctx: NodeCallbackContext) -> Optional[Event]:
+    invocation_order.append(f"before_{ctx.node.name}")
+    return None
+
+  async def after_callback(ctx: NodeCallbackContext) -> Optional[Event]:
+    invocation_order.append(f"after_{ctx.node.name}")
+    return None
+
+  graph = GraphAgent(
+      name="test_graph",
+      before_node_callback=before_callback,
+      after_node_callback=after_callback,
+  )
+
+  # Two parallel nodes + a merge node
+  node_a = GraphNode(name="node_a", agent=MockAgent("agent_a", "out_a"))
+  node_b = GraphNode(name="node_b", agent=MockAgent("agent_b", "out_b"))
+  node_merge = GraphNode(
+      name="node_merge", agent=MockAgent("agent_merge", "merged")
+  )
+
+  graph.add_node(node_a).add_node(node_b).add_node(node_merge)
+  graph.add_edge("node_a", "node_merge")
+  graph.add_edge("node_b", "node_merge")
+  graph.set_start("node_a").set_end("node_merge")
+
+  graph.add_parallel_group(
+      "pg",
+      ParallelNodeGroup(
+          nodes=["node_a", "node_b"],
+          join_strategy=JoinStrategy.WAIT_ALL,
+      ),
+  )
+
+  session_service = InMemorySessionService()
+  runner = Runner(
+      app_name="test_app", agent=graph, session_service=session_service
+  )
+  await session_service.create_session(
+      app_name="test_app", user_id="test_user", session_id="test_session"
+  )
+
+  async for _ in runner.run_async(
+      user_id="test_user",
+      session_id="test_session",
+      new_message=types.Content(role="user", parts=[types.Part(text="test")]),
+  ):
+    pass
+
+  # node_a is the trigger node for the parallel group.
+  # It should get after_node_callback but NOT before_node_callback
+  # (before_node_callback is now after the parallel group check).
+  # node_b is in the already-executed group so it gets skipped entirely.
+  # node_merge is a regular node and gets both callbacks.
+  assert "after_node_a" in invocation_order, (
+      "after_node_callback should fire for parallel trigger node. Got:"
+      f" {invocation_order}"
+  )
+  assert "before_node_merge" in invocation_order
+  assert "after_node_merge" in invocation_order
+
+
+@pytest.mark.asyncio
+async def test_before_callback_skipped_for_already_executed_parallel_nodes():
+  """Verify callback does NOT fire for nodes in already-executed parallel groups.
+
+  When node_b is visited after the parallel group already executed (via
+  node_a as trigger), before_node_callback should NOT fire for node_b
+  because the parallel group check `continue`s before reaching the callback.
+  """
+  from google.adk.agents.graph.parallel import JoinStrategy
+  from google.adk.agents.graph.parallel import ParallelNodeGroup
+
+  before_invocations = []
+
+  async def before_callback(ctx: NodeCallbackContext) -> Optional[Event]:
+    before_invocations.append(ctx.node.name)
+    return None
+
+  graph = GraphAgent(
+      name="test_graph",
+      before_node_callback=before_callback,
+  )
+
+  node_a = GraphNode(name="node_a", agent=MockAgent("agent_a", "out_a"))
+  node_b = GraphNode(name="node_b", agent=MockAgent("agent_b", "out_b"))
+  node_merge = GraphNode(
+      name="node_merge", agent=MockAgent("agent_merge", "merged")
+  )
+
+  graph.add_node(node_a).add_node(node_b).add_node(node_merge)
+  graph.add_edge("node_a", "node_merge")
+  graph.add_edge("node_b", "node_merge")
+  graph.set_start("node_a").set_end("node_merge")
+
+  graph.add_parallel_group(
+      "pg",
+      ParallelNodeGroup(
+          nodes=["node_a", "node_b"],
+          join_strategy=JoinStrategy.WAIT_ALL,
+      ),
+  )
+
+  session_service = InMemorySessionService()
+  runner = Runner(
+      app_name="test_app", agent=graph, session_service=session_service
+  )
+  await session_service.create_session(
+      app_name="test_app", user_id="test_user", session_id="test_session"
+  )
+
+  async for _ in runner.run_async(
+      user_id="test_user",
+      session_id="test_session",
+      new_message=types.Content(role="user", parts=[types.Part(text="test")]),
+  ):
+    pass
+
+  # before_node_callback should NOT have been called for node_a or node_b
+  # (node_a triggers parallel group before callback; node_b is skipped
+  # entirely via the already-executed check + continue).
+  # Only node_merge should get before_node_callback.
+  assert "node_a" not in before_invocations, (
+      "before_node_callback should NOT fire for parallel trigger node. Got:"
+      f" {before_invocations}"
+  )
+  assert "node_b" not in before_invocations, (
+      "before_node_callback should NOT fire for already-executed parallel"
+      f" node. Got: {before_invocations}"
+  )
+  assert "node_merge" in before_invocations, (
+      "before_node_callback should fire for regular nodes. Got:"
+      f" {before_invocations}"
+  )

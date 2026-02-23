@@ -28,12 +28,14 @@ from google.adk.agents.graph import export_execution_timeline
 from google.adk.agents.graph import export_graph_structure
 from google.adk.agents.graph import export_graph_with_execution
 from google.adk.agents.graph import GraphAgent
+from google.adk.agents.graph import InterruptAction
 from google.adk.agents.graph import GraphNode
 from google.adk.agents.graph import GraphState
 from google.adk.agents.graph import rewind_to_node
 from google.adk.agents.graph import StateReducer
 from google.adk.agents.graph.graph_agent import _GRAPH_INTERNAL_KEYS
 from google.adk.agents.graph.graph_agent_state import GraphAgentState
+from google.adk.agents.graph.interrupt_service import InterruptService
 from google.adk.agents.graph.parallel import ParallelNodeGroup
 from google.adk.agents.graph.patterns import DynamicNode
 from google.adk.agents.graph.patterns import NestedGraphNode
@@ -2664,3 +2666,182 @@ class TestConditionEvalLogging:
       assert result is False
       mock_logger.error.assert_called_once()
       assert mock_logger.error.call_args[1].get("exc_info") is True
+
+
+@pytest.mark.asyncio
+class TestImmediateCancellation:
+
+  async def test_cancelled_before_first_node(self):
+    agent_a = SimpleTestAgent("a", ["should_not_run"])
+    graph = GraphAgent(name="g")
+    graph.add_node(GraphNode(name="nA", agent=agent_a))
+    graph.set_start("nA")
+    graph.set_end("nA")
+    interrupt_svc = InterruptService()
+    graph.interrupt_service = interrupt_svc
+    interrupt_svc.register_session("test-session")
+    await interrupt_svc.cancel("test-session")
+    ctx = _cov_make_ctx(graph)
+    events = await _cov_collect(graph, ctx)
+    assert agent_a.call_count == 0
+    cancel_events = [
+        e
+        for e in events
+        if e.content
+        and e.content.parts
+        and "cancelled" in (e.content.parts[0].text or "").lower()
+    ]
+    assert len(cancel_events) == 1
+    cancel_ev = cancel_events[0]
+    assert cancel_ev.actions.state_delta["graph_cancelled"] is True
+    assert cancel_ev.actions.state_delta["graph_can_resume"] is True
+
+  async def test_cancelled_at_second_iteration(self):
+    agent_a = SimpleTestAgent("a", ["a_out"])
+    agent_b = SimpleTestAgent("b", ["b_out"])
+    graph = _cov_linear_graph("g", [agent_a, agent_b], ["nA", "nB"])
+    interrupt_svc = InterruptService()
+    graph.interrupt_service = interrupt_svc
+    interrupt_svc.register_session("test-session")
+    call_count = {"n": 0}
+    original_is_active = interrupt_svc.is_active
+
+    def conditional_is_active(session_id):
+      call_count["n"] += 1
+      return call_count["n"] < 2 and original_is_active(session_id)
+
+    with patch.object(
+        interrupt_svc, "is_active", side_effect=conditional_is_active
+    ):
+      ctx = _cov_make_ctx(graph)
+      events = await _cov_collect(graph, ctx)
+    assert agent_a.call_count == 1
+    assert agent_b.call_count == 0
+
+
+@pytest.mark.asyncio
+class TestCancellationDuringNode:
+
+  async def test_cancelled_mid_node_execution(self):
+    multi_agent = _CovMultiEventAgent("multi", event_count=3)
+    agent_b = SimpleTestAgent("b", ["b_out"])
+    graph = _cov_linear_graph("g", [multi_agent, agent_b], ["nA", "nB"])
+    interrupt_svc = InterruptService()
+    graph.interrupt_service = interrupt_svc
+    interrupt_svc.register_session("test-session")
+    call_count = {"n": 0}
+
+    def staged_is_active(session_id):
+      call_count["n"] += 1
+      return call_count["n"] <= 1
+
+    with patch.object(interrupt_svc, "is_active", side_effect=staged_is_active):
+      ctx = _cov_make_ctx(graph)
+      events = await _cov_collect(graph, ctx)
+    assert agent_b.call_count == 0
+    cancel_events = [
+        e
+        for e in events
+        if e.content
+        and e.content.parts
+        and "cancelled during node" in (e.content.parts[0].text or "").lower()
+    ]
+    assert len(cancel_events) == 1
+    assert cancel_events[0].actions.state_delta["graph_cancelled"] is True
+
+
+# ---------------------------------------------------------------------------
+# Issue 8: go_back state key tracking
+# ---------------------------------------------------------------------------
+
+
+class TestGoBackOutputKeyTracking:
+  """Test that go_back uses tracked output_keys for correct state cleanup."""
+
+  def test_go_back_with_custom_output_mapper_clears_correct_keys(self):
+    """go_back should clear keys tracked by output_keys, not just node name."""
+    from google.adk.agents.graph.graph_agent_state import GraphAgentState
+    from google.adk.agents.graph.graph_interrupt_handler import GraphInterruptMixin
+
+    agent_state = GraphAgentState(
+        path=["node_a", "node_b", "node_c"],
+        output_keys={
+            "node_b": ["custom_key_1", "custom_key_2"],
+            "node_c": ["result"],
+        },
+    )
+    state = GraphState(data={
+        "input": "test",
+        "custom_key_1": "val1",
+        "custom_key_2": "val2",
+        "result": "final",
+    })
+
+    action = InterruptAction(
+        action="go_back",
+        reasoning="redo",
+        parameters={"steps": 2},
+    )
+
+    # Simulate go_back logic from _process_interrupt_message
+    steps = action.parameters.get("steps", 1)
+    current_path = list(agent_state.path)
+    target_node = current_path[-(steps + 1)]
+    nodes_to_clear = current_path[-steps:]
+    agent_state.path = current_path[:-steps]
+
+    for node_name in nodes_to_clear:
+      tracked_keys = agent_state.output_keys.get(node_name)
+      if tracked_keys:
+        for key in tracked_keys:
+          state.data.pop(key, None)
+      else:
+        state.data.pop(node_name, None)
+
+    assert target_node == "node_a"
+    # Custom keys should be cleared
+    assert "custom_key_1" not in state.data
+    assert "custom_key_2" not in state.data
+    assert "result" not in state.data
+    # Input should remain
+    assert state.data["input"] == "test"
+
+  def test_go_back_warns_when_no_keys_found(self):
+    """go_back logs warning and falls back to node name when no tracked keys."""
+    import logging
+
+    from google.adk.agents.graph.graph_agent_state import GraphAgentState
+
+    agent_state = GraphAgentState(
+        path=["node_a", "node_b"],
+        output_keys={},  # No tracked keys
+    )
+    state = GraphState(data={
+        "input": "test",
+        "node_b": "output",
+    })
+
+    # Simulate go_back for 1 step
+    steps = 1
+    current_path = list(agent_state.path)
+    nodes_to_clear = current_path[-steps:]
+
+    with patch("google.adk.agents.graph.graph_interrupt_handler.logger") as mock_log:
+      for node_name in nodes_to_clear:
+        tracked_keys = agent_state.output_keys.get(node_name)
+        if tracked_keys:
+          for key in tracked_keys:
+            state.data.pop(key, None)
+        else:
+          mock_log.warning(
+              "go_back: no tracked output_keys for node '%s', "
+              "falling back to clearing key '%s'",
+              node_name,
+              node_name,
+          )
+          state.data.pop(node_name, None)
+
+    # Fallback should have cleared the node name key
+    assert "node_b" not in state.data
+    # Warning should have been logged
+    mock_log.warning.assert_called_once()

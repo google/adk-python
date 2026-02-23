@@ -161,7 +161,7 @@ async def run(question: str) -> str:
     if event.content and event.content.parts:
       text = event.content.parts[0].text or ""
       if text and not text.startswith("[GraphMetadata]"):
-        final = text
+        final += text
   return final
 
 

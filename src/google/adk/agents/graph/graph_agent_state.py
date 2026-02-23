@@ -42,5 +42,7 @@ class GraphAgentState(BaseAgentState):  # type: ignore[misc]
 
   telemetry_config_dict: Optional[Dict[str, Any]] = None
 
+  output_keys: Dict[str, List[str]] = Field(default_factory=dict)
+
   agent_path: List[str] = Field(default_factory=list)
   executed_parallel_groups: List[str] = Field(default_factory=list)

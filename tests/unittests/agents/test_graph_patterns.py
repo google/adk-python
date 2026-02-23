@@ -638,6 +638,29 @@ class TestPatternSubAgentRegistration:
     # Find deeply-nested agent
     assert outer.find_agent("deep_agent") is inner_agent
 
+  def test_find_agent_dynamic_node_runtime_agents_not_searchable(self):
+    """DynamicNode runtime-selected agents are NOT discoverable via find_agent.
+
+    Only fallback_agent (if set) is registered and searchable. Agents
+    chosen by agent_selector at execution time don't exist until the graph
+    runs, so they cannot be found statically.
+    """
+    runtime_agent = SimpleTestAgent("runtime_selected", ["ok"])
+    fallback = SimpleTestAgent("fallback_agent", ["fallback"])
+
+    outer = GraphAgent(name="outer")
+    dyn = DynamicNode(
+        name="dispatcher",
+        agent_selector=lambda s: runtime_agent,
+        fallback_agent=fallback,
+    )
+    outer.add_node(dyn)
+
+    # Fallback agent IS discoverable
+    assert outer.find_agent("fallback_agent") is fallback
+    # Runtime-selected agent is NOT discoverable
+    assert outer.find_agent("runtime_selected") is None
+
 
 # ============================================================================
 # Multi-event output accumulation tests
