@@ -18,9 +18,8 @@ from typing import Any
 from typing import Optional
 from typing import TYPE_CHECKING
 
-from typing_extensions import override
-
 from google.genai import types
+from typing_extensions import override
 
 from ..agents.base_agent import BaseAgent
 from ..agents.callback_context import CallbackContext
