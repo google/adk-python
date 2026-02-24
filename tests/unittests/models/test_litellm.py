@@ -26,6 +26,7 @@ import warnings
 
 from google.adk.models.lite_llm import _append_fallback_user_content_if_missing
 from google.adk.models.lite_llm import _content_to_message_param
+from google.adk.models.lite_llm import _enforce_strict_openai_schema
 from google.adk.models.lite_llm import _FILE_ID_REQUIRED_PROVIDERS
 from google.adk.models.lite_llm import _FINISH_REASON_MAPPING
 from google.adk.models.lite_llm import _function_declaration_to_tool_param
@@ -45,6 +46,7 @@ from google.adk.models.lite_llm import _to_litellm_role
 from google.adk.models.lite_llm import FunctionChunk
 from google.adk.models.lite_llm import LiteLlm
 from google.adk.models.lite_llm import LiteLLMClient
+from google.adk.models.lite_llm import ReasoningChunk
 from google.adk.models.lite_llm import TextChunk
 from google.adk.models.lite_llm import UsageMetadataChunk
 from google.adk.models.llm_request import LlmRequest
@@ -57,6 +59,7 @@ from litellm.types.utils import ChatCompletionDeltaToolCall
 from litellm.types.utils import Choices
 from litellm.types.utils import Delta
 from litellm.types.utils import ModelResponse
+from litellm.types.utils import ModelResponseStream
 from litellm.types.utils import StreamingChoices
 from pydantic import BaseModel
 from pydantic import Field
@@ -129,7 +132,7 @@ FILE_BYTES_TEST_CASES = [
 ]
 
 STREAMING_MODEL_RESPONSE = [
-    ModelResponse(
+    ModelResponseStream(
         model="test_model",
         choices=[
             StreamingChoices(
@@ -141,7 +144,7 @@ STREAMING_MODEL_RESPONSE = [
             )
         ],
     ),
-    ModelResponse(
+    ModelResponseStream(
         model="test_model",
         choices=[
             StreamingChoices(
@@ -153,7 +156,7 @@ STREAMING_MODEL_RESPONSE = [
             )
         ],
     ),
-    ModelResponse(
+    ModelResponseStream(
         model="test_model",
         choices=[
             StreamingChoices(
@@ -165,7 +168,7 @@ STREAMING_MODEL_RESPONSE = [
             )
         ],
     ),
-    ModelResponse(
+    ModelResponseStream(
         model="test_model",
         choices=[
             StreamingChoices(
@@ -187,7 +190,7 @@ STREAMING_MODEL_RESPONSE = [
             )
         ],
     ),
-    ModelResponse(
+    ModelResponseStream(
         model="test_model",
         choices=[
             StreamingChoices(
@@ -209,7 +212,7 @@ STREAMING_MODEL_RESPONSE = [
             )
         ],
     ),
-    ModelResponse(
+    ModelResponseStream(
         model="test_model",
         choices=[
             StreamingChoices(
@@ -392,6 +395,145 @@ def test_to_litellm_response_format_with_dict_schema_for_openai():
   assert formatted["json_schema"]["schema"]["additionalProperties"] is False
 
 
+class _InnerModel(BaseModel):
+  value: str = Field(description="A value")
+  optional_field: str | None = Field(default=None, description="Optional")
+
+
+class _OuterModel(BaseModel):
+  inner: _InnerModel = Field(description="Nested model")
+  name: str
+
+
+class _WithList(BaseModel):
+  items: list[_InnerModel] = Field(description="List of items")
+  label: str
+
+
+def test_enforce_strict_openai_schema_adds_additional_properties_recursively():
+  """additionalProperties: false must appear on all object schemas."""
+  schema = _OuterModel.model_json_schema()
+
+  _enforce_strict_openai_schema(schema)
+
+  # Root level
+  assert schema["additionalProperties"] is False
+  # Nested model in $defs
+  inner_def = schema["$defs"]["_InnerModel"]
+  assert inner_def["additionalProperties"] is False
+
+
+def test_enforce_strict_openai_schema_marks_all_properties_required():
+  """All properties must appear in 'required', including optional fields."""
+  schema = _InnerModel.model_json_schema()
+
+  _enforce_strict_openai_schema(schema)
+
+  assert sorted(schema["required"]) == ["optional_field", "value"]
+
+
+def test_enforce_strict_openai_schema_strips_ref_sibling_keywords():
+  """$ref nodes must have no sibling keywords like 'description'."""
+  schema = _OuterModel.model_json_schema()
+  # Pydantic v2 generates {"$ref": "...", "description": "..."} for nested models
+  inner_prop = schema["properties"]["inner"]
+  assert "$ref" in inner_prop, "Expected Pydantic to generate a $ref property"
+  assert len(inner_prop) > 1, "Expected sibling keywords alongside $ref"
+
+  _enforce_strict_openai_schema(schema)
+
+  inner_prop = schema["properties"]["inner"]
+  assert list(inner_prop.keys()) == ["$ref"]
+
+
+def test_enforce_strict_openai_schema_handles_array_items():
+  """Array item schemas should also be recursively transformed."""
+  schema = _WithList.model_json_schema()
+
+  _enforce_strict_openai_schema(schema)
+
+  assert schema["additionalProperties"] is False
+  inner_def = schema["$defs"]["_InnerModel"]
+  assert inner_def["additionalProperties"] is False
+  assert sorted(inner_def["required"]) == ["optional_field", "value"]
+
+
+def test_enforce_strict_openai_schema_preserves_anyof_and_default():
+  """anyOf structure and default value for Optional fields must be preserved."""
+  schema = _InnerModel.model_json_schema()
+
+  _enforce_strict_openai_schema(schema)
+
+  opt_prop = schema["properties"]["optional_field"]
+  assert opt_prop["anyOf"] == [{"type": "string"}, {"type": "null"}]
+  assert opt_prop["default"] is None
+
+
+def test_to_litellm_response_format_dict_input_not_mutated():
+  """Passing a raw dict should not mutate the caller's original dict."""
+  schema = {
+      "type": "object",
+      "properties": {
+          "nested": {
+              "type": "object",
+              "properties": {"x": {"type": "string"}},
+          }
+      },
+  }
+  import copy
+
+  original = copy.deepcopy(schema)
+
+  _to_litellm_response_format(schema, model="gpt-4o")
+
+  assert schema == original, "Caller's input dict was mutated"
+
+
+def test_to_litellm_response_format_instance_input_for_openai():
+  """Passing a BaseModel instance should produce a valid strict schema."""
+  instance = _OuterModel(
+      inner=_InnerModel(value="test", optional_field=None), name="foo"
+  )
+
+  formatted = _to_litellm_response_format(instance, model="gpt-4o")
+
+  assert formatted["type"] == "json_schema"
+  schema = formatted["json_schema"]["schema"]
+  assert schema["additionalProperties"] is False
+  inner_def = schema["$defs"]["_InnerModel"]
+  assert inner_def["additionalProperties"] is False
+  assert sorted(inner_def["required"]) == ["optional_field", "value"]
+
+
+def test_to_litellm_response_format_nested_pydantic_for_openai():
+  """Nested Pydantic model should produce a valid OpenAI strict schema."""
+  formatted = _to_litellm_response_format(_OuterModel, model="gpt-4o")
+
+  assert formatted["type"] == "json_schema"
+  assert formatted["json_schema"]["strict"] is True
+
+  schema = formatted["json_schema"]["schema"]
+  assert schema["additionalProperties"] is False
+  assert sorted(schema["required"]) == ["inner", "name"]
+
+  # $defs inner model must also be strict
+  inner_def = schema["$defs"]["_InnerModel"]
+  assert inner_def["additionalProperties"] is False
+  assert sorted(inner_def["required"]) == ["optional_field", "value"]
+
+
+def test_to_litellm_response_format_nested_pydantic_for_gemini_unchanged():
+  """Gemini models should NOT get the strict OpenAI transformations."""
+  formatted = _to_litellm_response_format(
+      _OuterModel, model="gemini/gemini-2.0-flash"
+  )
+
+  assert formatted["type"] == "json_object"
+  schema = formatted["response_schema"]
+  # Gemini path should pass through the raw Pydantic schema untouched
+  assert schema == _OuterModel.model_json_schema()
+
+
 async def test_get_completion_inputs_uses_openai_format_for_openai_model():
   """Test that _get_completion_inputs produces OpenAI-compatible format."""
   llm_request = LlmRequest(
@@ -532,7 +674,7 @@ def test_schema_to_dict_filters_none_enum_values():
 
 
 MULTIPLE_FUNCTION_CALLS_STREAM = [
-    ModelResponse(
+    ModelResponseStream(
         choices=[
             StreamingChoices(
                 finish_reason=None,
@@ -553,7 +695,7 @@ MULTIPLE_FUNCTION_CALLS_STREAM = [
             )
         ]
     ),
-    ModelResponse(
+    ModelResponseStream(
         choices=[
             StreamingChoices(
                 finish_reason=None,
@@ -574,7 +716,7 @@ MULTIPLE_FUNCTION_CALLS_STREAM = [
             )
         ]
     ),
-    ModelResponse(
+    ModelResponseStream(
         choices=[
             StreamingChoices(
                 finish_reason=None,
@@ -595,7 +737,7 @@ MULTIPLE_FUNCTION_CALLS_STREAM = [
             )
         ]
     ),
-    ModelResponse(
+    ModelResponseStream(
         choices=[
             StreamingChoices(
                 finish_reason=None,
@@ -616,7 +758,7 @@ MULTIPLE_FUNCTION_CALLS_STREAM = [
             )
         ]
     ),
-    ModelResponse(
+    ModelResponseStream(
         choices=[
             StreamingChoices(
                 finish_reason="tool_calls",
@@ -627,7 +769,7 @@ MULTIPLE_FUNCTION_CALLS_STREAM = [
 
 
 STREAM_WITH_EMPTY_CHUNK = [
-    ModelResponse(
+    ModelResponseStream(
         choices=[
             StreamingChoices(
                 finish_reason=None,
@@ -648,7 +790,7 @@ STREAM_WITH_EMPTY_CHUNK = [
             )
         ]
     ),
-    ModelResponse(
+    ModelResponseStream(
         choices=[
             StreamingChoices(
                 finish_reason=None,
@@ -670,7 +812,7 @@ STREAM_WITH_EMPTY_CHUNK = [
         ]
     ),
     # This is the problematic empty chunk that should be ignored.
-    ModelResponse(
+    ModelResponseStream(
         choices=[
             StreamingChoices(
                 finish_reason=None,
@@ -691,7 +833,7 @@ STREAM_WITH_EMPTY_CHUNK = [
             )
         ]
     ),
-    ModelResponse(
+    ModelResponseStream(
         choices=[StreamingChoices(finish_reason="tool_calls", delta=Delta())]
     ),
 ]
@@ -727,7 +869,7 @@ def mock_response():
 # indices all 0
 # finish_reason stop instead of tool_calls
 NON_COMPLIANT_MULTIPLE_FUNCTION_CALLS_STREAM = [
-    ModelResponse(
+    ModelResponseStream(
         choices=[
             StreamingChoices(
                 finish_reason=None,
@@ -748,7 +890,7 @@ NON_COMPLIANT_MULTIPLE_FUNCTION_CALLS_STREAM = [
             )
         ]
     ),
-    ModelResponse(
+    ModelResponseStream(
         choices=[
             StreamingChoices(
                 finish_reason=None,
@@ -769,7 +911,7 @@ NON_COMPLIANT_MULTIPLE_FUNCTION_CALLS_STREAM = [
             )
         ]
     ),
-    ModelResponse(
+    ModelResponseStream(
         choices=[
             StreamingChoices(
                 finish_reason=None,
@@ -790,7 +932,7 @@ NON_COMPLIANT_MULTIPLE_FUNCTION_CALLS_STREAM = [
             )
         ]
     ),
-    ModelResponse(
+    ModelResponseStream(
         choices=[
             StreamingChoices(
                 finish_reason=None,
@@ -811,7 +953,7 @@ NON_COMPLIANT_MULTIPLE_FUNCTION_CALLS_STREAM = [
             )
         ]
     ),
-    ModelResponse(
+    ModelResponseStream(
         choices=[
             StreamingChoices(
                 finish_reason="stop",
@@ -2707,7 +2849,7 @@ def test_to_litellm_role():
             "stop",
         ),
         (
-            ModelResponse(
+            ModelResponseStream(
                 choices=[
                     StreamingChoices(
                         finish_reason=None,
@@ -2729,10 +2871,10 @@ def test_to_litellm_role():
                 ]
             ),
             [FunctionChunk(id="1", name="test_function", args='{"key": "va')],
-            UsageMetadataChunk(
-                prompt_tokens=0, completion_tokens=0, total_tokens=0
-            ),
             None,
+            # LiteLLM 1.81+ defaults finish_reason to "stop" for partial chunks,
+            # older versions return None. Both are valid for streaming chunks.
+            (None, "stop"),
         ),
         (
             ModelResponse(choices=[{"finish_reason": "tool_calls"}]),
@@ -2813,6 +2955,38 @@ def test_to_litellm_role():
             ),
             "tool_calls",
         ),
+        (
+            ModelResponseStream(
+                choices=[
+                    StreamingChoices(
+                        finish_reason=None,
+                        delta=Delta(role="assistant", content="Hello"),
+                    )
+                ]
+            ),
+            [TextChunk(text="Hello")],
+            None,
+            (None, "stop"),
+        ),
+        (
+            ModelResponseStream(
+                choices=[
+                    StreamingChoices(
+                        finish_reason="stop",
+                        delta=Delta(
+                            role="assistant", reasoning_content="thinking..."
+                        ),
+                    )
+                ]
+            ),
+            [
+                ReasoningChunk(
+                    parts=[types.Part(text="thinking...", thought=True)]
+                )
+            ],
+            None,
+            "stop",
+        ),
     ],
 )
 def test_model_response_to_chunk(
@@ -2836,13 +3010,48 @@ def test_model_response_to_chunk(
     else:
       assert isinstance(chunk, type(expected_chunk))
       assert chunk == expected_chunk
-    assert finished == expected_finished
+    if isinstance(expected_finished, tuple):
+      assert finished in expected_finished
+    else:
+      assert finished == expected_finished
 
   if expected_usage_chunk is None:
     assert usage_chunk is None
   else:
     assert usage_chunk is not None
     assert usage_chunk == expected_usage_chunk
+
+
+def test_model_response_to_chunk_does_not_mutate_delta_object():
+  """Verify that _model_response_to_chunk doesn't mutate the Delta object.
+
+  In real streaming responses, LiteLLM's StreamingChoices only has 'delta'
+  (message is explicitly popped in StreamingChoices constructor). The delta
+  object itself carries reasoning_content when present.
+  """
+  delta = Delta(
+      role="assistant", content="Hello", reasoning_content="thinking..."
+  )
+  response = ModelResponseStream(
+      choices=[StreamingChoices(delta=delta, finish_reason=None)]
+  )
+
+  chunks = [chunk for chunk, _ in _model_response_to_chunk(response) if chunk]
+
+  assert (
+      ReasoningChunk(parts=[types.Part(text="thinking...", thought=True)])
+      in chunks
+  )
+  assert TextChunk(text="Hello") in chunks
+
+  # Verify we don't accidentally mutate the original delta object.
+  assert delta.content == "Hello"
+  assert delta.reasoning_content == "thinking..."
+
+
+def test_model_response_to_chunk_rejects_dict_response():
+  with pytest.raises(TypeError):
+    list(_model_response_to_chunk({"choices": []}))
 
 
 @pytest.mark.asyncio
@@ -3056,7 +3265,7 @@ async def test_generate_content_async_stream_sets_finish_reason(
     mock_completion, lite_llm_instance
 ):
   mock_completion.return_value = iter([
-      ModelResponse(
+      ModelResponseStream(
           model="test_model",
           choices=[
               StreamingChoices(
@@ -3065,7 +3274,7 @@ async def test_generate_content_async_stream_sets_finish_reason(
               )
           ],
       ),
-      ModelResponse(
+      ModelResponseStream(
           model="test_model",
           choices=[
               StreamingChoices(
@@ -3074,7 +3283,7 @@ async def test_generate_content_async_stream_sets_finish_reason(
               )
           ],
       ),
-      ModelResponse(
+      ModelResponseStream(
           model="test_model",
           choices=[StreamingChoices(finish_reason="stop", delta=Delta())],
       ),
@@ -3107,7 +3316,7 @@ async def test_generate_content_async_stream_with_usage_metadata(
 
   streaming_model_response_with_usage_metadata = [
       *STREAMING_MODEL_RESPONSE,
-      ModelResponse(
+      ModelResponseStream(
           usage={
               "prompt_tokens": 10,
               "completion_tokens": 5,
@@ -3176,7 +3385,7 @@ async def test_generate_content_async_stream_with_usage_metadata(
   """Tests that cached prompt tokens are propagated in streaming mode."""
   streaming_model_response_with_usage_metadata = [
       *STREAMING_MODEL_RESPONSE,
-      ModelResponse(
+      ModelResponseStream(
           usage={
               "prompt_tokens": 10,
               "completion_tokens": 5,
@@ -3657,7 +3866,7 @@ async def test_finish_reason_propagation(
 async def test_finish_reason_unknown_maps_to_other(
     mock_acompletion, lite_llm_instance
 ):
-  """Test that unknown finish_reason values map to FinishReason.OTHER."""
+  """Test that unmapped finish_reason values map to FinishReason.OTHER."""
   mock_response = ModelResponse(
       choices=[
           Choices(
@@ -3665,7 +3874,9 @@ async def test_finish_reason_unknown_maps_to_other(
                   role="assistant",
                   content="Test response",
               ),
-              finish_reason="unknown_reason_type",
+              # LiteLLM validates finish_reason to a known set. Use a value that
+              # LiteLLM accepts but ADK does not explicitly map.
+              finish_reason="eos",
           )
       ]
   )

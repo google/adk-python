@@ -20,6 +20,7 @@ import importlib
 import json
 import logging
 import os
+import sys
 import time
 import traceback
 import typing
@@ -67,6 +68,7 @@ from ..auth.credential_service.base_credential_service import BaseCredentialServ
 from ..errors.already_exists_error import AlreadyExistsError
 from ..errors.input_validation_error import InputValidationError
 from ..errors.not_found_error import NotFoundError
+from ..errors.session_not_found_error import SessionNotFoundError
 from ..evaluation.base_eval_service import InferenceConfig
 from ..evaluation.base_eval_service import InferenceRequest
 from ..evaluation.constants import MISSING_EVAL_DEPENDENCIES_MESSAGE
@@ -88,6 +90,7 @@ from ..runners import Runner
 from ..sessions.base_session_service import BaseSessionService
 from ..sessions.session import Session
 from ..utils.context_utils import Aclosing
+from ..version import __version__
 from .cli_eval import EVAL_SESSION_ID_PREFIX
 from .utils import cleanup
 from .utils import common
@@ -202,7 +205,7 @@ class RunAgentRequest(common.BaseModel):
   app_name: str
   user_id: str
   session_id: str
-  new_message: types.Content
+  new_message: Optional[types.Content] = None
   streaming: bool = False
   state_delta: Optional[dict[str, Any]] = None
   # for resume long-running functions
@@ -492,6 +495,7 @@ class AdkWebServer:
       logo_text: Optional[str] = None,
       logo_image_url: Optional[str] = None,
       url_prefix: Optional[str] = None,
+      auto_create_session: bool = False,
   ):
     self.agent_loader = agent_loader
     self.session_service = session_service
@@ -509,6 +513,7 @@ class AdkWebServer:
     self.current_app_name_ref: SharedValue[str] = SharedValue(value="")
     self.runner_dict = {}
     self.url_prefix = url_prefix
+    self.auto_create_session = auto_create_session
 
   async def get_runner_async(self, app_name: str) -> Runner:
     """Returns the cached runner for the given app."""
@@ -558,6 +563,7 @@ class AdkWebServer:
         session_service=self.session_service,
         memory_service=self.memory_service,
         credential_service=self.credential_service,
+        auto_create_session=self.auto_create_session,
     )
 
   def _instantiate_extra_plugins(self) -> list[BasePlugin]:
@@ -757,6 +763,20 @@ class AdkWebServer:
           allow_headers=["*"],
       )
 
+    @app.get("/health")
+    async def health() -> dict[str, str]:
+      return {"status": "ok"}
+
+    @app.get("/version")
+    async def version() -> dict[str, str]:
+      return {
+          "version": __version__,
+          "language": "python",
+          "language_version": (
+              f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+          ),
+      }
+
     @app.get("/list-apps")
     async def list_apps(
         detailed: bool = Query(
@@ -774,6 +794,11 @@ class AdkWebServer:
       if event_dict is None:
         raise HTTPException(status_code=404, detail="Trace not found")
       return event_dict
+
+    @app.get("/apps/{app_name}")
+    async def get_app_info(app_name: str) -> Any:
+      runner = await self.get_runner_async(app_name)
+      return runner.app
 
     @app.get("/debug/trace/session/{session_id}", tags=[TAG_DEBUG])
     async def get_session_trace(session_id: str) -> Any:
@@ -945,6 +970,96 @@ class AdkWebServer:
             status_code=400,
             detail=str(ve),
         ) from ve
+
+    # TODO - remove after migration
+    @deprecated(
+        "Please use create_eval_set instead. This will be removed in future"
+        " releases."
+    )
+    @app.post(
+        "/apps/{app_name}/eval_sets/{eval_set_id}",
+        response_model_exclude_none=True,
+        tags=[TAG_EVALUATION],
+    )
+    async def create_eval_set_legacy(
+        app_name: str,
+        eval_set_id: str,
+    ):
+      """Creates an eval set, given the id."""
+      await create_eval_set(
+          app_name=app_name,
+          create_eval_set_request=CreateEvalSetRequest(
+              eval_set=EvalSet(eval_set_id=eval_set_id, eval_cases=[])
+          ),
+      )
+
+    # TODO - remove after migration
+    @deprecated(
+        "Please use list_eval_sets instead. This will be removed in future"
+        " releases."
+    )
+    @app.get(
+        "/apps/{app_name}/eval_sets",
+        response_model_exclude_none=True,
+        tags=[TAG_EVALUATION],
+    )
+    async def list_eval_sets_legacy(app_name: str) -> list[str]:
+      list_eval_sets_response = await list_eval_sets(app_name)
+      return list_eval_sets_response.eval_set_ids
+
+    # TODO - remove after migration
+    @deprecated(
+        "Please use run_eval instead. This will be removed in future releases."
+    )
+    @app.post(
+        "/apps/{app_name}/eval_sets/{eval_set_id}/run_eval",
+        response_model_exclude_none=True,
+        tags=[TAG_EVALUATION],
+    )
+    async def run_eval_legacy(
+        app_name: str, eval_set_id: str, req: RunEvalRequest
+    ) -> list[RunEvalResult]:
+      run_eval_response = await run_eval(
+          app_name=app_name, eval_set_id=eval_set_id, req=req
+      )
+      return run_eval_response.run_eval_results
+
+    # TODO - remove after migration
+    @deprecated(
+        "Please use get_eval_result instead. This will be removed in future"
+        " releases."
+    )
+    @app.get(
+        "/apps/{app_name}/eval_results/{eval_result_id}",
+        response_model_exclude_none=True,
+        tags=[TAG_EVALUATION],
+    )
+    async def get_eval_result_legacy(
+        app_name: str,
+        eval_result_id: str,
+    ) -> EvalSetResult:
+      try:
+        return self.eval_set_results_manager.get_eval_set_result(
+            app_name, eval_result_id
+        )
+      except ValueError as ve:
+        raise HTTPException(status_code=404, detail=str(ve)) from ve
+      except ValidationError as ve:
+        raise HTTPException(status_code=500, detail=str(ve)) from ve
+
+    # TODO - remove after migration
+    @deprecated(
+        "Please use list_eval_results instead. This will be removed in future"
+        " releases."
+    )
+    @app.get(
+        "/apps/{app_name}/eval_results",
+        response_model_exclude_none=True,
+        tags=[TAG_EVALUATION],
+    )
+    async def list_eval_results_legacy(app_name: str) -> list[str]:
+      list_eval_results_response = await list_eval_results(app_name)
+      return list_eval_results_response.eval_result_ids
 
     @app.get(
         "/apps/{app_name}/eval-sets",
@@ -1258,6 +1373,24 @@ class AdkWebServer:
       return artifact
 
     @app.get(
+        "/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts/{artifact_name}/versions/metadata",
+        response_model=list[ArtifactVersion],
+        response_model_exclude_none=True,
+    )
+    async def list_artifact_versions_metadata(
+        app_name: str,
+        user_id: str,
+        session_id: str,
+        artifact_name: str,
+    ) -> list[ArtifactVersion]:
+      return await self.artifact_service.list_artifact_versions(
+          app_name=app_name,
+          user_id=user_id,
+          session_id=session_id,
+          filename=artifact_name,
+      )
+
+    @app.get(
         "/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts/{artifact_name}/versions/{version_id}",
         response_model_exclude_none=True,
     )
@@ -1323,6 +1456,31 @@ class AdkWebServer:
       if artifact_version is None:
         raise HTTPException(
             status_code=500, detail="Artifact metadata unavailable"
+        )
+      return artifact_version
+
+    @app.get(
+        "/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts/{artifact_name}/versions/{version_id}/metadata",
+        response_model=ArtifactVersion,
+        response_model_exclude_none=True,
+    )
+    async def get_artifact_version_metadata(
+        app_name: str,
+        user_id: str,
+        session_id: str,
+        artifact_name: str,
+        version_id: int,
+    ) -> ArtifactVersion:
+      artifact_version = await self.artifact_service.get_artifact_version(
+          app_name=app_name,
+          user_id=user_id,
+          session_id=session_id,
+          filename=artifact_name,
+          version=version_id,
+      )
+      if not artifact_version:
+        raise HTTPException(
+            status_code=404, detail="Artifact version not found"
         )
       return artifact_version
 
@@ -1401,52 +1559,68 @@ class AdkWebServer:
 
     @app.post("/run", response_model_exclude_none=True)
     async def run_agent(req: RunAgentRequest) -> list[Event]:
-      session = await self.session_service.get_session(
-          app_name=req.app_name, user_id=req.user_id, session_id=req.session_id
-      )
-      if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
       runner = await self.get_runner_async(req.app_name)
-      async with Aclosing(
-          runner.run_async(
-              user_id=req.user_id,
-              session_id=req.session_id,
-              new_message=req.new_message,
-              state_delta=req.state_delta,
-          )
-      ) as agen:
-        events = [event async for event in agen]
+      try:
+        async with Aclosing(
+            runner.run_async(
+                user_id=req.user_id,
+                session_id=req.session_id,
+                new_message=req.new_message,
+                state_delta=req.state_delta,
+                invocation_id=req.invocation_id,
+            )
+        ) as agen:
+          events = [event async for event in agen]
+      except SessionNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
       logger.info("Generated %s events in agent run", len(events))
       logger.debug("Events generated: %s", events)
       return events
 
     @app.post("/run_sse")
     async def run_agent_sse(req: RunAgentRequest) -> StreamingResponse:
-      # SSE endpoint
-      session = await self.session_service.get_session(
-          app_name=req.app_name, user_id=req.user_id, session_id=req.session_id
+      stream_mode = StreamingMode.SSE if req.streaming else StreamingMode.NONE
+      runner = await self.get_runner_async(req.app_name)
+      agen = runner.run_async(
+          user_id=req.user_id,
+          session_id=req.session_id,
+          new_message=req.new_message,
+          state_delta=req.state_delta,
+          run_config=RunConfig(streaming_mode=stream_mode),
+          invocation_id=req.invocation_id,
       )
-      if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
+
+      # Eagerly advance the generator to trigger session validation
+      # before the streaming response is created.  This lets us return
+      # a proper HTTP 404 for missing sessions without a redundant
+      # get_session call — the Runner's single _get_or_create_session
+      # call is the only one that runs.
+      first_event = None
+      first_error = None
+      try:
+        first_event = await anext(agen)
+      except SessionNotFoundError as e:
+        await agen.aclose()
+        raise HTTPException(status_code=404, detail=str(e)) from e
+      except StopAsyncIteration:
+        await agen.aclose()
+      except Exception as e:
+        first_error = e
 
       # Convert the events to properly formatted SSE
       async def event_generator():
-        try:
-          stream_mode = (
-              StreamingMode.SSE if req.streaming else StreamingMode.NONE
-          )
-          runner = await self.get_runner_async(req.app_name)
-          async with Aclosing(
-              runner.run_async(
-                  user_id=req.user_id,
-                  session_id=req.session_id,
-                  new_message=req.new_message,
-                  state_delta=req.state_delta,
-                  run_config=RunConfig(streaming_mode=stream_mode),
-                  invocation_id=req.invocation_id,
-              )
-          ) as agen:
-            async for event in agen:
+        async with Aclosing(agen):
+          try:
+            if first_error:
+              raise first_error
+
+            async def all_events():
+              if first_event is not None:
+                yield first_event
+              async for event in agen:
+                yield event
+
+            async for event in all_events():
               # ADK Web renders artifacts from `actions.artifactDelta`
               # during part processing *and* during action processing
               # 1) the original event with `artifactDelta` cleared (content)
@@ -1472,9 +1646,9 @@ class AdkWebServer:
                     "Generated event in agent run streaming: %s", sse_event
                 )
                 yield f"data: {sse_event}\n\n"
-        except Exception as e:
-          logger.exception("Error in event_generator: %s", e)
-          yield f"data: {json.dumps({'error': str(e)})}\n\n"
+          except Exception as e:
+            logger.exception("Error in event_generator: %s", e)
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
 
       # Returns a streaming response with the proper media type for SSE
       return StreamingResponse(
@@ -1541,6 +1715,9 @@ class AdkWebServer:
         modalities: List[Literal["TEXT", "AUDIO"]] = Query(
             default=["AUDIO"]
         ),  # Only allows "TEXT" or "AUDIO"
+        proactive_audio: bool | None = Query(default=None),
+        enable_affective_dialog: bool | None = Query(default=None),
+        enable_session_resumption: bool | None = Query(default=None),
     ) -> None:
       await websocket.accept()
 
@@ -1557,7 +1734,22 @@ class AdkWebServer:
 
       async def forward_events():
         runner = await self.get_runner_async(app_name)
-        run_config = RunConfig(response_modalities=modalities)
+        run_config = RunConfig(
+            response_modalities=modalities,
+            proactivity=(
+                types.ProactivityConfig(proactive_audio=proactive_audio)
+                if proactive_audio is not None
+                else None
+            ),
+            enable_affective_dialog=enable_affective_dialog,
+            session_resumption=(
+                types.SessionResumptionConfig(
+                    transparent=enable_session_resumption
+                )
+                if enable_session_resumption is not None
+                else None
+            ),
+        )
         async with Aclosing(
             runner.run_live(
                 session=session,

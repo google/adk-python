@@ -32,14 +32,12 @@ from google.adk.apps.compaction import _run_compaction_for_sliding_window
 from google.adk.artifacts import artifact_util
 from google.genai import types
 
-from .agents.active_streaming_tool import ActiveStreamingTool
 from .agents.base_agent import BaseAgent
 from .agents.base_agent import BaseAgentState
 from .agents.context_cache_config import ContextCacheConfig
 from .agents.invocation_context import InvocationContext
 from .agents.invocation_context import new_invocation_context_id
 from .agents.live_request_queue import LiveRequestQueue
-from .agents.llm_agent import LlmAgent
 from .agents.run_config import RunConfig
 from .apps.app import App
 from .apps.app import ResumabilityConfig
@@ -47,6 +45,7 @@ from .artifacts.base_artifact_service import BaseArtifactService
 from .artifacts.in_memory_artifact_service import InMemoryArtifactService
 from .auth.credential_service.base_credential_service import BaseCredentialService
 from .code_executors.built_in_code_executor import BuiltInCodeExecutor
+from .errors.session_not_found_error import SessionNotFoundError
 from .events.event import Event
 from .events.event import EventActions
 from .flows.llm_flows import contents
@@ -360,7 +359,7 @@ class Runner:
 
     This helper first attempts to retrieve the session. If not found and
     auto_create_session is True, it creates a new session with the provided
-    identifiers. Otherwise, it raises a ValueError with a helpful message.
+    identifiers. Otherwise, it raises a SessionNotFoundError.
 
     Args:
       user_id: The user ID of the session.
@@ -370,7 +369,8 @@ class Runner:
       The existing or newly created `Session`.
 
     Raises:
-      ValueError: If the session is not found and auto_create_session is False.
+      SessionNotFoundError: If the session is not found and
+        auto_create_session is False.
     """
     session = await self.session_service.get_session(
         app_name=self.app_name, user_id=user_id, session_id=session_id
@@ -382,7 +382,7 @@ class Runner:
         )
       else:
         message = self._format_session_not_found_message(session_id)
-        raise ValueError(message)
+        raise SessionNotFoundError(message)
     return session
 
   def run(
@@ -555,7 +555,10 @@ class Runner:
         if self.app and self.app.events_compaction_config:
           logger.debug('Running event compactor.')
           await _run_compaction_for_sliding_window(
-              self.app, session, self.session_service
+              self.app,
+              session,
+              self.session_service,
+              skip_token_compaction=invocation_context.token_compaction_checked,
           )
 
     async with Aclosing(_run_with_trace(new_message, invocation_id)) as agen:
@@ -937,7 +940,7 @@ class Runner:
     **Events Yielded to Callers:**
     *   **Live Model Audio Events with Inline Data:** Events containing raw
         audio `Blob` data(`inline_data`).
-    *   **Live Model Audio Events with File Data:** Both input and ouput audio
+    *   **Live Model Audio Events with File Data:** Both input and output audio
         data are aggregated into an audio file saved into artifacts. The
         reference to the file is saved in the event as `file_data`.
     *   **Usage Metadata:** Events containing token usage.
@@ -1012,52 +1015,6 @@ class Runner:
 
     root_agent = self.agent
     invocation_context.agent = self._find_agent_to_run(session, root_agent)
-
-    # Pre-processing for live streaming tools
-    # Inspect the tool's parameters to find if it uses LiveRequestQueue
-    invocation_context.active_streaming_tools = {}
-    # For shell agents, there is no canonical_tools method so we should skip.
-    if hasattr(invocation_context.agent, 'canonical_tools'):
-      import inspect
-
-      # Use canonical_tools to get properly wrapped BaseTool instances
-      canonical_tools = await invocation_context.agent.canonical_tools(
-          invocation_context
-      )
-      for tool in canonical_tools:
-        # We use `inspect.signature()` to examine the tool's underlying function (`tool.func`).
-        # This approach is deliberately chosen over `typing.get_type_hints()` for robustness.
-        #
-        # The Problem with `get_type_hints()`:
-        # `get_type_hints()` attempts to resolve forward-referenced (string-based) type
-        # annotations. This resolution can easily fail with a `NameError` (e.g., "Union not found")
-        # if the type isn't available in the scope where `get_type_hints()` is called.
-        # This is a common and brittle issue in framework code that inspects functions
-        # defined in separate user modules.
-        #
-        # Why `inspect.signature()` is Better Here:
-        # `inspect.signature()` does NOT resolve the annotations; it retrieves the raw
-        # annotation object as it was defined on the function. This allows us to
-        # perform a direct and reliable identity check (`param.annotation is LiveRequestQueue`)
-        # without risking a `NameError`.
-        callable_to_inspect = tool.func if hasattr(tool, 'func') else tool
-        # Ensure the target is actually callable before inspecting to avoid errors.
-        if not callable(callable_to_inspect):
-          continue
-        for param in inspect.signature(callable_to_inspect).parameters.values():
-          if param.annotation is LiveRequestQueue:
-            if not invocation_context.active_streaming_tools:
-              invocation_context.active_streaming_tools = {}
-
-            logger.debug(
-                'Register streaming tool with input stream: %s', tool.name
-            )
-            active_streaming_tool = ActiveStreamingTool(
-                stream=LiveRequestQueue()
-            )
-            invocation_context.active_streaming_tools[tool.name] = (
-                active_streaming_tool
-            )
 
     async def execute(ctx: InvocationContext) -> AsyncGenerator[Event]:
       async with Aclosing(ctx.agent.run_live(ctx)) as agen:
@@ -1143,8 +1100,8 @@ class Runner:
     """
     agent = agent_to_run
     while agent:
-      if not isinstance(agent, LlmAgent):
-        # Only LLM-based Agent can provide agent transfer capability.
+      if not hasattr(agent, 'disallow_transfer_to_parent'):
+        # Only agents with transfer capability can transfer.
         return False
       if agent.disallow_transfer_to_parent:
         return False
@@ -1393,7 +1350,7 @@ class Runner:
     run_config = run_config or RunConfig()
     invocation_id = invocation_id or new_invocation_context_id()
 
-    if run_config.support_cfc and isinstance(self.agent, LlmAgent):
+    if run_config.support_cfc and hasattr(self.agent, 'canonical_model'):
       model_name = self.agent.canonical_model.model
       if not model_name.startswith('gemini-2'):
         raise ValueError(
@@ -1410,6 +1367,9 @@ class Runner:
         credential_service=self.credential_service,
         plugin_manager=self.plugin_manager,
         context_cache_config=self.context_cache_config,
+        events_compaction_config=(
+            self.app.events_compaction_config if self.app else None
+        ),
         invocation_id=invocation_id,
         agent=self.agent,
         session=session,
@@ -1487,7 +1447,7 @@ class Runner:
 
   def _collect_toolset(self, agent: BaseAgent) -> set[BaseToolset]:
     toolsets = set()
-    if isinstance(agent, LlmAgent):
+    if hasattr(agent, 'tools'):
       for tool_union in agent.tools:
         if isinstance(tool_union, BaseToolset):
           toolsets.add(tool_union)

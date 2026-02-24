@@ -18,6 +18,7 @@ from unittest.mock import MagicMock
 from unittest.mock import patch
 
 from google.adk.tools.apihub_tool.clients.apihub_client import APIHubClient
+from google.auth.exceptions import DefaultCredentialsError
 import pytest
 from requests.exceptions import HTTPError
 
@@ -398,6 +399,24 @@ class TestAPIHubClient:
       # no service account client
       APIHubClient()._get_access_token()
 
+  @patch(
+      "google.adk.tools.apihub_tool.clients.apihub_client.default_service_credential"
+  )
+  def test_get_access_token_default_credentials_error(
+      self, mock_default_service_credential
+  ):
+    mock_default_service_credential.side_effect = DefaultCredentialsError(
+        "ADC not found"
+    )
+    with pytest.raises(
+        ValueError,
+        match=(
+            "Please provide a service account or an access token to API Hub"
+            " client."
+        ),
+    ):
+      APIHubClient()._get_access_token()
+
   @patch("requests.get")
   def test_get_spec_content_api_level(self, mock_get, client):
     mock_get.side_effect = [
@@ -470,7 +489,9 @@ class TestAPIHubClient:
         MagicMock(
             status_code=200,
             json=lambda: {
-                "name": "projects/test-project/locations/us-central1/apis/api1/versions/v1",
+                "name": (
+                    "projects/test-project/locations/us-central1/apis/api1/versions/v1"
+                ),
                 "specs": [],
             },
         ),  # No specs

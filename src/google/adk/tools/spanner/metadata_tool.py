@@ -277,7 +277,7 @@ def get_table_schema(
 
     try:
       json.dumps(results)
-    except:
+    except (TypeError, ValueError, OverflowError):
       results = str(results)
 
     return {"status": "SUCCESS", "results": results}
@@ -375,7 +375,7 @@ def list_table_indexes(
 
         try:
           json.dumps(index_info)
-        except:
+        except (TypeError, ValueError, OverflowError):
           index_info = str(index_info)
 
         indexes.append(index_info)
@@ -479,7 +479,7 @@ def list_table_index_columns(
 
         try:
           json.dumps(index_column_info)
-        except:
+        except (TypeError, ValueError, OverflowError):
           index_column_info = str(index_column_info)
 
         index_columns.append(index_column_info)

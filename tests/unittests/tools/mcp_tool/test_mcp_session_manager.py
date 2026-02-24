@@ -18,10 +18,12 @@ import hashlib
 from io import StringIO
 import json
 import sys
+from unittest.mock import ANY
 from unittest.mock import AsyncMock
 from unittest.mock import Mock
 from unittest.mock import patch
 
+from google.adk.platform import thread as platform_thread
 from google.adk.tools.mcp_tool.mcp_session_manager import MCPSessionManager
 from google.adk.tools.mcp_tool.mcp_session_manager import retry_on_errors
 from google.adk.tools.mcp_tool.mcp_session_manager import SseConnectionParams
@@ -298,6 +300,10 @@ class TestMCPSessionManager:
           assert session == mock_session
           assert len(manager._sessions) == 1
           assert "stdio_session" in manager._sessions
+          session_data = manager._sessions["stdio_session"]
+          assert len(session_data) == 3
+          assert session_data[0] == mock_session
+          assert session_data[2] == asyncio.get_running_loop()
 
           # Verify SessionContext was created
           mock_session_context_class.assert_called_once()
@@ -312,7 +318,11 @@ class TestMCPSessionManager:
     # Create mock existing session
     existing_session = MockClientSession()
     existing_exit_stack = MockAsyncExitStack()
-    manager._sessions["stdio_session"] = (existing_session, existing_exit_stack)
+    manager._sessions["stdio_session"] = (
+        existing_session,
+        existing_exit_stack,
+        asyncio.get_running_loop(),
+    )
 
     # Session is connected
     existing_session._read_stream._closed = False
@@ -377,8 +387,16 @@ class TestMCPSessionManager:
     session2 = MockClientSession()
     exit_stack2 = MockAsyncExitStack()
 
-    manager._sessions["session1"] = (session1, exit_stack1)
-    manager._sessions["session2"] = (session2, exit_stack2)
+    manager._sessions["session1"] = (
+        session1,
+        exit_stack1,
+        asyncio.get_running_loop(),
+    )
+    manager._sessions["session2"] = (
+        session2,
+        exit_stack2,
+        asyncio.get_running_loop(),
+    )
 
     await manager.close()
 
@@ -388,7 +406,8 @@ class TestMCPSessionManager:
     assert len(manager._sessions) == 0
 
   @pytest.mark.asyncio
-  async def test_close_with_errors(self):
+  @patch("google.adk.tools.mcp_tool.mcp_session_manager.logger")
+  async def test_close_with_errors(self, mock_logger):
     """Test cleanup when some sessions fail to close."""
     manager = MCPSessionManager(self.mock_stdio_connection_params)
 
@@ -400,11 +419,16 @@ class TestMCPSessionManager:
     session2 = MockClientSession()
     exit_stack2 = MockAsyncExitStack()
 
-    manager._sessions["session1"] = (session1, exit_stack1)
-    manager._sessions["session2"] = (session2, exit_stack2)
-
-    custom_errlog = StringIO()
-    manager._errlog = custom_errlog
+    manager._sessions["session1"] = (
+        session1,
+        exit_stack1,
+        asyncio.get_running_loop(),
+    )
+    manager._sessions["session2"] = (
+        session2,
+        exit_stack2,
+        asyncio.get_running_loop(),
+    )
 
     # Should not raise exception
     await manager.close()
@@ -413,10 +437,11 @@ class TestMCPSessionManager:
     exit_stack2.aclose.assert_called_once()
     assert len(manager._sessions) == 0
 
-    # Error should be logged
-    error_output = custom_errlog.getvalue()
-    assert "Warning: Error during MCP session cleanup" in error_output
-    assert "Close error 1" in error_output
+    # Error should be logged via logger.warning
+    mock_logger.warning.assert_called_once()
+    args, kwargs = mock_logger.warning.call_args
+    assert "Error during session cleanup for session1: Close error 1" in args[0]
+    assert kwargs.get("exc_info")
 
   @pytest.mark.asyncio
   @patch("google.adk.tools.mcp_tool.mcp_session_manager.stdio_client")
@@ -447,6 +472,173 @@ class TestMCPSessionManager:
 
     # Verify session was closed
     assert not manager._sessions
+
+  @pytest.mark.asyncio
+  async def test_session_lock_different_loops(self):
+    """Verify that _session_lock returns different locks for different loops."""
+
+    manager = MCPSessionManager(self.mock_stdio_connection_params)
+
+    # Access in current loop
+    lock1 = manager._session_lock
+    assert isinstance(lock1, asyncio.Lock)
+
+    # Access in a different loop (in a separate thread)
+    lock_container = []
+
+    def run_in_thread():
+      loop2 = asyncio.new_event_loop()
+      asyncio.set_event_loop(loop2)
+      try:
+
+        async def get_lock():
+          return manager._session_lock
+
+        lock_container.append(loop2.run_until_complete(get_lock()))
+      finally:
+        loop2.close()
+
+    thread = platform_thread.create_thread(target=run_in_thread)
+    thread.start()
+    thread.join()
+
+    assert lock_container
+    lock2 = lock_container[0]
+    assert isinstance(lock2, asyncio.Lock)
+    assert lock1 is not lock2
+
+  @pytest.mark.asyncio
+  async def test_cleanup_session_cross_loop(self):
+    """Verify that _cleanup_session uses run_coroutine_threadsafe for different loops."""
+    manager = MCPSessionManager(self.mock_stdio_connection_params)
+    mock_exit_stack = MockAsyncExitStack()
+
+    # Create a dummy loop that is "running" in another thread
+    loop2 = asyncio.new_event_loop()
+    try:
+      with patch(
+          "google.adk.tools.mcp_tool.mcp_session_manager.asyncio.run_coroutine_threadsafe"
+      ) as mock_run_threadsafe:
+        with patch(
+            "google.adk.tools.mcp_tool.mcp_session_manager.logger"
+        ) as mock_logger:
+          # We need to mock the return value of run_coroutine_threadsafe to be a future
+          mock_future = Mock()
+          mock_run_threadsafe.return_value = mock_future
+
+          await manager._cleanup_session("test_session", mock_exit_stack, loop2)
+
+          # Verify run_coroutine_threadsafe was called
+          # ANY is used because a new coroutine object is created each time
+          mock_run_threadsafe.assert_called_once_with(ANY, loop2)
+
+          mock_logger.info.assert_any_call(
+              "Scheduling cleanup of session test_session on its original"
+              " event loop."
+          )
+          mock_future.add_done_callback.assert_called_once()
+    finally:
+      loop2.close()
+
+  @pytest.mark.asyncio
+  async def test_create_session_cleans_up_without_aclose_if_loop_is_different(
+      self,
+  ):
+    """Verify that sessions from different loops are cleaned up without calling aclose()."""
+    manager = MCPSessionManager(self.mock_stdio_connection_params)
+
+    # 1. Simulate a session created in a "different" loop
+    mock_session = MockClientSession()
+    mock_exit_stack = MockAsyncExitStack()
+    # Use a dummy object as a different loop
+    different_loop = Mock(spec=asyncio.AbstractEventLoop)
+
+    manager._sessions["stdio_session"] = (
+        mock_session,
+        mock_exit_stack,
+        different_loop,
+    )
+
+    # 2. Mock creation of a new session
+    # We need to mock create_client, wait_for, and SessionContext
+    with patch.object(manager, "_create_client") as mock_create_client:
+      with patch(
+          "google.adk.tools.mcp_tool.mcp_session_manager.asyncio.wait_for"
+      ) as mock_wait_for:
+        with patch(
+            "google.adk.tools.mcp_tool.mcp_session_manager.SessionContext"
+        ) as mock_session_context_class:
+          # Setup mocks for new session creation
+          mock_create_client.return_value = AsyncMock()
+          new_session = MockClientSession()
+          mock_wait_for.return_value = new_session
+          mock_session_context_class.return_value = AsyncMock()
+
+          # 3. Call create_session
+          session = await manager.create_session()
+
+          # 4. Verify results
+          assert session == new_session
+          assert len(manager._sessions) == 1
+          # Verify that old exit_stack.aclose was NOT called since loop was different
+          mock_exit_stack.aclose.assert_not_called()
+
+  @pytest.mark.asyncio
+  async def test_close_skips_aclose_for_different_loop_sessions(self):
+    """Verify that close() skips aclose() for sessions from different loops."""
+    manager = MCPSessionManager(self.mock_stdio_connection_params)
+
+    # Add one session from same loop and one from different loop
+    current_loop = asyncio.get_running_loop()
+    different_loop = Mock(spec=asyncio.AbstractEventLoop)
+
+    session1 = MockClientSession()
+    exit_stack1 = MockAsyncExitStack()
+    manager._sessions["session1"] = (session1, exit_stack1, current_loop)
+
+    session2 = MockClientSession()
+    exit_stack2 = MockAsyncExitStack()
+    manager._sessions["session2"] = (session2, exit_stack2, different_loop)
+
+    await manager.close()
+
+    # exit_stack1 should be closed, exit_stack2 should be skipped
+    exit_stack1.aclose.assert_called_once()
+    exit_stack2.aclose.assert_not_called()
+    assert len(manager._sessions) == 0
+
+  @pytest.mark.asyncio
+  async def test_pickle_mcp_session_manager(self):
+    """Verify that MCPSessionManager can be pickled and unpickled."""
+    import pickle
+
+    manager = MCPSessionManager(self.mock_stdio_connection_params)
+
+    # Access the lock to ensure it's initialized
+    lock = manager._session_lock
+    assert isinstance(lock, asyncio.Lock)
+
+    # Add a mock session to verify it's cleared on pickling
+    manager._sessions["test"] = (Mock(), Mock(), asyncio.get_running_loop())
+
+    # Pickle and unpickle
+    pickled = pickle.dumps(manager)
+    unpickled = pickle.loads(pickled)
+
+    # Verify basics are restored
+    assert unpickled._connection_params == manager._connection_params
+
+    # Verify transient/unpicklable members are re-initialized or cleared
+    assert unpickled._sessions == {}
+    assert unpickled._session_lock_map == {}
+    assert isinstance(unpickled._lock_map_lock, type(manager._lock_map_lock))
+    assert unpickled._lock_map_lock is not manager._lock_map_lock
+    assert unpickled._errlog == sys.stderr
+
+    # Verify we can still get a lock in the new instance
+    new_lock = unpickled._session_lock
+    assert isinstance(new_lock, asyncio.Lock)
+    assert new_lock is not lock
 
 
 @pytest.mark.asyncio
