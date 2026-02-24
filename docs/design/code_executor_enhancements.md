@@ -403,31 +403,44 @@ account for this:
   it after the join (whether the worker finishes or times out). If the
   lock were acquired inside the worker thread, a timed-out worker would
   hold the lock indefinitely, deadlocking all subsequent calls.
-- **Recommended pattern:** Acquire the lock in `execute_code()` before
-  spawning the worker thread, pass the lock-holding context to the worker,
-  and release in a `finally` block after `thread.join(timeout)`:
+- **Recommended pattern — unhealthy guard:** When a timeout fires, the
+  executor marks itself as unhealthy (`_healthy = False`) and **does not
+  release the lock**. All subsequent `execute_code()` calls fail fast
+  with an explicit error until the caller invokes `reinitialize()`,
+  which waits for the lingering daemon thread (best-effort), resets
+  `_healthy = True`, and releases the lock. This prevents the lock
+  from being released while the daemon thread still mutates
+  `sys.stdout` or the working directory.
   ```python
-  with _execution_lock:
-      thread = threading.Thread(target=_run, daemon=True)
-      thread.start()
-      thread.join(timeout=timeout)
-      if thread.is_alive():
-          # Lock is released when `with` exits, even though
-          # the daemon thread may still be running.
-          # This is acceptable: the lingering thread's exec()
-          # is no longer protected by the lock, but it is a
-          # daemon thread that will be killed on process exit.
+  def execute_code(self, ...):
+      if not self._healthy:
           return CodeExecutionResult(
-              stderr=f'Execution timed out after {timeout}s'
+              stderr='Executor unhealthy after timeout. '
+                     'Call reinitialize() to recover.'
           )
+      with _execution_lock:
+          thread = threading.Thread(target=_run, daemon=True)
+          thread.start()
+          thread.join(timeout=timeout)
+          if thread.is_alive():
+              self._healthy = False
+              # Lock stays held — no new exec until reinit.
+              return CodeExecutionResult(
+                  stderr=f'Execution timed out after '
+                         f'{timeout}s. Executor marked '
+                         f'unhealthy.'
+              )
   ```
-- **Risk:** A timed-out daemon thread may still be mutating
-  `sys.stdout` or the working directory after the lock is released.
-  This is a best-effort trade-off for a development executor — the
-  alternative (never releasing the lock) would deadlock the process.
+- **Recovery path:** `reinitialize()` joins the lingering daemon
+  thread (with a generous grace timeout), restores `sys.stdout`
+  and cwd if needed, sets `_healthy = True`, and releases
+  `_execution_lock`. This mirrors the `ContainerCodeExecutor`
+  recovery model (§4.2.3).
 
-**Recommendation:** Thread-based timeout for `UnsafeLocalCodeExecutor` is
-sufficient. Document that it provides best-effort timeout only.
+**Recommendation:** Thread-based timeout with unhealthy guard for
+`UnsafeLocalCodeExecutor` is sufficient for a development executor.
+Document that timeout triggers an unhealthy state requiring
+explicit recovery via `reinitialize()`.
 
 #### 4.2.3 `ContainerCodeExecutor` — Docker Exec Kill on Timeout
 
@@ -848,10 +861,10 @@ of the cumulative replay approach (Option C). Users must keep
 side-effecting code in the final block or use Option A (persistent
 process) when side effects are unavoidable.
 
-#### 5.2.2 Recommended Approach: Option A (Persistent Process)
+#### 5.2.2 Final Target: Option A (Persistent Process)
 
-**Option A is the recommended approach.** It is the most robust for
-true statefulness and is the standard approach used by Jupyter kernels
+**Option A is the final target.** It is the most robust approach for
+true statefulness and is the standard design used by Jupyter kernels
 and similar systems:
 
 - Variables, imports, and objects persist naturally
@@ -859,20 +872,38 @@ and similar systems:
 - No serialization issues
 - O(1) cost per call (not O(n) like Option C)
 
-Option C (cumulative replay) has a fundamental side-effect replay
-problem that cannot be fully mitigated. We recommend **going directly
-to Option A** rather than shipping Option C as an interim MVP that
-would accumulate technical debt and user-facing bugs.
+Implementation is deferred to **Phase 4** of the roadmap (§8) because
+it requires a persistent-process protocol (I/O boundary delimiters,
+crash detection, REPL lifecycle management) that is a substantial
+design effort on its own. See Open Question 1 (§9) for the protocol
+design spike.
 
-If a simpler interim is needed before the persistent-process protocol
-is ready, Option C may be used with the following restrictions:
+**Acceptance criteria for Option A:**
+- Code blocks execute in a long-lived Python REPL process
+- Variables, imports, and objects persist across calls
+- No replay of prior blocks on each new call
+- Crash/OOM triggers automatic REPL restart with clear error
+- `execution_id` isolates state across concurrent sessions
+- `reset_state()` kills and restarts the REPL
+
+#### 5.2.3 Interim Fallback: Option C (Cumulative Replay)
+
+If stateful execution is needed before the persistent-process protocol
+is ready, Option C may be shipped as a **time-bounded interim** with
+the following restrictions:
+
 - Documented as limited to **pure computation only** (variable setup,
   data transforms, aggregations)
 - Side-effecting code (file writes, network calls, DB mutations) is
   explicitly unsupported and will produce incorrect results
-- Clearly labeled as experimental / unstable
+- Clearly labeled as `experimental` / `unstable` in docstrings and
+  release notes
+- **Deprecation plan:** Option C is removed no later than one minor
+  release after Option A ships. The `stateful` field docstring must
+  state: *"Experimental. Uses cumulative replay (Option C). Will be
+  replaced by persistent-process execution in a future release."*
 
-#### 5.2.3 Implementation Plan (Phase 1, if pursued)
+#### 5.2.4 Implementation Plan (Option C Interim, if pursued)
 
 1. **Unfreeze `stateful` in `ContainerCodeExecutor`:**
 
@@ -1123,6 +1154,7 @@ class LocalSandboxCodeExecutor(BaseCodeExecutor):
 
     def execute_code(self, invocation_context, code_execution_input):
         import platform
+        import signal
         import subprocess
         import sys
         import tempfile
@@ -1134,15 +1166,45 @@ class LocalSandboxCodeExecutor(BaseCodeExecutor):
                 'Windows. Use ContainerCodeExecutor instead.'
             )
 
-        with tempfile.NamedTemporaryFile(
-            mode='w', suffix='.py', delete=True
-        ) as f:
-            f.write(code_execution_input.code)
-            f.flush()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            # Materialize input_files into the temp directory,
+            # preserving relative paths (mirrors
+            # UnsafeLocalCodeExecutor sandbox behavior).
+            for f in (code_execution_input.input_files or []):
+                file_path = os.path.join(
+                    temp_dir, f.path or f.name
+                )
+                os.makedirs(
+                    os.path.dirname(file_path), exist_ok=True
+                )
+                mode = 'wb' if isinstance(f.content, bytes) \
+                    else 'w'
+                with open(file_path, mode) as out_f:
+                    out_f.write(f.content)
+
+            # Honor working_dir: resolve as subdirectory of
+            # temp_dir (same contract as
+            # UnsafeLocalCodeExecutor).
+            if code_execution_input.working_dir:
+                exec_dir = os.path.join(
+                    temp_dir,
+                    code_execution_input.working_dir,
+                )
+                os.makedirs(exec_dir, exist_ok=True)
+            else:
+                exec_dir = temp_dir
+
+            # Write code to a temp file inside exec_dir
+            script_path = os.path.join(exec_dir, '_run.py')
+            with open(script_path, 'w') as sf:
+                sf.write(code_execution_input.code)
 
             # Build restricted environment
-            env = {k: os.environ[k] for k in self.allowed_env_vars
-                   if k in os.environ}
+            env = {
+                k: os.environ[k]
+                for k in self.allowed_env_vars
+                if k in os.environ
+            }
             env['PATH'] = '/usr/bin:/usr/local/bin'
 
             input_t = code_execution_input.timeout_seconds
@@ -1160,8 +1222,6 @@ class LocalSandboxCodeExecutor(BaseCodeExecutor):
                 spawn_kwargs['process_group'] = 0
             else:
                 # Fallback for 3.10; caveat: not fork-safe.
-                # Guard resource import for platforms where
-                # the module is unavailable.
                 def _set_limits():
                     try:
                         import resource
@@ -1194,21 +1254,44 @@ class LocalSandboxCodeExecutor(BaseCodeExecutor):
             cmd = [
                 'python3', '-c',
                 limit_code
-                + f'exec(open({f.name!r}).read())',
+                + f'exec(open({script_path!r}).read())',
             ]
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                env=env,
-                cwd=tempfile.gettempdir(),
-                **spawn_kwargs,
-            )
+
+            # Use Popen for explicit process-group kill on
+            # timeout (subprocess.run only kills the direct
+            # child, leaving descendants alive).
+            try:
+                proc = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    env=env,
+                    cwd=exec_dir,
+                    **spawn_kwargs,
+                )
+                stdout, stderr = proc.communicate(
+                    timeout=timeout,
+                )
+            except subprocess.TimeoutExpired:
+                # Kill the entire process group to reap
+                # descendants (fork bombs, child workers).
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except OSError:
+                    proc.kill()  # fallback
+                proc.wait()
+                return CodeExecutionResult(
+                    stdout='',
+                    stderr=(
+                        f'Execution timed out after '
+                        f'{timeout}s'
+                    ),
+                )
 
         return CodeExecutionResult(
-            stdout=result.stdout,
-            stderr=result.stderr if result.returncode != 0
+            stdout=stdout,
+            stderr=stderr if proc.returncode != 0
                    else '',
         )
 ```
@@ -1299,22 +1382,51 @@ USER executor
 WORKDIR /home/executor
 ```
 
-**C. Network isolation by default:**
+**C. Network isolation (opt-in, graduating to default):**
+
+These hardening options **break scripts that require network access or
+write outside `/tmp`**. They are introduced as explicit opt-in flags
+first, then graduated to defaults in a later minor release with a
+deprecation warning cycle.
+
+**Phase 3 (initial release) — opt-in:**
 
 ```python
+class ContainerCodeExecutor(BaseCodeExecutor):
+    # New opt-in fields (default False to preserve
+    # backward compatibility).
+    disable_network: bool = False
+    read_only_rootfs: bool = False
+    mem_limit: Optional[str] = None  # e.g. '512m'
+    cpu_quota: Optional[int] = None  # e.g. 50000
+
 def __init_container(self):
-    self._container = self._client.containers.run(
+    run_kwargs = dict(
         image=self.image,
         detach=True,
         tty=True,
-        network_mode='none',  # No network access
-        read_only=True,       # Read-only filesystem
-        tmpfs={'/tmp': 'size=100M'},  # Writable tmp
-        mem_limit='512m',     # Memory limit
-        cpu_period=100000,
-        cpu_quota=50000,      # 50% of one CPU
+    )
+    if self.disable_network:
+        run_kwargs['network_mode'] = 'none'
+    if self.read_only_rootfs:
+        run_kwargs['read_only'] = True
+        run_kwargs['tmpfs'] = {'/tmp': 'size=100M'}
+    if self.mem_limit:
+        run_kwargs['mem_limit'] = self.mem_limit
+    if self.cpu_quota:
+        run_kwargs['cpu_period'] = 100000
+        run_kwargs['cpu_quota'] = self.cpu_quota
+    self._container = self._client.containers.run(
+        **run_kwargs
     )
 ```
+
+**Future minor release — graduate to default:**
+
+After at least one minor release with opt-in availability, flip the
+defaults to `True` for `disable_network` and `read_only_rootfs`.
+Emit a `DeprecationWarning` for one release before the flip to give
+users time to set explicit `False` if they need the old behavior.
 
 ### 6.4 Recommendation Matrix
 
@@ -1393,7 +1505,7 @@ class CodeExecutionInput:
 | `SecurityWarning` on `UnsafeLocalCodeExecutor` | Yes (warning only) | No |
 | New `LocalSandboxCodeExecutor` | Yes (additive) | No |
 | `restrict_builtins` on `UnsafeLocalCodeExecutor` | Yes (default `False`) | No |
-| Default image for `ContainerCodeExecutor` | Breaking (currently requires image/docker_path) | Minor |
+| Default image for `ContainerCodeExecutor` | Breaking behavior change (currently requires explicit `image` or `docker_path`; adding a default changes what runs). Versioning: ship in a minor release with a `DeprecationWarning` for one cycle, then make it the hard default. | Emit `DeprecationWarning` when no image specified; docs must show explicit `image=` in all examples during transition. |
 
 ### 7.3 Impact on `RunSkillScriptTool`
 
@@ -1642,7 +1754,8 @@ Implement Option A (persistent process) directly, as recommended in
    key design question is how to delimit output for each code block:
    sentinel strings in stdout, JSON-envelope protocol, or a side
    channel (e.g., file-based result). Sentinel strings are simplest
-   but can collide with user output. Decision: spike during Phase 2.
+   but can collide with user output. Decision: spike during Phase 4
+   (Stateful Container, §8).
 
 2. **Should `LocalSandboxCodeExecutor` support stateful execution?**
    Subprocess-based execution is inherently stateless. Stateful support
