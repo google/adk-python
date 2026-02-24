@@ -888,3 +888,188 @@ async def test_integration_shell_stderr_only():
   )
   assert result["status"] == "error"
   assert "failure" in result["stderr"]
+
+
+# ── Shell JSON envelope parsing (unit tests with mock executor) ──
+
+
+@pytest.mark.asyncio
+async def test_shell_json_envelope_parsed(mock_skill1):
+  """Shell JSON envelope is correctly unpacked by run_async."""
+  import json
+
+  envelope = json.dumps({
+      "__shell_result__": True,
+      "stdout": "hello from shell\n",
+      "stderr": "",
+      "returncode": 0,
+  })
+  executor = _make_mock_executor(stdout=envelope)
+  toolset = skill_toolset.SkillToolset([mock_skill1], code_executor=executor)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+  result = await tool.run_async(
+      args={"skill_name": "skill1", "script_path": "setup.sh"},
+      tool_context=ctx,
+  )
+  assert result["status"] == "success"
+  assert result["stdout"] == "hello from shell\n"
+  assert result["stderr"] == ""
+
+
+@pytest.mark.asyncio
+async def test_shell_json_envelope_nonzero_returncode(mock_skill1):
+  """Non-zero returncode in shell envelope sets stderr."""
+  import json
+
+  envelope = json.dumps({
+      "__shell_result__": True,
+      "stdout": "",
+      "stderr": "",
+      "returncode": 2,
+  })
+  executor = _make_mock_executor(stdout=envelope)
+  toolset = skill_toolset.SkillToolset([mock_skill1], code_executor=executor)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+  result = await tool.run_async(
+      args={"skill_name": "skill1", "script_path": "setup.sh"},
+      tool_context=ctx,
+  )
+  assert result["status"] == "error"
+  assert "Exit code 2" in result["stderr"]
+
+
+@pytest.mark.asyncio
+async def test_shell_json_envelope_with_stderr(mock_skill1):
+  """Shell envelope with both stdout and stderr reports warning."""
+  import json
+
+  envelope = json.dumps({
+      "__shell_result__": True,
+      "stdout": "data\n",
+      "stderr": "deprecation warning\n",
+      "returncode": 0,
+  })
+  executor = _make_mock_executor(stdout=envelope)
+  toolset = skill_toolset.SkillToolset([mock_skill1], code_executor=executor)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+  result = await tool.run_async(
+      args={"skill_name": "skill1", "script_path": "setup.sh"},
+      tool_context=ctx,
+  )
+  assert result["status"] == "warning"
+  assert result["stdout"] == "data\n"
+  assert result["stderr"] == "deprecation warning\n"
+
+
+@pytest.mark.asyncio
+async def test_shell_json_envelope_timeout(mock_skill1):
+  """Shell envelope from TimeoutExpired reports error status."""
+  import json
+
+  envelope = json.dumps({
+      "__shell_result__": True,
+      "stdout": "partial output\n",
+      "stderr": "Timed out after 300s",
+      "returncode": -1,
+  })
+  executor = _make_mock_executor(stdout=envelope)
+  toolset = skill_toolset.SkillToolset([mock_skill1], code_executor=executor)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+  result = await tool.run_async(
+      args={"skill_name": "skill1", "script_path": "setup.sh"},
+      tool_context=ctx,
+  )
+  assert result["status"] == "warning"
+  assert result["stdout"] == "partial output\n"
+  assert "Timed out" in result["stderr"]
+
+
+@pytest.mark.asyncio
+async def test_shell_non_json_stdout_passthrough(mock_skill1):
+  """Non-JSON shell stdout is passed through without parsing."""
+  executor = _make_mock_executor(stdout="plain text output\n")
+  toolset = skill_toolset.SkillToolset([mock_skill1], code_executor=executor)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+  result = await tool.run_async(
+      args={"skill_name": "skill1", "script_path": "setup.sh"},
+      tool_context=ctx,
+  )
+  assert result["status"] == "success"
+  assert result["stdout"] == "plain text output\n"
+
+
+# ── input_files packaging ──
+
+
+@pytest.mark.asyncio
+async def test_execute_script_input_files_packaged(mock_skill1):
+  """Verify references, assets, and scripts are packaged as input_files."""
+  executor = _make_mock_executor(stdout="ok\n")
+  toolset = skill_toolset.SkillToolset([mock_skill1], code_executor=executor)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+  await tool.run_async(
+      args={"skill_name": "skill1", "script_path": "run.py"},
+      tool_context=ctx,
+  )
+
+  call_args = executor.execute_code.call_args
+  code_input = call_args[0][1]
+  input_files = code_input.input_files
+
+  paths = {f.path for f in input_files}
+  assert "references/ref1.md" in paths
+  assert "assets/asset1.txt" in paths
+  assert "scripts/setup.sh" in paths
+  assert "scripts/run.py" in paths
+  assert "scripts/build.rb" in paths
+
+  # Verify content matches
+  ref_file = next(f for f in input_files if f.path == "references/ref1.md")
+  assert ref_file.content == "ref content 1"
+  asset_file = next(f for f in input_files if f.path == "assets/asset1.txt")
+  assert asset_file.content == "asset content 1"
+
+
+@pytest.mark.asyncio
+async def test_execute_script_input_files_working_dir(mock_skill1):
+  """Verify working_dir is set to '.' for sandboxed execution."""
+  executor = _make_mock_executor(stdout="ok\n")
+  toolset = skill_toolset.SkillToolset([mock_skill1], code_executor=executor)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+  await tool.run_async(
+      args={"skill_name": "skill1", "script_path": "run.py"},
+      tool_context=ctx,
+  )
+
+  call_args = executor.execute_code.call_args
+  code_input = call_args[0][1]
+  assert code_input.working_dir == "."
+
+
+# ── Integration: shell non-zero exit ──
+
+
+@pytest.mark.asyncio
+async def test_integration_shell_nonzero_exit():
+  """Real executor: shell script with non-zero exit via JSON envelope."""
+  script = models.Script(src="exit 42")
+  skill = _make_skill_with_script("test_skill", "fail.sh", script)
+  toolset = _make_real_executor_toolset([skill])
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+  result = await tool.run_async(
+      args={
+          "skill_name": "test_skill",
+          "script_path": "fail.sh",
+      },
+      tool_context=ctx,
+  )
+  assert result["status"] == "error"
+  assert "42" in result["stderr"] or result["stderr"]

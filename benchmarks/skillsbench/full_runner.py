@@ -42,6 +42,7 @@ import pathlib
 import re
 import sys
 import tarfile
+import threading
 import time
 import tomllib
 from typing import Any
@@ -161,7 +162,7 @@ class TaskContainerExecutor(BaseCodeExecutor):
 
   _container: object = None
   _client: object = None
-  _cmd_timeout: float = 300.0  # Per-command timeout in seconds
+  _cmd_timeout: float = 180.0  # Per-command timeout in seconds
 
   def start(
       self,
@@ -279,6 +280,43 @@ class TaskContainerExecutor(BaseCodeExecutor):
       combined = combined + "\n" + stderr if combined else stderr
     return rc, combined
 
+  async def async_exec_in_container(
+      self,
+      cmd: list[str],
+      workdir: str = "/root",
+      timeout: float | None = None,
+  ) -> tuple[int, str]:
+    """Async version of exec_in_container.
+
+    Runs the blocking Docker exec_run in a thread executor so
+    the asyncio event loop stays free for timeout checks.
+    """
+    timeout = timeout or self._cmd_timeout
+
+    def _blocking():
+      if self._container is None:
+        raise RuntimeError("Container not started")
+      rc, output = self._container.exec_run(
+          cmd,
+          workdir=workdir,
+          demux=True,
+      )
+      out = (output[0] or b"").decode("utf-8", errors="replace")
+      err = (output[1] or b"").decode("utf-8", errors="replace")
+      combined = out
+      if err:
+        combined = combined + "\n" + err if combined else err
+      return rc, combined
+
+    loop = asyncio.get_running_loop()
+    try:
+      return await asyncio.wait_for(
+          loop.run_in_executor(None, _blocking),
+          timeout=timeout,
+      )
+    except asyncio.TimeoutError:
+      return -1, f"Command timed out after {timeout}s"
+
   def read_file_from_container(self, path: str) -> str | None:
     """Read a single file from the container, or None."""
     if self._container is None:
@@ -322,8 +360,13 @@ def build_task_image(
     *,
     rebuild: bool = False,
     build_timeout: float = _DEFAULT_BUILD_TIMEOUT,
+    max_retries: int = 2,
 ) -> str:
   """Build (or reuse) a Docker image for one task.
+
+  Retries up to *max_retries* times on failure, running
+  ``docker system prune -f`` between attempts to free
+  build cache and disk space.
 
   Returns the image tag.
   """
@@ -339,14 +382,36 @@ def build_task_image(
   if not (build_ctx / "Dockerfile").exists():
     raise FileNotFoundError(f"No Dockerfile in {build_ctx}")
 
-  logger.info("Building image %s …", tag)
-  client.images.build(
-      path=str(build_ctx),
-      tag=tag,
-      rm=True,
-      timeout=int(build_timeout),
-  )
-  return tag
+  last_exc: Exception | None = None
+  for attempt in range(1, max_retries + 2):  # 1 try + max_retries
+    try:
+      logger.info("Building image %s (attempt %d) …", tag, attempt)
+      client.images.build(
+          path=str(build_ctx),
+          tag=tag,
+          rm=True,
+          forcerm=True,
+          timeout=int(build_timeout),
+      )
+      return tag
+    except Exception as exc:
+      last_exc = exc
+      if attempt <= max_retries:
+        logger.warning(
+            "Build attempt %d failed for %s: %s — pruning and retrying",
+            attempt,
+            tag,
+            str(exc)[:120],
+        )
+        try:
+          client.containers.prune()
+          client.images.prune(filters={"dangling": True})
+        except Exception:
+          pass
+      else:
+        break
+
+  raise last_exc  # type: ignore[misc]
 
 
 # ── Lenient skill loader ─────────────────────────────────────────────
@@ -634,7 +699,8 @@ class ContainerBashTool(BaseTool):
     command = args.get("command", "")
     if not command:
       return {"error": "command is required"}
-    rc, output = self._executor.exec_in_container(
+    # Use async exec to keep the event loop free for timeouts
+    rc, output = await self._executor.async_exec_in_container(
         ["bash", "-c", command],
     )
     # Truncate very long output to avoid blowing context
@@ -806,6 +872,21 @@ def discover_tasks(
 # ── evaluate one task ────────────────────────────────────────────────
 
 
+def _watchdog_stop(executor: TaskContainerExecutor, seconds: float):
+  """Background thread: force-kill the container after *seconds*.
+
+  This is a hard safety net — if asyncio.wait_for fails to cancel
+  a task because the event loop is blocked by synchronous Docker
+  calls, the watchdog kills the container from a separate thread,
+  causing the blocking exec_run to fail and unblock the loop.
+  """
+  time.sleep(seconds)
+  try:
+    executor.stop()
+  except Exception:
+    pass
+
+
 async def evaluate_task(
     task_dir: pathlib.Path,
     client: docker.DockerClient,
@@ -830,6 +911,7 @@ async def evaluate_task(
   executor = TaskContainerExecutor()
   num_skills = 0
   agent_timeout = _DEFAULT_AGENT_TIMEOUT
+  watchdog = None
 
   try:
     # 1. Parse config
@@ -883,14 +965,22 @@ async def evaluate_task(
     # 5. Start container
     executor.start(image_tag, client)
 
-    # 6. Build agent and run
+    # 6. Start watchdog — hard kill after agent_timeout + 60s
+    watchdog = threading.Thread(
+        target=_watchdog_stop,
+        args=(executor, agent_timeout + 60),
+        daemon=True,
+    )
+    watchdog.start()
+
+    # 7. Build agent and run
     agent = build_agent(skills, executor)
     invocations = await asyncio.wait_for(
         run_task(agent, user_query),
         timeout=agent_timeout,
     )
 
-    # 7. Score
+    # 8. Score
     if skip_tests:
       score = score_task_heuristic(invocations)
     else:
@@ -978,6 +1068,16 @@ def print_summary(
 # ── full evaluation loop ─────────────────────────────────────────────
 
 
+def _docker_prune(client: docker.DockerClient) -> None:
+  """Prune stopped containers and dangling images."""
+  try:
+    client.containers.prune()
+    client.images.prune(filters={"dangling": True})
+    logger.info("Docker prune completed")
+  except Exception as exc:
+    logger.warning("Docker prune failed: %s", exc)
+
+
 async def run_full_evaluation(
     tasks_dir: pathlib.Path,
     client: docker.DockerClient,
@@ -987,13 +1087,21 @@ async def run_full_evaluation(
     rebuild: bool = False,
     build_only: bool = False,
     skip_tests: bool = False,
+    prune_interval: int = 20,
 ) -> list[TaskResult]:
-  """Run evaluation on all matching tasks."""
+  """Run evaluation on all matching tasks.
+
+  Args:
+    prune_interval: Prune Docker every N tasks to prevent
+      disk buildup during long runs. Set to 0 to disable.
+  """
   task_dirs = discover_tasks(tasks_dir, filter_pattern)
   total = len(task_dirs)
   print(f"Found {total} tasks in {tasks_dir}\n")
 
   if build_only:
+    ok = 0
+    fail = 0
     for idx, td in enumerate(task_dirs, 1):
       name = td.name[:35].ljust(35)
       try:
@@ -1004,14 +1112,27 @@ async def run_full_evaluation(
             rebuild=rebuild,
             build_timeout=config["build_timeout"],
         )
+        ok += 1
         print(f"[{idx:>2}/{total}]  {name} OK  ({tag})")
       except Exception as exc:
+        fail += 1
         print(f"[{idx:>2}/{total}]  {name} FAIL  ({str(exc)[:80]})")
       sys.stdout.flush()
+      # Periodic prune during build-only runs
+      if prune_interval and idx % prune_interval == 0:
+        print(f"  >> pruning Docker (every {prune_interval})")
+        _docker_prune(client)
+    print(f"\nBuild summary: {ok} OK, {fail} FAIL / {total}")
     return []
 
   results: list[TaskResult] = []
   for idx, td in enumerate(task_dirs, 1):
+    name = td.name[:35].ljust(35)
+    print(
+        f"[{idx:>2}/{total}]  {name} ...running",
+        end="",
+        flush=True,
+    )
     result = await evaluate_task(
         td,
         client,
@@ -1020,7 +1141,13 @@ async def run_full_evaluation(
         skip_tests=skip_tests,
     )
     results.append(result)
+    # Overwrite the "...running" line with final result
+    print(f"\r", end="")
     print_task_result(idx, total, result)
+    # Periodic prune to prevent disk buildup
+    if prune_interval and idx % prune_interval == 0:
+      print(f"  >> pruning Docker (every {prune_interval})")
+      _docker_prune(client)
 
   return results
 
@@ -1068,6 +1195,15 @@ def main():
       action="store_true",
       help="Use tool-call heuristic instead of pytest scoring",
   )
+  parser.add_argument(
+      "--prune-interval",
+      type=int,
+      default=20,
+      help=(
+          "Prune Docker every N tasks to prevent disk buildup"
+          " (default: 20, 0 to disable)"
+      ),
+  )
   args = parser.parse_args()
 
   logging.basicConfig(level=logging.WARNING)
@@ -1087,6 +1223,7 @@ def main():
           rebuild=args.rebuild,
           build_only=args.build_only,
           skip_tests=args.skip_tests,
+          prune_interval=args.prune_interval,
       )
   )
   elapsed = time.time() - start
