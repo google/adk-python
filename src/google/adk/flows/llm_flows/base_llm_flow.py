@@ -81,6 +81,7 @@ def _finalize_model_response_event(
     llm_request: LlmRequest,
     llm_response: LlmResponse,
     model_response_event: Event,
+    function_call_ids: Optional[dict[tuple[str, int], str]] = None,
 ) -> Event:
   """Finalize and build the model response event from LLM response.
 
@@ -91,6 +92,11 @@ def _finalize_model_response_event(
     llm_request: The original LLM request.
     llm_response: The LLM response from the model.
     model_response_event: The base event to populate.
+    function_call_ids: Optional mutable dict mapping (function_name, index) to
+      previously assigned client function call IDs. Used during SSE streaming
+      to ensure partial and final events for the same function call share the
+      same ID. When provided, newly generated IDs are stored back into this
+      dict for reuse by subsequent events in the same streaming sequence.
 
   Returns:
     The finalized Event with LLM response data merged in.
@@ -103,7 +109,23 @@ def _finalize_model_response_event(
   if finalized_event.content:
     function_calls = finalized_event.get_function_calls()
     if function_calls:
+      # Restore previously assigned IDs before populating new ones so that
+      # partial and final events in an SSE stream share the same IDs.
+      if function_call_ids is not None:
+        for i, fc in enumerate(function_calls):
+          key = (fc.name, i)
+          if key in function_call_ids:
+            fc.id = function_call_ids[key]
+
       functions.populate_client_function_call_id(finalized_event)
+
+      # Persist any newly generated IDs for subsequent events.
+      if function_call_ids is not None:
+        for i, fc in enumerate(function_calls):
+          key = (fc.name, i)
+          if fc.id and key not in function_call_ids:
+            function_call_ids[key] = fc.id
+
       finalized_event.long_running_tool_ids = (
           functions.get_long_running_function_calls(
               function_calls, llm_request.tools_dict
@@ -821,6 +843,9 @@ class BaseLlmFlow(ABC):
         author=invocation_context.agent.name,
         branch=invocation_context.branch,
     )
+    # Track function call IDs across partial/final events in SSE streaming
+    # so that the same function call keeps the same client-generated ID.
+    function_call_ids: dict[tuple[str, int], str] = {}
     async with Aclosing(
         self._call_llm_async(
             invocation_context, llm_request, model_response_event
@@ -834,6 +859,7 @@ class BaseLlmFlow(ABC):
                 llm_request,
                 llm_response,
                 model_response_event,
+                function_call_ids,
             )
         ) as agen:
           async for event in agen:
@@ -880,6 +906,7 @@ class BaseLlmFlow(ABC):
       llm_request: LlmRequest,
       llm_response: LlmResponse,
       model_response_event: Event,
+      function_call_ids: Optional[dict[tuple[str, int], str]] = None,
   ) -> AsyncGenerator[Event, None]:
     """Postprocess after calling the LLM.
 
@@ -888,6 +915,8 @@ class BaseLlmFlow(ABC):
       llm_request: The original LLM request.
       llm_response: The LLM response from the LLM call.
       model_response_event: A mutable event for the LLM response.
+      function_call_ids: Optional mutable dict for preserving function call IDs
+        across partial and final events in an SSE streaming sequence.
 
     Yields:
       A generator of events.
@@ -911,7 +940,7 @@ class BaseLlmFlow(ABC):
 
     # Builds the event.
     model_response_event = self._finalize_model_response_event(
-        llm_request, llm_response, model_response_event
+        llm_request, llm_response, model_response_event, function_call_ids
     )
     yield model_response_event
 
@@ -1191,9 +1220,10 @@ class BaseLlmFlow(ABC):
       llm_request: LlmRequest,
       llm_response: LlmResponse,
       model_response_event: Event,
+      function_call_ids: Optional[dict[tuple[str, int], str]] = None,
   ) -> Event:
     return _finalize_model_response_event(
-        llm_request, llm_response, model_response_event
+        llm_request, llm_response, model_response_event, function_call_ids
     )
 
   async def _resolve_toolset_auth(
