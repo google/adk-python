@@ -1488,7 +1488,7 @@ where the default changes and the explicit opt-out syntax.
 | 4 | Add default image + network/rootfs isolation as **opt-in** flags | Medium | Low |
 | 5 | Create official `adk-code-executor` Docker image | Medium | Low |
 | 6 | Update documentation and samples | Small | None |
-| 7 | Graduate network/rootfs isolation to **default** (future minor) | Small | Medium (breaking for scripts needing network/host writes) |
+| 7 | Graduate network/rootfs isolation to **default** (future release: minor pre-1.0 / major post-1.0; see §6.3.3-C) | Small | Medium (breaking for scripts needing network/host writes) |
 
 ---
 
