@@ -540,7 +540,6 @@ class SkillToolset(BaseToolset):
       *,
       code_executor: Optional[BaseCodeExecutor] = None,
       script_timeout: int = _DEFAULT_SCRIPT_TIMEOUT,
-      additional_tools: Optional[list[Any]] = None,
   ):
     """Initializes the SkillToolset.
 
@@ -550,8 +549,6 @@ class SkillToolset(BaseToolset):
       script_timeout: Timeout in seconds for shell script execution via
         subprocess.run. Defaults to 300 seconds. Does not apply to Python
         scripts executed via exec().
-      additional_tools: Optional list of additional tools (BaseTool,
-        BaseToolset, or Callables).
     """
     super().__init__()
 
@@ -565,7 +562,6 @@ class SkillToolset(BaseToolset):
     self._skills = {skill.name: skill for skill in skills}
     self._code_executor = code_executor
     self._script_timeout = script_timeout
-    self._additional_tools = additional_tools or []
 
     # Initialize core skill tools
     self._tools = [
@@ -579,86 +575,8 @@ class SkillToolset(BaseToolset):
   async def get_tools(
       self, readonly_context: ReadonlyContext | None = None
   ) -> list[BaseTool]:
-    """Returns the list of tools in this toolset.
-
-    Dynamically resolves `allowed_tools` from skills against provided
-    `additional_tools`
-    and built-in ADK tools.
-    """
-
-    import inspect
-
-    from google.adk import tools as built_in_tools
-
-    from .function_tool import FunctionTool
-
-    result = list(self._tools)
-
-    # Collect allowed tools from all skills
-    allowed_tool_names = set()
-    for skill in self._list_skills():
-      if skill.frontmatter.allowed_tools:
-        allowed_tool_names.update(skill.frontmatter.allowed_tools)
-
-    if not allowed_tool_names:
-      return result
-
-    # Resolve additional_tools passed by developer
-    tools_by_name = {}
-    for tool_union in self._additional_tools:
-      if isinstance(tool_union, BaseTool):
-        tools_by_name[tool_union.name] = tool_union
-      elif isinstance(tool_union, BaseToolset):
-        for tool in await tool_union.get_tools(readonly_context):
-          tools_by_name[tool.name] = tool
-      elif inspect.isroutine(tool_union):
-        func_tool = FunctionTool(tool_union)
-        tools_by_name[func_tool.name] = func_tool
-      else:
-        logger.warning("Ignored unsupported additional_tool: %s", tool_union)
-
-    for allowed_tool in allowed_tool_names:
-      if allowed_tool in tools_by_name:
-        result.append(tools_by_name[allowed_tool])
-      elif hasattr(built_in_tools, allowed_tool):
-        # Fallback to ADK built-in tools
-        builtin_obj = getattr(built_in_tools, allowed_tool)
-        if inspect.isroutine(builtin_obj):
-          result.append(FunctionTool(builtin_obj))
-        elif isinstance(builtin_obj, type) and issubclass(
-            builtin_obj, BaseTool
-        ):
-          try:
-            # Attempt to instantiate built-in tools that take no arguments
-            result.append(builtin_obj())
-          except TypeError:
-            logger.warning(
-                "Could not instantiate built-in tool '%s'. It may require"
-                " arguments.",
-                allowed_tool,
-            )
-        elif isinstance(builtin_obj, type) and issubclass(
-            builtin_obj, BaseToolset
-        ):
-          try:
-            toolset = builtin_obj()
-            result.extend(await toolset.get_tools(readonly_context))
-          except TypeError:
-            logger.warning(
-                "Could not instantiate built-in toolset '%s'. It may require"
-                " arguments.",
-                allowed_tool,
-            )
-        else:
-          logger.warning("Unrecognized built-in tool type for %s", allowed_tool)
-      else:
-        logger.warning(
-            "Skill requested tool '%s' which was not provided in"
-            " additional_tools or found in built-in tools.",
-            allowed_tool,
-        )
-
-    return result
+    """Returns the list of tools in this toolset."""
+    return self._tools
 
   def _get_skill(self, name: str) -> models.Skill | None:
     """Retrieves a skill by name."""
