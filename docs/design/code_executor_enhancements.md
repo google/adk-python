@@ -418,6 +418,14 @@ account for this:
                      'Call reinitialize() to recover.'
           )
       with _execution_lock:
+          # Re-check after acquiring the lock: another
+          # caller may have timed out while we waited.
+          if not self._healthy:
+              return CodeExecutionResult(
+                  stderr='Executor unhealthy after '
+                         'timeout. Call reinitialize() '
+                         'to recover.'
+              )
           thread = threading.Thread(target=_run, daemon=True)
           thread.start()
           thread.join(timeout=timeout)
@@ -1324,10 +1332,14 @@ class LocalSandboxCodeExecutor(BaseCodeExecutor):
   held. ADK executors may be called from async/threaded contexts.
 - `process_group=0` (Python 3.11+) is fork-safe and places the child
   in its own process group, enabling clean `os.killpg()` on timeout.
-- Resource limits are set via an inline `-c` wrapper script instead
-  of `preexec_fn`, avoiding the fork-safety issue entirely.
+- On Python 3.11+, resource limits are set via an inline `-c`
+  wrapper script (not `preexec_fn`), avoiding the fork-safety issue.
 - On Python 3.10 (ADK minimum is `>=3.10`), fall back to
-  `preexec_fn=set_limits` with a documented caveat about thread safety.
+  `preexec_fn=_setup_child` which calls `os.setpgrp()` (required
+  for `os.killpg` on timeout) **and** sets `resource.setrlimit`
+  for CPU/memory. The inline `-c` wrapper still applies limits as
+  a defense-in-depth layer. Documented caveat: `preexec_fn` is not
+  fork-safe in multi-threaded programs.
 
 **Dependencies:** None (stdlib only). This is the key advantage over
 `ContainerCodeExecutor`.
@@ -1731,7 +1743,7 @@ should be opt-in or gated behind a version flag.
 4. Add digest-pinned default image to `ContainerCodeExecutor`
 5. Add network/rootfs isolation as **opt-in** flags on
    `ContainerCodeExecutor` (`disable_network`, `read_only_rootfs`,
-   both default `False`; see §6.3.2-C for graduation plan)
+   both default `False`; see §6.3.3-C for graduation plan)
 6. Create official `adk-code-executor` Docker image (versioned tags)
 7. Update all samples to recommend secure executors
 8. Add security-focused tests

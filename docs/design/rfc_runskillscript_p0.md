@@ -192,9 +192,13 @@ The solution is to **mark the executor unhealthy on timeout**:
 1. On timeout, set `self._healthy = False` before returning the
    timeout error. The lock is released normally when the `with` block
    exits.
-2. Subsequent `execute_code()` calls check `self._healthy` at the top
-   and **fail fast** with a clear error: `"Executor is unhealthy after
-   a timed-out execution. Call reinitialize() to recover."`
+2. Subsequent `execute_code()` calls check `self._healthy` **both
+   before and after** acquiring `_execution_lock` (double-check
+   pattern: the pre-lock check is a fast path; the post-lock check
+   closes the race where a caller passes the pre-lock check, waits
+   on the lock, and enters after another call has timed out). Both
+   checks **fail fast** with: `"Executor is unhealthy after a
+   timed-out execution. Call reinitialize() to recover."`
 3. `reinitialize()` waits for the lingering daemon thread to finish
    (with a generous join timeout), resets `_healthy = True`, and
    allows execution to resume.
@@ -292,7 +296,8 @@ class LocalSandboxCodeExecutor(BaseCodeExecutor):
     - Resource limits (CPU time, memory) via resource.setrlimit
     - Restricted environment variables
     - Temporary working directory
-    - subprocess.run(timeout=N) for wall-clock timeout
+    - Popen + communicate(timeout=N) + os.killpg for wall-clock
+      timeout with process-group cleanup
     """
 
     default_timeout_seconds: int = 30
