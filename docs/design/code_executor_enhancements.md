@@ -445,9 +445,15 @@ account for this:
   concurrent read of `sys.stdout` from other code could see stale
   data. This is an acceptable trade-off for a development executor.
 - **Recovery path:** `reinitialize()` joins the lingering daemon
-  thread (with a generous grace timeout), restores `sys.stdout`
-  and cwd if needed, and sets `_healthy = True`. This mirrors the
-  `ContainerCodeExecutor` recovery model (§4.2.3).
+  thread with a generous grace timeout (e.g., 30 s). If the thread
+  exits within the grace period, restore `sys.stdout` and cwd, set
+  `_healthy = True`, and return success. If the thread is **still
+  alive** after the grace timeout, the executor remains unhealthy
+  (`_healthy = False`) and `reinitialize()` raises
+  `RuntimeError('Timed-out thread did not exit within grace period;
+  executor remains unhealthy.')`. The caller may retry later or
+  restart the process. This mirrors the `ContainerCodeExecutor`
+  recovery model (§4.2.3).
 
 **Recommendation:** Thread-based timeout with unhealthy guard for
 `UnsafeLocalCodeExecutor` is sufficient for a development executor.
@@ -1165,6 +1171,7 @@ class LocalSandboxCodeExecutor(BaseCodeExecutor):
     allowed_env_vars: list[str] = []
 
     def execute_code(self, invocation_context, code_execution_input):
+        import os
         import platform
         import signal
         import subprocess
@@ -1441,12 +1448,24 @@ def __init_container(self):
     )
 ```
 
-**Future minor release — graduate to default:**
+**Future release — graduate to default:**
 
-After at least one minor release with opt-in availability, flip the
-defaults to `True` for `disable_network` and `read_only_rootfs`.
-Emit a `DeprecationWarning` for one release before the flip to give
-users time to set explicit `False` if they need the old behavior.
+Flipping `disable_network` and `read_only_rootfs` from `False` to
+`True` is a **breaking behavior change** under SemVer (existing code
+that relies on network access or host-filesystem writes will fail).
+The graduation plan must follow ADK's SemVer policy:
+
+- **Option A (minor release, preferred if ADK is pre-1.0):** Pre-1.0
+  SemVer permits breaking changes in minor releases. Emit a
+  `DeprecationWarning` for at least one minor release before the
+  flip. Users who need the old behavior set explicit `False`.
+- **Option B (post-1.0):** Reserve the default flip for a **major**
+  release. In the preceding minor release(s), emit a
+  `DeprecationWarning` when these flags are unset, warning that the
+  default will change in the next major version.
+
+Either way, the deprecation warning must state the exact version
+where the default changes and the explicit opt-out syntax.
 
 ### 6.4 Recommendation Matrix
 
@@ -1526,7 +1545,7 @@ class CodeExecutionInput:
 | `SecurityWarning` on `UnsafeLocalCodeExecutor` | Yes (warning only) | No |
 | New `LocalSandboxCodeExecutor` | Yes (additive) | No |
 | `restrict_builtins` on `UnsafeLocalCodeExecutor` | Yes (default `False`) | No |
-| Default image for `ContainerCodeExecutor` | Breaking behavior change (currently requires explicit `image` or `docker_path`; adding a default changes what runs). Versioning: ship in a minor release with a `DeprecationWarning` for one cycle, then make it the hard default. | Emit `DeprecationWarning` when no image specified; docs must show explicit `image=` in all examples during transition. |
+| Default image for `ContainerCodeExecutor` | Breaking behavior change (currently requires explicit `image` or `docker_path`; adding a default changes what runs). Pre-1.0: may ship in a minor release with one-cycle `DeprecationWarning`. Post-1.0: reserve for a major release per SemVer. | Emit `DeprecationWarning` when no image specified; docs must show explicit `image=` in all examples during transition. |
 
 ### 7.3 Impact on `RunSkillScriptTool`
 

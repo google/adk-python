@@ -199,9 +199,12 @@ The solution is to **mark the executor unhealthy on timeout**:
    on the lock, and enters after another call has timed out). Both
    checks **fail fast** with: `"Executor is unhealthy after a
    timed-out execution. Call reinitialize() to recover."`
-3. `reinitialize()` waits for the lingering daemon thread to finish
-   (with a generous join timeout), resets `_healthy = True`, and
-   allows execution to resume.
+3. `reinitialize()` joins the lingering daemon thread with a grace
+   timeout (e.g., 30 s). If the thread exits, it resets
+   `_healthy = True` and allows execution to resume. If the thread
+   is **still alive** after the grace period, the executor stays
+   unhealthy and `reinitialize()` raises `RuntimeError` — the
+   caller must retry later or restart the process.
 
 This ensures that no new execution can run while a zombie thread is
 still alive and mutating shared state. The pattern mirrors the
