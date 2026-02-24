@@ -138,6 +138,24 @@ _SUPPORTED_FILE_CONTENT_MIME_TYPES = frozenset({
 # Providers that require file_id instead of inline file_data
 _FILE_ID_REQUIRED_PROVIDERS = frozenset({"openai", "azure"})
 
+# Default filenames for file uploads when display_name is missing.
+# OpenAI derives the MIME type from the filename extension during upload,
+# so passing a proper name ensures the stored file gets the right content-type.
+_MIME_TO_FILENAME = {
+    "application/pdf": "document.pdf",
+    "application/json": "document.json",
+    "application/msword": "document.doc",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "document.docx",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation": "document.pptx",
+    "application/x-sh": "script.sh",
+}
+
+
+def _filename_for_mime(mime_type: str) -> str:
+  """Return a default filename for a MIME type so uploads get the right content-type."""
+  return _MIME_TO_FILENAME.get(mime_type, "document.bin")
+
+
 _MISSING_TOOL_RESULT_MESSAGE = (
     "Error: Missing tool result (tool execution may have been interrupted "
     "before a response was recorded)."
@@ -840,10 +858,18 @@ async def _get_content(
             url_content_type: {"url": data_uri},
         })
       elif mime_type in _SUPPORTED_FILE_CONTENT_MIME_TYPES:
-        # OpenAI/Azure require file_id from uploaded file, not inline data
+        # OpenAI/Azure require file_id from uploaded file, not inline data.
+        # Pass (filename, content, content_type) so the upload gets the right MIME type.
         if provider in _FILE_ID_REQUIRED_PROVIDERS:
+          display_name = getattr(
+              part.inline_data, "display_name", None
+          ) or _filename_for_mime(part.inline_data.mime_type)
           file_response = await litellm.acreate_file(
-              file=part.inline_data.data,
+              file=(
+                  display_name,
+                  part.inline_data.data,
+                  part.inline_data.mime_type,
+              ),
               purpose="assistants",
               custom_llm_provider=provider,
           )
