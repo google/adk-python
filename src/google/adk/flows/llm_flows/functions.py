@@ -319,25 +319,6 @@ async def handle_function_calls_async_with_agent_tool_streaming(
     else:
       regular_calls.append(function_call)
 
-  # If no AgentTool calls, use normal flow
-  if not agent_tool_calls:
-    function_response_event = await handle_function_calls_async(
-        invocation_context, function_call_event, tools_dict
-    )
-    if function_response_event:
-      auth_event = generate_auth_event(
-          invocation_context, function_response_event
-      )
-      if auth_event:
-        yield auth_event
-      tool_confirmation_event = generate_request_confirmation_event(
-          invocation_context, function_call_event, function_response_event
-      )
-      if tool_confirmation_event:
-        yield tool_confirmation_event
-      yield function_response_event
-    return
-
   # Stream events from AgentTool sub-agents
   agent_tool_results = {}
   for function_call, agent_tool in agent_tool_calls:
