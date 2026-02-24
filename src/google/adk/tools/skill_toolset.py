@@ -16,9 +16,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
-import shlex
 from typing import Any
 from typing import Optional
 from typing import TYPE_CHECKING
@@ -239,16 +239,13 @@ class LoadSkillResourceTool(BaseTool):
 
 
 @experimental(FeatureName.SKILL_TOOLSET)
-class ExecuteSkillScriptTool(BaseTool):
+class RunSkillScriptTool(BaseTool):
   """Tool to execute scripts from a skill's scripts/ directory."""
 
   def __init__(self, toolset: "SkillToolset"):
     super().__init__(
-        name="execute_skill_script",
-        description=(
-            "Executes a script from a skill's scripts/ directory"
-            " and returns its output."
-        ),
+        name="run_skill_script",
+        description="Executes a script from a skill's scripts/ directory.",
     )
     self._toolset = toolset
 
@@ -263,22 +260,22 @@ class ExecuteSkillScriptTool(BaseTool):
                     "type": "string",
                     "description": "The name of the skill.",
                 },
-                "script_name": {
+                "script_path": {
                     "type": "string",
                     "description": (
-                        "The name of the script to execute (e.g.,"
-                        " 'setup.sh' or 'scripts/setup.sh')."
+                        "The relative path to the script (e.g.,"
+                        " 'scripts/setup.py')."
                     ),
                 },
-                "input_args": {
-                    "type": "string",
+                "args": {
+                    "type": "object",
                     "description": (
-                        "Optional space-separated arguments to pass"
-                        " to the script."
+                        "Optional arguments to pass to the script as key-value"
+                        " pairs."
                     ),
                 },
             },
-            "required": ["skill_name", "script_name"],
+            "required": ["skill_name", "script_path"],
         },
     )
 
@@ -286,23 +283,19 @@ class ExecuteSkillScriptTool(BaseTool):
       self, *, args: dict[str, Any], tool_context: ToolContext
   ) -> Any:
     skill_name = args.get("skill_name")
-    script_name = args.get("script_name")
-    input_args = args.get("input_args", "")
+    script_path = args.get("script_path")
+    script_args = args.get("args", {})
 
     if not skill_name:
       return {
           "error": "Skill name is required.",
           "error_code": "MISSING_SKILL_NAME",
       }
-    if not script_name:
+    if not script_path:
       return {
-          "error": "Script name is required.",
-          "error_code": "MISSING_SCRIPT_NAME",
+          "error": "Script path is required.",
+          "error_code": "MISSING_SCRIPT_PATH",
       }
-
-    # Strip scripts/ prefix for consistency
-    if script_name.startswith("scripts/"):
-      script_name = script_name[len("scripts/") :]
 
     skill = self._toolset._get_skill(skill_name)
     if not skill:
@@ -311,10 +304,15 @@ class ExecuteSkillScriptTool(BaseTool):
           "error_code": "SKILL_NOT_FOUND",
       }
 
-    script = skill.resources.get_script(script_name)
+    script = None
+    if script_path.startswith("scripts/"):
+      script = skill.resources.get_script(script_path[len("scripts/") :])
+    else:
+      script = skill.resources.get_script(script_path)
+
     if script is None:
       return {
-          "error": f"Script '{script_name}' not found in skill '{skill_name}'.",
+          "error": f"Script '{script_path}' not found in skill '{skill_name}'.",
           "error_code": "SCRIPT_NOT_FOUND",
       }
 
@@ -333,23 +331,51 @@ class ExecuteSkillScriptTool(BaseTool):
           "error_code": "NO_CODE_EXECUTOR",
       }
 
-    # Validate input_args early (before sending to code executor)
-    if input_args:
-      try:
-        shlex.split(input_args)
-      except ValueError as e:
-        return {
-            "error": f"Invalid input_args: {e}",
-            "error_code": "INVALID_INPUT_ARGS",
-        }
+    import os
 
-    # Prepare code based on script extension
-    code = self._prepare_code(script_name, script.src, input_args)
-    is_shell = "." in script_name and script_name.rsplit(".", 1)[
+    from ..code_executors.code_execution_utils import File
+
+    input_files = []
+
+    # Package ALL skill files for mounting
+    for ref_name in skill.resources.list_references():
+      content = skill.resources.get_reference(ref_name)
+      if content:
+        input_files.append(
+            File(
+                name=os.path.basename(ref_name),
+                path=f"references/{ref_name}",
+                content=content,
+            )
+        )
+    for asset_name in skill.resources.list_assets():
+      content = skill.resources.get_asset(asset_name)
+      if content:
+        input_files.append(
+            File(
+                name=os.path.basename(asset_name),
+                path=f"assets/{asset_name}",
+                content=content,
+            )
+        )
+    for scr_name in skill.resources.list_scripts():
+      scr = skill.resources.get_script(scr_name)
+      if scr and scr.src:
+        input_files.append(
+            File(
+                name=os.path.basename(scr_name),
+                path=f"scripts/{scr_name}",
+                content=scr.src,
+            )
+        )
+
+    # Prepare wrapper code
+    code = self._prepare_code(script_path, script_args)
+    is_shell = "." in script_path and script_path.rsplit(".", 1)[
         -1
     ].lower() in ("sh", "bash")
     if code is None:
-      ext = script_name.rsplit(".", 1)[-1] if "." in script_name else ""
+      ext = script_path.rsplit(".", 1)[-1] if "." in script_path else ""
       return {
           "error": (
               f"Unsupported script type '.{ext}'. Supported"
@@ -359,9 +385,14 @@ class ExecuteSkillScriptTool(BaseTool):
       }
 
     try:
-      result = code_executor.execute_code(
+      result = await asyncio.to_thread(
+          code_executor.execute_code,
           tool_context._invocation_context,
-          CodeExecutionInput(code=code),
+          CodeExecutionInput(
+              code=code,
+              input_files=input_files,
+              working_dir=".",
+          ),
       )
       stdout = result.stdout
       stderr = result.stderr
@@ -386,94 +417,91 @@ class ExecuteSkillScriptTool(BaseTool):
         status = "success"
       return {
           "skill_name": skill_name,
-          "script_name": script_name,
+          "script_path": script_path,
           "stdout": stdout,
           "stderr": stderr,
           "status": status,
       }
     except SystemExit as e:
-      # Scripts may call sys.exit(); intercept instead of letting
-      # it terminate the host process.
       exit_code = e.code if e.code is not None else 0
       if exit_code == 0:
-        # sys.exit(0) or sys.exit() is a normal termination.
         return {
             "skill_name": skill_name,
-            "script_name": script_name,
+            "script_path": script_path,
             "stdout": "",
             "stderr": "",
             "status": "success",
         }
       logger.warning(
           "Script '%s' from skill '%s' called sys.exit(%s)",
-          script_name,
+          script_path,
           skill_name,
           exit_code,
       )
       return {
-          "error": f"Script '{script_name}' exited with code {exit_code}.",
+          "error": f"Script '{script_path}' exited with code {exit_code}.",
           "error_code": "EXECUTION_ERROR",
       }
-    except Exception as e:
+    except Exception as e:  # pylint: disable=broad-exception-caught
       logger.exception(
           "Error executing script '%s' from skill '%s'",
-          script_name,
+          script_path,
           skill_name,
       )
-      # Keep the error message short for the LLM; full trace is logged above.
       short_msg = str(e)
       if len(short_msg) > 200:
         short_msg = short_msg[:200] + "..."
       return {
-          "error": f"Failed to execute script '{script_name}': {short_msg}",
+          "error": (
+              f"Failed to execute script '{script_path}':\n{type(e).__name__}:"
+              f" {short_msg}"
+          ),
           "error_code": "EXECUTION_ERROR",
       }
 
   def _prepare_code(
       self,
-      script_name: str,
-      script_src: str,
-      input_args: str,
+      script_path: str,
+      script_args: dict[str, Any],
   ) -> str | None:
     """Prepares Python code to execute the script.
 
     Args:
-      script_name: The script filename.
-      script_src: The script source content.
-      input_args: Optional arguments string.
+      script_path: The script file path.
+      script_args: Optional dictionary of arguments.
 
     Returns:
       Python code string to execute, or None if unsupported type.
     """
     ext = ""
-    if "." in script_name:
-      ext = script_name.rsplit(".", 1)[-1].lower()
+    if "." in script_path:
+      ext = script_path.rsplit(".", 1)[-1].lower()
+
+    if not script_path.startswith("scripts/"):
+      script_path = f"scripts/{script_path}"
 
     if ext == "py":
-      # Python script: execute directly, inject sys.argv if args
-      if input_args:
-        return (
-            "import sys, shlex\n"
-            f"sys.argv = [{script_name!r}]"
-            f" + shlex.split({input_args!r})\n"
-            + script_src
-        )
-      return script_src
-    elif ext in ("sh", "bash"):
-      # Shell script: wrap in subprocess.run.
-      # Args are passed as separate list elements after the
-      # script name to avoid shell injection.
-      # Both streams are JSON-serialized through stdout since
-      # UnsafeLocalCodeExecutor drops stdout on exception.
-      timeout = self._toolset._script_timeout
-      cmd = f"['bash', '-c', {script_src!r}, {script_name!r}]"
-      if input_args:
-        cmd += f" + shlex.split({input_args!r})"
+      # Python script: execute the mounted file using runpy
+      argv_list = [script_path]
+      for k, v in script_args.items():
+        argv_list.extend([f"--{k}", str(v)])
       return (
-          "import subprocess, shlex, json as _json\n"
+          "import sys\n"
+          "import runpy\n"
+          f"sys.argv = {argv_list!r}\n"
+          f"runpy.run_path({script_path!r}, run_name='__main__')\n"
+      )
+    elif ext in ("sh", "bash"):
+      # Shell script: wrap in subprocess.run
+      timeout = self._toolset._script_timeout
+      arr = ["bash", script_path]
+      for k, v in script_args.items():
+        arr.extend([f"--{k}", str(v)])
+      return (
+          "import subprocess, json as _json\n"
           "try:\n"
           "    _r = subprocess.run(\n"
-          f"        {cmd},\n"
+          f"        {arr!r},\n"
           "        capture_output=True, text=True,\n"
           f"        timeout={timeout!r},\n"
           "    )\n"
@@ -504,15 +532,18 @@ class SkillToolset(BaseToolset):
       *,
       code_executor: Optional[BaseCodeExecutor] = None,
       script_timeout: int = _DEFAULT_SCRIPT_TIMEOUT,
+      additional_tools: Optional[list[Any]] = None,
   ):
     """Initializes the SkillToolset.
 
     Args:
       skills: List of skills to register.
       code_executor: Optional code executor for script execution.
-      script_timeout: Timeout in seconds for shell script execution
-        via subprocess.run. Defaults to 300 seconds. Does not apply
-        to Python scripts executed via exec().
+      script_timeout: Timeout in seconds for shell script execution via
+        subprocess.run. Defaults to 300 seconds. Does not apply to Python
+        scripts executed via exec().
+      additional_tools: Optional list of additional tools (BaseTool,
+        BaseToolset, or Callables).
     """
     super().__init__()
 
@@ -526,18 +557,100 @@ class SkillToolset(BaseToolset):
     self._skills = {skill.name: skill for skill in skills}
     self._code_executor = code_executor
     self._script_timeout = script_timeout
+    self._additional_tools = additional_tools or []
+
+    # Initialize core skill tools
     self._tools = [
         ListSkillsTool(self),
         LoadSkillTool(self),
         LoadSkillResourceTool(self),
-        ExecuteSkillScriptTool(self),
     ]
+    # Always add RunSkillScriptTool, relies on invocation_context fallback if _code_executor is None
+    self._tools.append(RunSkillScriptTool(self))
 
   async def get_tools(
       self, readonly_context: ReadonlyContext | None = None
   ) -> list[BaseTool]:
-    """Returns the list of tools in this toolset."""
-    return self._tools
+    """Returns the list of tools in this toolset.
+
+    Dynamically resolves `allowed_tools` from skills against provided
+    `additional_tools`
+    and built-in ADK tools.
+    """
+
+    import inspect
+
+    from google.adk import tools as built_in_tools
+
+    from .function_tool import FunctionTool
+
+    result = list(self._tools)
+
+    # Collect allowed tools from all skills
+    allowed_tool_names = set()
+    for skill in self._list_skills():
+      if skill.frontmatter.allowed_tools:
+        allowed_tool_names.update(skill.frontmatter.allowed_tools)
+
+    if not allowed_tool_names:
+      return result
+
+    # Resolve additional_tools passed by developer
+    tools_by_name = {}
+    for tool_union in self._additional_tools:
+      if isinstance(tool_union, BaseTool):
+        tools_by_name[tool_union.name] = tool_union
+      elif isinstance(tool_union, BaseToolset):
+        for tool in await tool_union.get_tools(readonly_context):
+          tools_by_name[tool.name] = tool
+      elif inspect.isroutine(tool_union):
+        func_tool = FunctionTool(tool_union)
+        tools_by_name[func_tool.name] = func_tool
+      else:
+        logger.warning("Ignored unsupported additional_tool: %s", tool_union)
+
+    for allowed_tool in allowed_tool_names:
+      if allowed_tool in tools_by_name:
+        result.append(tools_by_name[allowed_tool])
+      elif hasattr(built_in_tools, allowed_tool):
+        # Fallback to ADK built-in tools
+        builtin_obj = getattr(built_in_tools, allowed_tool)
+        if inspect.isroutine(builtin_obj):
+          result.append(FunctionTool(builtin_obj))
+        elif isinstance(builtin_obj, type) and issubclass(
+            builtin_obj, BaseTool
+        ):
+          try:
+            # Attempt to instantiate built-in tools that take no arguments
+            result.append(builtin_obj())
+          except TypeError:
+            logger.warning(
+                "Could not instantiate built-in tool '%s'. It may require"
+                " arguments.",
+                allowed_tool,
+            )
+        elif isinstance(builtin_obj, type) and issubclass(
+            builtin_obj, BaseToolset
+        ):
+          try:
+            toolset = builtin_obj()
+            result.extend(await toolset.get_tools(readonly_context))
+          except TypeError:
+            logger.warning(
+                "Could not instantiate built-in toolset '%s'. It may require"
+                " arguments.",
+                allowed_tool,
+            )
+        else:
+          logger.warning("Unrecognized built-in tool type for %s", allowed_tool)
+      else:
+        logger.warning(
+            "Skill requested tool '%s' which was not provided in"
+            " additional_tools or found in built-in tools.",
+            allowed_tool,
+        )
+
+    return result
 
   def _get_skill(self, name: str) -> models.Skill | None:
     """Retrieves a skill by name."""
