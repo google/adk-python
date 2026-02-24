@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from typing_extensions import override
+
 from .base_session_service import BaseSessionService
 from .in_memory_session_service import InMemorySessionService
 from .session import Session
@@ -35,18 +37,23 @@ except ImportError:
     def __init__(self, *args, **kwargs):
       raise ImportError(self._ERROR_MESSAGE)
 
+    @override
     async def create_session(self, *args, **kwargs):
       raise ImportError(self._ERROR_MESSAGE)
 
+    @override
     async def get_session(self, *args, **kwargs):
       raise ImportError(self._ERROR_MESSAGE)
 
+    @override
     async def list_sessions(self, *args, **kwargs):
       raise ImportError(self._ERROR_MESSAGE)
 
+    @override
     async def delete_session(self, *args, **kwargs):
       raise ImportError(self._ERROR_MESSAGE)
 
+    @override
     async def append_event(self, *args, **kwargs):
       raise ImportError(self._ERROR_MESSAGE)
 
