@@ -1,7 +1,7 @@
 # ADK Code Executor Enhancements — Design Document
 
 **Authors:** haiyuancao, Claude Code
-**Date:** 2026-02-21
+**Date:** 2026-02-24
 **Status:** Draft
 **Tracking:** Related to PR #4575 (RunSkillScriptTool)
 
@@ -111,21 +111,39 @@ The following are explicitly **out of scope** for this design:
 
 | Executor | Stateful | Timeout | Isolation | Dependencies |
 |----------|----------|---------|-----------|-------------|
-| `UnsafeLocalCodeExecutor` | No (frozen) | None | None | None |
+| `UnsafeLocalCodeExecutor` | No (frozen) | None | Partial (temp-dir sandbox when `input_files` or `working_dir` set; no isolation otherwise) | None |
 | `ContainerCodeExecutor` | No (frozen) | None | Docker container | `docker` |
 | `GkeCodeExecutor` | No (ephemeral) | `timeout_seconds=300` | gVisor sandbox | `kubernetes` |
 | `VertexAiCodeExecutor` | Allowed | None | Vertex AI Extension | `vertexai` |
 | `AgentEngineSandboxCodeExecutor` | Allowed | None | Vertex AI Sandbox | `vertexai` |
-| `BuiltInCodeExecutor` | N/A | N/A | Gemini model | `google-genai` |
+| `BuiltInCodeExecutor` | N/A (delegates to Gemini model's built-in code execution) | N/A (Gemini-internal) | Gemini model | `google-genai` |
+
+**Note on `UnsafeLocalCodeExecutor` partial isolation:** When `input_files`
+or `working_dir` is set in `CodeExecutionInput`, the executor creates a
+`tempfile.TemporaryDirectory`, writes all input files with preserved
+relative paths (e.g., `references/data.csv`), and `os.chdir()`s into it
+before calling `exec()`. This provides filesystem-level isolation for the
+script's view of its working directory, but does **not** restrict access
+to the rest of the host filesystem, environment variables, or network.
+The temp directory is cleaned up after execution, and the original working
+directory is restored in a `finally` block. Both the sandbox and plain
+paths hold a process-global `_execution_lock` because `redirect_stdout`
+mutates `sys.stdout`.
 
 ### 3.2 Base Class Contract
 
 ```python
 class BaseCodeExecutor(BaseModel):
+    optimize_data_file: bool = False
     stateful: bool = False
     error_retry_attempts: int = 2
-    code_block_delimiters: List[tuple[str, str]]
-    execution_result_delimiters: tuple[str, str]
+    code_block_delimiters: List[tuple[str, str]] = [
+        ('```tool_code\n', '\n```'),
+        ('```python\n', '\n```'),
+    ]
+    execution_result_delimiters: tuple[str, str] = (
+        '```tool_output\n', '\n```'
+    )
 
     @abc.abstractmethod
     def execute_code(
@@ -141,7 +159,7 @@ class BaseCodeExecutor(BaseModel):
 @dataclasses.dataclass(frozen=True)
 class File:
     name: str
-    content: str | bytes
+    content: str | bytes  # Text or binary; executor writes 'w'/'wb'
     mime_type: str = 'text/plain'
     path: Optional[str] = None  # e.g. "scripts/run.py"
 
@@ -159,6 +177,23 @@ class CodeExecutionResult:
     output_files: list[File] = field(default_factory=list)
 ```
 
+**Binary content handling:** `File.content` accepts both `str` and
+`bytes`. When `UnsafeLocalCodeExecutor` writes input files to the
+temp-dir sandbox, it selects file mode based on content type:
+`'wb'` for `bytes`, `'w'` for `str`. This is relevant for
+`RunSkillScriptTool`, which packages skill resources as `File` objects
+— references and assets may contain binary content (e.g., images,
+serialized data).
+
+**`_prepare_globals` helper in `UnsafeLocalCodeExecutor`:** The executor
+has a `_prepare_globals()` function that scans the code for
+`if __name__ == '__main__'` patterns and injects `__name__ = '__main__'`
+into the execution globals. This interacts with `RunSkillScriptTool`'s
+Python wrapper, which uses `runpy.run_path(script_path,
+run_name='__main__')` — `runpy` sets `__name__` independently, so the
+executor's `_prepare_globals` applies to the wrapper code's outer scope
+while `runpy` sets it for the script's scope.
+
 ### 3.4 How Executors Are Used
 
 The primary consumer is `_code_execution.py` in the LLM flows layer:
@@ -169,8 +204,76 @@ The primary consumer is `_code_execution.py` in the LLM flows layer:
 3. **Stateful support**: Uses `execution_id` (from `CodeExecutorContext`)
    to maintain state across calls when `stateful=True`
 
-`RunSkillScriptTool` is a secondary consumer that calls
-`execute_code()` directly with generated Python code wrapping skill scripts.
+`RunSkillScriptTool` is a secondary consumer that wraps
+`execute_code()` in `asyncio.to_thread()` to avoid blocking the async
+event loop:
+
+```python
+result = await asyncio.to_thread(
+    code_executor.execute_code,
+    tool_context._invocation_context,
+    CodeExecutionInput(
+        code=code,
+        input_files=input_files,
+        working_dir=".",
+    ),
+)
+```
+
+This is architecturally significant: the tool is always called from an
+async context (`run_async`), but all `BaseCodeExecutor.execute_code()`
+implementations are synchronous. The `to_thread()` bridge ensures the
+executor's blocking call (which may involve `exec()`, Docker API calls,
+or HTTP requests) does not starve the event loop.
+
+#### 3.4.1 `RunSkillScriptTool` Current Implementation Details
+
+Key behaviors of the current implementation (`skill_toolset.py`) that
+inform the proposals in this document:
+
+- **Executor resolution chain:** Toolset-level `_code_executor` (highest
+  priority) → `agent.code_executor` attribute → `NO_CODE_EXECUTOR` error.
+- **`script_timeout` parameter:** `SkillToolset.__init__` accepts
+  `script_timeout: int` (default 300s). This timeout is embedded in
+  generated shell wrapper code via `subprocess.run(timeout=N)`. It does
+  **not** apply to Python scripts executed via `runpy.run_path()` — those
+  run inline in `exec()` with no timeout at any layer.
+- **`scripts/` prefix normalization:** `_prepare_code()` auto-prepends
+  `"scripts/"` if the `script_path` does not already start with it. This
+  allows the LLM to call with either `"setup.py"` or `"scripts/setup.py"`.
+- **Resource packaging:** ALL skill files (references, assets, scripts)
+  are packaged as `input_files` with preserved relative paths (e.g.,
+  `"references/data.csv"`, `"assets/template.txt"`). Empty resources
+  (content `""`) are still included — they are not silently dropped.
+  Both text (`str`) and binary (`bytes`) content are supported; the
+  executor writes them with the appropriate file mode (`'w'` vs `'wb'`).
+- **SystemExit handling:** `SystemExit(0)` or `SystemExit(None)` →
+  treated as success (empty stdout/stderr, status `"success"`).
+  `SystemExit(non-zero)` → `EXECUTION_ERROR` with the exit code in the
+  error message. This prevents scripts from terminating the host process.
+- **Error message truncation:** Exception messages longer than 200
+  characters are truncated to `message[:200] + "..."` to conserve LLM
+  context tokens.
+- **Shell JSON envelope:** Shell scripts are wrapped in a
+  `subprocess.run` call that serializes output as JSON:
+  `{"__shell_result__": true, "stdout": "...", "stderr": "...",
+  "returncode": N}`. On parse:
+  - Non-zero `returncode` with empty `stderr` → synthesized
+    `"Exit code {rc}"` as stderr
+  - Non-JSON stdout (e.g., if the wrapper itself fails) → raw stdout
+    is passed through without parsing
+- **Status derivation:** Purely based on stream presence:
+  `stderr` only → `"error"`, both streams → `"warning"`, no
+  `stderr` → `"success"`. For shell scripts, non-zero return codes
+  influence status indirectly (via synthesized stderr). For Python
+  scripts, there is no return code extraction — status is determined
+  solely by stdout/stderr content.
+- **Duplicate skill names:** `SkillToolset.__init__` validates that all
+  skill names are unique and raises `ValueError` on duplicates.
+- **System instruction injection:** `SkillToolset.process_llm_request()`
+  appends `DEFAULT_SKILL_SYSTEM_INSTRUCTION` plus an XML-formatted skill
+  list to every outgoing LLM request, informing the model about available
+  skills and the `run_skill_script` tool.
 
 ---
 
@@ -286,6 +389,42 @@ def execute_code(self, invocation_context, code_execution_input):
   executor — production deployments should use container-based executors.
 - An alternative is `multiprocessing`, but that adds complexity around
   serialization and shared state.
+
+**Interaction with existing `_execution_lock`:**
+
+The current `UnsafeLocalCodeExecutor` holds a process-global
+`_execution_lock` (`threading.Lock()`) for the entire duration of
+`execute_code()`, covering both the sandbox path (temp-dir + chdir) and
+the plain path (redirect_stdout only). The timeout thread proposal must
+account for this:
+
+- **Lock must be acquired outside the timeout thread.** The worker thread
+  must hold the lock while executing, and the calling thread must release
+  it after the join (whether the worker finishes or times out). If the
+  lock were acquired inside the worker thread, a timed-out worker would
+  hold the lock indefinitely, deadlocking all subsequent calls.
+- **Recommended pattern:** Acquire the lock in `execute_code()` before
+  spawning the worker thread, pass the lock-holding context to the worker,
+  and release in a `finally` block after `thread.join(timeout)`:
+  ```python
+  with _execution_lock:
+      thread = threading.Thread(target=_run, daemon=True)
+      thread.start()
+      thread.join(timeout=timeout)
+      if thread.is_alive():
+          # Lock is released when `with` exits, even though
+          # the daemon thread may still be running.
+          # This is acceptable: the lingering thread's exec()
+          # is no longer protected by the lock, but it is a
+          # daemon thread that will be killed on process exit.
+          return CodeExecutionResult(
+              stderr=f'Execution timed out after {timeout}s'
+          )
+  ```
+- **Risk:** A timed-out daemon thread may still be mutating
+  `sys.stdout` or the working directory after the lock is released.
+  This is a best-effort trade-off for a development executor — the
+  alternative (never releasing the lock) would deadlock the process.
 
 **Recommendation:** Thread-based timeout for `UnsafeLocalCodeExecutor` is
 sufficient. Document that it provides best-effort timeout only.
@@ -532,6 +671,33 @@ the executor rather than embedding it in generated shell wrapper code.
 However, the shell wrapper timeout (`subprocess.run(timeout=N)`) should
 be kept as defense-in-depth — it catches the subprocess even if the
 executor timeout fails.
+
+**Critical gap — Python scripts have zero timeout protection:**
+
+Shell scripts benefit from two layers of timeout: the `subprocess.run(
+timeout=N)` embedded in generated wrapper code, and (once implemented)
+the executor-level timeout. Python scripts have **neither**:
+
+- `_prepare_code()` generates `runpy.run_path()` inside a plain `exec()`
+  call — there is no subprocess boundary to kill.
+- `SkillToolset.script_timeout` only applies to the shell path (it is
+  passed to `subprocess.run(timeout=N)`). The docstring explicitly notes:
+  "Does not apply to Python scripts executed via exec()."
+- Until executor-level timeout is implemented, a Python script that hangs
+  (infinite loop, blocking I/O, deadlock) will block the executor thread
+  indefinitely. With `UnsafeLocalCodeExecutor`, this also holds the
+  `_execution_lock`, blocking all other executions.
+
+**Recommended actions for Phase 1:**
+1. Executor-level timeout (§4.2) is the primary fix — it covers both
+   Python and shell scripts uniformly.
+2. As defense-in-depth, `RunSkillScriptTool` should also set
+   `CodeExecutionInput.timeout_seconds = self._toolset._script_timeout`
+   once the field is available, ensuring per-invocation timeout even if
+   the executor has no default.
+3. Optionally, the Python wrapper code could be enhanced with a
+   watchdog thread pattern (similar to the shell `subprocess.run`
+   timeout), though this is less clean than executor-level enforcement.
 
 ---
 
@@ -854,10 +1020,11 @@ This is a critical security concern when executing:
 |--------|--------|--------------------|
 | LLM generates malicious code | Full host compromise | None |
 | Skill script reads secrets | Data exfiltration | None (documented warning only) |
-| Infinite loop / fork bomb | DoS / resource exhaustion | None (no timeout) |
-| `sys.exit()` in script | Process termination | Partial (`SystemExit` catch in `RunSkillScriptTool`) |
+| Infinite loop / fork bomb | DoS / resource exhaustion | Shell: `subprocess.run(timeout=N)` via `script_timeout`; Python: None (no timeout at any layer) |
+| `sys.exit()` in script | Process termination | `RunSkillScriptTool` catches `SystemExit`: code 0 or `None` → success; non-zero → `EXECUTION_ERROR` with exit code in message |
+| Long error messages | LLM context waste | Exception messages >200 chars truncated to `msg[:200] + "..."` |
 | Network exfiltration | Data leak | None |
-| File system manipulation | Data loss / corruption | None |
+| File system manipulation | Data loss / corruption | Partial (temp-dir sandbox when `input_files`/`working_dir` set) |
 
 ### 6.3 Design
 
@@ -1185,8 +1352,13 @@ class BaseCodeExecutor(BaseModel):
     optimize_data_file: bool = False
     stateful: bool = False
     error_retry_attempts: int = 2
-    code_block_delimiters: List[tuple[str, str]] = [...]
-    execution_result_delimiters: tuple[str, str] = (...)
+    code_block_delimiters: List[tuple[str, str]] = [
+        ('```tool_code\n', '\n```'),
+        ('```python\n', '\n```'),
+    ]
+    execution_result_delimiters: tuple[str, str] = (
+        '```tool_output\n', '\n```'
+    )
 
     # NEW: Proposal 1
     default_timeout_seconds: Optional[int] = None
@@ -1206,6 +1378,7 @@ class CodeExecutionInput:
     code: str
     input_files: list[File] = field(default_factory=list)
     execution_id: Optional[str] = None
+    working_dir: Optional[str] = None
     timeout_seconds: Optional[int] = None  # NEW: per-invocation
     """Per-invocation timeout. Overrides executor default when set."""
 ```
@@ -1226,10 +1399,13 @@ class CodeExecutionInput:
 
 | Feature | Current workaround | After enhancements |
 |---------|-------------------|-------------------|
-| Shell timeout | Embedded `subprocess.run(timeout=N)` | Keep as defense-in-depth |
-| Python timeout | None | Executor-level timeout handles it |
-| Isolation | Documentation warning only | `LocalSandboxCodeExecutor` or container |
-| Stateful scripts | Not supported | Available via `ContainerCodeExecutor(stateful=True)` |
+| Shell timeout | Embedded `subprocess.run(timeout=N)` via `SkillToolset.script_timeout` (default 300s) | Keep as defense-in-depth + executor-level timeout |
+| Python timeout | **None** — `runpy.run_path()` runs inline in `exec()` with no timeout at any layer | Executor-level timeout handles it; tool should also set `CodeExecutionInput.timeout_seconds` |
+| Isolation | Partial temp-dir sandbox (input_files/working_dir) + `_execution_lock` for stdout/cwd; no restriction on filesystem/network/env access | `LocalSandboxCodeExecutor` or container |
+| Stateful scripts | Not supported (`execution_id` not wired) | Available via `ContainerCodeExecutor(stateful=True)` with `execution_id` |
+| Output files | `CodeExecutionResult.output_files` silently dropped | Surfaced in tool response (§7.5.2) |
+| System instructions | `SkillToolset.process_llm_request()` injects `DEFAULT_SKILL_SYSTEM_INSTRUCTION` + XML skill list | No change needed |
+| Error truncation | Exception messages >200 chars truncated | Consider making threshold configurable |
 
 ### 7.4 Testing Strategy
 
@@ -1287,6 +1463,35 @@ Guidance:
 - Tool-level validation/configuration errors should continue using explicit
   `error_code` values.
 
+**Current status derivation and its asymmetry:**
+
+The current implementation determines status purely from stream presence:
+```python
+if stderr and not stdout:
+    status = "error"
+elif stderr:
+    status = "warning"
+else:
+    status = "success"
+```
+
+This creates an asymmetry between script types:
+
+- **Shell scripts:** Non-zero `returncode` from the JSON envelope causes
+  synthesized stderr (`"Exit code {rc}"`), so return codes **indirectly**
+  influence status. A shell script that fails silently (non-zero exit but
+  no stderr) still gets `"error"` status.
+- **Python scripts:** There is **no return code extraction**. A Python
+  script that exits cleanly but writes warnings to stderr (common in
+  data science libraries) would be classified as `"error"` or `"warning"`
+  even if it succeeded. Conversely, a Python script that silently produces
+  incorrect output would get `"success"` status.
+
+The proposed `return_code` field resolves this by providing a uniform
+source of truth. For Python scripts, this would require either:
+(a) wrapping the `runpy.run_path()` call to capture the exit code, or
+(b) treating any non-exception completion as `return_code = 0`.
+
 #### 7.5.2 Propagate `output_files` and Artifact Metadata
 
 `CodeExecutionResult.output_files` should be surfaced in the tool response.
@@ -1327,17 +1532,39 @@ Rules:
 
 #### 7.5.4 Script Args Normalization Contract
 
-Define and document deterministic mapping from JSON args to CLI argv.
+**Current behavior:** The implementation uses a simple `str(v)` conversion
+for all argument values, with no type-aware normalization:
 
-Suggested rules:
+```python
+# Both Python and shell paths use the same logic:
+for k, v in script_args.items():
+    argv_list.extend([f"--{k}", str(v)])
+```
+
+This means:
+- `{"verbose": true}` → `["--verbose", "True"]` (string, not a flag)
+- `{"flag": false}` → `["--flag", "False"]` (not omitted)
+- `{"items": [1, 2, 3]}` → `["--items", "[1, 2, 3]"]` (repr of list)
+- `{"count": 42}` → `["--count", "42"]` (correct)
+- Nested objects → `["--config", "{'a': 1}"]` (repr, not useful)
+
+Additionally, `args` type is validated to be a `dict` — non-dict values
+(strings, lists, integers, booleans) return `INVALID_ARGS_TYPE` error.
+
+**Proposed rules** (define deterministic mapping from JSON args to argv):
 - `str|int|float` -> `--key value`
-- `true` -> `--key`
-- `false|None` -> omit
+- `true` -> `--key` (flag only, no value)
+- `false|None` -> omit entirely
 - `list[...]` -> repeated `--key value` entries
 - Optional reserved key for positional args (for example, `_positional`)
 - Reject nested objects with explicit validation error
 
 This reduces LLM-side ambiguity and improves replay/debug stability.
+
+**Migration note:** Changing boolean handling from `"--key True"` to
+`"--key"` (flag) is a behavioral change. Existing skill scripts that
+parse `--verbose True` as a string value would break. The migration
+should be opt-in or gated behind a version flag.
 
 ---
 
