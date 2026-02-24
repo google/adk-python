@@ -17,6 +17,14 @@ from .session import Session
 from .state import State
 from .vertex_ai_session_service import VertexAiSessionService
 
+try:
+  from .database_session_service import DatabaseSessionService
+except ImportError:
+  # This handles the case where optional dependencies (like sqlalchemy)
+  # are not installed. Using a top-level import ensures documentation
+  # tools can "see" the class.
+  pass
+
 __all__ = [
     'BaseSessionService',
     'DatabaseSessionService',
@@ -25,17 +33,3 @@ __all__ = [
     'State',
     'VertexAiSessionService',
 ]
-
-
-def __getattr__(name: str):
-  if name == 'DatabaseSessionService':
-    try:
-      from .database_session_service import DatabaseSessionService
-
-      return DatabaseSessionService
-    except ImportError as e:
-      raise ImportError(
-          'DatabaseSessionService requires sqlalchemy>=2.0, please ensure it is'
-          ' installed correctly.'
-      ) from e
-  raise AttributeError(f'module {__name__!r} has no attribute {name!r}')
