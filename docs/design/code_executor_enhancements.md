@@ -3,7 +3,7 @@
 **Authors:** haiyuancao, Claude Code
 **Date:** 2026-02-21
 **Status:** Draft
-**Tracking:** Related to PR #4575 (ExecuteSkillScriptTool)
+**Tracking:** Related to PR #4575 (RunSkillScriptTool)
 
 ---
 
@@ -16,7 +16,7 @@ limit production readiness:
 
 1. **No uniform timeout enforcement** — Only `GkeCodeExecutor` has a
    `timeout_seconds` field. All other executors can hang indefinitely on
-   malicious, buggy, or slow code. The `ExecuteSkillScriptTool` works
+   malicious, buggy, or slow code. The `RunSkillScriptTool` works
    around this for shell scripts by embedding `subprocess.run(timeout=N)`
    in generated code, but this is a workaround, not a systemic solution.
 
@@ -74,8 +74,11 @@ The following are explicitly **out of scope** for this design:
 - Code is appended to stateful history **only after** successful execution.
   A failing code block is never replayed.
 - Executor instances are not thread-safe unless documented otherwise.
-  Concurrent `execute_code()` calls on the same instance require external
-  synchronization.
+  Concurrent `execute_code()` calls on the same instance may require
+  external synchronization.
+- `UnsafeLocalCodeExecutor` is a special case: it currently serializes
+  `execute_code()` with an internal lock because `redirect_stdout` and
+  `os.chdir()` mutate process-global state.
 
 ---
 
@@ -112,11 +115,19 @@ class BaseCodeExecutor(BaseModel):
 ### 3.3 Data Model
 
 ```python
+@dataclasses.dataclass(frozen=True)
+class File:
+    name: str
+    content: str | bytes
+    mime_type: str = 'text/plain'
+    path: Optional[str] = None  # e.g. "scripts/run.py"
+
 @dataclasses.dataclass
 class CodeExecutionInput:
     code: str
     input_files: list[File] = field(default_factory=list)
     execution_id: Optional[str] = None  # For stateful execution
+    working_dir: Optional[str] = None   # e.g. "."
 
 @dataclasses.dataclass
 class CodeExecutionResult:
@@ -135,7 +146,7 @@ The primary consumer is `_code_execution.py` in the LLM flows layer:
 3. **Stateful support**: Uses `execution_id` (from `CodeExecutorContext`)
    to maintain state across calls when `stateful=True`
 
-`ExecuteSkillScriptTool` is a secondary consumer that calls
+`RunSkillScriptTool` is a secondary consumer that calls
 `execute_code()` directly with generated Python code wrapping skill scripts.
 
 ---
@@ -201,7 +212,7 @@ timeout = (
 **Why per-invocation + executor default:**
 - Backward compatible — existing code that doesn't set it works unchanged
 - Safe for shared executors — no global mutable state
-- Callers can override per-call (e.g., `ExecuteSkillScriptTool` sets
+- Callers can override per-call (e.g., `RunSkillScriptTool` sets
   `script_timeout`, LLM flows use a different default)
 - Executor subclasses can define their own defaults
 
@@ -490,10 +501,10 @@ is not applicable. Use the same thread+join pattern as
 | 5 | Migrate `GkeCodeExecutor.timeout_seconds` to `default_timeout_seconds` | None |
 | 6 | Add client-side timeout to remote executors | Low |
 
-### 4.4 Impact on `ExecuteSkillScriptTool`
+### 4.4 Impact on `RunSkillScriptTool`
 
 Once `BaseCodeExecutor` has native timeout support, the
-`ExecuteSkillScriptTool` can optionally delegate timeout enforcement to
+`RunSkillScriptTool` can optionally delegate timeout enforcement to
 the executor rather than embedding it in generated shell wrapper code.
 However, the shell wrapper timeout (`subprocess.run(timeout=N)`) should
 be kept as defense-in-depth — it catches the subprocess even if the
@@ -757,16 +768,17 @@ identify stateful sessions. For `ContainerCodeExecutor`:
 
 This aligns with how `VertexAiCodeExecutor` uses `session_id`.
 
-**Gap: `ExecuteSkillScriptTool` does not wire `execution_id`.**
+**Gap: `RunSkillScriptTool` does not wire `execution_id`.**
 
-Currently, `ExecuteSkillScriptTool.run_async()` creates
-`CodeExecutionInput(code=prepared_code)` without setting `execution_id`.
+Currently, `RunSkillScriptTool.run_async()` creates
+`CodeExecutionInput(code=..., input_files=..., working_dir='.')` without
+setting `execution_id`.
 This means all skill script executions share the same (default) namespace
 in a stateful executor, with no isolation between different skills or
 invocations.
 
 **Action items:**
-1. `ExecuteSkillScriptTool` should generate a **session-stable**
+1. `RunSkillScriptTool` should generate a **session-stable**
    `execution_id` scoped to skill + agent. The key must persist
    across turns so that stateful code history is preserved:
    ```python
@@ -820,7 +832,7 @@ This is a critical security concern when executing:
 | LLM generates malicious code | Full host compromise | None |
 | Skill script reads secrets | Data exfiltration | None (documented warning only) |
 | Infinite loop / fork bomb | DoS / resource exhaustion | None (no timeout) |
-| `sys.exit()` in script | Process termination | Partial (`SystemExit` catch in `ExecuteSkillScriptTool`) |
+| `sys.exit()` in script | Process termination | Partial (`SystemExit` catch in `RunSkillScriptTool`) |
 | Network exfiltration | Data leak | None |
 | File system manipulation | Data loss / corruption | None |
 
@@ -1187,7 +1199,7 @@ class CodeExecutionInput:
 | `restrict_builtins` on `UnsafeLocalCodeExecutor` | Yes (default `False`) | No |
 | Default image for `ContainerCodeExecutor` | Breaking (currently requires image/docker_path) | Minor |
 
-### 7.3 Impact on `ExecuteSkillScriptTool`
+### 7.3 Impact on `RunSkillScriptTool`
 
 | Feature | Current workaround | After enhancements |
 |---------|-------------------|-------------------|
@@ -1209,7 +1221,7 @@ is new and has no tests yet.
 | Category | Approach | New tests needed |
 |----------|----------|-----------------|
 | Unit tests | Mock-based tests per executor | **Add `test_container_code_executor.py`**, add `test_local_sandbox_code_executor.py` |
-| Integration tests | Real executor tests (like `ExecuteSkillScriptTool` integration tests) | Add Docker-based container tests (CI-gated) |
+| Integration tests | Real executor tests (like `RunSkillScriptTool` integration tests) | Add Docker-based container tests (CI-gated) |
 | Timeout tests | Scripts with `time.sleep()` to verify enforcement | Per-executor timeout tests |
 | Timeout kill fallback | Verify `PermissionError` from `os.kill` triggers container restart | Mock `os.kill` to raise `PermissionError`, assert `container.restart()` called and `CodeExecutionResult.stderr` contains timeout message |
 | Timeout kill success | Verify `os.kill(host_pid)` path when permitted | Mock `exec_inspect` to return PID, assert `os.kill` called with correct signal |
@@ -1239,7 +1251,7 @@ is new and has no tests yet.
    by users or by higher-level retry logic.
 6. Migrate `GkeCodeExecutor.timeout_seconds` to `default_timeout_seconds`
 7. Add timeout tests for each executor
-8. Update `ExecuteSkillScriptTool` to set per-invocation timeout via
+8. Update `RunSkillScriptTool` to set per-invocation timeout via
    `CodeExecutionInput.timeout_seconds`
 
 ### Phase 2: Stateful Container (5-8 days)
@@ -1254,7 +1266,7 @@ Implement Option A (persistent process) directly, as recommended in
    read output, detect crash/restart)
 4. Add `execution_id`-based session isolation (one REPL per
    `execution_id`)
-5. Wire `execution_id` in `ExecuteSkillScriptTool`
+5. Wire `execution_id` in `RunSkillScriptTool`
 6. Add `reset_state()` method (kills and restarts the REPL)
 7. Add stateful execution tests (variable persistence, crash recovery,
    `execution_id` isolation)
@@ -1314,6 +1326,6 @@ Implement Option A (persistent process) directly, as recommended in
 - [GkeCodeExecutor](../../src/google/adk/code_executors/gke_code_executor.py)
 - [VertexAiCodeExecutor](../../src/google/adk/code_executors/vertex_ai_code_executor.py)
 - [AgentEngineSandboxCodeExecutor](../../src/google/adk/code_executors/agent_engine_sandbox_code_executor.py)
-- [ExecuteSkillScriptTool](../../src/google/adk/tools/skill_toolset.py)
+- [RunSkillScriptTool](../../src/google/adk/tools/skill_toolset.py)
 - [Code Execution Flow](../../src/google/adk/flows/llm_flows/_code_execution.py)
-- [PR #4575 — ExecuteSkillScriptTool](https://github.com/google/adk-python/pull/4575)
+- [PR #4575 — RunSkillScriptTool](https://github.com/google/adk-python/pull/4575)
