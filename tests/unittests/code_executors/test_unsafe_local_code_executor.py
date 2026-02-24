@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import concurrent.futures
+import os
 import textwrap
 from unittest.mock import MagicMock
 
@@ -129,9 +130,14 @@ class TestUnsafeLocalCodeExecutor:
   ):
     """Concurrent sandbox and plain calls must not mix stdout."""
     executor = UnsafeLocalCodeExecutor()
-    plain_input = CodeExecutionInput(code='print("PLAIN")')
+    original_cwd = os.getcwd()
+    plain_input = CodeExecutionInput(
+        code='import os; print("PLAIN:" + os.getcwd())'
+    )
     sandbox_input = CodeExecutionInput(
-        code='import time; time.sleep(0.01); print("SANDBOX")',
+        code=(
+            'import os, time; time.sleep(0.01); print("SANDBOX:" + os.getcwd())'
+        ),
         input_files=[
             File(name="dummy.txt", content="data"),
         ],
@@ -157,6 +163,11 @@ class TestUnsafeLocalCodeExecutor:
       if "PLAIN" in r_sandbox.stdout or "SANDBOX" in r_plain.stdout:
         errors.append(f"sandbox={r_sandbox.stdout!r} plain={r_plain.stdout!r}")
 
+      # Plain-path cwd must remain the original cwd, not a temp dir
+      plain_cwd = r_plain.stdout.strip().split(":", 1)[1]
+      if plain_cwd != original_cwd:
+        errors.append(f"plain cwd={plain_cwd!r} expected={original_cwd!r}")
+
     assert not errors, (
-        f"stdout bleed detected in {len(errors)}/50 iterations: " + errors[0]
+        f"bleed detected in {len(errors)}/50 iterations: " + errors[0]
     )
