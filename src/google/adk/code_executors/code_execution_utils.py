@@ -46,6 +46,11 @@ class File:
   The mime type of the file (e.g., "image/png").
   """
 
+  path: Optional[str] = None
+  """
+  The relative path to write the file to in a sandbox context (e.g., "references/data.csv").
+  """
+
 
 @dataclasses.dataclass
 class CodeExecutionInput:
@@ -64,6 +69,11 @@ class CodeExecutionInput:
   execution_id: Optional[str] = None
   """
   The execution ID for the stateful code execution.
+  """
+
+  working_dir: Optional[str] = None
+  """
+  The designated working directory for the code execution environment.
   """
 
 
