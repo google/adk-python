@@ -1,0 +1,187 @@
+{
+  "eval_set_id": "bigquerybench-adk-v1",
+  "name": "BigQueryBench ADK Evaluation",
+  "description": "End-to-end evaluation cases for BigQuery skills using public datasets. Covers schema exploration, SQL generation, multi-step analysis, and AI/ML operations.",
+  "eval_cases": [
+    {
+      "eval_id": "schema_list_datasets",
+      "conversation": [
+        {
+          "invocation_id": "inv-schema-ds-01",
+          "user_content": {
+            "parts": [{"text": "What datasets are available in the bigquery-public-data project? List a few of them."}],
+            "role": "user"
+          },
+          "final_response": {
+            "parts": [{"text": "usa_names\nsamples\nnoaa_gsod"}],
+            "role": "model"
+          },
+          "intermediate_data": {
+            "tool_uses": [
+              {"name": "list_dataset_ids", "args": {"project_id": "bigquery-public-data"}}
+            ],
+            "tool_responses": [],
+            "intermediate_responses": []
+          },
+          "creation_timestamp": 0.0
+        }
+      ],
+      "creation_timestamp": 0.0
+    },
+    {
+      "eval_id": "schema_list_tables",
+      "conversation": [
+        {
+          "invocation_id": "inv-schema-tbl-01",
+          "user_content": {
+            "parts": [{"text": "What tables exist in the usa_names dataset in bigquery-public-data?"}],
+            "role": "user"
+          },
+          "final_response": {
+            "parts": [{"text": "usa_1910_current"}],
+            "role": "model"
+          },
+          "intermediate_data": {
+            "tool_uses": [
+              {"name": "list_table_ids", "args": {"project_id": "bigquery-public-data", "dataset_id": "usa_names"}}
+            ],
+            "tool_responses": [],
+            "intermediate_responses": []
+          },
+          "creation_timestamp": 0.0
+        }
+      ],
+      "creation_timestamp": 0.0
+    },
+    {
+      "eval_id": "schema_get_table_info",
+      "conversation": [
+        {
+          "invocation_id": "inv-schema-info-01",
+          "user_content": {
+            "parts": [{"text": "What columns and data types does the usa_1910_current table in the usa_names dataset have?"}],
+            "role": "user"
+          },
+          "final_response": {
+            "parts": [{"text": "name\nyear\ngender\nstate\nnumber"}],
+            "role": "model"
+          },
+          "intermediate_data": {
+            "tool_uses": [
+              {"name": "get_table_info", "args": {"project_id": "bigquery-public-data", "dataset_id": "usa_names", "table_id": "usa_1910_current"}}
+            ],
+            "tool_responses": [],
+            "intermediate_responses": []
+          },
+          "creation_timestamp": 0.0
+        }
+      ],
+      "creation_timestamp": 0.0
+    },
+    {
+      "eval_id": "sql_shakespeare_unique_words",
+      "conversation": [
+        {
+          "invocation_id": "inv-sql-shk-01",
+          "user_content": {
+            "parts": [{"text": "Using the samples.shakespeare table in bigquery-public-data, which work (corpus) has the most unique words? Show the top 3 works by distinct word count."}],
+            "role": "user"
+          },
+          "final_response": {
+            "parts": [{"text": "hamlet\nkinghenryv\nkingrichardiii"}],
+            "role": "model"
+          },
+          "intermediate_data": {
+            "tool_uses": [
+              {"name": "get_table_info", "args": {"project_id": "bigquery-public-data", "dataset_id": "samples", "table_id": "shakespeare"}},
+              {"name": "execute_sql", "args": {"project_id": "bigquery-public-data", "query": "SELECT corpus, COUNT(DISTINCT word) AS unique_words FROM `bigquery-public-data.samples.shakespeare` GROUP BY corpus ORDER BY unique_words DESC LIMIT 3"}}
+            ],
+            "tool_responses": [],
+            "intermediate_responses": []
+          },
+          "creation_timestamp": 0.0
+        }
+      ],
+      "creation_timestamp": 0.0
+    },
+    {
+      "eval_id": "sql_usa_names_top_2020",
+      "conversation": [
+        {
+          "invocation_id": "inv-sql-names-01",
+          "user_content": {
+            "parts": [{"text": "What were the top 5 most popular baby names in the year 2020 across all states? Use the usa_names.usa_1910_current table in bigquery-public-data."}],
+            "role": "user"
+          },
+          "final_response": {
+            "parts": [{"text": "Olivia\nEmma\nLiam\nNoah\nAva"}],
+            "role": "model"
+          },
+          "intermediate_data": {
+            "tool_uses": [
+              {"name": "get_table_info", "args": {"project_id": "bigquery-public-data", "dataset_id": "usa_names", "table_id": "usa_1910_current"}},
+              {"name": "execute_sql", "args": {"project_id": "bigquery-public-data", "query": "SELECT name, SUM(number) AS total FROM `bigquery-public-data.usa_names.usa_1910_current` WHERE year = 2020 GROUP BY name ORDER BY total DESC LIMIT 5"}}
+            ],
+            "tool_responses": [],
+            "intermediate_responses": []
+          },
+          "creation_timestamp": 0.0
+        }
+      ],
+      "creation_timestamp": 0.0
+    },
+    {
+      "eval_id": "sql_names_by_decade",
+      "conversation": [
+        {
+          "invocation_id": "inv-sql-decade-01",
+          "user_content": {
+            "parts": [{"text": "How many distinct baby names were registered in each decade from 1950 to 2000 (inclusive)? Use the usa_names.usa_1910_current table in bigquery-public-data."}],
+            "role": "user"
+          },
+          "final_response": {
+            "parts": [{"text": "1950\n1960\n1970\n1980\n1990\n2000"}],
+            "role": "model"
+          },
+          "intermediate_data": {
+            "tool_uses": [
+              {"name": "get_table_info", "args": {"project_id": "bigquery-public-data", "dataset_id": "usa_names", "table_id": "usa_1910_current"}},
+              {"name": "execute_sql", "args": {"project_id": "bigquery-public-data", "query": "SELECT CAST(FLOOR(year / 10) * 10 AS INT64) AS decade, COUNT(DISTINCT name) AS distinct_names FROM `bigquery-public-data.usa_names.usa_1910_current` WHERE year BETWEEN 1950 AND 2009 GROUP BY decade ORDER BY decade"}}
+            ],
+            "tool_responses": [],
+            "intermediate_responses": []
+          },
+          "creation_timestamp": 0.0
+        }
+      ],
+      "creation_timestamp": 0.0
+    },
+    {
+      "eval_id": "multi_step_explore_and_query",
+      "conversation": [
+        {
+          "invocation_id": "inv-multi-01",
+          "user_content": {
+            "parts": [{"text": "I want to analyze the Austin bikeshare data in bigquery-public-data. First explore what tables and columns are available, then tell me the top 5 busiest start stations by total trip count."}],
+            "role": "user"
+          },
+          "final_response": {
+            "parts": [{"text": "start_station_name\ntrip"}],
+            "role": "model"
+          },
+          "intermediate_data": {
+            "tool_uses": [
+              {"name": "list_table_ids", "args": {"project_id": "bigquery-public-data", "dataset_id": "austin_bikeshare"}},
+              {"name": "get_table_info", "args": {"project_id": "bigquery-public-data", "dataset_id": "austin_bikeshare", "table_id": "bikeshare_trips"}},
+              {"name": "execute_sql", "args": {"project_id": "bigquery-public-data", "query": "SELECT start_station_name, COUNT(*) AS trip_count FROM `bigquery-public-data.austin_bikeshare.bikeshare_trips` GROUP BY start_station_name ORDER BY trip_count DESC LIMIT 5"}}
+            ],
+            "tool_responses": [],
+            "intermediate_responses": []
+          },
+          "creation_timestamp": 0.0
+        }
+      ],
+      "creation_timestamp": 0.0
+    }
+  ]
+}
