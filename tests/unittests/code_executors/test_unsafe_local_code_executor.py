@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import concurrent.futures
 import textwrap
 from unittest.mock import MagicMock
 
@@ -19,6 +20,7 @@ from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.code_executors.code_execution_utils import CodeExecutionInput
 from google.adk.code_executors.code_execution_utils import CodeExecutionResult
+from google.adk.code_executors.code_execution_utils import File
 from google.adk.code_executors.unsafe_local_code_executor import UnsafeLocalCodeExecutor
 from google.adk.sessions.base_session_service import BaseSessionService
 from google.adk.sessions.session import Session
@@ -121,3 +123,40 @@ class TestUnsafeLocalCodeExecutor:
 
     assert result.stderr == ""
     assert result.stdout == "hi ada\n"
+
+  def test_concurrent_sandbox_and_plain_no_stdout_bleed(
+      self, mock_invocation_context: InvocationContext
+  ):
+    """Concurrent sandbox and plain calls must not mix stdout."""
+    executor = UnsafeLocalCodeExecutor()
+    plain_input = CodeExecutionInput(code='print("PLAIN")')
+    sandbox_input = CodeExecutionInput(
+        code='import time; time.sleep(0.01); print("SANDBOX")',
+        input_files=[
+            File(name="dummy.txt", content="data"),
+        ],
+        working_dir=".",
+    )
+
+    errors = []
+    for _ in range(50):
+      with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        f_sandbox = pool.submit(
+            executor.execute_code,
+            mock_invocation_context,
+            sandbox_input,
+        )
+        f_plain = pool.submit(
+            executor.execute_code,
+            mock_invocation_context,
+            plain_input,
+        )
+        r_sandbox = f_sandbox.result()
+        r_plain = f_plain.result()
+
+      if "PLAIN" in r_sandbox.stdout or "SANDBOX" in r_plain.stdout:
+        errors.append(f"sandbox={r_sandbox.stdout!r} plain={r_plain.stdout!r}")
+
+    assert not errors, (
+        f"stdout bleed detected in {len(errors)}/50 iterations: " + errors[0]
+    )
