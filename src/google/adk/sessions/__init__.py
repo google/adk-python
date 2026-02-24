@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 from .base_session_service import BaseSessionService
 from .in_memory_session_service import InMemorySessionService
 from .session import Session
@@ -21,9 +22,17 @@ try:
   from .database_session_service import DatabaseSessionService
 except ImportError:
   # This handles the case where optional dependencies (like sqlalchemy)
-  # are not installed. Using a top-level import ensures documentation
-  # tools can "see" the class.
-  pass
+  # are not installed. A placeholder class ensures the symbol is always
+  # available for documentation tools, providing a clear error message
+  # at runtime if used without the necessary dependencies.
+  class DatabaseSessionService:
+
+    def __init__(self, *args, **kwargs):
+      raise ImportError(
+          'DatabaseSessionService requires sqlalchemy>=2.0, please ensure it is'
+          ' installed correctly.'
+      )
+
 
 __all__ = [
     'BaseSessionService',
