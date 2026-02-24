@@ -38,6 +38,29 @@ to the existing API.
 
 ---
 
+## 1.1 Prioritized Next Steps for `RunSkillScriptTool`
+
+The three major proposals in this doc remain valid, but for improving
+`RunSkillScriptTool` specifically, we should prioritize them alongside
+additional high-impact tool-contract work.
+
+| Rank | Priority | Area | Why it matters now |
+|------|----------|------|--------------------|
+| 1 | P0 | Uniform timeout support (Proposal 1) | Python script execution can still hang indefinitely without executor-level timeout controls. |
+| 2 | P0 | Security hardening (Proposal 3) | `UnsafeLocalCodeExecutor` remains unsafe for untrusted scripts and is a major deployment risk. |
+| 3 | P1 | Structured `RunSkillScriptTool` result contract | Agents need explicit machine-readable execution metadata (`return_code`, timeout flag), not just inferred status from `stdout/stderr`. |
+| 4 | P1 | Propagate `output_files` / artifacts | Script-generated outputs are currently dropped by tool responses, limiting practical utility. |
+| 5 | P1 | Strengthen script argument contract | Argument normalization rules are underspecified, which leads to fragile calls and inconsistent behavior. |
+| 6 | P1 | Wire `execution_id` in `RunSkillScriptTool` | Needed for predictable namespace isolation and future stateful execution compatibility. |
+| 7 | P2 | Stateful `ContainerCodeExecutor` (Proposal 2) | Valuable, but more complex and less urgent than reliability/safety/tool-contract gaps above. |
+
+**Interpretation for implementation planning:**
+- P0 items are required for production reliability/safety.
+- P1 items directly improve agent correctness and tool usability.
+- P2 items are strategic enhancements once P0/P1 are complete.
+
+---
+
 ## 2. Non-Goals & Invariants
 
 The following are explicitly **out of scope** for this design:
@@ -1230,12 +1253,99 @@ is new and has no tests yet.
 | Security tests | Scripts attempting blocked operations | `restrict_builtins` bypass attempts, env var leakage |
 | Stateful tests | Multi-call sequences verifying variable persistence | Append-after-success, failure-does-not-poison, `execution_id` isolation |
 | Stateful crash recovery | Verify error returned on REPL/container crash | Kill REPL mid-execution, assert error indicates state loss |
+| Tool contract tests | Validate structured `RunSkillScriptTool` response schema | Assert `return_code`, `timed_out`, `status`, and error envelope consistency |
+| Output propagation tests | Verify executor `output_files` are surfaced by tool | Assert tool response includes generated files/metadata |
+| Args normalization tests | Verify deterministic mapping from JSON args to argv | Cover booleans, lists, positional args, and invalid types |
+| `execution_id` wiring tests | Verify stable and scoped `execution_id` generation | Assert per-session/per-skill isolation and persistence semantics |
+
+### 7.5 High-Priority `RunSkillScriptTool` Contract Enhancements
+
+These improvements are additive and can be shipped before stateful container
+support.
+
+#### 7.5.1 Structured Execution Result Schema
+
+Current output is largely free-form (`stdout`, `stderr`, derived `status`).
+Add explicit structured fields:
+
+```python
+{
+  "skill_name": "...",
+  "script_path": "...",
+  "status": "success|warning|error",
+  "return_code": int | None,
+  "timed_out": bool,
+  "stdout": str,
+  "stderr": str,
+  "output_files": [...],  # see §7.5.2
+}
+```
+
+Guidance:
+- `status` should be derived from structured fields (`return_code`,
+  `timed_out`, and stream presence), not treated as the source of truth.
+- Tool-level validation/configuration errors should continue using explicit
+  `error_code` values.
+
+#### 7.5.2 Propagate `output_files` and Artifact Metadata
+
+`CodeExecutionResult.output_files` should be surfaced in the tool response.
+This is critical for scripts that generate reports, transformed datasets, or
+intermediate artifacts.
+
+Minimum expected shape:
+
+```python
+output_files = [
+  {
+    "name": str,
+    "mime_type": str | None,
+    # optional future fields:
+    # "artifact_id": str,
+    # "path": str,
+  }
+]
+```
+
+#### 7.5.3 `execution_id` Wiring in `RunSkillScriptTool`
+
+Even before full stateful container support, wire a deterministic
+`execution_id` to avoid ambiguous namespaces in stateful-capable executors.
+
+Recommended key shape:
+
+```python
+execution_id = (
+    f"skill:{skill_name}:session:{session_id}:agent:{agent_name}"
+)
+```
+
+Rules:
+- Stable across turns within the same session.
+- Scoped by skill and agent.
+- Never derived from `invocation_id` (too short-lived).
+
+#### 7.5.4 Script Args Normalization Contract
+
+Define and document deterministic mapping from JSON args to CLI argv.
+
+Suggested rules:
+- `str|int|float` -> `--key value`
+- `true` -> `--key`
+- `false|None` -> omit
+- `list[...]` -> repeated `--key value` entries
+- Optional reserved key for positional args (for example, `_positional`)
+- Reject nested objects with explicit validation error
+
+This reduces LLM-side ambiguity and improves replay/debug stability.
 
 ---
 
 ## 8. Implementation Roadmap
 
-### Phase 1: Timeout (3-4 days)
+### 8.1 Priority-Ordered Plan
+
+#### Phase 1 (P0): Timeout Foundation (3-4 days)
 
 1. Add `timeout_seconds: Optional[int] = None` to `CodeExecutionInput`
 2. Add `default_timeout_seconds: Optional[int] = None` to
@@ -1254,7 +1364,29 @@ is new and has no tests yet.
 8. Update `RunSkillScriptTool` to set per-invocation timeout via
    `CodeExecutionInput.timeout_seconds`
 
-### Phase 2: Stateful Container (5-8 days)
+#### Phase 2 (P1): `RunSkillScriptTool` Contract Hardening (2-3 days)
+
+1. Add structured response fields: `return_code`, `timed_out`,
+   schema-stable status semantics
+2. Surface executor `output_files` in tool output
+3. Define and implement args normalization contract
+4. Add deterministic `execution_id` wiring for tool calls
+5. Add tool-level contract tests (schema, args, output propagation,
+   `execution_id` isolation behavior)
+
+#### Phase 3 (P0): Security Hardening (5-7 days)
+
+1. Add `SecurityWarning` to `UnsafeLocalCodeExecutor`
+2. Add `restrict_builtins` option (documented as best-effort friction)
+3. Implement `LocalSandboxCodeExecutor` (using `process_group`, not
+   `preexec_fn`)
+4. Add digest-pinned default image to `ContainerCodeExecutor`
+5. Add network isolation defaults to `ContainerCodeExecutor`
+6. Create official `adk-code-executor` Docker image (versioned tags)
+7. Update all samples to recommend secure executors
+8. Add security-focused tests
+
+#### Phase 4 (P2): Stateful Container (5-8 days)
 
 Implement Option A (persistent process) directly, as recommended in
 §5.2.2. This avoids the side-effect replay problems of Option C.
@@ -1272,19 +1404,7 @@ Implement Option A (persistent process) directly, as recommended in
    `execution_id` isolation)
 8. Update samples and documentation
 
-### Phase 3: Security Hardening (5-7 days)
-
-1. Add `SecurityWarning` to `UnsafeLocalCodeExecutor`
-2. Add `restrict_builtins` option (documented as best-effort friction)
-3. Implement `LocalSandboxCodeExecutor` (using `process_group`, not
-   `preexec_fn`)
-4. Add digest-pinned default image to `ContainerCodeExecutor`
-5. Add network isolation defaults to `ContainerCodeExecutor`
-6. Create official `adk-code-executor` Docker image (versioned tags)
-7. Update all samples to recommend secure executors
-8. Add security-focused tests
-
-### Total estimated effort: 11-16 days
+### Total estimated effort: 15-22 days
 
 ---
 
