@@ -52,6 +52,7 @@ The executor landscape today:
 | `ContainerCodeExecutor` | **None** | `exec_run()` blocks forever |
 | `GkeCodeExecutor` | 300 s | K8s watch API |
 | `VertexAiCodeExecutor` | Opaque | Vertex AI internal |
+| `AgentEngineSandboxCodeExecutor` | Opaque | Vertex AI Sandbox internal |
 
 `RunSkillScriptTool` works around this for shell scripts by embedding
 `subprocess.run(timeout=N)` in generated wrapper code. The default is
@@ -91,11 +92,14 @@ host Python process:
 | `sys.exit()` | Process crash | `SystemExit` caught in tool |
 | Infinite loop / fork bomb | DoS | Shell: `subprocess.run(timeout)`; Python: **none** |
 
-This executor is the only one that requires zero external dependencies,
-making it the de facto default for:
-- `adk web` / `adk run` during development
-- CI test suites
-- Quick-start samples and tutorials
+This executor is the only one that requires zero external dependencies.
+While `LlmAgent.code_executor` does not globally default to it (it
+defaults to `None`, and CFC paths may force `BuiltInCodeExecutor`),
+`UnsafeLocalCodeExecutor` is the common choice in practice for setups
+that need local code execution:
+- Samples and tutorials that demonstrate `code_executor=` configuration
+- `adk web` / `adk run` development workflows
+- CI test suites without Docker
 
 Any code the LLM generates or any third-party skill script runs with
 full host access. This is acceptable for trusted, single-developer
@@ -150,37 +154,63 @@ timeout = (
 - Existing code that sets neither field gets `None` → no timeout →
   identical to current behavior. Zero breaking changes.
 
-#### 3.1.2 `UnsafeLocalCodeExecutor` — Thread + Join
+#### 3.1.2 `UnsafeLocalCodeExecutor` — Thread + Join + Unhealthy Guard
 
 `exec()` cannot be interrupted from the same thread. Run it in a
 daemon thread with `join(timeout)`:
 
 ```
-                        ┌─ execute_code() ──────────────────┐
-                        │                                    │
-  acquire               │   with _execution_lock:            │
-  _execution_lock ──────│     spawn daemon thread ──► exec() │
-                        │     thread.join(timeout)           │
-                        │     if thread.is_alive():          │
-                        │       return stderr="timed out"    │
-                        │                                    │
-  release lock ─────────│   (lock released even if timed out)│
-                        └────────────────────────────────────┘
+                        ┌─ execute_code() ──────────────────────┐
+                        │                                        │
+  check _healthy ───────│   if not self._healthy: raise error    │
+                        │                                        │
+  acquire               │   with _execution_lock:                │
+  _execution_lock ──────│     spawn daemon thread ──► exec()     │
+                        │     thread.join(timeout)               │
+                        │     if thread.is_alive():              │
+                        │       self._healthy = False ◄── mark!  │
+                        │       return stderr="timed out"        │
+                        │                                        │
+  release lock ─────────│   (lock released)                      │
+                        └────────────────────────────────────────┘
 ```
 
-**Key design decision — lock acquired outside the thread:**
-The `_execution_lock` must be held by the calling thread, not the
-worker. If the worker held the lock and timed out, it would hold it
-forever, deadlocking subsequent calls. Acquiring outside means the
-lock is released when the `with` block exits, even if the daemon
-thread is still running. The lingering thread is a daemon — it will
-be killed on process exit. This is a best-effort trade-off appropriate
-for a development executor.
+**Critical invariant — unhealthy after timeout:**
 
-**Trade-off acknowledged:** A timed-out daemon thread may still be
-mutating `sys.stdout` after the lock is released. This is acceptable
-for `UnsafeLocalCodeExecutor` (development only); production executors
-use subprocess or container isolation where kill is clean.
+Simply releasing `_execution_lock` while a timed-out daemon thread is
+still running would let subsequent executions proceed while the
+lingering thread continues to mutate process-global `sys.stdout` and
+the working directory. This causes cross-execution stdout
+contamination and cwd corruption — a data-integrity bug, not just a
+cosmetic issue.
+
+The solution is to **mark the executor unhealthy on timeout**:
+
+1. On timeout, set `self._healthy = False` before returning the
+   timeout error. The lock is released normally when the `with` block
+   exits.
+2. Subsequent `execute_code()` calls check `self._healthy` at the top
+   and **fail fast** with a clear error: `"Executor is unhealthy after
+   a timed-out execution. Call reinitialize() to recover."`
+3. `reinitialize()` waits for the lingering daemon thread to finish
+   (with a generous join timeout), resets `_healthy = True`, and
+   allows execution to resume.
+
+This ensures that no new execution can run while a zombie thread is
+still alive and mutating shared state. The pattern mirrors the
+`ContainerCodeExecutor` unhealthy-state design (§3.1.3).
+
+**Trade-off:** After a timeout, the executor is unavailable until
+`reinitialize()` is called. This is acceptable for a development
+executor — the alternative (silent stdout/cwd corruption) is worse.
+Production deployments should use `LocalSandboxCodeExecutor` (§3.2)
+or `ContainerCodeExecutor`, where timeout kill is clean.
+
+**Why not skip thread-timeout on `UnsafeLocalCodeExecutor` entirely?**
+Without any timeout, a hung `exec()` holds `_execution_lock` forever,
+which is strictly worse — the executor is permanently blocked with no
+error and no recovery path. The unhealthy-guard approach at least
+unblocks the lock, reports the error, and offers a recovery mechanism.
 
 #### 3.1.3 `ContainerCodeExecutor` — Docker Exec Kill
 
@@ -274,16 +304,34 @@ Execution flow:
   1. Write code to a NamedTemporaryFile (.py)
   2. Write input_files to a TemporaryDirectory
   3. Build minimal env: only allowed_env_vars + PATH
-  4. subprocess.run(
+  4. Popen(
          ['python3', '-c', <limit_code> + exec(open(file).read())],
-         timeout=timeout,
          env=env,
          cwd=temp_dir,
-         process_group=0,       # Python 3.11+; preexec_fn fallback for 3.10
-         capture_output=True,
+         process_group=0,       # Python 3.11+; preexec_fn fallback
+         stdout=PIPE, stderr=PIPE,
      )
-  5. Return CodeExecutionResult(stdout, stderr)
+  5. communicate(timeout=timeout)
+  6. On TimeoutExpired:
+       os.killpg(proc.pid, signal.SIGKILL)   # kill entire group
+       proc.communicate(timeout=5)             # reap zombies
+  7. Return CodeExecutionResult(stdout, stderr)
 ```
+
+**Why `Popen` + `os.killpg` instead of `subprocess.run(timeout)`:**
+
+`subprocess.run(timeout=N)` only kills the direct child process. If
+the script spawns subprocesses (e.g., `os.system()`, `Popen`,
+`multiprocessing`), those descendants survive the timeout and become
+orphans. With `process_group=0`, the child is placed in its own
+process group. On timeout, `os.killpg(proc.pid, SIGKILL)` kills the
+entire group — the child and all its descendants. The follow-up
+`proc.communicate(timeout=5)` reaps any zombies.
+
+On Python 3.10 (where `process_group` is unavailable), the fallback
+uses `preexec_fn=os.setpgrp` to achieve the same process-group
+isolation, with a documented caveat about fork-safety in
+multi-threaded programs (see §3.2.3).
 
 The inline `limit_code` wrapper sets `resource.setrlimit` for CPU and
 memory inside the child process (guarded with `try/except ImportError`
@@ -293,16 +341,19 @@ for platforms where `resource` is unavailable).
 
 | Threat | Protected? | How |
 |--------|-----------|-----|
-| Infinite loop | Yes | `subprocess.run(timeout)` + `RLIMIT_CPU` |
+| Infinite loop (direct) | Yes | Wall-clock timeout + `RLIMIT_CPU` |
+| Infinite loop (child procs) | Yes | `os.killpg` kills entire process group |
+| Fork bomb | **Partial** | `RLIMIT_CPU` + timeout bound total wall-clock; does not cap `RLIMIT_NPROC` (could be added) |
 | Memory bomb | Yes | `RLIMIT_AS` |
 | Env var / secret reading | Yes | Restricted `env` dict |
 | `sys.exit()` crash | Yes | Separate process |
-| Filesystem read/write | **Partial** | `cwd` is temp dir, but host fs still accessible |
+| Filesystem read/write | **Partial** | `cwd` is temp dir, but host fs still accessible via absolute paths |
 | Network exfiltration | **No** | Requires OS-level firewall (out of scope) |
 
 This is strictly stronger than `UnsafeLocalCodeExecutor` across every
 dimension, with zero additional dependencies. The remaining gaps
-(full filesystem isolation, network restriction) require containers.
+(full filesystem isolation, network restriction, `RLIMIT_NPROC`)
+require containers or OS-level policy.
 
 #### 3.2.3 Platform Considerations
 
@@ -335,9 +386,10 @@ dimension, with zero additional dependencies. The remaining gaps
 
 Add warnings to docs and let users choose their executor.
 
-**Rejected.** The default experience (`adk web`, samples, tutorials)
-uses `UnsafeLocalCodeExecutor`. New users will not read security docs
-before running `adk web`. The default must be safe enough for its
+**Rejected.** Samples, tutorials, and common development workflows
+use `UnsafeLocalCodeExecutor` for local code execution. New users
+follow sample code without reading security docs. The executor most
+commonly reached by new developers must be safe enough for its
 intended use (local development with untrusted LLM-generated code).
 
 ### 4.2 "Require Docker for All Local Execution"
@@ -388,8 +440,14 @@ callers that don't set timeout.
 | 5 | Update samples, docs, and recommendation matrix. |
 
 **Exit criteria:** `LocalSandboxCodeExecutor()` works as a drop-in
-replacement for `UnsafeLocalCodeExecutor()` with no configuration.
-Documentation recommends it for all local use.
+replacement for `UnsafeLocalCodeExecutor()` for the supported script
+profile: scripts that use stdout/stderr for output, do not depend on
+host environment variables beyond an explicit allowlist, and access
+files only within the sandbox working directory. Scripts that rely on
+broad host-filesystem access or specific env vars will need to
+configure `allowed_env_vars` or use `UnsafeLocalCodeExecutor`.
+Documentation recommends `LocalSandboxCodeExecutor` for all new local
+development and clearly states the compatibility envelope.
 
 ### 5.3 Recommendation Matrix (Post-Rollout)
 
@@ -407,7 +465,9 @@ Documentation recommends it for all local use.
 - **Timeout coverage:** 100% of executors support `timeout_seconds`
   (currently 1 of 5).
 - **Default safety:** `LocalSandboxCodeExecutor` passes all existing
-  `RunSkillScriptTool` integration tests as a drop-in replacement.
+  `RunSkillScriptTool` integration tests that fit the supported script
+  profile (stdout/stderr output, sandbox-local file access, no
+  dependency on host env vars beyond allowlist).
 - **No regressions:** All existing unit and integration tests pass
   with zero behavioral changes for callers that don't opt in.
 - **Adoption signal:** Samples and `adk web` default documentation
@@ -452,5 +512,5 @@ RunSkillScriptTool.run_async()
 | `src/google/adk/code_executors/unsafe_local_code_executor.py` | Current local executor |
 | `src/google/adk/code_executors/container_code_executor.py` | Docker-based executor |
 | `src/google/adk/code_executors/gke_code_executor.py` | GKE-based executor (has timeout) |
-| `tests/unittests/tools/test_skill_toolset.py` | 1173-line test suite for skill tools |
+| `tests/unittests/tools/test_skill_toolset.py` | ~1170-line test suite for skill tools |
 | `docs/design/code_executor_enhancements.md` | Detailed design doc (companion to this RFC) |
