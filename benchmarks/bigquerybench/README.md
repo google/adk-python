@@ -375,6 +375,310 @@ use this template:
 - Set `tool_config.write_mode = WriteMode.PROTECTED` in the agent
   for AI/ML eval cases that need to create temp models.
 
+## Complete Walkthrough: Adding a New BigQuery Skill
+
+This section walks through every step of updating the evaluation
+pipeline when a **new BigQuery tool** is added to
+`BigQueryToolset`. We use a concrete example: a hypothetical
+`cluster_data` tool that performs K-Means clustering via BQML.
+
+### Context: What Is the New Tool?
+
+Suppose a developer adds this tool to `src/google/adk/tools/bigquery/`:
+
+```python
+def cluster_data(
+    project_id: str,
+    input_data: str,           # Table ID or SQL query
+    feature_cols: list[str],   # Columns to cluster on
+    num_clusters: int = 3,     # K in K-Means
+    *,
+    credentials: Credentials,
+    settings: BigQueryToolConfig,
+    tool_context: ToolContext,
+) -> dict:
+    """Cluster rows using BigQuery ML K-Means.
+
+    Creates a TEMP MODEL and returns cluster assignments
+    with centroid distances.
+    """
+```
+
+The tool generates SQL like:
+
+```sql
+CREATE TEMP MODEL cluster_model_<uuid>
+  OPTIONS (MODEL_TYPE='KMEANS', NUM_CLUSTERS=3)
+  AS SELECT feature1, feature2 FROM `project.dataset.table`;
+
+SELECT * FROM ML.PREDICT(MODEL cluster_model_<uuid>,
+  (SELECT feature1, feature2 FROM `project.dataset.table`));
+```
+
+Output columns: `centroid_id`, `nearest_centroids_distance`,
+plus the original feature columns.
+
+### Step 1: Register the Tool in BigQueryToolset
+
+The developer registers the tool in `bigquery_toolset.py`. Once
+registered, it's automatically available to any agent using
+`BigQueryToolset`. **No changes to the eval agent** (`agent.py`)
+are needed — the toolset dynamically exposes all registered tools.
+
+Verify the tool is visible:
+
+```python
+from benchmarks.bigquerybench.agent import bigquery_toolset
+tools = bigquery_toolset.get_tools()
+assert any(t.name == "cluster_data" for t in tools)
+```
+
+### Step 2: Decide If Existing Metrics Are Sufficient
+
+Check each metric against the new tool's behavior:
+
+| Metric | Does It Work? | Action Needed? |
+|--------|--------------|----------------|
+| `schema_discovery_score` | Yes — the agent should still explore schema before clustering | No change |
+| `tool_usage_score` | Yes — set-based matching works for any tool name | No change |
+| `output_correctness_score` | **Partially** — ML outputs vary across runs, so exact numeric matching will be flaky | Use structural reference lines (column names, cluster count) instead of exact values |
+
+**When you DO need a new metric:** If the new tool has a unique
+correctness criterion that can't be captured by substring matching
+(e.g., "the SQL must be syntactically valid", "the forecast horizon
+must match the request"), add a new metric function to `metrics.py`.
+See [Step 2b: Adding a Custom Metric](#step-2b-adding-a-custom-metric)
+below.
+
+### Step 3: Pick a Public Dataset
+
+Choose a dataset from `bigquery-public-data` with numeric columns
+suitable for clustering. For this example, we'll use the **penguins**
+dataset (`ml_datasets.penguins`) which has well-known numeric features.
+
+Verify it exists:
+
+```sql
+SELECT column_name, data_type
+FROM `bigquery-public-data.ml_datasets.INFORMATION_SCHEMA.COLUMNS`
+WHERE table_name = 'penguins';
+```
+
+Expected columns: `species`, `island`, `culmen_length_mm`,
+`culmen_depth_mm`, `flipper_length_mm`, `body_mass_g`, `sex`.
+
+### Step 4: Write the Eval Case
+
+Add to `eval_sets/bigquerybench_eval.json`:
+
+```json
+{
+  "eval_id": "ml_cluster_penguins",
+  "conversation": [
+    {
+      "invocation_id": "inv-cluster-01",
+      "user_content": {
+        "parts": [{"text": "Cluster the penguins in bigquery-public-data.ml_datasets.penguins into 3 groups based on their physical measurements (culmen_length_mm, culmen_depth_mm, flipper_length_mm, body_mass_g). Show the cluster assignments."}],
+        "role": "user"
+      },
+      "final_response": {
+        "parts": [{"text": "centroid_id\nculmen_length_mm\nculmen_depth_mm\nflipper_length_mm\nbody_mass_g"}],
+        "role": "model"
+      },
+      "intermediate_data": {
+        "tool_uses": [
+          {"name": "get_table_info", "args": {"project_id": "bigquery-public-data", "dataset_id": "ml_datasets", "table_id": "penguins"}},
+          {"name": "cluster_data", "args": {"project_id": "your-project", "input_data": "SELECT culmen_length_mm, culmen_depth_mm, flipper_length_mm, body_mass_g FROM `bigquery-public-data.ml_datasets.penguins` WHERE body_mass_g IS NOT NULL", "feature_cols": ["culmen_length_mm", "culmen_depth_mm", "flipper_length_mm", "body_mass_g"], "num_clusters": 3}}
+        ],
+        "tool_responses": [],
+        "intermediate_responses": []
+      },
+      "creation_timestamp": 0.0
+    }
+  ],
+  "creation_timestamp": 0.0
+}
+```
+
+**Reference line design choices:**
+
+- `centroid_id` — structural: confirms clustering output format
+- `culmen_length_mm`, `culmen_depth_mm`, etc. — structural: confirms
+  feature columns are returned in output
+- We do NOT include exact centroid values or row counts because ML
+  model outputs vary across runs
+
+### Step 5: Update the Agent Write Mode
+
+The `cluster_data` tool creates a `TEMP MODEL`, which requires at
+least `PROTECTED` write mode. Update the eval run command:
+
+```bash
+BQ_EVAL_WRITE_MODE=protected \
+  python -m benchmarks.bigquerybench.runner --filter ml_cluster_penguins
+```
+
+Or for CI, set it in the environment configuration.
+
+### Step 6: Validate the Eval Case
+
+```bash
+# Dry-run: check JSON is valid
+python -m benchmarks.bigquerybench.runner --dry-run
+
+# Single-case run
+BQ_EVAL_WRITE_MODE=protected \
+  python -m benchmarks.bigquerybench.runner --filter ml_cluster_penguins
+
+# Multi-run for variance check (ML outputs may vary)
+BQ_EVAL_WRITE_MODE=protected \
+  python -m benchmarks.bigquerybench.runner --filter ml_cluster --num-runs 3
+```
+
+Expected output:
+
+```
+=================================================================
+  BigQueryBench Evaluation — ADK BigQueryToolset
+=================================================================
+
+[1/1] Running: ml_cluster_penguins
+  Response: Here are the cluster assignments for the penguins...
+  Scores: schema=1.0 tools=1.00 output=PASS
+
+Eval Case                                  Schema   Tools   Output   Result
+---------------------------------------------------------------------------
+ml_cluster_penguins                           1.0    1.00      1.0    PASS
+---------------------------------------------------------------------------
+
+=================================================================
+  Leaderboard Summary
+=================================================================
+  Framework:          ADK BigQueryToolset
+  Cases:              1/1 (100.0%)
+  Avg Schema Disc.:   1.00
+  Avg Tool Usage:     1.00
+  Elapsed:            12.3s
+=================================================================
+```
+
+### Step 7: Commit
+
+```bash
+git add benchmarks/bigquerybench/eval_sets/bigquerybench_eval.json
+git commit -m "eval(bigquerybench): add clustering eval case for cluster_data tool"
+```
+
+**Files changed:** Only `bigquerybench_eval.json`. No code changes
+needed unless a new metric was added (Step 2b).
+
+---
+
+### Step 2b: Adding a Custom Metric (When Needed)
+
+If existing metrics are insufficient for your new tool, add a metric
+function to `metrics.py`. Here's a concrete example: a
+`clustering_quality_score` that validates the agent used the correct
+number of clusters.
+
+**1. Write the metric function in `metrics.py`:**
+
+```python
+def clustering_quality_score(
+    eval_metric: EvalMetric,
+    actual_invocations: list[Invocation],
+    expected_invocations: Optional[list[Invocation]],
+    conversation_scenario: Optional[ConversationScenario] = None,
+) -> EvaluationResult:
+  """Score 1.0 if cluster_data was called with correct num_clusters.
+
+  Checks that the agent called cluster_data and that the
+  num_clusters argument matches the expected value.
+  """
+  if not expected_invocations:
+    return EvaluationResult(
+        overall_score=1.0,
+        overall_eval_status=EvalStatus.PASSED,
+    )
+
+  # Extract expected num_clusters from expected tool calls.
+  expected_k = None
+  for inv in expected_invocations:
+    for tc in get_all_tool_calls(inv.intermediate_data):
+      if tc.name == "cluster_data" and tc.args:
+        expected_k = tc.args.get("num_clusters")
+        break
+
+  # Extract actual num_clusters from actual tool calls.
+  actual_k = None
+  for inv in actual_invocations:
+    for tc in get_all_tool_calls(inv.intermediate_data):
+      if tc.name == "cluster_data" and tc.args:
+        actual_k = tc.args.get("num_clusters")
+        break
+
+  if expected_k is None:
+    score = 1.0  # No clustering expected
+  elif actual_k is None:
+    score = 0.0  # Clustering expected but not called
+  else:
+    score = 1.0 if actual_k == expected_k else 0.0
+
+  status = (
+      EvalStatus.PASSED if score >= 1.0
+      else EvalStatus.FAILED
+  )
+  return EvaluationResult(
+      overall_score=score,
+      overall_eval_status=status,
+      per_invocation_results=_make_per_invocation(
+          actual_invocations, expected_invocations,
+          score, status,
+      ),
+  )
+```
+
+**2. Wire it into the runner (`runner.py`):**
+
+```python
+from .metrics import clustering_quality_score
+
+def score_invocations(actual, expected):
+    # ... existing metrics ...
+
+    result = clustering_quality_score(
+        metric, actual_invocations, expected_invocations,
+    )
+    scores["clustering_quality"] = result.overall_score or 0.0
+
+    return scores
+```
+
+**3. Update the results table to show the new column.**
+
+**4. Commit all changed files:**
+
+```bash
+git add benchmarks/bigquerybench/metrics.py \
+        benchmarks/bigquerybench/runner.py \
+        benchmarks/bigquerybench/eval_sets/bigquerybench_eval.json
+git commit -m "eval(bigquerybench): add cluster_data eval case and clustering_quality metric"
+```
+
+---
+
+### Summary: Files to Touch per Scenario
+
+| Scenario | `eval.json` | `metrics.py` | `runner.py` | `agent.py` |
+|----------|:-----------:|:------------:|:-----------:|:----------:|
+| New eval case for existing tool | **Yes** | No | No | No |
+| New tool, existing metrics sufficient | **Yes** | No | No | No |
+| New tool, needs custom metric | **Yes** | **Yes** | **Yes** | No |
+| New tool, needs agent config change | **Yes** | Maybe | Maybe | **Yes** |
+
+The toolset auto-discovers new tools, so `agent.py` only changes if
+the agent's instruction prompt or write mode needs updating.
+
 ## Metrics Reference
 
 | Metric | Function Path | Threshold | Pass Condition |
