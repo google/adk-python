@@ -29,6 +29,7 @@ def mock_skill1_frontmatter():
   frontmatter = mock.create_autospec(models.Frontmatter, instance=True)
   frontmatter.name = "skill1"
   frontmatter.description = "Skill 1 description"
+  frontmatter.allowed_tools = ["test_tool"]
   frontmatter.model_dump.return_value = {
       "name": "skill1",
       "description": "Skill 1 description",
@@ -45,7 +46,14 @@ def mock_skill1(mock_skill1_frontmatter):
   skill.instructions = "instructions for skill1"
   skill.frontmatter = mock_skill1_frontmatter
   skill.resources = mock.MagicMock(
-      spec=["get_reference", "get_asset", "get_script"]
+      spec=[
+          "get_reference",
+          "get_asset",
+          "get_script",
+          "list_references",
+          "list_assets",
+          "list_scripts",
+      ]
   )
 
   def get_ref(name):
@@ -70,6 +78,13 @@ def mock_skill1(mock_skill1_frontmatter):
   skill.resources.get_reference.side_effect = get_ref
   skill.resources.get_asset.side_effect = get_asset
   skill.resources.get_script.side_effect = get_script
+  skill.resources.list_references.return_value = ["ref1.md"]
+  skill.resources.list_assets.return_value = ["asset1.txt"]
+  skill.resources.list_scripts.return_value = [
+      "setup.sh",
+      "run.py",
+      "build.rb",
+  ]
   return skill
 
 
@@ -79,6 +94,7 @@ def mock_skill2_frontmatter():
   frontmatter = mock.create_autospec(models.Frontmatter, instance=True)
   frontmatter.name = "skill2"
   frontmatter.description = "Skill 2 description"
+  frontmatter.allowed_tools = []
   frontmatter.model_dump.return_value = {
       "name": "skill2",
       "description": "Skill 2 description",
@@ -95,7 +111,14 @@ def mock_skill2(mock_skill2_frontmatter):
   skill.instructions = "instructions for skill2"
   skill.frontmatter = mock_skill2_frontmatter
   skill.resources = mock.MagicMock(
-      spec=["get_reference", "get_asset", "get_script"]
+      spec=[
+          "get_reference",
+          "get_asset",
+          "get_script",
+          "list_references",
+          "list_assets",
+          "list_scripts",
+      ]
   )
 
   def get_ref(name):
@@ -110,6 +133,9 @@ def mock_skill2(mock_skill2_frontmatter):
 
   skill.resources.get_reference.side_effect = get_ref
   skill.resources.get_asset.side_effect = get_asset
+  skill.resources.list_references.return_value = ["ref2.md"]
+  skill.resources.list_assets.return_value = ["asset2.txt"]
+  skill.resources.list_scripts.return_value = []
   return skill
 
 
@@ -142,7 +168,7 @@ async def test_get_tools(mock_skill1, mock_skill2):
   assert isinstance(tools[0], skill_toolset.ListSkillsTool)
   assert isinstance(tools[1], skill_toolset.LoadSkillTool)
   assert isinstance(tools[2], skill_toolset.LoadSkillResourceTool)
-  assert isinstance(tools[3], skill_toolset.ExecuteSkillScriptTool)
+  assert isinstance(tools[3], skill_toolset.RunSkillScriptTool)
 
 
 @pytest.mark.asyncio
@@ -316,7 +342,7 @@ async def test_scripts_resource_not_found(mock_skill1, tool_context_instance):
   assert result["error_code"] == "RESOURCE_NOT_FOUND"
 
 
-# ExecuteSkillScriptTool tests
+# RunSkillScriptTool tests
 
 
 def _make_tool_context_with_agent(agent=None):
@@ -341,20 +367,20 @@ def _make_mock_executor(stdout="", stderr=""):
     "args, expected_error_code",
     [
         (
-            {"script_name": "setup.sh"},
+            {"script_path": "setup.sh"},
             "MISSING_SKILL_NAME",
         ),
         (
             {"skill_name": "skill1"},
-            "MISSING_SCRIPT_NAME",
+            "MISSING_SCRIPT_PATH",
         ),
         (
-            {"skill_name": "", "script_name": "setup.sh"},
+            {"skill_name": "", "script_path": "setup.sh"},
             "MISSING_SKILL_NAME",
         ),
         (
-            {"skill_name": "skill1", "script_name": ""},
-            "MISSING_SCRIPT_NAME",
+            {"skill_name": "skill1", "script_path": ""},
+            "MISSING_SCRIPT_PATH",
         ),
     ],
 )
@@ -363,7 +389,7 @@ async def test_execute_script_missing_params(
 ):
   executor = _make_mock_executor()
   toolset = skill_toolset.SkillToolset([mock_skill1], code_executor=executor)
-  tool = skill_toolset.ExecuteSkillScriptTool(toolset)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
   ctx = _make_tool_context_with_agent()
   result = await tool.run_async(args=args, tool_context=ctx)
   assert result["error_code"] == expected_error_code
@@ -373,10 +399,10 @@ async def test_execute_script_missing_params(
 async def test_execute_script_skill_not_found(mock_skill1):
   executor = _make_mock_executor()
   toolset = skill_toolset.SkillToolset([mock_skill1], code_executor=executor)
-  tool = skill_toolset.ExecuteSkillScriptTool(toolset)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
   ctx = _make_tool_context_with_agent()
   result = await tool.run_async(
-      args={"skill_name": "nonexistent", "script_name": "setup.sh"},
+      args={"skill_name": "nonexistent", "script_path": "setup.sh"},
       tool_context=ctx,
   )
   assert result["error_code"] == "SKILL_NOT_FOUND"
@@ -386,10 +412,10 @@ async def test_execute_script_skill_not_found(mock_skill1):
 async def test_execute_script_script_not_found(mock_skill1):
   executor = _make_mock_executor()
   toolset = skill_toolset.SkillToolset([mock_skill1], code_executor=executor)
-  tool = skill_toolset.ExecuteSkillScriptTool(toolset)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
   ctx = _make_tool_context_with_agent()
   result = await tool.run_async(
-      args={"skill_name": "skill1", "script_name": "nonexistent.py"},
+      args={"skill_name": "skill1", "script_path": "nonexistent.py"},
       tool_context=ctx,
   )
   assert result["error_code"] == "SCRIPT_NOT_FOUND"
@@ -398,12 +424,12 @@ async def test_execute_script_script_not_found(mock_skill1):
 @pytest.mark.asyncio
 async def test_execute_script_no_code_executor(mock_skill1):
   toolset = skill_toolset.SkillToolset([mock_skill1])
-  tool = skill_toolset.ExecuteSkillScriptTool(toolset)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
   # Agent without code_executor attribute
   agent = mock.MagicMock(spec=[])
   ctx = _make_tool_context_with_agent(agent=agent)
   result = await tool.run_async(
-      args={"skill_name": "skill1", "script_name": "setup.sh"},
+      args={"skill_name": "skill1", "script_path": "setup.sh"},
       tool_context=ctx,
   )
   assert result["error_code"] == "NO_CODE_EXECUTOR"
@@ -413,12 +439,12 @@ async def test_execute_script_no_code_executor(mock_skill1):
 async def test_execute_script_agent_code_executor_none(mock_skill1):
   """Agent has code_executor attr but it's None."""
   toolset = skill_toolset.SkillToolset([mock_skill1])
-  tool = skill_toolset.ExecuteSkillScriptTool(toolset)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
   agent = mock.MagicMock()
   agent.code_executor = None
   ctx = _make_tool_context_with_agent(agent=agent)
   result = await tool.run_async(
-      args={"skill_name": "skill1", "script_name": "setup.sh"},
+      args={"skill_name": "skill1", "script_path": "setup.sh"},
       tool_context=ctx,
   )
   assert result["error_code"] == "NO_CODE_EXECUTOR"
@@ -428,10 +454,10 @@ async def test_execute_script_agent_code_executor_none(mock_skill1):
 async def test_execute_script_unsupported_type(mock_skill1):
   executor = _make_mock_executor()
   toolset = skill_toolset.SkillToolset([mock_skill1], code_executor=executor)
-  tool = skill_toolset.ExecuteSkillScriptTool(toolset)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
   ctx = _make_tool_context_with_agent()
   result = await tool.run_async(
-      args={"skill_name": "skill1", "script_name": "build.rb"},
+      args={"skill_name": "skill1", "script_path": "build.rb"},
       tool_context=ctx,
   )
   assert result["error_code"] == "UNSUPPORTED_SCRIPT_TYPE"
@@ -441,32 +467,37 @@ async def test_execute_script_unsupported_type(mock_skill1):
 async def test_execute_script_python_success(mock_skill1):
   executor = _make_mock_executor(stdout="hello\n")
   toolset = skill_toolset.SkillToolset([mock_skill1], code_executor=executor)
-  tool = skill_toolset.ExecuteSkillScriptTool(toolset)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
   ctx = _make_tool_context_with_agent()
   result = await tool.run_async(
-      args={"skill_name": "skill1", "script_name": "run.py"},
+      args={"skill_name": "skill1", "script_path": "run.py"},
       tool_context=ctx,
   )
   assert result["status"] == "success"
   assert result["stdout"] == "hello\n"
   assert result["stderr"] == ""
   assert result["skill_name"] == "skill1"
-  assert result["script_name"] == "run.py"
+  assert result["script_path"] == "run.py"
 
   # Verify the code passed to executor is the raw script
   call_args = executor.execute_code.call_args
   code_input = call_args[0][1]
-  assert code_input.code == "print('hello')"
+  assert code_input.code == (
+      "import sys\n"
+      "import runpy\n"
+      "sys.argv = ['scripts/run.py']\n"
+      "runpy.run_path('scripts/run.py', run_name='__main__')\n"
+  )
 
 
 @pytest.mark.asyncio
 async def test_execute_script_shell_success(mock_skill1):
   executor = _make_mock_executor(stdout="setup\n")
   toolset = skill_toolset.SkillToolset([mock_skill1], code_executor=executor)
-  tool = skill_toolset.ExecuteSkillScriptTool(toolset)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
   ctx = _make_tool_context_with_agent()
   result = await tool.run_async(
-      args={"skill_name": "skill1", "script_name": "setup.sh"},
+      args={"skill_name": "skill1", "script_path": "setup.sh"},
       tool_context=ctx,
   )
   assert result["status"] == "success"
@@ -484,13 +515,13 @@ async def test_execute_script_shell_success(mock_skill1):
 async def test_execute_script_with_input_args_python(mock_skill1):
   executor = _make_mock_executor(stdout="done\n")
   toolset = skill_toolset.SkillToolset([mock_skill1], code_executor=executor)
-  tool = skill_toolset.ExecuteSkillScriptTool(toolset)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
   ctx = _make_tool_context_with_agent()
   result = await tool.run_async(
       args={
           "skill_name": "skill1",
-          "script_name": "run.py",
-          "input_args": "--verbose --count 3",
+          "script_path": "run.py",
+          "args": {"verbose": True, "count": "3"},
       },
       tool_context=ctx,
   )
@@ -498,22 +529,23 @@ async def test_execute_script_with_input_args_python(mock_skill1):
 
   call_args = executor.execute_code.call_args
   code_input = call_args[0][1]
-  assert "sys.argv" in code_input.code
-  assert "shlex.split" in code_input.code
-  assert "--verbose --count 3" in code_input.code
+  assert (
+      "['scripts/run.py', '--verbose', 'True', '--count', '3']"
+      in code_input.code
+  )
 
 
 @pytest.mark.asyncio
 async def test_execute_script_with_input_args_shell(mock_skill1):
   executor = _make_mock_executor(stdout="done\n")
   toolset = skill_toolset.SkillToolset([mock_skill1], code_executor=executor)
-  tool = skill_toolset.ExecuteSkillScriptTool(toolset)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
   ctx = _make_tool_context_with_agent()
   result = await tool.run_async(
       args={
           "skill_name": "skill1",
-          "script_name": "setup.sh",
-          "input_args": "--force",
+          "script_path": "setup.sh",
+          "args": {"force": True},
       },
       tool_context=ctx,
   )
@@ -521,25 +553,24 @@ async def test_execute_script_with_input_args_shell(mock_skill1):
 
   call_args = executor.execute_code.call_args
   code_input = call_args[0][1]
-  assert "shlex.split" in code_input.code
-  assert "--force" in code_input.code
+  assert "['bash', 'scripts/setup.sh', '--force', 'True']" in code_input.code
 
 
 @pytest.mark.asyncio
 async def test_execute_script_scripts_prefix_stripping(mock_skill1):
   executor = _make_mock_executor(stdout="setup\n")
   toolset = skill_toolset.SkillToolset([mock_skill1], code_executor=executor)
-  tool = skill_toolset.ExecuteSkillScriptTool(toolset)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
   ctx = _make_tool_context_with_agent()
   result = await tool.run_async(
       args={
           "skill_name": "skill1",
-          "script_name": "scripts/setup.sh",
+          "script_path": "scripts/setup.sh",
       },
       tool_context=ctx,
   )
   assert result["status"] == "success"
-  assert result["script_name"] == "setup.sh"
+  assert result["script_path"] == "scripts/setup.sh"
 
 
 @pytest.mark.asyncio
@@ -550,12 +581,12 @@ async def test_execute_script_toolset_executor_priority(mock_skill1):
   toolset = skill_toolset.SkillToolset(
       [mock_skill1], code_executor=toolset_executor
   )
-  tool = skill_toolset.ExecuteSkillScriptTool(toolset)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
   agent = mock.MagicMock()
   agent.code_executor = agent_executor
   ctx = _make_tool_context_with_agent(agent=agent)
   result = await tool.run_async(
-      args={"skill_name": "skill1", "script_name": "run.py"},
+      args={"skill_name": "skill1", "script_path": "run.py"},
       tool_context=ctx,
   )
   assert result["stdout"] == "from toolset\n"
@@ -568,12 +599,12 @@ async def test_execute_script_agent_executor_fallback(mock_skill1):
   """Falls back to agent's code executor when toolset has none."""
   agent_executor = _make_mock_executor(stdout="from agent\n")
   toolset = skill_toolset.SkillToolset([mock_skill1])
-  tool = skill_toolset.ExecuteSkillScriptTool(toolset)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
   agent = mock.MagicMock()
   agent.code_executor = agent_executor
   ctx = _make_tool_context_with_agent(agent=agent)
   result = await tool.run_async(
-      args={"skill_name": "skill1", "script_name": "run.py"},
+      args={"skill_name": "skill1", "script_path": "run.py"},
       tool_context=ctx,
   )
   assert result["stdout"] == "from agent\n"
@@ -585,10 +616,10 @@ async def test_execute_script_execution_error(mock_skill1):
   executor = _make_mock_executor()
   executor.execute_code.side_effect = RuntimeError("boom")
   toolset = skill_toolset.SkillToolset([mock_skill1], code_executor=executor)
-  tool = skill_toolset.ExecuteSkillScriptTool(toolset)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
   ctx = _make_tool_context_with_agent()
   result = await tool.run_async(
-      args={"skill_name": "skill1", "script_name": "run.py"},
+      args={"skill_name": "skill1", "script_path": "run.py"},
       tool_context=ctx,
   )
   assert result["error_code"] == "EXECUTION_ERROR"
@@ -601,10 +632,10 @@ async def test_execute_script_stderr_only_sets_error_status(mock_skill1):
   """stderr with no stdout should report error status."""
   executor = _make_mock_executor(stdout="", stderr="fatal error\n")
   toolset = skill_toolset.SkillToolset([mock_skill1], code_executor=executor)
-  tool = skill_toolset.ExecuteSkillScriptTool(toolset)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
   ctx = _make_tool_context_with_agent()
   result = await tool.run_async(
-      args={"skill_name": "skill1", "script_name": "run.py"},
+      args={"skill_name": "skill1", "script_path": "run.py"},
       tool_context=ctx,
   )
   assert result["status"] == "error"
@@ -616,10 +647,10 @@ async def test_execute_script_stderr_with_stdout_sets_warning(mock_skill1):
   """stderr alongside stdout should report warning status."""
   executor = _make_mock_executor(stdout="output\n", stderr="deprecation\n")
   toolset = skill_toolset.SkillToolset([mock_skill1], code_executor=executor)
-  tool = skill_toolset.ExecuteSkillScriptTool(toolset)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
   ctx = _make_tool_context_with_agent()
   result = await tool.run_async(
-      args={"skill_name": "skill1", "script_name": "run.py"},
+      args={"skill_name": "skill1", "script_path": "run.py"},
       tool_context=ctx,
   )
   assert result["status"] == "warning"
@@ -633,10 +664,10 @@ async def test_execute_script_execution_error_truncated(mock_skill1):
   executor = _make_mock_executor()
   executor.execute_code.side_effect = RuntimeError("x" * 300)
   toolset = skill_toolset.SkillToolset([mock_skill1], code_executor=executor)
-  tool = skill_toolset.ExecuteSkillScriptTool(toolset)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
   ctx = _make_tool_context_with_agent()
   result = await tool.run_async(
-      args={"skill_name": "skill1", "script_name": "run.py"},
+      args={"skill_name": "skill1", "script_path": "run.py"},
       tool_context=ctx,
   )
   assert result["error_code"] == "EXECUTION_ERROR"
@@ -651,10 +682,10 @@ async def test_execute_script_system_exit_caught(mock_skill1):
   executor = _make_mock_executor()
   executor.execute_code.side_effect = SystemExit(1)
   toolset = skill_toolset.SkillToolset([mock_skill1], code_executor=executor)
-  tool = skill_toolset.ExecuteSkillScriptTool(toolset)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
   ctx = _make_tool_context_with_agent()
   result = await tool.run_async(
-      args={"skill_name": "skill1", "script_name": "run.py"},
+      args={"skill_name": "skill1", "script_path": "run.py"},
       tool_context=ctx,
   )
   assert result["error_code"] == "EXECUTION_ERROR"
@@ -667,10 +698,10 @@ async def test_execute_script_system_exit_zero_is_success(mock_skill1):
   executor = _make_mock_executor()
   executor.execute_code.side_effect = SystemExit(0)
   toolset = skill_toolset.SkillToolset([mock_skill1], code_executor=executor)
-  tool = skill_toolset.ExecuteSkillScriptTool(toolset)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
   ctx = _make_tool_context_with_agent()
   result = await tool.run_async(
-      args={"skill_name": "skill1", "script_name": "run.py"},
+      args={"skill_name": "skill1", "script_path": "run.py"},
       tool_context=ctx,
   )
   assert result["status"] == "success"
@@ -683,10 +714,10 @@ async def test_execute_script_system_exit_none_is_success(mock_skill1):
   executor = _make_mock_executor()
   executor.execute_code.side_effect = SystemExit(None)
   toolset = skill_toolset.SkillToolset([mock_skill1], code_executor=executor)
-  tool = skill_toolset.ExecuteSkillScriptTool(toolset)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
   ctx = _make_tool_context_with_agent()
   result = await tool.run_async(
-      args={"skill_name": "skill1", "script_name": "run.py"},
+      args={"skill_name": "skill1", "script_path": "run.py"},
       tool_context=ctx,
   )
   assert result["status"] == "success"
@@ -700,10 +731,10 @@ async def test_execute_script_shell_includes_timeout(mock_skill1):
   toolset = skill_toolset.SkillToolset(
       [mock_skill1], code_executor=executor, script_timeout=60
   )
-  tool = skill_toolset.ExecuteSkillScriptTool(toolset)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
   ctx = _make_tool_context_with_agent()
   result = await tool.run_async(
-      args={"skill_name": "skill1", "script_name": "setup.sh"},
+      args={"skill_name": "skill1", "script_path": "setup.sh"},
       tool_context=ctx,
   )
   assert result["status"] == "success"
@@ -727,31 +758,13 @@ async def test_execute_script_extensionless_unsupported(mock_skill1):
 
   executor = _make_mock_executor()
   toolset = skill_toolset.SkillToolset([mock_skill1], code_executor=executor)
-  tool = skill_toolset.ExecuteSkillScriptTool(toolset)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
   ctx = _make_tool_context_with_agent()
   result = await tool.run_async(
-      args={"skill_name": "skill1", "script_name": "noext"},
+      args={"skill_name": "skill1", "script_path": "noext"},
       tool_context=ctx,
   )
   assert result["error_code"] == "UNSUPPORTED_SCRIPT_TYPE"
-
-
-@pytest.mark.asyncio
-async def test_execute_script_invalid_input_args(mock_skill1):
-  """Unclosed quotes in input_args should return INVALID_INPUT_ARGS."""
-  executor = _make_mock_executor()
-  toolset = skill_toolset.SkillToolset([mock_skill1], code_executor=executor)
-  tool = skill_toolset.ExecuteSkillScriptTool(toolset)
-  ctx = _make_tool_context_with_agent()
-  result = await tool.run_async(
-      args={
-          "skill_name": "skill1",
-          "script_name": "run.py",
-          "input_args": '--name "unclosed',
-      },
-      tool_context=ctx,
-  )
-  assert result["error_code"] == "INVALID_INPUT_ARGS"
 
 
 # ── Integration tests using real UnsafeLocalCodeExecutor ──
@@ -768,7 +781,14 @@ def _make_skill_with_script(skill_name, script_name, script):
   fm.description = f"Test skill {skill_name}"
   skill.frontmatter = fm
   skill.resources = mock.MagicMock(
-      spec=["get_reference", "get_asset", "get_script"]
+      spec=[
+          "get_reference",
+          "get_asset",
+          "get_script",
+          "list_references",
+          "list_assets",
+          "list_scripts",
+      ]
   )
 
   def get_script(name):
@@ -779,6 +799,9 @@ def _make_skill_with_script(skill_name, script_name, script):
   skill.resources.get_script.side_effect = get_script
   skill.resources.get_reference.return_value = None
   skill.resources.get_asset.return_value = None
+  skill.resources.list_references.return_value = []
+  skill.resources.list_assets.return_value = []
+  skill.resources.list_scripts.return_value = [script_name]
   return skill
 
 
@@ -796,12 +819,12 @@ async def test_integration_python_stdout():
   script = models.Script(src="print('hello world')")
   skill = _make_skill_with_script("test_skill", "hello.py", script)
   toolset = _make_real_executor_toolset([skill])
-  tool = skill_toolset.ExecuteSkillScriptTool(toolset)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
   ctx = _make_tool_context_with_agent()
   result = await tool.run_async(
       args={
           "skill_name": "test_skill",
-          "script_name": "hello.py",
+          "script_path": "hello.py",
       },
       tool_context=ctx,
   )
@@ -816,12 +839,12 @@ async def test_integration_python_sys_exit_zero():
   script = models.Script(src="import sys; sys.exit(0)")
   skill = _make_skill_with_script("test_skill", "exit_zero.py", script)
   toolset = _make_real_executor_toolset([skill])
-  tool = skill_toolset.ExecuteSkillScriptTool(toolset)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
   ctx = _make_tool_context_with_agent()
   result = await tool.run_async(
       args={
           "skill_name": "test_skill",
-          "script_name": "exit_zero.py",
+          "script_path": "exit_zero.py",
       },
       tool_context=ctx,
   )
@@ -834,12 +857,12 @@ async def test_integration_shell_stdout_and_stderr():
   script = models.Script(src="echo output; echo warning >&2")
   skill = _make_skill_with_script("test_skill", "both.sh", script)
   toolset = _make_real_executor_toolset([skill])
-  tool = skill_toolset.ExecuteSkillScriptTool(toolset)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
   ctx = _make_tool_context_with_agent()
   result = await tool.run_async(
       args={
           "skill_name": "test_skill",
-          "script_name": "both.sh",
+          "script_path": "both.sh",
       },
       tool_context=ctx,
   )
@@ -854,12 +877,12 @@ async def test_integration_shell_stderr_only():
   script = models.Script(src="echo failure >&2")
   skill = _make_skill_with_script("test_skill", "err.sh", script)
   toolset = _make_real_executor_toolset([skill])
-  tool = skill_toolset.ExecuteSkillScriptTool(toolset)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
   ctx = _make_tool_context_with_agent()
   result = await tool.run_async(
       args={
           "skill_name": "test_skill",
-          "script_name": "err.sh",
+          "script_path": "err.sh",
       },
       tool_context=ctx,
   )
