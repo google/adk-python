@@ -203,8 +203,6 @@ class AgentTool(BaseTool):
       The tool result. If output_schema is defined, returns a dict. Otherwise,
       returns a string. Returns empty string if last_content is None.
     """
-    from ..agents.llm_agent import LlmAgent
-
     if not last_content:
       return ''
 
@@ -213,10 +211,11 @@ class AgentTool(BaseTool):
         for p in (last_content.parts or ())
         if p and p.text and not p.thought
     )
-    if isinstance(self.agent, LlmAgent) and self.agent.output_schema:
-      tool_result = self.agent.output_schema.model_validate_json(
-          merged_text
-      ).model_dump(exclude_none=True)
+    output_schema = _get_output_schema(self.agent)
+    if output_schema:
+      tool_result = output_schema.model_validate_json(merged_text).model_dump(
+          exclude_none=True
+      )
     else:
       tool_result = merged_text
     return tool_result
