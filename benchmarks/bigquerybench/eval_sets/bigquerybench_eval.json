@@ -1,20 +1,20 @@
 {
   "eval_set_id": "bigquerybench-adk-v1",
   "name": "BigQueryBench ADK Evaluation",
-  "description": "Trace-based evaluation: verify the agent calls the correct BigQuery tools with the correct dataset/table args. No response text matching.",
+  "description": "Skill invocation evaluation: verify the agent calls the correct skill tools with the correct args, and follows skill instructions to produce correct results.",
   "eval_cases": [
     {
-      "eval_id": "schema_list_datasets",
+      "eval_id": "skill_list_skills",
       "conversation": [
         {
-          "invocation_id": "inv-schema-ds-01",
+          "invocation_id": "inv-skill-list-01",
           "user_content": {
-            "parts": [{"text": "What datasets are available in the bigquery-public-data project? List a few of them."}],
+            "parts": [{"text": "What skills are available for me to use?"}],
             "role": "user"
           },
           "intermediate_data": {
             "tool_uses": [
-              {"name": "list_dataset_ids", "args": {"project_id": "bigquery-public-data"}}
+              {"name": "list_skills", "args": {}}
             ],
             "tool_responses": [],
             "intermediate_responses": []
@@ -22,20 +22,30 @@
           "creation_timestamp": 0.0
         }
       ],
+      "rubrics": [
+        {
+          "rubric_id": "lists_bq_skill",
+          "rubric_content": {"text_property": "The response mentions the bq-sql-analyst skill by name."}
+        },
+        {
+          "rubric_id": "includes_description",
+          "rubric_content": {"text_property": "The response includes a description of what the skill can do."}
+        }
+      ],
       "creation_timestamp": 0.0
     },
     {
-      "eval_id": "schema_list_tables",
+      "eval_id": "skill_load_sql_analyst",
       "conversation": [
         {
-          "invocation_id": "inv-schema-tbl-01",
+          "invocation_id": "inv-skill-load-01",
           "user_content": {
-            "parts": [{"text": "What tables exist in the usa_names dataset in bigquery-public-data?"}],
+            "parts": [{"text": "Load the bq-sql-analyst skill and tell me what it can do."}],
             "role": "user"
           },
           "intermediate_data": {
             "tool_uses": [
-              {"name": "list_table_ids", "args": {"project_id": "bigquery-public-data", "dataset_id": "usa_names"}}
+              {"name": "load_skill", "args": {"name": "bq-sql-analyst"}}
             ],
             "tool_responses": [],
             "intermediate_responses": []
@@ -43,20 +53,31 @@
           "creation_timestamp": 0.0
         }
       ],
+      "rubrics": [
+        {
+          "rubric_id": "describes_capabilities",
+          "rubric_content": {"text_property": "The response describes the skill's capabilities such as SQL analysis or data formatting."}
+        },
+        {
+          "rubric_id": "mentions_scripts",
+          "rubric_content": {"text_property": "The response mentions available scripts or references provided by the skill."}
+        }
+      ],
       "creation_timestamp": 0.0
     },
     {
-      "eval_id": "schema_get_table_info",
+      "eval_id": "skill_load_reference",
       "conversation": [
         {
-          "invocation_id": "inv-schema-info-01",
+          "invocation_id": "inv-skill-ref-01",
           "user_content": {
-            "parts": [{"text": "What columns and data types does the usa_1910_current table in the usa_names dataset have?"}],
+            "parts": [{"text": "Using the bq-sql-analyst skill, load the public datasets reference so I know what data is available."}],
             "role": "user"
           },
           "intermediate_data": {
             "tool_uses": [
-              {"name": "get_table_info", "args": {"project_id": "bigquery-public-data", "dataset_id": "usa_names", "table_id": "usa_1910_current"}}
+              {"name": "load_skill", "args": {"name": "bq-sql-analyst"}},
+              {"name": "load_skill_resource", "args": {"skill_name": "bq-sql-analyst", "path": "references/public-datasets.md"}}
             ],
             "tool_responses": [],
             "intermediate_responses": []
@@ -64,21 +85,31 @@
           "creation_timestamp": 0.0
         }
       ],
+      "rubrics": [
+        {
+          "rubric_id": "shows_datasets",
+          "rubric_content": {"text_property": "The response contains information about BigQuery public datasets such as usa_names, samples, or austin_bikeshare."}
+        },
+        {
+          "rubric_id": "loaded_skill_first",
+          "rubric_content": {"text_property": "The agent loaded the skill instructions before loading the resource."}
+        }
+      ],
       "creation_timestamp": 0.0
     },
     {
-      "eval_id": "sql_shakespeare_unique_words",
+      "eval_id": "skill_query_with_reference",
       "conversation": [
         {
-          "invocation_id": "inv-sql-shk-01",
+          "invocation_id": "inv-skill-query-01",
           "user_content": {
-            "parts": [{"text": "Using the samples.shakespeare table in bigquery-public-data, which work (corpus) has the most unique words? Show the top 3 works by distinct word count."}],
+            "parts": [{"text": "Use the bq-sql-analyst skill to help me find the top 3 Shakespeare works by unique word count. Load the skill and its reference first, then query the data."}],
             "role": "user"
           },
           "intermediate_data": {
             "tool_uses": [
-              {"name": "get_table_info", "args": {"project_id": "bigquery-public-data", "dataset_id": "samples", "table_id": "shakespeare"}},
-              {"name": "execute_sql", "args": {"project_id": "bigquery-public-data"}}
+              {"name": "load_skill", "args": {"name": "bq-sql-analyst"}},
+              {"name": "load_skill_resource", "args": {"skill_name": "bq-sql-analyst", "path": "references/public-datasets.md"}}
             ],
             "tool_responses": [],
             "intermediate_responses": []
@@ -86,21 +117,35 @@
           "creation_timestamp": 0.0
         }
       ],
+      "rubrics": [
+        {
+          "rubric_id": "consulted_reference",
+          "rubric_content": {"text_property": "The agent loaded the skill's public-datasets reference to identify the Shakespeare table before querying."}
+        },
+        {
+          "rubric_id": "result_has_ranking",
+          "rubric_content": {"text_property": "The final response contains a ranking of Shakespeare works by unique word count, showing at least 3 works."}
+        },
+        {
+          "rubric_id": "followed_workflow",
+          "rubric_content": {"text_property": "The agent followed the skill workflow: loaded the skill, then consulted the reference, then queried the data."}
+        }
+      ],
       "creation_timestamp": 0.0
     },
     {
-      "eval_id": "sql_usa_names_top_2020",
+      "eval_id": "skill_run_format_script",
       "conversation": [
         {
-          "invocation_id": "inv-sql-names-01",
+          "invocation_id": "inv-skill-script-01",
           "user_content": {
-            "parts": [{"text": "What were the top 5 most popular baby names in the year 2020 across all states? Use the usa_names.usa_1910_current table in bigquery-public-data."}],
+            "parts": [{"text": "Use the bq-sql-analyst skill's format_results.py script to format a table with header 'name,count' and rows 'Alice,5;Bob,3;Carol,8'. Load the skill first."}],
             "role": "user"
           },
           "intermediate_data": {
             "tool_uses": [
-              {"name": "get_table_info", "args": {"project_id": "bigquery-public-data", "dataset_id": "usa_names", "table_id": "usa_1910_current"}},
-              {"name": "execute_sql", "args": {"project_id": "bigquery-public-data"}}
+              {"name": "load_skill", "args": {"name": "bq-sql-analyst"}},
+              {"name": "run_skill_script", "args": {"skill_name": "bq-sql-analyst", "script_path": "scripts/format_results.py"}}
             ],
             "tool_responses": [],
             "intermediate_responses": []
@@ -108,49 +153,18 @@
           "creation_timestamp": 0.0
         }
       ],
-      "creation_timestamp": 0.0
-    },
-    {
-      "eval_id": "sql_names_by_decade",
-      "conversation": [
+      "rubrics": [
         {
-          "invocation_id": "inv-sql-decade-01",
-          "user_content": {
-            "parts": [{"text": "How many distinct baby names were registered in each decade from 1950 to 2000 (inclusive)? Use the usa_names.usa_1910_current table in bigquery-public-data."}],
-            "role": "user"
-          },
-          "intermediate_data": {
-            "tool_uses": [
-              {"name": "get_table_info", "args": {"project_id": "bigquery-public-data", "dataset_id": "usa_names", "table_id": "usa_1910_current"}},
-              {"name": "execute_sql", "args": {"project_id": "bigquery-public-data"}}
-            ],
-            "tool_responses": [],
-            "intermediate_responses": []
-          },
-          "creation_timestamp": 0.0
-        }
-      ],
-      "creation_timestamp": 0.0
-    },
-    {
-      "eval_id": "multi_step_explore_and_query",
-      "conversation": [
+          "rubric_id": "loaded_before_run",
+          "rubric_content": {"text_property": "The agent loaded the skill instructions before running the script."}
+        },
         {
-          "invocation_id": "inv-multi-01",
-          "user_content": {
-            "parts": [{"text": "I want to analyze the Austin bikeshare data in bigquery-public-data. First explore what tables and columns are available, then tell me the top 5 busiest start stations by total trip count."}],
-            "role": "user"
-          },
-          "intermediate_data": {
-            "tool_uses": [
-              {"name": "list_table_ids", "args": {"project_id": "bigquery-public-data", "dataset_id": "austin_bikeshare"}},
-              {"name": "get_table_info", "args": {"project_id": "bigquery-public-data", "dataset_id": "austin_bikeshare", "table_id": "bikeshare_trips"}},
-              {"name": "execute_sql", "args": {"project_id": "bigquery-public-data"}}
-            ],
-            "tool_responses": [],
-            "intermediate_responses": []
-          },
-          "creation_timestamp": 0.0
+          "rubric_id": "output_has_table",
+          "rubric_content": {"text_property": "The output contains a formatted table with the data for Alice, Bob, and Carol."}
+        },
+        {
+          "rubric_id": "has_columns",
+          "rubric_content": {"text_property": "The formatted output includes column headers 'name' and 'count'."}
         }
       ],
       "creation_timestamp": 0.0

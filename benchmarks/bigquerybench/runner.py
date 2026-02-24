@@ -12,15 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Trace-based BigQueryBench runner.
+"""BigQueryBench evaluation runner.
 
-Evaluates whether the agent calls the correct BigQuery tools with the
-correct dataset/table arguments.  No response text matching — only
-the tool-call trace matters.
+Evaluates skill invocation correctness (trace-based) and instruction
+adherence (LLM-as-judge with rubrics).
 
 Usage:
     python -m benchmarks.bigquerybench.runner
-    python -m benchmarks.bigquerybench.runner --filter sql_shakespeare
+    python -m benchmarks.bigquerybench.runner --filter skill_load
     python -m benchmarks.bigquerybench.runner --num-runs 3
     python -m benchmarks.bigquerybench.runner --dry-run
 
@@ -53,6 +52,7 @@ from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.utils.context_utils import Aclosing
 
+from .metrics import instruction_adherence_score
 from .metrics import tool_args_score
 from .metrics import tool_invocation_score
 
@@ -70,23 +70,36 @@ def load_eval_set(path: pathlib.Path) -> EvalSet:
 
 def print_header():
   print()
-  print("=" * 65)
-  print("  BigQueryBench — Trace-Based Evaluation")
-  print("=" * 65)
+  print("=" * 72)
+  print("  BigQueryBench — Skill Evaluation")
+  print("=" * 72)
   print()
 
 
+def _case_passed(scores: dict[str, float]) -> bool:
+  trace_ok = (
+      scores.get("tool_invocation", 0.0) >= 1.0
+      and scores.get("tool_args", 0.0) >= 1.0
+  )
+  adherence_ok = scores.get("adherence", 1.0) >= 0.75
+  return trace_ok and adherence_ok
+
+
 def print_results_table(results: dict[str, dict[str, float]]):
-  print(f"{'Eval Case':<40} {'Tools':>7} {'Args':>7} {'Result':>8}")
-  print("-" * 65)
+  print(
+      f"{'Eval Case':<34} {'Tools':>6} {'Args':>6} {'Adhere':>7} {'Result':>7}"
+  )
+  print("-" * 72)
   for case_id, scores in results.items():
-    short_id = case_id[:39]
+    short_id = case_id[:33]
     tools = scores.get("tool_invocation", 0.0)
     args = scores.get("tool_args", 0.0)
-    passed = tools >= 1.0 and args >= 1.0
-    mark = "PASS" if passed else "FAIL"
-    print(f"{short_id:<40} {tools:>7.2f} {args:>7.2f}   {mark:>5}")
-  print("-" * 65)
+    adhere = scores.get("adherence", 1.0)
+    mark = "PASS" if _case_passed(scores) else "FAIL"
+    print(
+        f"{short_id:<34} {tools:>6.2f} {args:>6.2f} {adhere:>7.2f}   {mark:>4}"
+    )
+  print("-" * 72)
 
 
 def print_summary(
@@ -94,28 +107,23 @@ def print_summary(
     num_cases: int,
     elapsed: float,
 ):
-  passed = sum(
-      1
-      for s in results.values()
-      if s.get("tool_invocation", 0.0) >= 1.0 and s.get("tool_args", 0.0) >= 1.0
-  )
-  avg_tools = sum(
-      s.get("tool_invocation", 0.0) for s in results.values()
-  ) / max(len(results), 1)
-  avg_args = sum(s.get("tool_args", 0.0) for s in results.values()) / max(
-      len(results), 1
-  )
+  n = max(len(results), 1)
+  passed = sum(1 for s in results.values() if _case_passed(s))
+  avg_tools = sum(s.get("tool_invocation", 0.0) for s in results.values()) / n
+  avg_args = sum(s.get("tool_args", 0.0) for s in results.values()) / n
+  avg_adhere = sum(s.get("adherence", 1.0) for s in results.values()) / n
   pct = (passed / max(num_cases, 1)) * 100
 
   print()
-  print("=" * 65)
+  print("=" * 72)
   print("  Summary")
-  print("=" * 65)
+  print("=" * 72)
   print(f"  Cases:              {passed}/{num_cases} ({pct:.1f}%)")
   print(f"  Avg Tool Match:     {avg_tools:.2f}")
   print(f"  Avg Args Match:     {avg_args:.2f}")
+  print(f"  Avg Adherence:      {avg_adhere:.2f}")
   print(f"  Elapsed:            {elapsed:.1f}s")
-  print("=" * 65)
+  print("=" * 72)
 
 
 async def run_single_eval_case(root_agent, eval_case) -> list[Invocation]:
@@ -170,19 +178,34 @@ async def run_single_eval_case(root_agent, eval_case) -> list[Invocation]:
     return EvaluationGenerator.convert_events_to_eval_invocations(events)
 
 
-def score_invocations(
+async def score_invocations(
     actual: list[Invocation],
     expected: Optional[list[Invocation]],
+    rubrics=None,
 ) -> dict[str, float]:
   metric = EvalMetric(metric_name="bigquerybench")
 
   r1 = tool_invocation_score(metric, actual, expected)
   r2 = tool_args_score(metric, actual, expected)
 
-  return {
+  scores = {
       "tool_invocation": r1.overall_score or 0.0,
       "tool_args": r2.overall_score or 0.0,
   }
+
+  if rubrics:
+    r3 = await instruction_adherence_score(actual, rubrics)
+    scores["adherence"] = r3.overall_score or 0.0
+
+  return scores
+
+
+_TRACE_ARGS = frozenset({
+    "name",
+    "skill_name",
+    "path",
+    "script_path",
+})
 
 
 def _print_trace(actual_invocations: list[Invocation]):
@@ -192,9 +215,7 @@ def _print_trace(actual_invocations: list[Invocation]):
   for inv in actual_invocations:
     for tc in get_all_tool_calls(inv.intermediate_data):
       args_summary = ", ".join(
-          f"{k}={v!r}"
-          for k, v in (tc.args or {}).items()
-          if k in ("project_id", "dataset_id", "table_id")
+          f"{k}={v!r}" for k, v in (tc.args or {}).items() if k in _TRACE_ARGS
       )
       print(f"    -> {tc.name}({args_summary})")
 
@@ -231,14 +252,19 @@ async def run_evaluation(
         actual = await run_single_eval_case(root_agent, eval_case)
         _print_trace(actual)
 
-        scores = score_invocations(actual, eval_case.conversation)
+        scores = await score_invocations(
+            actual, eval_case.conversation, eval_case.rubrics
+        )
         run_scores.append(scores)
 
         tools = scores["tool_invocation"]
         args = scores["tool_args"]
-        passed = tools >= 1.0 and args >= 1.0
-        mark = "PASS" if passed else "FAIL"
-        print(f"  tools={tools:.2f}  args={args:.2f}  {mark}")
+        adhere = scores.get("adherence", 1.0)
+        mark = "PASS" if _case_passed(scores) else "FAIL"
+        parts = [f"tools={tools:.2f}", f"args={args:.2f}"]
+        if "adherence" in scores:
+          parts.append(f"adherence={adhere:.2f}")
+        print(f"  {' '.join(parts)}  {mark}")
 
       except Exception as e:
         logger.error("Error running %s: %s", eval_id, e)
@@ -246,8 +272,10 @@ async def run_evaluation(
         run_scores.append({"tool_invocation": 0.0, "tool_args": 0.0})
 
     avg: dict[str, float] = {}
-    for key in ("tool_invocation", "tool_args"):
-      avg[key] = sum(s[key] for s in run_scores) / len(run_scores)
+    for key in ("tool_invocation", "tool_args", "adherence"):
+      vals = [s[key] for s in run_scores if key in s]
+      if vals:
+        avg[key] = sum(vals) / len(vals)
     results[eval_id] = avg
 
   return results
@@ -289,7 +317,9 @@ def main():
       tools = [
           t.name for t in case.conversation[0].intermediate_data.tool_uses or []
       ]
-      print(f"  {case.eval_id}: {' -> '.join(tools)}")
+      n_rubrics = len(case.rubrics) if case.rubrics else 0
+      rubric_info = f" ({n_rubrics} rubrics)" if n_rubrics else ""
+      print(f"  {case.eval_id}: {' -> '.join(tools)}{rubric_info}")
     print("\nJSON valid.")
     sys.exit(0)
 
@@ -311,10 +341,7 @@ def main():
   print_results_table(results)
   print_summary(results, num_cases, elapsed)
 
-  all_pass = all(
-      s.get("tool_invocation", 0.0) >= 1.0 and s.get("tool_args", 0.0) >= 1.0
-      for s in results.values()
-  )
+  all_pass = all(_case_passed(s) for s in results.values())
   sys.exit(0 if all_pass else 1)
 
 

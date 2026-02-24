@@ -1,21 +1,18 @@
-# BigQueryBench: Trace-Based Evaluation for BigQuery Skills
+# BigQueryBench: Skill Invocation & Instruction Adherence Evaluation
 
 ## Overview
 
-BigQueryBench verifies that an agent built with ADK's `BigQueryToolset`
-**calls the correct tools with the correct arguments**.  It inspects
-the tool-call trace only — no response text matching.
+BigQueryBench evaluates agents built with ADK's `SkillToolset` on
+two dimensions:
 
-For each eval case, the pipeline checks two things:
+1. **Skill invocation correctness** (trace-based) — Did the agent
+   call the right skill tools with the right arguments?
+2. **Instruction adherence** (LLM-as-judge) — Did the agent follow
+   the skill's instructions and produce correct results?
 
-1. **Tool invocation** — Did the agent call the right BigQuery
-   functions?  (e.g., `get_table_info` then `execute_sql`)
-2. **Tool arguments** — Did those calls point at the right data?
-   (e.g., `project_id="bigquery-public-data"`,
-   `dataset_id="usa_names"`, `table_id="usa_1910_current"`)
-
-This makes evaluation deterministic, easy to maintain, and immune to
-LLM response wording variance.
+The trace-based checks are deterministic. The instruction adherence
+checks use natural-language rubrics evaluated by a judge LLM, making
+them easy to write and immune to exact-wording variance.
 
 ## Quick Start
 
@@ -28,52 +25,64 @@ export GOOGLE_GENAI_USE_VERTEXAI=1
 python -m benchmarks.bigquerybench.runner
 
 # Run one case
-python -m benchmarks.bigquerybench.runner --filter schema_list_tables
+python -m benchmarks.bigquerybench.runner --filter skill_load
 
 # Dry-run (validate JSON only, no LLM calls)
 python -m benchmarks.bigquerybench.runner --dry-run
+
+# Run unit tests (no API keys needed)
+pytest tests/unittests/benchmarks/bigquerybench/ -v
 ```
 
 ## How It Works
 
 ```
 eval_sets/bigquerybench_eval.json
-  ↓  (user query + expected tool_uses)
+  ↓  (user query + expected tool_uses + rubrics)
 runner.py
   ↓  runs agent via ADK Runner
   ↓  collects event trace → Invocations
 metrics.py
-  ├── tool_invocation_score: expected tool names ⊆ actual tool names?
-  └── tool_args_score: expected (tool, project/dataset/table) ⊆ actual?
+  ├── tool_invocation_score: expected skill tool names ⊆ actual?
+  ├── tool_args_score: expected (tool, skill-arg) pairs ⊆ actual?
+  └── instruction_adherence_score: LLM judge checks rubrics
   ↓
-PASS if both scores = 1.0
+PASS if all three scores meet thresholds
 ```
+
+## Three Metrics
+
+| Metric | Type | What It Checks | Pass Condition |
+|--------|------|----------------|----------------|
+| `tool_invocation_score` | Trace | Correct skill tools called | Score = 1.0 |
+| `tool_args_score` | Trace | Correct skill/resource/script targeted | Score = 1.0 |
+| `instruction_adherence_score` | LLM judge | Agent followed instructions, output correct | Score >= 0.75 |
+
+A case **passes** when all three metrics meet their thresholds.
 
 ## Eval Case Format
 
-Each eval case specifies a user query and the expected tool calls.
-No `final_response` is needed — only the trace matters.
+Each eval case has three parts:
+1. **`conversation`** — user query + expected skill tool calls
+2. **`rubrics`** — natural-language assertions checked by the judge
 
 ```json
 {
-  "eval_id": "schema_get_table_info",
+  "eval_id": "skill_load_reference",
   "conversation": [
     {
       "invocation_id": "inv-01",
       "user_content": {
-        "parts": [{"text": "What columns does usa_1910_current have?"}],
+        "parts": [{"text": "Load the public datasets reference from bq-sql-analyst."}],
         "role": "user"
       },
       "intermediate_data": {
         "tool_uses": [
-          {
-            "name": "get_table_info",
-            "args": {
-              "project_id": "bigquery-public-data",
-              "dataset_id": "usa_names",
-              "table_id": "usa_1910_current"
-            }
-          }
+          {"name": "load_skill", "args": {"name": "bq-sql-analyst"}},
+          {"name": "load_skill_resource", "args": {
+            "skill_name": "bq-sql-analyst",
+            "path": "references/public-datasets.md"
+          }}
         ],
         "tool_responses": [],
         "intermediate_responses": []
@@ -81,61 +90,112 @@ No `final_response` is needed — only the trace matters.
       "creation_timestamp": 0.0
     }
   ],
+  "rubrics": [
+    {
+      "rubric_id": "shows_datasets",
+      "rubric_content": {
+        "text_property": "The response contains information about BigQuery public datasets."
+      }
+    },
+    {
+      "rubric_id": "loaded_skill_first",
+      "rubric_content": {
+        "text_property": "The agent loaded the skill instructions before loading the resource."
+      }
+    }
+  ],
   "creation_timestamp": 0.0
 }
 ```
 
-**What gets checked:**
+### Trace Checks (deterministic)
 
 | Field in `args` | Checked? | Why |
 |-----------------|----------|-----|
-| `project_id` | Yes | Must point at the right GCP project |
-| `dataset_id` | Yes | Must load the right dataset |
-| `table_id` | Yes | Must load the right table |
-| `query` | **No** | Exact SQL varies — agent may write equivalent SQL differently |
-| Other args | **No** | Tool-specific args (e.g., `horizon`, `num_clusters`) are not checked by default |
+| `name` | Yes | Must load the right skill (`load_skill`) |
+| `skill_name` | Yes | Must target the right skill (`load_skill_resource`, `run_skill_script`) |
+| `path` | Yes | Must load the right resource (`load_skill_resource`) |
+| `script_path` | Yes | Must run the right script (`run_skill_script`) |
 
-## Metrics
+### Rubrics (LLM-as-judge)
 
-| Metric | What It Checks | Pass Condition |
-|--------|---------------|----------------|
-| `tool_invocation_score` | All expected tool names appear in the trace | Score = 1.0 |
-| `tool_args_score` | All expected `(tool, project_id/dataset_id/table_id)` pairs appear in the trace | Score = 1.0 |
+Each rubric is a natural-language assertion about the agent's behavior
+or output. The judge LLM reads the conversation (user request + tool
+trace + final response) and answers yes/no per rubric.
 
-A case **passes** when both scores are 1.0.
+**Example rubrics:**
+```json
+{"rubric_id": "r1", "rubric_content": {"text_property": "The agent used AI.classify to classify the data."}}
+{"rubric_id": "r2", "rubric_content": {"text_property": "The result contains a markdown table with group statistics."}}
+{"rubric_id": "r3", "rubric_content": {"text_property": "The agent loaded the skill before running the script."}}
+```
 
 ## Included Eval Cases
 
-| eval_id | User Query | Expected Trace |
-|---------|-----------|----------------|
-| `schema_list_datasets` | "What datasets are in bigquery-public-data?" | `list_dataset_ids(project_id=bigquery-public-data)` |
-| `schema_list_tables` | "What tables in usa_names?" | `list_table_ids(project_id=.., dataset_id=usa_names)` |
-| `schema_get_table_info` | "Columns of usa_1910_current?" | `get_table_info(project_id=.., dataset_id=usa_names, table_id=usa_1910_current)` |
-| `sql_shakespeare_unique_words` | "Top 3 works by unique words?" | `get_table_info(.., shakespeare)` → `execute_sql(..)` |
-| `sql_usa_names_top_2020` | "Top 5 baby names in 2020?" | `get_table_info(.., usa_1910_current)` → `execute_sql(..)` |
-| `sql_names_by_decade` | "Distinct names per decade 1950-2000?" | `get_table_info(.., usa_1910_current)` → `execute_sql(..)` |
-| `multi_step_explore_and_query` | "Explore bikeshare, top 5 stations?" | `list_table_ids(..)` → `get_table_info(.., bikeshare_trips)` → `execute_sql(..)` |
+| eval_id | Expected Trace | Rubrics |
+|---------|---------------|---------|
+| `skill_list_skills` | `list_skills()` | Lists bq-sql-analyst; includes description |
+| `skill_load_sql_analyst` | `load_skill(name=bq-sql-analyst)` | Describes capabilities; mentions scripts |
+| `skill_load_reference` | `load_skill` → `load_skill_resource` | Shows datasets; loaded skill first |
+| `skill_query_with_reference` | `load_skill` → `load_skill_resource` | Consulted reference; has ranking; followed workflow |
+| `skill_run_format_script` | `load_skill` → `run_skill_script` | Loaded before run; has table; has columns |
+
+## Example Output
+
+```
+========================================================================
+  BigQueryBench — Skill Evaluation
+========================================================================
+
+[1/5] skill_list_skills
+    -> list_skills()
+  tools=1.00  args=1.00  adherence=1.00  PASS
+
+[2/5] skill_load_sql_analyst
+    -> load_skill(name='bq-sql-analyst')
+  tools=1.00  args=1.00  adherence=1.00  PASS
+
+Eval Case                          Tools   Args  Adhere  Result
+------------------------------------------------------------------------
+skill_list_skills                   1.00   1.00    1.00   PASS
+skill_load_sql_analyst              1.00   1.00    1.00   PASS
+skill_load_reference                1.00   1.00    1.00   PASS
+skill_query_with_reference          1.00   1.00    0.67   FAIL
+skill_run_format_script             1.00   1.00    1.00   PASS
+------------------------------------------------------------------------
+
+========================================================================
+  Summary
+========================================================================
+  Cases:              4/5 (80.0%)
+  Avg Tool Match:     1.00
+  Avg Args Match:     1.00
+  Avg Adherence:      0.93
+  Elapsed:            42.1s
+========================================================================
+```
 
 ## Adding a New Eval Case
 
-### For an existing tool (e.g., new `execute_sql` scenario)
+### For an existing skill
 
-Only add a JSON object to `bigquerybench_eval.json`. No code changes.
+Add a JSON object to `bigquerybench_eval.json` with both `tool_uses`
+(trace expectations) and `rubrics` (instruction adherence assertions).
 
 ```json
 {
-  "eval_id": "sql_weather_hottest_day",
+  "eval_id": "skill_explore_usa_names",
   "conversation": [
     {
-      "invocation_id": "inv-weather-01",
+      "invocation_id": "inv-new-01",
       "user_content": {
-        "parts": [{"text": "What was the hottest day recorded in the NOAA GSOD 2023 data?"}],
+        "parts": [{"text": "Use the bq-sql-analyst skill to explore the usa_names dataset."}],
         "role": "user"
       },
       "intermediate_data": {
         "tool_uses": [
-          {"name": "get_table_info", "args": {"project_id": "bigquery-public-data", "dataset_id": "noaa_gsod", "table_id": "gsod2023"}},
-          {"name": "execute_sql", "args": {"project_id": "bigquery-public-data"}}
+          {"name": "load_skill", "args": {"name": "bq-sql-analyst"}},
+          {"name": "load_skill_resource", "args": {"skill_name": "bq-sql-analyst", "path": "references/public-datasets.md"}}
         ],
         "tool_responses": [],
         "intermediate_responses": []
@@ -143,161 +203,82 @@ Only add a JSON object to `bigquerybench_eval.json`. No code changes.
       "creation_timestamp": 0.0
     }
   ],
-  "creation_timestamp": 0.0
-}
-```
-
-Validate: `python -m benchmarks.bigquerybench.runner --filter sql_weather`
-
-### For a new tool (e.g., `forecast`, `cluster_data`)
-
-Same steps — just use the new tool name in `tool_uses`. The metrics
-check tool names and key args generically, so no metric code changes
-are needed.
-
-```json
-{
-  "eval_id": "ml_forecast_temperature",
-  "conversation": [
+  "rubrics": [
     {
-      "invocation_id": "inv-forecast-01",
-      "user_content": {
-        "parts": [{"text": "Forecast the next 7 days of temperature from NOAA GSOD 2023 data for station 725300."}],
-        "role": "user"
-      },
-      "intermediate_data": {
-        "tool_uses": [
-          {"name": "get_table_info", "args": {"project_id": "bigquery-public-data", "dataset_id": "noaa_gsod", "table_id": "gsod2023"}},
-          {"name": "forecast", "args": {"project_id": "bigquery-public-data"}}
-        ],
-        "tool_responses": [],
-        "intermediate_responses": []
-      },
-      "creation_timestamp": 0.0
+      "rubric_id": "consulted_ref",
+      "rubric_content": {"text_property": "The agent consulted the public datasets reference."}
+    },
+    {
+      "rubric_id": "mentions_usa_names",
+      "rubric_content": {"text_property": "The response mentions the usa_names dataset and its columns."}
     }
   ],
   "creation_timestamp": 0.0
 }
 ```
 
-For AI/ML tools that create temp models, set write mode:
-```bash
-BQ_EVAL_WRITE_MODE=protected python -m benchmarks.bigquerybench.runner --filter ml_forecast
-```
+### For a new skill
 
-## Complete Walkthrough: Adding a New BigQuery Skill
+1. Create a skill directory under `skills/`:
+   ```
+   skills/my-new-skill/
+   ├── SKILL.md
+   ├── references/
+   └── scripts/
+   ```
 
-This walkthrough uses a concrete example: a hypothetical
-`cluster_data` tool (K-Means via BQML) being added to
-`BigQueryToolset`.
+2. Register it in `agent.py`:
+   ```python
+   _SKILL_NAMES = [
+       "bq-sql-analyst",
+       "my-new-skill",  # ← add here
+   ]
+   ```
 
-### Step 1: Register the tool
+3. Add eval cases with trace expectations + rubrics.
 
-The developer adds `cluster_data` to `bigquery_toolset.py`. Once
-registered, it's automatically available to the eval agent — no
-changes to `agent.py` needed.
+### Writing Good Rubrics
 
-### Step 2: Write the eval case
+**Do:**
+- Assert observable behavior: "The agent loaded the skill before running the script."
+- Assert output properties: "The response contains a table with columns name and count."
+- Assert domain correctness: "The result includes the top 3 Shakespeare works."
 
-What we want to verify: when the user asks "cluster the penguins
-data", the agent should:
-1. Call `get_table_info` on `ml_datasets.penguins` (load the schema)
-2. Call `cluster_data` against `bigquery-public-data` (invoke the
-   right tool on the right data)
-
-```json
-{
-  "eval_id": "ml_cluster_penguins",
-  "conversation": [
-    {
-      "invocation_id": "inv-cluster-01",
-      "user_content": {
-        "parts": [{"text": "Cluster the penguins in bigquery-public-data.ml_datasets.penguins into 3 groups based on their physical measurements."}],
-        "role": "user"
-      },
-      "intermediate_data": {
-        "tool_uses": [
-          {"name": "get_table_info", "args": {"project_id": "bigquery-public-data", "dataset_id": "ml_datasets", "table_id": "penguins"}},
-          {"name": "cluster_data", "args": {"project_id": "bigquery-public-data"}}
-        ],
-        "tool_responses": [],
-        "intermediate_responses": []
-      },
-      "creation_timestamp": 0.0
-    }
-  ],
-  "creation_timestamp": 0.0
-}
-```
-
-**What gets checked automatically:**
-- `tool_invocation_score`: Did the trace contain both
-  `get_table_info` and `cluster_data`?
-- `tool_args_score`: Did `get_table_info` target
-  `(bigquery-public-data, ml_datasets, penguins)`? Did
-  `cluster_data` target `bigquery-public-data`?
-
-**What is NOT checked** (intentionally):
-- The exact `feature_cols` or `num_clusters` the LLM chose
-- The exact response wording
-- The numeric clustering results
-
-### Step 3: Validate
-
-```bash
-BQ_EVAL_WRITE_MODE=protected \
-  python -m benchmarks.bigquerybench.runner --filter ml_cluster_penguins
-```
-
-Expected output:
-
-```
-[1/1] ml_cluster_penguins
-    -> get_table_info(project_id='bigquery-public-data', dataset_id='ml_datasets', table_id='penguins')
-    -> cluster_data(project_id='bigquery-public-data')
-  tools=1.00  args=1.00  PASS
-```
-
-### Step 4: Commit
-
-```bash
-git add benchmarks/bigquerybench/eval_sets/bigquerybench_eval.json
-git commit -m "eval(bigquerybench): add clustering eval for cluster_data"
-```
-
-**Only `bigquerybench_eval.json` changed.** No code changes.
+**Don't:**
+- Assert exact wording: "The response starts with 'Here are the results'."
+- Assert implementation details: "The agent called execute_sql with SELECT DISTINCT."
+- Use vague assertions: "The response is good."
 
 ### When Do You Need Code Changes?
 
 | Scenario | JSON | `metrics.py` | `runner.py` | `agent.py` |
 |----------|:----:|:------------:|:-----------:|:----------:|
-| New eval case, existing tool | Yes | - | - | - |
-| New tool, trace check is enough | Yes | - | - | - |
-| New tool, need to check a non-key arg (e.g., `num_clusters`) | Yes | Yes (add arg to `_KEY_ARGS`) | - | - |
-| New tool, need entirely new metric | Yes | Yes | Yes | - |
-| Agent instruction or write-mode change | - | - | - | Yes |
-
-**Adding a checked arg** is a one-line change in `metrics.py`:
-
-```python
-_KEY_ARGS = frozenset({
-    "project_id",
-    "dataset_id",
-    "table_id",
-    "num_clusters",  # ← add here
-})
-```
+| New eval case, existing skill | Yes | - | - | - |
+| New skill added to `skills/` | Yes | - | - | Yes (add to `_SKILL_NAMES`) |
+| Change judge model or threshold | - | Yes | - | - |
+| Need entirely new metric | Yes | Yes | Yes | - |
+| Agent instruction change | - | - | - | Yes |
 
 ## Architecture
 
 ```
 benchmarks/bigquerybench/
 ├── __init__.py
-├── agent.py           # LlmAgent + BigQueryToolset (read-only default)
-├── runner.py          # Runs agent, collects trace, scores
-├── metrics.py         # tool_invocation_score + tool_args_score
-└── eval_sets/
-    └── bigquerybench_eval.json   # 7 eval cases
+├── agent.py           # LlmAgent + BigQueryToolset + SkillToolset
+├── runner.py          # Runs agent, scores trace + rubrics
+├── metrics.py         # 3 metrics: trace (x2) + LLM-as-judge (x1)
+├── eval_sets/
+│   └── bigquerybench_eval.json   # 5 eval cases with rubrics
+└── skills/
+    └── bq-sql-analyst/
+        ├── SKILL.md
+        ├── references/
+        │   └── public-datasets.md
+        └── scripts/
+            └── format_results.py
+
+tests/unittests/benchmarks/bigquerybench/
+└── test_metrics.py    # 14 tests (trace + LLM judge + JSON validation)
 ```
 
 ## Environment Variables
@@ -313,7 +294,9 @@ benchmarks/bigquerybench/
 
 | Symptom | Fix |
 |---------|-----|
-| `403 Access Denied` | `gcloud auth application-default login` + enable BigQuery API |
-| `tool_invocation_score = 0` | Agent didn't call expected tool — check agent instructions |
-| `tool_args_score < 1.0` | Agent pointed at wrong dataset/table — check user query specificity |
-| AI/ML tool fails | Set `BQ_EVAL_WRITE_MODE=protected` |
+| `tool_invocation_score = 0` | Agent didn't call expected skill tool — check agent instructions |
+| `tool_args_score < 1.0` | Agent targeted wrong skill or resource — check user query specificity |
+| `adherence < 0.75` | Agent produced wrong output — review rubrics and skill instructions |
+| Skill not found | Verify skill dir exists in `skills/` and name is in `_SKILL_NAMES` in `agent.py` |
+| Judge LLM fails | Check `GOOGLE_API_KEY` or `GOOGLE_GENAI_USE_VERTEXAI` + `GOOGLE_CLOUD_PROJECT` |
+| `load_skill_resource` fails | Check the `path` arg matches a real file under the skill dir |
