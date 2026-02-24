@@ -78,8 +78,10 @@ class UnsafeLocalCodeExecutor(BaseCodeExecutor):
         or code_execution_input.working_dir
     )
 
-    if needs_sandbox:
-      with _execution_lock:
+    # Lock is required for both paths: redirect_stdout mutates
+    # process-global sys.stdout, and the sandbox path also mutates cwd.
+    with _execution_lock:
+      if needs_sandbox:
         original_cwd = os.getcwd()
         try:
           with tempfile.TemporaryDirectory() as temp_dir:
@@ -112,17 +114,17 @@ class UnsafeLocalCodeExecutor(BaseCodeExecutor):
           error = str(e)
         finally:
           os.chdir(original_cwd)
-    else:
-      # Original path: no temp dir, no chdir, no lock needed
-      try:
-        globals_ = {}
-        _prepare_globals(code_execution_input.code, globals_)
-        stdout = io.StringIO()
-        with redirect_stdout(stdout):
-          exec(code_execution_input.code, globals_, globals_)
-        output = stdout.getvalue()
-      except Exception as e:
-        error = str(e)
+      else:
+        # Original path: no temp dir, no chdir
+        try:
+          globals_ = {}
+          _prepare_globals(code_execution_input.code, globals_)
+          stdout = io.StringIO()
+          with redirect_stdout(stdout):
+            exec(code_execution_input.code, globals_, globals_)
+          output = stdout.getvalue()
+        except Exception as e:
+          error = str(e)
 
     # Collect the final result.
     return CodeExecutionResult(
