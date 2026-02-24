@@ -3949,3 +3949,719 @@ class TestMultiSubagentToolLogging:
     # All rows share the same session
     for row in rows:
       assert row["session_id"] == "session-multi"
+
+
+class TestSchemaAutoUpgrade:
+  """Tests for _ensure_schema_exists with auto_schema_upgrade."""
+
+  def _make_plugin(self, auto_schema_upgrade=False):
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        auto_schema_upgrade=auto_schema_upgrade,
+    )
+    with mock.patch("google.cloud.bigquery.Client"):
+      plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+          project_id=PROJECT_ID,
+          dataset_id=DATASET_ID,
+          table_id=TABLE_ID,
+          config=config,
+      )
+    plugin.client = mock.MagicMock()
+    plugin.full_table_id = f"{PROJECT_ID}.{DATASET_ID}.{TABLE_ID}"
+    plugin._schema = bigquery_agent_analytics_plugin._get_events_schema()
+    return plugin
+
+  def test_create_table_sets_version_label(self):
+    """New tables get the schema version label."""
+    plugin = self._make_plugin()
+    plugin.client.get_table.side_effect = cloud_exceptions.NotFound("not found")
+    plugin._ensure_schema_exists()
+    plugin.client.create_table.assert_called_once()
+    tbl = plugin.client.create_table.call_args[0][0]
+    assert (
+        tbl.labels[bigquery_agent_analytics_plugin._SCHEMA_VERSION_LABEL_KEY]
+        == bigquery_agent_analytics_plugin._SCHEMA_VERSION
+    )
+
+  def test_no_upgrade_when_disabled(self):
+    """Auto-upgrade disabled: existing table is not modified."""
+    plugin = self._make_plugin(auto_schema_upgrade=False)
+    existing = mock.MagicMock()
+    existing.schema = [
+        bigquery.SchemaField("timestamp", "TIMESTAMP"),
+    ]
+    existing.labels = {}
+    plugin.client.get_table.return_value = existing
+    plugin._ensure_schema_exists()
+    plugin.client.update_table.assert_not_called()
+
+  def test_upgrade_adds_missing_columns(self):
+    """Auto-upgrade adds columns missing from existing table."""
+    plugin = self._make_plugin(auto_schema_upgrade=True)
+    existing = mock.MagicMock(spec=bigquery.Table)
+    existing.schema = [
+        bigquery.SchemaField("timestamp", "TIMESTAMP"),
+    ]
+    existing.labels = {"other": "label"}
+    plugin.client.get_table.return_value = existing
+    plugin._ensure_schema_exists()
+    plugin.client.update_table.assert_called_once()
+    updated_table = plugin.client.update_table.call_args[0][0]
+    updated_names = {f.name for f in updated_table.schema}
+    assert "event_type" in updated_names
+    assert "agent" in updated_names
+    assert "content" in updated_names
+    assert (
+        updated_table.labels[
+            bigquery_agent_analytics_plugin._SCHEMA_VERSION_LABEL_KEY
+        ]
+        == bigquery_agent_analytics_plugin._SCHEMA_VERSION
+    )
+
+  def test_skip_upgrade_when_version_matches(self):
+    """No update when stored version matches current."""
+    plugin = self._make_plugin(auto_schema_upgrade=True)
+    existing = mock.MagicMock(spec=bigquery.Table)
+    existing.schema = plugin._schema
+    existing.labels = {
+        bigquery_agent_analytics_plugin._SCHEMA_VERSION_LABEL_KEY: (
+            bigquery_agent_analytics_plugin._SCHEMA_VERSION
+        ),
+    }
+    plugin.client.get_table.return_value = existing
+    plugin._ensure_schema_exists()
+    plugin.client.update_table.assert_not_called()
+
+  def test_upgrade_error_is_logged_not_raised(self):
+    """Schema upgrade errors are logged, not propagated."""
+    plugin = self._make_plugin(auto_schema_upgrade=True)
+    existing = mock.MagicMock(spec=bigquery.Table)
+    existing.schema = [
+        bigquery.SchemaField("timestamp", "TIMESTAMP"),
+    ]
+    existing.labels = {}
+    plugin.client.get_table.return_value = existing
+    plugin.client.update_table.side_effect = Exception("boom")
+    # Should not raise
+    plugin._ensure_schema_exists()
+
+  def test_upgrade_preserves_existing_columns(self):
+    """Existing columns are never dropped or altered during upgrade."""
+    plugin = self._make_plugin(auto_schema_upgrade=True)
+    # Simulate a table with a subset of canonical columns plus a
+    # user-added custom column that is NOT in the canonical schema.
+    custom_field = bigquery.SchemaField("my_custom_col", "STRING")
+    existing = mock.MagicMock(spec=bigquery.Table)
+    existing.schema = [
+        bigquery.SchemaField("timestamp", "TIMESTAMP"),
+        bigquery.SchemaField("event_type", "STRING"),
+        custom_field,
+    ]
+    existing.labels = {}
+    plugin.client.get_table.return_value = existing
+    plugin._ensure_schema_exists()
+
+    updated_table = plugin.client.update_table.call_args[0][0]
+    updated_names = [f.name for f in updated_table.schema]
+    # Original columns are still present and in original order.
+    assert updated_names[0] == "timestamp"
+    assert updated_names[1] == "event_type"
+    assert updated_names[2] == "my_custom_col"
+    # New canonical columns were appended after existing ones.
+    assert "agent" in updated_names
+    assert "content" in updated_names
+
+  def test_upgrade_from_no_label_treats_as_outdated(self):
+    """A table with no version label is treated as needing upgrade."""
+    plugin = self._make_plugin(auto_schema_upgrade=True)
+    existing = mock.MagicMock(spec=bigquery.Table)
+    existing.schema = list(plugin._schema)  # All columns present
+    existing.labels = {}  # No version label
+    plugin.client.get_table.return_value = existing
+    plugin._ensure_schema_exists()
+
+    # update_table should be called to stamp the version label even
+    # though no new columns were needed.
+    plugin.client.update_table.assert_called_once()
+    updated_table = plugin.client.update_table.call_args[0][0]
+    assert (
+        updated_table.labels[
+            bigquery_agent_analytics_plugin._SCHEMA_VERSION_LABEL_KEY
+        ]
+        == bigquery_agent_analytics_plugin._SCHEMA_VERSION
+    )
+
+  def test_upgrade_from_older_version_label(self):
+    """A table with an older version label triggers upgrade."""
+    plugin = self._make_plugin(auto_schema_upgrade=True)
+    existing = mock.MagicMock(spec=bigquery.Table)
+    existing.schema = [
+        bigquery.SchemaField("timestamp", "TIMESTAMP"),
+        bigquery.SchemaField("event_type", "STRING"),
+    ]
+    # Simulate a table stamped with an older version.
+    existing.labels = {
+        bigquery_agent_analytics_plugin._SCHEMA_VERSION_LABEL_KEY: "0",
+    }
+    plugin.client.get_table.return_value = existing
+    plugin._ensure_schema_exists()
+
+    plugin.client.update_table.assert_called_once()
+    updated_table = plugin.client.update_table.call_args[0][0]
+    # Version label should be updated to current.
+    assert (
+        updated_table.labels[
+            bigquery_agent_analytics_plugin._SCHEMA_VERSION_LABEL_KEY
+        ]
+        == bigquery_agent_analytics_plugin._SCHEMA_VERSION
+    )
+    # Missing columns should have been added.
+    updated_names = {f.name for f in updated_table.schema}
+    assert "agent" in updated_names
+    assert "content" in updated_names
+
+  def test_upgrade_is_idempotent(self):
+    """Calling _ensure_schema_exists twice doesn't double-update."""
+    plugin = self._make_plugin(auto_schema_upgrade=True)
+
+    # First call: table exists with old schema.
+    existing = mock.MagicMock(spec=bigquery.Table)
+    existing.schema = [
+        bigquery.SchemaField("timestamp", "TIMESTAMP"),
+    ]
+    existing.labels = {}
+    plugin.client.get_table.return_value = existing
+    plugin._ensure_schema_exists()
+    assert plugin.client.update_table.call_count == 1
+
+    # Second call: table now has current version label.
+    existing.labels = {
+        bigquery_agent_analytics_plugin._SCHEMA_VERSION_LABEL_KEY: (
+            bigquery_agent_analytics_plugin._SCHEMA_VERSION
+        ),
+    }
+    plugin.client.update_table.reset_mock()
+    plugin._ensure_schema_exists()
+    plugin.client.update_table.assert_not_called()
+
+  def test_update_table_receives_schema_and_labels_fields(self):
+    """update_table is called with update_fields=['schema', 'labels']."""
+    plugin = self._make_plugin(auto_schema_upgrade=True)
+    existing = mock.MagicMock(spec=bigquery.Table)
+    existing.schema = [
+        bigquery.SchemaField("timestamp", "TIMESTAMP"),
+    ]
+    existing.labels = {}
+    plugin.client.get_table.return_value = existing
+    plugin._ensure_schema_exists()
+
+    call_args = plugin.client.update_table.call_args
+    update_fields = call_args[0][1]
+    assert "schema" in update_fields
+    assert "labels" in update_fields
+
+  def test_auto_schema_upgrade_defaults_to_true(self):
+    """Default config has auto_schema_upgrade enabled."""
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig()
+    assert config.auto_schema_upgrade is True
+
+  def test_create_table_conflict_is_ignored(self):
+    """Race condition (Conflict) during create_table is silently handled."""
+    plugin = self._make_plugin()
+    plugin.client.get_table.side_effect = cloud_exceptions.NotFound("not found")
+    plugin.client.create_table.side_effect = cloud_exceptions.Conflict(
+        "already exists"
+    )
+    # Should not raise.
+    plugin._ensure_schema_exists()
+
+
+class TestToolProvenance:
+  """Tests for _get_tool_origin helper."""
+
+  def test_function_tool_returns_local(self):
+    from google.adk.tools.function_tool import FunctionTool
+
+    def dummy():
+      pass
+
+    tool = FunctionTool(dummy)
+    result = bigquery_agent_analytics_plugin._get_tool_origin(tool)
+    assert result == "LOCAL"
+
+  def test_agent_tool_returns_sub_agent(self):
+    from google.adk.tools.agent_tool import AgentTool
+
+    agent = mock.MagicMock()
+    agent.name = "sub"
+    tool = AgentTool.__new__(AgentTool)
+    tool.agent = agent
+    tool._name = "sub"
+    result = bigquery_agent_analytics_plugin._get_tool_origin(tool)
+    assert result == "SUB_AGENT"
+
+  def test_transfer_tool_returns_transfer_agent(self):
+    from google.adk.tools.transfer_to_agent_tool import TransferToAgentTool
+
+    tool = TransferToAgentTool(agent_names=["other"])
+    result = bigquery_agent_analytics_plugin._get_tool_origin(tool)
+    assert result == "TRANSFER_AGENT"
+
+  def test_mcp_tool_returns_mcp(self):
+    try:
+      from google.adk.tools.mcp_tool.mcp_tool import McpTool
+    except ImportError:
+      pytest.skip("MCP not installed")
+    tool = McpTool.__new__(McpTool)
+    result = bigquery_agent_analytics_plugin._get_tool_origin(tool)
+    assert result == "MCP"
+
+  def test_a2a_agent_tool_returns_a2a(self):
+    from google.adk.tools.agent_tool import AgentTool
+
+    try:
+      from google.adk.agents.remote_a2a_agent import RemoteA2aAgent
+    except ImportError:
+      pytest.skip("A2A agent not available")
+
+    remote_agent = mock.MagicMock(spec=RemoteA2aAgent)
+    remote_agent.name = "remote"
+    remote_agent.description = "remote a2a agent"
+    tool = AgentTool.__new__(AgentTool)
+    tool.agent = remote_agent
+    tool._name = "remote"
+    result = bigquery_agent_analytics_plugin._get_tool_origin(tool)
+    assert result == "A2A"
+
+  def test_unknown_tool_returns_unknown(self):
+    tool = mock.MagicMock(spec=base_tool_lib.BaseTool)
+    tool.name = "mystery"
+    result = bigquery_agent_analytics_plugin._get_tool_origin(tool)
+    assert result == "UNKNOWN"
+
+
+class TestHITLTracing:
+  """Tests for HITL-specific event emission via on_event_callback.
+
+  HITL events (``adk_request_credential``, ``adk_request_confirmation``,
+  ``adk_request_input``) are synthetic function calls injected by the
+  framework — they never pass through ``before_tool_callback`` /
+  ``after_tool_callback``.  Detection therefore lives in
+  ``on_event_callback``, which inspects the event stream for these
+  function calls and their corresponding function responses.
+  """
+
+  def _make_fc_event(self, fc_name, args=None):
+    """Build a mock Event containing a function call."""
+    event = mock.MagicMock(spec=event_lib.Event)
+    fc = types.FunctionCall(name=fc_name, args=args or {})
+    part = types.Part(function_call=fc)
+    event.content = types.Content(role="model", parts=[part])
+    event.actions = event_actions_lib.EventActions()
+    return event
+
+  def _make_fr_event(self, fr_name, response=None):
+    """Build a mock Event containing a function response."""
+    event = mock.MagicMock(spec=event_lib.Event)
+    fr = types.FunctionResponse(name=fr_name, response=response or {})
+    part = types.Part(function_response=fr)
+    event.content = types.Content(role="user", parts=[part])
+    event.actions = event_actions_lib.EventActions()
+    return event
+
+  @pytest.mark.asyncio
+  async def test_hitl_confirmation_emits_additional_event(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      invocation_context,
+      dummy_arrow_schema,
+  ):
+    event = self._make_fc_event("adk_request_confirmation", {"confirm": True})
+    await bq_plugin_inst.on_event_callback(
+        invocation_context=invocation_context, event=event
+    )
+    await asyncio.sleep(0.05)
+    rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+    event_types = [r["event_type"] for r in rows]
+    assert "HITL_CONFIRMATION_REQUEST" in event_types
+
+  @pytest.mark.asyncio
+  async def test_hitl_credential_emits_additional_event(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      invocation_context,
+      dummy_arrow_schema,
+  ):
+    event = self._make_fc_event("adk_request_credential", {"auth": "oauth2"})
+    await bq_plugin_inst.on_event_callback(
+        invocation_context=invocation_context, event=event
+    )
+    await asyncio.sleep(0.05)
+    rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+    event_types = [r["event_type"] for r in rows]
+    assert "HITL_CREDENTIAL_REQUEST" in event_types
+
+  @pytest.mark.asyncio
+  async def test_hitl_completion_emits_additional_event(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      invocation_context,
+      dummy_arrow_schema,
+  ):
+    event = self._make_fr_event("adk_request_confirmation", {"confirmed": True})
+    await bq_plugin_inst.on_event_callback(
+        invocation_context=invocation_context, event=event
+    )
+    await asyncio.sleep(0.05)
+    rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+    event_types = [r["event_type"] for r in rows]
+    assert "HITL_CONFIRMATION_REQUEST_COMPLETED" in event_types
+
+  @pytest.mark.asyncio
+  async def test_regular_tool_no_hitl_event(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      invocation_context,
+      dummy_arrow_schema,
+  ):
+    event = self._make_fc_event("regular_tool", {"x": 1})
+    await bq_plugin_inst.on_event_callback(
+        invocation_context=invocation_context, event=event
+    )
+    await asyncio.sleep(0.05)
+    # No HITL events should be emitted for non-HITL function calls.
+    # on_event_callback only logs STATE_DELTA and HITL events; a regular
+    # function call produces neither.
+    assert mock_write_client.append_rows.call_count == 0
+
+
+# ==============================================================================
+# TEST CLASS: Span Hierarchy Isolation (Issue #4561)
+# ==============================================================================
+
+
+class TestSpanHierarchyIsolation:
+  """Regression tests for https://github.com/google/adk-python/issues/4561.
+
+  ``push_span()`` must NOT attach its span to the ambient OTel context.
+  If it does, any subsequent ``tracer.start_as_current_span()`` in the
+  framework (e.g. ``call_llm``, ``execute_tool``) will be incorrectly
+  re-parented under the plugin's span.
+  """
+
+  def test_push_span_does_not_change_ambient_context(self, callback_context):
+    """push_span must not mutate the current OTel span."""
+    span_before = trace.get_current_span()
+
+    bigquery_agent_analytics_plugin.TraceManager.push_span(
+        callback_context, "test_span"
+    )
+
+    span_after = trace.get_current_span()
+    assert span_after is span_before
+
+    # Cleanup
+    bigquery_agent_analytics_plugin.TraceManager.pop_span()
+
+  def test_attach_current_span_does_not_change_ambient_context(
+      self, callback_context
+  ):
+    """attach_current_span must not mutate the current OTel span."""
+    span_before = trace.get_current_span()
+
+    bigquery_agent_analytics_plugin.TraceManager.attach_current_span(
+        callback_context
+    )
+
+    span_after = trace.get_current_span()
+    assert span_after is span_before
+
+    # Cleanup
+    bigquery_agent_analytics_plugin.TraceManager.pop_span()
+
+  def test_pop_span_does_not_change_ambient_context(self, callback_context):
+    """pop_span must not mutate the current OTel span."""
+    bigquery_agent_analytics_plugin.TraceManager.push_span(
+        callback_context, "test_span"
+    )
+    span_before = trace.get_current_span()
+
+    bigquery_agent_analytics_plugin.TraceManager.pop_span()
+
+    span_after = trace.get_current_span()
+    assert span_after is span_before
+
+  def test_push_span_with_real_tracer_does_not_reparent(self, callback_context):
+    """With a real OTel tracer, plugin spans must not become parents
+
+    of subsequently created framework spans.
+    """
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    framework_tracer = provider.get_tracer("test-framework")
+
+    # Simulate: plugin pushes a span BEFORE the framework span
+    bigquery_agent_analytics_plugin.TraceManager.push_span(
+        callback_context, "llm_request"
+    )
+
+    # Framework creates its own span via start_as_current_span
+    with framework_tracer.start_as_current_span("call_llm") as fw_span:
+      fw_context = fw_span.get_span_context()
+
+    # Pop the plugin span
+    bigquery_agent_analytics_plugin.TraceManager.pop_span()
+
+    provider.shutdown()
+
+    # Verify the framework span was NOT re-parented under the
+    # plugin's llm_request span
+    finished = exporter.get_finished_spans()
+    call_llm_spans = [s for s in finished if s.name == "call_llm"]
+    assert len(call_llm_spans) == 1
+    fw_finished = call_llm_spans[0]
+
+    # The framework span's parent should NOT be the plugin's
+    # llm_request span.  With the fix, the plugin never
+    # attaches to the ambient context, so ``call_llm`` will
+    # have whatever parent existed before (None in this test).
+    assert fw_finished.parent is None
+
+  def test_multiple_push_pop_cycles_leave_context_clean(self, callback_context):
+    """Multiple push/pop cycles must not leak context changes."""
+    original_span = trace.get_current_span()
+
+    for _ in range(5):
+      bigquery_agent_analytics_plugin.TraceManager.push_span(
+          callback_context, "cycle_span"
+      )
+      bigquery_agent_analytics_plugin.TraceManager.pop_span()
+
+    assert trace.get_current_span() is original_span
+
+
+# ==============================================================================
+# TEST CLASS: End-to-End HITL Tracing via Runner
+# ==============================================================================
+
+
+def _hitl_my_action(
+    tool_context: tool_context_lib.ToolContext,
+) -> dict[str, str]:
+  """Tool function used by HITL end-to-end tests."""
+  return {"result": f"confirmed={tool_context.tool_confirmation.confirmed}"}
+
+
+class TestHITLTracingEndToEnd:
+  """End-to-end tests that run the full Runner + Plugin pipeline with
+
+  ``FunctionTool(require_confirmation=True)`` and verify that HITL events
+  are logged alongside normal TOOL_* events in the BQ analytics plugin.
+  """
+
+  @pytest.fixture
+  def _mock_bq_infra(
+      self,
+      mock_auth_default,
+      mock_bq_client,
+      mock_write_client,
+      mock_to_arrow_schema,
+      mock_asyncio_to_thread,
+  ):
+    """Bundle all BQ mocking fixtures."""
+    yield mock_write_client
+
+  @pytest.mark.asyncio
+  async def test_confirmation_flow_emits_hitl_events(
+      self,
+      _mock_bq_infra,
+      dummy_arrow_schema,
+  ):
+    """Full Runner pipeline: tool with require_confirmation emits
+
+    HITL_CONFIRMATION_REQUEST and HITL_CONFIRMATION_REQUEST_COMPLETED.
+    """
+    from google.adk.flows.llm_flows.functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+    from google.adk.tools.function_tool import FunctionTool
+    from google.genai.types import FunctionCall
+    from google.genai.types import FunctionResponse
+    from google.genai.types import Part
+
+    from .. import testing_utils
+
+    mock_write_client = _mock_bq_infra
+
+    tool = FunctionTool(func=_hitl_my_action, require_confirmation=True)
+
+    # -- Mock LLM: first response calls the tool, second is final text --
+    llm_responses = [
+        testing_utils.LlmResponse(
+            content=testing_utils.ModelContent(
+                parts=[
+                    Part(function_call=FunctionCall(name=tool.name, args={}))
+                ]
+            )
+        ),
+        testing_utils.LlmResponse(
+            content=testing_utils.ModelContent(
+                parts=[Part(text="Done, action confirmed.")]
+            )
+        ),
+    ]
+    mock_model = testing_utils.MockModel(responses=llm_responses)
+
+    # -- Build the plugin --
+    bq_plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        project_id=PROJECT_ID,
+        dataset_id=DATASET_ID,
+        table_id=TABLE_ID,
+    )
+    await bq_plugin._ensure_started()
+    mock_write_client.append_rows.reset_mock()
+
+    # -- Build agent + runner WITH the plugin --
+    from google.adk.agents.llm_agent import LlmAgent
+
+    agent = LlmAgent(name="hitl_agent", model=mock_model, tools=[tool])
+    runner = testing_utils.InMemoryRunner(root_agent=agent, plugins=[bq_plugin])
+
+    # -- Turn 1: user query → LLM calls tool → HITL pause --
+    events_turn1 = await runner.run_async(
+        testing_utils.UserContent("run my_action")
+    )
+
+    # Find the adk_request_confirmation function call
+    confirmation_fc_id = None
+    for ev in events_turn1:
+      if ev.content and ev.content.parts:
+        for part in ev.content.parts:
+          if (
+              hasattr(part, "function_call")
+              and part.function_call
+              and part.function_call.name
+              == REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+          ):
+            confirmation_fc_id = part.function_call.id
+            break
+      if confirmation_fc_id:
+        break
+
+    assert (
+        confirmation_fc_id is not None
+    ), "Expected adk_request_confirmation function call in turn 1"
+
+    # -- Turn 2: user sends confirmation → tool re-executes --
+    user_confirmation = testing_utils.UserContent(
+        Part(
+            function_response=FunctionResponse(
+                id=confirmation_fc_id,
+                name=REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+                response={"confirmed": True},
+            )
+        )
+    )
+    events_turn2 = await runner.run_async(user_confirmation)
+
+    # -- Give the async BQ writer a moment to flush --
+    await asyncio.sleep(0.2)
+
+    # -- Collect all BQ rows --
+    rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+    event_types = [r["event_type"] for r in rows]
+
+    # -- Verify standard events are present --
+    assert "TOOL_STARTING" in event_types
+    assert "TOOL_COMPLETED" in event_types
+
+    # -- Verify HITL-specific events are present --
+    assert (
+        "HITL_CONFIRMATION_REQUEST" in event_types
+    ), f"Expected HITL_CONFIRMATION_REQUEST in {event_types}"
+    assert (
+        "HITL_CONFIRMATION_REQUEST_COMPLETED" in event_types
+    ), f"Expected HITL_CONFIRMATION_REQUEST_COMPLETED in {event_types}"
+
+    # -- Verify HITL events have correct tool name in content --
+    hitl_rows = [r for r in rows if r["event_type"].startswith("HITL_")]
+    for row in hitl_rows:
+      content = json.loads(row["content"]) if row["content"] else {}
+      assert content.get("tool") == "adk_request_confirmation", (
+          "HITL event should reference 'adk_request_confirmation',"
+          f" got {content.get('tool')}"
+      )
+
+    await bq_plugin.shutdown()
+
+  @pytest.mark.asyncio
+  async def test_regular_tool_does_not_emit_hitl_events(
+      self,
+      _mock_bq_infra,
+      dummy_arrow_schema,
+  ):
+    """A tool WITHOUT require_confirmation should not produce HITL events."""
+    from google.adk.tools.function_tool import FunctionTool
+    from google.genai.types import FunctionCall
+    from google.genai.types import Part
+
+    from .. import testing_utils
+
+    mock_write_client = _mock_bq_infra
+
+    def regular_tool() -> str:
+      return "done"
+
+    tool = FunctionTool(func=regular_tool)
+
+    llm_responses = [
+        testing_utils.LlmResponse(
+            content=testing_utils.ModelContent(
+                parts=[
+                    Part(function_call=FunctionCall(name=tool.name, args={}))
+                ]
+            )
+        ),
+        testing_utils.LlmResponse(
+            content=testing_utils.ModelContent(parts=[Part(text="All done.")])
+        ),
+    ]
+    mock_model = testing_utils.MockModel(responses=llm_responses)
+
+    bq_plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        project_id=PROJECT_ID,
+        dataset_id=DATASET_ID,
+        table_id=TABLE_ID,
+    )
+    await bq_plugin._ensure_started()
+    mock_write_client.append_rows.reset_mock()
+
+    from google.adk.agents.llm_agent import LlmAgent
+
+    agent = LlmAgent(name="regular_agent", model=mock_model, tools=[tool])
+    runner = testing_utils.InMemoryRunner(root_agent=agent, plugins=[bq_plugin])
+
+    await runner.run_async(testing_utils.UserContent("run regular_tool"))
+    await asyncio.sleep(0.2)
+
+    rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+    event_types = [r["event_type"] for r in rows]
+
+    # Standard tool events should be present
+    assert "TOOL_STARTING" in event_types
+    assert "TOOL_COMPLETED" in event_types
+
+    # No HITL events
+    hitl_events = [et for et in event_types if et.startswith("HITL_")]
+    assert (
+        hitl_events == []
+    ), f"Expected no HITL events for regular tool, got {hitl_events}"
+
+    await bq_plugin.shutdown()

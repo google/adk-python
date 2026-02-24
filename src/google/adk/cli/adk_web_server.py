@@ -68,6 +68,7 @@ from ..auth.credential_service.base_credential_service import BaseCredentialServ
 from ..errors.already_exists_error import AlreadyExistsError
 from ..errors.input_validation_error import InputValidationError
 from ..errors.not_found_error import NotFoundError
+from ..errors.session_not_found_error import SessionNotFoundError
 from ..evaluation.base_eval_service import InferenceConfig
 from ..evaluation.base_eval_service import InferenceRequest
 from ..evaluation.constants import MISSING_EVAL_DEPENDENCIES_MESSAGE
@@ -1558,53 +1559,68 @@ class AdkWebServer:
 
     @app.post("/run", response_model_exclude_none=True)
     async def run_agent(req: RunAgentRequest) -> list[Event]:
-      session = await self.session_service.get_session(
-          app_name=req.app_name, user_id=req.user_id, session_id=req.session_id
-      )
-      if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
       runner = await self.get_runner_async(req.app_name)
-      async with Aclosing(
-          runner.run_async(
-              user_id=req.user_id,
-              session_id=req.session_id,
-              new_message=req.new_message,
-              state_delta=req.state_delta,
-              invocation_id=req.invocation_id,
-          )
-      ) as agen:
-        events = [event async for event in agen]
+      try:
+        async with Aclosing(
+            runner.run_async(
+                user_id=req.user_id,
+                session_id=req.session_id,
+                new_message=req.new_message,
+                state_delta=req.state_delta,
+                invocation_id=req.invocation_id,
+            )
+        ) as agen:
+          events = [event async for event in agen]
+      except SessionNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
       logger.info("Generated %s events in agent run", len(events))
       logger.debug("Events generated: %s", events)
       return events
 
     @app.post("/run_sse")
     async def run_agent_sse(req: RunAgentRequest) -> StreamingResponse:
-      # SSE endpoint
-      session = await self.session_service.get_session(
-          app_name=req.app_name, user_id=req.user_id, session_id=req.session_id
+      stream_mode = StreamingMode.SSE if req.streaming else StreamingMode.NONE
+      runner = await self.get_runner_async(req.app_name)
+      agen = runner.run_async(
+          user_id=req.user_id,
+          session_id=req.session_id,
+          new_message=req.new_message,
+          state_delta=req.state_delta,
+          run_config=RunConfig(streaming_mode=stream_mode),
+          invocation_id=req.invocation_id,
       )
-      if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
+
+      # Eagerly advance the generator to trigger session validation
+      # before the streaming response is created.  This lets us return
+      # a proper HTTP 404 for missing sessions without a redundant
+      # get_session call — the Runner's single _get_or_create_session
+      # call is the only one that runs.
+      first_event = None
+      first_error = None
+      try:
+        first_event = await anext(agen)
+      except SessionNotFoundError as e:
+        await agen.aclose()
+        raise HTTPException(status_code=404, detail=str(e)) from e
+      except StopAsyncIteration:
+        await agen.aclose()
+      except Exception as e:
+        first_error = e
 
       # Convert the events to properly formatted SSE
       async def event_generator():
-        try:
-          stream_mode = (
-              StreamingMode.SSE if req.streaming else StreamingMode.NONE
-          )
-          runner = await self.get_runner_async(req.app_name)
-          async with Aclosing(
-              runner.run_async(
-                  user_id=req.user_id,
-                  session_id=req.session_id,
-                  new_message=req.new_message,
-                  state_delta=req.state_delta,
-                  run_config=RunConfig(streaming_mode=stream_mode),
-                  invocation_id=req.invocation_id,
-              )
-          ) as agen:
-            async for event in agen:
+        async with Aclosing(agen):
+          try:
+            if first_error:
+              raise first_error
+
+            async def all_events():
+              if first_event is not None:
+                yield first_event
+              async for event in agen:
+                yield event
+
+            async for event in all_events():
               # ADK Web renders artifacts from `actions.artifactDelta`
               # during part processing *and* during action processing
               # 1) the original event with `artifactDelta` cleared (content)
@@ -1630,9 +1646,9 @@ class AdkWebServer:
                     "Generated event in agent run streaming: %s", sse_event
                 )
                 yield f"data: {sse_event}\n\n"
-        except Exception as e:
-          logger.exception("Error in event_generator: %s", e)
-          yield f"data: {json.dumps({'error': str(e)})}\n\n"
+          except Exception as e:
+            logger.exception("Error in event_generator: %s", e)
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
 
       # Returns a streaming response with the proper media type for SSE
       return StreamingResponse(

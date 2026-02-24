@@ -99,7 +99,7 @@ class BaseMemoryService(ABC):
       *,
       app_name: str,
       user_id: str,
-      memories: Sequence[str],
+      memories: Sequence[MemoryEntry],
       custom_metadata: Mapping[str, object] | None = None,
   ) -> None:
     """Adds explicit memory items directly to the memory service.

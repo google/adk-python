@@ -24,6 +24,7 @@ from typing_extensions import override
 from ..agents.readonly_context import ReadonlyContext
 from ..utils.model_name_utils import is_gemini_1_model
 from ..utils.model_name_utils import is_gemini_model
+from ..utils.model_name_utils import is_gemini_model_id_check_disabled
 from .base_tool import BaseTool
 from .tool_context import ToolContext
 
@@ -141,14 +142,16 @@ class VertexAiSearchTool(BaseTool):
       tool_context: ToolContext,
       llm_request: LlmRequest,
   ) -> None:
-    if is_gemini_model(llm_request.model):
+    model_check_disabled = is_gemini_model_id_check_disabled()
+    llm_request.config = llm_request.config or types.GenerateContentConfig()
+    llm_request.config.tools = llm_request.config.tools or []
+
+    if is_gemini_model(llm_request.model) or model_check_disabled:
       if is_gemini_1_model(llm_request.model) and llm_request.config.tools:
         raise ValueError(
             'Vertex AI search tool cannot be used with other tools in Gemini'
             ' 1.x.'
         )
-      llm_request.config = llm_request.config or types.GenerateContentConfig()
-      llm_request.config.tools = llm_request.config.tools or []
 
       # Build the search config (can be overridden by subclasses)
       vertex_ai_search_config = self._build_vertex_ai_search_config(

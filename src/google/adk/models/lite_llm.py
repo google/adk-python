@@ -70,7 +70,9 @@ if TYPE_CHECKING:
   from litellm import Function
   from litellm import Message
   from litellm import ModelResponse
+  from litellm import ModelResponseStream
   from litellm import OpenAIMessageContent
+  from litellm.types.utils import Delta
 else:
   litellm = None
   acompletion = None
@@ -85,7 +87,9 @@ else:
   Function = None
   Message = None
   ModelResponse = None
+  Delta = None
   OpenAIMessageContent = None
+  ModelResponseStream = None
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -151,6 +155,7 @@ _LITELLM_GLOBAL_SYMBOLS = (
     "Function",
     "Message",
     "ModelResponse",
+    "ModelResponseStream",
     "OpenAIMessageContent",
     "acompletion",
     "completion",
@@ -382,15 +387,11 @@ def _convert_reasoning_value_to_parts(reasoning_value: Any) -> List[types.Part]:
   ]
 
 
-def _extract_reasoning_value(message: Message | Dict[str, Any]) -> Any:
-  """Fetches the reasoning payload from a LiteLLM message or dict."""
+def _extract_reasoning_value(message: Message | Delta | None) -> Any:
+  """Fetches the reasoning payload from a LiteLLM message."""
   if message is None:
     return None
-  if hasattr(message, "reasoning_content"):
-    return getattr(message, "reasoning_content")
-  if isinstance(message, dict):
-    return message.get("reasoning_content")
-  return None
+  return message.get("reasoning_content")
 
 
 class ChatCompletionFileUrlObject(TypedDict, total=False):
@@ -1264,7 +1265,7 @@ def _function_declaration_to_tool_param(
 
 
 def _model_response_to_chunk(
-    response: ModelResponse,
+    response: ModelResponse | ModelResponseStream,
 ) -> Generator[
     Tuple[
         Optional[
@@ -1282,6 +1283,9 @@ def _model_response_to_chunk(
 ]:
   """Converts a litellm message to text, function or usage metadata chunk.
 
+  LiteLLM streaming chunks carry `delta`, while non-streaming chunks carry
+  `message`.
+
   Args:
     response: The response from the model.
 
@@ -1290,18 +1294,45 @@ def _model_response_to_chunk(
   """
   _ensure_litellm_imported()
 
-  message = None
-  if response.get("choices", None):
-    message = response["choices"][0].get("message", None)
-    finish_reason = response["choices"][0].get("finish_reason", None)
-    # check streaming delta
-    if message is None and response["choices"][0].get("delta", None):
-      message = response["choices"][0]["delta"]
+  def _has_meaningful_signal(message: Message | Delta | None) -> bool:
+    if message is None:
+      return False
+    return bool(
+        message.get("content")
+        or message.get("tool_calls")
+        or message.get("function_call")
+        or message.get("reasoning_content")
+    )
+
+  if isinstance(response, ModelResponseStream):
+    message_field = "delta"
+  elif isinstance(response, ModelResponse):
+    message_field = "message"
+  else:
+    raise TypeError(
+        "Unexpected response type from LiteLLM: %r" % (type(response),)
+    )
+
+  choices = response.get("choices")
+  if not choices:
+    yield None, None
+  else:
+    choice = choices[0]
+    finish_reason = choice.get("finish_reason")
+    if message_field == "delta":
+      message = choice.get("delta")
+    else:
+      message = choice.get("message")
+
+    if message is not None and not _has_meaningful_signal(message):
+      message = None
 
     message_content: Optional[OpenAIMessageContent] = None
     tool_calls: list[ChatCompletionMessageToolCall] = []
     reasoning_parts: List[types.Part] = []
+
     if message is not None:
+      # Both Delta and Message support dict-like .get() access
       (
           message_content,
           tool_calls,
@@ -1318,39 +1349,46 @@ def _model_response_to_chunk(
 
     if tool_calls:
       for idx, tool_call in enumerate(tool_calls):
-        # aggregate tool_call
-        if tool_call.type == "function":
-          func_name = tool_call.function.name
-          func_args = tool_call.function.arguments
-          func_index = getattr(tool_call, "index", idx)
+        # LiteLLM tool call objects support dict-like .get() access
+        if tool_call.get("type") == "function":
+          function_obj = tool_call.get("function")
+          if not function_obj:
+            continue
+          func_name = function_obj.get("name")
+          func_args = function_obj.get("arguments")
+          func_index = tool_call.get("index", idx)
+          tool_call_id = tool_call.get("id")
 
           # Ignore empty chunks that don't carry any information.
           if not func_name and not func_args:
             continue
 
           yield FunctionChunk(
-              id=tool_call.id,
+              id=tool_call_id,
               name=func_name,
               args=func_args,
               index=func_index,
           ), finish_reason
 
-    if finish_reason and not (message_content or tool_calls):
+    if finish_reason and not (message_content or tool_calls or reasoning_parts):
       yield None, finish_reason
-
-  if not message:
-    yield None, None
 
   # Ideally usage would be expected with the last ModelResponseStream with a
   # finish_reason set. But this is not the case we are observing from litellm.
   # So we are sending it as a separate chunk to be set on the llm_response.
-  if response.get("usage", None):
-    yield UsageMetadataChunk(
-        prompt_tokens=response["usage"].get("prompt_tokens", 0),
-        completion_tokens=response["usage"].get("completion_tokens", 0),
-        total_tokens=response["usage"].get("total_tokens", 0),
-        cached_prompt_tokens=_extract_cached_prompt_tokens(response["usage"]),
-    ), None
+  usage = response.get("usage")
+  if usage:
+    try:
+      yield UsageMetadataChunk(
+          prompt_tokens=usage.get("prompt_tokens", 0) or 0,
+          completion_tokens=usage.get("completion_tokens", 0) or 0,
+          total_tokens=usage.get("total_tokens", 0) or 0,
+          cached_prompt_tokens=_extract_cached_prompt_tokens(usage),
+      ), None
+    except AttributeError as e:
+      raise TypeError(
+          "Unexpected LiteLLM usage type: %r" % (type(usage),)
+      ) from e
 
 
 def _model_response_to_generate_content_response(
@@ -1453,6 +1491,54 @@ def _message_to_generate_content_response(
   )
 
 
+def _enforce_strict_openai_schema(schema: dict[str, Any]) -> None:
+  """Recursively transforms a JSON schema for OpenAI strict structured outputs.
+
+  OpenAI strict mode requires:
+  1. additionalProperties: false on all object schemas (including nested/$defs).
+  2. All properties listed in 'required' (no optional omissions).
+  3. $ref nodes must have no sibling keywords (e.g., no 'description' next to
+     '$ref').
+
+  This function mutates the schema dict in place.
+
+  Args:
+    schema: A JSON schema dictionary to transform.
+  """
+  if not isinstance(schema, dict):
+    return
+
+  # Strip sibling keywords from $ref nodes (OpenAI rejects them).
+  if "$ref" in schema:
+    for key in list(schema.keys()):
+      if key != "$ref":
+        del schema[key]
+    return
+
+  # Ensure all object schemas have additionalProperties: false and list every
+  # property as required.
+  if schema.get("type") == "object" and "properties" in schema:
+    schema["additionalProperties"] = False
+    schema["required"] = sorted(schema["properties"].keys())
+
+  # Recurse into $defs (Pydantic's nested model definitions).
+  for defn in schema.get("$defs", {}).values():
+    _enforce_strict_openai_schema(defn)
+
+  # Recurse into property schemas.
+  for prop in schema.get("properties", {}).values():
+    _enforce_strict_openai_schema(prop)
+
+  # Recurse into combinators.
+  for key in ("anyOf", "oneOf", "allOf"):
+    for item in schema.get(key, []):
+      _enforce_strict_openai_schema(item)
+
+  # Recurse into array item schemas.
+  if "items" in schema and isinstance(schema["items"], dict):
+    _enforce_strict_openai_schema(schema["items"])
+
+
 def _to_litellm_response_format(
     response_schema: types.SchemaUnion,
     model: str,
@@ -1477,7 +1563,7 @@ def _to_litellm_response_format(
         and schema_type.lower() in _LITELLM_STRUCTURED_TYPES
     ):
       return response_schema
-    schema_dict = dict(response_schema)
+    schema_dict = copy.deepcopy(response_schema)
     if "title" in schema_dict:
       schema_name = str(schema_dict["title"])
   elif isinstance(response_schema, type) and issubclass(
@@ -1488,14 +1574,18 @@ def _to_litellm_response_format(
   elif isinstance(response_schema, BaseModel):
     if isinstance(response_schema, types.Schema):
       # GenAI Schema instances already represent JSON schema definitions.
-      schema_dict = response_schema.model_dump(exclude_none=True, mode="json")
+      schema_dict = copy.deepcopy(
+          response_schema.model_dump(exclude_none=True, mode="json")
+      )
       if "title" in schema_dict:
         schema_name = str(schema_dict["title"])
     else:
       schema_dict = response_schema.__class__.model_json_schema()
       schema_name = response_schema.__class__.__name__
   elif hasattr(response_schema, "model_dump"):
-    schema_dict = response_schema.model_dump(exclude_none=True, mode="json")
+    schema_dict = copy.deepcopy(
+        response_schema.model_dump(exclude_none=True, mode="json")
+    )
     schema_name = response_schema.__class__.__name__
   else:
     logger.warning(
@@ -1513,14 +1603,8 @@ def _to_litellm_response_format(
 
   # OpenAI-compatible format (default) per LiteLLM docs:
   # https://docs.litellm.ai/docs/completion/json_mode
-  if (
-      isinstance(schema_dict, dict)
-      and schema_dict.get("type") == "object"
-      and "additionalProperties" not in schema_dict
-  ):
-    # OpenAI structured outputs require explicit additionalProperties: false.
-    schema_dict = dict(schema_dict)
-    schema_dict["additionalProperties"] = False
+  if isinstance(schema_dict, dict):
+    _enforce_strict_openai_schema(schema_dict)
 
   return {
       "type": "json_schema",
@@ -1902,6 +1986,57 @@ class LiteLlm(BaseLlm):
       aggregated_llm_response_with_tool_call = None
       usage_metadata = None
       fallback_index = 0
+
+      def _finalize_tool_call_response(
+          *, model_version: str, finish_reason: str
+      ) -> LlmResponse:
+        tool_calls = []
+        for index, func_data in function_calls.items():
+          if func_data["id"]:
+            tool_calls.append(
+                ChatCompletionMessageToolCall(
+                    type="function",
+                    id=func_data["id"],
+                    function=Function(
+                        name=func_data["name"],
+                        arguments=func_data["args"],
+                        index=index,
+                    ),
+                )
+            )
+        llm_response = _message_to_generate_content_response(
+            ChatCompletionAssistantMessage(
+                role="assistant",
+                content=text,
+                tool_calls=tool_calls,
+            ),
+            model_version=model_version,
+            thought_parts=list(reasoning_parts) if reasoning_parts else None,
+        )
+        llm_response.finish_reason = _map_finish_reason(finish_reason)
+        return llm_response
+
+      def _finalize_text_response(
+          *, model_version: str, finish_reason: str
+      ) -> LlmResponse:
+        message_content = text if text else None
+        llm_response = _message_to_generate_content_response(
+            ChatCompletionAssistantMessage(
+                role="assistant",
+                content=message_content,
+            ),
+            model_version=model_version,
+            thought_parts=list(reasoning_parts) if reasoning_parts else None,
+        )
+        llm_response.finish_reason = _map_finish_reason(finish_reason)
+        return llm_response
+
+      def _reset_stream_buffers() -> None:
+        nonlocal text, reasoning_parts
+        text = ""
+        reasoning_parts = []
+        function_calls.clear()
+
       async for part in await self.llm_client.acompletion(**completion_args):
         for chunk, finish_reason in _model_response_to_chunk(part):
           if isinstance(chunk, FunctionChunk):
@@ -1951,58 +2086,49 @@ class LiteLlm(BaseLlm):
                 cached_content_token_count=chunk.cached_prompt_tokens,
             )
 
-          if (
-              finish_reason == "tool_calls" or finish_reason == "stop"
-          ) and function_calls:
-            tool_calls = []
-            for index, func_data in function_calls.items():
-              if func_data["id"]:
-                tool_calls.append(
-                    ChatCompletionMessageToolCall(
-                        type="function",
-                        id=func_data["id"],
-                        function=Function(
-                            name=func_data["name"],
-                            arguments=func_data["args"],
-                            index=index,
-                        ),
-                    )
-                )
+          # LiteLLM 1.81+ can set finish_reason="stop" on partial chunks. Only
+          # finalize tool calls on an explicit tool_calls finish_reason, or on a
+          # stop-only chunk (no content/tool deltas).
+          if function_calls and (
+              finish_reason == "tool_calls"
+              or (finish_reason == "stop" and chunk is None)
+          ):
             aggregated_llm_response_with_tool_call = (
-                _message_to_generate_content_response(
-                    ChatCompletionAssistantMessage(
-                        role="assistant",
-                        content=text,
-                        tool_calls=tool_calls,
-                    ),
+                _finalize_tool_call_response(
                     model_version=part.model,
-                    thought_parts=list(reasoning_parts)
-                    if reasoning_parts
-                    else None,
+                    finish_reason=finish_reason,
                 )
             )
-            aggregated_llm_response_with_tool_call.finish_reason = (
-                _map_finish_reason(finish_reason)
-            )
-            text = ""
-            reasoning_parts = []
-            function_calls.clear()
-          elif finish_reason == "stop" and (text or reasoning_parts):
-            message_content = text if text else None
-            aggregated_llm_response = _message_to_generate_content_response(
-                ChatCompletionAssistantMessage(
-                    role="assistant", content=message_content
-                ),
+            _reset_stream_buffers()
+          elif (
+              finish_reason == "stop"
+              and (text or reasoning_parts)
+              and chunk is None
+              and not function_calls
+          ):
+            # Only aggregate text response when we have a true stop signal
+            # chunk is None means no content in this chunk, just finish signal.
+            # LiteLLM 1.81+ sets finish_reason="stop" on partial chunks with
+            # content.
+            aggregated_llm_response = _finalize_text_response(
                 model_version=part.model,
-                thought_parts=list(reasoning_parts)
-                if reasoning_parts
-                else None,
+                finish_reason=finish_reason,
             )
-            aggregated_llm_response.finish_reason = _map_finish_reason(
-                finish_reason
-            )
-            text = ""
-            reasoning_parts = []
+            _reset_stream_buffers()
+
+      if function_calls and not aggregated_llm_response_with_tool_call:
+        aggregated_llm_response_with_tool_call = _finalize_tool_call_response(
+            model_version=part.model,
+            finish_reason="tool_calls",
+        )
+        _reset_stream_buffers()
+
+      if (text or reasoning_parts) and not aggregated_llm_response:
+        aggregated_llm_response = _finalize_text_response(
+            model_version=part.model,
+            finish_reason="stop",
+        )
+        _reset_stream_buffers()
 
       # waiting until streaming ends to yield the llm_response as litellm tends
       # to send chunk that contains usage_metadata after the chunk with
