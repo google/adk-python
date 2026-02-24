@@ -17,7 +17,10 @@ from __future__ import annotations
 from contextlib import redirect_stdout
 import io
 import logging
+import os
 import re
+import tempfile
+import threading
 from typing import Any
 
 from pydantic import Field
@@ -29,6 +32,8 @@ from .code_execution_utils import CodeExecutionInput
 from .code_execution_utils import CodeExecutionResult
 
 logger = logging.getLogger('google_adk.' + __name__)
+
+_execution_lock = threading.Lock()
 
 
 def _prepare_globals(code: str, globals_: dict[str, Any]) -> None:
@@ -67,15 +72,40 @@ class UnsafeLocalCodeExecutor(BaseCodeExecutor):
     # Execute the code.
     output = ''
     error = ''
-    try:
-      globals_ = {}
-      _prepare_globals(code_execution_input.code, globals_)
-      stdout = io.StringIO()
-      with redirect_stdout(stdout):
-        exec(code_execution_input.code, globals_, globals_)
-      output = stdout.getvalue()
-    except Exception as e:
-      error = str(e)
+
+    with _execution_lock:
+      original_cwd = os.getcwd()
+      try:
+        # Prepare the execution environment (temp volume)
+        with tempfile.TemporaryDirectory() as temp_dir:
+          # Write input files to the temp directory
+          for f in code_execution_input.input_files:
+            file_path = os.path.join(temp_dir, f.path or f.name)
+            os.makedirs(os.path.dirname(file_path), exist_ok=True)
+            mode = 'wb' if isinstance(f.content, bytes) else 'w'
+            with open(file_path, mode) as out_f:
+              out_f.write(f.content)
+
+          # Change working directory if specified
+          if code_execution_input.working_dir:
+            exec_dir = os.path.join(temp_dir, code_execution_input.working_dir)
+            os.makedirs(exec_dir, exist_ok=True)
+            os.chdir(exec_dir)
+          else:
+            os.chdir(temp_dir)
+
+          # Execute the code
+          globals_ = {}
+          _prepare_globals(code_execution_input.code, globals_)
+          stdout = io.StringIO()
+          with redirect_stdout(stdout):
+            exec(code_execution_input.code, globals_, globals_)
+          output = stdout.getvalue()
+
+      except Exception as e:
+        error = str(e)
+      finally:
+        os.chdir(original_cwd)
 
     # Collect the final result.
     return CodeExecutionResult(
