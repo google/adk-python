@@ -141,7 +141,7 @@ class AgentEngineSandboxCodeExecutor(BaseCodeExecutor):
               ' stdout/stderr: %s',
               output.data.decode('utf-8', errors='ignore'),
           )
-          continue
+          raise
         if isinstance(json_output_data, dict):
           # Primary fields returned by the API are msg_out/msg_err.
           # Fall back to stdout/stderr for backward compatibility.
