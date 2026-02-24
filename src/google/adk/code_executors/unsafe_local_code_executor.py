@@ -73,39 +73,56 @@ class UnsafeLocalCodeExecutor(BaseCodeExecutor):
     output = ''
     error = ''
 
-    with _execution_lock:
-      original_cwd = os.getcwd()
+    needs_sandbox = (
+        code_execution_input.input_files
+        or code_execution_input.working_dir
+    )
+
+    if needs_sandbox:
+      with _execution_lock:
+        original_cwd = os.getcwd()
+        try:
+          with tempfile.TemporaryDirectory() as temp_dir:
+            # Write input files to the temp directory
+            for f in code_execution_input.input_files:
+              file_path = os.path.join(temp_dir, f.path or f.name)
+              os.makedirs(os.path.dirname(file_path), exist_ok=True)
+              mode = 'wb' if isinstance(f.content, bytes) else 'w'
+              with open(file_path, mode) as out_f:
+                out_f.write(f.content)
+
+            # Change working directory
+            if code_execution_input.working_dir:
+              exec_dir = os.path.join(
+                  temp_dir, code_execution_input.working_dir
+              )
+              os.makedirs(exec_dir, exist_ok=True)
+              os.chdir(exec_dir)
+            else:
+              os.chdir(temp_dir)
+
+            globals_ = {}
+            _prepare_globals(code_execution_input.code, globals_)
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+              exec(code_execution_input.code, globals_, globals_)
+            output = stdout.getvalue()
+
+        except Exception as e:
+          error = str(e)
+        finally:
+          os.chdir(original_cwd)
+    else:
+      # Original path: no temp dir, no chdir, no lock needed
       try:
-        # Prepare the execution environment (temp volume)
-        with tempfile.TemporaryDirectory() as temp_dir:
-          # Write input files to the temp directory
-          for f in code_execution_input.input_files:
-            file_path = os.path.join(temp_dir, f.path or f.name)
-            os.makedirs(os.path.dirname(file_path), exist_ok=True)
-            mode = 'wb' if isinstance(f.content, bytes) else 'w'
-            with open(file_path, mode) as out_f:
-              out_f.write(f.content)
-
-          # Change working directory if specified
-          if code_execution_input.working_dir:
-            exec_dir = os.path.join(temp_dir, code_execution_input.working_dir)
-            os.makedirs(exec_dir, exist_ok=True)
-            os.chdir(exec_dir)
-          else:
-            os.chdir(temp_dir)
-
-          # Execute the code
-          globals_ = {}
-          _prepare_globals(code_execution_input.code, globals_)
-          stdout = io.StringIO()
-          with redirect_stdout(stdout):
-            exec(code_execution_input.code, globals_, globals_)
-          output = stdout.getvalue()
-
+        globals_ = {}
+        _prepare_globals(code_execution_input.code, globals_)
+        stdout = io.StringIO()
+        with redirect_stdout(stdout):
+          exec(code_execution_input.code, globals_, globals_)
+        output = stdout.getvalue()
       except Exception as e:
         error = str(e)
-      finally:
-        os.chdir(original_cwd)
 
     # Collect the final result.
     return CodeExecutionResult(
