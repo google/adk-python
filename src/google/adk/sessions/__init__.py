@@ -27,26 +27,28 @@ except ImportError:
   class DatabaseSessionService(BaseSessionService):
     """Placeholder for DatabaseSessionService when dependencies are not installed."""
 
+    _ERROR_MESSAGE = (
+        'DatabaseSessionService requires sqlalchemy>=2.0, please ensure it is'
+        ' installed correctly.'
+    )
+
     def __init__(self, *args, **kwargs):
-      raise ImportError(
-          'DatabaseSessionService requires sqlalchemy>=2.0, please ensure it is'
-          ' installed correctly.'
-      )
+      raise ImportError(self._ERROR_MESSAGE)
 
     async def create_session(self, *args, **kwargs):
-      self.__init__(*args, **kwargs)
+      raise ImportError(self._ERROR_MESSAGE)
 
     async def get_session(self, *args, **kwargs):
-      self.__init__(*args, **kwargs)
+      raise ImportError(self._ERROR_MESSAGE)
 
     async def list_sessions(self, *args, **kwargs):
-      self.__init__(*args, **kwargs)
+      raise ImportError(self._ERROR_MESSAGE)
 
     async def delete_session(self, *args, **kwargs):
-      self.__init__(*args, **kwargs)
+      raise ImportError(self._ERROR_MESSAGE)
 
     async def append_event(self, *args, **kwargs):
-      self.__init__(*args, **kwargs)
+      raise ImportError(self._ERROR_MESSAGE)
 
 
 __all__ = [
