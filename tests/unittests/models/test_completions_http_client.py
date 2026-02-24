@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
 from unittest import mock
 from unittest.mock import AsyncMock
 
@@ -24,7 +25,7 @@ import pytest
 
 @pytest.fixture
 def client():
-  return CompletionsHTTPClient(base_url='https://example.com')
+  return CompletionsHTTPClient(base_url='https://localhost')
 
 
 @pytest.fixture(name='llm_request')
@@ -58,7 +59,7 @@ async def test_construct_payload_basic_payload(client, llm_request):
     url = call_args[0][0]
     kwargs = call_args[1]
 
-    assert url == 'https://example.com/chat/completions'
+    assert url == 'https://localhost/chat/completions'
     payload = kwargs['json']
     assert payload['model'] == 'open_llama'
     assert payload['stream'] is False
@@ -231,7 +232,7 @@ async def test_construct_payload_image_file_uri(client):
               role='user',
               parts=[
                   types.Part.from_uri(
-                      file_uri='https://example.com/image.jpg',
+                      file_uri='https://localhost/image.jpg',
                       mime_type='image/jpeg',
                   )
               ],
@@ -263,7 +264,7 @@ async def test_construct_payload_image_file_uri(client):
     assert isinstance(message['content'], list)
     assert message['content'][0] == {
         'type': 'image_url',
-        'image_url': {'url': 'https://example.com/image.jpg'},
+        'image_url': {'url': 'https://localhost/image.jpg'},
     }
 
 
@@ -368,6 +369,7 @@ async def test_construct_payload_response_format(
 
     mock_post.assert_called_once()
     payload = mock_post.call_args[1]['json']
+
     assert payload['response_format'] == expected_response_format
 
 
@@ -438,3 +440,334 @@ async def test_generate_content_async_function_call_response(
     assert part.function_call.name == 'get_weather'
     assert part.function_call.args == {'location': 'London'}
     assert part.function_call.id is None
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_streaming_function_call():
+  local_client = CompletionsHTTPClient(base_url='https://localhost')
+  llm_request = LlmRequest(
+      model='apigee/test',
+      contents=[
+          types.Content(role='user', parts=[types.Part.from_text(text='hi')])
+      ],
+  )
+
+  # Mock chunks simulating split arguments
+  chunk_data_0 = {
+      'id': 'chatcmpl-123',
+      'object': 'chat.completion.chunk',
+      'created': 1234567890,
+      'model': 'gpt-3.5-turbo',
+      'service_tier': 'default',
+      'choices': [{
+          'index': 0,
+          'delta': {
+              'tool_calls': [{
+                  'index': 0,
+                  'id': 'call_123',
+                  'type': 'function',
+                  'function': {'name': 'get_weather', 'arguments': ''},
+              }]
+          },
+          'finish_reason': None,
+      }],
+  }
+  chunk_data_1 = {
+      'id': 'chatcmpl-123',
+      'object': 'chat.completion.chunk',
+      'created': 1234567890,
+      'model': 'gpt-3.5-turbo',
+      'service_tier': 'default',
+      'choices': [{
+          'index': 0,
+          'delta': {
+              'tool_calls': [{
+                  'index': 0,
+                  'function': {'arguments': '{"location": "London"}'},
+              }]
+          },
+          'finish_reason': None,
+      }],
+  }
+  chunk_data_2 = {
+      'id': 'chatcmpl-123',
+      'object': 'chat.completion.chunk',
+      'created': 1234567890,
+      'model': 'gpt-3.5-turbo',
+      'service_tier': 'default',
+      'choices': [{
+          'index': 0,
+          'delta': {
+              'tool_calls': [{
+                  'index': 0,
+                  'function': {'arguments': '{"country": "UK"}'},
+              }]
+          },
+          'finish_reason': None,
+      }],
+  }
+  chunk_data_3 = {
+      'id': 'chatcmpl-123',
+      'object': 'chat.completion.chunk',
+      'created': 1234567890,
+      'model': 'gpt-3.5-turbo',
+      'service_tier': 'default',
+      'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'tool_calls'}],
+      'usage': {
+          'prompt_tokens': 10,
+          'completion_tokens': 20,
+          'total_tokens': 30,
+      },
+  }
+
+  chunks = [
+      f'{json.dumps(chunk_data_0)}\n',
+      f'{json.dumps(chunk_data_1)}\n',
+      f'{json.dumps(chunk_data_2)}\n',
+      f'{json.dumps(chunk_data_3)}\n',
+  ]
+
+  async def mock_aiter_lines():
+    for chunk in chunks:
+      yield chunk
+
+  mock_response = AsyncMock(spec=httpx.Response)
+  mock_response.aiter_lines.return_value = mock_aiter_lines()
+  mock_response.status_code = 200
+
+  mock_stream_ctx = mock.AsyncMock()
+  mock_stream_ctx.__aenter__.return_value = mock_response
+
+  with mock.patch.object(
+      httpx.AsyncClient, 'stream', return_value=mock_stream_ctx
+  ):
+    responses = [
+        r
+        async for r in local_client.generate_content_async(
+            llm_request, stream=True
+        )
+    ]
+    # Check that we get 5 responses (one per chunk + extra final accumulated)
+    assert len(responses) == 5
+
+    # Check 1st response: partial tool call, empty args
+    assert responses[0].partial is True
+    assert responses[0].content.parts[0].function_call.name == 'get_weather'
+    assert responses[0].content.parts[0].function_call.id == 'call_123'
+
+    # Check 2nd response: full args for first update
+    assert responses[1].partial is True
+    assert responses[1].content.parts[0].function_call.args == {
+        'location': 'London'
+    }
+
+    # Check 3rd response: full args for second update (merged)
+    assert responses[2].partial is True
+    assert responses[2].content.parts[0].function_call.args == {'country': 'UK'}
+
+    # Check 4th response: last delta (empty)
+    assert responses[3].partial is True
+    assert responses[3].content.parts == []
+
+    # Check 5th response: final accumulated
+    assert responses[4].finish_reason == types.FinishReason.STOP
+    # Full accumulated args
+    assert responses[4].content.parts[0].function_call.args == {
+        'location': 'London',
+        'country': 'UK',
+    }
+
+    # Check metadata and usage
+    assert responses[4].model_version == 'gpt-3.5-turbo'
+    assert responses[4].custom_metadata['id'] == 'chatcmpl-123'
+    assert responses[4].custom_metadata['created'], 1234567890
+    assert responses[4].custom_metadata['object'], 'chat.completion.chunk'
+    assert responses[4].custom_metadata['service_tier'], 'default'
+    assert responses[4].usage_metadata is not None
+    assert responses[4].usage_metadata.prompt_token_count == 10
+    assert responses[4].usage_metadata.candidates_token_count == 20
+    assert responses[4].usage_metadata.total_token_count == 30
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_streaming_multiple_function_calls():
+  # Mock streaming response with multiple tool calls
+  local_client = CompletionsHTTPClient(base_url='https://localhost')
+  llm_request = LlmRequest(
+      model='apigee/test',
+      contents=[
+          types.Content(role='user', parts=[types.Part.from_text(text='hi')])
+      ],
+  )
+  chunk_data_1 = {
+      'choices': [{
+          'index': 0,
+          'delta': {
+              'tool_calls': [
+                  {
+                      'index': 0,
+                      'id': 'call_1',
+                      'type': 'function',
+                      'function': {'name': 'func_1', 'arguments': ''},
+                  },
+                  {
+                      'index': 1,
+                      'id': 'call_2',
+                      'type': 'function',
+                      'function': {'name': 'func_2', 'arguments': ''},
+                  },
+              ]
+          },
+          'finish_reason': None,
+      }]
+  }
+  # the tool_call type is optional in chunk responses.
+  chunk_data_2 = {
+      'choices': [{
+          'index': 0,
+          'delta': {
+              'tool_calls': [
+                  {'index': 0, 'function': {'arguments': '{"arg": 1}'}},
+                  {'index': 1, 'function': {'arguments': '{"arg": 2}'}},
+              ]
+          },
+          'finish_reason': None,
+      }]
+  }
+  chunk_data_3 = {
+      'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'tool_calls'}]
+  }
+
+  chunks = [
+      f'{json.dumps(chunk_data_1)}\n',
+      f'{json.dumps(chunk_data_2)}\n',
+      f'{json.dumps(chunk_data_3)}\n',
+  ]
+
+  async def mock_aiter_lines():
+    for chunk in chunks:
+      yield chunk
+
+  mock_response = AsyncMock(spec=httpx.Response)
+  mock_response.aiter_lines.return_value = mock_aiter_lines()
+  mock_response.status_code = 200
+
+  mock_stream_ctx = mock.AsyncMock()
+  mock_stream_ctx.__aenter__.return_value = mock_response
+
+  with mock.patch.object(
+      httpx.AsyncClient, 'stream', return_value=mock_stream_ctx
+  ):
+    responses = [
+        r
+        async for r in local_client.generate_content_async(
+            llm_request, stream=True
+        )
+    ]
+
+    assert len(responses) == 4
+    parts = responses[-1].content.parts
+    assert len(parts) == 2
+
+    assert parts[0].function_call.name == 'func_1'
+    assert parts[0].function_call.args == {'arg': 1}
+    assert parts[0].function_call.id == 'call_1'
+
+    assert parts[1].function_call.name == 'func_2'
+    assert parts[1].function_call.args == {'arg': 2}
+
+    assert parts[1].function_call.id == 'call_2'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ('chunks', 'expected_response_count'),
+    [
+        (
+            [
+                '\n',
+                '   \n',
+                (
+                    'data: {"choices": [{"index": 0, "delta": {"content":'
+                    ' "Hello"}, "finish_reason": null}]}\n'
+                ),
+            ],
+            1,
+        ),
+        (
+            [
+                (
+                    'data: {"choices": [{"index": 0, "delta": {"content":'
+                    ' "Hello"}, "finish_reason": null}]}\n'
+                ),
+                '[DONE]\n',
+                (
+                    'data: {"choices": [{"index": 0, "delta": {"content":'
+                    ' "World"}, "finish_reason": "stop"}]}\n'
+                ),
+            ],
+            1,  # Should stop after [DONE]
+        ),
+        (
+            [
+                (
+                    'data: {"choices": [{"index": 0, "delta": {"content":'
+                    ' "Hello"}, "finish_reason": null}]}\n'
+                ),
+                '   [DONE]   \n',
+                (
+                    'data: {"choices": [{"index": 0, "delta": {"content":'
+                    ' "World"}, "finish_reason": "stop"}]}\n'
+                ),
+            ],
+            1,  # Should stop after [DONE]
+        ),
+        (
+            [
+                (
+                    'data: {"choices": [{"index": 0, "delta": {"content":'
+                    ' "Hello"}, "finish_reason": null}]}\n'
+                ),
+                'data: [DONE]\n',
+                (
+                    'data: {"choices": [{"index": 0, "delta": {"content":'
+                    ' "World"}, "finish_reason": "stop"}]}\n'
+                ),
+            ],
+            1,  # Should stop after [DONE]
+        ),
+    ],
+)
+async def test_generate_content_async_streaming_parse_lines(
+    chunks, expected_response_count
+):
+  local_client = CompletionsHTTPClient(base_url='https://localhost')
+  llm_request = LlmRequest(
+      model='apigee/test',
+      contents=[
+          types.Content(role='user', parts=[types.Part.from_text(text='hi')])
+      ],
+  )
+
+  async def mock_aiter_lines():
+    for chunk in chunks:
+      yield chunk
+
+  mock_response = AsyncMock(spec=httpx.Response)
+  mock_response.aiter_lines.return_value = mock_aiter_lines()
+  mock_response.status_code = 200
+
+  mock_stream_ctx = mock.AsyncMock()
+  mock_stream_ctx.__aenter__.return_value = mock_response
+
+  with mock.patch.object(
+      httpx.AsyncClient, 'stream', return_value=mock_stream_ctx
+  ):
+    responses = [
+        r
+        async for r in local_client.generate_content_async(
+            llm_request, stream=True
+        )
+    ]
+    assert len(responses) == expected_response_count
+    assert responses[0].content.parts[0].text == 'Hello'
