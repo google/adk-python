@@ -56,7 +56,7 @@ This is very important:
 1. If a skill seems relevant to the current user query, you MUST use the `load_skill` tool with `name="<SKILL_NAME>"` to read its full instructions before proceeding.
 2. Once you have read the instructions, follow them exactly as documented before replying to the user. For example, If the instruction lists multiple steps, please make sure you complete all of them in order.
 3. The `load_skill_resource` tool is for viewing files within a skill's directory (e.g., `references/*`, `assets/*`, `scripts/*`). Do NOT use other tools to access these files.
-4. Use `execute_skill_script` to run scripts from a skill's `scripts/` directory. Use `load_skill_resource` to view script content first if needed.
+4. Use `run_skill_script` to run scripts from a skill's `scripts/` directory. Use `load_skill_resource` to view script content first if needed.
 """
 
 
@@ -285,6 +285,14 @@ class RunSkillScriptTool(BaseTool):
     skill_name = args.get("skill_name")
     script_path = args.get("script_path")
     script_args = args.get("args", {})
+    if not isinstance(script_args, dict):
+      return {
+          "error": (
+              "'args' must be a JSON object (key-value pairs),"
+              f" got {type(script_args).__name__}."
+          ),
+          "error_code": "INVALID_ARGS_TYPE",
+      }
 
     if not skill_name:
       return {
@@ -340,7 +348,7 @@ class RunSkillScriptTool(BaseTool):
     # Package ALL skill files for mounting
     for ref_name in skill.resources.list_references():
       content = skill.resources.get_reference(ref_name)
-      if content:
+      if content is not None:
         input_files.append(
             File(
                 name=os.path.basename(ref_name),
@@ -350,7 +358,7 @@ class RunSkillScriptTool(BaseTool):
         )
     for asset_name in skill.resources.list_assets():
       content = skill.resources.get_asset(asset_name)
-      if content:
+      if content is not None:
         input_files.append(
             File(
                 name=os.path.basename(asset_name),
@@ -360,7 +368,7 @@ class RunSkillScriptTool(BaseTool):
         )
     for scr_name in skill.resources.list_scripts():
       scr = skill.resources.get_script(scr_name)
-      if scr and scr.src:
+      if scr is not None and scr.src is not None:
         input_files.append(
             File(
                 name=os.path.basename(scr_name),

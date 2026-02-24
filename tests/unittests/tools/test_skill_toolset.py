@@ -1073,3 +1073,100 @@ async def test_integration_shell_nonzero_exit():
   )
   assert result["status"] == "error"
   assert "42" in result["stderr"] or result["stderr"]
+
+
+# ── Finding 1: system instruction references correct tool name ──
+
+
+def test_system_instruction_references_run_skill_script():
+  """System instruction must reference the actual tool name."""
+  assert "run_skill_script" in skill_toolset.DEFAULT_SKILL_SYSTEM_INSTRUCTION
+  assert (
+      "execute_skill_script"
+      not in skill_toolset.DEFAULT_SKILL_SYSTEM_INSTRUCTION
+  )
+
+
+# ── Finding 2: empty files are mounted (not silently dropped) ──
+
+
+@pytest.mark.asyncio
+async def test_execute_script_empty_files_mounted():
+  """Empty references/assets/scripts should still be packaged."""
+  skill = mock.create_autospec(models.Skill, instance=True)
+  skill.name = "emp"
+  skill.description = "skill with empty files"
+  skill.instructions = "test"
+  fm = mock.create_autospec(models.Frontmatter, instance=True)
+  fm.name = "emp"
+  fm.description = "skill with empty files"
+  skill.frontmatter = fm
+  skill.resources = mock.MagicMock(
+      spec=[
+          "get_reference",
+          "get_asset",
+          "get_script",
+          "list_references",
+          "list_assets",
+          "list_scripts",
+      ]
+  )
+  skill.resources.list_references.return_value = ["empty.md"]
+  skill.resources.list_assets.return_value = ["empty.cfg"]
+  skill.resources.list_scripts.return_value = ["run.py"]
+  skill.resources.get_reference.side_effect = lambda n: (
+      "" if n == "empty.md" else None
+  )
+  skill.resources.get_asset.side_effect = lambda n: (
+      "" if n == "empty.cfg" else None
+  )
+  skill.resources.get_script.side_effect = lambda n: (
+      models.Script(src="") if n == "run.py" else None
+  )
+
+  executor = _make_mock_executor(stdout="ok\n")
+  toolset = skill_toolset.SkillToolset([skill], code_executor=executor)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+  await tool.run_async(
+      args={"skill_name": "emp", "script_path": "run.py"},
+      tool_context=ctx,
+  )
+
+  call_args = executor.execute_code.call_args
+  code_input = call_args[0][1]
+  paths = {f.path for f in code_input.input_files}
+  assert "references/empty.md" in paths
+  assert "assets/empty.cfg" in paths
+  assert "scripts/run.py" in paths
+
+
+# ── Finding 3: invalid args type returns clear error ──
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "bad_args",
+    [
+        "not a dict",
+        ["a", "list"],
+        42,
+        True,
+    ],
+)
+async def test_execute_script_invalid_args_type(mock_skill1, bad_args):
+  """Non-dict args should return INVALID_ARGS_TYPE, not crash."""
+  executor = _make_mock_executor()
+  toolset = skill_toolset.SkillToolset([mock_skill1], code_executor=executor)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+  result = await tool.run_async(
+      args={
+          "skill_name": "skill1",
+          "script_path": "run.py",
+          "args": bad_args,
+      },
+      tool_context=ctx,
+  )
+  assert result["error_code"] == "INVALID_ARGS_TYPE"
+  executor.execute_code.assert_not_called()
