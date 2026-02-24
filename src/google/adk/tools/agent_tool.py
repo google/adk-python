@@ -209,7 +209,9 @@ class AgentTool(BaseTool):
       return ''
 
     merged_text = '\n'.join(
-        p.text for p in (last_content.parts or ()) if p and p.text
+        p.text
+        for p in (last_content.parts or ())
+        if p and p.text and not p.thought
     )
     if isinstance(self.agent, LlmAgent) and self.agent.output_schema:
       tool_result = self.agent.output_schema.model_validate_json(
@@ -237,7 +239,6 @@ class AgentTool(BaseTool):
     Returns:
       A tuple of (runner, content, session) ready for execution.
     """
-    from ..agents.llm_agent import LlmAgent
     from ..runners import Runner
     from ..sessions.in_memory_session_service import InMemorySessionService
 

@@ -743,15 +743,7 @@ class BaseLlmFlow(ABC):
     ) as agen:
       async for event in agen:
         # Track the function response event for post-processing
-        if (
-            event.content
-            and event.content.parts
-            and any(
-                part.function_response
-                for part in event.content.parts
-                if part.function_response
-            )
-        ):
+        if event.get_function_responses():
           function_response_event = event
         yield event
 

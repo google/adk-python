@@ -356,9 +356,6 @@ async def handle_function_calls_async_with_agent_tool_streaming(
 
     # Build final result from last content using AgentTool helper method
     tool_result = agent_tool._build_tool_result_from_content(last_content)
-    # Wrap non-dict results for function response format
-    if not isinstance(tool_result, dict):
-      tool_result = {'result': tool_result}
     agent_tool_results[function_call.id] = tool_result
 
   # Handle regular calls if any
