@@ -163,6 +163,10 @@ extensions = [
   "toolbox-adk>=0.5.7, <0.6.0",                 # For tools.toolbox_toolset.ToolboxToolset
 ]
 
+camb = [
+  "camb-sdk>=1.0.0",                                # For CambAIToolset
+]
+
 otel-gcp = ["opentelemetry-instrumentation-google-genai>=0.6b0, <1.0.0"]
 
 toolbox = ["toolbox-adk>=0.5.7, <0.6.0"]

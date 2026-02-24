@@ -24,6 +24,7 @@ if TYPE_CHECKING:
   from .api_registry import ApiRegistry
   from .apihub_tool.apihub_toolset import APIHubToolset
   from .base_tool import BaseTool
+  from .camb.camb_toolset import CambAIToolset
   from .discovery_engine_search_tool import DiscoveryEngineSearchTool
   from .enterprise_search_tool import enterprise_web_search_tool as enterprise_web_search
   from .example_tool import ExampleTool
@@ -86,6 +87,7 @@ _LAZY_MAPPING = {
     'MCPToolset': ('.mcp_tool.mcp_toolset', 'MCPToolset'),
     'McpToolset': ('.mcp_tool.mcp_toolset', 'McpToolset'),
     'ApiRegistry': ('.api_registry', 'ApiRegistry'),
+    'CambAIToolset': ('.camb.camb_toolset', 'CambAIToolset'),
 }
 
 __all__ = list(_LAZY_MAPPING.keys())
