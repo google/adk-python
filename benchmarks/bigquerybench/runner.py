@@ -12,26 +12,23 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Standalone BigQueryBench runner that produces leaderboard scores.
+"""Trace-based BigQueryBench runner.
+
+Evaluates whether the agent calls the correct BigQuery tools with the
+correct dataset/table arguments.  No response text matching — only
+the tool-call trace matters.
 
 Usage:
     python -m benchmarks.bigquerybench.runner
-    python -m benchmarks.bigquerybench.runner --num-runs 3
     python -m benchmarks.bigquerybench.runner --filter sql_shakespeare
+    python -m benchmarks.bigquerybench.runner --num-runs 3
     python -m benchmarks.bigquerybench.runner --dry-run
 
 Environment variables:
     GOOGLE_CLOUD_PROJECT        — GCP project for BigQuery API calls
     GOOGLE_API_KEY              — API key for Google AI Studio
     GOOGLE_GENAI_USE_VERTEXAI   — Set to 1 for Vertex AI backend
-    BQ_EVAL_WRITE_MODE          — Override write mode (blocked/protected)
-
-This script:
-1. Loads the BigQueryBench agent and eval set
-2. Runs each case through the ADK Runner
-3. Applies 3 custom metrics (schema_discovery, tool_usage, output)
-4. Outputs per-case results and a leaderboard-format summary
-5. Exits with code 0 if all pass, 1 if any fail
+    BQ_EVAL_WRITE_MODE          — blocked / protected / allowed
 """
 
 from __future__ import annotations
@@ -56,9 +53,8 @@ from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.utils.context_utils import Aclosing
 
-from .metrics import output_correctness_score
-from .metrics import schema_discovery_score
-from .metrics import tool_usage_score
+from .metrics import tool_args_score
+from .metrics import tool_invocation_score
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +63,6 @@ _DEFAULT_EVAL_SET = _BENCH_DIR / "eval_sets" / "bigquerybench_eval.json"
 
 
 def load_eval_set(path: pathlib.Path) -> EvalSet:
-  """Load an EvalSet from a JSON file."""
   with open(path) as f:
     data = json.load(f)
   return EvalSet.model_validate(data)
@@ -76,65 +71,54 @@ def load_eval_set(path: pathlib.Path) -> EvalSet:
 def print_header():
   print()
   print("=" * 65)
-  print("  BigQueryBench Evaluation — ADK BigQueryToolset")
+  print("  BigQueryBench — Trace-Based Evaluation")
   print("=" * 65)
   print()
 
 
 def print_results_table(results: dict[str, dict[str, float]]):
-  """Print per-case results as a formatted table."""
-  print(
-      f"{'Eval Case':<40} {'Schema':>8} {'Tools':>7}"
-      f" {'Output':>8} {'Result':>8}"
-  )
-  print("-" * 75)
+  print(f"{'Eval Case':<40} {'Tools':>7} {'Args':>7} {'Result':>8}")
+  print("-" * 65)
   for case_id, scores in results.items():
     short_id = case_id[:39]
-    schema = scores.get("schema_discovery", 0.0)
-    tools = scores.get("tool_usage", 0.0)
-    output = scores.get("output_correctness", 0.0)
-    mark = "PASS" if output >= 1.0 else "FAIL"
-    print(
-        f"{short_id:<40} {schema:>7.1f} {tools:>7.2f}"
-        f" {output:>7.1f}   {mark:>5}"
-    )
-  print("-" * 75)
+    tools = scores.get("tool_invocation", 0.0)
+    args = scores.get("tool_args", 0.0)
+    passed = tools >= 1.0 and args >= 1.0
+    mark = "PASS" if passed else "FAIL"
+    print(f"{short_id:<40} {tools:>7.2f} {args:>7.2f}   {mark:>5}")
+  print("-" * 65)
 
 
-def print_leaderboard_summary(
+def print_summary(
     results: dict[str, dict[str, float]],
     num_cases: int,
     elapsed: float,
 ):
-  """Print a leaderboard-format summary."""
   passed = sum(
-      1 for s in results.values() if s.get("output_correctness", 0.0) >= 1.0
+      1
+      for s in results.values()
+      if s.get("tool_invocation", 0.0) >= 1.0 and s.get("tool_args", 0.0) >= 1.0
   )
-  avg_schema = sum(
-      s.get("schema_discovery", 0.0) for s in results.values()
+  avg_tools = sum(
+      s.get("tool_invocation", 0.0) for s in results.values()
   ) / max(len(results), 1)
-  avg_tools = sum(s.get("tool_usage", 0.0) for s in results.values()) / max(
+  avg_args = sum(s.get("tool_args", 0.0) for s in results.values()) / max(
       len(results), 1
   )
   pct = (passed / max(num_cases, 1)) * 100
 
   print()
   print("=" * 65)
-  print("  Leaderboard Summary")
+  print("  Summary")
   print("=" * 65)
-  print(f"  Framework:          ADK BigQueryToolset")
   print(f"  Cases:              {passed}/{num_cases} ({pct:.1f}%)")
-  print(f"  Avg Schema Disc.:   {avg_schema:.2f}")
-  print(f"  Avg Tool Usage:     {avg_tools:.2f}")
+  print(f"  Avg Tool Match:     {avg_tools:.2f}")
+  print(f"  Avg Args Match:     {avg_args:.2f}")
   print(f"  Elapsed:            {elapsed:.1f}s")
   print("=" * 65)
 
 
-async def run_single_eval_case(
-    root_agent,
-    eval_case,
-) -> list[Invocation]:
-  """Run a single eval case through the Runner."""
+async def run_single_eval_case(root_agent, eval_case) -> list[Invocation]:
   session_service = InMemorySessionService()
   artifact_service = InMemoryArtifactService()
   memory_service = InMemoryMemoryService()
@@ -187,35 +171,32 @@ async def run_single_eval_case(
 
 
 def score_invocations(
-    actual_invocations: list[Invocation],
-    expected_invocations: Optional[list[Invocation]],
+    actual: list[Invocation],
+    expected: Optional[list[Invocation]],
 ) -> dict[str, float]:
-  """Apply all 3 metrics and return scores."""
   metric = EvalMetric(metric_name="bigquerybench")
-  scores = {}
 
-  result = schema_discovery_score(
-      metric,
-      actual_invocations,
-      expected_invocations,
-  )
-  scores["schema_discovery"] = result.overall_score or 0.0
+  r1 = tool_invocation_score(metric, actual, expected)
+  r2 = tool_args_score(metric, actual, expected)
 
-  result = tool_usage_score(
-      metric,
-      actual_invocations,
-      expected_invocations,
-  )
-  scores["tool_usage"] = result.overall_score or 0.0
+  return {
+      "tool_invocation": r1.overall_score or 0.0,
+      "tool_args": r2.overall_score or 0.0,
+  }
 
-  result = output_correctness_score(
-      metric,
-      actual_invocations,
-      expected_invocations,
-  )
-  scores["output_correctness"] = result.overall_score or 0.0
 
-  return scores
+def _print_trace(actual_invocations: list[Invocation]):
+  """Print the tool-call trace for debugging."""
+  from google.adk.evaluation.eval_case import get_all_tool_calls
+
+  for inv in actual_invocations:
+    for tc in get_all_tool_calls(inv.intermediate_data):
+      args_summary = ", ".join(
+          f"{k}={v!r}"
+          for k, v in (tc.args or {}).items()
+          if k in ("project_id", "dataset_id", "table_id")
+      )
+      print(f"    -> {tc.name}({args_summary})")
 
 
 async def run_evaluation(
@@ -223,11 +204,9 @@ async def run_evaluation(
     num_runs: int = 1,
     filter_str: Optional[str] = None,
 ) -> dict[str, dict[str, float]]:
-  """Run the BigQueryBench evaluation."""
   path = eval_set_path or _DEFAULT_EVAL_SET
   eval_set = load_eval_set(path)
 
-  # Import agent (triggers BigQuery toolset setup).
   from .agent import root_agent
 
   cases = eval_set.eval_cases
@@ -238,11 +217,10 @@ async def run_evaluation(
       return {}
 
   results: dict[str, dict[str, float]] = {}
-  total = len(cases)
 
   for idx, eval_case in enumerate(cases, 1):
     eval_id = eval_case.eval_id
-    print(f"\n[{idx}/{total}] Running: {eval_id}")
+    print(f"\n[{idx}/{len(cases)}] {eval_id}")
 
     run_scores: list[dict[str, float]] = []
     for run in range(num_runs):
@@ -251,40 +229,25 @@ async def run_evaluation(
 
       try:
         actual = await run_single_eval_case(root_agent, eval_case)
+        _print_trace(actual)
 
-        # Print response preview.
-        for inv in actual:
-          if inv.final_response and inv.final_response.parts:
-            for part in inv.final_response.parts:
-              if part.text:
-                preview = part.text[:200].replace("\n", " ")
-                print(f"  Response: {preview}...")
-                break
-
-        expected = eval_case.conversation
-        scores = score_invocations(actual, expected)
+        scores = score_invocations(actual, eval_case.conversation)
         run_scores.append(scores)
 
-        schema = scores["schema_discovery"]
-        tools = scores["tool_usage"]
-        output = scores["output_correctness"]
-        mark = "PASS" if output >= 1.0 else "FAIL"
-        print(f"  Scores: schema={schema:.1f} tools={tools:.2f} output={mark}")
+        tools = scores["tool_invocation"]
+        args = scores["tool_args"]
+        passed = tools >= 1.0 and args >= 1.0
+        mark = "PASS" if passed else "FAIL"
+        print(f"  tools={tools:.2f}  args={args:.2f}  {mark}")
 
       except Exception as e:
         logger.error("Error running %s: %s", eval_id, e)
         print(f"  ERROR: {e}")
-        run_scores.append({
-            "schema_discovery": 0.0,
-            "tool_usage": 0.0,
-            "output_correctness": 0.0,
-        })
+        run_scores.append({"tool_invocation": 0.0, "tool_args": 0.0})
 
-    # Average scores across runs.
     avg: dict[str, float] = {}
-    for key in ["schema_discovery", "tool_usage", "output_correctness"]:
-      values = [s[key] for s in run_scores]
-      avg[key] = sum(values) / len(values)
+    for key in ("tool_invocation", "tool_args"):
+      avg[key] = sum(s[key] for s in run_scores) / len(run_scores)
     results[eval_id] = avg
 
   return results
@@ -292,30 +255,26 @@ async def run_evaluation(
 
 def main():
   parser = argparse.ArgumentParser(
-      description="BigQueryBench evaluation runner for ADK",
+      description="BigQueryBench trace-based evaluation runner",
   )
   parser.add_argument(
       "--eval-set",
       type=pathlib.Path,
       default=None,
-      help="Path to eval set JSON (default: built-in)",
   )
   parser.add_argument(
       "--num-runs",
       type=int,
       default=1,
-      help="Number of runs per case (default: 1)",
   )
   parser.add_argument(
       "--filter",
       type=str,
       default=None,
-      help="Substring filter for eval_id (e.g., 'sql_shakespeare')",
   )
   parser.add_argument(
       "--dry-run",
       action="store_true",
-      help="Validate eval set JSON without running LLM inference",
   )
   args = parser.parse_args()
 
@@ -323,12 +282,15 @@ def main():
 
   if args.dry_run:
     path = args.eval_set or _DEFAULT_EVAL_SET
-    eval_set = load_eval_set(path)
-    print(f"Eval set: {eval_set.name}")
-    print(f"Cases:    {len(eval_set.eval_cases)}")
-    for case in eval_set.eval_cases:
-      print(f"  - {case.eval_id}")
-    print("\nDry run: eval set JSON is valid.")
+    es = load_eval_set(path)
+    print(f"Eval set: {es.name}")
+    print(f"Cases:    {len(es.eval_cases)}")
+    for case in es.eval_cases:
+      tools = [
+          t.name for t in case.conversation[0].intermediate_data.tool_uses or []
+      ]
+      print(f"  {case.eval_id}: {' -> '.join(tools)}")
+    print("\nJSON valid.")
     sys.exit(0)
 
   print_header()
@@ -343,20 +305,15 @@ def main():
   )
 
   elapsed = time.time() - start
-  eval_path = args.eval_set or _DEFAULT_EVAL_SET
-  eval_set = load_eval_set(eval_path)
-
-  num_cases = len(eval_set.eval_cases)
-  if args.filter:
-    num_cases = len(results)
+  num_cases = len(results)
 
   print()
   print_results_table(results)
-  print_leaderboard_summary(results, num_cases, elapsed)
+  print_summary(results, num_cases, elapsed)
 
-  # Exit code: 0 if all pass, 1 if any fail.
   all_pass = all(
-      s.get("output_correctness", 0.0) >= 1.0 for s in results.values()
+      s.get("tool_invocation", 0.0) >= 1.0 and s.get("tool_args", 0.0) >= 1.0
+      for s in results.values()
   )
   sys.exit(0 if all_pass else 1)
 

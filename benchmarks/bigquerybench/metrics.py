@@ -12,9 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Custom metrics for BigQueryBench evaluation.
+"""Trace-based metrics for BigQueryBench evaluation.
 
-Three metrics following the ADK custom metric function signature:
+Two metrics that check the agent's tool-call trace only (no response
+text matching).  This makes evaluation deterministic and easy to
+maintain: just specify which tools should be called and with which
+key arguments.
 
     def metric_fn(
         eval_metric: EvalMetric,
@@ -24,9 +27,8 @@ Three metrics following the ADK custom metric function signature:
     ) -> EvaluationResult
 
 Reference via dotted path in eval configs:
-    "benchmarks.bigquerybench.metrics.schema_discovery_score"
-    "benchmarks.bigquerybench.metrics.tool_usage_score"
-    "benchmarks.bigquerybench.metrics.output_correctness_score"
+    "benchmarks.bigquerybench.metrics.tool_invocation_score"
+    "benchmarks.bigquerybench.metrics.tool_args_score"
 """
 
 from __future__ import annotations
@@ -41,22 +43,12 @@ from google.adk.evaluation.eval_metrics import EvalStatus
 from google.adk.evaluation.evaluator import EvaluationResult
 from google.adk.evaluation.evaluator import PerInvocationResult
 
-# Tools that count as "schema exploration".
-_SCHEMA_TOOLS = frozenset({
-    "list_dataset_ids",
-    "list_table_ids",
-    "get_dataset_info",
-    "get_table_info",
-})
 
-
-def _get_tool_names(invocations: list[Invocation]) -> list[str]:
-  """Extract all tool call names from a list of invocations."""
-  names = []
+def _get_tool_calls(invocations: list[Invocation]):
+  """Yield (name, args_dict) for every tool call in the trace."""
   for inv in invocations:
-    for tool_call in get_all_tool_calls(inv.intermediate_data):
-      names.append(tool_call.name)
-  return names
+    for tc in get_all_tool_calls(inv.intermediate_data):
+      yield tc.name, (tc.args or {})
 
 
 def _make_per_invocation(
@@ -65,7 +57,6 @@ def _make_per_invocation(
     score: float,
     status: EvalStatus,
 ) -> list[PerInvocationResult]:
-  """Build per-invocation results list."""
   results = []
   for i, actual in enumerate(actual_invocations):
     expected = None
@@ -82,51 +73,23 @@ def _make_per_invocation(
   return results
 
 
-def schema_discovery_score(
+# ── Metric 1: correct tools invoked ──────────────────────────────
+
+
+def tool_invocation_score(
     eval_metric: EvalMetric,
     actual_invocations: list[Invocation],
     expected_invocations: Optional[list[Invocation]],
     conversation_scenario: Optional[ConversationScenario] = None,
 ) -> EvaluationResult:
-  """Score 1.0 if the agent called at least one schema exploration tool.
+  """Score = fraction of expected tool names present in the trace.
 
-  Schema tools: list_dataset_ids, list_table_ids, get_dataset_info,
-  get_table_info.
+  Checks that the agent called the right BigQuery functions (e.g.
+  ``get_table_info``, ``execute_sql``, ``forecast``).  Order does
+  not matter; extra tool calls are ignored.
 
-  This metric enforces the "explore before query" pattern — agents
-  should understand the schema before generating SQL or calling AI/ML
-  tools.
-  """
-  tool_names = set(_get_tool_names(actual_invocations))
-  called_schema = bool(tool_names & _SCHEMA_TOOLS)
-
-  score = 1.0 if called_schema else 0.0
-  status = EvalStatus.PASSED if called_schema else EvalStatus.FAILED
-
-  return EvaluationResult(
-      overall_score=score,
-      overall_eval_status=status,
-      per_invocation_results=_make_per_invocation(
-          actual_invocations,
-          expected_invocations,
-          score,
-          status,
-      ),
-  )
-
-
-def tool_usage_score(
-    eval_metric: EvalMetric,
-    actual_invocations: list[Invocation],
-    expected_invocations: Optional[list[Invocation]],
-    conversation_scenario: Optional[ConversationScenario] = None,
-) -> EvaluationResult:
-  """Fraction of expected tool calls that were actually made.
-
-  Score = |expected_tools ∩ actual_tools| / |expected_tools|.
-  Uses set-based matching (any order). Passes at >= 0.5.
-
-  Same semantics as SkillsBench tool_usage_score for consistency.
+  Score = |expected_names ∩ actual_names| / |expected_names|.
+  Pass threshold: 1.0 (all expected tools must be called).
   """
   if not expected_invocations:
     return EvaluationResult(
@@ -134,8 +97,8 @@ def tool_usage_score(
         overall_eval_status=EvalStatus.PASSED,
     )
 
-  expected_names = set(_get_tool_names(expected_invocations))
-  actual_names = set(_get_tool_names(actual_invocations))
+  expected_names = {name for name, _ in _get_tool_calls(expected_invocations)}
+  actual_names = {name for name, _ in _get_tool_calls(actual_invocations)}
 
   if not expected_names:
     score = 1.0
@@ -143,7 +106,7 @@ def tool_usage_score(
     matched = expected_names & actual_names
     score = len(matched) / len(expected_names)
 
-  status = EvalStatus.PASSED if score >= 0.5 else EvalStatus.FAILED
+  status = EvalStatus.PASSED if score >= 1.0 else EvalStatus.FAILED
 
   return EvaluationResult(
       overall_score=score,
@@ -157,64 +120,72 @@ def tool_usage_score(
   )
 
 
-def output_correctness_score(
+# ── Metric 2: correct args on key tool calls ─────────────────────
+
+# Args that identify the *target data* — these are what we check.
+# We intentionally skip volatile args like ``query`` (the exact SQL
+# the LLM generates will vary) and only verify that the agent
+# pointed at the right dataset / table / project.
+_KEY_ARGS = frozenset({
+    "project_id",
+    "dataset_id",
+    "table_id",
+})
+
+
+def tool_args_score(
     eval_metric: EvalMetric,
     actual_invocations: list[Invocation],
     expected_invocations: Optional[list[Invocation]],
     conversation_scenario: Optional[ConversationScenario] = None,
 ) -> EvaluationResult:
-  """Binary pass/fail: 1.0 if response contains all reference lines.
+  """Score = fraction of expected (tool, key-arg) pairs matched.
 
-  Each non-empty line in the expected final_response is a reference
-  phrase. The actual response must contain every phrase as a
-  case-insensitive substring.
+  For each expected tool call that has ``project_id``, ``dataset_id``,
+  or ``table_id`` in its args, check that the agent made a call to
+  the *same tool* with the *same value* for that arg.  This verifies
+  the agent loaded the right reference data (correct dataset, correct
+  table) without caring about the exact SQL or response text.
 
-  Same semantics as SkillsBench skillsbench_binary_score for
-  consistency.
+  Score = matched_pairs / expected_pairs.  Pass threshold: 1.0.
+  If no key args exist in the expected trace, score is 1.0 (vacuous).
   """
-  if not expected_invocations or not actual_invocations:
+  if not expected_invocations:
     return EvaluationResult(
-        overall_score=0.0,
-        overall_eval_status=EvalStatus.NOT_EVALUATED,
+        overall_score=1.0,
+        overall_eval_status=EvalStatus.PASSED,
     )
 
-  # Get the last actual response text.
-  actual_text = ""
-  for inv in reversed(actual_invocations):
-    if inv.final_response and inv.final_response.parts:
-      for part in inv.final_response.parts:
-        if part.text:
-          actual_text = part.text
-          break
-    if actual_text:
-      break
+  # Build expected set: (tool_name, arg_key, arg_value).
+  expected_pairs: set[tuple[str, str, str]] = set()
+  for name, args in _get_tool_calls(expected_invocations):
+    for key in _KEY_ARGS:
+      if key in args:
+        expected_pairs.add((name, key, str(args[key])))
 
-  # Get the expected response text.
-  expected_text = ""
-  for inv in reversed(expected_invocations):
-    if inv.final_response and inv.final_response.parts:
-      for part in inv.final_response.parts:
-        if part.text:
-          expected_text = part.text
-          break
-    if expected_text:
-      break
-
-  if not expected_text:
+  if not expected_pairs:
+    # No key args to check — pass vacuously.
     return EvaluationResult(
-        overall_score=0.0,
-        overall_eval_status=EvalStatus.NOT_EVALUATED,
+        overall_score=1.0,
+        overall_eval_status=EvalStatus.PASSED,
+        per_invocation_results=_make_per_invocation(
+            actual_invocations,
+            expected_invocations,
+            1.0,
+            EvalStatus.PASSED,
+        ),
     )
 
-  reference_lines = [
-      line.strip() for line in expected_text.split("\n") if line.strip()
-  ]
-  actual_lower = actual_text.lower()
-  matched = sum(1 for line in reference_lines if line.lower() in actual_lower)
+  # Build actual set the same way.
+  actual_pairs: set[tuple[str, str, str]] = set()
+  for name, args in _get_tool_calls(actual_invocations):
+    for key in _KEY_ARGS:
+      if key in args:
+        actual_pairs.add((name, key, str(args[key])))
 
-  is_pass = matched == len(reference_lines) and len(reference_lines) > 0
-  score = 1.0 if is_pass else 0.0
-  status = EvalStatus.PASSED if is_pass else EvalStatus.FAILED
+  matched = expected_pairs & actual_pairs
+  score = len(matched) / len(expected_pairs)
+  status = EvalStatus.PASSED if score >= 1.0 else EvalStatus.FAILED
 
   return EvaluationResult(
       overall_score=score,
