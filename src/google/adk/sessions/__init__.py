@@ -23,15 +23,30 @@ try:
 except ImportError:
   # This handles the case where optional dependencies (like sqlalchemy)
   # are not installed. A placeholder class ensures the symbol is always
-  # available for documentation tools, providing a clear error message
-  # at runtime if used without the necessary dependencies.
-  class DatabaseSessionService:
+  # available for documentation tools and static analysis.
+  class DatabaseSessionService(BaseSessionService):
+    """Placeholder for DatabaseSessionService when dependencies are not installed."""
 
     def __init__(self, *args, **kwargs):
       raise ImportError(
           'DatabaseSessionService requires sqlalchemy>=2.0, please ensure it is'
           ' installed correctly.'
       )
+
+    async def create_session(self, *args, **kwargs):
+      self.__init__(*args, **kwargs)
+
+    async def get_session(self, *args, **kwargs):
+      self.__init__(*args, **kwargs)
+
+    async def list_sessions(self, *args, **kwargs):
+      self.__init__(*args, **kwargs)
+
+    async def delete_session(self, *args, **kwargs):
+      self.__init__(*args, **kwargs)
+
+    async def append_event(self, *args, **kwargs):
+      self.__init__(*args, **kwargs)
 
 
 __all__ = [
