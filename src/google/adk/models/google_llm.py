@@ -85,23 +85,6 @@ class Gemini(BaseLlm):
 
   Attributes:
     model: The name of the Gemini model.
-    client: An optional preconfigured ``google.genai.Client`` instance.
-      When provided, ADK uses this client for all API calls instead of
-      creating one internally from environment variables or ADC.  This
-      allows fine-grained control over authentication, project, location,
-      and other client-level settings — and enables running agents that
-      target different Vertex AI regions within the same process.
-
-      Example::
-
-        from google import genai
-        from google.adk.models import Gemini
-
-        client = genai.Client(
-            vertexai=True, project="my-project", location="us-central1"
-        )
-        model = Gemini(model="gemini-2.5-flash", client=client)
-
     use_interactions_api: Whether to use the interactions API for model
       invocation.
   """
@@ -147,35 +130,6 @@ class Gemini(BaseLlm):
   )
   ```
   """
-
-  def __init__(self, *, client: Optional[Client] = None, **kwargs: Any):
-    """Initialises a Gemini model wrapper.
-
-    Args:
-      client: An optional preconfigured ``google.genai.Client``.  When
-        provided, ADK uses this client for **all** Gemini API calls
-        (including the Live API) instead of creating one internally.
-
-        .. note::
-          When a custom client is supplied it is used as-is for Live API
-          connections.  ADK will **not** override the client's
-          ``api_version``; you are responsible for setting the correct
-          version (``v1beta1`` for Vertex AI, ``v1alpha`` for the
-          Gemini developer API) on the client yourself.
-
-        .. warning::
-          ``google.genai.Client`` contains threading primitives that
-          cannot be pickled.  If you are deploying to Agent Engine (or
-          any environment that serialises the model), do **not** pass a
-          custom client — let ADK create one from the environment
-          instead.
-
-      **kwargs: Forwarded to the Pydantic ``BaseLlm`` constructor
-        (``model``, ``base_url``, ``retry_options``, etc.).
-    """
-    super().__init__(**kwargs)
-    # Store after super().__init__ so Pydantic validation runs first.
-    object.__setattr__(self, '_client', client)
 
   @classmethod
   @override
@@ -345,16 +299,9 @@ class Gemini(BaseLlm):
   def api_client(self) -> Client:
     """Provides the api client.
 
-    If a preconfigured ``client`` was passed to the constructor it is
-    returned directly; otherwise a new ``Client`` is created using the
-    default environment/ADC configuration.
-
     Returns:
       The api client.
     """
-    if self._client is not None:
-      return self._client
-
     from google.genai import Client
 
     return Client(
@@ -387,9 +334,6 @@ class Gemini(BaseLlm):
 
   @cached_property
   def _live_api_client(self) -> Client:
-    if self._client is not None:
-      return self._client
-
     from google.genai import Client
 
     return Client(
