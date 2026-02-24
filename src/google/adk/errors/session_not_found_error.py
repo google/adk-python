@@ -14,14 +14,11 @@
 
 from __future__ import annotations
 
-from .not_found_error import NotFoundError
 
-
-class SessionNotFoundError(ValueError, NotFoundError):
+class SessionNotFoundError(ValueError):
   """Raised when a session cannot be found.
 
-  Inherits from both ValueError (for backward compatibility) and NotFoundError
-  (for semantic consistency with the project's error hierarchy).
+  Inherits from ValueError (for backward compatibility).
   """
 
   def __init__(self, message="Session not found."):
