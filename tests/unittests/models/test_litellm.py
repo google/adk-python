@@ -3958,7 +3958,27 @@ async def test_get_content_pdf_openai_uses_file_id(mocker):
   assert "file_data" not in content[0]["file"]
 
   mock_acreate_file.assert_called_once_with(
-      file=b"test_pdf_data",
+      file=("document.pdf", b"test_pdf_data", "application/pdf"),
+      purpose="assistants",
+      custom_llm_provider="openai",
+  )
+
+
+@pytest.mark.asyncio
+async def test_get_content_pdf_openai_uses_display_name_as_filename(mocker):
+  """Test that display_name is used as filename when available."""
+  mock_file_response = mocker.create_autospec(litellm.FileObject)
+  mock_file_response.id = "file-abc123"
+  mock_acreate_file = AsyncMock(return_value=mock_file_response)
+  mocker.patch.object(litellm, "acreate_file", new=mock_acreate_file)
+
+  part = types.Part.from_bytes(data=b"test_pdf_data", mime_type="application/pdf")
+  part.inline_data.display_name = "my_report.pdf"
+  content = await _get_content([part], provider="openai")
+
+  assert content[0]["file"]["file_id"] == "file-abc123"
+  mock_acreate_file.assert_called_once_with(
+      file=("my_report.pdf", b"test_pdf_data", "application/pdf"),
       purpose="assistants",
       custom_llm_provider="openai",
   )
@@ -3997,7 +4017,7 @@ async def test_get_content_pdf_azure_uses_file_id(mocker):
   assert content[0]["file"]["file_id"] == "file-xyz789"
 
   mock_acreate_file.assert_called_once_with(
-      file=b"test_pdf_data",
+      file=("document.pdf", b"test_pdf_data", "application/pdf"),
       purpose="assistants",
       custom_llm_provider="azure",
   )
@@ -4041,7 +4061,11 @@ async def test_get_completion_inputs_openai_file_upload(mocker):
   assert content[1]["type"] == "file"
   assert content[1]["file"]["file_id"] == "file-uploaded123"
 
-  mock_acreate_file.assert_called_once()
+  mock_acreate_file.assert_called_once_with(
+      file=("document.pdf", b"test_pdf_content", "application/pdf"),
+      purpose="assistants",
+      custom_llm_provider="openai",
+  )
 
 
 @pytest.mark.asyncio
