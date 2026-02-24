@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from typing import Any
 from typing import AsyncGenerator
+from typing import Optional
 from typing import TYPE_CHECKING
 
 from google.genai import types
@@ -207,7 +208,9 @@ class AgentTool(BaseTool):
     if not last_content:
       return ''
 
-    merged_text = '\n'.join(p.text for p in last_content.parts if p.text)
+    merged_text = '\n'.join(
+        p.text for p in (last_content.parts or ()) if p and p.text
+    )
     if isinstance(self.agent, LlmAgent) and self.agent.output_schema:
       tool_result = self.agent.output_schema.model_validate_json(
           merged_text

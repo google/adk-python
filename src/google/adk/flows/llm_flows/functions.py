@@ -373,7 +373,7 @@ async def handle_function_calls_async_with_agent_tool_streaming(
             role='user',
             parts=[
                 part
-                for part in (function_call_event.content.parts or [])
+                for part in function_call_event.content.parts or []
                 if part.function_call
                 and part.function_call.name not in agent_tool_names
             ],

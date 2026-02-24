@@ -90,7 +90,7 @@ async def test_agent_tool_run_async_with_events_yields_sub_agent_events():
   all_text = ' '.join(
       part.text
       for event in text_events
-      for part in (event.content.parts or [])
+      for part in event.content.parts or []
       if part.text
   )
   assert 'Step' in all_text or 'Complete' in all_text
