@@ -20,42 +20,60 @@ write_mode via BQ_EVAL_WRITE_MODE env var when evaluating AI/ML
 tools (forecast, detect_anomalies, etc.).
 """
 
+from functools import cached_property
+import logging
 import os
 import pathlib
 
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.code_executors.unsafe_local_code_executor import UnsafeLocalCodeExecutor
+from google.adk.models.google_llm import Gemini
 from google.adk.skills import load_skill_from_dir
-from google.adk.tools.bigquery.bigquery_credentials import BigQueryCredentialsConfig
-from google.adk.tools.bigquery.bigquery_toolset import BigQueryToolset
-from google.adk.tools.bigquery.config import BigQueryToolConfig
-from google.adk.tools.bigquery.config import WriteMode
 from google.adk.tools.skill_toolset import SkillToolset
-import google.auth
+from google.genai import types as genai_types
 
-_WRITE_MODE_MAP = {
-    "blocked": WriteMode.BLOCKED,
-    "protected": WriteMode.PROTECTED,
-    "allowed": WriteMode.ALLOWED,
-}
+logger = logging.getLogger(__name__)
 
-_write_mode_str = os.environ.get("BQ_EVAL_WRITE_MODE", "blocked").lower()
-_write_mode = _WRITE_MODE_MAP.get(_write_mode_str, WriteMode.BLOCKED)
+# ── BigQuery toolset (optional — requires ADC) ───────────────────
+bigquery_toolset = None
+try:
+  from google.adk.tools.bigquery.bigquery_credentials import BigQueryCredentialsConfig
+  from google.adk.tools.bigquery.bigquery_toolset import BigQueryToolset
+  from google.adk.tools.bigquery.config import BigQueryToolConfig
+  from google.adk.tools.bigquery.config import WriteMode
+  import google.auth
 
-application_default_credentials, _ = google.auth.default()
-credentials_config = BigQueryCredentialsConfig(
-    credentials=application_default_credentials,
-)
+  _WRITE_MODE_MAP = {
+      "blocked": WriteMode.BLOCKED,
+      "protected": WriteMode.PROTECTED,
+      "allowed": WriteMode.ALLOWED,
+  }
 
-tool_config = BigQueryToolConfig(
-    write_mode=_write_mode,
-    max_query_result_rows=50,
-)
+  _write_mode_str = os.environ.get("BQ_EVAL_WRITE_MODE", "blocked").lower()
+  _write_mode = _WRITE_MODE_MAP.get(_write_mode_str, WriteMode.BLOCKED)
 
-bigquery_toolset = BigQueryToolset(
-    credentials_config=credentials_config,
-    bigquery_tool_config=tool_config,
-)
+  application_default_credentials, project = google.auth.default()
+  if not project and not os.environ.get("GOOGLE_CLOUD_PROJECT"):
+    raise EnvironmentError("No GCP project found. Set GOOGLE_CLOUD_PROJECT.")
+  credentials_config = BigQueryCredentialsConfig(
+      credentials=application_default_credentials,
+  )
+
+  tool_config = BigQueryToolConfig(
+      write_mode=_write_mode,
+      max_query_result_rows=50,
+  )
+
+  bigquery_toolset = BigQueryToolset(
+      credentials_config=credentials_config,
+      bigquery_tool_config=tool_config,
+  )
+except Exception as e:
+  logger.warning(
+      "BigQuery toolset unavailable (%s). "
+      "Skill-only evaluation will still work.",
+      e,
+  )
 
 # ── Skill toolset ──────────────────────────────────────────────────
 _SKILLS_DIR = pathlib.Path(__file__).parent / "skills"
@@ -71,15 +89,44 @@ skill_toolset = SkillToolset(
     code_executor=UnsafeLocalCodeExecutor(),
 )
 
-root_agent = LlmAgent(
-    model="gemini-2.5-flash",
-    name="bigquerybench_agent",
-    description=(
-        "Agent for BigQuery data exploration, SQL execution, and"
-        " AI/ML operations against public datasets.  Also supports"
-        " skill-based workflows via SkillToolset."
-    ),
-    instruction="""\
+
+# ── Model (Vertex AI + API key) ──────────────────────────────────
+class _VertexGemini(Gemini):
+  """Gemini subclass that uses vertexai=True with an API key."""
+
+  @cached_property
+  def api_client(self):
+    from google.genai import Client
+
+    return Client(
+        vertexai=True,
+        api_key=os.environ.get("GOOGLE_CLOUD_API_KEY"),
+        http_options=genai_types.HttpOptions(
+            headers=self._tracking_headers(),
+            retry_options=self.retry_options,
+            base_url=self.base_url,
+        ),
+    )
+
+
+_SKILL_INSTRUCTION = """\
+You are a data analyst with access to skills.
+
+Workflow for skill-based tasks:
+1. Use list_skills to discover available skills.
+2. Use load_skill to read the skill's instructions.
+3. Use load_skill_resource to examine references, sample data,
+   or templates from the skill.
+4. Follow the skill's instructions — this may involve running
+   the skill's scripts via run_skill_script.
+5. Present results clearly.
+
+IMPORTANT: Only use the tools available to you (list_skills,
+load_skill, load_skill_resource, run_skill_script). Do NOT
+attempt to call tools that are not listed.
+"""
+
+_BQ_INSTRUCTION = """\
 You are a data analyst with access to BigQuery tools and skills.
 
 Workflow for direct BigQuery queries:
@@ -104,6 +151,32 @@ Workflow for skill-based tasks:
 5. Present results clearly.
 
 All public datasets are in project "bigquery-public-data".
-""",
-    tools=[bigquery_toolset, skill_toolset],
+"""
+
+_INSTRUCTION = _BQ_INSTRUCTION if bigquery_toolset else _SKILL_INSTRUCTION
+
+_api_key = os.environ.get("GOOGLE_CLOUD_API_KEY")
+_model = (
+    _VertexGemini(
+        model="gemini-3-flash-preview",
+        retry_options=genai_types.HttpRetryOptions(
+            initialDelay=2,
+            expBase=2,
+            attempts=5,
+        ),
+    )
+    if _api_key
+    else "gemini-3-flash-preview"
+)
+
+root_agent = LlmAgent(
+    model=_model,
+    name="bigquerybench_agent",
+    description=(
+        "Agent for BigQuery data exploration, SQL execution, and"
+        " AI/ML operations against public datasets.  Also supports"
+        " skill-based workflows via SkillToolset."
+    ),
+    instruction=_INSTRUCTION,
+    tools=[t for t in [bigquery_toolset, skill_toolset] if t],
 )

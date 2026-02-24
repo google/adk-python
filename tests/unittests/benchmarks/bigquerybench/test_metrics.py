@@ -250,9 +250,11 @@ class TestInstructionAdherenceScore:
     )
 
     mock_models = mock.AsyncMock()
-    mock_models.generate_content_async.return_value = mock_response
+    mock_models.generate_content.return_value = mock_response
+    mock_aio = mock.MagicMock()
+    mock_aio.models = mock_models
     mock_client = mock.MagicMock()
-    mock_client.models = mock_models
+    mock_client.aio = mock_aio
 
     with mock.patch("google.genai.Client", return_value=mock_client):
       result = await instruction_adherence_score(actual, rubrics)
@@ -284,9 +286,11 @@ class TestInstructionAdherenceScore:
     )
 
     mock_models = mock.AsyncMock()
-    mock_models.generate_content_async.return_value = mock_response
+    mock_models.generate_content.return_value = mock_response
+    mock_aio = mock.MagicMock()
+    mock_aio.models = mock_models
     mock_client = mock.MagicMock()
-    mock_client.models = mock_models
+    mock_client.aio = mock_aio
 
     with mock.patch("google.genai.Client", return_value=mock_client):
       result = await instruction_adherence_score(actual, rubrics)

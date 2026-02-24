@@ -103,7 +103,7 @@
         {
           "invocation_id": "inv-skill-query-01",
           "user_content": {
-            "parts": [{"text": "Use the bq-sql-analyst skill to help me find the top 3 Shakespeare works by unique word count. Load the skill and its reference first, then query the data."}],
+            "parts": [{"text": "Load the bq-sql-analyst skill and then load its public-datasets reference. Summarize the key datasets listed in that reference document."}],
             "role": "user"
           },
           "intermediate_data": {
@@ -120,15 +120,15 @@
       "rubrics": [
         {
           "rubric_id": "consulted_reference",
-          "rubric_content": {"text_property": "The agent loaded the skill's public-datasets reference to identify the Shakespeare table before querying."}
+          "rubric_content": {"text_property": "The agent loaded the public-datasets reference from the skill."}
         },
         {
-          "rubric_id": "result_has_ranking",
-          "rubric_content": {"text_property": "The final response contains a ranking of Shakespeare works by unique word count, showing at least 3 works."}
+          "rubric_id": "summarizes_datasets",
+          "rubric_content": {"text_property": "The response summarizes datasets mentioned in the reference document."}
         },
         {
           "rubric_id": "followed_workflow",
-          "rubric_content": {"text_property": "The agent followed the skill workflow: loaded the skill, then consulted the reference, then queried the data."}
+          "rubric_content": {"text_property": "The agent loaded the skill instructions before loading the resource."}
         }
       ],
       "creation_timestamp": 0.0

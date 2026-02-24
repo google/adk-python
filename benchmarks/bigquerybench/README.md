@@ -17,9 +17,12 @@ them easy to write and immune to exact-wording variance.
 ## Quick Start
 
 ```bash
-# Prerequisites: GCP project with BigQuery API + ADC configured
+# Skill-only mode (no BigQuery credentials needed):
+export GOOGLE_CLOUD_API_KEY=your-vertex-ai-api-key
+
+# Full mode (BigQuery + skills — requires ADC + project):
 export GOOGLE_CLOUD_PROJECT=your-project-id
-export GOOGLE_GENAI_USE_VERTEXAI=1
+export GOOGLE_CLOUD_API_KEY=your-vertex-ai-api-key
 
 # Run all eval cases
 python -m benchmarks.bigquerybench.runner
@@ -137,7 +140,7 @@ trace + final response) and answers yes/no per rubric.
 | `skill_list_skills` | `list_skills()` | Lists bq-sql-analyst; includes description |
 | `skill_load_sql_analyst` | `load_skill(name=bq-sql-analyst)` | Describes capabilities; mentions scripts |
 | `skill_load_reference` | `load_skill` → `load_skill_resource` | Shows datasets; loaded skill first |
-| `skill_query_with_reference` | `load_skill` → `load_skill_resource` | Consulted reference; has ranking; followed workflow |
+| `skill_query_with_reference` | `load_skill` → `load_skill_resource` | Consulted reference; summarizes datasets; followed workflow |
 | `skill_run_format_script` | `load_skill` → `run_skill_script` | Loaded before run; has table; has columns |
 
 ## Example Output
@@ -155,23 +158,38 @@ trace + final response) and answers yes/no per rubric.
     -> load_skill(name='bq-sql-analyst')
   tools=1.00  args=1.00  adherence=1.00  PASS
 
+[3/5] skill_load_reference
+    -> load_skill(name='bq-sql-analyst')
+    -> load_skill_resource(skill_name='bq-sql-analyst', path='references/public-datasets.md')
+  tools=1.00  args=1.00  adherence=1.00  PASS
+
+[4/5] skill_query_with_reference
+    -> load_skill(name='bq-sql-analyst')
+    -> load_skill_resource(skill_name='bq-sql-analyst', path='references/public-datasets.md')
+  tools=1.00  args=1.00  adherence=1.00  PASS
+
+[5/5] skill_run_format_script
+    -> load_skill(name='bq-sql-analyst')
+    -> run_skill_script(skill_name='bq-sql-analyst', script_path='scripts/format_results.py')
+  tools=1.00  args=1.00  adherence=1.00  PASS
+
 Eval Case                          Tools   Args  Adhere  Result
 ------------------------------------------------------------------------
 skill_list_skills                   1.00   1.00    1.00   PASS
 skill_load_sql_analyst              1.00   1.00    1.00   PASS
 skill_load_reference                1.00   1.00    1.00   PASS
-skill_query_with_reference          1.00   1.00    0.67   FAIL
+skill_query_with_reference          1.00   1.00    1.00   PASS
 skill_run_format_script             1.00   1.00    1.00   PASS
 ------------------------------------------------------------------------
 
 ========================================================================
   Summary
 ========================================================================
-  Cases:              4/5 (80.0%)
+  Cases:              5/5 (100.0%)
   Avg Tool Match:     1.00
   Avg Args Match:     1.00
-  Avg Adherence:      0.93
-  Elapsed:            42.1s
+  Avg Adherence:      1.00
+  Elapsed:            488.8s
 ========================================================================
 ```
 
@@ -281,14 +299,30 @@ tests/unittests/benchmarks/bigquerybench/
 └── test_metrics.py    # 14 tests (trace + LLM judge + JSON validation)
 ```
 
+## Retry Backoff
+
+Both the agent model and the LLM judge use exponential backoff with
+retry on 429 (rate limit) errors:
+
+- **Agent model**: 5 attempts, 2s initial delay, 2x exponential
+  backoff (via `HttpRetryOptions`)
+- **LLM judge**: 5 attempts, 2s → 4s → 8s → 16s manual backoff,
+  plus 3 HTTP-level retries per attempt
+
 ## Environment Variables
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `GOOGLE_CLOUD_PROJECT` | Yes | GCP project for BigQuery API |
-| `GOOGLE_GENAI_USE_VERTEXAI` | Conditional | `1` for Vertex AI backend |
-| `GOOGLE_API_KEY` | Conditional | API key for AI Studio backend |
+| `GOOGLE_CLOUD_API_KEY` | Yes | Vertex AI API key for agent model + judge |
+| `GOOGLE_CLOUD_PROJECT` | No | GCP project for BigQuery API (enables BigQuery toolset) |
 | `BQ_EVAL_WRITE_MODE` | No | `blocked` (default) / `protected` / `allowed` |
+
+**Two modes:**
+- **Skill-only** (default): Set `GOOGLE_CLOUD_API_KEY` only.
+  BigQuery toolset is skipped; all 5 skill eval cases run.
+- **Full mode**: Set both `GOOGLE_CLOUD_API_KEY` and
+  `GOOGLE_CLOUD_PROJECT` (+ ADC configured). BigQuery toolset
+  is enabled alongside skills.
 
 ## Troubleshooting
 
@@ -297,6 +331,7 @@ tests/unittests/benchmarks/bigquerybench/
 | `tool_invocation_score = 0` | Agent didn't call expected skill tool — check agent instructions |
 | `tool_args_score < 1.0` | Agent targeted wrong skill or resource — check user query specificity |
 | `adherence < 0.75` | Agent produced wrong output — review rubrics and skill instructions |
+| 429 RESOURCE_EXHAUSTED | Rate limit — retry backoff handles this automatically; wait and retry |
 | Skill not found | Verify skill dir exists in `skills/` and name is in `_SKILL_NAMES` in `agent.py` |
-| Judge LLM fails | Check `GOOGLE_API_KEY` or `GOOGLE_GENAI_USE_VERTEXAI` + `GOOGLE_CLOUD_PROJECT` |
+| Judge LLM fails | Check `GOOGLE_CLOUD_API_KEY` is set correctly |
 | `load_skill_resource` fails | Check the `path` arg matches a real file under the skill dir |

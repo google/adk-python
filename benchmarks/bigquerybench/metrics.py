@@ -29,11 +29,11 @@ Three metrics:
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import os
 import re
 from typing import Optional
-
-import google.genai
 
 from google.adk.evaluation.eval_case import ConversationScenario
 from google.adk.evaluation.eval_case import get_all_tool_calls
@@ -43,6 +43,8 @@ from google.adk.evaluation.eval_metrics import EvalStatus
 from google.adk.evaluation.eval_rubrics import Rubric
 from google.adk.evaluation.evaluator import EvaluationResult
 from google.adk.evaluation.evaluator import PerInvocationResult
+import google.genai
+from google.genai import types as genai_types
 
 logger = logging.getLogger(__name__)
 
@@ -256,7 +258,7 @@ def _format_tool_trace(invocations: list[Invocation]) -> str:
 async def instruction_adherence_score(
     actual_invocations: list[Invocation],
     rubrics: Optional[list[Rubric]],
-    judge_model: str = "gemini-2.5-flash",
+    judge_model: str = "gemini-3-flash-preview",
 ) -> EvaluationResult:
   """LLM-as-judge: check each rubric against the agent's output.
 
@@ -299,19 +301,45 @@ async def instruction_adherence_score(
       rubrics_text=rubrics_text,
   )
 
-  try:
-    client = google.genai.Client()
-    response = await client.models.generate_content_async(
-        model=judge_model,
-        contents=prompt,
-    )
-    response_text = response.text or ""
-  except Exception as e:
-    logger.error("Judge LLM call failed: %s", e)
-    return EvaluationResult(
-        overall_score=0.0,
-        overall_eval_status=EvalStatus.FAILED,
-    )
+  max_attempts = 5
+  initial_delay = 2.0
+  response_text = ""
+  for attempt in range(1, max_attempts + 1):
+    try:
+      api_key = os.environ.get("GOOGLE_CLOUD_API_KEY", "")
+      client = google.genai.Client(
+          vertexai=True,
+          api_key=api_key,
+          http_options=genai_types.HttpOptions(
+              retry_options=genai_types.HttpRetryOptions(
+                  initialDelay=initial_delay,
+                  expBase=2,
+                  attempts=3,
+              ),
+          ),
+      )
+      response = await client.aio.models.generate_content(
+          model=judge_model,
+          contents=prompt,
+      )
+      response_text = response.text or ""
+      break
+    except Exception as e:
+      if attempt < max_attempts and "429" in str(e):
+        delay = initial_delay * (2 ** (attempt - 1))
+        logger.warning(
+            "Judge LLM rate-limited (attempt %d/%d), retrying in %.1fs...",
+            attempt,
+            max_attempts,
+            delay,
+        )
+        await asyncio.sleep(delay)
+      else:
+        logger.error("Judge LLM call failed: %s", e)
+        return EvaluationResult(
+            overall_score=0.0,
+            overall_eval_status=EvalStatus.FAILED,
+        )
 
   # Parse verdicts.
   verdicts = _VERDICT_RE.findall(response_text)
