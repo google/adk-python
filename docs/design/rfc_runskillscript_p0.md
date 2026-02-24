@@ -4,7 +4,9 @@
 **Date:** 2026-02-24
 **Status:** Proposed
 **Audience:** ADK TL / UTL
-**Effort:** 8-11 engineering days
+**Effort:** 8-11 engineering days (P0 scope only; see
+  `code_executor_enhancements.md` for full 15-22 day estimate
+  covering P0-P2)
 **Tracking:** Follow-up to PR #4575 (RunSkillScriptTool)
 
 ---
@@ -71,8 +73,9 @@ watchdog thread, and no way for the caller to interrupt it. Worse,
 `UnsafeLocalCodeExecutor` holds a process-global `threading.Lock()`
 for the entire execution (required because `redirect_stdout` and
 `os.chdir` mutate process-global state). A hung Python script
-deadlocks the lock, blocking **all** code execution across all agents
-sharing that executor instance.
+deadlocks the lock, blocking **all** code execution across the entire
+process — every agent and every `UnsafeLocalCodeExecutor` instance
+shares the same module-level `_execution_lock`.
 
 **Impact:** A single infinite-loop in a skill script takes down the
 entire ADK process. This is a denial-of-service risk for any
@@ -87,7 +90,7 @@ host Python process:
 | Threat | Impact | Current Mitigation |
 |--------|--------|--------------------|
 | Read env vars / secrets | Data exfiltration | None |
-| Write to host filesystem | Data loss / corruption | Partial (temp-dir when `input_files` set) |
+| Write to host filesystem | Data loss / corruption | Partial (temp-dir sandbox when `input_files` or `working_dir` is set) |
 | Outbound network calls | Data leak | None |
 | `sys.exit()` | Process crash | `SystemExit` caught in tool |
 | Infinite loop / fork bomb | DoS | Shell: `subprocess.run(timeout)`; Python: **none** |
@@ -329,9 +332,11 @@ entire group — the child and all its descendants. The follow-up
 `proc.communicate(timeout=5)` reaps any zombies.
 
 On Python 3.10 (where `process_group` is unavailable), the fallback
-uses `preexec_fn=os.setpgrp` to achieve the same process-group
-isolation, with a documented caveat about fork-safety in
-multi-threaded programs (see §3.2.3).
+uses `preexec_fn=_setup_child` where `_setup_child` calls
+`os.setpgrp()` (process-group isolation) **and** sets
+`resource.setrlimit` for CPU/memory. This achieves the same
+kill-group semantics, with a documented caveat about fork-safety
+in multi-threaded programs (see §3.2.3).
 
 The inline `limit_code` wrapper sets `resource.setrlimit` for CPU and
 memory inside the child process (guarded with `try/except ImportError`
@@ -359,9 +364,12 @@ require containers or OS-level policy.
 
 - **Python 3.11+:** Use `process_group=0` (fork-safe, replaces
   `preexec_fn`). Enables clean `os.killpg()` on timeout.
-- **Python 3.10:** Fall back to `preexec_fn=set_limits` with a
-  documented caveat about thread safety in multi-threaded programs.
-  ADK minimum is `>=3.10` per `pyproject.toml`.
+- **Python 3.10:** Fall back to `preexec_fn=_setup_child` where
+  `_setup_child` calls `os.setpgrp()` (new process group, required
+  for `os.killpg` on timeout) **and** sets `resource.setrlimit` for
+  CPU/memory. Documented caveat: `preexec_fn` is not fork-safe in
+  multi-threaded programs. ADK minimum is `>=3.10` per
+  `pyproject.toml`.
 - **Windows:** Not supported. Raise `NotImplementedError` directing
   users to `ContainerCodeExecutor`. (`resource.setrlimit` and
   `process_group` are Unix-only.)

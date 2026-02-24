@@ -403,14 +403,13 @@ account for this:
   it after the join (whether the worker finishes or times out). If the
   lock were acquired inside the worker thread, a timed-out worker would
   hold the lock indefinitely, deadlocking all subsequent calls.
-- **Recommended pattern — unhealthy guard:** When a timeout fires, the
-  executor marks itself as unhealthy (`_healthy = False`) and **does not
-  release the lock**. All subsequent `execute_code()` calls fail fast
-  with an explicit error until the caller invokes `reinitialize()`,
-  which waits for the lingering daemon thread (best-effort), resets
-  `_healthy = True`, and releases the lock. This prevents the lock
-  from being released while the daemon thread still mutates
-  `sys.stdout` or the working directory.
+- **Recommended pattern — unhealthy guard:** On timeout, the executor
+  sets `self._healthy = False` before returning the timeout error. The
+  lock is released normally when the `with` block exits (a `with`
+  statement always releases on any exit path, including `return`).
+  The daemon thread may still be running after the lock is released;
+  the unhealthy flag prevents new executions from starting until the
+  caller explicitly recovers via `reinitialize()`.
   ```python
   def execute_code(self, ...):
       if not self._healthy:
@@ -424,18 +423,23 @@ account for this:
           thread.join(timeout=timeout)
           if thread.is_alive():
               self._healthy = False
-              # Lock stays held — no new exec until reinit.
+              # Lock released when `with` exits.
+              # Unhealthy flag blocks future calls.
               return CodeExecutionResult(
                   stderr=f'Execution timed out after '
                          f'{timeout}s. Executor marked '
                          f'unhealthy.'
               )
   ```
+- **Risk:** After the lock is released, the lingering daemon thread
+  may still be mutating `sys.stdout` or the working directory. The
+  unhealthy guard ensures no *new* execution races with it, but a
+  concurrent read of `sys.stdout` from other code could see stale
+  data. This is an acceptable trade-off for a development executor.
 - **Recovery path:** `reinitialize()` joins the lingering daemon
   thread (with a generous grace timeout), restores `sys.stdout`
-  and cwd if needed, sets `_healthy = True`, and releases
-  `_execution_lock`. This mirrors the `ContainerCodeExecutor`
-  recovery model (§4.2.3).
+  and cwd if needed, and sets `_healthy = True`. This mirrors the
+  `ContainerCodeExecutor` recovery model (§4.2.3).
 
 **Recommendation:** Thread-based timeout with unhealthy guard for
 `UnsafeLocalCodeExecutor` is sufficient for a development executor.
@@ -975,7 +979,7 @@ def reset_state(self):
 # Keep optimize_data_file frozen
 ```
 
-#### 5.2.4 Interaction with `execution_id`
+#### 5.2.5 Interaction with `execution_id`
 
 The LLM flow layer uses `execution_id` (from `CodeExecutorContext`) to
 identify stateful sessions. For `ContainerCodeExecutor`:
@@ -1221,8 +1225,12 @@ class LocalSandboxCodeExecutor(BaseCodeExecutor):
             if sys.version_info >= (3, 11):
                 spawn_kwargs['process_group'] = 0
             else:
-                # Fallback for 3.10; caveat: not fork-safe.
-                def _set_limits():
+                # Fallback for 3.10; caveat: preexec_fn is not
+                # fork-safe in multi-threaded programs.
+                # Must call os.setpgrp() so os.killpg() works
+                # on timeout, AND set resource limits.
+                def _setup_child():
+                    os.setpgrp()  # new process group
                     try:
                         import resource
                         resource.setrlimit(
@@ -1235,7 +1243,7 @@ class LocalSandboxCodeExecutor(BaseCodeExecutor):
                         )
                     except (ImportError, OSError):
                         pass  # timeout-only enforcement
-                spawn_kwargs['preexec_fn'] = _set_limits
+                spawn_kwargs['preexec_fn'] = _setup_child
 
             # Inline wrapper sets resource limits in the child
             # process. Guarded for missing resource module.
@@ -1446,9 +1454,10 @@ users time to set explicit `False` if they need the old behavior.
 | 1 | Add `SecurityWarning` to `UnsafeLocalCodeExecutor` | Small | None |
 | 2 | Add `restrict_builtins` option | Small | Low |
 | 3 | Implement `LocalSandboxCodeExecutor` | Medium | Low |
-| 4 | Add default image + network isolation to `ContainerCodeExecutor` | Medium | Low |
+| 4 | Add default image + network/rootfs isolation as **opt-in** flags | Medium | Low |
 | 5 | Create official `adk-code-executor` Docker image | Medium | Low |
 | 6 | Update documentation and samples | Small | None |
+| 7 | Graduate network/rootfs isolation to **default** (future minor) | Small | Medium (breaking for scripts needing network/host writes) |
 
 ---
 
@@ -1720,7 +1729,9 @@ should be opt-in or gated behind a version flag.
 3. Implement `LocalSandboxCodeExecutor` (using `process_group`, not
    `preexec_fn`)
 4. Add digest-pinned default image to `ContainerCodeExecutor`
-5. Add network isolation defaults to `ContainerCodeExecutor`
+5. Add network/rootfs isolation as **opt-in** flags on
+   `ContainerCodeExecutor` (`disable_network`, `read_only_rootfs`,
+   both default `False`; see §6.3.2-C for graduation plan)
 6. Create official `adk-code-executor` Docker image (versioned tags)
 7. Update all samples to recommend secure executors
 8. Add security-focused tests
@@ -1736,14 +1747,19 @@ Implement Option A (persistent process) directly, as recommended in
 3. Implement persistent Python REPL management (start, send code,
    read output, detect crash/restart)
 4. Add `execution_id`-based session isolation (one REPL per
-   `execution_id`)
-5. Wire `execution_id` in `RunSkillScriptTool`
-6. Add `reset_state()` method (kills and restarts the REPL)
-7. Add stateful execution tests (variable persistence, crash recovery,
+   `execution_id`; wiring in `RunSkillScriptTool` is done in
+   Phase 2 — see §5.2.5)
+5. Add `reset_state()` method (kills and restarts the REPL)
+6. Add stateful execution tests (variable persistence, crash recovery,
    `execution_id` isolation)
-8. Update samples and documentation
+7. Update samples and documentation
 
 ### Total estimated effort: 15-22 days
+
+> **Scope note:** This covers all four phases (P0 timeout + P0 security
+> + P1 contract hardening + P2 stateful container). The companion RFC
+> (`rfc_runskillscript_p0.md`) scopes only P0-A (timeout) and P0-B
+> (LocalSandboxCodeExecutor), estimated at 8-11 days.
 
 ---
 
