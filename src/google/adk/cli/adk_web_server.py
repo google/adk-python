@@ -601,30 +601,11 @@ class AdkWebServer:
     module = importlib.import_module(module_name)
     return getattr(module, obj_name)
 
-  def _setup_runtime_config(self, web_assets_dir: str):
-    """Sets up the runtime config for the web server."""
-    # Read existing runtime config file.
-    runtime_config_path = os.path.join(
-        web_assets_dir, "assets", "config", "runtime-config.json"
-    )
-    runtime_config = {}
-    try:
-      with open(runtime_config_path, "r") as f:
-        runtime_config = json.load(f)
-    except FileNotFoundError:
-      logger.info(
-          "File not found: %s. A new runtime config file will be created.",
-          runtime_config_path,
-      )
-    except json.JSONDecodeError:
-      logger.warning(
-          "Failed to decode JSON from %s. The file content will be"
-          " overwritten.",
-          runtime_config_path,
-      )
-    runtime_config["backendUrl"] = self.url_prefix if self.url_prefix else ""
-
-    # Set custom logo config.
+  def _build_runtime_config(self) -> dict[str, Any]:
+    """Builds the runtime config dict for the dev UI frontend."""
+    runtime_config: dict[str, Any] = {
+        "backendUrl": self.url_prefix if self.url_prefix else "",
+    }
     if self.logo_text or self.logo_image_url:
       if not self.logo_text or not self.logo_image_url:
         raise ValueError(
@@ -635,18 +616,7 @@ class AdkWebServer:
           "text": self.logo_text,
           "imageUrl": self.logo_image_url,
       }
-    elif "logo" in runtime_config:
-      del runtime_config["logo"]
-
-    # Write the runtime config file.
-    try:
-      os.makedirs(os.path.dirname(runtime_config_path), exist_ok=True)
-      with open(runtime_config_path, "w") as f:
-        json.dump(runtime_config, f, indent=2)
-    except IOError as e:
-      logger.error(
-          "Failed to write runtime config file %s: %s", runtime_config_path, e
-      )
+    return runtime_config
 
   async def _create_session(
       self,
@@ -742,7 +712,7 @@ class AdkWebServer:
         ],
     )
     if web_assets_dir:
-      self._setup_runtime_config(web_assets_dir)
+      self._build_runtime_config()
 
     # TODO - register_processors to be removed once --otel_to_cloud is no
     # longer experimental.
@@ -1815,6 +1785,10 @@ class AdkWebServer:
             "logo_text": self.logo_text,
             "logo_image_url": self.logo_image_url,
         }
+
+      @app.get("/dev-ui/assets/config/runtime-config.json")
+      async def get_runtime_config():
+        return self._build_runtime_config()
 
       @app.get("/")
       async def redirect_root_to_dev_ui():

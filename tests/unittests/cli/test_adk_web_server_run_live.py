@@ -203,3 +203,70 @@ def test_run_live_defaults_and_individual_options(
         run_config.session_resumption.transparent
         is expected_session_resumption_transparent
     )
+
+
+def _make_server(**kwargs) -> AdkWebServer:
+  defaults = dict(
+      agent_loader=_DummyAgentLoader(),
+      session_service=InMemorySessionService(),
+      memory_service=types.SimpleNamespace(),
+      artifact_service=types.SimpleNamespace(),
+      credential_service=types.SimpleNamespace(),
+      eval_sets_manager=types.SimpleNamespace(),
+      eval_set_results_manager=types.SimpleNamespace(),
+      agents_dir=".",
+  )
+  defaults.update(kwargs)
+  return AdkWebServer(**defaults)
+
+
+class TestBuildRuntimeConfig:
+
+  def test_default_no_prefix(self):
+    server = _make_server()
+    config = server._build_runtime_config()
+    assert config == {"backendUrl": ""}
+
+  def test_with_url_prefix(self):
+    server = _make_server(url_prefix="/my-prefix")
+    config = server._build_runtime_config()
+    assert config == {"backendUrl": "/my-prefix"}
+
+  def test_with_logo(self):
+    server = _make_server(
+        logo_text="My App",
+        logo_image_url="https://example.com/logo.png",
+    )
+    config = server._build_runtime_config()
+    assert config == {
+        "backendUrl": "",
+        "logo": {
+            "text": "My App",
+            "imageUrl": "https://example.com/logo.png",
+        },
+    }
+
+  def test_logo_text_only_raises(self):
+    server = _make_server(logo_text="My App")
+    with pytest.raises(ValueError, match="Both --logo-text and --logo-image-url"):
+      server._build_runtime_config()
+
+  def test_logo_image_url_only_raises(self):
+    server = _make_server(logo_image_url="https://example.com/logo.png")
+    with pytest.raises(ValueError, match="Both --logo-text and --logo-image-url"):
+      server._build_runtime_config()
+
+
+class TestRuntimeConfigEndpoint:
+
+  def test_get_runtime_config_json(self, tmp_path):
+    server = _make_server(url_prefix="/test-prefix")
+    app = server.get_fast_api_app(
+        setup_observer=lambda _observer, _server: None,
+        tear_down_observer=lambda _observer, _server: None,
+        web_assets_dir=str(tmp_path),
+    )
+    client = TestClient(app)
+    resp = client.get("/dev-ui/assets/config/runtime-config.json")
+    assert resp.status_code == 200
+    assert resp.json() == {"backendUrl": "/test-prefix"}
