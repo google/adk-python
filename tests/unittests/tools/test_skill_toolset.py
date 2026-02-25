@@ -692,13 +692,7 @@ async def test_execute_script_system_exit_caught(mock_skill1):
       tool_context=ctx,
   )
   assert result["error_code"] == "EXECUTION_ERROR"
-  assert (
-      "SystemExit" in result["error"]
-      or "code 1" in result["error"]
-      or "Traceback" in result["error"]
-      or "exited with code 1" in result["error"]
-      or result["error"] == "1"
-  )
+  assert "exited with code 1" in result["error"]
 
 
 @pytest.mark.asyncio
@@ -991,7 +985,7 @@ async def test_shell_json_envelope_timeout(mock_skill1):
       args={"skill_name": "skill1", "script_path": "setup.sh"},
       tool_context=ctx,
   )
-  assert result["status"] == "warning"
+  assert result["status"] == "error"
   assert result["stdout"] == "partial output\n"
   assert "Timed out" in result["stderr"]
 
@@ -1063,7 +1057,7 @@ async def test_integration_shell_nonzero_exit():
       tool_context=ctx,
   )
   assert result["status"] == "error"
-  assert "42" in result["stderr"] or result["stderr"]
+  assert "42" in result["stderr"]
 
 
 # ── Finding 1: system instruction references correct tool name ──
@@ -1082,40 +1076,47 @@ def test_system_instruction_references_run_skill_script():
 
 
 @pytest.mark.asyncio
-async def test_execute_script_empty_files_mounted(mock_skill1):
-  """Verify empty files are mounted (not silently dropped)."""
+async def test_execute_script_empty_files_mounted():
+  """Verify empty files are included in wrapper code, not dropped."""
+  skill = mock.create_autospec(models.Skill, instance=True)
+  skill.name = "skill_empty"
+  skill.resources = mock.MagicMock(
+      spec=[
+          "get_reference",
+          "get_asset",
+          "get_script",
+          "list_references",
+          "list_assets",
+          "list_scripts",
+      ]
+  )
+  skill.resources.get_reference.side_effect = (
+      lambda n: "" if n == "empty.md" else None
+  )
+  skill.resources.get_asset.side_effect = (
+      lambda n: "" if n == "empty.cfg" else None
+  )
+  skill.resources.get_script.side_effect = (
+      lambda n: models.Script(src="") if n == "run.py" else None
+  )
+  skill.resources.list_references.return_value = ["empty.md"]
+  skill.resources.list_assets.return_value = ["empty.cfg"]
+  skill.resources.list_scripts.return_value = ["run.py"]
+
   executor = _make_mock_executor(stdout="ok\n")
-  toolset = skill_toolset.SkillToolset([mock_skill1], code_executor=executor)
+  toolset = skill_toolset.SkillToolset([skill], code_executor=executor)
   tool = skill_toolset.RunSkillScriptTool(toolset)
   ctx = _make_tool_context_with_agent()
   await tool.run_async(
-      args={"skill_name": "skill1", "script_path": "run.py"},
+      args={"skill_name": "skill_empty", "script_path": "run.py"},
       tool_context=ctx,
   )
 
   call_args = executor.execute_code.call_args
   code_input = call_args[0][1]
-  assert (
-      "'references/empty.md': ''" in code_input.code
-      or "'references/empty.md': b''" in code_input.code
-      or '"references/empty.md": ""' in code_input.code
-      or "references/empty.md" not in code_input.code
-      or "_files = {" in code_input.code
-  )
-  assert (
-      "'assets/empty.cfg': ''" in code_input.code
-      or "'assets/empty.cfg': b''" in code_input.code
-      or '"assets/empty.cfg": ""' in code_input.code
-      or "assets/empty.cfg" not in code_input.code
-      or "_files = {" in code_input.code
-  )
-  assert (
-      "'scripts/run.py': ''" in code_input.code
-      or "'scripts/run.py': b''" in code_input.code
-      or '"scripts/run.py": ""' in code_input.code
-      or "scripts/run.py" not in code_input.code
-      or "_files = {" in code_input.code
-  )
+  assert "'references/empty.md': ''" in code_input.code
+  assert "'assets/empty.cfg': ''" in code_input.code
+  assert "'scripts/run.py': ''" in code_input.code
 
 
 # ── Finding 3: invalid args type returns clear error ──
@@ -1147,3 +1148,49 @@ async def test_execute_script_invalid_args_type(mock_skill1, bad_args):
   )
   assert result["error_code"] == "INVALID_ARGS_TYPE"
   executor.execute_code.assert_not_called()
+
+
+# ── Finding 4: binary file content is handled in wrapper ──
+
+
+@pytest.mark.asyncio
+async def test_execute_script_binary_content_packaged():
+  """Verify binary asset content uses 'wb' mode in wrapper code."""
+  skill = mock.create_autospec(models.Skill, instance=True)
+  skill.name = "skill_bin"
+  skill.resources = mock.MagicMock(
+      spec=[
+          "get_reference",
+          "get_asset",
+          "get_script",
+          "list_references",
+          "list_assets",
+          "list_scripts",
+      ]
+  )
+  skill.resources.get_reference.side_effect = (
+      lambda n: b"\x00\x01\x02" if n == "data.bin" else None
+  )
+  skill.resources.get_asset.return_value = None
+  skill.resources.get_script.side_effect = lambda n: (
+      models.Script(src="print('ok')") if n == "run.py" else None
+  )
+  skill.resources.list_references.return_value = ["data.bin"]
+  skill.resources.list_assets.return_value = []
+  skill.resources.list_scripts.return_value = ["run.py"]
+
+  executor = _make_mock_executor(stdout="ok\n")
+  toolset = skill_toolset.SkillToolset([skill], code_executor=executor)
+  tool = skill_toolset.RunSkillScriptTool(toolset)
+  ctx = _make_tool_context_with_agent()
+  await tool.run_async(
+      args={"skill_name": "skill_bin", "script_path": "run.py"},
+      tool_context=ctx,
+  )
+
+  call_args = executor.execute_code.call_args
+  code_input = call_args[0][1]
+  # Binary content should appear as bytes literal
+  assert "b'\\x00\\x01\\x02'" in code_input.code
+  # Wrapper code handles binary with 'wb' mode
+  assert "'wb' if isinstance(content, bytes)" in code_input.code

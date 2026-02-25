@@ -26,12 +26,10 @@ from typing import Optional
 from typing import TYPE_CHECKING
 
 from google.genai import types
-from typing_extensions import override
 
 from ..agents.readonly_context import ReadonlyContext
 from ..code_executors.base_code_executor import BaseCodeExecutor
 from ..code_executors.code_execution_utils import CodeExecutionInput
-from ..code_executors.code_execution_utils import CodeExecutionResult
 from ..features import experimental
 from ..features import FeatureName
 from ..skills import models
@@ -46,6 +44,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger("google_adk." + __name__)
 
 _DEFAULT_SCRIPT_TIMEOUT = 300
+_MAX_SKILL_PAYLOAD_BYTES = 16 * 1024 * 1024  # 16 MB
 
 DEFAULT_SKILL_SYSTEM_INSTRUCTION = """You can use specialized 'skills' to help you with complex tasks. You MUST use the skill tools to interact with these skills.
 
@@ -242,25 +241,15 @@ class LoadSkillResourceTool(BaseTool):
     }
 
 
-class SkillScriptCodeExecutor(BaseCodeExecutor):
-  """A wrapper that extracts skill files and executes scripts in a temp dir."""
+class SkillScriptCodeExecutor:
+  """A helper that materializes skill files and executes scripts."""
 
   _base_executor: BaseCodeExecutor
   _script_timeout: int
 
   def __init__(self, base_executor: BaseCodeExecutor, script_timeout: int):
-    super().__init__()
     self._base_executor = base_executor
     self._script_timeout = script_timeout
-
-  @override
-  def execute_code(
-      self,
-      invocation_context: Any,
-      code_execution_input: CodeExecutionInput,
-  ) -> CodeExecutionResult:
-    """Not used directly by the wrapper."""
-    raise NotImplementedError("Use execute_script_async instead")
 
   async def execute_script_async(
       self,
@@ -272,11 +261,14 @@ class SkillScriptCodeExecutor(BaseCodeExecutor):
     """Prepares and executes the script using the base executor."""
     code = self._build_wrapper_code(skill, script_path, script_args)
     if code is None:
-      ext = script_path.rsplit(".", 1)[-1] if "." in script_path else ""
+      if "." in script_path:
+        ext_msg = f"'.{script_path.rsplit('.', 1)[-1]}'"
+      else:
+        ext_msg = "(no extension)"
       return {
           "error": (
-              f"Unsupported script type '.{ext}'. Supported"
-              " types: .py, .sh, .bash"
+              f"Unsupported script type {ext_msg}."
+              " Supported types: .py, .sh, .bash"
           ),
           "error_code": "UNSUPPORTED_SCRIPT_TYPE",
       }
@@ -294,6 +286,7 @@ class SkillScriptCodeExecutor(BaseCodeExecutor):
 
       # Shell scripts serialize both streams as JSON
       # through stdout; parse the envelope if present.
+      rc = 0
       is_shell = "." in script_path and script_path.rsplit(".", 1)[
           -1
       ].lower() in ("sh", "bash")
@@ -310,7 +303,9 @@ class SkillScriptCodeExecutor(BaseCodeExecutor):
           pass
 
       status = "success"
-      if stderr and not stdout:
+      if rc != 0:
+        status = "error"
+      elif stderr and not stdout:
         status = "error"
       elif stderr:
         status = "warning"
@@ -322,26 +317,23 @@ class SkillScriptCodeExecutor(BaseCodeExecutor):
           "stderr": stderr,
           "status": status,
       }
-    except BaseException as e:  # pylint: disable=broad-exception-caught
-      if isinstance(e, SystemExit):
-        stdout = ""
-        stderr = ""
-        if e.code in (None, 0):
-          return {
-              "skill_name": skill.name,
-              "script_path": script_path,
-              "stdout": stdout,
-              "stderr": stderr,
-              "status": "success",
-          }
+    except SystemExit as e:
+      if e.code in (None, 0):
         return {
-            "error": (
-                f"Failed to execute script '{script_path}': exited with code"
-                f" {e.code}"
-            ),
-            "error_code": "EXECUTION_ERROR",
+            "skill_name": skill.name,
+            "script_path": script_path,
+            "stdout": "",
+            "stderr": "",
+            "status": "success",
         }
-
+      return {
+          "error": (
+              f"Failed to execute script '{script_path}':"
+              f" exited with code {e.code}"
+          ),
+          "error_code": "EXECUTION_ERROR",
+      }
+    except Exception as e:  # pylint: disable=broad-exception-caught
       logger.exception(
           "Error executing script '%s' from skill '%s'",
           script_path,
@@ -352,7 +344,8 @@ class SkillScriptCodeExecutor(BaseCodeExecutor):
         short_msg = short_msg[:200] + "..."
       return {
           "error": (
-              f"Failed to execute script '{script_path}':\n{type(e).__name__}:"
+              "Failed to execute script"
+              f" '{script_path}':\n{type(e).__name__}:"
               f" {short_msg}"
           ),
           "error_code": "EXECUTION_ERROR",
@@ -387,6 +380,19 @@ class SkillScriptCodeExecutor(BaseCodeExecutor):
       scr = skill.resources.get_script(scr_name)
       if scr is not None and scr.src is not None:
         files_dict[f"scripts/{scr_name}"] = scr.src
+
+    total_size = sum(
+        len(v) if isinstance(v, (str, bytes)) else 0
+        for v in files_dict.values()
+    )
+    if total_size > _MAX_SKILL_PAYLOAD_BYTES:
+      logger.warning(
+          "Skill '%s' resources total %d bytes, exceeding"
+          " the recommended limit of %d bytes.",
+          skill.name,
+          total_size,
+          _MAX_SKILL_PAYLOAD_BYTES,
+      )
 
     # Build the boilerplate extract string
     code_lines = [
@@ -432,7 +438,7 @@ class SkillScriptCodeExecutor(BaseCodeExecutor):
           "        _r = subprocess.run(",
           f"          {arr!r},",
           "          capture_output=True, text=True,",
-          f"          timeout={timeout!r},",
+          f"          timeout={timeout!r}, cwd=td,",
           "        )",
           "        print(_json.dumps({",
           "            '__shell_result__': True,",
