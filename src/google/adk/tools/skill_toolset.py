@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# pylint: disable=g-import-not-at-top,protected-access
+
 """Toolset for discovering, viewing, and executing agent skills."""
 
 from __future__ import annotations
@@ -24,10 +26,12 @@ from typing import Optional
 from typing import TYPE_CHECKING
 
 from google.genai import types
+from typing_extensions import override
 
 from ..agents.readonly_context import ReadonlyContext
 from ..code_executors.base_code_executor import BaseCodeExecutor
 from ..code_executors.code_execution_utils import CodeExecutionInput
+from ..code_executors.code_execution_utils import CodeExecutionResult
 from ..features import experimental
 from ..features import FeatureName
 from ..skills import models
@@ -238,6 +242,224 @@ class LoadSkillResourceTool(BaseTool):
     }
 
 
+class SkillScriptCodeExecutor(BaseCodeExecutor):
+  """A wrapper that extracts skill files and executes scripts in a temp dir."""
+
+  _base_executor: BaseCodeExecutor
+  _script_timeout: int
+
+  def __init__(self, base_executor: BaseCodeExecutor, script_timeout: int):
+    super().__init__()
+    self._base_executor = base_executor
+    self._script_timeout = script_timeout
+
+  @override
+  def execute_code(
+      self,
+      invocation_context: Any,
+      code_execution_input: CodeExecutionInput,
+  ) -> CodeExecutionResult:
+    """Not used directly by the wrapper."""
+    raise NotImplementedError("Use execute_script_async instead")
+
+  async def execute_script_async(
+      self,
+      invocation_context: Any,
+      skill: models.Skill,
+      script_path: str,
+      script_args: dict[str, Any],
+  ) -> dict[str, Any]:
+    """Prepares and executes the script using the base executor."""
+    code = self._build_wrapper_code(skill, script_path, script_args)
+    if code is None:
+      ext = script_path.rsplit(".", 1)[-1] if "." in script_path else ""
+      return {
+          "error": (
+              f"Unsupported script type '.{ext}'. Supported"
+              " types: .py, .sh, .bash"
+          ),
+          "error_code": "UNSUPPORTED_SCRIPT_TYPE",
+      }
+
+    try:
+      # Execute the self-contained script using the underlying executor
+      result = await asyncio.to_thread(
+          self._base_executor.execute_code,
+          invocation_context,
+          CodeExecutionInput(code=code),
+      )
+
+      stdout = result.stdout
+      stderr = result.stderr
+
+      # Shell scripts serialize both streams as JSON
+      # through stdout; parse the envelope if present.
+      is_shell = "." in script_path and script_path.rsplit(".", 1)[
+          -1
+      ].lower() in ("sh", "bash")
+      if is_shell and stdout:
+        try:
+          parsed = json.loads(stdout)
+          if isinstance(parsed, dict) and parsed.get("__shell_result__"):
+            stdout = parsed.get("stdout", "")
+            stderr = parsed.get("stderr", "")
+            rc = parsed.get("returncode", 0)
+            if rc != 0 and not stderr:
+              stderr = f"Exit code {rc}"
+        except (json.JSONDecodeError, ValueError):
+          pass
+
+      status = "success"
+      if stderr and not stdout:
+        status = "error"
+      elif stderr:
+        status = "warning"
+
+      return {
+          "skill_name": skill.name,
+          "script_path": script_path,
+          "stdout": stdout,
+          "stderr": stderr,
+          "status": status,
+      }
+    except BaseException as e:  # pylint: disable=broad-exception-caught
+      if isinstance(e, SystemExit):
+        stdout = ""
+        stderr = ""
+        if e.code in (None, 0):
+          return {
+              "skill_name": skill.name,
+              "script_path": script_path,
+              "stdout": stdout,
+              "stderr": stderr,
+              "status": "success",
+          }
+        return {
+            "error": (
+                f"Failed to execute script '{script_path}': exited with code"
+                f" {e.code}"
+            ),
+            "error_code": "EXECUTION_ERROR",
+        }
+
+      logger.exception(
+          "Error executing script '%s' from skill '%s'",
+          script_path,
+          skill.name,
+      )
+      short_msg = str(e)
+      if len(short_msg) > 200:
+        short_msg = short_msg[:200] + "..."
+      return {
+          "error": (
+              f"Failed to execute script '{script_path}':\n{type(e).__name__}:"
+              f" {short_msg}"
+          ),
+          "error_code": "EXECUTION_ERROR",
+      }
+
+  def _build_wrapper_code(
+      self,
+      skill: models.Skill,
+      script_path: str,
+      script_args: dict[str, Any],
+  ) -> str | None:
+    """Builds a self-extracting Python script."""
+    ext = ""
+    if "." in script_path:
+      ext = script_path.rsplit(".", 1)[-1].lower()
+
+    if not script_path.startswith("scripts/"):
+      script_path = f"scripts/{script_path}"
+
+    files_dict = {}
+    for ref_name in skill.resources.list_references():
+      content = skill.resources.get_reference(ref_name)
+      if content is not None:
+        files_dict[f"references/{ref_name}"] = content
+
+    for asset_name in skill.resources.list_assets():
+      content = skill.resources.get_asset(asset_name)
+      if content is not None:
+        files_dict[f"assets/{asset_name}"] = content
+
+    for scr_name in skill.resources.list_scripts():
+      scr = skill.resources.get_script(scr_name)
+      if scr is not None and scr.src is not None:
+        files_dict[f"scripts/{scr_name}"] = scr.src
+
+    # Build the boilerplate extract string
+    code_lines = [
+        "import os",
+        "import tempfile",
+        "import sys",
+        "import json as _json",
+        "import subprocess",
+        "import runpy",
+        f"_files = {files_dict!r}",
+        "def _materialize_and_run():",
+        "  _orig_cwd = os.getcwd()",
+        "  with tempfile.TemporaryDirectory() as td:",
+        "    for rel_path, content in _files.items():",
+        "      full_path = os.path.join(td, rel_path)",
+        "      os.makedirs(os.path.dirname(full_path), exist_ok=True)",
+        "      mode = 'wb' if isinstance(content, bytes) else 'w'",
+        "      with open(full_path, mode) as f:",
+        "        f.write(content)",
+        "    os.chdir(td)",
+        "    try:",
+    ]
+
+    if ext == "py":
+      argv_list = [script_path]
+      for k, v in script_args.items():
+        argv_list.extend([f"--{k}", str(v)])
+      code_lines.extend([
+          f"      sys.argv = {argv_list!r}",
+          "      try:",
+          f"        runpy.run_path({script_path!r}, run_name='__main__')",
+          "      except SystemExit as e:",
+          "        if e.code is not None and e.code != 0:",
+          "          raise e",
+      ])
+    elif ext in ("sh", "bash"):
+      arr = ["bash", script_path]
+      for k, v in script_args.items():
+        arr.extend([f"--{k}", str(v)])
+      timeout = self._script_timeout
+      code_lines.extend([
+          "      try:",
+          "        _r = subprocess.run(",
+          f"          {arr!r},",
+          "          capture_output=True, text=True,",
+          f"          timeout={timeout!r},",
+          "        )",
+          "        print(_json.dumps({",
+          "            '__shell_result__': True,",
+          "            'stdout': _r.stdout,",
+          "            'stderr': _r.stderr,",
+          "            'returncode': _r.returncode,",
+          "        }))",
+          "      except subprocess.TimeoutExpired as _e:",
+          "        print(_json.dumps({",
+          "            '__shell_result__': True,",
+          "            'stdout': _e.stdout or '',",
+          f"            'stderr': 'Timed out after {timeout}s',",
+          "            'returncode': -1,",
+          "        }))",
+      ])
+    else:
+      return None
+
+    code_lines.extend([
+        "    finally:",
+        "      os.chdir(_orig_cwd)",
+    ])
+
+    code_lines.append("_materialize_and_run()")
+    return "\n".join(code_lines)
+
+
 @experimental(FeatureName.SKILL_TOOLSET)
 class RunSkillScriptTool(BaseTool):
   """Tool to execute scripts from a skill's scripts/ directory."""
@@ -339,195 +561,12 @@ class RunSkillScriptTool(BaseTool):
           "error_code": "NO_CODE_EXECUTOR",
       }
 
-    import os
-
-    from ..code_executors.code_execution_utils import File
-
-    input_files = []
-
-    # Package ALL skill files for mounting
-    for ref_name in skill.resources.list_references():
-      content = skill.resources.get_reference(ref_name)
-      if content is not None:
-        input_files.append(
-            File(
-                name=os.path.basename(ref_name),
-                path=f"references/{ref_name}",
-                content=content,
-            )
-        )
-    for asset_name in skill.resources.list_assets():
-      content = skill.resources.get_asset(asset_name)
-      if content is not None:
-        input_files.append(
-            File(
-                name=os.path.basename(asset_name),
-                path=f"assets/{asset_name}",
-                content=content,
-            )
-        )
-    for scr_name in skill.resources.list_scripts():
-      scr = skill.resources.get_script(scr_name)
-      if scr is not None and scr.src is not None:
-        input_files.append(
-            File(
-                name=os.path.basename(scr_name),
-                path=f"scripts/{scr_name}",
-                content=scr.src,
-            )
-        )
-
-    # Prepare wrapper code
-    code = self._prepare_code(script_path, script_args)
-    is_shell = "." in script_path and script_path.rsplit(".", 1)[
-        -1
-    ].lower() in ("sh", "bash")
-    if code is None:
-      ext = script_path.rsplit(".", 1)[-1] if "." in script_path else ""
-      return {
-          "error": (
-              f"Unsupported script type '.{ext}'. Supported"
-              " types: .py, .sh, .bash"
-          ),
-          "error_code": "UNSUPPORTED_SCRIPT_TYPE",
-      }
-
-    try:
-      result = await asyncio.to_thread(
-          code_executor.execute_code,
-          tool_context._invocation_context,
-          CodeExecutionInput(
-              code=code,
-              input_files=input_files,
-              working_dir=".",
-          ),
-      )
-      stdout = result.stdout
-      stderr = result.stderr
-      # Shell scripts serialize both streams as JSON
-      # through stdout; parse the envelope if present.
-      if is_shell and stdout:
-        try:
-          parsed = json.loads(stdout)
-          if isinstance(parsed, dict) and parsed.get("__shell_result__"):
-            stdout = parsed.get("stdout", "")
-            stderr = parsed.get("stderr", "")
-            rc = parsed.get("returncode", 0)
-            if rc != 0 and not stderr:
-              stderr = f"Exit code {rc}"
-        except (json.JSONDecodeError, ValueError):
-          pass
-      if stderr and not stdout:
-        status = "error"
-      elif stderr:
-        status = "warning"
-      else:
-        status = "success"
-      return {
-          "skill_name": skill_name,
-          "script_path": script_path,
-          "stdout": stdout,
-          "stderr": stderr,
-          "status": status,
-      }
-    except SystemExit as e:
-      exit_code = e.code if e.code is not None else 0
-      if exit_code == 0:
-        return {
-            "skill_name": skill_name,
-            "script_path": script_path,
-            "stdout": "",
-            "stderr": "",
-            "status": "success",
-        }
-      logger.warning(
-          "Script '%s' from skill '%s' called sys.exit(%s)",
-          script_path,
-          skill_name,
-          exit_code,
-      )
-      return {
-          "error": f"Script '{script_path}' exited with code {exit_code}.",
-          "error_code": "EXECUTION_ERROR",
-      }
-    except Exception as e:  # pylint: disable=broad-exception-caught
-      logger.exception(
-          "Error executing script '%s' from skill '%s'",
-          script_path,
-          skill_name,
-      )
-      short_msg = str(e)
-      if len(short_msg) > 200:
-        short_msg = short_msg[:200] + "..."
-      return {
-          "error": (
-              f"Failed to execute script '{script_path}':\n{type(e).__name__}:"
-              f" {short_msg}"
-          ),
-          "error_code": "EXECUTION_ERROR",
-      }
-
-  def _prepare_code(
-      self,
-      script_path: str,
-      script_args: dict[str, Any],
-  ) -> str | None:
-    """Prepares Python code to execute the script.
-
-    Args:
-      script_path: The script file path.
-      script_args: Optional dictionary of arguments.
-
-    Returns:
-      Python code string to execute, or None if unsupported type.
-    """
-    ext = ""
-    if "." in script_path:
-      ext = script_path.rsplit(".", 1)[-1].lower()
-
-    if not script_path.startswith("scripts/"):
-      script_path = f"scripts/{script_path}"
-
-    if ext == "py":
-      # Python script: execute the mounted file using runpy
-      argv_list = [script_path]
-      for k, v in script_args.items():
-        argv_list.extend([f"--{k}", str(v)])
-      return (
-          "import sys\n"
-          "import runpy\n"
-          f"sys.argv = {argv_list!r}\n"
-          f"runpy.run_path({script_path!r}, run_name='__main__')\n"
-      )
-    elif ext in ("sh", "bash"):
-      # Shell script: wrap in subprocess.run
-      timeout = self._toolset._script_timeout
-      arr = ["bash", script_path]
-      for k, v in script_args.items():
-        arr.extend([f"--{k}", str(v)])
-      return (
-          "import subprocess, json as _json\n"
-          "try:\n"
-          "    _r = subprocess.run(\n"
-          f"        {arr!r},\n"
-          "        capture_output=True, text=True,\n"
-          f"        timeout={timeout!r},\n"
-          "    )\n"
-          "    print(_json.dumps({\n"
-          "        '__shell_result__': True,\n"
-          "        'stdout': _r.stdout,\n"
-          "        'stderr': _r.stderr,\n"
-          "        'returncode': _r.returncode,\n"
-          "    }))\n"
-          "except subprocess.TimeoutExpired as _e:\n"
-          "    print(_json.dumps({\n"
-          "        '__shell_result__': True,\n"
-          "        'stdout': _e.stdout or '',\n"
-          f"        'stderr': 'Timed out after {timeout}s',\n"
-          "        'returncode': -1,\n"
-          "    }))\n"
-      )
-    return None
+    script_executor = SkillScriptCodeExecutor(
+        code_executor, self._toolset._script_timeout  # pylint: disable=protected-access
+    )
+    return await script_executor.execute_script_async(
+        tool_context._invocation_context, skill, script_path, script_args  # pylint: disable=protected-access
+    )
 
 
 @experimental(FeatureName.SKILL_TOOLSET)
