@@ -83,7 +83,9 @@ async def inject_session_state(
     # Double (or more) braces are escape sequences: {{x}} → {x}
     if raw.startswith('{{') and raw.endswith('}}'):
       return raw[1:-1]
-    var_name = raw.lstrip('{').rstrip('}').strip()
+    # Use slicing instead of lstrip/rstrip to avoid stripping extra braces
+    # from malformed inputs like '{var}}}'.
+    var_name = raw[1:-1].strip()
     optional = False
     if var_name.endswith('?'):
       optional = True
