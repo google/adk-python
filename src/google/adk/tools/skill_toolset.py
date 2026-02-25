@@ -241,7 +241,7 @@ class LoadSkillResourceTool(BaseTool):
     }
 
 
-class SkillScriptCodeExecutor:
+class _SkillScriptCodeExecutor:
   """A helper that materializes skill files and executes scripts."""
 
   _base_executor: BaseCodeExecutor
@@ -567,7 +567,7 @@ class RunSkillScriptTool(BaseTool):
           "error_code": "NO_CODE_EXECUTOR",
       }
 
-    script_executor = SkillScriptCodeExecutor(
+    script_executor = _SkillScriptCodeExecutor(
         code_executor, self._toolset._script_timeout  # pylint: disable=protected-access
     )
     return await script_executor.execute_script_async(
