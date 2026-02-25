@@ -14,11 +14,14 @@
 
 """Platform module for abstracting unique ID generation."""
 
+from contextvars import ContextVar
 import uuid
 from typing import Callable
 
 _default_id_provider: Callable[[], str] = lambda: str(uuid.uuid4())
-_id_provider: Callable[[], str] = _default_id_provider
+_id_provider_context_var: ContextVar[Callable[[], str]] = (
+    ContextVar("id_provider", default=_default_id_provider)
+)
 
 
 def set_id_provider(provider: Callable[[], str]) -> None:
@@ -27,16 +30,14 @@ def set_id_provider(provider: Callable[[], str]) -> None:
   Args:
     provider: A callable that returns a unique ID string.
   """
-  global _id_provider
-  _id_provider = provider
+  _id_provider_context_var.set(provider)
 
 
 def reset_id_provider() -> None:
   """Resets the ID provider to its default implementation."""
-  global _id_provider
-  _id_provider = _default_id_provider
+  _id_provider_context_var.set(_default_id_provider)
 
 
 def new_uuid() -> str:
   """Returns a new unique ID."""
-  return _id_provider()
+  return _id_provider_context_var.get()()

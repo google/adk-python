@@ -14,9 +14,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Optional
-import uuid
 
 from google.adk.platform import time as platform_time
 from google.adk.platform import uuid as platform_uuid

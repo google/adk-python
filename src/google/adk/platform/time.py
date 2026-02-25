@@ -14,11 +14,14 @@
 
 """Platform module for abstracting system time generation."""
 
+from contextvars import ContextVar
 import time
 from typing import Callable
 
 _default_time_provider: Callable[[], float] = time.time
-_time_provider: Callable[[], float] = _default_time_provider
+_time_provider_context_var: ContextVar[Callable[[], float]] = (
+    ContextVar("time_provider", default=_default_time_provider)
+)
 
 
 def set_time_provider(provider: Callable[[], float]) -> None:
@@ -28,16 +31,14 @@ def set_time_provider(provider: Callable[[], float]) -> None:
     provider: A callable that returns the current time in seconds since the
       epoch.
   """
-  global _time_provider
-  _time_provider = provider
+  _time_provider_context_var.set(provider)
 
 
 def reset_time_provider() -> None:
   """Resets the time provider to its default implementation."""
-  global _time_provider
-  _time_provider = _default_time_provider
+  _time_provider_context_var.set(_default_time_provider)
 
 
 def get_time() -> float:
   """Returns the current time in seconds since the epoch."""
-  return _time_provider()
+  return _time_provider_context_var.get()()
