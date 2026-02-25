@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 from typing import Dict
@@ -230,7 +231,7 @@ def _generate_sql_for_ann(
   """
 
 
-def similarity_search(
+async def similarity_search(
     project_id: str,
     instance_id: str,
     database_id: str,
@@ -462,13 +463,16 @@ def similarity_search(
 
     # Generate embedding for the query according to the embedding options.
     if vertex_ai_embedding_model_name:
-      embedding = utils.embed_contents(
-          vertex_ai_embedding_model_name,
-          [query],
-          output_dimensionality,
+      embedding = (
+          await utils.embed_contents_async(
+              vertex_ai_embedding_model_name,
+              [query],
+              output_dimensionality,
+          )
       )[0]
     else:
-      embedding = _get_embedding_for_query(
+      embedding = await asyncio.to_thread(
+          _get_embedding_for_query,
           database,
           database.database_dialect,
           spanner_gsql_embedding_model_name,
@@ -507,22 +511,20 @@ def similarity_search(
     else:
       params = {_GOOGLESQL_PARAMETER_QUERY_EMBEDDING: embedding}
 
-    with database.snapshot() as snapshot:
-      result_set = snapshot.execute_sql(sql, params=params)
-      rows = []
-      result = {}
-      for row in result_set:
-        try:
-          # if the json serialization of the row succeeds, use it as is
-          json.dumps(row)
-        except (TypeError, ValueError, OverflowError):
-          row = str(row)
+    def _execute_sql():
+      with database.snapshot() as snapshot:
+        result_set = snapshot.execute_sql(sql, params=params)
+        rows = []
+        for row in result_set:
+          try:
+            # If the json serialization of the row succeeds, use it as is
+            json.dumps(row)
+          except (TypeError, ValueError, OverflowError):
+            row = str(row)
+          rows.append(row)
+        return {"status": "SUCCESS", "rows": rows}
 
-        rows.append(row)
-
-      result["status"] = "SUCCESS"
-      result["rows"] = rows
-      return result
+    return await asyncio.to_thread(_execute_sql)
   except Exception as ex:
     return {
         "status": "ERROR",
@@ -530,7 +532,7 @@ def similarity_search(
     }
 
 
-def vector_store_similarity_search(
+async def vector_store_similarity_search(
     query: str,
     credentials: Credentials,
     settings: SpannerToolSettings,
@@ -605,7 +607,7 @@ def vector_store_similarity_search(
           settings.vector_store_settings.num_leaves_to_search
       )
 
-    return similarity_search(
+    return await similarity_search(
         project_id=settings.vector_store_settings.project_id,
         instance_id=settings.vector_store_settings.instance_id,
         database_id=settings.vector_store_settings.database_id,
