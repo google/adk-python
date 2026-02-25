@@ -418,16 +418,41 @@ async def test_temp_state_is_not_persisted_in_state_or_events(session_service):
   )
   await session_service.append_event(session=session, event=event)
 
-  # Refetch session and check state and event
-  session_got = await session_service.get_session(
-      app_name=app_name, user_id=user_id, session_id='s1'
-  )
-  # Check session state does not contain temp keys
-  assert session_got.state.get('sk') == 'v2'
-  assert 'temp:k1' not in session_got.state
+  # Temp state IS available in the in-memory session (same invocation)
+  assert session.state.get('temp:k1') == 'v1'
+  assert session.state.get('sk') == 'v2'
+
   # Check event as stored in session does not contain temp keys in state_delta
-  assert 'temp:k1' not in session_got.events[0].actions.state_delta
-  assert session_got.events[0].actions.state_delta.get('sk') == 'v2'
+  assert 'temp:k1' not in event.actions.state_delta
+  assert event.actions.state_delta.get('sk') == 'v2'
+
+
+@pytest.mark.asyncio
+async def test_temp_state_visible_across_sequential_events(session_service):
+  """Temp state set by one event should be readable before the next event.
+
+  This simulates a SequentialAgent where agent-1 writes output_key='temp:out'
+  and agent-2 needs to read it from session.state within the same invocation.
+  """
+  app_name = 'my_app'
+  user_id = 'u1'
+  session = await session_service.create_session(
+      app_name=app_name, user_id=user_id, session_id='s_seq'
+  )
+
+  # Agent-1 writes temp state
+  event1 = Event(
+      invocation_id='inv1',
+      author='agent1',
+      actions=EventActions(state_delta={'temp:output': 'result_from_a1'}),
+  )
+  await session_service.append_event(session=session, event=event1)
+
+  # Agent-2 should be able to read temp state from the same session object
+  assert session.state.get('temp:output') == 'result_from_a1'
+
+  # But the event delta should NOT contain the temp key (not persisted)
+  assert 'temp:output' not in event1.actions.state_delta
 
 
 @pytest.mark.asyncio
