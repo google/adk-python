@@ -90,11 +90,26 @@ def _finalize_model_response_event(
   Args:
     llm_request: The original LLM request.
     llm_response: The LLM response from the model.
-    model_response_event: The base event to populate.
+    model_response_event: The base event to populate.  When SSE streaming is
+      active, this same object is passed for every partial *and* the final
+      response.  After the first partial event is finalized, the assigned
+      ``adk-*`` function-call IDs are written back into
+      ``model_response_event.content`` so that subsequent calls (including the
+      final non-partial event) can reuse the same IDs instead of generating
+      new ones.
 
   Returns:
     The finalized Event with LLM response data merged in.
   """
+  # Collect any function-call IDs that were already assigned during a previous
+  # partial-event finalization for this same logical LLM turn.  We extract them
+  # *before* the merge so they are not lost when llm_response overwrites content.
+  prior_fc_ids: list[str | None] = []
+  if model_response_event.content:
+    prior_fc_ids = [
+        fc.id for fc in (model_response_event.get_function_calls() or [])
+    ]
+
   finalized_event = Event.model_validate({
       **model_response_event.model_dump(exclude_none=True),
       **llm_response.model_dump(exclude_none=True),
@@ -103,7 +118,19 @@ def _finalize_model_response_event(
   if finalized_event.content:
     function_calls = finalized_event.get_function_calls()
     if function_calls:
+      # Restore previously-assigned IDs (by position) so that partial and
+      # final SSE events for the same function call share the same ID.
+      if prior_fc_ids:
+        for idx, fc in enumerate(function_calls):
+          if idx < len(prior_fc_ids) and prior_fc_ids[idx]:
+            fc.id = prior_fc_ids[idx]
+
       functions.populate_client_function_call_id(finalized_event)
+
+      # Persist the now-assigned IDs back into model_response_event so that
+      # the next call (e.g. the final non-partial event) can reuse them.
+      model_response_event.content = finalized_event.content
+
       finalized_event.long_running_tool_ids = (
           functions.get_long_running_function_calls(
               function_calls, llm_request.tools_dict
