@@ -327,6 +327,14 @@ async def test_process_llm_request(
   assert "skill2" in instructions[1]
 
 
+def test_default_skill_system_instruction_warning():
+  with pytest.warns(
+      UserWarning, match="DEFAULT_SKILL_SYSTEM_INSTRUCTION is experimental"
+  ):
+    instruction = skill_toolset.DEFAULT_SKILL_SYSTEM_INSTRUCTION
+    assert "specialized 'skills'" in instruction
+
+
 def test_duplicate_skill_name_raises(mock_skill1):
   skill_dup = mock.create_autospec(models.Skill, instance=True)
   skill_dup.name = "skill1"

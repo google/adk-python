@@ -24,6 +24,7 @@ import logging
 from typing import Any
 from typing import Optional
 from typing import TYPE_CHECKING
+import warnings
 
 from google.genai import types
 
@@ -46,7 +47,7 @@ logger = logging.getLogger("google_adk." + __name__)
 _DEFAULT_SCRIPT_TIMEOUT = 300
 _MAX_SKILL_PAYLOAD_BYTES = 16 * 1024 * 1024  # 16 MB
 
-DEFAULT_SKILL_SYSTEM_INSTRUCTION = """You can use specialized 'skills' to help you with complex tasks. You MUST use the skill tools to interact with these skills.
+_DEFAULT_SKILL_SYSTEM_INSTRUCTION = """You can use specialized 'skills' to help you with complex tasks. You MUST use the skill tools to interact with these skills.
 
 Skills are folders of instructions and resources that extend your capabilities for specialized tasks. Each skill folder contains:
 - **SKILL.md** (required): The main instruction file with skill metadata and detailed markdown instructions.
@@ -638,6 +639,19 @@ class SkillToolset(BaseToolset):
     skills = self._list_skills()
     skills_xml = prompt.format_skills_as_xml(skills)
     instructions = []
-    instructions.append(DEFAULT_SKILL_SYSTEM_INSTRUCTION)
+    instructions.append(_DEFAULT_SKILL_SYSTEM_INSTRUCTION)
     instructions.append(skills_xml)
     llm_request.append_instructions(instructions)
+
+
+def __getattr__(name: str) -> Any:
+  if name == "DEFAULT_SKILL_SYSTEM_INSTRUCTION":
+    warnings.warn(
+        "DEFAULT_SKILL_SYSTEM_INSTRUCTION is experimental. Its content "
+        "is internal implementation and will change in minor/patch releases "
+        "to tune agent performance.",
+        UserWarning,
+        stacklevel=2,
+    )
+    return _DEFAULT_SKILL_SYSTEM_INSTRUCTION
+  raise AttributeError(f"module {__name__} has no attribute {name}")
