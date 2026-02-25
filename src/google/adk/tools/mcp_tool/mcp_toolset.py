@@ -107,6 +107,7 @@ class McpToolset(BaseToolset):
       auth_scheme: Optional[AuthScheme] = None,
       auth_credential: Optional[AuthCredential] = None,
       require_confirmation: Union[bool, Callable[..., bool]] = False,
+      is_high_risk: bool = False,
       header_provider: Optional[
           Callable[[ReadonlyContext], Dict[str, str]]
       ] = None,
@@ -136,6 +137,9 @@ class McpToolset(BaseToolset):
       auth_credential: The auth credential of the tool for tool calling
       require_confirmation: Whether tools in this toolset require confirmation.
         Can be a single boolean or a callable to apply to all tools.
+      is_high_risk: Whether tools from this toolset are high-risk. High-risk
+        tools fail closed unless an explicit confirmation policy resolves to
+        `True`.
       header_provider: A callable that takes a ReadonlyContext and returns a
         dictionary of headers to be used for the MCP session.
       progress_callback: Optional callback to receive progress notifications
@@ -170,6 +174,7 @@ class McpToolset(BaseToolset):
     self._auth_scheme = auth_scheme
     self._auth_credential = auth_credential
     self._require_confirmation = require_confirmation
+    self._is_high_risk = is_high_risk
     # Store auth config as instance variable so ADK can populate
     # exchanged_auth_credential in-place before calling get_tools()
     self._auth_config: Optional[AuthConfig] = (
@@ -316,6 +321,7 @@ class McpToolset(BaseToolset):
           auth_scheme=self._auth_scheme,
           auth_credential=self._auth_credential,
           require_confirmation=self._require_confirmation,
+          is_high_risk=self._is_high_risk,
           header_provider=self._header_provider,
           progress_callback=self._progress_callback
           if hasattr(self, "_progress_callback")

@@ -130,6 +130,7 @@ class McpTool(BaseAuthenticatedTool):
       auth_scheme: Optional[AuthScheme] = None,
       auth_credential: Optional[AuthCredential] = None,
       require_confirmation: Union[bool, Callable[..., bool]] = False,
+      is_high_risk: bool = False,
       header_provider: Optional[
           Callable[[ReadonlyContext], Dict[str, str]]
       ] = None,
@@ -151,6 +152,8 @@ class McpTool(BaseAuthenticatedTool):
           or a callable that takes the function's arguments and returns a
           boolean. If the callable returns True, the tool will require
           confirmation from the user.
+        is_high_risk: Whether this tool is high-risk. High-risk tools fail
+          closed unless an explicit confirmation policy resolves to `True`.
         header_provider: Optional function to provide dynamic headers.
         progress_callback: Optional callback to receive progress notifications
           from MCP server during long-running tool execution. Can be either:
@@ -178,6 +181,7 @@ class McpTool(BaseAuthenticatedTool):
     self._mcp_tool = mcp_tool
     self._mcp_session_manager = mcp_session_manager
     self._require_confirmation = require_confirmation
+    self._is_high_risk = is_high_risk
     self._header_provider = header_provider
     self._progress_callback = progress_callback
 
@@ -261,6 +265,15 @@ class McpTool(BaseAuthenticatedTool):
       )
     else:
       require_confirmation = bool(self._require_confirmation)
+
+    if self._is_high_risk and not require_confirmation:
+      return {
+          "error": (
+              "This high-risk tool requires an explicit confirmation policy."
+              " Set require_confirmation=True or provide a callable policy"
+              " that returns True."
+          )
+      }
 
     if require_confirmation:
       if not tool_context.tool_confirmation:

@@ -47,6 +47,7 @@ class FunctionTool(BaseTool):
       func: Callable[..., Any],
       *,
       require_confirmation: Union[bool, Callable[..., bool]] = False,
+      is_high_risk: bool = False,
   ):
     """Initializes the FunctionTool. Extracts metadata from a callable object.
 
@@ -56,6 +57,9 @@ class FunctionTool(BaseTool):
         a callable that takes the function's arguments and returns a boolean. If
         the callable returns True, the tool will require confirmation from the
         user.
+      is_high_risk: Whether the tool performs high-impact operations. High-risk
+        tools fail closed unless an explicit confirmation policy resolves to
+        `True`.
     """
     name = ''
     doc = ''
@@ -82,6 +86,7 @@ class FunctionTool(BaseTool):
     self.func = func
     self._ignore_params = ['tool_context', 'input_stream']
     self._require_confirmation = require_confirmation
+    self._is_high_risk = is_high_risk
 
   @override
   def _get_declaration(self) -> Optional[types.FunctionDeclaration]:
@@ -191,6 +196,15 @@ You could retry calling this tool, but it is IMPORTANT for you to provide all th
       )
     else:
       require_confirmation = bool(self._require_confirmation)
+
+    if self._is_high_risk and not require_confirmation:
+      return {
+          'error': (
+              'This high-risk tool requires an explicit confirmation policy.'
+              ' Set require_confirmation=True or provide a callable policy'
+              ' that returns True.'
+          )
+      }
 
     if require_confirmation:
       if not tool_context.tool_confirmation:

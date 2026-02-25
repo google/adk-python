@@ -418,6 +418,32 @@ async def test_run_async_with_require_confirmation():
 
 
 @pytest.mark.asyncio
+async def test_run_async_high_risk_without_confirmation_policy_fails_closed():
+  """Test that high-risk tools fail closed without explicit confirmation policy."""
+
+  def sample_func(arg1: str):
+    return {"received_arg": arg1}
+
+  tool = FunctionTool(sample_func, is_high_risk=True)
+  mock_invocation_context = MagicMock(spec=InvocationContext)
+  mock_invocation_context.session = MagicMock(spec=Session)
+  mock_invocation_context.session.state = MagicMock()
+  tool_context_mock = ToolContext(invocation_context=mock_invocation_context)
+
+  result = await tool.run_async(
+      args={"arg1": "hello"},
+      tool_context=tool_context_mock,
+  )
+  assert result == {
+      "error": (
+          "This high-risk tool requires an explicit confirmation policy. Set"
+          " require_confirmation=True or provide a callable policy that returns"
+          " True."
+      )
+  }
+
+
+@pytest.mark.asyncio
 async def test_run_async_parameter_filtering(mock_tool_context):
   """Test that parameter filtering works correctly for functions with explicit parameters."""
 

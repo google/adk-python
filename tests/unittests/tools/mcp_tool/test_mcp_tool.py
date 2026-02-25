@@ -686,6 +686,30 @@ class TestMCPTool:
     tool_context.request_confirmation.assert_called_once()
 
   @pytest.mark.asyncio
+  async def test_run_async_high_risk_without_confirmation_policy_fails_closed(
+      self,
+  ):
+    """Test that high-risk MCP tools fail closed without explicit policy."""
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+        is_high_risk=True,
+    )
+    tool_context = Mock(spec=ToolContext)
+    tool_context.tool_confirmation = None
+    args = {"param1": "test_value"}
+
+    result = await tool.run_async(args=args, tool_context=tool_context)
+
+    assert result == {
+        "error": (
+            "This high-risk tool requires an explicit confirmation policy. Set"
+            " require_confirmation=True or provide a callable policy that"
+            " returns True."
+        )
+    }
+
+  @pytest.mark.asyncio
   async def test_run_async_require_confirmation_true_rejected(self):
     """Test require_confirmation=True with rejection in context."""
     tool = MCPTool(
