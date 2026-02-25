@@ -1,4 +1,4 @@
-# Copyright 2026 Google LLC
+# Copyright 2025 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -148,16 +148,8 @@ class VertexAiCodeExecutor(BaseCodeExecutor):
       code_execution_input: CodeExecutionInput,
   ) -> CodeExecutionResult:
     # Execute the code.
-    code_to_exec = self._get_code_with_imports(code_execution_input.code)
-    if code_execution_input.working_dir:
-      code_to_exec = (
-          f'import os\nos.makedirs("{code_execution_input.working_dir}",'
-          f' exist_ok=True)\nos.chdir("{code_execution_input.working_dir}")\n'
-          + code_to_exec
-      )
-
     code_execution_result = self._execute_code_interpreter(
-        code_to_exec,
+        self._get_code_with_imports(code_execution_input.code),
         code_execution_input.input_files,
         code_execution_input.execution_id,
     )
@@ -224,7 +216,7 @@ class VertexAiCodeExecutor(BaseCodeExecutor):
     operation_params = {'code': code}
     if input_files:
       operation_params['files'] = [
-          {'name': f.path or f.name, 'contents': f.content} for f in input_files
+          {'name': f.name, 'contents': f.content} for f in input_files
       ]
     if session_id:
       operation_params['session_id'] = session_id
