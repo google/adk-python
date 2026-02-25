@@ -1,0 +1,83 @@
+# Step 4: Triggers when the changelog PR is merged to release/candidate.
+# Records last-release-sha and renames release/candidate to release/v{version}.
+name: "Release: Finalize"
+
+on:
+  pull_request:
+    types: [closed]
+    branches:
+      - release/candidate
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  finalize:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check for release-please PR
+        id: check
+        env:
+          LABELS: ${{ toJson(github.event.pull_request.labels.*.name) }}
+        run: |
+          if echo "$LABELS" | grep -q "autorelease: pending"; then
+            echo "is_release_pr=true" >> $GITHUB_OUTPUT
+          else
+            echo "Not a release-please PR, skipping"
+            echo "is_release_pr=false" >> $GITHUB_OUTPUT
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.check.outputs.is_release_pr == 'true'
+        with:
+          ref: release/candidate
+          token: ${{ secrets.RELEASE_PAT }}
+          fetch-depth: 0
+
+      - name: Extract version from manifest
+        if: steps.check.outputs.is_release_pr == 'true'
+        id: version
+        run: |
+          VERSION=$(jq -r '.["."]' .github/.release-please-manifest.json)
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Extracted version: $VERSION"
+
+      - name: Configure git identity from RELEASE_PAT
+        if: steps.check.outputs.is_release_pr == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PAT }}
+        run: |
+          USER_JSON=$(gh api user)
+          git config user.name "$(echo "$USER_JSON" | jq -r '.login')"
+          git config user.email "$(echo "$USER_JSON" | jq -r '.id')+$(echo "$USER_JSON" | jq -r '.login')@users.noreply.github.com"
+
+      - name: Record last-release-sha for release-please
+        if: steps.check.outputs.is_release_pr == 'true'
+        run: |
+          git fetch origin main
+          CUT_SHA=$(git merge-base origin/main HEAD)
+          echo "Release was cut from main at: $CUT_SHA"
+          jq --arg sha "$CUT_SHA" '. + {"last-release-sha": $sha}' \
+            .github/release-please-config.json > tmp.json && mv tmp.json .github/release-please-config.json
+          git add .github/release-please-config.json
+          git commit -m "chore: update last-release-sha for next release"
+          git push origin release/candidate
+
+      - name: Rename release/candidate to release/v{version}
+        if: steps.check.outputs.is_release_pr == 'true'
+        run: |
+          VERSION="v${{ steps.version.outputs.version }}"
+          git push origin "release/candidate:refs/heads/release/$VERSION" ":release/candidate"
+          echo "Renamed release/candidate to release/$VERSION"
+
+      - name: Update PR label to tagged
+        if: steps.check.outputs.is_release_pr == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr edit ${{ github.event.pull_request.number }} \
+            --remove-label "autorelease: pending" \
+            --add-label "autorelease: tagged"
+          echo "Updated PR label to autorelease: tagged"

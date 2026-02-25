@@ -207,6 +207,17 @@ class AdkWebServerClient:
       response.raise_for_status()
       return Session.model_validate(response.json())
 
+  async def get_version_data(self) -> Dict[str, str]:
+    """Retrieve version data from the ADK web server.
+
+    Returns:
+      Dictionary containing version information
+    """
+    async with self._get_client() as client:
+      response = await client.get("/version")
+      response.raise_for_status()
+      return response.json()
+
   async def run_agent(
       self,
       request: RunAgentRequest,

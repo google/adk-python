@@ -14,9 +14,14 @@
 
 from __future__ import annotations
 
+from typing import Optional
+
 from pydantic import Field
+from pydantic import field_validator
 
 from .common import EvalBaseModel
+from .simulation.pre_built_personas import get_default_persona_registry
+from .simulation.user_simulator_personas import UserPersona
 
 
 class ConversationScenario(EvalBaseModel):
@@ -47,6 +52,18 @@ class ConversationScenario(EvalBaseModel):
   a standard-size car for three days from the airport. Once both tasks are done,
   your overall goal is complete.
   """
+
+  user_persona: Optional[UserPersona] = Field(default=None)
+  """User persona that the user simulator should adopt. If a persona id is specified instead, we will try to use one of our default personas."""
+
+  @field_validator("user_persona", mode="before")
+  @classmethod
+  def validate_user_persona(
+      cls, value: Optional[UserPersona | str]
+  ) -> Optional[UserPersona]:
+    if value is not None and isinstance(value, str):
+      return get_default_persona_registry().get_persona(value)
+    return value
 
 
 class ConversationScenarios(EvalBaseModel):

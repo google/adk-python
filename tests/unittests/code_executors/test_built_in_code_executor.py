@@ -97,6 +97,22 @@ def test_process_llm_request_non_gemini_2_model(
   )
 
 
+def test_process_llm_request_non_gemini_2_model_with_disabled_check(
+    built_in_executor: BuiltInCodeExecutor,
+    monkeypatch,
+):
+  """Tests non-Gemini models pass when model-id check is disabled."""
+  monkeypatch.setenv("ADK_DISABLE_GEMINI_MODEL_ID_CHECK", "true")
+  llm_request = LlmRequest(model="internal-model-v1")
+
+  built_in_executor.process_llm_request(llm_request)
+
+  assert llm_request.config is not None
+  assert llm_request.config.tools == [
+      types.Tool(code_execution=types.ToolCodeExecution())
+  ]
+
+
 def test_process_llm_request_no_model_name(
     built_in_executor: BuiltInCodeExecutor,
 ):

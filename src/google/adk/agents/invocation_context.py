@@ -24,6 +24,7 @@ from pydantic import ConfigDict
 from pydantic import Field
 from pydantic import PrivateAttr
 
+from ..apps.app import EventsCompactionConfig
 from ..apps.app import ResumabilityConfig
 from ..artifacts.base_artifact_service import BaseArtifactService
 from ..auth.credential_service.base_credential_service import BaseCredentialService
@@ -199,6 +200,12 @@ class InvocationContext(BaseModel):
 
   resumability_config: Optional[ResumabilityConfig] = None
   """The resumability config that applies to all agents under this invocation."""
+
+  events_compaction_config: Optional[EventsCompactionConfig] = None
+  """The compaction config for this invocation."""
+
+  token_compaction_checked: bool = False
+  """Whether token-threshold compaction ran during this invocation."""
 
   plugin_manager: PluginManager = Field(default_factory=PluginManager)
   """The manager for keeping track of plugins in this invocation."""

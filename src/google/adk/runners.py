@@ -32,7 +32,6 @@ from google.adk.apps.compaction import _run_compaction_for_sliding_window
 from google.adk.artifacts import artifact_util
 from google.genai import types
 
-from .agents.active_streaming_tool import ActiveStreamingTool
 from .agents.base_agent import BaseAgent
 from .agents.base_agent import BaseAgentState
 from .agents.context_cache_config import ContextCacheConfig
@@ -46,6 +45,7 @@ from .artifacts.base_artifact_service import BaseArtifactService
 from .artifacts.in_memory_artifact_service import InMemoryArtifactService
 from .auth.credential_service.base_credential_service import BaseCredentialService
 from .code_executors.built_in_code_executor import BuiltInCodeExecutor
+from .errors.session_not_found_error import SessionNotFoundError
 from .events.event import Event
 from .events.event import EventActions
 from .flows.llm_flows import contents
@@ -359,7 +359,7 @@ class Runner:
 
     This helper first attempts to retrieve the session. If not found and
     auto_create_session is True, it creates a new session with the provided
-    identifiers. Otherwise, it raises a ValueError with a helpful message.
+    identifiers. Otherwise, it raises a SessionNotFoundError.
 
     Args:
       user_id: The user ID of the session.
@@ -369,7 +369,8 @@ class Runner:
       The existing or newly created `Session`.
 
     Raises:
-      ValueError: If the session is not found and auto_create_session is False.
+      SessionNotFoundError: If the session is not found and
+        auto_create_session is False.
     """
     session = await self.session_service.get_session(
         app_name=self.app_name, user_id=user_id, session_id=session_id
@@ -381,7 +382,7 @@ class Runner:
         )
       else:
         message = self._format_session_not_found_message(session_id)
-        raise ValueError(message)
+        raise SessionNotFoundError(message)
     return session
 
   def run(
@@ -554,7 +555,10 @@ class Runner:
         if self.app and self.app.events_compaction_config:
           logger.debug('Running event compactor.')
           await _run_compaction_for_sliding_window(
-              self.app, session, self.session_service
+              self.app,
+              session,
+              self.session_service,
+              skip_token_compaction=invocation_context.token_compaction_checked,
           )
 
     async with Aclosing(_run_with_trace(new_message, invocation_id)) as agen:
@@ -1012,52 +1016,6 @@ class Runner:
     root_agent = self.agent
     invocation_context.agent = self._find_agent_to_run(session, root_agent)
 
-    # Pre-processing for live streaming tools
-    # Inspect the tool's parameters to find if it uses LiveRequestQueue
-    invocation_context.active_streaming_tools = {}
-    # For shell agents, there is no canonical_tools method so we should skip.
-    if hasattr(invocation_context.agent, 'canonical_tools'):
-      import inspect
-
-      # Use canonical_tools to get properly wrapped BaseTool instances
-      canonical_tools = await invocation_context.agent.canonical_tools(
-          invocation_context
-      )
-      for tool in canonical_tools:
-        # We use `inspect.signature()` to examine the tool's underlying function (`tool.func`).
-        # This approach is deliberately chosen over `typing.get_type_hints()` for robustness.
-        #
-        # The Problem with `get_type_hints()`:
-        # `get_type_hints()` attempts to resolve forward-referenced (string-based) type
-        # annotations. This resolution can easily fail with a `NameError` (e.g., "Union not found")
-        # if the type isn't available in the scope where `get_type_hints()` is called.
-        # This is a common and brittle issue in framework code that inspects functions
-        # defined in separate user modules.
-        #
-        # Why `inspect.signature()` is Better Here:
-        # `inspect.signature()` does NOT resolve the annotations; it retrieves the raw
-        # annotation object as it was defined on the function. This allows us to
-        # perform a direct and reliable identity check (`param.annotation is LiveRequestQueue`)
-        # without risking a `NameError`.
-        callable_to_inspect = tool.func if hasattr(tool, 'func') else tool
-        # Ensure the target is actually callable before inspecting to avoid errors.
-        if not callable(callable_to_inspect):
-          continue
-        for param in inspect.signature(callable_to_inspect).parameters.values():
-          if param.annotation is LiveRequestQueue:
-            if not invocation_context.active_streaming_tools:
-              invocation_context.active_streaming_tools = {}
-
-            logger.debug(
-                'Register streaming tool with input stream: %s', tool.name
-            )
-            active_streaming_tool = ActiveStreamingTool(
-                stream=LiveRequestQueue()
-            )
-            invocation_context.active_streaming_tools[tool.name] = (
-                active_streaming_tool
-            )
-
     async def execute(ctx: InvocationContext) -> AsyncGenerator[Event]:
       async with Aclosing(ctx.agent.run_live(ctx)) as agen:
         async for event in agen:
@@ -1409,6 +1367,9 @@ class Runner:
         credential_service=self.credential_service,
         plugin_manager=self.plugin_manager,
         context_cache_config=self.context_cache_config,
+        events_compaction_config=(
+            self.app.events_compaction_config if self.app else None
+        ),
         invocation_id=invocation_id,
         agent=self.agent,
         session=session,
