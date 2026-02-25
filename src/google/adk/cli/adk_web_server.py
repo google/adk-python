@@ -588,7 +588,8 @@ class AdkWebServer:
     """Import a plugin object (class or instance) from a fully qualified name.
 
     Args:
-      qualified_name: Fully qualified name (e.g., 'my_package.my_plugin.MyPlugin')
+      qualified_name: Fully qualified name (e.g.,
+        'my_package.my_plugin.MyPlugin')
 
     Returns:
       The imported object, which can be either a class or an instance.
@@ -688,6 +689,7 @@ class AdkWebServer:
       ] = lambda o, s: None,
       register_processors: Callable[[TracerProvider], None] = lambda o: None,
       otel_to_cloud: bool = False,
+      with_ui: bool = False,
   ):
     """Creates a FastAPI app for the ADK web server.
 
@@ -700,7 +702,8 @@ class AdkWebServer:
       lifespan: The lifespan of the FastAPI app.
       allow_origins: The origins that are allowed to make cross-origin requests.
         Entries can be literal origins (e.g., 'https://example.com') or regex
-        patterns prefixed with 'regex:' (e.g., 'regex:https://.*\\.example\\.com').
+        patterns prefixed with 'regex:' (e.g.,
+        'regex:https://.*\\.example\\.com').
       web_assets_dir: The directory containing the web assets to serve.
       setup_observer: Callback for setting up the file system observer.
       tear_down_observer: Callback for cleaning up the file system observer.
@@ -795,10 +798,93 @@ class AdkWebServer:
         raise HTTPException(status_code=404, detail="Trace not found")
       return event_dict
 
-    @app.get("/apps/{app_name}")
-    async def get_app_info(app_name: str) -> Any:
-      runner = await self.get_runner_async(app_name)
-      return runner.app
+    if web_assets_dir:
+
+      @app.get("/dev/build_graph/{app_name}")
+      async def get_app_info(app_name: str) -> Any:
+        runner = await self.get_runner_async(app_name)
+
+        if not runner.app:
+          raise HTTPException(
+              status_code=404, detail=f"App not found: {app_name}"
+          )
+
+        def serialize_agent(agent: BaseAgent) -> dict[str, Any]:
+          """Recursively serialize an agent, excluding non-serializable fields."""
+          agent_dict = {}
+
+          for field_name, field_info in agent.__class__.model_fields.items():
+            # Skip non-serializable fields
+            if field_name in [
+                "parent_agent",
+                "before_agent_callback",
+                "after_agent_callback",
+                "before_model_callback",
+                "after_model_callback",
+                "on_model_error_callback",
+                "before_tool_callback",
+                "after_tool_callback",
+                "on_tool_error_callback",
+            ]:
+              continue
+
+            value = getattr(agent, field_name, None)
+
+            # Handle sub_agents recursively
+            if field_name == "sub_agents" and value:
+              agent_dict[field_name] = [
+                  serialize_agent(sub_agent) for sub_agent in value
+              ]
+            elif value is None or field_name == "tools":
+              continue
+            else:
+              try:
+                if isinstance(value, (str, int, float, bool, list, dict)):
+                  agent_dict[field_name] = value
+                elif hasattr(value, "model_dump"):
+                  agent_dict[field_name] = value.model_dump(
+                      mode="python", exclude_none=True
+                  )
+                else:
+                  agent_dict[field_name] = str(value)
+              except Exception:
+                pass
+
+          return agent_dict
+
+        app_info = {
+            "name": runner.app.name,
+            "root_agent": serialize_agent(runner.app.root_agent),
+        }
+
+        # Add optional fields if present
+        if runner.app.plugins:
+          app_info["plugins"] = [
+              {"name": getattr(plugin, "name", type(plugin).__name__)}
+              for plugin in runner.app.plugins
+          ]
+
+        if runner.app.context_cache_config:
+          try:
+            app_info["context_cache_config"] = (
+                runner.app.context_cache_config.model_dump(
+                    mode="python", exclude_none=True
+                )
+            )
+          except Exception:
+            pass
+
+        if runner.app.resumability_config:
+          try:
+            app_info["resumability_config"] = (
+                runner.app.resumability_config.model_dump(
+                    mode="python", exclude_none=True
+                )
+            )
+          except Exception:
+            pass
+
+        return app_info
 
     @app.get("/debug/trace/session/{session_id}", tags=[TAG_DEBUG])
     async def get_session_trace(session_id: str) -> Any:
@@ -1534,7 +1620,8 @@ class AdkWebServer:
           update_memory_request: The memory request for the update
 
       Raises:
-          HTTPException: If the memory service is not configured or the request is invalid.
+          HTTPException: If the memory service is not configured or the request
+          is invalid.
       """
       if not self.memory_service:
         raise HTTPException(
