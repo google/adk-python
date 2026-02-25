@@ -109,19 +109,24 @@ logger = logging.getLogger('google_adk.' + __name__)
 def _safe_json_serialize(obj) -> str:
   """Convert any Python object to a JSON-serializable type or string.
 
+  Handles Pydantic BaseModel instances (common as tool return types)
+  by calling model_dump() before JSON encoding.
+
   Args:
     obj: The object to serialize.
 
   Returns:
-    The JSON-serialized object string or <non-serializable> if the object cannot be serialized.
+    The JSON-serialized object string or <not serializable> if the object
+    cannot be serialized.
   """
+  def _default(o: Any) -> Any:
+    if isinstance(o, BaseModel):
+      return o.model_dump(mode='json')
+    return '<not serializable>'
 
   try:
-    # Try direct JSON serialization first
-    return json.dumps(
-        obj, ensure_ascii=False, default=lambda o: '<not serializable>'
-    )
-  except (TypeError, OverflowError):
+    return json.dumps(obj, ensure_ascii=False, default=_default)
+  except (TypeError, OverflowError, ValueError):
     return '<not serializable>'
 
 

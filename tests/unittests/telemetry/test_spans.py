@@ -1175,3 +1175,58 @@ async def test_generate_content_span_with_experimental_semconv(
   assert attributes[GEN_AI_AGENT_NAME] == invocation_context.agent.name
   assert GEN_AI_CONVERSATION_ID in attributes
   assert attributes[GEN_AI_CONVERSATION_ID] == invocation_context.session.id
+
+
+# ---------------------------------------------------------------------------
+# _safe_json_serialize tests
+# ---------------------------------------------------------------------------
+
+from google.adk.telemetry.tracing import _safe_json_serialize
+from pydantic import BaseModel as PydanticBaseModel
+
+
+class _SampleToolResult(PydanticBaseModel):
+  query: str
+  total: int
+  items: list[str] = []
+
+
+class _NestedModel(PydanticBaseModel):
+  inner: _SampleToolResult
+
+
+def test_safe_json_serialize_plain_dict():
+  """Plain dicts serialize normally."""
+  result = _safe_json_serialize({'key': 'value', 'num': 42})
+  assert json.loads(result) == {'key': 'value', 'num': 42}
+
+
+def test_safe_json_serialize_pydantic_model_in_dict():
+  """Pydantic models nested in a dict are serialized via model_dump."""
+  model = _SampleToolResult(query='test', total=2, items=['a', 'b'])
+  result = _safe_json_serialize({'result': model})
+  parsed = json.loads(result)
+  assert parsed == {'result': {'query': 'test', 'total': 2, 'items': ['a', 'b']}}
+
+
+def test_safe_json_serialize_nested_pydantic_model():
+  """Nested Pydantic models are fully serialized."""
+  inner = _SampleToolResult(query='q', total=0, items=[])
+  outer = _NestedModel(inner=inner)
+  result = _safe_json_serialize({'result': outer})
+  parsed = json.loads(result)
+  assert parsed['result']['inner'] == {'query': 'q', 'total': 0, 'items': []}
+
+
+def test_safe_json_serialize_top_level_pydantic_model():
+  """A top-level Pydantic model (not wrapped in a dict) is serialized."""
+  model = _SampleToolResult(query='direct', total=1, items=['x'])
+  result = _safe_json_serialize(model)
+  parsed = json.loads(result)
+  assert parsed == {'query': 'direct', 'total': 1, 'items': ['x']}
+
+
+def test_safe_json_serialize_non_serializable_fallback():
+  """Objects that are neither JSON-native nor Pydantic fall back gracefully."""
+  result = _safe_json_serialize({'value': object()})
+  assert '<not serializable>' in result
