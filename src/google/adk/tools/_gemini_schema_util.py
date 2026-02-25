@@ -152,6 +152,13 @@ def _sanitize_schema_formats_for_gemini(
         )
         for item in schema
     ]
+  # JSON Schema allows boolean schemas: `true` (accept any value) and `false`
+  # (reject all values). Gemini has no equivalent for either. `true` is
+  # approximated as an unconstrained object schema; `false` has no meaningful
+  # Gemini representation and is also mapped to an object schema as a safe
+  # fallback so that schema conversion does not crash.
+  if isinstance(schema, bool):
+    return {"type": "object"}
   if not isinstance(schema, dict):
     return schema
 
