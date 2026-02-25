@@ -61,7 +61,10 @@ def convert_a2a_part_to_genai_part(
   """Convert an A2A Part to a Google GenAI Part."""
   part = a2a_part.root
   if isinstance(part, a2a_types.TextPart):
-    return genai_types.Part(text=part.text)
+    thought = None
+    if part.metadata:
+      thought = part.metadata.get(_get_adk_metadata_key('thought'))
+    return genai_types.Part(text=part.text, thought=thought)
 
   if isinstance(part, a2a_types.FilePart):
     if isinstance(part.file, a2a_types.FileWithUri):
