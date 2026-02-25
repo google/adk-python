@@ -123,8 +123,8 @@ def _finalize_model_response_event(
       if function_call_ids is not None:
         for i, fc in enumerate(function_calls):
           key = (fc.name, i)
-          if fc.id and key not in function_call_ids:
-            function_call_ids[key] = fc.id
+          if fc.id:
+            function_call_ids.setdefault(key, fc.id)
 
       finalized_event.long_running_tool_ids = (
           functions.get_long_running_function_calls(
