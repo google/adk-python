@@ -71,7 +71,7 @@ class TestAgentEngineSandboxCodeExecutor:
     mock_json_output = MagicMock()
     mock_json_output.mime_type = "application/json"
     mock_json_output.data = json.dumps(
-        {"stdout": "hello world", "stderr": ""}
+        {"msg_out": "hello world", "msg_err": ""}
     ).encode("utf-8")
     mock_json_output.metadata = None
 

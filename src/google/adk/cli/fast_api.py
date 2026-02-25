@@ -525,6 +525,7 @@ def get_fast_api_app(
   if a2a:
     from a2a.server.apps import A2AStarletteApplication
     from a2a.server.request_handlers import DefaultRequestHandler
+    from a2a.server.tasks import InMemoryPushNotificationConfigStore
     from a2a.server.tasks import InMemoryTaskStore
     from a2a.types import AgentCard
     from a2a.utils.constants import AGENT_CARD_WELL_KNOWN_PATH
@@ -563,8 +564,12 @@ def get_fast_api_app(
               runner=create_a2a_runner_loader(app_name),
           )
 
+          push_config_store = InMemoryPushNotificationConfigStore()
+
           request_handler = DefaultRequestHandler(
-              agent_executor=agent_executor, task_store=a2a_task_store
+              agent_executor=agent_executor,
+              task_store=a2a_task_store,
+              push_config_store=push_config_store,
           )
 
           with (p / "agent.json").open("r", encoding="utf-8") as f:

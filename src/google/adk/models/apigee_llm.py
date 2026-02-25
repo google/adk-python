@@ -25,6 +25,7 @@ import logging
 import os
 from typing import Any
 from typing import AsyncGenerator
+from typing import Generator
 from typing import Optional
 from typing import TYPE_CHECKING
 
@@ -50,6 +51,14 @@ _APIGEE_PROXY_URL_ENV_VARIABLE_NAME = 'APIGEE_PROXY_URL'
 _GOOGLE_GENAI_USE_VERTEXAI_ENV_VARIABLE_NAME = 'GOOGLE_GENAI_USE_VERTEXAI'
 _PROJECT_ENV_VARIABLE_NAME = 'GOOGLE_CLOUD_PROJECT'
 _LOCATION_ENV_VARIABLE_NAME = 'GOOGLE_CLOUD_LOCATION'
+
+_CUSTOM_METADATA_FIELDS = (
+    'id',
+    'created',
+    'model',
+    'service_tier',
+    'object',
+)
 
 
 class ApigeeLlm(Gemini):
@@ -290,6 +299,45 @@ def _get_model_id(model: str) -> str:
   return components[-1]
 
 
+def _parse_logprobs(
+    logprobs_data: dict[str, Any] | None,
+) -> types.LogprobsResult | None:
+  """Parses OpenAI logprobs data into LogprobsResult."""
+  if not logprobs_data or 'content' not in logprobs_data:
+    return None
+
+  chosen_candidates = []
+  top_candidates = []
+
+  for item in logprobs_data['content']:
+    chosen_candidates.append(
+        types.LogprobsResultCandidate(
+            token=item.get('token'),
+            log_probability=item.get('logprob'),
+            # OpenAI text format usually doesn't expose ID easily here
+            token_id=None,
+        )
+    )
+
+    if 'top_logprobs' in item:
+      current_top_candidates = []
+      for top_item in item['top_logprobs']:
+        current_top_candidates.append(
+            types.LogprobsResultCandidate(
+                token=top_item.get('token'),
+                log_probability=top_item.get('logprob'),
+                token_id=None,
+            )
+        )
+      top_candidates.append(
+          types.LogprobsResultTopCandidates(candidates=current_top_candidates)
+      )
+
+  return types.LogprobsResult(
+      chosen_candidates=chosen_candidates, top_candidates=top_candidates
+  )
+
+
 def _validate_model_string(model: str) -> bool:
   """Validates the model string for Apigee LLM.
 
@@ -383,7 +431,7 @@ class CompletionsHTTPClient:
       loop.create_task(client.aclose())
     except RuntimeError:
       try:
-        # This fails if aynscio.run is already called in main and is being closed.
+        # This fails if asyncio.run is already called in main and is closing.
         asyncio.run(client.aclose())
       except RuntimeError:
         pass
@@ -470,7 +518,8 @@ class CompletionsHTTPClient:
       url = f"{url.rstrip('/')}/chat/completions"
 
     if stream:
-      raise NotImplementedError('Streaming is not supported yet.')
+      async for stream_res in self._handle_streaming(url, payload, headers):
+        yield stream_res
     else:
       response = await self._httpx_post_with_retry(url, payload, headers)
       data = response.json()
@@ -487,11 +536,33 @@ class CompletionsHTTPClient:
         response.raise_for_status()
         return response
 
-  async def _handle_streaming_response(
-      self, response: httpx.Response
+  async def _handle_streaming(
+      self, url: str, payload: dict[str, Any], headers: dict[str, str]
   ) -> AsyncGenerator[LlmResponse, None]:
     """Handles streaming response from OpenAI-compatible API."""
-    raise NotImplementedError('Streaming is not supported yet.')
+    accumulator = ChatCompletionsResponseHandler()
+    async with self._client.stream(
+        'POST',
+        url,
+        json=payload,
+        headers=headers,
+    ) as resp:
+      resp.raise_for_status()
+      async for line in resp.aiter_lines():
+        if not line:
+          continue
+        line = line.strip()
+        if line.startswith('data:'):
+          line = line.removeprefix('data:')
+        line = line.lstrip()
+        if line == '[DONE]':
+          break
+        try:
+          for res in self._parse_streaming_line(line, accumulator):
+            yield res
+        except json.JSONDecodeError:
+          logger.warning('Failed to parse JSON chunk: %s', line)
+          continue
 
   def _construct_payload(
       self, llm_request: LlmRequest, stream: bool
@@ -731,78 +802,62 @@ class CompletionsHTTPClient:
       return ''.join(part.text for part in parts if part.text)
     return None
 
-  def _parse_logprobs(
-      self, logprobs_data: dict[str, Any] | None
-  ) -> types.LogprobsResult | None:
-    """Parses OpenAI logprobs data into LogprobsResult."""
-    if not logprobs_data or 'content' not in logprobs_data:
-      return None
-
-    chosen_candidates = []
-    top_candidates = []
-
-    for item in logprobs_data['content']:
-      chosen_candidates.append(
-          types.LogprobsResultCandidate(
-              token=item.get('token'),
-              log_probability=item.get('logprob'),
-              # OpenAI text format usually doesn't expose ID easily here
-              token_id=None,
-          )
-      )
-
-      if 'top_logprobs' in item:
-        current_top_candidates = []
-        for top_item in item['top_logprobs']:
-          current_top_candidates.append(
-              types.LogprobsResultCandidate(
-                  token=top_item.get('token'),
-                  log_probability=top_item.get('logprob'),
-                  token_id=None,
-              )
-          )
-        top_candidates.append(
-            types.LogprobsResultTopCandidates(candidates=current_top_candidates)
-        )
-
-    return types.LogprobsResult(
-        chosen_candidates=chosen_candidates, top_candidates=top_candidates
-    )
-
   def _parse_response(self, response: dict[str, Any]) -> LlmResponse:
     """Parses an OpenAI response dictionary into an LlmResponse."""
+    handler = ChatCompletionsResponseHandler()
+    return handler.process_response(response)
+
+  def _parse_streaming_line(
+      self,
+      line: str,
+      accumulator: ChatCompletionsResponseHandler,
+  ) -> Generator[LlmResponse]:
+    """Parses a single line from the streaming response.
+
+    Args:
+      line: A single line from the streaming response, expected to be a JSON
+        string.
+      accumulator: An accumulator to manage partial chat completion choices
+        across multiple chunks.
+
+    Yields:
+      An LlmResponse object parsed from the streaming line.
+    """
+    chunk = json.loads(line)
+    for response in accumulator.process_chunk(chunk):
+      yield response
+
+
+class ChatCompletionsResponseHandler:
+  """Accumulates responses from the /chat/completions endpoint.
+
+  Useful for both streaming and non-streaming responses.
+  """
+
+  def __init__(self):
+    self.content_parts = ''
+    self.tool_call_parts = {}
+    self.role = ''
+    self.streaming_complete = False
+    self.model = ''
+    self.usage = {}
+    self.logprobs = {}
+    self.custom_metadata = {}
+
+  def process_response(self, response: dict[str, Any]) -> LlmResponse:
+    """Processes a complete non-streaming response."""
     choices = response.get('choices', [])
     if not choices:
-      return LlmResponse()
-
+      raise ValueError('No choices found in response.')
+    if len(choices) > 1:
+      logging.error(
+          'Multiple choices found in response but only the first one will be'
+          ' used.'
+      )
     choice = choices[0]
     message = choice.get('message', {})
-    role = message.get('role', 'model')
-    if role == 'assistant':
-      role = 'model'
-
-    parts = []
-    content_str = message.get('content')
-    if content_str:
-      parts.append(types.Part.from_text(text=content_str))
-
-    tool_calls = message.get('tool_calls')
-    if tool_calls:
-      for tool_call in tool_calls:
-        call_type = tool_call.get('type', 'unknown')
-        # TODO: Add support for 'custom' type.
-        if call_type != 'function':
-          raise ValueError(
-              f'Unsupported tool_call type: {call_type} in call {tool_call}'
-          )
-        func = tool_call.get('function', {})
-        part = self._parse_function_call(func)
-        parts.append(part)
-
-    function_call = message.get('function_call')
-    if function_call:
-      part = self._parse_function_call(function_call)
-      parts.append(part)
+    _, role = self._add_chat_completion_message(message)
+    parts = self._get_content_parts()
 
     usage = response.get('usage', {})
     usage_metadata = types.GenerateContentResponseUsageMetadata(
@@ -810,19 +865,13 @@ class CompletionsHTTPClient:
         candidates_token_count=usage.get('completion_tokens', 0),
         total_token_count=usage.get('total_tokens', 0),
     )
+    logprobs_result = _parse_logprobs(choice.get('logprobs'))
 
-    logprobs_result = self._parse_logprobs(choice.get('logprobs'))
-
-    custom_metadata = {
-        'id': response.get('id'),
-        'created': response.get('created'),
-        'model': response.get('model'),
-        'system_fingerprint': response.get('system_fingerprint'),
-        'service_tier': response.get('service_tier'),
-    }
-    custom_metadata = {
-        k: v for k, v in custom_metadata.items() if v is not None
-    }
+    custom_metadata = {}
+    for k in _CUSTOM_METADATA_FIELDS:
+      v = response.get(k)
+      if v is not None:
+        custom_metadata[k] = v
 
     return LlmResponse(
         content=types.Content(role=role, parts=parts),
@@ -832,6 +881,83 @@ class CompletionsHTTPClient:
         model_version=response.get('model'),
         custom_metadata=custom_metadata,
     )
+
+  def process_chunk(
+      self, chunk: dict[str, Any]
+  ) -> Generator[LlmResponse, None, None]:
+    """Processes a chunk and yields responses."""
+    if 'model' in chunk:
+      self.model = chunk['model']
+    if 'usage' in chunk and chunk['usage']:
+      self.usage.update(chunk['usage'])
+
+    for k in _CUSTOM_METADATA_FIELDS:
+      v = chunk.get(k)
+      if v is not None:
+        self.custom_metadata[k] = v
+
+    usage_metadata = None
+    if self.usage:
+      usage_metadata = types.GenerateContentResponseUsageMetadata(
+          prompt_token_count=self.usage.get('prompt_tokens', 0),
+          candidates_token_count=self.usage.get('completion_tokens', 0),
+          total_token_count=self.usage.get('total_tokens', 0),
+      )
+
+    choices = chunk.get('choices')
+    if not choices:
+      # If no choices, but we have usage or other metadata updates, yield them.
+      if usage_metadata or self.custom_metadata:
+        yield LlmResponse(
+            partial=True,
+            model_version=self.model,
+            usage_metadata=usage_metadata,
+            custom_metadata=self.custom_metadata,
+        )
+      return
+
+    if len(choices) > 1:
+      logging.error(
+          'Multiple choices found in streaming response but only the first one'
+          ' will be used.'
+      )
+    choice = choices[0]
+
+    # Accumulate logprobs if present
+    if 'logprobs' in choice and choice['logprobs']:
+      self._accumulate_logprobs(choice['logprobs'])
+
+    logprobs_result = None
+    if self.logprobs:
+      logprobs_result = _parse_logprobs(self.logprobs)
+
+    delta = choice.get('delta', {})
+    partial_parts, role = self._add_chat_completion_chunk_delta(delta)
+
+    yield LlmResponse(
+        partial=True,
+        content=types.Content(role=role, parts=partial_parts),
+        model_version=self.model,
+        usage_metadata=usage_metadata,
+        custom_metadata=self.custom_metadata,
+        logprobs_result=logprobs_result,
+    )
+
+    finish_reason = choice.get('finish_reason')
+    if finish_reason:
+      yield LlmResponse(
+          content=types.Content(
+              role=role,
+              parts=self._get_content_parts(),
+          ),
+          finish_reason=self._map_finish_reason(finish_reason),
+          custom_metadata=self.custom_metadata,
+          model_version=self.model,
+          usage_metadata=usage_metadata,
+          logprobs_result=logprobs_result,
+      )
+      # Exit because the 'finish_reason' chunk is the final chunk.
+      return
 
   def _map_finish_reason(self, reason: str | None) -> types.FinishReason:
     if reason == 'stop':
@@ -844,25 +970,176 @@ class CompletionsHTTPClient:
       return types.FinishReason.SAFETY
     return types.FinishReason.FINISH_REASON_UNSPECIFIED
 
-  def _parse_function_call(self, func: dict[str, Any]) -> types.Part:
-    """Parses a function call dictionary into a Part."""
-    name = func.get('name')
-    args_str = func.get('arguments', '{}')
-    try:
-      args = json.loads(args_str)
-    except json.JSONDecodeError:
-      args = {}
-    tool_part = types.Part.from_function_call(name=name, args=args)
-    if tool_part.function_call:
-      tool_part.function_call.id = func.get('id', None)
-      # Add support for gemini's thought_signature.
-      thought_signature = (
-          func.get('extra_content', {})
-          .get('google', {})
-          .get('thought_signature', '')
+  def _accumulate_logprobs(self, logprobs_chunk: dict[str, Any]) -> None:
+    """Accumulates logprobs from a chunk."""
+    if not self.logprobs:
+      self.logprobs = {'content': [], 'refusal': []}
+
+    if 'content' in logprobs_chunk and logprobs_chunk['content']:
+      if 'content' not in self.logprobs:
+        self.logprobs['content'] = []
+      self.logprobs['content'].extend(logprobs_chunk['content'])
+
+    if 'refusal' in logprobs_chunk and logprobs_chunk['refusal']:
+      if 'refusal' not in self.logprobs:
+        self.logprobs['refusal'] = []
+      self.logprobs['refusal'].extend(logprobs_chunk['refusal'])
+
+  def _append_content(self, content: str, refusal: str) -> str:
+    if content and refusal:
+      content += '\n'
+      content += refusal
+    elif refusal:
+      content = refusal
+    if content:
+      self.content_parts += content
+    return content
+
+  def _add_chat_completion_chunk_delta(
+      self, delta: dict[str, Any]
+  ) -> (list[types.Part], str):
+    """Adds a chunk delta from a streaming chat completions response.
+
+    This method processes a single delta chunk from a streaming chat completions
+    response, accumulating partial content and tool calls.
+
+    Args:
+      delta: A dictionary representing a single delta from the streaming chat
+        completions API.
+
+    Returns:
+      A tuple containing:
+        - A list of `types.Part` objects representing the content and tool calls
+          in this chunk.
+        - The role associated with the message.
+    """
+    parts = []
+    for tool_call in delta.get('tool_calls', []):
+      chunk_part = self._upsert_tool_call(tool_call)
+      parts.append(chunk_part)
+    content = delta.get('content')
+    refusal = delta.get('refusal')
+    merged_content = self._append_content(content, refusal)
+    if merged_content:
+      parts.append(types.Part.from_text(text=merged_content))
+
+    self._get_or_create_role(delta.get('role', 'model'))
+    return parts, self.role
+
+  def _add_chat_completion_message(
+      self, message: dict[str, Any]
+  ) -> (list[types.Part], str):
+    """Adds a complete chat completion message to the accumulator.
+
+    This method processes a single message from a non-streaming chat completions
+    response, extracting and accumulating content and tool calls.
+
+    Args:
+      message: A dictionary representing a single message from the chat
+        completions API.
+
+    Returns:
+      A tuple containing:
+        - A list of `types.Part` objects representing the content and tool calls
+          in this message.
+        - The role associated with the message.
+    """
+    for tool_call in message.get('tool_calls', []):
+      self._upsert_tool_call(tool_call)
+    function_call = message.get('function_call')
+    if function_call:
+      # function_call is a single tool call and does not have an id.
+      self._upsert_tool_call({
+          'type': 'function',
+          'function': function_call,
+      })
+    content = message.get('content')
+    refusal = message.get('refusal')
+    self._append_content(content, refusal)
+
+    self._get_or_create_role(message.get('role', 'model'))
+    return self._get_content_parts(), self.role
+
+  def _get_content_parts(self) -> list[types.Part]:
+    """Returns the content parts from the accumulated response."""
+    parts = []
+    if self.content_parts:
+      parts.append(types.Part.from_text(text=self.content_parts))
+    sorted_indices = sorted(self.tool_call_parts.keys())
+    for index in sorted_indices:
+      parts.append(self.tool_call_parts[index])
+    return parts
+
+  def _upsert_tool_call(self, tool_call: dict[str, Any]) -> types.Part:
+    """Upserts a tool call into the accumulated tool call parts.
+
+    This method handles partial tool call chunks in streaming responses by
+    updating existing tool call parts or creating new ones.
+
+    Args:
+      tool_call: A dictionary representing a tool call or a delta of a tool call
+        from the chat completions API.
+
+    Returns:
+      A `types.Part` object representing the updated or newly created tool call.
+    """
+    index = tool_call.get('index')
+    if index is None:
+      # If index is not provided, we might be in a non-streaming response.
+      # We just append it as a new tool call.
+      index = len(self.tool_call_parts)
+
+    if index not in self.tool_call_parts:
+      self.tool_call_parts[index] = types.Part(
+          function_call=types.FunctionCall()
       )
-      if thought_signature:
-        if isinstance(thought_signature, str):
-          thought_signature = base64.b64decode(thought_signature)
-        tool_part.thought_signature = thought_signature
-    return tool_part
+    part = self.tool_call_parts[index]
+    chunk_part = types.Part(function_call=types.FunctionCall())
+    call_type = tool_call.get('type')
+    # TODO: Add support for 'custom' type.
+    if call_type is not None and call_type != 'function':
+      raise ValueError(
+          f'Unsupported tool_call type: {call_type} in call {tool_call}'
+      )
+    func = tool_call.get('function', {})
+    args_delta = func.get('arguments', '')
+    if args_delta:
+      try:
+        args = json.loads(args_delta)
+        chunk_part.function_call.args = args
+        if not part.function_call.args:
+          part.function_call.args = dict(args)
+        else:
+          part.function_call.args.update(args)
+      except json.JSONDecodeError as e:
+        raise ValueError(f'Failed to parse arguments: {args_delta}') from e
+
+    func_name = func.get('name')
+    if func_name:
+      part.function_call.name = func_name
+      chunk_part.function_call.name = func_name
+    tool_call_id = tool_call.get('id')
+    if tool_call_id:
+      part.function_call.id = tool_call_id
+      chunk_part.function_call.id = tool_call_id
+
+    # Add support for gemini's thought_signature.
+    thought_signature = (
+        tool_call.get('extra_content', {})
+        .get('google', {})
+        .get('thought_signature', '')
+    )
+    if thought_signature:
+      if isinstance(thought_signature, str):
+        thought_signature = base64.b64decode(thought_signature)
+      part.thought_signature = thought_signature
+      chunk_part.thought_signature = thought_signature
+    return chunk_part
+
+  def _get_or_create_role(self, role: str = '') -> str:
+    if self.role:
+      return self.role
+    if role == 'assistant':
+      role = 'model'
+    self.role = role
+    return self.role

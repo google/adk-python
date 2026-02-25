@@ -25,6 +25,7 @@ from pydantic import alias_generators
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
+from pydantic import model_validator
 
 
 class BaseModelWithConfig(BaseModel):
@@ -145,11 +146,45 @@ class ServiceAccountCredential(BaseModelWithConfig):
 
 
 class ServiceAccount(BaseModelWithConfig):
-  """Represents Google Service Account configuration."""
+  """Represents Google Service Account configuration.
+
+  Attributes:
+    service_account_credential: The service account credential (JSON key).
+    scopes: The OAuth2 scopes to request. Optional; when omitted with
+        ``use_default_credential=True``, defaults to the cloud-platform scope.
+    use_default_credential: Whether to use Application Default Credentials.
+    use_id_token: Whether to exchange for an ID token instead of an access
+        token. Required for service-to-service authentication with Cloud Run,
+        Cloud Functions, and other Google Cloud services that require identity
+        verification. When True, ``audience`` must also be set.
+    audience: The target audience for the ID token, typically the URL of the
+        receiving service (e.g. ``https://my-service-xyz.run.app``). Required
+        when ``use_id_token`` is True.
+  """
 
   service_account_credential: Optional[ServiceAccountCredential] = None
-  scopes: List[str]
+  scopes: Optional[List[str]] = None
   use_default_credential: Optional[bool] = False
+  use_id_token: Optional[bool] = False
+  audience: Optional[str] = None
+
+  @model_validator(mode="after")
+  def _validate_config(self) -> ServiceAccount:
+    if (
+        not self.use_default_credential
+        and self.service_account_credential is None
+    ):
+      raise ValueError(
+          "service_account_credential is required when"
+          " use_default_credential is False."
+      )
+    if self.use_id_token and not self.audience:
+      raise ValueError(
+          "audience is required when use_id_token is True. Set it to the"
+          " URL of the target service"
+          " (e.g. 'https://my-service.run.app')."
+      )
+    return self
 
 
 class AuthCredentialTypes(str, Enum):
