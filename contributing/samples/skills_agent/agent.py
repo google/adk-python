@@ -41,7 +41,7 @@ greeting_skill = models.Skill(
 )
 
 weather_skill = load_skill_from_dir(
-    pathlib.Path(__file__).parent / "skills" / "weather_skill"
+    pathlib.Path(__file__).parent / "skills" / "weather-skill"
 )
 
 my_skill_toolset = SkillToolset(skills=[greeting_skill, weather_skill])
