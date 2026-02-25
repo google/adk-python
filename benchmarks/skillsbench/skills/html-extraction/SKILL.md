@@ -13,7 +13,7 @@ Parse HTML content and extract text, links, or table data using tag-based select
 
 Extracts content from embedded sample HTML based on a target selector.
 
-**Usage**: `execute_skill_script(skill_name="html-extraction", script_name="extract.py", input_args="target=links")`
+**Usage**: `run_skill_script(skill_name="html-extraction", script_path="scripts/extract.py", args={"target": "links"})`
 
 Supported targets:
 - `target=links`: Extract all hyperlinks (text and href)
@@ -31,5 +31,5 @@ Supported targets:
 
 1. Use `load_skill` to read these instructions.
 2. Use `load_skill_resource` to see the sample HTML page.
-3. Use `execute_skill_script` with the desired target to extract data.
+3. Use `run_skill_script` with the desired target to extract data.
 4. Present the extracted content to the user.

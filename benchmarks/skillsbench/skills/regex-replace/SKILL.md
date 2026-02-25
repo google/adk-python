@@ -13,7 +13,7 @@ Apply regular expression patterns to find and replace text. Supports basic and a
 
 Performs regex find-and-replace on input text.
 
-**Usage**: `execute_skill_script(skill_name="regex-replace", script_name="replace.py", input_args="pattern=\\d+ replacement=NUM text='Order 123 has 45 items at $67'")`
+**Usage**: `run_skill_script(skill_name="regex-replace", script_path="scripts/replace.py", args={"pattern": "\\d+", "replacement": "NUM", "text": "Order 123 has 45 items at $67"})`
 
 Arguments:
 - `pattern`: The regex pattern to match
@@ -32,5 +32,5 @@ Matches: <number of matches found>
 ## Workflow
 
 1. Use `load_skill` to read these instructions.
-2. Use `execute_skill_script` with pattern, replacement, and text arguments.
+2. Use `run_skill_script` with pattern, replacement, and text arguments.
 3. Present the transformation result to the user.

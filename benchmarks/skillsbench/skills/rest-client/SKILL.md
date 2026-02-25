@@ -13,7 +13,7 @@ Build and execute simulated REST API requests against an embedded mock API. Demo
 
 Executes a simulated REST API request against a mock endpoint.
 
-**Usage**: `execute_skill_script(skill_name="rest-client", script_name="request.py", input_args="method=GET endpoint=/users")`
+**Usage**: `run_skill_script(skill_name="rest-client", script_path="scripts/request.py", args={"method": "GET", "endpoint": "/users"})`
 
 Supported arguments:
 - `method`: HTTP method (GET, POST, PUT, DELETE)
@@ -36,5 +36,5 @@ Available mock endpoints:
 
 1. Use `load_skill` to read these instructions.
 2. Use `load_skill_resource` to review the API documentation.
-3. Use `execute_skill_script` to make API requests.
+3. Use `run_skill_script` to make API requests.
 4. Parse the response and present the data to the user.

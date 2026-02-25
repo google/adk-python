@@ -9,7 +9,7 @@ This harness adapts 8 representative SkillsBench tasks as ADK skills and
 evaluates them through the ADK evaluation framework. It tests whether an
 agent can discover, load, and execute skills using the `SkillToolset`
 tools: `list_skills`, `load_skill`, `load_skill_resource`, and
-`execute_skill_script`.
+`run_skill_script`.
 
 ## Task Categories
 

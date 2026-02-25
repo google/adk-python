@@ -13,7 +13,7 @@ Transform JSON objects by flattening nested structures, renaming keys, and filte
 
 Transforms a JSON object according to a field mapping specification.
 
-**Usage**: `execute_skill_script(skill_name="json-transform", script_name="transform.py", input_args="flatten=true")`
+**Usage**: `run_skill_script(skill_name="json-transform", script_path="scripts/transform.py", args={"flatten": "true"})`
 
 The script reads the embedded sample data and applies transformations:
 - `flatten=true`: Flatten nested objects using dot notation
@@ -30,5 +30,5 @@ The script reads the embedded sample data and applies transformations:
 
 1. Use `load_skill` to read these instructions.
 2. Use `load_skill_resource` to examine the sample data.
-3. Use `execute_skill_script` to transform the data.
+3. Use `run_skill_script` to transform the data.
 4. Present the transformed JSON to the user.

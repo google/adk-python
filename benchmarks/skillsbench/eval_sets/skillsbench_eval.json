@@ -21,7 +21,7 @@
               {"name": "list_skills", "args": {}},
               {"name": "load_skill", "args": {"skill_name": "csv-aggregation"}},
               {"name": "load_skill_resource", "args": {"skill_name": "csv-aggregation", "resource_type": "references", "resource_id": "sample-data.md"}},
-              {"name": "execute_skill_script", "args": {"skill_name": "csv-aggregation", "script_name": "aggregate.py", "input_args": "group_col=department metric_col=salary"}}
+              {"name": "run_skill_script", "args": {"skill_name": "csv-aggregation", "script_path": "scripts/aggregate.py", "args": {"group_col": "department", "metric_col": "salary"}}}
             ],
             "tool_responses": [],
             "intermediate_responses": []
@@ -49,7 +49,7 @@
               {"name": "list_skills", "args": {}},
               {"name": "load_skill", "args": {"skill_name": "json-transform"}},
               {"name": "load_skill_resource", "args": {"skill_name": "json-transform", "resource_type": "references", "resource_id": "sample-data.md"}},
-              {"name": "execute_skill_script", "args": {"skill_name": "json-transform", "script_name": "transform.py", "input_args": "flatten=true"}}
+              {"name": "run_skill_script", "args": {"skill_name": "json-transform", "script_path": "scripts/transform.py", "args": {"flatten": "true"}}}
             ],
             "tool_responses": [],
             "intermediate_responses": []
@@ -77,7 +77,7 @@
               {"name": "list_skills", "args": {}},
               {"name": "load_skill", "args": {"skill_name": "html-extraction"}},
               {"name": "load_skill_resource", "args": {"skill_name": "html-extraction", "resource_type": "references", "resource_id": "sample-page.md"}},
-              {"name": "execute_skill_script", "args": {"skill_name": "html-extraction", "script_name": "extract.py", "input_args": "target=table"}}
+              {"name": "run_skill_script", "args": {"skill_name": "html-extraction", "script_path": "scripts/extract.py", "args": {"target": "table"}}}
             ],
             "tool_responses": [],
             "intermediate_responses": []
@@ -105,8 +105,8 @@
               {"name": "list_skills", "args": {}},
               {"name": "load_skill", "args": {"skill_name": "rest-client"}},
               {"name": "load_skill_resource", "args": {"skill_name": "rest-client", "resource_type": "references", "resource_id": "api-docs.md"}},
-              {"name": "execute_skill_script", "args": {"skill_name": "rest-client", "script_name": "request.py", "input_args": "method=GET endpoint=/users"}},
-              {"name": "execute_skill_script", "args": {"skill_name": "rest-client", "script_name": "request.py", "input_args": "method=GET endpoint=/users/2"}}
+              {"name": "run_skill_script", "args": {"skill_name": "rest-client", "script_path": "scripts/request.py", "args": {"method": "GET", "endpoint": "/users"}}},
+              {"name": "run_skill_script", "args": {"skill_name": "rest-client", "script_path": "scripts/request.py", "args": {"method": "GET", "endpoint": "/users/2"}}}
             ],
             "tool_responses": [],
             "intermediate_responses": []
@@ -133,7 +133,7 @@
             "tool_uses": [
               {"name": "list_skills", "args": {}},
               {"name": "load_skill", "args": {"skill_name": "regex-replace"}},
-              {"name": "execute_skill_script", "args": {"skill_name": "regex-replace", "script_name": "replace.py", "input_args": "pattern=\\d+ replacement=NUM text='Order 123 has 45 items at $67'"}}
+              {"name": "run_skill_script", "args": {"skill_name": "regex-replace", "script_path": "scripts/replace.py", "args": {"pattern": "\\d+", "replacement": "NUM", "text": "Order 123 has 45 items at $67"}}}
             ],
             "tool_responses": [],
             "intermediate_responses": []
@@ -160,7 +160,7 @@
             "tool_uses": [
               {"name": "list_skills", "args": {}},
               {"name": "load_skill", "args": {"skill_name": "function-scaffold"}},
-              {"name": "execute_skill_script", "args": {"skill_name": "function-scaffold", "script_name": "scaffold.py", "input_args": "name=calculate_bmi params=weight:float,height:float returns=float description='Calculate Body Mass Index'"}}
+              {"name": "run_skill_script", "args": {"skill_name": "function-scaffold", "script_path": "scripts/scaffold.py", "args": {"name": "calculate_bmi", "params": "weight:float,height:float", "returns": "float", "description": "Calculate Body Mass Index"}}}
             ],
             "tool_responses": [],
             "intermediate_responses": []
@@ -187,7 +187,7 @@
             "tool_uses": [
               {"name": "list_skills", "args": {}},
               {"name": "load_skill", "args": {"skill_name": "statistical-calc"}},
-              {"name": "execute_skill_script", "args": {"skill_name": "statistical-calc", "script_name": "stats.py", "input_args": "data=10,20,30,40,50,60,70,80,90,100"}}
+              {"name": "run_skill_script", "args": {"skill_name": "statistical-calc", "script_path": "scripts/stats.py", "args": {"data": "10,20,30,40,50,60,70,80,90,100"}}}
             ],
             "tool_responses": [],
             "intermediate_responses": []
@@ -215,7 +215,7 @@
               {"name": "list_skills", "args": {}},
               {"name": "load_skill", "args": {"skill_name": "log-parsing"}},
               {"name": "load_skill_resource", "args": {"skill_name": "log-parsing", "resource_type": "references", "resource_id": "sample-logs.md"}},
-              {"name": "execute_skill_script", "args": {"skill_name": "log-parsing", "script_name": "parse.py", "input_args": "level=ALL format=summary"}}
+              {"name": "run_skill_script", "args": {"skill_name": "log-parsing", "script_path": "scripts/parse.py", "args": {"level": "ALL", "format": "summary"}}}
             ],
             "tool_responses": [],
             "intermediate_responses": []

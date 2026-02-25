@@ -16,7 +16,7 @@
 
 This agent loads all skills from the skills/ directory and uses
 SkillToolset to provide list_skills, load_skill, load_skill_resource,
-and execute_skill_script tools. It is designed to be evaluated against
+and run_skill_script tools. It is designed to be evaluated against
 the SkillsBench benchmark tasks.
 
 WARNING: This agent uses UnsafeLocalCodeExecutor for script execution.
@@ -64,7 +64,7 @@ root_agent = Agent(
         "2. Use load_skill to read the skill's instructions carefully.\n"
         "3. Use load_skill_resource to examine references or sample data"
         " if available.\n"
-        "4. Use execute_skill_script to run the skill's scripts with"
+        "4. Use run_skill_script to run the skill's scripts with"
         " appropriate arguments.\n"
         "5. Interpret the output and present a clear answer.\n\n"
         "Always check skill instructions before executing scripts."

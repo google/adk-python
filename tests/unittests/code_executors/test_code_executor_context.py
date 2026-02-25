@@ -32,12 +32,9 @@ def context_with_data() -> CodeExecutorContext:
           "execution_session_id": "session123",
           "processed_input_files": ["file1.csv", "file2.txt"],
       },
-      "_code_executor_input_files": [{
-          "name": "input1.txt",
-          "content": "YQ==",
-          "mime_type": "text/plain",
-          "path": None,
-      }],
+      "_code_executor_input_files": [
+          {"name": "input1.txt", "content": "YQ==", "mime_type": "text/plain"}
+      ],
       "_code_executor_error_counts": {"invocationA": 2},
   }
   state = State(state_data, {})
@@ -148,7 +145,6 @@ def test_add_input_files_new(empty_state: State):
       "name": "new.dat",
       "content": "Yg==",
       "mime_type": "application/octet-stream",
-      "path": None,
   }]
 
 
@@ -157,18 +153,8 @@ def test_add_input_files_append(context_with_data: CodeExecutorContext):
   new_file = File(name="input2.log", content="Yw==", mime_type="text/x-log")
   context_with_data.add_input_files([new_file])
   expected_files_data = [
-      {
-          "name": "input1.txt",
-          "content": "YQ==",
-          "mime_type": "text/plain",
-          "path": None,
-      },
-      {
-          "name": "input2.log",
-          "content": "Yw==",
-          "mime_type": "text/x-log",
-          "path": None,
-      },
+      {"name": "input1.txt", "content": "YQ==", "mime_type": "text/plain"},
+      {"name": "input2.log", "content": "Yw==", "mime_type": "text/x-log"},
   ]
   assert (
       context_with_data._session_state["_code_executor_input_files"]

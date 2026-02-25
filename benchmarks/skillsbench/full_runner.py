@@ -646,7 +646,7 @@ def score_task_heuristic(
 
   has_load = "load_skill" in tool_names
   has_use = (
-      "execute_skill_script" in tool_names
+      "run_skill_script" in tool_names
       or "load_skill_resource" in tool_names
   )
   has_response = False
@@ -750,7 +750,7 @@ def build_agent(
           " carefully.\n"
           "3. Use load_skill_resource to examine references or"
           " sample data if available.\n"
-          "4. Use execute_skill_script to run the skill's"
+          "4. Use run_skill_script to run the skill's"
           " scripts with appropriate arguments.\n"
           "5. Use bash to read/write files, install packages,"
           " or run any shell command in the environment.\n"
