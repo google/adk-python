@@ -267,3 +267,45 @@ async def test_inject_session_state_with_optional_missing_state_returns_empty():
       instruction_template, invocation_context
   )
   assert populated_instruction == "Optional value: "
+
+
+@pytest.mark.asyncio
+async def test_double_braces_escape_to_literal():
+  """Double braces {{x}} should produce literal {x}, not a state lookup."""
+  instruction_template = 'Generate a keyword like "roofing cost in {{city}}".'
+  invocation_context = await _create_test_readonly_context()
+
+  populated_instruction = await instructions_utils.inject_session_state(
+      instruction_template, invocation_context
+  )
+  assert populated_instruction == (
+      'Generate a keyword like "roofing cost in {city}".'
+  )
+
+
+@pytest.mark.asyncio
+async def test_double_braces_mixed_with_state_variable():
+  """Double braces should escape while single braces still resolve state."""
+  instruction_template = "Hello {user_name}, use {{placeholder}} in prompts."
+  invocation_context = await _create_test_readonly_context(
+      state={"user_name": "Alice"}
+  )
+
+  populated_instruction = await instructions_utils.inject_session_state(
+      instruction_template, invocation_context
+  )
+  assert populated_instruction == (
+      "Hello Alice, use {placeholder} in prompts."
+  )
+
+
+@pytest.mark.asyncio
+async def test_triple_braces_peel_one_layer():
+  """Triple braces {{{x}}} should peel one layer to {{x}}."""
+  instruction_template = "Escaped: {{{example}}}"
+  invocation_context = await _create_test_readonly_context()
+
+  populated_instruction = await instructions_utils.inject_session_state(
+      instruction_template, invocation_context
+  )
+  assert populated_instruction == "Escaped: {{example}}"

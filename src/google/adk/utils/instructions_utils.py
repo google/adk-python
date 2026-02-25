@@ -79,7 +79,11 @@ async def inject_session_state(
     return ''.join(result)
 
   async def _replace_match(match) -> str:
-    var_name = match.group().lstrip('{').rstrip('}').strip()
+    raw = match.group()
+    # Double (or more) braces are escape sequences: {{x}} → {x}
+    if raw.startswith('{{') and raw.endswith('}}'):
+      return raw[1:-1]
+    var_name = raw.lstrip('{').rstrip('}').strip()
     optional = False
     if var_name.endswith('?'):
       optional = True
