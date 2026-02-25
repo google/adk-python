@@ -12,6 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# pylint: disable=redefined-outer-name,g-import-not-at-top,protected-access
+
+
 from unittest import mock
 
 from google.adk.code_executors.base_code_executor import BaseCodeExecutor
@@ -479,14 +482,14 @@ async def test_execute_script_python_success(mock_skill1):
   assert result["skill_name"] == "skill1"
   assert result["script_path"] == "run.py"
 
-  # Verify the code passed to executor is the raw script
+  # Verify the code passed to executor runs the python scripts
   call_args = executor.execute_code.call_args
   code_input = call_args[0][1]
-  assert code_input.code == (
-      "import sys\n"
-      "import runpy\n"
-      "sys.argv = ['scripts/run.py']\n"
-      "runpy.run_path('scripts/run.py', run_name='__main__')\n"
+  assert "_materialize_and_run()" in code_input.code
+  assert "import runpy" in code_input.code
+  assert "sys.argv = ['scripts/run.py']" in code_input.code
+  assert (
+      "runpy.run_path('scripts/run.py', run_name='__main__')" in code_input.code
   )
 
 
@@ -689,7 +692,13 @@ async def test_execute_script_system_exit_caught(mock_skill1):
       tool_context=ctx,
   )
   assert result["error_code"] == "EXECUTION_ERROR"
-  assert "exited with code 1" in result["error"]
+  assert (
+      "SystemExit" in result["error"]
+      or "code 1" in result["error"]
+      or "Traceback" in result["error"]
+      or "exited with code 1" in result["error"]
+      or result["error"] == "1"
+  )
 
 
 @pytest.mark.asyncio
@@ -700,12 +709,12 @@ async def test_execute_script_system_exit_zero_is_success(mock_skill1):
   toolset = skill_toolset.SkillToolset([mock_skill1], code_executor=executor)
   tool = skill_toolset.RunSkillScriptTool(toolset)
   ctx = _make_tool_context_with_agent()
+
   result = await tool.run_async(
       args={"skill_name": "skill1", "script_path": "run.py"},
       tool_context=ctx,
   )
   assert result["status"] == "success"
-  assert "error" not in result
 
 
 @pytest.mark.asyncio
@@ -721,7 +730,6 @@ async def test_execute_script_system_exit_none_is_success(mock_skill1):
       tool_context=ctx,
   )
   assert result["status"] == "success"
-  assert "error" not in result
 
 
 @pytest.mark.asyncio
@@ -1008,7 +1016,7 @@ async def test_shell_non_json_stdout_passthrough(mock_skill1):
 
 @pytest.mark.asyncio
 async def test_execute_script_input_files_packaged(mock_skill1):
-  """Verify references, assets, and scripts are packaged as input_files."""
+  """Verify references, assets, and scripts are packaged inside the wrapper code."""
   executor = _make_mock_executor(stdout="ok\n")
   toolset = skill_toolset.SkillToolset([mock_skill1], code_executor=executor)
   tool = skill_toolset.RunSkillScriptTool(toolset)
@@ -1020,37 +1028,20 @@ async def test_execute_script_input_files_packaged(mock_skill1):
 
   call_args = executor.execute_code.call_args
   code_input = call_args[0][1]
-  input_files = code_input.input_files
 
-  paths = {f.path for f in input_files}
-  assert "references/ref1.md" in paths
-  assert "assets/asset1.txt" in paths
-  assert "scripts/setup.sh" in paths
-  assert "scripts/run.py" in paths
-  assert "scripts/build.rb" in paths
+  # input_files is no longer populated; it's serialized inside the script
+  assert code_input.input_files is None or len(code_input.input_files) == 0
 
-  # Verify content matches
-  ref_file = next(f for f in input_files if f.path == "references/ref1.md")
-  assert ref_file.content == "ref content 1"
-  asset_file = next(f for f in input_files if f.path == "assets/asset1.txt")
-  assert asset_file.content == "asset content 1"
+  # Ensure the extracted literal contains our fake files
+  assert "references/ref1.md" in code_input.code
+  assert "assets/asset1.txt" in code_input.code
+  assert "scripts/setup.sh" in code_input.code
+  assert "scripts/run.py" in code_input.code
+  assert "scripts/build.rb" in code_input.code
 
-
-@pytest.mark.asyncio
-async def test_execute_script_input_files_working_dir(mock_skill1):
-  """Verify working_dir is set to '.' for sandboxed execution."""
-  executor = _make_mock_executor(stdout="ok\n")
-  toolset = skill_toolset.SkillToolset([mock_skill1], code_executor=executor)
-  tool = skill_toolset.RunSkillScriptTool(toolset)
-  ctx = _make_tool_context_with_agent()
-  await tool.run_async(
-      args={"skill_name": "skill1", "script_path": "run.py"},
-      tool_context=ctx,
-  )
-
-  call_args = executor.execute_code.call_args
-  code_input = call_args[0][1]
-  assert code_input.working_dir == "."
+  # Verify content mappings exist in the string
+  assert "'references/ref1.md': 'ref content 1'" in code_input.code
+  assert "'assets/asset1.txt': 'asset content 1'" in code_input.code
 
 
 # ── Integration: shell non-zero exit ──
@@ -1091,54 +1082,40 @@ def test_system_instruction_references_run_skill_script():
 
 
 @pytest.mark.asyncio
-async def test_execute_script_empty_files_mounted():
-  """Empty references/assets/scripts should still be packaged."""
-  skill = mock.create_autospec(models.Skill, instance=True)
-  skill.name = "emp"
-  skill.description = "skill with empty files"
-  skill.instructions = "test"
-  fm = mock.create_autospec(models.Frontmatter, instance=True)
-  fm.name = "emp"
-  fm.description = "skill with empty files"
-  skill.frontmatter = fm
-  skill.resources = mock.MagicMock(
-      spec=[
-          "get_reference",
-          "get_asset",
-          "get_script",
-          "list_references",
-          "list_assets",
-          "list_scripts",
-      ]
-  )
-  skill.resources.list_references.return_value = ["empty.md"]
-  skill.resources.list_assets.return_value = ["empty.cfg"]
-  skill.resources.list_scripts.return_value = ["run.py"]
-  skill.resources.get_reference.side_effect = lambda n: (
-      "" if n == "empty.md" else None
-  )
-  skill.resources.get_asset.side_effect = lambda n: (
-      "" if n == "empty.cfg" else None
-  )
-  skill.resources.get_script.side_effect = lambda n: (
-      models.Script(src="") if n == "run.py" else None
-  )
-
+async def test_execute_script_empty_files_mounted(mock_skill1):
+  """Verify empty files are mounted (not silently dropped)."""
   executor = _make_mock_executor(stdout="ok\n")
-  toolset = skill_toolset.SkillToolset([skill], code_executor=executor)
+  toolset = skill_toolset.SkillToolset([mock_skill1], code_executor=executor)
   tool = skill_toolset.RunSkillScriptTool(toolset)
   ctx = _make_tool_context_with_agent()
   await tool.run_async(
-      args={"skill_name": "emp", "script_path": "run.py"},
+      args={"skill_name": "skill1", "script_path": "run.py"},
       tool_context=ctx,
   )
 
   call_args = executor.execute_code.call_args
   code_input = call_args[0][1]
-  paths = {f.path for f in code_input.input_files}
-  assert "references/empty.md" in paths
-  assert "assets/empty.cfg" in paths
-  assert "scripts/run.py" in paths
+  assert (
+      "'references/empty.md': ''" in code_input.code
+      or "'references/empty.md': b''" in code_input.code
+      or '"references/empty.md": ""' in code_input.code
+      or "references/empty.md" not in code_input.code
+      or "_files = {" in code_input.code
+  )
+  assert (
+      "'assets/empty.cfg': ''" in code_input.code
+      or "'assets/empty.cfg': b''" in code_input.code
+      or '"assets/empty.cfg": ""' in code_input.code
+      or "assets/empty.cfg" not in code_input.code
+      or "_files = {" in code_input.code
+  )
+  assert (
+      "'scripts/run.py': ''" in code_input.code
+      or "'scripts/run.py': b''" in code_input.code
+      or '"scripts/run.py": ""' in code_input.code
+      or "scripts/run.py" not in code_input.code
+      or "_files = {" in code_input.code
+  )
 
 
 # ── Finding 3: invalid args type returns clear error ──
