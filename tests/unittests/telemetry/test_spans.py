@@ -33,6 +33,9 @@ from google.adk.telemetry.tracing import trace_tool_call
 from google.adk.telemetry.tracing import use_inference_span
 from google.adk.tools.base_tool import BaseTool
 from google.genai import types
+from mcp import ClientSession as McpClientSession
+from mcp import ListToolsResult as McpListToolsResult
+from mcp import Tool as McpTool
 from opentelemetry._logs import LogRecord
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_AGENT_NAME
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_CONVERSATION_ID
@@ -47,6 +50,11 @@ from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_A
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_USAGE_OUTPUT_TOKENS
 from opentelemetry.semconv._incubating.attributes.user_attributes import USER_ID
 import pytest
+
+try:
+  from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_TOOL_DEFINITIONS
+except ImportError:
+  GEN_AI_TOOL_DEFINITIONS = 'gen_ai.tool_definitions'
 
 
 class Event:
@@ -815,6 +823,52 @@ async def test_generate_content_span(
   assert choice_log.attributes == {GEN_AI_SYSTEM: 'test_system'}
 
 
+def _mock_callable_tool():
+  """Description of some tool."""
+  return 'result'
+
+
+def _mock_mcp_client_session() -> McpClientSession:
+  mock_session = mock.create_autospec(spec=McpClientSession, instance=True)
+
+  mock_tool_obj = McpTool(
+      name='mcp_tool',
+      description='Tool from session',
+      inputSchema={
+          'type': 'object',
+          'properties': {'query': {'type': 'string'}},
+      },
+  )
+  mock_result = mock.create_autospec(McpListToolsResult, instance=True)
+  mock_result.tools = [mock_tool_obj]
+
+  mock_session.list_tools = mock.AsyncMock(return_value=mock_result)
+
+  return mock_session
+
+
+def _mock_mcp_tool():
+  return McpTool(
+      name='mcp_tool',
+      description='A standalone mcp tool',
+      inputSchema={
+          'type': 'object',
+          'properties': {'id': {'type': 'integer'}},
+      },
+  )
+
+
+def _mock_tool_dict() -> types.ToolDict:
+  return types.ToolDict(
+      function_declarations=[
+          types.FunctionDeclarationDict(
+              name='mock_tool', description='Description of mock tool.'
+          ),
+      ],
+      google_maps=types.GoogleMaps(),
+  )
+
+
 @pytest.mark.asyncio
 @mock.patch('google.adk.telemetry.tracing.otel_logger')
 @mock.patch('google.adk.telemetry.tracing.tracer')
@@ -862,11 +916,18 @@ async def test_generate_content_span_with_experimental_semconv(
       role='model', parts=[types.Part(text='Response')]
   )
 
+  tools = [
+      _mock_callable_tool,
+      _mock_tool_dict(),
+      _mock_mcp_client_session(),
+      _mock_mcp_tool(),
+  ]
+
   llm_request = LlmRequest(
       model='some-model',
       contents=[user_content1, user_content2],
       config=types.GenerateContentConfig(
-          system_instruction=system_instruction,
+          system_instruction=system_instruction, tools=tools
       ),
   )
   llm_response = LlmResponse(
@@ -923,6 +984,92 @@ async def test_generate_content_span_with_experimental_semconv(
       ],
       'finish_reason': 'stop',
   }]
+  expected_tool_definitions = [
+      {
+          'name': '_mock_callable_tool',
+          'description': 'Description of some tool.',
+          'parameters': None,
+          'type': 'function',
+      },
+      {
+          'name': 'mock_tool',
+          'description': 'Description of mock tool.',
+          'parameters': None,
+          'type': 'function',
+      },
+      {
+          'name': 'google_maps',
+          'type': 'google_maps',
+      },
+      {
+          'name': 'mcp_tool',
+          'description': 'Tool from session',
+          'parameters': {
+              'type': 'object',
+              'properties': {'query': {'type': 'string'}},
+          },
+          'type': 'function',
+      },
+      {
+          'name': 'mcp_tool',
+          'description': 'A standalone mcp tool',
+          'parameters': {
+              'type': 'object',
+              'properties': {'id': {'type': 'integer'}},
+          },
+          'type': 'function',
+      },
+  ]
+  expected_tool_definitions_no_content = [
+      {
+          'name': '_mock_callable_tool',
+          'description': 'Description of some tool.',
+          'parameters': None,
+          'type': 'function',
+      },
+      {
+          'name': 'mock_tool',
+          'description': 'Description of mock tool.',
+          'parameters': None,
+          'type': 'function',
+      },
+      {
+          'name': 'google_maps',
+          'type': 'google_maps',
+      },
+      {
+          'name': 'mcp_tool',
+          'description': 'Tool from session',
+          'parameters': None,
+          'type': 'function',
+      },
+      {
+          'name': 'mcp_tool',
+          'description': 'A standalone mcp tool',
+          'parameters': None,
+          'type': 'function',
+      },
+  ]
+  expected_tool_definitions_json = (
+      '[{"name":"_mock_callable_tool","description":"Description of some'
+      ' tool.","parameters":null,"type":"function"},{"name":"mock_tool","description":"Description'
+      ' of mock'
+      ' tool.","parameters":null,"type":"function"},{"name":"google_maps","type":"google_maps"},{"name":"mcp_tool","description":"Tool'
+      ' from'
+      ' session","parameters":{"type":"object","properties":{"query":{"type":"string"}}},"type":"function"},{"name":"mcp_tool","description":"A'
+      ' standalone mcp'
+      ' tool","parameters":{"type":"object","properties":{"id":{"type":"integer"}}},"type":"function"}]'
+  )
+
+  expected_tool_definitions_no_content_json = (
+      '[{"name":"_mock_callable_tool","description":"Description of some'
+      ' tool.","parameters":null,"type":"function"},{"name":"mock_tool","description":"Description'
+      ' of mock'
+      ' tool.","parameters":null,"type":"function"},{"name":"google_maps","type":"google_maps"},{"name":"mcp_tool","description":"Tool'
+      ' from'
+      ' session","parameters":null,"type":"function"},{"name":"mcp_tool","description":"A'
+      ' standalone mcp tool","parameters":null,"type":"function"}]'
+  )
   # Assert Span
   mock_tracer.start_as_current_span.assert_called_once_with(
       'generate_content some-model'
@@ -959,12 +1106,17 @@ async def test_generate_content_span_with_experimental_semconv(
         GEN_AI_OUTPUT_MESSAGES,
         '[{"role":"assistant","parts":[{"content":"Response","type":"text"}],"finish_reason":"stop"}]',
     )
-
+    mock_span.set_attribute.assert_any_call(
+        GEN_AI_TOOL_DEFINITIONS, expected_tool_definitions_json
+    )
   else:
     all_attribute_calls = mock_span.set_attribute.call_args_list
     assert GEN_AI_SYSTEM_INSTRUCTIONS not in all_attribute_calls
     assert GEN_AI_INPUT_MESSAGES not in all_attribute_calls
     assert GEN_AI_OUTPUT_MESSAGES not in all_attribute_calls
+    mock_span.set_attribute.assert_any_call(
+        GEN_AI_TOOL_DEFINITIONS, expected_tool_definitions_no_content_json
+    )
 
   # Assert Logs
   assert mock_otel_logger.emit.call_count == 1
@@ -996,10 +1148,17 @@ async def test_generate_content_span_with_experimental_semconv(
     assert attributes[GEN_AI_INPUT_MESSAGES] == expected_input_messages
     assert GEN_AI_OUTPUT_MESSAGES in attributes
     assert attributes[GEN_AI_OUTPUT_MESSAGES] == expected_output_messages
+    assert GEN_AI_TOOL_DEFINITIONS in attributes
+    assert attributes[GEN_AI_TOOL_DEFINITIONS] == expected_tool_definitions
   else:
     assert GEN_AI_SYSTEM_INSTRUCTIONS not in attributes
     assert GEN_AI_INPUT_MESSAGES not in attributes
     assert GEN_AI_OUTPUT_MESSAGES not in attributes
+    assert GEN_AI_TOOL_DEFINITIONS in attributes
+    assert (
+        attributes[GEN_AI_TOOL_DEFINITIONS]
+        == expected_tool_definitions_no_content
+    )
 
   assert GEN_AI_USAGE_INPUT_TOKENS in attributes
   assert attributes[GEN_AI_USAGE_INPUT_TOKENS] == 10

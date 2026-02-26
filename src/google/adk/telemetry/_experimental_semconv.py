@@ -28,6 +28,8 @@ from typing import TypedDict
 
 from google.genai import types
 from google.genai.models import t as transformers
+from mcp import ClientSession as McpClientSession
+from mcp import Tool as McpTool
 from opentelemetry._logs import Logger
 from opentelemetry._logs import LogRecord
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_INPUT_MESSAGES
@@ -42,11 +44,18 @@ from opentelemetry.util.types import AttributeValue
 from ..models.llm_request import LlmRequest
 from ..models.llm_response import LlmResponse
 
+try:
+  from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_TOOL_DEFINITIONS
+except ImportError:
+  GEN_AI_TOOL_DEFINITIONS = 'gen_ai.tool_definitions'
+
 OTEL_SEMCONV_STABILITY_OPT_IN = 'OTEL_SEMCONV_STABILITY_OPT_IN'
 
 OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT = (
     'OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT'
 )
+
+FUNCTION_TOOL_DEFINITION_TYPE = 'function'
 
 
 class Text(TypedDict):
@@ -93,6 +102,21 @@ class OutputMessage(TypedDict):
   finish_reason: str
 
 
+class FunctionToolDefinition(TypedDict):
+  name: str
+  description: str | None
+  parameters: Any
+  type: Literal['function']
+
+
+class GenericToolDefinition(TypedDict):
+  name: str
+  type: str
+
+
+ToolDefinition = FunctionToolDefinition | GenericToolDefinition
+
+
 def _safe_json_serialize_no_whitespaces(obj) -> str:
   """Convert any Python object to a JSON-serializable type or string.
 
@@ -127,6 +151,158 @@ def get_content_capturing_mode() -> str:
   return os.getenv(
       OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT, ''
   ).upper()
+
+
+def _model_dump_to_tool_definition(tool: Any) -> dict[str, Any]:
+  model_dump = tool.model_dump(exclude_none=True)
+
+  name = (
+      model_dump.get('name')
+      or getattr(tool, 'name', None)
+      or type(tool).__name__
+  )
+  description = model_dump.get('description') or getattr(
+      tool, 'description', None
+  )
+  parameters = model_dump.get('parameters') or model_dump.get('inputSchema')
+  return FunctionToolDefinition(
+      name=name,
+      description=description,
+      parameters=parameters,
+      type=FUNCTION_TOOL_DEFINITION_TYPE,
+  )
+
+
+def _clean_parameters(params: Any) -> Any:
+  """Converts parameter objects into plain dicts."""
+  if params is None:
+    return None
+  if isinstance(params, dict):
+    return params
+  if hasattr(params, 'to_dict'):
+    return params.to_dict()
+  if hasattr(params, 'model_dump'):
+    return params.model_dump(exclude_none=True)
+
+  try:
+    # Check if it's already a standard JSON type.
+    json.dumps(params)
+    return params
+
+  except (TypeError, ValueError):
+    return {
+        'type': 'object',
+        'properties': {
+            'serialization_error': {
+                'type': 'string',
+                'description': (
+                    f'Failed to serialize parameters: {type(params).__name__}'
+                ),
+            }
+        },
+    }
+
+
+def _tool_to_tool_definition(tool: types.Tool) -> list[dict[str, Any]]:
+  definitions = []
+  if tool.function_declarations:
+    for fd in tool.function_declarations:
+      definitions.append(
+          FunctionToolDefinition(
+              name=getattr(fd, 'name', type(fd).__name__),
+              description=getattr(fd, 'description', None),
+              parameters=_clean_parameters(getattr(fd, 'parameters', None)),
+              type=FUNCTION_TOOL_DEFINITION_TYPE,
+          )
+      )
+
+  # Generic types
+  if hasattr(tool, 'model_dump'):
+    exclude_fields = {'function_declarations'}
+    fields = {
+        k: v
+        for k, v in tool.model_dump().items()
+        if v is not None and k not in exclude_fields
+    }
+
+    for tool_type, _ in fields.items():
+      definitions.append(
+          GenericToolDefinition(
+              name=tool_type,
+              type=tool_type,
+          )
+      )
+
+  return definitions
+
+
+def _tool_definition_from_callable_tool(tool: Any) -> dict[str, Any]:
+  doc = getattr(tool, '__doc__', '') or ''
+  return FunctionToolDefinition(
+      name=getattr(tool, '__name__', type(tool).__name__),
+      description=doc.strip(),
+      parameters=None,
+      type=FUNCTION_TOOL_DEFINITION_TYPE,
+  )
+
+
+def _tool_definition_from_mcp_tool(tool: McpTool) -> dict[str, Any]:
+  if hasattr(tool, 'model_dump'):
+    return _model_dump_to_tool_definition(tool)
+
+  return FunctionToolDefinition(
+      name=getattr(tool, 'name', type(tool).__name__),
+      description=getattr(tool, 'description', None),
+      parameters=getattr(tool, 'input_schema', None),
+      type=FUNCTION_TOOL_DEFINITION_TYPE,
+  )
+
+
+async def _to_tool_definitions(
+    tool: types.ToolUnionDict,
+) -> list[dict[str, Any]]:
+
+  if isinstance(tool, types.Tool):
+    return _tool_to_tool_definition(tool)
+
+  if callable(tool):
+    return [_tool_definition_from_callable_tool(tool)]
+
+  if isinstance(tool, McpTool):
+    return [_tool_definition_from_mcp_tool(tool)]
+
+  if isinstance(tool, McpClientSession):
+    result = await tool.list_tools()
+    return [_model_dump_to_tool_definition(t) for t in result.tools]
+
+  return [
+      GenericToolDefinition(
+          name='UnserializableTool',
+          type=type(tool).__name__,
+      )
+  ]
+
+
+def _operation_details_attributes_no_content(
+    operation_details_attributes: Mapping[str, AttributeValue],
+) -> dict[str, AttributeValue]:
+  tool_def = operation_details_attributes.get(GEN_AI_TOOL_DEFINITIONS)
+  if not tool_def:
+    return {}
+
+  return {
+      GEN_AI_TOOL_DEFINITIONS: [
+          FunctionToolDefinition(
+              name=td['name'],
+              description=td['description'],
+              parameters=None,
+              type=td['type'],
+          )
+          if 'parameters' in td
+          else td
+          for td in tool_def
+      ]
+  }
 
 
 def _to_input_message(
@@ -264,8 +440,17 @@ async def set_operation_details_attributes_from_request(
 
   system_instructions = _to_system_instructions(llm_request.config)
 
+  tool_definitions = []
+  if tools := llm_request.config.tools:
+    for tool in tools:
+      definitions = await _to_tool_definitions(tool)
+      for de in definitions:
+        if de:
+          tool_definitions.append(de)
+
   operation_details_attributes[GEN_AI_INPUT_MESSAGES] = input_messages
   operation_details_attributes[GEN_AI_SYSTEM_INSTRUCTIONS] = system_instructions
+  operation_details_attributes[GEN_AI_TOOL_DEFINITIONS] = tool_definitions
 
 
 def set_operation_details_attributes_from_response(
@@ -310,6 +495,11 @@ def maybe_log_completion_details(
 
   if capturing_mode in ['EVENT_ONLY', 'SPAN_AND_EVENT']:
     final_attributes = final_attributes | operation_details_attributes
+  else:
+    final_attributes = (
+        final_attributes
+        | _operation_details_attributes_no_content(operation_details_attributes)
+    )
 
   otel_logger.emit(
       LogRecord(
@@ -320,4 +510,9 @@ def maybe_log_completion_details(
 
   if capturing_mode in ['SPAN_ONLY', 'SPAN_AND_EVENT']:
     for key, value in operation_details_attributes.items():
+      span.set_attribute(key, _safe_json_serialize_no_whitespaces(value))
+  else:
+    for key, value in _operation_details_attributes_no_content(
+        operation_details_attributes
+    ).items():
       span.set_attribute(key, _safe_json_serialize_no_whitespaces(value))
