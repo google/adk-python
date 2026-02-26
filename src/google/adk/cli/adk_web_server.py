@@ -1668,46 +1668,39 @@ class AdkWebServer:
     async def run_agent_sse(req: RunAgentRequest) -> StreamingResponse:
       stream_mode = StreamingMode.SSE if req.streaming else StreamingMode.NONE
       runner = await self.get_runner_async(req.app_name)
-      agen = runner.run_async(
-          user_id=req.user_id,
-          session_id=req.session_id,
-          new_message=req.new_message,
-          state_delta=req.state_delta,
-          run_config=RunConfig(streaming_mode=stream_mode),
-          invocation_id=req.invocation_id,
-      )
 
-      # Eagerly advance the generator to trigger session validation
-      # before the streaming response is created.  This lets us return
-      # a proper HTTP 404 for missing sessions without a redundant
-      # get_session call — the Runner's single _get_or_create_session
-      # call is the only one that runs.
-      first_event = None
-      first_error = None
-      try:
-        first_event = await anext(agen)
-      except SessionNotFoundError as e:
-        await agen.aclose()
-        raise HTTPException(status_code=404, detail=str(e)) from e
-      except StopAsyncIteration:
-        await agen.aclose()
-      except Exception as e:
-        first_error = e
+      # Validate session existence before starting the stream.
+      # We check directly here instead of eagerly advancing the
+      # runner's async generator with anext(), because splitting
+      # generator consumption across two asyncio Tasks (request
+      # handler vs StreamingResponse) breaks OpenTelemetry context
+      # detachment.
+      if not runner.auto_create_session:
+        session = await self.session_service.get_session(
+            app_name=req.app_name,
+            user_id=req.user_id,
+            session_id=req.session_id,
+        )
+        if not session:
+          raise HTTPException(
+              status_code=404,
+              detail=f"Session not found: {req.session_id}",
+          )
 
       # Convert the events to properly formatted SSE
       async def event_generator():
-        async with Aclosing(agen):
+        async with Aclosing(
+            runner.run_async(
+                user_id=req.user_id,
+                session_id=req.session_id,
+                new_message=req.new_message,
+                state_delta=req.state_delta,
+                run_config=RunConfig(streaming_mode=stream_mode),
+                invocation_id=req.invocation_id,
+            )
+        ) as agen:
           try:
-            if first_error:
-              raise first_error
-
-            async def all_events():
-              if first_event is not None:
-                yield first_event
-              async for event in agen:
-                yield event
-
-            async for event in all_events():
+            async for event in agen:
               # ADK Web renders artifacts from `actions.artifactDelta`
               # during part processing *and* during action processing
               # 1) the original event with `artifactDelta` cleared (content)
