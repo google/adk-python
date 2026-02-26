@@ -85,10 +85,11 @@ When plotting trends, you should make sure to sort and order the data by the x-a
 
 """,
     code_executor=AgentEngineSandboxCodeExecutor(
-        # Replace with your sandbox resource name if you already have one. Only use it for testing or prototyping purposes, because this will use the same sandbox for all requests.
+        # Replace with your sandbox resource name if you already have one.
+        sandbox_resource_name="SANDBOX_RESOURCE_NAME",
         # "projects/vertex-agent-loadtest/locations/us-central1/reasoningEngines/6842889780301135872/sandboxEnvironments/6545148628569161728",
-        sandbox_resource_name=None,
-        # Replace with agent engine resource name used for creating sandbox environment.
+        # Replace with agent engine resource name used for creating sandbox if
+        # sandbox_resource_name is not set.
         agent_engine_resource_name="AGENT_ENGINE_RESOURCE_NAME",
     ),
 )

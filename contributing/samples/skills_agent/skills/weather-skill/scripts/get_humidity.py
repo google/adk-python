@@ -12,14 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from __future__ import annotations
+import argparse
 
 
-class SessionNotFoundError(ValueError):
-  """Raised when a session cannot be found.
+def get_humidity(location: str) -> str:
+  """Fetch live humidity for a given location. (Simulated)"""
+  print(f"Fetching live humidity for {location}...")
+  return "45% (Simulated)"
 
-  Inherits from ValueError (for backward compatibility).
-  """
 
-  def __init__(self, message="Session not found."):
-    super().__init__(message)
+if __name__ == "__main__":
+  parser = argparse.ArgumentParser()
+  parser.add_argument("--location", type=str, default="Mountain View")
+  args = parser.parse_args()
+
+  print(get_humidity(args.location))

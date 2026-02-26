@@ -1,11 +1,10 @@
 # Runs release-please to create/update a PR with version bump and changelog.
-# Triggered automatically by step 1 (cut) or step 3 (cherry-pick).
+# Triggered only by workflow_dispatch (from release-cut.yml).
+# Does NOT auto-run on push to preserve manual changelog edits after cherry-picks.
 name: "Release: Please"
 
 on:
-  push:
-    branches:
-      - release/candidate
+  # Only run via workflow_dispatch (triggered by release-cut.yml)
   workflow_dispatch:
 
 permissions:
@@ -14,8 +13,6 @@ permissions:
 
 jobs:
   release-please:
-    # Skip if this is a release-please PR merge (handled by Release: Finalize)
-    if: "!startsWith(github.event.head_commit.message, 'chore(release')"
     runs-on: ubuntu-latest
     steps:
       - name: Check if release/candidate still exists
