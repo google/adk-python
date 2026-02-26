@@ -364,8 +364,7 @@ class DatabaseSessionService(BaseSessionService):
         storage_user_state.state = storage_user_state.state | user_state_delta
 
       # Store the session
-      raw_time = round(platform_time.get_time(), 6) # rounding here to avoid percision changes when saving to db
-      now = datetime.fromtimestamp(raw_time, tz=timezone.utc)
+      now = datetime.fromtimestamp(platform_time.get_time(), tz=timezone.utc)
       is_sqlite = self.db_engine.dialect.name == _SQLITE_DIALECT
       is_postgresql = self.db_engine.dialect.name == _POSTGRESQL_DIALECT
       if is_sqlite or is_postgresql:
@@ -619,10 +618,6 @@ class DatabaseSessionService(BaseSessionService):
             )
           if session_state_delta:
             storage_session.state = storage_session.state | session_state_delta
-
-        # Explicitly round the event float timestamp to microseconds (6 digits)
-        # to match native `datetime.now()` truncation when saving/loading from DB
-        event.timestamp = round(event.timestamp, 6)
 
         if is_sqlite:
           update_time = datetime.fromtimestamp(
