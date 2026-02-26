@@ -37,7 +37,6 @@ from google.adk.tools.computer_use.computer_use_tool import ComputerUseTool
 from google.genai import types
 
 from ...agents.active_streaming_tool import ActiveStreamingTool
-from ...agents.invocation_context import InvocationContext
 from ...agents.live_request_queue import LiveRequestQueue
 from ...auth.auth_tool import AuthConfig
 from ...auth.auth_tool import AuthToolArguments
@@ -52,6 +51,7 @@ from ...tools.tool_context import ToolContext
 from ...utils.context_utils import Aclosing
 
 if TYPE_CHECKING:
+  from ...agents.invocation_context import InvocationContext
   from ...agents.llm_agent import LlmAgent
 
 AF_FUNCTION_CALL_ID_PREFIX = 'adk-'
@@ -1157,6 +1157,18 @@ def merge_parallel_function_response_events(
   return merged_event
 
 
+def find_event_by_function_call_id(
+    events: list[Event],
+    function_call_id: str,
+) -> Optional[Event]:
+  """Finds the function call event that matches the function call id."""
+  for event in reversed(events):
+    for function_call in event.get_function_calls():
+      if function_call.id == function_call_id:
+        return event
+  return None
+
+
 def find_matching_function_call(
     events: list[Event],
 ) -> Optional[Event]:
@@ -1165,25 +1177,8 @@ def find_matching_function_call(
     return None
 
   last_event = events[-1]
-  if (
-      last_event.content
-      and last_event.content.parts
-      and any(part.function_response for part in last_event.content.parts)
-  ):
+  function_responses = last_event.get_function_responses()
+  if not function_responses:
+    return None
 
-    function_call_id = next(
-        part.function_response.id
-        for part in last_event.content.parts
-        if part.function_response
-    )
-    for i in range(len(events) - 2, -1, -1):
-      event = events[i]
-      # looking for the system long-running request euc function call
-      function_calls = event.get_function_calls()
-      if not function_calls:
-        continue
-
-      for function_call in function_calls:
-        if function_call.id == function_call_id:
-          return event
-  return None
+  return find_event_by_function_call_id(events[:-1], function_responses[0].id)
