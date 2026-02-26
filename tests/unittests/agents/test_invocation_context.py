@@ -13,10 +13,12 @@
 # limitations under the License.
 
 from unittest.mock import Mock
+from uuid import UUID
 
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.base_agent import BaseAgentState
 from google.adk.agents.invocation_context import InvocationContext
+from google.adk.agents.invocation_context import new_invocation_context_id
 from google.adk.apps import ResumabilityConfig
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
@@ -28,6 +30,16 @@ from google.genai.types import Part
 import pytest
 
 from .. import testing_utils
+
+
+def test_new_invocation_context_id_is_uuid_backed_and_unique():
+  """Invocation IDs should be UUID-backed and not derived from prompt text."""
+  ids = [new_invocation_context_id() for _ in range(32)]
+
+  assert len(set(ids)) == len(ids)
+  for invocation_id in ids:
+    assert invocation_id.startswith('e-')
+    UUID(invocation_id[2:])
 
 
 class TestInvocationContext:
