@@ -48,7 +48,7 @@ def make_tts_func(
     """Convert text to speech using camb.ai.
 
     Supports 140+ languages and multiple voice models. The audio is
-    saved to a temporary file and the file path is returned.
+    saved to a temporary file and the file path is returned. The caller is responsible for deleting this file after use.
 
     Args:
       text: Text to convert to speech (3-3000 characters).
@@ -197,7 +197,7 @@ def make_translated_tts_func(
   ) -> str:
     """Translate text and convert to speech in one step using camb.ai.
 
-    Returns the file path to the generated audio file.
+    Returns the file path to the generated audio file. The caller is responsible for deleting this file after use.
 
     Args:
       text: Text to translate and speak.
@@ -340,7 +340,7 @@ def make_text_to_sound_func(
     """Generate sounds, music, or soundscapes from text descriptions using camb.ai.
 
     Describe the sound or music you want and the tool will generate it.
-    Returns the file path to the generated audio file.
+    Returns the file path to the generated audio file. The caller is responsible for deleting this file after use.
 
     Args:
       prompt: Description of the sound or music to generate.
@@ -381,7 +381,8 @@ def make_audio_separation_func(
     """Separate vocals/speech from background audio using camb.ai.
 
     Provide either an audio URL or a local file path. Returns JSON with
-    paths to the separated vocals and background audio files.
+    paths to separated audio files. The caller is responsible for deleting
+    any temporary files created by this tool.
 
     Args:
       audio_url: URL of the audio file to separate.
