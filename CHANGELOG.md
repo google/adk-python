@@ -1,32 +1,48 @@
 # Changelog
 
-## [2.0.0](https://github.com/google/adk-python/compare/v1.25.1...v2.0.0) (2026-02-26)
+## [1.26.0](https://github.com/google/adk-python/compare/v1.25.1...v1.26.0) (2026-02-26)
 
-
-### ⚠ BREAKING CHANGES
-
-* **skill:** coloate default skill SI with skilltoolset
 
 ### Features
 
-* Add /chat/completions integration to ApigeeLlm ([9c4c445](https://github.com/google/adk-python/commit/9c4c44536904f5cf3301a5abb910a5666344a8c5))
-* Add /chat/completions streaming support to Apigee LLM ([121d277](https://github.com/google/adk-python/commit/121d27741684685c564e484704ae949c5f0807b1))
-* add generate/create modes for Vertex AI Memory Bank writes ([811e50a](https://github.com/google/adk-python/commit/811e50a0cbb181d502b9837711431ef78fca3f34))
-* Add interceptor framework to A2aAgentExecutor ([87fcd77](https://github.com/google/adk-python/commit/87fcd77caa9672f219c12e5a0e2ff65cbbaaf6f3))
-* Add intra-invocation compaction and token compaction pre-request ([485fcb8](https://github.com/google/adk-python/commit/485fcb84e3ca351f83416c012edcafcec479c1db))
-* Add schema auto-upgrade, tool provenance, HITL tracing, and span hierarchy fix to BigQuery Agent Analytics plugin ([4260ef0](https://github.com/google/adk-python/commit/4260ef0c7c37ecdfea295fb0e1a933bb0df78bea))
-* Add support for memory consolidation via Vertex AI Memory Bank ([4a88804](https://github.com/google/adk-python/commit/4a88804ec7d17fb4031b238c362f27d240df0a13))
-* Agent Registry in ADK ([abaa929](https://github.com/google/adk-python/commit/abaa92944c4cd43d206e2986d405d4ee07d45afe))
-* Agent Skills spec compliance — validation, aliases, scripts, and auto-injection ([223d9a7](https://github.com/google/adk-python/commit/223d9a7ff52d8da702f1f436bd22e94ad78bd5da))
-* **auth:** Add native support for id_token in OAuth2 credentials ([33f7d11](https://github.com/google/adk-python/commit/33f7d118b377b60f998c92944d2673679fddbc6e))
-* Bigquery ADK support for search catalog tool ([bef3f11](https://github.com/google/adk-python/commit/bef3f117b4842ce62760328304484cd26a1ec30a))
-* change default BigQuery table ID and update docstring ([7557a92](https://github.com/google/adk-python/commit/7557a929398ec2a1f946500d906cef5a4f86b5d1))
-* Expand LiteLlm supported models and add registry tests ([d5332f4](https://github.com/google/adk-python/commit/d5332f44347f44d60360e14205a2342a0c990d66))
-* Introduce User Personas to the ADK evaluation framework ([6a808c6](https://github.com/google/adk-python/commit/6a808c60b38ad7140ddeb222887c6accc63edce9))
-* Make skill instruction optimizable and can adapt to user tasks ([21be6ad](https://github.com/google/adk-python/commit/21be6adcb86722a585b26f600c45c85e593b4ee0))
-* Support ID token exchange in ServiceAccountCredentialExchanger ([7be90db](https://github.com/google/adk-python/commit/7be90db24b41f1830e39ca3d7e15bf4dbfa5a304)), closes [#4458](https://github.com/google/adk-python/issues/4458)
-* Update Agent Registry to create AgentCard from info in get agents endpoint ([c33d614](https://github.com/google/adk-python/commit/c33d614004a47d1a74951dd13628fd2300aeb9ef))
-* Use --memory_service_uri in ADK CLI run command ([a7b5097](https://github.com/google/adk-python/commit/a7b509763c1732f0363e90952bb4c2672572d542))
+* **[Core]**
+  * Add intra-invocation compaction and token compaction pre-request ([485fcb8](https://github.com/google/adk-python/commit/485fcb84e3ca351f83416c012edcafcec479c1db))
+  * Use `--memory_service_uri` in ADK CLI run command ([a7b5097](https://github.com/google/adk-python/commit/a7b509763c1732f0363e90952bb4c2672572d542))
+
+* **[Models]**
+  * Add `/chat/completions` integration to `ApigeeLlm` ([9c4c445](https://github.com/google/adk-python/commit/9c4c44536904f5cf3301a5abb910a5666344a8c5))
+  * Add `/chat/completions` streaming support to Apigee LLM ([121d277](https://github.com/google/adk-python/commit/121d27741684685c564e484704ae949c5f0807b1))
+  * Expand LiteLlm supported models and add registry tests ([d5332f4](https://github.com/google/adk-python/commit/d5332f44347f44d60360e14205a2342a0c990d66))
+
+* **[Tools]**
+  * Add `load_skill_from_dir()` method ([9f7d5b3](https://github.com/google/adk-python/commit/9f7d5b3f1476234e552b783415527cc4bac55b39))
+  * Agent Skills spec compliance — validation, aliases, scripts, and auto-injection ([223d9a7](https://github.com/google/adk-python/commit/223d9a7ff52d8da702f1f436bd22e94ad78bd5da))
+  * BigQuery ADK support for search catalog tool ([bef3f11](https://github.com/google/adk-python/commit/bef3f117b4842ce62760328304484cd26a1ec30a))
+  * Make skill instruction optimizable and can adapt to user tasks ([21be6ad](https://github.com/google/adk-python/commit/21be6adcb86722a585b26f600c45c85e593b4ee0))
+  * Pass trace context in MCP tool call's `_meta` field with OpenTelemetry propagator ([bcbfeba](https://github.com/google/adk-python/commit/bcbfeba953d46fca731b11542a00103cef374e57))
+
+* **[Evals]**
+  * Introduce User Personas to the ADK evaluation framework ([6a808c6](https://github.com/google/adk-python/commit/6a808c60b38ad7140ddeb222887c6accc63edce9))
+
+* **[Services]**
+  * Add generate/create modes for Vertex AI Memory Bank writes ([811e50a](https://github.com/google/adk-python/commit/811e50a0cbb181d502b9837711431ef78fca3f34))
+  * Add support for memory consolidation via Vertex AI Memory Bank ([4a88804](https://github.com/google/adk-python/commit/4a88804ec7d17fb4031b238c362f27d240df0a13))
+
+* **[A2A]**
+  * Add interceptor framework to `A2aAgentExecutor` ([87fcd77](https://github.com/google/adk-python/commit/87fcd77caa9672f219c12e5a0e2ff65cbbaaf6f3))
+
+* **[Auth]**
+  * Add native support for `id_token` in OAuth2 credentials ([33f7d11](https://github.com/google/adk-python/commit/33f7d118b377b60f998c92944d2673679fddbc6e))
+  * Support ID token exchange in `ServiceAccountCredentialExchanger` ([7be90db](https://github.com/google/adk-python/commit/7be90db24b41f1830e39ca3d7e15bf4dbfa5a304)), closes [#4458](https://github.com/google/adk-python/issues/4458)
+
+* **[Integrations]**
+  * Agent Registry in ADK ([abaa929](https://github.com/google/adk-python/commit/abaa92944c4cd43d206e2986d405d4ee07d45afe))
+  * Add schema auto-upgrade, tool provenance, HITL tracing, and span hierarchy fix to BigQuery Agent Analytics plugin ([4260ef0](https://github.com/google/adk-python/commit/4260ef0c7c37ecdfea295fb0e1a933bb0df78bea))
+  * Change default BigQuery table ID and update docstring ([7557a92](https://github.com/google/adk-python/commit/7557a929398ec2a1f946500d906cef5a4f86b5d1))
+  * Update Agent Registry to create AgentCard from info in get agents endpoint ([c33d614](https://github.com/google/adk-python/commit/c33d614004a47d1a74951dd13628fd2300aeb9ef))
+
+* **[Web]**
+  * Enable dependency injection for agent loader in FastAPI app gen ([34da2d5](https://github.com/google/adk-python/commit/34da2d5b26e82f96f1951334fe974a0444843720))
 
 
 ### Bug Fixes
