@@ -4,6 +4,7 @@
   "packages": {
     ".": {
       "release-type": "python",
+      "versioning": "always-bump-minor",
       "package-name": "google-adk",
       "include-component-in-tag": false,
       "skip-github-release": true,
