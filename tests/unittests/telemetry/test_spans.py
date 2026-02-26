@@ -26,20 +26,23 @@ from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.telemetry.tracing import ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS
 from google.adk.telemetry.tracing import trace_agent_invocation
 from google.adk.telemetry.tracing import trace_call_llm
-from google.adk.telemetry.tracing import trace_generate_content_result
+from google.adk.telemetry.tracing import trace_inference_result
 from google.adk.telemetry.tracing import trace_merged_tool_calls
 from google.adk.telemetry.tracing import trace_send_data
 from google.adk.telemetry.tracing import trace_tool_call
-from google.adk.telemetry.tracing import use_generate_content_span
+from google.adk.telemetry.tracing import use_inference_span
 from google.adk.tools.base_tool import BaseTool
 from google.genai import types
 from opentelemetry._logs import LogRecord
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_AGENT_NAME
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_CONVERSATION_ID
+from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_INPUT_MESSAGES
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_OPERATION_NAME
+from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_OUTPUT_MESSAGES
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_REQUEST_MODEL
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_RESPONSE_FINISH_REASONS
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_SYSTEM
+from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_SYSTEM_INSTRUCTIONS
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_USAGE_INPUT_TOKENS
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_USAGE_OUTPUT_TOKENS
 from opentelemetry.semconv._incubating.attributes.user_attributes import USER_ID
@@ -731,12 +734,12 @@ async def test_generate_content_span(
   )
 
   # Act
-  with use_generate_content_span(
+  async with use_inference_span(
       llm_request, invocation_context, model_response_event
-  ) as span:
-    assert span is mock_span
+  ) as gc_span:
+    assert gc_span.span is mock_span
 
-    trace_generate_content_result(span, llm_response)
+    trace_inference_result(gc_span, llm_response)
 
   # Assert Span
   mock_tracer.start_as_current_span.assert_called_once_with(
@@ -810,3 +813,206 @@ async def test_generate_content_span(
   assert choice_log is not None
   assert choice_log.body == expected_choice_body
   assert choice_log.attributes == {GEN_AI_SYSTEM: 'test_system'}
+
+
+@pytest.mark.asyncio
+@mock.patch('google.adk.telemetry.tracing.otel_logger')
+@mock.patch('google.adk.telemetry.tracing.tracer')
+@mock.patch(
+    'google.adk.telemetry.tracing._guess_gemini_system_name',
+    return_value='test_system',
+)
+@pytest.mark.parametrize(
+    'capture_content',
+    ['SPAN_AND_EVENT', 'EVENT_ONLY', 'SPAN_ONLY', 'NO_CONTENT'],
+)
+async def test_generate_content_span_with_experimental_semconv(
+    mock_guess_system_name,
+    mock_tracer,
+    mock_otel_logger,
+    monkeypatch,
+    capture_content,
+):
+  """Test native generate_content span creation with attributes and logs with experimental semconv enabled."""
+  # Arrange
+  monkeypatch.setenv(
+      'OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT',
+      str(capture_content).lower(),
+  )
+  monkeypatch.setenv(
+      'OTEL_SEMCONV_STABILITY_OPT_IN',
+      'gen_ai_latest_experimental',
+  )
+  monkeypatch.setattr(
+      'google.adk.telemetry.tracing._instrumented_with_opentelemetry_instrumentation_google_genai',
+      lambda: False,
+  )
+
+  agent = LlmAgent(name='test_agent', model='not-a-gemini-model')
+  invocation_context = await _create_invocation_context(agent)
+
+  system_instruction = types.Content(
+      parts=[types.Part.from_text(text='You are a helpful assistant.')],
+  )
+
+  user_content1 = types.Content(role='user', parts=[types.Part(text='Hello')])
+  user_content2 = types.Content(role='user', parts=[types.Part(text='World')])
+
+  model_content = types.Content(
+      role='model', parts=[types.Part(text='Response')]
+  )
+
+  llm_request = LlmRequest(
+      model='some-model',
+      contents=[user_content1, user_content2],
+      config=types.GenerateContentConfig(
+          system_instruction=system_instruction,
+      ),
+  )
+  llm_response = LlmResponse(
+      content=model_content,
+      finish_reason=types.FinishReason.STOP,
+      usage_metadata=types.GenerateContentResponseUsageMetadata(
+          prompt_token_count=10,
+          candidates_token_count=20,
+      ),
+  )
+
+  model_response_event = mock.MagicMock()
+  model_response_event.id = 'event-123'
+
+  mock_span = (
+      mock_tracer.start_as_current_span.return_value.__enter__.return_value
+  )
+
+  # Act
+  async with use_inference_span(
+      llm_request,
+      invocation_context,
+      model_response_event,
+  ) as gc_span:
+    assert gc_span.span is mock_span
+
+    trace_inference_result(gc_span, llm_response)
+
+  # Expected attributes
+  expected_system_instructions = [
+      {
+          'content': 'You are a helpful assistant.',
+          'type': 'text',
+      },
+  ]
+  expected_input_messages = [
+      {
+          'role': 'user',
+          'parts': [
+              {'content': 'Hello', 'type': 'text'},
+          ],
+      },
+      {
+          'role': 'user',
+          'parts': [
+              {'content': 'World', 'type': 'text'},
+          ],
+      },
+  ]
+  expected_output_messages = [{
+      'role': 'assistant',
+      'parts': [
+          {'content': 'Response', 'type': 'text'},
+      ],
+      'finish_reason': 'stop',
+  }]
+  # Assert Span
+  mock_tracer.start_as_current_span.assert_called_once_with(
+      'generate_content some-model'
+  )
+
+  mock_span.set_attribute.assert_any_call(
+      GEN_AI_OPERATION_NAME, 'generate_content'
+  )
+  mock_span.set_attribute.assert_any_call(GEN_AI_REQUEST_MODEL, 'some-model')
+  mock_span.set_attribute.assert_any_call(
+      GEN_AI_RESPONSE_FINISH_REASONS, ['stop']
+  )
+  mock_span.set_attribute.assert_any_call(GEN_AI_USAGE_INPUT_TOKENS, 10)
+  mock_span.set_attribute.assert_any_call(GEN_AI_USAGE_OUTPUT_TOKENS, 20)
+
+  mock_span.set_attributes.assert_called_once_with({
+      GEN_AI_AGENT_NAME: invocation_context.agent.name,
+      GEN_AI_CONVERSATION_ID: invocation_context.session.id,
+      USER_ID: invocation_context.session.user_id,
+      'gcp.vertex.agent.event_id': 'event-123',
+      'gcp.vertex.agent.invocation_id': invocation_context.invocation_id,
+  })
+
+  if capture_content in ['SPAN_AND_EVENT', 'SPAN_ONLY']:
+    mock_span.set_attribute.assert_any_call(
+        GEN_AI_SYSTEM_INSTRUCTIONS,
+        '[{"content":"You are a helpful assistant.","type":"text"}]',
+    )
+    mock_span.set_attribute.assert_any_call(
+        GEN_AI_INPUT_MESSAGES,
+        '[{"role":"user","parts":[{"content":"Hello","type":"text"}]},{"role":"user","parts":[{"content":"World","type":"text"}]}]',
+    )
+    mock_span.set_attribute.assert_any_call(
+        GEN_AI_OUTPUT_MESSAGES,
+        '[{"role":"assistant","parts":[{"content":"Response","type":"text"}],"finish_reason":"stop"}]',
+    )
+
+  else:
+    all_attribute_calls = mock_span.set_attribute.call_args_list
+    assert GEN_AI_SYSTEM_INSTRUCTIONS not in all_attribute_calls
+    assert GEN_AI_INPUT_MESSAGES not in all_attribute_calls
+    assert GEN_AI_OUTPUT_MESSAGES not in all_attribute_calls
+
+  # Assert Logs
+  assert mock_otel_logger.emit.call_count == 1
+
+  log_records: list[LogRecord] = [
+      call.args[0] for call in mock_otel_logger.emit.call_args_list
+  ]
+
+  operation_details_log = next(
+      (
+          lr
+          for lr in log_records
+          if lr.event_name == 'gen_ai.client.inference.operation.details'
+      ),
+      None,
+  )
+
+  assert operation_details_log is not None
+  assert operation_details_log.attributes is not None
+
+  attributes = operation_details_log.attributes
+
+  if capture_content in ['SPAN_AND_EVENT', 'EVENT_ONLY']:
+    assert GEN_AI_SYSTEM_INSTRUCTIONS in attributes
+    assert (
+        attributes[GEN_AI_SYSTEM_INSTRUCTIONS] == expected_system_instructions
+    )
+    assert GEN_AI_INPUT_MESSAGES in attributes
+    assert attributes[GEN_AI_INPUT_MESSAGES] == expected_input_messages
+    assert GEN_AI_OUTPUT_MESSAGES in attributes
+    assert attributes[GEN_AI_OUTPUT_MESSAGES] == expected_output_messages
+  else:
+    assert GEN_AI_SYSTEM_INSTRUCTIONS not in attributes
+    assert GEN_AI_INPUT_MESSAGES not in attributes
+    assert GEN_AI_OUTPUT_MESSAGES not in attributes
+
+  assert GEN_AI_USAGE_INPUT_TOKENS in attributes
+  assert attributes[GEN_AI_USAGE_INPUT_TOKENS] == 10
+  assert GEN_AI_USAGE_OUTPUT_TOKENS in attributes
+  assert attributes[GEN_AI_USAGE_OUTPUT_TOKENS] == 20
+  assert 'gcp.vertex.agent.event_id' in attributes
+  assert attributes['gcp.vertex.agent.event_id'] == 'event-123'
+  assert 'gcp.vertex.agent.invocation_id' in attributes
+  assert (
+      attributes['gcp.vertex.agent.invocation_id']
+      == invocation_context.invocation_id
+  )
+  assert GEN_AI_AGENT_NAME in attributes
+  assert attributes[GEN_AI_AGENT_NAME] == invocation_context.agent.name
+  assert GEN_AI_CONVERSATION_ID in attributes
+  assert attributes[GEN_AI_CONVERSATION_ID] == invocation_context.session.id
