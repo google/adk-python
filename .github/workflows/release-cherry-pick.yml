@@ -1,5 +1,6 @@
 # Step 3 (optional): Cherry-picks a commit from main to the release/candidate branch.
 # Use between step 1 and step 4 to include bug fixes in an in-progress release.
+# Note: Does NOT auto-trigger release-please to preserve manual changelog edits.
 name: "Release: Cherry-pick"
 
 on:
@@ -12,7 +13,6 @@ on:
 
 permissions:
   contents: write
-  actions: write
 
 jobs:
   cherry-pick:
@@ -39,10 +39,5 @@ jobs:
         run: |
           git push origin release/candidate
           echo "Successfully cherry-picked commit to release/candidate"
-
-      - name: Trigger Release Please
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh workflow run release-please.yml --repo ${{ github.repository }} --ref release/candidate
-          echo "Triggered Release Please workflow"
+          echo "Note: Release Please is NOT auto-triggered to preserve manual changelog edits."
+          echo "Run release-please.yml manually if you want to regenerate the changelog."
