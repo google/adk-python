@@ -26,6 +26,8 @@ from typing import Union
 from urllib.parse import urlparse
 import uuid
 
+from google.adk.platform import uuid as platform_uuid
+
 from a2a.client import Client as A2AClient
 from a2a.client import ClientEvent as A2AClientEvent
 from a2a.client.card_resolver import A2ACardResolver
@@ -549,7 +551,7 @@ class RemoteA2aAgent(BaseAgent):
         return
 
       a2a_request = A2AMessage(
-          message_id=str(uuid.uuid4()),
+          message_id=platform_uuid.new_uuid(),
           parts=message_parts,
           role="user",
           context_id=context_id,

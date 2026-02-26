@@ -28,6 +28,8 @@ from datetime import timezone
 from typing import Any
 import uuid
 
+from google.adk.platform import uuid as platform_uuid
+
 from sqlalchemy import ForeignKeyConstraint
 from sqlalchemy import func
 from sqlalchemy import inspect
@@ -81,7 +83,7 @@ class StorageSession(Base):
   id: Mapped[str] = mapped_column(
       String(DEFAULT_MAX_KEY_LENGTH),
       primary_key=True,
-      default=lambda: str(uuid.uuid4()),
+      default=platform_uuid.new_uuid,
   )
 
   state: Mapped[MutableDict[str, Any]] = mapped_column(

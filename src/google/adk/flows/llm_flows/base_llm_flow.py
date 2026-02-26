@@ -17,6 +17,8 @@ from __future__ import annotations
 from abc import ABC
 import asyncio
 import datetime
+
+from google.adk.platform import time as platform_time
 import inspect
 import logging
 from typing import AsyncGenerator
@@ -839,7 +841,7 @@ class BaseLlmFlow(ABC):
           async for event in agen:
             # Update the mutable event id to avoid conflict
             model_response_event.id = Event.new_id()
-            model_response_event.timestamp = datetime.datetime.now().timestamp()
+            model_response_event.timestamp = platform_time.get_time()
             yield event
 
   async def _preprocess_async(
