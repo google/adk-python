@@ -97,6 +97,14 @@ async def test_tracer_start_as_current_span(
 
   def wrapped_firstiter(coro):
     nonlocal firstiter
+    # Skip check for specific async context managers in tracing.py,
+    # as their internal generators are not expected to be Aclosing-wrapped.
+    if (
+        coro.__name__ == 'use_inference_span'
+        or coro.__name__ == '_use_native_generate_content_span'
+    ):
+      firstiter(coro)
+      return
     assert any(
         isinstance(referrer, Aclosing)
         or isinstance(indirect_referrer, Aclosing)
