@@ -4927,3 +4927,21 @@ class TestAnalyticsViews:
 
     # Views should NOT be attempted since table creation failed
     plugin.client.query.assert_not_called()
+
+  @pytest.mark.asyncio
+  async def test_create_analytics_views_raises_on_startup_failure(
+      self, mock_auth_default, mock_write_client
+  ):
+    """create_analytics_views() raises if plugin init fails."""
+    # Make the BQ Client constructor raise so _lazy_setup fails
+    # before _started is set to True.
+    with mock.patch.object(
+        bigquery, "Client", side_effect=Exception("client boom")
+    ):
+      plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+          project_id=PROJECT_ID,
+          dataset_id=DATASET_ID,
+          table_id=TABLE_ID,
+      )
+      with pytest.raises(RuntimeError, match="Plugin initialization failed"):
+        await plugin.create_analytics_views()

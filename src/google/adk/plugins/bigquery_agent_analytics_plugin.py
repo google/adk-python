@@ -2138,6 +2138,10 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     before attempting view creation.
     """
     await self._ensure_started()
+    if not self._started:
+      raise RuntimeError(
+          "Plugin initialization failed; cannot create analytics views."
+      )
     loop = asyncio.get_running_loop()
     await loop.run_in_executor(self._executor, self._create_analytics_views)
 
