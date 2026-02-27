@@ -368,11 +368,17 @@ async def _run_and_handle_error(
 
   try:
     async with Aclosing(response_generator) as agen:
-      with tracing.use_generate_content_span(
-          llm_request, invocation_context, model_response_event
-      ) as span:
+      async with tracing.use_inference_span(
+          llm_request,
+          invocation_context,
+          model_response_event,
+      ) as gc_span:
         async for llm_response in agen:
-          tracing.trace_generate_content_result(span, llm_response)
+          if gc_span:
+            tracing.trace_inference_result(
+                gc_span,
+                llm_response,
+            )
           yield llm_response
   except Exception as model_error:
     callback_context = CallbackContext(
