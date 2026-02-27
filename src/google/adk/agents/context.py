@@ -32,6 +32,7 @@ if TYPE_CHECKING:
   from ..events.event import Event
   from ..events.event_actions import EventActions
   from ..memory.base_memory_service import SearchMemoryResponse
+  from ..memory.memory_entry import MemoryEntry
   from ..sessions.state import State
   from ..tools.tool_confirmation import ToolConfirmation
   from .invocation_context import InvocationContext
@@ -366,7 +367,7 @@ class Context(ReadonlyContext):
   async def add_memory(
       self,
       *,
-      memories: Sequence[str],
+      memories: Sequence[MemoryEntry],
       custom_metadata: Mapping[str, object] | None = None,
   ) -> None:
     """Adds explicit memory items directly to the memory service.

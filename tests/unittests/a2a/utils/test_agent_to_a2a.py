@@ -12,12 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from unittest.mock import ANY
 from unittest.mock import AsyncMock
 from unittest.mock import Mock
 from unittest.mock import patch
 
 from a2a.server.apps import A2AStarletteApplication
 from a2a.server.request_handlers import DefaultRequestHandler
+from a2a.server.tasks import InMemoryPushNotificationConfigStore
 from a2a.server.tasks import InMemoryTaskStore
 from a2a.types import AgentCard
 from google.adk.a2a.executor.a2a_agent_executor import A2aAgentExecutor
@@ -77,7 +79,9 @@ class TestToA2A:
     mock_task_store_class.assert_called_once()
     mock_agent_executor_class.assert_called_once()
     mock_request_handler_class.assert_called_once_with(
-        agent_executor=mock_agent_executor, task_store=mock_task_store
+        agent_executor=mock_agent_executor,
+        push_config_store=ANY,
+        task_store=mock_task_store,
     )
     mock_card_builder_class.assert_called_once_with(
         agent=self.mock_agent, rpc_url="http://localhost:8000/"
@@ -122,13 +126,51 @@ class TestToA2A:
     mock_task_store_class.assert_called_once()
     mock_agent_executor_class.assert_called_once_with(runner=custom_runner)
     mock_request_handler_class.assert_called_once_with(
-        agent_executor=mock_agent_executor, task_store=mock_task_store
+        agent_executor=mock_agent_executor,
+        push_config_store=ANY,
+        task_store=mock_task_store,
     )
     mock_card_builder_class.assert_called_once_with(
         agent=self.mock_agent, rpc_url="http://localhost:8000/"
     )
     mock_app.add_event_handler.assert_called_once_with(
         "startup", mock_app.add_event_handler.call_args[0][1]
+    )
+
+  @patch("google.adk.a2a.utils.agent_to_a2a.A2aAgentExecutor")
+  @patch("google.adk.a2a.utils.agent_to_a2a.DefaultRequestHandler")
+  @patch("google.adk.a2a.utils.agent_to_a2a.InMemoryTaskStore")
+  @patch("google.adk.a2a.utils.agent_to_a2a.AgentCardBuilder")
+  @patch("google.adk.a2a.utils.agent_to_a2a.Starlette")
+  def test_to_a2a_passes_custom_push_config_store(
+      self,
+      mock_starlette_class,
+      mock_card_builder_class,
+      mock_task_store_class,
+      mock_request_handler_class,
+      mock_agent_executor_class,
+  ):
+    """Test to_a2a forwards a custom push config store."""
+    mock_app = Mock(spec=Starlette)
+    mock_starlette_class.return_value = mock_app
+    mock_task_store = Mock(spec=InMemoryTaskStore)
+    mock_task_store_class.return_value = mock_task_store
+    mock_agent_executor = Mock(spec=A2aAgentExecutor)
+    mock_agent_executor_class.return_value = mock_agent_executor
+    mock_request_handler = Mock(spec=DefaultRequestHandler)
+    mock_request_handler_class.return_value = mock_request_handler
+    mock_card_builder = Mock(spec=AgentCardBuilder)
+    mock_card_builder_class.return_value = mock_card_builder
+
+    custom_push_store = InMemoryPushNotificationConfigStore()
+
+    result = to_a2a(self.mock_agent, push_config_store=custom_push_store)
+
+    assert result == mock_app
+    mock_request_handler_class.assert_called_once_with(
+        agent_executor=mock_agent_executor,
+        push_config_store=custom_push_store,
+        task_store=mock_task_store,
     )
 
   @patch("google.adk.a2a.utils.agent_to_a2a.A2aAgentExecutor")
