@@ -12,6 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
+from typing import Any
+
 from typing_extensions import override
 
 from .base_session_service import BaseSessionService
@@ -26,7 +30,8 @@ except ImportError:
   # This handles the case where optional dependencies (like sqlalchemy)
   # are not installed. A placeholder class ensures the symbol is always
   # available for documentation tools and static analysis.
-  class DatabaseSessionService(BaseSessionService):
+  # We use type: ignore[no-redef, misc] to satisfy strict mypy checks.
+  class DatabaseSessionService(BaseSessionService):  # type: ignore[no-redef, misc]
     """Placeholder for DatabaseSessionService when dependencies are not installed."""
 
     _ERROR_MESSAGE = (
@@ -34,27 +39,27 @@ except ImportError:
         ' installed correctly.'
     )
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
       raise ImportError(self._ERROR_MESSAGE)
 
     @override
-    async def create_session(self, *args, **kwargs):
+    async def create_session(self, *args: Any, **kwargs: Any) -> Any:
       raise ImportError(self._ERROR_MESSAGE)
 
     @override
-    async def get_session(self, *args, **kwargs):
+    async def get_session(self, *args: Any, **kwargs: Any) -> Any:
       raise ImportError(self._ERROR_MESSAGE)
 
     @override
-    async def list_sessions(self, *args, **kwargs):
+    async def list_sessions(self, *args: Any, **kwargs: Any) -> Any:
       raise ImportError(self._ERROR_MESSAGE)
 
     @override
-    async def delete_session(self, *args, **kwargs):
+    async def delete_session(self, *args: Any, **kwargs: Any) -> Any:
       raise ImportError(self._ERROR_MESSAGE)
 
     @override
-    async def append_event(self, *args, **kwargs):
+    async def append_event(self, *args: Any, **kwargs: Any) -> Any:
       raise ImportError(self._ERROR_MESSAGE)
 
 
