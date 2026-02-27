@@ -4765,6 +4765,30 @@ class TestForkSafety:
     assert state["_init_pid"] == 0
     assert state["_started"] is False
 
+  @pytest.mark.asyncio
+  async def test_unpickle_legacy_state_missing_init_pid(
+      self, mock_auth_default, mock_bq_client, mock_write_client
+  ):
+    """Unpickling state from older code without _init_pid should not crash."""
+    plugin = self._make_plugin()
+    state = plugin.__getstate__()
+    # Simulate legacy pickle state that lacks _init_pid entirely
+    del state["_init_pid"]
+
+    new_plugin = (
+        bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin.__new__(
+            bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin
+        )
+    )
+    new_plugin.__setstate__(state)
+
+    # _init_pid should be backfilled to 0, triggering re-init
+    assert new_plugin._init_pid == 0
+    # _ensure_started should not raise AttributeError
+    await new_plugin._ensure_started()
+    assert new_plugin._started is True
+    await new_plugin.shutdown()
+
 
 # ==============================================================================
 # Analytics Views Tests
@@ -4869,3 +4893,37 @@ class TestAnalyticsViews:
     """Config create_views defaults to True."""
     config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig()
     assert config.create_views is True
+
+  @pytest.mark.asyncio
+  async def test_create_analytics_views_ensures_started(
+      self, mock_auth_default, mock_bq_client, mock_write_client
+  ):
+    """Public create_analytics_views() initializes plugin first."""
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        project_id=PROJECT_ID,
+        dataset_id=DATASET_ID,
+        table_id=TABLE_ID,
+    )
+    assert plugin._started is False
+
+    await plugin.create_analytics_views()
+
+    # Plugin should be started after the call
+    assert plugin._started is True
+    # Views should have been created (query called)
+    expected_count = len(bigquery_agent_analytics_plugin._EVENT_VIEW_DEFS)
+    # _ensure_schema_exists also creates views, so total calls
+    # = schema-creation views + explicit views
+    assert mock_bq_client.query.call_count >= expected_count
+    await plugin.shutdown()
+
+  def test_views_not_created_after_table_creation_failure(self):
+    """View creation is skipped when create_table raises a non-Conflict error."""
+    plugin = self._make_plugin(create_views=True)
+    plugin.client.get_table.side_effect = cloud_exceptions.NotFound("not found")
+    plugin.client.create_table.side_effect = RuntimeError("BQ down")
+
+    plugin._ensure_schema_exists()
+
+    # Views should NOT be attempted since table creation failed
+    plugin.client.query.assert_not_called()

@@ -2037,10 +2037,13 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       )
       tbl.clustering_fields = self.config.clustering_fields
       tbl.labels = {_SCHEMA_VERSION_LABEL_KEY: _SCHEMA_VERSION}
+      table_ready = False
       try:
         self.client.create_table(tbl)
+        table_ready = True
       except cloud_exceptions.Conflict:
-        pass
+        # Another process created it concurrently — still usable.
+        table_ready = True
       except Exception as e:
         logger.error(
             "Could not create table %s: %s",
@@ -2048,7 +2051,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
             e,
             exc_info=True,
         )
-      if self.config.create_views:
+      if table_ready and self.config.create_views:
         self._create_analytics_views()
     except Exception as e:
       logger.error(
@@ -2131,8 +2134,10 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     """Public async helper to (re-)create all analytics views.
 
     Useful when views need to be refreshed explicitly, for example
-    after a schema upgrade.
+    after a schema upgrade.  Ensures the plugin is initialized
+    before attempting view creation.
     """
+    await self._ensure_started()
     loop = asyncio.get_running_loop()
     await loop.run_in_executor(self._executor, self._create_analytics_views)
 
@@ -2193,6 +2198,9 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
 
   def __setstate__(self, state):
     """Custom unpickling to restore state."""
+    # Backfill keys that may be absent in pickled state from older
+    # code versions so _ensure_started does not raise AttributeError.
+    state.setdefault("_init_pid", 0)
     self.__dict__.update(state)
 
   def _reset_runtime_state(self) -> None:
