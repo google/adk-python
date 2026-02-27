@@ -19,6 +19,7 @@ from typing import AsyncGenerator
 from typing import TYPE_CHECKING
 
 from google.genai import types
+from pydantic import ValidationError
 from typing_extensions import override
 
 from . import functions
@@ -92,7 +93,7 @@ class _RequestConfirmationLlmRequestProcessor(BaseLlmRequestProcessor):
                 function_response.response,
                 strict=True,
             )
-        except (json.JSONDecodeError, Exception):
+        except (json.JSONDecodeError, ValidationError):
           logger.warning(
               'Malformed tool confirmation payload for function call %s,'
               ' denying execution.',
