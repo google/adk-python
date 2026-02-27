@@ -27,6 +27,7 @@ import functools
 import json
 import logging
 import mimetypes
+import os
 import random
 import time
 from types import MappingProxyType
@@ -498,6 +499,9 @@ class BigQueryLoggerConfig:
   # dropped or altered).  Safe to leave enabled; a version label on the
   # table ensures the diff runs at most once per schema version.
   auto_schema_upgrade: bool = True
+  # Automatically create per-event-type BigQuery views that unnest
+  # JSON columns into typed, queryable columns.
+  create_views: bool = True
 
 
 # ==============================================================================
@@ -1582,6 +1586,115 @@ def _get_events_schema() -> list[bigquery.SchemaField]:
 
 
 # ==============================================================================
+# ANALYTICS VIEW DEFINITIONS
+# ==============================================================================
+
+# Columns included in every per-event-type view.
+_VIEW_COMMON_COLUMNS = (
+    "timestamp",
+    "event_type",
+    "agent",
+    "session_id",
+    "invocation_id",
+    "user_id",
+    "trace_id",
+    "span_id",
+    "parent_span_id",
+    "status",
+    "error_message",
+    "is_truncated",
+)
+
+# Per-event-type column extractions.  Each value is a list of
+# ``"SQL_EXPR AS alias"`` strings that will be appended after the
+# common columns in the view SELECT.
+_EVENT_VIEW_DEFS: dict[str, list[str]] = {
+    "USER_MESSAGE_RECEIVED": [],
+    "LLM_REQUEST": [
+        "JSON_VALUE(attributes, '$.model') AS model",
+        "content AS request_content",
+        "JSON_QUERY(attributes, '$.llm_config') AS llm_config",
+        "JSON_QUERY(attributes, '$.tools') AS tools",
+    ],
+    "LLM_RESPONSE": [
+        "JSON_QUERY(content, '$.response') AS response",
+        (
+            "CAST(JSON_VALUE(content, '$.usage.prompt')"
+            " AS INT64) AS usage_prompt_tokens"
+        ),
+        (
+            "CAST(JSON_VALUE(content, '$.usage.completion')"
+            " AS INT64) AS usage_completion_tokens"
+        ),
+        (
+            "CAST(JSON_VALUE(content, '$.usage.total')"
+            " AS INT64) AS usage_total_tokens"
+        ),
+        "CAST(JSON_VALUE(latency_ms, '$.total_ms') AS INT64) AS total_ms",
+        (
+            "CAST(JSON_VALUE(latency_ms,"
+            " '$.time_to_first_token_ms') AS INT64) AS ttft_ms"
+        ),
+        "JSON_VALUE(attributes, '$.model_version') AS model_version",
+        "JSON_QUERY(attributes, '$.usage_metadata') AS usage_metadata",
+    ],
+    "LLM_ERROR": [
+        "CAST(JSON_VALUE(latency_ms, '$.total_ms') AS INT64) AS total_ms",
+    ],
+    "TOOL_STARTING": [
+        "JSON_VALUE(content, '$.tool') AS tool_name",
+        "JSON_QUERY(content, '$.args') AS tool_args",
+        "JSON_VALUE(content, '$.tool_origin') AS tool_origin",
+    ],
+    "TOOL_COMPLETED": [
+        "JSON_VALUE(content, '$.tool') AS tool_name",
+        "JSON_QUERY(content, '$.result') AS tool_result",
+        "JSON_VALUE(content, '$.tool_origin') AS tool_origin",
+        "CAST(JSON_VALUE(latency_ms, '$.total_ms') AS INT64) AS total_ms",
+    ],
+    "TOOL_ERROR": [
+        "JSON_VALUE(content, '$.tool') AS tool_name",
+        "JSON_QUERY(content, '$.args') AS tool_args",
+        "JSON_VALUE(content, '$.tool_origin') AS tool_origin",
+        "CAST(JSON_VALUE(latency_ms, '$.total_ms') AS INT64) AS total_ms",
+    ],
+    "AGENT_STARTING": [
+        "JSON_VALUE(content, '$.text_summary') AS agent_instruction",
+    ],
+    "AGENT_COMPLETED": [
+        "CAST(JSON_VALUE(latency_ms, '$.total_ms') AS INT64) AS total_ms",
+    ],
+    "INVOCATION_STARTING": [],
+    "INVOCATION_COMPLETED": [],
+    "STATE_DELTA": [
+        "JSON_QUERY(attributes, '$.state_delta') AS state_delta",
+    ],
+    "HITL_CREDENTIAL_REQUEST": [
+        "JSON_VALUE(content, '$.tool') AS tool_name",
+        "JSON_QUERY(content, '$.args') AS tool_args",
+    ],
+    "HITL_CONFIRMATION_REQUEST": [
+        "JSON_VALUE(content, '$.tool') AS tool_name",
+        "JSON_QUERY(content, '$.args') AS tool_args",
+    ],
+    "HITL_INPUT_REQUEST": [
+        "JSON_VALUE(content, '$.tool') AS tool_name",
+        "JSON_QUERY(content, '$.args') AS tool_args",
+    ],
+}
+
+_VIEW_SQL_TEMPLATE = """\
+CREATE OR REPLACE VIEW `{project}.{dataset}.{view_name}` AS
+SELECT
+  {columns}
+FROM
+  `{project}.{dataset}.{table}`
+WHERE
+  event_type = '{event_type}'
+"""
+
+
+# ==============================================================================
 # MAIN PLUGIN
 # ==============================================================================
 @dataclass
@@ -1660,6 +1773,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     self.parser: Optional[HybridContentParser] = None
     self._schema = None
     self.arrow_schema = None
+    self._init_pid = os.getpid()
 
   def _cleanup_stale_loop_states(self) -> None:
     """Removes entries for event loops that have been closed."""
@@ -1912,6 +2026,8 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       existing_table = self.client.get_table(self.full_table_id)
       if self.config.auto_schema_upgrade:
         self._maybe_upgrade_schema(existing_table)
+      if self.config.create_views:
+        self._create_analytics_views()
     except cloud_exceptions.NotFound:
       logger.info("Table %s not found, creating table.", self.full_table_id)
       tbl = bigquery.Table(self.full_table_id, schema=self._schema)
@@ -1932,6 +2048,8 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
             e,
             exc_info=True,
         )
+      if self.config.create_views:
+        self._create_analytics_views()
     except Exception as e:
       logger.error(
           "Error checking for table %s: %s",
@@ -1979,6 +2097,44 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
           e,
           exc_info=True,
       )
+
+  def _create_analytics_views(self) -> None:
+    """Creates per-event-type BigQuery views (idempotent).
+
+    Each view filters the events table by ``event_type`` and
+    extracts JSON columns into typed, queryable columns.  Uses
+    ``CREATE OR REPLACE VIEW`` so it is safe to call repeatedly.
+    Errors are logged but never raised.
+    """
+    for event_type, extra_cols in _EVENT_VIEW_DEFS.items():
+      view_name = "v_" + event_type.lower()
+      columns = ",\n  ".join(list(_VIEW_COMMON_COLUMNS) + extra_cols)
+      sql = _VIEW_SQL_TEMPLATE.format(
+          project=self.project_id,
+          dataset=self.dataset_id,
+          view_name=view_name,
+          columns=columns,
+          table=self.table_id,
+          event_type=event_type,
+      )
+      try:
+        self.client.query(sql).result()
+      except Exception as e:
+        logger.error(
+            "Failed to create view %s: %s",
+            view_name,
+            e,
+            exc_info=True,
+        )
+
+  async def create_analytics_views(self) -> None:
+    """Public async helper to (re-)create all analytics views.
+
+    Useful when views need to be refreshed explicitly, for example
+    after a schema upgrade.
+    """
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(self._executor, self._create_analytics_views)
 
   async def shutdown(self, timeout: float | None = None) -> None:
     """Shuts down the plugin and releases resources.
@@ -2032,11 +2188,32 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     state["parser"] = None
     state["_started"] = False
     state["_is_shutting_down"] = False
+    state["_init_pid"] = 0
     return state
 
   def __setstate__(self, state):
     """Custom unpickling to restore state."""
     self.__dict__.update(state)
+
+  def _reset_runtime_state(self) -> None:
+    """Resets all runtime state after a fork.
+
+    gRPC channels and asyncio locks are not safe to use after
+    ``os.fork()``.  This method clears them so the next call to
+    ``_ensure_started()`` re-initializes everything in the child
+    process.  Pure-data fields like ``_schema`` and
+    ``arrow_schema`` are kept because they are safe across fork.
+    """
+    self._setup_lock = None
+    self.client = None
+    self._loop_state_by_loop = {}
+    self._write_stream_name = None
+    self._executor = None
+    self.offloader = None
+    self.parser = None
+    self._started = False
+    self._is_shutting_down = False
+    self._init_pid = os.getpid()
 
   async def __aenter__(self) -> BigQueryAgentAnalyticsPlugin:
     await self._ensure_started()
@@ -2047,6 +2224,8 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
 
   async def _ensure_started(self, **kwargs) -> None:
     """Ensures that the plugin is started and initialized."""
+    if os.getpid() != self._init_pid:
+      self._reset_runtime_state()
     if not self._started:
       # Kept original lock name as it was not explicitly changed.
       if self._setup_lock is None:

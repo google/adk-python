@@ -4665,3 +4665,207 @@ class TestHITLTracingEndToEnd:
     ), f"Expected no HITL events for regular tool, got {hitl_events}"
 
     await bq_plugin.shutdown()
+
+
+# ==============================================================================
+# Fork-Safety Tests
+# ==============================================================================
+class TestForkSafety:
+  """Tests for fork-safety via PID tracking."""
+
+  def _make_plugin(self):
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig()
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        project_id=PROJECT_ID,
+        dataset_id=DATASET_ID,
+        table_id=TABLE_ID,
+        config=config,
+    )
+    return plugin
+
+  @pytest.mark.asyncio
+  async def test_pid_change_triggers_reinit(
+      self, mock_auth_default, mock_bq_client, mock_write_client
+  ):
+    """Simulating a fork by changing _init_pid forces re-init."""
+    plugin = self._make_plugin()
+    await plugin._ensure_started()
+    assert plugin._started is True
+
+    # Simulate a fork: set _init_pid to a stale value
+    plugin._init_pid = -1
+    assert plugin._started is True  # still True before check
+
+    # _ensure_started should detect PID mismatch and reset
+    await plugin._ensure_started()
+    # After reset + re-init, _init_pid should match current
+    import os
+
+    assert plugin._init_pid == os.getpid()
+    assert plugin._started is True
+    await plugin.shutdown()
+
+  @pytest.mark.asyncio
+  async def test_pid_unchanged_skips_reset(
+      self, mock_auth_default, mock_bq_client, mock_write_client
+  ):
+    """Same PID should not trigger a reset."""
+    plugin = self._make_plugin()
+    await plugin._ensure_started()
+
+    # Save references to verify they are not recreated
+    original_client = plugin.client
+    original_parser = plugin.parser
+
+    await plugin._ensure_started()
+    assert plugin.client is original_client
+    assert plugin.parser is original_parser
+    await plugin.shutdown()
+
+  def test_reset_runtime_state_clears_fields(self):
+    """_reset_runtime_state clears all runtime fields."""
+    plugin = self._make_plugin()
+    # Fake some runtime state
+    plugin._started = True
+    plugin._is_shutting_down = True
+    plugin.client = mock.MagicMock()
+    plugin._loop_state_by_loop = {"fake": "state"}
+    plugin._write_stream_name = "some/stream"
+    plugin._executor = mock.MagicMock()
+    plugin.offloader = mock.MagicMock()
+    plugin.parser = mock.MagicMock()
+    plugin._setup_lock = mock.MagicMock()
+    # Keep pure-data fields
+    plugin._schema = ["kept"]
+    plugin.arrow_schema = "kept_arrow"
+
+    plugin._reset_runtime_state()
+
+    assert plugin._started is False
+    assert plugin._is_shutting_down is False
+    assert plugin.client is None
+    assert plugin._loop_state_by_loop == {}
+    assert plugin._write_stream_name is None
+    assert plugin._executor is None
+    assert plugin.offloader is None
+    assert plugin.parser is None
+    assert plugin._setup_lock is None
+    # Pure-data fields are preserved
+    assert plugin._schema == ["kept"]
+    assert plugin.arrow_schema == "kept_arrow"
+
+    import os
+
+    assert plugin._init_pid == os.getpid()
+
+  def test_getstate_resets_pid(self):
+    """Pickle state should have _init_pid = 0 to force re-init."""
+    plugin = self._make_plugin()
+    state = plugin.__getstate__()
+    assert state["_init_pid"] == 0
+    assert state["_started"] is False
+
+
+# ==============================================================================
+# Analytics Views Tests
+# ==============================================================================
+class TestAnalyticsViews:
+  """Tests for auto-created per-event-type BigQuery views."""
+
+  def _make_plugin(self, create_views=True):
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        create_views=create_views,
+    )
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        project_id=PROJECT_ID,
+        dataset_id=DATASET_ID,
+        table_id=TABLE_ID,
+        config=config,
+    )
+    plugin.client = mock.MagicMock()
+    plugin.full_table_id = f"{PROJECT_ID}.{DATASET_ID}.{TABLE_ID}"
+    plugin._schema = bigquery_agent_analytics_plugin._get_events_schema()
+    return plugin
+
+  def test_views_created_on_new_table(self):
+    """NotFound path creates all views."""
+    plugin = self._make_plugin(create_views=True)
+    plugin.client.get_table.side_effect = cloud_exceptions.NotFound("not found")
+    mock_query_job = mock.MagicMock()
+    plugin.client.query.return_value = mock_query_job
+
+    plugin._ensure_schema_exists()
+
+    expected_count = len(bigquery_agent_analytics_plugin._EVENT_VIEW_DEFS)
+    assert plugin.client.query.call_count == expected_count
+
+  def test_views_created_for_existing_table(self):
+    """Existing table path also creates views."""
+    plugin = self._make_plugin(create_views=True)
+    existing = mock.MagicMock(spec=bigquery.Table)
+    existing.schema = plugin._schema
+    existing.labels = {
+        bigquery_agent_analytics_plugin._SCHEMA_VERSION_LABEL_KEY: (
+            bigquery_agent_analytics_plugin._SCHEMA_VERSION
+        ),
+    }
+    plugin.client.get_table.return_value = existing
+    mock_query_job = mock.MagicMock()
+    plugin.client.query.return_value = mock_query_job
+
+    plugin._ensure_schema_exists()
+
+    expected_count = len(bigquery_agent_analytics_plugin._EVENT_VIEW_DEFS)
+    assert plugin.client.query.call_count == expected_count
+
+  def test_views_not_created_when_disabled(self):
+    """create_views=False skips view creation."""
+    plugin = self._make_plugin(create_views=False)
+    plugin.client.get_table.side_effect = cloud_exceptions.NotFound("not found")
+
+    plugin._ensure_schema_exists()
+
+    plugin.client.query.assert_not_called()
+
+  def test_view_creation_error_logged_not_raised(self):
+    """Errors during view creation don't crash the plugin."""
+    plugin = self._make_plugin(create_views=True)
+    plugin.client.get_table.side_effect = cloud_exceptions.NotFound("not found")
+    plugin.client.query.side_effect = Exception("BQ error")
+
+    # Should not raise
+    plugin._ensure_schema_exists()
+
+    # Verify it tried to create views (and failed gracefully)
+    assert plugin.client.query.call_count > 0
+
+  def test_view_sql_contains_correct_event_filter(self):
+    """Each SQL has correct WHERE clause and view name."""
+    plugin = self._make_plugin(create_views=True)
+    plugin.client.get_table.side_effect = cloud_exceptions.NotFound("not found")
+    mock_query_job = mock.MagicMock()
+    plugin.client.query.return_value = mock_query_job
+
+    plugin._ensure_schema_exists()
+
+    calls = plugin.client.query.call_args_list
+    for call in calls:
+      sql = call[0][0]
+      # Each SQL should have CREATE OR REPLACE VIEW
+      assert "CREATE OR REPLACE VIEW" in sql
+      # Each SQL should filter by event_type
+      assert "WHERE" in sql
+      assert "event_type = " in sql
+      # View name should start with v_
+      assert ".v_" in sql
+
+    # Verify specific views exist
+    all_sql = " ".join(c[0][0] for c in calls)
+    for event_type in bigquery_agent_analytics_plugin._EVENT_VIEW_DEFS:
+      view_name = "v_" + event_type.lower()
+      assert view_name in all_sql, f"View {view_name} not found in SQL"
+
+  def test_config_create_views_default_true(self):
+    """Config create_views defaults to True."""
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig()
+    assert config.create_views is True
