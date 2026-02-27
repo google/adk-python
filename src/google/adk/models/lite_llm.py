@@ -145,8 +145,12 @@ _MIME_TO_FILENAME = {
     "application/pdf": "document.pdf",
     "application/json": "document.json",
     "application/msword": "document.doc",
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "document.docx",
-    "application/vnd.openxmlformats-officedocument.presentationml.presentation": "document.pptx",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": (
+        "document.docx"
+    ),
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation": (
+        "document.pptx"
+    ),
     "application/x-sh": "script.sh",
 }
 

@@ -3972,7 +3972,9 @@ async def test_get_content_pdf_openai_uses_display_name_as_filename(mocker):
   mock_acreate_file = AsyncMock(return_value=mock_file_response)
   mocker.patch.object(litellm, "acreate_file", new=mock_acreate_file)
 
-  part = types.Part.from_bytes(data=b"test_pdf_data", mime_type="application/pdf")
+  part = types.Part.from_bytes(
+      data=b"test_pdf_data", mime_type="application/pdf"
+  )
   part.inline_data.display_name = "my_report.pdf"
   content = await _get_content([part], provider="openai")
 
