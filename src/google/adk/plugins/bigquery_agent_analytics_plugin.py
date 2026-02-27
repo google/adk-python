@@ -1763,6 +1763,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     self.location = location
 
     self._started = False
+    self._startup_error: Optional[Exception] = None
     self._is_shutting_down = False
     self._setup_lock = None
     self.client = None
@@ -2141,7 +2142,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     if not self._started:
       raise RuntimeError(
           "Plugin initialization failed; cannot create analytics views."
-      )
+      ) from self._startup_error
     loop = asyncio.get_running_loop()
     await loop.run_in_executor(self._executor, self._create_analytics_views)
 
@@ -2196,6 +2197,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     state["offloader"] = None
     state["parser"] = None
     state["_started"] = False
+    state["_startup_error"] = None
     state["_is_shutting_down"] = False
     state["_init_pid"] = 0
     return state
@@ -2224,6 +2226,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     self.offloader = None
     self.parser = None
     self._started = False
+    self._startup_error = None
     self._is_shutting_down = False
     self._init_pid = os.getpid()
 
@@ -2247,7 +2250,9 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
           try:
             await self._lazy_setup(**kwargs)
             self._started = True
+            self._startup_error = None
           except Exception as e:
+            self._startup_error = e
             logger.error("Failed to initialize BigQuery Plugin: %s", e)
 
   @staticmethod

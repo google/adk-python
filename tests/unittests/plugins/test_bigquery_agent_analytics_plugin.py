@@ -4943,5 +4943,10 @@ class TestAnalyticsViews:
           dataset_id=DATASET_ID,
           table_id=TABLE_ID,
       )
-      with pytest.raises(RuntimeError, match="Plugin initialization failed"):
+      with pytest.raises(
+          RuntimeError, match="Plugin initialization failed"
+      ) as exc_info:
         await plugin.create_analytics_views()
+      # Root cause should be chained for debuggability
+      assert exc_info.value.__cause__ is not None
+      assert "client boom" in str(exc_info.value.__cause__)
