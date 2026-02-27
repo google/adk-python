@@ -1,6 +1,6 @@
 {
   "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
-  "last-release-sha": "9f7d5b3f1476234e552b783415527cc4bac55b39",
+  "last-release-sha": "8f5428150d18ed732b66379c0acb806a9121c3cb",
   "packages": {
     ".": {
       "release-type": "python",
@@ -10,16 +10,51 @@
       "skip-github-release": true,
       "changelog-path": "CHANGELOG.md",
       "changelog-sections": [
-        {"type": "feat", "section": "Features"},
-        {"type": "fix", "section": "Bug Fixes"},
-        {"type": "perf", "section": "Performance Improvements"},
-        {"type": "refactor", "section": "Code Refactoring"},
-        {"type": "docs", "section": "Documentation"},
-        {"type": "test", "section": "Tests", "hidden": true},
-        {"type": "build", "section": "Build System", "hidden": true},
-        {"type": "ci", "section": "CI/CD", "hidden": true},
-        {"type": "style", "section": "Styles", "hidden": true},
-        {"type": "chore", "section": "Miscellaneous Chores", "hidden": true}
+        {
+          "type": "feat",
+          "section": "Features"
+        },
+        {
+          "type": "fix",
+          "section": "Bug Fixes"
+        },
+        {
+          "type": "perf",
+          "section": "Performance Improvements"
+        },
+        {
+          "type": "refactor",
+          "section": "Code Refactoring"
+        },
+        {
+          "type": "docs",
+          "section": "Documentation"
+        },
+        {
+          "type": "test",
+          "section": "Tests",
+          "hidden": true
+        },
+        {
+          "type": "build",
+          "section": "Build System",
+          "hidden": true
+        },
+        {
+          "type": "ci",
+          "section": "CI/CD",
+          "hidden": true
+        },
+        {
+          "type": "style",
+          "section": "Styles",
+          "hidden": true
+        },
+        {
+          "type": "chore",
+          "section": "Miscellaneous Chores",
+          "hidden": true
+        }
       ]
     }
   }
