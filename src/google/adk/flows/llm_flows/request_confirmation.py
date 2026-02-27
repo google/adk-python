@@ -72,22 +72,33 @@ class _RequestConfirmationLlmRequestProcessor(BaseLlmRequestProcessor):
           continue
 
         # Find the FunctionResponse event that contains the user provided tool
-        # confirmation
-        if (
-            function_response.response
-            and len(function_response.response.values()) == 1
-            and 'response' in function_response.response.keys()
-        ):
-          # ADK client must send a resuming run request with a function response
-          # that always encapsulate the confirmation result with a 'response'
-          # key
-          tool_confirmation = ToolConfirmation.model_validate(
-              json.loads(function_response.response['response'])
-          )
-        else:
-          tool_confirmation = ToolConfirmation.model_validate(
+        # confirmation. Use strict=True so malformed payloads (e.g.
+        # confirmed="yes") are rejected instead of coerced to allow.
+        try:
+          if (
               function_response.response
+              and len(function_response.response.values()) == 1
+              and 'response' in function_response.response.keys()
+          ):
+            # ADK client must send a resuming run request with a function
+            # response that always encapsulate the confirmation result with
+            # a 'response' key
+            tool_confirmation = ToolConfirmation.model_validate(
+                json.loads(function_response.response['response']),
+                strict=True,
+            )
+          else:
+            tool_confirmation = ToolConfirmation.model_validate(
+                function_response.response,
+                strict=True,
+            )
+        except (json.JSONDecodeError, Exception):
+          logger.warning(
+              'Malformed tool confirmation payload for function call %s,'
+              ' denying execution.',
+              function_response.id,
           )
+          tool_confirmation = ToolConfirmation(confirmed=False)
         request_confirmation_function_responses[function_response.id] = (
             tool_confirmation
         )

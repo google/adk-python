@@ -300,3 +300,115 @@ async def test_request_confirmation_processor_tool_not_confirmed():
     assert (
         args[4][MOCK_FUNCTION_CALL_ID] == user_confirmation
     )  # tool_confirmation_dict
+
+
+def _build_confirmation_events(response_payload):
+  """Helper to build agent confirmation request + user response events."""
+  original_function_call = types.FunctionCall(
+      name=MOCK_TOOL_NAME, args={"param1": "test"}, id=MOCK_FUNCTION_CALL_ID
+  )
+
+  tool_confirmation = ToolConfirmation(confirmed=False, hint="test hint")
+  tool_confirmation_args = {
+      "originalFunctionCall": original_function_call.model_dump(
+          exclude_none=True, by_alias=True
+      ),
+      "toolConfirmation": tool_confirmation.model_dump(
+          by_alias=True, exclude_none=True
+      ),
+  }
+
+  agent_event = Event(
+      author="agent",
+      content=types.Content(
+          parts=[
+              types.Part(
+                  function_call=types.FunctionCall(
+                      name=functions.REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+                      args=tool_confirmation_args,
+                      id=MOCK_CONFIRMATION_FUNCTION_CALL_ID,
+                  )
+              )
+          ]
+      ),
+  )
+
+  user_event = Event(
+      author="user",
+      content=types.Content(
+          parts=[
+              types.Part(
+                  function_response=types.FunctionResponse(
+                      name=functions.REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+                      id=MOCK_CONFIRMATION_FUNCTION_CALL_ID,
+                      response=response_payload,
+                  )
+              )
+          ]
+      ),
+  )
+  return agent_event, user_event
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "malformed_payload",
+    [
+        {"response": json.dumps({"confirmed": "yes"})},
+        {"response": json.dumps({"confirmed": 1})},
+        {"response": json.dumps({"confirmed": "true"})},
+        {"response": "not valid json"},
+        {"confirmed": "yes"},
+        {"confirmed": 1},
+    ],
+    ids=[
+        "string_yes_wrapped",
+        "int_1_wrapped",
+        "string_true_wrapped",
+        "invalid_json_wrapped",
+        "string_yes_direct",
+        "int_1_direct",
+    ],
+)
+async def test_malformed_confirmation_payload_denied(malformed_payload):
+  """Malformed confirmation payloads must be denied, not coerced to allow."""
+  agent = LlmAgent(name="test_agent", tools=[mock_tool])
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  llm_request = LlmRequest()
+
+  agent_event, user_event = _build_confirmation_events(malformed_payload)
+  invocation_context.session.events.append(agent_event)
+  invocation_context.session.events.append(user_event)
+
+  with patch(
+      "google.adk.flows.llm_flows.functions.handle_function_call_list_async"
+  ) as mock_handle:
+    mock_handle.return_value = Event(
+        author="agent",
+        content=types.Content(
+            parts=[
+                types.Part(
+                    function_response=types.FunctionResponse(
+                        name=MOCK_TOOL_NAME,
+                        id=MOCK_FUNCTION_CALL_ID,
+                        response={"error": "Tool execution not confirmed"},
+                    )
+                )
+            ]
+        ),
+    )
+
+    events = []
+    async for event in request_processor.run_async(
+        invocation_context, llm_request
+    ):
+      events.append(event)
+
+    assert len(events) == 1
+    mock_handle.assert_called_once()
+    _, kwargs = mock_handle.call_args
+    args = mock_handle.call_args[0]
+    # The parsed confirmation should have confirmed=False
+    assert args[4][MOCK_FUNCTION_CALL_ID].confirmed is False
