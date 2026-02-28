@@ -182,15 +182,15 @@ def convert_genai_part_to_a2a_part(
         part.inline_data.mime_type == A2A_DATA_PART_TEXT_MIME_TYPE
         and part.inline_data.data is not None
     ):
-        encoded_data_str = base64.b64encode(part.inline_data.data).decode('utf-8')
-        start_tag = A2A_DATA_PART_START_TAG.decode('utf-8')
-        end_tag = A2A_DATA_PART_END_TAG.decode('utf-8')
-        if encoded_data_str.startswith(start_tag) and encoded_data_str.endswith(end_tag):
-            return a2a_types.Part(
-                root=a2a_types.DataPart.model_validate_json(
-                    encoded_data_str[len(start_tag) : -len(end_tag)]
-                )
+      encoded_data_str = base64.b64encode(part.inline_data.data).decode('utf-8')
+      start_tag = A2A_DATA_PART_START_TAG.decode('utf-8')
+      end_tag = A2A_DATA_PART_END_TAG.decode('utf-8')
+      if encoded_data_str.startswith(start_tag) and encoded_data_str.endswith(end_tag):
+        return a2a_types.Part(
+            root=a2a_types.DataPart.model_validate_json(
+                encoded_data_str[len(start_tag) : -len(end_tag)]
             )
+        )
     # The default case for inline_data is to convert it to FileWithBytes.
     a2a_part = a2a_types.FilePart(
         file=a2a_types.FileWithBytes(
