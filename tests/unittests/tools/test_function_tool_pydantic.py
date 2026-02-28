@@ -97,7 +97,7 @@ def test_preprocess_args_with_dict_to_pydantic_conversion():
       "user": {"name": "Alice", "age": 30, "email": "alice@example.com"}
   }
 
-  processed_args = tool._preprocess_args(input_args)
+  processed_args, _ = tool._preprocess_args(input_args)
 
   # Check that the dict was converted to a Pydantic model
   assert "user" in processed_args
@@ -116,7 +116,7 @@ def test_preprocess_args_with_existing_pydantic_model():
   existing_user = UserModel(name="Bob", age=25)
   input_args = {"user": existing_user}
 
-  processed_args = tool._preprocess_args(input_args)
+  processed_args, _ = tool._preprocess_args(input_args)
 
   # Check that the existing model was not changed (same object)
   assert "user" in processed_args
@@ -132,7 +132,7 @@ def test_preprocess_args_with_optional_pydantic_model_none():
 
   input_args = {"user": {"name": "Charlie", "age": 35}, "preferences": None}
 
-  processed_args = tool._preprocess_args(input_args)
+  processed_args, _ = tool._preprocess_args(input_args)
 
   # Check user conversion
   assert isinstance(processed_args["user"], UserModel)
@@ -151,7 +151,7 @@ def test_preprocess_args_with_optional_pydantic_model_dict():
       "preferences": {"theme": "dark", "notifications": False},
   }
 
-  processed_args = tool._preprocess_args(input_args)
+  processed_args, _ = tool._preprocess_args(input_args)
 
   # Check both conversions
   assert isinstance(processed_args["user"], UserModel)
@@ -172,7 +172,7 @@ def test_preprocess_args_with_mixed_types():
       "count": 10,
   }
 
-  processed_args = tool._preprocess_args(input_args)
+  processed_args, _ = tool._preprocess_args(input_args)
 
   # Check that only Pydantic model was converted
   assert processed_args["name"] == "test_name"  # string unchanged
@@ -191,7 +191,7 @@ def test_preprocess_args_with_invalid_data_graceful_failure():
   # Invalid data that can't be converted to UserModel
   input_args = {"user": "invalid_string"}  # string instead of dict/model
 
-  processed_args = tool._preprocess_args(input_args)
+  processed_args, _ = tool._preprocess_args(input_args)
 
   # Should keep original value when conversion fails
   assert processed_args["user"] == "invalid_string"
@@ -206,7 +206,7 @@ def test_preprocess_args_with_non_pydantic_parameters():
   tool = FunctionTool(simple_function)
 
   input_args = {"name": "test", "age": 25}
-  processed_args = tool._preprocess_args(input_args)
+  processed_args, _ = tool._preprocess_args(input_args)
 
   # Should remain unchanged (no Pydantic models to convert)
   assert processed_args == input_args

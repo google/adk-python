@@ -100,68 +100,101 @@ class FunctionTool(BaseTool):
 
     return function_decl
 
-  def _preprocess_args(self, args: dict[str, Any]) -> dict[str, Any]:
-    """Preprocess and convert function arguments before invocation.
+  def _preprocess_args(
+      self, args: dict[str, Any]
+  ) -> tuple[dict[str, Any], list[str]]:
+    """Preprocess, validate, and convert function arguments before invocation.
 
-    Currently handles:
+    Handles:
     - Converting JSON dictionaries to Pydantic model instances where expected
-
-    Future extensions could include:
-    - Type coercion for other complex types
-    - Validation and sanitization
-    - Custom conversion logic
+    - Validating and coercing primitive types (int, float, str, bool)
+    - Validating enum values
+    - Validating container types (list[int], dict[str, float], etc.)
 
     Args:
       args: Raw arguments from the LLM tool call
 
     Returns:
-      Processed arguments ready for function invocation
+      A tuple of (processed_args, validation_errors). If validation_errors is
+      non-empty, the caller should return the errors to the LLM instead of
+      invoking the function.
     """
     signature = inspect.signature(self.func)
     converted_args = args.copy()
+    validation_errors = []
 
     for param_name, param in signature.parameters.items():
-      if param_name in args and param.annotation != inspect.Parameter.empty:
-        target_type = param.annotation
+      if param_name not in args or param.annotation is inspect.Parameter.empty:
+        continue
 
-        # Handle Optional[PydanticModel] types
-        if get_origin(param.annotation) is Union:
-          union_args = get_args(param.annotation)
-          # Find the non-None type in Optional[T] (which is Union[T, None])
-          non_none_types = [arg for arg in union_args if arg is not type(None)]
-          if len(non_none_types) == 1:
-            target_type = non_none_types[0]
+      target_type = param.annotation
+      is_optional = False
 
-        # Check if the target type is a Pydantic model
-        if inspect.isclass(target_type) and issubclass(
-            target_type, pydantic.BaseModel
-        ):
-          # Skip conversion if the value is None and the parameter is Optional
-          if args[param_name] is None:
-            continue
+      # Handle Optional[T] (Union[T, None]) - unwrap to get inner type
+      if get_origin(param.annotation) is Union:
+        union_args = get_args(param.annotation)
+        non_none_types = [arg for arg in union_args if arg is not type(None)]
+        if len(non_none_types) == 1:
+          target_type = non_none_types[0]
+          is_optional = len(union_args) != len(non_none_types)
 
-          # Convert to Pydantic model if it's not already the correct type
-          if not isinstance(args[param_name], target_type):
-            try:
-              converted_args[param_name] = target_type.model_validate(
-                  args[param_name]
-              )
-            except Exception as e:
-              logger.warning(
-                  f"Failed to convert argument '{param_name}' to Pydantic model"
-                  f' {target_type.__name__}: {e}'
-              )
-              # Keep the original value if conversion fails
-              pass
+      # Pydantic models: keep existing graceful-failure behavior
+      if inspect.isclass(target_type) and issubclass(
+          target_type, pydantic.BaseModel
+      ):
+        if args[param_name] is None:
+          continue
+        if not isinstance(args[param_name], target_type):
+          try:
+            converted_args[param_name] = target_type.model_validate(
+                args[param_name]
+            )
+          except Exception as e:
+            logger.warning(
+                f"Failed to convert argument '{param_name}' to Pydantic model"
+                f' {target_type.__name__}: {e}'
+            )
+        continue
 
-    return converted_args
+      # Skip None values only for Optional params
+      if args[param_name] is None and is_optional:
+        continue
+
+      # Validate and coerce all other annotated types using TypeAdapter.
+      # This handles primitives (int, float, str, bool), enums, and
+      # container types (list[int], dict[str, float], etc.).
+      try:
+        adapter = pydantic.TypeAdapter(target_type)
+        converted_args[param_name] = adapter.validate_python(
+            args[param_name]
+        )
+      except pydantic.ValidationError as e:
+        validation_errors.append(
+            f"Parameter '{param_name}': expected type '{target_type}',"
+            f' validation error: {e}'
+        )
+      except Exception:
+        # TypeAdapter could not handle this annotation (e.g. a forward
+        # reference string). Skip validation silently.
+        pass
+
+    return converted_args, validation_errors
 
   @override
   async def run_async(
       self, *, args: dict[str, Any], tool_context: ToolContext
   ) -> Any:
-    # Preprocess arguments (includes Pydantic model conversion)
-    args_to_call = self._preprocess_args(args)
+    # Preprocess arguments (includes Pydantic model conversion and type
+    # validation). Validation errors are returned to the LLM so it can
+    # self-correct and retry with proper argument types.
+    args_to_call, validation_errors = self._preprocess_args(args)
+
+    if validation_errors:
+      validation_errors_str = '\n'.join(validation_errors)
+      error_str = f"""Invoking `{self.name}()` failed due to argument validation errors:
+{validation_errors_str}
+You could retry calling this tool with corrected argument types."""
+      return {'error': error_str}
 
     signature = inspect.signature(self.func)
     valid_params = {param for param in signature.parameters}
