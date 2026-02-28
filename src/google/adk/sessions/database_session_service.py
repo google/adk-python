@@ -568,15 +568,13 @@ class DatabaseSessionService(BaseSessionService):
         # write locks. Most events carry only session-scoped state (or no
         # state at all), so acquiring FOR UPDATE on app_states / user_states
         # unnecessarily serializes all concurrent append_event calls.
-        has_app_delta = False
-        has_user_delta = False
-        state_deltas = None
-        if event.actions and event.actions.state_delta:
-          state_deltas = _session_util.extract_state_delta(
-              event.actions.state_delta
-          )
-          has_app_delta = bool(state_deltas.get("app"))
-          has_user_delta = bool(state_deltas.get("user"))
+        state_deltas = (
+            _session_util.extract_state_delta(event.actions.state_delta)
+            if event.actions and event.actions.state_delta
+            else None
+        )
+        has_app_delta = bool(state_deltas and state_deltas.get("app"))
+        has_user_delta = bool(state_deltas and state_deltas.get("user"))
 
         storage_app_state = await _select_required_state(
             sql_session=sql_session,
