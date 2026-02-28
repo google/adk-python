@@ -487,3 +487,78 @@ async def test_handle_after_model_callback_caches_canonical_tools():
     assert result1.grounding_metadata == {'foo': 'bar'}
     assert result2.grounding_metadata == {'foo': 'bar'}
     assert result3.grounding_metadata == {'foo': 'bar'}
+
+
+# ---------------------------------------------------------------------------
+# Tests for _finalize_model_response_event function-call ID consistency
+# ---------------------------------------------------------------------------
+
+from google.adk.flows.llm_flows.base_llm_flow import _finalize_model_response_event
+
+
+def _make_fc_response(fc_name: str, fc_id: str | None = None, partial: bool = False) -> LlmResponse:
+    """Helper: build an LlmResponse with a single function call."""
+    return LlmResponse(
+        content=types.Content(
+            role='model',
+            parts=[
+                types.Part(
+                    function_call=types.FunctionCall(
+                        name=fc_name,
+                        args={'x': 1},
+                        id=fc_id,
+                    )
+                )
+            ],
+        ),
+        partial=partial,
+    )
+
+
+def test_finalize_model_response_event_consistent_fc_id_across_partial_and_final():
+    """Function call IDs must be identical in partial and final SSE events.
+
+    Regression test for https://github.com/google/adk-python/issues/4609.
+    When SSE streaming is active, _finalize_model_response_event is called
+    once for the partial event and once for the final event, both sharing the
+    same model_response_event object.  The assigned adk-* ID must be the same
+    in both calls.
+    """
+    llm_request = LlmRequest()
+    llm_request.tools_dict = {}
+    base_event = Event(
+        invocation_id='inv1',
+        author='agent',
+    )
+
+    # First call: partial streaming event (function call has no ID from LLM)
+    partial_response = _make_fc_response('my_tool', fc_id=None, partial=True)
+    partial_finalized = _finalize_model_response_event(
+        llm_request, partial_response, base_event
+    )
+    partial_fc_id = partial_finalized.get_function_calls()[0].id
+    assert partial_fc_id is not None
+    assert partial_fc_id.startswith('adk-')
+
+    # Second call: final (non-partial) event for the same function call
+    final_response = _make_fc_response('my_tool', fc_id=None, partial=False)
+    final_finalized = _finalize_model_response_event(
+        llm_request, final_response, base_event
+    )
+    final_fc_id = final_finalized.get_function_calls()[0].id
+
+    assert final_fc_id == partial_fc_id, (
+        f'Function call ID changed between partial ({partial_fc_id!r}) and '
+        f'final ({final_fc_id!r}) SSE events — HITL workflows will break.'
+    )
+
+
+def test_finalize_model_response_event_preserves_llm_assigned_id():
+    """If the LLM already assigned an ID, it must be preserved as-is."""
+    llm_request = LlmRequest()
+    llm_request.tools_dict = {}
+    base_event = Event(invocation_id='inv1', author='agent')
+
+    response = _make_fc_response('my_tool', fc_id='llm-assigned-id')
+    finalized = _finalize_model_response_event(llm_request, response, base_event)
+    assert finalized.get_function_calls()[0].id == 'llm-assigned-id'
