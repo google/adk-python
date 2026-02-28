@@ -507,6 +507,11 @@ class BigQueryLoggerConfig:
 # ==============================================================================
 # HELPER: TRACE MANAGER (Async-Safe with ContextVars)
 # ==============================================================================
+# NOTE: These contextvars are module-global, not plugin-instance-scoped.
+# Multiple BigQueryAgentAnalyticsPlugin instances in the same execution
+# context will share trace state.  This is acceptable for the expected
+# single-plugin-per-process deployment, but should be revisited if
+# multi-instance support is needed (e.g. scope by plugin instance ID).
 
 _root_agent_name_ctx = contextvars.ContextVar(
     "_bq_analytics_root_agent_name", default=None
@@ -564,12 +569,13 @@ class TraceManager:
 
   @staticmethod
   def init_trace(callback_context: CallbackContext) -> None:
-    if _root_agent_name_ctx.get() is None:
-      try:
-        root_agent = callback_context._invocation_context.agent.root_agent
-        _root_agent_name_ctx.set(root_agent.name)
-      except (AttributeError, ValueError):
-        pass
+    # Always refresh root_agent_name — it can change between
+    # invocations (e.g. different root agents in the same task).
+    try:
+      root_agent = callback_context._invocation_context.agent.root_agent
+      _root_agent_name_ctx.set(root_agent.name)
+    except (AttributeError, ValueError):
+      pass
 
     # Ensure records stack is initialized
     TraceManager._get_records()
@@ -2734,6 +2740,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     # invocation to prevent leaks into the next one.
     TraceManager.clear_stack()
     _active_invocation_id_ctx.set(None)
+    _root_agent_name_ctx.set(None)
     # Ensure all logs are flushed before the agent returns
     await self.flush()
 

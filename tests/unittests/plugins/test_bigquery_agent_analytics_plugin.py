@@ -5884,3 +5884,119 @@ class TestStackLeakSafety:
       )
 
     provider.shutdown()
+
+
+class TestRootAgentNameAcrossInvocations:
+  """Regression: root_agent_name must refresh across invocations."""
+
+  @pytest.mark.asyncio
+  async def test_root_agent_name_updates_between_invocations(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      mock_session,
+      dummy_arrow_schema,
+  ):
+    """Two invocations with different root agents must log correct names.
+
+    Previously init_trace() only set _root_agent_name_ctx when it was
+    None, so the second invocation would inherit the first's root agent.
+    """
+    from opentelemetry.sdk.trace import TracerProvider as SdkProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    provider = SdkProvider()
+    provider.add_span_processor(SimpleSpanProcessor(InMemorySpanExporter()))
+    real_tracer = provider.get_tracer("test")
+
+    mock_session_service = mock.create_autospec(
+        base_session_service_lib.BaseSessionService,
+        instance=True,
+        spec_set=True,
+    )
+    mock_plugin_manager = mock.create_autospec(
+        plugin_manager_lib.PluginManager,
+        instance=True,
+        spec_set=True,
+    )
+
+    def _make_inv_ctx(agent_name, inv_id):
+      agent = mock.create_autospec(
+          base_agent.BaseAgent, instance=True, spec_set=True
+      )
+      type(agent).name = mock.PropertyMock(return_value=agent_name)
+      type(agent).instruction = mock.PropertyMock(return_value="")
+      # root_agent returns itself (no parent).
+      agent.root_agent = agent
+      return invocation_context_lib.InvocationContext(
+          agent=agent,
+          session=mock_session,
+          invocation_id=inv_id,
+          session_service=mock_session_service,
+          plugin_manager=mock_plugin_manager,
+      )
+
+    with mock.patch.object(
+        bigquery_agent_analytics_plugin, "tracer", real_tracer
+    ):
+      # --- Invocation 1: root agent = "RootA" ---
+      bigquery_agent_analytics_plugin._span_records_ctx.set(None)
+      bigquery_agent_analytics_plugin._active_invocation_id_ctx.set(None)
+      bigquery_agent_analytics_plugin._root_agent_name_ctx.set(None)
+
+      inv1 = _make_inv_ctx("RootA", "inv-001")
+      cb1 = callback_context_lib.CallbackContext(inv1)
+      await bq_plugin_inst.before_run_callback(invocation_context=inv1)
+      await bq_plugin_inst.before_agent_callback(
+          agent=inv1.agent, callback_context=cb1
+      )
+      await bq_plugin_inst.after_agent_callback(
+          agent=inv1.agent, callback_context=cb1
+      )
+      await bq_plugin_inst.after_run_callback(invocation_context=inv1)
+      await asyncio.sleep(0.01)
+
+      rows_inv1 = await _get_captured_rows_async(
+          mock_write_client, dummy_arrow_schema
+      )
+
+      # --- Invocation 2: root agent = "RootB" ---
+      mock_write_client.append_rows.reset_mock()
+
+      inv2 = _make_inv_ctx("RootB", "inv-002")
+      cb2 = callback_context_lib.CallbackContext(inv2)
+      await bq_plugin_inst.before_run_callback(invocation_context=inv2)
+      await bq_plugin_inst.before_agent_callback(
+          agent=inv2.agent, callback_context=cb2
+      )
+      await bq_plugin_inst.after_agent_callback(
+          agent=inv2.agent, callback_context=cb2
+      )
+      await bq_plugin_inst.after_run_callback(invocation_context=inv2)
+      await asyncio.sleep(0.01)
+
+      rows_inv2 = await _get_captured_rows_async(
+          mock_write_client, dummy_arrow_schema
+      )
+
+    # Parse root_agent_name from the attributes JSON column.
+    def _get_root_names(rows):
+      names = set()
+      for r in rows:
+        attrs = r.get("attributes")
+        if attrs:
+          parsed = json.loads(attrs) if isinstance(attrs, str) else attrs
+          if "root_agent_name" in parsed:
+            names.add(parsed["root_agent_name"])
+      return names
+
+    names_inv1 = _get_root_names(rows_inv1)
+    names_inv2 = _get_root_names(rows_inv2)
+
+    # Invocation 1 should only have "RootA".
+    assert names_inv1 == {"RootA"}, f"Expected {{'RootA'}}, got {names_inv1}"
+    # Invocation 2 must have "RootB", NOT stale "RootA".
+    assert names_inv2 == {"RootB"}, f"Expected {{'RootB'}}, got {names_inv2}"
+
+    provider.shutdown()
