@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License
 
+import base64
 import contextlib
 import json
 import logging
@@ -35,6 +36,7 @@ from google.adk.models.lite_llm import _get_completion_inputs
 from google.adk.models.lite_llm import _get_content
 from google.adk.models.lite_llm import _get_provider_from_model
 from google.adk.models.lite_llm import _message_to_generate_content_response
+from google.adk.models.lite_llm import _THOUGHT_SIGNATURE_SEPARATOR
 from google.adk.models.lite_llm import _MISSING_TOOL_RESULT_MESSAGE
 from google.adk.models.lite_llm import _model_response_to_chunk
 from google.adk.models.lite_llm import _model_response_to_generate_content_response
@@ -2216,6 +2218,75 @@ def test_message_to_generate_content_response_tool_call():
       "test_arg": "test_value"
   }
   assert response.content.parts[0].function_call.id == "test_tool_call_id"
+
+
+def test_message_to_generate_content_response_preserves_thought_signature():
+  """Verify that thought_signature embedded in tool_call id is extracted."""
+  raw_sig = b"test-signature-bytes"
+  encoded_sig = base64.b64encode(raw_sig).decode()
+  embedded_id = f"call_abc{_THOUGHT_SIGNATURE_SEPARATOR}{encoded_sig}"
+
+  message = ChatCompletionAssistantMessage(
+      role="assistant",
+      content=None,
+      tool_calls=[
+          ChatCompletionMessageToolCall(
+              type="function",
+              id=embedded_id,
+              function=Function(
+                  name="get_weather",
+                  arguments='{"city": "Tokyo"}',
+              ),
+          )
+      ],
+  )
+
+  response = _message_to_generate_content_response(message)
+  part = response.content.parts[0]
+  assert part.function_call.name == "get_weather"
+  assert part.function_call.id == "call_abc"
+  assert part.thought_signature == raw_sig
+
+
+@pytest.mark.asyncio
+async def test_content_to_message_param_embeds_thought_signature_in_tool_call():
+  """Verify that thought_signature on Part is re-embedded in tool_call id."""
+  raw_sig = b"test-signature-bytes"
+  part = types.Part.from_function_call(
+      name="get_weather",
+      args={"city": "Tokyo"},
+  )
+  part.function_call.id = "call_abc"
+  part.thought_signature = raw_sig
+
+  content = types.Content(role="model", parts=[part])
+  message = await _content_to_message_param(content)
+
+  expected_id = f"call_abc{_THOUGHT_SIGNATURE_SEPARATOR}{base64.b64encode(raw_sig).decode()}"
+  assert message["tool_calls"][0]["id"] == expected_id
+
+
+def test_message_to_generate_content_response_no_signature_passthrough():
+  """Verify that tool_call ids without signature pass through unchanged."""
+  message = ChatCompletionAssistantMessage(
+      role="assistant",
+      content=None,
+      tool_calls=[
+          ChatCompletionMessageToolCall(
+              type="function",
+              id="call_plain",
+              function=Function(
+                  name="get_time",
+                  arguments="{}",
+              ),
+          )
+      ],
+  )
+
+  response = _message_to_generate_content_response(message)
+  part = response.content.parts[0]
+  assert part.function_call.id == "call_plain"
+  assert part.thought_signature is None
 
 
 def test_message_to_generate_content_response_inline_tool_call_text():
