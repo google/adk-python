@@ -1034,7 +1034,7 @@ class TestAgentLoader:
       loader = AgentLoader(str(temp_path))
       agents = loader.list_agents()
 
-      assert sorted(agents) == ["module_agent", "valid_agent", "yaml_agent"]
+      assert agents == ["module_agent", "valid_agent", "yaml_agent"]
       assert "random_folder" not in agents
       assert "data" not in agents
       assert "tmp" not in agents
