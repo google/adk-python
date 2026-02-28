@@ -20,8 +20,8 @@ import json
 from unittest import mock
 
 from google.adk.agents import base_agent
-from google.adk.agents import callback_context as callback_context_lib
-from google.adk.agents import invocation_context as invocation_context_lib
+from google.adk.agents.callback_context import CallbackContext
+from google.adk.agents.invocation_context import InvocationContext
 from google.adk.events import event as event_lib
 from google.adk.events import event_actions as event_actions_lib
 from google.adk.models import llm_request as llm_request_lib
@@ -83,7 +83,7 @@ def invocation_context(mock_agent, mock_session):
   mock_plugin_manager = mock.create_autospec(
       plugin_manager_lib.PluginManager, instance=True, spec_set=True
   )
-  return invocation_context_lib.InvocationContext(
+  return InvocationContext(
       agent=mock_agent,
       session=mock_session,
       invocation_id="inv-789",
@@ -94,9 +94,7 @@ def invocation_context(mock_agent, mock_session):
 
 @pytest.fixture
 def callback_context(invocation_context):
-  return callback_context_lib.CallbackContext(
-      invocation_context=invocation_context
-  )
+  return CallbackContext(invocation_context=invocation_context)
 
 
 @pytest.fixture
@@ -3422,7 +3420,7 @@ class TestMultiSubagentToolLogging:
         instance=True,
         spec_set=True,
     )
-    return invocation_context_lib.InvocationContext(
+    return InvocationContext(
         agent=mock_a,
         session=session,
         invocation_id=invocation_id,
@@ -3628,7 +3626,7 @@ class TestMultiSubagentToolLogging:
     """
     session = self._make_session()
     inv_ctx = self._make_invocation_context("schema_explorer", session)
-    cb_ctx = callback_context_lib.CallbackContext(invocation_context=inv_ctx)
+    cb_ctx = CallbackContext(invocation_context=inv_ctx)
     tool_ctx = tool_context_lib.ToolContext(invocation_context=inv_ctx)
     mock_agent = inv_ctx.agent
     tool = self._make_tool("get_table_info")
@@ -3906,9 +3904,7 @@ class TestMultiSubagentToolLogging:
       inv_ctx_t1_orch = self._make_invocation_context(
           "orchestrator", session, invocation_id="inv-t1"
       )
-      cb_ctx_t1_orch = callback_context_lib.CallbackContext(
-          invocation_context=inv_ctx_t1_orch
-      )
+      cb_ctx_t1_orch = CallbackContext(invocation_context=inv_ctx_t1_orch)
 
       # Orchestrator agent_starting
       await plugin.before_agent_callback(
@@ -3921,9 +3917,7 @@ class TestMultiSubagentToolLogging:
       inv_ctx_t1_sub = self._make_invocation_context(
           "schema_explorer", session, invocation_id="inv-t1"
       )
-      cb_ctx_t1_sub = callback_context_lib.CallbackContext(
-          invocation_context=inv_ctx_t1_sub
-      )
+      cb_ctx_t1_sub = CallbackContext(invocation_context=inv_ctx_t1_sub)
       tool_ctx_t1 = tool_context_lib.ToolContext(
           invocation_context=inv_ctx_t1_sub
       )
@@ -3971,9 +3965,7 @@ class TestMultiSubagentToolLogging:
       inv_ctx_t2_orch = self._make_invocation_context(
           "orchestrator", session, invocation_id="inv-t2"
       )
-      cb_ctx_t2_orch = callback_context_lib.CallbackContext(
-          invocation_context=inv_ctx_t2_orch
-      )
+      cb_ctx_t2_orch = CallbackContext(invocation_context=inv_ctx_t2_orch)
 
       await plugin.before_agent_callback(
           agent=inv_ctx_t2_orch.agent,
@@ -3985,9 +3977,7 @@ class TestMultiSubagentToolLogging:
       inv_ctx_t2_sub = self._make_invocation_context(
           "image_describer", session, invocation_id="inv-t2"
       )
-      cb_ctx_t2_sub = callback_context_lib.CallbackContext(
-          invocation_context=inv_ctx_t2_sub
-      )
+      cb_ctx_t2_sub = CallbackContext(invocation_context=inv_ctx_t2_sub)
       tool_ctx_t2 = tool_context_lib.ToolContext(
           invocation_context=inv_ctx_t2_sub
       )
@@ -5757,7 +5747,7 @@ class TestStackLeakSafety:
 
       # --- Invocation 2 with a different invocation_id ---
       mock_write_client.append_rows.reset_mock()
-      inv_ctx_2 = invocation_context_lib.InvocationContext(
+      inv_ctx_2 = InvocationContext(
           agent=mock_agent,
           session=mock_session,
           invocation_id="inv-NEW-002",
@@ -5929,7 +5919,7 @@ class TestRootAgentNameAcrossInvocations:
       type(agent).instruction = mock.PropertyMock(return_value="")
       # root_agent returns itself (no parent).
       agent.root_agent = agent
-      return invocation_context_lib.InvocationContext(
+      return InvocationContext(
           agent=agent,
           session=mock_session,
           invocation_id=inv_id,
@@ -5946,7 +5936,7 @@ class TestRootAgentNameAcrossInvocations:
       bigquery_agent_analytics_plugin._root_agent_name_ctx.set(None)
 
       inv1 = _make_inv_ctx("RootA", "inv-001")
-      cb1 = callback_context_lib.CallbackContext(inv1)
+      cb1 = CallbackContext(inv1)
       await bq_plugin_inst.before_run_callback(invocation_context=inv1)
       await bq_plugin_inst.before_agent_callback(
           agent=inv1.agent, callback_context=cb1
@@ -5965,7 +5955,7 @@ class TestRootAgentNameAcrossInvocations:
       mock_write_client.append_rows.reset_mock()
 
       inv2 = _make_inv_ctx("RootB", "inv-002")
-      cb2 = callback_context_lib.CallbackContext(inv2)
+      cb2 = CallbackContext(inv2)
       await bq_plugin_inst.before_run_callback(invocation_context=inv2)
       await bq_plugin_inst.before_agent_callback(
           agent=inv2.agent, callback_context=cb2
