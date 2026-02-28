@@ -536,12 +536,13 @@ class DatabaseSessionService(BaseSessionService):
     # FOR UPDATE locks on rows that will actually be written.
     # The result is reused later to avoid calling extract_state_delta twice.
     state_deltas = None
+    has_app_delta, has_user_delta = False, False
     if event.actions and event.actions.state_delta:
       state_deltas = _session_util.extract_state_delta(
           event.actions.state_delta
       )
-    has_app_delta = bool(state_deltas and state_deltas.get("app"))
-    has_user_delta = bool(state_deltas and state_deltas.get("user"))
+      has_app_delta = bool(state_deltas.get("app"))
+      has_user_delta = bool(state_deltas.get("user"))
 
     async with self._with_session_lock(
         app_name=session.app_name,
