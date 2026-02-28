@@ -98,6 +98,10 @@ _EXCLUDED_PART_FIELD = {"inline_data": {"data"}}
 _LITELLM_STRUCTURED_TYPES = {"json_object", "json_schema"}
 _JSON_DECODER = json.JSONDecoder()
 
+# Separator used by LiteLLM to embed Gemini thought_signature in tool_call ids.
+# See: https://ai.google.dev/gemini-api/docs/thought-signatures
+_THOUGHT_SIGNATURE_SEPARATOR = "__thought__"
+
 # Mapping of major MIME type prefixes to LiteLLM content types for URL blocks.
 _MEDIA_URL_CONTENT_TYPE_BY_MAJOR_MIME_TYPE = {
     "image": "image_url",
@@ -662,10 +666,15 @@ async def _content_to_message_param(
     reasoning_parts: list[types.Part] = []
     for part in content.parts:
       if part.function_call:
+        tool_call_id = part.function_call.id or ""
+        # Re-embed thought_signature in tool_call id for LiteLLM round-trip.
+        if part.thought_signature:
+          sig = base64.b64encode(part.thought_signature).decode()
+          tool_call_id = f"{tool_call_id}{_THOUGHT_SIGNATURE_SEPARATOR}{sig}"
         tool_calls.append(
             ChatCompletionAssistantToolCall(
                 type="function",
-                id=part.function_call.id,
+                id=tool_call_id,
                 function=Function(
                     name=part.function_call.name,
                     arguments=_safe_json_serialize(part.function_call.args),
@@ -1481,7 +1490,20 @@ def _message_to_generate_content_response(
             name=tool_call.function.name,
             args=json.loads(tool_call.function.arguments or "{}"),
         )
-        part.function_call.id = tool_call.id
+        tool_call_id = tool_call.id or ""
+        # Extract thought_signature embedded in tool_call id by LiteLLM.
+        if _THOUGHT_SIGNATURE_SEPARATOR in tool_call_id:
+          raw_id, sig = tool_call_id.split(_THOUGHT_SIGNATURE_SEPARATOR, 1)
+          part.function_call.id = raw_id
+          try:
+            part.thought_signature = base64.b64decode(sig)
+          except Exception:
+            logger.warning(
+                "Failed to decode thought_signature from tool_call id %s",
+                tool_call_id,
+            )
+        else:
+          part.function_call.id = tool_call_id
         parts.append(part)
 
   return LlmResponse(
