@@ -604,7 +604,16 @@ class TraceManager:
     # Create the span without attaching it to the ambient context.
     # This avoids re-parenting framework spans like ``call_llm``
     # or ``execute_tool``.  See #4561.
-    span = tracer.start_span(span_name)
+    #
+    # If the internal stack already has a span, create the new span
+    # as a child so it shares the same trace_id.  Without this, each
+    # ``start_span`` would be an independent root with its own
+    # trace_id — causing trace_id fracture (see #4645).
+    records = TraceManager._get_records()
+    parent_ctx = None
+    if records and records[-1].span.get_span_context().is_valid:
+      parent_ctx = trace.set_span_in_context(records[-1].span)
+    span = tracer.start_span(span_name, context=parent_ctx)
 
     if span.get_span_context().is_valid:
       span_id_str = format(span.get_span_context().span_id, "016x")
@@ -618,7 +627,6 @@ class TraceManager:
         start_time_ns=time.time_ns(),
     )
 
-    records = TraceManager._get_records()
     new_records = list(records) + [record]
     _span_records_ctx.set(new_records)
 
@@ -654,6 +662,32 @@ class TraceManager:
     _span_records_ctx.set(new_records)
 
     return span_id_str
+
+  @staticmethod
+  def ensure_invocation_span(
+      callback_context: CallbackContext,
+  ) -> None:
+    """Ensures a root span exists on the plugin stack for this invocation.
+
+    Must be called before any events are logged so that every event in
+    the invocation shares the same trace_id.
+
+    * If the stack already has entries → no-op (already initialised).
+    * If the ambient OTel span is valid → ``attach_current_span`` (reuse
+      the runner's span without owning it).
+    * Otherwise → ``push_span("invocation")`` (create a new root span
+      that will be popped in ``after_run_callback``).
+    """
+    records = _span_records_ctx.get()
+    if records:
+      return  # Already initialised for this invocation.
+
+    # Check for a valid ambient span (e.g. the Runner's invocation span).
+    ambient = trace.get_current_span()
+    if ambient.get_span_context().is_valid:
+      TraceManager.attach_current_span(callback_context)
+    else:
+      TraceManager.push_span(callback_context, "invocation")
 
   @staticmethod
   def pop_span() -> tuple[Optional[str], Optional[int]]:
@@ -1709,6 +1743,7 @@ class _LoopState:
 class EventData:
   """Typed container for structured fields passed to _log_event."""
 
+  trace_id_override: Optional[str] = None
   span_id_override: Optional[str] = None
   parent_span_id_override: Optional[str] = None
   latency_ms: Optional[int] = None
@@ -2256,27 +2291,50 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
             logger.error("Failed to initialize BigQuery Plugin: %s", e)
 
   @staticmethod
-  def _resolve_span_ids(
+  def _resolve_ids(
       event_data: EventData,
-  ) -> tuple[str, str]:
-    """Reads span/parent overrides from EventData, falling back to TraceManager.
+      callback_context: CallbackContext,
+  ) -> tuple[Optional[str], Optional[str], Optional[str]]:
+    """Resolves trace_id, span_id, and parent_span_id for a log row.
+
+    Priority order (highest first):
+      1. Explicit ``EventData`` overrides (needed for post-pop callbacks).
+      2. Ambient OTel span (the framework's ``start_as_current_span``).
+         When present this aligns BQ rows with Cloud Trace / o11y.
+      3. Plugin's internal span stack (``TraceManager``).
+      4. ``invocation_id`` fallback for trace_id.
 
     Returns:
-        (span_id, parent_span_id)
+        (trace_id, span_id, parent_span_id)
     """
-    current_span_id, current_parent_span_id = (
+    # --- Layer 3: plugin stack baseline ---
+    trace_id = TraceManager.get_trace_id(callback_context)
+    plugin_span_id, plugin_parent_span_id = (
         TraceManager.get_current_span_and_parent()
     )
+    span_id = plugin_span_id
+    parent_span_id = plugin_parent_span_id
 
-    span_id = current_span_id
+    # --- Layer 2: ambient OTel span ---
+    ambient = trace.get_current_span()
+    ambient_ctx = ambient.get_span_context()
+    if ambient_ctx.is_valid:
+      trace_id = format(ambient_ctx.trace_id, "032x")
+      span_id = format(ambient_ctx.span_id, "016x")
+      # SDK spans expose .parent; non-recording spans do not.
+      parent_ctx = getattr(ambient, "parent", None)
+      if parent_ctx is not None and parent_ctx.span_id:
+        parent_span_id = format(parent_ctx.span_id, "016x")
+
+    # --- Layer 1: explicit EventData overrides ---
+    if event_data.trace_id_override is not None:
+      trace_id = event_data.trace_id_override
     if event_data.span_id_override is not None:
       span_id = event_data.span_id_override
-
-    parent_span_id = current_parent_span_id
     if event_data.parent_span_id_override is not None:
       parent_span_id = event_data.parent_span_id_override
 
-    return span_id, parent_span_id
+    return trace_id, span_id, parent_span_id
 
   @staticmethod
   def _extract_latency(
@@ -2389,8 +2447,9 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       except Exception as e:
         logger.warning("Content formatter failed: %s", e)
 
-    trace_id = TraceManager.get_trace_id(callback_context)
-    span_id, parent_span_id = self._resolve_span_ids(event_data)
+    trace_id, span_id, parent_span_id = self._resolve_ids(
+        event_data, callback_context
+    )
 
     if not self.parser:
       logger.warning("Parser not initialized; skipping event %s.", event_type)
@@ -2457,6 +2516,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         user_message: The message content received from the user.
     """
     callback_ctx = CallbackContext(invocation_context)
+    TraceManager.ensure_invocation_span(callback_ctx)
     await self._log_event(
         "USER_MESSAGE_RECEIVED",
         callback_ctx,
@@ -2591,9 +2651,11 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         invocation_context: The context of the current invocation.
     """
     await self._ensure_started()
+    callback_ctx = CallbackContext(invocation_context)
+    TraceManager.ensure_invocation_span(callback_ctx)
     await self._log_event(
         "INVOCATION_STARTING",
-        CallbackContext(invocation_context),
+        callback_ctx,
     )
 
   @_safe_callback
@@ -2605,9 +2667,25 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     Args:
         invocation_context: The context of the current invocation.
     """
+    # Capture trace_id BEFORE popping the invocation-root span so that
+    # INVOCATION_COMPLETED shares the same trace_id as all earlier events
+    # in this invocation (fixes #4645 completion-event fracture).
+    callback_ctx = CallbackContext(invocation_context)
+    trace_id = TraceManager.get_trace_id(callback_ctx)
+
+    # Pop the invocation-root span pushed by ensure_invocation_span().
+    span_id, duration = TraceManager.pop_span()
+    parent_span_id = TraceManager.get_current_span_id()
+
     await self._log_event(
         "INVOCATION_COMPLETED",
-        CallbackContext(invocation_context),
+        callback_ctx,
+        event_data=EventData(
+            trace_id_override=trace_id,
+            latency_ms=duration,
+            span_id_override=span_id,
+            parent_span_id_override=parent_span_id,
+        ),
     )
     # Ensure all logs are flushed before the agent returns
     await self.flush()
