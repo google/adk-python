@@ -39,6 +39,13 @@ from typing import TYPE_CHECKING
 import uuid
 import weakref
 
+from google.adk.agents.callback_context import CallbackContext
+from google.adk.models.llm_request import LlmRequest
+from google.adk.models.llm_response import LlmResponse
+from google.adk.plugins.base_plugin import BasePlugin
+from google.adk.tools.base_tool import BaseTool
+from google.adk.tools.tool_context import ToolContext
+from google.adk.version import __version__
 from google.api_core import client_options
 from google.api_core.exceptions import InternalServerError
 from google.api_core.exceptions import ServiceUnavailable
@@ -55,16 +62,8 @@ from google.genai import types
 from opentelemetry import trace
 import pyarrow as pa
 
-from ..agents.callback_context import CallbackContext
-from ..models.llm_request import LlmRequest
-from ..models.llm_response import LlmResponse
-from ..tools.base_tool import BaseTool
-from ..tools.tool_context import ToolContext
-from ..version import __version__
-from .base_plugin import BasePlugin
-
 if TYPE_CHECKING:
-  from ..agents.invocation_context import InvocationContext
+  from google.adk.agents.invocation_context import InvocationContext
 
 logger: logging.Logger = logging.getLogger("google_adk." + __name__)
 tracer = trace.get_tracer(
