@@ -121,9 +121,9 @@ def _finalize_model_response_event(
       # Restore previously-assigned IDs (by position) so that partial and
       # final SSE events for the same function call share the same ID.
       if prior_fc_ids:
-        for idx, fc in enumerate(function_calls):
-          if idx < len(prior_fc_ids) and prior_fc_ids[idx]:
-            fc.id = prior_fc_ids[idx]
+        for fc, prior_id in zip(function_calls, prior_fc_ids):
+          if prior_id:
+            fc.id = prior_id
 
       functions.populate_client_function_call_id(finalized_event)
 
