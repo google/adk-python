@@ -151,8 +151,10 @@ class FunctionTool(BaseTool):
             )
           except Exception as e:
             logger.warning(
-                f"Failed to convert argument '{param_name}' to Pydantic model"
-                f' {target_type.__name__}: {e}'
+                "Failed to convert argument '%s' to Pydantic model %s: %s",
+                param_name,
+                target_type.__name__,
+                e,
             )
         continue
 
