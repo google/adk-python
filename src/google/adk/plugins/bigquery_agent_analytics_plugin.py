@@ -512,6 +512,13 @@ _root_agent_name_ctx = contextvars.ContextVar(
     "_bq_analytics_root_agent_name", default=None
 )
 
+# Tracks the invocation_id that owns the current span stack so that
+# ensure_invocation_span() can distinguish "same invocation re-entry"
+# (idempotent) from "stale records from a previous invocation" (clear).
+_active_invocation_id_ctx: contextvars.ContextVar[Optional[str]] = (
+    contextvars.ContextVar("_bq_analytics_active_invocation_id", default=None)
+)
+
 
 @dataclass
 class _SpanRecord:
@@ -672,14 +679,22 @@ class TraceManager:
     Must be called before any events are logged so that every event in
     the invocation shares the same trace_id.
 
-    * If the stack already has entries → no-op (already initialised).
-    * If the ambient OTel span is valid → ``attach_current_span`` (reuse
-      the runner's span without owning it).
-    * Otherwise → ``push_span("invocation")`` (create a new root span
-      that will be popped in ``after_run_callback``).
+    * If the stack has entries for the *current* invocation → no-op
+      (idempotent within the same invocation).
+    * If the stack has entries from a *different* invocation → clear
+      stale records and re-initialise (safety net for abnormal exit).
+    * If the ambient OTel span is valid → ``attach_current_span``
+      (reuse the runner's span without owning it).
+    * Otherwise → ``push_span("invocation")`` (create a new root
+      span that will be popped in ``after_run_callback``).
     """
+    current_inv = callback_context.invocation_id
+    active_inv = _active_invocation_id_ctx.get()
+
     records = _span_records_ctx.get()
     if records:
+      if active_inv == current_inv:
+        return  # Already initialised for this invocation.
       # Stale records from a previous invocation that wasn't cleaned
       # up (e.g. exception skipped after_run_callback). Clear and
       # re-init.
@@ -688,6 +703,8 @@ class TraceManager:
           len(records),
       )
       TraceManager.clear_stack()
+
+    _active_invocation_id_ctx.set(current_inv)
 
     # Check for a valid ambient span (e.g. the Runner's invocation span).
     ambient = trace.get_current_span()
@@ -2716,6 +2733,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     # Safety net: clear any remaining stack entries from this
     # invocation to prevent leaks into the next one.
     TraceManager.clear_stack()
+    _active_invocation_id_ctx.set(None)
     # Ensure all logs are flushed before the agent returns
     await self.flush()
 

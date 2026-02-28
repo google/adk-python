@@ -5591,7 +5591,7 @@ class TestStackLeakSafety:
   """
 
   def test_ensure_invocation_span_clears_stale_records(self, callback_context):
-    """Pre-populated stack is cleared and re-initialized."""
+    """Pre-populated stack from a different invocation is cleared."""
     from opentelemetry.sdk.trace import TracerProvider as SdkProvider
     from opentelemetry.sdk.trace.export import SimpleSpanProcessor
     from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
@@ -5607,13 +5607,18 @@ class TestStackLeakSafety:
     ):
       # Simulate stale records from incomplete previous invocation.
       bigquery_agent_analytics_plugin._span_records_ctx.set(None)
+      # Mark the stale records as belonging to a different invocation.
+      bigquery_agent_analytics_plugin._active_invocation_id_ctx.set(
+          "old-inv-stale"
+      )
       TM.push_span(callback_context, "stale-invocation")
       TM.push_span(callback_context, "stale-agent")
 
       stale_records = bigquery_agent_analytics_plugin._span_records_ctx.get()
       assert len(stale_records) == 2
 
-      # ensure_invocation_span should clear stale and re-init.
+      # ensure_invocation_span with the *current* invocation_id should
+      # detect the mismatch, clear stale records, and re-init.
       TM.ensure_invocation_span(callback_context)
 
       records = bigquery_agent_analytics_plugin._span_records_ctx.get()
@@ -5719,6 +5724,7 @@ class TestStackLeakSafety:
       callback_context,
       mock_agent,
       dummy_arrow_schema,
+      mock_session,
   ):
     """Next invocation starts clean even if previous was incomplete."""
     from opentelemetry.sdk.trace import TracerProvider as SdkProvider
@@ -5735,6 +5741,7 @@ class TestStackLeakSafety:
         bigquery_agent_analytics_plugin, "tracer", real_tracer
     ):
       bigquery_agent_analytics_plugin._span_records_ctx.set(None)
+      bigquery_agent_analytics_plugin._active_invocation_id_ctx.set(None)
 
       # --- Incomplete invocation 1: no after_run_callback ---
       await bq_plugin_inst.before_run_callback(
@@ -5748,20 +5755,132 @@ class TestStackLeakSafety:
       stale = bigquery_agent_analytics_plugin._span_records_ctx.get()
       assert len(stale) >= 2  # invocation + agent
 
-      # --- Invocation 2: before_run_callback triggers
-      #     ensure_invocation_span which should clear stale state ---
+      # --- Invocation 2 with a different invocation_id ---
       mock_write_client.append_rows.reset_mock()
-      await bq_plugin_inst.before_run_callback(
-          invocation_context=invocation_context
+      inv_ctx_2 = invocation_context_lib.InvocationContext(
+          agent=mock_agent,
+          session=mock_session,
+          invocation_id="inv-NEW-002",
+          session_service=invocation_context.session_service,
+          plugin_manager=invocation_context.plugin_manager,
       )
+      await bq_plugin_inst.before_run_callback(invocation_context=inv_ctx_2)
 
       records = bigquery_agent_analytics_plugin._span_records_ctx.get()
       # Should have exactly 1 fresh invocation span.
       assert len(records) == 1
 
       # Cleanup
+      await bq_plugin_inst.after_run_callback(invocation_context=inv_ctx_2)
+
+    provider.shutdown()
+
+  def test_ensure_invocation_span_idempotent_same_invocation(
+      self, callback_context
+  ):
+    """Calling ensure_invocation_span twice in the same invocation is a no-op."""
+    from opentelemetry.sdk.trace import TracerProvider as SdkProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    TM = bigquery_agent_analytics_plugin.TraceManager
+
+    provider = SdkProvider()
+    provider.add_span_processor(SimpleSpanProcessor(InMemorySpanExporter()))
+    real_tracer = provider.get_tracer("test")
+
+    with mock.patch.object(
+        bigquery_agent_analytics_plugin, "tracer", real_tracer
+    ):
+      bigquery_agent_analytics_plugin._span_records_ctx.set(None)
+      bigquery_agent_analytics_plugin._active_invocation_id_ctx.set(None)
+
+      # First call: creates invocation span.
+      TM.ensure_invocation_span(callback_context)
+      records_after_first = list(
+          bigquery_agent_analytics_plugin._span_records_ctx.get()
+      )
+      assert len(records_after_first) == 1
+      first_span_id = records_after_first[0].span_id
+
+      # Second call (same invocation): must be a no-op.
+      TM.ensure_invocation_span(callback_context)
+      records_after_second = (
+          bigquery_agent_analytics_plugin._span_records_ctx.get()
+      )
+      assert len(records_after_second) == 1
+      assert records_after_second[0].span_id == first_span_id
+
+      # Cleanup
+      TM.pop_span()
+
+    provider.shutdown()
+
+  @pytest.mark.asyncio
+  async def test_user_message_then_before_run_same_trace_no_ambient(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      invocation_context,
+      callback_context,
+      mock_agent,
+      dummy_arrow_schema,
+  ):
+    """Regression: on_user_message → before_run must share one trace_id.
+
+    Without the invocation-ID guard, the second ensure_invocation_span()
+    call would clear the stack and create a new root span with a
+    different trace_id, fracturing USER_MESSAGE_RECEIVED from
+    INVOCATION_STARTING.
+    """
+    from opentelemetry.sdk.trace import TracerProvider as SdkProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    provider = SdkProvider()
+    provider.add_span_processor(SimpleSpanProcessor(InMemorySpanExporter()))
+    real_tracer = provider.get_tracer("test")
+
+    with mock.patch.object(
+        bigquery_agent_analytics_plugin, "tracer", real_tracer
+    ):
+      bigquery_agent_analytics_plugin._span_records_ctx.set(None)
+      bigquery_agent_analytics_plugin._active_invocation_id_ctx.set(None)
+
+      # No ambient span.
+      assert not trace.get_current_span().get_span_context().is_valid
+
+      user_msg = types.Content(parts=[types.Part(text="hello")], role="user")
+      await bq_plugin_inst.on_user_message_callback(
+          invocation_context=invocation_context,
+          user_message=user_msg,
+      )
+      await bq_plugin_inst.before_run_callback(
+          invocation_context=invocation_context
+      )
+      await bq_plugin_inst.before_agent_callback(
+          agent=mock_agent, callback_context=callback_context
+      )
+      await bq_plugin_inst.after_agent_callback(
+          agent=mock_agent, callback_context=callback_context
+      )
       await bq_plugin_inst.after_run_callback(
           invocation_context=invocation_context
+      )
+      await asyncio.sleep(0.01)
+
+      rows = await _get_captured_rows_async(
+          mock_write_client, dummy_arrow_schema
+      )
+      event_types = [r["event_type"] for r in rows]
+      assert "USER_MESSAGE_RECEIVED" in event_types
+      assert "INVOCATION_STARTING" in event_types
+
+      # Every row must share the same trace_id.
+      trace_ids = {r["trace_id"] for r in rows}
+      assert len(trace_ids) == 1, (
+          "Expected 1 unique trace_id across all events, got"
+          f" {len(trace_ids)}: {trace_ids}"
       )
 
     provider.shutdown()
