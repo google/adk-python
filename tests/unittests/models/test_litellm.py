@@ -2226,6 +2226,56 @@ def test_message_to_generate_content_response_tool_call():
   assert response.content.parts[0].function_call.id == "test_tool_call_id"
 
 
+def test_message_to_generate_content_response_tool_call_with_thought_signature():
+  signature = b"gemini_signature"
+  encoded_signature = base64.b64encode(signature).decode("utf-8")
+  message = ChatCompletionAssistantMessage(
+      role="assistant",
+      content=None,
+      tool_calls=[
+          ChatCompletionMessageToolCall(
+              type="function",
+              id=f"test_tool_call_id__thought__{encoded_signature}",
+              function=Function(
+                  name="test_function",
+                  arguments='{"test_arg": "test_value"}',
+              ),
+          )
+      ],
+  )
+
+  response = _message_to_generate_content_response(message)
+  assert response.content.role == "model"
+  assert response.content.parts[0].function_call.name == "test_function"
+  assert response.content.parts[0].function_call.args == {
+      "test_arg": "test_value"
+  }
+  assert response.content.parts[0].function_call.id == "test_tool_call_id"
+  assert response.content.parts[0].thought_signature == signature
+
+
+@pytest.mark.asyncio
+async def test_content_to_message_param_embeds_thought_signature_in_tool_call():
+  part = types.Part.from_function_call(
+      name="test_function",
+      args={"test_arg": "test_value"},
+  )
+  part.function_call.id = "test_tool_call_id"
+  part.thought_signature = b"gemini_signature"
+  content = types.Content(role="model", parts=[part])
+
+  message = await _content_to_message_param(content)
+
+  tool_calls = message["tool_calls"]
+  assert tool_calls is not None
+  assert len(tool_calls) == 1
+  assert (
+      tool_calls[0]["id"]
+      == "test_tool_call_id__thought__"
+      + base64.b64encode(b"gemini_signature").decode("utf-8")
+  )
+
+
 def test_message_to_generate_content_response_inline_tool_call_text():
   message = ChatCompletionAssistantMessage(
       role="assistant",
