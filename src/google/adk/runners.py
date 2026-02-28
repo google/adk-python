@@ -1381,6 +1381,10 @@ class Runner:
         return event.content
     return None
 
+  def _create_invocation_context(self, **kwargs) -> InvocationContext:
+    """Creates an InvocationContext instance."""
+    return InvocationContext(**kwargs)
+
   def _new_invocation_context(
       self,
       session: Session,
@@ -1415,7 +1419,7 @@ class Runner:
       if not isinstance(self.agent.code_executor, BuiltInCodeExecutor):
         self.agent.code_executor = BuiltInCodeExecutor()
 
-    return InvocationContext(
+    return self._create_invocation_context(
         artifact_service=self.artifact_service,
         session_service=self.session_service,
         memory_service=self.memory_service,
