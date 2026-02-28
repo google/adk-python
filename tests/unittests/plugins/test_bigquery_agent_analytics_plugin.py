@@ -3197,6 +3197,42 @@ class TestResolveIds:
     bigquery_agent_analytics_plugin.TraceManager.pop_span()
     provider.shutdown()
 
+  def test_ambient_span_used_for_completed_event(self, callback_context):
+    """Completed event with overrides should use ambient when present.
+
+    When an ambient OTel span is valid, passing None overrides lets
+    _resolve_ids Layer 2 pick the ambient span — matching the
+    STARTING event's span_id.
+    """
+    from opentelemetry.sdk.trace import TracerProvider as SdkProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    provider = SdkProvider()
+    provider.add_span_processor(SimpleSpanProcessor(InMemorySpanExporter()))
+    real_tracer = provider.get_tracer("test")
+
+    with real_tracer.start_as_current_span("invoke_agent") as agent_span:
+      expected_span = format(agent_span.get_span_context().span_id, "016x")
+
+      # Simulate STARTING: no overrides → ambient Layer 2 wins.
+      ed_starting = bigquery_agent_analytics_plugin.EventData()
+      _, span_starting, _ = self._resolve(ed_starting, callback_context)
+
+      # Simulate COMPLETED: None overrides (ambient check passed).
+      ed_completed = bigquery_agent_analytics_plugin.EventData(
+          span_id_override=None,
+          parent_span_id_override=None,
+          latency_ms=42,
+      )
+      _, span_completed, _ = self._resolve(ed_completed, callback_context)
+
+      assert span_starting == expected_span
+      assert span_completed == expected_span
+      assert span_starting == span_completed
+
+    provider.shutdown()
+
 
 class TestExtractLatency:
   """Tests for the _extract_latency static helper."""
@@ -5339,5 +5375,393 @@ class TestTraceIdContinuity:
       # The two turns must have DIFFERENT trace_ids (different
       # root spans).
       assert trace_id_turn1 != trace_id_turn2
+
+    provider.shutdown()
+
+
+class TestSpanIdConsistency:
+  """Tests that STARTING/COMPLETED event pairs share span IDs.
+
+  Span-ID resolution contract:
+  - When OTel is active: BQ rows use the same trace/span/parent IDs as
+    Cloud Trace (ambient framework spans). STARTING and COMPLETED events
+    in the same lifecycle share the same span_id.
+  - When OTel is not active: BQ rows use the plugin's internal span
+    stack. STARTING gets the current top-of-stack; COMPLETED gets the
+    popped span.
+  """
+
+  @pytest.mark.asyncio
+  async def test_starting_completed_same_span_with_ambient(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      invocation_context,
+      callback_context,
+      mock_agent,
+      dummy_arrow_schema,
+  ):
+    """With ambient OTel, STARTING and COMPLETED get the same span_id."""
+    from opentelemetry.sdk.trace import TracerProvider as SdkProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    provider = SdkProvider()
+    provider.add_span_processor(SimpleSpanProcessor(InMemorySpanExporter()))
+    real_tracer = provider.get_tracer("test")
+
+    with mock.patch.object(
+        bigquery_agent_analytics_plugin, "tracer", real_tracer
+    ):
+      bigquery_agent_analytics_plugin._span_records_ctx.set(None)
+
+      # Simulate the framework's ambient spans.
+      with real_tracer.start_as_current_span("invocation"):
+        await bq_plugin_inst.before_run_callback(
+            invocation_context=invocation_context
+        )
+        with real_tracer.start_as_current_span("invoke_agent"):
+          await bq_plugin_inst.before_agent_callback(
+              agent=mock_agent, callback_context=callback_context
+          )
+          await bq_plugin_inst.after_agent_callback(
+              agent=mock_agent, callback_context=callback_context
+          )
+        await bq_plugin_inst.after_run_callback(
+            invocation_context=invocation_context
+        )
+
+      await asyncio.sleep(0.01)
+
+      rows = await _get_captured_rows_async(
+          mock_write_client, dummy_arrow_schema
+      )
+      agent_starting = [r for r in rows if r["event_type"] == "AGENT_STARTING"]
+      agent_completed = [
+          r for r in rows if r["event_type"] == "AGENT_COMPLETED"
+      ]
+
+      assert len(agent_starting) == 1
+      assert len(agent_completed) == 1
+
+      # Both events must share the same span_id (the ambient
+      # invoke_agent span) — no plugin-synthetic override.
+      assert agent_starting[0]["span_id"] == agent_completed[0]["span_id"]
+      assert (
+          agent_starting[0]["parent_span_id"]
+          == agent_completed[0]["parent_span_id"]
+      )
+
+    provider.shutdown()
+
+  @pytest.mark.asyncio
+  async def test_starting_completed_use_plugin_span_without_ambient(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      invocation_context,
+      callback_context,
+      mock_agent,
+      dummy_arrow_schema,
+  ):
+    """Without ambient OTel, COMPLETED gets the popped plugin span."""
+    from opentelemetry.sdk.trace import TracerProvider as SdkProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    provider = SdkProvider()
+    provider.add_span_processor(SimpleSpanProcessor(InMemorySpanExporter()))
+    real_tracer = provider.get_tracer("test")
+
+    with mock.patch.object(
+        bigquery_agent_analytics_plugin, "tracer", real_tracer
+    ):
+      bigquery_agent_analytics_plugin._span_records_ctx.set(None)
+
+      # No ambient OTel span.
+      assert not trace.get_current_span().get_span_context().is_valid
+
+      await bq_plugin_inst.before_run_callback(
+          invocation_context=invocation_context
+      )
+      await bq_plugin_inst.before_agent_callback(
+          agent=mock_agent, callback_context=callback_context
+      )
+      await bq_plugin_inst.after_agent_callback(
+          agent=mock_agent, callback_context=callback_context
+      )
+      await bq_plugin_inst.after_run_callback(
+          invocation_context=invocation_context
+      )
+
+      await asyncio.sleep(0.01)
+
+      rows = await _get_captured_rows_async(
+          mock_write_client, dummy_arrow_schema
+      )
+      agent_starting = [r for r in rows if r["event_type"] == "AGENT_STARTING"]
+      agent_completed = [
+          r for r in rows if r["event_type"] == "AGENT_COMPLETED"
+      ]
+
+      assert len(agent_starting) == 1
+      assert len(agent_completed) == 1
+
+      # AGENT_STARTING gets the top-of-stack span; AGENT_COMPLETED
+      # gets the popped span via override — they should match.
+      assert agent_starting[0]["span_id"] == agent_completed[0]["span_id"]
+
+    provider.shutdown()
+
+  @pytest.mark.asyncio
+  async def test_tool_error_captures_span_id(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      invocation_context,
+      callback_context,
+      dummy_arrow_schema,
+  ):
+    """on_tool_error_callback uses the popped span_id (bonus fix)."""
+    from opentelemetry.sdk.trace import TracerProvider as SdkProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    provider = SdkProvider()
+    provider.add_span_processor(SimpleSpanProcessor(InMemorySpanExporter()))
+    real_tracer = provider.get_tracer("test")
+
+    mock_tool = mock.create_autospec(base_tool_lib.BaseTool, instance=True)
+    type(mock_tool).name = mock.PropertyMock(return_value="my_tool")
+    tool_ctx = tool_context_lib.ToolContext(
+        invocation_context=invocation_context
+    )
+
+    with mock.patch.object(
+        bigquery_agent_analytics_plugin, "tracer", real_tracer
+    ):
+      bigquery_agent_analytics_plugin._span_records_ctx.set(None)
+
+      # No ambient OTel — plugin span stack provides IDs.
+      assert not trace.get_current_span().get_span_context().is_valid
+
+      await bq_plugin_inst.before_run_callback(
+          invocation_context=invocation_context
+      )
+      # Push tool span via before_tool_callback
+      await bq_plugin_inst.before_tool_callback(
+          tool=mock_tool,
+          tool_args={"a": 1},
+          tool_context=tool_ctx,
+      )
+      # Error callback should pop the tool span and use its ID
+      await bq_plugin_inst.on_tool_error_callback(
+          tool=mock_tool,
+          tool_args={"a": 1},
+          tool_context=tool_ctx,
+          error=RuntimeError("boom"),
+      )
+      await bq_plugin_inst.after_run_callback(
+          invocation_context=invocation_context
+      )
+      await asyncio.sleep(0.01)
+
+      rows = await _get_captured_rows_async(
+          mock_write_client, dummy_arrow_schema
+      )
+      tool_starting = [r for r in rows if r["event_type"] == "TOOL_STARTING"]
+      tool_error = [r for r in rows if r["event_type"] == "TOOL_ERROR"]
+
+      assert len(tool_starting) == 1
+      assert len(tool_error) == 1
+
+      # The TOOL_ERROR event must have the same span_id as
+      # TOOL_STARTING (both correspond to the same tool span).
+      assert tool_starting[0]["span_id"] == tool_error[0]["span_id"]
+      assert tool_error[0]["span_id"] is not None
+
+    provider.shutdown()
+
+
+class TestStackLeakSafety:
+  """Tests for stack leak safety (P2).
+
+  Ensures the plugin's internal span stack doesn't leak records
+  across invocations when after_run_callback is skipped.
+  """
+
+  def test_ensure_invocation_span_clears_stale_records(self, callback_context):
+    """Pre-populated stack is cleared and re-initialized."""
+    from opentelemetry.sdk.trace import TracerProvider as SdkProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    TM = bigquery_agent_analytics_plugin.TraceManager
+
+    provider = SdkProvider()
+    provider.add_span_processor(SimpleSpanProcessor(InMemorySpanExporter()))
+    real_tracer = provider.get_tracer("test")
+
+    with mock.patch.object(
+        bigquery_agent_analytics_plugin, "tracer", real_tracer
+    ):
+      # Simulate stale records from incomplete previous invocation.
+      bigquery_agent_analytics_plugin._span_records_ctx.set(None)
+      TM.push_span(callback_context, "stale-invocation")
+      TM.push_span(callback_context, "stale-agent")
+
+      stale_records = bigquery_agent_analytics_plugin._span_records_ctx.get()
+      assert len(stale_records) == 2
+
+      # ensure_invocation_span should clear stale and re-init.
+      TM.ensure_invocation_span(callback_context)
+
+      records = bigquery_agent_analytics_plugin._span_records_ctx.get()
+      # Should have exactly 1 fresh entry (the new invocation span).
+      assert len(records) == 1
+      # The fresh span should NOT be one of the stale ones.
+      assert records[0].span_id != stale_records[0].span_id
+      assert records[0].span_id != stale_records[1].span_id
+
+    provider.shutdown()
+
+  def test_clear_stack_ends_owned_spans(self, callback_context):
+    """clear_stack() ends all owned spans."""
+    from opentelemetry.sdk.trace import TracerProvider as SdkProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    TM = bigquery_agent_analytics_plugin.TraceManager
+
+    provider = SdkProvider()
+    exporter = InMemorySpanExporter()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    real_tracer = provider.get_tracer("test")
+
+    with mock.patch.object(
+        bigquery_agent_analytics_plugin, "tracer", real_tracer
+    ):
+      bigquery_agent_analytics_plugin._span_records_ctx.set(None)
+      TM.push_span(callback_context, "span-a")
+      TM.push_span(callback_context, "span-b")
+
+      records = list(bigquery_agent_analytics_plugin._span_records_ctx.get())
+      assert all(r.owns_span for r in records)
+
+      TM.clear_stack()
+
+      # Stack must be empty after clear.
+      result = bigquery_agent_analytics_plugin._span_records_ctx.get()
+      assert result == []
+
+      # Both owned spans should have been ended (exported).
+      exported = exporter.get_finished_spans()
+      assert len(exported) == 2
+
+    provider.shutdown()
+
+  @pytest.mark.asyncio
+  async def test_after_run_callback_clears_remaining_stack(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      invocation_context,
+      callback_context,
+      mock_agent,
+      dummy_arrow_schema,
+  ):
+    """after_run_callback clears any leftover stack entries."""
+    from opentelemetry.sdk.trace import TracerProvider as SdkProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    TM = bigquery_agent_analytics_plugin.TraceManager
+
+    provider = SdkProvider()
+    provider.add_span_processor(SimpleSpanProcessor(InMemorySpanExporter()))
+    real_tracer = provider.get_tracer("test")
+
+    with mock.patch.object(
+        bigquery_agent_analytics_plugin, "tracer", real_tracer
+    ):
+      bigquery_agent_analytics_plugin._span_records_ctx.set(None)
+
+      # No ambient span.
+      assert not trace.get_current_span().get_span_context().is_valid
+
+      await bq_plugin_inst.before_run_callback(
+          invocation_context=invocation_context
+      )
+      # Push an agent span but DON'T pop it (simulate missing
+      # after_agent_callback due to exception).
+      await bq_plugin_inst.before_agent_callback(
+          agent=mock_agent, callback_context=callback_context
+      )
+      # Stack now has [invocation, agent].
+
+      # after_run_callback should pop invocation + clear remaining.
+      await bq_plugin_inst.after_run_callback(
+          invocation_context=invocation_context
+      )
+
+      # Stack must be empty.
+      records = bigquery_agent_analytics_plugin._span_records_ctx.get()
+      assert records == []
+
+    provider.shutdown()
+
+  @pytest.mark.asyncio
+  async def test_next_invocation_clean_after_incomplete_previous(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      invocation_context,
+      callback_context,
+      mock_agent,
+      dummy_arrow_schema,
+  ):
+    """Next invocation starts clean even if previous was incomplete."""
+    from opentelemetry.sdk.trace import TracerProvider as SdkProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    TM = bigquery_agent_analytics_plugin.TraceManager
+
+    provider = SdkProvider()
+    provider.add_span_processor(SimpleSpanProcessor(InMemorySpanExporter()))
+    real_tracer = provider.get_tracer("test")
+
+    with mock.patch.object(
+        bigquery_agent_analytics_plugin, "tracer", real_tracer
+    ):
+      bigquery_agent_analytics_plugin._span_records_ctx.set(None)
+
+      # --- Incomplete invocation 1: no after_run_callback ---
+      await bq_plugin_inst.before_run_callback(
+          invocation_context=invocation_context
+      )
+      await bq_plugin_inst.before_agent_callback(
+          agent=mock_agent, callback_context=callback_context
+      )
+      # Skip after_agent and after_run — simulates exception.
+
+      stale = bigquery_agent_analytics_plugin._span_records_ctx.get()
+      assert len(stale) >= 2  # invocation + agent
+
+      # --- Invocation 2: before_run_callback triggers
+      #     ensure_invocation_span which should clear stale state ---
+      mock_write_client.append_rows.reset_mock()
+      await bq_plugin_inst.before_run_callback(
+          invocation_context=invocation_context
+      )
+
+      records = bigquery_agent_analytics_plugin._span_records_ctx.get()
+      # Should have exactly 1 fresh invocation span.
+      assert len(records) == 1
+
+      # Cleanup
+      await bq_plugin_inst.after_run_callback(
+          invocation_context=invocation_context
+      )
 
     provider.shutdown()

@@ -680,7 +680,14 @@ class TraceManager:
     """
     records = _span_records_ctx.get()
     if records:
-      return  # Already initialised for this invocation.
+      # Stale records from a previous invocation that wasn't cleaned
+      # up (e.g. exception skipped after_run_callback). Clear and
+      # re-init.
+      logger.debug(
+          "Clearing %d stale span records from previous invocation.",
+          len(records),
+      )
+      TraceManager.clear_stack()
 
     # Check for a valid ambient span (e.g. the Runner's invocation span).
     ambient = trace.get_current_span()
@@ -716,6 +723,17 @@ class TraceManager:
       record.span.end()
 
     return record.span_id, duration_ms
+
+  @staticmethod
+  def clear_stack() -> None:
+    """Clears all span records. Safety net for cross-invocation cleanup."""
+    records = _span_records_ctx.get()
+    if records:
+      # End any owned spans to avoid OTel resource leaks.
+      for record in reversed(records):
+        if record.owns_span:
+          record.span.end()
+      _span_records_ctx.set([])
 
   @staticmethod
   def get_current_span_and_parent() -> tuple[Optional[str], Optional[str]]:
@@ -2680,16 +2698,24 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     span_id, duration = TraceManager.pop_span()
     parent_span_id = TraceManager.get_current_span_id()
 
+    # Only override span IDs when no ambient OTel span exists.
+    # When ambient exists, _resolve_ids Layer 2 uses the framework's
+    # span IDs, keeping STARTING/COMPLETED pairs consistent.
+    has_ambient = trace.get_current_span().get_span_context().is_valid
+
     await self._log_event(
         "INVOCATION_COMPLETED",
         callback_ctx,
         event_data=EventData(
             trace_id_override=trace_id,
             latency_ms=duration,
-            span_id_override=span_id,
-            parent_span_id_override=parent_span_id,
+            span_id_override=None if has_ambient else span_id,
+            parent_span_id_override=(None if has_ambient else parent_span_id),
         ),
     )
+    # Safety net: clear any remaining stack entries from this
+    # invocation to prevent leaks into the next one.
+    TraceManager.clear_stack()
     # Ensure all logs are flushed before the agent returns
     await self.flush()
 
@@ -2722,18 +2748,20 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         callback_context: The callback context.
     """
     span_id, duration = TraceManager.pop_span()
-    # When popping, the current stack now points to parent.
-    # The event we are logging ("AGENT_COMPLETED") belongs to the span we just popped.
-    # So we must override span_id to be the popped span, and parent to be current top of stack.
     parent_span_id, _ = TraceManager.get_current_span_and_parent()
+
+    # Only override span IDs when no ambient OTel span exists.
+    # When ambient exists, _resolve_ids Layer 2 uses the framework's
+    # span IDs, keeping STARTING/COMPLETED pairs consistent.
+    has_ambient = trace.get_current_span().get_span_context().is_valid
 
     await self._log_event(
         "AGENT_COMPLETED",
         callback_context,
         event_data=EventData(
             latency_ms=duration,
-            span_id_override=span_id,
-            parent_span_id_override=parent_span_id,
+            span_id_override=None if has_ambient else span_id,
+            parent_span_id_override=(None if has_ambient else parent_span_id),
         ),
     )
 
@@ -2883,6 +2911,12 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       # Otherwise log_event will fetch current stack (which is parent).
       span_id = popped_span_id or span_id
 
+    # Only override span IDs when no ambient OTel span exists.
+    # When ambient exists, _resolve_ids Layer 2 uses the framework's
+    # span IDs, keeping LLM_REQUEST/LLM_RESPONSE pairs consistent.
+    has_ambient = trace.get_current_span().get_span_context().is_valid
+    use_override = is_popped and not has_ambient
+
     await self._log_event(
         "LLM_RESPONSE",
         callback_context,
@@ -2893,8 +2927,8 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
             time_to_first_token_ms=tfft,
             model_version=llm_response.model_version,
             usage_metadata=llm_response.usage_metadata,
-            span_id_override=span_id if is_popped else None,
-            parent_span_id_override=(parent_span_id if is_popped else None),
+            span_id_override=span_id if use_override else None,
+            parent_span_id_override=(parent_span_id if use_override else None),
         ),
     )
 
@@ -2915,14 +2949,18 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     """
     span_id, duration = TraceManager.pop_span()
     parent_span_id, _ = TraceManager.get_current_span_and_parent()
+
+    # Only override span IDs when no ambient OTel span exists.
+    has_ambient = trace.get_current_span().get_span_context().is_valid
+
     await self._log_event(
         "LLM_ERROR",
         callback_context,
         event_data=EventData(
             error_message=str(error),
             latency_ms=duration,
-            span_id_override=span_id,
-            parent_span_id_override=parent_span_id,
+            span_id_override=None if has_ambient else span_id,
+            parent_span_id_override=(None if has_ambient else parent_span_id),
         ),
     )
 
@@ -2987,10 +3025,13 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     span_id, duration = TraceManager.pop_span()
     parent_span_id, _ = TraceManager.get_current_span_and_parent()
 
+    # Only override span IDs when no ambient OTel span exists.
+    has_ambient = trace.get_current_span().get_span_context().is_valid
+
     event_data = EventData(
         latency_ms=duration,
-        span_id_override=span_id,
-        parent_span_id_override=parent_span_id,
+        span_id_override=None if has_ambient else span_id,
+        parent_span_id_override=(None if has_ambient else parent_span_id),
     )
     await self._log_event(
         "TOOL_COMPLETED",
@@ -3026,7 +3067,12 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         "args": args_truncated,
         "tool_origin": tool_origin,
     }
-    _, duration = TraceManager.pop_span()
+    span_id, duration = TraceManager.pop_span()
+    parent_span_id, _ = TraceManager.get_current_span_and_parent()
+
+    # Only override span IDs when no ambient OTel span exists.
+    has_ambient = trace.get_current_span().get_span_context().is_valid
+
     await self._log_event(
         "TOOL_ERROR",
         tool_context,
@@ -3035,5 +3081,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         event_data=EventData(
             error_message=str(error),
             latency_ms=duration,
+            span_id_override=None if has_ambient else span_id,
+            parent_span_id_override=(None if has_ambient else parent_span_id),
         ),
     )
