@@ -3161,6 +3161,42 @@ class TestResolveIds:
     assert parent_id == "forced-parent"
     provider.shutdown()
 
+  def test_ambient_root_span_no_self_parent(self, callback_context):
+    """Ambient root span (no parent) must not produce self-parent."""
+    from opentelemetry.sdk.trace import TracerProvider as SdkProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    provider = SdkProvider()
+    provider.add_span_processor(SimpleSpanProcessor(InMemorySpanExporter()))
+    real_tracer = provider.get_tracer("test")
+
+    # Seed the plugin stack with a span so there's a stale parent.
+    bigquery_agent_analytics_plugin._span_records_ctx.set(None)
+    with mock.patch.object(
+        bigquery_agent_analytics_plugin, "tracer", real_tracer
+    ):
+      bigquery_agent_analytics_plugin.TraceManager.push_span(
+          callback_context, "plugin-child"
+      )
+
+    ed = bigquery_agent_analytics_plugin.EventData()
+
+    # Single root ambient span — no parent.
+    with real_tracer.start_as_current_span("root_invocation") as root:
+      trace_id, span_id, parent_id = self._resolve(ed, callback_context)
+      root_span_id = format(root.get_span_context().span_id, "016x")
+
+    # span_id should be the ambient root's span_id
+    assert span_id == root_span_id
+    # parent must be None — not the stale plugin parent, not self
+    assert parent_id is None
+    assert span_id != parent_id
+
+    # Cleanup
+    bigquery_agent_analytics_plugin.TraceManager.pop_span()
+    provider.shutdown()
+
 
 class TestExtractLatency:
   """Tests for the _extract_latency static helper."""

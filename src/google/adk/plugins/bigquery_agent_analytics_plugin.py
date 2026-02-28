@@ -2321,6 +2321,9 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     if ambient_ctx.is_valid:
       trace_id = format(ambient_ctx.trace_id, "032x")
       span_id = format(ambient_ctx.span_id, "016x")
+      # Reset parent — stale plugin-stack parent must not leak through
+      # when the ambient span is a root (no parent).
+      parent_span_id = None
       # SDK spans expose .parent; non-recording spans do not.
       parent_ctx = getattr(ambient, "parent", None)
       if parent_ctx is not None and parent_ctx.span_id:
