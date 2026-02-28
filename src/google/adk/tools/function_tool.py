@@ -170,7 +170,7 @@ class FunctionTool(BaseTool):
         )
       except pydantic.ValidationError as e:
         validation_errors.append(
-            f"Parameter '{param_name}': expected type '{target_type}',"
+            f"Parameter '{param_name}': expected type '{getattr(target_type, '__name__', target_type)}',"
             f' validation error: {e}'
         )
       except (TypeError, NameError) as e:
