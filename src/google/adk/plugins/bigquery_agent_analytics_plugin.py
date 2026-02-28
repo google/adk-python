@@ -2715,38 +2715,40 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     Args:
         invocation_context: The context of the current invocation.
     """
-    # Capture trace_id BEFORE popping the invocation-root span so that
-    # INVOCATION_COMPLETED shares the same trace_id as all earlier events
-    # in this invocation (fixes #4645 completion-event fracture).
-    callback_ctx = CallbackContext(invocation_context)
-    trace_id = TraceManager.get_trace_id(callback_ctx)
+    try:
+      # Capture trace_id BEFORE popping the invocation-root span so
+      # that INVOCATION_COMPLETED shares the same trace_id as all
+      # earlier events in this invocation (fixes #4645).
+      callback_ctx = CallbackContext(invocation_context)
+      trace_id = TraceManager.get_trace_id(callback_ctx)
 
-    # Pop the invocation-root span pushed by ensure_invocation_span().
-    span_id, duration = TraceManager.pop_span()
-    parent_span_id = TraceManager.get_current_span_id()
+      # Pop the invocation-root span pushed by ensure_invocation_span.
+      span_id, duration = TraceManager.pop_span()
+      parent_span_id = TraceManager.get_current_span_id()
 
-    # Only override span IDs when no ambient OTel span exists.
-    # When ambient exists, _resolve_ids Layer 2 uses the framework's
-    # span IDs, keeping STARTING/COMPLETED pairs consistent.
-    has_ambient = trace.get_current_span().get_span_context().is_valid
+      # Only override span IDs when no ambient OTel span exists.
+      # When ambient exists, _resolve_ids Layer 2 uses the framework's
+      # span IDs, keeping STARTING/COMPLETED pairs consistent.
+      has_ambient = trace.get_current_span().get_span_context().is_valid
 
-    await self._log_event(
-        "INVOCATION_COMPLETED",
-        callback_ctx,
-        event_data=EventData(
-            trace_id_override=trace_id,
-            latency_ms=duration,
-            span_id_override=None if has_ambient else span_id,
-            parent_span_id_override=(None if has_ambient else parent_span_id),
-        ),
-    )
-    # Safety net: clear any remaining stack entries from this
-    # invocation to prevent leaks into the next one.
-    TraceManager.clear_stack()
-    _active_invocation_id_ctx.set(None)
-    _root_agent_name_ctx.set(None)
-    # Ensure all logs are flushed before the agent returns
-    await self.flush()
+      await self._log_event(
+          "INVOCATION_COMPLETED",
+          callback_ctx,
+          event_data=EventData(
+              trace_id_override=trace_id,
+              latency_ms=duration,
+              span_id_override=None if has_ambient else span_id,
+              parent_span_id_override=(None if has_ambient else parent_span_id),
+          ),
+      )
+    finally:
+      # Cleanup must run even if _log_event raises, otherwise
+      # stale invocation metadata leaks into the next invocation.
+      TraceManager.clear_stack()
+      _active_invocation_id_ctx.set(None)
+      _root_agent_name_ctx.set(None)
+      # Ensure all logs are flushed before the agent returns.
+      await self.flush()
 
   @_safe_callback
   async def before_agent_callback(

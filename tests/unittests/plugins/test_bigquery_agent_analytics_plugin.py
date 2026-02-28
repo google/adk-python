@@ -6000,3 +6000,70 @@ class TestRootAgentNameAcrossInvocations:
     assert names_inv2 == {"RootB"}, f"Expected {{'RootB'}}, got {names_inv2}"
 
     provider.shutdown()
+
+
+class TestAfterRunCleanupExceptionSafety:
+  """after_run_callback cleanup must execute even if _log_event fails."""
+
+  @pytest.mark.asyncio
+  async def test_cleanup_runs_when_log_event_raises(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      invocation_context,
+      callback_context,
+      mock_agent,
+  ):
+    """Stale state is cleared even when _log_event raises."""
+    from opentelemetry.sdk.trace import TracerProvider as SdkProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    provider = SdkProvider()
+    provider.add_span_processor(SimpleSpanProcessor(InMemorySpanExporter()))
+    real_tracer = provider.get_tracer("test")
+
+    with mock.patch.object(
+        bigquery_agent_analytics_plugin, "tracer", real_tracer
+    ):
+      bigquery_agent_analytics_plugin._span_records_ctx.set(None)
+      bigquery_agent_analytics_plugin._active_invocation_id_ctx.set(None)
+      bigquery_agent_analytics_plugin._root_agent_name_ctx.set(None)
+
+      # Run a normal before_run to initialise state.
+      await bq_plugin_inst.before_run_callback(
+          invocation_context=invocation_context
+      )
+      await bq_plugin_inst.before_agent_callback(
+          agent=mock_agent, callback_context=callback_context
+      )
+
+      # Verify state is populated.
+      assert bigquery_agent_analytics_plugin._span_records_ctx.get()
+      assert (
+          bigquery_agent_analytics_plugin._active_invocation_id_ctx.get()
+          is not None
+      )
+
+      # Make _log_event raise inside after_run_callback.
+      with mock.patch.object(
+          bq_plugin_inst,
+          "_log_event",
+          side_effect=RuntimeError("boom"),
+      ):
+        # _safe_callback swallows the exception, but cleanup in
+        # the finally block must still execute.
+        await bq_plugin_inst.after_run_callback(
+            invocation_context=invocation_context
+        )
+
+      # All invocation state must be cleaned up despite the error.
+      records = bigquery_agent_analytics_plugin._span_records_ctx.get()
+      assert records == [] or records is None
+      assert (
+          bigquery_agent_analytics_plugin._active_invocation_id_ctx.get()
+          is None
+      )
+      assert bigquery_agent_analytics_plugin._root_agent_name_ctx.get() is None
+
+    provider.shutdown()
