@@ -116,11 +116,14 @@ def _safe_json_serialize(obj) -> str:
     The JSON-serialized object string or <non-serializable> if the object cannot be serialized.
   """
 
+  def _default(o: Any) -> Any:
+    if isinstance(o, BaseModel):
+      return o.model_dump(mode='json')
+    return '<not serializable>'
+
   try:
     # Try direct JSON serialization first
-    return json.dumps(
-        obj, ensure_ascii=False, default=lambda o: '<not serializable>'
-    )
+    return json.dumps(obj, ensure_ascii=False, default=_default)
   except (TypeError, OverflowError):
     return '<not serializable>'
 
