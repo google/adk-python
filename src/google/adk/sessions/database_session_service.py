@@ -531,6 +531,16 @@ class DatabaseSessionService(BaseSessionService):
     schema = self._get_schema_classes()
     is_sqlite = self.db_engine.dialect.name == _SQLITE_DIALECT
     use_row_level_locking = self._supports_row_level_locking()
+
+    # Pre-analyze which state scopes have deltas so we only acquire
+    # FOR UPDATE locks on rows that will actually be written.
+    has_app_delta = False
+    has_user_delta = False
+    if event.actions and event.actions.state_delta:
+      pre_deltas = _session_util.extract_state_delta(event.actions.state_delta)
+      has_app_delta = bool(pre_deltas.get("app"))
+      has_user_delta = bool(pre_deltas.get("user"))
+
     async with self._with_session_lock(
         app_name=session.app_name,
         user_id=session.user_id,
@@ -554,7 +564,7 @@ class DatabaseSessionService(BaseSessionService):
             sql_session=sql_session,
             state_model=schema.StorageAppState,
             predicates=(schema.StorageAppState.app_name == session.app_name,),
-            use_row_level_locking=use_row_level_locking,
+            use_row_level_locking=use_row_level_locking and has_app_delta,
             missing_message=(
                 "App state missing for app_name="
                 f"{session.app_name!r}. Session state tables should be "
@@ -568,7 +578,7 @@ class DatabaseSessionService(BaseSessionService):
                 schema.StorageUserState.app_name == session.app_name,
                 schema.StorageUserState.user_id == session.user_id,
             ),
-            use_row_level_locking=use_row_level_locking,
+            use_row_level_locking=use_row_level_locking and has_user_delta,
             missing_message=(
                 "User state missing for app_name="
                 f"{session.app_name!r}, user_id={session.user_id!r}. "

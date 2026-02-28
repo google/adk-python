@@ -1153,3 +1153,204 @@ async def test_prepare_tables_idempotent_after_creation():
     assert session.id == 's1'
   finally:
     await service.close()
+
+
+@pytest.mark.asyncio
+async def test_append_event_skips_for_update_when_no_app_or_user_delta():
+  """FOR UPDATE locks on app_states/user_states should be skipped when the
+  event carries no delta for those scopes."""
+  service = DatabaseSessionService('sqlite+aiosqlite:///:memory:')
+  try:
+    session = await service.create_session(
+        app_name='my_app', user_id='user', session_id='s1'
+    )
+
+    # Patch _supports_row_level_locking to simulate PostgreSQL behavior
+    with mock.patch.object(
+        service, '_supports_row_level_locking', return_value=True
+    ):
+      original_fn = database_session_service._select_required_state
+      calls = []
+
+      async def spy(**kwargs):
+        calls.append(kwargs.get('use_row_level_locking'))
+        return await original_fn(**kwargs)
+
+      with mock.patch.object(
+          database_session_service,
+          '_select_required_state',
+          side_effect=spy,
+      ):
+        # Event with only session-scoped state (no app: or user: prefix)
+        event_no_scoped_delta = Event(
+            invocation_id='inv1',
+            author='user',
+            actions=EventActions(state_delta={'session_key': 'v1'}),
+        )
+        await service.append_event(session, event_no_scoped_delta)
+
+    # Two calls: one for app_states, one for user_states
+    assert len(calls) == 2
+    # Both should be False since there's no app: or user: delta
+    assert calls[0] is False
+    assert calls[1] is False
+  finally:
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_append_event_skips_for_update_when_no_state_delta():
+  """FOR UPDATE locks should be skipped when event has no state_delta at all."""
+  service = DatabaseSessionService('sqlite+aiosqlite:///:memory:')
+  try:
+    session = await service.create_session(
+        app_name='my_app', user_id='user', session_id='s1'
+    )
+
+    with mock.patch.object(
+        service, '_supports_row_level_locking', return_value=True
+    ):
+      original_fn = database_session_service._select_required_state
+      calls = []
+
+      async def spy(**kwargs):
+        calls.append(kwargs.get('use_row_level_locking'))
+        return await original_fn(**kwargs)
+
+      with mock.patch.object(
+          database_session_service,
+          '_select_required_state',
+          side_effect=spy,
+      ):
+        event_no_delta = Event(
+            invocation_id='inv2',
+            author='user',
+        )
+        await service.append_event(session, event_no_delta)
+
+    assert len(calls) == 2
+    assert calls[0] is False
+    assert calls[1] is False
+  finally:
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_append_event_acquires_for_update_when_app_delta_present():
+  """FOR UPDATE lock on app_states should be acquired when event has app:
+  prefixed state delta."""
+  service = DatabaseSessionService('sqlite+aiosqlite:///:memory:')
+  try:
+    session = await service.create_session(
+        app_name='my_app', user_id='user', session_id='s1'
+    )
+
+    with mock.patch.object(
+        service, '_supports_row_level_locking', return_value=True
+    ):
+      original_fn = database_session_service._select_required_state
+      calls = []
+
+      async def spy(**kwargs):
+        calls.append(kwargs.get('use_row_level_locking'))
+        return await original_fn(**kwargs)
+
+      with mock.patch.object(
+          database_session_service,
+          '_select_required_state',
+          side_effect=spy,
+      ):
+        event_app_delta = Event(
+            invocation_id='inv3',
+            author='user',
+            actions=EventActions(state_delta={'app:key1': 'v1'}),
+        )
+        await service.append_event(session, event_app_delta)
+
+    assert len(calls) == 2
+    # app_states lock: True (has app: delta)
+    assert calls[0] is True
+    # user_states lock: False (no user: delta)
+    assert calls[1] is False
+  finally:
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_append_event_acquires_for_update_when_user_delta_present():
+  """FOR UPDATE lock on user_states should be acquired when event has user:
+  prefixed state delta."""
+  service = DatabaseSessionService('sqlite+aiosqlite:///:memory:')
+  try:
+    session = await service.create_session(
+        app_name='my_app', user_id='user', session_id='s1'
+    )
+
+    with mock.patch.object(
+        service, '_supports_row_level_locking', return_value=True
+    ):
+      original_fn = database_session_service._select_required_state
+      calls = []
+
+      async def spy(**kwargs):
+        calls.append(kwargs.get('use_row_level_locking'))
+        return await original_fn(**kwargs)
+
+      with mock.patch.object(
+          database_session_service,
+          '_select_required_state',
+          side_effect=spy,
+      ):
+        event_user_delta = Event(
+            invocation_id='inv4',
+            author='user',
+            actions=EventActions(state_delta={'user:key1': 'v1'}),
+        )
+        await service.append_event(session, event_user_delta)
+
+    assert len(calls) == 2
+    # app_states lock: False (no app: delta)
+    assert calls[0] is False
+    # user_states lock: True (has user: delta)
+    assert calls[1] is True
+  finally:
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_append_event_acquires_for_update_when_both_deltas_present():
+  """FOR UPDATE locks on both app_states and user_states should be acquired
+  when the event has both app: and user: prefixed state deltas."""
+  service = DatabaseSessionService('sqlite+aiosqlite:///:memory:')
+  try:
+    session = await service.create_session(
+        app_name='my_app', user_id='user', session_id='s1'
+    )
+
+    with mock.patch.object(
+        service, '_supports_row_level_locking', return_value=True
+    ):
+      original_fn = database_session_service._select_required_state
+      calls = []
+
+      async def spy(**kwargs):
+        calls.append(kwargs.get('use_row_level_locking'))
+        return await original_fn(**kwargs)
+
+      with mock.patch.object(
+          database_session_service,
+          '_select_required_state',
+          side_effect=spy,
+      ):
+        event_both = Event(
+            invocation_id='inv5',
+            author='user',
+            actions=EventActions(state_delta={'app:ak': 'av', 'user:uk': 'uv'}),
+        )
+        await service.append_event(session, event_both)
+
+    assert len(calls) == 2
+    assert calls[0] is True
+    assert calls[1] is True
+  finally:
+    await service.close()
