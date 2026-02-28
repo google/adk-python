@@ -181,13 +181,14 @@ def convert_genai_part_to_a2a_part(
     if (
         part.inline_data.mime_type == A2A_DATA_PART_TEXT_MIME_TYPE
         and part.inline_data.data is not None
-        and part.inline_data.data.startswith(A2A_DATA_PART_START_TAG)
-        and part.inline_data.data.endswith(A2A_DATA_PART_END_TAG)
+        and isinstance(base64.b64encode(part.inline_data.data).decode('utf-8'), str)
+        and base64.b64encode(part.inline_data.data).decode('utf-8').startswith(A2A_DATA_PART_START_TAG.decode('utf-8'))
+        and base64.b64encode(part.inline_data.data).decode('utf-8').endswith(A2A_DATA_PART_END_TAG.decode('utf-8'))
     ):
       return a2a_types.Part(
           root=a2a_types.DataPart.model_validate_json(
-              part.inline_data.data[
-                  len(A2A_DATA_PART_START_TAG) : -len(A2A_DATA_PART_END_TAG)
+              base64.b64encode(part.inline_data.data).decode('utf-8')[
+                  len(A2A_DATA_PART_START_TAG.decode('utf-8')) : -len(A2A_DATA_PART_END_TAG.decode('utf-8'))
               ]
           )
       )
