@@ -81,6 +81,7 @@ def _finalize_model_response_event(
     llm_request: LlmRequest,
     llm_response: LlmResponse,
     model_response_event: Event,
+    function_call_id_cache: Optional[dict[str, str]] = None,
 ) -> Event:
   """Finalize and build the model response event from LLM response.
 
@@ -91,6 +92,9 @@ def _finalize_model_response_event(
     llm_request: The original LLM request.
     llm_response: The LLM response from the model.
     model_response_event: The base event to populate.
+    function_call_id_cache: Optional dict mapping function call names to
+      previously generated IDs. Used to keep IDs stable across partial
+      and final streaming events.
 
   Returns:
     The finalized Event with LLM response data merged in.
@@ -103,7 +107,9 @@ def _finalize_model_response_event(
   if finalized_event.content:
     function_calls = finalized_event.get_function_calls()
     if function_calls:
-      functions.populate_client_function_call_id(finalized_event)
+      functions.populate_client_function_call_id(
+          finalized_event, function_call_id_cache
+      )
       finalized_event.long_running_tool_ids = (
           functions.get_long_running_function_calls(
               function_calls, llm_request.tools_dict
@@ -827,6 +833,9 @@ class BaseLlmFlow(ABC):
         author=invocation_context.agent.name,
         branch=invocation_context.branch,
     )
+    # Cache maps function call names to generated IDs so that partial and
+    # final streaming events for the same call share a stable ID.
+    function_call_id_cache: dict[str, str] = {}
     async with Aclosing(
         self._call_llm_async(
             invocation_context, llm_request, model_response_event
@@ -840,6 +849,7 @@ class BaseLlmFlow(ABC):
                 llm_request,
                 llm_response,
                 model_response_event,
+                function_call_id_cache,
             )
         ) as agen:
           async for event in agen:
@@ -886,6 +896,7 @@ class BaseLlmFlow(ABC):
       llm_request: LlmRequest,
       llm_response: LlmResponse,
       model_response_event: Event,
+      function_call_id_cache: Optional[dict[str, str]] = None,
   ) -> AsyncGenerator[Event, None]:
     """Postprocess after calling the LLM.
 
@@ -894,6 +905,9 @@ class BaseLlmFlow(ABC):
       llm_request: The original LLM request.
       llm_response: The LLM response from the LLM call.
       model_response_event: A mutable event for the LLM response.
+      function_call_id_cache: Optional dict mapping function call names to
+        previously generated IDs. Keeps IDs stable across partial and final
+        streaming events.
 
     Yields:
       A generator of events.
@@ -917,7 +931,8 @@ class BaseLlmFlow(ABC):
 
     # Builds the event.
     model_response_event = self._finalize_model_response_event(
-        llm_request, llm_response, model_response_event
+        llm_request, llm_response, model_response_event,
+        function_call_id_cache,
     )
     yield model_response_event
 
@@ -1197,9 +1212,11 @@ class BaseLlmFlow(ABC):
       llm_request: LlmRequest,
       llm_response: LlmResponse,
       model_response_event: Event,
+      function_call_id_cache: Optional[dict[str, str]] = None,
   ) -> Event:
     return _finalize_model_response_event(
-        llm_request, llm_response, model_response_event
+        llm_request, llm_response, model_response_event,
+        function_call_id_cache,
     )
 
   async def _resolve_toolset_auth(
