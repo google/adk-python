@@ -35,6 +35,7 @@ from a2a.client.errors import A2AClientHTTPError
 from a2a.client.middleware import ClientCallContext
 from a2a.types import AgentCard
 from a2a.types import Message as A2AMessage
+from a2a.types import MessageSendConfiguration
 from a2a.types import Part as A2APart
 from a2a.types import Role
 from a2a.types import TaskArtifactUpdateEvent as A2ATaskArtifactUpdateEvent
@@ -43,6 +44,7 @@ from a2a.types import TaskStatusUpdateEvent as A2ATaskStatusUpdateEvent
 from a2a.types import TransportProtocol as A2ATransport
 from google.genai import types as genai_types
 import httpx
+from pydantic import BaseModel
 
 try:
   from a2a.utils.constants import AGENT_CARD_WELL_KNOWN_PATH
@@ -50,6 +52,9 @@ except ImportError:
   # Fallback for older versions of a2a-sdk.
   AGENT_CARD_WELL_KNOWN_PATH = "/.well-known/agent.json"
 
+from ..a2a.agent.config import A2aRemoteAgentConfig
+from ..a2a.agent.utils import execute_after_request_interceptors
+from ..a2a.agent.utils import execute_before_request_interceptors
 from ..a2a.converters.event_converter import convert_a2a_message_to_event
 from ..a2a.converters.event_converter import convert_a2a_task_to_event
 from ..a2a.converters.event_converter import convert_event_to_a2a_message
@@ -127,6 +132,7 @@ class RemoteA2aAgent(BaseAgent):
           Callable[[InvocationContext, A2AMessage], dict[str, Any]]
       ] = None,
       full_history_when_stateless: bool = False,
+      config: Optional[A2aRemoteAgentConfig] = None,
       **kwargs: Any,
   ) -> None:
     """Initialize RemoteA2aAgent.
@@ -147,6 +153,7 @@ class RemoteA2aAgent(BaseAgent):
         return Tasks or context IDs) will receive all session events on every
         request. If False, the default behavior of sending only events since the
         last reply from the agent will be used.
+      config: Optional configuration object.
       **kwargs: Additional arguments passed to BaseAgent
 
     Raises:
@@ -174,6 +181,7 @@ class RemoteA2aAgent(BaseAgent):
     self._a2a_client_factory: Optional[A2AClientFactory] = a2a_client_factory
     self._a2a_request_meta_provider = a2a_request_meta_provider
     self._full_history_when_stateless = full_history_when_stateless
+    self._config = config or A2aRemoteAgentConfig()
 
     # Validate and store agent card reference
     if isinstance(agent_card, AgentCard):
@@ -558,18 +566,36 @@ class RemoteA2aAgent(BaseAgent):
     logger.debug(build_a2a_request_log(a2a_request))
 
     try:
-      request_metadata = None
-      if self._a2a_request_meta_provider:
-        request_metadata = self._a2a_request_meta_provider(ctx, a2a_request)
+      a2a_request, parameters = await execute_before_request_interceptors(
+          self._config.request_interceptors, ctx, a2a_request
+      )
 
+      if isinstance(a2a_request, Event):
+        yield a2a_request
+        return
+
+      # Backward compatibility
+      if self._a2a_request_meta_provider:
+        parameters.request_metadata = self._a2a_request_meta_provider(
+            ctx, a2a_request
+        )
+
+      # TODO: Add support for requested_extension and
+      # message_send_configuration once they are supported by the A2A client.
       async for a2a_response in self._a2a_client.send_message(
           request=a2a_request,
-          request_metadata=request_metadata,
-          context=ClientCallContext(state=ctx.session.state),
+          request_metadata=parameters.request_metadata,
+          context=parameters.client_call_context,
       ):
         logger.debug(build_a2a_response_log(a2a_response))
 
         event = await self._handle_a2a_response(a2a_response, ctx)
+        if not event:
+          continue
+
+        event = await execute_after_request_interceptors(
+            self._config.request_interceptors, ctx, a2a_response, event
+        )
         if not event:
           continue
 
