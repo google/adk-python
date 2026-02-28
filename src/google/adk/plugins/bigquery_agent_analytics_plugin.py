@@ -508,10 +508,14 @@ class BigQueryLoggerConfig:
 # HELPER: TRACE MANAGER (Async-Safe with ContextVars)
 # ==============================================================================
 # NOTE: These contextvars are module-global, not plugin-instance-scoped.
-# Multiple BigQueryAgentAnalyticsPlugin instances in the same execution
-# context will share trace state.  This is acceptable for the expected
-# single-plugin-per-process deployment, but should be revisited if
-# multi-instance support is needed (e.g. scope by plugin instance ID).
+# This is safe in practice for two reasons:
+#   1. PluginManager enforces name-uniqueness, preventing two BQ plugin
+#      instances on the same Runner.
+#   2. Concurrent asyncio tasks (e.g. two Runners in asyncio.gather) each
+#      get an isolated contextvar copy, so they don't interfere.
+# The only problematic case would be two plugin instances interleaved
+# within the *same* asyncio task without task boundaries — which the
+# framework's PluginManager already prevents.
 
 _root_agent_name_ctx = contextvars.ContextVar(
     "_bq_analytics_root_agent_name", default=None
