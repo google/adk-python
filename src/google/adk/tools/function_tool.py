@@ -142,7 +142,7 @@ class FunctionTool(BaseTool):
       if inspect.isclass(target_type) and issubclass(
           target_type, pydantic.BaseModel
       ):
-        if args[param_name] is None:
+        if args[param_name] is None and is_optional:
           continue
         if not isinstance(args[param_name], target_type):
           try:
@@ -173,10 +173,16 @@ class FunctionTool(BaseTool):
             f"Parameter '{param_name}': expected type '{target_type}',"
             f' validation error: {e}'
         )
-      except (TypeError, NameError):
+      except (TypeError, NameError) as e:
         # TypeAdapter could not handle this annotation (e.g. a forward
-        # reference string). Skip validation silently.
-        pass
+        # reference string). Skip validation but log a warning.
+        logger.warning(
+            "Skipping validation for parameter '%s' due to unhandled"
+            " annotation type '%s': %s",
+            param_name,
+            target_type,
+            e,
+        )
 
     return converted_args, validation_errors
 

@@ -155,10 +155,12 @@ class TestArgValidationErrors:
     args, errors = tool._preprocess_args(
         {"name": 123, "count": "not_a_number", "flag": "not_a_bool"}
     )
-    # name: int->str coercion might fail in strict, but lax mode might
-    # handle it. count: "not_a_number"->int will fail. flag: depends on
-    # pydantic behavior.
+    # All three fail: pydantic rejects int->str, "not_a_number"->int,
+    # and "not_a_bool"->bool.
+    assert len(errors) == 3
+    assert any("name" in e for e in errors)
     assert any("count" in e for e in errors)
+    assert any("flag" in e for e in errors)
 
 
 # --- run_async integration tests ---
