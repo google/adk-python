@@ -275,15 +275,19 @@ class ApplicationIntegrationToolset(BaseToolset):
       self,
       readonly_context: Optional[ReadonlyContext] = None,
   ) -> List[RestApiTool]:
-    return (
-        [
-            tool
-            for tool in self._tools
-            if self._is_tool_selected(tool, readonly_context)
-        ]
-        if self._openapi_toolset is None
-        else await self._openapi_toolset.get_tools(readonly_context)
-    )
+    if self._openapi_toolset is not None:
+      return await self._openapi_toolset.get_tools(readonly_context)
+
+    if self._auth_config and self._auth_config.exchanged_auth_credential:
+      for tool in self._tools:
+        if isinstance(tool, IntegrationConnectorTool) and tool._auth_scheme:
+          tool._auth_credential = self._auth_config.exchanged_auth_credential
+
+    return [
+        tool
+        for tool in self._tools
+        if self._is_tool_selected(tool, readonly_context)
+    ]
 
   @override
   async def close(self) -> None:
