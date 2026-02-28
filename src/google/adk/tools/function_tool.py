@@ -173,12 +173,25 @@ class FunctionTool(BaseTool):
             f"Parameter '{param_name}': expected type '{target_type}',"
             f' validation error: {e}'
         )
-      except Exception:
+      except (TypeError, NameError):
         # TypeAdapter could not handle this annotation (e.g. a forward
         # reference string). Skip validation silently.
         pass
 
     return converted_args, validation_errors
+
+  def _build_validation_error_response(
+      self, validation_errors: list[str]
+  ) -> dict[str, str]:
+    """Formats validation errors into an error dict for the LLM."""
+    validation_errors_str = '\n'.join(validation_errors)
+    return {
+        'error': (
+            f'Invoking `{self.name}()` failed due to argument validation'
+            f' errors:\n{validation_errors_str}\nYou could retry calling'
+            ' this tool with corrected argument types.'
+        )
+    }
 
   @override
   async def run_async(
@@ -190,11 +203,7 @@ class FunctionTool(BaseTool):
     args_to_call, validation_errors = self._preprocess_args(args)
 
     if validation_errors:
-      validation_errors_str = '\n'.join(validation_errors)
-      error_str = f"""Invoking `{self.name}()` failed due to argument validation errors:
-{validation_errors_str}
-You could retry calling this tool with corrected argument types."""
-      return {'error': error_str}
+      return self._build_validation_error_response(validation_errors)
 
     signature = inspect.signature(self.func)
     valid_params = {param for param in signature.parameters}

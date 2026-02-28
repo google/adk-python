@@ -78,11 +78,7 @@ class CrewaiTool(FunctionTool):
     args_to_call, validation_errors = self._preprocess_args(args)
 
     if validation_errors:
-      validation_errors_str = '\n'.join(validation_errors)
-      error_str = f"""Invoking `{self.name}()` failed due to argument validation errors:
-{validation_errors_str}
-You could retry calling this tool with corrected argument types."""
-      return {'error': error_str}
+      return self._build_validation_error_response(validation_errors)
 
     signature = inspect.signature(self.func)
     valid_params = {param for param in signature.parameters}
