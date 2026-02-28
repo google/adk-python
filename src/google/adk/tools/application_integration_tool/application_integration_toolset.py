@@ -270,6 +270,25 @@ class ApplicationIntegrationToolset(BaseToolset):
           )
       )
 
+  def _clone_connector_tool_with_auth_credential(
+      self,
+      tool: IntegrationConnectorTool,
+      auth_credential: AuthCredential,
+  ) -> IntegrationConnectorTool:
+    return IntegrationConnectorTool(
+        name=tool.name,
+        description=tool.description,
+        connection_name=tool._connection_name,
+        connection_host=tool._connection_host,
+        connection_service_name=tool._connection_service_name,
+        entity=tool._entity,
+        action=tool._action,
+        operation=tool._operation,
+        rest_api_tool=tool._rest_api_tool,
+        auth_scheme=tool._auth_scheme,
+        auth_credential=auth_credential,
+    )
+
   @override
   async def get_tools(
       self,
@@ -278,16 +297,33 @@ class ApplicationIntegrationToolset(BaseToolset):
     if self._openapi_toolset is not None:
       return await self._openapi_toolset.get_tools(readonly_context)
 
-    if self._auth_config and self._auth_config.exchanged_auth_credential:
-      for tool in self._tools:
-        if isinstance(tool, IntegrationConnectorTool) and tool._auth_scheme:
-          tool._auth_credential = self._auth_config.exchanged_auth_credential
+    exchanged_auth_credential = (
+        self._auth_config.exchanged_auth_credential
+        if self._auth_config
+        else None
+    )
 
-    return [
+    selected_tools = [
         tool
         for tool in self._tools
         if self._is_tool_selected(tool, readonly_context)
     ]
+
+    if not exchanged_auth_credential:
+      return selected_tools
+
+    resolved_tools: List[RestApiTool] = []
+    for tool in selected_tools:
+      if isinstance(tool, IntegrationConnectorTool) and tool._auth_scheme:
+        resolved_tools.append(
+            self._clone_connector_tool_with_auth_credential(
+                tool, exchanged_auth_credential
+            )
+        )
+      else:
+        resolved_tools.append(tool)
+
+    return resolved_tools
 
   @override
   async def close(self) -> None:

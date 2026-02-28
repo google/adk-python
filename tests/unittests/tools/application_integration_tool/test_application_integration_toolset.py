@@ -729,7 +729,10 @@ async def test_get_tools_uses_exchanged_auth_credential_when_available(
   )
   toolset._auth_config.exchanged_auth_credential = exchanged_auth_credential
 
+  original_tool = toolset._tools[0]
   tools = await toolset.get_tools()
 
   assert len(tools) == 1
+  assert tools[0] is not original_tool
   assert tools[0]._auth_credential == exchanged_auth_credential
+  assert original_tool._auth_credential == raw_auth_credential
