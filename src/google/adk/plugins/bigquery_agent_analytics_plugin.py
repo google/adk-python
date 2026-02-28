@@ -1739,7 +1739,7 @@ class _LoopState:
   batch_processor: BatchProcessor
 
 
-@dataclass
+@dataclass(kw_only=True)
 class EventData:
   """Typed container for structured fields passed to _log_event."""
 
