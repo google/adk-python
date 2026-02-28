@@ -138,12 +138,14 @@ class FunctionTool(BaseTool):
           target_type = non_none_types[0]
           is_optional = len(union_args) != len(non_none_types)
 
+      # Skip None values only for Optional params
+      if args[param_name] is None and is_optional:
+        continue
+
       # Pydantic models: keep existing graceful-failure behavior
       if inspect.isclass(target_type) and issubclass(
           target_type, pydantic.BaseModel
       ):
-        if args[param_name] is None and is_optional:
-          continue
         if not isinstance(args[param_name], target_type):
           try:
             converted_args[param_name] = target_type.model_validate(
@@ -156,10 +158,6 @@ class FunctionTool(BaseTool):
                 target_type.__name__,
                 e,
             )
-        continue
-
-      # Skip None values only for Optional params
-      if args[param_name] is None and is_optional:
         continue
 
       # Validate and coerce all other annotated types using TypeAdapter.
