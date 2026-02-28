@@ -16,14 +16,17 @@ import os
 
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.auth.auth_credential import AuthCredentialTypes
+from google.adk.tools.bigtable import query_tool as bigtable_query_tool
 from google.adk.tools.bigtable.bigtable_credentials import BigtableCredentialsConfig
 from google.adk.tools.bigtable.bigtable_toolset import BigtableToolset
 from google.adk.tools.bigtable.settings import BigtableToolSettings
+from google.adk.tools.google_tool import GoogleTool
 import google.auth
+from google.cloud.bigtable.data.execute_query.metadata import SqlType
 
-# Define an appropriate credential type
-CREDENTIALS_TYPE = AuthCredentialTypes.OAUTH2
-
+# Define an appropriate credential type.
+# None for Application Default Credentials
+CREDENTIALS_TYPE = None
 
 # Define Bigtable tool config with read capability set to allowed.
 tool_settings = BigtableToolSettings()
@@ -59,6 +62,53 @@ bigtable_toolset = BigtableToolset(
     credentials_config=credentials_config, bigtable_tool_settings=tool_settings
 )
 
+_BIGTABLE_PROJECT_ID = "google.com:cloud-bigtable-dev"
+_BIGTABLE_INSTANCE_ID = "annenguyen-bus-instance"
+
+
+def search_hotels_by_location(
+    location_name: str,
+    credentials: google.auth.credentials.Credentials,
+    settings: BigtableToolSettings,
+    tool_context: google.adk.tools.tool_context.ToolContext,
+):
+  """Search hotels by location name.
+
+  This function takes a location name and returns a list of hotels
+  in that area.
+
+  Args:
+    location_name (str): The geographical location (e.g., city or town) for the
+      hotel search.
+    Example: { "location_name": "Basel" }
+
+  Returns:
+      The hotels name, price tier.
+  """
+
+  sql_template = """
+  SELECT
+    TO_INT64(cf['id']) as id,
+    CAST(cf['name'] AS STRING) AS name,
+    CAST(cf['location'] AS STRING) AS location,
+    CAST(cf['price_tier'] AS STRING) AS price_tier,
+    CAST(cf['checkin_date'] AS STRING) AS checkin_date,
+    CAST(cf['checkout_date'] AS STRING) AS checkout_date
+  FROM hotels
+  WHERE LOWER(CAST(cf['location'] AS STRING)) LIKE LOWER(CONCAT('%', @location_name, '%'))
+  """
+  return bigtable_query_tool.execute_sql(
+      project_id=_BIGTABLE_PROJECT_ID,
+      instance_id=_BIGTABLE_INSTANCE_ID,
+      query=sql_template,
+      credentials=credentials,
+      settings=settings,
+      tool_context=tool_context,
+      parameters={"location": location_name},
+      parameter_types={"location": SqlType.String()},
+  )
+
+
 # The variable name `root_agent` determines what your root agent is for the
 # debug CLI
 root_agent = LlmAgent(
@@ -72,5 +122,13 @@ root_agent = LlmAgent(
         You are a data agent with access to several Bigtable tools.
         Make use of those tools to answer the user's questions.
     """,
-    tools=[bigtable_toolset],
+    tools=[
+        bigtable_toolset,
+        # Or, uncomment to use customized Bigtable tools.
+        # GoogleTool(
+        #     func=search_hotels_by_location,
+        #     credentials_config=credentials_config,
+        #     tool_settings=tool_settings,
+        # ),
+    ],
 )

@@ -17,6 +17,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 from concurrent.futures import ThreadPoolExecutor
 import copy
 import functools
@@ -31,10 +33,10 @@ from typing import Optional
 from typing import TYPE_CHECKING
 import uuid
 
+from google.adk.tools.computer_use.computer_use_tool import ComputerUseTool
 from google.genai import types
 
 from ...agents.active_streaming_tool import ActiveStreamingTool
-from ...agents.invocation_context import InvocationContext
 from ...agents.live_request_queue import LiveRequestQueue
 from ...auth.auth_tool import AuthConfig
 from ...auth.auth_tool import AuthToolArguments
@@ -49,6 +51,7 @@ from ...tools.tool_context import ToolContext
 from ...utils.context_utils import Aclosing
 
 if TYPE_CHECKING:
+  from ...agents.invocation_context import InvocationContext
   from ...agents.llm_agent import LlmAgent
 
 AF_FUNCTION_CALL_ID_PREFIX = 'adk-'
@@ -991,6 +994,50 @@ def _get_tool_and_context(
   return (tool, tool_context)
 
 
+def _try_decode_computer_use_image(
+    tool: BaseTool,
+    function_result: dict[str, object],
+) -> Optional[list[types.FunctionResponsePart]]:
+  """Decodes the image from the function result for a computer use tool.
+
+  Args:
+    tool: The tool that produced the function result.
+    function_result: The dictionary containing the function's result. This
+      dictionary may be modified in-place to remove the 'image' key if an image
+      is successfully decoded.
+
+  Returns:
+    A list containing a `types.FunctionResponsePart` with the decoded image
+    data, or None if no image was found or decoding failed.
+  """
+
+  if not isinstance(tool, ComputerUseTool) or not isinstance(
+      function_result, dict
+  ):
+    return None
+
+  if (
+      'image' not in function_result
+      or 'data' not in function_result['image']
+      or 'mimetype' not in function_result['image']
+  ):
+    return None
+
+  try:
+    image_data = base64.b64decode(function_result['image']['data'])
+    mime_type = function_result['image']['mimetype']
+
+    part = types.FunctionResponsePart.from_bytes(
+        data=image_data, mime_type=mime_type
+    )
+
+    del function_result['image']
+    return [part]
+  except (binascii.Error, ValueError):
+    logger.exception('Failed to decode image from computer use tool')
+    return None
+
+
 async def __call_tool_live(
     tool: BaseTool,
     args: dict[str, object],
@@ -1028,8 +1075,16 @@ def __build_response_event(
   if not isinstance(function_result, dict):
     function_result = {'result': function_result}
 
+  function_response_parts = None
+  if isinstance(tool, ComputerUseTool):
+    function_response_parts = _try_decode_computer_use_image(
+        tool, function_result
+    )
+
   part_function_response = types.Part.from_function_response(
-      name=tool.name, response=function_result
+      name=tool.name,
+      response=function_result,
+      parts=function_response_parts,
   )
   part_function_response.function_response.id = tool_context.function_call_id
 
@@ -1102,6 +1157,18 @@ def merge_parallel_function_response_events(
   return merged_event
 
 
+def find_event_by_function_call_id(
+    events: list[Event],
+    function_call_id: str,
+) -> Optional[Event]:
+  """Finds the function call event that matches the function call id."""
+  for event in reversed(events):
+    for function_call in event.get_function_calls():
+      if function_call.id == function_call_id:
+        return event
+  return None
+
+
 def find_matching_function_call(
     events: list[Event],
 ) -> Optional[Event]:
@@ -1110,25 +1177,8 @@ def find_matching_function_call(
     return None
 
   last_event = events[-1]
-  if (
-      last_event.content
-      and last_event.content.parts
-      and any(part.function_response for part in last_event.content.parts)
-  ):
+  function_responses = last_event.get_function_responses()
+  if not function_responses:
+    return None
 
-    function_call_id = next(
-        part.function_response.id
-        for part in last_event.content.parts
-        if part.function_response
-    )
-    for i in range(len(events) - 2, -1, -1):
-      event = events[i]
-      # looking for the system long-running request euc function call
-      function_calls = event.get_function_calls()
-      if not function_calls:
-        continue
-
-      for function_call in function_calls:
-        if function_call.id == function_call_id:
-          return event
-  return None
+  return find_event_by_function_call_id(events[:-1], function_responses[0].id)

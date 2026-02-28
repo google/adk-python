@@ -12,5 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# version: major.minor.patch
-__version__ = "1.26.0"
+"""A2A agents package."""
+
+from .config import A2aRemoteAgentConfig
+from .config import ParametersConfig
+from .config import RequestInterceptor
+
+__all__ = [
+    "A2aRemoteAgentConfig",
+    "ParametersConfig",
+    "RequestInterceptor",
+]
