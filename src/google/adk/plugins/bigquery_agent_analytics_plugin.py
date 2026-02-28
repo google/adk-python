@@ -1743,7 +1743,6 @@ class _LoopState:
 class EventData:
   """Typed container for structured fields passed to _log_event."""
 
-  trace_id_override: Optional[str] = None
   span_id_override: Optional[str] = None
   parent_span_id_override: Optional[str] = None
   latency_ms: Optional[int] = None
@@ -1754,6 +1753,7 @@ class EventData:
   status: str = "OK"
   error_message: Optional[str] = None
   extra_attributes: dict[str, Any] = field(default_factory=dict)
+  trace_id_override: Optional[str] = None
 
 
 class BigQueryAgentAnalyticsPlugin(BasePlugin):
