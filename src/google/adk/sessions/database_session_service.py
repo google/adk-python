@@ -564,6 +564,20 @@ class DatabaseSessionService(BaseSessionService):
         if storage_session is None:
           raise ValueError(f"Session {session.id} not found.")
 
+        # Pre-analyze state deltas to determine which scopes actually need
+        # write locks. Most events carry only session-scoped state (or no
+        # state at all), so acquiring FOR UPDATE on app_states / user_states
+        # unnecessarily serializes all concurrent append_event calls.
+        has_app_delta = False
+        has_user_delta = False
+        state_deltas = None
+        if event.actions and event.actions.state_delta:
+          state_deltas = _session_util.extract_state_delta(
+              event.actions.state_delta
+          )
+          has_app_delta = bool(state_deltas.get("app"))
+          has_user_delta = bool(state_deltas.get("user"))
+
         storage_app_state = await _select_required_state(
             sql_session=sql_session,
             state_model=schema.StorageAppState,
@@ -622,7 +636,7 @@ class DatabaseSessionService(BaseSessionService):
           storage_user_state.state = (
               storage_user_state.state | state_deltas["user"]
           )
-        if state_deltas["session"]:
+        if state_deltas and state_deltas["session"]:
           storage_session.state = (
               storage_session.state | state_deltas["session"]
           )
