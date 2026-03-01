@@ -135,11 +135,14 @@ class FunctionTool(BaseTool):
       # Validate and coerce using TypeAdapter. Handles primitives, enums,
       # Pydantic models, Optional[T], T | None, and container types natively.
       try:
-        if target_type not in self._type_adapter_cache:
-          self._type_adapter_cache[target_type] = pydantic.TypeAdapter(
-              target_type
-          )
-        adapter = self._type_adapter_cache[target_type]
+        try:
+          adapter = self._type_adapter_cache[target_type]
+        except (KeyError, TypeError):
+          adapter = pydantic.TypeAdapter(target_type)
+          try:
+            self._type_adapter_cache[target_type] = adapter
+          except TypeError:
+            pass
         converted_args[param_name] = adapter.validate_python(
             args[param_name]
         )
