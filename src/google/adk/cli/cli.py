@@ -135,7 +135,6 @@ async def run_interactively(
       memory_service=memory_service,
       credential_service=credential_service,
   )
-  runner_ref = [runner]
   
   if dev:
     loop = asyncio.get_running_loop()
@@ -148,6 +147,7 @@ async def run_interactively(
       sys.stdout.flush()
     
     async def _handle_reload():
+      nonlocal runner
       click.secho('\nChanges detected, reloading agent...', fg='yellow')
       if not (agent_loader and agent_folder_name):
         return
@@ -166,8 +166,8 @@ async def run_interactively(
             memory_service=memory_service,
             credential_service=credential_service,
         )
-        await runner_ref[0].close()
-        runner_ref[0] = new_runner
+        await runner.close()
+        runner = new_runner
       except Exception as e:
         click.secho(f'Error reloading agent: {e}', fg='red')
 
@@ -217,7 +217,7 @@ async def run_interactively(
     if query.strip() == 'exit':
       break
     async with Aclosing(
-        runner_ref[0].run_async(
+        runner.run_async(
             user_id=session.user_id,
             session_id=session.id,
             new_message=types.Content(
@@ -233,7 +233,7 @@ async def run_interactively(
     if dev:
       _prompt_user(new_line=True)
       
-  await runner_ref[0].close()
+  await runner.close()
 
 
 async def run_cli(
