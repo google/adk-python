@@ -135,12 +135,42 @@ async def run_interactively(
       memory_service=memory_service,
       credential_service=credential_service,
   )
+  runner_ref = [runner]
   
   if dev:
     loop = asyncio.get_running_loop()
     input_queue = asyncio.Queue()
     _EOF_SENTINEL = object()
     
+    def _prompt_user(new_line: bool = False):
+      prompt = '\n[user]: ' if new_line else '[user]: '
+      sys.stdout.write(prompt)
+      sys.stdout.flush()
+    
+    async def _handle_reload():
+      click.secho('\nChanges detected, reloading agent...', fg='yellow')
+      if not (agent_loader and agent_folder_name):
+        return
+      try:
+        agent_loader.remove_agent_from_cache(agent_folder_name)
+        new_agent_or_app = agent_loader.load_agent(agent_folder_name)
+        reloaded_app = (
+            new_agent_or_app
+            if isinstance(new_agent_or_app, App)
+            else App(name=session.app_name, root_agent=new_agent_or_app)
+        )
+        new_runner = Runner(
+            app=reloaded_app,
+            artifact_service=artifact_service,
+            session_service=session_service,
+            memory_service=memory_service,
+            credential_service=credential_service,
+        )
+        await runner_ref[0].close()
+        runner_ref[0] = new_runner
+      except Exception as e:
+        click.secho(f'Error reloading agent: {e}', fg='red')
+
     def _read_input():
       try:
         while True:
@@ -154,8 +184,7 @@ async def run_interactively(
           loop.call_soon_threadsafe(input_queue.put_nowait, _EOF_SENTINEL)
 
     threading.Thread(target=_read_input, daemon=True).start()
-    sys.stdout.write('[user]: ')
-    sys.stdout.flush()
+    _prompt_user()
 
   while True:
     if not dev or reload_event is None:
@@ -170,30 +199,10 @@ async def run_interactively(
       if reload_task in done:
         input_task.cancel()
         reload_event.clear()
-        click.secho('\nChanges detected, reloading agent...', fg='yellow')
-        if agent_loader and agent_folder_name:
-          try:
-            agent_loader.remove_agent_from_cache(agent_folder_name)
-            new_agent_or_app = agent_loader.load_agent(agent_folder_name)
-            reloaded_app = (
-                new_agent_or_app
-                if isinstance(new_agent_or_app, App)
-                else App(name=session.app_name, root_agent=new_agent_or_app)
-            )
-            new_runner = Runner(
-                app=reloaded_app,
-                artifact_service=artifact_service,
-                session_service=session_service,
-                memory_service=memory_service,
-                credential_service=credential_service,
-            )
-            await runner.close()
-            runner = new_runner
-          except Exception as e:
-            click.secho(f'Error reloading agent: {e}', fg='red')
         
-        sys.stdout.write('\n[user]: ')
-        sys.stdout.flush()
+        await _handle_reload()
+        
+        _prompt_user(new_line=True)
         continue
       else:
         reload_task.cancel()
@@ -203,13 +212,12 @@ async def run_interactively(
 
     if not query or not query.strip():
       if dev:
-        sys.stdout.write('[user]: ')
-        sys.stdout.flush()
+        _prompt_user()
       continue
     if query.strip() == 'exit':
       break
     async with Aclosing(
-        runner.run_async(
+        runner_ref[0].run_async(
             user_id=session.user_id,
             session_id=session.id,
             new_message=types.Content(
@@ -223,10 +231,9 @@ async def run_interactively(
             click.echo(f'[{event.author}]: {text}')
             
     if dev:
-      sys.stdout.write('\n[user]: ')
-      sys.stdout.flush()
+      _prompt_user(new_line=True)
       
-  await runner.close()
+  await runner_ref[0].close()
 
 
 async def run_cli(
