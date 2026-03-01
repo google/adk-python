@@ -177,8 +177,10 @@ async def run_interactively(
           line = sys.stdin.readline()
           if not line: break
           loop.call_soon_threadsafe(input_queue.put_nowait, line)
-      except Exception as e:
-        print(f"[ERROR] Exception in stdin reader thread: {e}", file=sys.stderr)
+      except Exception:
+        import traceback
+        print("[ERROR] Exception in stdin reader thread:", file=sys.stderr)
+        traceback.print_exc(file=sys.stderr)
       finally:
         if not loop.is_closed():
           loop.call_soon_threadsafe(input_queue.put_nowait, _EOF_SENTINEL)
