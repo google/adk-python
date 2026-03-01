@@ -519,3 +519,68 @@ async def test_run_interactively_whitespace_and_exit(
 
   # verify: assistant echoed once with 'echo:hello'
   assert any("echo:hello" in m for m in echoed)
+
+
+@pytest.mark.asyncio
+async def test_run_interactively_dev_reload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """run_interactively should reload the agent when reload_event is set."""
+  import asyncio
+  import sys
+  import time
+  
+  session_service = InMemorySessionService()
+  sess = await session_service.create_session(app_name="dummy", user_id="u")
+  artifact_service = InMemoryArtifactService()
+  credential_service = InMemoryCredentialService()
+  root_agent = BaseAgent(name="root")
+
+  reload_event = asyncio.Event()
+  sys_stdin_readline_calls = []
+  
+  def mock_readline():
+    sys_stdin_readline_calls.append(True)
+    if len(sys_stdin_readline_calls) == 1:
+      # Return a normal query first
+      return "hello\n"
+    elif len(sys_stdin_readline_calls) == 2:
+      # Sleep a bit to allow the loop to run, then trigger the reload
+      time.sleep(0.1)
+      # In tests, we need to set the event thread-safely
+      loop = asyncio.get_event_loop()
+      loop.call_soon_threadsafe(reload_event.set)
+      time.sleep(0.1)
+      return "exit\n"
+    return "exit\n"
+
+  monkeypatch.setattr(sys.stdin, "readline", mock_readline)
+  
+  echoed: list[str] = []
+  monkeypatch.setattr(click, "echo", lambda msg, **kw: echoed.append(msg))
+  monkeypatch.setattr(click, "secho", lambda msg, **kw: echoed.append(msg))
+  
+  class DummyAgentLoader:
+    removed = False
+    reloaded = False
+    def remove_agent_from_cache(self, name):
+      self.removed = True
+      
+    def load_agent(self, name):
+      self.reloaded = True
+      return BaseAgent(name="reloaded_root")
+      
+  loader = DummyAgentLoader()
+
+  await cli.run_interactively(
+      root_agent, artifact_service, sess, session_service, credential_service,
+      dev=True, reload_event=reload_event, agent_loader=loader, agent_folder_name="dummy_folder"
+  )
+
+  # Check that the agent handled the first message
+  assert any("echo:hello" in m for m in echoed)
+  # Check that the reload message was printed
+  assert any("reloading agent..." in m for m in echoed)
+  # Check that the loader cache was manipulated
+  assert loader.removed is True
+  assert loader.reloaded is True

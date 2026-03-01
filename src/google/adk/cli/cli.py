@@ -18,6 +18,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 from typing import Union
+import asyncio
+import sys
+import threading
+from watchdog.events import FileSystemEventHandler
+from watchdog.observers import Observer
 
 import click
 from google.genai import types
@@ -40,6 +45,27 @@ from .utils.agent_loader import AgentLoader
 from .utils.service_factory import create_artifact_service_from_options
 from .utils.service_factory import create_memory_service_from_options
 from .utils.service_factory import create_session_service_from_options
+
+
+class DevModeChangeHandler(FileSystemEventHandler):
+  """Watchdog event handler to trigger agent reload upon file changes."""
+  
+  def __init__(self, loop: asyncio.AbstractEventLoop, reload_event: asyncio.Event):
+    super().__init__()
+    self.loop = loop
+    self.reload_event = reload_event
+
+  def _handle_change(self, event):
+    if event.is_directory:
+      return
+    if event.src_path.endswith('.py') or event.src_path.endswith('.yaml'):
+      self.loop.call_soon_threadsafe(self.reload_event.set)
+
+  def on_modified(self, event):
+    self._handle_change(event)
+
+  def on_created(self, event):
+    self._handle_change(event)
 
 
 class InputFile(BaseModel):
@@ -98,6 +124,10 @@ async def run_interactively(
     session_service: BaseSessionService,
     credential_service: BaseCredentialService,
     memory_service: Optional[BaseMemoryService] = None,
+    dev: bool = False,
+    reload_event: Optional[asyncio.Event] = None,
+    agent_loader: Optional[AgentLoader] = None,
+    agent_folder_name: Optional[str] = None,
 ) -> None:
   app = (
       root_agent_or_app
@@ -111,11 +141,72 @@ async def run_interactively(
       memory_service=memory_service,
       credential_service=credential_service,
   )
+  
+  if dev:
+    loop = asyncio.get_running_loop()
+    input_queue = asyncio.Queue()
+    
+    def _read_input():
+      while True:
+        try:
+          line = sys.stdin.readline()
+          if not line: break
+          loop.call_soon_threadsafe(input_queue.put_nowait, line)
+        except Exception:
+          break
+
+    threading.Thread(target=_read_input, daemon=True).start()
+    sys.stdout.write('[user]: ')
+    sys.stdout.flush()
+
   while True:
-    query = input('[user]: ')
+    if not dev or reload_event is None:
+      query = input('[user]: ')
+    else:
+      input_task = asyncio.create_task(input_queue.get())
+      reload_task = asyncio.create_task(reload_event.wait())
+      done, pending = await asyncio.wait(
+          [input_task, reload_task], return_when=asyncio.FIRST_COMPLETED
+      )
+      
+      if reload_task in done:
+        input_task.cancel()
+        reload_event.clear()
+        click.secho('\nChanges detected, reloading agent...', fg='yellow')
+        await runner.close()
+        
+        if agent_loader and agent_folder_name:
+            try:
+                agent_loader.remove_agent_from_cache(agent_folder_name)
+                new_agent_or_app = agent_loader.load_agent(agent_folder_name)
+                app = (
+                    new_agent_or_app
+                    if isinstance(new_agent_or_app, App)
+                    else App(name=session.app_name, root_agent=new_agent_or_app)
+                )
+                runner = Runner(
+                    app=app,
+                    artifact_service=artifact_service,
+                    session_service=session_service,
+                    memory_service=memory_service,
+                    credential_service=credential_service,
+                )
+            except Exception as e:
+                click.secho(f'Error reloading agent: {e}', fg='red')
+        
+        sys.stdout.write('\n[user]: ')
+        sys.stdout.flush()
+        continue
+      else:
+        reload_task.cancel()
+        query = input_task.result()
+
     if not query or not query.strip():
+      if dev:
+        sys.stdout.write('[user]: ')
+        sys.stdout.flush()
       continue
-    if query == 'exit':
+    if query.strip() == 'exit':
       break
     async with Aclosing(
         runner.run_async(
@@ -130,6 +221,11 @@ async def run_interactively(
         if event.content and event.content.parts:
           if text := ''.join(part.text or '' for part in event.content.parts):
             click.echo(f'[{event.author}]: {text}')
+            
+    if dev:
+      sys.stdout.write('\n[user]: ')
+      sys.stdout.flush()
+      
   await runner.close()
 
 
@@ -141,6 +237,7 @@ async def run_cli(
     saved_session_file: Optional[str] = None,
     save_session: bool,
     session_id: Optional[str] = None,
+    dev: bool = False,
     session_service_uri: Optional[str] = None,
     artifact_service_uri: Optional[str] = None,
     memory_service_uri: Optional[str] = None,
@@ -203,6 +300,17 @@ async def run_cli(
 
   credential_service = InMemoryCredentialService()
 
+  observer = None
+  reload_event = None
+  if dev:
+    loop = asyncio.get_running_loop()
+    reload_event = asyncio.Event()
+    event_handler = DevModeChangeHandler(loop, reload_event)
+    observer = Observer()
+    observer.schedule(event_handler, path=str(agent_root), recursive=True)
+    observer.start()
+    click.secho(f"Auto-reload enabled - watching for file changes in {agent_folder_name}...", fg="green")
+
   # Helper function for printing events
   def _print_event(event) -> None:
     content = event.content
@@ -250,6 +358,10 @@ async def run_cli(
         session_service,
         credential_service,
         memory_service=memory_service,
+        dev=dev,
+        reload_event=reload_event,
+        agent_loader=agent_loader,
+        agent_folder_name=agent_folder_name,
     )
   else:
     session = await session_service.create_session(
@@ -263,6 +375,10 @@ async def run_cli(
         session_service,
         credential_service,
         memory_service=memory_service,
+        dev=dev,
+        reload_event=reload_event,
+        agent_loader=agent_loader,
+        agent_folder_name=agent_folder_name,
     )
 
   if save_session:
@@ -281,3 +397,7 @@ async def run_cli(
     )
 
     print('Session saved to', session_path)
+
+  if observer:
+    observer.stop()
+    observer.join()
