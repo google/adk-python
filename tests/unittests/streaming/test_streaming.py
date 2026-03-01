@@ -1348,7 +1348,9 @@ def test_input_streaming_tool_registered_lazily_with_stream():
 
   stream_state_during_call = None
 
-  async def monitor_video_stream(input_stream: LiveRequestQueue):
+  async def monitor_video_stream(
+      input_stream: LiveRequestQueue,
+  ) -> AsyncGenerator[str, None]:
     """Record whether input_stream was provided."""
     nonlocal stream_state_during_call
     stream_state_during_call = input_stream is not None
@@ -1366,7 +1368,7 @@ def test_input_streaming_tool_registered_lazily_with_stream():
   captured_context = None
   original_method = runner.runner._new_invocation_context_for_live
 
-  def capturing_method(*args, **kwargs):
+  def capturing_method(*args, **kwargs) -> Any:
     nonlocal captured_context
     ctx = original_method(*args, **kwargs)
     captured_context = ctx
@@ -1439,14 +1441,16 @@ def test_stop_streaming_resets_stream_to_none():
 
   mock_model = testing_utils.MockModel.create([response1, response2, response3])
 
-  async def monitor_stock_price(stock_symbol: str):
+  async def monitor_stock_price(
+      stock_symbol: str,
+  ) -> AsyncGenerator[str, None]:
     """Yield periodic price updates for the given stock symbol."""
     yield f'Monitoring {stock_symbol}'
     while True:
       await asyncio.sleep(0.1)
       yield f'{stock_symbol} price update'
 
-  def stop_streaming(function_name: str):
+  def stop_streaming(function_name: str) -> None:
     """Stop a running streaming tool by name."""
     pass
 
@@ -1465,7 +1469,7 @@ def test_stop_streaming_resets_stream_to_none():
   captured_child_context = None
   original_create = root_agent._create_invocation_context
 
-  def capturing_create(*args, **kwargs):
+  def capturing_create(*args, **kwargs) -> Any:
     nonlocal captured_child_context
     ctx = original_create(*args, **kwargs)
     captured_child_context = ctx
@@ -1515,7 +1519,9 @@ def test_output_streaming_tool_registered_lazily_without_stream():
 
   mock_model = testing_utils.MockModel.create([response1, response2])
 
-  async def monitor_stock_price(stock_symbol: str):
+  async def monitor_stock_price(
+      stock_symbol: str,
+  ) -> AsyncGenerator[str, None]:
     """Yield periodic price updates."""
     yield f'price for {stock_symbol}'
 
@@ -1532,7 +1538,7 @@ def test_output_streaming_tool_registered_lazily_without_stream():
   captured_child_context = None
   original_create = root_agent._create_invocation_context
 
-  def capturing_create(*args, **kwargs):
+  def capturing_create(*args, **kwargs) -> Any:
     nonlocal captured_child_context
     ctx = original_create(*args, **kwargs)
     captured_child_context = ctx
@@ -1557,3 +1563,198 @@ def test_output_streaming_tool_registered_lazily_without_stream():
   assert (
       active_tools['monitor_stock_price'].stream is None
   ), 'Expected stream to be None for output-streaming tool'
+
+
+def _run_single_tool_live(
+    tool_func,
+    func_name: str,
+    func_args: dict[str, Any] | None = None,
+    max_responses: int = 3,
+) -> dict[str, Any]:
+  """Run a live session that invokes a single tool and return active_streaming_tools.
+
+  Sets up a mock model that issues one function call then completes,
+  creates an agent with the given tool, captures the invocation context,
+  and returns the ``active_streaming_tools`` dict after execution.
+  """
+  function_call = types.Part.from_function_call(
+      name=func_name, args=func_args or {}
+  )
+  response1 = LlmResponse(
+      content=types.Content(role='model', parts=[function_call]),
+      turn_complete=False,
+  )
+  response2 = LlmResponse(turn_complete=True)
+
+  mock_model = testing_utils.MockModel.create([response1, response2])
+
+  root_agent = Agent(
+      name='root_agent',
+      model=mock_model,
+      tools=[tool_func],
+  )
+
+  runner = _LiveTestRunner(root_agent=root_agent)
+
+  captured_child_context = None
+  original_create = root_agent._create_invocation_context
+
+  def capturing_create(*args, **kwargs) -> Any:
+    nonlocal captured_child_context
+    ctx = original_create(*args, **kwargs)
+    captured_child_context = ctx
+    return ctx
+
+  root_agent._create_invocation_context = capturing_create
+
+  live_request_queue = LiveRequestQueue()
+  live_request_queue.send_realtime(
+      blob=types.Blob(data=b'test', mime_type='audio/pcm')
+  )
+
+  runner.run_live(live_request_queue, max_responses=max_responses)
+
+  assert captured_child_context is not None
+  return captured_child_context.active_streaming_tools or {}
+
+
+def test_input_streaming_tool_has_stream_set_at_registration():
+  """Test that input-streaming tools get .stream set to a LiveRequestQueue during registration."""
+
+  async def monitor_video_stream(
+      input_stream: LiveRequestQueue,
+  ) -> AsyncGenerator[str, None]:
+    """Simulate an input-streaming tool."""
+    yield 'started'
+
+  active_tools = _run_single_tool_live(
+      monitor_video_stream, 'monitor_video_stream'
+  )
+
+  assert (
+      'monitor_video_stream' in active_tools
+  ), 'Expected input-streaming tool to be registered when called'
+  # Stream should be a LiveRequestQueue, not None.
+  assert (
+      active_tools['monitor_video_stream'].stream is not None
+  ), 'Expected .stream to be set for input-streaming tool'
+  assert isinstance(
+      active_tools['monitor_video_stream'].stream, LiveRequestQueue
+  ), 'Expected .stream to be a LiveRequestQueue instance'
+
+
+def test_input_streaming_tool_stream_recreated_after_stop():
+  """Test that re-invoking an input-streaming tool after stop creates a new stream."""
+  start_call = types.Part.from_function_call(name='monitor_video', args={})
+  stop_call = types.Part.from_function_call(
+      name='stop_streaming', args={'function_name': 'monitor_video'}
+  )
+  restart_call = types.Part.from_function_call(name='monitor_video', args={})
+
+  response1 = LlmResponse(
+      content=types.Content(role='model', parts=[start_call]),
+      turn_complete=False,
+  )
+  response2 = LlmResponse(
+      content=types.Content(role='model', parts=[stop_call]),
+      turn_complete=False,
+  )
+  response3 = LlmResponse(
+      content=types.Content(role='model', parts=[restart_call]),
+      turn_complete=False,
+  )
+  response4 = LlmResponse(turn_complete=True)
+
+  mock_model = testing_utils.MockModel.create(
+      [response1, response2, response3, response4]
+  )
+
+  call_count = 0
+
+  async def monitor_video(
+      input_stream: LiveRequestQueue,
+  ) -> AsyncGenerator[str, None]:
+    """Simulate an input-streaming tool that tracks invocation count."""
+    nonlocal call_count
+    call_count += 1
+    yield f'started (call {call_count})'
+    while True:
+      await asyncio.sleep(0.1)
+      yield 'frame'
+
+  def stop_streaming(function_name: str) -> None:
+    """Stop a running streaming tool by name."""
+    pass
+
+  root_agent = Agent(
+      name='root_agent',
+      model=mock_model,
+      tools=[monitor_video, stop_streaming],
+  )
+
+  runner = _LiveTestRunner(root_agent=root_agent)
+
+  captured_child_context = None
+  original_create = root_agent._create_invocation_context
+
+  def capturing_create(*args, **kwargs) -> Any:
+    nonlocal captured_child_context
+    ctx = original_create(*args, **kwargs)
+    captured_child_context = ctx
+    return ctx
+
+  root_agent._create_invocation_context = capturing_create
+
+  live_request_queue = LiveRequestQueue()
+  live_request_queue.send_realtime(
+      blob=types.Blob(data=b'test', mime_type='audio/pcm')
+  )
+
+  res_events = runner.run_live(live_request_queue, max_responses=8)
+
+  # monitor_video should appear at least twice in function calls
+  # (start + restart). Function response events may add extra
+  # occurrences.
+  call_names = [
+      fc.name for event in res_events for fc in event.get_function_calls()
+  ]
+  assert (
+      call_names.count('monitor_video') >= 2
+  ), f'Expected monitor_video called at least twice, got: {call_names}'
+
+  # After re-invocation, stream should be set again (not None).
+  assert captured_child_context is not None
+  active_tools = captured_child_context.active_streaming_tools or {}
+  assert 'monitor_video' in active_tools
+  assert (
+      active_tools['monitor_video'].stream is not None
+  ), 'Expected .stream to be recreated after stop + re-invocation'
+
+
+def test_async_gen_with_input_stream_wrong_annotation_gets_no_stream():
+  """Test that an async generator with input_stream param but wrong annotation gets no stream."""
+  received_input_stream = None
+
+  async def my_tool(input_stream: str) -> AsyncGenerator[str, None]:
+    """Simulate an async generator whose input_stream is typed as str."""
+    nonlocal received_input_stream
+    received_input_stream = input_stream
+    yield f'got: {input_stream}'
+
+  active_tools = _run_single_tool_live(
+      my_tool, 'my_tool', func_args={'input_stream': 'some_value'}
+  )
+
+  assert (
+      'my_tool' in active_tools
+  ), 'Expected async generator tool to be registered'
+  # Stream should be None because annotation is str, not LiveRequestQueue.
+  assert active_tools['my_tool'].stream is None, (
+      'Expected .stream to be None when input_stream annotation is not'
+      ' LiveRequestQueue'
+  )
+  # The tool should have received the model-provided arg value, not a
+  # LiveRequestQueue.
+  assert (
+      received_input_stream == 'some_value'
+  ), 'Expected input_stream to be the model-provided string value'

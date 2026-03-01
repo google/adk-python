@@ -645,14 +645,6 @@ def cli_run(
   """
   logs.log_to_tmp_folder()
 
-  # Validation warning for memory_service_uri (not supported for adk run)
-  if memory_service_uri:
-    click.secho(
-        "WARNING: --memory_service_uri is not supported for adk run.",
-        fg="yellow",
-        err=True,
-    )
-
   agent_parent_folder = os.path.dirname(agent)
   agent_folder_name = os.path.basename(agent)
 
@@ -666,6 +658,7 @@ def cli_run(
           session_id=session_id,
           session_service_uri=session_service_uri,
           artifact_service_uri=artifact_service_uri,
+          memory_service_uri=memory_service_uri,
           use_local_storage=use_local_storage,
       )
   )

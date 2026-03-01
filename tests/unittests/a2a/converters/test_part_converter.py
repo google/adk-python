@@ -289,7 +289,7 @@ class TestConvertGenaiPartToA2aPart:
     assert isinstance(result.root, a2a_types.TextPart)
     assert result.root.text == "Hello, world!"
     assert result.root.metadata is not None
-    assert result.root.metadata[_get_adk_metadata_key("thought")] == True
+    assert result.root.metadata[_get_adk_metadata_key("thought")]
 
   def test_convert_file_data_part(self):
     """Test conversion of GenAI file_data Part to A2A Part."""
@@ -515,6 +515,22 @@ class TestRoundTripConversions:
     assert isinstance(result_a2a_part, a2a_types.Part)
     assert isinstance(result_a2a_part.root, a2a_types.TextPart)
     assert result_a2a_part.root.text == original_text
+
+  def test_text_part_with_thought_round_trip(self):
+    """Test round-trip conversion for text parts with thought."""
+    # Arrange
+    original_text = "Thinking..."
+    genai_part = genai_types.Part(text=original_text, thought=True)
+
+    # Act
+    a2a_part = convert_genai_part_to_a2a_part(genai_part)
+    result_genai_part = convert_a2a_part_to_genai_part(a2a_part)
+
+    # Assert
+    assert result_genai_part is not None
+    assert isinstance(result_genai_part, genai_types.Part)
+    assert result_genai_part.text == original_text
+    assert result_genai_part.thought
 
   def test_file_uri_round_trip(self):
     """Test round-trip conversion for file parts with URI."""

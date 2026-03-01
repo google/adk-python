@@ -27,7 +27,6 @@ from google.genai import types
 import pydantic
 from typing_extensions import override
 
-from ..agents.live_request_queue import LiveRequestQueue
 from ..utils.context_utils import Aclosing
 from ._automatic_function_calling_util import build_function_declaration
 from .base_tool import BaseTool
@@ -245,15 +244,13 @@ You could retry calling this tool, but it is IMPORTANT for you to provide all th
   ) -> Any:
     args_to_call = args.copy()
     signature = inspect.signature(self.func)
+    # For input-streaming tools, the stream is created during
+    # registration in _process_function_live_helper. Pass it here.
     if (
         self.name in invocation_context.active_streaming_tools
-        and 'input_stream' in signature.parameters
+        and invocation_context.active_streaming_tools[self.name].stream
+        is not None
     ):
-      # Create the stream now that the model has called the tool.
-      # _send_to_model will start duplicating LiveRequests to this stream.
-      invocation_context.active_streaming_tools[self.name].stream = (
-          LiveRequestQueue()
-      )
       args_to_call['input_stream'] = invocation_context.active_streaming_tools[
           self.name
       ].stream

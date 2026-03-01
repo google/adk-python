@@ -301,6 +301,11 @@ def _register_builtin_services(registry: ServiceRegistry) -> None:
   registry.register_artifact_service("file", file_artifact_factory)
 
   # -- Memory Services --
+  def memory_memory_factory(_uri: str, **_):
+    from ..memory.in_memory_memory_service import InMemoryMemoryService
+
+    return InMemoryMemoryService()
+
   def rag_memory_factory(uri: str, **kwargs):
     from ..memory.vertex_ai_rag_memory_service import VertexAiRagMemoryService
 
@@ -324,6 +329,7 @@ def _register_builtin_services(registry: ServiceRegistry) -> None:
     )
     return VertexAiMemoryBankService(**params)
 
+  registry.register_memory_service("memory", memory_memory_factory)
   registry.register_memory_service("rag", rag_memory_factory)
   registry.register_memory_service("agentengine", agentengine_memory_factory)
 

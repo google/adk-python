@@ -28,6 +28,7 @@ from ..apps.app import App
 from ..artifacts.base_artifact_service import BaseArtifactService
 from ..auth.credential_service.base_credential_service import BaseCredentialService
 from ..auth.credential_service.in_memory_credential_service import InMemoryCredentialService
+from ..memory.base_memory_service import BaseMemoryService
 from ..runners import Runner
 from ..sessions.base_session_service import BaseSessionService
 from ..sessions.session import Session
@@ -37,6 +38,7 @@ from .service_registry import load_services_module
 from .utils import envs
 from .utils.agent_loader import AgentLoader
 from .utils.service_factory import create_artifact_service_from_options
+from .utils.service_factory import create_memory_service_from_options
 from .utils.service_factory import create_session_service_from_options
 
 
@@ -53,6 +55,7 @@ async def run_input_file(
     session_service: BaseSessionService,
     credential_service: BaseCredentialService,
     input_path: str,
+    memory_service: Optional[BaseMemoryService] = None,
 ) -> Session:
   app = (
       agent_or_app
@@ -63,6 +66,7 @@ async def run_input_file(
       app=app,
       artifact_service=artifact_service,
       session_service=session_service,
+      memory_service=memory_service,
       credential_service=credential_service,
   )
   with open(input_path, 'r', encoding='utf-8') as f:
@@ -93,6 +97,7 @@ async def run_interactively(
     session: Session,
     session_service: BaseSessionService,
     credential_service: BaseCredentialService,
+    memory_service: Optional[BaseMemoryService] = None,
 ) -> None:
   app = (
       root_agent_or_app
@@ -103,6 +108,7 @@ async def run_interactively(
       app=app,
       artifact_service=artifact_service,
       session_service=session_service,
+      memory_service=memory_service,
       credential_service=credential_service,
   )
   while True:
@@ -137,6 +143,7 @@ async def run_cli(
     session_id: Optional[str] = None,
     session_service_uri: Optional[str] = None,
     artifact_service_uri: Optional[str] = None,
+    memory_service_uri: Optional[str] = None,
     use_local_storage: bool = True,
 ) -> None:
   """Runs an interactive CLI for a certain agent.
@@ -154,6 +161,7 @@ async def run_cli(
     session_id: Optional[str], the session ID to save the session to on exit.
     session_service_uri: Optional[str], custom session service URI.
     artifact_service_uri: Optional[str], custom artifact service URI.
+    memory_service_uri: Optional[str], custom memory service URI.
     use_local_storage: bool, whether to use local .adk storage by default.
   """
   agent_parent_path = Path(agent_parent_dir).resolve()
@@ -171,6 +179,9 @@ async def run_cli(
   if isinstance(agent_or_app, App) and agent_or_app.name != agent_folder_name:
     app_name_to_dir = {agent_or_app.name: agent_folder_name}
 
+  if not is_env_enabled('ADK_DISABLE_LOAD_DOTENV'):
+    envs.load_dotenv_for_agent(agent_folder_name, agents_dir)
+
   # Create session and artifact services using factory functions.
   # Sessions persist under <agents_dir>/<agent>/.adk/session.db when enabled.
   session_service = create_session_service_from_options(
@@ -185,10 +196,12 @@ async def run_cli(
       artifact_service_uri=artifact_service_uri,
       use_local_storage=use_local_storage,
   )
+  memory_service = create_memory_service_from_options(
+      base_dir=agent_parent_path,
+      memory_service_uri=memory_service_uri,
+  )
 
   credential_service = InMemoryCredentialService()
-  if not is_env_enabled('ADK_DISABLE_LOAD_DOTENV'):
-    envs.load_dotenv_for_agent(agent_folder_name, agents_dir)
 
   # Helper function for printing events
   def _print_event(event) -> None:
@@ -208,6 +221,7 @@ async def run_cli(
         agent_or_app=agent_or_app,
         artifact_service=artifact_service,
         session_service=session_service,
+        memory_service=memory_service,
         credential_service=credential_service,
         input_path=input_file,
     )
@@ -235,6 +249,7 @@ async def run_cli(
         session,
         session_service,
         credential_service,
+        memory_service=memory_service,
     )
   else:
     session = await session_service.create_session(
@@ -247,6 +262,7 @@ async def run_cli(
         session,
         session_service,
         credential_service,
+        memory_service=memory_service,
     )
 
   if save_session:

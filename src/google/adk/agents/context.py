@@ -32,6 +32,7 @@ if TYPE_CHECKING:
   from ..events.event import Event
   from ..events.event_actions import EventActions
   from ..memory.base_memory_service import SearchMemoryResponse
+  from ..memory.memory_entry import MemoryEntry
   from ..sessions.state import State
   from ..tools.tool_confirmation import ToolConfirmation
   from .invocation_context import InvocationContext
@@ -345,7 +346,8 @@ class Context(ReadonlyContext):
 
     Args:
       events: Explicit events to add to memory.
-      custom_metadata: Optional standard metadata for memory generation.
+      custom_metadata: Optional metadata forwarded to the configured memory
+        service. Supported keys are implementation-specific.
 
     Raises:
       ValueError: If memory service is not available.
@@ -359,6 +361,33 @@ class Context(ReadonlyContext):
         user_id=self._invocation_context.session.user_id,
         session_id=self._invocation_context.session.id,
         events=events,
+        custom_metadata=custom_metadata,
+    )
+
+  async def add_memory(
+      self,
+      *,
+      memories: Sequence[MemoryEntry],
+      custom_metadata: Mapping[str, object] | None = None,
+  ) -> None:
+    """Adds explicit memory items directly to the memory service.
+
+    Uses this callback's current session identifiers as memory scope.
+
+    Args:
+      memories: Explicit memory items to add.
+      custom_metadata: Optional metadata forwarded to the configured memory
+        service. Supported keys are implementation-specific.
+
+    Raises:
+      ValueError: If memory service is not available.
+    """
+    if self._invocation_context.memory_service is None:
+      raise ValueError("Cannot add memory: memory service is not available.")
+    await self._invocation_context.memory_service.add_memory(
+        app_name=self._invocation_context.session.app_name,
+        user_id=self._invocation_context.session.user_id,
+        memories=memories,
         custom_metadata=custom_metadata,
     )
 
