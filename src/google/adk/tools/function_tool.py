@@ -137,12 +137,11 @@ class FunctionTool(BaseTool):
       try:
         try:
           adapter = self._type_adapter_cache[target_type]
-        except (KeyError, TypeError):
+        except TypeError:
           adapter = pydantic.TypeAdapter(target_type)
-          try:
-            self._type_adapter_cache[target_type] = adapter
-          except TypeError:
-            pass
+        except KeyError:
+          adapter = pydantic.TypeAdapter(target_type)
+          self._type_adapter_cache[target_type] = adapter
         converted_args[param_name] = adapter.validate_python(
             args[param_name]
         )
