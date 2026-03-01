@@ -16,20 +16,10 @@ from __future__ import annotations
 
 import inspect
 import logging
-import sys
 from typing import Any
 from typing import Callable
-from typing import get_args
-from typing import get_origin
 from typing import Optional
 from typing import Union
-
-if sys.version_info >= (3, 10):
-  from types import UnionType
-
-  _UNION_TYPES = (Union, UnionType)
-else:
-  _UNION_TYPES = (Union,)
 
 from google.genai import types
 import pydantic
@@ -141,22 +131,9 @@ class FunctionTool(BaseTool):
         continue
 
       target_type = param.annotation
-      is_optional = False
 
-      # Handle Optional[T] (Union[T, None]) and T | None (Python 3.10+)
-      if get_origin(param.annotation) in _UNION_TYPES:
-        union_args = get_args(param.annotation)
-        non_none_types = [arg for arg in union_args if arg is not type(None)]
-        if len(non_none_types) == 1:
-          target_type = non_none_types[0]
-          is_optional = len(union_args) != len(non_none_types)
-
-      # Skip None values only for Optional params
-      if args[param_name] is None and is_optional:
-        continue
-
-      # Validate and coerce all annotated types using TypeAdapter.
-      # This handles primitives, enums, Pydantic models, and container types.
+      # Validate and coerce using TypeAdapter. Handles primitives, enums,
+      # Pydantic models, Optional[T], T | None, and container types natively.
       try:
         if target_type not in self._type_adapter_cache:
           self._type_adapter_cache[target_type] = pydantic.TypeAdapter(
