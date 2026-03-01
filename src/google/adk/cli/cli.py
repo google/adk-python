@@ -55,18 +55,11 @@ class DevModeChangeHandler(FileSystemEventHandler):
     self.loop = loop
     self.reload_event = reload_event
 
-  def _handle_change(self, event):
+  def on_any_event(self, event):
     if event.is_directory:
       return
-    if event.src_path.endswith('.py') or event.src_path.endswith('.yaml'):
+    if event.src_path.endswith(('.py', '.yaml')) or getattr(event, 'dest_path', '').endswith(('.py', '.yaml')):
       self.loop.call_soon_threadsafe(self.reload_event.set)
-
-  def on_modified(self, event):
-    self._handle_change(event)
-
-  def on_created(self, event):
-    self._handle_change(event)
-
 
 class InputFile(BaseModel):
   state: dict[str, object]

@@ -16,9 +16,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
+import sys
 from textwrap import dedent
+import time
 import types
 from typing import Any
 from typing import Dict
@@ -526,9 +529,6 @@ async def test_run_interactively_dev_reload(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
   """run_interactively should reload the agent when reload_event is set."""
-  import asyncio
-  import sys
-  import time
   
   session_service = InMemorySessionService()
   sess = await session_service.create_session(app_name="dummy", user_id="u")
