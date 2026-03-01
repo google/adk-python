@@ -16,12 +16,20 @@ from __future__ import annotations
 
 import inspect
 import logging
+import sys
 from typing import Any
 from typing import Callable
 from typing import get_args
 from typing import get_origin
 from typing import Optional
 from typing import Union
+
+if sys.version_info >= (3, 10):
+  from types import UnionType
+
+  _UNION_TYPES = (Union, UnionType)
+else:
+  _UNION_TYPES = (Union,)
 
 from google.genai import types
 import pydantic
@@ -130,8 +138,8 @@ class FunctionTool(BaseTool):
       target_type = param.annotation
       is_optional = False
 
-      # Handle Optional[T] (Union[T, None]) - unwrap to get inner type
-      if get_origin(param.annotation) is Union:
+      # Handle Optional[T] (Union[T, None]) and T | None (Python 3.10+)
+      if get_origin(param.annotation) in _UNION_TYPES:
         union_args = get_args(param.annotation)
         non_none_types = [arg for arg in union_args if arg is not type(None)]
         if len(non_none_types) == 1:
