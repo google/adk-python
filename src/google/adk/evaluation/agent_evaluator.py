@@ -87,10 +87,18 @@ class _EvalMetricResultWithInvocation(BaseModel):
 
   This is class is intentionally marked as private and is created for
   convenience.
+
+  actual_invocations: These are the invocations that are obtained from the
+    agent under test.
+  expected_invocations: An optional list of invocations, if specified,
+    usually act as a benchmark/golden response. If these are specified
+    usually the expectation is that the length of this list and actual
+    invocaiton is the same.
+  eval_metric_result: This is the EvalMetricResult for the given actual and expected invocation.
   """
 
   actual_invocation: Invocation
-  expected_invocation: Invocation
+  expected_invocation: Optional[Invocation] = None
   eval_metric_result: EvalMetricResult
 
 
@@ -438,19 +446,19 @@ class AgentEvaluator:
           "threshold": threshold,
           "prompt": AgentEvaluator._convert_content_to_text(
               per_invocation_result.expected_invocation.user_content
-          ),
+          ) if per_invocation_result.expected_invocation else None,
           "expected_response": AgentEvaluator._convert_content_to_text(
               per_invocation_result.expected_invocation.final_response
-          ),
+          ) if per_invocation_result.expected_invocation else None,
           "actual_response": AgentEvaluator._convert_content_to_text(
               per_invocation_result.actual_invocation.final_response
           ),
           "expected_tool_calls": AgentEvaluator._convert_tool_calls_to_text(
               per_invocation_result.expected_invocation.intermediate_data
-          ),
+          ) if per_invocation_result.expected_invocation else None,
           "actual_tool_calls": AgentEvaluator._convert_tool_calls_to_text(
               per_invocation_result.actual_invocation.intermediate_data
-          ),
+          )
       })
 
     print(
