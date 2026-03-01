@@ -150,7 +150,8 @@ async def run_interactively(
       except Exception as e:
         print(f"[ERROR] Exception in stdin reader thread: {e}", file=sys.stderr)
       finally:
-        loop.call_soon_threadsafe(input_queue.put_nowait, _EOF_SENTINEL)
+        if not loop.is_closed():
+          loop.call_soon_threadsafe(input_queue.put_nowait, _EOF_SENTINEL)
 
     threading.Thread(target=_read_input, daemon=True).start()
     sys.stdout.write('[user]: ')
@@ -306,7 +307,9 @@ async def run_cli(
     reload_event = asyncio.Event()
     event_handler = DevModeChangeHandler(loop, reload_event)
     observer = Observer()
-    watch_path = str(agent_root) if agent_root.is_dir() else str(agent_parent_path)
+    if not agent_root.is_dir():
+      raise RuntimeError(f"Agent root directory not found or is not a directory: {agent_root}")
+    watch_path = str(agent_root)
     observer.schedule(event_handler, path=watch_path, recursive=True)
     observer.start()
     click.secho(f"Auto-reload enabled - watching for file changes in {agent_folder_name}...", fg="green")
