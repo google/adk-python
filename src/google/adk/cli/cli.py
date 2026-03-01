@@ -49,6 +49,7 @@ from .utils.service_factory import create_session_service_from_options
 
 class DevModeChangeHandler(FileSystemEventHandler):
   """Watchdog event handler to trigger agent reload upon file changes."""
+  WATCHED_EXTENSIONS = ('.py', '.yaml')
   
   def __init__(self, loop: asyncio.AbstractEventLoop, reload_event: asyncio.Event):
     super().__init__()
@@ -58,7 +59,7 @@ class DevModeChangeHandler(FileSystemEventHandler):
   def on_any_event(self, event):
     if event.is_directory:
       return
-    if event.src_path.endswith(('.py', '.yaml')) or getattr(event, 'dest_path', '').endswith(('.py', '.yaml')):
+    if event.src_path.endswith(self.WATCHED_EXTENSIONS) or getattr(event, 'dest_path', '').endswith(self.WATCHED_EXTENSIONS):
       self.loop.call_soon_threadsafe(self.reload_event.set)
 
 class InputFile(BaseModel):
@@ -138,16 +139,18 @@ async def run_interactively(
   if dev:
     loop = asyncio.get_running_loop()
     input_queue = asyncio.Queue()
+    _EOF_SENTINEL = object()
     
     def _read_input():
-      while True:
-        try:
+      try:
+        while True:
           line = sys.stdin.readline()
           if not line: break
           loop.call_soon_threadsafe(input_queue.put_nowait, line)
-        except Exception as e:
-          print(f"[ERROR] Exception in stdin reader thread: {e}", file=sys.stderr)
-          break
+      except Exception as e:
+        print(f"[ERROR] Exception in stdin reader thread: {e}", file=sys.stderr)
+      finally:
+        loop.call_soon_threadsafe(input_queue.put_nowait, _EOF_SENTINEL)
 
     threading.Thread(target=_read_input, daemon=True).start()
     sys.stdout.write('[user]: ')
@@ -194,6 +197,8 @@ async def run_interactively(
       else:
         reload_task.cancel()
         query = input_task.result()
+        if query is _EOF_SENTINEL:
+          break
 
     if not query or not query.strip():
       if dev:

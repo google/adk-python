@@ -539,6 +539,8 @@ async def test_run_interactively_dev_reload(
   reload_event = asyncio.Event()
   sys_stdin_readline_calls = []
   
+  main_loop = asyncio.get_running_loop()
+  
   def mock_readline():
     sys_stdin_readline_calls.append(True)
     if len(sys_stdin_readline_calls) == 1:
@@ -548,8 +550,7 @@ async def test_run_interactively_dev_reload(
       # Sleep a bit to allow the loop to run, then trigger the reload
       time.sleep(0.1)
       # In tests, we need to set the event thread-safely
-      loop = asyncio.get_event_loop()
-      loop.call_soon_threadsafe(reload_event.set)
+      main_loop.call_soon_threadsafe(reload_event.set)
       time.sleep(0.1)
       return "exit\n"
     return "exit\n"
