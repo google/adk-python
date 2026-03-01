@@ -813,6 +813,51 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
     self.assertEqual(actual_texts, expected_texts)
     # Verify timestamps are in order
 
+  def test_replay_contract_compacted_and_raw_events_match_effective_prompt(
+      self,
+  ):
+    raw_events = [
+        self._create_event(1.0, 'inv1', 'User asks about weather'),
+        self._create_event(2.0, 'inv1', 'Agent asks clarifying question'),
+        self._create_event(3.0, 'inv2', 'User clarifies location'),
+        self._create_event(4.0, 'inv2', 'Agent proposes plan'),
+        self._create_event(5.0, 'inv3', 'User asks for final answer'),
+    ]
+
+    compacted_events = [
+        self._create_compacted_event(
+            1.0,
+            4.0,
+            (
+                'User asks about weather\n'
+                'Agent asks clarifying question\n'
+                'User clarifies location\n'
+                'Agent proposes plan'
+            ),
+            appended_ts=4.5,
+        ),
+        self._create_event(5.0, 'inv3', 'User asks for final answer'),
+    ]
+
+    raw_prompt = '\n'.join(
+        part.text
+        for content in contents._get_contents(None, raw_events)
+        for part in content.parts
+        if part.text
+    )
+    compacted_prompt = '\n'.join(
+        part.text
+        for content in contents._get_contents(None, compacted_events)
+        for part in content.parts
+        if part.text
+    )
+
+    self.assertEqual(
+        compacted_prompt,
+        raw_prompt,
+        'Compaction should preserve deterministic replay prompt semantics.',
+    )
+
   def test_get_contents_subsumed_compaction_is_hidden(self):
     events = [
         self._create_event(1.0, 'inv1', 'Event 1'),
