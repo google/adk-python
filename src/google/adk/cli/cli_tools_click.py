@@ -38,6 +38,8 @@ from .. import version
 from ..evaluation.constants import MISSING_EVAL_DEPENDENCIES_MESSAGE
 from ..features import FeatureName
 from ..features import override_feature_enabled
+from ..sessions.migration import migration_runner
+from .cli import generate_agent_card
 from .cli import run_cli
 from .fast_api import get_fast_api_app
 from .utils import envs
@@ -2161,3 +2163,6 @@ def cli_deploy_gke(
     )
   except Exception as e:
     click.secho(f"Deploy failed: {e}", fg="red", err=True)
+
+
+main.add_command(generate_agent_card)

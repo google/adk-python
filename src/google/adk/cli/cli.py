@@ -34,6 +34,7 @@ from ..sessions.base_session_service import BaseSessionService
 from ..sessions.session import Session
 from ..utils.context_utils import Aclosing
 from ..utils.env_utils import is_env_enabled
+from .cli_generate_agent_card import generate_agent_card
 from .service_registry import load_services_module
 from .utils import envs
 from .utils.agent_loader import AgentLoader
