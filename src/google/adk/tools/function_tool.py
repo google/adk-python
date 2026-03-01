@@ -93,6 +93,7 @@ class FunctionTool(BaseTool):
     self._context_param_name = find_context_parameter(func) or 'tool_context'
     self._ignore_params = [self._context_param_name, 'input_stream']
     self._require_confirmation = require_confirmation
+    self._type_adapter_cache: dict[Any, pydantic.TypeAdapter] = {}
 
   @override
   def _get_declaration(self) -> Optional[types.FunctionDeclaration]:
@@ -157,7 +158,11 @@ class FunctionTool(BaseTool):
       # Validate and coerce all annotated types using TypeAdapter.
       # This handles primitives, enums, Pydantic models, and container types.
       try:
-        adapter = pydantic.TypeAdapter(target_type)
+        if target_type not in self._type_adapter_cache:
+          self._type_adapter_cache[target_type] = pydantic.TypeAdapter(
+              target_type
+          )
+        adapter = self._type_adapter_cache[target_type]
         converted_args[param_name] = adapter.validate_python(
             args[param_name]
         )
