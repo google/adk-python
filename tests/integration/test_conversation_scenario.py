@@ -23,4 +23,3 @@ async def test_eval_agent_with_conversation_scenario():
       eval_dataset_file_path_or_dir="tests/integration/fixture/conversation_scenario/conversation_scenario.test.json",
       num_runs=2,
   )
-

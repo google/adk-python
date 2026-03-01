@@ -444,21 +444,33 @@ class AgentEvaluator:
           "eval_status": per_invocation_result.eval_metric_result.eval_status,
           "score": per_invocation_result.eval_metric_result.score,
           "threshold": threshold,
-          "prompt": AgentEvaluator._convert_content_to_text(
-              per_invocation_result.expected_invocation.user_content
-          ) if per_invocation_result.expected_invocation else "",
-          "expected_response": AgentEvaluator._convert_content_to_text(
-              per_invocation_result.expected_invocation.final_response
-          ) if per_invocation_result.expected_invocation else "",
+          "prompt": (
+              AgentEvaluator._convert_content_to_text(
+                  per_invocation_result.expected_invocation.user_content
+              )
+              if per_invocation_result.expected_invocation
+              else ""
+          ),
+          "expected_response": (
+              AgentEvaluator._convert_content_to_text(
+                  per_invocation_result.expected_invocation.final_response
+              )
+              if per_invocation_result.expected_invocation
+              else ""
+          ),
           "actual_response": AgentEvaluator._convert_content_to_text(
               per_invocation_result.actual_invocation.final_response
           ),
-          "expected_tool_calls": AgentEvaluator._convert_tool_calls_to_text(
-              per_invocation_result.expected_invocation.intermediate_data
-          ) if per_invocation_result.expected_invocation else "",
+          "expected_tool_calls": (
+              AgentEvaluator._convert_tool_calls_to_text(
+                  per_invocation_result.expected_invocation.intermediate_data
+              )
+              if per_invocation_result.expected_invocation
+              else ""
+          ),
           "actual_tool_calls": AgentEvaluator._convert_tool_calls_to_text(
               per_invocation_result.actual_invocation.intermediate_data
-          )
+          ),
       })
 
     print(

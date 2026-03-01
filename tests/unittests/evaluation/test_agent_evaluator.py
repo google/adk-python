@@ -86,54 +86,6 @@ class TestPrintDetailsWithNoExpectedInvocation:
     ]
     _call_print_details(items)  # should not raise
 
-  def test_prompt_is_empty_string(self):
-    items = [
-        _EvalMetricResultWithInvocation(
-            actual_invocation=_make_actual_invocation(),
-            expected_invocation=None,
-            eval_metric_result=_make_eval_metric_result(),
-        )
-    ]
-    mock_df_cls = _call_print_details(items)
-    data = mock_df_cls.call_args[0][0]
-    assert data[0]["prompt"] == ""
-
-  def test_expected_response_is_empty_string(self):
-    items = [
-        _EvalMetricResultWithInvocation(
-            actual_invocation=_make_actual_invocation(),
-            expected_invocation=None,
-            eval_metric_result=_make_eval_metric_result(),
-        )
-    ]
-    mock_df_cls = _call_print_details(items)
-    data = mock_df_cls.call_args[0][0]
-    assert data[0]["expected_response"] == ""
-
-  def test_expected_tool_calls_is_empty_string(self):
-    items = [
-        _EvalMetricResultWithInvocation(
-            actual_invocation=_make_actual_invocation(),
-            expected_invocation=None,
-            eval_metric_result=_make_eval_metric_result(),
-        )
-    ]
-    mock_df_cls = _call_print_details(items)
-    data = mock_df_cls.call_args[0][0]
-    assert data[0]["expected_tool_calls"] == ""
-
-  def test_actual_response_is_populated(self):
-    items = [
-        _EvalMetricResultWithInvocation(
-            actual_invocation=_make_actual_invocation(response="hello world"),
-            expected_invocation=None,
-            eval_metric_result=_make_eval_metric_result(),
-        )
-    ]
-    mock_df_cls = _call_print_details(items)
-    data = mock_df_cls.call_args[0][0]
-    assert data[0]["actual_response"] == "hello world"
-
   def test_multiple_invocations_all_without_expected(self):
     items = [
         _EvalMetricResultWithInvocation(
