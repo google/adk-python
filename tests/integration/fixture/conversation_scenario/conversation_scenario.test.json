@@ -1,0 +1,11 @@
+{
+  "eval_set_id": "test",
+  "eval_cases": [{
+    "eval_id": "CS-1",
+    "conversation_scenario": {
+      "starting_prompt": "Hello",
+      "conversation_plan": "Ask the agent to do something"
+    },
+    "session_input": null
+  }]
+}

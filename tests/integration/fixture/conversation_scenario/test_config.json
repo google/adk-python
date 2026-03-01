@@ -1,0 +1,4 @@
+{
+  "criteria": { "hallucinations_v1": { "threshold": 0.8 } },
+  "user_simulator_config": { "model": "gemini-2.5-flash", "max_allowed_invocations": 10 }
+}
