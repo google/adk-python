@@ -184,17 +184,18 @@ def test_preprocess_args_with_mixed_types():
   assert processed_args["user"].age == 40
 
 
-def test_preprocess_args_with_invalid_data_graceful_failure():
-  """Test _preprocess_args handles invalid data gracefully."""
+def test_preprocess_args_with_invalid_data_returns_error():
+  """Test _preprocess_args returns validation error for invalid Pydantic data."""
   tool = FunctionTool(sync_function_with_pydantic_model)
 
   # Invalid data that can't be converted to UserModel
   input_args = {"user": "invalid_string"}  # string instead of dict/model
 
-  processed_args, _ = tool._preprocess_args(input_args)
+  _, errors = tool._preprocess_args(input_args)
 
-  # Should keep original value when conversion fails
-  assert processed_args["user"] == "invalid_string"
+  # Should return a validation error for the LLM to self-correct
+  assert len(errors) == 1
+  assert "user" in errors[0]
 
 
 def test_preprocess_args_with_non_pydantic_parameters():

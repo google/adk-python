@@ -132,7 +132,11 @@ class FunctionTool(BaseTool):
     validation_errors = []
 
     for param_name, param in signature.parameters.items():
-      if param_name not in args or param.annotation is inspect.Parameter.empty:
+      if (
+          param_name not in args
+          or param.annotation is inspect.Parameter.empty
+          or param_name in self._ignore_params
+      ):
         continue
 
       target_type = param.annotation
@@ -150,27 +154,8 @@ class FunctionTool(BaseTool):
       if args[param_name] is None and is_optional:
         continue
 
-      # Pydantic models: keep existing graceful-failure behavior
-      if inspect.isclass(target_type) and issubclass(
-          target_type, pydantic.BaseModel
-      ):
-        if not isinstance(args[param_name], target_type):
-          try:
-            converted_args[param_name] = target_type.model_validate(
-                args[param_name]
-            )
-          except Exception as e:
-            logger.warning(
-                "Failed to convert argument '%s' to Pydantic model %s: %s",
-                param_name,
-                target_type.__name__,
-                e,
-            )
-        continue
-
-      # Validate and coerce all other annotated types using TypeAdapter.
-      # This handles primitives (int, float, str, bool), enums, and
-      # container types (list[int], dict[str, float], etc.).
+      # Validate and coerce all annotated types using TypeAdapter.
+      # This handles primitives, enums, Pydantic models, and container types.
       try:
         adapter = pydantic.TypeAdapter(target_type)
         converted_args[param_name] = adapter.validate_python(
