@@ -1,5 +1,97 @@
 # Changelog
 
+## [1.26.0](https://github.com/google/adk-python/compare/v1.25.1...v1.26.0) (2026-02-26)
+
+
+### Features
+
+* **[Core]**
+  * Add intra-invocation compaction and token compaction pre-request ([485fcb8](https://github.com/google/adk-python/commit/485fcb84e3ca351f83416c012edcafcec479c1db))
+  * Use `--memory_service_uri` in ADK CLI run command ([a7b5097](https://github.com/google/adk-python/commit/a7b509763c1732f0363e90952bb4c2672572d542))
+
+* **[Models]**
+  * Add `/chat/completions` integration to `ApigeeLlm` ([9c4c445](https://github.com/google/adk-python/commit/9c4c44536904f5cf3301a5abb910a5666344a8c5))
+  * Add `/chat/completions` streaming support to Apigee LLM ([121d277](https://github.com/google/adk-python/commit/121d27741684685c564e484704ae949c5f0807b1))
+  * Expand LiteLlm supported models and add registry tests ([d5332f4](https://github.com/google/adk-python/commit/d5332f44347f44d60360e14205a2342a0c990d66))
+
+* **[Tools]**
+  * Add `load_skill_from_dir()` method ([9f7d5b3](https://github.com/google/adk-python/commit/9f7d5b3f1476234e552b783415527cc4bac55b39))
+  * Agent Skills spec compliance — validation, aliases, scripts, and auto-injection ([223d9a7](https://github.com/google/adk-python/commit/223d9a7ff52d8da702f1f436bd22e94ad78bd5da))
+  * BigQuery ADK support for search catalog tool ([bef3f11](https://github.com/google/adk-python/commit/bef3f117b4842ce62760328304484cd26a1ec30a))
+  * Make skill instruction optimizable and can adapt to user tasks ([21be6ad](https://github.com/google/adk-python/commit/21be6adcb86722a585b26f600c45c85e593b4ee0))
+  * Pass trace context in MCP tool call's `_meta` field with OpenTelemetry propagator ([bcbfeba](https://github.com/google/adk-python/commit/bcbfeba953d46fca731b11542a00103cef374e57))
+
+* **[Evals]**
+  * Introduce User Personas to the ADK evaluation framework ([6a808c6](https://github.com/google/adk-python/commit/6a808c60b38ad7140ddeb222887c6accc63edce9))
+
+* **[Services]**
+  * Add generate/create modes for Vertex AI Memory Bank writes ([811e50a](https://github.com/google/adk-python/commit/811e50a0cbb181d502b9837711431ef78fca3f34))
+  * Add support for memory consolidation via Vertex AI Memory Bank ([4a88804](https://github.com/google/adk-python/commit/4a88804ec7d17fb4031b238c362f27d240df0a13))
+
+* **[A2A]**
+  * Add interceptor framework to `A2aAgentExecutor` ([87fcd77](https://github.com/google/adk-python/commit/87fcd77caa9672f219c12e5a0e2ff65cbbaaf6f3))
+
+* **[Auth]**
+  * Add native support for `id_token` in OAuth2 credentials ([33f7d11](https://github.com/google/adk-python/commit/33f7d118b377b60f998c92944d2673679fddbc6e))
+  * Support ID token exchange in `ServiceAccountCredentialExchanger` ([7be90db](https://github.com/google/adk-python/commit/7be90db24b41f1830e39ca3d7e15bf4dbfa5a304)), closes [#4458](https://github.com/google/adk-python/issues/4458)
+
+* **[Integrations]**
+  * Agent Registry in ADK ([abaa929](https://github.com/google/adk-python/commit/abaa92944c4cd43d206e2986d405d4ee07d45afe))
+  * Add schema auto-upgrade, tool provenance, HITL tracing, and span hierarchy fix to BigQuery Agent Analytics plugin ([4260ef0](https://github.com/google/adk-python/commit/4260ef0c7c37ecdfea295fb0e1a933bb0df78bea))
+  * Change default BigQuery table ID and update docstring ([7557a92](https://github.com/google/adk-python/commit/7557a929398ec2a1f946500d906cef5a4f86b5d1))
+  * Update Agent Registry to create AgentCard from info in get agents endpoint ([c33d614](https://github.com/google/adk-python/commit/c33d614004a47d1a74951dd13628fd2300aeb9ef))
+
+* **[Web]**
+  * Enable dependency injection for agent loader in FastAPI app gen ([34da2d5](https://github.com/google/adk-python/commit/34da2d5b26e82f96f1951334fe974a0444843720))
+
+
+### Bug Fixes
+
+* Add OpenAI strict JSON schema enforcement in LiteLLM ([2dbd1f2](https://github.com/google/adk-python/commit/2dbd1f25bdb1d88a6873d824b81b3dd5243332a4)), closes [#4573](https://github.com/google/adk-python/issues/4573)
+* Add push notification config store to agent_to_a2a ([4ca904f](https://github.com/google/adk-python/commit/4ca904f11113c4faa3e17bb4a9662dca1f936e2e)), closes [#4126](https://github.com/google/adk-python/issues/4126)
+* Add support for injecting a custom google.genai.Client into Gemini models ([48105b4](https://github.com/google/adk-python/commit/48105b49c5ab8e4719a66e7219f731b2cd293b00)), closes [#2560](https://github.com/google/adk-python/issues/2560)
+* Add support for injecting a custom google.genai.Client into Gemini models ([c615757](https://github.com/google/adk-python/commit/c615757ba12093ba4a2ba19bee3f498fef91584c)), closes [#2560](https://github.com/google/adk-python/issues/2560)
+* Check both `input_stream` parameter name and its annotation to decide whether it's a streaming tool that accept input stream ([d56cb41](https://github.com/google/adk-python/commit/d56cb4142c5040b6e7d13beb09123b8a59341384))
+* **deps:** Increase pydantic lower version to 2.7.0 ([dbd6420](https://github.com/google/adk-python/commit/dbd64207aebea8c5af19830a9a02d4c05d1d9469))
+* edit copybara and BUILD config for new adk/integrations folder (added with Agent Registry) ([37d52b4](https://github.com/google/adk-python/commit/37d52b4caf6738437e62fe804103efe4bde363a1))
+* Expand add_memory to accept MemoryEntry ([f27a9cf](https://github.com/google/adk-python/commit/f27a9cfb87caecb8d52967c50637ed5ad541cd07))
+* Fix pickling lock errors in McpSessionManager ([4e2d615](https://github.com/google/adk-python/commit/4e2d6159ae3552954aaae295fef3e09118502898))
+* fix typo in PlanReActPlanner instruction ([6d53d80](https://github.com/google/adk-python/commit/6d53d800d5f6dc5d4a3a75300e34d5a9b0f006f5))
+* handle UnicodeDecodeError when loading skills in ADK ([3fbc27f](https://github.com/google/adk-python/commit/3fbc27fa4ddb58b2b69ee1bea1e3a7b2514bd725))
+* Improve BigQuery Agent Analytics plugin reliability and code quality ([ea03487](https://github.com/google/adk-python/commit/ea034877ec15eef1be8f9a4be9fcd95446a3dc21))
+* Include list of skills in every message and remove list_skills tool from system instruction ([4285f85](https://github.com/google/adk-python/commit/4285f852d54670390b19302ed38306bccc0a7cee))
+* Invoke on_tool_error_callback for missing tools in live mode ([e6b601a](https://github.com/google/adk-python/commit/e6b601a2ab71b7e2df0240fd55550dca1eba8397))
+* Keep query params embedded in OpenAPI paths when using httpx ([ffbcc0a](https://github.com/google/adk-python/commit/ffbcc0a626deb24fe38eab402b3d6ace484115df)), closes [#4555](https://github.com/google/adk-python/issues/4555)
+* Only relay the LiveRequest after tools is invoked ([b53bc55](https://github.com/google/adk-python/commit/b53bc555cceaa11dc53b42c9ca1d650592fb4365))
+* Parallelize tool resolution in LlmAgent.canonical_tools() ([7478bda](https://github.com/google/adk-python/commit/7478bdaa9817b0285b4119e8c739d7520373f719))
+* race condition in table creation for `DatabaseSessionService` ([fbe9ecc](https://github.com/google/adk-python/commit/fbe9eccd05e628daa67059ba2e6a0d03966b240d))
+* Re-export DEFAULT_SKILL_SYSTEM_INSTRUCTION to skills and skill/prompt.py to avoid breaking current users ([40ec134](https://github.com/google/adk-python/commit/40ec1343c2708e1cf0d39cd8b8a96f3729f843de))
+* Refactor LiteLLM streaming response parsing for compatibility with LiteLLM 1.81+ ([e8019b1](https://github.com/google/adk-python/commit/e8019b1b1b0b43dcc5fa23075942b31db502ffdd)), closes [#4225](https://github.com/google/adk-python/issues/4225)
+* remove duplicate session GET when using API server, unbreak auto_session_create when using API server ([445dc18](https://github.com/google/adk-python/commit/445dc189e915ce5198e822ad7fadd6bb0880a95e))
+* Remove experimental decorators from user persona data models ([eccdf6d](https://github.com/google/adk-python/commit/eccdf6d01e70c37a1e5aa47c40d74469580365d2))
+* Replace the global DEFAULT_USER_PERSONA_REGISTRY with a function call to get_default_persona_registry ([2703613](https://github.com/google/adk-python/commit/2703613572a38bf4f9e25569be2ee678dc91b5b5))
+* **skill:** coloate default skill SI with skilltoolset ([fc1f1db](https://github.com/google/adk-python/commit/fc1f1db00562a79cd6c742cfd00f6267295c29a8))
+* Update agent_engine_sandbox_code_executor in ADK ([ee8d956](https://github.com/google/adk-python/commit/ee8d956413473d1bbbb025a470ad882c1487d8b8))
+* Update agent_engine_sandbox_code_executor in ADK ([dab80e4](https://github.com/google/adk-python/commit/dab80e4a8f3c5476f731335724bff5df3e6f3650))
+* Update sample skills agent to use weather-skill instead of weather_skill ([8f54281](https://github.com/google/adk-python/commit/8f5428150d18ed732b66379c0acb806a9121c3cb))
+* update Spanner query tools to async functions ([1dbcecc](https://github.com/google/adk-python/commit/1dbceccf36c28d693b0982b531a99877a3e75169))
+* use correct msg_out/msg_err keys for Agent Engine sandbox output ([b1e33a9](https://github.com/google/adk-python/commit/b1e33a90b4ba716d717e0488b84892b8a7f42aac))
+* Validate session before streaming instead of eagerly advancing the runner generator ([ab32f33](https://github.com/google/adk-python/commit/ab32f33e7418d452e65cf6f5b6cbfe1371600323))
+* **web:** allow session resume without new message ([30b2ed3](https://github.com/google/adk-python/commit/30b2ed3ef8ee6d3633743c0db00533683d3342d8))
+
+
+### Code Refactoring
+
+* Extract reusable function for building agent transfer instructions ([e1e0d63](https://github.com/google/adk-python/commit/e1e0d6361675e7b9a2c9b2523e3a72e2e5e7ce05))
+* Extract reusable private methods ([976a238](https://github.com/google/adk-python/commit/976a238544330528b4f9f4bea6c4e75ec13b33e1))
+* Extract reusable private methods ([42eeaef](https://github.com/google/adk-python/commit/42eeaef2b34c860f126c79c552435458614255ad))
+* Extract reusable private methods ([706f9fe](https://github.com/google/adk-python/commit/706f9fe74db0197e19790ca542d372ce46d0ae87))
+
+
+### Documentation
+
+* add `thinking_config` in `generate_content_config` in example agent ([c6b1c74](https://github.com/google/adk-python/commit/c6b1c74321faf62cc52d2518eb9ea0dcef050cde))
+
 ## [1.25.1](https://github.com/google/adk-python/compare/v1.25.0...v1.25.1) (2026-02-18)
 
 ### Bug Fixes
