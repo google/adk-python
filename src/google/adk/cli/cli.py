@@ -152,7 +152,8 @@ async def run_interactively(
           line = sys.stdin.readline()
           if not line: break
           loop.call_soon_threadsafe(input_queue.put_nowait, line)
-        except Exception:
+        except Exception as e:
+          print(f"[ERROR] Exception in stdin reader thread: {e}", file=sys.stderr)
           break
 
     threading.Thread(target=_read_input, daemon=True).start()
@@ -173,26 +174,26 @@ async def run_interactively(
         input_task.cancel()
         reload_event.clear()
         click.secho('\nChanges detected, reloading agent...', fg='yellow')
-        await runner.close()
-        
         if agent_loader and agent_folder_name:
-            try:
-                agent_loader.remove_agent_from_cache(agent_folder_name)
-                new_agent_or_app = agent_loader.load_agent(agent_folder_name)
-                app = (
-                    new_agent_or_app
-                    if isinstance(new_agent_or_app, App)
-                    else App(name=session.app_name, root_agent=new_agent_or_app)
-                )
-                runner = Runner(
-                    app=app,
-                    artifact_service=artifact_service,
-                    session_service=session_service,
-                    memory_service=memory_service,
-                    credential_service=credential_service,
-                )
-            except Exception as e:
-                click.secho(f'Error reloading agent: {e}', fg='red')
+          try:
+            agent_loader.remove_agent_from_cache(agent_folder_name)
+            new_agent_or_app = agent_loader.load_agent(agent_folder_name)
+            reloaded_app = (
+                new_agent_or_app
+                if isinstance(new_agent_or_app, App)
+                else App(name=session.app_name, root_agent=new_agent_or_app)
+            )
+            new_runner = Runner(
+                app=reloaded_app,
+                artifact_service=artifact_service,
+                session_service=session_service,
+                memory_service=memory_service,
+                credential_service=credential_service,
+            )
+            await runner.close()
+            runner = new_runner
+          except Exception as e:
+            click.secho(f'Error reloading agent: {e}', fg='red')
         
         sys.stdout.write('\n[user]: ')
         sys.stdout.flush()
@@ -307,7 +308,8 @@ async def run_cli(
     reload_event = asyncio.Event()
     event_handler = DevModeChangeHandler(loop, reload_event)
     observer = Observer()
-    observer.schedule(event_handler, path=str(agent_root), recursive=True)
+    watch_path = str(agent_root) if agent_root.is_dir() else str(agent_parent_path)
+    observer.schedule(event_handler, path=watch_path, recursive=True)
     observer.start()
     click.secho(f"Auto-reload enabled - watching for file changes in {agent_folder_name}...", fg="green")
 
@@ -322,82 +324,83 @@ async def run_cli(
     author = event.author or 'system'
     click.echo(f'[{author}]: {"".join(text_parts)}')
 
-  if input_file:
-    session = await run_input_file(
-        app_name=session_app_name,
-        user_id=user_id,
-        agent_or_app=agent_or_app,
-        artifact_service=artifact_service,
-        session_service=session_service,
-        memory_service=memory_service,
-        credential_service=credential_service,
-        input_path=input_file,
-    )
-  elif saved_session_file:
-    # Load the saved session from file
-    with open(saved_session_file, 'r', encoding='utf-8') as f:
-      loaded_session = Session.model_validate_json(f.read())
+  try:
+    if input_file:
+      session = await run_input_file(
+          app_name=session_app_name,
+          user_id=user_id,
+          agent_or_app=agent_or_app,
+          artifact_service=artifact_service,
+          session_service=session_service,
+          memory_service=memory_service,
+          credential_service=credential_service,
+          input_path=input_file,
+      )
+    elif saved_session_file:
+      # Load the saved session from file
+      with open(saved_session_file, 'r', encoding='utf-8') as f:
+        loaded_session = Session.model_validate_json(f.read())
 
-    # Create a new session in the service, copying state from the file
-    session = await session_service.create_session(
-        app_name=session_app_name,
-        user_id=user_id,
-        state=loaded_session.state if loaded_session else None,
-    )
+      # Create a new session in the service, copying state from the file
+      session = await session_service.create_session(
+          app_name=session_app_name,
+          user_id=user_id,
+          state=loaded_session.state if loaded_session else None,
+      )
 
-    # Append events from the file to the new session and display them
-    if loaded_session:
-      for event in loaded_session.events:
-        await session_service.append_event(session, event)
-        _print_event(event)
+      # Append events from the file to the new session and display them
+      if loaded_session:
+        for event in loaded_session.events:
+          await session_service.append_event(session, event)
+          _print_event(event)
 
-    await run_interactively(
-        agent_or_app,
-        artifact_service,
-        session,
-        session_service,
-        credential_service,
-        memory_service=memory_service,
-        dev=dev,
-        reload_event=reload_event,
-        agent_loader=agent_loader,
-        agent_folder_name=agent_folder_name,
-    )
-  else:
-    session = await session_service.create_session(
-        app_name=session_app_name, user_id=user_id
-    )
-    click.echo(f'Running agent {agent_or_app.name}, type exit to exit.')
-    await run_interactively(
-        agent_or_app,
-        artifact_service,
-        session,
-        session_service,
-        credential_service,
-        memory_service=memory_service,
-        dev=dev,
-        reload_event=reload_event,
-        agent_loader=agent_loader,
-        agent_folder_name=agent_folder_name,
-    )
+      await run_interactively(
+          agent_or_app,
+          artifact_service,
+          session,
+          session_service,
+          credential_service,
+          memory_service=memory_service,
+          dev=dev,
+          reload_event=reload_event,
+          agent_loader=agent_loader,
+          agent_folder_name=agent_folder_name,
+      )
+    else:
+      session = await session_service.create_session(
+          app_name=session_app_name, user_id=user_id
+      )
+      click.echo(f'Running agent {agent_or_app.name}, type exit to exit.')
+      await run_interactively(
+          agent_or_app,
+          artifact_service,
+          session,
+          session_service,
+          credential_service,
+          memory_service=memory_service,
+          dev=dev,
+          reload_event=reload_event,
+          agent_loader=agent_loader,
+          agent_folder_name=agent_folder_name,
+      )
 
-  if save_session:
-    session_id = session_id or input('Session ID to save: ')
-    session_path = agent_root / f'{session_id}.session.json'
+    if save_session:
+      session_id = session_id or input('Session ID to save: ')
+      session_path = agent_root / f'{session_id}.session.json'
 
-    # Fetch the session again to get all the details.
-    session = await session_service.get_session(
-        app_name=session.app_name,
-        user_id=session.user_id,
-        session_id=session.id,
-    )
-    session_path.write_text(
-        session.model_dump_json(indent=2, exclude_none=True, by_alias=True),
-        encoding='utf-8',
-    )
+      # Fetch the session again to get all the details.
+      session = await session_service.get_session(
+          app_name=session.app_name,
+          user_id=session.user_id,
+          session_id=session.id,
+      )
+      session_path.write_text(
+          session.model_dump_json(indent=2, exclude_none=True, by_alias=True),
+          encoding='utf-8',
+      )
 
-    print('Session saved to', session_path)
-
-  if observer:
-    observer.stop()
-    observer.join()
+      print('Session saved to', session_path)
+  finally:
+    if observer:
+      observer.stop()
+      observer.join()
