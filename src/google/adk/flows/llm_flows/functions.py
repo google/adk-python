@@ -150,8 +150,8 @@ async def _call_tool_in_thread_pool(
         args_to_call = tool._preprocess_args(args)
         signature = inspect.signature(tool.func)
         valid_params = {param for param in signature.parameters}
-        if 'tool_context' in valid_params:
-          args_to_call['tool_context'] = tool_context
+        if tool._context_param_name in valid_params:
+          args_to_call[tool._context_param_name] = tool_context
         args_to_call = {
             k: v for k, v in args_to_call.items() if k in valid_params
         }

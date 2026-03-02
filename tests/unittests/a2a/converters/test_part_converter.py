@@ -55,7 +55,9 @@ class TestConvertA2aPartToGenaiPart:
     a2a_part = a2a_types.Part(
         root=a2a_types.FilePart(
             file=a2a_types.FileWithUri(
-                uri="gs://bucket/file.txt", mime_type="text/plain"
+                uri="gs://bucket/file.txt",
+                mime_type="text/plain",
+                name="my_file.txt",
             )
         )
     )
@@ -69,6 +71,7 @@ class TestConvertA2aPartToGenaiPart:
     assert result.file_data is not None
     assert result.file_data.file_uri == "gs://bucket/file.txt"
     assert result.file_data.mime_type == "text/plain"
+    assert result.file_data.display_name == "my_file.txt"
 
   def test_convert_file_part_with_bytes(self):
     """Test conversion of A2A FilePart with bytes to GenAI Part."""
@@ -80,7 +83,9 @@ class TestConvertA2aPartToGenaiPart:
     a2a_part = a2a_types.Part(
         root=a2a_types.FilePart(
             file=a2a_types.FileWithBytes(
-                bytes=base64_encoded, mime_type="text/plain"
+                bytes=base64_encoded,
+                mime_type="text/plain",
+                name="my_bytes.txt",
             )
         )
     )
@@ -95,6 +100,7 @@ class TestConvertA2aPartToGenaiPart:
     # The converter decodes base64 back to original bytes
     assert result.inline_data.data == test_bytes
     assert result.inline_data.mime_type == "text/plain"
+    assert result.inline_data.display_name == "my_bytes.txt"
 
   def test_convert_data_part_function_call(self):
     """Test conversion of A2A DataPart with function call metadata."""
@@ -296,7 +302,9 @@ class TestConvertGenaiPartToA2aPart:
     # Arrange
     genai_part = genai_types.Part(
         file_data=genai_types.FileData(
-            file_uri="gs://bucket/file.txt", mime_type="text/plain"
+            file_uri="gs://bucket/file.txt",
+            mime_type="text/plain",
+            display_name="my_file.txt",
         )
     )
 
@@ -310,13 +318,18 @@ class TestConvertGenaiPartToA2aPart:
     assert isinstance(result.root.file, a2a_types.FileWithUri)
     assert result.root.file.uri == "gs://bucket/file.txt"
     assert result.root.file.mime_type == "text/plain"
+    assert result.root.file.name == "my_file.txt"
 
   def test_convert_inline_data_part(self):
     """Test conversion of GenAI inline_data Part to A2A Part."""
     # Arrange
     test_bytes = b"test file content"
     genai_part = genai_types.Part(
-        inline_data=genai_types.Blob(data=test_bytes, mime_type="text/plain")
+        inline_data=genai_types.Blob(
+            data=test_bytes,
+            mime_type="text/plain",
+            display_name="my_bytes.txt",
+        )
     )
 
     # Act
@@ -332,6 +345,7 @@ class TestConvertGenaiPartToA2aPart:
     expected_base64 = base64.b64encode(test_bytes).decode("utf-8")
     assert result.root.file.bytes == expected_base64
     assert result.root.file.mime_type == "text/plain"
+    assert result.root.file.name == "my_bytes.txt"
 
   def test_convert_inline_data_part_with_video_metadata(self):
     """Test conversion of GenAI inline_data Part with video metadata to A2A Part."""
