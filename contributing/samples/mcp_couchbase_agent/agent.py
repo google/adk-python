@@ -49,7 +49,7 @@ root_agent = LlmAgent(
         "Use the provided tools to check cluster health, explore the data "
         "model (buckets, scopes, collections, and document schemas), "
         "run SQL++ queries, and perform key-value document operations. "
-        "The database is in read-only mode. Use SQL++ syntax (not standard "
+        "Use SQL++ syntax (not standard "
         "SQL) for queries. Always discover the data model before writing "
         "queries. Ask clarifying questions when unsure about bucket, scope, "
         "or collection names."
