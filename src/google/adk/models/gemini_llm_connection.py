@@ -180,9 +180,7 @@ class GeminiLlmConnection(BaseLlmConnection):
         if message.server_content:
           content = message.server_content.model_turn
           if content and content.parts:
-            llm_response = LlmResponse(
-                content=content, interrupted=message.server_content.interrupted
-            )
+            llm_response = LlmResponse(content=content)
             if content.parts[0].text:
               text += content.parts[0].text
               llm_response.partial = True
