@@ -104,10 +104,25 @@ def convert_a2a_part_to_genai_part(
           part.metadata[_get_adk_metadata_key(A2A_DATA_PART_METADATA_TYPE_KEY)]
           == A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL
       ):
+        # Restore thought_signature if present
+        thought_signature = None
+        thought_sig_key = _get_adk_metadata_key('thought_signature')
+        if thought_sig_key in part.metadata:
+          sig_value = part.metadata[thought_sig_key]
+          if isinstance(sig_value, bytes):
+            thought_signature = sig_value
+          elif isinstance(sig_value, str):
+            try:
+              thought_signature = base64.b64decode(sig_value)
+            except Exception:
+              logger.warning(
+                  'Failed to decode thought_signature: %s', sig_value
+              )
         return genai_types.Part(
             function_call=genai_types.FunctionCall.model_validate(
                 part.data, by_alias=True
-            )
+            ),
+            thought_signature=thought_signature,
         )
       if (
           part.metadata[_get_adk_metadata_key(A2A_DATA_PART_METADATA_TYPE_KEY)]
@@ -214,16 +229,22 @@ def convert_genai_part_to_a2a_part(
   # TODO once A2A defined how to service such information, migrate below
   # logic accordingly
   if part.function_call:
+    fc_metadata = {
+        _get_adk_metadata_key(
+            A2A_DATA_PART_METADATA_TYPE_KEY
+        ): A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL
+    }
+    # Preserve thought_signature if present
+    if part.thought_signature is not None:
+      fc_metadata[_get_adk_metadata_key('thought_signature')] = (
+          base64.b64encode(part.thought_signature).decode('utf-8')
+      )
     return a2a_types.Part(
         root=a2a_types.DataPart(
             data=part.function_call.model_dump(
                 by_alias=True, exclude_none=True
             ),
-            metadata={
-                _get_adk_metadata_key(
-                    A2A_DATA_PART_METADATA_TYPE_KEY
-                ): A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL
-            },
+            metadata=fc_metadata,
         )
     )
 
