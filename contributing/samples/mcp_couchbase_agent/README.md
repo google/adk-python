@@ -3,7 +3,7 @@
 This agent uses the Couchbase MCP server to interact with Couchbase databases. It demonstrates how to:
 - Connect to a Couchbase cluster using MCP (Model Context Protocol)
 - Use `uvx` to run the MCP server without manual installation
-- Pass database credentials securely via environment variables
+- Pass database credentials via environment variables
 
 ## Prerequisites
 
@@ -12,7 +12,7 @@ This agent uses the Couchbase MCP server to interact with Couchbase databases. I
 
 ## Setup Instructions
 
-### 1. Configure Database Connection
+### Configure Database Connection
 
 Create a `.env` file in the `mcp_couchbase_agent` directory:
 
@@ -31,7 +31,7 @@ couchbase://node1.example.com,node2.example.com
 
 For Couchbase Capella (cloud), use `couchbases://` (with TLS).
 
-### 2. Run the Agent
+### Run the Agent
 
 Start the ADK Web UI from the samples directory:
 
@@ -44,7 +44,7 @@ The agent will automatically:
 - Use `uvx` to run the `couchbase-mcp-server` in read-only mode
 - Connect to your Couchbase cluster
 
-### 3. Example Queries
+### Example Queries
 
 Once the agent is running, try these queries:
 
@@ -60,15 +60,14 @@ Once the agent is running, try these queries:
 
 The agent uses:
 - **Model**: Gemini 2.5 Flash
-- **MCP Server**: `couchbase-mcp-server` (via `uvx`)
-- **Access Mode**: Read-only (default). The Couchbase MCP server runs in read-only mode (`CB_MCP_READ_ONLY_MODE=true`), which prevents write operations for safety.
+- **MCP Server**: [`couchbase-mcp-server`](https://github.com/Couchbase-Ecosystem/mcp-server-couchbase) (via `uvx`)
+- **Access Mode**: Read-only (default). The Couchbase MCP server runs in read-only mode (`CB_MCP_READ_ONLY_MODE=true`), which prevents write operations for safety. Set to `false` to enable write operations (see [Optional Configuration](#optional-configuration)).
 - **Connection**: StdioConnectionParams with 60-second timeout
 - **Environment Variables**: `CB_CONNECTION_STRING`, `CB_USERNAME`, `CB_PASSWORD`
 
 ### Available Tool Categories
 
-The Couchbase MCP server provides tools across these categories (19 tools in
-read-only mode, 23 with writes enabled):
+The Couchbase MCP server provides tools across these categories:
 
 1. **Cluster Health** (3 tools) - Check cluster status, test connections, and view running services
 2. **Schema Discovery** (5 tools) - Explore buckets, scopes, collections, and infer document schemas
@@ -78,7 +77,7 @@ read-only mode, 23 with writes enabled):
 
 ### Optional Configuration
 
-You can customize the MCP server behavior with additional environment variables in your `.env` file:
+You can customize the MCP server behavior with additional environment variables in your `.env` file. For the full list of configuration options, see the [MCP server documentation](https://github.com/Couchbase-Ecosystem/mcp-server-couchbase#additional-configuration-for-mcp-server).
 
 ```bash
 # Disable read-only mode (allows write operations - use with caution)
@@ -93,6 +92,6 @@ CB_MCP_DISABLED_TOOLS=delete_document_by_id,upsert_document_by_id
 - Ensure your `CB_CONNECTION_STRING` is correctly formatted (`couchbase://` or `couchbases://`)
 - Verify database credentials (username and password) have appropriate permissions
 - For Couchbase Capella, ensure your IP address is in the allowed list
-- Check that `uv` is installed (`pip install uv` or `brew install uv`)
+- Check that `uv` is installed (see [installation instructions](https://docs.astral.sh/uv/getting-started/installation/))
 - If the connection times out, verify network access to the Couchbase cluster
 - For TLS connections (`couchbases://`), ensure the cluster's certificate is trusted

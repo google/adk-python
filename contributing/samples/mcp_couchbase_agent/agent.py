@@ -18,7 +18,6 @@ from dotenv import load_dotenv
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.tools.mcp_tool import McpToolset
 from google.adk.tools.mcp_tool import StdioConnectionParams
-from google.genai.types import GenerateContentConfig
 from mcp import StdioServerParameters
 
 load_dotenv()
@@ -41,6 +40,10 @@ if not CB_USERNAME or not CB_PASSWORD:
 root_agent = LlmAgent(
     model="gemini-2.5-flash",
     name="couchbase_agent",
+    description=(
+        "An agent that interacts with Couchbase databases using the"
+        " Couchbase MCP server."
+    ),
     instruction=(
         "You are a Couchbase database assistant. "
         "Use the provided tools to check cluster health, explore the data "
@@ -61,6 +64,7 @@ root_agent = LlmAgent(
                         "CB_CONNECTION_STRING": CB_CONNECTION_STRING,
                         "CB_USERNAME": CB_USERNAME,
                         "CB_PASSWORD": CB_PASSWORD,
+                        # Prevents write operations; set to "false" to enable
                         "CB_MCP_READ_ONLY_MODE": "true",
                     },
                 ),
@@ -68,8 +72,4 @@ root_agent = LlmAgent(
             ),
         )
     ],
-    generate_content_config=GenerateContentConfig(
-        temperature=0.2,
-        top_p=0.95,
-    ),
 )
