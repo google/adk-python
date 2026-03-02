@@ -32,6 +32,9 @@ class Sampler(ABC, Generic[SamplingResult]):
   to get evaluation results for the candidate agent on the batch of examples.
   """
 
+  TRAIN_SET = "train"
+  VALIDATION_SET = "validation"
+
   @abstractmethod
   def get_train_example_ids(self) -> list[str]:
     """Returns the UIDs of examples to use for training the agent."""
@@ -46,7 +49,7 @@ class Sampler(ABC, Generic[SamplingResult]):
   async def sample_and_score(
       self,
       candidate: Agent,
-      example_set: Literal["train", "validation"] = "validation",
+      example_set: Literal[TRAIN_SET, VALIDATION_SET] = VALIDATION_SET,
       batch: Optional[list[str]] = None,
       capture_full_eval_data: bool = False,
   ) -> SamplingResult:
