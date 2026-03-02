@@ -370,7 +370,7 @@ def convert_a2a_message_to_event(
 @a2a_experimental
 def convert_event_to_a2a_message(
     event: Event,
-    invocation_context: InvocationContext,
+    invocation_context: InvocationContext | None = None,
     role: Role = Role.agent,
     part_converter: GenAIPartToA2APartConverter = convert_genai_part_to_a2a_part,
 ) -> Optional[Message]:
@@ -390,8 +390,6 @@ def convert_event_to_a2a_message(
   """
   if not event:
     raise ValueError("Event cannot be None")
-  if not invocation_context:
-    raise ValueError("Invocation context cannot be None")
 
   if not event.content or not event.content.parts:
     return None

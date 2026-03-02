@@ -151,9 +151,13 @@ def _remove_title(schema: Dict):
 
 
 def _get_pydantic_schema(func: Callable) -> Dict:
+  from ..utils.context_utils import find_context_parameter
+
   fields_dict = _get_fields_dict(func)
-  if 'tool_context' in fields_dict.keys():
-    fields_dict.pop('tool_context')
+  # Remove context parameter (detected by type or fallback to 'tool_context' name)
+  context_param = find_context_parameter(func) or 'tool_context'
+  if context_param in fields_dict.keys():
+    fields_dict.pop(context_param)
   return pydantic.create_model(func.__name__, **fields_dict).model_json_schema()
 
 
