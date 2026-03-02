@@ -77,15 +77,19 @@ The Couchbase MCP server provides tools across these categories:
 
 ### Optional Configuration
 
-You can customize the MCP server behavior with additional environment variables in your `.env` file. For the full list of configuration options, see the [MCP server documentation](https://github.com/Couchbase-Ecosystem/mcp-server-couchbase#additional-configuration-for-mcp-server).
+The sample passes a fixed set of environment variables to the MCP server via the `env` dict in `agent.py`. To customize the server behavior (e.g., disabling read-only mode or specific tools), add the variables to the `env` dict in `agent.py`:
 
-```bash
-# Disable read-only mode (allows write operations - use with caution)
-CB_MCP_READ_ONLY_MODE=false
-
-# Disable specific tools (comma-separated list)
-CB_MCP_DISABLED_TOOLS=delete_document_by_id,upsert_document_by_id
+```python
+env={
+    "CB_CONNECTION_STRING": CB_CONNECTION_STRING,
+    "CB_USERNAME": CB_USERNAME,
+    "CB_PASSWORD": CB_PASSWORD,
+    "CB_MCP_READ_ONLY_MODE": "false",  # Enable write operations
+    "CB_MCP_DISABLED_TOOLS": "delete_document_by_id,upsert_document_by_id",
+},
 ```
+
+For the full list of configuration options, see the [MCP server documentation](https://github.com/Couchbase-Ecosystem/mcp-server-couchbase#additional-configuration-for-mcp-server).
 
 ## Troubleshooting
 
