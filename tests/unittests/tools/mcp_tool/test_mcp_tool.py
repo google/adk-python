@@ -534,7 +534,9 @@ class TestMCPTool:
     )
 
     # Create service account credential
-    service_account = ServiceAccount(scopes=["test"])
+    service_account = ServiceAccount(
+        scopes=["test"], use_default_credential=True
+    )
     credential = AuthCredential(
         auth_type=AuthCredentialTypes.SERVICE_ACCOUNT,
         service_account=service_account,

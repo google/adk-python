@@ -21,7 +21,6 @@ from unittest.mock import Mock
 from unittest.mock import patch
 
 from a2a.client.client import ClientConfig
-from a2a.client.client import Consumer
 from a2a.client.client_factory import ClientFactory
 from a2a.client.middleware import ClientCallContext
 from a2a.types import AgentCapabilities
@@ -29,13 +28,16 @@ from a2a.types import AgentCard
 from a2a.types import AgentSkill
 from a2a.types import Artifact
 from a2a.types import Message as A2AMessage
-from a2a.types import SendMessageSuccessResponse
 from a2a.types import Task as A2ATask
 from a2a.types import TaskArtifactUpdateEvent
 from a2a.types import TaskState
 from a2a.types import TaskStatus as A2ATaskStatus
 from a2a.types import TaskStatusUpdateEvent
 from a2a.types import TextPart
+from google.adk.a2a.agent import ParametersConfig
+from google.adk.a2a.agent import RequestInterceptor
+from google.adk.a2a.agent.utils import execute_after_request_interceptors
+from google.adk.a2a.agent.utils import execute_before_request_interceptors
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.remote_a2a_agent import A2A_METADATA_PREFIX
 from google.adk.agents.remote_a2a_agent import AgentCardResolutionError
@@ -2432,3 +2434,203 @@ class TestRemoteA2aAgentIntegration:
 
                   # Verify A2A client was called
                   mock_a2a_client.send_message.assert_called_once()
+
+
+class TestRemoteA2aAgentInterceptors:
+
+  @pytest.fixture
+  def mock_context(self):
+    ctx = Mock(spec=InvocationContext)
+    ctx.session = Mock()
+    ctx.session.state = {"key": "value"}
+    return ctx
+
+  @pytest.mark.asyncio
+  async def test_execute_before_request_interceptors_none(self, mock_context):
+    request = Mock(spec=A2AMessage)
+    result_req, params = await execute_before_request_interceptors(
+        None, mock_context, request
+    )
+    assert result_req is request
+    assert params.client_call_context.state == {"key": "value"}
+
+  @pytest.mark.asyncio
+  async def test_execute_before_request_interceptors_empty(self, mock_context):
+    request = Mock(spec=A2AMessage)
+    result_req, params = await execute_before_request_interceptors(
+        [], mock_context, request
+    )
+    assert result_req is request
+    assert params.client_call_context.state == {"key": "value"}
+
+  @pytest.mark.asyncio
+  async def test_execute_before_request_interceptors_success(
+      self, mock_context
+  ):
+    request = Mock(spec=A2AMessage)
+    new_request = Mock(spec=A2AMessage)
+
+    interceptor1 = Mock(spec=RequestInterceptor)
+    interceptor1.before_request = AsyncMock(
+        return_value=(
+            new_request,
+            ParametersConfig(
+                client_call_context=ClientCallContext(state={"updated": "true"})
+            ),
+        )
+    )
+
+    result_req, params = await execute_before_request_interceptors(
+        [interceptor1], mock_context, request
+    )
+
+    assert result_req is new_request
+    assert params.client_call_context.state == {"updated": "true"}
+    interceptor1.before_request.assert_called_once()
+
+  @pytest.mark.asyncio
+  async def test_execute_before_request_interceptors_returns_event(
+      self, mock_context
+  ):
+    request = Mock(spec=A2AMessage)
+    event = Mock(spec=Event)
+
+    interceptor1 = Mock(spec=RequestInterceptor)
+    interceptor1.before_request = AsyncMock(
+        return_value=(
+            event,
+            ParametersConfig(
+                client_call_context=ClientCallContext(state={"updated": "true"})
+            ),
+        )
+    )
+
+    interceptor2 = Mock(spec=RequestInterceptor)
+    interceptor2.before_request = AsyncMock()
+
+    result, params = await execute_before_request_interceptors(
+        [interceptor1, interceptor2], mock_context, request
+    )
+
+    assert result is event
+    assert params.client_call_context.state == {"updated": "true"}
+    interceptor1.before_request.assert_called_once()
+    interceptor2.before_request.assert_not_called()
+
+  @pytest.mark.asyncio
+  async def test_execute_before_request_interceptors_no_before_request(
+      self, mock_context
+  ):
+    request = Mock(spec=A2AMessage)
+
+    interceptor1 = Mock(spec=RequestInterceptor)
+    interceptor1.before_request = None
+
+    result_req, params = await execute_before_request_interceptors(
+        [interceptor1], mock_context, request
+    )
+
+    assert result_req is request
+    assert params.client_call_context.state == {"key": "value"}
+
+  @pytest.mark.asyncio
+  async def test_execute_after_request_interceptors_none(self, mock_context):
+    response = Mock(spec=A2AMessage)
+    event = Mock(spec=Event)
+    result = await execute_after_request_interceptors(
+        None, mock_context, response, event
+    )
+    assert result is event
+
+  @pytest.mark.asyncio
+  async def test_execute_after_request_interceptors_empty(self, mock_context):
+    response = Mock(spec=A2AMessage)
+    event = Mock(spec=Event)
+    result = await execute_after_request_interceptors(
+        [], mock_context, response, event
+    )
+    assert result is event
+
+  @pytest.mark.asyncio
+  async def test_execute_after_request_interceptors_success(self, mock_context):
+    response = Mock(spec=A2AMessage)
+    event = Mock(spec=Event)
+    new_event = Mock(spec=Event)
+
+    interceptor1 = Mock(spec=RequestInterceptor)
+    interceptor1.after_request = AsyncMock(return_value=new_event)
+
+    result = await execute_after_request_interceptors(
+        [interceptor1], mock_context, response, event
+    )
+
+    assert result is new_event
+    interceptor1.after_request.assert_called_once_with(
+        mock_context, response, event
+    )
+
+  @pytest.mark.asyncio
+  async def test_execute_after_request_interceptors_reverse_order(
+      self, mock_context
+  ):
+    response = Mock(spec=A2AMessage)
+    event = Mock(spec=Event)
+    event1 = Mock(spec=Event)
+    event2 = Mock(spec=Event)
+
+    interceptor1 = Mock(spec=RequestInterceptor)
+    interceptor1.after_request = AsyncMock(return_value=event1)
+
+    interceptor2 = Mock(spec=RequestInterceptor)
+    interceptor2.after_request = AsyncMock(return_value=event2)
+
+    result = await execute_after_request_interceptors(
+        [interceptor1, interceptor2], mock_context, response, event
+    )
+
+    assert result is event1
+    interceptor2.after_request.assert_called_once_with(
+        mock_context, response, event
+    )
+    interceptor1.after_request.assert_called_once_with(
+        mock_context, response, event2
+    )
+
+  @pytest.mark.asyncio
+  async def test_execute_after_request_interceptors_returns_none(
+      self, mock_context
+  ):
+    response = Mock(spec=A2AMessage)
+    event = Mock(spec=Event)
+
+    interceptor1 = Mock(spec=RequestInterceptor)
+    interceptor1.after_request = AsyncMock()
+
+    interceptor2 = Mock(spec=RequestInterceptor)
+    interceptor2.after_request = AsyncMock(return_value=None)
+
+    result = await execute_after_request_interceptors(
+        [interceptor1, interceptor2], mock_context, response, event
+    )
+
+    assert result is None
+    interceptor2.after_request.assert_called_once_with(
+        mock_context, response, event
+    )
+    interceptor1.after_request.assert_not_called()
+
+  @pytest.mark.asyncio
+  async def test_execute_after_request_interceptors_no_after_request(
+      self, mock_context
+  ):
+    response = Mock(spec=A2AMessage)
+    event = Mock(spec=Event)
+
+    interceptor1 = Mock(spec=RequestInterceptor)
+    interceptor1.after_request = None
+
+    result = await execute_after_request_interceptors(
+        [interceptor1], mock_context, response, event
+    )
+
+    assert result is event

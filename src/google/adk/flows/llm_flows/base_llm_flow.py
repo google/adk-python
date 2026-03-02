@@ -368,11 +368,17 @@ async def _run_and_handle_error(
 
   try:
     async with Aclosing(response_generator) as agen:
-      with tracing.use_generate_content_span(
-          llm_request, invocation_context, model_response_event
-      ) as span:
+      async with tracing.use_inference_span(
+          llm_request,
+          invocation_context,
+          model_response_event,
+      ) as gc_span:
         async for llm_response in agen:
-          tracing.trace_generate_content_result(span, llm_response)
+          if gc_span:
+            tracing.trace_inference_result(
+                gc_span,
+                llm_response,
+            )
           yield llm_response
   except Exception as model_error:
     callback_context = CallbackContext(
@@ -871,7 +877,7 @@ class BaseLlmFlow(ABC):
     # Resolve toolset authentication before tool listing.
     # This ensures credentials are ready before get_tools() is called.
     async with Aclosing(
-        _resolve_toolset_auth(invocation_context, agent)
+        self._resolve_toolset_auth(invocation_context, agent)
     ) as agen:
       async for event in agen:
         yield event
@@ -1109,7 +1115,7 @@ class BaseLlmFlow(ABC):
       model_response_event: Event,
   ) -> AsyncGenerator[LlmResponse, None]:
     # Runs before_model_callback if it exists.
-    if response := await _handle_before_model_callback(
+    if response := await self._handle_before_model_callback(
         invocation_context, llm_request, model_response_event
     ):
       yield response
@@ -1134,7 +1140,7 @@ class BaseLlmFlow(ABC):
           invocation_context.live_request_queue = LiveRequestQueue()
           responses_generator = self.run_live(invocation_context)
           async with Aclosing(
-              _run_and_handle_error(
+              self._run_and_handle_error(
                   responses_generator,
                   invocation_context,
                   llm_request,
@@ -1143,7 +1149,7 @@ class BaseLlmFlow(ABC):
           ) as agen:
             async for llm_response in agen:
               # Runs after_model_callback if it exists.
-              if altered_llm_response := await _handle_after_model_callback(
+              if altered_llm_response := await self._handle_after_model_callback(
                   invocation_context, llm_response, model_response_event
               ):
                 llm_response = altered_llm_response
@@ -1167,7 +1173,7 @@ class BaseLlmFlow(ABC):
               == StreamingMode.SSE,
           )
           async with Aclosing(
-              _run_and_handle_error(
+              self._run_and_handle_error(
                   responses_generator,
                   invocation_context,
                   llm_request,
@@ -1183,7 +1189,7 @@ class BaseLlmFlow(ABC):
                   span,
               )
               # Runs after_model_callback if it exists.
-              if altered_llm_response := await _handle_after_model_callback(
+              if altered_llm_response := await self._handle_after_model_callback(
                   invocation_context, llm_response, model_response_event
               ):
                 llm_response = altered_llm_response
@@ -1203,6 +1209,55 @@ class BaseLlmFlow(ABC):
     return _finalize_model_response_event(
         llm_request, llm_response, model_response_event
     )
+
+  async def _resolve_toolset_auth(
+      self,
+      invocation_context: InvocationContext,
+      agent: LlmAgent,
+  ) -> AsyncGenerator[Event, None]:
+    async with Aclosing(
+        _resolve_toolset_auth(invocation_context, agent)
+    ) as agen:
+      async for event in agen:
+        yield event
+
+  async def _handle_before_model_callback(
+      self,
+      invocation_context: InvocationContext,
+      llm_request: LlmRequest,
+      model_response_event: Event,
+  ) -> Optional[LlmResponse]:
+    return await _handle_before_model_callback(
+        invocation_context, llm_request, model_response_event
+    )
+
+  async def _handle_after_model_callback(
+      self,
+      invocation_context: InvocationContext,
+      llm_response: LlmResponse,
+      model_response_event: Event,
+  ) -> Optional[LlmResponse]:
+    return await _handle_after_model_callback(
+        invocation_context, llm_response, model_response_event
+    )
+
+  async def _run_and_handle_error(
+      self,
+      response_generator: AsyncGenerator[LlmResponse, None],
+      invocation_context: InvocationContext,
+      llm_request: LlmRequest,
+      model_response_event: Event,
+  ) -> AsyncGenerator[LlmResponse, None]:
+    async with Aclosing(
+        _run_and_handle_error(
+            response_generator,
+            invocation_context,
+            llm_request,
+            model_response_event,
+        )
+    ) as agen:
+      async for response in agen:
+        yield response
 
   async def _handle_control_event_flush(
       self, invocation_context: InvocationContext, llm_response: LlmResponse

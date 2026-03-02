@@ -50,6 +50,7 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
       invocation_id: str,
       text: str,
       prompt_token_count: int | None = None,
+      thought: bool = False,
   ) -> Event:
     usage_metadata = None
     if prompt_token_count is not None:
@@ -60,7 +61,60 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
         timestamp=timestamp,
         invocation_id=invocation_id,
         author='user',
-        content=Content(role='user', parts=[Part(text=text)]),
+        content=Content(role='user', parts=[Part(text=text, thought=thought)]),
+        usage_metadata=usage_metadata,
+    )
+
+  def _create_function_call_event(
+      self,
+      timestamp: float,
+      invocation_id: str,
+      function_call_id: str,
+  ) -> Event:
+    return Event(
+        timestamp=timestamp,
+        invocation_id=invocation_id,
+        author='agent',
+        content=Content(
+            role='model',
+            parts=[
+                Part(
+                    function_call=types.FunctionCall(
+                        id=function_call_id, name='tool', args={}
+                    )
+                )
+            ],
+        ),
+    )
+
+  def _create_function_response_event(
+      self,
+      timestamp: float,
+      invocation_id: str,
+      function_call_id: str,
+      prompt_token_count: int | None = None,
+  ) -> Event:
+    usage_metadata = None
+    if prompt_token_count is not None:
+      usage_metadata = types.GenerateContentResponseUsageMetadata(
+          prompt_token_count=prompt_token_count
+      )
+    return Event(
+        timestamp=timestamp,
+        invocation_id=invocation_id,
+        author='agent',
+        content=Content(
+            role='user',
+            parts=[
+                Part(
+                    function_response=types.FunctionResponse(
+                        id=function_call_id,
+                        name='tool',
+                        response={'result': 'ok'},
+                    )
+                )
+            ],
+        ),
         usage_metadata=usage_metadata,
     )
 
@@ -249,8 +303,20 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
         token_threshold=50_000,
         event_retention_size=5,
     )
+    self.assertEqual(config.compaction_interval, 2)
+    self.assertEqual(config.overlap_size, 1)
     self.assertEqual(config.token_threshold, 50_000)
     self.assertEqual(config.event_retention_size, 5)
+
+  def test_events_compaction_config_accepts_sliding_window_fields(self):
+    config = EventsCompactionConfig(
+        compaction_interval=2,
+        overlap_size=1,
+    )
+    self.assertEqual(config.compaction_interval, 2)
+    self.assertEqual(config.overlap_size, 1)
+    self.assertIsNone(config.token_threshold)
+    self.assertIsNone(config.event_retention_size)
 
   def test_events_compaction_config_rejects_partial_token_fields(
       self,
@@ -261,6 +327,23 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
           overlap_size=1,
           token_threshold=50_000,
       )
+
+  def test_events_compaction_config_rejects_partial_sliding_fields(
+      self,
+  ):
+    with pytest.raises(ValidationError):
+      EventsCompactionConfig(
+          compaction_interval=2,
+      )
+
+    with pytest.raises(ValidationError):
+      EventsCompactionConfig(
+          overlap_size=0,
+      )
+
+  def test_events_compaction_config_rejects_missing_modes(self):
+    with pytest.raises(ValidationError):
+      EventsCompactionConfig()
 
   def test_latest_prompt_token_count_fallback_applies_compaction(self):
     events = [
@@ -274,6 +357,25 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
 
     # Visible text after compaction is: 'S' + ('c' * 20) = 21 chars.
     self.assertEqual(estimated_token_count, 21 // 4)
+
+  def test_latest_prompt_token_count_fallback_uses_effective_contents(self):
+    events = [
+        self._create_event(1.0, 'inv1', 'visible'),
+        Event(
+            timestamp=2.0,
+            invocation_id='inv2',
+            author='model',
+            content=Content(
+                role='model',
+                parts=[Part(text='hidden-thought', thought=True)],
+            ),
+        ),
+    ]
+
+    estimated_token_count = compaction_module._latest_prompt_token_count(events)
+
+    # Thought-only events are filtered by contents processing.
+    self.assertEqual(estimated_token_count, len('visible') // 4)
 
   async def test_run_compaction_for_token_threshold_keeps_retention_events(
       self,
@@ -323,6 +425,136 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
     self.mock_session_service.append_event.assert_called_once_with(
         session=session, event=mock_compacted_event
     )
+
+  async def test_run_compaction_for_token_threshold_keeps_tool_call_pair(
+      self,
+  ):
+    app = App(
+        name='test',
+        root_agent=Mock(spec=BaseAgent),
+        events_compaction_config=EventsCompactionConfig(
+            summarizer=self.mock_compactor,
+            compaction_interval=999,
+            overlap_size=0,
+            token_threshold=50,
+            event_retention_size=1,
+        ),
+    )
+    session = Session(
+        app_name='test',
+        user_id='u1',
+        id='s1',
+        events=[
+            self._create_event(1.0, 'inv1', 'e1'),
+            self._create_function_call_event(2.0, 'inv2', 'tool-call-1'),
+            self._create_function_response_event(
+                3.0,
+                'inv2',
+                'tool-call-1',
+                prompt_token_count=100,
+            ),
+        ],
+    )
+
+    mock_compacted_event = self._create_compacted_event(
+        1.0, 1.0, 'Summary inv1'
+    )
+    self.mock_compactor.maybe_summarize_events.return_value = (
+        mock_compacted_event
+    )
+
+    await _run_compaction_for_sliding_window(
+        app, session, self.mock_session_service
+    )
+
+    compacted_events_arg = self.mock_compactor.maybe_summarize_events.call_args[
+        1
+    ]['events']
+    self.assertEqual(
+        [e.invocation_id for e in compacted_events_arg],
+        ['inv1'],
+    )
+    self.mock_session_service.append_event.assert_called_once_with(
+        session=session, event=mock_compacted_event
+    )
+
+  async def test_run_compaction_for_token_threshold_equal_threshold_compacts(
+      self,
+  ):
+    app = App(
+        name='test',
+        root_agent=Mock(spec=BaseAgent),
+        events_compaction_config=EventsCompactionConfig(
+            summarizer=self.mock_compactor,
+            compaction_interval=999,
+            overlap_size=0,
+            token_threshold=100,
+            event_retention_size=1,
+        ),
+    )
+    session = Session(
+        app_name='test',
+        user_id='u1',
+        id='s1',
+        events=[
+            self._create_event(1.0, 'inv1', 'e1'),
+            self._create_event(2.0, 'inv2', 'e2', prompt_token_count=100),
+        ],
+    )
+
+    mock_compacted_event = self._create_compacted_event(
+        1.0, 1.0, 'Summary inv1'
+    )
+    self.mock_compactor.maybe_summarize_events.return_value = (
+        mock_compacted_event
+    )
+
+    await _run_compaction_for_sliding_window(
+        app, session, self.mock_session_service
+    )
+
+    compacted_events_arg = self.mock_compactor.maybe_summarize_events.call_args[
+        1
+    ]['events']
+    self.assertEqual(
+        [e.invocation_id for e in compacted_events_arg],
+        ['inv1'],
+    )
+    self.mock_session_service.append_event.assert_called_once_with(
+        session=session, event=mock_compacted_event
+    )
+
+  async def test_run_compaction_skip_token_compaction(self):
+    app = App(
+        name='test',
+        root_agent=Mock(spec=BaseAgent),
+        events_compaction_config=EventsCompactionConfig(
+            summarizer=self.mock_compactor,
+            compaction_interval=999,
+            overlap_size=0,
+            token_threshold=50,
+            event_retention_size=1,
+        ),
+    )
+    session = Session(
+        app_name='test',
+        user_id='u1',
+        id='s1',
+        events=[
+            self._create_event(1.0, 'inv1', 'e1'),
+            self._create_event(2.0, 'inv2', 'e2', prompt_token_count=100),
+        ],
+    )
+
+    await _run_compaction_for_sliding_window(
+        app,
+        session,
+        self.mock_session_service,
+        skip_token_compaction=True,
+    )
+
+    self.mock_compactor.maybe_summarize_events.assert_not_called()
+    self.mock_session_service.append_event.assert_not_called()
 
   async def test_run_compaction_for_token_threshold_seeds_previous_compaction(
       self,
@@ -478,6 +710,68 @@ class TestCompaction(unittest.IsolatedAsyncioTestCase):
     )
     self.assertEqual(compacted_events_arg[0].timestamp, 1.0)
     self.assertEqual(compacted_events_arg[1].invocation_id, 'inv4')
+    self.mock_session_service.append_event.assert_called_once_with(
+        session=session, event=mock_compacted_event
+    )
+
+  async def test_run_compaction_for_token_threshold_uses_latest_ordered_seed(
+      self,
+  ):
+    app = App(
+        name='test',
+        root_agent=Mock(spec=BaseAgent),
+        events_compaction_config=EventsCompactionConfig(
+            summarizer=self.mock_compactor,
+            compaction_interval=999,
+            overlap_size=0,
+            token_threshold=50,
+            event_retention_size=1,
+        ),
+    )
+    session = Session(
+        app_name='test',
+        user_id='u1',
+        id='s1',
+        events=[
+            self._create_event(1.0, 'inv1', 'e1'),
+            self._create_event(2.0, 'inv2', 'e2'),
+            self._create_event(3.0, 'inv3', 'e3'),
+            self._create_event(4.0, 'inv4', 'e4'),
+            self._create_event(5.0, 'inv5', 'e5'),
+            self._create_event(15.0, 'inv6', 'e6'),
+            self._create_event(20.0, 'inv7', 'e7'),
+            self._create_compacted_event(
+                15.0, 20.0, 'Summary 15-20', appended_ts=21.0
+            ),
+            self._create_compacted_event(
+                1.0, 5.0, 'Summary 1-5', appended_ts=22.0
+            ),
+            self._create_event(23.0, 'inv8', 'e8'),
+            self._create_event(24.0, 'inv9', 'e9', prompt_token_count=120),
+        ],
+    )
+
+    mock_compacted_event = self._create_compacted_event(
+        1.0, 23.0, 'Summary 1-23'
+    )
+    self.mock_compactor.maybe_summarize_events.return_value = (
+        mock_compacted_event
+    )
+
+    await _run_compaction_for_sliding_window(
+        app, session, self.mock_session_service
+    )
+
+    compacted_events_arg = self.mock_compactor.maybe_summarize_events.call_args[
+        1
+    ]['events']
+    self.assertEqual(
+        compacted_events_arg[0].content.parts[0].text, 'Summary 1-5'
+    )
+    self.assertEqual(
+        [e.invocation_id for e in compacted_events_arg[1:]],
+        ['inv6', 'inv7', 'inv8'],
+    )
     self.mock_session_service.append_event.assert_called_once_with(
         session=session, event=mock_compacted_event
     )
