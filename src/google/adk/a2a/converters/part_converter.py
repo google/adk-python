@@ -70,7 +70,9 @@ def convert_a2a_part_to_genai_part(
     if isinstance(part.file, a2a_types.FileWithUri):
       return genai_types.Part(
           file_data=genai_types.FileData(
-              file_uri=part.file.uri, mime_type=part.file.mime_type
+              file_uri=part.file.uri,
+              mime_type=part.file.mime_type,
+              display_name=part.file.name,
           )
       )
 
@@ -79,6 +81,7 @@ def convert_a2a_part_to_genai_part(
           inline_data=genai_types.Blob(
               data=base64.b64decode(part.file.bytes),
               mime_type=part.file.mime_type,
+              display_name=part.file.name,
           )
       )
     else:
@@ -188,6 +191,7 @@ def convert_genai_part_to_a2a_part(
             file=a2a_types.FileWithUri(
                 uri=part.file_data.file_uri,
                 mime_type=part.file_data.mime_type,
+                name=part.file_data.display_name,
             )
         )
     )
@@ -211,6 +215,7 @@ def convert_genai_part_to_a2a_part(
         file=a2a_types.FileWithBytes(
             bytes=base64.b64encode(part.inline_data.data).decode('utf-8'),
             mime_type=part.inline_data.mime_type,
+            name=part.inline_data.display_name,
         )
     )
 
