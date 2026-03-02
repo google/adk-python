@@ -281,8 +281,7 @@ class GeminiLlmConnection(BaseLlmConnection):
             if text:
               yield self.__build_full_text_response(text)
               text = ''
-            else:
-              yield LlmResponse(interrupted=message.server_content.interrupted)
+            yield LlmResponse(interrupted=message.server_content.interrupted)
         if message.tool_call:
           if text:
             yield self.__build_full_text_response(text)
