@@ -22,7 +22,6 @@ from typing import Any
 from typing import Dict
 from typing import List
 from typing import Optional
-import uuid
 
 from google.adk.platform import time as platform_time
 from google.adk.platform import uuid as platform_uuid

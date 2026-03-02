@@ -16,7 +16,6 @@ from __future__ import annotations
 
 from abc import ABC
 import asyncio
-import datetime
 
 from google.adk.platform import time as platform_time
 import inspect

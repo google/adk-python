@@ -24,7 +24,6 @@ from typing import Callable
 from typing import Optional
 from typing import Union
 from urllib.parse import urlparse
-import uuid
 
 from google.adk.platform import uuid as platform_uuid
 

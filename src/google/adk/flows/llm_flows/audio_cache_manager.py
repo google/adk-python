@@ -15,7 +15,6 @@
 from __future__ import annotations
 
 import logging
-import time
 
 from google.adk.platform import time as platform_time
 from typing import TYPE_CHECKING

@@ -21,7 +21,6 @@ import logging
 from typing import Awaitable
 from typing import Callable
 from typing import Optional
-import uuid
 
 from google.adk.platform import time as platform_time
 from google.adk.platform import uuid as platform_uuid

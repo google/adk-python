@@ -32,7 +32,6 @@ import json
 import pickle
 from typing import Any
 from typing import Optional
-import uuid
 
 from google.adk.platform import uuid as platform_uuid
 
