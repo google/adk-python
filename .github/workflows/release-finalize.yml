@@ -68,9 +68,11 @@ jobs:
       - name: Rename release/candidate to release/v{version}
         if: steps.check.outputs.is_release_pr == 'true'
         run: |
-          VERSION="v${{ steps.version.outputs.version }}"
+          VERSION="v${STEPS_VERSION_OUTPUTS_VERSION}"
           git push origin "release/candidate:refs/heads/release/$VERSION" ":release/candidate"
           echo "Renamed release/candidate to release/$VERSION"
+        env:
+          STEPS_VERSION_OUTPUTS_VERSION: ${{ steps.version.outputs.version }}
 
       - name: Update PR label to tagged
         if: steps.check.outputs.is_release_pr == 'true'

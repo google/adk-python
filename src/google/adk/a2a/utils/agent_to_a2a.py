@@ -20,7 +20,9 @@ from typing import Union
 
 from a2a.server.apps import A2AStarletteApplication
 from a2a.server.request_handlers import DefaultRequestHandler
+from a2a.server.tasks import InMemoryPushNotificationConfigStore
 from a2a.server.tasks import InMemoryTaskStore
+from a2a.server.tasks import PushNotificationConfigStore
 from a2a.types import AgentCard
 from starlette.applications import Starlette
 
@@ -78,6 +80,7 @@ def to_a2a(
     port: int = 8000,
     protocol: str = "http",
     agent_card: Optional[Union[AgentCard, str]] = None,
+    push_config_store: Optional[PushNotificationConfigStore] = None,
     runner: Optional[Runner] = None,
 ) -> Starlette:
   """Convert an ADK agent to a A2A Starlette application.
@@ -90,6 +93,9 @@ def to_a2a(
       agent_card: Optional pre-built AgentCard object or path to agent card
                   JSON. If not provided, will be built automatically from the
                   agent.
+      push_config_store: Optional A2A push notification config store. If not
+        provided, an in-memory store will be created so push-notification
+        config RPC methods are supported.
       runner: Optional pre-built Runner object. If not provided, a default
               runner will be created using in-memory services.
 
@@ -127,8 +133,13 @@ def to_a2a(
       runner=runner or create_runner,
   )
 
+  if push_config_store is None:
+    push_config_store = InMemoryPushNotificationConfigStore()
+
   request_handler = DefaultRequestHandler(
-      agent_executor=agent_executor, task_store=task_store
+      agent_executor=agent_executor,
+      task_store=task_store,
+      push_config_store=push_config_store,
   )
 
   # Use provided agent card or build one from the agent
