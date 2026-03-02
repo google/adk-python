@@ -28,9 +28,11 @@ definition. The rationales to have customized tool are:
 """
 
 from .bigquery_credentials import BigQueryCredentialsConfig
+from .bigquery_skill import get_bigquery_skill
 from .bigquery_toolset import BigQueryToolset
 
 __all__ = [
-    "BigQueryToolset",
     "BigQueryCredentialsConfig",
+    "BigQueryToolset",
+    "get_bigquery_skill",
 ]
