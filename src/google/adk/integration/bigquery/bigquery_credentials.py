@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from ...features import experimental
 from ...features import FeatureName
-from .._google_credentials import BaseGoogleCredentialsConfig
+from ...tools._google_credentials import BaseGoogleCredentialsConfig
 
 BIGQUERY_TOKEN_CACHE_KEY = "bigquery_token_cache"
 BIGQUERY_DEFAULT_SCOPE = ["https://www.googleapis.com/auth/bigquery"]

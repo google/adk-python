@@ -12,10 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""BigQuery integration — skills and guided workflows."""
+"""BigQuery integration — tools, credentials, and skills."""
 
+from .bigquery_credentials import BigQueryCredentialsConfig
 from .bigquery_skill import get_bigquery_skill
+from .bigquery_toolset import BigQueryToolset
 
 __all__ = [
+    "BigQueryCredentialsConfig",
+    "BigQueryToolset",
     "get_bigquery_skill",
 ]

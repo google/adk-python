@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""BigQuery Tools (Experimental).
+"""Alias — canonical location is google.adk.integration.bigquery.
 
 BigQuery Tools under this module are hand crafted and customized while the tools
 under google.adk.tools.google_api_tool are auto generated based on API
@@ -27,9 +27,39 @@ definition. The rationales to have customized tool are:
    execute_sql can't arbitrarily mutate existing data.
 """
 
-from .bigquery_credentials import BigQueryCredentialsConfig
-from .bigquery_skill import get_bigquery_skill
-from .bigquery_toolset import BigQueryToolset
+import sys
+
+from google.adk.integration.bigquery import bigquery_credentials
+from google.adk.integration.bigquery import bigquery_skill
+from google.adk.integration.bigquery import bigquery_toolset
+from google.adk.integration.bigquery import client
+from google.adk.integration.bigquery import config
+from google.adk.integration.bigquery import data_insights_tool
+from google.adk.integration.bigquery import metadata_tool
+from google.adk.integration.bigquery import query_tool
+
+# Register canonical modules under the alias path so that imports like
+# ``from google.adk.tools.bigquery.client import get_bigquery_client``
+# resolve to the *same* module object where the real code lives.  This
+# ensures mock.patch.object works correctly in tests.
+_CANONICAL_MODULES = {
+    "bigquery_credentials": bigquery_credentials,
+    "bigquery_skill": bigquery_skill,
+    "bigquery_toolset": bigquery_toolset,
+    "client": client,
+    "config": config,
+    "data_insights_tool": data_insights_tool,
+    "metadata_tool": metadata_tool,
+    "query_tool": query_tool,
+}
+
+for _name, _mod in _CANONICAL_MODULES.items():
+  sys.modules[f"{__name__}.{_name}"] = _mod
+
+# Re-export top-level names for convenience.
+from google.adk.integration.bigquery import BigQueryCredentialsConfig
+from google.adk.integration.bigquery import BigQueryToolset
+from google.adk.integration.bigquery import get_bigquery_skill
 
 __all__ = [
     "BigQueryCredentialsConfig",

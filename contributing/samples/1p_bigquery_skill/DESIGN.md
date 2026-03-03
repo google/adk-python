@@ -33,9 +33,16 @@ We propose to package spec-compliant skill directories within the ADK library, a
 ## Directory Structure Example:
 
 ```
-src/google/adk/integration/bigquery/    # Canonical location for skills
-├── __init__.py                         # Exports get_bigquery_skill
-├── bigquery_skill.py                   # Convenience loader
+src/google/adk/integration/bigquery/    # Canonical location
+├── __init__.py                         # Exports BigQueryToolset, etc.
+├── bigquery_toolset.py                 # Raw tools
+├── bigquery_credentials.py             # Credentials config
+├── bigquery_skill.py                   # Skill loader
+├── client.py                           # BQ client helper
+├── config.py                           # Tool configuration
+├── data_insights_tool.py               # Data insights tool
+├── metadata_tool.py                    # Metadata tools
+├── query_tool.py                       # Query tools
 └── skills/
     └── bigquery-data-analysis/         # Spec-compliant skill directory
         ├── SKILL.md                    # Frontmatter + workflow instructions
@@ -44,8 +51,9 @@ src/google/adk/integration/bigquery/    # Canonical location for skills
             └── error_handling.md
 
 src/google/adk/tools/bigquery/
-├── bigquery_toolset.py                 # Existing: raw tools
-└── bigquery_skill.py                   # Alias → integration.bigquery
+└── __init__.py                         # Alias → integration.bigquery
+                                        # (registers canonical modules
+                                        #  in sys.modules for compat)
 ```
 
 ## Runtime Flow:
@@ -64,7 +72,7 @@ This allows the agent to access guidance on demand without overloading the conte
 
 ```py
 from google.adk.agents.llm_agent import LlmAgent
-from google.adk.tools.bigquery.bigquery_toolset import BigQueryToolset
+from google.adk.integration.bigquery import BigQueryToolset
 
 bigquery_toolset = BigQueryToolset(credentials_config=creds)
 
@@ -83,7 +91,7 @@ root_agent = LlmAgent(
 
 ```py
 from google.adk.agents.llm_agent import LlmAgent
-from google.adk.tools.bigquery.bigquery_toolset import BigQueryToolset
+from google.adk.integration.bigquery import BigQueryToolset
 from google.adk.integration.bigquery import get_bigquery_skill
 from google.adk.tools.skill_toolset import SkillToolset
 
@@ -131,7 +139,7 @@ def get_<toolset>_skill() -> Skill:
 
 # Backward Compatibility
 
-This proposal is entirely additive and does not introduce any breaking changes. Existing usage patterns of toolsets and `SkillToolset` remain unaffected.
+All toolset code has moved to `google.adk.integration.bigquery` as the canonical location. The old `google.adk.tools.bigquery` path remains as a fully transparent alias: its `__init__.py` registers the canonical modules in `sys.modules` so that all existing imports (including `from google.adk.tools.bigquery.config import BigQueryToolConfig`) resolve to the same module objects where the real code lives. This ensures `mock.patch.object` and all other patterns continue to work without changes to existing tests or user code.
 
 # Alternatives Considered
 
