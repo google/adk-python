@@ -34,6 +34,32 @@ _ALLOWED_FRONTMATTER_KEYS = frozenset({
 })
 
 
+def _resolve_skill_dir(
+    skill_dir: Union[str, pathlib.Path],
+    relative_to: Union[str, pathlib.Path, None] = None,
+) -> pathlib.Path:
+  """Resolve a skill directory path.
+
+  If ``skill_dir`` is relative and ``relative_to`` is provided, the path is
+  resolved relative to the **parent directory** of ``relative_to``.
+  Otherwise the path is resolved relative to the current working directory
+  (the existing default behaviour).
+
+  Args:
+    skill_dir: Path to the skill directory.
+    relative_to: Optional reference file path (typically ``__file__``).
+      When provided, relative *skill_dir* values are resolved against the
+      parent directory of this path instead of CWD.
+
+  Returns:
+    Resolved absolute ``pathlib.Path``.
+  """
+  skill_dir = pathlib.Path(skill_dir)
+  if not skill_dir.is_absolute() and relative_to is not None:
+    skill_dir = pathlib.Path(relative_to).resolve().parent / skill_dir
+  return skill_dir.resolve()
+
+
 def _load_dir(directory: pathlib.Path) -> dict[str, str]:
   """Recursively load files from a directory into a dictionary.
 
@@ -108,11 +134,20 @@ def _parse_skill_md(
   return parsed, body, skill_md
 
 
-def _load_skill_from_dir(skill_dir: Union[str, pathlib.Path]) -> models.Skill:
+def _load_skill_from_dir(
+    skill_dir: Union[str, pathlib.Path],
+    *,
+    relative_to: Union[str, pathlib.Path, None] = None,
+) -> models.Skill:
   """Load a complete skill from a directory.
 
   Args:
     skill_dir: Path to the skill directory.
+    relative_to: Optional reference file path (typically ``__file__``).
+      When *skill_dir* is relative, it is resolved against the parent
+      directory of this path instead of CWD.  Recommended usage::
+
+        load_skill_from_dir("my-skill", relative_to=__file__)
 
   Returns:
     Skill object with all components loaded.
@@ -122,7 +157,7 @@ def _load_skill_from_dir(skill_dir: Union[str, pathlib.Path]) -> models.Skill:
     ValueError: If SKILL.md is invalid or the skill name does not match
       the directory name.
   """
-  skill_dir = pathlib.Path(skill_dir).resolve()
+  skill_dir = _resolve_skill_dir(skill_dir, relative_to)
 
   parsed, body, skill_md = _parse_skill_md(skill_dir)
 
@@ -158,6 +193,8 @@ def _load_skill_from_dir(skill_dir: Union[str, pathlib.Path]) -> models.Skill:
 
 def _validate_skill_dir(
     skill_dir: Union[str, pathlib.Path],
+    *,
+    relative_to: Union[str, pathlib.Path, None] = None,
 ) -> list[str]:
   """Validate a skill directory without fully loading it.
 
@@ -166,12 +203,15 @@ def _validate_skill_dir(
 
   Args:
     skill_dir: Path to the skill directory.
+    relative_to: Optional reference file path (typically ``__file__``).
+      When *skill_dir* is relative, it is resolved against the parent
+      directory of this path instead of CWD.
 
   Returns:
     List of problem strings. Empty list means the skill is valid.
   """
   problems: list[str] = []
-  skill_dir = pathlib.Path(skill_dir).resolve()
+  skill_dir = _resolve_skill_dir(skill_dir, relative_to)
 
   if not skill_dir.exists():
     return [f"Directory '{skill_dir}' does not exist."]
@@ -213,6 +253,8 @@ def _validate_skill_dir(
 
 def _read_skill_properties(
     skill_dir: Union[str, pathlib.Path],
+    *,
+    relative_to: Union[str, pathlib.Path, None] = None,
 ) -> models.Frontmatter:
   """Read only the frontmatter properties from a skill directory.
 
@@ -221,6 +263,9 @@ def _read_skill_properties(
 
   Args:
     skill_dir: Path to the skill directory.
+    relative_to: Optional reference file path (typically ``__file__``).
+      When *skill_dir* is relative, it is resolved against the parent
+      directory of this path instead of CWD.
 
   Returns:
     Frontmatter object with the skill's metadata.
@@ -229,6 +274,6 @@ def _read_skill_properties(
     FileNotFoundError: If the directory or SKILL.md is not found.
     ValueError: If the frontmatter is invalid.
   """
-  skill_dir = pathlib.Path(skill_dir).resolve()
+  skill_dir = _resolve_skill_dir(skill_dir, relative_to)
   parsed, _, _ = _parse_skill_md(skill_dir)
   return models.Frontmatter.model_validate(parsed)

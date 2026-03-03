@@ -16,6 +16,7 @@
 
 from google.adk.skills import load_skill_from_dir as _load_skill_from_dir
 from google.adk.skills._utils import _read_skill_properties
+from google.adk.skills._utils import _resolve_skill_dir
 from google.adk.skills._utils import _validate_skill_dir
 import pytest
 
@@ -180,3 +181,95 @@ Body content
   assert fm.name == "my-skill"
   assert fm.description == "A cool skill"
   assert fm.license == "MIT"
+
+
+# ---- _resolve_skill_dir / relative_to tests ----
+
+_SKILL_MD = """\
+---
+name: {name}
+description: A skill
+---
+Body
+"""
+
+
+def _make_skill(parent: "pathlib.Path", name: str = "my-skill"):
+  """Helper to create a minimal skill directory."""
+  import pathlib  # noqa: F811 – local re-import for helper
+
+  skill_dir = parent / name
+  skill_dir.mkdir(parents=True, exist_ok=True)
+  (skill_dir / "SKILL.md").write_text(_SKILL_MD.format(name=name))
+  return skill_dir
+
+
+def test_resolve_skill_dir_helper(tmp_path):
+  """Unit test _resolve_skill_dir directly."""
+  import pathlib
+
+  # Absolute path is unchanged regardless of relative_to.
+  abs_path = tmp_path / "my-skill"
+  result = _resolve_skill_dir(abs_path, relative_to="/some/file.py")
+  assert result == abs_path.resolve()
+
+  # Relative path + relative_to resolves against parent of relative_to.
+  ref_file = tmp_path / "agent.py"
+  ref_file.touch()
+  result = _resolve_skill_dir("skills/my-skill", relative_to=ref_file)
+  assert result == (tmp_path / "skills" / "my-skill").resolve()
+
+  # Relative path + no relative_to resolves against CWD.
+  result = _resolve_skill_dir("some-dir")
+  assert result == pathlib.Path("some-dir").resolve()
+
+
+def test_load_skill_with_relative_to(tmp_path):
+  """load_skill_from_dir resolves a relative path via relative_to."""
+  _make_skill(tmp_path / "skills", "my-skill")
+
+  # Simulate a __file__ sitting in tmp_path.
+  ref_file = tmp_path / "agent.py"
+  ref_file.touch()
+
+  skill = _load_skill_from_dir("skills/my-skill", relative_to=ref_file)
+  assert skill.name == "my-skill"
+
+
+def test_load_skill_relative_to_none_uses_cwd(tmp_path):
+  """When relative_to is None, CWD behaviour is preserved."""
+  _make_skill(tmp_path, "my-skill")
+
+  # Passing the absolute tmp_path still works with relative_to=None.
+  skill = _load_skill_from_dir(tmp_path / "my-skill")
+  assert skill.name == "my-skill"
+
+
+def test_load_skill_absolute_path_ignores_relative_to(tmp_path):
+  """Absolute skill_dir ignores relative_to entirely."""
+  skill_dir = _make_skill(tmp_path, "my-skill")
+
+  skill = _load_skill_from_dir(skill_dir, relative_to="/nonexistent/agent.py")
+  assert skill.name == "my-skill"
+
+
+def test_validate_skill_dir_with_relative_to(tmp_path):
+  """_validate_skill_dir works with relative_to."""
+  _make_skill(tmp_path / "skills", "my-skill")
+
+  ref_file = tmp_path / "agent.py"
+  ref_file.touch()
+
+  problems = _validate_skill_dir("skills/my-skill", relative_to=ref_file)
+  assert problems == []
+
+
+def test_read_skill_properties_with_relative_to(tmp_path):
+  """_read_skill_properties works with relative_to."""
+  _make_skill(tmp_path / "skills", "my-skill")
+
+  ref_file = tmp_path / "agent.py"
+  ref_file.touch()
+
+  fm = _read_skill_properties("skills/my-skill", relative_to=ref_file)
+  assert fm.name == "my-skill"
