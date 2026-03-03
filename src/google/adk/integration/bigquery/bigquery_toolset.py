@@ -44,12 +44,19 @@ class BigQueryToolset(BaseToolset):
       tool_filter: Optional[Union[ToolPredicate, List[str]]] = None,
       credentials_config: Optional[BigQueryCredentialsConfig] = None,
       bigquery_tool_config: Optional[BigQueryToolConfig] = None,
+      load_skills: bool = False,
   ):
     super().__init__(tool_filter=tool_filter)
     self._credentials_config = credentials_config
     self._tool_settings = (
         bigquery_tool_config if bigquery_tool_config else BigQueryToolConfig()
     )
+    self._skill_toolset = None
+    if load_skills:
+      from ...tools.skill_toolset import SkillToolset
+      from .bigquery_skill import get_bigquery_skill
+
+      self._skill_toolset = SkillToolset(skills=[get_bigquery_skill()])
 
   def _is_tool_selected(
       self, tool: BaseTool, readonly_context: ReadonlyContext
@@ -90,11 +97,14 @@ class BigQueryToolset(BaseToolset):
         ]
     ]
 
-    return [
+    tools = [
         tool
         for tool in all_tools
         if self._is_tool_selected(tool, readonly_context)
     ]
+    if self._skill_toolset:
+      tools.extend(await self._skill_toolset.get_tools(readonly_context))
+    return tools
 
   @override
   async def close(self):

@@ -87,7 +87,23 @@ root_agent = LlmAgent(
 )
 ```
 
-## After:
+## After (single flag):
+
+```py
+from google.adk.agents.llm_agent import LlmAgent
+from google.adk.integration.bigquery import BigQueryToolset
+
+bigquery_toolset = BigQueryToolset(credentials_config=creds, load_skills=True)
+
+root_agent = LlmAgent(
+    model="gemini-2.5-flash",
+    name="analyst",
+    instruction="You are a data analyst. Use your tools and skills.",
+    tools=[bigquery_toolset],
+)
+```
+
+## After (explicit, composable):
 
 ```py
 from google.adk.agents.llm_agent import LlmAgent
@@ -96,26 +112,25 @@ from google.adk.integration.bigquery import get_bigquery_skill
 from google.adk.tools.skill_toolset import SkillToolset
 
 bigquery_toolset = BigQueryToolset(credentials_config=creds)
-bq_skill_toolset = SkillToolset(skills=[get_bigquery_skill()])
+bq_skill_toolset = SkillToolset(skills=[get_bigquery_skill(), my_custom_skill])
 
 root_agent = LlmAgent(
     model="gemini-2.5-flash",
     name="analyst",
     instruction="You are a data analyst. Use your tools and skills.",
-    tools=[bigquery_toolset, bq_skill_toolset], # Add both
+    tools=[bigquery_toolset, bq_skill_toolset],
 )
 ```
 
-The detailed guidance is now encapsulated within the skill, accessible through standard skill tools.
+The `load_skills=True` flag is the simplest path for the common case. The explicit `SkillToolset` pattern is available when you need to combine the 1P skill with custom skills.
 
 ## Composability:
 
-This design maintains a clear separation of concerns. Developers can mix and match:
+Both approaches are available. Developers can mix and match:
 
-* Toolset only.  
-* Toolset \+ 1P Skill.  
-* Toolset \+ Custom Skills.  
-* Toolset \+ 1P Skill \+ Custom Skills.
+* `BigQueryToolset(load_skills=True)` — single-line, includes 1P skill.
+* `BigQueryToolset()` + `SkillToolset(skills=[...])` — full control over which skills are loaded.
+* `BigQueryToolset()` alone — no skills, tools only.
 
 # Implementation Pattern for Toolsets
 
