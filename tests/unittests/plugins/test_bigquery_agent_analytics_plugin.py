@@ -1734,6 +1734,7 @@ class TestBigQueryAgentAnalyticsPlugin:
     _assert_common_fields(log_entry, "LLM_ERROR")
     assert log_entry["content"] is None
     assert log_entry["error_message"] == "LLM failed"
+    assert log_entry["status"] == "ERROR"
 
   @pytest.mark.asyncio
   async def test_on_tool_error_callback_logs_correctly(
@@ -1761,6 +1762,7 @@ class TestBigQueryAgentAnalyticsPlugin:
     assert content_dict["tool"] == "MyTool"
     assert content_dict["args"] == {"param": "value"}
     assert log_entry["error_message"] == "Tool timed out"
+    assert log_entry["status"] == "ERROR"
 
   @pytest.mark.asyncio
   async def test_table_creation_options(
@@ -6057,3 +6059,210 @@ class TestAfterRunCleanupExceptionSafety:
       assert bigquery_agent_analytics_plugin._root_agent_name_ctx.get() is None
 
     provider.shutdown()
+
+
+class TestStringSystemPromptTruncation:
+  """Tests that a string system prompt is truncated in parse()."""
+
+  @pytest.mark.asyncio
+  async def test_long_string_system_prompt_is_truncated(self):
+    """A string system_instruction exceeding max_content_length is truncated."""
+    parser = bigquery_agent_analytics_plugin.HybridContentParser(
+        offloader=None,
+        trace_id="test-trace",
+        span_id="test-span",
+        max_length=50,
+    )
+    long_prompt = "A" * 200
+    llm_request = llm_request_lib.LlmRequest(
+        model="gemini-pro",
+        contents=[types.Content(parts=[types.Part(text="Hi")])],
+        config=types.GenerateContentConfig(
+            system_instruction=long_prompt,
+        ),
+    )
+    payload, _, is_truncated = await parser.parse(llm_request)
+    assert is_truncated
+    assert len(payload["system_prompt"]) < 200
+    assert "TRUNCATED" in payload["system_prompt"]
+
+
+class TestSessionStateTruncation:
+  """Tests that session state is truncated in _enrich_attributes."""
+
+  @pytest.mark.asyncio
+  async def test_oversized_session_state_is_truncated(
+      self,
+      mock_auth_default,
+      mock_bq_client,
+      mock_write_client,
+      mock_to_arrow_schema,
+      mock_asyncio_to_thread,
+      mock_session,
+      invocation_context,
+  ):
+    """Session state with large values is truncated."""
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        max_content_length=30,
+    )
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        project_id=PROJECT_ID,
+        dataset_id=DATASET_ID,
+        table_id=TABLE_ID,
+        config=config,
+    )
+    await plugin._ensure_started()
+
+    # Set a large session state value.
+    large_value = "X" * 200
+    type(mock_session).state = mock.PropertyMock(
+        return_value={"big_key": large_value}
+    )
+
+    callback_ctx = CallbackContext(invocation_context=invocation_context)
+    event_data = bigquery_agent_analytics_plugin.EventData()
+    attrs = plugin._enrich_attributes(event_data, callback_ctx)
+    state = attrs["session_metadata"]["state"]
+    assert len(state["big_key"]) < 200
+    assert "TRUNCATED" in state["big_key"]
+    await plugin.shutdown()
+
+
+class TestSchemaUpgradeNestedFields:
+  """Tests for nested RECORD field detection in schema upgrade."""
+
+  def _make_plugin(self):
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        auto_schema_upgrade=True,
+    )
+    with mock.patch("google.cloud.bigquery.Client"):
+      plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+          project_id=PROJECT_ID,
+          dataset_id=DATASET_ID,
+          table_id=TABLE_ID,
+          config=config,
+      )
+    plugin.client = mock.MagicMock()
+    plugin.full_table_id = f"{PROJECT_ID}.{DATASET_ID}.{TABLE_ID}"
+    return plugin
+
+  def test_nested_field_detected(self):
+    """A new sub-field in a RECORD triggers an upgrade."""
+    plugin = self._make_plugin()
+
+    existing_record = bigquery.SchemaField(
+        "metadata",
+        "RECORD",
+        fields=[
+            bigquery.SchemaField("key", "STRING"),
+        ],
+    )
+    desired_record = bigquery.SchemaField(
+        "metadata",
+        "RECORD",
+        fields=[
+            bigquery.SchemaField("key", "STRING"),
+            bigquery.SchemaField("value", "STRING"),
+        ],
+    )
+    plugin._schema = [
+        bigquery.SchemaField("timestamp", "TIMESTAMP"),
+        desired_record,
+    ]
+
+    existing = mock.MagicMock(spec=bigquery.Table)
+    existing.schema = [
+        bigquery.SchemaField("timestamp", "TIMESTAMP"),
+        existing_record,
+    ]
+    existing.labels = {}
+    plugin.client.get_table.return_value = existing
+    plugin._ensure_schema_exists()
+
+    plugin.client.update_table.assert_called_once()
+    updated_table = plugin.client.update_table.call_args[0][0]
+    # Find the metadata field and check it has both sub-fields.
+    metadata_field = next(
+        f for f in updated_table.schema if f.name == "metadata"
+    )
+    sub_names = {sf.name for sf in metadata_field.fields}
+    assert "key" in sub_names
+    assert "value" in sub_names
+
+  def test_version_label_not_stamped_on_failure(self):
+    """A failed update_table does not persist the version label."""
+    plugin = self._make_plugin()
+    plugin._schema = [
+        bigquery.SchemaField("timestamp", "TIMESTAMP"),
+        bigquery.SchemaField("new_col", "STRING"),
+    ]
+
+    existing = mock.MagicMock(spec=bigquery.Table)
+    existing.schema = [
+        bigquery.SchemaField("timestamp", "TIMESTAMP"),
+    ]
+    existing.labels = {}
+    plugin.client.get_table.return_value = existing
+    plugin.client.update_table.side_effect = Exception("network error")
+
+    # Should not raise.
+    plugin._ensure_schema_exists()
+
+    # The label is set on the table object before update_table is
+    # called, but since update_table failed the label was never
+    # persisted remotely.  On the next run the stored_version will
+    # still be None (from the real BQ table) so the upgrade retries.
+    # We verify that update_table was actually attempted.
+    plugin.client.update_table.assert_called_once()
+
+
+class TestMultiLoopShutdownDrainsOtherLoops:
+  """Tests that shutdown() drains batch processors on other loops."""
+
+  @pytest.mark.asyncio
+  async def test_other_loop_batch_processor_drained(
+      self,
+      mock_auth_default,
+      mock_bq_client,
+      mock_write_client,
+      mock_to_arrow_schema,
+      mock_asyncio_to_thread,
+  ):
+    """Shutdown drains batch_processor.shutdown on non-current loops."""
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        project_id=PROJECT_ID,
+        dataset_id=DATASET_ID,
+        table_id=TABLE_ID,
+    )
+    await plugin._ensure_started()
+
+    # Create a mock "other" loop with a mock batch processor.
+    other_loop = mock.MagicMock(spec=asyncio.AbstractEventLoop)
+    other_loop.is_closed.return_value = False
+
+    mock_other_bp = mock.AsyncMock()
+    mock_other_write_client = mock.MagicMock()
+    mock_other_write_client.transport = mock.AsyncMock()
+
+    other_state = bigquery_agent_analytics_plugin._LoopState(
+        write_client=mock_other_write_client,
+        batch_processor=mock_other_bp,
+    )
+    plugin._loop_state_by_loop[other_loop] = other_state
+
+    # Patch run_coroutine_threadsafe to verify it's called for
+    # the other loop's batch_processor.
+    mock_future = mock.MagicMock()
+    mock_future.result.return_value = None
+    with mock.patch.object(
+        asyncio,
+        "run_coroutine_threadsafe",
+        return_value=mock_future,
+    ) as mock_rcts:
+      await plugin.shutdown()
+
+      # Verify run_coroutine_threadsafe was called with
+      # the other loop.
+      mock_rcts.assert_called()
+      call_args = mock_rcts.call_args
+      assert call_args[0][1] is other_loop

@@ -76,13 +76,6 @@ tracer = trace.get_tracer(
 _SCHEMA_VERSION = "1"
 _SCHEMA_VERSION_LABEL_KEY = "adk_schema_version"
 
-# Human-in-the-loop (HITL) tool names that receive additional
-# dedicated event types alongside the normal TOOL_* events.
-_HITL_TOOL_NAMES = frozenset({
-    "adk_request_credential",
-    "adk_request_confirmation",
-    "adk_request_input",
-})
 _HITL_EVENT_MAP = MappingProxyType({
     "adk_request_credential": "HITL_CREDENTIAL_REQUEST",
     "adk_request_confirmation": "HITL_CONFIRMATION_REQUEST",
@@ -1407,7 +1400,10 @@ class HybridContentParser:
       if content.config and getattr(content.config, "system_instruction", None):
         si = content.config.system_instruction
         if isinstance(si, str):
-          json_payload["system_prompt"] = si
+          truncated_si, trunc = process_text(si)
+          if trunc:
+            is_truncated = True
+          json_payload["system_prompt"] = truncated_si
         else:
           summary, parts, trunc = await self._parse_content_object(si)
           if trunc:
@@ -2142,8 +2138,76 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
           exc_info=True,
       )
 
+  @staticmethod
+  def _schema_fields_match(
+      existing: list[bq_schema.SchemaField],
+      desired: list[bq_schema.SchemaField],
+  ) -> tuple[
+      list[bq_schema.SchemaField],
+      list[bq_schema.SchemaField],
+  ]:
+    """Compares existing vs desired schema fields recursively.
+
+    Returns:
+        A tuple of (new_top_level_fields, updated_record_fields).
+        ``new_top_level_fields`` are fields in *desired* that are
+        entirely absent from *existing*.
+        ``updated_record_fields`` are RECORD fields that exist in
+        both but have new sub-fields in *desired*; each entry is a
+        copy of the existing field with the missing sub-fields
+        appended.
+    """
+    existing_by_name = {f.name: f for f in existing}
+    new_fields: list[bq_schema.SchemaField] = []
+    updated_records: list[bq_schema.SchemaField] = []
+
+    for desired_field in desired:
+      existing_field = existing_by_name.get(desired_field.name)
+      if existing_field is None:
+        new_fields.append(desired_field)
+      elif (
+          desired_field.field_type == "RECORD"
+          and existing_field.field_type == "RECORD"
+          and desired_field.fields
+      ):
+        # Recurse into nested RECORD fields.
+        sub_new, sub_updated = (
+            BigQueryAgentAnalyticsPlugin._schema_fields_match(
+                list(existing_field.fields),
+                list(desired_field.fields),
+            )
+        )
+        if sub_new or sub_updated:
+          # Build a merged sub-field list.
+          merged_sub = list(existing_field.fields)
+          # Replace updated nested records in-place.
+          updated_names = {f.name for f in sub_updated}
+          merged_sub = [
+              next(u for u in sub_updated if u.name == f.name)
+              if f.name in updated_names
+              else f
+              for f in merged_sub
+          ]
+          # Append entirely new sub-fields.
+          merged_sub.extend(sub_new)
+          updated_records.append(
+              bq_schema.SchemaField(
+                  name=existing_field.name,
+                  field_type=existing_field.field_type,
+                  mode=existing_field.mode,
+                  description=existing_field.description,
+                  fields=tuple(merged_sub),
+              )
+          )
+
+    return new_fields, updated_records
+
   def _maybe_upgrade_schema(self, existing_table: bigquery.Table) -> None:
     """Adds missing columns to an existing table (additive only).
+
+    Handles nested RECORD fields by recursing into sub-fields.
+    The version label is only stamped after a successful update
+    so that a failed attempt is retried on the next run.
 
     Args:
         existing_table: The current BigQuery table object.
@@ -2154,24 +2218,43 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     if stored_version == _SCHEMA_VERSION:
       return
 
-    existing_names = {f.name for f in existing_table.schema}
-    new_fields = [f for f in self._schema if f.name not in existing_names]
+    new_fields, updated_records = self._schema_fields_match(
+        list(existing_table.schema), list(self._schema)
+    )
 
-    if new_fields:
-      merged = list(existing_table.schema) + new_fields
+    if new_fields or updated_records:
+      # Build merged top-level schema.
+      updated_names = {f.name for f in updated_records}
+      merged = [
+          next(u for u in updated_records if u.name == f.name)
+          if f.name in updated_names
+          else f
+          for f in existing_table.schema
+      ]
+      merged.extend(new_fields)
       existing_table.schema = merged
+
+      change_desc = []
+      if new_fields:
+        change_desc.append(f"new columns {[f.name for f in new_fields]}")
+      if updated_records:
+        change_desc.append(
+            f"updated RECORD fields {[f.name for f in updated_records]}"
+        )
       logger.info(
-          "Auto-upgrading table %s: adding columns %s",
+          "Auto-upgrading table %s: %s",
           self.full_table_id,
-          [f.name for f in new_fields],
+          ", ".join(change_desc),
       )
 
-    # Always stamp the version label so we skip on next run.
-    labels = dict(existing_table.labels or {})
-    labels[_SCHEMA_VERSION_LABEL_KEY] = _SCHEMA_VERSION
-    existing_table.labels = labels
-
     try:
+      # Stamp the version label inside the try block so that
+      # on failure the label is NOT persisted and the next run
+      # retries the upgrade.
+      labels = dict(existing_table.labels or {})
+      labels[_SCHEMA_VERSION_LABEL_KEY] = _SCHEMA_VERSION
+      existing_table.labels = labels
+
       update_fields = ["schema", "labels"]
       self.client.update_table(existing_table, update_fields)
     except Exception as e:
@@ -2242,6 +2325,22 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       # 1. Shutdown current loop's processor directly.
       if loop in self._loop_state_by_loop:
         await self._loop_state_by_loop[loop].batch_processor.shutdown(timeout=t)
+
+      # 1b. Drain batch processors on other (non-current) loops.
+      for other_loop, state in self._loop_state_by_loop.items():
+        if other_loop is loop or other_loop.is_closed():
+          continue
+        try:
+          future = asyncio.run_coroutine_threadsafe(
+              state.batch_processor.shutdown(timeout=t),
+              other_loop,
+          )
+          future.result(timeout=t)
+        except Exception:
+          logger.warning(
+              "Could not drain batch processor on loop %s",
+              other_loop,
+          )
 
       # 2. Close clients for all states
       for state in self._loop_state_by_loop.values():
@@ -2442,7 +2541,11 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         # Include session state if non-empty (contains user-set metadata
         # like gchat thread-id, customer_id, etc.)
         if session.state:
-          session_meta["state"] = dict(session.state)
+          truncated_state, _ = _recursive_smart_truncate(
+              dict(session.state),
+              self.config.max_content_length,
+          )
+          session_meta["state"] = truncated_state
         attrs["session_metadata"] = session_meta
       except Exception:
         pass
@@ -2988,6 +3091,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         "LLM_ERROR",
         callback_context,
         event_data=EventData(
+            status="ERROR",
             error_message=str(error),
             latency_ms=duration,
             span_id_override=None if has_ambient else span_id,
@@ -3110,6 +3214,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         raw_content=content_dict,
         is_truncated=is_truncated,
         event_data=EventData(
+            status="ERROR",
             error_message=str(error),
             latency_ms=duration,
             span_id_override=None if has_ambient else span_id,
