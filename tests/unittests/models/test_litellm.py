@@ -2820,6 +2820,11 @@ def test_to_litellm_role():
                         }
                     }
                 ],
+                usage={
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0,
+                },
             ),
             [TextChunk(text="this is a test")],
             UsageMetadataChunk(
@@ -2879,6 +2884,11 @@ def test_to_litellm_role():
         (
             ModelResponse(
                 choices=[{"finish_reason": "tool_calls"}],
+                usage={
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0,
+                },
             ),
             [None],
             UsageMetadataChunk(
@@ -2887,7 +2897,14 @@ def test_to_litellm_role():
             "tool_calls",
         ),
         (
-            ModelResponse(choices=[{}]),
+            ModelResponse(
+                choices=[{}],
+                usage={
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0,
+                },
+            ),
             [None],
             UsageMetadataChunk(
                 prompt_tokens=0, completion_tokens=0, total_tokens=0
