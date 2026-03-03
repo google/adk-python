@@ -180,3 +180,27 @@ Body content
   assert fm.name == "my-skill"
   assert fm.description == "A cool skill"
   assert fm.license == "MIT"
+
+
+def test_load_skill_from_dir_resolves_duplicate_agent_prefix(tmp_path, monkeypatch):
+  """Resolves agent-prefixed relative paths when cwd is already the agent dir."""
+  workspace_dir = tmp_path / "workspace"
+  agent_dir = workspace_dir / "my-agent"
+  skill_dir = agent_dir / "skills" / "my-skill"
+  skill_dir.mkdir(parents=True)
+
+  skill_md = """---
+name: my-skill
+description: Prefix path test
+---
+Body
+"""
+  (skill_dir / "SKILL.md").write_text(skill_md)
+
+  monkeypatch.chdir(agent_dir)
+
+  # This path is valid from workspace root but commonly passed from agent code.
+  skill = _load_skill_from_dir("my-agent/skills/my-skill")
+
+  assert skill.name == "my-skill"
+  assert skill.description == "Prefix path test"

@@ -34,6 +34,40 @@ _ALLOWED_FRONTMATTER_KEYS = frozenset({
 })
 
 
+def _resolve_skill_dir_path(skill_dir: Union[str, pathlib.Path]) -> pathlib.Path:
+  """Resolve a skill path consistently across execution environments.
+
+  Relative skill paths may be authored from a parent folder (for example,
+  ``agent_name/skills/my-skill``) while execution happens with cwd already set
+  to ``agent_name``. In that case, naively resolving against cwd produces a
+  duplicated segment (``agent_name/agent_name/...``).
+
+  Args:
+    skill_dir: Raw skill directory path provided by caller.
+
+  Returns:
+    A best-effort resolved path.
+  """
+  path = pathlib.Path(skill_dir)
+  if path.is_absolute():
+    return path.resolve()
+
+  cwd = pathlib.Path.cwd()
+  candidates = [cwd / path]
+
+  if path.parts and path.parts[0] == cwd.name:
+    stripped = pathlib.Path(*path.parts[1:])
+    candidates.append(cwd / stripped)
+
+  candidates.append(cwd.parent / path)
+
+  for candidate in candidates:
+    if candidate.exists():
+      return candidate.resolve()
+
+  return candidates[0].resolve()
+
+
 def _load_dir(directory: pathlib.Path) -> dict[str, str]:
   """Recursively load files from a directory into a dictionary.
 
@@ -122,7 +156,7 @@ def _load_skill_from_dir(skill_dir: Union[str, pathlib.Path]) -> models.Skill:
     ValueError: If SKILL.md is invalid or the skill name does not match
       the directory name.
   """
-  skill_dir = pathlib.Path(skill_dir).resolve()
+  skill_dir = _resolve_skill_dir_path(skill_dir)
 
   parsed, body, skill_md = _parse_skill_md(skill_dir)
 
@@ -171,7 +205,7 @@ def _validate_skill_dir(
     List of problem strings. Empty list means the skill is valid.
   """
   problems: list[str] = []
-  skill_dir = pathlib.Path(skill_dir).resolve()
+  skill_dir = _resolve_skill_dir_path(skill_dir)
 
   if not skill_dir.exists():
     return [f"Directory '{skill_dir}' does not exist."]
@@ -229,6 +263,6 @@ def _read_skill_properties(
     FileNotFoundError: If the directory or SKILL.md is not found.
     ValueError: If the frontmatter is invalid.
   """
-  skill_dir = pathlib.Path(skill_dir).resolve()
+  skill_dir = _resolve_skill_dir_path(skill_dir)
   parsed, _, _ = _parse_skill_md(skill_dir)
   return models.Frontmatter.model_validate(parsed)
