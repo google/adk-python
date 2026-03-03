@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock
 from unittest.mock import Mock
 from unittest.mock import patch
 
+from google.adk.agents.context import Context
 from google.adk.auth.auth_credential import AuthCredential
 from google.adk.auth.auth_credential import AuthCredentialTypes
 from google.adk.auth.auth_credential import HttpAuth
@@ -972,3 +973,45 @@ class TestMCPTool:
     assert factory_calls[0][0] == "test_tool"
     # callback_context is the tool_context itself (ToolContext extends CallbackContext)
     assert factory_calls[0][1] is tool_context
+
+  @pytest.mark.asyncio
+  async def test_run_async_require_confirmation_callable_with_context_type(
+      self,
+  ):
+    """Test require_confirmation callable with Context type annotation."""
+
+    async def _require_confirmation_func(param1: str, ctx: Context):
+      return True
+
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+        require_confirmation=_require_confirmation_func,
+    )
+    tool_context = Mock(spec=ToolContext)
+    tool_context.tool_confirmation = None
+    tool_context.request_confirmation = Mock()
+    args = {"param1": "test_value", "extra_arg": 123}
+
+    with patch.object(
+        tool, "_invoke_callable", new_callable=AsyncMock
+    ) as mock_invoke_callable:
+      mock_invoke_callable.return_value = True
+
+      result = await tool.run_async(args=args, tool_context=tool_context)
+
+      # Verify context is passed with detected parameter name 'ctx'
+      expected_args_to_call = {
+          "param1": "test_value",
+          "ctx": tool_context,
+      }
+      mock_invoke_callable.assert_called_once_with(
+          _require_confirmation_func, expected_args_to_call
+      )
+
+      assert result == {
+          "error": (
+              "This tool call requires confirmation, please approve or reject."
+          )
+      }
+      tool_context.request_confirmation.assert_called_once()
