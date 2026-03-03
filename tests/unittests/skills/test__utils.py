@@ -273,3 +273,16 @@ def test_read_skill_properties_with_relative_to(tmp_path):
 
   fm = _read_skill_properties("skills/my-skill", relative_to=ref_file)
   assert fm.name == "my-skill"
+
+
+def test_resolve_skill_dir_with_directory_relative_to(tmp_path):
+  """relative_to accepts a directory and uses it directly as anchor."""
+  _make_skill(tmp_path / "skills", "my-skill")
+
+  # When relative_to is a directory, it should be used as-is (no .parent).
+  result = _resolve_skill_dir("skills/my-skill", relative_to=tmp_path)
+  assert result == (tmp_path / "skills" / "my-skill").resolve()
+
+  # End-to-end: load_skill_from_dir with a directory-valued relative_to.
+  skill = _load_skill_from_dir("skills/my-skill", relative_to=tmp_path)
+  assert skill.name == "my-skill"

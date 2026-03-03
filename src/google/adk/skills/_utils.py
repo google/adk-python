@@ -41,22 +41,26 @@ def _resolve_skill_dir(
   """Resolve a skill directory path.
 
   If ``skill_dir`` is relative and ``relative_to`` is provided, the path is
-  resolved relative to the **parent directory** of ``relative_to``.
-  Otherwise the path is resolved relative to the current working directory
-  (the existing default behaviour).
+  resolved relative to ``relative_to``.  When ``relative_to`` is a file,
+  its parent directory is used as the anchor; when it is a directory, it is
+  used directly.  Otherwise the path is resolved relative to the current
+  working directory (the existing default behaviour).
 
   Args:
     skill_dir: Path to the skill directory.
-    relative_to: Optional reference file path (typically ``__file__``).
-      When provided, relative *skill_dir* values are resolved against the
-      parent directory of this path instead of CWD.
+    relative_to: Optional reference path (typically ``__file__``).
+      When provided, relative *skill_dir* values are resolved against
+      this path (or its parent, if it is a file) instead of CWD.
 
   Returns:
     Resolved absolute ``pathlib.Path``.
   """
   skill_dir = pathlib.Path(skill_dir)
   if not skill_dir.is_absolute() and relative_to is not None:
-    skill_dir = pathlib.Path(relative_to).resolve().parent / skill_dir
+    base = pathlib.Path(relative_to).resolve()
+    if not base.is_dir():
+      base = base.parent
+    skill_dir = base / skill_dir
   return skill_dir.resolve()
 
 
