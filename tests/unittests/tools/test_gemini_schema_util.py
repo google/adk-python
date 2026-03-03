@@ -648,6 +648,88 @@ class TestToGeminiSchema:
     assert gemini_schema.type == Type.OBJECT
     assert gemini_schema.properties is None
 
+  def test_to_gemini_schema_boolean_true_property(self):
+    """Tests that a JSON Schema boolean `true` property is handled.
+
+    JSON Schema allows `true` as a schema meaning "accept any value".
+    Some MCP servers use this pattern for fields whose content is not
+    further constrained.
+    """
+    openapi_schema = {
+        "type": "object",
+        "properties": {
+            "items": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "refId": {"type": "string"},
+                        "model": True,  # JSON Schema boolean schema
+                    },
+                },
+            }
+        },
+    }
+    gemini_schema = _to_gemini_schema(openapi_schema)
+    assert isinstance(gemini_schema, Schema)
+    items_schema = gemini_schema.properties["items"]
+    assert items_schema.type == Type.ARRAY
+    # `model: true` should be converted to an object schema
+    model_schema = items_schema.items.properties["model"]
+    assert model_schema.type == Type.OBJECT
+
+  def test_to_gemini_schema_boolean_false_property(self):
+    """Tests that a JSON Schema boolean `false` property does not raise.
+
+    `false` means "no value is valid" in JSON Schema, which has no Gemini
+    equivalent. Conversion falls back to an object schema to avoid crashing;
+    the result is semantically imprecise but safe.
+    """
+    openapi_schema = {
+        "type": "object",
+        "properties": {
+            "anything": False,  # JSON Schema boolean schema (reject all)
+        },
+    }
+    # Should not raise even though `false` has no Gemini equivalent.
+    gemini_schema = _to_gemini_schema(openapi_schema)
+    assert isinstance(gemini_schema, Schema)
+    assert gemini_schema.properties["anything"] is not None
+
+  def test_to_gemini_schema_boolean_true_in_array_items_properties(self):
+    """Regression test: boolean `true` schema inside array item properties.
+
+    Some MCP servers use `"field": true` in an array item's properties to
+    indicate an unconstrained field, which is valid JSON Schema.
+    """
+    openapi_schema = {
+        "type": "object",
+        "properties": {
+            "title": {"type": "string"},
+            "data": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "datasourceUid": {"type": "string"},
+                        "model": True,
+                        "queryType": {"type": "string"},
+                        "refId": {"type": "string"},
+                    },
+                },
+            },
+        },
+        "required": ["title", "data"],
+    }
+    # Should not raise a ValidationError
+    gemini_schema = _to_gemini_schema(openapi_schema)
+    assert isinstance(gemini_schema, Schema)
+    assert gemini_schema.type == Type.OBJECT
+    data_schema = gemini_schema.properties["data"]
+    assert data_schema.type == Type.ARRAY
+    model_schema = data_schema.items.properties["model"]
+    assert model_schema.type == Type.OBJECT
+
 
 class TestToSnakeCase:
 

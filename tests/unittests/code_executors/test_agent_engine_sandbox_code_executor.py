@@ -30,7 +30,7 @@ def mock_invocation_context() -> InvocationContext:
   mock.invocation_id = "test-invocation-123"
   session = MagicMock(spec=Session)
   mock.session = session
-  session.state = []
+  session.state = {}
 
   return mock
 
@@ -178,7 +178,6 @@ class TestAgentEngineSandboxCodeExecutor:
 
     # Assert create was called and session updated with new sandbox
     mock_api_client.agent_engines.sandboxes.create.assert_called_once()
-    assert executor.sandbox_resource_name == created_sandbox_name
     assert (
         mock_invocation_context.session.state["sandbox_name"]
         == created_sandbox_name
@@ -240,7 +239,6 @@ class TestAgentEngineSandboxCodeExecutor:
     assert create_call_kwargs["name"] == (
         "projects/123/locations/us-central1/reasoningEngines/456"
     )
-    assert executor.sandbox_resource_name == created_sandbox_name
     assert (
         mock_invocation_context.session.state["sandbox_name"]
         == created_sandbox_name

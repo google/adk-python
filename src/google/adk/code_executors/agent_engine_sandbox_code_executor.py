@@ -21,7 +21,6 @@ import re
 from typing import Optional
 
 from typing_extensions import override
-from vertexai import types
 
 from ..agents.invocation_context import InvocationContext
 from .base_code_executor import BaseCodeExecutor
@@ -98,20 +97,30 @@ class AgentEngineSandboxCodeExecutor(BaseCodeExecutor):
       invocation_context: InvocationContext,
       code_execution_input: CodeExecutionInput,
   ) -> CodeExecutionResult:
+    # default to the sandbox resource name if set.
+    sandbox_name = self.sandbox_resource_name
     if self.sandbox_resource_name is None:
+      from google.api_core import exceptions
+      from vertexai import types
+
+      # use sandbox name stored in session if available.
       sandbox_name = invocation_context.session.state.get('sandbox_name', None)
       create_new_sandbox = False
       if sandbox_name is None:
         create_new_sandbox = True
       else:
         # Check if the sandbox is still running OR already expired due to ttl.
-        sandbox = self._get_api_client().agent_engines.sandboxes.get(
-            name=sandbox_name
-        )
-        if not sandbox or sandbox.state != 'STATE_RUNNING':
+        try:
+          sandbox = self._get_api_client().agent_engines.sandboxes.get(
+              name=sandbox_name
+          )
+          if sandbox is None or sandbox.state != 'STATE_RUNNING':
+            create_new_sandbox = True
+        except exceptions.NotFound:
           create_new_sandbox = True
 
       if create_new_sandbox:
+        # Create a new sandbox and assign it to sandbox_name.
         operation = self._get_api_client().agent_engines.sandboxes.create(
             spec={'code_execution_environment': {}},
             name=self.agent_engine_resource_name,
@@ -124,12 +133,8 @@ class AgentEngineSandboxCodeExecutor(BaseCodeExecutor):
                 ttl='31536000s',
             ),
         )
-        self.sandbox_resource_name = operation.response.name
-        invocation_context.session.state['sandbox_name'] = (
-            self.sandbox_resource_name
-        )
-      else:
-        self.sandbox_resource_name = sandbox_name
+        sandbox_name = operation.response.name
+        invocation_context.session.state['sandbox_name'] = sandbox_name
 
     # Execute the code.
     input_data = {
@@ -147,7 +152,7 @@ class AgentEngineSandboxCodeExecutor(BaseCodeExecutor):
 
     code_execution_response = (
         self._get_api_client().agent_engines.sandboxes.execute_code(
-            name=self.sandbox_resource_name,
+            name=sandbox_name,
             input_data=input_data,
         )
     )
