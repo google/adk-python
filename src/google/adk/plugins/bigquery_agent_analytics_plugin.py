@@ -2190,15 +2190,11 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
           ]
           # Append entirely new sub-fields.
           merged_sub.extend(sub_new)
-          updated_records.append(
-              bq_schema.SchemaField(
-                  name=existing_field.name,
-                  field_type=existing_field.field_type,
-                  mode=existing_field.mode,
-                  description=existing_field.description,
-                  fields=tuple(merged_sub),
-              )
-          )
+          # Rebuild via API representation to preserve all
+          # existing field attributes (policy_tags, etc.).
+          api_repr = existing_field.to_api_repr()
+          api_repr["fields"] = [sf.to_api_repr() for sf in merged_sub]
+          updated_records.append(bq_schema.SchemaField.from_api_repr(api_repr))
 
     return new_fields, updated_records
 

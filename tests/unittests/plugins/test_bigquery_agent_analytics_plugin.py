@@ -6215,6 +6215,60 @@ class TestSchemaUpgradeNestedFields:
     # We verify that update_table was actually attempted.
     plugin.client.update_table.assert_called_once()
 
+  def test_nested_upgrade_preserves_policy_tags(self):
+    """RECORD field metadata (e.g. policy_tags) is preserved on upgrade."""
+    from google.cloud.bigquery import schema as bq_schema
+
+    plugin = self._make_plugin()
+
+    existing_record = bigquery.SchemaField(
+        "metadata",
+        "RECORD",
+        policy_tags=bq_schema.PolicyTagList(
+            names=["projects/p/locations/us/taxonomies/t/policyTags/pt"]
+        ),
+        fields=[
+            bigquery.SchemaField("key", "STRING"),
+        ],
+    )
+    desired_record = bigquery.SchemaField(
+        "metadata",
+        "RECORD",
+        fields=[
+            bigquery.SchemaField("key", "STRING"),
+            bigquery.SchemaField("value", "STRING"),
+        ],
+    )
+    plugin._schema = [
+        bigquery.SchemaField("timestamp", "TIMESTAMP"),
+        desired_record,
+    ]
+
+    existing = mock.MagicMock(spec=bigquery.Table)
+    existing.schema = [
+        bigquery.SchemaField("timestamp", "TIMESTAMP"),
+        existing_record,
+    ]
+    existing.labels = {}
+    plugin.client.get_table.return_value = existing
+    plugin._ensure_schema_exists()
+
+    plugin.client.update_table.assert_called_once()
+    updated_table = plugin.client.update_table.call_args[0][0]
+    metadata_field = next(
+        f for f in updated_table.schema if f.name == "metadata"
+    )
+    # Sub-fields were merged.
+    sub_names = {sf.name for sf in metadata_field.fields}
+    assert "key" in sub_names
+    assert "value" in sub_names
+    # policy_tags preserved from the existing field.
+    assert metadata_field.policy_tags is not None
+    assert (
+        "projects/p/locations/us/taxonomies/t/policyTags/pt"
+        in metadata_field.policy_tags.names
+    )
+
 
 class TestMultiLoopShutdownDrainsOtherLoops:
   """Tests that shutdown() drains batch processors on other loops."""
