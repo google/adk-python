@@ -14,6 +14,8 @@
 
 """Platform module for abstracting unique ID generation."""
 
+from __future__ import annotations
+
 from contextvars import ContextVar
 from typing import Callable
 import uuid

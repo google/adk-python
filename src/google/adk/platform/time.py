@@ -14,6 +14,8 @@
 
 """Platform module for abstracting system time generation."""
 
+from __future__ import annotations
+
 from contextvars import ContextVar
 import time
 from typing import Callable
