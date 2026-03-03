@@ -28,7 +28,6 @@ from datetime import timezone
 from typing import Any
 
 from google.adk.platform import uuid as platform_uuid
-
 from sqlalchemy import ForeignKeyConstraint
 from sqlalchemy import func
 from sqlalchemy import inspect

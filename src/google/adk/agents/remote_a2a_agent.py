@@ -25,8 +25,6 @@ from typing import Optional
 from typing import Union
 from urllib.parse import urlparse
 
-from google.adk.platform import uuid as platform_uuid
-
 from a2a.client import Client as A2AClient
 from a2a.client import ClientEvent as A2AClientEvent
 from a2a.client.card_resolver import A2ACardResolver
@@ -43,6 +41,7 @@ from a2a.types import TaskArtifactUpdateEvent as A2ATaskArtifactUpdateEvent
 from a2a.types import TaskState
 from a2a.types import TaskStatusUpdateEvent as A2ATaskStatusUpdateEvent
 from a2a.types import TransportProtocol as A2ATransport
+from google.adk.platform import uuid as platform_uuid
 from google.genai import types as genai_types
 import httpx
 from pydantic import BaseModel

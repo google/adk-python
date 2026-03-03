@@ -19,7 +19,6 @@ from typing import Any
 from typing import Optional
 
 from google.adk.platform import time as platform_time
-
 from google.genai import types
 from pydantic import alias_generators
 from pydantic import BaseModel

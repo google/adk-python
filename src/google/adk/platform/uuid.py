@@ -15,12 +15,12 @@
 """Platform module for abstracting unique ID generation."""
 
 from contextvars import ContextVar
-import uuid
 from typing import Callable
+import uuid
 
 _default_id_provider: Callable[[], str] = lambda: str(uuid.uuid4())
-_id_provider_context_var: ContextVar[Callable[[], str]] = (
-    ContextVar("id_provider", default=_default_id_provider)
+_id_provider_context_var: ContextVar[Callable[[], str]] = ContextVar(
+    "id_provider", default=_default_id_provider
 )
 
 

@@ -18,8 +18,6 @@ from contextlib import asynccontextmanager
 import copy
 from datetime import datetime
 from datetime import timezone
-
-from google.adk.platform import time as platform_time
 import logging
 from typing import Any
 from typing import AsyncIterator
@@ -27,6 +25,7 @@ from typing import Optional
 from typing import TypeAlias
 from typing import TypeVar
 
+from google.adk.platform import time as platform_time
 from sqlalchemy import delete
 from sqlalchemy import event
 from sqlalchemy import select

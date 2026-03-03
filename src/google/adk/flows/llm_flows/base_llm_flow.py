@@ -16,8 +16,6 @@ from __future__ import annotations
 
 from abc import ABC
 import asyncio
-
-from google.adk.platform import time as platform_time
 import inspect
 import logging
 from typing import AsyncGenerator
@@ -25,6 +23,7 @@ from typing import cast
 from typing import Optional
 from typing import TYPE_CHECKING
 
+from google.adk.platform import time as platform_time
 from google.genai import types
 from websockets.exceptions import ConnectionClosed
 from websockets.exceptions import ConnectionClosedOK

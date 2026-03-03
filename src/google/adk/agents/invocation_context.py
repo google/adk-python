@@ -18,7 +18,6 @@ from typing import Any
 from typing import Optional
 
 from google.adk.platform import uuid as platform_uuid
-
 from google.genai import types
 from pydantic import BaseModel
 from pydantic import ConfigDict

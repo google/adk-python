@@ -23,9 +23,6 @@ from typing import Dict
 from typing import List
 from typing import Optional
 
-from google.adk.platform import time as platform_time
-from google.adk.platform import uuid as platform_uuid
-
 from a2a.server.events import Event as A2AEvent
 from a2a.types import DataPart
 from a2a.types import Message
@@ -36,6 +33,8 @@ from a2a.types import TaskState
 from a2a.types import TaskStatus
 from a2a.types import TaskStatusUpdateEvent
 from a2a.types import TextPart
+from google.adk.platform import time as platform_time
+from google.adk.platform import uuid as platform_uuid
 from google.genai import types as genai_types
 
 from ...agents.invocation_context import InvocationContext
@@ -460,7 +459,9 @@ def _create_error_status_event(
               if event.error_code
               else {},
           ),
-          timestamp=datetime.fromtimestamp(platform_time.get_time(), tz=timezone.utc).isoformat(),
+          timestamp=datetime.fromtimestamp(
+              platform_time.get_time(), tz=timezone.utc
+          ).isoformat(),
       ),
       final=False,
   )
@@ -488,7 +489,9 @@ def _create_status_update_event(
   status = TaskStatus(
       state=TaskState.working,
       message=message,
-      timestamp=datetime.fromtimestamp(platform_time.get_time(), tz=timezone.utc).isoformat(),
+      timestamp=datetime.fromtimestamp(
+          platform_time.get_time(), tz=timezone.utc
+      ).isoformat(),
   )
 
   if any(

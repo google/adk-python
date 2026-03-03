@@ -15,10 +15,9 @@
 from __future__ import annotations
 
 import logging
-
-from google.adk.platform import time as platform_time
 from typing import TYPE_CHECKING
 
+from google.adk.platform import time as platform_time
 from google.genai import types
 
 from ...events.event import Event

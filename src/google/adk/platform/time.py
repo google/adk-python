@@ -19,8 +19,8 @@ import time
 from typing import Callable
 
 _default_time_provider: Callable[[], float] = time.time
-_time_provider_context_var: ContextVar[Callable[[], float]] = (
-    ContextVar("time_provider", default=_default_time_provider)
+_time_provider_context_var: ContextVar[Callable[[], float]] = ContextVar(
+    "time_provider", default=_default_time_provider
 )
 
 

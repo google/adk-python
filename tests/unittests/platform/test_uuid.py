@@ -14,27 +14,27 @@
 
 """Unit tests for the platform uuid module."""
 
-import uuid
 import unittest
+import uuid
 
 from google.adk.platform import uuid as platform_uuid
 
 
 class TestUUID(unittest.TestCase):
 
-    def tearDown(self):
-        # Reset provider to default after each test
-        platform_uuid.reset_id_provider()
+  def tearDown(self):
+    # Reset provider to default after each test
+    platform_uuid.reset_id_provider()
 
-    def test_default_id_provider(self):
-        # Verify it returns a string uuid
-        uid = platform_uuid.new_uuid()
-        self.assertIsInstance(uid, str)
-        # Should be parseable as uuid
-        uuid.UUID(uid)
+  def test_default_id_provider(self):
+    # Verify it returns a string uuid
+    uid = platform_uuid.new_uuid()
+    self.assertIsInstance(uid, str)
+    # Should be parseable as uuid
+    uuid.UUID(uid)
 
-    def test_custom_id_provider(self):
-        # Test override
-        mock_id = "test-id-123"
-        platform_uuid.set_id_provider(lambda: mock_id)
-        self.assertEqual(platform_uuid.new_uuid(), mock_id)
+  def test_custom_id_provider(self):
+    # Test override
+    mock_id = "test-id-123"
+    platform_uuid.set_id_provider(lambda: mock_id)
+    self.assertEqual(platform_uuid.new_uuid(), mock_id)
