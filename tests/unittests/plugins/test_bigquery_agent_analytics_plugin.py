@@ -6305,13 +6305,19 @@ class TestMultiLoopShutdownDrainsOtherLoops:
     plugin._loop_state_by_loop[other_loop] = other_state
 
     # Patch run_coroutine_threadsafe to verify it's called for
-    # the other loop's batch_processor.
+    # the other loop's batch_processor.  Close the coroutine arg
+    # to avoid "coroutine was never awaited" RuntimeWarning.
     mock_future = mock.MagicMock()
     mock_future.result.return_value = None
+
+    def _fake_run_coroutine_threadsafe(coro, loop):
+      coro.close()
+      return mock_future
+
     with mock.patch.object(
         asyncio,
         "run_coroutine_threadsafe",
-        return_value=mock_future,
+        side_effect=_fake_run_coroutine_threadsafe,
     ) as mock_rcts:
       await plugin.shutdown()
 
