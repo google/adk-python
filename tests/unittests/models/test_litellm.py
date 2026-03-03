@@ -2819,7 +2819,7 @@ def test_to_litellm_role():
                             "content": "this is a test",
                         }
                     }
-                ]
+                ],
             ),
             [TextChunk(text="this is a test")],
             UsageMetadataChunk(
@@ -2877,7 +2877,9 @@ def test_to_litellm_role():
             (None, "stop"),
         ),
         (
-            ModelResponse(choices=[{"finish_reason": "tool_calls"}]),
+            ModelResponse(
+                choices=[{"finish_reason": "tool_calls"}],
+            ),
             [None],
             UsageMetadataChunk(
                 prompt_tokens=0, completion_tokens=0, total_tokens=0
@@ -2962,7 +2964,8 @@ def test_to_litellm_role():
                         finish_reason=None,
                         delta=Delta(role="assistant", content="Hello"),
                     )
-                ]
+                ],
+                usage=None,
             ),
             [TextChunk(text="Hello")],
             None,
@@ -2977,7 +2980,8 @@ def test_to_litellm_role():
                             role="assistant", reasoning_content="thinking..."
                         ),
                     )
-                ]
+                ],
+                usage=None,
             ),
             [
                 ReasoningChunk(
