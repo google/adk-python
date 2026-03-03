@@ -147,9 +147,11 @@ def _load_skill_from_dir(
 
   Args:
     skill_dir: Path to the skill directory.
-    relative_to: Optional reference file path (typically ``__file__``).
-      When *skill_dir* is relative, it is resolved against the parent
-      directory of this path instead of CWD.  Recommended usage::
+    relative_to: Optional anchor path (typically ``__file__``).
+      When *skill_dir* is relative, it is resolved against this path
+      instead of CWD.  If ``relative_to`` is a file, its parent
+      directory is used as the anchor; if it is a directory, it is
+      used directly.  Recommended usage::
 
         load_skill_from_dir("my-skill", relative_to=__file__)
 
@@ -207,9 +209,11 @@ def _validate_skill_dir(
 
   Args:
     skill_dir: Path to the skill directory.
-    relative_to: Optional reference file path (typically ``__file__``).
-      When *skill_dir* is relative, it is resolved against the parent
-      directory of this path instead of CWD.
+    relative_to: Optional anchor path (typically ``__file__``).
+      When *skill_dir* is relative, it is resolved against this path
+      instead of CWD.  If ``relative_to`` is a file, its parent
+      directory is used as the anchor; if it is a directory, it is
+      used directly.
 
   Returns:
     List of problem strings. Empty list means the skill is valid.
@@ -267,9 +271,11 @@ def _read_skill_properties(
 
   Args:
     skill_dir: Path to the skill directory.
-    relative_to: Optional reference file path (typically ``__file__``).
-      When *skill_dir* is relative, it is resolved against the parent
-      directory of this path instead of CWD.
+    relative_to: Optional anchor path (typically ``__file__``).
+      When *skill_dir* is relative, it is resolved against this path
+      instead of CWD.  If ``relative_to`` is a file, its parent
+      directory is used as the anchor; if it is a directory, it is
+      used directly.
 
   Returns:
     Frontmatter object with the skill's metadata.
