@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -19,6 +19,7 @@ from typing import Optional
 from typing import TYPE_CHECKING
 
 from google.genai import types
+from typing_extensions import override
 
 from ..agents.base_agent import BaseAgent
 from ..agents.callback_context import CallbackContext
@@ -36,7 +37,7 @@ if TYPE_CHECKING:
 class LoggingPlugin(BasePlugin):
   """A plugin that logs important information at each callback point.
 
-  This plugin helps printing all critical events in the console. It is not a
+  This plugin helps print all critical events in the console. It is not a
   replacement of existing logging in ADK. It rather helps terminal based
   debugging by showing all logs in the console, and serves as a simple demo for
   everyone to leverage when developing new plugins.
@@ -66,6 +67,7 @@ class LoggingPlugin(BasePlugin):
     """
     super().__init__(name)
 
+  @override
   async def on_user_message_callback(
       self,
       *,
@@ -87,6 +89,7 @@ class LoggingPlugin(BasePlugin):
       self._log(f"   Branch: {invocation_context.branch}")
     return None
 
+  @override
   async def before_run_callback(
       self, *, invocation_context: InvocationContext
   ) -> Optional[types.Content]:
@@ -99,6 +102,7 @@ class LoggingPlugin(BasePlugin):
     )
     return None
 
+  @override
   async def on_event_callback(
       self, *, invocation_context: InvocationContext, event: Event
   ) -> Optional[Event]:
@@ -122,6 +126,7 @@ class LoggingPlugin(BasePlugin):
 
     return None
 
+  @override
   async def after_run_callback(
       self, *, invocation_context: InvocationContext
   ) -> Optional[None]:
@@ -134,6 +139,7 @@ class LoggingPlugin(BasePlugin):
     )
     return None
 
+  @override
   async def before_agent_callback(
       self, *, agent: BaseAgent, callback_context: CallbackContext
   ) -> Optional[types.Content]:
@@ -145,6 +151,7 @@ class LoggingPlugin(BasePlugin):
       self._log(f"   Branch: {callback_context._invocation_context.branch}")
     return None
 
+  @override
   async def after_agent_callback(
       self, *, agent: BaseAgent, callback_context: CallbackContext
   ) -> Optional[types.Content]:
@@ -154,6 +161,7 @@ class LoggingPlugin(BasePlugin):
     self._log(f"   Invocation ID: {callback_context.invocation_id}")
     return None
 
+  @override
   async def before_model_callback(
       self, *, callback_context: CallbackContext, llm_request: LlmRequest
   ) -> Optional[LlmResponse]:
@@ -179,6 +187,7 @@ class LoggingPlugin(BasePlugin):
 
     return None
 
+  @override
   async def after_model_callback(
       self, *, callback_context: CallbackContext, llm_response: LlmResponse
   ) -> Optional[LlmResponse]:
@@ -206,6 +215,7 @@ class LoggingPlugin(BasePlugin):
 
     return None
 
+  @override
   async def before_tool_callback(
       self,
       *,
@@ -221,6 +231,7 @@ class LoggingPlugin(BasePlugin):
     self._log(f"   Arguments: {self._format_args(tool_args)}")
     return None
 
+  @override
   async def after_tool_callback(
       self,
       *,
@@ -237,6 +248,7 @@ class LoggingPlugin(BasePlugin):
     self._log(f"   Result: {self._format_args(result)}")
     return None
 
+  @override
   async def on_model_error_callback(
       self,
       *,
@@ -251,6 +263,7 @@ class LoggingPlugin(BasePlugin):
 
     return None
 
+  @override
   async def on_tool_error_callback(
       self,
       *,

@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -11,6 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+from __future__ import annotations
 
 from typing import List
 from typing import Optional
@@ -166,7 +168,7 @@ Follow this format when answering the question: (1) The planning part should be 
     planning_preamble = f"""
 Below are the requirements for the planning:
 The plan is made to answer the user query if following the plan. The plan is coherent and covers all aspects of information from user query, and only involves the tools that are accessible by the agent. The plan contains the decomposed steps as a numbered list where each step should use one or multiple available tools. By reading the plan, you can intuitively know which tools to trigger or what actions to take.
-If the initial plan cannot be successfully executed, you should learn from previous execution results and revise your plan. The revised plan should be be under {REPLANNING_TAG}. Then use tools to follow the new plan.
+If the initial plan cannot be successfully executed, you should learn from previous execution results and revise your plan. The revised plan should be under {REPLANNING_TAG}. Then use tools to follow the new plan.
 """
 
     reasoning_preamble = """

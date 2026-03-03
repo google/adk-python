@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -222,13 +222,27 @@ class TestOAuth2CredentialUtil:
     tokens = OAuth2Token({
         "access_token": "new_access_token",
         "refresh_token": "new_refresh_token",
+        "id_token": "new_id_token",
         "expires_at": expected_expires_at,
         "expires_in": 3600,
     })
+
+    assert credential.oauth2 is not None
 
     update_credential_with_tokens(credential, tokens)
 
     assert credential.oauth2.access_token == "new_access_token"
     assert credential.oauth2.refresh_token == "new_refresh_token"
+    assert credential.oauth2.id_token == "new_id_token"
     assert credential.oauth2.expires_at == expected_expires_at
     assert credential.oauth2.expires_in == 3600
+
+  def test_update_credential_with_tokens_none(self) -> None:
+    credential = AuthCredential(
+        auth_type=AuthCredentialTypes.API_KEY,
+    )
+    tokens = OAuth2Token({"access_token": "new_access_token"})
+
+    # Should not raise any exceptions when oauth2 is None
+    update_credential_with_tokens(credential, tokens)
+    assert credential.oauth2 is None

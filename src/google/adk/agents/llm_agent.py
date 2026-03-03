@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 import inspect
 import logging
@@ -40,6 +41,8 @@ from typing_extensions import TypeAlias
 
 from ..code_executors.base_code_executor import BaseCodeExecutor
 from ..events.event import Event
+from ..features import experimental
+from ..features import FeatureName
 from ..flows.llm_flows.auto_flow import AutoFlow
 from ..flows.llm_flows.base_llm_flow import BaseLlmFlow
 from ..flows.llm_flows.single_flow import SingleFlow
@@ -54,7 +57,6 @@ from ..tools.function_tool import FunctionTool
 from ..tools.tool_configs import ToolConfig
 from ..tools.tool_context import ToolContext
 from ..utils.context_utils import Aclosing
-from ..utils.feature_decorator import experimental
 from .base_agent import BaseAgent
 from .base_agent import BaseAgentState
 from .base_agent_config import BaseAgentConfig
@@ -285,7 +287,7 @@ class LlmAgent(BaseAgent):
   """The additional content generation configurations.
 
   NOTE: not all fields are usable, e.g. tools must be configured via `tools`,
-  thinking_config must be configured via `planner` in LlmAgent.
+  thinking_config can be configured here or via the `planner`. If both are set, the planner's configuration takes precedence.
 
   For example: use this config to adjust model temperature, configure safety
   settings, etc.
@@ -469,7 +471,7 @@ class LlmAgent(BaseAgent):
         self.__maybe_save_output_to_state(event)
         yield event
         if ctx.should_pause_invocation(event):
-          # Do not pause immediately, wait until the long running tool call is
+          # Do not pause immediately, wait until the long-running tool call is
           # executed.
           should_pause = True
     if should_pause:
@@ -479,7 +481,7 @@ class LlmAgent(BaseAgent):
       events = ctx._get_events(current_invocation=True, current_branch=True)
       if events and any(ctx.should_pause_invocation(e) for e in events[-2:]):
         return
-      # Only yield an end state if the last event is no longer a long running
+      # Only yield an end state if the last event is no longer a long-running
       # tool call.
       ctx.set_agent_state(self.name, end_of_agent=True)
       yield self._create_agent_state_event(ctx)
@@ -589,24 +591,27 @@ class LlmAgent(BaseAgent):
       return global_instruction, True
 
   async def canonical_tools(
-      self, ctx: ReadonlyContext = None
+      self, ctx: Optional[ReadonlyContext] = None
   ) -> list[BaseTool]:
     """The resolved self.tools field as a list of BaseTool based on the context.
 
     This method is only for use by Agent Development Kit.
     """
-    resolved_tools = []
     # We may need to wrap some built-in tools if there are other tools
     # because the built-in tools cannot be used together with other tools.
     # TODO(b/448114567): Remove once the workaround is no longer needed.
     multiple_tools = len(self.tools) > 1
     model = self.canonical_model
-    for tool_union in self.tools:
-      resolved_tools.extend(
-          await _convert_tool_union_to_tools(
-              tool_union, ctx, model, multiple_tools
-          )
-      )
+
+    results = await asyncio.gather(*(
+        _convert_tool_union_to_tools(tool_union, ctx, model, multiple_tools)
+        for tool_union in self.tools
+    ))
+
+    resolved_tools = []
+    for tools in results:
+      resolved_tools.extend(tools)
+
     return resolved_tools
 
   @property
@@ -849,8 +854,6 @@ class LlmAgent(BaseAgent):
   ) -> types.GenerateContentConfig:
     if not generate_content_config:
       return types.GenerateContentConfig()
-    if generate_content_config.thinking_config:
-      raise ValueError('Thinking config should be set via LlmAgent.planner.')
     if generate_content_config.tools:
       raise ValueError('All tools must be set via LlmAgent.tools.')
     if generate_content_config.system_instruction:
@@ -863,8 +866,25 @@ class LlmAgent(BaseAgent):
       )
     return generate_content_config
 
+  @override
+  def model_post_init(self, __context: Any) -> None:
+    """Provides a warning if multiple thinking configurations are found."""
+    super().model_post_init(__context)
+
+    # Note: Using getattr to check both locations for thinking_config
+    if getattr(
+        self.generate_content_config, 'thinking_config', None
+    ) and getattr(self.planner, 'thinking_config', None):
+      warnings.warn(
+          'Both `thinking_config` in `generate_content_config` and a '
+          'planner with `thinking_config` are provided. The '
+          "planner's configuration will take precedence.",
+          UserWarning,
+          stacklevel=3,
+      )
+
   @classmethod
-  @experimental
+  @experimental(FeatureName.AGENT_CONFIG)
   def _resolve_tools(
       cls, tool_configs: list[ToolConfig], config_abs_path: str
   ) -> list[Any]:
@@ -923,7 +943,7 @@ class LlmAgent(BaseAgent):
 
   @override
   @classmethod
-  @experimental
+  @experimental(FeatureName.AGENT_CONFIG)
   def _parse_config(
       cls: Type[LlmAgent],
       config: LlmAgentConfig,

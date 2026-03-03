@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,12 +14,15 @@
 
 from __future__ import annotations
 
+import collections.abc
 import inspect
 from types import FunctionType
 import typing
 from typing import Any
 from typing import Callable
 from typing import Dict
+from typing import get_args
+from typing import get_origin
 from typing import Optional
 from typing import Union
 
@@ -148,9 +151,13 @@ def _remove_title(schema: Dict):
 
 
 def _get_pydantic_schema(func: Callable) -> Dict:
+  from ..utils.context_utils import find_context_parameter
+
   fields_dict = _get_fields_dict(func)
-  if 'tool_context' in fields_dict.keys():
-    fields_dict.pop('tool_context')
+  # Remove context parameter (detected by type or fallback to 'tool_context' name)
+  context_param = find_context_parameter(func) or 'tool_context'
+  if context_param in fields_dict.keys():
+    fields_dict.pop(context_param)
   return pydantic.create_model(func.__name__, **fields_dict).model_json_schema()
 
 
@@ -390,6 +397,20 @@ def from_function_with_options(
     return declaration
 
   return_annotation = inspect.signature(func).return_annotation
+
+  # Handle AsyncGenerator and Generator return types (streaming tools)
+  # AsyncGenerator[YieldType, SendType] -> use YieldType as response schema
+  # Generator[YieldType, SendType, ReturnType] -> use YieldType as response schema
+  origin = get_origin(return_annotation)
+  if origin is not None and (
+      origin is collections.abc.AsyncGenerator
+      or origin is collections.abc.Generator
+  ):
+    type_args = get_args(return_annotation)
+    if type_args:
+      # First type argument is the yield type
+      yield_type = type_args[0]
+      return_annotation = yield_type
 
   # Handle functions with no return annotation
   if return_annotation is inspect._empty:

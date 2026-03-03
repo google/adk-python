@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -93,7 +93,7 @@ class PerInvocationResultsAggregator(abc.ABC):
   """An interface for aggregating per invocation samples.
 
   AutoRaters that are backed by an LLM are known to have certain degree of
-  unreliabilty to their responses. In order to counter that we sample the
+  unreliability to their responses. In order to counter that we sample the
   autorater more than once for a single invocation.
 
   The aggregator helps convert those multiple samples into a single result.
@@ -419,7 +419,7 @@ class RubricBasedEvaluator(LlmAsJudge):
     """Returns a combined result by aggregating multiple samples for the same invocation.
 
     AutoRaters that are backed by an LLM are known to have certain degree of
-    unreliabilty to their responses. In order to counter that we sample the
+    unreliability to their responses. In order to counter that we sample the
     autorater more than once for a single invocation.
 
     The aggregator helps convert those multiple samples into a single result.
