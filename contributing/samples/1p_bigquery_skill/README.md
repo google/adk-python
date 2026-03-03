@@ -74,6 +74,7 @@ available when needed.
 
 Other toolsets can follow the same pattern:
 
-1. Create a spec-compliant skill directory under `tools/<toolset>/skills/`.
+1. Create a spec-compliant skill directory under `integration/<toolset>/skills/`.
 2. Add a `get_*_skill()` convenience loader.
-3. Users add both the toolset and `SkillToolset` to their agent's tools.
+3. (Optional) Add an alias in `tools/<toolset>/` for backward compatibility.
+4. Users add both the toolset and `SkillToolset` to their agent's tools.

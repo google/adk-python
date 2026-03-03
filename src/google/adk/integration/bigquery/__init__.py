@@ -12,12 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Alias — canonical location is google.adk.integration.bigquery."""
+"""BigQuery integration — skills and guided workflows."""
 
-from __future__ import annotations
+from .bigquery_skill import get_bigquery_skill
 
-# Re-export from canonical location for backward compatibility.
-from ...integration.bigquery.bigquery_skill import _SKILL_DIR
-from ...integration.bigquery.bigquery_skill import get_bigquery_skill
-
-__all__ = ["get_bigquery_skill"]
+__all__ = [
+    "get_bigquery_skill",
+]

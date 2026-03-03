@@ -25,8 +25,8 @@ Setup:
 """
 
 from google.adk.agents.llm_agent import LlmAgent
+from google.adk.integration.bigquery import get_bigquery_skill
 from google.adk.tools.bigquery.bigquery_credentials import BigQueryCredentialsConfig
-from google.adk.tools.bigquery.bigquery_skill import get_bigquery_skill
 from google.adk.tools.bigquery.bigquery_toolset import BigQueryToolset
 from google.adk.tools.skill_toolset import SkillToolset
 

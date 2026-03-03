@@ -33,15 +33,19 @@ We propose to package spec-compliant skill directories within the ADK library, a
 ## Directory Structure Example:
 
 ```
-src/google/adk/tools/bigquery/
-├── bigquery_toolset.py          # Existing: raw tools
-├── bigquery_skill.py            # New: get_bigquery_skill() loader
+src/google/adk/integration/bigquery/    # Canonical location for skills
+├── __init__.py                         # Exports get_bigquery_skill
+├── bigquery_skill.py                   # Convenience loader
 └── skills/
-    └── bigquery-data-analysis/  # Spec-compliant skill directory
-        ├── SKILL.md             # Frontmatter + workflow instructions
+    └── bigquery-data-analysis/         # Spec-compliant skill directory
+        ├── SKILL.md                    # Frontmatter + workflow instructions
         └── references/
             ├── sql_patterns.md
             └── error_handling.md
+
+src/google/adk/tools/bigquery/
+├── bigquery_toolset.py                 # Existing: raw tools
+└── bigquery_skill.py                   # Alias → integration.bigquery
 ```
 
 ## Runtime Flow:
@@ -80,7 +84,7 @@ root_agent = LlmAgent(
 ```py
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.tools.bigquery.bigquery_toolset import BigQueryToolset
-from google.adk.tools.bigquery.bigquery_skill import get_bigquery_skill
+from google.adk.integration.bigquery import get_bigquery_skill
 from google.adk.tools.skill_toolset import SkillToolset
 
 bigquery_toolset = BigQueryToolset(credentials_config=creds)
@@ -107,8 +111,8 @@ This design maintains a clear separation of concerns. Developers can mix and mat
 
 # Implementation Pattern for Toolsets
 
-1. **Create Skill Directory:** Add `src/google/adk/tools/<toolset>/skills/<skill-name>/` with `SKILL.md` and optional `references/`.  
-2. **Add Loader:** Create `src/google/adk/tools/<toolset>/<toolset>_skill.py`:
+1. **Create Skill Directory:** Add `src/google/adk/integration/<toolset>/skills/<skill-name>/` with `SKILL.md` and optional `references/`.
+2. **Add Loader:** Create `src/google/adk/integration/<toolset>/<toolset>_skill.py`:
 
 ```py
 import pathlib
@@ -120,7 +124,7 @@ def get_<toolset>_skill() -> Skill:
     return load_skill_from_dir(_SKILL_DIR)
 ```
 
-3. **Export Loader (Optional):** Add to `src/google/adk/tools/<toolset>/__init__.py`.  
+3. **Add Alias (Optional):** Re-export from `src/google/adk/tools/<toolset>/` for backward compatibility.  
 4. **Add Tests & Sample:** Validate skill structure and demonstrate usage.
 
 **Candidate Toolsets for 1P Skills:** Spanner, Bigtable, PubSub.
