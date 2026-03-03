@@ -53,19 +53,19 @@ def _resolve_skill_dir_path(skill_dir: Union[str, pathlib.Path]) -> pathlib.Path
     return path.resolve()
 
   cwd = pathlib.Path.cwd()
-  candidates = [cwd / path]
+  candidates = []
 
   if path.parts and path.parts[0] == cwd.name:
     stripped = pathlib.Path(*path.parts[1:])
     candidates.append(cwd / stripped)
 
-  candidates.append(cwd.parent / path)
+  candidates.append(cwd / path)
 
   for candidate in candidates:
     if candidate.exists():
       return candidate.resolve()
 
-  return candidates[0].resolve()
+  return candidates[-1].resolve()
 
 
 def _load_dir(directory: pathlib.Path) -> dict[str, str]:
