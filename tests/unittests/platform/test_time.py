@@ -22,18 +22,18 @@ from google.adk.platform import time as platform_time
 
 class TestTime(unittest.TestCase):
 
-  def tearDown(self):
+  def tearDown(self) -> None:
     # Reset provider to default after each test
     platform_time.reset_time_provider()
 
-  def test_default_time_provider(self):
+  def test_default_time_provider(self) -> None:
     # Verify it returns a float that is close to now
     now = time.time()
     rt_time = platform_time.get_time()
     self.assertIsInstance(rt_time, float)
     self.assertAlmostEqual(rt_time, now, delta=1.0)
 
-  def test_custom_time_provider(self):
+  def test_custom_time_provider(self) -> None:
     # Test override
     mock_time = 123456789.0
     platform_time.set_time_provider(lambda: mock_time)

@@ -22,18 +22,18 @@ from google.adk.platform import uuid as platform_uuid
 
 class TestUUID(unittest.TestCase):
 
-  def tearDown(self):
+  def tearDown(self) -> None:
     # Reset provider to default after each test
     platform_uuid.reset_id_provider()
 
-  def test_default_id_provider(self):
+  def test_default_id_provider(self) -> None:
     # Verify it returns a string uuid
     uid = platform_uuid.new_uuid()
     self.assertIsInstance(uid, str)
     # Should be parseable as uuid
     uuid.UUID(uid)
 
-  def test_custom_id_provider(self):
+  def test_custom_id_provider(self) -> None:
     # Test override
     mock_id = "test-id-123"
     platform_uuid.set_id_provider(lambda: mock_id)
