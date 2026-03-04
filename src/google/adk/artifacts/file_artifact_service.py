@@ -22,6 +22,7 @@ from pathlib import PureWindowsPath
 import shutil
 from typing import Any
 from typing import Optional
+from typing import Union
 from urllib.parse import unquote
 from urllib.parse import urlparse
 
@@ -35,6 +36,7 @@ from typing_extensions import override
 from ..errors.input_validation_error import InputValidationError
 from .base_artifact_service import ArtifactVersion
 from .base_artifact_service import BaseArtifactService
+from .base_artifact_service import ensure_part
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -314,7 +316,7 @@ class FileArtifactService(BaseArtifactService):
       app_name: str,
       user_id: str,
       filename: str,
-      artifact: types.Part,
+      artifact: Union[types.Part, dict[str, Any]],
       session_id: Optional[str] = None,
       custom_metadata: Optional[dict[str, Any]] = None,
   ) -> int:
@@ -339,11 +341,12 @@ class FileArtifactService(BaseArtifactService):
       self,
       user_id: str,
       filename: str,
-      artifact: types.Part,
+      artifact: Union[types.Part, dict[str, Any]],
       session_id: Optional[str],
       custom_metadata: Optional[dict[str, Any]],
   ) -> int:
     """Saves an artifact to disk and returns its version."""
+    artifact = ensure_part(artifact)
     artifact_dir = self._artifact_dir(
         user_id=user_id,
         session_id=session_id,
