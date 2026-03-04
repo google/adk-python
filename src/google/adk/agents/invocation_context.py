@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 from typing import Any
+from typing import cast
 from typing import Optional
 
 from google.adk.platform import uuid as platform_uuid
@@ -413,4 +414,4 @@ class InvocationContext(BaseModel):
 
 
 def new_invocation_context_id() -> str:
-  return "e-" + str(platform_uuid.new_uuid())
+  return "e-" + str(cast(str, platform_uuid.new_uuid()))
