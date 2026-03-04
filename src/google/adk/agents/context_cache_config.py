@@ -14,6 +14,9 @@
 
 from __future__ import annotations
 
+from typing import Optional
+
+from google.genai import types
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
@@ -38,10 +41,12 @@ class ContextCacheConfig(BaseModel):
       cache_intervals: Maximum number of invocations to reuse the same cache before refreshing it
       ttl_seconds: Time-to-live for cache in seconds
       min_tokens: Minimum tokens required to enable caching
+      create_http_options: HTTP options for cache creation API calls
   """
 
   model_config = ConfigDict(
       extra="forbid",
+      arbitrary_types_allowed=True,
   )
 
   cache_intervals: int = Field(
@@ -72,13 +77,15 @@ class ContextCacheConfig(BaseModel):
       ),
   )
 
-  async_creation: bool = Field(
-      default=False,
+  create_http_options: Optional[types.HttpOptions] = Field(
+      default=None,
       description=(
-          "When True, cache creation is performed in the background instead of"
-          " blocking the current request. The current request proceeds uncached"
-          " and the cache is available for the next request. This eliminates"
-          " latency spikes from slow CachedContent.create() API calls."
+          "HTTP options for cache creation API calls. Use this to set a"
+          " timeout on CachedContent.create() calls (e.g."
+          " types.HttpOptions(timeout=10000) for a 10-second timeout in"
+          " milliseconds). When the cache creation call exceeds the timeout,"
+          " it fails and the request proceeds without caching. None uses the"
+          " client's default HTTP options."
       ),
   )
 
@@ -92,5 +99,5 @@ class ContextCacheConfig(BaseModel):
     return (
         f"ContextCacheConfig(cache_intervals={self.cache_intervals}, "
         f"ttl={self.ttl_seconds}s, min_tokens={self.min_tokens}, "
-        f"async_creation={self.async_creation})"
+        f"create_http_options={self.create_http_options})"
     )
