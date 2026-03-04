@@ -29,6 +29,7 @@ from ...auth.auth_credential import ServiceAccount
 from ...auth.auth_credential import ServiceAccountCredential
 from ...auth.auth_schemes import AuthScheme
 from ...auth.auth_tool import AuthConfig
+from ..base_tool import BaseTool
 from ..base_toolset import BaseToolset
 from ..base_toolset import ToolPredicate
 from ..openapi_tool.auth.auth_helpers import service_account_scheme_credential
@@ -293,7 +294,7 @@ class ApplicationIntegrationToolset(BaseToolset):
   async def get_tools(
       self,
       readonly_context: Optional[ReadonlyContext] = None,
-  ) -> List[RestApiTool]:
+  ) -> List[BaseTool]:
     if self._openapi_toolset is not None:
       return await self._openapi_toolset.get_tools(readonly_context)
 
@@ -312,7 +313,7 @@ class ApplicationIntegrationToolset(BaseToolset):
     if not exchanged_auth_credential:
       return selected_tools
 
-    resolved_tools: List[RestApiTool] = []
+    resolved_tools: List[BaseTool] = []
     for tool in selected_tools:
       if isinstance(tool, IntegrationConnectorTool) and tool._auth_scheme:
         resolved_tools.append(
