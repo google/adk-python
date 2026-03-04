@@ -72,6 +72,16 @@ class ContextCacheConfig(BaseModel):
       ),
   )
 
+  async_creation: bool = Field(
+      default=False,
+      description=(
+          "When True, cache creation is performed in the background instead of"
+          " blocking the current request. The current request proceeds uncached"
+          " and the cache is available for the next request. This eliminates"
+          " latency spikes from slow CachedContent.create() API calls."
+      ),
+  )
+
   @property
   def ttl_string(self) -> str:
     """Get TTL as string format for cache creation."""
@@ -81,5 +91,6 @@ class ContextCacheConfig(BaseModel):
     """String representation for logging."""
     return (
         f"ContextCacheConfig(cache_intervals={self.cache_intervals}, "
-        f"ttl={self.ttl_seconds}s, min_tokens={self.min_tokens})"
+        f"ttl={self.ttl_seconds}s, min_tokens={self.min_tokens}, "
+        f"async_creation={self.async_creation})"
     )

@@ -106,7 +106,7 @@ class TestContextCacheConfig:
     )
 
     expected = (
-        "ContextCacheConfig(cache_intervals=15, ttl=3600s, min_tokens=1024)"
+        "ContextCacheConfig(cache_intervals=15, ttl=3600s, min_tokens=1024, async_creation=False)"
     )
     assert str(config) == expected
 
@@ -114,7 +114,7 @@ class TestContextCacheConfig:
     """Test string representation with default values."""
     config = ContextCacheConfig()
 
-    expected = "ContextCacheConfig(cache_intervals=10, ttl=1800s, min_tokens=0)"
+    expected = "ContextCacheConfig(cache_intervals=10, ttl=1800s, min_tokens=0, async_creation=False)"
     assert str(config) == expected
 
   def test_pydantic_model_validation(self):
