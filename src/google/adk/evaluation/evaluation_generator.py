@@ -356,7 +356,7 @@ class EvaluationGenerator:
           agent_name = event.author
           app_details.agent_details[agent_name] = AgentDetails(
               name=agent_name,
-              instructions=llm_request.config.system_instruction,
+              instructions="\n\n".join(llm_request.config.system_instruction) if isinstance(llm_request.config.system_instruction, list) else llm_request.config.system_instruction or "",
               tool_declarations=llm_request.config.tools or [],
           )
 
