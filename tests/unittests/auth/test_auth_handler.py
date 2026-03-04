@@ -66,6 +66,12 @@ class MockOAuth2Session:
     params = f"client_id={self.client_id}&scope={self.scope}"
     if kwargs.get("audience"):
       params += f"&audience={kwargs.get('audience')}"
+    if kwargs.get("code_challenge_method"):
+      params += (
+          "&code_challenge_method="
+          f"{kwargs.get('code_challenge_method')}"
+      )
+      params += f"&code_challenge={kwargs.get('code_challenge')}"
     return f"{url}?{params}", "mock_state"
 
   def fetch_token(
@@ -250,6 +256,19 @@ class TestGenerateAuthUri:
     result = handler.generate_auth_uri()
 
     assert "audience=test_audience" in result.oauth2.auth_uri
+
+  @patch("google.adk.auth.auth_handler.OAuth2Session", MockOAuth2Session)
+  def test_generate_auth_uri_with_pkce(self, auth_config):
+    """Test generating an auth URI with PKCE enabled."""
+    auth_config.raw_auth_credential.oauth2.code_challenge_method = "S256"
+    handler = AuthHandler(auth_config)
+
+    result = handler.generate_auth_uri()
+
+    assert "code_challenge_method=S256" in result.oauth2.auth_uri
+    assert "code_challenge=" in result.oauth2.auth_uri
+    assert "code_verifier=" not in result.oauth2.auth_uri
+    assert result.oauth2.code_verifier
 
   @patch("google.adk.auth.auth_handler.OAuth2Session", MockOAuth2Session)
   def test_generate_auth_uri_openid(
