@@ -2269,10 +2269,12 @@ async def test_content_to_message_param_embeds_thought_signature_in_tool_call():
   tool_calls = message["tool_calls"]
   assert tool_calls is not None
   assert len(tool_calls) == 1
-  assert (
-      tool_calls[0]["id"]
-      == "test_tool_call_id__thought__"
-      + base64.b64encode(b"gemini_signature").decode("utf-8")
+  assert tool_calls[0][
+      "id"
+  ] == "test_tool_call_id__thought__" + base64.b64encode(
+      b"gemini_signature"
+  ).decode(
+      "utf-8"
   )
 
 

@@ -149,6 +149,7 @@ _MISSING_TOOL_RESULT_MESSAGE = (
 # https://ai.google.dev/gemini-api/docs/thought-signatures
 _THOUGHT_SIGNATURE_SEPARATOR = "__thought__"
 
+
 _LITELLM_IMPORTED = False
 _LITELLM_GLOBAL_SYMBOLS = (
     "ChatCompletionAssistantMessage",
