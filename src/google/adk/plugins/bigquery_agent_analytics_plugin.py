@@ -28,6 +28,13 @@ import json
 import logging
 import mimetypes
 import os
+
+# Enable gRPC fork support so child processes created via os.fork()
+# can safely create new gRPC channels.  Must be set before grpc's
+# C-core is loaded (which happens through the google.api_core
+# imports below).  setdefault respects any explicit user override.
+os.environ.setdefault("GRPC_ENABLE_FORK_SUPPORT", "1")
+
 import random
 import time
 from types import MappingProxyType
@@ -81,6 +88,23 @@ _HITL_EVENT_MAP = MappingProxyType({
     "adk_request_confirmation": "HITL_CONFIRMATION_REQUEST",
     "adk_request_input": "HITL_INPUT_REQUEST",
 })
+
+# Track all living plugin instances so the fork handler can reset
+# them proactively in the child, before _ensure_started runs.
+_LIVE_PLUGINS: weakref.WeakSet = weakref.WeakSet()
+
+
+def _after_fork_in_child() -> None:
+  """Reset every living plugin instance after os.fork()."""
+  for plugin in list(_LIVE_PLUGINS):
+    try:
+      plugin._reset_runtime_state()
+    except Exception:
+      pass
+
+
+if hasattr(os, "register_at_fork"):
+  os.register_at_fork(after_in_child=_after_fork_in_child)
 
 
 def _safe_callback(func):
@@ -1851,6 +1875,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     self._schema = None
     self.arrow_schema = None
     self._init_pid = os.getpid()
+    _LIVE_PLUGINS.add(self)
 
   def _cleanup_stale_loop_states(self) -> None:
     """Removes entries for event loops that have been closed."""
@@ -2393,6 +2418,30 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     process.  Pure-data fields like ``_schema`` and
     ``arrow_schema`` are kept because they are safe across fork.
     """
+    logger.warning(
+        "Fork detected (parent PID %s, child PID %s). Resetting"
+        " gRPC state for BigQuery analytics plugin.  Note: gRPC"
+        " bidirectional streaming (used by the BigQuery Storage"
+        " Write API) is not fork-safe.  If writes hang or time"
+        " out, switch to 'spawn' multiprocessing start method:"
+        "  multiprocessing.set_start_method('spawn')",
+        self._init_pid,
+        os.getpid(),
+    )
+    # Best-effort: close inherited gRPC channels so broken
+    # finalizers don't interfere with newly created channels.
+    for loop_state in self._loop_state_by_loop.values():
+      wc = getattr(loop_state, "write_client", None)
+      transport = getattr(wc, "transport", None)
+      if transport is not None:
+        try:
+          channel = getattr(transport, "_grpc_channel", None)
+          if channel is not None and hasattr(channel, "close"):
+            channel.close()
+        except Exception:
+          pass
+
+    # Clear all runtime state.
     self._setup_lock = None
     self.client = None
     self._loop_state_by_loop = {}

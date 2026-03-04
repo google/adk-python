@@ -4922,6 +4922,107 @@ class TestForkSafety:
     await new_plugin.shutdown()
 
 
+class TestForkGrpcSafety:
+  """Tests for gRPC fork safety enhancements."""
+
+  def _make_plugin(self):
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig()
+    return bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        project_id=PROJECT_ID,
+        dataset_id=DATASET_ID,
+        table_id=TABLE_ID,
+        config=config,
+    )
+
+  def test_grpc_fork_env_var_set(self):
+    """GRPC_ENABLE_FORK_SUPPORT should be '1' after import."""
+    import os
+
+    assert os.environ.get("GRPC_ENABLE_FORK_SUPPORT") == "1"
+
+  def test_register_at_fork_resets_all_instances(self):
+    """_after_fork_in_child resets all living plugin instances."""
+    p1 = self._make_plugin()
+    p2 = self._make_plugin()
+    p1._started = True
+    p2._started = True
+    p1._init_pid = -1
+    p2._init_pid = -1
+
+    bigquery_agent_analytics_plugin._after_fork_in_child()
+
+    import os
+
+    assert p1._started is False
+    assert p2._started is False
+    assert p1._init_pid == os.getpid()
+    assert p2._init_pid == os.getpid()
+
+  def test_dead_plugin_removed_from_live_set(self):
+    """WeakSet should not hold dead plugin references."""
+    p = self._make_plugin()
+    assert p in bigquery_agent_analytics_plugin._LIVE_PLUGINS
+    pid = id(p)
+    del p
+    # After deletion, the WeakSet should no longer contain it.
+    for alive in bigquery_agent_analytics_plugin._LIVE_PLUGINS:
+      assert id(alive) != pid
+
+  def test_reset_closes_inherited_transports(self):
+    """_reset_runtime_state closes inherited gRPC channels."""
+    plugin = self._make_plugin()
+    mock_channel = mock.MagicMock()
+    mock_transport = mock.MagicMock()
+    mock_transport._grpc_channel = mock_channel
+    mock_wc = mock.MagicMock()
+    mock_wc.transport = mock_transport
+
+    mock_loop_state = mock.MagicMock()
+    mock_loop_state.write_client = mock_wc
+
+    plugin._loop_state_by_loop = {mock.MagicMock(): mock_loop_state}
+    plugin._init_pid = -1
+
+    plugin._reset_runtime_state()
+
+    mock_channel.close.assert_called_once()
+
+  def test_transport_close_exception_swallowed(self):
+    """close() raising should not prevent reset from completing."""
+    plugin = self._make_plugin()
+    mock_channel = mock.MagicMock()
+    mock_channel.close.side_effect = RuntimeError("broken channel")
+    mock_transport = mock.MagicMock()
+    mock_transport._grpc_channel = mock_channel
+    mock_wc = mock.MagicMock()
+    mock_wc.transport = mock_transport
+
+    mock_loop_state = mock.MagicMock()
+    mock_loop_state.write_client = mock_wc
+
+    plugin._loop_state_by_loop = {mock.MagicMock(): mock_loop_state}
+    plugin._init_pid = -1
+
+    # Should not raise
+    plugin._reset_runtime_state()
+
+    assert plugin._started is False
+    assert plugin._loop_state_by_loop == {}
+
+  def test_reset_logs_fork_warning(self):
+    """_reset_runtime_state logs a warning with 'Fork detected'."""
+    plugin = self._make_plugin()
+    plugin._init_pid = -1
+
+    with mock.patch.object(
+        bigquery_agent_analytics_plugin.logger, "warning"
+    ) as mock_warn:
+      plugin._reset_runtime_state()
+
+    mock_warn.assert_called_once()
+    assert "Fork detected" in mock_warn.call_args[0][0]
+
+
 # ==============================================================================
 # Analytics Views Tests
 # ==============================================================================
