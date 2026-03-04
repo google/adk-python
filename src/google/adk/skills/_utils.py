@@ -96,7 +96,7 @@ def _load_dir(directory: pathlib.Path) -> dict[str, str]:
 
 def _parse_skill_md(
     skill_dir: pathlib.Path,
-) -> tuple[dict, str, pathlib.Path]:
+) -> tuple[dict[str, object], str, pathlib.Path]:
   """Parse SKILL.md from a skill directory.
 
   Args:
