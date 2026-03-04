@@ -71,6 +71,7 @@ class MockOAuth2Session:
           "&code_challenge_method="
           f"{kwargs.get('code_challenge_method')}"
       )
+    if kwargs.get("code_challenge"):
       params += f"&code_challenge={kwargs.get('code_challenge')}"
     return f"{url}?{params}", "mock_state"
 
