@@ -24,6 +24,9 @@ from typing import Literal
 from typing import Optional
 from typing import Tuple
 from typing import Union
+from urllib.parse import parse_qs
+from urllib.parse import urlparse
+from urllib.parse import urlunparse
 
 from fastapi.openapi.models import Operation
 from fastapi.openapi.models import Schema
@@ -374,6 +377,14 @@ class RestApiTool(BaseTool):
     base_url = self.endpoint.base_url or ""
     base_url = base_url[:-1] if base_url.endswith("/") else base_url
     url = f"{base_url}{self.endpoint.path.format(**path_params)}"
+
+    # Move query params embedded in the path into query_params, since httpx
+    # replaces (rather than merges) the URL query string when `params` is set.
+    parsed_url = urlparse(url)
+    if parsed_url.query or parsed_url.fragment:
+      for key, values in parse_qs(parsed_url.query).items():
+        query_params.setdefault(key, values[0] if len(values) == 1 else values)
+      url = urlunparse(parsed_url._replace(query="", fragment=""))
 
     # Construct body
     body_kwargs: Dict[str, Any] = {}
