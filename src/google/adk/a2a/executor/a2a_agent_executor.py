@@ -36,22 +36,14 @@ from a2a.types import TextPart
 from google.adk.platform import time as platform_time
 from google.adk.platform import uuid as platform_uuid
 from google.adk.runners import Runner
-from pydantic import BaseModel
 from typing_extensions import override
 
 from ...utils.context_utils import Aclosing
-from ..converters.event_converter import AdkEventToA2AEventsConverter
-from ..converters.event_converter import convert_event_to_a2a_events
-from ..converters.part_converter import A2APartToGenAIPartConverter
-from ..converters.part_converter import convert_a2a_part_to_genai_part
-from ..converters.part_converter import convert_genai_part_to_a2a_part
-from ..converters.part_converter import GenAIPartToA2APartConverter
-from ..converters.request_converter import A2ARequestToAgentRunRequestConverter
 from ..converters.request_converter import AgentRunRequest
-from ..converters.request_converter import convert_a2a_request_to_agent_run_request
 from ..converters.utils import _get_adk_metadata_key
 from ..experimental import a2a_experimental
-from .config import ExecuteInterceptor
+from .a2a_agent_executor_impl import _A2aAgentExecutor as ExecutorImpl
+from .config import A2aAgentExecutorConfig
 from .executor_context import ExecutorContext
 from .task_result_aggregator import TaskResultAggregator
 from .utils import execute_after_agent_interceptors
@@ -62,28 +54,15 @@ logger = logging.getLogger('google_adk.' + __name__)
 
 
 @a2a_experimental
-class A2aAgentExecutorConfig(BaseModel):
-  """Configuration for the A2aAgentExecutor."""
-
-  a2a_part_converter: A2APartToGenAIPartConverter = (
-      convert_a2a_part_to_genai_part
-  )
-  gen_ai_part_converter: GenAIPartToA2APartConverter = (
-      convert_genai_part_to_a2a_part
-  )
-  request_converter: A2ARequestToAgentRunRequestConverter = (
-      convert_a2a_request_to_agent_run_request
-  )
-  event_converter: AdkEventToA2AEventsConverter = convert_event_to_a2a_events
-
-  execute_interceptors: Optional[list[ExecuteInterceptor]] = None
-
-
-@a2a_experimental
 class A2aAgentExecutor(AgentExecutor):
   """An AgentExecutor that runs an ADK Agent against an A2A request and
 
   publishes updates to an event queue.
+
+  Args:
+    runner: The runner to use for the agent.
+    config: The config to use for the executor.
+    use_legacy: Whether to use the legacy executor implementation.
   """
 
   def __init__(
@@ -91,10 +70,15 @@ class A2aAgentExecutor(AgentExecutor):
       *,
       runner: Runner | Callable[..., Runner | Awaitable[Runner]],
       config: Optional[A2aAgentExecutorConfig] = None,
+      use_legacy: bool = True,
   ):
     super().__init__()
-    self._runner = runner
-    self._config = config or A2aAgentExecutorConfig()
+    if not use_legacy:
+      self._executor_impl = ExecutorImpl(runner=runner, config=config)
+    else:
+      self._executor_impl = None
+      self._runner = runner
+      self._config = config or A2aAgentExecutorConfig()
 
   async def _resolve_runner(self) -> Runner:
     """Resolve the runner, handling cases where it's a callable that returns a Runner."""
@@ -123,6 +107,10 @@ class A2aAgentExecutor(AgentExecutor):
   @override
   async def cancel(self, context: RequestContext, event_queue: EventQueue):
     """Cancel the execution."""
+    if self._executor_impl:
+      await self._executor_impl.cancel(context, event_queue)
+      return
+
     # TODO: Implement proper cancellation logic if needed
     raise NotImplementedError('Cancellation is not supported')
 
@@ -133,6 +121,7 @@ class A2aAgentExecutor(AgentExecutor):
       event_queue: EventQueue,
   ):
     """Executes an A2A request and publishes updates to the event queue
+
     specified. It runs as following:
     * Takes the input from the A2A request
     * Convert the input to ADK input content, and runs the ADK agent
@@ -140,6 +129,10 @@ class A2aAgentExecutor(AgentExecutor):
     * Converts the ADK output events into A2A task updates
     * Publishes the updates back to A2A server via event queue
     """
+    if self._executor_impl:
+      await self._executor_impl.execute(context, event_queue)
+      return
+
     if not context.message:
       raise ValueError('A2A request must have a message')
 
@@ -218,7 +211,7 @@ class A2aAgentExecutor(AgentExecutor):
         run_config=run_request.run_config,
     )
 
-    self._executor_context = ExecutorContext(
+    executor_context = ExecutorContext(
         app_name=runner.app_name,
         user_id=run_request.user_id,
         session_id=run_request.session_id,
@@ -257,7 +250,7 @@ class A2aAgentExecutor(AgentExecutor):
         ):
           a2a_event = await execute_after_event_interceptors(
               a2a_event,
-              self._executor_context,
+              executor_context,
               adk_event,
               self._config.execute_interceptors,
           )
@@ -313,7 +306,7 @@ class A2aAgentExecutor(AgentExecutor):
       )
 
     final_event = await execute_after_agent_interceptors(
-        self._executor_context,
+        executor_context,
         final_event,
         self._config.execute_interceptors,
     )
