@@ -33,6 +33,7 @@ if TYPE_CHECKING:
 from . import _session_util
 from ..events.event import Event
 from ..events.event_actions import EventActions
+from ..events.event_actions import EventCompaction
 from ..utils.vertex_ai_utils import get_express_mode_api_key
 from .base_session_service import BaseSessionService
 from .base_session_service import GetSessionConfig
@@ -267,8 +268,9 @@ class VertexAiSessionService(BaseSessionService):
               k: json.loads(v.model_dump_json(exclude_none=True, by_alias=True))
               for k, v in event.actions.requested_auth_configs.items()
           },
-          # TODO: add requested_tool_confirmations, compaction, agent_state once
+          # TODO: add requested_tool_confirmations, agent_state once
           # they are available in the API.
+          # Note: compaction is stored via event_metadata.custom_metadata.
       }
     if event.error_code:
       config['error_code'] = event.error_code
@@ -291,6 +293,19 @@ class VertexAiSessionService(BaseSessionService):
       metadata_dict['grounding_metadata'] = event.grounding_metadata.model_dump(
           exclude_none=True, mode='json'
       )
+    # Store compaction data in custom_metadata since the Vertex AI service
+    # does not yet support the compaction field.
+    # TODO: Stop writing to custom_metadata once the Vertex AI service
+    # supports the compaction field natively in EventActions.
+    if event.actions and event.actions.compaction:
+      compaction_dict = event.actions.compaction.model_dump(
+          exclude_none=True, mode='json'
+      )
+      existing_custom = metadata_dict.get('custom_metadata') or {}
+      metadata_dict['custom_metadata'] = {
+          **existing_custom,
+          '_compaction': compaction_dict,
+      }
     config['event_metadata'] = metadata_dict
 
     async with self._get_api_client() as api_client:
@@ -347,16 +362,6 @@ class VertexAiSessionService(BaseSessionService):
 def _from_api_event(api_event_obj: vertexai.types.SessionEvent) -> Event:
   """Converts an API event object to an Event object."""
   actions = getattr(api_event_obj, 'actions', None)
-  if actions:
-    actions_dict = actions.model_dump(exclude_none=True, mode='python')
-    rename_map = {'transfer_agent': 'transfer_to_agent'}
-    renamed_actions_dict = {
-        rename_map.get(k, k): v for k, v in actions_dict.items()
-    }
-    event_actions = EventActions.model_validate(renamed_actions_dict)
-  else:
-    event_actions = EventActions()
-
   event_metadata = getattr(api_event_obj, 'event_metadata', None)
   if event_metadata:
     long_running_tool_ids_list = getattr(
@@ -370,6 +375,16 @@ def _from_api_event(api_event_obj: vertexai.types.SessionEvent) -> Event:
     interrupted = getattr(event_metadata, 'interrupted', None)
     branch = getattr(event_metadata, 'branch', None)
     custom_metadata = getattr(event_metadata, 'custom_metadata', None)
+    # Extract compaction data stored in custom_metadata.
+    # NOTE: This read path must be kept permanently because sessions
+    # written before native compaction support store compaction data
+    # in custom_metadata under the '_compaction' key.
+    compaction_data = None
+    if custom_metadata and '_compaction' in custom_metadata:
+      custom_metadata = dict(custom_metadata)  # avoid mutating the API response
+      compaction_data = custom_metadata.pop('_compaction')
+      if not custom_metadata:
+        custom_metadata = None
     grounding_metadata = _session_util.decode_model(
         getattr(event_metadata, 'grounding_metadata', None),
         types.GroundingMetadata,
@@ -381,7 +396,25 @@ def _from_api_event(api_event_obj: vertexai.types.SessionEvent) -> Event:
     interrupted = None
     branch = None
     custom_metadata = None
+    compaction_data = None
     grounding_metadata = None
+
+  if actions:
+    actions_dict = actions.model_dump(exclude_none=True, mode='python')
+    rename_map = {'transfer_agent': 'transfer_to_agent'}
+    renamed_actions_dict = {
+        rename_map.get(k, k): v for k, v in actions_dict.items()
+    }
+    if compaction_data:
+      renamed_actions_dict['compaction'] = compaction_data
+    event_actions = EventActions.model_validate(renamed_actions_dict)
+  else:
+    if compaction_data:
+      event_actions = EventActions(
+          compaction=EventCompaction.model_validate(compaction_data)
+      )
+    else:
+      event_actions = EventActions()
 
   return Event(
       id=api_event_obj.name.split('/')[-1],

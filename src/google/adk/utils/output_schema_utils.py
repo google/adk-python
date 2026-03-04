@@ -30,6 +30,17 @@ from .variant_utils import GoogleLLMVariant
 
 def can_use_output_schema_with_tools(model: Union[str, BaseLlm]) -> bool:
   """Returns True if output schema with tools is supported."""
+  # LiteLLM handles tools + response_format compatibility per-provider:
+  # - Providers with native support (OpenAI, Azure): both passed directly
+  # - Providers without (Fireworks): auto-converted to json_tool_call +
+  #   tool_choice enforcement
+  # This is strictly more reliable than the SetModelResponseTool
+  # prompt-based workaround.
+  from ..models.lite_llm import LiteLlm
+
+  if isinstance(model, LiteLlm):
+    return True
+
   model_string = model if isinstance(model, str) else model.model
 
   return (
