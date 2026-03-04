@@ -106,7 +106,8 @@ class TestContextCacheConfig:
     )
 
     expected = (
-        "ContextCacheConfig(cache_intervals=15, ttl=3600s, min_tokens=1024, create_http_options=None)"
+        "ContextCacheConfig(cache_intervals=15, ttl=3600s, min_tokens=1024,"
+        " create_http_options=None)"
     )
     assert str(config) == expected
 
@@ -114,7 +115,10 @@ class TestContextCacheConfig:
     """Test string representation with default values."""
     config = ContextCacheConfig()
 
-    expected = "ContextCacheConfig(cache_intervals=10, ttl=1800s, min_tokens=0, create_http_options=None)"
+    expected = (
+        "ContextCacheConfig(cache_intervals=10, ttl=1800s, min_tokens=0,"
+        " create_http_options=None)"
+    )
     assert str(config) == expected
 
   def test_pydantic_model_validation(self):
@@ -130,20 +134,15 @@ class TestContextCacheConfig:
 
     assert "cache_intervals" in fields
     assert (
-        "Maximum number of invocations"
-        in fields["cache_intervals"].description
+        "Maximum number of invocations" in fields["cache_intervals"].description
     )
 
     assert "ttl_seconds" in fields
-    assert (
-        "Time-to-live for cache"
-        in fields["ttl_seconds"].description
-    )
+    assert "Time-to-live for cache" in fields["ttl_seconds"].description
 
     assert "min_tokens" in fields
     assert (
-        "Minimum estimated request tokens"
-        in fields["min_tokens"].description
+        "Minimum estimated request tokens" in fields["min_tokens"].description
     )
 
   def test_immutability_config(self):
