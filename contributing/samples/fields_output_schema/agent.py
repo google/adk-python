@@ -22,9 +22,20 @@ class WeatherData(BaseModel):
   wind_speed: str
 
 
+def get_current_year() -> str:
+  """Get the current year.
+
+  Returns:
+    The current year as a string
+  """
+  from datetime import datetime
+
+  return str(datetime.now().year)
+
+
 root_agent = Agent(
     name='root_agent',
-    model='gemini-2.0-flash',
+    model='gemini-2.5-flash',
     instruction="""\
 Answer user's questions based on the data you have.
 
@@ -43,6 +54,7 @@ Here are the data you have for Cupertino
 * wind_speed: 13 mph
 
 """,
-    output_schema=WeatherData,
+    output_schema=list[WeatherData],
     output_key='weather_data',
+    tools=[get_current_year],
 )

@@ -27,6 +27,7 @@ import asyncio
 import logging
 from typing import Any
 from typing import Optional
+from typing import Union
 
 from google.genai import types
 from typing_extensions import override
@@ -34,6 +35,7 @@ from typing_extensions import override
 from ..errors.input_validation_error import InputValidationError
 from .base_artifact_service import ArtifactVersion
 from .base_artifact_service import BaseArtifactService
+from .base_artifact_service import ensure_part
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -61,7 +63,7 @@ class GcsArtifactService(BaseArtifactService):
       app_name: str,
       user_id: str,
       filename: str,
-      artifact: types.Part,
+      artifact: Union[types.Part, dict[str, Any]],
       session_id: Optional[str] = None,
       custom_metadata: Optional[dict[str, Any]] = None,
   ) -> int:
@@ -198,9 +200,10 @@ class GcsArtifactService(BaseArtifactService):
       user_id: str,
       session_id: Optional[str],
       filename: str,
-      artifact: types.Part,
+      artifact: Union[types.Part, dict[str, Any]],
       custom_metadata: Optional[dict[str, Any]] = None,
   ) -> int:
+    artifact = ensure_part(artifact)
     versions = self._list_versions(
         app_name=app_name,
         user_id=user_id,
