@@ -182,7 +182,9 @@ Body content
   assert fm.license == "MIT"
 
 
-def test_load_skill_from_dir_resolves_duplicate_agent_prefix(tmp_path, monkeypatch):
+def test_load_skill_from_dir_resolves_duplicate_agent_prefix(
+    tmp_path, monkeypatch
+):
   """Resolves agent-prefixed relative paths when cwd is already the agent dir."""
   workspace_dir = tmp_path / "workspace"
   agent_dir = workspace_dir / "my-agent"

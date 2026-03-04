@@ -34,7 +34,9 @@ _ALLOWED_FRONTMATTER_KEYS = frozenset({
 })
 
 
-def _resolve_skill_dir_path(skill_dir: Union[str, pathlib.Path]) -> pathlib.Path:
+def _resolve_skill_dir_path(
+    skill_dir: Union[str, pathlib.Path],
+) -> pathlib.Path:
   """Resolve a skill path consistently across execution environments.
 
   Relative skill paths may be authored from a parent folder (for example,
