@@ -23,6 +23,8 @@ from unittest import mock
 from google.adk.agents.llm_agent import Agent
 from google.adk.events.event import Event
 from google.adk.flows.llm_flows.functions import handle_function_calls_live
+from google.adk.plugins.base_plugin import BasePlugin
+from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.tool_context import ToolContext
 from google.genai import types
@@ -463,3 +465,159 @@ async def test_live_on_tool_error_callback_tool_not_found_modify_tool_response()
   assert part.function_response.response == {
       "result": "on_tool_error_callback_response"
   }
+
+
+# --- Plugin callback tests for live mode ---
+
+
+class MockPlugin(BasePlugin):
+  """A mock plugin for testing plugin callbacks in live mode."""
+
+  before_tool_response = {"MockPlugin": "before_tool_response from MockPlugin"}
+  after_tool_response = {"MockPlugin": "after_tool_response from MockPlugin"}
+
+  def __init__(self, name="mock_plugin"):
+    self.name = name
+    self.enable_before_tool_callback = False
+    self.enable_after_tool_callback = False
+
+  async def before_tool_callback(
+      self,
+      *,
+      tool: BaseTool,
+      tool_args: dict[str, Any],
+      tool_context: ToolContext,
+  ) -> Optional[dict]:
+    if not self.enable_before_tool_callback:
+      return None
+    return self.before_tool_response
+
+  async def after_tool_callback(
+      self,
+      *,
+      tool: BaseTool,
+      tool_args: dict[str, Any],
+      tool_context: ToolContext,
+      result: dict,
+  ) -> Optional[dict]:
+    if not self.enable_after_tool_callback:
+      return None
+    return self.after_tool_response
+
+
+async def invoke_tool_with_plugin_live(
+    mock_plugin,
+) -> Optional[Event]:
+  """Invokes a tool with a plugin using live mode."""
+
+  def simple_fn(**kwargs) -> Dict[str, Any]:
+    return {"initial": "response"}
+
+  tool = FunctionTool(simple_fn)
+  model = testing_utils.MockModel.create(responses=[])
+  agent = Agent(
+      name="agent",
+      model=model,
+      tools=[tool],
+  )
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content="", plugins=[mock_plugin]
+  )
+  function_call = types.FunctionCall(name=tool.name, args={})
+  content = types.Content(parts=[types.Part(function_call=function_call)])
+  event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=content,
+  )
+  tools_dict = {tool.name: tool}
+  return await handle_function_calls_live(
+      invocation_context,
+      event,
+      tools_dict,
+  )
+
+
+@pytest.mark.asyncio
+async def test_live_plugin_before_tool_callback():
+  """Test that plugin before_tool_callback is called in live mode."""
+  plugin = MockPlugin()
+  plugin.enable_before_tool_callback = True
+
+  result_event = await invoke_tool_with_plugin_live(plugin)
+
+  assert result_event is not None
+  part = result_event.content.parts[0]
+  assert part.function_response.response == plugin.before_tool_response
+
+
+@pytest.mark.asyncio
+async def test_live_plugin_after_tool_callback():
+  """Test that plugin after_tool_callback is called in live mode."""
+  plugin = MockPlugin()
+  plugin.enable_after_tool_callback = True
+
+  result_event = await invoke_tool_with_plugin_live(plugin)
+
+  assert result_event is not None
+  part = result_event.content.parts[0]
+  assert part.function_response.response == plugin.after_tool_response
+
+
+@pytest.mark.asyncio
+async def test_live_plugin_before_tool_callback_disabled():
+  """Test that disabled plugin before_tool_callback allows normal tool execution."""
+  plugin = MockPlugin()
+  plugin.enable_before_tool_callback = False
+
+  result_event = await invoke_tool_with_plugin_live(plugin)
+
+  assert result_event is not None
+  part = result_event.content.parts[0]
+  assert part.function_response.response == {"initial": "response"}
+
+
+@pytest.mark.asyncio
+async def test_live_plugin_callbacks_match_async_behavior():
+  """Test that plugin callbacks in live mode match the async (non-live) behavior."""
+  from google.adk.flows.llm_flows.functions import handle_function_calls_async
+
+  def simple_fn(**kwargs) -> Dict[str, Any]:
+    return {"initial": "response"}
+
+  tool = FunctionTool(simple_fn)
+  model = testing_utils.MockModel.create(responses=[])
+  agent = Agent(
+      name="agent",
+      model=model,
+      tools=[tool],
+  )
+
+  # Test with plugin before_tool_callback enabled
+  plugin = MockPlugin()
+  plugin.enable_before_tool_callback = True
+
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content="", plugins=[plugin]
+  )
+  function_call = types.FunctionCall(name=tool.name, args={})
+  content = types.Content(parts=[types.Part(function_call=function_call)])
+  event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=content,
+  )
+  tools_dict = {tool.name: tool}
+
+  async_result = await handle_function_calls_async(
+      invocation_context, event, tools_dict
+  )
+  live_result = await handle_function_calls_live(
+      invocation_context, event, tools_dict
+  )
+
+  assert async_result is not None
+  assert live_result is not None
+  async_response = async_result.content.parts[0].function_response.response
+  live_response = live_result.content.parts[0].function_response.response
+  assert async_response == live_response == plugin.before_tool_response
