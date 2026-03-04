@@ -2423,13 +2423,17 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         " gRPC state for BigQuery analytics plugin.  Note: gRPC"
         " bidirectional streaming (used by the BigQuery Storage"
         " Write API) is not fork-safe.  If writes hang or time"
-        " out, switch to 'spawn' multiprocessing start method:"
+        " out, configure the 'spawn' start method at your program"
+        " entry-point before creating child processes:"
         "  multiprocessing.set_start_method('spawn')",
         self._init_pid,
         os.getpid(),
     )
     # Best-effort: close inherited gRPC channels so broken
     # finalizers don't interfere with newly created channels.
+    # For grpc.aio channels, close() is a coroutine.  We cannot
+    # await here (called from sync context / fork handler), so
+    # we skip async channels and only close sync ones.
     for loop_state in self._loop_state_by_loop.values():
       wc = getattr(loop_state, "write_client", None)
       transport = getattr(wc, "transport", None)
@@ -2437,7 +2441,11 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         try:
           channel = getattr(transport, "_grpc_channel", None)
           if channel is not None and hasattr(channel, "close"):
-            channel.close()
+            result = channel.close()
+            # If close() returned a coroutine (grpc.aio channel),
+            # discard it to avoid unawaited-coroutine warnings.
+            if asyncio.iscoroutine(result):
+              result.close()
         except Exception:
           pass
 

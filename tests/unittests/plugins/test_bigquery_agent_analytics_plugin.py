@@ -4968,10 +4968,11 @@ class TestForkGrpcSafety:
     for alive in bigquery_agent_analytics_plugin._LIVE_PLUGINS:
       assert id(alive) != pid
 
-  def test_reset_closes_inherited_transports(self):
-    """_reset_runtime_state closes inherited gRPC channels."""
+  def test_reset_closes_inherited_sync_transports(self):
+    """_reset_runtime_state closes inherited sync gRPC channels."""
     plugin = self._make_plugin()
     mock_channel = mock.MagicMock()
+    mock_channel.close.return_value = None  # sync close
     mock_transport = mock.MagicMock()
     mock_transport._grpc_channel = mock_channel
     mock_wc = mock.MagicMock()
@@ -4984,6 +4985,35 @@ class TestForkGrpcSafety:
     plugin._init_pid = -1
 
     plugin._reset_runtime_state()
+
+    mock_channel.close.assert_called_once()
+
+  def test_reset_discards_async_channel_close_coroutine(self):
+    """Async channel close() returns a coroutine; must not warn."""
+    import warnings
+
+    plugin = self._make_plugin()
+
+    async def _async_close():
+      pass
+
+    mock_channel = mock.MagicMock()
+    mock_channel.close.return_value = _async_close()
+    mock_transport = mock.MagicMock()
+    mock_transport._grpc_channel = mock_channel
+    mock_wc = mock.MagicMock()
+    mock_wc.transport = mock_transport
+
+    mock_loop_state = mock.MagicMock()
+    mock_loop_state.write_client = mock_wc
+
+    plugin._loop_state_by_loop = {mock.MagicMock(): mock_loop_state}
+    plugin._init_pid = -1
+
+    with warnings.catch_warnings():
+      warnings.simplefilter("error", RuntimeWarning)
+      # Must not raise RuntimeWarning for unawaited coroutine
+      plugin._reset_runtime_state()
 
     mock_channel.close.assert_called_once()
 
