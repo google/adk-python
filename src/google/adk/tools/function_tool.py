@@ -142,13 +142,12 @@ class FunctionTool(BaseTool):
         except KeyError:
           adapter = pydantic.TypeAdapter(target_type)
           self._type_adapter_cache[target_type] = adapter
-        converted_args[param_name] = adapter.validate_python(
-            args[param_name]
-        )
+        converted_args[param_name] = adapter.validate_python(args[param_name])
       except pydantic.ValidationError as e:
         validation_errors.append(
-            f"Parameter '{param_name}': expected type '{getattr(target_type, '__name__', target_type)}',"
-            f' validation error: {e}'
+            f"Parameter '{param_name}': expected type"
+            f" '{getattr(target_type, '__name__', target_type)}', validation"
+            f' error: {e}'
         )
       except (TypeError, NameError) as e:
         # TypeAdapter could not handle this annotation (e.g. a forward
