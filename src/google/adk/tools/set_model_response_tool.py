@@ -16,18 +16,21 @@
 
 from __future__ import annotations
 
+import inspect
 from typing import Any
 from typing import Optional
 
 from google.genai import types
-from pydantic import BaseModel
+from pydantic import TypeAdapter
 from typing_extensions import override
 
+from ..utils._schema_utils import get_list_inner_type
+from ..utils._schema_utils import is_basemodel_schema
+from ..utils._schema_utils import is_list_of_basemodel
+from ..utils._schema_utils import SchemaType
 from ._automatic_function_calling_util import build_function_declaration
 from .base_tool import BaseTool
 from .tool_context import ToolContext
-
-MODEL_JSON_RESPONSE_KEY = 'temp:__adk_model_response__'
 
 
 class SetModelResponseTool(BaseTool):
@@ -38,14 +41,20 @@ class SetModelResponseTool(BaseTool):
   provide its final structured response instead of outputting text directly.
   """
 
-  def __init__(self, output_schema: type[BaseModel]):
+  def __init__(self, output_schema: SchemaType):
     """Initialize the tool with the expected output schema.
 
     Args:
-      output_schema: The pydantic model class defining the expected output
-        structure.
+      output_schema: The output schema. Supports all types from SchemaUnion:
+        - type[BaseModel]: A pydantic model class (e.g., MySchema)
+        - list[type[BaseModel]]: A generic list type (e.g., list[MySchema])
+        - list[primitive]: e.g., list[str], list[int]
+        - dict: Raw dict schemas
+        - Schema: Google's Schema type
     """
     self.output_schema = output_schema
+    self._is_basemodel = is_basemodel_schema(output_schema)
+    self._is_list_of_basemodel = is_list_of_basemodel(output_schema)
 
     # Create a function that matches the output schema
     def set_model_response() -> str:
@@ -57,17 +66,37 @@ class SetModelResponseTool(BaseTool):
       return 'Response set successfully.'
 
     # Add the schema fields as parameters to the function dynamically
-    import inspect
-
-    schema_fields = output_schema.model_fields
-    params = []
-    for field_name, field_info in schema_fields.items():
-      param = inspect.Parameter(
-          field_name,
-          inspect.Parameter.KEYWORD_ONLY,
-          annotation=field_info.annotation,
-      )
-      params.append(param)
+    if self._is_basemodel:
+      # For regular BaseModel, use the model's fields
+      schema_fields = output_schema.model_fields
+      params = []
+      for field_name, field_info in schema_fields.items():
+        param = inspect.Parameter(
+            field_name,
+            inspect.Parameter.KEYWORD_ONLY,
+            annotation=field_info.annotation,
+        )
+        params.append(param)
+    elif self._is_list_of_basemodel:
+      # For list[BaseModel], create a single 'items' parameter
+      inner_type = get_list_inner_type(output_schema)
+      params = [
+          inspect.Parameter(
+              'items',
+              inspect.Parameter.KEYWORD_ONLY,
+              annotation=list[inner_type],
+          )
+      ]
+    else:
+      # For other schema types (list[str], dict, etc.),
+      # create a single parameter with the actual schema type
+      params = [
+          inspect.Parameter(
+              'response',
+              inspect.Parameter.KEYWORD_ONLY,
+              annotation=output_schema,
+          )
+      ]
 
     # Create new signature with schema parameters
     new_sig = inspect.Signature(parameters=params)
@@ -94,19 +123,31 @@ class SetModelResponseTool(BaseTool):
 
   @override
   async def run_async(
-      self, *, args: dict[str, Any], tool_context: ToolContext  # pylint: disable=unused-argument
-  ) -> dict[str, Any]:
-    """Process the model's response and return the validated dict.
+      self, *, args: dict[str, Any], tool_context: ToolContext
+  ) -> Any:
+    """Process the model's response and return the validated data.
 
     Args:
       args: The structured response data matching the output schema.
       tool_context: Tool execution context.
 
     Returns:
-      The validated response as dict.
+      The validated response. Type depends on the output_schema:
+        - dict for BaseModel
+        - list of dicts for list[BaseModel]
+        - raw value for other schema types (list[str], dict, etc.)
     """
-    # Validate the input matches the expected schema
-    validated_response = self.output_schema.model_validate(args)
-
-    # Return the validated dict directly
-    return validated_response.model_dump()
+    if self._is_basemodel:
+      # For regular BaseModel, validate directly
+      validated_response = self.output_schema.model_validate(args)
+      return validated_response.model_dump(exclude_none=True)
+    elif self._is_list_of_basemodel:
+      # For list[BaseModel], extract and validate the 'items' field
+      items = args.get('items', [])
+      type_adapter = TypeAdapter(self.output_schema)
+      validated_response = type_adapter.validate_python(items)
+      return [item.model_dump(exclude_none=True) for item in validated_response]
+    else:
+      # For other schema types (list[str], dict, etc.),
+      # return the value directly without pydantic validation
+      return args.get('response')

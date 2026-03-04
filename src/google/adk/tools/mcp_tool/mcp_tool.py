@@ -41,6 +41,7 @@ from ...auth.auth_schemes import AuthScheme
 from ...auth.auth_tool import AuthConfig
 from ...features import FeatureName
 from ...features import is_feature_enabled
+from ...utils.context_utils import find_context_parameter
 from .._gemini_schema_util import _to_gemini_schema
 from ..base_authenticated_tool import BaseAuthenticatedTool
 from ..tool_context import ToolContext
@@ -242,14 +243,18 @@ class McpTool(BaseAuthenticatedTool):
             for param in signature.parameters.values()
         )
 
-        if "tool_context" in valid_params or has_kwargs:
-          args_to_call["tool_context"] = tool_context
+        # Detect context parameter by type or fallback to 'tool_context' name
+        context_param = (
+            find_context_parameter(self._require_confirmation) or "tool_context"
+        )
+        if context_param in valid_params or has_kwargs:
+          args_to_call[context_param] = tool_context
 
         # Filter args_to_call only if there's no **kwargs
         if not has_kwargs:
-          # Add tool_context to valid_params if it was added to args_to_call
-          if "tool_context" in args_to_call:
-            valid_params.add("tool_context")
+          # Add context param to valid_params if it was added to args_to_call
+          if context_param in args_to_call:
+            valid_params.add(context_param)
           args_to_call = {
               k: v for k, v in args_to_call.items() if k in valid_params
           }
@@ -264,10 +269,6 @@ class McpTool(BaseAuthenticatedTool):
 
     if require_confirmation:
       if not tool_context.tool_confirmation:
-        args_to_show = args.copy()
-        if "tool_context" in args_to_show:
-          args_to_show.pop("tool_context")
-
         tool_context.request_confirmation(
             hint=(
                 f"Please approve or reject the tool call {self.name}() by"
