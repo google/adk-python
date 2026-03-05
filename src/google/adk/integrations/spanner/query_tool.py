@@ -22,7 +22,7 @@ from typing import Callable
 from google.auth.credentials import Credentials
 
 from . import utils
-from ..tool_context import ToolContext
+from ...tools.tool_context import ToolContext
 from .settings import QueryResultMode
 from .settings import SpannerToolSettings
 

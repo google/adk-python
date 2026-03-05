@@ -16,13 +16,13 @@ import os
 
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.auth.auth_credential import AuthCredentialTypes
+from google.adk.integrations.spanner.settings import Capabilities
+from google.adk.integrations.spanner.settings import QueryResultMode
+from google.adk.integrations.spanner.settings import SpannerToolSettings
+from google.adk.integrations.spanner.spanner_credentials import SpannerCredentialsConfig
+from google.adk.integrations.spanner.spanner_toolset import SpannerToolset
+import google.adk.integrations.spanner.utils as spanner_tool_utils
 from google.adk.tools.google_tool import GoogleTool
-from google.adk.tools.spanner.settings import Capabilities
-from google.adk.tools.spanner.settings import QueryResultMode
-from google.adk.tools.spanner.settings import SpannerToolSettings
-from google.adk.tools.spanner.spanner_credentials import SpannerCredentialsConfig
-from google.adk.tools.spanner.spanner_toolset import SpannerToolset
-import google.adk.tools.spanner.utils as spanner_tool_utils
 from google.adk.tools.tool_context import ToolContext
 import google.auth
 from google.auth.credentials import Credentials

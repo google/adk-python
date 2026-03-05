@@ -12,26 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Spanner Tools (Experimental).
+"""Backward compatibility for google.adk.tools.spanner."""
 
-Spanner Tools under this module are hand crafted and customized while the tools
-under google.adk.tools.google_api_tool are auto generated based on API
-definition. The rationales to have customized tool are:
+import warnings
 
-1. A dedicated Spanner toolset to provide an easier, integrated way to interact
-with Spanner database and tables for building AI Agent applications quickly.
-2. We want to provide more high-level tools like Search, ML.Predict, and Graph
-etc.
-3. We want to provide extra access guardrails and controls in those tools.
-For example, execute_sql can't arbitrarily mutate existing data.
-4. We want to provide Spanner best practices and knowledge assistants for ad-hoc
-analytics queries.
-5. Use Spanner Toolset for more customization and control to interact with
-Spanner database and tables.
-"""
+from google.adk.integrations.spanner import spanner_credentials
+from google.adk.integrations.spanner.spanner_toolset import SpannerToolset
 
-from . import spanner_credentials
-from .spanner_toolset import SpannerToolset
+warnings.warn(
+    "google.adk.tools.spanner is moved to google.adk.integrations.spanner.",
+    DeprecationWarning,
+    stacklevel=2,
+)
 
 SpannerCredentialsConfig = spanner_credentials.SpannerCredentialsConfig
 __all__ = [

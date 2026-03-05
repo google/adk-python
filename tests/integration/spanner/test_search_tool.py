@@ -15,9 +15,9 @@
 from unittest import mock
 from unittest.mock import MagicMock
 
-from google.adk.tools.spanner import client
-from google.adk.tools.spanner import search_tool
-from google.adk.tools.spanner import utils
+from google.adk.integrations.spanner import client
+from google.adk.integrations.spanner import search_tool
+from google.adk.integrations.spanner import utils
 from google.cloud.spanner_admin_database_v1.types import DatabaseDialect
 import pytest
 

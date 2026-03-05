@@ -18,7 +18,7 @@ import os
 import re
 from unittest import mock
 
-from google.adk.tools.spanner.client import get_spanner_client
+from google.adk.integrations.spanner.client import get_spanner_client
 from google.auth.exceptions import DefaultCredentialsError
 from google.oauth2.credentials import Credentials
 import pytest

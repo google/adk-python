@@ -14,11 +14,11 @@
 
 from __future__ import annotations
 
+from google.adk.integrations.spanner import SpannerCredentialsConfig
+from google.adk.integrations.spanner import SpannerToolset
+from google.adk.integrations.spanner.settings import SpannerToolSettings
+from google.adk.integrations.spanner.settings import SpannerVectorStoreSettings
 from google.adk.tools.google_tool import GoogleTool
-from google.adk.tools.spanner import SpannerCredentialsConfig
-from google.adk.tools.spanner import SpannerToolset
-from google.adk.tools.spanner.settings import SpannerToolSettings
-from google.adk.tools.spanner.settings import SpannerVectorStoreSettings
 import pytest
 
 

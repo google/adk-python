@@ -17,10 +17,10 @@ from __future__ import annotations
 import warnings
 
 from google.adk.features._feature_registry import _WARNED_FEATURES
-from google.adk.tools.spanner.settings import Capabilities
-from google.adk.tools.spanner.settings import QueryResultMode
-from google.adk.tools.spanner.settings import SpannerToolSettings
-from google.adk.tools.spanner.settings import SpannerVectorStoreSettings
+from google.adk.integrations.spanner.settings import Capabilities
+from google.adk.integrations.spanner.settings import QueryResultMode
+from google.adk.integrations.spanner.settings import SpannerToolSettings
+from google.adk.integrations.spanner.settings import SpannerVectorStoreSettings
 from pydantic import ValidationError
 import pytest
 

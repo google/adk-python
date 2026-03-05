@@ -29,7 +29,7 @@ from google.cloud.spanner_admin_database_v1.types import DatabaseDialect
 from . import client
 from ...features import experimental
 from ...features import FeatureName
-from ..tool_context import ToolContext
+from ...tools.tool_context import ToolContext
 from .settings import QueryResultMode
 from .settings import SpannerToolSettings
 from .settings import SpannerVectorStoreSettings

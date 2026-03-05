@@ -4,7 +4,7 @@
 
 This sample demonstrates how to build an intelligent Retrieval Augmented
 Generation (RAG) agent using the flexible, built-in Spanner tools available
-in the ADK's `google.adk.tools.spanner` module, including how to create
+in the ADK's `google.adk.integrations.spanner` module, including how to create
 customized Spanner tools by extending the existing ones.
 
 [Spanner](https://cloud.google.com/spanner/docs) is a fully managed,
@@ -199,10 +199,10 @@ There are a few options to perform similarity search:
 
     ```py
     from google.adk.agents.llm_agent import LlmAgent
-    from google.adk.tools.spanner.settings import Capabilities
-    from google.adk.tools.spanner.settings import SpannerToolSettings
-    from google.adk.tools.spanner.settings import SpannerVectorStoreSettings
-    from google.adk.tools.spanner.spanner_toolset import SpannerToolset
+    from google.adk.integrations.spanner.settings import Capabilities
+    from google.adk.integrations.spanner.settings import SpannerToolSettings
+    from google.adk.integrations.spanner.settings import SpannerVectorStoreSettings
+    from google.adk.integrations.spanner.spanner_toolset import SpannerToolset
 
     # credentials_config = SpannerCredentialsConfig(...)
 
@@ -267,9 +267,9 @@ There are a few options to perform similarity search:
 
     ```py
     from google.adk.agents.llm_agent import LlmAgent
-    from google.adk.tools.spanner.settings import Capabilities
-    from google.adk.tools.spanner.settings import SpannerToolSettings
-    from google.adk.tools.spanner.spanner_toolset import SpannerToolset
+    from google.adk.integrations.spanner.settings import Capabilities
+    from google.adk.integrations.spanner.settings import SpannerToolSettings
+    from google.adk.integrations.spanner.spanner_toolset import SpannerToolset
 
     # credentials_config = SpannerCredentialsConfig(...)
 
@@ -312,7 +312,7 @@ There are a few options to perform similarity search:
     from google.adk.agents.llm_agent import LlmAgent
 
     from google.adk.tools.google_tool import GoogleTool
-    from google.adk.tools.spanner import search_tool
+    from google.adk.integrations.spanner import search_tool
     import google.auth
     from google.auth.credentials import Credentials
 
