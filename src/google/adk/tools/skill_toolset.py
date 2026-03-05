@@ -37,9 +37,11 @@ from ..skills import models
 from ..skills import prompt
 from .base_tool import BaseTool
 from .base_toolset import BaseToolset
+from .function_tool import FunctionTool
 from .tool_context import ToolContext
 
 if TYPE_CHECKING:
+  from ..agents.llm_agent import ToolUnion
   from ..models.llm_request import LlmRequest
 
 logger = logging.getLogger("google_adk." + __name__)
@@ -137,6 +139,15 @@ class LoadSkillTool(BaseTool):
           "error": f"Skill '{skill_name}' not found.",
           "error_code": "SKILL_NOT_FOUND",
       }
+
+    # Record skill activation in agent state for tool resolution.
+    agent_name = tool_context.agent_name
+    state_key = f"_adk_activated_skill_{agent_name}"
+
+    activated_skills = list(tool_context.state.get(state_key, []))
+    if skill_name not in activated_skills:
+      activated_skills.append(skill_name)
+      tool_context.state[state_key] = activated_skills
 
     return {
         "skill_name": skill_name,
@@ -586,6 +597,7 @@ class SkillToolset(BaseToolset):
       *,
       code_executor: Optional[BaseCodeExecutor] = None,
       script_timeout: int = _DEFAULT_SCRIPT_TIMEOUT,
+      additional_tools: list[ToolUnion] | None = None,
   ):
     """Initializes the SkillToolset.
 
@@ -609,20 +621,73 @@ class SkillToolset(BaseToolset):
     self._code_executor = code_executor
     self._script_timeout = script_timeout
 
+    self._provided_tools_by_name = {}
+    for tool_union in additional_tools or []:
+      if isinstance(tool_union, BaseTool):
+        self._provided_tools_by_name[tool_union.name] = tool_union
+      elif callable(tool_union):
+        ft = FunctionTool(tool_union)
+        self._provided_tools_by_name[ft.name] = ft
+
     # Initialize core skill tools
     self._tools = [
         ListSkillsTool(self),
         LoadSkillTool(self),
         LoadSkillResourceTool(self),
+        RunSkillScriptTool(self),
     ]
-    # Always add RunSkillScriptTool, relies on invocation_context fallback if _code_executor is None
-    self._tools.append(RunSkillScriptTool(self))
 
   async def get_tools(
       self, readonly_context: ReadonlyContext | None = None
   ) -> list[BaseTool]:
     """Returns the list of tools in this toolset."""
-    return self._tools
+    dynamic_tools = await self._resolve_additional_tools_from_state(
+        readonly_context
+    )
+    return self._tools + dynamic_tools
+
+  async def _resolve_additional_tools_from_state(
+      self, readonly_context: ReadonlyContext | None
+  ) -> list[BaseTool]:
+    """Resolves tools listed in the "adk_additional_tools" metadata of skills."""
+
+    if not readonly_context:
+      return []
+
+    agent_name = readonly_context.agent_name
+    state_key = f"_adk_activated_skill_{agent_name}"
+    activated_skills = readonly_context.state.get(state_key, [])
+
+    if not activated_skills:
+      return []
+
+    additional_tool_names = set()
+    for skill_name in activated_skills:
+      skill = self._skills.get(skill_name)
+      if skill:
+        additional_tools = skill.frontmatter.metadata.get(
+            "adk_additional_tools"
+        )
+        if additional_tools:
+          additional_tool_names.update(additional_tools)
+
+    if not additional_tool_names:
+      return []
+
+    resolved_tools = []
+    existing_tool_names = {t.name for t in self._tools}
+    for name in additional_tool_names:
+      if name in self._provided_tools_by_name:
+        tool = self._provided_tools_by_name[name]
+        if tool.name in existing_tool_names:
+          logger.error(
+              "Tool name collision: tool '%s' already exists.", tool.name
+          )
+          continue
+        resolved_tools.append(tool)
+        existing_tool_names.add(tool.name)
+
+    return resolved_tools
 
   def _get_skill(self, name: str) -> models.Skill | None:
     """Retrieves a skill by name."""

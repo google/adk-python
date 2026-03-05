@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import re
+from typing import Any
 from typing import Optional
 import unicodedata
 
@@ -37,11 +38,13 @@ class Frontmatter(BaseModel):
         (required).
       license: License for the skill (optional).
       compatibility: Compatibility information for the skill (optional).
-      allowed_tools: Tool patterns the skill requires (optional, experimental).
-        Accepts both ``allowed_tools`` and the YAML-friendly ``allowed-tools``
-        key.
+      allowed_tools: A space-delimited list of tools that are pre-approved to
+        run (optional, experimental). Accepts both ``allowed_tools`` and the
+        YAML-friendly ``allowed-tools`` key. For more details, see
+        https://agentskills.io/specification#allowed-tools-field.
       metadata: Key-value pairs for client-specific properties (defaults to
-        empty dict).
+        empty dict). For example, to include additional tools, use the
+        ``adk_additional_tools`` key with a list of tools.
   """
 
   model_config = ConfigDict(
@@ -58,7 +61,16 @@ class Frontmatter(BaseModel):
       alias="allowed-tools",
       serialization_alias="allowed-tools",
   )
-  metadata: dict[str, str] = {}
+  metadata: dict[str, Any] = {}
+
+  @field_validator("metadata")
+  @classmethod
+  def _validate_metadata(cls, v: dict[str, Any]) -> dict[str, Any]:
+    if "adk_additional_tools" in v:
+      tools = v["adk_additional_tools"]
+      if not isinstance(tools, list):
+        raise ValueError("adk_additional_tools must be a list of strings")
+    return v
 
   @field_validator("name")
   @classmethod

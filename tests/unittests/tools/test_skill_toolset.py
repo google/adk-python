@@ -12,9 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# pylint: disable=redefined-outer-name,g-import-not-at-top,protected-access
-
-
+import logging
 from unittest import mock
 
 from google.adk.code_executors.base_code_executor import BaseCodeExecutor
@@ -145,7 +143,13 @@ def mock_skill2(mock_skill2_frontmatter):
 @pytest.fixture
 def tool_context_instance():
   """Fixture for tool context."""
-  return mock.create_autospec(tool_context.ToolContext, instance=True)
+  ctx = mock.create_autospec(tool_context.ToolContext, instance=True)
+  ctx._invocation_context = mock.MagicMock()
+  ctx._invocation_context.agent = mock.MagicMock()
+  ctx._invocation_context.agent.name = "test_agent"
+  ctx._invocation_context.agent_states = {}
+  ctx.agent_name = "test_agent"
+  return ctx
 
 
 # SkillToolset tests
@@ -361,6 +365,10 @@ def _make_tool_context_with_agent(agent=None):
   ctx = mock.MagicMock(spec=tool_context.ToolContext)
   ctx._invocation_context = mock.MagicMock()
   ctx._invocation_context.agent = agent or mock.MagicMock()
+  ctx._invocation_context.agent.name = "test_agent"
+  ctx._invocation_context.agent_states = {}
+  ctx.agent_name = "test_agent"
+  ctx.state = {}
   return ctx
 
 
@@ -1202,3 +1210,65 @@ async def test_execute_script_binary_content_packaged():
   assert "b'\\x00\\x01\\x02'" in code_input.code
   # Wrapper code handles binary with 'wb' mode
   assert "'wb' if isinstance(content, bytes)" in code_input.code
+
+
+@pytest.mark.asyncio
+async def test_skill_toolset_dynamic_tool_resolution(mock_skill1):
+  # Set up a skill with additional_tools in metadata
+  mock_skill1.frontmatter.metadata = {
+      "adk_additional_tools": ["my_custom_tool", "my_func"]
+  }
+  mock_skill1.name = "skill1"
+
+  # Prepare additional tools
+  custom_tool = mock.create_autospec(skill_toolset.BaseTool, instance=True)
+  custom_tool.name = "my_custom_tool"
+
+  def my_func():
+    """My function description."""
+    pass
+
+  toolset = skill_toolset.SkillToolset(
+      [mock_skill1],
+      additional_tools=[custom_tool, my_func],
+  )
+
+  ctx = _make_tool_context_with_agent()
+  # Initial tools (only core)
+  tools = await toolset.get_tools(readonly_context=ctx)
+  assert len(tools) == 4
+
+  # Activate skill
+  load_tool = skill_toolset.LoadSkillTool(toolset)
+  await load_tool.run_async(args={"name": "skill1"}, tool_context=ctx)
+
+  # Dynamic tools should now be resolved
+  tools = await toolset.get_tools(readonly_context=ctx)
+  tool_names = {t.name for t in tools}
+  assert "my_custom_tool" in tool_names
+  assert "my_func" in tool_names
+
+  # Check specific tool resolution details
+  my_func_tool = next(t for t in tools if t.name == "my_func")
+  assert isinstance(my_func_tool, skill_toolset.FunctionTool)
+  assert my_func_tool.description == "My function description."
+
+
+@pytest.mark.asyncio
+async def test_skill_toolset_resolution_error_handling(mock_skill1, caplog):
+  mock_skill1.frontmatter.metadata = {
+      "adk_additional_tools": ["nonexistent_tool"]
+  }
+  mock_skill1.name = "skill1"
+  toolset = skill_toolset.SkillToolset([mock_skill1])
+  ctx = _make_tool_context_with_agent()
+
+  # Activate skill
+  load_tool = skill_toolset.LoadSkillTool(toolset)
+  await load_tool.run_async(args={"name": "skill1"}, tool_context=ctx)
+
+  with caplog.at_level(logging.WARNING):
+    tools = await toolset.get_tools(readonly_context=ctx)
+
+  # Should still return basic skill tools
+  assert len(tools) == 4

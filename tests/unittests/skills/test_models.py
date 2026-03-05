@@ -173,3 +173,34 @@ def test_allowed_tools_serialization_alias():
   dumped = fm.model_dump(by_alias=True)
   assert "allowed-tools" in dumped
   assert dumped["allowed-tools"] == "tool-pattern"
+
+
+def test_metadata_adk_additional_tools_list():
+  fm = models.Frontmatter.model_validate({
+      "name": "my-skill",
+      "description": "desc",
+      "metadata": {"adk_additional_tools": ["tool1", "tool2"]},
+  })
+  assert fm.metadata["adk_additional_tools"] == ["tool1", "tool2"]
+
+
+def test_metadata_adk_additional_tools_rejected_as_string():
+  with pytest.raises(
+      ValidationError, match="adk_additional_tools must be a list of strings"
+  ):
+    models.Frontmatter.model_validate({
+        "name": "my-skill",
+        "description": "desc",
+        "metadata": {"adk_additional_tools": "tool1 tool2"},
+    })
+
+
+def test_metadata_adk_additional_tools_invalid_type():
+  with pytest.raises(
+      ValidationError, match="adk_additional_tools must be a list of strings"
+  ):
+    models.Frontmatter.model_validate({
+        "name": "my-skill",
+        "description": "desc",
+        "metadata": {"adk_additional_tools": 123},
+    })
