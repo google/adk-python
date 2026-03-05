@@ -414,4 +414,4 @@ class InvocationContext(BaseModel):
 
 
 def new_invocation_context_id() -> str:
-  return "e-" + str(cast(str, platform_uuid.new_uuid()))
+  return "e-" + cast(str, platform_uuid.new_uuid())

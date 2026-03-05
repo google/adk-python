@@ -14,8 +14,8 @@
 
 from __future__ import annotations
 
-from typing import Optional
 from typing import cast
+from typing import Optional
 
 from google.adk.platform import time as platform_time
 from google.adk.platform import uuid as platform_uuid
