@@ -15,9 +15,11 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 from typing import List
 from typing import Optional
 from typing import Union
+from typing import cast
 
 from fastapi.openapi.models import HTTPBearer
 from typing_extensions import override
@@ -43,8 +45,8 @@ from .integration_connector_tool import IntegrationConnectorTool
 logger = logging.getLogger("google_adk." + __name__)
 
 
-# TODO: Apply a common toolset interface
-class ApplicationIntegrationToolset(BaseToolset):
+# TODO(cheliu): Apply a common toolset interface
+class ApplicationIntegrationToolset(BaseToolset):  # type: ignore[misc]
   """ApplicationIntegrationToolset generates tools from a given Application
   Integration or Integration Connector resource.
 
@@ -183,11 +185,15 @@ class ApplicationIntegrationToolset(BaseToolset):
           "Invalid request, Either integration or (connection and"
           " (entity_operations or actions)) should be provided."
       )
-    self._openapi_toolset = None
-    self._tools = []
+    self._openapi_toolset: Optional[OpenAPIToolset] = None
+    self._tools: list[IntegrationConnectorTool] = []
     self._parse_spec_to_toolset(spec, connection_details)
 
-  def _parse_spec_to_toolset(self, spec_dict, connection_details):
+  def _parse_spec_to_toolset(
+      self,
+      spec_dict: dict[str, Any],
+      connection_details: dict[str, Any],
+  ) -> None:
     """Parses the spec dict to OpenAPI toolset."""
     if self._service_account_json:
       sa_credential = ServiceAccountCredential.model_validate_json(
@@ -296,7 +302,10 @@ class ApplicationIntegrationToolset(BaseToolset):
       readonly_context: Optional[ReadonlyContext] = None,
   ) -> List[BaseTool]:
     if self._openapi_toolset is not None:
-      return await self._openapi_toolset.get_tools(readonly_context)
+      return cast(
+          List[BaseTool],
+          await self._openapi_toolset.get_tools(readonly_context),
+      )
 
     exchanged_auth_credential = (
         self._auth_config.exchanged_auth_credential
