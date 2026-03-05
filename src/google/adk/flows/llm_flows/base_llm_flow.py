@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING
 
 from google.adk.platform import time as platform_time
 from google.genai import types
+from opentelemetry import context as otel_context
 from opentelemetry import trace
 from websockets.exceptions import ConnectionClosed
 from websockets.exceptions import ConnectionClosedOK
@@ -41,6 +42,7 @@ from ...events.event import Event
 from ...models.base_llm_connection import BaseLlmConnection
 from ...models.llm_request import LlmRequest
 from ...models.llm_response import LlmResponse
+
 from ...telemetry import tracing
 from ...telemetry.tracing import trace_call_llm
 from ...telemetry.tracing import trace_send_data
@@ -1169,7 +1171,17 @@ class BaseLlmFlow(ABC):
   ) -> AsyncGenerator[LlmResponse, None]:
 
     async def _call_llm_with_tracing() -> AsyncGenerator[LlmResponse, None]:
-      with tracer.start_as_current_span('call_llm') as span:
+      # Use explicit span management instead of start_as_current_span context
+      # manager to ensure span.end() is always called. In multi-agent scenarios
+      # with transfer_to_agent, the async generator may receive GeneratorExit
+      # after an async context switch (sub-agent execution). This causes
+      # context.detach() to raise ValueError (stale contextvars token), which
+      # prevents span.end() from being reached when using the context manager.
+      # See: https://github.com/google/adk-python/issues/4715
+      span = tracer.start_span('call_llm')
+      ctx = trace.set_span_in_context(span)
+      token = otel_context.attach(ctx)
+      try:
         # Runs before_model_callback inside the call_llm span so
         # plugins observe the same span as after/error callbacks.
         if response := await self._handle_before_model_callback(
@@ -1262,6 +1274,12 @@ class BaseLlmFlow(ABC):
                   llm_response = altered
 
               yield llm_response
+      finally:
+        try:
+          otel_context.detach(token)
+        except ValueError:
+          pass
+        span.end()
 
     async with Aclosing(_call_llm_with_tracing()) as agen:
       async for event in agen:
