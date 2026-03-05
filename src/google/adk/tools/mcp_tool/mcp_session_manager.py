@@ -195,6 +195,8 @@ class MCPSessionManager:
           StreamableHTTPConnectionParams,
       ],
       errlog: TextIO = sys.stderr,
+      sampling_callback: Optional[Any] = None,
+      sampling_capabilities: Optional[Any] = None,
   ):
     """Initializes the MCP session manager.
 
@@ -205,6 +207,9 @@ class MCPSessionManager:
         errlog: (Optional) TextIO stream for error logging. Use only for
           initializing a local stdio MCP session.
     """
+    self._sampling_callback = sampling_callback
+    self._sampling_capabilities = sampling_capabilities
+
     if isinstance(connection_params, StdioServerParameters):
       # So far timeout is not configurable. Given MCP is still evolving, we
       # would expect stdio_client to evolve to accept timeout parameter like
@@ -475,6 +480,8 @@ class MCPSessionManager:
                     timeout=timeout_in_seconds,
                     sse_read_timeout=sse_read_timeout_in_seconds,
                     is_stdio=is_stdio,
+                    sampling_callback=self._sampling_callback,
+                    sampling_capabilities=self._sampling_capabilities,
                 )
             ),
             timeout=timeout_in_seconds,

@@ -114,6 +114,8 @@ class McpToolset(BaseToolset):
           Union[ProgressFnT, ProgressCallbackFactory]
       ] = None,
       use_mcp_resources: Optional[bool] = False,
+      sampling_callback: Optional[SamplingFnT] = None,
+      sampling_capabilities: Optional[Any] = None,
   ):
     """Initializes the McpToolset.
 
@@ -154,6 +156,9 @@ class McpToolset(BaseToolset):
 
     super().__init__(tool_filter=tool_filter, tool_name_prefix=tool_name_prefix)
 
+    self._sampling_callback = sampling_callback
+    self._sampling_capabilities = sampling_capabilities
+
     if not connection_params:
       raise ValueError("Missing connection params in McpToolset.")
 
@@ -166,6 +171,8 @@ class McpToolset(BaseToolset):
     self._mcp_session_manager = MCPSessionManager(
         connection_params=self._connection_params,
         errlog=self._errlog,
+        sampling_callback=self._sampling_callback,
+        sampling_capabilities=self._sampling_capabilities,
     )
     self._auth_scheme = auth_scheme
     self._auth_credential = auth_credential
