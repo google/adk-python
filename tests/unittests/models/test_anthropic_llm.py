@@ -526,6 +526,24 @@ def test_part_to_message_block_with_multiple_content_items():
   assert result["content"] == "First part\nSecond part"
 
 
+def test_part_to_message_block_with_pdf_document():
+  """Test that part_to_message_block handles PDF document parts."""
+  pdf_data = b"%PDF-1.4 fake pdf content"
+  part = Part(
+      inline_data=types.Blob(mime_type="application/pdf", data=pdf_data)
+  )
+
+  result = part_to_message_block(part)
+
+  assert isinstance(result, dict)
+  assert result["type"] == "document"
+  assert result["source"]["type"] == "base64"
+  assert result["source"]["media_type"] == "application/pdf"
+  import base64
+
+  assert result["source"]["data"] == base64.b64encode(pdf_data).decode()
+
+
 content_to_message_param_test_cases = [
     (
         "user_role_with_text_and_image",
@@ -578,6 +596,40 @@ content_to_message_param_test_cases = [
         1,  # Image filtered out, only text remains
         True,  # Should log warning
     ),
+    (
+        "user_role_with_text_and_document",
+        Content(
+            role="user",
+            parts=[
+                Part.from_text(text="Summarize this document."),
+                Part(
+                    inline_data=types.Blob(
+                        mime_type="application/pdf", data=b"fake_pdf_data"
+                    )
+                ),
+            ],
+        ),
+        "user",
+        2,  # Both text and document included
+        False,  # Should not log warning
+    ),
+    (
+        "model_role_with_text_and_document",
+        Content(
+            role="model",
+            parts=[
+                Part.from_text(text="Here is the summary."),
+                Part(
+                    inline_data=types.Blob(
+                        mime_type="application/pdf", data=b"fake_pdf_data"
+                    )
+                ),
+            ],
+        ),
+        "assistant",
+        1,  # Document filtered out, only text remains
+        True,  # Should log warning
+    ),
 ]
 
 
@@ -597,9 +649,7 @@ def test_content_to_message_param_with_images(
     assert len(result["content"]) == expected_content_length
 
     if should_log_warning:
-      mock_logger.warning.assert_called_once_with(
-          "Image data is not supported in Claude for assistant turns."
-      )
+      mock_logger.warning.assert_called_once()
     else:
       mock_logger.warning.assert_not_called()
 

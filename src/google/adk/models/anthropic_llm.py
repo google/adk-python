@@ -90,6 +90,14 @@ def _is_image_part(part: types.Part) -> bool:
   )
 
 
+def _is_document_part(part: types.Part) -> bool:
+  return (
+      part.inline_data
+      and part.inline_data.mime_type
+      and part.inline_data.mime_type == "application/pdf"
+  )
+
+
 def part_to_message_block(
     part: types.Part,
 ) -> Union[
@@ -151,6 +159,14 @@ def part_to_message_block(
             type="base64", media_type=part.inline_data.mime_type, data=data
         ),
     )
+  elif _is_document_part(part):
+    data = base64.b64encode(part.inline_data.data).decode()
+    return anthropic_types.DocumentBlockParam(
+        type="document",
+        source=dict(
+            type="base64", media_type=part.inline_data.mime_type, data=data
+        ),
+    )
   elif part.executable_code:
     return anthropic_types.TextBlockParam(
         type="text",
@@ -176,6 +192,13 @@ def content_to_message_param(
     if content.role != "user" and _is_image_part(part):
       logger.warning(
           "Image data is not supported in Claude for assistant turns."
+      )
+      continue
+
+    # Document data is not supported in Claude for assistant turns.
+    if content.role != "user" and _is_document_part(part):
+      logger.warning(
+          "Document data is not supported in Claude for assistant turns."
       )
       continue
 
