@@ -17,13 +17,13 @@ from __future__ import annotations
 import textwrap
 from unittest import mock
 
-from google.adk.integrations.spanner import query_tool
-from google.adk.integrations.spanner import settings
-from google.adk.integrations.spanner.settings import QueryResultMode
-from google.adk.integrations.spanner.settings import SpannerToolSettings
-from google.adk.integrations.spanner.spanner_credentials import SpannerCredentialsConfig
-from google.adk.integrations.spanner.spanner_toolset import SpannerToolset
 from google.adk.tools.base_tool import BaseTool
+from google.adk.tools.spanner import query_tool
+from google.adk.tools.spanner import settings
+from google.adk.tools.spanner.settings import QueryResultMode
+from google.adk.tools.spanner.settings import SpannerToolSettings
+from google.adk.tools.spanner.spanner_credentials import SpannerCredentialsConfig
+from google.adk.tools.spanner.spanner_toolset import SpannerToolset
 from google.adk.tools.tool_context import ToolContext
 from google.auth.credentials import Credentials
 import pytest

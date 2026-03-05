@@ -16,11 +16,11 @@ import os
 
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.auth.auth_credential import AuthCredentialTypes
-from google.adk.integrations.spanner.settings import Capabilities
-from google.adk.integrations.spanner.settings import SpannerToolSettings
-from google.adk.integrations.spanner.settings import SpannerVectorStoreSettings
-from google.adk.integrations.spanner.spanner_credentials import SpannerCredentialsConfig
-from google.adk.integrations.spanner.spanner_toolset import SpannerToolset
+from google.adk.tools.spanner.settings import Capabilities
+from google.adk.tools.spanner.settings import SpannerToolSettings
+from google.adk.tools.spanner.settings import SpannerVectorStoreSettings
+from google.adk.tools.spanner.spanner_credentials import SpannerCredentialsConfig
+from google.adk.tools.spanner.spanner_toolset import SpannerToolset
 import google.auth
 
 # Define an appropriate credential type

@@ -16,11 +16,11 @@ from __future__ import annotations
 
 from unittest import mock
 
-from google.adk.integrations.spanner import utils as spanner_utils
-from google.adk.integrations.spanner.settings import SpannerToolSettings
-from google.adk.integrations.spanner.settings import SpannerVectorStoreSettings
-from google.adk.integrations.spanner.settings import TableColumn
-from google.adk.integrations.spanner.settings import VectorSearchIndexSettings
+from google.adk.tools.spanner import utils as spanner_utils
+from google.adk.tools.spanner.settings import SpannerToolSettings
+from google.adk.tools.spanner.settings import SpannerVectorStoreSettings
+from google.adk.tools.spanner.settings import TableColumn
+from google.adk.tools.spanner.settings import VectorSearchIndexSettings
 from google.cloud.spanner_admin_database_v1.types import DatabaseDialect
 from google.cloud.spanner_v1 import batch as spanner_batch
 from google.cloud.spanner_v1 import client as spanner_client_v1

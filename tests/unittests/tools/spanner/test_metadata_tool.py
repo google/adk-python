@@ -15,7 +15,7 @@
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
-from google.adk.integrations.spanner import metadata_tool
+from google.adk.tools.spanner import metadata_tool
 from google.cloud.spanner_admin_database_v1.types import DatabaseDialect
 import pytest
 
@@ -35,7 +35,7 @@ def mock_spanner_ids():
   }
 
 
-@patch("google.adk.integrations.spanner.client.get_spanner_client")
+@patch("google.adk.tools.spanner.client.get_spanner_client")
 def test_list_table_names_success(
     mock_get_spanner_client, mock_spanner_ids, mock_credentials
 ):
@@ -60,7 +60,7 @@ def test_list_table_names_success(
   assert result["results"] == ["table1"]
 
 
-@patch("google.adk.integrations.spanner.client.get_spanner_client")
+@patch("google.adk.tools.spanner.client.get_spanner_client")
 def test_list_table_names_error(
     mock_get_spanner_client, mock_spanner_ids, mock_credentials
 ):
@@ -76,7 +76,7 @@ def test_list_table_names_error(
   assert result["error_details"] == "Test Exception"
 
 
-@patch("google.adk.integrations.spanner.client.get_spanner_client")
+@patch("google.adk.tools.spanner.client.get_spanner_client")
 def test_get_table_schema_success(
     mock_get_spanner_client, mock_spanner_ids, mock_credentials
 ):
@@ -154,7 +154,7 @@ def test_get_table_schema_success(
   )
 
 
-@patch("google.adk.integrations.spanner.client.get_spanner_client")
+@patch("google.adk.tools.spanner.client.get_spanner_client")
 def test_list_table_indexes_success(
     mock_get_spanner_client, mock_spanner_ids, mock_credentials
 ):
@@ -192,7 +192,7 @@ def test_list_table_indexes_success(
   assert result["results"][0]["INDEX_NAME"] == "PRIMARY_KEY"
 
 
-@patch("google.adk.integrations.spanner.client.get_spanner_client")
+@patch("google.adk.tools.spanner.client.get_spanner_client")
 def test_list_table_indexes_circular_row_fallback_to_string(
     mock_get_spanner_client, mock_spanner_ids, mock_credentials
 ):
@@ -231,7 +231,7 @@ def test_list_table_indexes_circular_row_fallback_to_string(
   assert isinstance(result["results"][0], str)
 
 
-@patch("google.adk.integrations.spanner.client.get_spanner_client")
+@patch("google.adk.tools.spanner.client.get_spanner_client")
 def test_list_table_index_columns_success(
     mock_get_spanner_client, mock_spanner_ids, mock_credentials
 ):
@@ -268,7 +268,7 @@ def test_list_table_index_columns_success(
   assert result["results"][0]["COLUMN_NAME"] == "col1"
 
 
-@patch("google.adk.integrations.spanner.client.get_spanner_client")
+@patch("google.adk.tools.spanner.client.get_spanner_client")
 def test_list_named_schemas_success(
     mock_get_spanner_client, mock_spanner_ids, mock_credentials
 ):

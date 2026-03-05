@@ -3,7 +3,7 @@
 ## Introduction
 
 This sample agent demonstrates the Spanner first-party tools in ADK,
-distributed via the `google.adk.integrations.spanner` module. These tools include:
+distributed via the `google.adk.tools.spanner` module. These tools include:
 
 1. `list_table_names`
 

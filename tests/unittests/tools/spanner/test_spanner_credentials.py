@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from google.adk.integrations.spanner.spanner_credentials import SpannerCredentialsConfig
+from google.adk.tools.spanner.spanner_credentials import SpannerCredentialsConfig
 # Mock the Google OAuth and API dependencies
 import google.auth.credentials
 import google.oauth2.credentials

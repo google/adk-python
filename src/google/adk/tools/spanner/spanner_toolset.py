@@ -19,11 +19,11 @@ from typing import Optional
 from typing import Union
 
 from google.adk.agents.readonly_context import ReadonlyContext
+from google.adk.tools.spanner import metadata_tool
+from google.adk.tools.spanner import query_tool
+from google.adk.tools.spanner import search_tool
 from typing_extensions import override
 
-from . import metadata_tool
-from . import query_tool
-from . import search_tool
 from ...features import experimental
 from ...features import FeatureName
 from ...tools.base_tool import BaseTool
