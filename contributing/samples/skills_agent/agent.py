@@ -17,9 +17,47 @@
 import pathlib
 
 from google.adk import Agent
+from google.adk.code_executors.unsafe_local_code_executor import UnsafeLocalCodeExecutor
 from google.adk.skills import load_skill_from_dir
 from google.adk.skills import models
-from google.adk.tools import skill_toolset
+from google.adk.tools.base_tool import BaseTool
+from google.adk.tools.skill_toolset import SkillToolset
+from google.genai import types
+
+
+class GetTimezoneTool(BaseTool):
+  """A tool to get the timezone for a given location."""
+
+  def __init__(self):
+    super().__init__(
+        name="get_timezone",
+        description="Returns the timezone for a given location.",
+    )
+
+  def _get_declaration(self) -> types.FunctionDeclaration | None:
+    return types.FunctionDeclaration(
+        name=self.name,
+        description=self.description,
+        parameters_json_schema={
+            "type": "object",
+            "properties": {
+                "location": {
+                    "type": "string",
+                    "description": "The location to get the timezone for.",
+                },
+            },
+            "required": ["location"],
+        },
+    )
+
+  async def run_async(self, *, args: dict, tool_context) -> str:
+    return f"The timezone for {args['location']} is UTC+00:00."
+
+
+def get_current_humidity(location: str) -> str:
+  """Returns the current humidity for a given location."""
+  return f"The humidity in {location} is 45%."
+
 
 greeting_skill = models.Skill(
     frontmatter=models.Frontmatter(
@@ -27,6 +65,7 @@ greeting_skill = models.Skill(
         description=(
             "A friendly greeting skill that can say hello to a specific person."
         ),
+        metadata={"adk_additional_tools": ["get_timezone"]},
     ),
     instructions=(
         "Step 1: Read the 'references/hello_world.txt' file to understand how"
@@ -41,18 +80,21 @@ greeting_skill = models.Skill(
 )
 
 weather_skill = load_skill_from_dir(
-    pathlib.Path(__file__).parent / "skills" / "weather_skill"
+    pathlib.Path(__file__).parent / "skills" / "weather-skill"
 )
 
-my_skill_toolset = skill_toolset.SkillToolset(
-    skills=[greeting_skill, weather_skill]
+# WARNING: UnsafeLocalCodeExecutor has security concerns and should NOT
+# be used in production environments.
+my_skill_toolset = SkillToolset(
+    skills=[greeting_skill, weather_skill],
+    additional_tools=[GetTimezoneTool(), get_current_humidity],
+    code_executor=UnsafeLocalCodeExecutor(),
 )
 
 root_agent = Agent(
     model="gemini-2.5-flash",
     name="skill_user_agent",
     description="An agent that can use specialized skills.",
-    instruction=skill_toolset.DEFAULT_SKILL_SYSTEM_INSTRUCTION,
     tools=[
         my_skill_toolset,
     ],

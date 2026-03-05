@@ -68,6 +68,7 @@ from ..auth.credential_service.base_credential_service import BaseCredentialServ
 from ..errors.already_exists_error import AlreadyExistsError
 from ..errors.input_validation_error import InputValidationError
 from ..errors.not_found_error import NotFoundError
+from ..errors.session_not_found_error import SessionNotFoundError
 from ..evaluation.base_eval_service import InferenceConfig
 from ..evaluation.base_eval_service import InferenceRequest
 from ..evaluation.constants import MISSING_EVAL_DEPENDENCIES_MESSAGE
@@ -207,6 +208,8 @@ class RunAgentRequest(common.BaseModel):
   new_message: Optional[types.Content] = None
   streaming: bool = False
   state_delta: Optional[dict[str, Any]] = None
+  # for long-running function resume requests (e.g., OAuth callback)
+  function_call_event_id: Optional[str] = None
   # for resume long-running functions
   invocation_id: Optional[str] = None
 
@@ -587,7 +590,8 @@ class AdkWebServer:
     """Import a plugin object (class or instance) from a fully qualified name.
 
     Args:
-      qualified_name: Fully qualified name (e.g., 'my_package.my_plugin.MyPlugin')
+      qualified_name: Fully qualified name (e.g.,
+        'my_package.my_plugin.MyPlugin')
 
     Returns:
       The imported object, which can be either a class or an instance.
@@ -687,6 +691,7 @@ class AdkWebServer:
       ] = lambda o, s: None,
       register_processors: Callable[[TracerProvider], None] = lambda o: None,
       otel_to_cloud: bool = False,
+      with_ui: bool = False,
   ):
     """Creates a FastAPI app for the ADK web server.
 
@@ -699,7 +704,8 @@ class AdkWebServer:
       lifespan: The lifespan of the FastAPI app.
       allow_origins: The origins that are allowed to make cross-origin requests.
         Entries can be literal origins (e.g., 'https://example.com') or regex
-        patterns prefixed with 'regex:' (e.g., 'regex:https://.*\\.example\\.com').
+        patterns prefixed with 'regex:' (e.g.,
+        'regex:https://.*\\.example\\.com').
       web_assets_dir: The directory containing the web assets to serve.
       setup_observer: Callback for setting up the file system observer.
       tear_down_observer: Callback for cleaning up the file system observer.
@@ -794,10 +800,93 @@ class AdkWebServer:
         raise HTTPException(status_code=404, detail="Trace not found")
       return event_dict
 
-    @app.get("/apps/{app_name}")
-    async def get_app_info(app_name: str) -> Any:
-      runner = await self.get_runner_async(app_name)
-      return runner.app
+    if web_assets_dir:
+
+      @app.get("/dev/build_graph/{app_name}")
+      async def get_app_info(app_name: str) -> Any:
+        runner = await self.get_runner_async(app_name)
+
+        if not runner.app:
+          raise HTTPException(
+              status_code=404, detail=f"App not found: {app_name}"
+          )
+
+        def serialize_agent(agent: BaseAgent) -> dict[str, Any]:
+          """Recursively serialize an agent, excluding non-serializable fields."""
+          agent_dict = {}
+
+          for field_name, field_info in agent.__class__.model_fields.items():
+            # Skip non-serializable fields
+            if field_name in [
+                "parent_agent",
+                "before_agent_callback",
+                "after_agent_callback",
+                "before_model_callback",
+                "after_model_callback",
+                "on_model_error_callback",
+                "before_tool_callback",
+                "after_tool_callback",
+                "on_tool_error_callback",
+            ]:
+              continue
+
+            value = getattr(agent, field_name, None)
+
+            # Handle sub_agents recursively
+            if field_name == "sub_agents" and value:
+              agent_dict[field_name] = [
+                  serialize_agent(sub_agent) for sub_agent in value
+              ]
+            elif value is None or field_name == "tools":
+              continue
+            else:
+              try:
+                if isinstance(value, (str, int, float, bool, list, dict)):
+                  agent_dict[field_name] = value
+                elif hasattr(value, "model_dump"):
+                  agent_dict[field_name] = value.model_dump(
+                      mode="python", exclude_none=True
+                  )
+                else:
+                  agent_dict[field_name] = str(value)
+              except Exception:
+                pass
+
+          return agent_dict
+
+        app_info = {
+            "name": runner.app.name,
+            "root_agent": serialize_agent(runner.app.root_agent),
+        }
+
+        # Add optional fields if present
+        if runner.app.plugins:
+          app_info["plugins"] = [
+              {"name": getattr(plugin, "name", type(plugin).__name__)}
+              for plugin in runner.app.plugins
+          ]
+
+        if runner.app.context_cache_config:
+          try:
+            app_info["context_cache_config"] = (
+                runner.app.context_cache_config.model_dump(
+                    mode="python", exclude_none=True
+                )
+            )
+          except Exception:
+            pass
+
+        if runner.app.resumability_config:
+          try:
+            app_info["resumability_config"] = (
+                runner.app.resumability_config.model_dump(
+                    mode="python", exclude_none=True
+                )
+            )
+          except Exception:
+            pass
+
+        return app_info
 
     @app.get("/debug/trace/session/{session_id}", tags=[TAG_DEBUG])
     async def get_session_trace(session_id: str) -> Any:
@@ -1533,7 +1622,8 @@ class AdkWebServer:
           update_memory_request: The memory request for the update
 
       Raises:
-          HTTPException: If the memory service is not configured or the request is invalid.
+          HTTPException: If the memory service is not configured or the request
+          is invalid.
       """
       if not self.memory_service:
         raise HTTPException(
@@ -1558,52 +1648,60 @@ class AdkWebServer:
 
     @app.post("/run", response_model_exclude_none=True)
     async def run_agent(req: RunAgentRequest) -> list[Event]:
-      session = await self.session_service.get_session(
-          app_name=req.app_name, user_id=req.user_id, session_id=req.session_id
-      )
-      if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
       runner = await self.get_runner_async(req.app_name)
-      async with Aclosing(
-          runner.run_async(
-              user_id=req.user_id,
-              session_id=req.session_id,
-              new_message=req.new_message,
-              state_delta=req.state_delta,
-              invocation_id=req.invocation_id,
-          )
-      ) as agen:
-        events = [event async for event in agen]
+      try:
+        async with Aclosing(
+            runner.run_async(
+                user_id=req.user_id,
+                session_id=req.session_id,
+                new_message=req.new_message,
+                state_delta=req.state_delta,
+                invocation_id=req.invocation_id,
+            )
+        ) as agen:
+          events = [event async for event in agen]
+      except SessionNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
       logger.info("Generated %s events in agent run", len(events))
       logger.debug("Events generated: %s", events)
       return events
 
     @app.post("/run_sse")
     async def run_agent_sse(req: RunAgentRequest) -> StreamingResponse:
-      # SSE endpoint
-      session = await self.session_service.get_session(
-          app_name=req.app_name, user_id=req.user_id, session_id=req.session_id
-      )
-      if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
+      stream_mode = StreamingMode.SSE if req.streaming else StreamingMode.NONE
+      runner = await self.get_runner_async(req.app_name)
+
+      # Validate session existence before starting the stream.
+      # We check directly here instead of eagerly advancing the
+      # runner's async generator with anext(), because splitting
+      # generator consumption across two asyncio Tasks (request
+      # handler vs StreamingResponse) breaks OpenTelemetry context
+      # detachment.
+      if not runner.auto_create_session:
+        session = await self.session_service.get_session(
+            app_name=req.app_name,
+            user_id=req.user_id,
+            session_id=req.session_id,
+        )
+        if not session:
+          raise HTTPException(
+              status_code=404,
+              detail=f"Session not found: {req.session_id}",
+          )
 
       # Convert the events to properly formatted SSE
       async def event_generator():
-        try:
-          stream_mode = (
-              StreamingMode.SSE if req.streaming else StreamingMode.NONE
-          )
-          runner = await self.get_runner_async(req.app_name)
-          async with Aclosing(
-              runner.run_async(
-                  user_id=req.user_id,
-                  session_id=req.session_id,
-                  new_message=req.new_message,
-                  state_delta=req.state_delta,
-                  run_config=RunConfig(streaming_mode=stream_mode),
-                  invocation_id=req.invocation_id,
-              )
-          ) as agen:
+        async with Aclosing(
+            runner.run_async(
+                user_id=req.user_id,
+                session_id=req.session_id,
+                new_message=req.new_message,
+                state_delta=req.state_delta,
+                run_config=RunConfig(streaming_mode=stream_mode),
+                invocation_id=req.invocation_id,
+            )
+        ) as agen:
+          try:
             async for event in agen:
               # ADK Web renders artifacts from `actions.artifactDelta`
               # during part processing *and* during action processing
@@ -1611,7 +1709,8 @@ class AdkWebServer:
               # 2) a content-less "action-only" event carrying `artifactDelta`
               events_to_stream = [event]
               if (
-                  event.actions.artifact_delta
+                  not req.function_call_event_id
+                  and event.actions.artifact_delta
                   and event.content
                   and event.content.parts
               ):
@@ -1630,9 +1729,9 @@ class AdkWebServer:
                     "Generated event in agent run streaming: %s", sse_event
                 )
                 yield f"data: {sse_event}\n\n"
-        except Exception as e:
-          logger.exception("Error in event_generator: %s", e)
-          yield f"data: {json.dumps({'error': str(e)})}\n\n"
+          except Exception as e:
+            logger.exception("Error in event_generator: %s", e)
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
 
       # Returns a streaming response with the proper media type for SSE
       return StreamingResponse(

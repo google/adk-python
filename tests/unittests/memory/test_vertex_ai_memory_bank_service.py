@@ -230,6 +230,14 @@ async def test_initialize_with_project_location_and_api_key_error():
   )
 
 
+def test_initialize_without_agent_engine_id_error():
+  with pytest.raises(
+      ValueError,
+      match='agent_engine_id is required for VertexAiMemoryBankService',
+  ):
+    mock_vertex_ai_memory_bank_service(agent_engine_id=None)
+
+
 @pytest.mark.asyncio
 async def test_add_session_to_memory(mock_vertexai_client):
   memory_service = mock_vertex_ai_memory_bank_service()
@@ -481,6 +489,7 @@ async def test_add_memory_calls_create(
           ),
       ],
       custom_metadata={
+          'enable_consolidation': False,
           'ttl': '6000s',
           'source': 'agent',
       },
@@ -516,6 +525,139 @@ async def test_add_memory_calls_create(
       ]
   )
   vertex_common_types.AgentEngineMemoryConfig(**create_config)
+
+
+@pytest.mark.asyncio
+async def test_add_memory_enable_consolidation_calls_generate_direct_source(
+    mock_vertexai_client,
+):
+  memory_service = mock_vertex_ai_memory_bank_service()
+  await memory_service.add_memory(
+      app_name=MOCK_SESSION.app_name,
+      user_id=MOCK_SESSION.user_id,
+      memories=[
+          MemoryEntry(
+              content=types.Content(parts=[types.Part(text='fact one')])
+          ),
+          MemoryEntry(
+              content=types.Content(parts=[types.Part(text='fact two')])
+          ),
+      ],
+      custom_metadata={
+          'enable_consolidation': True,
+          'source': 'agent',
+      },
+  )
+
+  expected_config = {'wait_for_completion': False}
+  if _supports_generate_memories_metadata():
+    expected_config['metadata'] = {'source': {'string_value': 'agent'}}
+
+  mock_vertexai_client.agent_engines.memories.generate.assert_called_once_with(
+      name='reasoningEngines/123',
+      direct_memories_source={
+          'direct_memories': [
+              {'fact': 'fact one'},
+              {'fact': 'fact two'},
+          ]
+      },
+      scope={'app_name': MOCK_APP_NAME, 'user_id': MOCK_USER_ID},
+      config=expected_config,
+  )
+  mock_vertexai_client.agent_engines.memories.create.assert_not_called()
+
+  generate_config = (
+      mock_vertexai_client.agent_engines.memories.generate.call_args.kwargs[
+          'config'
+      ]
+  )
+  vertex_common_types.GenerateAgentEngineMemoriesConfig(**generate_config)
+
+
+@pytest.mark.asyncio
+async def test_add_memory_enable_consolidation_batches_generate_calls(
+    mock_vertexai_client,
+):
+  memory_service = mock_vertex_ai_memory_bank_service()
+  await memory_service.add_memory(
+      app_name=MOCK_SESSION.app_name,
+      user_id=MOCK_SESSION.user_id,
+      memories=[
+          MemoryEntry(
+              content=types.Content(parts=[types.Part(text='fact one')])
+          ),
+          MemoryEntry(
+              content=types.Content(parts=[types.Part(text='fact two')])
+          ),
+          MemoryEntry(
+              content=types.Content(parts=[types.Part(text='fact three')])
+          ),
+          MemoryEntry(
+              content=types.Content(parts=[types.Part(text='fact four')])
+          ),
+          MemoryEntry(
+              content=types.Content(parts=[types.Part(text='fact five')])
+          ),
+          MemoryEntry(
+              content=types.Content(parts=[types.Part(text='fact six')])
+          ),
+      ],
+      custom_metadata={
+          'enable_consolidation': True,
+      },
+  )
+
+  mock_vertexai_client.agent_engines.memories.generate.assert_has_awaits([
+      mock.call(
+          name='reasoningEngines/123',
+          direct_memories_source={
+              'direct_memories': [
+                  {'fact': 'fact one'},
+                  {'fact': 'fact two'},
+                  {'fact': 'fact three'},
+                  {'fact': 'fact four'},
+                  {'fact': 'fact five'},
+              ]
+          },
+          scope={'app_name': MOCK_APP_NAME, 'user_id': MOCK_USER_ID},
+          config={'wait_for_completion': False},
+      ),
+      mock.call(
+          name='reasoningEngines/123',
+          direct_memories_source={
+              'direct_memories': [
+                  {'fact': 'fact six'},
+              ]
+          },
+          scope={'app_name': MOCK_APP_NAME, 'user_id': MOCK_USER_ID},
+          config={'wait_for_completion': False},
+      ),
+  ])
+  assert mock_vertexai_client.agent_engines.memories.generate.await_count == 2
+  mock_vertexai_client.agent_engines.memories.create.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_add_memory_invalid_enable_consolidation_type_raises(
+    mock_vertexai_client,
+):
+  memory_service = mock_vertex_ai_memory_bank_service()
+  with pytest.raises(
+      TypeError,
+      match=r'custom_metadata\["enable_consolidation"\] must be a bool',
+  ):
+    await memory_service.add_memory(
+        app_name=MOCK_SESSION.app_name,
+        user_id=MOCK_SESSION.user_id,
+        memories=[
+            MemoryEntry(
+                content=types.Content(parts=[types.Part(text='fact one')])
+            )
+        ],
+        custom_metadata={'enable_consolidation': 'yes'},
+    )
+  mock_vertexai_client.agent_engines.memories.generate.assert_not_called()
+  mock_vertexai_client.agent_engines.memories.create.assert_not_called()
 
 
 @pytest.mark.asyncio

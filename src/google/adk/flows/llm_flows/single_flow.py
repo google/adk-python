@@ -22,6 +22,7 @@ from . import _code_execution
 from . import _nl_planning
 from . import _output_schema_processor
 from . import basic
+from . import compaction
 from . import contents
 from . import context_cache_processor
 from . import identity
@@ -42,6 +43,9 @@ def _create_request_processors():
       request_confirmation.request_processor,
       instructions.request_processor,
       identity.request_processor,
+      # Compaction should run before contents so compacted events are reflected
+      # in the model request context.
+      compaction.request_processor,
       contents.request_processor,
       # Context cache processor sets up cache config and finds
       # existing cache metadata.

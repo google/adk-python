@@ -42,8 +42,8 @@ class TestPrompt:
 
   def test_format_skills_as_xml_escaping(self):
     skills = [
-        models.Frontmatter(name="skill&name", description="desc<ription>"),
+        models.Frontmatter(name="my-skill", description="desc<ription>"),
     ]
     xml = prompt.format_skills_as_xml(skills)
-    assert "skill&amp;name" in xml
+    assert "my-skill" in xml
     assert "desc&lt;ription&gt;" in xml

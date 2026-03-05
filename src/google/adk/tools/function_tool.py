@@ -28,6 +28,7 @@ import pydantic
 from typing_extensions import override
 
 from ..utils.context_utils import Aclosing
+from ..utils.context_utils import find_context_parameter
 from ._automatic_function_calling_util import build_function_declaration
 from .base_tool import BaseTool
 from .tool_context import ToolContext
@@ -80,7 +81,9 @@ class FunctionTool(BaseTool):
 
     super().__init__(name=name, description=doc)
     self.func = func
-    self._ignore_params = ['tool_context', 'input_stream']
+    # Detect context parameter by type annotation, fallback to 'tool_context' name
+    self._context_param_name = find_context_parameter(func) or 'tool_context'
+    self._ignore_params = [self._context_param_name, 'input_stream']
     self._require_confirmation = require_confirmation
 
   @override
@@ -162,8 +165,8 @@ class FunctionTool(BaseTool):
 
     signature = inspect.signature(self.func)
     valid_params = {param for param in signature.parameters}
-    if 'tool_context' in valid_params:
-      args_to_call['tool_context'] = tool_context
+    if self._context_param_name in valid_params:
+      args_to_call[self._context_param_name] = tool_context
 
     # Filter args_to_call to only include valid parameters for the function
     args_to_call = {k: v for k, v in args_to_call.items() if k in valid_params}
@@ -195,8 +198,8 @@ You could retry calling this tool, but it is IMPORTANT for you to provide all th
     if require_confirmation:
       if not tool_context.tool_confirmation:
         args_to_show = args_to_call.copy()
-        if 'tool_context' in args_to_show:
-          args_to_show.pop('tool_context')
+        if self._context_param_name in args_to_show:
+          args_to_show.pop(self._context_param_name)
 
         tool_context.request_confirmation(
             hint=(
@@ -254,8 +257,8 @@ You could retry calling this tool, but it is IMPORTANT for you to provide all th
       args_to_call['input_stream'] = invocation_context.active_streaming_tools[
           self.name
       ].stream
-    if 'tool_context' in signature.parameters:
-      args_to_call['tool_context'] = tool_context
+    if self._context_param_name in signature.parameters:
+      args_to_call[self._context_param_name] = tool_context
 
     # TODO: support tool confirmation for live mode.
     async with Aclosing(self.func(**args_to_call)) as agen:

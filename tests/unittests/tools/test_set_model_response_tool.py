@@ -14,11 +14,12 @@
 
 """Tests for SetModelResponseTool."""
 
+import inspect
+
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.run_config import RunConfig
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
-from google.adk.tools.set_model_response_tool import MODEL_JSON_RESPONSE_KEY
 from google.adk.tools.set_model_response_tool import SetModelResponseTool
 from google.adk.tools.tool_context import ToolContext
 from pydantic import BaseModel
@@ -83,8 +84,6 @@ def test_function_signature_generation():
   """Test that function signature is correctly generated from schema."""
   tool = SetModelResponseTool(PersonSchema)
 
-  import inspect
-
   sig = inspect.signature(tool.func)
 
   # Check that parameters match schema fields
@@ -129,12 +128,6 @@ async def test_run_async_valid_data():
   assert result['age'] == 25
   assert result['city'] == 'Seattle'
 
-  # Verify data is no longer stored in session state (old behavior)
-  stored_response = invocation_context.session.state.get(
-      MODEL_JSON_RESPONSE_KEY
-  )
-  assert stored_response is None
-
 
 @pytest.mark.asyncio
 async def test_run_async_complex_schema():
@@ -164,12 +157,6 @@ async def test_run_async_complex_schema():
   assert result['tags'] == ['tag1', 'tag2']
   assert result['metadata'] == {'key': 'value'}
   assert result['is_active'] is False
-
-  # Verify data is no longer stored in session state (old behavior)
-  stored_response = invocation_context.session.state.get(
-      MODEL_JSON_RESPONSE_KEY
-  )
-  assert stored_response is None
 
 
 @pytest.mark.asyncio
@@ -220,14 +207,11 @@ async def test_session_state_storage_key():
       tool_context=tool_context,
   )
 
-  # Verify response is returned directly, not stored in session state
+  # Verify response is returned directly
   assert result is not None
   assert result['name'] == 'Diana'
   assert result['age'] == 35
   assert result['city'] == 'Miami'
-
-  # Verify session state is no longer used
-  assert MODEL_JSON_RESPONSE_KEY not in invocation_context.session.state
 
 
 @pytest.mark.asyncio
@@ -260,9 +244,6 @@ async def test_multiple_executions_return_latest():
   assert result2['age'] == 30
   assert result2['city'] == 'City2'
 
-  # Verify session state is not used
-  assert MODEL_JSON_RESPONSE_KEY not in invocation_context.session.state
-
 
 def test_function_return_value_consistency():
   """Test that function return value matches run_async return value."""
@@ -273,3 +254,216 @@ def test_function_return_value_consistency():
 
   # Both should return the same value
   assert direct_result == 'Response set successfully.'
+
+
+# Tests for list[BaseModel] schema support
+
+
+class ItemSchema(BaseModel):
+  """Simple item schema for list testing."""
+
+  id: int = Field(description='Item ID')
+  name: str = Field(description='Item name')
+
+
+def test_tool_initialization_list_schema():
+  """Test tool initialization with a list schema."""
+  tool = SetModelResponseTool(list[ItemSchema])
+
+  assert tool.output_schema == list[ItemSchema]
+  assert tool._is_list_of_basemodel
+  assert tool.name == 'set_model_response'
+  assert 'Set your final response' in tool.description
+  assert tool.func is not None
+
+
+def test_function_signature_generation_list_schema():
+  """Test that function signature is correctly generated for list schema."""
+  tool = SetModelResponseTool(list[ItemSchema])
+
+  sig = inspect.signature(tool.func)
+
+  # Should have a single 'items' parameter
+  assert 'items' in sig.parameters
+  assert len(sig.parameters) == 1
+
+  # Parameter should be keyword-only with correct annotation
+  assert sig.parameters['items'].kind == inspect.Parameter.KEYWORD_ONLY
+  assert sig.parameters['items'].annotation == list[ItemSchema]
+
+
+def test_get_declaration_list_schema():
+  """Test that tool declaration is properly generated for list schema."""
+  tool = SetModelResponseTool(list[ItemSchema])
+
+  declaration = tool._get_declaration()
+
+  assert declaration is not None
+  assert declaration.name == 'set_model_response'
+  assert declaration.description is not None
+
+
+@pytest.mark.asyncio
+async def test_run_async_list_schema_valid_data():
+  """Test tool execution with valid list data."""
+  tool = SetModelResponseTool(list[ItemSchema])
+
+  agent = LlmAgent(name='test_agent', model='gemini-1.5-flash')
+  invocation_context = await _create_invocation_context(agent)
+  tool_context = ToolContext(invocation_context)
+
+  # Execute with valid list data
+  result = await tool.run_async(
+      args={
+          'items': [
+              {'id': 1, 'name': 'Item 1'},
+              {'id': 2, 'name': 'Item 2'},
+              {'id': 3, 'name': 'Item 3'},
+          ]
+      },
+      tool_context=tool_context,
+  )
+
+  # Verify the tool returns list of dicts
+  assert result is not None
+  assert isinstance(result, list)
+  assert len(result) == 3
+  assert result[0]['id'] == 1
+  assert result[0]['name'] == 'Item 1'
+  assert result[1]['id'] == 2
+  assert result[2]['id'] == 3
+
+
+@pytest.mark.asyncio
+async def test_run_async_list_schema_empty_list():
+  """Test tool execution with empty list."""
+  tool = SetModelResponseTool(list[ItemSchema])
+
+  agent = LlmAgent(name='test_agent', model='gemini-1.5-flash')
+  invocation_context = await _create_invocation_context(agent)
+  tool_context = ToolContext(invocation_context)
+
+  # Execute with empty list
+  result = await tool.run_async(
+      args={'items': []},
+      tool_context=tool_context,
+  )
+
+  # Verify the tool returns empty list
+  assert result is not None
+  assert isinstance(result, list)
+  assert len(result) == 0
+
+
+@pytest.mark.asyncio
+async def test_run_async_list_schema_validation_error():
+  """Test tool execution with invalid list data raises validation error."""
+  tool = SetModelResponseTool(list[ItemSchema])
+
+  agent = LlmAgent(name='test_agent', model='gemini-1.5-flash')
+  invocation_context = await _create_invocation_context(agent)
+  tool_context = ToolContext(invocation_context)
+
+  # Execute with invalid data (wrong type for id)
+  with pytest.raises(ValidationError):
+    await tool.run_async(
+        args={
+            'items': [
+                {'id': 'not_a_number', 'name': 'Item 1'},
+            ]
+        },
+        tool_context=tool_context,
+    )
+
+
+# Tests for other schema types (list[str], dict, etc.)
+
+
+def test_tool_initialization_list_str_schema():
+  """Test tool initialization with list[str] schema."""
+  tool = SetModelResponseTool(list[str])
+
+  assert tool.output_schema == list[str]
+  assert not tool._is_basemodel
+  assert not tool._is_list_of_basemodel
+  assert tool.name == 'set_model_response'
+  assert tool.func is not None
+
+
+def test_function_signature_generation_list_str_schema():
+  """Test that function signature is correctly generated for list[str] schema."""
+  tool = SetModelResponseTool(list[str])
+
+  sig = inspect.signature(tool.func)
+
+  # Should have a single 'response' parameter with list[str] annotation
+  assert 'response' in sig.parameters
+  assert len(sig.parameters) == 1
+  assert sig.parameters['response'].kind == inspect.Parameter.KEYWORD_ONLY
+  assert sig.parameters['response'].annotation == list[str]
+
+
+@pytest.mark.asyncio
+async def test_run_async_list_str_schema():
+  """Test tool execution with list[str] data."""
+  tool = SetModelResponseTool(list[str])
+
+  agent = LlmAgent(name='test_agent', model='gemini-1.5-flash')
+  invocation_context = await _create_invocation_context(agent)
+  tool_context = ToolContext(invocation_context)
+
+  # Execute with list of strings
+  result = await tool.run_async(
+      args={'response': ['apple', 'banana', 'cherry']},
+      tool_context=tool_context,
+  )
+
+  # Verify the tool returns the list directly
+  assert result is not None
+  assert isinstance(result, list)
+  assert result == ['apple', 'banana', 'cherry']
+
+
+def test_tool_initialization_dict_schema():
+  """Test tool initialization with dict schema."""
+  tool = SetModelResponseTool(dict[str, int])
+
+  assert tool.output_schema == dict[str, int]
+  assert not tool._is_basemodel
+  assert not tool._is_list_of_basemodel
+  assert tool.name == 'set_model_response'
+  assert tool.func is not None
+
+
+def test_function_signature_generation_dict_schema():
+  """Test that function signature is correctly generated for dict schema."""
+  tool = SetModelResponseTool(dict[str, int])
+
+  sig = inspect.signature(tool.func)
+
+  # Should have a single 'response' parameter with dict[str, int] annotation
+  assert 'response' in sig.parameters
+  assert len(sig.parameters) == 1
+  assert sig.parameters['response'].kind == inspect.Parameter.KEYWORD_ONLY
+  assert sig.parameters['response'].annotation == dict[str, int]
+
+
+@pytest.mark.asyncio
+async def test_run_async_dict_schema():
+  """Test tool execution with dict data."""
+  tool = SetModelResponseTool(dict[str, int])
+
+  agent = LlmAgent(name='test_agent', model='gemini-1.5-flash')
+  invocation_context = await _create_invocation_context(agent)
+  tool_context = ToolContext(invocation_context)
+
+  # Execute with dict data
+  result = await tool.run_async(
+      args={'response': {'a': 1, 'b': 2, 'c': 3}},
+      tool_context=tool_context,
+  )
+
+  # Verify the tool returns the dict directly
+  assert result is not None
+  assert isinstance(result, dict)
+  assert result == {'a': 1, 'b': 2, 'c': 3}
