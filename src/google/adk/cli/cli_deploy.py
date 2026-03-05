@@ -28,6 +28,8 @@ import warnings
 import click
 from packaging.version import parse
 
+from .utils import envs
+
 _IS_WINDOWS = os.name == 'nt'
 _GCLOUD_CMD = 'gcloud.cmd' if _IS_WINDOWS else 'gcloud'
 _LOCAL_STORAGE_FLAG_MIN_VERSION: Final[str] = '1.21.0'
@@ -509,6 +511,12 @@ def _validate_agent_import(
     # Add parent directory to path so imports work correctly
     if parent_dir not in sys.path:
       sys.path.insert(0, parent_dir)
+
+    # Load .env file before importing the agent module so that
+    # environment-dependent code (e.g. pydantic BaseSettings) can resolve
+    # variables during import.
+    envs.load_dotenv_for_agent(module_name, parent_dir)
+
     try:
       module = importlib.import_module(f'{module_name}.agent')
     except ImportError as e:

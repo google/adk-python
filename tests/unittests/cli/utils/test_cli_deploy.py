@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import importlib
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -654,3 +655,25 @@ class TestValidateAgentImport:
     )
 
     assert sys.path == original_path
+
+  def test_loads_dotenv_before_import(self, tmp_path: Path) -> None:
+    """Should load .env file before importing agent module."""
+    # Create agent.py that reads an env var at import time
+    (tmp_path / "__init__.py").touch()
+    (tmp_path / "agent.py").write_text(
+        "import os\n"
+        "val = os.environ.get('_ADK_TEST_DEPLOY_VAR')\n"
+        "if val != 'from_dotenv':\n"
+        "    raise RuntimeError("
+        "'_ADK_TEST_DEPLOY_VAR not loaded from .env')\n"
+        "root_agent = 'ok'\n"
+    )
+    (tmp_path / ".env").write_text("_ADK_TEST_DEPLOY_VAR=from_dotenv\n")
+
+    # Should not raise because .env is loaded before import
+    cli_deploy._validate_agent_import(
+        str(tmp_path), "root_agent", is_config_agent=False
+    )
+
+    # Clean up the env var
+    os.environ.pop("_ADK_TEST_DEPLOY_VAR", None)
