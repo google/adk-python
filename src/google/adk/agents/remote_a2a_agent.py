@@ -534,13 +534,8 @@ class RemoteA2aAgent(BaseAgent):
       # Filter out thought parts from user-facing response content.
       # Intermediate (submitted/working) events have all parts marked as
       # thought, so non_thought_parts will be empty and we preserve them.
-      if (
-          event.content is not None
-          and event.content.parts
-      ):
-        non_thought_parts = [
-            p for p in event.content.parts if not p.thought
-        ]
+      if event.content is not None and event.content.parts:
+        non_thought_parts = [p for p in event.content.parts if not p.thought]
         if non_thought_parts:
           event.content.parts = non_thought_parts
 
