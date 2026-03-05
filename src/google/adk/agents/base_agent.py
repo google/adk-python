@@ -115,6 +115,12 @@ class BaseAgent(BaseModel):
   Agent name cannot be "user", since it's reserved for end-user's input.
   """
 
+  version: str = ''
+  """The agent's version.
+
+  Version of the agent being invoked. Used to identify the Agent involved in telemetry.
+  """
+
   description: str = ''
   """Description about the agent's capability.
 
@@ -680,6 +686,7 @@ class BaseAgent(BaseModel):
 
     kwargs: Dict[str, Any] = {
         'name': config.name,
+        'version': config.version,
         'description': config.description,
     }
     if config.sub_agents:

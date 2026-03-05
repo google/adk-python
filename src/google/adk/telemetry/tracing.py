@@ -82,6 +82,8 @@ OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT = (
 
 USER_CONTENT_ELIDED = '<elided>'
 
+GEN_AI_AGENT_VERSION = 'gen_ai.agent.version'
+
 # Needed to avoid circular imports
 if TYPE_CHECKING:
   from ..agents.base_agent import BaseAgent
@@ -155,6 +157,7 @@ def trace_agent_invocation(
   span.set_attribute(GEN_AI_AGENT_DESCRIPTION, agent.description)
 
   span.set_attribute(GEN_AI_AGENT_NAME, agent.name)
+  span.set_attribute(GEN_AI_AGENT_VERSION, agent.version)
   span.set_attribute(GEN_AI_CONVERSATION_ID, ctx.session.id)
 
 
@@ -455,6 +458,7 @@ def use_generate_content_span(
       USER_ID: invocation_context.session.user_id,
       'gcp.vertex.agent.event_id': model_response_event.id,
       'gcp.vertex.agent.invocation_id': invocation_context.invocation_id,
+      GEN_AI_AGENT_VERSION: invocation_context.agent.version,
   }
   if (
       _is_gemini_agent(invocation_context.agent)
@@ -489,6 +493,7 @@ async def use_inference_span(
       USER_ID: invocation_context.session.user_id,
       'gcp.vertex.agent.event_id': model_response_event.id,
       'gcp.vertex.agent.invocation_id': invocation_context.invocation_id,
+      GEN_AI_AGENT_VERSION: invocation_context.agent.version,
   }
   if (
       _is_gemini_agent(invocation_context.agent)
