@@ -117,6 +117,8 @@ def _safe_json_serialize(obj) -> str:
   """
 
   try:
+    if isinstance(obj, BaseModel):
+      return json.dumps(obj.model_dump(), default=str)
     # Try direct JSON serialization first
     return json.dumps(
         obj, ensure_ascii=False, default=lambda o: '<not serializable>'
