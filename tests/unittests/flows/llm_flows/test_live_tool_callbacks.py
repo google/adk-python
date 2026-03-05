@@ -470,6 +470,33 @@ async def test_live_on_tool_error_callback_tool_not_found_modify_tool_response()
 # --- Plugin callback tests for live mode ---
 
 
+async def _setup_plugin_test_harness(plugin: "MockPlugin"):
+  """Creates a common test setup for plugin callback tests."""
+
+  def simple_fn(**kwargs) -> Dict[str, Any]:
+    return {"initial": "response"}
+
+  tool = FunctionTool(simple_fn)
+  model = testing_utils.MockModel.create(responses=[])
+  agent = Agent(
+      name="agent",
+      model=model,
+      tools=[tool],
+  )
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content="", plugins=[plugin]
+  )
+  function_call = types.FunctionCall(name=tool.name, args={})
+  content = types.Content(parts=[types.Part(function_call=function_call)])
+  event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=content,
+  )
+  tools_dict = {tool.name: tool}
+  return invocation_context, event, tools_dict
+
+
 class MockPlugin(BasePlugin):
   """A mock plugin for testing plugin callbacks in live mode."""
 
@@ -509,28 +536,9 @@ async def invoke_tool_with_plugin_live(
     mock_plugin,
 ) -> Optional[Event]:
   """Invokes a tool with a plugin using live mode."""
-
-  def simple_fn(**kwargs) -> Dict[str, Any]:
-    return {"initial": "response"}
-
-  tool = FunctionTool(simple_fn)
-  model = testing_utils.MockModel.create(responses=[])
-  agent = Agent(
-      name="agent",
-      model=model,
-      tools=[tool],
+  invocation_context, event, tools_dict = await _setup_plugin_test_harness(
+      mock_plugin
   )
-  invocation_context = await testing_utils.create_invocation_context(
-      agent=agent, user_content="", plugins=[mock_plugin]
-  )
-  function_call = types.FunctionCall(name=tool.name, args={})
-  content = types.Content(parts=[types.Part(function_call=function_call)])
-  event = Event(
-      invocation_id=invocation_context.invocation_id,
-      author=agent.name,
-      content=content,
-  )
-  tools_dict = {tool.name: tool}
   return await handle_function_calls_live(
       invocation_context,
       event,
@@ -577,37 +585,30 @@ async def test_live_plugin_before_tool_callback_disabled():
   assert part.function_response.response == {"initial": "response"}
 
 
+@pytest.mark.parametrize(
+    "enable_before, enable_after, get_expected_response",
+    [
+        (True, False, lambda p: p.before_tool_response),
+        (False, True, lambda p: p.after_tool_response),
+        (True, True, lambda p: p.after_tool_response),
+        (False, False, lambda p: {"initial": "response"}),
+    ],
+    ids=["before_only", "after_only", "both_enabled", "none_enabled"],
+)
 @pytest.mark.asyncio
-async def test_live_plugin_callbacks_match_async_behavior():
+async def test_live_plugin_callbacks_match_async_behavior(
+    enable_before, enable_after, get_expected_response
+):
   """Test that plugin callbacks in live mode match the async (non-live) behavior."""
   from google.adk.flows.llm_flows.functions import handle_function_calls_async
 
-  def simple_fn(**kwargs) -> Dict[str, Any]:
-    return {"initial": "response"}
-
-  tool = FunctionTool(simple_fn)
-  model = testing_utils.MockModel.create(responses=[])
-  agent = Agent(
-      name="agent",
-      model=model,
-      tools=[tool],
-  )
-
-  # Test with plugin before_tool_callback enabled
   plugin = MockPlugin()
-  plugin.enable_before_tool_callback = True
+  plugin.enable_before_tool_callback = enable_before
+  plugin.enable_after_tool_callback = enable_after
 
-  invocation_context = await testing_utils.create_invocation_context(
-      agent=agent, user_content="", plugins=[plugin]
+  invocation_context, event, tools_dict = await _setup_plugin_test_harness(
+      plugin
   )
-  function_call = types.FunctionCall(name=tool.name, args={})
-  content = types.Content(parts=[types.Part(function_call=function_call)])
-  event = Event(
-      invocation_id=invocation_context.invocation_id,
-      author=agent.name,
-      content=content,
-  )
-  tools_dict = {tool.name: tool}
 
   async_result = await handle_function_calls_async(
       invocation_context, event, tools_dict
@@ -620,4 +621,82 @@ async def test_live_plugin_callbacks_match_async_behavior():
   assert live_result is not None
   async_response = async_result.content.parts[0].function_response.response
   live_response = live_result.content.parts[0].function_response.response
-  assert async_response == live_response == plugin.before_tool_response
+  expected_response = get_expected_response(plugin)
+  assert async_response == live_response == expected_response
+
+
+@pytest.mark.asyncio
+async def test_live_on_tool_error_callback_during_execution():
+  """Test that on_tool_error_callback fires when tool raises during live execution."""
+
+  def failing_fn(**kwargs) -> Dict[str, Any]:
+    raise RuntimeError("tool execution failed")
+
+  def error_handler(tool, args, tool_context, error):
+    return {"error_handled": str(error)}
+
+  tool = FunctionTool(failing_fn)
+  model = testing_utils.MockModel.create(responses=[])
+  agent = Agent(
+      name="agent",
+      model=model,
+      tools=[tool],
+      on_tool_error_callback=error_handler,
+  )
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content=""
+  )
+  function_call = types.FunctionCall(name=tool.name, args={})
+  content = types.Content(parts=[types.Part(function_call=function_call)])
+  event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=content,
+  )
+  tools_dict = {tool.name: tool}
+
+  result_event = await handle_function_calls_live(
+      invocation_context,
+      event,
+      tools_dict,
+  )
+
+  assert result_event is not None
+  part = result_event.content.parts[0]
+  assert part.function_response.response == {
+      "error_handled": "tool execution failed"
+  }
+
+
+@pytest.mark.asyncio
+async def test_live_on_tool_error_callback_during_execution_noop():
+  """Test that tool exception propagates when on_tool_error_callback returns None."""
+
+  def failing_fn(**kwargs) -> Dict[str, Any]:
+    raise RuntimeError("tool execution failed")
+
+  def noop_error_handler(tool, args, tool_context, error):
+    return None
+
+  tool = FunctionTool(failing_fn)
+  model = testing_utils.MockModel.create(responses=[])
+  agent = Agent(
+      name="agent",
+      model=model,
+      tools=[tool],
+      on_tool_error_callback=noop_error_handler,
+  )
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content=""
+  )
+  function_call = types.FunctionCall(name=tool.name, args={})
+  content = types.Content(parts=[types.Part(function_call=function_call)])
+  event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=content,
+  )
+  tools_dict = {tool.name: tool}
+
+  with pytest.raises(RuntimeError, match="tool execution failed"):
+    await handle_function_calls_live(invocation_context, event, tools_dict)
