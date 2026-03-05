@@ -94,7 +94,7 @@ def _is_document_part(part: types.Part) -> bool:
   return (
       part.inline_data
       and part.inline_data.mime_type
-      and part.inline_data.mime_type == "application/pdf"
+      and part.inline_data.mime_type.startswith("application/pdf")
   )
 
 
