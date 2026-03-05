@@ -344,6 +344,8 @@ def _convert_to_object(data):
           'requested_auth_configs',
           'rawEvent',
           'raw_event',
+          'cache_metadata',
+          'usage_metadata',
       ]:
         kwargs[key] = value
       else:
@@ -1306,3 +1308,63 @@ async def test_append_event_fallback_for_older_sdk(mock_api_client_instance):
 
   assert appended_event.actions.compaction is not None
   assert appended_event.actions.compaction.start_timestamp == 1000.0
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
+async def test_append_event_with_cache_and_usage_metadata():
+  """cache_metadata and usage_metadata round-trip through append and get."""
+  session_service = mock_vertex_ai_session_service()
+  session = await session_service.get_session(
+      app_name='123', user_id='user', session_id='1'
+  )
+  assert session is not None
+
+  cache_meta = CacheMetadata(
+      cache_name='projects/123/locations/us-central1/cachedContents/456',
+      expire_time=9999999999.0,
+      fingerprint='abc123hash',
+      invocations_used=3,
+      contents_count=10,
+      created_at=1700000000.0,
+  )
+  usage_meta = genai_types.GenerateContentResponseUsageMetadata(
+      prompt_token_count=100,
+      candidates_token_count=50,
+      total_token_count=150,
+      cached_content_token_count=80,
+  )
+  event_to_append = Event(
+      invocation_id='cache_test_invocation',
+      author='model',
+      timestamp=1734005536.0,
+      content=genai_types.Content(
+          parts=[genai_types.Part(text='cached response')]
+      ),
+      cache_metadata=cache_meta,
+      usage_metadata=usage_meta,
+  )
+
+  await session_service.append_event(session, event_to_append)
+
+  retrieved_session = await session_service.get_session(
+      app_name='123', user_id='user', session_id='1'
+  )
+  assert retrieved_session is not None
+
+  appended_event = retrieved_session.events[-1]
+  # cache_metadata is preserved
+  assert appended_event.cache_metadata is not None
+  assert appended_event.cache_metadata.cache_name == (
+      'projects/123/locations/us-central1/cachedContents/456'
+  )
+  assert appended_event.cache_metadata.fingerprint == 'abc123hash'
+  assert appended_event.cache_metadata.invocations_used == 3
+  assert appended_event.cache_metadata.contents_count == 10
+  assert appended_event.cache_metadata.created_at == 1700000000.0
+  # usage_metadata is preserved
+  assert appended_event.usage_metadata is not None
+  assert appended_event.usage_metadata.prompt_token_count == 100
+  assert appended_event.usage_metadata.candidates_token_count == 50
+  assert appended_event.usage_metadata.total_token_count == 150
+  assert appended_event.usage_metadata.cached_content_token_count == 80

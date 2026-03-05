@@ -36,6 +36,7 @@ from . import _session_util
 from ..events.event import Event
 from ..events.event_actions import EventActions
 from ..events.event_actions import EventCompaction
+from ..models.cache_metadata import CacheMetadata
 from ..utils.vertex_ai_utils import get_express_mode_api_key
 from .base_session_service import BaseSessionService
 from .base_session_service import GetSessionConfig
@@ -311,6 +312,14 @@ class VertexAiSessionService(BaseSessionService):
             else None
         ),
     }
+    if event.usage_metadata:
+      metadata_dict['usage_metadata'] = event.usage_metadata.model_dump(
+          exclude_none=True, mode='json'
+      )
+    if event.cache_metadata:
+      metadata_dict['cache_metadata'] = event.cache_metadata.model_dump(
+          exclude_none=True, mode='json'
+      )
     if event.grounding_metadata:
       metadata_dict['grounding_metadata'] = event.grounding_metadata.model_dump(
           exclude_none=True, mode='json'
@@ -481,6 +490,14 @@ def _from_api_event(api_event_obj: vertexai.types.SessionEvent) -> Event:
         getattr(event_metadata, 'grounding_metadata', None),
         types.GroundingMetadata,
     )
+    usage_metadata = _session_util.decode_model(
+        getattr(event_metadata, 'usage_metadata', None),
+        types.GenerateContentResponseUsageMetadata,
+    )
+    cache_metadata = _session_util.decode_model(
+        getattr(event_metadata, 'cache_metadata', None),
+        CacheMetadata,
+    )
   else:
     long_running_tool_ids = None
     partial = None
@@ -491,6 +508,8 @@ def _from_api_event(api_event_obj: vertexai.types.SessionEvent) -> Event:
     compaction_data = None
     usage_metadata_data = None
     grounding_metadata = None
+    usage_metadata = None
+    cache_metadata = None
 
   if actions:
     actions_dict = actions.model_dump(exclude_none=True, mode='python')
@@ -539,6 +558,8 @@ def _from_api_event(api_event_obj: vertexai.types.SessionEvent) -> Event:
       branch=branch,
       custom_metadata=custom_metadata,
       grounding_metadata=grounding_metadata,
+      usage_metadata=usage_metadata,
+      cache_metadata=cache_metadata,
       long_running_tool_ids=long_running_tool_ids,
       usage_metadata=usage_metadata,
   )
