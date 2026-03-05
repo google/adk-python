@@ -65,6 +65,7 @@ from typing_extensions import deprecated
 
 from .. import version
 from ..utils.model_name_utils import is_gemini_model
+from ..utils.serialization_utils import serialize_pydantic_model
 from ._experimental_semconv import is_experimental_semconv
 from ._experimental_semconv import maybe_log_completion_details
 from ._experimental_semconv import set_operation_details_attributes_from_request
@@ -117,8 +118,9 @@ def _safe_json_serialize(obj) -> str:
   """
 
   try:
-    if isinstance(obj, BaseModel):
-      return json.dumps(obj.model_dump(), default=str)
+    serialized = serialize_pydantic_model(obj)
+    if serialized is not None:
+      return serialized
     # Try direct JSON serialization first
     return json.dumps(
         obj, ensure_ascii=False, default=lambda o: '<not serializable>'

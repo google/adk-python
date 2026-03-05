@@ -51,6 +51,8 @@ from pydantic import BaseModel
 from pydantic import Field
 from typing_extensions import override
 
+from ..utils.serialization_utils import serialize_pydantic_model
+
 from ..utils._google_client_headers import merge_tracking_headers
 from .base_llm import BaseLlm
 from .llm_request import LlmRequest
@@ -493,8 +495,9 @@ def _safe_json_serialize(obj) -> str:
   """
 
   try:
-    if isinstance(obj, BaseModel):
-      return json.dumps(obj.model_dump(), default=str)
+    serialized = serialize_pydantic_model(obj)
+    if serialized is not None:
+      return serialized
     # Try direct JSON serialization first
     return json.dumps(obj, ensure_ascii=False)
   except (TypeError, OverflowError):
