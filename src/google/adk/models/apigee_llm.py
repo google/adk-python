@@ -29,6 +29,7 @@ from typing import Generator
 from typing import Optional
 from typing import TYPE_CHECKING
 
+import google.auth
 from google.adk import version as adk_version
 from google.genai import types
 import httpx
@@ -51,6 +52,11 @@ _APIGEE_PROXY_URL_ENV_VARIABLE_NAME = 'APIGEE_PROXY_URL'
 _GOOGLE_GENAI_USE_VERTEXAI_ENV_VARIABLE_NAME = 'GOOGLE_GENAI_USE_VERTEXAI'
 _PROJECT_ENV_VARIABLE_NAME = 'GOOGLE_CLOUD_PROJECT'
 _LOCATION_ENV_VARIABLE_NAME = 'GOOGLE_CLOUD_LOCATION'
+
+_APIGEE_SCOPES = [
+    'https://www.googleapis.com/auth/cloud-platform',
+    'https://www.googleapis.com/auth/userinfo.email',
+]
 
 _CUSTOM_METADATA_FIELDS = (
     'id',
@@ -232,6 +238,8 @@ class ApigeeLlm(Gemini):
         **kwargs_for_http_options,
     )
 
+    credentials, _ = google.auth.default(scopes=_APIGEE_SCOPES)
+
     kwargs_for_client = {}
     kwargs_for_client['vertexai'] = self._isvertexai
     if self._isvertexai:
@@ -239,6 +247,7 @@ class ApigeeLlm(Gemini):
       kwargs_for_client['location'] = self._location
 
     return Client(
+        credentials=credentials,
         http_options=http_options,
         **kwargs_for_client,
     )

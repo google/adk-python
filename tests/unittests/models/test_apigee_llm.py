@@ -18,6 +18,7 @@ import os
 from unittest import mock
 from unittest.mock import AsyncMock
 
+from google.adk.models.apigee_llm import _APIGEE_SCOPES
 from google.adk.models.apigee_llm import ApigeeLlm
 from google.adk.models.apigee_llm import CompletionsHTTPClient
 from google.adk.models.llm_request import LlmRequest
@@ -649,3 +650,40 @@ def test_parse_response_usage_metadata():
   assert llm_response.usage_metadata.candidates_token_count == 5
   assert llm_response.usage_metadata.total_token_count == 15
   assert llm_response.usage_metadata.thoughts_token_count == 4
+
+
+@pytest.mark.asyncio
+@mock.patch('google.genai.Client')
+@mock.patch('google.adk.models.apigee_llm.google.auth.default')
+async def test_api_client_requests_userinfo_email_scope(
+    mock_auth_default, mock_client_constructor, llm_request
+):
+  """Tests that api_client requests userinfo.email scope for Apigee Gateway tokeninfo."""
+  mock_credentials = mock.Mock()
+  mock_auth_default.return_value = (mock_credentials, 'test-project')
+
+  mock_client_instance = mock.Mock()
+  mock_client_instance.aio.models.generate_content = AsyncMock(
+      return_value=types.GenerateContentResponse(
+          candidates=[
+              types.Candidate(
+                  content=Content(
+                      parts=[Part.from_text(text='Test response')],
+                      role='model',
+                  )
+              )
+          ]
+      )
+  )
+  mock_client_constructor.return_value = mock_client_instance
+
+  apigee_llm = ApigeeLlm(
+      model=APIGEE_GEMINI_MODEL_ID,
+      proxy_url=PROXY_URL,
+  )
+  _ = [resp async for resp in apigee_llm.generate_content_async(llm_request)]
+
+  mock_auth_default.assert_called_once_with(scopes=_APIGEE_SCOPES)
+
+  _, kwargs = mock_client_constructor.call_args
+  assert kwargs['credentials'] is mock_credentials
