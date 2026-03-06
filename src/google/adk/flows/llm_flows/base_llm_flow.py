@@ -45,6 +45,9 @@ from ...models.base_llm_connection import BaseLlmConnection
 from ...models.llm_request import LlmRequest
 from ...models.llm_response import LlmResponse
 from ...telemetry import tracing
+from opentelemetry import context as otel_context
+from opentelemetry import trace
+
 from ...telemetry.tracing import trace_call_llm
 from ...telemetry.tracing import trace_send_data
 from ...telemetry.tracing import tracer
@@ -1127,7 +1130,14 @@ class BaseLlmFlow(ABC):
     llm = self.__get_llm(invocation_context)
 
     async def _call_llm_with_tracing() -> AsyncGenerator[LlmResponse, None]:
-      with tracer.start_as_current_span('call_llm') as span:
+      # Use explicit span management instead of start_as_current_span context
+      # manager to ensure span.end() is always called even when GeneratorExit
+      # is raised during async iteration (e.g., when transfer_to_agent causes
+      # the generator to be closed). See #4715.
+      span = tracer.start_span('call_llm')
+      ctx = trace.set_span_in_context(span)
+      token = otel_context.attach(ctx)
+      try:
         if invocation_context.run_config.support_cfc:
           invocation_context.live_request_queue = LiveRequestQueue()
           responses_generator = self.run_live(invocation_context)
@@ -1187,6 +1197,12 @@ class BaseLlmFlow(ABC):
                 llm_response = altered_llm_response
 
               yield llm_response
+      finally:
+        try:
+          otel_context.detach(token)
+        except ValueError:
+          pass
+        span.end()
 
     async with Aclosing(_call_llm_with_tracing()) as agen:
       async for event in agen:
