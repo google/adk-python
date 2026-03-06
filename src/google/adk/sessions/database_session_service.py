@@ -25,6 +25,7 @@ from typing import Optional
 from typing import TypeAlias
 from typing import TypeVar
 
+from google.adk.platform import time as platform_time
 from sqlalchemy import delete
 from sqlalchemy import event
 from sqlalchemy import select
@@ -362,7 +363,7 @@ class DatabaseSessionService(BaseSessionService):
         storage_user_state.state = storage_user_state.state | user_state_delta
 
       # Store the session
-      now = datetime.now(timezone.utc)
+      now = datetime.fromtimestamp(platform_time.get_time(), tz=timezone.utc)
       is_sqlite = self.db_engine.dialect.name == _SQLITE_DIALECT
       is_postgresql = self.db_engine.dialect.name == _POSTGRESQL_DIALECT
       if is_sqlite or is_postgresql:

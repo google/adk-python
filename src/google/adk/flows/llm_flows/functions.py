@@ -31,8 +31,8 @@ from typing import cast
 from typing import Dict
 from typing import Optional
 from typing import TYPE_CHECKING
-import uuid
 
+from google.adk.platform import uuid as platform_uuid
 from google.adk.tools.computer_use.computer_use_tool import ComputerUseTool
 from google.genai import types
 
@@ -178,7 +178,7 @@ async def _call_tool_in_thread_pool(
 
 
 def generate_client_function_call_id() -> str:
-  return f'{AF_FUNCTION_CALL_ID_PREFIX}{uuid.uuid4()}'
+  return f'{AF_FUNCTION_CALL_ID_PREFIX}{platform_uuid.new_uuid()}'
 
 
 def populate_client_function_call_id(model_response_event: Event) -> None:
