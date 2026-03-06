@@ -419,9 +419,9 @@ async def test_list_artifact_versions_and_get_artifact_version(
   ]
 
   with patch(
-      "google.adk.artifacts.base_artifact_service.datetime"
-  ) as mock_datetime:
-    mock_datetime.now.return_value = FIXED_DATETIME
+      "google.adk.artifacts.base_artifact_service.platform_time"
+  ) as mock_platform_time:
+    mock_platform_time.get_time.return_value = FIXED_DATETIME.timestamp()
 
     for i in range(4):
       custom_metadata = {"key": "value" + str(i)}
@@ -506,9 +506,9 @@ async def test_list_artifact_versions_with_user_prefix(
   ]
 
   with patch(
-      "google.adk.artifacts.base_artifact_service.datetime"
-  ) as mock_datetime:
-    mock_datetime.now.return_value = FIXED_DATETIME
+      "google.adk.artifacts.base_artifact_service.platform_time"
+  ) as mock_platform_time:
+    mock_platform_time.get_time.return_value = FIXED_DATETIME.timestamp()
 
     for i in range(4):
       custom_metadata = {"key": "value" + str(i)}
