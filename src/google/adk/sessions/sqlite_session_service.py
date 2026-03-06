@@ -432,7 +432,10 @@ class SqliteSessionService(BaseSessionService):
               session.id,
               event.invocation_id,
               event.timestamp,
-              event.model_dump_json(exclude_none=True),
+              event.model_dump_json(
+                  exclude_none=True,
+                  fallback=lambda v: f"<non-serializable: {type(v).__name__}>",
+              ),
           ),
       )
       if not has_session_state_delta:

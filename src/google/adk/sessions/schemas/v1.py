@@ -199,7 +199,11 @@ class StorageEvent(Base):
         app_name=session.app_name,
         user_id=session.user_id,
         timestamp=datetime.fromtimestamp(event.timestamp),
-        event_data=event.model_dump(exclude_none=True, mode="json"),
+        event_data=event.model_dump(
+            exclude_none=True,
+            mode="json",
+            fallback=lambda v: f"<non-serializable: {type(v).__name__}>",
+        ),
     )
 
   def to_event(self) -> Event:
