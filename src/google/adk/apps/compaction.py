@@ -273,6 +273,22 @@ def _event_function_response_ids(event: Event) -> set[str]:
   return function_response_ids
 
 
+def _pending_function_call_ids(events: list[Event]) -> set[str]:
+  """Returns function call IDs that have no matching response in the event list.
+
+  These represent pending/unanswered function calls (e.g., from
+  adk_request_confirmation) that must not be compacted away, otherwise
+  a later FunctionResponse will fail to find its matching FunctionCall.
+  See #4740.
+  """
+  all_call_ids: set[str] = set()
+  all_response_ids: set[str] = set()
+  for event in events:
+    all_call_ids.update(_event_function_call_ids(event))
+    all_response_ids.update(_event_function_response_ids(event))
+  return all_call_ids - all_response_ids
+
+
 def _safe_token_compaction_split_index(
     *,
     candidate_events: list[Event],
@@ -285,6 +301,10 @@ def _safe_token_compaction_split_index(
   assembly can fail. This method shifts the split earlier so matching function
   call events are retained together with their responses.
 
+  Also preserves pending (unanswered) function call events to prevent
+  compacting away function calls that have not yet received a response
+  (e.g., adk_request_confirmation). See #4740.
+
   Iterates backwards through candidate_events once, maintaining a running set
   of unmatched response IDs. The latest valid split point where no unmatched
   responses remain is returned.
@@ -292,6 +312,9 @@ def _safe_token_compaction_split_index(
   initial_split = len(candidate_events) - event_retention_size
   if initial_split <= 0:
     return 0
+
+  # Identify pending function calls across ALL candidate events
+  pending_call_ids = _pending_function_call_ids(candidate_events)
 
   unmatched_response_ids: set[str] = set()
   best_split = 0
@@ -302,9 +325,17 @@ def _safe_token_compaction_split_index(
     call_ids = _event_function_call_ids(event)
     unmatched_response_ids -= call_ids
 
+    # Also check: would compacting events [0..i) remove a pending call?
     if not unmatched_response_ids and i <= initial_split:
-      best_split = i
-      break
+      # Verify no pending function calls exist in the compacted prefix
+      pending_in_prefix = False
+      for j in range(i):
+        if _event_function_call_ids(candidate_events[j]) & pending_call_ids:
+          pending_in_prefix = True
+          break
+      if not pending_in_prefix:
+        best_split = i
+        break
 
   return best_split
 
