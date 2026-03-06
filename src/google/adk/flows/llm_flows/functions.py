@@ -587,14 +587,19 @@ async def _execute_single_function_call_async(
 
   with tracer.start_as_current_span(f'execute_tool {tool.name}'):
     function_response_event = None
+    caught_error = None
     try:
       function_response_event = await _run_with_trace()
       return function_response_event
+    except Exception as e:
+      caught_error = e
+      raise
     finally:
       trace_tool_call(
           tool=tool,
           args=function_args,
           function_response_event=function_response_event,
+          error=caught_error,
       )
 
 
@@ -821,14 +826,19 @@ async def _execute_single_function_call_live(
 
   with tracer.start_as_current_span(f'execute_tool {tool.name}'):
     function_response_event = None
+    caught_error = None
     try:
       function_response_event = await _run_with_trace()
       return function_response_event
+    except Exception as e:
+      caught_error = e
+      raise
     finally:
       trace_tool_call(
           tool=tool,
           args=function_args,
           function_response_event=function_response_event,
+          error=caught_error,
       )
 
 
