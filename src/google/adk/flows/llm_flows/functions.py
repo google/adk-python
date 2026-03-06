@@ -194,12 +194,12 @@ def populate_client_function_call_id(
       # Use (name, index) as cache key so that two calls to the same
       # function in a single response keep separate stable IDs.
       cache_key = f'{function_call.name}:{idx}'
-      if function_call_id_cache is not None and cache_key in function_call_id_cache:
-        function_call.id = function_call_id_cache[cache_key]
+      if function_call_id_cache is not None:
+        function_call.id = function_call_id_cache.setdefault(
+            cache_key, generate_client_function_call_id()
+        )
       else:
         function_call.id = generate_client_function_call_id()
-        if function_call_id_cache is not None:
-          function_call_id_cache[cache_key] = function_call.id
 
 
 def remove_client_function_call_id(content: Optional[types.Content]) -> None:

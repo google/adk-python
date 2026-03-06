@@ -702,6 +702,9 @@ class BaseLlmFlow(ABC):
       else:
         return invocation_context.agent.name
 
+    # Cache maps function call names to generated IDs so that partial and
+    # final streaming events for the same call share a stable ID.
+    function_call_id_cache: dict[str, str] = {}
     try:
       while True:
         async with Aclosing(llm_connection.receive()) as agen:
@@ -726,6 +729,7 @@ class BaseLlmFlow(ABC):
                     llm_request,
                     llm_response,
                     model_response_event,
+                    function_call_id_cache,
                 )
             ) as agen:
               async for event in agen:
@@ -959,6 +963,7 @@ class BaseLlmFlow(ABC):
       llm_request: LlmRequest,
       llm_response: LlmResponse,
       model_response_event: Event,
+      function_call_id_cache: Optional[dict[str, str]] = None,
   ) -> AsyncGenerator[Event, None]:
     """Postprocess after calling the LLM asynchronously.
 
@@ -967,6 +972,9 @@ class BaseLlmFlow(ABC):
       llm_request: The original LLM request.
       llm_response: The LLM response from the LLM call.
       model_response_event: A mutable event for the LLM response.
+      function_call_id_cache: Optional dict mapping function call names to
+        previously generated IDs. Keeps IDs stable across partial and final
+        streaming events.
 
     Yields:
       A generator of events.
@@ -1028,7 +1036,8 @@ class BaseLlmFlow(ABC):
 
     # Builds the event.
     model_response_event = self._finalize_model_response_event(
-        llm_request, llm_response, model_response_event
+        llm_request, llm_response, model_response_event,
+        function_call_id_cache,
     )
     yield model_response_event
 
