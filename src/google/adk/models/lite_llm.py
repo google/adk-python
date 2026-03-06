@@ -388,10 +388,18 @@ def _convert_reasoning_value_to_parts(reasoning_value: Any) -> List[types.Part]:
 
 
 def _extract_reasoning_value(message: Message | Delta | None) -> Any:
-  """Fetches the reasoning payload from a LiteLLM message."""
+  """Fetches the reasoning payload from a LiteLLM message.
+
+  Checks for both 'reasoning_content' (LiteLLM standard, used by Azure/Foundry,
+  Ollama via LiteLLM) and 'reasoning' (used by LM Studio, vLLM).
+  Prioritizes 'reasoning_content' when both are present.
+  """
   if message is None:
     return None
-  return message.get("reasoning_content")
+  reasoning_content = message.get("reasoning_content")
+  if reasoning_content is not None:
+    return reasoning_content
+  return message.get("reasoning")
 
 
 class ChatCompletionFileUrlObject(TypedDict, total=False):
@@ -1302,6 +1310,7 @@ def _model_response_to_chunk(
         or message.get("tool_calls")
         or message.get("function_call")
         or message.get("reasoning_content")
+        or message.get("reasoning")
     )
 
   if isinstance(response, ModelResponseStream):

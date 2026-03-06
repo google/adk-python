@@ -208,6 +208,8 @@ class RunAgentRequest(common.BaseModel):
   new_message: Optional[types.Content] = None
   streaming: bool = False
   state_delta: Optional[dict[str, Any]] = None
+  # for long-running function resume requests (e.g., OAuth callback)
+  function_call_event_id: Optional[str] = None
   # for resume long-running functions
   invocation_id: Optional[str] = None
 
@@ -1707,7 +1709,8 @@ class AdkWebServer:
               # 2) a content-less "action-only" event carrying `artifactDelta`
               events_to_stream = [event]
               if (
-                  event.actions.artifact_delta
+                  not req.function_call_event_id
+                  and event.actions.artifact_delta
                   and event.content
                   and event.content.parts
               ):

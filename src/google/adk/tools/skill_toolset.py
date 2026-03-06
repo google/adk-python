@@ -21,12 +21,14 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import mimetypes
 from typing import Any
 from typing import Optional
 from typing import TYPE_CHECKING
 import warnings
 
 from google.genai import types
+from typing_extensions import override
 
 from ..agents.readonly_context import ReadonlyContext
 from ..code_executors.base_code_executor import BaseCodeExecutor
@@ -37,15 +39,23 @@ from ..skills import models
 from ..skills import prompt
 from .base_tool import BaseTool
 from .base_toolset import BaseToolset
+from .function_tool import FunctionTool
 from .tool_context import ToolContext
 
 if TYPE_CHECKING:
+  from ..agents.llm_agent import ToolUnion
   from ..models.llm_request import LlmRequest
 
 logger = logging.getLogger("google_adk." + __name__)
 
 _DEFAULT_SCRIPT_TIMEOUT = 300
 _MAX_SKILL_PAYLOAD_BYTES = 16 * 1024 * 1024  # 16 MB
+
+# Message used for the "Content Injection" pattern.
+_BINARY_FILE_DETECTED_MSG = (
+    "Binary file detected. The content has been injected into the"
+    " conversation history for you to analyze."
+)
 
 _DEFAULT_SKILL_SYSTEM_INSTRUCTION = """You can use specialized 'skills' to help you with complex tasks. You MUST use the skill tools to interact with these skills.
 
@@ -137,6 +147,15 @@ class LoadSkillTool(BaseTool):
           "error": f"Skill '{skill_name}' not found.",
           "error_code": "SKILL_NOT_FOUND",
       }
+
+    # Record skill activation in agent state for tool resolution.
+    agent_name = tool_context.agent_name
+    state_key = f"_adk_activated_skill_{agent_name}"
+
+    activated_skills = list(tool_context.state.get(state_key, []))
+    if skill_name not in activated_skills:
+      activated_skills.append(skill_name)
+      tool_context.state[state_key] = activated_skills
 
     return {
         "skill_name": skill_name,
@@ -235,11 +254,83 @@ class LoadSkillResourceTool(BaseTool):
           "error_code": "RESOURCE_NOT_FOUND",
       }
 
+    if isinstance(content, bytes):
+      return {
+          "skill_name": skill_name,
+          "path": resource_path,
+          "status": _BINARY_FILE_DETECTED_MSG,
+      }
+
     return {
         "skill_name": skill_name,
         "path": resource_path,
         "content": content,
     }
+
+  @override
+  async def process_llm_request(
+      self, *, tool_context: ToolContext, llm_request: Any
+  ) -> None:
+    """Injects binary content into the LLM request if the model viewed it."""
+    await super().process_llm_request(
+        tool_context=tool_context, llm_request=llm_request
+    )
+
+    if not llm_request.contents:
+      return
+
+    # Check for LoadSkillResource calls on binary files in the last turn
+    for part in llm_request.contents[-1].parts:
+      if not part.function_response or part.function_response.name != self.name:
+        continue
+
+      response = part.function_response.response or {}
+      if response.get("status") != _BINARY_FILE_DETECTED_MSG:
+        continue
+
+      skill_name = response.get("skill_name")
+      resource_path = response.get("path")
+      if not skill_name or not resource_path:
+        continue
+
+      skill = self._toolset._get_skill(skill_name)
+      if not skill:
+        continue
+
+      # Find the binary content
+      content = None
+      if resource_path.startswith("references/"):
+        ref_name = resource_path[len("references/") :]
+        content = skill.resources.get_reference(ref_name)
+      elif resource_path.startswith("assets/"):
+        asset_name = resource_path[len("assets/") :]
+        content = skill.resources.get_asset(asset_name)
+
+      if not isinstance(content, bytes):
+        continue
+
+      # Determine mime type based on extension
+      mime_type, _ = mimetypes.guess_type(resource_path)
+      if not mime_type:
+        mime_type = "application/octet-stream"
+
+      # Append binary content to llm_request
+      llm_request.contents.append(
+          types.Content(
+              role="user",
+              parts=[
+                  types.Part.from_text(
+                      text=f"The content of binary file '{resource_path}' is:"
+                  ),
+                  types.Part(
+                      inline_data=types.Blob(
+                          data=content,
+                          mime_type=mime_type,
+                      )
+                  ),
+              ],
+          )
+      )
 
 
 class _SkillScriptCodeExecutor:
@@ -586,6 +677,7 @@ class SkillToolset(BaseToolset):
       *,
       code_executor: Optional[BaseCodeExecutor] = None,
       script_timeout: int = _DEFAULT_SCRIPT_TIMEOUT,
+      additional_tools: list[ToolUnion] | None = None,
   ):
     """Initializes the SkillToolset.
 
@@ -609,20 +701,73 @@ class SkillToolset(BaseToolset):
     self._code_executor = code_executor
     self._script_timeout = script_timeout
 
+    self._provided_tools_by_name = {}
+    for tool_union in additional_tools or []:
+      if isinstance(tool_union, BaseTool):
+        self._provided_tools_by_name[tool_union.name] = tool_union
+      elif callable(tool_union):
+        ft = FunctionTool(tool_union)
+        self._provided_tools_by_name[ft.name] = ft
+
     # Initialize core skill tools
     self._tools = [
         ListSkillsTool(self),
         LoadSkillTool(self),
         LoadSkillResourceTool(self),
+        RunSkillScriptTool(self),
     ]
-    # Always add RunSkillScriptTool, relies on invocation_context fallback if _code_executor is None
-    self._tools.append(RunSkillScriptTool(self))
 
   async def get_tools(
       self, readonly_context: ReadonlyContext | None = None
   ) -> list[BaseTool]:
     """Returns the list of tools in this toolset."""
-    return self._tools
+    dynamic_tools = await self._resolve_additional_tools_from_state(
+        readonly_context
+    )
+    return self._tools + dynamic_tools
+
+  async def _resolve_additional_tools_from_state(
+      self, readonly_context: ReadonlyContext | None
+  ) -> list[BaseTool]:
+    """Resolves tools listed in the "adk_additional_tools" metadata of skills."""
+
+    if not readonly_context:
+      return []
+
+    agent_name = readonly_context.agent_name
+    state_key = f"_adk_activated_skill_{agent_name}"
+    activated_skills = readonly_context.state.get(state_key, [])
+
+    if not activated_skills:
+      return []
+
+    additional_tool_names = set()
+    for skill_name in activated_skills:
+      skill = self._skills.get(skill_name)
+      if skill:
+        additional_tools = skill.frontmatter.metadata.get(
+            "adk_additional_tools"
+        )
+        if additional_tools:
+          additional_tool_names.update(additional_tools)
+
+    if not additional_tool_names:
+      return []
+
+    resolved_tools = []
+    existing_tool_names = {t.name for t in self._tools}
+    for name in additional_tool_names:
+      if name in self._provided_tools_by_name:
+        tool = self._provided_tools_by_name[name]
+        if tool.name in existing_tool_names:
+          logger.error(
+              "Tool name collision: tool '%s' already exists.", tool.name
+          )
+          continue
+        resolved_tools.append(tool)
+        existing_tool_names.add(tool.name)
+
+    return resolved_tools
 
   def _get_skill(self, name: str) -> models.Skill | None:
     """Retrieves a skill by name."""
