@@ -70,7 +70,7 @@ class AuthHandler:
     state[credential_key] = await self.exchange_auth_token()
 
   def _validate(self) -> None:
-    if not self.auth_scheme:
+    if not self.auth_config.auth_scheme:
       raise ValueError("auth_scheme is empty.")
 
   def get_auth_response(self, state: State) -> AuthCredential:
@@ -160,7 +160,8 @@ class AuthHandler:
     auth_scheme = self.auth_config.auth_scheme
     auth_credential = self.auth_config.raw_auth_credential
     if not auth_credential or not auth_credential.oauth2:
-      raise ValueError("raw_auth_credential or oauth2 is empty")
+      raise ValueError("OAuth2 auth_credential with oauth2 config is required.")
+    oauth2_credential = auth_credential.oauth2
 
     if isinstance(auth_scheme, OpenIdConnectWithConfig):
       authorization_endpoint = auth_scheme.authorization_endpoint
@@ -189,24 +190,24 @@ class AuthHandler:
       scopes = list(scopes.keys())
 
     client = OAuth2Session(
-        auth_credential.oauth2.client_id,
-        auth_credential.oauth2.client_secret,
+        oauth2_credential.client_id,
+        oauth2_credential.client_secret,
         scope=" ".join(scopes),
-        redirect_uri=auth_credential.oauth2.redirect_uri,
-        code_challenge_method=auth_credential.oauth2.code_challenge_method,
+        redirect_uri=oauth2_credential.redirect_uri,
+        code_challenge_method=oauth2_credential.code_challenge_method,
     )
     params = {
         "access_type": "offline",
         "prompt": "consent",
     }
-    if auth_credential.oauth2.audience:
-      params["audience"] = auth_credential.oauth2.audience
+    if oauth2_credential.audience:
+      params["audience"] = oauth2_credential.audience
 
     # If using PKCE with S256, ensure a code_verifier exists.
     # If not provided in the credential, generate a cryptographically secure
     # random token of 48 characters (OAuth2 recommends 43-128 characters).
-    code_verifier = auth_credential.oauth2.code_verifier
-    method = auth_credential.oauth2.code_challenge_method
+    code_verifier = oauth2_credential.code_verifier
+    method = oauth2_credential.code_challenge_method
 
     if method:
       if method != "S256":
@@ -222,9 +223,10 @@ class AuthHandler:
     )
 
     exchanged_auth_credential = auth_credential.model_copy(deep=True)
-    exchanged_auth_credential.oauth2.auth_uri = uri
-    exchanged_auth_credential.oauth2.state = state
-    if code_verifier:
-      exchanged_auth_credential.oauth2.code_verifier = code_verifier
+    if exchanged_auth_credential.oauth2:
+      exchanged_auth_credential.oauth2.auth_uri = uri
+      exchanged_auth_credential.oauth2.state = state
+      if code_verifier:
+        exchanged_auth_credential.oauth2.code_verifier = code_verifier
 
     return exchanged_auth_credential

@@ -66,13 +66,12 @@ class MockOAuth2Session:
     params = f"client_id={self.client_id}&scope={self.scope}"
     if kwargs.get("audience"):
       params += f"&audience={kwargs.get('audience')}"
-    if kwargs.get("code_challenge_method"):
-      params += (
-          "&code_challenge_method="
-          f"{kwargs.get('code_challenge_method')}"
-      )
-    if kwargs.get("code_challenge"):
-      params += f"&code_challenge={kwargs.get('code_challenge')}"
+    code_challenge_method = self.extra_kwargs.get(
+        "code_challenge_method"
+    ) or kwargs.get("code_challenge_method")
+    if code_challenge_method:
+      params += f"&code_challenge_method={code_challenge_method}"
+      params += "&code_challenge=mock_code_challenge"
     return f"{url}?{params}", "mock_state"
 
   def fetch_token(
