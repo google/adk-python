@@ -35,3 +35,20 @@ except ImportError:
       ' VertexAiRagMemoryService please install it. If not, you can ignore this'
       ' warning.'
   )
+
+try:
+  from .database_memory_service import DatabaseMemoryService
+  from .memory_search_backend import KeywordSearchBackend
+  from .memory_search_backend import MemorySearchBackend
+
+  __all__ += [
+      'DatabaseMemoryService',
+      'KeywordSearchBackend',
+      'MemorySearchBackend',
+  ]
+except ImportError:
+  logger.debug(
+      'SQLAlchemy or an async DB driver is not installed. If you want to use'
+      ' DatabaseMemoryService please install sqlalchemy and an async driver'
+      ' (e.g. aiosqlite for SQLite). If not, you can ignore this warning.'
+  )

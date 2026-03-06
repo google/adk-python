@@ -99,6 +99,9 @@ Thumbs.db
 *.tmp
 *.temp
 
+# Agent handoff / session notes (not for version control)
+AGENT_HANDOFF.md
+
 # AI Coding Tools - Project-specific configs
 # Developers should symlink or copy AGENTS.md and add their own overrides locally
 .adk/
