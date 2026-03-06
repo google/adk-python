@@ -18,8 +18,8 @@ from unittest.mock import create_autospec
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
-from google.adk.tools import api_registry
-from google.adk.tools.api_registry import ApiRegistry
+from google.adk.integrations import api_registry
+from google.adk.integrations.api_registry import ApiRegistry
 from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
 import httpx
 
@@ -218,7 +218,10 @@ class TestApiRegistry(unittest.IsolatedAsyncioTestCase):
       )
     mock_response.raise_for_status.assert_called_once()
 
-  @patch("google.adk.tools.api_registry.McpToolset", autospec=True)
+  @patch(
+      "google.adk.integrations.api_registry.api_registry.McpToolset",
+      autospec=True,
+  )
   @patch("httpx.Client", autospec=True)
   async def test_get_toolset_success(self, MockHttpClient, MockMcpToolset):
     mock_response = MagicMock()
@@ -245,7 +248,10 @@ class TestApiRegistry(unittest.IsolatedAsyncioTestCase):
     )
     self.assertEqual(toolset, MockMcpToolset.return_value)
 
-  @patch("google.adk.tools.api_registry.McpToolset", autospec=True)
+  @patch(
+      "google.adk.integrations.api_registry.api_registry.McpToolset",
+      autospec=True,
+  )
   @patch("httpx.Client", autospec=True)
   async def test_get_toolset_with_quota_project_id_success(
       self, MockHttpClient, MockMcpToolset
@@ -277,7 +283,10 @@ class TestApiRegistry(unittest.IsolatedAsyncioTestCase):
     )
     self.assertEqual(toolset, MockMcpToolset.return_value)
 
-  @patch("google.adk.tools.api_registry.McpToolset", autospec=True)
+  @patch(
+      "google.adk.integrations.api_registry.api_registry.McpToolset",
+      autospec=True,
+  )
   @patch("httpx.Client", autospec=True)
   async def test_get_toolset_with_filter_and_prefix(
       self, MockHttpClient, MockMcpToolset
@@ -321,7 +330,7 @@ class TestApiRegistry(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(httpx, "Client", autospec=True) as MockHttpClient,
             patch.object(
-                api_registry, "McpToolset", autospec=True
+                api_registry.api_registry, "McpToolset", autospec=True
             ) as MockMcpToolset,
         ):
           mock_response = create_autospec(httpx.Response, instance=True)

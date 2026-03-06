@@ -27,6 +27,7 @@ from google.adk.auth import auth_schemes
 from google.adk.auth.auth_tool import AuthConfig
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
+from google.adk.events.event_actions import EventCompaction
 from google.adk.sessions.base_session_service import GetSessionConfig
 from google.adk.sessions.session import Session
 from google.adk.sessions.vertex_ai_session_service import VertexAiSessionService
@@ -826,3 +827,87 @@ async def test_append_event():
   assert len(retrieved_session.events) == 2
   event_to_append.id = retrieved_session.events[1].id
   assert retrieved_session.events[1] == event_to_append
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
+async def test_append_event_with_compaction():
+  """Compaction data round-trips through append_event and get_session."""
+  session_service = mock_vertex_ai_session_service()
+  session = await session_service.get_session(
+      app_name='123', user_id='user', session_id='1'
+  )
+  assert session is not None
+
+  compaction = EventCompaction(
+      start_timestamp=1000.0,
+      end_timestamp=2000.0,
+      compacted_content=genai_types.Content(
+          parts=[genai_types.Part(text='compacted summary')]
+      ),
+  )
+  event_to_append = Event(
+      invocation_id='compaction_invocation',
+      author='model',
+      timestamp=1734005534.0,
+      actions=EventActions(compaction=compaction),
+  )
+
+  await session_service.append_event(session, event_to_append)
+
+  retrieved_session = await session_service.get_session(
+      app_name='123', user_id='user', session_id='1'
+  )
+  assert retrieved_session is not None
+
+  appended_event = retrieved_session.events[-1]
+  assert appended_event.actions.compaction is not None
+  assert appended_event.actions.compaction.start_timestamp == 1000.0
+  assert appended_event.actions.compaction.end_timestamp == 2000.0
+  assert appended_event.actions.compaction.compacted_content.parts[0].text == (
+      'compacted summary'
+  )
+  # custom_metadata should remain None when only compaction was stored
+  assert appended_event.custom_metadata is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
+async def test_append_event_with_compaction_and_custom_metadata():
+  """Both compaction and user custom_metadata survive the round-trip."""
+  session_service = mock_vertex_ai_session_service()
+  session = await session_service.get_session(
+      app_name='123', user_id='user', session_id='1'
+  )
+  assert session is not None
+
+  compaction = EventCompaction(
+      start_timestamp=100.0,
+      end_timestamp=200.0,
+      compacted_content=genai_types.Content(
+          parts=[genai_types.Part(text='summary')]
+      ),
+  )
+  event_to_append = Event(
+      invocation_id='compaction_and_meta_invocation',
+      author='model',
+      timestamp=1734005535.0,
+      actions=EventActions(compaction=compaction),
+      custom_metadata={'user_key': 'user_value'},
+  )
+
+  await session_service.append_event(session, event_to_append)
+
+  retrieved_session = await session_service.get_session(
+      app_name='123', user_id='user', session_id='1'
+  )
+  assert retrieved_session is not None
+
+  appended_event = retrieved_session.events[-1]
+  # Compaction is restored
+  assert appended_event.actions.compaction is not None
+  assert appended_event.actions.compaction.start_timestamp == 100.0
+  assert appended_event.actions.compaction.end_timestamp == 200.0
+  # User custom_metadata is preserved without the internal _compaction key
+  assert appended_event.custom_metadata == {'user_key': 'user_value'}
+  assert '_compaction' not in (appended_event.custom_metadata or {})

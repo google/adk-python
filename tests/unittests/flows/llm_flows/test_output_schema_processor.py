@@ -199,7 +199,6 @@ async def test_output_schema_request_processor(
 @pytest.mark.asyncio
 async def test_set_model_response_tool():
   """Test the set_model_response tool functionality."""
-  from google.adk.tools.set_model_response_tool import MODEL_JSON_RESPONSE_KEY
   from google.adk.tools.set_model_response_tool import SetModelResponseTool
   from google.adk.tools.tool_context import ToolContext
 
@@ -215,17 +214,11 @@ async def test_set_model_response_tool():
       tool_context=tool_context,
   )
 
-  # Verify the tool now returns dict directly
+  # Verify the tool returns dict directly
   assert result is not None
   assert result['name'] == 'John Doe'
   assert result['age'] == 30
   assert result['city'] == 'New York'
-
-  # Check that the response is no longer stored in session state
-  stored_response = invocation_context.session.state.get(
-      MODEL_JSON_RESPONSE_KEY
-  )
-  assert stored_response is None
 
 
 @pytest.mark.asyncio
@@ -325,6 +318,48 @@ async def test_get_structured_model_response_with_non_ascii():
   extracted_json = get_structured_model_response(function_response_event)
 
   # Assert that the output is the expected JSON string without escaped characters
+  assert extracted_json == expected_json
+
+
+@pytest.mark.asyncio
+async def test_get_structured_model_response_with_wrapped_result():
+  """Test get_structured_model_response with wrapped list result.
+
+  When a tool returns a non-dict (e.g., list), it gets wrapped as
+  {'result': [...]}.  This test ensures we correctly unwrap the result.
+  """
+  from google.adk.events.event import Event
+  from google.adk.flows.llm_flows._output_schema_processor import get_structured_model_response
+  from google.genai import types
+
+  # Simulate a list result wrapped by ADK's functions.py
+  wrapped_response = {
+      'result': [
+          {'name': 'Alice', 'age': 30},
+          {'name': 'Bob', 'age': 25},
+      ]
+  }
+  expected_json = '[{"name": "Alice", "age": 30}, {"name": "Bob", "age": 25}]'
+
+  # Create a function response event with wrapped result
+  function_response_event = Event(
+      author='test_agent',
+      content=types.Content(
+          role='user',
+          parts=[
+              types.Part(
+                  function_response=types.FunctionResponse(
+                      name='set_model_response', response=wrapped_response
+                  )
+              )
+          ],
+      ),
+  )
+
+  # Get the structured response
+  extracted_json = get_structured_model_response(function_response_event)
+
+  # Should extract the unwrapped list, not the wrapped dict
   assert extracted_json == expected_json
 
 

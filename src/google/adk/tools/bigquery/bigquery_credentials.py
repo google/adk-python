@@ -19,6 +19,10 @@ from ...features import FeatureName
 from .._google_credentials import BaseGoogleCredentialsConfig
 
 BIGQUERY_TOKEN_CACHE_KEY = "bigquery_token_cache"
+BIGQUERY_SCOPES = [
+    "https://www.googleapis.com/auth/bigquery",
+    "https://www.googleapis.com/auth/dataplex",
+]
 BIGQUERY_DEFAULT_SCOPE = ["https://www.googleapis.com/auth/bigquery"]
 
 
@@ -34,8 +38,8 @@ class BigQueryCredentialsConfig(BaseGoogleCredentialsConfig):
     super().__post_init__()
 
     if not self.scopes:
-      self.scopes = BIGQUERY_DEFAULT_SCOPE
-
+      self.scopes = BIGQUERY_SCOPES
+    # Set the token cache key
     self._token_cache_key = BIGQUERY_TOKEN_CACHE_KEY
 
     return self
