@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import base64
 import json
 import os
 import sys
@@ -526,6 +527,40 @@ def test_part_to_message_block_with_multiple_content_items():
   assert result["content"] == "First part\nSecond part"
 
 
+def test_part_to_message_block_with_pdf_document():
+  """Test that part_to_message_block handles PDF document parts."""
+  pdf_data = b"%PDF-1.4 fake pdf content"
+  part = Part(
+      inline_data=types.Blob(mime_type="application/pdf", data=pdf_data)
+  )
+
+  result = part_to_message_block(part)
+
+  assert isinstance(result, dict)
+  assert result["type"] == "document"
+  assert result["source"]["type"] == "base64"
+  assert result["source"]["media_type"] == "application/pdf"
+  assert result["source"]["data"] == base64.b64encode(pdf_data).decode()
+
+
+def test_part_to_message_block_with_pdf_mime_type_parameters():
+  """Test that PDF parts with MIME type parameters are handled correctly."""
+  pdf_data = b"%PDF-1.4 fake pdf content"
+  part = Part(
+      inline_data=types.Blob(
+          mime_type="application/pdf; name=doc.pdf", data=pdf_data
+      )
+  )
+
+  result = part_to_message_block(part)
+
+  assert isinstance(result, dict)
+  assert result["type"] == "document"
+  assert result["source"]["type"] == "base64"
+  assert result["source"]["media_type"] == "application/pdf; name=doc.pdf"
+  assert result["source"]["data"] == base64.b64encode(pdf_data).decode()
+
+
 content_to_message_param_test_cases = [
     (
         "user_role_with_text_and_image",
@@ -542,7 +577,7 @@ content_to_message_param_test_cases = [
         ),
         "user",
         2,  # Expected content length
-        False,  # Should not log warning
+        None,  # No warning expected
     ),
     (
         "model_role_with_text_and_image",
@@ -559,7 +594,7 @@ content_to_message_param_test_cases = [
         ),
         "assistant",
         1,  # Image filtered out, only text remains
-        True,  # Should log warning
+        "Image data is not supported in Claude for assistant turns.",
     ),
     (
         "assistant_role_with_text_and_image",
@@ -576,30 +611,62 @@ content_to_message_param_test_cases = [
         ),
         "assistant",
         1,  # Image filtered out, only text remains
-        True,  # Should log warning
+        "Image data is not supported in Claude for assistant turns.",
+    ),
+    (
+        "user_role_with_text_and_document",
+        Content(
+            role="user",
+            parts=[
+                Part.from_text(text="Summarize this document."),
+                Part(
+                    inline_data=types.Blob(
+                        mime_type="application/pdf", data=b"fake_pdf_data"
+                    )
+                ),
+            ],
+        ),
+        "user",
+        2,  # Both text and document included
+        None,  # No warning expected
+    ),
+    (
+        "model_role_with_text_and_document",
+        Content(
+            role="model",
+            parts=[
+                Part.from_text(text="Here is the summary."),
+                Part(
+                    inline_data=types.Blob(
+                        mime_type="application/pdf", data=b"fake_pdf_data"
+                    )
+                ),
+            ],
+        ),
+        "assistant",
+        1,  # Document filtered out, only text remains
+        "PDF data is not supported in Claude for assistant turns.",
     ),
 ]
 
 
 @pytest.mark.parametrize(
-    "_, content, expected_role, expected_content_length, should_log_warning",
+    "_, content, expected_role, expected_content_length, expected_warning",
     content_to_message_param_test_cases,
     ids=[case[0] for case in content_to_message_param_test_cases],
 )
-def test_content_to_message_param_with_images(
-    _, content, expected_role, expected_content_length, should_log_warning
+def test_content_to_message_param(
+    _, content, expected_role, expected_content_length, expected_warning
 ):
-  """Test content_to_message_param handles images correctly based on role."""
+  """Test content_to_message_param handles images and documents based on role."""
   with mock.patch("google.adk.models.anthropic_llm.logger") as mock_logger:
     result = content_to_message_param(content)
 
     assert result["role"] == expected_role
     assert len(result["content"]) == expected_content_length
 
-    if should_log_warning:
-      mock_logger.warning.assert_called_once_with(
-          "Image data is not supported in Claude for assistant turns."
-      )
+    if expected_warning:
+      mock_logger.warning.assert_called_once_with(expected_warning)
     else:
       mock_logger.warning.assert_not_called()
 
