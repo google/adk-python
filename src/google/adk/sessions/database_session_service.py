@@ -536,11 +536,7 @@ class DatabaseSessionService(BaseSessionService):
     is_sqlite = self.db_engine.dialect.name == _SQLITE_DIALECT
     use_row_level_locking = self._supports_row_level_locking()
 
-    state_delta = (
-        event.actions.state_delta
-        if event.actions and event.actions.state_delta
-        else {}
-    )
+    state_delta = event.actions.state_delta if event.actions.state_delta else {}
     state_deltas = _session_util.extract_state_delta(state_delta)
     has_app_delta = bool(state_deltas["app"])
     has_user_delta = bool(state_deltas["user"])
@@ -570,7 +566,7 @@ class DatabaseSessionService(BaseSessionService):
         # unnecessarily serializes all concurrent append_event calls.
         state_deltas = (
             _session_util.extract_state_delta(event.actions.state_delta)
-            if event.actions and event.actions.state_delta
+            if event.actions.state_delta
             else None
         )
         has_app_delta = bool(state_deltas and state_deltas.get("app"))
