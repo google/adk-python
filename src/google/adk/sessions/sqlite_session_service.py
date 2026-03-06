@@ -361,6 +361,9 @@ class SqliteSessionService(BaseSessionService):
     if event.partial:
       return event
 
+    # Apply temp state to in-memory session before trimming, so that
+    # subsequent agents within the same invocation can read temp values.
+    self._apply_temp_state(session, event)
     # Trim temp state before persisting
     event = self._trim_temp_delta_state(event)
     event_timestamp = event.timestamp

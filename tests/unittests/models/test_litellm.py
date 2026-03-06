@@ -27,6 +27,7 @@ import warnings
 from google.adk.models.lite_llm import _append_fallback_user_content_if_missing
 from google.adk.models.lite_llm import _content_to_message_param
 from google.adk.models.lite_llm import _enforce_strict_openai_schema
+from google.adk.models.lite_llm import _extract_reasoning_value
 from google.adk.models.lite_llm import _FILE_ID_REQUIRED_PROVIDERS
 from google.adk.models.lite_llm import _FINISH_REASON_MAPPING
 from google.adk.models.lite_llm import _function_declaration_to_tool_param
@@ -2285,6 +2286,139 @@ def test_model_response_to_generate_content_response_reasoning_content():
   assert response.content.parts[1].text == "Answer"
 
 
+def test_message_to_generate_content_response_reasoning_field():
+  """Test that the 'reasoning' field is supported (LM Studio, vLLM)."""
+  message = {
+      "role": "assistant",
+      "content": "Final answer",
+      "reasoning": "Thinking process",
+  }
+  response = _message_to_generate_content_response(message)
+
+  assert len(response.content.parts) == 2
+  thought_part = response.content.parts[0]
+  text_part = response.content.parts[1]
+  assert thought_part.text == "Thinking process"
+  assert thought_part.thought is True
+  assert text_part.text == "Final answer"
+
+
+def test_model_response_to_generate_content_response_reasoning_field():
+  """Test that 'reasoning' field is supported in ModelResponse."""
+  model_response = ModelResponse(
+      model="test-model",
+      choices=[{
+          "message": {
+              "role": "assistant",
+              "content": "Result",
+              "reasoning": "Chain of thought",
+          },
+          "finish_reason": "stop",
+      }],
+  )
+
+  response = _model_response_to_generate_content_response(model_response)
+
+  assert response.content.parts[0].text == "Chain of thought"
+  assert response.content.parts[0].thought is True
+  assert response.content.parts[1].text == "Result"
+
+
+def test_reasoning_content_takes_precedence_over_reasoning():
+  """Test that 'reasoning_content' is prioritized over 'reasoning'."""
+  message = {
+      "role": "assistant",
+      "content": "Answer",
+      "reasoning_content": "LiteLLM standard reasoning",
+      "reasoning": "Alternative reasoning",
+  }
+  response = _message_to_generate_content_response(message)
+
+  assert len(response.content.parts) == 2
+  thought_part = response.content.parts[0]
+  assert thought_part.text == "LiteLLM standard reasoning"
+  assert thought_part.thought is True
+
+
+def test_extract_reasoning_value_from_reasoning_content():
+  """Test extraction from reasoning_content (LiteLLM standard)."""
+  message = ChatCompletionAssistantMessage(
+      role="assistant",
+      content="Answer",
+      reasoning_content="LiteLLM reasoning",
+  )
+  result = _extract_reasoning_value(message)
+  assert result == "LiteLLM reasoning"
+
+
+def test_extract_reasoning_value_from_reasoning():
+  """Test extraction from reasoning (LM Studio, vLLM)."""
+
+  class MockMessage:
+
+    def __init__(self):
+      self.role = "assistant"
+      self.content = "Answer"
+      self.reasoning = "Alternative reasoning"
+
+    def get(self, key, default=None):
+      return getattr(self, key, default)
+
+  message = MockMessage()
+  result = _extract_reasoning_value(message)
+  assert result == "Alternative reasoning"
+
+
+def test_extract_reasoning_value_dict_reasoning_content():
+  """Test extraction from dict with reasoning_content field."""
+  message = {
+      "role": "assistant",
+      "content": "Answer",
+      "reasoning_content": "Dict reasoning content",
+  }
+  result = _extract_reasoning_value(message)
+  assert result == "Dict reasoning content"
+
+
+def test_extract_reasoning_value_dict_reasoning():
+  """Test extraction from dict with reasoning field."""
+  message = {
+      "role": "assistant",
+      "content": "Answer",
+      "reasoning": "Dict reasoning",
+  }
+  result = _extract_reasoning_value(message)
+  assert result == "Dict reasoning"
+
+
+def test_extract_reasoning_value_dict_prefers_reasoning_content():
+  """Test that reasoning_content takes precedence over reasoning in dicts."""
+  message = {
+      "role": "assistant",
+      "content": "Answer",
+      "reasoning_content": "Primary",
+      "reasoning": "Secondary",
+  }
+  result = _extract_reasoning_value(message)
+  assert result == "Primary"
+
+
+def test_extract_reasoning_value_none_message():
+  """Test that None message returns None."""
+  result = _extract_reasoning_value(None)
+  assert result is None
+
+
+def test_extract_reasoning_value_no_reasoning_fields():
+  """Test that None is returned when no reasoning fields exist."""
+  message = {
+      "role": "assistant",
+      "content": "Answer only",
+  }
+  result = _extract_reasoning_value(message)
+  assert result is None
+
+
 def test_parse_tool_calls_from_text_multiple_calls():
   text = (
       '{"name":"alpha","arguments":{"value":1}}\n'
@@ -2819,7 +2953,12 @@ def test_to_litellm_role():
                             "content": "this is a test",
                         }
                     }
-                ]
+                ],
+                usage={
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0,
+                },
             ),
             [TextChunk(text="this is a test")],
             UsageMetadataChunk(
@@ -2877,7 +3016,14 @@ def test_to_litellm_role():
             (None, "stop"),
         ),
         (
-            ModelResponse(choices=[{"finish_reason": "tool_calls"}]),
+            ModelResponse(
+                choices=[{"finish_reason": "tool_calls"}],
+                usage={
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0,
+                },
+            ),
             [None],
             UsageMetadataChunk(
                 prompt_tokens=0, completion_tokens=0, total_tokens=0
@@ -2885,7 +3031,14 @@ def test_to_litellm_role():
             "tool_calls",
         ),
         (
-            ModelResponse(choices=[{}]),
+            ModelResponse(
+                choices=[{}],
+                usage={
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0,
+                },
+            ),
             [None],
             UsageMetadataChunk(
                 prompt_tokens=0, completion_tokens=0, total_tokens=0
@@ -2962,7 +3115,8 @@ def test_to_litellm_role():
                         finish_reason=None,
                         delta=Delta(role="assistant", content="Hello"),
                     )
-                ]
+                ],
+                usage=None,
             ),
             [TextChunk(text="Hello")],
             None,
@@ -2977,7 +3131,8 @@ def test_to_litellm_role():
                             role="assistant", reasoning_content="thinking..."
                         ),
                     )
-                ]
+                ],
+                usage=None,
             ),
             [
                 ReasoningChunk(

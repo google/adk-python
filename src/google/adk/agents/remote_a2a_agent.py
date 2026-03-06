@@ -38,6 +38,7 @@ from a2a.types import Message as A2AMessage
 from a2a.types import MessageSendConfiguration
 from a2a.types import Part as A2APart
 from a2a.types import Role
+from a2a.types import Task as A2ATask
 from a2a.types import TaskArtifactUpdateEvent as A2ATaskArtifactUpdateEvent
 from a2a.types import TaskState
 from a2a.types import TaskStatusUpdateEvent as A2ATaskStatusUpdateEvent
@@ -62,6 +63,7 @@ from ..a2a.converters.part_converter import A2APartToGenAIPartConverter
 from ..a2a.converters.part_converter import convert_a2a_part_to_genai_part
 from ..a2a.converters.part_converter import convert_genai_part_to_a2a_part
 from ..a2a.converters.part_converter import GenAIPartToA2APartConverter
+from ..a2a.converters.utils import _get_adk_metadata_key
 from ..a2a.experimental import a2a_experimental
 from ..a2a.logs.log_utils import build_a2a_request_log
 from ..a2a.logs.log_utils import build_a2a_response_log
@@ -522,6 +524,76 @@ class RemoteA2aAgent(BaseAgent):
           branch=ctx.branch,
       )
 
+  async def _handle_a2a_response_v2(
+      self, a2a_response: A2AClientEvent | A2AMessage, ctx: InvocationContext
+  ) -> Optional[Event]:
+    """Handle A2A response and convert to Event.
+
+    Args:
+      a2a_response: The A2A response object
+      ctx: The invocation context
+
+    Returns:
+      Event object representing the response, or None if no event should be
+      emitted.
+    """
+    try:
+      if isinstance(a2a_response, tuple):
+        task, update = a2a_response
+        event = None
+        if update is None:
+          # This is the initial response for a streaming task or the complete
+          # response for a non-streaming task.
+          event = self._config.a2a_task_converter(
+              task, self.name, ctx, self._config.a2a_part_converter
+          )
+        elif isinstance(update, A2ATaskStatusUpdateEvent):
+          # This is a streaming task status update.
+          event = self._config.a2a_status_update_converter(
+              update, self.name, ctx, self._config.a2a_part_converter
+          )
+        elif isinstance(update, A2ATaskArtifactUpdateEvent):
+          # This is a streaming task artifact update.
+          event = self._config.a2a_artifact_update_converter(
+              update, self.name, ctx, self._config.a2a_part_converter
+          )
+        if not event:
+          return None
+        event.custom_metadata = event.custom_metadata or {}
+        event.custom_metadata[A2A_METADATA_PREFIX + "task_id"] = task.id
+        if task.context_id:
+          event.custom_metadata[A2A_METADATA_PREFIX + "context_id"] = (
+              task.context_id
+          )
+
+      # Otherwise, it's a regular A2AMessage.
+      elif isinstance(a2a_response, A2AMessage):
+        event = self._config.a2a_message_converter(
+            a2a_response, self.name, ctx, self._config.a2a_part_converter
+        )
+        event.custom_metadata = event.custom_metadata or {}
+
+        if a2a_response.context_id:
+          event.custom_metadata[A2A_METADATA_PREFIX + "context_id"] = (
+              a2a_response.context_id
+          )
+      else:
+        event = Event(
+            author=self.name,
+            error_message="Unknown A2A response type",
+            invocation_id=ctx.invocation_id,
+            branch=ctx.branch,
+        )
+      return event
+    except A2AClientError as e:
+      logger.error("Failed to handle A2A response: %s", e)
+      return Event(
+          author=self.name,
+          error_message=f"Failed to process A2A response: {e}",
+          invocation_id=ctx.invocation_id,
+          branch=ctx.branch,
+      )
+
   async def _run_async_impl(
       self, ctx: InvocationContext
   ) -> AsyncGenerator[Event, None]:
@@ -589,7 +661,20 @@ class RemoteA2aAgent(BaseAgent):
       ):
         logger.debug(build_a2a_response_log(a2a_response))
 
-        event = await self._handle_a2a_response(a2a_response, ctx)
+        metadata = None
+        if isinstance(a2a_response, tuple):
+          task = a2a_response[0]
+          if task:
+            metadata = task.metadata
+        else:
+          metadata = a2a_response.metadata
+
+        if metadata and metadata.get(
+            _get_adk_metadata_key("agent_executor_v2")
+        ):
+          event = await self._handle_a2a_response_v2(a2a_response, ctx)
+        else:
+          event = await self._handle_a2a_response(a2a_response, ctx)
         if not event:
           continue
 
