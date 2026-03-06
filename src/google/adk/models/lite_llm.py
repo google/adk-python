@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import copy
 import importlib.util
 import json
@@ -1506,7 +1507,7 @@ def _message_to_generate_content_response(
           part.function_call.id = raw_id
           try:
             part.thought_signature = base64.b64decode(sig)
-          except Exception:
+          except binascii.Error:
             logger.warning(
                 "Failed to decode thought_signature from tool_call id %s",
                 tool_call_id,
