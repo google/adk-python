@@ -30,7 +30,7 @@ from google.adk.tools.mcp_tool.mcp_session_manager import MCPSessionManager
 from google.adk.tools.mcp_tool.mcp_session_manager import SseConnectionParams
 from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
 from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
-from google.adk.tools.mcp_tool.mcp_tool import McpTool
+from google.adk.tools.mcp_tool.mcp_tool import MCPTool
 from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
 from mcp import StdioServerParameters
 from mcp.types import BlobResourceContents
@@ -179,7 +179,7 @@ class TestMcpToolset:
 
     assert len(tools) == 4
     for tool in tools[:3]:
-      assert isinstance(tool, McpTool)
+      assert isinstance(tool, MCPTool)
     assert isinstance(tools[3], LoadMcpResourceTool)
     assert tools[0].name == "tool1"
     assert tools[1].name == "tool2"

@@ -52,7 +52,7 @@ from .mcp_session_manager import retry_on_errors
 from .mcp_session_manager import SseConnectionParams
 from .mcp_session_manager import StdioConnectionParams
 from .mcp_session_manager import StreamableHTTPConnectionParams
-from .mcp_tool import McpTool
+from .mcp_tool import MCPTool
 from .mcp_tool import ProgressCallbackFactory
 
 logger = logging.getLogger("google_adk." + __name__)
@@ -310,7 +310,7 @@ class McpToolset(BaseToolset):
     # Apply filtering based on context and tool_filter
     tools = []
     for tool in tools_response.tools:
-      mcp_tool = McpTool(
+      mcp_tool = MCPTool(
           mcp_tool=tool,
           mcp_session_manager=self._mcp_session_manager,
           auth_scheme=self._auth_scheme,
