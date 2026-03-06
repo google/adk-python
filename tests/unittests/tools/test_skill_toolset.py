@@ -21,6 +21,7 @@ from google.adk.models import llm_request as llm_request_model
 from google.adk.skills import models
 from google.adk.tools import skill_toolset
 from google.adk.tools import tool_context
+from google.genai import types
 import pytest
 
 
@@ -60,11 +61,15 @@ def mock_skill1(mock_skill1_frontmatter):
   def get_ref(name):
     if name == "ref1.md":
       return "ref content 1"
+    if name == "doc.pdf":
+      return b"fake pdf content"
     return None
 
   def get_asset(name):
     if name == "asset1.txt":
       return "asset content 1"
+    if name == "image.png":
+      return b"fake image content"
     return None
 
   def get_script(name):
@@ -79,8 +84,8 @@ def mock_skill1(mock_skill1_frontmatter):
   skill.resources.get_reference.side_effect = get_ref
   skill.resources.get_asset.side_effect = get_asset
   skill.resources.get_script.side_effect = get_script
-  skill.resources.list_references.return_value = ["ref1.md"]
-  skill.resources.list_assets.return_value = ["asset1.txt"]
+  skill.resources.list_references.return_value = ["ref1.md", "doc.pdf"]
+  skill.resources.list_assets.return_value = ["asset1.txt", "image.png"]
   skill.resources.list_scripts.return_value = [
       "setup.sh",
       "run.py",
@@ -251,6 +256,28 @@ async def test_load_skill_run_async(
             },
         ),
         (
+            {"skill_name": "skill1", "path": "references/doc.pdf"},
+            {
+                "skill_name": "skill1",
+                "path": "references/doc.pdf",
+                "status": (
+                    "Binary file detected. The content has been injected into"
+                    " the conversation history for you to analyze."
+                ),
+            },
+        ),
+        (
+            {"skill_name": "skill1", "path": "assets/image.png"},
+            {
+                "skill_name": "skill1",
+                "path": "assets/image.png",
+                "status": (
+                    "Binary file detected. The content has been injected into"
+                    " the conversation history for you to analyze."
+                ),
+            },
+        ),
+        (
             {"skill_name": "skill1", "path": "scripts/setup.sh"},
             {
                 "skill_name": "skill1",
@@ -308,6 +335,56 @@ async def test_load_resource_run_async(
   tool = skill_toolset.LoadSkillResourceTool(toolset)
   result = await tool.run_async(args=args, tool_context=tool_context_instance)
   assert result == expected_result
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "resource_path, expected_mime, fake_content",
+    [
+        ("references/doc.pdf", "application/pdf", b"fake pdf content"),
+        ("assets/image.png", "image/png", b"fake image content"),
+    ],
+)
+async def test_load_resource_process_llm_request_binary(
+    mock_skill1,
+    tool_context_instance,
+    resource_path,
+    expected_mime,
+    fake_content,
+):
+  toolset = skill_toolset.SkillToolset([mock_skill1])
+  tool = skill_toolset.LoadSkillResourceTool(toolset)
+
+  llm_req = mock.create_autospec(llm_request_model.LlmRequest, instance=True)
+
+  part = types.Part.from_function_response(
+      name=tool.name,
+      response={
+          "skill_name": "skill1",
+          "path": resource_path,
+          "status": (
+              "Binary file detected. The content has been injected into the"
+              " conversation history for you to analyze."
+          ),
+      },
+  )
+  content = types.Content(role="model", parts=[part])
+  llm_req.contents = [content]
+
+  await tool.process_llm_request(
+      tool_context=tool_context_instance, llm_request=llm_req
+  )
+
+  assert len(llm_req.contents) == 2
+  injected_content = llm_req.contents[1]
+  assert injected_content.role == "user"
+  assert len(injected_content.parts) == 2
+  assert (
+      f"The content of binary file '{resource_path}' is:"
+      in injected_content.parts[0].text
+  )
+  assert injected_content.parts[1].inline_data.data == fake_content
+  assert injected_content.parts[1].inline_data.mime_type == expected_mime
 
 
 @pytest.mark.asyncio

@@ -30,7 +30,7 @@ _NAME_PATTERN = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 
 
 class Frontmatter(BaseModel):
-  """L1 skill content: metadata parsed from SKILL.md frontmatter for skill discovery.
+  """L1 skill content: metadata parsed from SKILL.md for skill discovery.
 
   Attributes:
       name: Skill name in kebab-case (required).
@@ -117,7 +117,7 @@ class Script(BaseModel):
 
 
 class Resources(BaseModel):
-  """L3 skill content: additional instructions, assets, and scripts, loaded as needed.
+  """L3 skill content: additional instructions, assets, and scripts.
 
   Attributes:
       references: Additional markdown files with instructions, workflows, or
@@ -127,29 +127,29 @@ class Resources(BaseModel):
       scripts: Executable scripts that can be run via bash.
   """
 
-  references: dict[str, str] = {}
-  assets: dict[str, str] = {}
+  references: dict[str, str | bytes] = {}
+  assets: dict[str, str | bytes] = {}
   scripts: dict[str, Script] = {}
 
-  def get_reference(self, reference_id: str) -> Optional[str]:
+  def get_reference(self, reference_id: str) -> Optional[str | bytes]:
     """Get content of a reference file.
 
     Args:
         reference_id: Unique path or name of the reference file.
 
     Returns:
-        Reference content as string, or None if not found
+        Reference content as string or bytes, or None if not found
     """
     return self.references.get(reference_id)
 
-  def get_asset(self, asset_id: str) -> Optional[str]:
+  def get_asset(self, asset_id: str) -> Optional[str | bytes]:
     """Get content of an asset file.
 
     Args:
         asset_id: Unique path or name of the asset file.
 
     Returns:
-        Asset content as string, or None if not found
+        Asset content as string or bytes, or None if not found
     """
     return self.assets.get(asset_id)
 

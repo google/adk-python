@@ -21,12 +21,14 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import mimetypes
 from typing import Any
 from typing import Optional
 from typing import TYPE_CHECKING
 import warnings
 
 from google.genai import types
+from typing_extensions import override
 
 from ..agents.readonly_context import ReadonlyContext
 from ..code_executors.base_code_executor import BaseCodeExecutor
@@ -48,6 +50,12 @@ logger = logging.getLogger("google_adk." + __name__)
 
 _DEFAULT_SCRIPT_TIMEOUT = 300
 _MAX_SKILL_PAYLOAD_BYTES = 16 * 1024 * 1024  # 16 MB
+
+# Message used for the "Content Injection" pattern.
+_BINARY_FILE_DETECTED_MSG = (
+    "Binary file detected. The content has been injected into the"
+    " conversation history for you to analyze."
+)
 
 _DEFAULT_SKILL_SYSTEM_INSTRUCTION = """You can use specialized 'skills' to help you with complex tasks. You MUST use the skill tools to interact with these skills.
 
@@ -246,11 +254,83 @@ class LoadSkillResourceTool(BaseTool):
           "error_code": "RESOURCE_NOT_FOUND",
       }
 
+    if isinstance(content, bytes):
+      return {
+          "skill_name": skill_name,
+          "path": resource_path,
+          "status": _BINARY_FILE_DETECTED_MSG,
+      }
+
     return {
         "skill_name": skill_name,
         "path": resource_path,
         "content": content,
     }
+
+  @override
+  async def process_llm_request(
+      self, *, tool_context: ToolContext, llm_request: Any
+  ) -> None:
+    """Injects binary content into the LLM request if the model viewed it."""
+    await super().process_llm_request(
+        tool_context=tool_context, llm_request=llm_request
+    )
+
+    if not llm_request.contents:
+      return
+
+    # Check for LoadSkillResource calls on binary files in the last turn
+    for part in llm_request.contents[-1].parts:
+      if not part.function_response or part.function_response.name != self.name:
+        continue
+
+      response = part.function_response.response or {}
+      if response.get("status") != _BINARY_FILE_DETECTED_MSG:
+        continue
+
+      skill_name = response.get("skill_name")
+      resource_path = response.get("path")
+      if not skill_name or not resource_path:
+        continue
+
+      skill = self._toolset._get_skill(skill_name)
+      if not skill:
+        continue
+
+      # Find the binary content
+      content = None
+      if resource_path.startswith("references/"):
+        ref_name = resource_path[len("references/") :]
+        content = skill.resources.get_reference(ref_name)
+      elif resource_path.startswith("assets/"):
+        asset_name = resource_path[len("assets/") :]
+        content = skill.resources.get_asset(asset_name)
+
+      if not isinstance(content, bytes):
+        continue
+
+      # Determine mime type based on extension
+      mime_type, _ = mimetypes.guess_type(resource_path)
+      if not mime_type:
+        mime_type = "application/octet-stream"
+
+      # Append binary content to llm_request
+      llm_request.contents.append(
+          types.Content(
+              role="user",
+              parts=[
+                  types.Part.from_text(
+                      text=f"The content of binary file '{resource_path}' is:"
+                  ),
+                  types.Part(
+                      inline_data=types.Blob(
+                          data=content,
+                          mime_type=mime_type,
+                      )
+                  ),
+              ],
+          )
+      )
 
 
 class _SkillScriptCodeExecutor:
