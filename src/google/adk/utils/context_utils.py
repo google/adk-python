@@ -26,6 +26,7 @@ from typing import Any
 from typing import Callable
 from typing import get_args
 from typing import get_origin
+from typing import get_type_hints
 from typing import Union
 
 # Re-export aclosing for backward compatibility
@@ -80,7 +81,12 @@ def find_context_parameter(func: Callable[..., Any]) -> str | None:
     signature = inspect.signature(func)
   except (ValueError, TypeError):
     return None
+  try:
+    hints = get_type_hints(func)
+  except (NameError, TypeError, AttributeError):
+    hints = {}
   for name, param in signature.parameters.items():
-    if _is_context_type(param.annotation):
+    annotation = hints.get(name, param.annotation)
+    if _is_context_type(annotation):
       return name
   return None

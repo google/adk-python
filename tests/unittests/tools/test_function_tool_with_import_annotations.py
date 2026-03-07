@@ -16,8 +16,12 @@ from __future__ import annotations
 
 from typing import Any
 from typing import Dict
+from typing import Optional
 
 from google.adk.tools import _automatic_function_calling_util
+from google.adk.tools.function_tool import FunctionTool
+from google.adk.tools.tool_context import ToolContext
+from google.adk.utils.context_utils import find_context_parameter
 from google.adk.utils.variant_utils import GoogleLLMVariant
 from google.genai import types
 
@@ -177,3 +181,41 @@ def test_string_annotation_no_params_vertex():
   # VERTEX_AI should have response schema for string return (stored as string)
   assert declaration.response is not None
   assert declaration.response.type == types.Type.STRING
+
+
+def test_find_context_parameter_detects_custom_name_with_future_annotations():
+  """Test custom param name detection with deferred annotations."""
+
+  # pylint: disable-next=unused-argument
+  def my_tool(ctx: ToolContext) -> str:
+    """A tool with a custom-named context parameter."""
+    return ''
+
+  assert find_context_parameter(my_tool) == 'ctx'
+
+
+def test_find_context_parameter_optional_ctx_with_future_annotations():
+  """Test Optional[ToolContext] detection with deferred annotations."""
+
+  # pylint: disable-next=unused-argument
+  def my_tool(ctx: Optional[ToolContext] = None) -> str:
+    """A tool with an optional context parameter."""
+    return ''
+
+  assert find_context_parameter(my_tool) == 'ctx'
+
+
+def test_function_tool_excludes_custom_context_param_with_future_annotations():
+  """Test schema omits context param with deferred annotations."""
+
+  # pylint: disable-next=unused-argument
+  def my_tool(query: str, ctx: ToolContext) -> str:
+    """A tool with a custom-named context parameter."""
+    return query
+
+  tool = FunctionTool(my_tool)
+  declaration = tool._get_declaration()  # pylint: disable=protected-access
+
+  assert declaration.name == 'my_tool'
+  assert set(declaration.parameters.properties.keys()) == {'query'}
+  assert 'ctx' not in declaration.parameters.properties
