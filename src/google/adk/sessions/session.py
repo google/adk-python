@@ -48,3 +48,5 @@ class Session(BaseModel):
   call/response, etc."""
   last_update_time: float = 0.0
   """The last update time of the session."""
+  event_sequence: int = 0
+  """A monotonically increasing integer for optimistic concurrency control."""
