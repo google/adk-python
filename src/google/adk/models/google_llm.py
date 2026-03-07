@@ -303,13 +303,16 @@ class Gemini(BaseLlm):
       The api client.
     """
     from google.genai import Client
+    from google.cloud.aiplatform import initializer
 
     return Client(
+        location=initializer.global_config.location,
+        project=initializer.global_config.project,
         http_options=types.HttpOptions(
             headers=self._tracking_headers(),
             retry_options=self.retry_options,
             base_url=self.base_url,
-        )
+        ),
     )
 
   @cached_property
@@ -335,11 +338,15 @@ class Gemini(BaseLlm):
   @cached_property
   def _live_api_client(self) -> Client:
     from google.genai import Client
+    from google.cloud.aiplatform import initializer
 
     return Client(
+        location=initializer.global_config.location,
+        project=initializer.global_config.project,
         http_options=types.HttpOptions(
-            headers=self._tracking_headers(), api_version=self._live_api_version
-        )
+            headers=self._tracking_headers(),
+            api_version=self._live_api_version,
+        ),
     )
 
   @contextlib.asynccontextmanager
