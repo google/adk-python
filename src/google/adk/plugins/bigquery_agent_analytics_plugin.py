@@ -503,8 +503,13 @@ class BigQueryLoggerConfig:
   content_formatter: Optional[Callable[[Any, str], Any]] = None
   # If provided, large content (images, audio, video, large text) will be offloaded to this GCS bucket.
   gcs_bucket_name: Optional[str] = None
-  # If provided, this connection ID will be used as the authorizer for ObjectRef columns.
-  # Format: "location.connection_id" (e.g. "us.my-connection")
+  # If provided, this connection ID will be used as the authorizer for
+  # ObjectRef columns and for BigLake Iceberg table creation.
+  # Accepted formats:
+  #   - "location.connection" (e.g. "us.my-connection")
+  #   - "project.location.connection" (e.g. "my-project.us.my-connection")
+  #   - Full resource path ("projects/P/locations/L/connections/C")
+  # For BigLake, the short forms are normalized to the full resource path.
   connection_id: Optional[str] = None
   # If provided, the table will be created as a BigLake managed table
   # for Apache Iceberg.  Requires ``connection_id`` to be set as well.
