@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 from typing import Optional
 
@@ -22,10 +23,29 @@ from pydantic import alias_generators
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
+from pydantic import field_serializer
 
 from ..auth.auth_tool import AuthConfig
 from ..tools.tool_confirmation import ToolConfirmation
 from .ui_widget import UiWidget
+
+
+def _make_json_serializable(obj: Any) -> Any:
+  """Recursively converts an object to a JSON-serializable form.
+
+  Non-serializable leaf values (e.g. Python callables stored in session state)
+  are replaced with a descriptive string so the overall structure can still be
+  persisted without crashing.
+  """
+  if isinstance(obj, dict):
+    return {k: _make_json_serializable(v) for k, v in obj.items()}
+  if isinstance(obj, (list, tuple)):
+    return [_make_json_serializable(v) for v in obj]
+  try:
+    json.dumps(obj)
+    return obj
+  except (TypeError, ValueError):
+    return f'<not serializable: {type(obj).__name__}>'
 
 
 class EventCompaction(BaseModel):
@@ -67,6 +87,10 @@ class EventActions(BaseModel):
   state_delta: dict[str, object] = Field(default_factory=dict)
   """Indicates that the event is updating the state with the given delta."""
 
+  @field_serializer('state_delta', mode='plain')
+  def _serialize_state_delta(self, value: dict[str, object]) -> dict[str, Any]:
+    return _make_json_serializable(value)
+
   artifact_delta: dict[str, int] = Field(default_factory=dict)
   """Indicates that the event is updating an artifact. key is the filename,
   value is the version."""
@@ -106,6 +130,14 @@ class EventActions(BaseModel):
   agent_state: Optional[dict[str, Any]] = None
   """The agent state at the current event, used for checkpoint and resume. This
   should only be set by ADK workflow."""
+
+  @field_serializer('agent_state', mode='plain')
+  def _serialize_agent_state(
+      self, value: Optional[dict[str, Any]]
+  ) -> Optional[dict[str, Any]]:
+    if value is None:
+      return None
+    return _make_json_serializable(value)
 
   rewind_before_invocation_id: Optional[str] = None
   """The invocation id to rewind to. This is only set for rewind event."""
