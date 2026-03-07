@@ -506,6 +506,10 @@ class BigQueryLoggerConfig:
   # If provided, this connection ID will be used as the authorizer for ObjectRef columns.
   # Format: "location.connection_id" (e.g. "us.my-connection")
   connection_id: Optional[str] = None
+  # If provided, the table will be created as a BigLake managed table
+  # for Apache Iceberg.  Requires ``connection_id`` to be set as well.
+  # Format: "gs://bucket/path_to_table/"
+  biglake_storage_uri: Optional[str] = None
 
   # Toggle for session metadata (e.g. gchat thread-id)
   log_session_metadata: bool = True
@@ -1453,9 +1457,42 @@ class HybridContentParser:
     return json_payload, content_parts, is_truncated
 
 
-def _get_events_schema() -> list[bigquery.SchemaField]:
+def _replace_json_with_string(
+    fields: list[bigquery.SchemaField],
+) -> list[bigquery.SchemaField]:
+  """Replaces JSON fields with STRING (for BigLake Iceberg)."""
+  result = []
+  for f in fields:
+    if f.field_type == "JSON":
+      result.append(
+          bigquery.SchemaField(
+              f.name,
+              "STRING",
+              mode=f.mode,
+              description=f.description,
+              fields=f.fields,
+          )
+      )
+    elif f.field_type in ("RECORD", "STRUCT") and f.fields:
+      result.append(
+          bigquery.SchemaField(
+              f.name,
+              f.field_type,
+              mode=f.mode,
+              description=f.description,
+              fields=_replace_json_with_string(list(f.fields)),
+          )
+      )
+    else:
+      result.append(f)
+  return result
+
+
+def _get_events_schema(
+    biglake: bool = False,
+) -> list[bigquery.SchemaField]:
   """Returns the BigQuery schema for the events table."""
-  return [
+  schema = [
       bigquery.SchemaField(
           "timestamp",
           "TIMESTAMP",
@@ -1682,6 +1719,9 @@ def _get_events_schema() -> list[bigquery.SchemaField]:
           ),
       ),
   ]
+  if biglake:
+    schema = _replace_json_with_string(schema)
+  return schema
 
 
 # ==============================================================================
@@ -1862,6 +1902,11 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     self.table_id = table_id or self.config.table_id
     self.location = location
 
+    if self.config.biglake_storage_uri and not self.config.connection_id:
+      raise ValueError(
+          "connection_id is required when biglake_storage_uri is set."
+      )
+
     self._started = False
     self._startup_error: Optional[Exception] = None
     self._is_shutting_down = False
@@ -1876,6 +1921,10 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     self.arrow_schema = None
     self._init_pid = os.getpid()
     _LIVE_PLUGINS.add(self)
+
+  @property
+  def is_biglake(self) -> bool:
+    return self.config.biglake_storage_uri is not None
 
   def _cleanup_stale_loop_states(self) -> None:
     """Removes entries for event loops that have been closed."""
@@ -2057,7 +2106,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
 
     self.full_table_id = f"{self.project_id}.{self.dataset_id}.{self.table_id}"
     if not self._schema:
-      self._schema = _get_events_schema()
+      self._schema = _get_events_schema(biglake=self.is_biglake)
       await loop.run_in_executor(self._executor, self._ensure_schema_exists)
 
     if not self.parser:
@@ -2139,6 +2188,20 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       )
       tbl.clustering_fields = self.config.clustering_fields
       tbl.labels = {_SCHEMA_VERSION_LABEL_KEY: _SCHEMA_VERSION}
+      if self.is_biglake:
+        from google.cloud.bigquery.table import BigLakeConfiguration
+
+        if not self.config.connection_id:
+          raise ValueError(
+              "connection_id is required for BigLake Iceberg tables."
+              " Set it in BigQueryLoggerConfig."
+          )
+        tbl.biglake_configuration = BigLakeConfiguration(
+            connection_id=self.config.connection_id,
+            storage_uri=self.config.biglake_storage_uri,
+            file_format="PARQUET",
+            table_format="ICEBERG",
+        )
       table_ready = False
       try:
         self.client.create_table(tbl)

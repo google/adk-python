@@ -6452,3 +6452,187 @@ class TestMultiLoopShutdownDrainsOtherLoops:
       mock_rcts.assert_called()
       call_args = mock_rcts.call_args
       assert call_args[0][1] is other_loop
+
+
+# ==============================================================================
+# BigLake Iceberg Tests
+# ==============================================================================
+
+
+class TestBigLakeIceberg:
+  """Tests for BigLake Iceberg support."""
+
+  def test_biglake_storage_uri_config(self):
+    """biglake_storage_uri defaults to None."""
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig()
+    assert config.biglake_storage_uri is None
+
+  def test_biglake_storage_uri_config_set(self):
+    """biglake_storage_uri can be set."""
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        connection_id="us.my-conn",
+        biglake_storage_uri="gs://bucket/path/",
+    )
+    assert config.biglake_storage_uri == "gs://bucket/path/"
+
+  def test_is_biglake_property_true(self):
+    """is_biglake is True when biglake_storage_uri is set."""
+    with mock.patch(
+        "google.auth.default",
+        return_value=(mock.MagicMock(), PROJECT_ID),
+    ):
+      plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+          project_id=PROJECT_ID,
+          dataset_id=DATASET_ID,
+          config=bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+              connection_id="us.my-conn",
+              biglake_storage_uri="gs://bucket/path/",
+          ),
+      )
+      assert plugin.is_biglake is True
+
+  def test_is_biglake_property_false(self):
+    """is_biglake is False when biglake_storage_uri is None."""
+    with mock.patch(
+        "google.auth.default",
+        return_value=(mock.MagicMock(), PROJECT_ID),
+    ):
+      plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+          project_id=PROJECT_ID,
+          dataset_id=DATASET_ID,
+      )
+      assert plugin.is_biglake is False
+
+  def test_biglake_requires_connection_id(self):
+    """ValueError if biglake_storage_uri set without connection_id."""
+    with mock.patch(
+        "google.auth.default",
+        return_value=(mock.MagicMock(), PROJECT_ID),
+    ):
+      with pytest.raises(ValueError, match="connection_id is required"):
+        bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+            project_id=PROJECT_ID,
+            dataset_id=DATASET_ID,
+            config=bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+                biglake_storage_uri="gs://bucket/path/",
+            ),
+        )
+
+  def test_biglake_schema_no_json_fields(self):
+    """All JSON fields become STRING when biglake=True."""
+    schema = bigquery_agent_analytics_plugin._get_events_schema(biglake=True)
+
+    def _collect_json_fields(fields, prefix=""):
+      found = []
+      for f in fields:
+        full_name = f"{prefix}{f.name}" if prefix else f.name
+        if f.field_type == "JSON":
+          found.append(full_name)
+        if f.fields:
+          found.extend(_collect_json_fields(f.fields, f"{full_name}."))
+      return found
+
+    json_fields = _collect_json_fields(schema)
+    assert (
+        json_fields == []
+    ), f"Expected no JSON fields in biglake schema, found: {json_fields}"
+
+  def test_biglake_schema_nested_record_json_replaced(self):
+    """object_ref.details is STRING in biglake schema."""
+    schema = bigquery_agent_analytics_plugin._get_events_schema(biglake=True)
+    # Find content_parts -> object_ref -> details
+    content_parts = next(f for f in schema if f.name == "content_parts")
+    object_ref = next(f for f in content_parts.fields if f.name == "object_ref")
+    details = next(f for f in object_ref.fields if f.name == "details")
+    assert details.field_type == "STRING"
+
+  def test_biglake_arrow_schema_no_json_metadata(self):
+    """Arrow schema from biglake has no google:sqlType:json metadata."""
+    schema = bigquery_agent_analytics_plugin._get_events_schema(biglake=True)
+    arrow_schema = bigquery_agent_analytics_plugin.to_arrow_schema(schema)
+    assert arrow_schema is not None
+
+    def _check_no_json_metadata(arrow_fields):
+      for field in arrow_fields:
+        if field.metadata:
+          assert (
+              b"google:sqlType:json" not in field.metadata.values()
+          ), f"Field {field.name} has JSON metadata"
+        if isinstance(field.type, pa.StructType):
+          _check_no_json_metadata(
+              [field.type.field(i) for i in range(field.type.num_fields)]
+          )
+        elif isinstance(field.type, pa.ListType):
+          val_type = field.type.value_type
+          if isinstance(val_type, pa.StructType):
+            _check_no_json_metadata(
+                [val_type.field(i) for i in range(val_type.num_fields)]
+            )
+
+    _check_no_json_metadata(arrow_schema)
+
+  def test_biglake_table_creation_sets_configuration(self):
+    """create_table receives BigLakeConfiguration when biglake enabled."""
+    with mock.patch(
+        "google.auth.default",
+        return_value=(mock.MagicMock(), PROJECT_ID),
+    ):
+      plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+          project_id=PROJECT_ID,
+          dataset_id=DATASET_ID,
+          config=bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+              connection_id="us.my-conn",
+              biglake_storage_uri="gs://bucket/path/",
+              create_views=False,
+          ),
+      )
+      mock_client = mock.MagicMock()
+      mock_client.get_table.side_effect = cloud_exceptions.NotFound("nope")
+      plugin.client = mock_client
+      plugin.full_table_id = f"{PROJECT_ID}.{DATASET_ID}.{TABLE_ID}"
+      plugin._schema = bigquery_agent_analytics_plugin._get_events_schema(
+          biglake=True
+      )
+
+      plugin._ensure_schema_exists()
+
+      mock_client.create_table.assert_called_once()
+      tbl = mock_client.create_table.call_args[0][0]
+      cfg = tbl.biglake_configuration
+      assert cfg is not None
+      assert cfg.connection_id == "us.my-conn"
+      assert cfg.storage_uri == "gs://bucket/path/"
+      assert cfg.file_format == "PARQUET"
+      assert cfg.table_format == "ICEBERG"
+
+  def test_non_biglake_schema_unchanged(self):
+    """JSON fields are preserved when biglake=False."""
+    schema = bigquery_agent_analytics_plugin._get_events_schema(biglake=False)
+    json_field_names = {"content", "attributes", "latency_ms"}
+    top_level = {f.name for f in schema if f.field_type == "JSON"}
+    assert json_field_names.issubset(top_level)
+
+  def test_replace_json_with_string_helper(self):
+    """Unit test the _replace_json_with_string helper."""
+    fields = [
+        bigquery.SchemaField("a", "JSON", mode="NULLABLE"),
+        bigquery.SchemaField("b", "STRING", mode="REQUIRED"),
+        bigquery.SchemaField(
+            "c",
+            "RECORD",
+            mode="NULLABLE",
+            fields=[
+                bigquery.SchemaField("d", "JSON", mode="NULLABLE"),
+                bigquery.SchemaField("e", "INTEGER", mode="NULLABLE"),
+            ],
+        ),
+    ]
+    result = bigquery_agent_analytics_plugin._replace_json_with_string(fields)
+    assert result[0].field_type == "STRING"
+    assert result[0].name == "a"
+    assert result[1].field_type == "STRING"
+    assert result[1].name == "b"
+    assert result[2].field_type == "RECORD"
+    assert result[2].fields[0].field_type == "STRING"
+    assert result[2].fields[0].name == "d"
+    assert result[2].fields[1].field_type == "INTEGER"
