@@ -6672,6 +6672,13 @@ class TestBigLakeIceberg:
     )
     assert result == "projects/my-project/locations/us/connections/my-conn"
 
+  def test_normalize_connection_id_three_part_format(self):
+    """project.location.connection is expanded correctly."""
+    result = bigquery_agent_analytics_plugin._normalize_biglake_connection_id(
+        "myproj.us.my-conn", "fallback-project"
+    )
+    assert result == "projects/myproj/locations/us/connections/my-conn"
+
   def test_normalize_connection_id_full_format(self):
     """Full resource path is returned as-is."""
     full = "projects/p/locations/us/connections/c"

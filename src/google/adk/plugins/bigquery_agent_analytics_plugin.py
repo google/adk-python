@@ -1508,7 +1508,8 @@ def _normalize_biglake_connection_id(
 
   Accepts:
     - Full resource path (returned as-is)
-    - "location.connection" (e.g. "us.my-connection")
+    - "project.location.connection" (e.g. "my-project.us.my-connection")
+    - "location.connection" (e.g. "us.my-connection") — uses project_id
 
   Args:
     connection_id: The connection ID in short or full format.
@@ -1522,14 +1523,18 @@ def _normalize_biglake_connection_id(
   """
   if connection_id.startswith("projects/"):
     return connection_id
-  parts = connection_id.split(".", 1)
+  parts = connection_id.split(".")
+  if len(parts) == 3:
+    proj, location, conn_name = parts
+    return f"projects/{proj}/locations/{location}/connections/{conn_name}"
   if len(parts) == 2:
     location, conn_name = parts
     return f"projects/{project_id}/locations/{location}/connections/{conn_name}"
   raise ValueError(
       f"Unrecognized connection_id format: '{connection_id}'. "
-      "Expected 'location.connection_name' (e.g. 'us.my-conn') or "
-      "full resource path "
+      "Expected 'location.connection_name' (e.g. 'us.my-conn'), "
+      "'project.location.connection_name' "
+      "(e.g. 'my-project.us.my-conn'), or full resource path "
       "'projects/PROJECT/locations/LOCATION/connections/CONNECTION'."
   )
 
