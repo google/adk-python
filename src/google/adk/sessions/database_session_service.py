@@ -369,6 +369,9 @@ class DatabaseSessionService(BaseSessionService):
       if is_sqlite or is_postgresql:
         now = now.replace(tzinfo=None)
 
+      # Initialize event_sequence for new sessions
+      session_state["event_sequence"] = 0
+
       storage_session = schema.StorageSession(
           app_name=app_name,
           user_id=user_id,
@@ -385,7 +388,7 @@ class DatabaseSessionService(BaseSessionService):
           storage_app_state.state, storage_user_state.state, session_state
       )
       session = storage_session.to_session(
-          state=merged_state, is_sqlite=is_sqlite
+          state=merged_state, is_sqlite=is_sqlite, event_sequence=0
       )
     return session
 
@@ -440,6 +443,7 @@ class DatabaseSessionService(BaseSessionService):
       app_state = storage_app_state.state if storage_app_state else {}
       user_state = storage_user_state.state if storage_user_state else {}
       session_state = storage_session.state
+      event_sequence = session_state.get("event_sequence", 0)
 
       # Merge states
       merged_state = _merge_state(app_state, user_state, session_state)
@@ -448,7 +452,7 @@ class DatabaseSessionService(BaseSessionService):
       events = [e.to_event() for e in reversed(storage_events)]
       is_sqlite = self.db_engine.dialect.name == _SQLITE_DIALECT
       session = storage_session.to_session(
-          state=merged_state, events=events, is_sqlite=is_sqlite
+          state=merged_state, events=events, is_sqlite=is_sqlite, event_sequence=event_sequence
       )
     return session
 
@@ -497,8 +501,10 @@ class DatabaseSessionService(BaseSessionService):
         session_state = storage_session.state
         user_state = user_states_map.get(storage_session.user_id, {})
         merged_state = _merge_state(app_state, user_state, session_state)
+        # Pass event_sequence to to_session if it exists in state
+        event_sequence = session_state.get("event_sequence", 0)
         sessions.append(
-            storage_session.to_session(state=merged_state, is_sqlite=is_sqlite)
+            storage_session.to_session(state=merged_state, is_sqlite=is_sqlite, event_sequence=event_sequence)
         )
       return ListSessionsResponse(sessions=sessions)
 
@@ -564,6 +570,14 @@ class DatabaseSessionService(BaseSessionService):
         if storage_session is None:
           raise ValueError(f"Session {session.id} not found.")
 
+        # Optimistic concurrency control check using event_sequence
+        stored_event_sequence = storage_session.state.get("event_sequence", 0)
+        if stored_event_sequence != session.event_sequence:
+          raise ValueError(
+              "The session has been modified by another writer. "
+              "Please reload the session before appending events."
+          )
+
         storage_app_state = await _select_required_state(
             sql_session=sql_session,
             state_model=schema.StorageAppState,
@@ -591,27 +605,7 @@ class DatabaseSessionService(BaseSessionService):
             ),
         )
 
-        if (
-            storage_session.get_update_timestamp(is_sqlite)
-            > session.last_update_time
-        ):
-          # Reload the session from storage if it has been updated since it was
-          # loaded.
-          app_state = storage_app_state.state
-          user_state = storage_user_state.state
-          session_state = storage_session.state
-          session.state = _merge_state(app_state, user_state, session_state)
-
-          stmt = (
-              select(schema.StorageEvent)
-              .filter(schema.StorageEvent.app_name == session.app_name)
-              .filter(schema.StorageEvent.session_id == session.id)
-              .filter(schema.StorageEvent.user_id == session.user_id)
-              .order_by(schema.StorageEvent.timestamp.asc())
-          )
-          result = await sql_session.stream_scalars(stmt)
-          storage_events = [e async for e in result]
-          session.events = [e.to_event() for e in storage_events]
+        # Removed the old timestamp-based stale session check and reload logic.
 
         # Merge pre-extracted state deltas into storage.
         if has_app_delta:
@@ -626,6 +620,9 @@ class DatabaseSessionService(BaseSessionService):
           storage_session.state = (
               storage_session.state | state_deltas["session"]
           )
+
+        # Increment event_sequence before commit
+        storage_session.state["event_sequence"] = stored_event_sequence + 1
 
         if is_sqlite:
           update_time = datetime.fromtimestamp(
@@ -642,8 +639,11 @@ class DatabaseSessionService(BaseSessionService):
         session.last_update_time = storage_session.get_update_timestamp(
             is_sqlite
         )
+        # Update in-memory session's event_sequence after successful commit
+        session.event_sequence = stored_event_sequence + 1
 
-    # Also update the in-memory session
+    # Also update the in-memory session (handled by super().append_event)
+    # This call might also update last_update_time, but event_sequence is explicitly handled now.
     await super().append_event(session=session, event=event)
     return event
 
