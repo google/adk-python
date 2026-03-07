@@ -24,7 +24,6 @@ from typing import Callable
 from typing import Optional
 from typing import Union
 from urllib.parse import urlparse
-import uuid
 
 from a2a.client import Client as A2AClient
 from a2a.client import ClientEvent as A2AClientEvent
@@ -43,6 +42,7 @@ from a2a.types import TaskArtifactUpdateEvent as A2ATaskArtifactUpdateEvent
 from a2a.types import TaskState
 from a2a.types import TaskStatusUpdateEvent as A2ATaskStatusUpdateEvent
 from a2a.types import TransportProtocol as A2ATransport
+from google.adk.platform import uuid as platform_uuid
 from google.genai import types as genai_types
 import httpx
 from pydantic import BaseModel
@@ -629,7 +629,7 @@ class RemoteA2aAgent(BaseAgent):
         return
 
       a2a_request = A2AMessage(
-          message_id=str(uuid.uuid4()),
+          message_id=platform_uuid.new_uuid(),
           parts=message_parts,
           role="user",
           context_id=context_id,

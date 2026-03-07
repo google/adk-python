@@ -32,8 +32,8 @@ import json
 import pickle
 from typing import Any
 from typing import Optional
-import uuid
 
+from google.adk.platform import uuid as platform_uuid
 from google.genai import types
 from sqlalchemy import Boolean
 from sqlalchemy import ForeignKeyConstraint
@@ -109,7 +109,7 @@ class StorageSession(Base):
   id: Mapped[str] = mapped_column(
       String(DEFAULT_MAX_KEY_LENGTH),
       primary_key=True,
-      default=lambda: str(uuid.uuid4()),
+      default=platform_uuid.new_uuid,
   )
 
   state: Mapped[MutableDict[str, Any]] = mapped_column(
