@@ -16,6 +16,7 @@
 
 from unittest import mock
 
+from google.adk.skills import list_skills_in_dir
 from google.adk.skills import list_skills_in_gcs_dir as _list_skills_in_gcs_dir
 from google.adk.skills import load_skill_from_dir as _load_skill_from_dir
 from google.adk.skills import load_skill_from_gcs_dir as _load_skill_from_gcs_dir
@@ -289,3 +290,53 @@ def test__load_skill_from_gcs_dir(mock_client_class):
   assert skill.instructions == "Test instructions"
   # Using dict access for reference
   assert skill.resources.get_reference("ref1.md") == "ref1 content"
+
+
+def test_list_skills_in_dir(tmp_path):
+  """Tests listing skills in a directory."""
+  skills_dir = tmp_path / "skills"
+  skills_dir.mkdir()
+
+  # Valid skill 1
+  skill1_dir = skills_dir / "skill1"
+  skill1_dir.mkdir()
+  (skill1_dir / "SKILL.md").write_text(
+      "---\nname: skill1\ndescription: desc1\n---\nbody"
+  )
+
+  # Valid skill 2
+  skill2_dir = skills_dir / "skill2"
+  skill2_dir.mkdir()
+  (skill2_dir / "SKILL.md").write_text(
+      "---\nname: skill2\ndescription: desc2\n---\nbody"
+  )
+
+  # Invalid skill: missing SKILL.md
+  (skills_dir / "invalid-no-md").mkdir()
+
+  # Invalid skill: invalid YAML
+  invalid_yaml_dir = skills_dir / "invalid-yaml"
+  invalid_yaml_dir.mkdir()
+  (invalid_yaml_dir / "SKILL.md").write_text("---\ninvalid: yaml: :\n---\nbody")
+
+  # Invalid skill: name mismatch
+  mismatch_dir = skills_dir / "mismatch"
+  mismatch_dir.mkdir()
+  (mismatch_dir / "SKILL.md").write_text(
+      "---\nname: other-name\ndescription: desc\n---\nbody"
+  )
+
+  skills = list_skills_in_dir(skills_dir)
+
+  assert len(skills) == 2
+  assert "skill1" in skills
+  assert "skill2" in skills
+  assert skills["skill1"].name == "skill1"
+  assert skills["skill2"].name == "skill2"
+
+
+def test_list_skills_in_dir_missing_base_path(tmp_path):
+  """Tests list_skills_in_dir with missing base directory."""
+
+  skills = list_skills_in_dir(tmp_path / "nonexistent")
+  assert skills == {}
