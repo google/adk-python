@@ -509,7 +509,17 @@ class BigQueryLoggerConfig:
   # If provided, the table will be created as a BigLake managed table
   # for Apache Iceberg.  Requires ``connection_id`` to be set as well.
   # Format: "gs://bucket/path_to_table/"
+  #
+  # NOTE: Data is written via the BigQuery Storage Write API.  Rows are
+  # immediately queryable within BigQuery, but Iceberg metadata (used by
+  # open-source engines such as Spark/Trino) may take up to ~90 minutes
+  # to refresh.  If near-real-time cross-engine visibility is required,
+  # consider a DML/load-job ingestion path instead.
   biglake_storage_uri: Optional[str] = None
+  # Whether to apply time-based partitioning for BigLake Iceberg tables.
+  # BigLake Iceberg time partitioning is a preview feature and may not be
+  # available in all projects/regions.  Defaults to False (skipped).
+  biglake_time_partitioning: bool = False
 
   # Toggle for session metadata (e.g. gchat thread-id)
   log_session_metadata: bool = True
@@ -1488,6 +1498,42 @@ def _replace_json_with_string(
   return result
 
 
+def _normalize_biglake_connection_id(
+    connection_id: str, project_id: str
+) -> str:
+  """Normalizes a connection ID to the full resource path for BigLake.
+
+  BigLakeConfiguration.connection_id requires the format:
+    projects/{project}/locations/{location}/connections/{connection}
+
+  Accepts:
+    - Full resource path (returned as-is)
+    - "location.connection" (e.g. "us.my-connection")
+
+  Args:
+    connection_id: The connection ID in short or full format.
+    project_id: The Google Cloud project ID for expansion.
+
+  Returns:
+    The fully-qualified connection resource path.
+
+  Raises:
+    ValueError: If the connection_id format is unrecognized.
+  """
+  if connection_id.startswith("projects/"):
+    return connection_id
+  parts = connection_id.split(".", 1)
+  if len(parts) == 2:
+    location, conn_name = parts
+    return f"projects/{project_id}/locations/{location}/connections/{conn_name}"
+  raise ValueError(
+      f"Unrecognized connection_id format: '{connection_id}'. "
+      "Expected 'location.connection_name' (e.g. 'us.my-conn') or "
+      "full resource path "
+      "'projects/PROJECT/locations/LOCATION/connections/CONNECTION'."
+  )
+
+
 def _get_events_schema(
     biglake: bool = False,
 ) -> list[bigquery.SchemaField]:
@@ -2182,10 +2228,13 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     except cloud_exceptions.NotFound:
       logger.info("Table %s not found, creating table.", self.full_table_id)
       tbl = bigquery.Table(self.full_table_id, schema=self._schema)
-      tbl.time_partitioning = bigquery.TimePartitioning(
-          type_=bigquery.TimePartitioningType.DAY,
-          field="timestamp",
-      )
+      # BigLake Iceberg time partitioning is a preview feature; skip
+      # unless the user explicitly opts in via biglake_time_partitioning.
+      if not self.is_biglake or self.config.biglake_time_partitioning:
+        tbl.time_partitioning = bigquery.TimePartitioning(
+            type_=bigquery.TimePartitioningType.DAY,
+            field="timestamp",
+        )
       tbl.clustering_fields = self.config.clustering_fields
       tbl.labels = {_SCHEMA_VERSION_LABEL_KEY: _SCHEMA_VERSION}
       if self.is_biglake:
@@ -2196,8 +2245,11 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
               "connection_id is required for BigLake Iceberg tables."
               " Set it in BigQueryLoggerConfig."
           )
+        biglake_conn_id = _normalize_biglake_connection_id(
+            self.config.connection_id, self.project_id
+        )
         tbl.biglake_configuration = BigLakeConfiguration(
-            connection_id=self.config.connection_id,
+            connection_id=biglake_conn_id,
             storage_uri=self.config.biglake_storage_uri,
             file_format="PARQUET",
             table_format="ICEBERG",

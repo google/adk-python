@@ -6600,10 +6600,92 @@ class TestBigLakeIceberg:
       tbl = mock_client.create_table.call_args[0][0]
       cfg = tbl.biglake_configuration
       assert cfg is not None
-      assert cfg.connection_id == "us.my-conn"
+      # connection_id should be normalized to full resource path
+      assert cfg.connection_id == (
+          f"projects/{PROJECT_ID}/locations/us/connections/my-conn"
+      )
       assert cfg.storage_uri == "gs://bucket/path/"
       assert cfg.file_format == "PARQUET"
       assert cfg.table_format == "ICEBERG"
+
+  def test_biglake_table_creation_skips_time_partitioning(self):
+    """BigLake tables skip time partitioning by default."""
+    with mock.patch(
+        "google.auth.default",
+        return_value=(mock.MagicMock(), PROJECT_ID),
+    ):
+      plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+          project_id=PROJECT_ID,
+          dataset_id=DATASET_ID,
+          config=bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+              connection_id="us.my-conn",
+              biglake_storage_uri="gs://bucket/path/",
+              create_views=False,
+          ),
+      )
+      mock_client = mock.MagicMock()
+      mock_client.get_table.side_effect = cloud_exceptions.NotFound("nope")
+      plugin.client = mock_client
+      plugin.full_table_id = f"{PROJECT_ID}.{DATASET_ID}.{TABLE_ID}"
+      plugin._schema = bigquery_agent_analytics_plugin._get_events_schema(
+          biglake=True
+      )
+
+      plugin._ensure_schema_exists()
+
+      tbl = mock_client.create_table.call_args[0][0]
+      assert tbl.time_partitioning is None
+
+  def test_biglake_table_creation_with_time_partitioning_opt_in(self):
+    """BigLake tables get time partitioning when opted in."""
+    with mock.patch(
+        "google.auth.default",
+        return_value=(mock.MagicMock(), PROJECT_ID),
+    ):
+      plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+          project_id=PROJECT_ID,
+          dataset_id=DATASET_ID,
+          config=bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+              connection_id="us.my-conn",
+              biglake_storage_uri="gs://bucket/path/",
+              biglake_time_partitioning=True,
+              create_views=False,
+          ),
+      )
+      mock_client = mock.MagicMock()
+      mock_client.get_table.side_effect = cloud_exceptions.NotFound("nope")
+      plugin.client = mock_client
+      plugin.full_table_id = f"{PROJECT_ID}.{DATASET_ID}.{TABLE_ID}"
+      plugin._schema = bigquery_agent_analytics_plugin._get_events_schema(
+          biglake=True
+      )
+
+      plugin._ensure_schema_exists()
+
+      tbl = mock_client.create_table.call_args[0][0]
+      assert tbl.time_partitioning is not None
+
+  def test_normalize_connection_id_short_format(self):
+    """Short location.name format is expanded to full resource path."""
+    result = bigquery_agent_analytics_plugin._normalize_biglake_connection_id(
+        "us.my-conn", "my-project"
+    )
+    assert result == "projects/my-project/locations/us/connections/my-conn"
+
+  def test_normalize_connection_id_full_format(self):
+    """Full resource path is returned as-is."""
+    full = "projects/p/locations/us/connections/c"
+    result = bigquery_agent_analytics_plugin._normalize_biglake_connection_id(
+        full, "ignored-project"
+    )
+    assert result == full
+
+  def test_normalize_connection_id_invalid_format(self):
+    """Invalid format raises ValueError."""
+    with pytest.raises(ValueError, match="Unrecognized connection_id"):
+      bigquery_agent_analytics_plugin._normalize_biglake_connection_id(
+          "just-a-name", "my-project"
+      )
 
   def test_non_biglake_schema_unchanged(self):
     """JSON fields are preserved when biglake=False."""
