@@ -29,6 +29,7 @@ from google.adk.platform import time as platform_time
 from sqlalchemy import delete
 from sqlalchemy import event
 from sqlalchemy import select
+from sqlalchemy import update # Import update
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import ArgumentError
 from sqlalchemy.ext.asyncio import async_sessionmaker
@@ -570,12 +571,39 @@ class DatabaseSessionService(BaseSessionService):
           raise ValueError(f"Session {session.id} not found.")
 
         # Get the current event_sequence from storage.
-        # With SERIALIZABLE isolation for SQLite and row-level locking
-        # for other DBs, the concurrency is handled at the database level.
         stored_event_sequence = storage_session.state.get("event_sequence", 0)
-        # No explicit check here, as the database's isolation level will
-        # prevent concurrent writes from interleaving. If a race occurs,
-        # the transaction will fail (e.g., due to a serialization error).
+        next_event_sequence = stored_event_sequence + 1
+
+        # Atomically update the event_sequence in the database.
+        # This update includes a WHERE clause that checks the current
+        # event_sequence, ensuring optimistic concurrency control.
+        # If another writer has already updated the session, the rowcount
+        # will be 0, indicating a conflict.
+        update_session_stmt = (
+            update(schema.StorageSession)
+            .where(
+                schema.StorageSession.app_name == session.app_name,
+                schema.StorageSession.user_id == session.user_id,
+                schema.StorageSession.id == session.id,
+                schema.StorageSession.state["event_sequence"]
+                == stored_event_sequence,
+            )
+            .values(
+                state=storage_session.state | {"event_sequence": next_event_sequence}
+            )
+        )
+        update_result = await sql_session.execute(update_session_stmt)
+
+        if update_result.rowcount == 0:
+          raise ValueError(
+              "The session has been modified by another writer. "
+              "Please reload the session before appending events."
+          )
+
+        # Update the in-memory storage_session to reflect the database change
+        # This is important for subsequent ORM operations within the same session
+        # and for the final session.event_sequence update.
+        storage_session.state["event_sequence"] = next_event_sequence
 
         storage_app_state = await _select_required_state(
             sql_session=sql_session,
@@ -616,12 +644,13 @@ class DatabaseSessionService(BaseSessionService):
               storage_user_state.state | state_deltas["user"]
           )
         if state_deltas["session"]:
+          # Note: storage_session.state["event_sequence"] was already updated
+          # by the explicit UPDATE statement above.
+          # We need to ensure other session state changes are merged.
+          # The | operator for dictionaries correctly merges.
           storage_session.state = (
               storage_session.state | state_deltas["session"]
           )
-
-        # Increment event_sequence before commit
-        storage_session.state["event_sequence"] = stored_event_sequence + 1
 
         if is_sqlite:
           update_time = datetime.fromtimestamp(
@@ -639,7 +668,7 @@ class DatabaseSessionService(BaseSessionService):
             is_sqlite
         )
         # Update in-memory session's event_sequence after successful commit
-        session.event_sequence = stored_event_sequence + 1
+        session.event_sequence = next_event_sequence
 
     # Also update the in-memory session (handled by super().append_event)
     # This call might also update last_update_time, but event_sequence is explicitly handled now.
