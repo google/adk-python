@@ -21,7 +21,6 @@ import logging
 from typing import Awaitable
 from typing import Callable
 from typing import Optional
-import uuid
 
 from a2a.server.agent_execution import AgentExecutor
 from a2a.server.agent_execution.context import RequestContext
@@ -34,6 +33,8 @@ from a2a.types import TaskState
 from a2a.types import TaskStatus
 from a2a.types import TaskStatusUpdateEvent
 from a2a.types import TextPart
+from google.adk.platform import time as platform_time
+from google.adk.platform import uuid as platform_uuid
 from google.adk.runners import Runner
 from typing_extensions import override
 
@@ -147,7 +148,9 @@ class A2aAgentExecutor(AgentExecutor):
               status=TaskStatus(
                   state=TaskState.submitted,
                   message=context.message,
-                  timestamp=datetime.now(timezone.utc).isoformat(),
+                  timestamp=datetime.fromtimestamp(
+                      platform_time.get_time(), tz=timezone.utc
+                  ).isoformat(),
               ),
               context_id=context.context_id,
               final=False,
@@ -166,9 +169,11 @@ class A2aAgentExecutor(AgentExecutor):
                 task_id=context.task_id,
                 status=TaskStatus(
                     state=TaskState.failed,
-                    timestamp=datetime.now(timezone.utc).isoformat(),
+                    timestamp=datetime.fromtimestamp(
+                        platform_time.get_time(), tz=timezone.utc
+                    ).isoformat(),
                     message=Message(
-                        message_id=str(uuid.uuid4()),
+                        message_id=platform_uuid.new_uuid(),
                         role=Role.agent,
                         parts=[TextPart(text=str(e))],
                     ),
@@ -219,7 +224,9 @@ class A2aAgentExecutor(AgentExecutor):
             task_id=context.task_id,
             status=TaskStatus(
                 state=TaskState.working,
-                timestamp=datetime.now(timezone.utc).isoformat(),
+                timestamp=datetime.fromtimestamp(
+                    platform_time.get_time(), tz=timezone.utc
+                ).isoformat(),
             ),
             context_id=context.context_id,
             final=False,
@@ -267,7 +274,7 @@ class A2aAgentExecutor(AgentExecutor):
               last_chunk=True,
               context_id=context.context_id,
               artifact=Artifact(
-                  artifact_id=str(uuid.uuid4()),
+                  artifact_id=platform_uuid.new_uuid(),
                   parts=task_result_aggregator.task_status_message.parts,
               ),
           )
@@ -277,7 +284,9 @@ class A2aAgentExecutor(AgentExecutor):
           task_id=context.task_id,
           status=TaskStatus(
               state=TaskState.completed,
-              timestamp=datetime.now(timezone.utc).isoformat(),
+              timestamp=datetime.fromtimestamp(
+                  platform_time.get_time(), tz=timezone.utc
+              ).isoformat(),
           ),
           context_id=context.context_id,
           final=True,
@@ -287,7 +296,9 @@ class A2aAgentExecutor(AgentExecutor):
           task_id=context.task_id,
           status=TaskStatus(
               state=task_result_aggregator.task_state,
-              timestamp=datetime.now(timezone.utc).isoformat(),
+              timestamp=datetime.fromtimestamp(
+                  platform_time.get_time(), tz=timezone.utc
+              ).isoformat(),
               message=task_result_aggregator.task_status_message,
           ),
           context_id=context.context_id,

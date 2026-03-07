@@ -254,6 +254,50 @@ def _read_skill_properties(
   return models.Frontmatter.model_validate(parsed)
 
 
+def _list_skills_in_dir(
+    skills_base_path: Union[str, pathlib.Path],
+) -> dict[str, models.Frontmatter]:
+  """List skills in a local directory.
+
+  Args:
+    skills_base_path: Path to the base directory containing skills.
+
+  Returns:
+    Dictionary mapping skill IDs to their frontmatter.
+  """
+  skills_base_path = pathlib.Path(skills_base_path).resolve()
+  skills = {}
+
+  if not skills_base_path.is_dir():
+    logging.warning(
+        "Skills base path '%s' is not a directory.", skills_base_path
+    )
+    return skills
+
+  for skill_dir in sorted(skills_base_path.iterdir()):
+    if not skill_dir.is_dir():
+      continue
+
+    skill_id = skill_dir.name
+    try:
+      frontmatter = _read_skill_properties(skill_dir)
+      if skill_id != frontmatter.name:
+        raise ValueError(
+            f"Skill name '{frontmatter.name}' does not match directory"
+            f" name '{skill_id}'."
+        )
+      skills[skill_id] = frontmatter
+    except (FileNotFoundError, ValueError, ValidationError) as e:
+      # log invalid skills during listing and skip them
+      logging.warning(
+          "Skipping invalid skill '%s' in directory '%s': %s",
+          skill_id,
+          skills_base_path,
+          e,
+      )
+  return skills
+
+
 def _list_skills_in_gcs_dir(
     bucket_name: str,
     skills_base_path: str = "",
