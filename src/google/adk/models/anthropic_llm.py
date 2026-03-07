@@ -90,11 +90,20 @@ def _is_image_part(part: types.Part) -> bool:
   )
 
 
+def _is_pdf_part(part: types.Part) -> bool:
+  return (
+      part.inline_data
+      and part.inline_data.mime_type
+      and part.inline_data.mime_type.split(";")[0].strip() == "application/pdf"
+  )
+
+
 def part_to_message_block(
     part: types.Part,
 ) -> Union[
     anthropic_types.TextBlockParam,
     anthropic_types.ImageBlockParam,
+    anthropic_types.DocumentBlockParam,
     anthropic_types.ToolUseBlockParam,
     anthropic_types.ToolResultBlockParam,
 ]:
@@ -151,6 +160,14 @@ def part_to_message_block(
             type="base64", media_type=part.inline_data.mime_type, data=data
         ),
     )
+  elif _is_pdf_part(part):
+    data = base64.b64encode(part.inline_data.data).decode()
+    return anthropic_types.DocumentBlockParam(
+        type="document",
+        source=dict(
+            type="base64", media_type=part.inline_data.mime_type, data=data
+        ),
+    )
   elif part.executable_code:
     return anthropic_types.TextBlockParam(
         type="text",
@@ -177,6 +194,11 @@ def content_to_message_param(
       logger.warning(
           "Image data is not supported in Claude for assistant turns."
       )
+      continue
+
+    # PDF data is not supported in Claude for assistant turns.
+    if content.role != "user" and _is_pdf_part(part):
+      logger.warning("PDF data is not supported in Claude for assistant turns.")
       continue
 
     message_block.append(part_to_message_block(part))

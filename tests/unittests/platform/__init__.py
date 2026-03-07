@@ -11,20 +11,3 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
-from google.adk.agents.llm_agent import Agent
-from google.adk.apps import App
-from google.adk.tools.toolbox_toolset import ToolboxToolset
-
-root_agent = Agent(
-    model="gemini-2.5-flash",
-    name="root_agent",
-    instruction="You are a helpful assistant",
-    # Add Toolbox tools to ADK agent
-    tools=[ToolboxToolset(server_url="http://127.0.0.1:5000")],
-)
-
-app = App(
-    root_agent=root_agent,
-    name="app",
-)
