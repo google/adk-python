@@ -23,6 +23,7 @@ from unittest.mock import AsyncMock
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.context_cache_config import ContextCacheConfig
 from google.adk.agents.invocation_context import InvocationContext
+from google.adk.agents.live_request_queue import LiveRequestQueue
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.run_config import RunConfig
 from google.adk.apps.app import App
@@ -342,8 +343,6 @@ async def test_run_live_auto_create_session():
   )
 
   # An empty LiveRequestQueue is sufficient for our mock agent.
-  from google.adk.agents.live_request_queue import LiveRequestQueue
-
   live_queue = LiveRequestQueue()
 
   agen = runner.run_live(
