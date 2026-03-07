@@ -6725,3 +6725,129 @@ class TestBigLakeIceberg:
     assert result[2].fields[0].field_type == "STRING"
     assert result[2].fields[0].name == "d"
     assert result[2].fields[1].field_type == "INTEGER"
+
+  def test_biglake_uses_legacy_streaming_processor(self):
+    """BigLake Iceberg uses LegacyStreamingBatchProcessor."""
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        project_id=PROJECT_ID,
+        dataset_id=DATASET_ID,
+        config=bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+            connection_id="us-central1.my-conn",
+            biglake_storage_uri="gs://bucket/path/",
+        ),
+    )
+
+    mock_client = mock.MagicMock(spec=bigquery.Client)
+    mock_client.get_table.side_effect = cloud_exceptions.NotFound("not found")
+    mock_client.create_table.return_value = None
+    plugin.client = mock_client
+    plugin.full_table_id = f"{PROJECT_ID}.{DATASET_ID}.agent_events"
+    plugin._schema = bigquery_agent_analytics_plugin._get_events_schema(
+        biglake=True
+    )
+    plugin._started = True
+    plugin.parser = mock.MagicMock()
+
+    async def run():
+      if plugin._executor is None:
+        from concurrent.futures import ThreadPoolExecutor
+
+        plugin._executor = ThreadPoolExecutor(max_workers=1)
+      state = await plugin._get_loop_state()
+      assert isinstance(
+          state.batch_processor,
+          bigquery_agent_analytics_plugin.LegacyStreamingBatchProcessor,
+      )
+      assert state.write_client is None
+      await state.batch_processor.shutdown()
+
+    asyncio.run(run())
+
+  def test_non_biglake_uses_storage_write_api_processor(self):
+    """Non-BigLake tables use the standard BatchProcessor."""
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        project_id=PROJECT_ID,
+        dataset_id=DATASET_ID,
+    )
+    assert not plugin.is_biglake
+
+  @pytest.mark.asyncio
+  async def test_legacy_processor_prepare_rows_json(self):
+    """LegacyStreamingBatchProcessor converts datetimes to ISO strings."""
+    from datetime import datetime
+    from datetime import timezone
+
+    rows = [
+        {
+            "timestamp": datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
+            "event_type": "TEST",
+            "content": '{"key": "value"}',
+            "count": 42,
+        },
+    ]
+    prepared = bigquery_agent_analytics_plugin.LegacyStreamingBatchProcessor._prepare_rows_json(
+        rows
+    )
+    assert len(prepared) == 1
+    assert prepared[0]["timestamp"] == "2026-01-01T12:00:00+00:00"
+    assert prepared[0]["event_type"] == "TEST"
+    assert prepared[0]["content"] == '{"key": "value"}'
+    assert prepared[0]["count"] == 42
+
+  @pytest.mark.asyncio
+  async def test_legacy_processor_write_calls_insert_rows_json(self):
+    """LegacyStreamingBatchProcessor calls insert_rows_json."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    mock_client = mock.MagicMock(spec=bigquery.Client)
+    mock_client.insert_rows_json.return_value = []
+
+    processor = bigquery_agent_analytics_plugin.LegacyStreamingBatchProcessor(
+        bq_client=mock_client,
+        full_table_id="proj.ds.tbl",
+        batch_size=10,
+        flush_interval=1.0,
+        retry_config=bigquery_agent_analytics_plugin.RetryConfig(),
+        queue_max_size=100,
+        shutdown_timeout=5.0,
+        executor=ThreadPoolExecutor(max_workers=1),
+    )
+    rows = [{"event_type": "TEST", "content": "hello"}]
+    await processor._write_rows_with_retry(rows)
+    mock_client.insert_rows_json.assert_called_once()
+    call_args = mock_client.insert_rows_json.call_args
+    assert call_args[0][0] == "proj.ds.tbl"
+
+  def test_biglake_lazy_setup_skips_arrow_schema(self):
+    """BigLake lazy setup does not create Arrow schema."""
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        project_id=PROJECT_ID,
+        dataset_id=DATASET_ID,
+        config=bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+            connection_id="us-central1.my-conn",
+            biglake_storage_uri="gs://bucket/path/",
+        ),
+    )
+
+    mock_client = mock.MagicMock(spec=bigquery.Client)
+    mock_client.get_table.side_effect = cloud_exceptions.NotFound("not found")
+    mock_client.create_table.return_value = None
+    plugin.client = mock_client
+    plugin.full_table_id = f"{PROJECT_ID}.{DATASET_ID}.agent_events"
+    plugin._schema = bigquery_agent_analytics_plugin._get_events_schema(
+        biglake=True
+    )
+    plugin._started = True
+    plugin.parser = mock.MagicMock()
+
+    async def run():
+      from concurrent.futures import ThreadPoolExecutor
+
+      if plugin._executor is None:
+        plugin._executor = ThreadPoolExecutor(max_workers=1)
+      state = await plugin._get_loop_state()
+      # Arrow schema should not have been created for BigLake
+      assert plugin.arrow_schema is None
+      await state.batch_processor.shutdown()
+
+    asyncio.run(run())

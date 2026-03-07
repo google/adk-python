@@ -43,6 +43,7 @@ from typing import Awaitable
 from typing import Callable
 from typing import Optional
 from typing import TYPE_CHECKING
+from typing import Union
 import uuid
 import weakref
 
@@ -1220,6 +1221,247 @@ class BatchProcessor:
         pass
 
 
+class LegacyStreamingBatchProcessor:
+  """Batches and writes events via the legacy streaming API.
+
+  Used for BigLake Iceberg tables where the Storage Write API v2
+  (Arrow format) is not supported.  Uses ``client.insert_rows_json()``
+  which handles Iceberg's internal identity columns transparently.
+  """
+
+  def __init__(
+      self,
+      bq_client: bigquery.Client,
+      full_table_id: str,
+      batch_size: int,
+      flush_interval: float,
+      retry_config: RetryConfig,
+      queue_max_size: int,
+      shutdown_timeout: float,
+      executor: ThreadPoolExecutor,
+  ):
+    self.bq_client = bq_client
+    self.full_table_id = full_table_id
+    self.batch_size = batch_size
+    self.flush_interval = flush_interval
+    self.retry_config = retry_config
+    self.shutdown_timeout = shutdown_timeout
+    self._executor = executor
+    self._queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(
+        maxsize=queue_max_size
+    )
+    self._batch_processor_task: Optional[asyncio.Task] = None
+    self._shutdown = False
+
+  async def flush(self) -> None:
+    """Flushes the queue by waiting for it to be empty."""
+    if self._queue.empty():
+      return
+    await self._queue.join()
+
+  async def start(self):
+    """Starts the batch writer worker task."""
+    if self._batch_processor_task is None:
+      self._batch_processor_task = asyncio.create_task(self._batch_writer())
+
+  async def append(self, row: dict[str, Any]) -> None:
+    """Appends a row to the queue for batching."""
+    try:
+      self._queue.put_nowait(row)
+    except asyncio.QueueFull:
+      logger.warning("BigQuery log queue full, dropping event.")
+
+  @staticmethod
+  def _prepare_rows_json(
+      rows: list[dict[str, Any]],
+  ) -> list[dict[str, Any]]:
+    """Converts row dicts to JSON-serializable format.
+
+    Handles datetime objects and ensures nested structures are
+    compatible with ``insert_rows_json``.
+
+    Args:
+        rows: list of row dictionaries.
+
+    Returns:
+        list of JSON-serializable row dictionaries.
+    """
+    prepared = []
+    for row in rows:
+      out = {}
+      for key, value in row.items():
+        if isinstance(value, datetime):
+          out[key] = value.isoformat()
+        else:
+          out[key] = value
+      prepared.append(out)
+    return prepared
+
+  async def _batch_writer(self) -> None:
+    """Worker task that batches and writes rows via legacy streaming."""
+    while not self._shutdown or not self._queue.empty():
+      batch = []
+      try:
+        if self._shutdown:
+          try:
+            first_item = self._queue.get_nowait()
+          except asyncio.QueueEmpty:
+            break
+        else:
+          first_item = await asyncio.wait_for(
+              self._queue.get(), timeout=self.flush_interval
+          )
+
+        if first_item is _SHUTDOWN_SENTINEL:
+          self._queue.task_done()
+          continue
+
+        batch.append(first_item)
+
+        while len(batch) < self.batch_size:
+          try:
+            item = self._queue.get_nowait()
+            if item is _SHUTDOWN_SENTINEL:
+              self._queue.task_done()
+              continue
+            batch.append(item)
+          except asyncio.QueueEmpty:
+            break
+
+        if batch:
+          try:
+            await self._write_rows_with_retry(batch)
+          finally:
+            for _ in batch:
+              self._queue.task_done()
+
+      except asyncio.TimeoutError:
+        continue
+      except asyncio.CancelledError:
+        logger.info("Legacy streaming batch writer task cancelled.")
+        break
+      except Exception as e:
+        logger.error(
+            "Error in legacy streaming batch writer: %s",
+            e,
+            exc_info=True,
+        )
+        if not self._shutdown:
+          try:
+            await asyncio.sleep(1)
+          except (asyncio.CancelledError, RuntimeError):
+            break
+        else:
+          break
+
+  async def _write_rows_with_retry(self, rows: list[dict[str, Any]]) -> None:
+    """Writes rows via insert_rows_json with retry logic."""
+    attempt = 0
+    delay = self.retry_config.initial_delay
+    prepared = self._prepare_rows_json(rows)
+    loop = asyncio.get_running_loop()
+
+    while attempt <= self.retry_config.max_retries:
+      try:
+
+        def do_insert():
+          return self.bq_client.insert_rows_json(self.full_table_id, prepared)
+
+        errors = await loop.run_in_executor(self._executor, do_insert)
+        if not errors:
+          return
+        logger.error(
+            "BigQuery legacy streaming insert errors: %s",
+            errors,
+        )
+        return
+
+      except (
+          ServiceUnavailable,
+          TooManyRequests,
+          InternalServerError,
+      ) as e:
+        attempt += 1
+        if attempt > self.retry_config.max_retries:
+          logger.error(
+              "BigQuery legacy streaming batch dropped"
+              " after %s attempts. Last error: %s",
+              self.retry_config.max_retries + 1,
+              e,
+          )
+          return
+        sleep_time = min(
+            delay * (1 + random.random()),
+            self.retry_config.max_delay,
+        )
+        logger.warning(
+            "BigQuery legacy streaming write failed"
+            " (Attempt %s), retrying in %.2fs... Error: %s",
+            attempt,
+            sleep_time,
+            e,
+        )
+        await asyncio.sleep(sleep_time)
+        delay *= self.retry_config.multiplier
+      except Exception as e:
+        logger.error(
+            "Unexpected BigQuery legacy streaming error (Dropping batch): %s",
+            e,
+            exc_info=True,
+        )
+        return
+
+  async def shutdown(self, timeout: float = 5.0) -> None:
+    """Shuts down the processor, draining the queue."""
+    self._shutdown = True
+    logger.info(
+        "LegacyStreamingBatchProcessor shutting down, draining queue..."
+    )
+
+    try:
+      self._queue.put_nowait(_SHUTDOWN_SENTINEL)
+    except asyncio.QueueFull:
+      pass
+
+    if self._batch_processor_task:
+      try:
+        await asyncio.wait_for(self._batch_processor_task, timeout=timeout)
+      except asyncio.TimeoutError:
+        logger.warning(
+            "LegacyStreamingBatchProcessor shutdown timed"
+            " out, cancelling worker."
+        )
+        self._batch_processor_task.cancel()
+        try:
+          await self._batch_processor_task
+        except asyncio.CancelledError:
+          pass
+      except Exception as e:
+        logger.error(
+            "Error during LegacyStreamingBatchProcessor shutdown: %s",
+            e,
+        )
+
+  async def close(self) -> None:
+    """Closes the processor and flushes remaining items."""
+    if self._shutdown:
+      return
+    self._shutdown = True
+    try:
+      await asyncio.wait_for(self._queue.join(), timeout=self.shutdown_timeout)
+    except (asyncio.TimeoutError, asyncio.CancelledError):
+      logger.warning(
+          "Timeout waiting for legacy streaming batch"
+          " queue to empty on shutdown."
+      )
+    if self._batch_processor_task and not self._batch_processor_task.done():
+      self._batch_processor_task.cancel()
+      try:
+        await self._batch_processor_task
+      except asyncio.CancelledError:
+        pass
+
+
 # ==============================================================================
 # HELPER: CONTENT PARSER (Length Limits Only)
 # ==============================================================================
@@ -1896,8 +2138,8 @@ WHERE
 class _LoopState:
   """Holds resources bound to a specific event loop."""
 
-  write_client: BigQueryWriteAsyncClient
-  batch_processor: BatchProcessor
+  write_client: Optional[BigQueryWriteAsyncClient]
+  batch_processor: Union[BatchProcessor, LegacyStreamingBatchProcessor]
 
 
 @dataclass(kw_only=True)
@@ -2019,7 +2261,9 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     return super().__getattribute__(name)
 
   @property
-  def _batch_processor_prop(self) -> Optional["BatchProcessor"]:
+  def _batch_processor_prop(
+      self,
+  ) -> Optional["Union[BatchProcessor, LegacyStreamingBatchProcessor]"]:
     """The batch processor for the current event loop."""
     try:
       loop = asyncio.get_running_loop()
@@ -2079,6 +2323,29 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     self._cleanup_stale_loop_states()
     if loop in self._loop_state_by_loop:
       return self._loop_state_by_loop[loop]
+
+    if self.is_biglake:
+      # BigLake Iceberg tables do not support the Storage Write API
+      # v2 (Arrow format) due to internal identity columns.  Use
+      # the legacy streaming API (insert_rows_json) instead.
+      batch_processor = LegacyStreamingBatchProcessor(
+          bq_client=self.client,
+          full_table_id=self.full_table_id,
+          batch_size=self.config.batch_size,
+          flush_interval=self.config.batch_flush_interval,
+          retry_config=self.config.retry_config,
+          queue_max_size=self.config.queue_max_size,
+          shutdown_timeout=self.config.shutdown_timeout,
+          executor=self._executor,
+      )
+      await batch_processor.start()
+
+      state = _LoopState(None, batch_processor)
+      self._loop_state_by_loop[loop] = state
+
+      atexit.register(self._atexit_cleanup, weakref.proxy(batch_processor))
+
+      return state
 
     # grpc.aio clients are loop-bound, so we create one per event loop.
 
@@ -2166,9 +2433,14 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       await loop.run_in_executor(self._executor, self._ensure_schema_exists)
 
     if not self.parser:
-      self.arrow_schema = to_arrow_schema(self._schema)
-      if not self.arrow_schema:
-        raise RuntimeError("Failed to convert BigQuery schema to Arrow schema.")
+      if not self.is_biglake:
+        # Arrow schema is only needed for the Storage Write API path.
+        # BigLake Iceberg uses legacy streaming which doesn't need it.
+        self.arrow_schema = to_arrow_schema(self._schema)
+        if not self.arrow_schema:
+          raise RuntimeError(
+              "Failed to convert BigQuery schema to Arrow schema."
+          )
 
       self.offloader = None
       if self.config.gcs_bucket_name:
@@ -2190,7 +2462,9 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     await self._get_loop_state()
 
   @staticmethod
-  def _atexit_cleanup(batch_processor: "BatchProcessor") -> None:
+  def _atexit_cleanup(
+      batch_processor: "Union[BatchProcessor, LegacyStreamingBatchProcessor]",
+  ) -> None:
     """Clean up batch processor on script exit.
 
     Drains any remaining items from the queue and logs a warning.
