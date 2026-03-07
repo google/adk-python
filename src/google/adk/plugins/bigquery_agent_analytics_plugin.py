@@ -1275,10 +1275,12 @@ class LegacyStreamingBatchProcessor:
   def _prepare_rows_json(
       rows: list[dict[str, Any]],
   ) -> list[dict[str, Any]]:
-    """Converts row dicts to JSON-serializable format.
+    """Converts row dicts to JSON-serializable format for BigLake.
 
-    Handles datetime objects and ensures nested structures are
-    compatible with ``insert_rows_json``.
+    BigLake Iceberg STRING columns cannot accept dict/list values
+    directly via ``insert_rows_json``.  This method serializes all
+    non-scalar Python values (dict, list) to JSON strings and
+    converts datetime objects to ISO format.
 
     Args:
         rows: list of row dictionaries.
@@ -1292,6 +1294,11 @@ class LegacyStreamingBatchProcessor:
       for key, value in row.items():
         if isinstance(value, datetime):
           out[key] = value.isoformat()
+        elif isinstance(value, (dict, list)):
+          try:
+            out[key] = json.dumps(value)
+          except (TypeError, ValueError):
+            out[key] = str(value)
         else:
           out[key] = value
       prepared.append(out)
@@ -1717,7 +1724,14 @@ class HybridContentParser:
 def _replace_json_with_string(
     fields: list[bigquery.SchemaField],
 ) -> list[bigquery.SchemaField]:
-  """Replaces JSON fields with STRING (for BigLake Iceberg)."""
+  """Replaces JSON and RECORD fields with STRING (for BigLake Iceberg).
+
+  BigLake Iceberg tables do not support JSON or nested RECORD types
+  via any streaming API.  This function converts:
+    - JSON fields → STRING
+    - REPEATED RECORD fields → STRING (JSON-serialized array)
+    - NULLABLE/REQUIRED RECORD fields → STRING (JSON-serialized object)
+  """
   result = []
   for f in fields:
     if f.field_type == "JSON":
@@ -1727,17 +1741,16 @@ def _replace_json_with_string(
               "STRING",
               mode=f.mode,
               description=f.description,
-              fields=f.fields,
           )
       )
-    elif f.field_type in ("RECORD", "STRUCT") and f.fields:
+    elif f.field_type in ("RECORD", "STRUCT"):
+      # Flatten nested RECORD/STRUCT to STRING for BigLake Iceberg.
       result.append(
           bigquery.SchemaField(
               f.name,
-              f.field_type,
-              mode=f.mode,
+              "STRING",
+              mode=f.mode if f.mode != "REPEATED" else "NULLABLE",
               description=f.description,
-              fields=_replace_json_with_string(list(f.fields)),
           )
       )
     else:

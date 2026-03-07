@@ -6537,14 +6537,14 @@ class TestBigLakeIceberg:
         json_fields == []
     ), f"Expected no JSON fields in biglake schema, found: {json_fields}"
 
-  def test_biglake_schema_nested_record_json_replaced(self):
-    """object_ref.details is STRING in biglake schema."""
+  def test_biglake_schema_record_fields_flattened(self):
+    """RECORD fields are flattened to STRING for BigLake Iceberg."""
     schema = bigquery_agent_analytics_plugin._get_events_schema(biglake=True)
-    # Find content_parts -> object_ref -> details
+    # content_parts: REPEATED RECORD → NULLABLE STRING
     content_parts = next(f for f in schema if f.name == "content_parts")
-    object_ref = next(f for f in content_parts.fields if f.name == "object_ref")
-    details = next(f for f in object_ref.fields if f.name == "details")
-    assert details.field_type == "STRING"
+    assert content_parts.field_type == "STRING"
+    assert content_parts.mode == "NULLABLE"
+    assert len(content_parts.fields) == 0
 
   def test_biglake_arrow_schema_no_json_metadata(self):
     """Arrow schema from biglake has no google:sqlType:json metadata."""
@@ -6715,16 +6715,30 @@ class TestBigLakeIceberg:
                 bigquery.SchemaField("e", "INTEGER", mode="NULLABLE"),
             ],
         ),
+        bigquery.SchemaField(
+            "r",
+            "RECORD",
+            mode="REPEATED",
+            fields=[
+                bigquery.SchemaField("x", "STRING", mode="NULLABLE"),
+            ],
+        ),
     ]
     result = bigquery_agent_analytics_plugin._replace_json_with_string(fields)
+    # JSON → STRING
     assert result[0].field_type == "STRING"
     assert result[0].name == "a"
+    # STRING unchanged
     assert result[1].field_type == "STRING"
     assert result[1].name == "b"
-    assert result[2].field_type == "RECORD"
-    assert result[2].fields[0].field_type == "STRING"
-    assert result[2].fields[0].name == "d"
-    assert result[2].fields[1].field_type == "INTEGER"
+    # RECORD → STRING (flattened)
+    assert result[2].field_type == "STRING"
+    assert result[2].name == "c"
+    assert len(result[2].fields) == 0
+    # REPEATED RECORD → NULLABLE STRING
+    assert result[3].field_type == "STRING"
+    assert result[3].name == "r"
+    assert result[3].mode == "NULLABLE"
 
   def test_biglake_uses_legacy_streaming_processor(self):
     """BigLake Iceberg uses LegacyStreamingBatchProcessor."""
@@ -6773,7 +6787,7 @@ class TestBigLakeIceberg:
 
   @pytest.mark.asyncio
   async def test_legacy_processor_prepare_rows_json(self):
-    """LegacyStreamingBatchProcessor converts datetimes to ISO strings."""
+    """LegacyStreamingBatchProcessor serializes non-scalar values."""
     from datetime import datetime
     from datetime import timezone
 
@@ -6782,17 +6796,32 @@ class TestBigLakeIceberg:
             "timestamp": datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
             "event_type": "TEST",
             "content": '{"key": "value"}',
+            "latency_ms": {"total_ms": 123},
+            "content_parts": [{"text": "hello", "idx": 0}],
             "count": 42,
+            "empty_list": [],
+            "none_val": None,
         },
     ]
     prepared = bigquery_agent_analytics_plugin.LegacyStreamingBatchProcessor._prepare_rows_json(
         rows
     )
     assert len(prepared) == 1
-    assert prepared[0]["timestamp"] == "2026-01-01T12:00:00+00:00"
-    assert prepared[0]["event_type"] == "TEST"
-    assert prepared[0]["content"] == '{"key": "value"}'
-    assert prepared[0]["count"] == 42
+    row = prepared[0]
+    assert row["timestamp"] == "2026-01-01T12:00:00+00:00"
+    assert row["event_type"] == "TEST"
+    # Already a string — stays as-is
+    assert row["content"] == '{"key": "value"}'
+    # Dict → JSON string
+    assert row["latency_ms"] == '{"total_ms": 123}'
+    # List of dicts → JSON string
+    assert row["content_parts"] == '[{"text": "hello", "idx": 0}]'
+    # Scalars unchanged
+    assert row["count"] == 42
+    # Empty list → JSON string "[]"
+    assert row["empty_list"] == "[]"
+    # None stays None
+    assert row["none_val"] is None
 
   @pytest.mark.asyncio
   async def test_legacy_processor_write_calls_insert_rows_json(self):
