@@ -516,8 +516,10 @@ class BigQueryLoggerConfig:
   # for Apache Iceberg.  Requires ``connection_id`` to be set as well.
   # Format: "gs://bucket/path_to_table/"
   #
-  # NOTE: Data is written via the BigQuery Storage Write API.  Rows are
-  # immediately queryable within BigQuery, but Iceberg metadata (used by
+  # NOTE: Data is written via the BigQuery legacy streaming API
+  # (insertAll / insert_rows_json) because the Storage Write API does
+  # not yet support BigLake Iceberg tables.  Rows are immediately
+  # queryable within BigQuery, but Iceberg metadata (used by
   # open-source engines such as Spark/Trino) may take up to ~90 minutes
   # to refresh.  If near-real-time cross-engine visibility is required,
   # consider a DML/load-job ingestion path instead.
