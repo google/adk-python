@@ -134,9 +134,8 @@ Suggested shape:
 class EventWriter(abc.ABC):
   """Internal interface for writing analytics events."""
 
-  @abc.abstractmethod
   async def start(self) -> None:
-    ...
+    return None
 
   @abc.abstractmethod
   async def append(self, row: dict[str, Any]) -> None:
@@ -154,18 +153,27 @@ class EventWriter(abc.ABC):
   async def close(self) -> None:
     ...
 
+  @property
+  def write_stream(self) -> Optional[str]:
+    return None
+
   def atexit_processor(self) -> Any | None:
     return None
 ```
 
 Notes:
 
-- `start()` is included so writer lifecycle is explicit even if the underlying
-  processor is already started internally.
+- `start()` is a concrete no-op in phase 2. Startup ownership remains with the
+  existing backend flow for this phase, and moving startup fully into the
+  writer is deferred cleanup rather than a primary design goal.
 - `close()` is distinct from `shutdown()` because native and BigLake resource
   cleanup differ.
-- `atexit_processor()` is optional and exists only to preserve the current
-  `_atexit_cleanup(...)` behavior without exposing processor types directly.
+- `write_stream` is optional and preserves the existing `write_stream`
+  compatibility surface during the transition away from
+  `_batch_processor_prop`.
+- `atexit_processor()` is intentionally transitional in phase 2. It preserves
+  the current `_atexit_cleanup(...)` behavior even though it still exposes the
+  underlying processor as technical debt to remove later.
 
 ## Concrete Writers
 
@@ -208,6 +216,10 @@ class StorageWriteApiWriter(EventWriter):
     await self._batch_processor.close()
     if getattr(self._write_client, "transport", None):
       await self._write_client.transport.close()
+
+  @property
+  def write_stream(self) -> Optional[str]:
+    return self._batch_processor.write_stream
 
   def atexit_processor(self) -> Any | None:
     return self._batch_processor
@@ -413,6 +425,31 @@ Important:
 After this step, the writer becomes the single owner of write-resource cleanup.
 The plugin should no longer close transports directly.
 
+#### Multi-Loop Shutdown
+
+The current plugin supports draining processors on foreign event loops via
+`asyncio.run_coroutine_threadsafe(...)`. Phase 2 must preserve that behavior.
+
+For the current loop:
+
+```python
+await state.writer.shutdown(timeout=t)
+```
+
+For a foreign loop:
+
+```python
+future = asyncio.run_coroutine_threadsafe(
+    state.writer.shutdown(timeout=t),
+    other_loop,
+)
+future.result(timeout=t)
+```
+
+The same cross-loop dispatch rule applies to `writer.close()` if close needs to
+run on a foreign loop. Phase 2 must make this ownership explicit to avoid
+double-close or partial-shutdown bugs.
+
 Acceptance criteria:
 
 - Native shutdown still closes the transport
@@ -446,7 +483,28 @@ After all plugin call sites use `writer`:
 
 - remove `_batch_processor_prop`
 - remove `_write_client_prop`
+- migrate `_write_stream_prop` to use `writer.write_stream`
 - remove direct transport-close logic from plugin shutdown
+
+#### Compatibility With `__getattribute__` Surface
+
+The current plugin exposes compatibility properties through `__getattribute__`
+for:
+
+- `batch_processor`
+- `write_client`
+- `write_stream`
+
+Phase 2 should preserve this surface during the transition rather than silently
+breaking it.
+
+Recommended approach:
+
+- keep `batch_processor` and `write_client` compatibility properties while
+  `_LoopState` still carries those fields
+- route `write_stream` through `writer.write_stream`
+- only consider removing any of these properties in a later cleanup phase with
+  an explicit deprecation plan
 
 Acceptance criteria:
 
@@ -473,7 +531,7 @@ class EventWriter(abc.ABC):
 
   @abc.abstractmethod
   async def start(self) -> None:
-    ...
+    return None
 
   @abc.abstractmethod
   async def append(self, row: dict[str, Any]) -> None:
@@ -490,6 +548,10 @@ class EventWriter(abc.ABC):
   @abc.abstractmethod
   async def close(self) -> None:
     ...
+
+  @property
+  def write_stream(self) -> Optional[str]:
+    return None
 
   def atexit_processor(self) -> Any | None:
     return None
@@ -505,9 +567,6 @@ class StorageWriteApiWriter(EventWriter):
     self._write_client = write_client
     self._batch_processor = batch_processor
 
-  async def start(self) -> None:
-    return None
-
   async def append(self, row: dict[str, Any]) -> None:
     await self._batch_processor.append(row)
 
@@ -522,6 +581,10 @@ class StorageWriteApiWriter(EventWriter):
     if getattr(self._write_client, "transport", None):
       await self._write_client.transport.close()
 
+  @property
+  def write_stream(self) -> Optional[str]:
+    return self._batch_processor.write_stream
+
   def atexit_processor(self) -> Any | None:
     return self._batch_processor
 
@@ -530,9 +593,6 @@ class LegacyStreamingWriter(EventWriter):
 
   def __init__(self, batch_processor: LegacyStreamingBatchProcessor):
     self._batch_processor = batch_processor
-
-  async def start(self) -> None:
-    return None
 
   async def append(self, row: dict[str, Any]) -> None:
     await self._batch_processor.append(row)
@@ -565,6 +625,22 @@ class LegacyStreamingWriter(EventWriter):
 
 This order minimizes risk and makes regressions easier to isolate.
 
+## Pickle / Unpickle Compatibility
+
+Phase 2 changes runtime state again by adding writer-owned objects. The plugin
+already has explicit pickle compatibility handling, so this phase must preserve
+that contract.
+
+Requirements:
+
+- `__getstate__()` must clear any new writer-related non-picklable runtime
+  state
+- `__setstate__()` must backfill any new fields with `setdefault(...)`
+- add a regression test that simulates unpickling a pre-phase-2 state
+
+Phase 2 should assume that writer instances, processors, and async resources
+are all runtime-only and must be recreated lazily after unpickle.
+
 ## Risks
 
 ### Risk 1: Double-close or double-shutdown
@@ -587,6 +663,8 @@ Mitigation:
 - Preserve current start ordering
 - Make `writer.start()` a no-op unless startup ownership is intentionally moved
 
+This is a cleanup concern rather than a primary design blocker for phase 2.
+
 ### Risk 3: Atexit cleanup breakage
 
 If processor access is removed too early, `_atexit_cleanup(...)` can no longer
@@ -606,6 +684,19 @@ Mitigation:
 - Prefer tests that assert writer type and observed behavior
 - Keep old fields temporarily during the transition
 
+### Risk 5: Fork safety regression
+
+The plugin already has `_reset_runtime_state()` to handle fork safety by
+clearing loop-bound runtime state. If `_LoopState` changes shape in phase 2,
+that behavior must remain valid.
+
+Mitigation:
+
+- ensure `_reset_runtime_state()` still clears all loop-bound writer state by
+  resetting `_loop_state_by_loop`
+- treat writer instances as runtime-only resources that are always recreated
+  after fork
+
 ## Testing Plan
 
 Run at minimum:
@@ -619,9 +710,12 @@ Recommended validation areas:
 - Existing plugin tests pass unchanged as regression coverage
 - New tests for writer selection through backends
 - New tests for append/flush/shutdown through the writer interface
+- New tests for multi-loop shutdown using `writer.shutdown(...)`
 - New tests for native transport cleanup inside `StorageWriteApiWriter`
 - New tests for BigLake cleanup without any write-client assumption
 - New tests for atexit registration through `writer.atexit_processor()`
+- New tests for `write_stream` compatibility through the writer interface
+- New tests for pickle/unpickle compatibility with missing phase-2 fields
 
 Recommended new tests:
 
@@ -633,6 +727,9 @@ Recommended new tests:
 6. `test_storage_write_api_writer_closes_transport`
 7. `test_legacy_streaming_writer_close_does_not_require_write_client`
 8. `test_atexit_cleanup_registration_uses_writer_processor`
+9. `test_multi_loop_shutdown_uses_writer_shutdown`
+10. `test_write_stream_property_preserved_via_writer`
+11. `test_unpickle_legacy_state_missing_writer_fields`
 
 ## Acceptance Criteria
 
@@ -645,8 +742,12 @@ This phase is complete when all of the following are true:
 - Plugin append path uses `writer.append(...)`
 - Plugin flush path uses `writer.flush(...)`
 - Plugin shutdown path uses `writer.shutdown(...)` and `writer.close(...)`
+- Foreign-loop shutdown still uses `asyncio.run_coroutine_threadsafe(...)`
+  with `writer.shutdown(...)`
 - The plugin no longer closes native transports directly
+- `write_stream` remains available through the compatibility surface
 - Atexit registration is done through the writer hook
+- Pickle/unpickle compatibility is preserved for pre-phase-2 state
 - New writer-focused tests pass
 
 ## Follow-up Phases
