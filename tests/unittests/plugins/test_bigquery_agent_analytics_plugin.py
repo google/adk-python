@@ -7177,6 +7177,24 @@ class TestEventWriterPhase2:
     mock_wc.transport.close.assert_awaited_once()
 
   @pytest.mark.asyncio
+  async def test_storage_writer_close_cleans_transport_on_bp_failure(self):
+    """Transport is closed even if batch_processor.close() raises."""
+    mock_wc = mock.MagicMock()
+    mock_wc.transport = mock.AsyncMock()
+    mock_bp = mock.AsyncMock(
+        spec=bigquery_agent_analytics_plugin.BatchProcessor
+    )
+    mock_bp.close.side_effect = RuntimeError("bp close failed")
+
+    writer = bigquery_agent_analytics_plugin.StorageWriteApiWriter(
+        mock_wc, mock_bp
+    )
+    with pytest.raises(RuntimeError, match="bp close failed"):
+      await writer.close()
+
+    mock_wc.transport.close.assert_awaited_once()
+
+  @pytest.mark.asyncio
   async def test_legacy_streaming_writer_close_no_write_client(self):
     """LegacyStreamingWriter.close() works without a write client."""
     mock_bp = mock.AsyncMock(

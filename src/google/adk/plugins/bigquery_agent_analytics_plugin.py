@@ -2379,9 +2379,11 @@ class StorageWriteApiWriter(EventWriter):
     await self._batch_processor.shutdown(timeout=timeout)
 
   async def close(self) -> None:
-    await self._batch_processor.close()
-    if getattr(self._write_client, "transport", None):
-      await self._write_client.transport.close()
+    try:
+      await self._batch_processor.close()
+    finally:
+      if getattr(self._write_client, "transport", None):
+        await self._write_client.transport.close()
 
   @property
   def write_stream(self) -> Optional[str]:
