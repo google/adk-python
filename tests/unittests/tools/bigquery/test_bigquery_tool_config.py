@@ -130,6 +130,16 @@ def test_bigquery_tool_config_valid_labels(labels):
             "Label keys cannot be empty",
             id="empty-label-key",
         ),
+        pytest.param(
+            {"adk-bigquery-test": "value"},
+            'Label key cannot start with "adk-bigquery-"',
+            id="internal-label-key",
+        ),
+        pytest.param(
+            {f"key_{i}": "value" for i in range(21)},
+            "Only up to 20 job labels can be provided",
+            id="too-many-labels",
+        ),
     ],
 )
 def test_bigquery_tool_config_invalid_labels(labels, message):
