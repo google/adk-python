@@ -54,6 +54,15 @@ from .utils import execute_before_agent_interceptors
 logger = logging.getLogger('google_adk.' + __name__)
 
 
+class _HandleRequestErrorWithContextId(Exception):
+  """Carries response context ID for error events emitted from execute()."""
+
+  def __init__(self, *, context_id: str, cause: Exception):
+    super().__init__(str(cause))
+    self.context_id = context_id
+    self.cause = cause
+
+
 @a2a_experimental
 class A2aAgentExecutor(AgentExecutor):
   """An AgentExecutor that runs an ADK Agent against an A2A request and
@@ -144,6 +153,11 @@ class A2aAgentExecutor(AgentExecutor):
     try:
       await self._handle_request(context, event_queue)
     except Exception as e:
+      failure_context_id = context.context_id
+      if isinstance(e, _HandleRequestErrorWithContextId):
+        failure_context_id = e.context_id
+        e = e.cause
+
       logger.error('Error handling A2A request: %s', e, exc_info=True)
       # Publish failure event
       try:
@@ -161,7 +175,7 @@ class A2aAgentExecutor(AgentExecutor):
                         parts=[TextPart(text=str(e))],
                     ),
                 ),
-                context_id=context.context_id,
+                context_id=failure_context_id,
                 final=True,
             )
         )
@@ -192,131 +206,136 @@ class A2aAgentExecutor(AgentExecutor):
         run_request=run_request,
         session_id=session.id,
     )
+    try:
 
-    # for new task, create a task submitted event
-    if not context.current_task:
+      # for new task, create a task submitted event
+      if not context.current_task:
+        await event_queue.enqueue_event(
+            TaskStatusUpdateEvent(
+                task_id=context.task_id,
+                status=TaskStatus(
+                    state=TaskState.submitted,
+                    message=context.message,
+                    timestamp=datetime.fromtimestamp(
+                        platform_time.get_time(), tz=timezone.utc
+                    ).isoformat(),
+                ),
+                context_id=response_context_id,
+                final=False,
+            )
+        )
+
+      # create invocation context
+      invocation_context = runner._new_invocation_context(
+          session=session,
+          new_message=run_request.new_message,
+          run_config=run_request.run_config,
+      )
+
+      executor_context = ExecutorContext(
+          app_name=runner.app_name,
+          user_id=run_request.user_id,
+          session_id=run_request.session_id,
+          runner=runner,
+      )
+
+      # publish the task working event
       await event_queue.enqueue_event(
           TaskStatusUpdateEvent(
               task_id=context.task_id,
               status=TaskStatus(
-                  state=TaskState.submitted,
-                  message=context.message,
+                  state=TaskState.working,
                   timestamp=datetime.fromtimestamp(
                       platform_time.get_time(), tz=timezone.utc
                   ).isoformat(),
               ),
               context_id=response_context_id,
               final=False,
+              metadata={
+                  _get_adk_metadata_key('app_name'): runner.app_name,
+                  _get_adk_metadata_key('user_id'): run_request.user_id,
+                  _get_adk_metadata_key('session_id'): run_request.session_id,
+              },
           )
       )
 
-    # create invocation context
-    invocation_context = runner._new_invocation_context(
-        session=session,
-        new_message=run_request.new_message,
-        run_config=run_request.run_config,
-    )
+      task_result_aggregator = TaskResultAggregator()
+      async with Aclosing(runner.run_async(**vars(run_request))) as agen:
+        async for adk_event in agen:
+          for a2a_event in self._config.event_converter(
+              adk_event,
+              invocation_context,
+              context.task_id,
+              response_context_id,
+              self._config.gen_ai_part_converter,
+          ):
+            a2a_event = await execute_after_event_interceptors(
+                a2a_event,
+                executor_context,
+                adk_event,
+                self._config.execute_interceptors,
+            )
+            if a2a_event is None:
+              continue
 
-    executor_context = ExecutorContext(
-        app_name=runner.app_name,
-        user_id=run_request.user_id,
-        session_id=run_request.session_id,
-        runner=runner,
-    )
+            task_result_aggregator.process_event(a2a_event)
+            await event_queue.enqueue_event(a2a_event)
 
-    # publish the task working event
-    await event_queue.enqueue_event(
-        TaskStatusUpdateEvent(
+      # publish the task result event - this is final
+      if (
+          task_result_aggregator.task_state == TaskState.working
+          and task_result_aggregator.task_status_message is not None
+          and task_result_aggregator.task_status_message.parts
+      ):
+        # if task is still working properly, publish the artifact update event as
+        # the final result according to a2a protocol.
+        await event_queue.enqueue_event(
+            TaskArtifactUpdateEvent(
+                task_id=context.task_id,
+                last_chunk=True,
+                context_id=response_context_id,
+                artifact=Artifact(
+                    artifact_id=platform_uuid.new_uuid(),
+                    parts=task_result_aggregator.task_status_message.parts,
+                ),
+            )
+        )
+        # public the final status update event
+        final_event = TaskStatusUpdateEvent(
             task_id=context.task_id,
             status=TaskStatus(
-                state=TaskState.working,
+                state=TaskState.completed,
                 timestamp=datetime.fromtimestamp(
                     platform_time.get_time(), tz=timezone.utc
                 ).isoformat(),
             ),
             context_id=response_context_id,
-            final=False,
-            metadata={
-                _get_adk_metadata_key('app_name'): runner.app_name,
-                _get_adk_metadata_key('user_id'): run_request.user_id,
-                _get_adk_metadata_key('session_id'): run_request.session_id,
-            },
+            final=True,
         )
-    )
+      else:
+        final_event = TaskStatusUpdateEvent(
+            task_id=context.task_id,
+            status=TaskStatus(
+                state=task_result_aggregator.task_state,
+                timestamp=datetime.fromtimestamp(
+                    platform_time.get_time(), tz=timezone.utc
+                ).isoformat(),
+                message=task_result_aggregator.task_status_message,
+            ),
+            context_id=response_context_id,
+            final=True,
+        )
 
-    task_result_aggregator = TaskResultAggregator()
-    async with Aclosing(runner.run_async(**vars(run_request))) as agen:
-      async for adk_event in agen:
-        for a2a_event in self._config.event_converter(
-            adk_event,
-            invocation_context,
-            context.task_id,
-            response_context_id,
-            self._config.gen_ai_part_converter,
-        ):
-          a2a_event = await execute_after_event_interceptors(
-              a2a_event,
-              executor_context,
-              adk_event,
-              self._config.execute_interceptors,
-          )
-          if a2a_event is None:
-            continue
-
-          task_result_aggregator.process_event(a2a_event)
-          await event_queue.enqueue_event(a2a_event)
-
-    # publish the task result event - this is final
-    if (
-        task_result_aggregator.task_state == TaskState.working
-        and task_result_aggregator.task_status_message is not None
-        and task_result_aggregator.task_status_message.parts
-    ):
-      # if task is still working properly, publish the artifact update event as
-      # the final result according to a2a protocol.
-      await event_queue.enqueue_event(
-          TaskArtifactUpdateEvent(
-              task_id=context.task_id,
-              last_chunk=True,
-              context_id=response_context_id,
-              artifact=Artifact(
-                  artifact_id=platform_uuid.new_uuid(),
-                  parts=task_result_aggregator.task_status_message.parts,
-              ),
-          )
+      final_event = await execute_after_agent_interceptors(
+          executor_context,
+          final_event,
+          self._config.execute_interceptors,
       )
-      # public the final status update event
-      final_event = TaskStatusUpdateEvent(
-          task_id=context.task_id,
-          status=TaskStatus(
-              state=TaskState.completed,
-              timestamp=datetime.fromtimestamp(
-                  platform_time.get_time(), tz=timezone.utc
-              ).isoformat(),
-          ),
-          context_id=response_context_id,
-          final=True,
-      )
-    else:
-      final_event = TaskStatusUpdateEvent(
-          task_id=context.task_id,
-          status=TaskStatus(
-              state=task_result_aggregator.task_state,
-              timestamp=datetime.fromtimestamp(
-                  platform_time.get_time(), tz=timezone.utc
-              ).isoformat(),
-              message=task_result_aggregator.task_status_message,
-          ),
-          context_id=response_context_id,
-          final=True,
-      )
-
-    final_event = await execute_after_agent_interceptors(
-        executor_context,
-        final_event,
-        self._config.execute_interceptors,
-    )
-    await event_queue.enqueue_event(final_event)
+      await event_queue.enqueue_event(final_event)
+    except Exception as e:
+      raise _HandleRequestErrorWithContextId(
+          context_id=response_context_id, cause=e
+      ) from e
 
   def _get_response_context_id(
       self,

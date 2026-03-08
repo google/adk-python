@@ -640,6 +640,40 @@ class TestA2aAgentExecutor:
     assert failure_event.final == True
 
   @pytest.mark.asyncio
+  async def test_execute_with_exception_after_mapped_events_uses_mapped_context_id(
+      self,
+  ):
+    """Test failure event context ID stays mapped when handle_request fails."""
+    self.mock_request_converter.return_value = AgentRunRequest(
+        user_id="test-user",
+        session_id="test-session",
+        new_message=Mock(spec=Content),
+        run_config=Mock(spec=RunConfig),
+    )
+
+    mock_session = Mock()
+    mock_session.id = "test-session"
+    self.mock_runner.session_service.get_session = AsyncMock(
+        return_value=mock_session
+    )
+    self.mock_runner._new_invocation_context.return_value = Mock()
+
+    async def mock_run_async(**kwargs):
+      raise RuntimeError("stream failure")
+      yield  # pragma: no cover
+
+    self.mock_runner.run_async = mock_run_async
+
+    await self.executor.execute(self.mock_context, self.mock_event_queue)
+
+    expected_context_id = _to_a2a_context_id(
+        self.mock_runner.app_name, "test-user", "test-session"
+    )
+    failure_event = self.mock_event_queue.enqueue_event.call_args_list[-1][0][0]
+    assert failure_event.status.state == TaskState.failed
+    assert failure_event.context_id == expected_context_id
+
+  @pytest.mark.asyncio
   async def test_handle_request_with_aggregator_message(self):
     """Test that the final task status event includes message from aggregator."""
     # Setup context with task_id
