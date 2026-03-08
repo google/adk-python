@@ -2883,6 +2883,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     state["_startup_error"] = None
     state["_is_shutting_down"] = False
     state["_init_pid"] = 0
+    state["_backend"] = None
     return state
 
   def __setstate__(self, state):
@@ -2890,6 +2891,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     # Backfill keys that may be absent in pickled state from older
     # code versions so _ensure_started does not raise AttributeError.
     state.setdefault("_init_pid", 0)
+    state.setdefault("_backend", None)
     self.__dict__.update(state)
 
   def _reset_runtime_state(self) -> None:

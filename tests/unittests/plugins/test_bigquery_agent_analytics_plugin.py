@@ -4919,6 +4919,31 @@ class TestForkSafety:
     assert new_plugin._started is True
     await new_plugin.shutdown()
 
+  @pytest.mark.asyncio
+  async def test_unpickle_legacy_state_missing_backend(
+      self, mock_auth_default, mock_bq_client, mock_write_client
+  ):
+    """Unpickling state from pre-backend-refactor code should not crash."""
+    plugin = self._make_plugin()
+    state = plugin.__getstate__()
+    # Simulate legacy pickle state that lacks _backend entirely
+    del state["_backend"]
+
+    new_plugin = (
+        bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin.__new__(
+            bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin
+        )
+    )
+    new_plugin.__setstate__(state)
+
+    # _backend should be backfilled to None
+    assert new_plugin._backend is None
+    # Lazy property should create it on demand without error
+    assert isinstance(
+        new_plugin.backend,
+        bigquery_agent_analytics_plugin.NativeBigQueryBackend,
+    )
+
 
 class TestForkGrpcSafety:
   """Tests for gRPC fork safety enhancements."""
