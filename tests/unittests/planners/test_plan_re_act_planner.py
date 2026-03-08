@@ -107,8 +107,10 @@ class TestHandleNonFunctionCallParts:
     planner._handle_non_function_call_parts(part, preserved)
 
     assert len(preserved) == 2
+    assert preserved[0].text == FINAL_ANSWER_TAG
     assert preserved[0].thought is True
     assert preserved[1].text == 'only answer'
+    assert not preserved[1].thought
 
   def test_text_with_final_answer_tag_no_answer(self, planner):
     text = f'just reasoning{FINAL_ANSWER_TAG}'
