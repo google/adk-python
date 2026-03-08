@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import abc
 import asyncio
 import atexit
 from concurrent.futures import ThreadPoolExecutor
@@ -2174,6 +2175,158 @@ class EventData:
   trace_id_override: Optional[str] = None
 
 
+class AnalyticsTableBackend(abc.ABC):
+  """Abstract backend for BigQuery analytics table operations."""
+
+  def __init__(self, plugin: "BigQueryAgentAnalyticsPlugin"):
+    self._plugin = plugin
+
+  @abc.abstractmethod
+  def build_schema(self) -> list[bigquery.SchemaField]:
+    ...
+
+  @abc.abstractmethod
+  def maybe_build_arrow_schema(
+      self, schema: list[bigquery.SchemaField]
+  ) -> Optional[pa.Schema]:
+    ...
+
+  @abc.abstractmethod
+  def prepare_table_for_create(self, table: bigquery.Table) -> bigquery.Table:
+    ...
+
+  @abc.abstractmethod
+  async def create_loop_state(
+      self, loop: asyncio.AbstractEventLoop
+  ) -> _LoopState:
+    ...
+
+
+class NativeBigQueryBackend(AnalyticsTableBackend):
+  """Backend for native BigQuery tables using Storage Write API."""
+
+  def build_schema(self) -> list[bigquery.SchemaField]:
+    return _get_events_schema(biglake=False)
+
+  def maybe_build_arrow_schema(
+      self, schema: list[bigquery.SchemaField]
+  ) -> Optional[pa.Schema]:
+    arrow_schema = to_arrow_schema(schema)
+    if not arrow_schema:
+      raise RuntimeError("Failed to convert BigQuery schema to Arrow schema.")
+    return arrow_schema
+
+  def prepare_table_for_create(self, table: bigquery.Table) -> bigquery.Table:
+    table.time_partitioning = bigquery.TimePartitioning(
+        type_=bigquery.TimePartitioningType.DAY,
+        field="timestamp",
+    )
+    table.clustering_fields = self._plugin.config.clustering_fields
+    return table
+
+  async def create_loop_state(
+      self, loop: asyncio.AbstractEventLoop
+  ) -> _LoopState:
+    plugin = self._plugin
+
+    def get_credentials():
+      creds, project_id = google.auth.default(
+          scopes=["https://www.googleapis.com/auth/cloud-platform"]
+      )
+      return creds, project_id
+
+    creds, project_id = await loop.run_in_executor(
+        plugin._executor, get_credentials
+    )
+    quota_project_id = getattr(creds, "quota_project_id", None)
+    options = (
+        client_options.ClientOptions(quota_project_id=quota_project_id)
+        if quota_project_id
+        else None
+    )
+    client_info = gapic_client_info.ClientInfo(
+        user_agent=f"google-adk-bq-logger/{__version__}"
+    )
+
+    write_client = BigQueryWriteAsyncClient(
+        credentials=creds,
+        client_info=client_info,
+        client_options=options,
+    )
+
+    if not plugin._write_stream_name:
+      plugin._write_stream_name = (
+          f"projects/{plugin.project_id}"
+          f"/datasets/{plugin.dataset_id}"
+          f"/tables/{plugin.table_id}/_default"
+      )
+
+    batch_processor = BatchProcessor(
+        write_client=write_client,
+        arrow_schema=plugin.arrow_schema,
+        write_stream=plugin._write_stream_name,
+        batch_size=plugin.config.batch_size,
+        flush_interval=plugin.config.batch_flush_interval,
+        retry_config=plugin.config.retry_config,
+        queue_max_size=plugin.config.queue_max_size,
+        shutdown_timeout=plugin.config.shutdown_timeout,
+    )
+    await batch_processor.start()
+
+    return _LoopState(write_client, batch_processor)
+
+
+class BigLakeIcebergBackend(AnalyticsTableBackend):
+  """Backend for BigLake Iceberg managed tables."""
+
+  def build_schema(self) -> list[bigquery.SchemaField]:
+    return _get_events_schema(biglake=True)
+
+  def maybe_build_arrow_schema(
+      self, schema: list[bigquery.SchemaField]
+  ) -> Optional[pa.Schema]:
+    return None
+
+  def prepare_table_for_create(self, table: bigquery.Table) -> bigquery.Table:
+    from google.cloud.bigquery.table import BigLakeConfiguration
+
+    plugin = self._plugin
+    if plugin.config.biglake_time_partitioning:
+      table.time_partitioning = bigquery.TimePartitioning(
+          type_=bigquery.TimePartitioningType.DAY,
+          field="timestamp",
+      )
+    table.clustering_fields = plugin.config.clustering_fields
+    biglake_conn_id = _normalize_biglake_connection_id(
+        plugin.config.connection_id, plugin.project_id
+    )
+    table.biglake_configuration = BigLakeConfiguration(
+        connection_id=biglake_conn_id,
+        storage_uri=plugin.config.biglake_storage_uri,
+        file_format="PARQUET",
+        table_format="ICEBERG",
+    )
+    return table
+
+  async def create_loop_state(
+      self, loop: asyncio.AbstractEventLoop
+  ) -> _LoopState:
+    plugin = self._plugin
+    batch_processor = LegacyStreamingBatchProcessor(
+        bq_client=plugin.client,
+        full_table_id=plugin.full_table_id,
+        batch_size=plugin.config.batch_size,
+        flush_interval=plugin.config.batch_flush_interval,
+        retry_config=plugin.config.retry_config,
+        queue_max_size=plugin.config.queue_max_size,
+        shutdown_timeout=plugin.config.shutdown_timeout,
+        executor=plugin._executor,
+    )
+    await batch_processor.start()
+
+    return _LoopState(None, batch_processor)
+
+
 class BigQueryAgentAnalyticsPlugin(BasePlugin):
   """BigQuery Agent Analytics Plugin using Write API.
 
@@ -2233,7 +2386,21 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     self._schema = None
     self.arrow_schema = None
     self._init_pid = os.getpid()
+    self._backend: Optional[AnalyticsTableBackend] = None
     _LIVE_PLUGINS.add(self)
+
+  def _make_backend(self) -> AnalyticsTableBackend:
+    """Creates the appropriate backend based on configuration."""
+    if self.is_biglake:
+      return BigLakeIcebergBackend(self)
+    return NativeBigQueryBackend(self)
+
+  @property
+  def backend(self) -> AnalyticsTableBackend:
+    """Returns the backend, creating it lazily if needed."""
+    if self._backend is None:
+      self._backend = self._make_backend()
+    return self._backend
 
   @property
   def is_biglake(self) -> bool:
@@ -2339,76 +2506,9 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     if loop in self._loop_state_by_loop:
       return self._loop_state_by_loop[loop]
 
-    if self.is_biglake:
-      # BigLake Iceberg tables do not support the Storage Write API
-      # v2 (Arrow format) due to internal identity columns.  Use
-      # the legacy streaming API (insert_rows_json) instead.
-      batch_processor = LegacyStreamingBatchProcessor(
-          bq_client=self.client,
-          full_table_id=self.full_table_id,
-          batch_size=self.config.batch_size,
-          flush_interval=self.config.batch_flush_interval,
-          retry_config=self.config.retry_config,
-          queue_max_size=self.config.queue_max_size,
-          shutdown_timeout=self.config.shutdown_timeout,
-          executor=self._executor,
-      )
-      await batch_processor.start()
-
-      state = _LoopState(None, batch_processor)
-      self._loop_state_by_loop[loop] = state
-
-      atexit.register(self._atexit_cleanup, weakref.proxy(batch_processor))
-
-      return state
-
-    # grpc.aio clients are loop-bound, so we create one per event loop.
-
-    def get_credentials():
-      creds, project_id = google.auth.default(
-          scopes=["https://www.googleapis.com/auth/cloud-platform"]
-      )
-      return creds, project_id
-
-    creds, project_id = await loop.run_in_executor(
-        self._executor, get_credentials
-    )
-    quota_project_id = getattr(creds, "quota_project_id", None)
-    options = (
-        client_options.ClientOptions(quota_project_id=quota_project_id)
-        if quota_project_id
-        else None
-    )
-    client_info = gapic_client_info.ClientInfo(
-        user_agent=f"google-adk-bq-logger/{__version__}"
-    )
-
-    write_client = BigQueryWriteAsyncClient(
-        credentials=creds,
-        client_info=client_info,
-        client_options=options,
-    )
-
-    if not self._write_stream_name:
-      self._write_stream_name = f"projects/{self.project_id}/datasets/{self.dataset_id}/tables/{self.table_id}/_default"
-
-    batch_processor = BatchProcessor(
-        write_client=write_client,
-        arrow_schema=self.arrow_schema,
-        write_stream=self._write_stream_name,
-        batch_size=self.config.batch_size,
-        flush_interval=self.config.batch_flush_interval,
-        retry_config=self.config.retry_config,
-        queue_max_size=self.config.queue_max_size,
-        shutdown_timeout=self.config.shutdown_timeout,
-    )
-    await batch_processor.start()
-
-    state = _LoopState(write_client, batch_processor)
+    state = await self.backend.create_loop_state(loop)
     self._loop_state_by_loop[loop] = state
-
-    atexit.register(self._atexit_cleanup, weakref.proxy(batch_processor))
-
+    atexit.register(self._atexit_cleanup, weakref.proxy(state.batch_processor))
     return state
 
   async def flush(self) -> None:
@@ -2444,18 +2544,11 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
 
     self.full_table_id = f"{self.project_id}.{self.dataset_id}.{self.table_id}"
     if not self._schema:
-      self._schema = _get_events_schema(biglake=self.is_biglake)
+      self._schema = self.backend.build_schema()
       await loop.run_in_executor(self._executor, self._ensure_schema_exists)
 
     if not self.parser:
-      if not self.is_biglake:
-        # Arrow schema is only needed for the Storage Write API path.
-        # BigLake Iceberg uses legacy streaming which doesn't need it.
-        self.arrow_schema = to_arrow_schema(self._schema)
-        if not self.arrow_schema:
-          raise RuntimeError(
-              "Failed to convert BigQuery schema to Arrow schema."
-          )
+      self.arrow_schema = self.backend.maybe_build_arrow_schema(self._schema)
 
       self.offloader = None
       if self.config.gcs_bucket_name:
@@ -2527,32 +2620,8 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     except cloud_exceptions.NotFound:
       logger.info("Table %s not found, creating table.", self.full_table_id)
       tbl = bigquery.Table(self.full_table_id, schema=self._schema)
-      # BigLake Iceberg time partitioning is a preview feature; skip
-      # unless the user explicitly opts in via biglake_time_partitioning.
-      if not self.is_biglake or self.config.biglake_time_partitioning:
-        tbl.time_partitioning = bigquery.TimePartitioning(
-            type_=bigquery.TimePartitioningType.DAY,
-            field="timestamp",
-        )
-      tbl.clustering_fields = self.config.clustering_fields
+      tbl = self.backend.prepare_table_for_create(tbl)
       tbl.labels = {_SCHEMA_VERSION_LABEL_KEY: _SCHEMA_VERSION}
-      if self.is_biglake:
-        from google.cloud.bigquery.table import BigLakeConfiguration
-
-        if not self.config.connection_id:
-          raise ValueError(
-              "connection_id is required for BigLake Iceberg tables."
-              " Set it in BigQueryLoggerConfig."
-          )
-        biglake_conn_id = _normalize_biglake_connection_id(
-            self.config.connection_id, self.project_id
-        )
-        tbl.biglake_configuration = BigLakeConfiguration(
-            connection_id=biglake_conn_id,
-            storage_uri=self.config.biglake_storage_uri,
-            file_format="PARQUET",
-            table_format="ICEBERG",
-        )
       table_ready = False
       try:
         self.client.create_table(tbl)

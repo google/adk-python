@@ -6880,3 +6880,104 @@ class TestBigLakeIceberg:
       await state.batch_processor.shutdown()
 
     asyncio.run(run())
+
+
+class TestAnalyticsTableBackend:
+  """Tests for the AnalyticsTableBackend abstraction."""
+
+  def _make_plugin(self, **config_kwargs):
+    return bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        project_id=PROJECT_ID,
+        dataset_id=DATASET_ID,
+        config=bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+            **config_kwargs
+        ),
+    )
+
+  def test_make_backend_native(self):
+    """No biglake_storage_uri produces NativeBigQueryBackend."""
+    plugin = self._make_plugin()
+    backend = plugin._make_backend()
+    assert isinstance(
+        backend,
+        bigquery_agent_analytics_plugin.NativeBigQueryBackend,
+    )
+
+  def test_make_backend_biglake(self):
+    """biglake_storage_uri produces BigLakeIcebergBackend."""
+    plugin = self._make_plugin(
+        connection_id="us.my-conn",
+        biglake_storage_uri="gs://bucket/path/",
+    )
+    backend = plugin._make_backend()
+    assert isinstance(
+        backend,
+        bigquery_agent_analytics_plugin.BigLakeIcebergBackend,
+    )
+
+  def test_native_backend_builds_native_schema(self):
+    """Native backend schema contains JSON fields."""
+    plugin = self._make_plugin()
+    schema = plugin.backend.build_schema()
+    json_names = {f.name for f in schema if f.field_type == "JSON"}
+    assert "content" in json_names
+
+  def test_biglake_backend_builds_biglake_schema(self):
+    """BigLake backend schema has no JSON fields."""
+    plugin = self._make_plugin(
+        connection_id="us.my-conn",
+        biglake_storage_uri="gs://bucket/path/",
+    )
+    schema = plugin.backend.build_schema()
+    json_names = {f.name for f in schema if f.field_type == "JSON"}
+    assert json_names == set()
+
+  def test_native_backend_builds_arrow_schema(self):
+    """Native backend returns a non-None Arrow schema."""
+    plugin = self._make_plugin()
+    schema = plugin.backend.build_schema()
+    arrow = plugin.backend.maybe_build_arrow_schema(schema)
+    assert arrow is not None
+    assert isinstance(arrow, pa.Schema)
+
+  def test_biglake_backend_skips_arrow_schema(self):
+    """BigLake backend returns None for Arrow schema."""
+    plugin = self._make_plugin(
+        connection_id="us.my-conn",
+        biglake_storage_uri="gs://bucket/path/",
+    )
+    schema = plugin.backend.build_schema()
+    arrow = plugin.backend.maybe_build_arrow_schema(schema)
+    assert arrow is None
+
+  def test_native_backend_prepares_table(self):
+    """Native backend sets time_partitioning, no BigLakeConfiguration."""
+    plugin = self._make_plugin()
+    tbl = bigquery.Table(f"{PROJECT_ID}.{DATASET_ID}.{TABLE_ID}", schema=[])
+    tbl = plugin.backend.prepare_table_for_create(tbl)
+    assert tbl.time_partitioning is not None
+    assert tbl.time_partitioning.field == "timestamp"
+    assert tbl.clustering_fields == ["event_type", "agent", "user_id"]
+    assert not hasattr(tbl, "biglake_configuration") or (
+        tbl.biglake_configuration is None
+    )
+
+  def test_biglake_backend_prepares_table(self):
+    """BigLake backend sets BigLakeConfiguration, connection normalized."""
+    plugin = self._make_plugin(
+        connection_id="us.my-conn",
+        biglake_storage_uri="gs://bucket/path/",
+    )
+    tbl = bigquery.Table(f"{PROJECT_ID}.{DATASET_ID}.{TABLE_ID}", schema=[])
+    tbl = plugin.backend.prepare_table_for_create(tbl)
+    cfg = tbl.biglake_configuration
+    assert cfg is not None
+    assert cfg.connection_id == (
+        f"projects/{PROJECT_ID}/locations/us/connections/my-conn"
+    )
+    assert cfg.storage_uri == "gs://bucket/path/"
+    assert cfg.file_format == "PARQUET"
+    assert cfg.table_format == "ICEBERG"
+    # Default: no time partitioning for BigLake
+    assert tbl.time_partitioning is None
+    assert tbl.clustering_fields == ["event_type", "agent", "user_id"]
