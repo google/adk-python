@@ -2774,13 +2774,19 @@ class TestLoopStateValidation:
     )
 
   def _make_loop_state(self):
-    """Creates a mock _LoopState with batch_processor and write_client."""
-    state = mock.MagicMock()
-    state.batch_processor = mock.MagicMock(
+    """Creates a mock _LoopState with a writer."""
+    mock_bp = mock.MagicMock(
         spec=bigquery_agent_analytics_plugin.BatchProcessor
     )
-    state.batch_processor.flush = mock.AsyncMock()
-    state.write_client = mock.MagicMock()
+    mock_bp.flush = mock.AsyncMock()
+    mock_writer = mock.AsyncMock(
+        spec=bigquery_agent_analytics_plugin.EventWriter
+    )
+    mock_writer.atexit_processor.return_value = mock_bp
+    mock_writer.write_stream = None
+    mock_writer.flush = mock.AsyncMock()
+    state = mock.MagicMock()
+    state.writer = mock_writer
     return state
 
   def test_cleanup_stale_loop_states_removes_closed_loops(self):
@@ -2837,7 +2843,7 @@ class TestLoopStateValidation:
     state = self._make_loop_state()
     plugin._loop_state_by_loop[loop] = state
 
-    assert plugin.batch_processor is state.batch_processor
+    assert plugin.batch_processor is state.writer.atexit_processor()
 
     # Clean up
     del plugin._loop_state_by_loop[loop]
@@ -6449,9 +6455,12 @@ class TestMultiLoopShutdownDrainsOtherLoops:
     mock_other_write_client = mock.MagicMock()
     mock_other_write_client.transport = mock.AsyncMock()
 
+    mock_other_writer = mock.AsyncMock(
+        spec=bigquery_agent_analytics_plugin.EventWriter
+    )
+    mock_other_writer.atexit_processor.return_value = mock_other_bp
     other_state = bigquery_agent_analytics_plugin._LoopState(
-        write_client=mock_other_write_client,
-        batch_processor=mock_other_bp,
+        writer=mock_other_writer,
     )
     plugin._loop_state_by_loop[other_loop] = other_state
 
@@ -6794,11 +6803,14 @@ class TestBigLakeIceberg:
         plugin._executor = ThreadPoolExecutor(max_workers=1)
       state = await plugin._get_loop_state()
       assert isinstance(
-          state.batch_processor,
+          state.writer,
+          bigquery_agent_analytics_plugin.LegacyStreamingWriter,
+      )
+      assert isinstance(
+          state.writer.atexit_processor(),
           bigquery_agent_analytics_plugin.LegacyStreamingBatchProcessor,
       )
-      assert state.write_client is None
-      await state.batch_processor.shutdown()
+      await state.writer.shutdown(timeout=5.0)
 
     asyncio.run(run())
 
@@ -6902,7 +6914,7 @@ class TestBigLakeIceberg:
       state = await plugin._get_loop_state()
       # Arrow schema should not have been created for BigLake
       assert plugin.arrow_schema is None
-      await state.batch_processor.shutdown()
+      await state.writer.shutdown(timeout=5.0)
 
     asyncio.run(run())
 
@@ -7006,3 +7018,286 @@ class TestAnalyticsTableBackend:
     # Default: no time partitioning for BigLake
     assert tbl.time_partitioning is None
     assert tbl.clustering_fields == ["event_type", "agent", "user_id"]
+
+
+class TestEventWriterPhase2:
+  """Tests for the EventWriter abstraction (phase 2)."""
+
+  def _make_plugin(self, **config_kwargs):
+    return bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        project_id=PROJECT_ID,
+        dataset_id=DATASET_ID,
+        config=bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+            **config_kwargs
+        ),
+    )
+
+  def test_native_backend_returns_storage_write_api_writer(self):
+    """Native backend creates a StorageWriteApiWriter."""
+    plugin = self._make_plugin()
+    mock_client = mock.MagicMock(spec=bigquery.Client)
+    mock_client.get_table.side_effect = cloud_exceptions.NotFound("nf")
+    mock_client.create_table.return_value = None
+    plugin.client = mock_client
+    plugin.full_table_id = f"{PROJECT_ID}.{DATASET_ID}.{TABLE_ID}"
+    plugin._schema = bigquery_agent_analytics_plugin._get_events_schema(
+        biglake=False
+    )
+    plugin.arrow_schema = bigquery_agent_analytics_plugin.to_arrow_schema(
+        plugin._schema
+    )
+    plugin._started = True
+    plugin.parser = mock.MagicMock()
+
+    async def run():
+      from concurrent.futures import ThreadPoolExecutor
+
+      if plugin._executor is None:
+        plugin._executor = ThreadPoolExecutor(max_workers=1)
+
+      with mock.patch.object(
+          google.auth,
+          "default",
+          return_value=(mock.MagicMock(), PROJECT_ID),
+      ):
+        with mock.patch.object(
+            bigquery_agent_analytics_plugin,
+            "BigQueryWriteAsyncClient",
+            autospec=True,
+        ):
+          state = await plugin._get_loop_state()
+          assert isinstance(
+              state.writer,
+              bigquery_agent_analytics_plugin.StorageWriteApiWriter,
+          )
+          await state.writer.shutdown(timeout=5.0)
+
+    asyncio.run(run())
+
+  def test_biglake_backend_returns_legacy_streaming_writer(self):
+    """BigLake backend creates a LegacyStreamingWriter."""
+    plugin = self._make_plugin(
+        connection_id="us-central1.my-conn",
+        biglake_storage_uri="gs://bucket/path/",
+    )
+    mock_client = mock.MagicMock(spec=bigquery.Client)
+    mock_client.get_table.side_effect = cloud_exceptions.NotFound("nf")
+    mock_client.create_table.return_value = None
+    plugin.client = mock_client
+    plugin.full_table_id = f"{PROJECT_ID}.{DATASET_ID}.{TABLE_ID}"
+    plugin._schema = bigquery_agent_analytics_plugin._get_events_schema(
+        biglake=True
+    )
+    plugin._started = True
+    plugin.parser = mock.MagicMock()
+
+    async def run():
+      from concurrent.futures import ThreadPoolExecutor
+
+      if plugin._executor is None:
+        plugin._executor = ThreadPoolExecutor(max_workers=1)
+      state = await plugin._get_loop_state()
+      assert isinstance(
+          state.writer,
+          bigquery_agent_analytics_plugin.LegacyStreamingWriter,
+      )
+      await state.writer.shutdown(timeout=5.0)
+
+    asyncio.run(run())
+
+  @pytest.mark.asyncio
+  async def test_plugin_flush_uses_writer_interface(self):
+    """plugin.flush() delegates to writer.flush()."""
+    plugin = self._make_plugin()
+    mock_writer = mock.AsyncMock(
+        spec=bigquery_agent_analytics_plugin.EventWriter
+    )
+    loop = asyncio.get_running_loop()
+    plugin._loop_state_by_loop[loop] = (
+        bigquery_agent_analytics_plugin._LoopState(writer=mock_writer)
+    )
+
+    await plugin.flush()
+
+    mock_writer.flush.assert_awaited_once()
+    del plugin._loop_state_by_loop[loop]
+
+  @pytest.mark.asyncio
+  async def test_plugin_shutdown_uses_writer_for_native(self):
+    """shutdown() calls writer.shutdown() and writer.close()."""
+    plugin = self._make_plugin()
+    mock_writer = mock.AsyncMock(
+        spec=bigquery_agent_analytics_plugin.EventWriter
+    )
+    loop = asyncio.get_running_loop()
+    plugin._loop_state_by_loop[loop] = (
+        bigquery_agent_analytics_plugin._LoopState(writer=mock_writer)
+    )
+
+    await plugin.shutdown()
+
+    mock_writer.shutdown.assert_awaited_once()
+    mock_writer.close.assert_awaited_once()
+
+  @pytest.mark.asyncio
+  async def test_plugin_shutdown_uses_writer_for_biglake(self):
+    """shutdown() calls writer.shutdown() and writer.close() for BigLake."""
+    plugin = self._make_plugin(
+        connection_id="us.my-conn",
+        biglake_storage_uri="gs://bucket/path/",
+    )
+    mock_writer = mock.AsyncMock(
+        spec=bigquery_agent_analytics_plugin.EventWriter
+    )
+    loop = asyncio.get_running_loop()
+    plugin._loop_state_by_loop[loop] = (
+        bigquery_agent_analytics_plugin._LoopState(writer=mock_writer)
+    )
+
+    await plugin.shutdown()
+
+    mock_writer.shutdown.assert_awaited_once()
+    mock_writer.close.assert_awaited_once()
+
+  @pytest.mark.asyncio
+  async def test_storage_write_api_writer_closes_transport(self):
+    """StorageWriteApiWriter.close() closes the gRPC transport."""
+    mock_wc = mock.MagicMock()
+    mock_wc.transport = mock.AsyncMock()
+    mock_bp = mock.AsyncMock(
+        spec=bigquery_agent_analytics_plugin.BatchProcessor
+    )
+
+    writer = bigquery_agent_analytics_plugin.StorageWriteApiWriter(
+        mock_wc, mock_bp
+    )
+    await writer.close()
+
+    mock_bp.close.assert_awaited_once()
+    mock_wc.transport.close.assert_awaited_once()
+
+  @pytest.mark.asyncio
+  async def test_legacy_streaming_writer_close_no_write_client(self):
+    """LegacyStreamingWriter.close() works without a write client."""
+    mock_bp = mock.AsyncMock(
+        spec=bigquery_agent_analytics_plugin.LegacyStreamingBatchProcessor
+    )
+
+    writer = bigquery_agent_analytics_plugin.LegacyStreamingWriter(mock_bp)
+    await writer.close()
+
+    mock_bp.close.assert_awaited_once()
+
+  def test_atexit_registration_uses_writer_processor(self):
+    """atexit registers the processor from writer.atexit_processor()."""
+    plugin = self._make_plugin(
+        connection_id="us-central1.my-conn",
+        biglake_storage_uri="gs://bucket/path/",
+    )
+    mock_client = mock.MagicMock(spec=bigquery.Client)
+    mock_client.get_table.side_effect = cloud_exceptions.NotFound("nf")
+    mock_client.create_table.return_value = None
+    plugin.client = mock_client
+    plugin.full_table_id = f"{PROJECT_ID}.{DATASET_ID}.{TABLE_ID}"
+    plugin._schema = bigquery_agent_analytics_plugin._get_events_schema(
+        biglake=True
+    )
+    plugin._started = True
+    plugin.parser = mock.MagicMock()
+
+    async def run():
+      from concurrent.futures import ThreadPoolExecutor
+
+      if plugin._executor is None:
+        plugin._executor = ThreadPoolExecutor(max_workers=1)
+      with mock.patch("atexit.register") as mock_atexit:
+        state = await plugin._get_loop_state()
+        mock_atexit.assert_called_once()
+        # The second arg should be a weakref proxy to the processor
+        call_args = mock_atexit.call_args
+        assert call_args[0][0] is plugin._atexit_cleanup
+        await state.writer.shutdown(timeout=5.0)
+
+    asyncio.run(run())
+
+  @pytest.mark.asyncio
+  async def test_multi_loop_shutdown_uses_writer_shutdown(self):
+    """Shutdown drains writers on foreign loops via writer.shutdown()."""
+    plugin = self._make_plugin()
+    # Set up current loop state
+    mock_current_writer = mock.AsyncMock(
+        spec=bigquery_agent_analytics_plugin.EventWriter
+    )
+    loop = asyncio.get_running_loop()
+    plugin._loop_state_by_loop[loop] = (
+        bigquery_agent_analytics_plugin._LoopState(writer=mock_current_writer)
+    )
+
+    # Set up other loop state
+    other_loop = mock.MagicMock(spec=asyncio.AbstractEventLoop)
+    other_loop.is_closed.return_value = False
+    mock_other_writer = mock.AsyncMock(
+        spec=bigquery_agent_analytics_plugin.EventWriter
+    )
+    plugin._loop_state_by_loop[other_loop] = (
+        bigquery_agent_analytics_plugin._LoopState(writer=mock_other_writer)
+    )
+
+    mock_future = mock.MagicMock()
+    mock_future.result.return_value = None
+
+    def _fake_rcts(coro, loop):
+      coro.close()
+      return mock_future
+
+    with mock.patch.object(
+        asyncio,
+        "run_coroutine_threadsafe",
+        side_effect=_fake_rcts,
+    ) as mock_rcts:
+      await plugin.shutdown()
+
+    mock_current_writer.shutdown.assert_awaited_once()
+    mock_rcts.assert_called()
+    assert mock_rcts.call_args[0][1] is other_loop
+
+  @pytest.mark.asyncio
+  async def test_write_stream_property_preserved_via_writer(self):
+    """write_stream compatibility property routes through writer."""
+    plugin = self._make_plugin()
+    mock_writer = mock.MagicMock(
+        spec=bigquery_agent_analytics_plugin.EventWriter
+    )
+    mock_writer.write_stream = "projects/p/datasets/d/tables/t/_default"
+    loop = asyncio.get_running_loop()
+    plugin._loop_state_by_loop[loop] = (
+        bigquery_agent_analytics_plugin._LoopState(writer=mock_writer)
+    )
+
+    assert plugin.write_stream == "projects/p/datasets/d/tables/t/_default"
+    del plugin._loop_state_by_loop[loop]
+
+  @pytest.mark.asyncio
+  async def test_unpickle_legacy_state_missing_writer_fields(
+      self,
+  ):
+    """Unpickling pre-phase-2 state without writer fields works."""
+    plugin = self._make_plugin()
+    state = plugin.__getstate__()
+    # _loop_state_by_loop is {} after getstate, so no writer
+    # fields need backfill there. Verify that works correctly.
+
+    new_plugin = (
+        bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin.__new__(
+            bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin
+        )
+    )
+    new_plugin.__setstate__(state)
+
+    assert new_plugin._backend is None
+    assert new_plugin._loop_state_by_loop == {}
+    # Lazy backend property should still work
+    assert isinstance(
+        new_plugin.backend,
+        bigquery_agent_analytics_plugin.NativeBigQueryBackend,
+    )

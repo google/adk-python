@@ -2150,12 +2150,11 @@ WHERE
 # ==============================================================================
 # MAIN PLUGIN
 # ==============================================================================
-@dataclass
+@dataclass(kw_only=True)
 class _LoopState:
   """Holds resources bound to a specific event loop."""
 
-  write_client: Optional[BigQueryWriteAsyncClient]
-  batch_processor: Union[BatchProcessor, LegacyStreamingBatchProcessor]
+  writer: "EventWriter"
 
 
 @dataclass(kw_only=True)
@@ -2273,7 +2272,8 @@ class NativeBigQueryBackend(AnalyticsTableBackend):
     )
     await batch_processor.start()
 
-    return _LoopState(write_client, batch_processor)
+    writer = StorageWriteApiWriter(write_client, batch_processor)
+    return _LoopState(writer=writer)
 
 
 class BigLakeIcebergBackend(AnalyticsTableBackend):
@@ -2324,7 +2324,96 @@ class BigLakeIcebergBackend(AnalyticsTableBackend):
     )
     await batch_processor.start()
 
-    return _LoopState(None, batch_processor)
+    writer = LegacyStreamingWriter(batch_processor)
+    return _LoopState(writer=writer)
+
+
+class EventWriter(abc.ABC):
+  """Internal interface for writing analytics events."""
+
+  async def start(self) -> None:
+    return None
+
+  @abc.abstractmethod
+  async def append(self, row: dict[str, Any]) -> None:
+    ...
+
+  @abc.abstractmethod
+  async def flush(self) -> None:
+    ...
+
+  @abc.abstractmethod
+  async def shutdown(self, timeout: float) -> None:
+    ...
+
+  @abc.abstractmethod
+  async def close(self) -> None:
+    ...
+
+  @property
+  def write_stream(self) -> Optional[str]:
+    return None
+
+  def atexit_processor(self) -> Any | None:
+    return None
+
+
+class StorageWriteApiWriter(EventWriter):
+  """Writer for native BigQuery tables using Storage Write API."""
+
+  def __init__(
+      self,
+      write_client: BigQueryWriteAsyncClient,
+      batch_processor: BatchProcessor,
+  ):
+    self._write_client = write_client
+    self._batch_processor = batch_processor
+
+  async def append(self, row: dict[str, Any]) -> None:
+    await self._batch_processor.append(row)
+
+  async def flush(self) -> None:
+    await self._batch_processor.flush()
+
+  async def shutdown(self, timeout: float) -> None:
+    await self._batch_processor.shutdown(timeout=timeout)
+
+  async def close(self) -> None:
+    await self._batch_processor.close()
+    if getattr(self._write_client, "transport", None):
+      await self._write_client.transport.close()
+
+  @property
+  def write_stream(self) -> Optional[str]:
+    return self._batch_processor.write_stream
+
+  def atexit_processor(self) -> Any | None:
+    return self._batch_processor
+
+
+class LegacyStreamingWriter(EventWriter):
+  """Writer for BigLake Iceberg tables using legacy streaming."""
+
+  def __init__(
+      self,
+      batch_processor: LegacyStreamingBatchProcessor,
+  ):
+    self._batch_processor = batch_processor
+
+  async def append(self, row: dict[str, Any]) -> None:
+    await self._batch_processor.append(row)
+
+  async def flush(self) -> None:
+    await self._batch_processor.flush()
+
+  async def shutdown(self, timeout: float) -> None:
+    await self._batch_processor.shutdown(timeout=timeout)
+
+  async def close(self) -> None:
+    await self._batch_processor.close()
+
+  def atexit_processor(self) -> Any | None:
+    return self._batch_processor
 
 
 class BigQueryAgentAnalyticsPlugin(BasePlugin):
@@ -2446,23 +2535,34 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
   def _batch_processor_prop(
       self,
   ) -> Optional["Union[BatchProcessor, LegacyStreamingBatchProcessor]"]:
-    """The batch processor for the current event loop."""
+    """The batch processor for the current event loop.
+
+    Compatibility surface — routes through the writer's
+    atexit_processor() hook.
+    """
+    w = self._writer_prop
+    return w.atexit_processor() if w else None
+
+  @property
+  def _write_client_prop(self) -> Optional["BigQueryWriteAsyncClient"]:
+    """The write client for the current event loop.
+
+    Compatibility surface — returns the write client from a
+    StorageWriteApiWriter, or None for other writer types.
+    """
+    w = self._writer_prop
+    if w and isinstance(w, StorageWriteApiWriter):
+      return w._write_client
+    return None
+
+  @property
+  def _writer_prop(self) -> Optional["EventWriter"]:
+    """The writer for the current event loop."""
     try:
       loop = asyncio.get_running_loop()
       self._cleanup_stale_loop_states()
       if loop in self._loop_state_by_loop:
-        return self._loop_state_by_loop[loop].batch_processor
-    except RuntimeError:
-      pass
-    return None
-
-  @property
-  def _write_client_prop(self) -> Optional["BigQueryWriteAsyncClient"]:
-    """The write client for the current event loop."""
-    try:
-      loop = asyncio.get_running_loop()
-      if loop in self._loop_state_by_loop:
-        return self._loop_state_by_loop[loop].write_client
+        return self._loop_state_by_loop[loop].writer
     except RuntimeError:
       pass
     return None
@@ -2470,8 +2570,8 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
   @property
   def _write_stream_prop(self) -> Optional[str]:
     """The write stream for the current event loop."""
-    bp = self._batch_processor_prop
-    return bp.write_stream if bp else None
+    w = self._writer_prop
+    return w.write_stream if w else None
 
   def _format_content_safely(
       self, content: Optional[types.Content]
@@ -2508,7 +2608,9 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
 
     state = await self.backend.create_loop_state(loop)
     self._loop_state_by_loop[loop] = state
-    atexit.register(self._atexit_cleanup, weakref.proxy(state.batch_processor))
+    processor = state.writer.atexit_processor()
+    if processor is not None:
+      atexit.register(self._atexit_cleanup, weakref.proxy(processor))
     return state
 
   async def flush(self) -> None:
@@ -2520,7 +2622,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       loop = asyncio.get_running_loop()
       self._cleanup_stale_loop_states()
       if loop in self._loop_state_by_loop:
-        await self._loop_state_by_loop[loop].batch_processor.flush()
+        await self._loop_state_by_loop[loop].writer.flush()
     except RuntimeError:
       # No running loop or other issue
       pass
@@ -2826,35 +2928,33 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     loop = asyncio.get_running_loop()
     try:
       # Correct Multi-Loop Shutdown:
-      # 1. Shutdown current loop's processor directly.
+      # 1. Shutdown current loop's writer directly.
       if loop in self._loop_state_by_loop:
-        await self._loop_state_by_loop[loop].batch_processor.shutdown(timeout=t)
+        await self._loop_state_by_loop[loop].writer.shutdown(timeout=t)
 
-      # 1b. Drain batch processors on other (non-current) loops.
+      # 1b. Drain writers on other (non-current) loops.
       for other_loop, state in self._loop_state_by_loop.items():
         if other_loop is loop or other_loop.is_closed():
           continue
         try:
           future = asyncio.run_coroutine_threadsafe(
-              state.batch_processor.shutdown(timeout=t),
+              state.writer.shutdown(timeout=t),
               other_loop,
           )
           future.result(timeout=t)
         except Exception:
           logger.warning(
-              "Could not drain batch processor on loop %s",
+              "Could not drain writer on loop %s",
               other_loop,
           )
 
-      # 2. Close clients for all states
+      # 2. Close writers for all states (transport cleanup
+      #    is owned by the writer).
       for state in self._loop_state_by_loop.values():
-        if state.write_client and getattr(
-            state.write_client, "transport", None
-        ):
-          try:
-            await state.write_client.transport.close()
-          except Exception:
-            pass
+        try:
+          await state.writer.close()
+        except Exception:
+          pass
 
       self._loop_state_by_loop.clear()
 
@@ -3183,7 +3283,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     }
 
     state = await self._get_loop_state()
-    await state.batch_processor.append(row)
+    await state.writer.append(row)
 
   # --- UPDATED CALLBACKS FOR V1 PARITY ---
 
