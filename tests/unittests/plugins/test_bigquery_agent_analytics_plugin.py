@@ -5206,6 +5206,23 @@ class TestAnalyticsViews:
     assert mock_bq_client.query.call_count >= expected_count
     await plugin.shutdown()
 
+  def test_view_creation_ignores_conflict_error(self):
+    """409 Conflict on view creation is silently ignored (issue #4746)."""
+    plugin = self._make_plugin(create_views=True)
+    plugin.client.get_table.return_value = mock.MagicMock()
+
+    # First view raises Conflict (concurrent create), rest succeed.
+    plugin.client.query.return_value.result.side_effect = [
+        cloud_exceptions.Conflict("Already Exists"),
+    ] + [None] * (len(bigquery_agent_analytics_plugin._EVENT_VIEW_DEFS) - 1)
+
+    plugin._ensure_schema_exists()
+
+    # All views should have been attempted (not stopped at first).
+    assert plugin.client.query.call_count == len(
+        bigquery_agent_analytics_plugin._EVENT_VIEW_DEFS
+    )
+
   def test_views_not_created_after_table_creation_failure(self):
     """View creation is skipped when create_table raises a non-Conflict error."""
     plugin = self._make_plugin(create_views=True)
