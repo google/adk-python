@@ -117,9 +117,7 @@ When rolling dice, track results in state.
 bq_config = BigQueryLoggerConfig(
     batch_size=1,
     batch_flush_interval=1.0,
-    # Views use JSON_VALUE() which won't work on STRING columns;
-    # disable for BigLake Iceberg tables.
-    create_views=False,
+    create_views=True,
     connection_id=CONNECTION_ID,
     biglake_storage_uri=BIGLAKE_STORAGE_URI,
     table_id=TABLE_ID,

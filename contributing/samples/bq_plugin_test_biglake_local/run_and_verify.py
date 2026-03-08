@@ -31,6 +31,7 @@ os.environ["GOOGLE_CLOUD_LOCATION"] = "us-central1"
 import random
 
 from google.adk.agents.llm_agent import LlmAgent
+from google.adk.plugins.bigquery_agent_analytics_plugin import _EVENT_VIEW_DEFS
 from google.adk.plugins.bigquery_agent_analytics_plugin import BigQueryAgentAnalyticsPlugin
 from google.adk.plugins.bigquery_agent_analytics_plugin import BigQueryLoggerConfig
 from google.adk.runners import Runner
@@ -119,7 +120,7 @@ async def run_agent_test():
   bq_config = BigQueryLoggerConfig(
       batch_size=1,
       batch_flush_interval=0.5,
-      create_views=False,
+      create_views=True,
       connection_id=CONNECTION_ID,
       biglake_storage_uri=BIGLAKE_STORAGE_URI,
       table_id=TABLE_ID,
@@ -368,8 +369,50 @@ def verify_bigquery(client, session_id):
   except Exception as e:
     check("STRING content query", False, str(e))
 
-  # ── 5. Verify trace IDs and sample events ──
-  print("\n=== 5. Sample Events ===\n")
+  # ── 5. Verify analytics views work on BigLake STRING columns ──
+  print("\n=== 5. Analytics Views on BigLake ===\n")
+
+  views_ok = 0
+  views_fail = 0
+  for event_type in _EVENT_VIEW_DEFS:
+    view_name = "v_" + event_type.lower()
+    full_view = f"{PROJECT_ID}.{DATASET_ID}.{view_name}"
+    try:
+      query = f"SELECT COUNT(*) as cnt FROM `{full_view}` LIMIT 1"
+      result = client.query(query).result()
+      cnt = list(result)[0].cnt
+      print(f"    {view_name:40s} -> {cnt} rows")
+      views_ok += 1
+    except Exception as e:
+      print(f"    {view_name:40s} -> FAILED: {e}")
+      views_fail += 1
+
+  check(
+      "All analytics views queryable on BigLake",
+      views_fail == 0,
+      f"{views_ok} OK, {views_fail} failed",
+  )
+
+  # Spot-check typed view on BigLake
+  try:
+    query = f"""
+    SELECT timestamp, tool_name, tool_origin, total_ms
+    FROM `{PROJECT_ID}.{DATASET_ID}.v_tool_completed`
+    WHERE session_id = '{session_id}'
+    LIMIT 3
+    """
+    result = client.query(query).result()
+    rows = list(result)
+    check(
+        "v_tool_completed extracts tool_name from STRING",
+        len(rows) > 0 and rows[0].tool_name is not None,
+        f"{len(rows)} rows, tool={rows[0].tool_name if rows else 'N/A'}",
+    )
+  except Exception as e:
+    check("v_tool_completed spot-check", False, str(e))
+
+  # ── 6. Verify trace IDs and sample events ──
+  print("\n=== 6. Sample Events ===\n")
 
   query = f"""
   SELECT timestamp, event_type, agent, trace_id, span_id, status

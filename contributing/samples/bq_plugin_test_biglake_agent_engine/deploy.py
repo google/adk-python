@@ -109,7 +109,7 @@ def deploy():
   bq_config = BigQueryLoggerConfig(
       batch_size=1,
       batch_flush_interval=1.0,
-      create_views=False,
+      create_views=True,
       connection_id=CONNECTION_ID,
       biglake_storage_uri=BIGLAKE_STORAGE_URI,
       table_id=TABLE_ID,
