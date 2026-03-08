@@ -30,6 +30,7 @@ import aiosqlite
 from typing_extensions import override
 
 from . import _session_util
+from .schemas.shared import _pydantic_serialization_fallback
 from ..errors.already_exists_error import AlreadyExistsError
 from ..events.event import Event
 from .base_session_service import BaseSessionService
@@ -434,7 +435,7 @@ class SqliteSessionService(BaseSessionService):
               event.timestamp,
               event.model_dump_json(
                   exclude_none=True,
-                  fallback=lambda v: f"<non-serializable: {type(v).__name__}>",
+                  fallback=_pydantic_serialization_fallback,
               ),
           ),
       )

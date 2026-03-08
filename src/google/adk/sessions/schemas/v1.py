@@ -44,6 +44,7 @@ from .shared import DEFAULT_MAX_KEY_LENGTH
 from .shared import DEFAULT_MAX_VARCHAR_LENGTH
 from .shared import DynamicJSON
 from .shared import PreciseTimestamp
+from .shared import _pydantic_serialization_fallback
 
 
 class Base(DeclarativeBase):
@@ -202,7 +203,7 @@ class StorageEvent(Base):
         event_data=event.model_dump(
             exclude_none=True,
             mode="json",
-            fallback=lambda v: f"<non-serializable: {type(v).__name__}>",
+            fallback=_pydantic_serialization_fallback,
         ),
     )
 

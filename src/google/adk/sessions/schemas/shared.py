@@ -26,6 +26,11 @@ DEFAULT_MAX_KEY_LENGTH = 128
 DEFAULT_MAX_VARCHAR_LENGTH = 256
 
 
+def _pydantic_serialization_fallback(v: object) -> str:
+  """Fallback for ``model_dump_json(fallback=...)`` to handle non-serializable objects."""
+  return f"<non-serializable: {type(v).__name__}>"
+
+
 class DynamicJSON(TypeDecorator):
   """A JSON-like type that uses JSONB on PostgreSQL and TEXT with JSON serialization for other databases."""
 
