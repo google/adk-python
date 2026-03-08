@@ -1,29 +1,23 @@
-"""Deploy and test the BigLake Iceberg BQ plugin agent on Agent Engine.
+"""Deploy and test the BQ plugin agent on Agent Engine.
 
 Usage:
-  python contributing/samples/bq_plugin_test_biglake_agent_engine/deploy.py
-
-This script:
-1. Deploys the agent to Vertex AI Agent Engine
-2. Runs test queries
-3. Waits for events to land in BigQuery
-4. Verifies the BigLake Iceberg table configuration and logged events
-
-Prerequisites: see bq_plugin_test_biglake_local/agent.py for setup.
+  python contributing/samples/bq_plugin_test_agent_engine/deploy.py
 """
 
 import os
 import random
-import sys
 import time
 
 from google.adk import Agent
 from google.adk.apps import App
 from google.adk.plugins.bigquery_agent_analytics_plugin import BigQueryAgentAnalyticsPlugin
 from google.adk.plugins.bigquery_agent_analytics_plugin import BigQueryLoggerConfig
-from google.cloud import bigquery
 import vertexai
 from vertexai import agent_engines
+
+PROJECT_ID = "test-project-0728-467323"
+LOCATION = "us-central1"
+DATASET_ID = "adk_logs"
 
 # Path to local wheel — build with: uv build --wheel
 _REPO_ROOT = os.path.abspath(
@@ -39,19 +33,6 @@ def _find_local_wheel():
   pattern = os.path.join(_DIST_DIR, "google_adk-*-py3-none-any.whl")
   wheels = sorted(glob.glob(pattern), key=os.path.getmtime, reverse=True)
   return wheels[0] if wheels else None
-
-
-# ──────────────────────────────────────────────────────────────────
-# CONFIGURE THESE for your environment
-# ──────────────────────────────────────────────────────────────────
-PROJECT_ID = "test-project-0728-467323"
-LOCATION = "us-central1"
-DATASET_ID = "adk_logs"
-CONNECTION_ID = "us-central1.my-ai-connection"
-BIGLAKE_STORAGE_URI = (
-    "gs://test-project-0728-467323-biglake/agent_events_iceberg_ae/"
-)
-TABLE_ID = "agent_events_iceberg_ae"
 
 
 # --- Tools (defined at module level for cloudpickle) ---
@@ -94,11 +75,8 @@ def deploy():
   # container.
   root_agent = Agent(
       model="gemini-2.5-flash",
-      name="bq_biglake_ae_test_agent",
-      description=(
-          "Test agent for Agent Engine with BigQuery analytics and"
-          " BigLake Iceberg."
-      ),
+      name="bq_plugin_ae_test_agent",
+      description="Test agent for Agent Engine with BigQuery analytics.",
       instruction=(
           "You are a helpful assistant that can roll dice and check"
           " weather. Use the appropriate tool. Be concise."
@@ -109,10 +87,7 @@ def deploy():
   bq_config = BigQueryLoggerConfig(
       batch_size=1,
       batch_flush_interval=1.0,
-      create_views=False,
-      connection_id=CONNECTION_ID,
-      biglake_storage_uri=BIGLAKE_STORAGE_URI,
-      table_id=TABLE_ID,
+      create_views=True,
   )
 
   bq_plugin = BigQueryAgentAnalyticsPlugin(
@@ -123,7 +98,7 @@ def deploy():
   )
 
   app = App(
-      name="bq_biglake_test_agent_engine",
+      name="bq_plugin_test_agent_engine",
       root_agent=root_agent,
       plugins=[bq_plugin],
   )
@@ -137,9 +112,6 @@ def deploy():
   _LOCAL_WHEEL = _find_local_wheel()
   if _LOCAL_WHEEL:
     print(f"Using local wheel: {_LOCAL_WHEEL}")
-    # Copy wheel to /tmp/whl/ so the tarball member path is short
-    # and predictable. After extraction to /code/, the wheel will be
-    # at /code/tmp/whl/<filename>.whl.
     import shutil
 
     whl_name = os.path.basename(_LOCAL_WHEEL)
@@ -149,9 +121,6 @@ def deploy():
     shutil.copy2(_LOCAL_WHEEL, staged_wheel)
 
     extra_packages = [staged_wheel]
-    # Reference the wheel via its extracted path so pip installs it.
-    # The tarball extracts to /code/, making the wheel available at
-    # ./tmp/whl/<filename>.whl relative to the pip working directory.
     reqs = [
         f"./tmp/whl/{whl_name}",
         "google-cloud-aiplatform",
@@ -170,10 +139,10 @@ def deploy():
         "pyarrow",
     ]
 
-  print("Deploying BigLake Iceberg agent to Agent Engine...")
+  print("Deploying agent to Agent Engine...")
   agent_engine = agent_engines.create(
       agent_engine=adk_app,
-      display_name="bq-biglake-iceberg-test",
+      display_name="bq-plugin-test",
       requirements=reqs,
       extra_packages=extra_packages,
   )
@@ -183,9 +152,9 @@ def deploy():
 
 def test_agent(agent_engine):
   """Send test queries to the deployed agent."""
-  print("\n--- Testing deployed BigLake Iceberg agent ---")
+  print("\n--- Testing deployed agent ---")
 
-  session = agent_engine.create_session(user_id="test-user-biglake-ae")
+  session = agent_engine.create_session(user_id="test-user-ae")
   print(f"Session ID: {session['id']}")
 
   queries = [
@@ -197,7 +166,7 @@ def test_agent(agent_engine):
   for query in queries:
     print(f"\nUser: {query}")
     for event in agent_engine.stream_query(
-        user_id="test-user-biglake-ae",
+        user_id="test-user-ae",
         session_id=session["id"],
         message=query,
     ):
@@ -218,9 +187,11 @@ def test_agent(agent_engine):
 
 
 def verify_bigquery(session_id):
-  """Verify the BigLake Iceberg table and logged events."""
+  """Verify the native BigQuery table and logged events."""
+  from google.cloud import bigquery
+
   client = bigquery.Client(project=PROJECT_ID, location=LOCATION)
-  full_table = f"{PROJECT_ID}.{DATASET_ID}.{TABLE_ID}"
+  full_table = f"{PROJECT_ID}.{DATASET_ID}.agent_events"
   all_passed = True
 
   def check(name, passed, detail=""):
@@ -233,78 +204,26 @@ def verify_bigquery(session_id):
       msg += f" — {detail}"
     print(msg)
 
-  # ── 1. Verify BigLake Configuration ──
-  print("\n=== 1. BigLake Table Configuration ===\n")
+  # ── 1. Table Configuration ──
+  print("\n=== 1. Native Table Configuration ===\n")
   try:
     table = client.get_table(full_table)
 
-    has_biglake = table.biglake_configuration is not None
-    check("Table has BigLakeConfiguration", has_biglake)
-
-    if has_biglake:
-      cfg = table.biglake_configuration
-      check(
-          "file_format is PARQUET",
-          cfg.file_format == "PARQUET",
-          f"got {cfg.file_format}",
-      )
-      check(
-          "table_format is ICEBERG",
-          cfg.table_format == "ICEBERG",
-          f"got {cfg.table_format}",
-      )
-      check(
-          "storage_uri matches",
-          cfg.storage_uri == BIGLAKE_STORAGE_URI,
-          f"got {cfg.storage_uri}",
-      )
-      # BigQuery may return connection_id in either full resource
-      # path or dot-separated format.
-      check(
-          "connection_id contains project and connection",
-          PROJECT_ID in cfg.connection_id
-          and "my-ai-connection" in cfg.connection_id,
-          f"got {cfg.connection_id}",
-      )
-
     check(
-        "No time partitioning (BigLake default)",
-        table.time_partitioning is None,
+        "No BigLakeConfiguration (native table)",
+        table.biglake_configuration is None,
+    )
+    check(
+        "Time partitioning on timestamp",
+        table.time_partitioning is not None,
         f"got {table.time_partitioning}",
     )
   except Exception as e:
     check("Table exists", False, str(e))
     return False
 
-  # ── 2. Verify Schema: No JSON fields ──
-  print("\n=== 2. Schema Validation (no JSON fields) ===\n")
-
-  def find_json_fields(fields, prefix=""):
-    found = []
-    for f in fields:
-      full_name = f"{prefix}{f.name}" if prefix else f.name
-      if f.field_type == "JSON":
-        found.append(full_name)
-      if f.fields:
-        found.extend(find_json_fields(f.fields, f"{full_name}."))
-    return found
-
-  json_fields = find_json_fields(table.schema)
-  check(
-      "No JSON fields in schema",
-      len(json_fields) == 0,
-      f"JSON fields found: {json_fields}" if json_fields else "all STRING",
-  )
-
-  for field_name in ("content", "attributes", "latency_ms", "content_parts"):
-    f = next((f for f in table.schema if f.name == field_name), None)
-    check(
-        f"'{field_name}' is STRING",
-        f is not None and f.field_type == "STRING",
-    )
-
-  # ── 3. Verify Events Logged ──
-  print("\n=== 3. Event Logging ===\n")
+  # ── 2. Events Logged ──
+  print("\n=== 2. Event Logging ===\n")
 
   query = f"""
   SELECT COUNT(*) as total_events
@@ -345,32 +264,10 @@ def verify_bigquery(session_id):
         f"missing: {missing}" if missing else f"{len(expected)} types",
     )
 
-  # ── 4. Verify STRING content queryable ──
-  print("\n=== 4. STRING Content Queryability ===\n")
-  try:
-    query = f"""
-    SELECT
-      event_type,
-      SAFE.PARSE_JSON(content) IS NOT NULL AS content_is_valid_json
-    FROM `{full_table}`
-    WHERE session_id = '{session_id}'
-      AND content IS NOT NULL
-    LIMIT 5
-    """
-    result = client.query(query).result()
-    rows = list(result)
-    check(
-        "STRING content is queryable",
-        len(rows) > 0,
-        f"{len(rows)} rows with content",
-    )
-  except Exception as e:
-    check("STRING content query", False, str(e))
-
   # ── Summary ──
   print("\n" + "=" * 60)
   if all_passed:
-    print("SUCCESS: All BigLake Iceberg verifications passed!")
+    print("SUCCESS: All native BigQuery verifications passed!")
   else:
     print("FAILURE: Some verifications failed. See above.")
   print("=" * 60)
@@ -378,6 +275,8 @@ def verify_bigquery(session_id):
 
 
 if __name__ == "__main__":
+  import sys
+
   agent_engine = deploy()
   session_id = test_agent(agent_engine)
 
