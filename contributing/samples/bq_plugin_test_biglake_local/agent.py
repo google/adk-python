@@ -3,8 +3,8 @@
 Validates that the BigLake Iceberg support (PR #4750) works end-to-end:
   - JSON fields are replaced with STRING in the schema
   - BigLakeConfiguration is set on the table
-  - Events are written and queryable via the Storage Write API
-  - No JSON extension metadata in the Arrow schema
+  - Events are written via legacy streaming (insert_rows_json)
+  - Analytics views work on STRING columns (JSON_VALUE is polymorphic)
 
 Prerequisites:
   1. A BigQuery Cloud Resource connection in your project.

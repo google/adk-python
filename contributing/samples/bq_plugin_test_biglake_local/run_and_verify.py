@@ -454,10 +454,9 @@ async def main():
     try:
       client.delete_table(full_table, not_found_ok=True)
       print(f"Dropped existing table {full_table} for clean test.")
-      # BigLake Iceberg tables need time after creation before the
-      # Storage Write API _default stream becomes available.  Wait
-      # for the table to be created in _lazy_setup, then give it
-      # extra time.
+      # BigLake Iceberg tables need time after creation before
+      # they are queryable.  Wait for the table to be created in
+      # _lazy_setup, then give it extra time.
       print("Will wait 30s after table creation for BigLake readiness.")
     except Exception as e:
       print(f"Could not drop table (may not exist): {e}")
