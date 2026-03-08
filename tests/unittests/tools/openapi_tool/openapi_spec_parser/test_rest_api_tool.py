@@ -41,6 +41,7 @@ from google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool import snak
 from google.adk.tools.tool_context import ToolContext
 from google.genai.types import FunctionDeclaration
 from google.genai.types import Schema
+import httpx
 import pytest
 import requests
 
@@ -246,7 +247,7 @@ class TestRestApiTool:
     }
 
   @patch(
-      "google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool.requests.request"
+      "google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool._request"
   )
   @pytest.mark.asyncio
   async def test_call_success(
@@ -278,7 +279,7 @@ class TestRestApiTool:
     assert result == {"result": "success"}
 
   @patch(
-      "google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool.requests.request"
+      "google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool._request"
   )
   @pytest.mark.asyncio
   async def test_call_http_failure(
@@ -293,8 +294,15 @@ class TestRestApiTool:
     mock_response = MagicMock()
     mock_response.status_code = 500
     mock_response.content = b"Internal Server Error"
-    mock_response.raise_for_status.side_effect = requests.exceptions.HTTPError(
-        "500 Server Error"
+
+    # Create a proper HTTPStatusError with request and response
+    mock_http_request = MagicMock(spec=httpx.Request)
+    mock_response.raise_for_status = MagicMock(
+        side_effect=httpx.HTTPStatusError(
+            "500 Server Error",
+            request=mock_http_request,
+            response=mock_response,
+        )
     )
     mock_request.return_value = mock_response
 
@@ -321,7 +329,7 @@ class TestRestApiTool:
     }
 
   @patch(
-      "google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool.requests.request"
+      "google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool._request"
   )
   @pytest.mark.asyncio
   async def test_call_auth_pending(
@@ -359,7 +367,7 @@ class TestRestApiTool:
       }
 
   @patch(
-      "google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool.requests.request"
+      "google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool._request"
   )
   @pytest.mark.asyncio
   async def test_call_with_required_param_defaults(
@@ -1052,6 +1060,11 @@ class TestRestApiTool:
     mock_response.json.return_value = {"result": "success"}
     mock_response.configure_mock(status_code=200)
 
+    mock_client = mock.create_autospec(
+        httpx.AsyncClient, instance=True, spec_set=True
+    )
+    mock_client.request = AsyncMock(return_value=mock_response)
+
     tool = RestApiTool(
         name="test_tool",
         description="Test Tool",
@@ -1063,14 +1076,15 @@ class TestRestApiTool:
     )
 
     with patch.object(
-        requests, "request", return_value=mock_response, autospec=True
+        httpx, "AsyncClient", return_value=mock_client, autospec=True
     ) as mock_request:
+
       await tool.call(args={}, tool_context=mock_tool_context)
 
       assert mock_request.called
       _, call_kwargs = mock_request.call_args
       if expected_verify_in_call is None:
-        assert "verify" not in call_kwargs
+        assert "verify" not in call_kwargs or call_kwargs["verify"] is True
       else:
         assert call_kwargs["verify"] == expected_verify_in_call
 
@@ -1087,6 +1101,11 @@ class TestRestApiTool:
     mock_response.json.return_value = {"result": "success"}
     mock_response.configure_mock(status_code=200)
 
+    mock_client = mock.create_autospec(
+        httpx.AsyncClient, instance=True, spec_set=True
+    )
+    mock_client.request = AsyncMock(return_value=mock_response)
+
     tool = RestApiTool(
         name="test_tool",
         description="Test Tool",
@@ -1100,7 +1119,7 @@ class TestRestApiTool:
     tool.configure_ssl_verify(ca_bundle_path)
 
     with patch.object(
-        requests, "request", return_value=mock_response
+        httpx, "AsyncClient", return_value=mock_client, autospec=True
     ) as mock_request:
       await tool.call(args={}, tool_context=mock_tool_context)
 
@@ -1169,13 +1188,14 @@ class TestRestApiTool:
     )
 
     with patch.object(
-        requests, "request", return_value=mock_response, autospec=True
+        httpx.AsyncClient, "request", return_value=mock_response, autospec=True
     ) as mock_request:
       await tool.call(args={}, tool_context=mock_tool_context)
 
       # Verify the headers were added to the request
       assert mock_request.called
       _, call_kwargs = mock_request.call_args
+
       assert call_kwargs["headers"]["X-Custom-Header"] == "custom-value"
       assert call_kwargs["headers"]["X-Request-ID"] == "12345"
 
@@ -1210,7 +1230,7 @@ class TestRestApiTool:
     )
 
     with patch.object(
-        requests, "request", return_value=mock_response, autospec=True
+        httpx.AsyncClient, "request", return_value=mock_response, autospec=True
     ):
       await tool.call(args={}, tool_context=mock_tool_context)
 
@@ -1242,11 +1262,167 @@ class TestRestApiTool:
     )
 
     with patch.object(
-        requests, "request", return_value=mock_response, autospec=True
+        httpx.AsyncClient, "request", return_value=mock_response, autospec=True
     ):
       result = await tool.call(args={}, tool_context=mock_tool_context)
 
       assert result == {"result": "success"}
+
+  def test_prepare_request_params_extracts_embedded_query_params(
+      self, sample_auth_credential, sample_auth_scheme
+  ):
+    """Test that query params embedded in the URL path are extracted.
+
+    ApplicationIntegrationToolset embeds query params and fragments directly
+    in the OpenAPI path (e.g. '...execute?triggerId=api_trigger/Name#action').
+    These must be moved into the explicit query_params dict so httpx does not
+    strip them when it replaces the URL query string with the `params` arg.
+    Regression test for https://github.com/google/adk-python/issues/4555.
+    """
+    integration_path = (
+        "/v2/projects/my-proj/locations/us-central1"
+        "/integrations/ExecuteConnection:execute"
+        "?triggerId=api_trigger/ExecuteConnection"
+        "#POST_files"
+    )
+    endpoint = OperationEndpoint(
+        base_url="https://integrations.googleapis.com",
+        path=integration_path,
+        method="POST",
+    )
+    operation = Operation(operationId="test_op")
+    tool = RestApiTool(
+        name="test_tool",
+        description="test",
+        endpoint=endpoint,
+        operation=operation,
+        auth_credential=sample_auth_credential,
+        auth_scheme=sample_auth_scheme,
+    )
+
+    request_params = tool._prepare_request_params([], {})
+
+    # The embedded query param must appear in params
+    assert request_params["params"]["triggerId"] == (
+        "api_trigger/ExecuteConnection"
+    )
+    # The URL must NOT contain the query string or fragment
+    assert "?" not in request_params["url"]
+    assert "#" not in request_params["url"]
+    assert request_params["url"] == (
+        "https://integrations.googleapis.com"
+        "/v2/projects/my-proj/locations/us-central1"
+        "/integrations/ExecuteConnection:execute"
+    )
+
+  def test_prepare_request_params_merges_embedded_and_explicit_query_params(
+      self, sample_auth_credential, sample_auth_scheme
+  ):
+    """Embedded URL query params merge with explicitly defined query params."""
+    endpoint = OperationEndpoint(
+        base_url="https://example.com",
+        path="/api?embedded_key=embedded_val",
+        method="GET",
+    )
+    operation = Operation(operationId="test_op")
+    tool = RestApiTool(
+        name="test_tool",
+        description="test",
+        endpoint=endpoint,
+        operation=operation,
+        auth_credential=sample_auth_credential,
+        auth_scheme=sample_auth_scheme,
+    )
+    params = [
+        ApiParameter(
+            original_name="explicit_key",
+            py_name="explicit_key",
+            param_location="query",
+            param_schema=OpenAPISchema(type="string"),
+        ),
+    ]
+    kwargs = {"explicit_key": "explicit_val"}
+
+    request_params = tool._prepare_request_params(params, kwargs)
+
+    assert request_params["params"]["embedded_key"] == "embedded_val"
+    assert request_params["params"]["explicit_key"] == "explicit_val"
+    assert "?" not in request_params["url"]
+
+  def test_prepare_request_params_explicit_query_param_takes_precedence(
+      self, sample_auth_credential, sample_auth_scheme
+  ):
+    """Explicitly defined query params take precedence over embedded ones."""
+    endpoint = OperationEndpoint(
+        base_url="https://example.com",
+        path="/api?key=embedded",
+        method="GET",
+    )
+    operation = Operation(operationId="test_op")
+    tool = RestApiTool(
+        name="test_tool",
+        description="test",
+        endpoint=endpoint,
+        operation=operation,
+        auth_credential=sample_auth_credential,
+        auth_scheme=sample_auth_scheme,
+    )
+    params = [
+        ApiParameter(
+            original_name="key",
+            py_name="key",
+            param_location="query",
+            param_schema=OpenAPISchema(type="string"),
+        ),
+    ]
+    kwargs = {"key": "explicit"}
+
+    request_params = tool._prepare_request_params(params, kwargs)
+
+    # Explicit value wins over the embedded one
+    assert request_params["params"]["key"] == "explicit"
+
+  def test_prepare_request_params_strips_fragment_only(
+      self, sample_auth_credential, sample_auth_scheme
+  ):
+    """Fragment-only paths (no query string) are also cleaned."""
+    endpoint = OperationEndpoint(
+        base_url="https://example.com",
+        path="/api#fragment",
+        method="GET",
+    )
+    operation = Operation(operationId="test_op")
+    tool = RestApiTool(
+        name="test_tool",
+        description="test",
+        endpoint=endpoint,
+        operation=operation,
+        auth_credential=sample_auth_credential,
+        auth_scheme=sample_auth_scheme,
+    )
+
+    request_params = tool._prepare_request_params([], {})
+
+    assert "#" not in request_params["url"]
+    assert request_params["url"] == "https://example.com/api"
+
+  def test_prepare_request_params_plain_url_unchanged(
+      self, sample_endpoint, sample_auth_credential, sample_auth_scheme
+  ):
+    """URLs without embedded query or fragment are not modified."""
+    operation = Operation(operationId="test_op")
+    tool = RestApiTool(
+        name="test_tool",
+        description="test",
+        endpoint=sample_endpoint,
+        operation=operation,
+        auth_credential=sample_auth_credential,
+        auth_scheme=sample_auth_scheme,
+    )
+
+    request_params = tool._prepare_request_params([], {})
+
+    assert request_params["url"] == "https://example.com/test"
 
 
 def test_snake_to_lower_camel():

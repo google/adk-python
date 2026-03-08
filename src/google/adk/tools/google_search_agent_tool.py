@@ -23,6 +23,7 @@ from typing_extensions import override
 from ..agents.llm_agent import LlmAgent
 from ..memory.in_memory_memory_service import InMemoryMemoryService
 from ..models.base_llm import BaseLlm
+from ..utils._schema_utils import validate_schema
 from ..utils.context_utils import Aclosing
 from ._forwarding_artifact_service import ForwardingArtifactService
 from .agent_tool import AgentTool
@@ -127,9 +128,7 @@ class GoogleSearchAgentTool(AgentTool):
       return ''
     merged_text = '\n'.join(p.text for p in last_content.parts if p.text)
     if isinstance(self.agent, LlmAgent) and self.agent.output_schema:
-      tool_result = self.agent.output_schema.model_validate_json(
-          merged_text
-      ).model_dump(exclude_none=True)
+      tool_result = validate_schema(self.agent.output_schema, merged_text)
     else:
       tool_result = merged_text
 

@@ -63,13 +63,25 @@ def test_create_session_service_sqlite(registry, mock_services):
   mock_services["sqlite_session"].assert_called_once_with(db_path="test.db")
 
 
-def test_create_session_service_sqlite_with_kwargs(registry, mock_services):
-  registry.create_session_service(
-      "sqlite:///test.db", pool_size=10, agents_dir="foo"
+def test_create_session_service_sqlite_ignores_unsupported_kwargs(
+    registry, mock_services, caplog
+):
+  """Test that SqliteSessionService ignores unsupported kwargs and logs warning."""
+  import logging
+
+  with caplog.at_level(logging.WARNING):
+    registry.create_session_service(
+        "sqlite:///test.db", pool_size=10, agents_dir="foo"
+    )
+
+  # SqliteSessionService should only receive db_path, not pool_size
+  mock_services["sqlite_session"].assert_called_once_with(db_path="test.db")
+
+  # Verify warning was logged about ignored kwargs
+  assert (
+      "SqliteSessionService does not support additional kwargs" in caplog.text
   )
-  mock_services["sqlite_session"].assert_called_once_with(
-      db_path="test.db", pool_size=10
-  )
+  assert "pool_size" in caplog.text
 
 
 def test_create_session_service_postgresql(registry, mock_services):
@@ -151,6 +163,13 @@ def test_create_memory_service_agentengine_full(registry, mock_services):
   mock_services["agentengine_memory"].assert_called_once_with(
       project="p", location="l", agent_engine_id="456"
   )
+
+
+def test_create_memory_service_memory(registry):
+  from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
+
+  memory_service = registry.create_memory_service("memory://")
+  assert isinstance(memory_service, InMemoryMemoryService)
 
 
 # General Tests

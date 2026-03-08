@@ -41,9 +41,16 @@ class _ContentLlmRequestProcessor(BaseLlmRequestProcessor):
   async def run_async(
       self, invocation_context: InvocationContext, llm_request: LlmRequest
   ) -> AsyncGenerator[Event, None]:
-    from ...agents.llm_agent import LlmAgent
+    from ...models.google_llm import Gemini
 
     agent = invocation_context.agent
+    preserve_function_call_ids = False
+    if hasattr(agent, 'canonical_model'):
+      canonical_model = agent.canonical_model
+      preserve_function_call_ids = (
+          isinstance(canonical_model, Gemini)
+          and canonical_model.use_interactions_api
+      )
 
     # Preserve all contents that were added by instruction processor
     # (since llm_request.contents will be completely reassigned below)
@@ -55,6 +62,7 @@ class _ContentLlmRequestProcessor(BaseLlmRequestProcessor):
           invocation_context.branch,
           invocation_context.session.events,
           agent.name,
+          preserve_function_call_ids=preserve_function_call_ids,
       )
     else:
       # Include current turn context only (no conversation history)
@@ -62,6 +70,7 @@ class _ContentLlmRequestProcessor(BaseLlmRequestProcessor):
           invocation_context.branch,
           invocation_context.session.events,
           agent.name,
+          preserve_function_call_ids=preserve_function_call_ids,
       )
 
     # Add instruction-related contents to proper position in conversation
@@ -313,54 +322,96 @@ def _process_compaction_events(events: list[Event]) -> list[Event]:
   Returns:
     A list of events with compaction applied.
   """
-  # example of compaction events:
-  # [event_1(timestamp=1), event_2(timestamp=2),
-  # compaction_1(event_1, event_2, timestamp=3), event_3(timestamp=4),
-  # compaction_2(event_2, event_3, timestamp=5), event_4(timestamp=6)]
-  # for each compaction event, it only covers the events at most between the
-  # current compaction and the previous compaction. So during compaction, we
-  # don't have to go across compaction boundaries.
-  # Compaction events are always strictly in order based on event timestamp.
-  events_to_process = []
-  last_compaction_start_time = float('inf')
+  # Example:
+  # [event_1(ts=1), event_2(ts=2), compaction_1(1-2), event_3(ts=4),
+  #  compaction_2(2-4), event_4(ts=6)].
+  #
+  # Overlaps are resolved by keeping only non-subsumed compaction summaries.
+  # A summary event is materialized at its compaction end timestamp, and raw
+  # events inside any kept compaction range are filtered out.
+  compaction_infos: list[tuple[int, float, float]] = []
+  for i, event in enumerate(events):
+    if not (event.actions and event.actions.compaction):
+      continue
+    compaction = event.actions.compaction
+    if (
+        compaction.start_timestamp is None
+        or compaction.end_timestamp is None
+        or compaction.compacted_content is None
+    ):
+      continue
+    compaction_infos.append(
+        (i, compaction.start_timestamp, compaction.end_timestamp)
+    )
 
-  # Iterate in reverse to easily handle overlapping compactions.
-  for event in reversed(events):
+  subsumed_compaction_event_indexes: set[int] = set()
+  for event_index, start_ts, end_ts in compaction_infos:
+    for other_index, other_start, other_end in compaction_infos:
+      if other_index == event_index:
+        continue
+      if other_start <= start_ts and other_end >= end_ts:
+        if (
+            other_start < start_ts
+            or other_end > end_ts
+            or other_index > event_index
+        ):
+          subsumed_compaction_event_indexes.add(event_index)
+          break
+
+  compaction_ranges: list[tuple[float, float]] = []
+  processed_items: list[tuple[float, int, Event]] = []
+
+  for i, event in enumerate(events):
     if event.actions and event.actions.compaction:
+      if i in subsumed_compaction_event_indexes:
+        continue
       compaction = event.actions.compaction
       if (
-          compaction.start_timestamp is not None
-          and compaction.end_timestamp is not None
+          compaction.start_timestamp is None
+          or compaction.end_timestamp is None
+          or compaction.compacted_content is None
       ):
-        # Create a new event for the compacted summary.
-        new_event = Event(
-            timestamp=compaction.end_timestamp,
-            author='model',
-            content=compaction.compacted_content,
-            branch=event.branch,
-            invocation_id=event.invocation_id,
-            actions=event.actions,
-        )
-        # Prepend to maintain chronological order in the final list.
-        events_to_process.insert(0, new_event)
-        # Update the boundary for filtering. Events with timestamps greater than
-        # or equal to this start time have been compacted.
-        last_compaction_start_time = min(
-            last_compaction_start_time, compaction.start_timestamp
-        )
-    elif event.timestamp < last_compaction_start_time:
-      # This event is not a compaction and is before the current compaction
-      # range. Prepend to maintain chronological order.
-      events_to_process.insert(0, event)
-    else:
-      # skip the event
-      pass
+        continue
+      compaction_ranges.append(
+          (compaction.start_timestamp, compaction.end_timestamp)
+      )
+      processed_items.append((
+          compaction.end_timestamp,
+          i,
+          Event(
+              timestamp=compaction.end_timestamp,
+              author='model',
+              content=compaction.compacted_content,
+              branch=event.branch,
+              invocation_id=event.invocation_id,
+              actions=event.actions,
+          ),
+      ))
 
-  return events_to_process
+  def _is_timestamp_compacted(ts: float) -> bool:
+    for start_ts, end_ts in compaction_ranges:
+      if start_ts <= ts <= end_ts:
+        return True
+    return False
+
+  for i, event in enumerate(events):
+    if event.actions and event.actions.compaction:
+      continue
+    if _is_timestamp_compacted(event.timestamp):
+      continue
+    processed_items.append((event.timestamp, i, event))
+
+  # Keep chronological order and a stable tie-breaker for equal timestamps.
+  processed_items.sort(key=lambda item: (item[0], item[1]))
+  return [event for _, _, event in processed_items]
 
 
 def _get_contents(
-    current_branch: Optional[str], events: list[Event], agent_name: str = ''
+    current_branch: Optional[str],
+    events: list[Event],
+    agent_name: str = '',
+    *,
+    preserve_function_call_ids: bool = False,
 ) -> list[types.Content]:
   """Get the contents for the LLM request.
 
@@ -370,6 +421,7 @@ def _get_contents(
     current_branch: The current branch of the agent.
     events: Events to process.
     agent_name: The name of the agent.
+    preserve_function_call_ids: Whether to preserve function call ids.
 
   Returns:
     A list of processed contents.
@@ -469,13 +521,18 @@ def _get_contents(
   for event in result_events:
     content = copy.deepcopy(event.content)
     if content:
-      remove_client_function_call_id(content)
+      if not preserve_function_call_ids:
+        remove_client_function_call_id(content)
       contents.append(content)
   return contents
 
 
 def _get_current_turn_contents(
-    current_branch: Optional[str], events: list[Event], agent_name: str = ''
+    current_branch: Optional[str],
+    events: list[Event],
+    agent_name: str = '',
+    *,
+    preserve_function_call_ids: bool = False,
 ) -> list[types.Content]:
   """Get contents for the current turn only (no conversation history).
 
@@ -491,6 +548,7 @@ def _get_current_turn_contents(
     current_branch: The current branch of the agent.
     events: A list of all session events.
     agent_name: The name of the agent.
+    preserve_function_call_ids: Whether to preserve function call ids.
 
   Returns:
     A list of contents for the current turn only, preserving context needed
@@ -502,7 +560,12 @@ def _get_current_turn_contents(
     if _should_include_event_in_context(current_branch, event) and (
         event.author == 'user' or _is_other_agent_reply(agent_name, event)
     ):
-      return _get_contents(current_branch, events[i:], agent_name)
+      return _get_contents(
+          current_branch,
+          events[i:],
+          agent_name,
+          preserve_function_call_ids=preserve_function_call_ids,
+      )
 
   return []
 

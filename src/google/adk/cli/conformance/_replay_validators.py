@@ -69,7 +69,7 @@ def _generate_diff_message(
     return _generate_mismatch_message(context, actual_json, recorded_json)
 
 
-def compare_event(
+def _compare_event(
     actual_event: Event, recorded_event: Event, index: int
 ) -> ComparisonResult:
   """Compare a single actual event with a recorded event."""
@@ -133,7 +133,7 @@ def compare_events(
     )
 
   for i, (actual, recorded) in enumerate(zip(actual_events, recorded_events)):
-    result = compare_event(actual, recorded, i)
+    result = _compare_event(actual, recorded, i)
     if not result.success:
       return result
 

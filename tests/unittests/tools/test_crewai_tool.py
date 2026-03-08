@@ -21,6 +21,7 @@ pytest.importorskip(
     "google.adk.tools.crewai_tool", reason="Requires Python 3.10+"
 )
 
+from google.adk.agents.context import Context
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.sessions.session import Session
 from google.adk.tools.crewai_tool import CrewaiTool
@@ -49,6 +50,14 @@ def _crewai_tool_with_context(tool_context: ToolContext, *args, **kwargs):
   return {
       "search_query": kwargs.get("search_query"),
       "tool_context_present": bool(tool_context),
+  }
+
+
+def _crewai_tool_with_context_type(ctx: Context, *args, **kwargs):
+  """CrewAI tool with Context type annotation."""
+  return {
+      "search_query": kwargs.get("search_query"),
+      "context_present": bool(ctx),
   }
 
 
@@ -180,3 +189,26 @@ async def test_crewai_tool_get_declaration():
 
   # Verify that the args_schema was used to build the declaration
   mock_crewai_tool.args_schema.model_json_schema.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_crewai_tool_with_context_type_annotation(mock_tool_context):
+  """Test CrewaiTool with Context type annotation and custom parameter name."""
+  mock_crewai_tool = MockCrewaiBaseTool(_crewai_tool_with_context_type)
+  tool = CrewaiTool(
+      mock_crewai_tool,
+      name="context_type_tool",
+      description="Context type tool",
+  )
+
+  # Verify the context parameter is detected by type
+  assert tool._context_param_name == "ctx"
+
+  # Test that context is properly injected
+  result = await tool.run_async(
+      args={"search_query": "test query"},
+      tool_context=mock_tool_context,
+  )
+
+  assert result["search_query"] == "test query"
+  assert result["context_present"]

@@ -20,6 +20,7 @@ import importlib
 import json
 import logging
 import os
+import sys
 import time
 import traceback
 import typing
@@ -67,6 +68,7 @@ from ..auth.credential_service.base_credential_service import BaseCredentialServ
 from ..errors.already_exists_error import AlreadyExistsError
 from ..errors.input_validation_error import InputValidationError
 from ..errors.not_found_error import NotFoundError
+from ..errors.session_not_found_error import SessionNotFoundError
 from ..evaluation.base_eval_service import InferenceConfig
 from ..evaluation.base_eval_service import InferenceRequest
 from ..evaluation.constants import MISSING_EVAL_DEPENDENCIES_MESSAGE
@@ -88,6 +90,7 @@ from ..runners import Runner
 from ..sessions.base_session_service import BaseSessionService
 from ..sessions.session import Session
 from ..utils.context_utils import Aclosing
+from ..version import __version__
 from .cli_eval import EVAL_SESSION_ID_PREFIX
 from .utils import cleanup
 from .utils import common
@@ -202,9 +205,11 @@ class RunAgentRequest(common.BaseModel):
   app_name: str
   user_id: str
   session_id: str
-  new_message: types.Content
+  new_message: Optional[types.Content] = None
   streaming: bool = False
   state_delta: Optional[dict[str, Any]] = None
+  # for long-running function resume requests (e.g., OAuth callback)
+  function_call_event_id: Optional[str] = None
   # for resume long-running functions
   invocation_id: Optional[str] = None
 
@@ -492,6 +497,7 @@ class AdkWebServer:
       logo_text: Optional[str] = None,
       logo_image_url: Optional[str] = None,
       url_prefix: Optional[str] = None,
+      auto_create_session: bool = False,
   ):
     self.agent_loader = agent_loader
     self.session_service = session_service
@@ -509,6 +515,7 @@ class AdkWebServer:
     self.current_app_name_ref: SharedValue[str] = SharedValue(value="")
     self.runner_dict = {}
     self.url_prefix = url_prefix
+    self.auto_create_session = auto_create_session
 
   async def get_runner_async(self, app_name: str) -> Runner:
     """Returns the cached runner for the given app."""
@@ -558,6 +565,7 @@ class AdkWebServer:
         session_service=self.session_service,
         memory_service=self.memory_service,
         credential_service=self.credential_service,
+        auto_create_session=self.auto_create_session,
     )
 
   def _instantiate_extra_plugins(self) -> list[BasePlugin]:
@@ -582,7 +590,8 @@ class AdkWebServer:
     """Import a plugin object (class or instance) from a fully qualified name.
 
     Args:
-      qualified_name: Fully qualified name (e.g., 'my_package.my_plugin.MyPlugin')
+      qualified_name: Fully qualified name (e.g.,
+        'my_package.my_plugin.MyPlugin')
 
     Returns:
       The imported object, which can be either a class or an instance.
@@ -682,6 +691,7 @@ class AdkWebServer:
       ] = lambda o, s: None,
       register_processors: Callable[[TracerProvider], None] = lambda o: None,
       otel_to_cloud: bool = False,
+      with_ui: bool = False,
   ):
     """Creates a FastAPI app for the ADK web server.
 
@@ -694,7 +704,8 @@ class AdkWebServer:
       lifespan: The lifespan of the FastAPI app.
       allow_origins: The origins that are allowed to make cross-origin requests.
         Entries can be literal origins (e.g., 'https://example.com') or regex
-        patterns prefixed with 'regex:' (e.g., 'regex:https://.*\\.example\\.com').
+        patterns prefixed with 'regex:' (e.g.,
+        'regex:https://.*\\.example\\.com').
       web_assets_dir: The directory containing the web assets to serve.
       setup_observer: Callback for setting up the file system observer.
       tear_down_observer: Callback for cleaning up the file system observer.
@@ -757,6 +768,20 @@ class AdkWebServer:
           allow_headers=["*"],
       )
 
+    @app.get("/health")
+    async def health() -> dict[str, str]:
+      return {"status": "ok"}
+
+    @app.get("/version")
+    async def version() -> dict[str, str]:
+      return {
+          "version": __version__,
+          "language": "python",
+          "language_version": (
+              f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+          ),
+      }
+
     @app.get("/list-apps")
     async def list_apps(
         detailed: bool = Query(
@@ -774,6 +799,94 @@ class AdkWebServer:
       if event_dict is None:
         raise HTTPException(status_code=404, detail="Trace not found")
       return event_dict
+
+    if web_assets_dir:
+
+      @app.get("/dev/build_graph/{app_name}")
+      async def get_app_info(app_name: str) -> Any:
+        runner = await self.get_runner_async(app_name)
+
+        if not runner.app:
+          raise HTTPException(
+              status_code=404, detail=f"App not found: {app_name}"
+          )
+
+        def serialize_agent(agent: BaseAgent) -> dict[str, Any]:
+          """Recursively serialize an agent, excluding non-serializable fields."""
+          agent_dict = {}
+
+          for field_name, field_info in agent.__class__.model_fields.items():
+            # Skip non-serializable fields
+            if field_name in [
+                "parent_agent",
+                "before_agent_callback",
+                "after_agent_callback",
+                "before_model_callback",
+                "after_model_callback",
+                "on_model_error_callback",
+                "before_tool_callback",
+                "after_tool_callback",
+                "on_tool_error_callback",
+            ]:
+              continue
+
+            value = getattr(agent, field_name, None)
+
+            # Handle sub_agents recursively
+            if field_name == "sub_agents" and value:
+              agent_dict[field_name] = [
+                  serialize_agent(sub_agent) for sub_agent in value
+              ]
+            elif value is None or field_name == "tools":
+              continue
+            else:
+              try:
+                if isinstance(value, (str, int, float, bool, list, dict)):
+                  agent_dict[field_name] = value
+                elif hasattr(value, "model_dump"):
+                  agent_dict[field_name] = value.model_dump(
+                      mode="python", exclude_none=True
+                  )
+                else:
+                  agent_dict[field_name] = str(value)
+              except Exception:
+                pass
+
+          return agent_dict
+
+        app_info = {
+            "name": runner.app.name,
+            "root_agent": serialize_agent(runner.app.root_agent),
+        }
+
+        # Add optional fields if present
+        if runner.app.plugins:
+          app_info["plugins"] = [
+              {"name": getattr(plugin, "name", type(plugin).__name__)}
+              for plugin in runner.app.plugins
+          ]
+
+        if runner.app.context_cache_config:
+          try:
+            app_info["context_cache_config"] = (
+                runner.app.context_cache_config.model_dump(
+                    mode="python", exclude_none=True
+                )
+            )
+          except Exception:
+            pass
+
+        if runner.app.resumability_config:
+          try:
+            app_info["resumability_config"] = (
+                runner.app.resumability_config.model_dump(
+                    mode="python", exclude_none=True
+                )
+            )
+          except Exception:
+            pass
+
+        return app_info
 
     @app.get("/debug/trace/session/{session_id}", tags=[TAG_DEBUG])
     async def get_session_trace(session_id: str) -> Any:
@@ -945,6 +1058,96 @@ class AdkWebServer:
             status_code=400,
             detail=str(ve),
         ) from ve
+
+    # TODO - remove after migration
+    @deprecated(
+        "Please use create_eval_set instead. This will be removed in future"
+        " releases."
+    )
+    @app.post(
+        "/apps/{app_name}/eval_sets/{eval_set_id}",
+        response_model_exclude_none=True,
+        tags=[TAG_EVALUATION],
+    )
+    async def create_eval_set_legacy(
+        app_name: str,
+        eval_set_id: str,
+    ):
+      """Creates an eval set, given the id."""
+      await create_eval_set(
+          app_name=app_name,
+          create_eval_set_request=CreateEvalSetRequest(
+              eval_set=EvalSet(eval_set_id=eval_set_id, eval_cases=[])
+          ),
+      )
+
+    # TODO - remove after migration
+    @deprecated(
+        "Please use list_eval_sets instead. This will be removed in future"
+        " releases."
+    )
+    @app.get(
+        "/apps/{app_name}/eval_sets",
+        response_model_exclude_none=True,
+        tags=[TAG_EVALUATION],
+    )
+    async def list_eval_sets_legacy(app_name: str) -> list[str]:
+      list_eval_sets_response = await list_eval_sets(app_name)
+      return list_eval_sets_response.eval_set_ids
+
+    # TODO - remove after migration
+    @deprecated(
+        "Please use run_eval instead. This will be removed in future releases."
+    )
+    @app.post(
+        "/apps/{app_name}/eval_sets/{eval_set_id}/run_eval",
+        response_model_exclude_none=True,
+        tags=[TAG_EVALUATION],
+    )
+    async def run_eval_legacy(
+        app_name: str, eval_set_id: str, req: RunEvalRequest
+    ) -> list[RunEvalResult]:
+      run_eval_response = await run_eval(
+          app_name=app_name, eval_set_id=eval_set_id, req=req
+      )
+      return run_eval_response.run_eval_results
+
+    # TODO - remove after migration
+    @deprecated(
+        "Please use get_eval_result instead. This will be removed in future"
+        " releases."
+    )
+    @app.get(
+        "/apps/{app_name}/eval_results/{eval_result_id}",
+        response_model_exclude_none=True,
+        tags=[TAG_EVALUATION],
+    )
+    async def get_eval_result_legacy(
+        app_name: str,
+        eval_result_id: str,
+    ) -> EvalSetResult:
+      try:
+        return self.eval_set_results_manager.get_eval_set_result(
+            app_name, eval_result_id
+        )
+      except ValueError as ve:
+        raise HTTPException(status_code=404, detail=str(ve)) from ve
+      except ValidationError as ve:
+        raise HTTPException(status_code=500, detail=str(ve)) from ve
+
+    # TODO - remove after migration
+    @deprecated(
+        "Please use list_eval_results instead. This will be removed in future"
+        " releases."
+    )
+    @app.get(
+        "/apps/{app_name}/eval_results",
+        response_model_exclude_none=True,
+        tags=[TAG_EVALUATION],
+    )
+    async def list_eval_results_legacy(app_name: str) -> list[str]:
+      list_eval_results_response = await list_eval_results(app_name)
+      return list_eval_results_response.eval_result_ids
 
     @app.get(
         "/apps/{app_name}/eval-sets",
@@ -1258,6 +1461,24 @@ class AdkWebServer:
       return artifact
 
     @app.get(
+        "/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts/{artifact_name}/versions/metadata",
+        response_model=list[ArtifactVersion],
+        response_model_exclude_none=True,
+    )
+    async def list_artifact_versions_metadata(
+        app_name: str,
+        user_id: str,
+        session_id: str,
+        artifact_name: str,
+    ) -> list[ArtifactVersion]:
+      return await self.artifact_service.list_artifact_versions(
+          app_name=app_name,
+          user_id=user_id,
+          session_id=session_id,
+          filename=artifact_name,
+      )
+
+    @app.get(
         "/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts/{artifact_name}/versions/{version_id}",
         response_model_exclude_none=True,
     )
@@ -1327,6 +1548,31 @@ class AdkWebServer:
       return artifact_version
 
     @app.get(
+        "/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts/{artifact_name}/versions/{version_id}/metadata",
+        response_model=ArtifactVersion,
+        response_model_exclude_none=True,
+    )
+    async def get_artifact_version_metadata(
+        app_name: str,
+        user_id: str,
+        session_id: str,
+        artifact_name: str,
+        version_id: int,
+    ) -> ArtifactVersion:
+      artifact_version = await self.artifact_service.get_artifact_version(
+          app_name=app_name,
+          user_id=user_id,
+          session_id=session_id,
+          filename=artifact_name,
+          version=version_id,
+      )
+      if not artifact_version:
+        raise HTTPException(
+            status_code=404, detail="Artifact version not found"
+        )
+      return artifact_version
+
+    @app.get(
         "/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts",
         response_model_exclude_none=True,
     )
@@ -1376,7 +1622,8 @@ class AdkWebServer:
           update_memory_request: The memory request for the update
 
       Raises:
-          HTTPException: If the memory service is not configured or the request is invalid.
+          HTTPException: If the memory service is not configured or the request
+          is invalid.
       """
       if not self.memory_service:
         raise HTTPException(
@@ -1401,51 +1648,60 @@ class AdkWebServer:
 
     @app.post("/run", response_model_exclude_none=True)
     async def run_agent(req: RunAgentRequest) -> list[Event]:
-      session = await self.session_service.get_session(
-          app_name=req.app_name, user_id=req.user_id, session_id=req.session_id
-      )
-      if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
       runner = await self.get_runner_async(req.app_name)
-      async with Aclosing(
-          runner.run_async(
-              user_id=req.user_id,
-              session_id=req.session_id,
-              new_message=req.new_message,
-              state_delta=req.state_delta,
-          )
-      ) as agen:
-        events = [event async for event in agen]
+      try:
+        async with Aclosing(
+            runner.run_async(
+                user_id=req.user_id,
+                session_id=req.session_id,
+                new_message=req.new_message,
+                state_delta=req.state_delta,
+                invocation_id=req.invocation_id,
+            )
+        ) as agen:
+          events = [event async for event in agen]
+      except SessionNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
       logger.info("Generated %s events in agent run", len(events))
       logger.debug("Events generated: %s", events)
       return events
 
     @app.post("/run_sse")
     async def run_agent_sse(req: RunAgentRequest) -> StreamingResponse:
-      # SSE endpoint
-      session = await self.session_service.get_session(
-          app_name=req.app_name, user_id=req.user_id, session_id=req.session_id
-      )
-      if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
+      stream_mode = StreamingMode.SSE if req.streaming else StreamingMode.NONE
+      runner = await self.get_runner_async(req.app_name)
+
+      # Validate session existence before starting the stream.
+      # We check directly here instead of eagerly advancing the
+      # runner's async generator with anext(), because splitting
+      # generator consumption across two asyncio Tasks (request
+      # handler vs StreamingResponse) breaks OpenTelemetry context
+      # detachment.
+      if not runner.auto_create_session:
+        session = await self.session_service.get_session(
+            app_name=req.app_name,
+            user_id=req.user_id,
+            session_id=req.session_id,
+        )
+        if not session:
+          raise HTTPException(
+              status_code=404,
+              detail=f"Session not found: {req.session_id}",
+          )
 
       # Convert the events to properly formatted SSE
       async def event_generator():
-        try:
-          stream_mode = (
-              StreamingMode.SSE if req.streaming else StreamingMode.NONE
-          )
-          runner = await self.get_runner_async(req.app_name)
-          async with Aclosing(
-              runner.run_async(
-                  user_id=req.user_id,
-                  session_id=req.session_id,
-                  new_message=req.new_message,
-                  state_delta=req.state_delta,
-                  run_config=RunConfig(streaming_mode=stream_mode),
-                  invocation_id=req.invocation_id,
-              )
-          ) as agen:
+        async with Aclosing(
+            runner.run_async(
+                user_id=req.user_id,
+                session_id=req.session_id,
+                new_message=req.new_message,
+                state_delta=req.state_delta,
+                run_config=RunConfig(streaming_mode=stream_mode),
+                invocation_id=req.invocation_id,
+            )
+        ) as agen:
+          try:
             async for event in agen:
               # ADK Web renders artifacts from `actions.artifactDelta`
               # during part processing *and* during action processing
@@ -1453,7 +1709,8 @@ class AdkWebServer:
               # 2) a content-less "action-only" event carrying `artifactDelta`
               events_to_stream = [event]
               if (
-                  event.actions.artifact_delta
+                  not req.function_call_event_id
+                  and event.actions.artifact_delta
                   and event.content
                   and event.content.parts
               ):
@@ -1472,9 +1729,9 @@ class AdkWebServer:
                     "Generated event in agent run streaming: %s", sse_event
                 )
                 yield f"data: {sse_event}\n\n"
-        except Exception as e:
-          logger.exception("Error in event_generator: %s", e)
-          yield f"data: {json.dumps({'error': str(e)})}\n\n"
+          except Exception as e:
+            logger.exception("Error in event_generator: %s", e)
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
 
       # Returns a streaming response with the proper media type for SSE
       return StreamingResponse(
@@ -1541,6 +1798,9 @@ class AdkWebServer:
         modalities: List[Literal["TEXT", "AUDIO"]] = Query(
             default=["AUDIO"]
         ),  # Only allows "TEXT" or "AUDIO"
+        proactive_audio: bool | None = Query(default=None),
+        enable_affective_dialog: bool | None = Query(default=None),
+        enable_session_resumption: bool | None = Query(default=None),
     ) -> None:
       await websocket.accept()
 
@@ -1557,7 +1817,22 @@ class AdkWebServer:
 
       async def forward_events():
         runner = await self.get_runner_async(app_name)
-        run_config = RunConfig(response_modalities=modalities)
+        run_config = RunConfig(
+            response_modalities=modalities,
+            proactivity=(
+                types.ProactivityConfig(proactive_audio=proactive_audio)
+                if proactive_audio is not None
+                else None
+            ),
+            enable_affective_dialog=enable_affective_dialog,
+            session_resumption=(
+                types.SessionResumptionConfig(
+                    transparent=enable_session_resumption
+                )
+                if enable_session_resumption is not None
+                else None
+            ),
+        )
         async with Aclosing(
             runner.run_live(
                 session=session,

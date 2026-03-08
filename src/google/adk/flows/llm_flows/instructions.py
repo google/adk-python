@@ -73,7 +73,6 @@ async def _build_instructions(
     llm_request: The LlmRequest to populate with instructions.
   """
   from ...agents.base_agent import BaseAgent
-  from ...agents.llm_agent import LlmAgent
 
   agent = invocation_context.agent
 
@@ -81,7 +80,10 @@ async def _build_instructions(
 
   # Handle global instructions (DEPRECATED - use GlobalInstructionPlugin instead)
   # TODO: Remove this code block when global_instruction field is removed
-  if isinstance(root_agent, LlmAgent) and root_agent.global_instruction:
+  if (
+      hasattr(root_agent, 'global_instruction')
+      and root_agent.global_instruction
+  ):
     raw_si, bypass_state_injection = (
         await root_agent.canonical_global_instruction(
             ReadonlyContext(invocation_context)
