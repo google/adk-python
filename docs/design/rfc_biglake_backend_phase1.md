@@ -121,7 +121,25 @@ The backend owns storage-model-specific behavior:
 - Table creation customization
 - Arrow schema creation
 - Loop-state creation
-- Backend capability flags such as whether views are supported
+
+## Plugin-Owned Responsibilities
+
+The following responsibilities remain in `BigQueryAgentAnalyticsPlugin` in
+phase 1 and are not moved into the backend:
+
+- Config validation in `__init__`
+- Parser and offloader lifecycle
+- Trace/span and callback lifecycle
+- High-level startup orchestration
+- Shutdown orchestration
+
+This includes the existing init-time validation that BigLake requires
+`connection_id` when `biglake_storage_uri` is set. That validation should stay
+in the plugin.
+
+The current second `connection_id` validation inside
+`_ensure_schema_exists()` is redundant once init-time validation exists. Phase
+1 should remove that redundant check rather than move it into the backend.
 
 ## Backend Interface
 
@@ -135,11 +153,6 @@ class AnalyticsTableBackend(abc.ABC):
 
   def __init__(self, plugin: "BigQueryAgentAnalyticsPlugin"):
     self._plugin = plugin
-
-  @property
-  @abc.abstractmethod
-  def is_biglake(self) -> bool:
-    ...
 
   @abc.abstractmethod
   def build_schema(self) -> list[bigquery.SchemaField]:
@@ -162,11 +175,38 @@ class AnalyticsTableBackend(abc.ABC):
       self, loop: asyncio.AbstractEventLoop
   ) -> _LoopState:
     ...
-
-  @abc.abstractmethod
-  def supports_views(self) -> bool:
-    ...
 ```
+
+Backends receive a reference to the plugin so they can reuse the existing
+runtime state without introducing a large constructor surface. In phase 1 this
+includes access to values such as:
+
+- `plugin.client`
+- `plugin._executor`
+- `plugin.project_id`
+- `plugin.dataset_id`
+- `plugin.table_id`
+- `plugin.config`
+- `plugin._write_stream_name`
+
+This is especially important because loop-state creation is asymmetric:
+
+- the native backend creates credentials and a `BigQueryWriteAsyncClient`
+- the BigLake backend reuses `plugin.client` and creates a legacy streaming
+  processor
+
+## Backend-Owned Helper Usage
+
+Phase 1 keeps the existing helpers unchanged, but their ownership becomes
+backend-specific:
+
+- `NativeBigQueryBackend.build_schema()` calls `_get_events_schema(biglake=False)`
+- `BigLakeIcebergBackend.build_schema()` calls `_get_events_schema(biglake=True)`
+- `BigLakeIcebergBackend.prepare_table_for_create()` calls
+  `_normalize_biglake_connection_id(...)`
+
+The plugin should not know about BigLake-specific helper usage such as
+connection ID normalization.
 
 ## Concrete Backends
 
@@ -184,10 +224,6 @@ Suggested implementation:
 
 ```python
 class NativeBigQueryBackend(AnalyticsTableBackend):
-
-  @property
-  def is_biglake(self) -> bool:
-    return False
 
   def build_schema(self) -> list[bigquery.SchemaField]:
     return _get_events_schema(biglake=False)
@@ -216,9 +252,6 @@ class NativeBigQueryBackend(AnalyticsTableBackend):
       self, loop: asyncio.AbstractEventLoop
   ) -> _LoopState:
     ...
-
-  def supports_views(self) -> bool:
-    return True
 ```
 
 ### `BigLakeIcebergBackend`
@@ -235,10 +268,6 @@ Suggested implementation:
 
 ```python
 class BigLakeIcebergBackend(AnalyticsTableBackend):
-
-  @property
-  def is_biglake(self) -> bool:
-    return True
 
   def build_schema(self) -> list[bigquery.SchemaField]:
     return _get_events_schema(biglake=True)
@@ -273,14 +302,11 @@ class BigLakeIcebergBackend(AnalyticsTableBackend):
       self, loop: asyncio.AbstractEventLoop
   ) -> _LoopState:
     ...
-
-  def supports_views(self) -> bool:
-    return False
 ```
 
-Note: `supports_views()` is included now because it is part of the natural
-backend contract, but this phase does not require any behavior change from the
-current implementation.
+Note: view support is backend-specific, but phase 1 does not need to encode it
+in the backend interface yet. If a future phase needs explicit
+`supports_views()` behavior, it can be added then.
 
 ## Plugin Integration
 
@@ -317,15 +343,16 @@ def backend(self) -> AnalyticsTableBackend:
 
 ### Keep `is_biglake`
 
-Preserve the public/internal property but delegate to the backend:
+Preserve the existing public/internal property with current semantics:
 
 ```python
 @property
 def is_biglake(self) -> bool:
-  return self.backend.is_biglake
+  return self.config.biglake_storage_uri is not None
 ```
 
 This minimizes diff size and avoids unnecessary churn in the rest of the class.
+The backend interface itself does not need an `is_biglake` property.
 
 ## Detailed Implementation Plan
 
@@ -352,6 +379,7 @@ Acceptance criteria:
 
 - Backend classes compile
 - No code is switched to use them yet
+- Existing init-time config validation remains in the plugin
 
 ### Step 2: Move schema construction into backends
 
@@ -359,6 +387,10 @@ Actions:
 
 - Move native schema selection to `NativeBigQueryBackend.build_schema()`
 - Move BigLake schema selection to `BigLakeIcebergBackend.build_schema()`
+- Keep helper functions unchanged, but the BigLake helper chain remains backend
+  owned:
+  - `_get_events_schema(biglake=True)`
+  - `_replace_json_with_string(...)`
 
 Plugin change:
 
@@ -408,6 +440,10 @@ Actions:
   `NativeBigQueryBackend.create_loop_state()`
 - Copy BigLake `LegacyStreamingBatchProcessor` creation into
   `BigLakeIcebergBackend.create_loop_state()`
+- Preserve `atexit.register(...)` behavior after backend-created loop state is
+  installed in the plugin, since both current paths register cleanup handlers
+- Keep `_LoopState` unchanged in phase 1 even though only the native backend
+  uses `write_client`
 
 Plugin change:
 
@@ -441,6 +477,8 @@ Actions:
 - Move BigLake partitioning, connection normalization, and
   `BigLakeConfiguration` setup into
   `BigLakeIcebergBackend.prepare_table_for_create()`
+- Remove the redundant `connection_id` validation from
+  `_ensure_schema_exists()` instead of moving it into the backend
 
 Plugin change in `_ensure_schema_exists()`:
 
@@ -499,6 +537,13 @@ Rationale:
 - Preserves existing tests
 - Keeps phase 1 focused on structure
 
+Clarification:
+
+- `BigLakeIcebergBackend.prepare_table_for_create()` should call
+  `_normalize_biglake_connection_id(...)` internally
+- `BigLakeIcebergBackend.build_schema()` should own the BigLake schema helper
+  chain internally
+
 ### Step 8: Add focused backend tests
 
 Add tests for the new internal abstraction.
@@ -535,6 +580,8 @@ Goal:
 
 - Add minimal, targeted coverage for the new abstraction
 - Keep existing tests as the primary regression safety net
+- Verify the backend methods produce the same effective outputs as the current
+  inline implementation
 
 ## Suggested Code Skeleton
 
@@ -544,11 +591,6 @@ class AnalyticsTableBackend(abc.ABC):
 
   def __init__(self, plugin: "BigQueryAgentAnalyticsPlugin"):
     self._plugin = plugin
-
-  @property
-  @abc.abstractmethod
-  def is_biglake(self) -> bool:
-    ...
 
   @abc.abstractmethod
   def build_schema(self) -> list[bigquery.SchemaField]:
@@ -572,16 +614,8 @@ class AnalyticsTableBackend(abc.ABC):
   ) -> _LoopState:
     ...
 
-  @abc.abstractmethod
-  def supports_views(self) -> bool:
-    ...
-
 
 class NativeBigQueryBackend(AnalyticsTableBackend):
-
-  @property
-  def is_biglake(self) -> bool:
-    return False
 
   def build_schema(self) -> list[bigquery.SchemaField]:
     return _get_events_schema(biglake=False)
@@ -611,15 +645,8 @@ class NativeBigQueryBackend(AnalyticsTableBackend):
   ) -> _LoopState:
     ...
 
-  def supports_views(self) -> bool:
-    return True
-
 
 class BigLakeIcebergBackend(AnalyticsTableBackend):
-
-  @property
-  def is_biglake(self) -> bool:
-    return True
 
   def build_schema(self) -> list[bigquery.SchemaField]:
     return _get_events_schema(biglake=True)
@@ -654,9 +681,6 @@ class BigLakeIcebergBackend(AnalyticsTableBackend):
       self, loop: asyncio.AbstractEventLoop
   ) -> _LoopState:
     ...
-
-  def supports_views(self) -> bool:
-    return False
 ```
 
 ## Suggested Implementation Order
@@ -731,12 +755,17 @@ pytest tests/unittests/plugins/test_bigquery_agent_analytics_plugin.py -q
 
 Recommended validation areas:
 
+- Existing plugin tests pass unchanged as regression coverage
 - Existing BigLake schema tests
 - Existing BigLake connection normalization tests
 - Existing processor selection tests
 - Existing lifecycle/shutdown tests
 - New backend selection tests
 - New backend behavior tests
+- New backend equivalence tests showing:
+  - native schema and Arrow outputs match prior inline behavior
+  - BigLake schema and table-preparation outputs match prior inline behavior
+  - loop-state creation preserves the current processor/client shape
 
 ## Acceptance Criteria
 
@@ -745,10 +774,13 @@ This phase is complete when all of the following are true:
 - No public API changes
 - No behavior change for native BigQuery tables
 - No behavior change for BigLake Iceberg tables
+- Existing plugin tests pass unchanged
 - `_get_loop_state()` no longer contains native/BigLake branching
 - `_lazy_setup()` no longer contains direct schema/Arrow branching by table type
 - Table creation customization is delegated to backends
-- Existing plugin unit tests pass
+- The redundant `connection_id` validation is removed from
+  `_ensure_schema_exists()`
+- Backend methods produce equivalent outputs to the prior inline logic
 - New backend-focused tests pass
 
 ## Follow-up Phases
