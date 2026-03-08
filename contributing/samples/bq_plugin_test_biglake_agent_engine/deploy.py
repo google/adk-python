@@ -12,6 +12,7 @@ This script:
 Prerequisites: see bq_plugin_test_biglake_local/agent.py for setup.
 """
 
+import os
 import random
 import sys
 import time
@@ -23,6 +24,21 @@ from google.adk.plugins.bigquery_agent_analytics_plugin import BigQueryLoggerCon
 from google.cloud import bigquery
 import vertexai
 from vertexai import agent_engines
+
+# Path to local wheel — build with: uv build --wheel
+_REPO_ROOT = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "..", "..")
+)
+_DIST_DIR = os.path.join(_REPO_ROOT, "dist")
+
+
+def _find_local_wheel():
+  """Find the latest google_adk wheel in dist/."""
+  import glob
+
+  pattern = os.path.join(_DIST_DIR, "google_adk-*-py3-none-any.whl")
+  wheels = sorted(glob.glob(pattern), key=os.path.getmtime, reverse=True)
+  return wheels[0] if wheels else None
 
 # ──────────────────────────────────────────────────────────────────
 # CONFIGURE THESE for your environment
@@ -115,17 +131,50 @@ def deploy():
   # interface required by Agent Engine.
   adk_app = agent_engines.AdkApp(app=app, enable_tracing=True)
 
+  # Use local wheel if available, otherwise fall back to PyPI.
+  extra_packages = []
+  _LOCAL_WHEEL = _find_local_wheel()
+  if _LOCAL_WHEEL:
+    print(f"Using local wheel: {_LOCAL_WHEEL}")
+    # Copy wheel to /tmp/whl/ so the tarball member path is short
+    # and predictable. After extraction to /code/, the wheel will be
+    # at /code/tmp/whl/<filename>.whl.
+    import shutil
+
+    whl_name = os.path.basename(_LOCAL_WHEEL)
+    staging_dir = "/tmp/whl"
+    os.makedirs(staging_dir, exist_ok=True)
+    staged_wheel = os.path.join(staging_dir, whl_name)
+    shutil.copy2(_LOCAL_WHEEL, staged_wheel)
+
+    extra_packages = [staged_wheel]
+    # Reference the wheel via its extracted path so pip installs it.
+    # The tarball extracts to /code/, making the wheel available at
+    # ./tmp/whl/<filename>.whl relative to the pip working directory.
+    reqs = [
+        f"./tmp/whl/{whl_name}",
+        "google-cloud-aiplatform",
+        "google-cloud-bigquery",
+        "google-cloud-bigquery-storage",
+        "google-cloud-storage",
+        "pyarrow",
+    ]
+  else:
+    print("Local wheel not found, using PyPI google-adk[bigquery].")
+    reqs = [
+        "google-adk[bigquery]",
+        "google-cloud-bigquery",
+        "google-cloud-bigquery-storage",
+        "google-cloud-storage",
+        "pyarrow",
+    ]
+
   print("Deploying BigLake Iceberg agent to Agent Engine...")
   agent_engine = agent_engines.create(
       agent_engine=adk_app,
       display_name="bq-biglake-iceberg-test",
-      requirements=[
-          "google-adk[bigquery]",
-          "google-cloud-bigquery",
-          "google-cloud-bigquery-storage",
-          "google-cloud-storage",
-          "pyarrow",
-      ],
+      requirements=reqs,
+      extra_packages=extra_packages,
   )
   print(f"Deployed! Resource name: {agent_engine.resource_name}")
   return agent_engine
@@ -246,10 +295,10 @@ def verify_bigquery(session_id):
       f"JSON fields found: {json_fields}" if json_fields else "all STRING",
   )
 
-  for field_name in ("content", "attributes", "latency_ms"):
+  for field_name in ("content", "attributes", "latency_ms", "content_parts"):
     f = next((f for f in table.schema if f.name == field_name), None)
     check(
-        f"'{field_name}' is STRING (was JSON)",
+        f"'{field_name}' is STRING",
         f is not None and f.field_type == "STRING",
     )
 
