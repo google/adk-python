@@ -199,10 +199,6 @@ class StorageWriteApiWriter(EventWriter):
     self._write_client = write_client
     self._batch_processor = batch_processor
 
-  async def start(self) -> None:
-    # No-op if processor was already started before wrapping.
-    return None
-
   async def append(self, row: dict[str, Any]) -> None:
     await self._batch_processor.append(row)
 
@@ -240,9 +236,6 @@ class LegacyStreamingWriter(EventWriter):
 
   def __init__(self, batch_processor: LegacyStreamingBatchProcessor):
     self._batch_processor = batch_processor
-
-  async def start(self) -> None:
-    return None
 
   async def append(self, row: dict[str, Any]) -> None:
     await self._batch_processor.append(row)
@@ -481,10 +474,13 @@ Acceptance criteria:
 
 After all plugin call sites use `writer`:
 
-- remove `_batch_processor_prop`
-- remove `_write_client_prop`
+- stop using `_batch_processor_prop` internally
+- stop using `_write_client_prop` internally
 - migrate `_write_stream_prop` to use `writer.write_stream`
 - remove direct transport-close logic from plugin shutdown
+
+This step is about eliminating internal plugin dependence on those properties,
+not removing the compatibility surface yet.
 
 #### Compatibility With `__getattribute__` Surface
 
@@ -529,7 +525,6 @@ This step should be the last change in phase 2.
 class EventWriter(abc.ABC):
   """Internal interface for writing analytics events."""
 
-  @abc.abstractmethod
   async def start(self) -> None:
     return None
 
