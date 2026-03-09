@@ -32,6 +32,7 @@ from typing import runtime_checkable
 from typing import TextIO
 from typing import Union
 
+import httpx
 from mcp import ClientSession
 from mcp import SamplingCapability
 from mcp import StdioServerParameters
@@ -50,10 +51,10 @@ logger = logging.getLogger('google_adk.' + __name__)
 
 
 def create_mcp_http_client(
-    headers=None,
-    timeout=None,
-    auth=None,
-):
+    headers: dict[str, str] | None = None,
+    timeout: httpx.Timeout | None = None,
+    auth: httpx.Auth | None = None,
+) -> httpx.AsyncClient:
   """Creates MCP HTTP client and instruments it when OTel is available."""
   client = _create_mcp_http_client(
       headers=headers,

@@ -13,12 +13,12 @@
 # limitations under the License.
 
 import asyncio
+import builtins
 from datetime import timedelta
 import hashlib
 from io import StringIO
 import json
 import sys
-import builtins
 from unittest.mock import ANY
 from unittest.mock import AsyncMock
 from unittest.mock import Mock
@@ -193,7 +193,9 @@ class TestMCPSessionManager:
         ].get_default(),
     )
 
-  @patch("google.adk.tools.mcp_tool.mcp_session_manager._create_mcp_http_client")
+  @patch(
+      "google.adk.tools.mcp_tool.mcp_session_manager._create_mcp_http_client"
+  )
   def test_default_httpx_factory_instruments_client_when_available(
       self, mock_base_factory
   ):
@@ -215,7 +217,9 @@ class TestMCPSessionManager:
     assert result is client
     mock_instrumentor.instrument_client.assert_called_once_with(client)
 
-  @patch("google.adk.tools.mcp_tool.mcp_session_manager._create_mcp_http_client")
+  @patch(
+      "google.adk.tools.mcp_tool.mcp_session_manager._create_mcp_http_client"
+  )
   def test_default_httpx_factory_handles_missing_opentelemetry(
       self, mock_base_factory
   ):
