@@ -1354,17 +1354,6 @@ async def test_append_event_with_cache_and_usage_metadata():
 
   appended_event = retrieved_session.events[-1]
   # cache_metadata is preserved
-  assert appended_event.cache_metadata is not None
-  assert appended_event.cache_metadata.cache_name == (
-      'projects/123/locations/us-central1/cachedContents/456'
-  )
-  assert appended_event.cache_metadata.fingerprint == 'abc123hash'
-  assert appended_event.cache_metadata.invocations_used == 3
-  assert appended_event.cache_metadata.contents_count == 10
-  assert appended_event.cache_metadata.created_at == 1700000000.0
+  assert appended_event.cache_metadata == cache_meta
   # usage_metadata is preserved
-  assert appended_event.usage_metadata is not None
-  assert appended_event.usage_metadata.prompt_token_count == 100
-  assert appended_event.usage_metadata.candidates_token_count == 50
-  assert appended_event.usage_metadata.total_token_count == 150
-  assert appended_event.usage_metadata.cached_content_token_count == 80
+  assert appended_event.usage_metadata == usage_meta
