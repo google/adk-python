@@ -569,6 +569,7 @@ async def test_append_event_complete(session_service):
       ),
       citation_metadata=types.CitationMetadata(),
       custom_metadata={'custom_key': 'custom_value'},
+      timestamp=1700000000.123,
       input_transcription=types.Transcription(
           text='input transcription',
           finished=True,
