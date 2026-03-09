@@ -114,7 +114,7 @@ class McpToolset(BaseToolset):
           Union[ProgressFnT, ProgressCallbackFactory]
       ] = None,
       use_mcp_resources: Optional[bool] = False,
-      sampling_callback: Optional[SamplingFnT] = None,
+      sampling_callback: Optional[Any] = None,
       sampling_capabilities: Optional[Any] = None,
   ):
     """Initializes the McpToolset.
