@@ -38,7 +38,7 @@ from mcp import StdioServerParameters
 from mcp.client.session import SamplingFnT
 from mcp.client.sse import sse_client
 from mcp.client.stdio import stdio_client
-from mcp.client.streamable_http import create_mcp_http_client
+from mcp.client.streamable_http import create_mcp_http_client as _create_mcp_http_client
 from mcp.client.streamable_http import McpHttpClientFactory
 from mcp.client.streamable_http import streamablehttp_client
 from pydantic import BaseModel
@@ -47,6 +47,26 @@ from pydantic import ConfigDict
 from .session_context import SessionContext
 
 logger = logging.getLogger('google_adk.' + __name__)
+
+
+def create_mcp_http_client(
+    headers=None,
+    timeout=None,
+    auth=None,
+):
+  """Creates MCP HTTP client and instruments it when OTel is available."""
+  client = _create_mcp_http_client(
+      headers=headers,
+      timeout=timeout,
+      auth=auth,
+  )
+  try:
+    from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+
+    HTTPXClientInstrumentor.instrument_client(client)
+  except ImportError:
+    pass
+  return client
 
 
 def _has_cancelled_error_context(exc: BaseException) -> bool:

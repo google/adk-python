@@ -18,12 +18,14 @@ import hashlib
 from io import StringIO
 import json
 import sys
+import builtins
 from unittest.mock import ANY
 from unittest.mock import AsyncMock
 from unittest.mock import Mock
 from unittest.mock import patch
 
 from google.adk.platform import thread as platform_thread
+from google.adk.tools.mcp_tool.mcp_session_manager import create_mcp_http_client
 from google.adk.tools.mcp_tool.mcp_session_manager import MCPSessionManager
 from google.adk.tools.mcp_tool.mcp_session_manager import retry_on_errors
 from google.adk.tools.mcp_tool.mcp_session_manager import SseConnectionParams
@@ -190,6 +192,48 @@ class TestMCPSessionManager:
             "httpx_client_factory"
         ].get_default(),
     )
+
+  @patch("google.adk.tools.mcp_tool.mcp_session_manager._create_mcp_http_client")
+  def test_default_httpx_factory_instruments_client_when_available(
+      self, mock_base_factory
+  ):
+    """Test default MCP HTTP factory instruments HTTPX client when available."""
+    client = Mock()
+    mock_base_factory.return_value = client
+
+    mock_instrumentor = Mock()
+    with patch.dict(
+        sys.modules,
+        {
+            "opentelemetry.instrumentation.httpx": Mock(
+                HTTPXClientInstrumentor=mock_instrumentor
+            )
+        },
+    ):
+      result = create_mcp_http_client()
+
+    assert result is client
+    mock_instrumentor.instrument_client.assert_called_once_with(client)
+
+  @patch("google.adk.tools.mcp_tool.mcp_session_manager._create_mcp_http_client")
+  def test_default_httpx_factory_handles_missing_opentelemetry(
+      self, mock_base_factory
+  ):
+    """Test default MCP HTTP factory works without OTel instrumentation."""
+    client = Mock()
+    mock_base_factory.return_value = client
+
+    original_import = builtins.__import__
+
+    def import_with_missing_otel(name, *args, **kwargs):
+      if name == "opentelemetry.instrumentation.httpx":
+        raise ImportError("missing test dependency")
+      return original_import(name, *args, **kwargs)
+
+    with patch("builtins.__import__", side_effect=import_with_missing_otel):
+      result = create_mcp_http_client()
+
+    assert result is client
 
   def test_generate_session_key_stdio(self):
     """Test session key generation for stdio connections."""
