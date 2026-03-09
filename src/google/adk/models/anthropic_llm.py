@@ -17,7 +17,9 @@
 from __future__ import annotations
 
 import base64
+import dataclasses
 from functools import cached_property
+import json
 import logging
 import os
 from typing import Any
@@ -31,6 +33,7 @@ from typing import Union
 from anthropic import AsyncAnthropic
 from anthropic import AsyncAnthropicVertex
 from anthropic import NOT_GIVEN
+from anthropic import NotGiven
 from anthropic import types as anthropic_types
 from google.genai import types
 from pydantic import BaseModel
@@ -46,6 +49,15 @@ if TYPE_CHECKING:
 __all__ = ["AnthropicLlm", "Claude"]
 
 logger = logging.getLogger("google_adk." + __name__)
+
+
+@dataclasses.dataclass
+class _ToolUseAccumulator:
+  """Accumulates streamed tool_use content block data."""
+
+  id: str
+  name: str
+  args_json: str
 
 
 class ClaudeRequest(BaseModel):
@@ -78,11 +90,20 @@ def _is_image_part(part: types.Part) -> bool:
   )
 
 
+def _is_pdf_part(part: types.Part) -> bool:
+  return (
+      part.inline_data
+      and part.inline_data.mime_type
+      and part.inline_data.mime_type.split(";")[0].strip() == "application/pdf"
+  )
+
+
 def part_to_message_block(
     part: types.Part,
 ) -> Union[
     anthropic_types.TextBlockParam,
     anthropic_types.ImageBlockParam,
+    anthropic_types.DocumentBlockParam,
     anthropic_types.ToolUseBlockParam,
     anthropic_types.ToolResultBlockParam,
 ]:
@@ -115,12 +136,15 @@ def part_to_message_block(
         else:
           content_items.append(str(item))
       content = "\n".join(content_items) if content_items else ""
-    # Handle traditional result format
-    elif "result" in response_data and response_data["result"]:
-      # Transformation is required because the content is a list of dict.
-      # ToolResultBlockParam content doesn't support list of dict. Converting
-      # to str to prevent anthropic.BadRequestError from being thrown.
-      content = str(response_data["result"])
+    # We serialize to str here
+    # SDK ref: anthropic.types.tool_result_block_param
+    # https://github.com/anthropics/anthropic-sdk-python/blob/main/src/anthropic/types/tool_result_block_param.py
+    elif "result" in response_data and response_data["result"] is not None:
+      result = response_data["result"]
+      if isinstance(result, (dict, list)):
+        content = json.dumps(result)
+      else:
+        content = str(result)
 
     return anthropic_types.ToolResultBlockParam(
         tool_use_id=part.function_response.id or "",
@@ -132,6 +156,14 @@ def part_to_message_block(
     data = base64.b64encode(part.inline_data.data).decode()
     return anthropic_types.ImageBlockParam(
         type="image",
+        source=dict(
+            type="base64", media_type=part.inline_data.mime_type, data=data
+        ),
+    )
+  elif _is_pdf_part(part):
+    data = base64.b64encode(part.inline_data.data).decode()
+    return anthropic_types.DocumentBlockParam(
+        type="document",
         source=dict(
             type="base64", media_type=part.inline_data.mime_type, data=data
         ),
@@ -162,6 +194,11 @@ def content_to_message_param(
       logger.warning(
           "Image data is not supported in Claude for assistant turns."
       )
+      continue
+
+    # PDF data is not supported in Claude for assistant turns.
+    if content.role != "user" and _is_pdf_part(part):
+      logger.warning("PDF data is not supported in Claude for assistant turns.")
       continue
 
     message_block.append(part_to_message_block(part))
@@ -305,16 +342,111 @@ class AnthropicLlm(BaseLlm):
         if llm_request.tools_dict
         else NOT_GIVEN
     )
-    # TODO(b/421255973): Enable streaming for anthropic models.
-    message = await self._anthropic_client.messages.create(
+
+    if not stream:
+      message = await self._anthropic_client.messages.create(
+          model=llm_request.model,
+          system=llm_request.config.system_instruction,
+          messages=messages,
+          tools=tools,
+          tool_choice=tool_choice,
+          max_tokens=self.max_tokens,
+      )
+      yield message_to_generate_content_response(message)
+    else:
+      async for response in self._generate_content_streaming(
+          llm_request, messages, tools, tool_choice
+      ):
+        yield response
+
+  async def _generate_content_streaming(
+      self,
+      llm_request: LlmRequest,
+      messages: list[anthropic_types.MessageParam],
+      tools: Union[Iterable[anthropic_types.ToolUnionParam], NotGiven],
+      tool_choice: Union[anthropic_types.ToolChoiceParam, NotGiven],
+  ) -> AsyncGenerator[LlmResponse, None]:
+    """Handles streaming responses from Anthropic models.
+
+    Yields partial LlmResponse objects as content arrives, followed by
+    a final aggregated LlmResponse with all content.
+    """
+    raw_stream = await self._anthropic_client.messages.create(
         model=llm_request.model,
         system=llm_request.config.system_instruction,
         messages=messages,
         tools=tools,
         tool_choice=tool_choice,
         max_tokens=self.max_tokens,
+        stream=True,
     )
-    yield message_to_generate_content_response(message)
+
+    # Track content blocks being built during streaming.
+    # Each entry maps a block index to its accumulated state.
+    text_blocks: dict[int, str] = {}
+    tool_use_blocks: dict[int, _ToolUseAccumulator] = {}
+    input_tokens = 0
+    output_tokens = 0
+
+    async for event in raw_stream:
+      if event.type == "message_start":
+        input_tokens = event.message.usage.input_tokens
+        output_tokens = event.message.usage.output_tokens
+
+      elif event.type == "content_block_start":
+        block = event.content_block
+        if isinstance(block, anthropic_types.TextBlock):
+          text_blocks[event.index] = block.text
+        elif isinstance(block, anthropic_types.ToolUseBlock):
+          tool_use_blocks[event.index] = _ToolUseAccumulator(
+              id=block.id,
+              name=block.name,
+              args_json="",
+          )
+
+      elif event.type == "content_block_delta":
+        delta = event.delta
+        if isinstance(delta, anthropic_types.TextDelta):
+          text_blocks.setdefault(event.index, "")
+          text_blocks[event.index] += delta.text
+          yield LlmResponse(
+              content=types.Content(
+                  role="model",
+                  parts=[types.Part.from_text(text=delta.text)],
+              ),
+              partial=True,
+          )
+        elif isinstance(delta, anthropic_types.InputJSONDelta):
+          if event.index in tool_use_blocks:
+            tool_use_blocks[event.index].args_json += delta.partial_json
+
+      elif event.type == "message_delta":
+        output_tokens = event.usage.output_tokens
+
+    # Build the final aggregated response with all content.
+    all_parts: list[types.Part] = []
+    all_indices = sorted(
+        set(list(text_blocks.keys()) + list(tool_use_blocks.keys()))
+    )
+    for idx in all_indices:
+      if idx in text_blocks:
+        all_parts.append(types.Part.from_text(text=text_blocks[idx]))
+      if idx in tool_use_blocks:
+        acc = tool_use_blocks[idx]
+        args = json.loads(acc.args_json) if acc.args_json else {}
+        part = types.Part.from_function_call(name=acc.name, args=args)
+        part.function_call.id = acc.id
+        all_parts.append(part)
+
+    yield LlmResponse(
+        content=types.Content(role="model", parts=all_parts),
+        usage_metadata=types.GenerateContentResponseUsageMetadata(
+            prompt_token_count=input_tokens,
+            candidates_token_count=output_tokens,
+            total_token_count=input_tokens + output_tokens,
+        ),
+        partial=False,
+    )
 
   @cached_property
   def _anthropic_client(self) -> AsyncAnthropic:

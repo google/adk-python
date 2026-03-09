@@ -44,6 +44,8 @@ class BigtableToolset(BaseToolset):
     - bigtable_get_instance_info
     - bigtable_list_tables
     - bigtable_get_table_info
+    - bigtable_list_clusters
+    - bigtable_get_cluster_info
     - bigtable_execute_sql
   """
 
@@ -95,6 +97,8 @@ class BigtableToolset(BaseToolset):
             metadata_tool.get_instance_info,
             metadata_tool.list_tables,
             metadata_tool.get_table_info,
+            metadata_tool.list_clusters,
+            metadata_tool.get_cluster_info,
             query_tool.execute_sql,
         ]
     ]
