@@ -14,7 +14,12 @@
 
 """Unit tests for skill utilities."""
 
+from unittest import mock
+
+from google.adk.skills import list_skills_in_dir
+from google.adk.skills import list_skills_in_gcs_dir as _list_skills_in_gcs_dir
 from google.adk.skills import load_skill_from_dir as _load_skill_from_dir
+from google.adk.skills import load_skill_from_gcs_dir as _load_skill_from_gcs_dir
 from google.adk.skills._utils import _read_skill_properties
 from google.adk.skills._utils import _validate_skill_dir
 import pytest
@@ -180,3 +185,158 @@ Body content
   assert fm.name == "my-skill"
   assert fm.description == "A cool skill"
   assert fm.license == "MIT"
+
+
+@mock.patch("google.cloud.storage.Client")
+def test__list_skills_in_gcs_dir(mock_client_class):
+
+  mock_client = mock.MagicMock()
+  mock_client_class.return_value = mock_client
+  mock_bucket = mock.MagicMock()
+  mock_client.bucket.return_value = mock_bucket
+
+  mock_iterator = mock.MagicMock()
+  mock_iterator.prefixes = ["skills/my-skill/"]
+  mock_bucket.list_blobs.return_value = mock_iterator
+
+  mock_blob = mock.MagicMock()
+  mock_blob.exists.return_value = True
+  mock_blob.download_as_text.return_value = (
+      "---\nname: my-skill\ndescription: A skill\n---\nBody"
+  )
+  mock_bucket.blob.return_value = mock_blob
+
+  skills = _list_skills_in_gcs_dir("my-bucket", "skills/")
+  assert "my-skill" in skills
+  assert skills["my-skill"].name == "my-skill"
+
+
+@mock.patch("google.cloud.storage.Client")
+@mock.patch("logging.warning")
+def test__list_skills_in_gcs_dir_skips_invalid(
+    mock_logging_warning, mock_client_class
+):
+  mock_client = mock.MagicMock()
+  mock_client_class.return_value = mock_client
+  mock_bucket = mock.MagicMock()
+  mock_client.bucket.return_value = mock_bucket
+
+  mock_iterator = mock.MagicMock()
+  mock_iterator.prefixes = ["skills/invalid-skill/", "skills/valid-skill/"]
+  mock_bucket.list_blobs.return_value = mock_iterator
+
+  def mock_blob_side_effect(path):
+    m = mock.MagicMock()
+    m.exists.return_value = True
+    if "invalid-skill" in path:
+      m.download_as_text.return_value = "invalid yaml content"
+    else:
+      m.download_as_text.return_value = (
+          "---\nname: valid-skill\ndescription: A skill\n---\nBody"
+      )
+    return m
+
+  mock_bucket.blob.side_effect = mock_blob_side_effect
+
+  skills = _list_skills_in_gcs_dir("my-bucket", "skills/")
+  assert "valid-skill" in skills
+  assert "invalid-skill" not in skills
+
+  # Verify warning was logged for the invalid skill
+  mock_logging_warning.assert_called_once()
+  args, _ = mock_logging_warning.call_args
+  assert "Skipping invalid skill" in args[0]
+  assert args[1] == "invalid-skill"
+  assert args[2] == "my-bucket"
+
+
+@mock.patch("google.cloud.storage.Client")
+def test__load_skill_from_gcs_dir(mock_client_class):
+
+  mock_client = mock.MagicMock()
+  mock_client_class.return_value = mock_client
+  mock_bucket = mock.MagicMock()
+  mock_client.bucket.return_value = mock_bucket
+
+  def mock_blob_side_effect(path):
+    m = mock.MagicMock()
+    if path.endswith("SKILL.md"):
+      m.exists.return_value = True
+      m.download_as_text.return_value = (
+          "---\nname: my-skill\ndescription: Test description\n---\nTest"
+          " instructions"
+      )
+    else:
+      m.exists.return_value = False
+    return m
+
+  mock_bucket.blob.side_effect = mock_blob_side_effect
+
+  # For resources
+  def list_blobs_side_effect(prefix=None):
+    if prefix.endswith("references/"):
+      m = mock.MagicMock()
+      m.name = prefix + "ref1.md"
+      m.download_as_text.return_value = "ref1 content"
+      return [m]
+    return []
+
+  mock_bucket.list_blobs.side_effect = list_blobs_side_effect
+
+  skill = _load_skill_from_gcs_dir("my-bucket", "skills/my-skill/")
+
+  assert skill.name == "my-skill"
+  assert skill.description == "Test description"
+  assert skill.instructions == "Test instructions"
+  # Using dict access for reference
+  assert skill.resources.get_reference("ref1.md") == "ref1 content"
+
+
+def test_list_skills_in_dir(tmp_path):
+  """Tests listing skills in a directory."""
+  skills_dir = tmp_path / "skills"
+  skills_dir.mkdir()
+
+  # Valid skill 1
+  skill1_dir = skills_dir / "skill1"
+  skill1_dir.mkdir()
+  (skill1_dir / "SKILL.md").write_text(
+      "---\nname: skill1\ndescription: desc1\n---\nbody"
+  )
+
+  # Valid skill 2
+  skill2_dir = skills_dir / "skill2"
+  skill2_dir.mkdir()
+  (skill2_dir / "SKILL.md").write_text(
+      "---\nname: skill2\ndescription: desc2\n---\nbody"
+  )
+
+  # Invalid skill: missing SKILL.md
+  (skills_dir / "invalid-no-md").mkdir()
+
+  # Invalid skill: invalid YAML
+  invalid_yaml_dir = skills_dir / "invalid-yaml"
+  invalid_yaml_dir.mkdir()
+  (invalid_yaml_dir / "SKILL.md").write_text("---\ninvalid: yaml: :\n---\nbody")
+
+  # Invalid skill: name mismatch
+  mismatch_dir = skills_dir / "mismatch"
+  mismatch_dir.mkdir()
+  (mismatch_dir / "SKILL.md").write_text(
+      "---\nname: other-name\ndescription: desc\n---\nbody"
+  )
+
+  skills = list_skills_in_dir(skills_dir)
+
+  assert len(skills) == 2
+  assert "skill1" in skills
+  assert "skill2" in skills
+  assert skills["skill1"].name == "skill1"
+  assert skills["skill2"].name == "skill2"
+
+
+def test_list_skills_in_dir_missing_base_path(tmp_path):
+  """Tests list_skills_in_dir with missing base directory."""
+
+  skills = list_skills_in_dir(tmp_path / "nonexistent")
+  assert skills == {}

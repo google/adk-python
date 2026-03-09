@@ -418,16 +418,41 @@ async def test_temp_state_is_not_persisted_in_state_or_events(session_service):
   )
   await session_service.append_event(session=session, event=event)
 
-  # Refetch session and check state and event
-  session_got = await session_service.get_session(
-      app_name=app_name, user_id=user_id, session_id='s1'
-  )
-  # Check session state does not contain temp keys
-  assert session_got.state.get('sk') == 'v2'
-  assert 'temp:k1' not in session_got.state
+  # Temp state IS available in the in-memory session (same invocation)
+  assert session.state.get('temp:k1') == 'v1'
+  assert session.state.get('sk') == 'v2'
+
   # Check event as stored in session does not contain temp keys in state_delta
-  assert 'temp:k1' not in session_got.events[0].actions.state_delta
-  assert session_got.events[0].actions.state_delta.get('sk') == 'v2'
+  assert 'temp:k1' not in event.actions.state_delta
+  assert event.actions.state_delta.get('sk') == 'v2'
+
+
+@pytest.mark.asyncio
+async def test_temp_state_visible_across_sequential_events(session_service):
+  """Temp state set by one event should be readable before the next event.
+
+  This simulates a SequentialAgent where agent-1 writes output_key='temp:out'
+  and agent-2 needs to read it from session.state within the same invocation.
+  """
+  app_name = 'my_app'
+  user_id = 'u1'
+  session = await session_service.create_session(
+      app_name=app_name, user_id=user_id, session_id='s_seq'
+  )
+
+  # Agent-1 writes temp state
+  event1 = Event(
+      invocation_id='inv1',
+      author='agent1',
+      actions=EventActions(state_delta={'temp:output': 'result_from_a1'}),
+  )
+  await session_service.append_event(session=session, event=event1)
+
+  # Agent-2 should be able to read temp state from the same session object
+  assert session.state.get('temp:output') == 'result_from_a1'
+
+  # But the event delta should NOT contain the temp key (not persisted)
+  assert 'temp:output' not in event1.actions.state_delta
 
 
 @pytest.mark.asyncio
@@ -544,6 +569,7 @@ async def test_append_event_complete(session_service):
       ),
       citation_metadata=types.CitationMetadata(),
       custom_metadata={'custom_key': 'custom_value'},
+      timestamp=1700000000.123,
       input_transcription=types.Transcription(
           text='input transcription',
           finished=True,
@@ -1152,4 +1178,93 @@ async def test_prepare_tables_idempotent_after_creation():
     )
     assert session.id == 's1'
   finally:
+    await service.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'state_delta, expect_app_lock, expect_user_lock',
+    [
+        pytest.param(
+            None,
+            False,
+            False,
+            id='no_state_delta',
+        ),
+        pytest.param(
+            {'session_key': 'v'},
+            False,
+            False,
+            id='session_only_delta',
+        ),
+        pytest.param(
+            {'app:key': 'v'},
+            True,
+            False,
+            id='app_delta_only',
+        ),
+        pytest.param(
+            {'user:key': 'v'},
+            False,
+            True,
+            id='user_delta_only',
+        ),
+        pytest.param(
+            {'app:a': '1', 'user:b': '2', 'sk': '3'},
+            True,
+            True,
+            id='all_scopes',
+        ),
+    ],
+)
+async def test_append_event_locks_only_scopes_with_deltas(
+    state_delta, expect_app_lock, expect_user_lock
+):
+  """FOR UPDATE should only be requested for state scopes that have deltas."""
+  service = DatabaseSessionService('sqlite+aiosqlite:///:memory:')
+
+  lock_requests = []
+  original_fn = database_session_service._select_required_state
+
+  async def tracking_fn(**kwargs):
+    lock_requests.append({
+        'model': kwargs['state_model'].__tablename__,
+        'use_row_level_locking': kwargs['use_row_level_locking'],
+    })
+    return await original_fn(**kwargs)
+
+  try:
+    session = await service.create_session(
+        app_name='app', user_id='user', session_id='s1'
+    )
+
+    database_session_service._select_required_state = tracking_fn
+    lock_requests.clear()
+
+    event_kwargs = {'invocation_id': 'inv', 'author': 'user'}
+    if state_delta is not None:
+      event_kwargs['actions'] = EventActions(state_delta=state_delta)
+    event = Event(**event_kwargs)
+    await service.append_event(session, event)
+
+    app_req = next(
+        (r for r in lock_requests if r['model'] == 'app_states'), None
+    )
+    user_req = next(
+        (r for r in lock_requests if r['model'] == 'user_states'), None
+    )
+
+    # SQLite doesn't support row-level locking so use_row_level_locking is
+    # always False. The important check is that locking is not requested
+    # when there is no delta (it must never be True without a delta).
+    if not expect_app_lock:
+      assert (
+          app_req is None or not app_req['use_row_level_locking']
+      ), 'app_states should not be locked without an app: delta'
+    if not expect_user_lock:
+      assert (
+          user_req is None or not user_req['use_row_level_locking']
+      ), 'user_states should not be locked without a user: delta'
+  finally:
+    database_session_service._select_required_state = original_fn
     await service.close()

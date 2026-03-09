@@ -12,11 +12,14 @@ Before starting, ensure you have Python installed on your system.
 
 ### 1. Install Toolbox
 
-Run the following command to download and install the toolbox:
+Run the following command to download and install the MCP Toolbox binary.
+
+> [!NOTE]
+> You can find the latest version on the [Releases page](https://github.com/googleapis/genai-toolbox/releases) and update the version in the URL below.
 
 ```bash
 export OS="linux/amd64" # one of linux/amd64, darwin/arm64, darwin/amd64, or windows/amd64
-curl -O https://storage.googleapis.com/genai-toolbox/v0.5.0/$OS/toolbox
+curl -O https://storage.googleapis.com/genai-toolbox/v0.28.0/$OS/toolbox
 chmod +x toolbox
 ```
 

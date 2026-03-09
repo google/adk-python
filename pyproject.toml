@@ -37,6 +37,7 @@ dependencies = [
   "google-cloud-bigquery-storage>=2.0.0",
   "google-cloud-bigquery>=2.2.0",
   "google-cloud-bigtable>=2.32.0",                           # For Bigtable database
+  "google-cloud-dataplex>=1.7.0,<3.0.0",                    # For Dataplex Catalog Search tool
   "google-cloud-discoveryengine>=0.13.12, <0.14.0",          # For Discovery Engine Search Tool
   "google-cloud-pubsub>=2.0.0, <3.0.0",                      # For Pub/Sub Tool
   "google-cloud-secret-manager>=2.22.0, <3.0.0",             # Fetching secrets in RestAPI Tool
@@ -56,7 +57,7 @@ dependencies = [
   "opentelemetry-resourcedetector-gcp>=1.9.0a0, <2.0.0",
   "opentelemetry-sdk>=1.36.0, <1.39.0",
   "pyarrow>=14.0.0",
-  "pydantic>=2.7.0, <3.0.0",                                 # For data validation/models
+  "pydantic>=2.12.0, <3.0.0",                                 # For data validation/models
   "python-dateutil>=2.9.0.post0, <3.0.0",                    # For Vertext AI Session Service
   "python-dotenv>=1.0.0, <2.0.0",                            # To manage environment variables
   "requests>=2.32.4, <3.0.0",
@@ -109,6 +110,7 @@ community = [
 eval = [
   # go/keep-sorted start
   "Jinja2>=3.1.4,<4.0.0",                         # For eval template rendering
+  "gepa>=0.1.0",
   "google-cloud-aiplatform[evaluation]>=1.100.0",
   "pandas>=2.2.3",
   "rouge-score>=0.1.2",
@@ -155,18 +157,19 @@ extensions = [
   "crewai[tools];python_version>='3.11' and python_version<'3.12'",       # For CrewaiTool; chromadb/pypika fail on 3.12+
   "docker>=7.0.0",                              # For ContainerCodeExecutor
   "kubernetes>=29.0.0",                         # For GkeCodeExecutor
+  "k8s-agent-sandbox>=0.1.1.post2",             # For GkeCodeExecutor sandbox mode
   "langgraph>=0.2.60, <0.4.8",                  # For LangGraphAgent
   "litellm>=1.75.5, <2.0.0",                    # For LiteLlm class. Currently has OpenAI limitations. TODO: once LiteLlm fix it
   "llama-index-readers-file>=0.4.0",            # For retrieval using LlamaIndex.
   "llama-index-embeddings-google-genai>=0.3.0", # For files retrieval using LlamaIndex.
   "lxml>=5.3.0",                                # For load_web_page tool.
   "pypika>=0.50.0",                             # For crewai->chromadb dependency
-  "toolbox-adk>=0.5.7, <0.6.0",                 # For tools.toolbox_toolset.ToolboxToolset
+  "toolbox-adk>=0.7.0, <0.8.0",                 # For tools.toolbox_toolset.ToolboxToolset
 ]
 
 otel-gcp = ["opentelemetry-instrumentation-google-genai>=0.6b0, <1.0.0"]
 
-toolbox = ["toolbox-adk>=0.5.7, <0.6.0"]
+toolbox = ["toolbox-adk>=0.7.0, <0.8.0"]
 
 [tool.pyink]
 # Format py files following Google style-guide

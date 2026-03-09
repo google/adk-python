@@ -16,9 +16,12 @@
 
 from __future__ import annotations
 
+import logging
 import pathlib
 from typing import Union
 
+from google.cloud import storage
+from pydantic import ValidationError
 import yaml
 
 from . import models
@@ -58,6 +61,39 @@ def _load_dir(directory: pathlib.Path) -> dict[str, str]:
   return files
 
 
+def _parse_skill_md_content(content: str) -> tuple[dict, str]:
+  """Parse SKILL.md from raw content string.
+
+  Args:
+    content: The string content of SKILL.md.
+
+  Returns:
+    Tuple of (parsed_frontmatter_dict, body_string).
+
+  Raises:
+    ValueError: If SKILL.md is invalid.
+  """
+  if not content.startswith("---"):
+    raise ValueError("SKILL.md must start with YAML frontmatter (---)")
+
+  parts = content.split("---", 2)
+  if len(parts) < 3:
+    raise ValueError("SKILL.md frontmatter not properly closed with ---")
+
+  frontmatter_str = parts[1]
+  body = parts[2].strip()
+
+  try:
+    parsed = yaml.safe_load(frontmatter_str)
+  except yaml.YAMLError as e:
+    raise ValueError(f"Invalid YAML in frontmatter: {e}") from e
+
+  if not isinstance(parsed, dict):
+    raise ValueError("SKILL.md frontmatter must be a YAML mapping")
+
+  return parsed, body
+
+
 def _parse_skill_md(
     skill_dir: pathlib.Path,
 ) -> tuple[dict, str, pathlib.Path]:
@@ -87,23 +123,7 @@ def _parse_skill_md(
     raise FileNotFoundError(f"SKILL.md not found in '{skill_dir}'.")
 
   content = skill_md.read_text(encoding="utf-8")
-  if not content.startswith("---"):
-    raise ValueError("SKILL.md must start with YAML frontmatter (---)")
-
-  parts = content.split("---", 2)
-  if len(parts) < 3:
-    raise ValueError("SKILL.md frontmatter not properly closed with ---")
-
-  frontmatter_str = parts[1]
-  body = parts[2].strip()
-
-  try:
-    parsed = yaml.safe_load(frontmatter_str)
-  except yaml.YAMLError as e:
-    raise ValueError(f"Invalid YAML in frontmatter: {e}") from e
-
-  if not isinstance(parsed, dict):
-    raise ValueError("SKILL.md frontmatter must be a YAML mapping")
+  parsed, body = _parse_skill_md_content(content)
 
   return parsed, body, skill_md
 
@@ -198,7 +218,7 @@ def _validate_skill_dir(
 
   try:
     frontmatter = models.Frontmatter.model_validate(parsed)
-  except Exception as e:
+  except ValidationError as e:
     problems.append(f"Frontmatter validation error: {e}")
     return problems
 
@@ -232,3 +252,184 @@ def _read_skill_properties(
   skill_dir = pathlib.Path(skill_dir).resolve()
   parsed, _, _ = _parse_skill_md(skill_dir)
   return models.Frontmatter.model_validate(parsed)
+
+
+def _list_skills_in_dir(
+    skills_base_path: Union[str, pathlib.Path],
+) -> dict[str, models.Frontmatter]:
+  """List skills in a local directory.
+
+  Args:
+    skills_base_path: Path to the base directory containing skills.
+
+  Returns:
+    Dictionary mapping skill IDs to their frontmatter.
+  """
+  skills_base_path = pathlib.Path(skills_base_path).resolve()
+  skills = {}
+
+  if not skills_base_path.is_dir():
+    logging.warning(
+        "Skills base path '%s' is not a directory.", skills_base_path
+    )
+    return skills
+
+  for skill_dir in sorted(skills_base_path.iterdir()):
+    if not skill_dir.is_dir():
+      continue
+
+    skill_id = skill_dir.name
+    try:
+      frontmatter = _read_skill_properties(skill_dir)
+      if skill_id != frontmatter.name:
+        raise ValueError(
+            f"Skill name '{frontmatter.name}' does not match directory"
+            f" name '{skill_id}'."
+        )
+      skills[skill_id] = frontmatter
+    except (FileNotFoundError, ValueError, ValidationError) as e:
+      # log invalid skills during listing and skip them
+      logging.warning(
+          "Skipping invalid skill '%s' in directory '%s': %s",
+          skill_id,
+          skills_base_path,
+          e,
+      )
+  return skills
+
+
+def _list_skills_in_gcs_dir(
+    bucket_name: str,
+    skills_base_path: str = "",
+) -> Dict[str, models.Frontmatter]:
+  """List skills in a GCS directory.
+
+  Args:
+    bucket_name: Name of the GCS bucket.
+    skills_base_path: Base directory within the bucket (e.g., 'path/to/skills').
+
+  Returns:
+    Dictionary mapping skill IDs to their frontmatter.
+  """
+  client = storage.Client()
+  bucket = client.bucket(bucket_name)
+
+  base_prefix = skills_base_path.strip("/")
+  if base_prefix:
+    base_prefix += "/"
+
+  iterator = bucket.list_blobs(prefix=base_prefix, delimiter="/")
+  # We must consume the iterator to populate the prefixes attribute
+  for _ in iterator:
+    pass
+  logging.info("Found %s skills in GCS.", iterator.prefixes)
+
+  skills = {}
+  for skill_prefix in sorted(iterator.prefixes):
+    manifest_blob = bucket.blob(f"{skill_prefix}SKILL.md")
+
+    if manifest_blob.exists():
+      content = manifest_blob.download_as_text()
+      skill_id = skill_prefix.rstrip("/").split("/")[-1]
+      try:
+        parsed, _ = _parse_skill_md_content(content)
+        frontmatter = models.Frontmatter.model_validate(parsed)
+        skills[skill_id] = frontmatter
+      except (ValueError, ValidationError) as e:
+        # log invalid skills during listing and skip them
+        logging.warning(
+            "Skipping invalid skill '%s' in bucket '%s': %s",
+            skill_id,
+            bucket_name,
+            e,
+        )
+  return skills
+
+
+def _load_skill_from_gcs_dir(
+    bucket_name: str,
+    skill_id: str,
+    skills_base_path: str = "",
+) -> models.Skill:
+  """Load a complete skill from a GCS directory.
+
+  Args:
+    bucket_name: Name of the GCS bucket.
+    skill_id: The ID of the skill (directory name).
+    skills_base_path: Base directory within the bucket (e.g., 'path/to/skills').
+
+  Returns:
+    Skill object with all components loaded.
+
+  Raises:
+    FileNotFoundError: If the skill directory or SKILL.md is not found.
+    ValueError: If SKILL.md is invalid or the skill name does not match
+      the directory name.
+  """
+  client = storage.Client()
+  bucket = client.bucket(bucket_name)
+
+  base_prefix = skills_base_path.strip("/")
+  if base_prefix:
+    base_prefix += "/"
+
+  skill_dir_prefix = f"{base_prefix}{skill_id}/"
+  manifest_blob = bucket.blob(f"{skill_dir_prefix}SKILL.md")
+
+  if not manifest_blob.exists():
+    raise FileNotFoundError(
+        f"SKILL.md not found at gs://{bucket_name}/{skill_dir_prefix}SKILL.md"
+    )
+
+  content = manifest_blob.download_as_text()
+  parsed, body = _parse_skill_md_content(content)
+  frontmatter = models.Frontmatter.model_validate(parsed)
+
+  # Validate that skill name matches the directory name
+  skill_name_expected = skill_id.strip("/").split("/")[-1]
+  if skill_name_expected != frontmatter.name:
+    raise ValueError(
+        f"Skill name '{frontmatter.name}' does not match directory"
+        f" name '{skill_name_expected}'."
+    )
+
+  def _load_files_in_dir(subdir: str) -> Dict[str, Union[str, bytes]]:
+    prefix = f"{skill_dir_prefix}{subdir}/"
+    blobs = bucket.list_blobs(prefix=prefix)
+    result = {}
+
+    for blob in blobs:
+      relative_path = blob.name[len(prefix) :]
+      if not relative_path:
+        continue
+
+      try:
+        result[relative_path] = blob.download_as_text()
+      except UnicodeDecodeError:
+        result[relative_path] = blob.download_as_bytes()
+    return result
+
+  references = _load_files_in_dir("references")
+  assets = _load_files_in_dir("assets")
+  raw_scripts = _load_files_in_dir("scripts")
+
+  scripts = {}
+  for name, src in raw_scripts.items():
+    if isinstance(src, bytes):
+      try:
+        src = src.decode("utf-8")
+      except UnicodeDecodeError:
+        continue  # skip binary scripts if any
+    scripts[name] = models.Script(src=src)
+
+  resources = models.Resources(
+      references=references,
+      assets=assets,
+      scripts=scripts,
+  )
+
+  return models.Skill(
+      frontmatter=frontmatter,
+      instructions=body,
+      resources=resources,
+  )
