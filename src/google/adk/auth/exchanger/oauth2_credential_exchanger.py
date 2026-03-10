@@ -193,6 +193,10 @@ class OAuth2CredentialExchanger(BaseCredentialExchanger):
       return ExchangeResult(auth_credential, False)
 
     try:
+      # Do not pass client_id here; the OAuth2Session already handles its
+      # placement based on token_endpoint_auth_method (e.g. in the
+      # Authorization header for client_secret_basic, or in the body for
+      # client_secret_post and public clients).
       tokens = client.fetch_token(
           token_endpoint,
           authorization_response=self._normalize_auth_uri(
@@ -200,7 +204,6 @@ class OAuth2CredentialExchanger(BaseCredentialExchanger):
           ),
           code=auth_credential.oauth2.auth_code,
           grant_type=OAuthGrantType.AUTHORIZATION_CODE,
-          client_id=auth_credential.oauth2.client_id,
       )
       update_credential_with_tokens(auth_credential, tokens)
       logger.debug("Successfully exchanged authorization code for access token")
