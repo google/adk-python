@@ -1500,6 +1500,15 @@ def _message_to_generate_content_response(
   )
 
 
+def _finish_reason_to_error_message(
+    finish_reason: types.FinishReason,
+) -> str:
+  """Returns an error message for non-stop finish reasons."""
+  if finish_reason == types.FinishReason.MAX_TOKENS:
+    return "Maximum tokens reached"
+  return f"Finished with {finish_reason}"
+
+
 def _enforce_strict_openai_schema(schema: dict[str, Any]) -> None:
   """Recursively transforms a JSON schema for OpenAI strict structured outputs.
 
@@ -2000,8 +2009,15 @@ class LiteLlm(BaseLlm):
           *, model_version: str, finish_reason: str
       ) -> LlmResponse:
         tool_calls = []
+        has_incomplete_tool_call_args = False
         for index, func_data in function_calls.items():
           if func_data["id"]:
+            if finish_reason == "length":
+              try:
+                json.loads(func_data["args"] or "{}")
+              except json.JSONDecodeError:
+                has_incomplete_tool_call_args = True
+                continue
             tool_calls.append(
                 ChatCompletionMessageToolCall(
                     type="function",
@@ -2013,6 +2029,19 @@ class LiteLlm(BaseLlm):
                     ),
                 )
             )
+
+        if has_incomplete_tool_call_args:
+          return LlmResponse(
+              error_code=types.FinishReason.MAX_TOKENS,
+              error_message=(
+                  "Tool call arguments were truncated while streaming and"
+                  " could not be parsed as valid JSON. Increase"
+                  " `max_output_tokens` and retry."
+              ),
+              finish_reason=types.FinishReason.MAX_TOKENS,
+              model_version=model_version,
+          )
+
         llm_response = _message_to_generate_content_response(
             ChatCompletionAssistantMessage(
                 role="assistant",
@@ -2022,7 +2051,13 @@ class LiteLlm(BaseLlm):
             model_version=model_version,
             thought_parts=list(reasoning_parts) if reasoning_parts else None,
         )
-        llm_response.finish_reason = _map_finish_reason(finish_reason)
+        mapped_finish_reason = _map_finish_reason(finish_reason)
+        llm_response.finish_reason = mapped_finish_reason
+        if mapped_finish_reason != types.FinishReason.STOP:
+          llm_response.error_code = mapped_finish_reason
+          llm_response.error_message = _finish_reason_to_error_message(
+              mapped_finish_reason
+          )
         return llm_response
 
       def _finalize_text_response(
@@ -2037,7 +2072,13 @@ class LiteLlm(BaseLlm):
             model_version=model_version,
             thought_parts=list(reasoning_parts) if reasoning_parts else None,
         )
-        llm_response.finish_reason = _map_finish_reason(finish_reason)
+        mapped_finish_reason = _map_finish_reason(finish_reason)
+        llm_response.finish_reason = mapped_finish_reason
+        if mapped_finish_reason != types.FinishReason.STOP:
+          llm_response.error_code = mapped_finish_reason
+          llm_response.error_message = _finish_reason_to_error_message(
+              mapped_finish_reason
+          )
         return llm_response
 
       def _reset_stream_buffers() -> None:
@@ -2096,10 +2137,11 @@ class LiteLlm(BaseLlm):
             )
 
           # LiteLLM 1.81+ can set finish_reason="stop" on partial chunks. Only
-          # finalize tool calls on an explicit tool_calls finish_reason, or on a
-          # stop-only chunk (no content/tool deltas).
+          # finalize tool calls on an explicit tool_calls/length finish_reason,
+          # or on a stop-only chunk (no content/tool deltas).
           if function_calls and (
               finish_reason == "tool_calls"
+              or finish_reason == "length"
               or (finish_reason == "stop" and chunk is None)
           ):
             aggregated_llm_response_with_tool_call = (
@@ -2109,16 +2151,14 @@ class LiteLlm(BaseLlm):
                 )
             )
             _reset_stream_buffers()
-          elif (
-              finish_reason == "stop"
-              and (text or reasoning_parts)
-              and chunk is None
-              and not function_calls
+          elif (text or reasoning_parts) and (
+              finish_reason == "length"
+              or (
+                  finish_reason == "stop"
+                  and chunk is None
+                  and not function_calls
+              )
           ):
-            # Only aggregate text response when we have a true stop signal
-            # chunk is None means no content in this chunk, just finish signal.
-            # LiteLLM 1.81+ sets finish_reason="stop" on partial chunks with
-            # content.
             aggregated_llm_response = _finalize_text_response(
                 model_version=part.model,
                 finish_reason=finish_reason,
