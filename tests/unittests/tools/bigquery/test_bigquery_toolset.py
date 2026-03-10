@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -41,7 +41,7 @@ async def test_bigquery_toolset_tools_default():
   tools = await toolset.get_tools()
   assert tools is not None
 
-  assert len(tools) == 10
+  assert len(tools) == 11
   assert all([isinstance(tool, GoogleTool) for tool in tools])
 
   expected_tool_names = set([
@@ -55,6 +55,7 @@ async def test_bigquery_toolset_tools_default():
       "forecast",
       "analyze_contribution",
       "detect_anomalies",
+      "search_catalog",
   ])
   actual_tool_names = set([tool.name for tool in tools])
   assert actual_tool_names == expected_tool_names

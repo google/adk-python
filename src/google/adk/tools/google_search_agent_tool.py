@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -23,6 +23,7 @@ from typing_extensions import override
 from ..agents.llm_agent import LlmAgent
 from ..memory.in_memory_memory_service import InMemoryMemoryService
 from ..models.base_llm import BaseLlm
+from ..utils._schema_utils import validate_schema
 from ..utils.context_utils import Aclosing
 from ._forwarding_artifact_service import ForwardingArtifactService
 from .agent_tool import AgentTool
@@ -123,13 +124,11 @@ class GoogleSearchAgentTool(AgentTool):
           last_content = event.content
           last_grounding_metadata = event.grounding_metadata
 
-    if not last_content:
+    if last_content is None or last_content.parts is None:
       return ''
     merged_text = '\n'.join(p.text for p in last_content.parts if p.text)
     if isinstance(self.agent, LlmAgent) and self.agent.output_schema:
-      tool_result = self.agent.output_schema.model_validate_json(
-          merged_text
-      ).model_dump(exclude_none=True)
+      tool_result = validate_schema(self.agent.output_schema, merged_text)
     else:
       tool_result = merged_text
 

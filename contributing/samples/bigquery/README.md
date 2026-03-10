@@ -24,11 +24,11 @@ distributed via the `google.adk.tools.bigquery` module. These tools include:
 5. `get_job_info`
   Fetches metadata about a BigQuery job.
 
-5. `execute_sql`
+6. `execute_sql`
 
   Runs or dry-runs a SQL query in BigQuery.
 
-6. `ask_data_insights`
+7. `ask_data_insights`
 
   Natural language-in, natural language-out tool that answers questions
   about structured data in BigQuery. Provides a one-stop solution for generating
@@ -38,22 +38,25 @@ distributed via the `google.adk.tools.bigquery` module. These tools include:
   the official [Conversational Analytics API documentation](https://cloud.google.com/gemini/docs/conversational-analytics-api/overview)
   for instructions.
 
-7. `forecast`
+8. `forecast`
 
   Perform time series forecasting using BigQuery's `AI.FORECAST` function,
   leveraging the TimesFM 2.0 model.
 
-8. `analyze_contribution`
+9. `analyze_contribution`
 
   Perform contribution analysis in BigQuery by creating a temporary
   `CONTRIBUTION_ANALYSIS` model and then querying it with
   `ML.GET_INSIGHTS` to find top contributors for a given metric.
 
-9. `detect_anomalies`
+10. `detect_anomalies`
 
   Perform time series anomaly detection in BigQuery by creating a temporary
   `ARIMA_PLUS` model and then querying it with
   `ML.DETECT_ANOMALIES` to detect time series data anomalies.
+
+11. `search_catalog`
+  Searches for data entries across projects using the Dataplex Catalog. This allows discovery of datasets, tables, and other assets.
 
 ## How to use
 
@@ -119,6 +122,39 @@ type.
 
 1. Set `CREDENTIALS_TYPE=AuthCredentialTypes.OAUTH2` in `agent.py` and run the agent
 
+### With Agent Engine and Gemini Enterprise
+
+This mode is useful when you deploy the agent to Vertex AI Agent Engine and
+want to make it available in Gemini Enterprise, allowing the agent to access
+BigQuery on behalf of the end-user. This setup uses OAuth 2.0 managed by
+Gemini Enterprise.
+
+1. Create an Authorization resource in Gemini Enterprise by following the guide at
+[Register and manage ADK agents hosted on Vertex AI Agent Engine](https://docs.cloud.google.com/gemini/enterprise/docs/register-and-manage-an-adk-agent) to:
+  * Create OAuth 2.0 credentials in your Google Cloud project.
+  * Create an Authorization resource in Gemini Enterprise, linking it to your
+    OAuth 2.0 credentials. When creating this resource, you will define a
+    unique identifier (`AUTH_ID`).
+
+2. Prepare the sample agent for consuming the access token provided by Gemini
+Enterprise and deploy to Vertex AI Agent Engine.
+  * Set `CREDENTIALS_TYPE=AuthCredentialTypes.HTTP` in `agent.py`. This
+configures the agent to use access tokens provided by Gemini Enterprise and
+provided by Agent Engine via the tool context.
+  * Replace `AUTH_ID` in `agent.py` with your authorization resource identifier
+    from step 1.
+  * [Deploy your agent to Vertex AI Agent Engine](https://google.github.io/adk-docs/deploy/agent-engine/).
+
+3. [Register your deployed agent with Gemini Enterprise](https://docs.cloud.google.com/gemini/enterprise/docs/register-and-manage-an-adk-agent#register-an-adk-agent), attaching the
+Authorization resource `AUTH_ID`. When this agent is invoked through Gemini
+Enterprise, an access token obtained using these OAuth credentials will be
+passed to the agent and made available in the ADK `tool_context` under the key
+`AUTH_ID`, which `agent.py` is configured to use.
+
+Once registered, users interacting with your agent via Gemini Enterprise will
+go through an OAuth consent flow, and Agent Engine will provide the agent with
+the necessary access tokens to call BigQuery APIs on their behalf.
+
 ## Sample prompts
 
 * which weather datasets exist in bigquery public data?
@@ -126,3 +162,4 @@ type.
 * which tables exist in the ml_datasets dataset?
 * show more details about the penguins table
 * compute penguins population per island.
+* are there any tables related to animals in project <your_project_id>?

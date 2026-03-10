@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,38 +12,25 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import base64
 import json
-import sys
 from unittest.mock import Mock
 from unittest.mock import patch
 
+from a2a import types as a2a_types
+from google.adk.a2a.converters.part_converter import A2A_DATA_PART_END_TAG
+from google.adk.a2a.converters.part_converter import A2A_DATA_PART_METADATA_TYPE_CODE_EXECUTION_RESULT
+from google.adk.a2a.converters.part_converter import A2A_DATA_PART_METADATA_TYPE_EXECUTABLE_CODE
+from google.adk.a2a.converters.part_converter import A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL
+from google.adk.a2a.converters.part_converter import A2A_DATA_PART_METADATA_TYPE_FUNCTION_RESPONSE
+from google.adk.a2a.converters.part_converter import A2A_DATA_PART_METADATA_TYPE_KEY
+from google.adk.a2a.converters.part_converter import A2A_DATA_PART_START_TAG
+from google.adk.a2a.converters.part_converter import A2A_DATA_PART_TEXT_MIME_TYPE
+from google.adk.a2a.converters.part_converter import convert_a2a_part_to_genai_part
+from google.adk.a2a.converters.part_converter import convert_genai_part_to_a2a_part
+from google.adk.a2a.converters.utils import _get_adk_metadata_key
+from google.genai import types as genai_types
 import pytest
-
-# Skip all tests in this module if Python version is less than 3.10
-pytestmark = pytest.mark.skipif(
-    sys.version_info < (3, 10), reason="A2A requires Python 3.10+"
-)
-
-# Import dependencies with version checking
-try:
-  from a2a import types as a2a_types
-  from google.adk.a2a.converters.part_converter import A2A_DATA_PART_METADATA_TYPE_CODE_EXECUTION_RESULT
-  from google.adk.a2a.converters.part_converter import A2A_DATA_PART_METADATA_TYPE_EXECUTABLE_CODE
-  from google.adk.a2a.converters.part_converter import A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL
-  from google.adk.a2a.converters.part_converter import A2A_DATA_PART_METADATA_TYPE_FUNCTION_RESPONSE
-  from google.adk.a2a.converters.part_converter import A2A_DATA_PART_METADATA_TYPE_KEY
-  from google.adk.a2a.converters.part_converter import convert_a2a_part_to_genai_part
-  from google.adk.a2a.converters.part_converter import convert_genai_part_to_a2a_part
-  from google.adk.a2a.converters.utils import _get_adk_metadata_key
-  from google.genai import types as genai_types
-except ImportError as e:
-  if sys.version_info < (3, 10):
-    # Imports are not needed since tests will be skipped due to pytestmark.
-    # The imported names are only used within test methods, not at module level,
-    # so no NameError occurs during module compilation.
-    pass
-  else:
-    raise e
 
 
 class TestConvertA2aPartToGenaiPart:
@@ -68,7 +55,9 @@ class TestConvertA2aPartToGenaiPart:
     a2a_part = a2a_types.Part(
         root=a2a_types.FilePart(
             file=a2a_types.FileWithUri(
-                uri="gs://bucket/file.txt", mime_type="text/plain"
+                uri="gs://bucket/file.txt",
+                mime_type="text/plain",
+                name="my_file.txt",
             )
         )
     )
@@ -82,19 +71,21 @@ class TestConvertA2aPartToGenaiPart:
     assert result.file_data is not None
     assert result.file_data.file_uri == "gs://bucket/file.txt"
     assert result.file_data.mime_type == "text/plain"
+    assert result.file_data.display_name == "my_file.txt"
 
   def test_convert_file_part_with_bytes(self):
     """Test conversion of A2A FilePart with bytes to GenAI Part."""
     # Arrange
     test_bytes = b"test file content"
     # A2A FileWithBytes expects base64-encoded string
-    import base64
 
     base64_encoded = base64.b64encode(test_bytes).decode("utf-8")
     a2a_part = a2a_types.Part(
         root=a2a_types.FilePart(
             file=a2a_types.FileWithBytes(
-                bytes=base64_encoded, mime_type="text/plain"
+                bytes=base64_encoded,
+                mime_type="text/plain",
+                name="my_bytes.txt",
             )
         )
     )
@@ -109,6 +100,7 @@ class TestConvertA2aPartToGenaiPart:
     # The converter decodes base64 back to original bytes
     assert result.inline_data.data == test_bytes
     assert result.inline_data.mime_type == "text/plain"
+    assert result.inline_data.display_name == "my_bytes.txt"
 
   def test_convert_data_part_function_call(self):
     """Test conversion of A2A DataPart with function call metadata."""
@@ -171,12 +163,43 @@ class TestConvertA2aPartToGenaiPart:
         "data": [1, 2, 3],
     }
 
-  def test_convert_data_part_without_special_metadata(self):
-    """Test conversion of A2A DataPart without special metadata to text."""
+  @pytest.mark.parametrize(
+      "test_name, data, metadata",
+      [
+          (
+              "without_special_metadata",
+              {"key": "value", "number": 123},
+              {"other": "metadata"},
+          ),
+          (
+              "no_metadata",
+              {"key": "value", "array": [1, 2, 3]},
+              None,
+          ),
+          (
+              "complex_data",
+              {
+                  "nested": {
+                      "array": [1, 2, {"inner": "value"}],
+                      "boolean": True,
+                      "null_value": None,
+                  },
+                  "unicode": "Hello 世界 🌍",
+              },
+              None,
+          ),
+          (
+              "empty_metadata",
+              {"key": "value"},
+              {},
+          ),
+      ],
+  )
+  def test_convert_data_part_to_inline_data(self, test_name, data, metadata):
+    """Test conversion of A2A DataPart to GenAI inline_data Part."""
     # Arrange
-    data = {"key": "value", "number": 123}
     a2a_part = a2a_types.Part(
-        root=a2a_types.DataPart(data=data, metadata={"other": "metadata"})
+        root=a2a_types.DataPart(data=data, metadata=metadata)
     )
 
     # Act
@@ -185,21 +208,17 @@ class TestConvertA2aPartToGenaiPart:
     # Assert
     assert result is not None
     assert isinstance(result, genai_types.Part)
-    assert result.text == json.dumps(data)
-
-  def test_convert_data_part_no_metadata(self):
-    """Test conversion of A2A DataPart with no metadata to text."""
-    # Arrange
-    data = {"key": "value", "array": [1, 2, 3]}
-    a2a_part = a2a_types.Part(root=a2a_types.DataPart(data=data))
-
-    # Act
-    result = convert_a2a_part_to_genai_part(a2a_part)
-
-    # Assert
-    assert result is not None
-    assert isinstance(result, genai_types.Part)
-    assert result.text == json.dumps(data)
+    assert result.inline_data is not None
+    assert result.inline_data.mime_type == A2A_DATA_PART_TEXT_MIME_TYPE
+    assert result.inline_data.data.startswith(A2A_DATA_PART_START_TAG)
+    assert result.inline_data.data.endswith(A2A_DATA_PART_END_TAG)
+    converted_data_part = a2a_types.DataPart.model_validate_json(
+        result.inline_data.data[
+            len(A2A_DATA_PART_START_TAG) : -len(A2A_DATA_PART_END_TAG)
+        ]
+    )
+    assert converted_data_part.data == data
+    assert converted_data_part.metadata == metadata
 
   def test_convert_unsupported_file_type(self):
     """Test handling of unsupported file types."""
@@ -276,14 +295,16 @@ class TestConvertGenaiPartToA2aPart:
     assert isinstance(result.root, a2a_types.TextPart)
     assert result.root.text == "Hello, world!"
     assert result.root.metadata is not None
-    assert result.root.metadata[_get_adk_metadata_key("thought")] == True
+    assert result.root.metadata[_get_adk_metadata_key("thought")]
 
   def test_convert_file_data_part(self):
     """Test conversion of GenAI file_data Part to A2A Part."""
     # Arrange
     genai_part = genai_types.Part(
         file_data=genai_types.FileData(
-            file_uri="gs://bucket/file.txt", mime_type="text/plain"
+            file_uri="gs://bucket/file.txt",
+            mime_type="text/plain",
+            display_name="my_file.txt",
         )
     )
 
@@ -297,13 +318,18 @@ class TestConvertGenaiPartToA2aPart:
     assert isinstance(result.root.file, a2a_types.FileWithUri)
     assert result.root.file.uri == "gs://bucket/file.txt"
     assert result.root.file.mime_type == "text/plain"
+    assert result.root.file.name == "my_file.txt"
 
   def test_convert_inline_data_part(self):
     """Test conversion of GenAI inline_data Part to A2A Part."""
     # Arrange
     test_bytes = b"test file content"
     genai_part = genai_types.Part(
-        inline_data=genai_types.Blob(data=test_bytes, mime_type="text/plain")
+        inline_data=genai_types.Blob(
+            data=test_bytes,
+            mime_type="text/plain",
+            display_name="my_bytes.txt",
+        )
     )
 
     # Act
@@ -315,11 +341,11 @@ class TestConvertGenaiPartToA2aPart:
     assert isinstance(result.root, a2a_types.FilePart)
     assert isinstance(result.root.file, a2a_types.FileWithBytes)
     # A2A FileWithBytes now stores base64-encoded bytes to ensure round-trip compatibility
-    import base64
 
     expected_base64 = base64.b64encode(test_bytes).decode("utf-8")
     assert result.root.file.bytes == expected_base64
     assert result.root.file.mime_type == "text/plain"
+    assert result.root.file.name == "my_bytes.txt"
 
   def test_convert_inline_data_part_with_video_metadata(self):
     """Test conversion of GenAI inline_data Part with video metadata to A2A Part."""
@@ -341,6 +367,32 @@ class TestConvertGenaiPartToA2aPart:
     assert isinstance(result.root.file, a2a_types.FileWithBytes)
     assert result.root.metadata is not None
     assert _get_adk_metadata_key("video_metadata") in result.root.metadata
+
+  def test_convert_inline_data_part_to_data_part(self):
+    """Test conversion of GenAI inline_data Part to A2A DataPart."""
+    # Arrange
+    data = {"key": "value"}
+    metadata = {"meta": "data"}
+    a2a_part_to_convert = a2a_types.DataPart(data=data, metadata=metadata)
+    json_data = a2a_part_to_convert.model_dump_json(
+        by_alias=True, exclude_none=True
+    ).encode("utf-8")
+    genai_part = genai_types.Part(
+        inline_data=genai_types.Blob(
+            data=A2A_DATA_PART_START_TAG + json_data + A2A_DATA_PART_END_TAG,
+            mime_type=A2A_DATA_PART_TEXT_MIME_TYPE,
+        )
+    )
+
+    # Act
+    result = convert_genai_part_to_a2a_part(genai_part)
+
+    # Assert
+    assert result is not None
+    assert isinstance(result, a2a_types.Part)
+    assert isinstance(result.root, a2a_types.DataPart)
+    assert result.root.data == data
+    assert result.root.metadata == metadata
 
   def test_convert_function_call_part(self):
     """Test conversion of GenAI function_call Part to A2A Part."""
@@ -476,6 +528,22 @@ class TestRoundTripConversions:
     assert isinstance(result_a2a_part, a2a_types.Part)
     assert isinstance(result_a2a_part.root, a2a_types.TextPart)
     assert result_a2a_part.root.text == original_text
+
+  def test_text_part_with_thought_round_trip(self):
+    """Test round-trip conversion for text parts with thought."""
+    # Arrange
+    original_text = "Thinking..."
+    genai_part = genai_types.Part(text=original_text, thought=True)
+
+    # Act
+    a2a_part = convert_genai_part_to_a2a_part(genai_part)
+    result_genai_part = convert_a2a_part_to_genai_part(a2a_part)
+
+    # Assert
+    assert result_genai_part is not None
+    assert isinstance(result_genai_part, genai_types.Part)
+    assert result_genai_part.text == original_text
+    assert result_genai_part.thought
 
   def test_file_uri_round_trip(self):
     """Test round-trip conversion for file parts with URI."""
@@ -613,6 +681,47 @@ class TestRoundTripConversions:
     )
     assert result_genai_part.executable_code.code == executable_code.code
 
+  def test_data_part_round_trip(self):
+    """Test round-trip conversion for data parts."""
+    # Arrange
+    data = {"key": "value"}
+    metadata = {"meta": "data"}
+    a2a_part = a2a_types.Part(
+        root=a2a_types.DataPart(data=data, metadata=metadata)
+    )
+
+    # Act
+    genai_part = convert_a2a_part_to_genai_part(a2a_part)
+    result_a2a_part = convert_genai_part_to_a2a_part(genai_part)
+
+    # Assert
+    assert result_a2a_part is not None
+    assert isinstance(result_a2a_part, a2a_types.Part)
+    assert isinstance(result_a2a_part.root, a2a_types.DataPart)
+    assert result_a2a_part.root.data == data
+    assert result_a2a_part.root.metadata == metadata
+
+  def test_data_part_with_mime_type_metadata_round_trip(self):
+    """Test round-trip conversion for data parts with 'mime_type' in metadata."""
+    # Arrange
+    data = {"content": "some data"}
+    metadata = {"meta": "data", "mime_type": "application/json"}
+    a2a_part = a2a_types.Part(
+        root=a2a_types.DataPart(data=data, metadata=metadata)
+    )
+
+    # Act
+    genai_part = convert_a2a_part_to_genai_part(a2a_part)
+    result_a2a_part = convert_genai_part_to_a2a_part(genai_part)
+
+    # Assert
+    assert result_a2a_part is not None
+    assert isinstance(result_a2a_part, a2a_types.Part)
+    assert isinstance(result_a2a_part.root, a2a_types.DataPart)
+    assert result_a2a_part.root.data == data
+    # The 'mime_type' key in the metadata should be preserved as is
+    assert result_a2a_part.root.metadata == metadata
+
 
 class TestEdgeCases:
   """Test cases for edge cases and error conditions."""
@@ -629,6 +738,37 @@ class TestEdgeCases:
     assert result is not None
     assert result.text == ""
 
+  def test_genai_inline_data_with_mimetype_to_a2a(self):
+    """Test conversion of GenAI inline_data with 'mimeType' in DataPart metadata to A2A.
+
+    This tests if 'mimeType' in metadata of a DataPart wrapped in inline_data
+    is correctly handled, ensuring the key casing is preserved.
+    """
+    # Arrange
+    data = {"key": "value"}
+    metadata = {"adk_type": "some_type", "mimeType": "image/png"}
+    a2a_part_inner = a2a_types.DataPart(data=data, metadata=metadata)
+    json_data = a2a_part_inner.model_dump_json(
+        by_alias=True, exclude_none=True
+    ).encode("utf-8")
+    genai_part = genai_types.Part(
+        inline_data=genai_types.Blob(
+            data=A2A_DATA_PART_START_TAG + json_data + A2A_DATA_PART_END_TAG,
+            mime_type=A2A_DATA_PART_TEXT_MIME_TYPE,
+        )
+    )
+
+    # Act
+    result = convert_genai_part_to_a2a_part(genai_part)
+
+    # Assert
+    assert result is not None
+    assert isinstance(result, a2a_types.Part)
+    assert isinstance(result.root, a2a_types.DataPart)
+    assert result.root.data == data
+    # The key casing should be preserved from the JSON
+    assert result.root.metadata == metadata
+
   def test_none_input_a2a_to_genai(self):
     """Test handling of None input for A2A to GenAI conversion."""
     # This test depends on how the function handles None input
@@ -642,39 +782,6 @@ class TestEdgeCases:
     # If it should raise an exception, we test for that
     with pytest.raises(AttributeError):
       convert_genai_part_to_a2a_part(None)
-
-  def test_data_part_with_complex_data(self):
-    """Test conversion of DataPart with complex nested data."""
-    # Arrange
-    complex_data = {
-        "nested": {
-            "array": [1, 2, {"inner": "value"}],
-            "boolean": True,
-            "null_value": None,
-        },
-        "unicode": "Hello 世界 🌍",
-    }
-    a2a_part = a2a_types.Part(root=a2a_types.DataPart(data=complex_data))
-
-    # Act
-    result = convert_a2a_part_to_genai_part(a2a_part)
-
-    # Assert
-    assert result is not None
-    assert result.text == json.dumps(complex_data)
-
-  def test_data_part_with_empty_metadata(self):
-    """Test conversion of DataPart with empty metadata dict."""
-    # Arrange
-    data = {"key": "value"}
-    a2a_part = a2a_types.Part(root=a2a_types.DataPart(data=data, metadata={}))
-
-    # Act
-    result = convert_a2a_part_to_genai_part(a2a_part)
-
-    # Assert
-    assert result is not None
-    assert result.text == json.dumps(data)
 
 
 class TestNewConstants:
@@ -747,3 +854,204 @@ class TestNewConstants:
     assert result.executable_code is not None
     assert result.executable_code.language == genai_types.Language.PYTHON
     assert result.executable_code.code == "print('Hello, World!')"
+
+
+class TestThoughtSignaturePreservation:
+  """Tests for thought_signature preservation in function call conversions."""
+
+  def test_genai_function_call_with_thought_signature_to_a2a(self):
+    """Test that thought_signature is preserved when converting GenAI to A2A."""
+    # Arrange
+    function_call = genai_types.FunctionCall(
+        id="fc_gemini3",
+        name="my_tool",
+        args={"document": "test content"},
+    )
+    genai_part = genai_types.Part(
+        function_call=function_call,
+        thought_signature=b"gemini3_signature_bytes",
+    )
+
+    # Act
+    result = convert_genai_part_to_a2a_part(genai_part)
+
+    # Assert
+    assert result is not None
+    assert isinstance(result.root, a2a_types.DataPart)
+    assert (
+        result.root.metadata[
+            _get_adk_metadata_key(A2A_DATA_PART_METADATA_TYPE_KEY)
+        ]
+        == A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL
+    )
+    # thought_signature should be base64 encoded in metadata
+    thought_sig_key = _get_adk_metadata_key("thought_signature")
+    assert thought_sig_key in result.root.metadata
+    assert (
+        base64.b64decode(result.root.metadata[thought_sig_key])
+        == b"gemini3_signature_bytes"
+    )
+
+  def test_genai_function_call_without_thought_signature_to_a2a(self):
+    """Test function call without thought_signature doesn't add metadata key."""
+    # Arrange
+    function_call = genai_types.FunctionCall(
+        id="fc_regular",
+        name="regular_tool",
+        args={},
+    )
+    genai_part = genai_types.Part(function_call=function_call)
+
+    # Act
+    result = convert_genai_part_to_a2a_part(genai_part)
+
+    # Assert
+    assert result is not None
+    assert isinstance(result.root, a2a_types.DataPart)
+    # thought_signature key should not be present
+    thought_sig_key = _get_adk_metadata_key("thought_signature")
+    assert thought_sig_key not in result.root.metadata
+
+  def test_a2a_function_call_with_thought_signature_to_genai(self):
+    """Test that thought_signature is restored when converting A2A to GenAI."""
+    # Arrange
+    a2a_part = a2a_types.Part(
+        root=a2a_types.DataPart(
+            data={
+                "id": "fc_gemini3",
+                "name": "my_tool",
+                "args": {"document": "test content"},
+            },
+            metadata={
+                _get_adk_metadata_key(
+                    A2A_DATA_PART_METADATA_TYPE_KEY
+                ): A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL,
+                _get_adk_metadata_key("thought_signature"): (
+                    base64.b64encode(b"restored_signature").decode("utf-8")
+                ),
+            },
+        )
+    )
+
+    # Act
+    result = convert_a2a_part_to_genai_part(a2a_part)
+
+    # Assert
+    assert result is not None
+    assert result.function_call is not None
+    assert result.function_call.name == "my_tool"
+    # thought_signature should be decoded back to bytes
+    assert result.thought_signature == b"restored_signature"
+
+  def test_a2a_function_call_without_thought_signature_to_genai(self):
+    """Test function call without thought_signature returns None for it."""
+    # Arrange
+    a2a_part = a2a_types.Part(
+        root=a2a_types.DataPart(
+            data={
+                "id": "fc_regular",
+                "name": "regular_tool",
+                "args": {},
+            },
+            metadata={
+                _get_adk_metadata_key(
+                    A2A_DATA_PART_METADATA_TYPE_KEY
+                ): A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL,
+            },
+        )
+    )
+
+    # Act
+    result = convert_a2a_part_to_genai_part(a2a_part)
+
+    # Assert
+    assert result is not None
+    assert result.function_call is not None
+    assert result.function_call.name == "regular_tool"
+    # thought_signature should be None
+    assert result.thought_signature is None
+
+  def test_function_call_with_thought_signature_round_trip(self):
+    """Test thought_signature is preserved in GenAI -> A2A -> GenAI round trip."""
+    # Arrange
+    original_signature = b"round_trip_signature_test"
+    function_call = genai_types.FunctionCall(
+        id="fc_round_trip",
+        name="round_trip_tool",
+        args={"key": "value"},
+    )
+    original_part = genai_types.Part(
+        function_call=function_call,
+        thought_signature=original_signature,
+    )
+
+    # Act - Convert GenAI -> A2A -> GenAI
+    a2a_part = convert_genai_part_to_a2a_part(original_part)
+    restored_part = convert_a2a_part_to_genai_part(a2a_part)
+
+    # Assert
+    assert restored_part is not None
+    assert restored_part.function_call is not None
+    assert restored_part.function_call.name == "round_trip_tool"
+    assert restored_part.thought_signature == original_signature
+
+  def test_a2a_function_call_with_bytes_thought_signature_to_genai(self):
+    """Test that bytes thought_signature is used directly without decoding."""
+    # Arrange - metadata contains raw bytes (not base64 encoded)
+    a2a_part = a2a_types.Part(
+        root=a2a_types.DataPart(
+            data={
+                "id": "fc_bytes",
+                "name": "bytes_tool",
+                "args": {},
+            },
+            metadata={
+                _get_adk_metadata_key(
+                    A2A_DATA_PART_METADATA_TYPE_KEY
+                ): A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL,
+                _get_adk_metadata_key(
+                    "thought_signature"
+                ): b"raw_bytes_signature",
+            },
+        )
+    )
+
+    # Act
+    result = convert_a2a_part_to_genai_part(a2a_part)
+
+    # Assert
+    assert result is not None
+    assert result.function_call is not None
+    # bytes should be used directly
+    assert result.thought_signature == b"raw_bytes_signature"
+
+  def test_a2a_function_call_with_invalid_base64_thought_signature(self):
+    """Test that invalid base64 thought_signature logs warning and returns None."""
+    # Arrange - metadata contains invalid base64 string
+    a2a_part = a2a_types.Part(
+        root=a2a_types.DataPart(
+            data={
+                "id": "fc_invalid",
+                "name": "invalid_sig_tool",
+                "args": {},
+            },
+            metadata={
+                _get_adk_metadata_key(
+                    A2A_DATA_PART_METADATA_TYPE_KEY
+                ): A2A_DATA_PART_METADATA_TYPE_FUNCTION_CALL,
+                _get_adk_metadata_key(
+                    "thought_signature"
+                ): "not_valid_base64!!!",
+            },
+        )
+    )
+
+    # Act
+    result = convert_a2a_part_to_genai_part(a2a_part)
+
+    # Assert
+    assert result is not None
+    assert result.function_call is not None
+    assert result.function_call.name == "invalid_sig_tool"
+    # thought_signature should be None due to decode failure
+    assert result.thought_signature is None

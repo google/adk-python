@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -57,10 +57,8 @@ class CustomErrorExtractionPlugin(ReflectAndRetryToolPlugin):
     return None
 
 
-# Inheriting from IsolatedAsyncioTestCase ensures these tests works in Python
-# 3.9. See https://github.com/pytest-dev/pytest-asyncio/issues/1039
-# Without this, the tests will fail with a "RuntimeError: There is no current
-# event loop in thread 'MainThread'."
+# Inheriting from IsolatedAsyncioTestCase ensures consistent behavior.
+# See https://github.com/pytest-dev/pytest-asyncio/issues/1039
 class TestReflectAndRetryToolPlugin(IsolatedAsyncioTestCase):
   """Comprehensive tests for ReflectAndRetryToolPlugin focusing on behavior."""
 

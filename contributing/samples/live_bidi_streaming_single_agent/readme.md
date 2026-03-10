@@ -8,7 +8,7 @@ Follow these steps to get the agent up and running:
 
 1.  **Start the ADK Web Server**
     Open your terminal, navigate to the root directory that contains the 
-    `live_bidi_streaming_agent` folder, and execute the following command:
+    `live_bidi_streaming_single_agent` folder, and execute the following command:
     ```bash
     adk web
     ```

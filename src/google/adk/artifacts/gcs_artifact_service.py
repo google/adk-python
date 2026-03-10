@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -20,18 +20,22 @@ The blob name format used depends on whether the filename has a user namespace:
   - For regular session-scoped files:
     {app_name}/{user_id}/{session_id}/{filename}/{version}
 """
+
 from __future__ import annotations
 
 import asyncio
 import logging
 from typing import Any
 from typing import Optional
+from typing import Union
 
 from google.genai import types
 from typing_extensions import override
 
+from ..errors.input_validation_error import InputValidationError
 from .base_artifact_service import ArtifactVersion
 from .base_artifact_service import BaseArtifactService
+from .base_artifact_service import ensure_part
 
 logger = logging.getLogger("google_adk." + __name__)
 
@@ -59,7 +63,7 @@ class GcsArtifactService(BaseArtifactService):
       app_name: str,
       user_id: str,
       filename: str,
-      artifact: types.Part,
+      artifact: Union[types.Part, dict[str, Any]],
       session_id: Optional[str] = None,
       custom_metadata: Optional[dict[str, Any]] = None,
   ) -> int:
@@ -161,7 +165,7 @@ class GcsArtifactService(BaseArtifactService):
       return f"{app_name}/{user_id}/user/{filename}"
 
     if session_id is None:
-      raise ValueError(
+      raise InputValidationError(
           "Session ID must be provided for session-scoped artifacts."
       )
     return f"{app_name}/{user_id}/{session_id}/{filename}"
@@ -196,9 +200,10 @@ class GcsArtifactService(BaseArtifactService):
       user_id: str,
       session_id: Optional[str],
       filename: str,
-      artifact: types.Part,
+      artifact: Union[types.Part, dict[str, Any]],
       custom_metadata: Optional[dict[str, Any]] = None,
   ) -> int:
+    artifact = ensure_part(artifact)
     versions = self._list_versions(
         app_name=app_name,
         user_id=user_id,
@@ -230,7 +235,9 @@ class GcsArtifactService(BaseArtifactService):
           " GcsArtifactService."
       )
     else:
-      raise ValueError("Artifact must have either inline_data or text.")
+      raise InputValidationError(
+          "Artifact must have either inline_data or text."
+      )
 
     return version
 

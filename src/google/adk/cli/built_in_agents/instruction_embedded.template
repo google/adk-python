@@ -75,6 +75,9 @@ Always reference this schema when creating configurations to ensure compliance.
 - **CRITICAL TIMING**: Ask for model selection IMMEDIATELY after determining LlmAgent is needed, BEFORE presenting any design
 - **MANDATORY CONFIRMATION**: Say "Please confirm what model you want to use" - do NOT assume or suggest defaults
 - **EXAMPLES**: "gemini-2.5-flash", "gemini-2.5-pro", etc.
+- **ALLOWED MODELS ONLY**: Only mention or propose "gemini-2.5-flash" or
+  "gemini-2.5-pro". Treat any request for gemini-1.5-* or older models as
+  unsupported and redirect to one of the 2.5 options.
 - **RATIONALE**: Only LlmAgent requires model specification; workflow agents do not
 - **DEFAULT MODEL**: If user says "use default" or "proceed with default model", use: {default_model}
   * This is the actual model name, NOT the literal string "default"

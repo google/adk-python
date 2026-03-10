@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,23 +14,22 @@
 
 from __future__ import annotations
 
+import abc
 import math
 import os
 from typing import Optional
-from typing import TYPE_CHECKING
 
 from google.genai import types as genai_types
 import pandas as pd
 from typing_extensions import override
 
+from ..dependencies.vertexai import vertexai
+from .eval_case import ConversationScenario
 from .eval_case import Invocation
 from .evaluator import EvalStatus
 from .evaluator import EvaluationResult
 from .evaluator import Evaluator
 from .evaluator import PerInvocationResult
-
-if TYPE_CHECKING:
-  from vertexai import types as vertexai_types
 
 _ERROR_MESSAGE_SUFFIX = """
 You should specify both project id and location. This metric uses Vertex Gen AI
@@ -57,71 +56,50 @@ class _VertexAiEvalFacade(Evaluator):
   def __init__(
       self,
       threshold: float,
-      metric_name: vertexai_types.PrebuiltMetric,
+      metric_name: vertexai.types.PrebuiltMetric,
       expected_invocations_required=False,
   ):
     self._threshold = threshold
     self._metric_name = metric_name
     self._expected_invocations_required = expected_invocations_required
 
-  @override
+    project_id = os.environ.get("GOOGLE_CLOUD_PROJECT", None)
+    location = os.environ.get("GOOGLE_CLOUD_LOCATION", None)
+    api_key = os.environ.get("GOOGLE_API_KEY", None)
+
+    if api_key:
+      self._client = vertexai.Client(api_key=api_key)
+    elif project_id or location:
+      if not project_id:
+        raise ValueError("Missing project id." + _ERROR_MESSAGE_SUFFIX)
+      if not location:
+        raise ValueError("Missing location." + _ERROR_MESSAGE_SUFFIX)
+      self._client = vertexai.Client(project=project_id, location=location)
+    else:
+      raise ValueError(
+          "Either API Key or Google cloud Project id and location should be"
+          " specified."
+      )
+
+  @abc.abstractmethod
   def evaluate_invocations(
       self,
       actual_invocations: list[Invocation],
-      expected_invocations: Optional[list[Invocation]],
+      expected_invocations: Optional[list[Invocation]] = None,
+      conversation_scenario: Optional[ConversationScenario] = None,
   ) -> EvaluationResult:
-    if self._expected_invocations_required and expected_invocations is None:
-      raise ValueError("expected_invocations is needed by this metric.")
+    """Returns EvaluationResult after performing evaluations using actual and expected invocations.
 
-    # If expected_invocation are not required by the metric and if they are not
-    # supplied, we provide a list of None.
-    expected_invocations = (
-        [None] * len(actual_invocations)
-        if expected_invocations is None
-        else expected_invocations
-    )
-
-    total_score = 0.0
-    num_invocations = 0
-    per_invocation_results = []
-    for actual, expected in zip(actual_invocations, expected_invocations):
-      prompt = self._get_text(actual.user_content)
-      reference = self._get_text(expected.final_response) if expected else None
-      response = self._get_text(actual.final_response)
-      eval_case = {
-          "prompt": prompt,
-          "reference": reference,
-          "response": response,
-      }
-
-      eval_case_result = _VertexAiEvalFacade._perform_eval(
-          dataset=pd.DataFrame([eval_case]), metrics=[self._metric_name]
-      )
-      score = self._get_score(eval_case_result)
-      per_invocation_results.append(
-          PerInvocationResult(
-              actual_invocation=actual,
-              expected_invocation=expected,
-              score=score,
-              eval_status=self._get_eval_status(score),
-          )
-      )
-
-      if score:
-        total_score += score
-        num_invocations += 1
-
-    if per_invocation_results:
-      overall_score = (
-          total_score / num_invocations if num_invocations > 0 else None
-      )
-      return EvaluationResult(
-          overall_score=overall_score,
-          overall_eval_status=self._get_eval_status(overall_score),
-          per_invocation_results=per_invocation_results,
-      )
-
-    return EvaluationResult()
+    Args:
+      actual_invocations: These are the invocations that are obtained from the
+        agent under test.
+      expected_invocations: An optional list of invocations, if specified,
+        usually act as a benchmark/golden response. If these are specified
+        usually the expectation is that the length of this list and actual
+        invocation is the same.
+      conversation_scenario: An optional conversation scenario for multi-turn
+        conversations.
+    """
 
   def _get_text(self, content: Optional[genai_types.Content]) -> str:
     if content and content.parts:
@@ -148,26 +126,80 @@ class _VertexAiEvalFacade(Evaluator):
 
     return EvalStatus.NOT_EVALUATED
 
-  @staticmethod
-  def _perform_eval(dataset, metrics):
+  def _perform_eval(self, dataset, metrics):
     """This method hides away the call to external service.
 
     Primarily helps with unit testing.
     """
-    project_id = os.environ.get("GOOGLE_CLOUD_PROJECT", None)
-    location = os.environ.get("GOOGLE_CLOUD_LOCATION", None)
-
-    if not project_id:
-      raise ValueError("Missing project id." + _ERROR_MESSAGE_SUFFIX)
-    if not location:
-      raise ValueError("Missing location." + _ERROR_MESSAGE_SUFFIX)
-
-    from vertexai import Client
-    from vertexai import types as vertexai_types
-
-    client = Client(project=project_id, location=location)
-
-    return client.evals.evaluate(
-        dataset=vertexai_types.EvaluationDataset(eval_dataset_df=dataset),
+    return self._client.evals.evaluate(
+        dataset=dataset,
         metrics=metrics,
     )
+
+
+class _SingleTurnVertexAiEvalFacade(_VertexAiEvalFacade):
+  """A facade for single turn metrics exposed in Vertex Gen AI Eval SDK."""
+
+  @override
+  def evaluate_invocations(
+      self,
+      actual_invocations: list[Invocation],
+      expected_invocations: Optional[list[Invocation]] = None,
+      conversation_scenario: Optional[ConversationScenario] = None,
+  ) -> EvaluationResult:
+    if self._expected_invocations_required and expected_invocations is None:
+      raise ValueError("expected_invocations is needed by this metric.")
+    del conversation_scenario  # not supported for per-invocation evaluation.
+
+    # If expected_invocation are not required by the metric and if they are not
+    # supplied, we provide a list of None.
+    expected_invocations = (
+        [None] * len(actual_invocations)
+        if expected_invocations is None
+        else expected_invocations
+    )
+
+    total_score = 0.0
+    num_invocations = 0
+    per_invocation_results = []
+    for actual, expected in zip(actual_invocations, expected_invocations):
+      prompt = self._get_text(actual.user_content)
+      reference = self._get_text(expected.final_response) if expected else None
+      response = self._get_text(actual.final_response)
+      eval_case = {
+          "prompt": prompt,
+          "reference": reference,
+          "response": response,
+      }
+
+      dataset = vertexai.types.EvaluationDataset(
+          eval_dataset_df=pd.DataFrame([eval_case])
+      )
+      eval_case_result = self._perform_eval(
+          dataset=dataset, metrics=[self._metric_name]
+      )
+      score = self._get_score(eval_case_result)
+      per_invocation_results.append(
+          PerInvocationResult(
+              actual_invocation=actual,
+              expected_invocation=expected,
+              score=score,
+              eval_status=self._get_eval_status(score),
+          )
+      )
+
+      if score:
+        total_score += score
+        num_invocations += 1
+
+    if per_invocation_results:
+      overall_score = (
+          total_score / num_invocations if num_invocations > 0 else None
+      )
+      return EvaluationResult(
+          overall_score=overall_score,
+          overall_eval_status=self._get_eval_status(overall_score),
+          per_invocation_results=per_invocation_results,
+      )
+
+    return EvaluationResult()

@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,6 +15,7 @@
 
 from google.adk.models.anthropic_llm import Claude
 from google.adk.models.google_llm import Gemini
+from google.adk.models.lite_llm import LiteLlm
 from google.adk.utils.output_schema_utils import can_use_output_schema_with_tools
 import pytest
 
@@ -37,6 +38,11 @@ import pytest
         (Claude(model="claude-3.7-sonnet"), "1", False),
         (Claude(model="claude-3.7-sonnet"), "0", False),
         (Claude(model="claude-3.7-sonnet"), None, False),
+        (LiteLlm(model="openai/gpt-4o"), "1", True),
+        (LiteLlm(model="openai/gpt-4o"), "0", True),
+        (LiteLlm(model="openai/gpt-4o"), None, True),
+        (LiteLlm(model="anthropic/claude-3.7-sonnet"), None, True),
+        (LiteLlm(model="fireworks_ai/llama-v3p1-70b"), None, True),
     ],
 )
 def test_can_use_output_schema_with_tools(

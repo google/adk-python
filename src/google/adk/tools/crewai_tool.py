@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -30,16 +30,9 @@ from .tool_context import ToolContext
 try:
   from crewai.tools import BaseTool as CrewaiBaseTool
 except ImportError as e:
-  import sys
-
-  if sys.version_info < (3, 10):
-    raise ImportError(
-        'Crewai Tools require Python 3.10+. Please upgrade your Python version.'
-    ) from e
-  else:
-    raise ImportError(
-        "Crewai Tools require pip install 'google-adk[extensions]'."
-    ) from e
+  raise ImportError(
+      "Crewai Tools require pip install 'google-adk[extensions]'."
+  ) from e
 
 
 class CrewaiTool(FunctionTool):
@@ -97,19 +90,19 @@ class CrewaiTool(FunctionTool):
       # remove arguments like `self` that are managed by the framework and not
       # intended to be passed through **kwargs.
       args_to_call.pop('self', None)
-      # We also remove `tool_context` that might have been passed in `args`,
+      # We also remove context param that might have been passed in `args`,
       # as it will be explicitly injected later if it's a valid parameter.
-      args_to_call.pop('tool_context', None)
+      args_to_call.pop(self._context_param_name, None)
     else:
       # For functions without **kwargs, use the original filtering.
       args_to_call = {
           k: v for k, v in args_to_call.items() if k in valid_params
       }
 
-    # Inject tool_context if it's an explicit parameter. This will add it
+    # Inject context if it's an explicit parameter. This will add it
     # or overwrite any value that might have been passed in `args`.
-    if 'tool_context' in valid_params:
-      args_to_call['tool_context'] = tool_context
+    if self._context_param_name in valid_params:
+      args_to_call[self._context_param_name] = tool_context
 
     # Check for missing mandatory arguments
     mandatory_args = self._get_mandatory_args()

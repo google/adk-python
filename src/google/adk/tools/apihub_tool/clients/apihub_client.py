@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -27,6 +27,7 @@ from urllib.parse import parse_qs
 from urllib.parse import urlparse
 
 from google.auth import default as default_service_credential
+from google.auth.exceptions import DefaultCredentialsError
 from google.auth.transport.requests import Request
 from google.oauth2 import service_account
 import requests
@@ -329,7 +330,7 @@ class APIHubClient(BaseAPIHubClient):
         credentials, _ = default_service_credential(
             scopes=["https://www.googleapis.com/auth/cloud-platform"]
         )
-      except:
+      except DefaultCredentialsError:
         credentials = None
 
     if not credentials:

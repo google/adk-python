@@ -12,11 +12,14 @@ Before starting, ensure you have Python installed on your system.
 
 ### 1. Install Toolbox
 
-Run the following command to download and install the toolbox:
+Run the following command to download and install the MCP Toolbox binary.
+
+> [!NOTE]
+> You can find the latest version on the [Releases page](https://github.com/googleapis/genai-toolbox/releases) and update the version in the URL below.
 
 ```bash
 export OS="linux/amd64" # one of linux/amd64, darwin/arm64, darwin/amd64, or windows/amd64
-curl -O https://storage.googleapis.com/genai-toolbox/v0.5.0/$OS/toolbox
+curl -O https://storage.googleapis.com/genai-toolbox/v0.28.0/$OS/toolbox
 chmod +x toolbox
 ```
 
@@ -26,10 +29,10 @@ Install SQLite from [https://sqlite.org/](https://sqlite.org/)
 
 ### 3. Install Required Python Dependencies
 
-**Important**: The ADK's `ToolboxToolset` class requires the `toolbox-core` package, which is not automatically installed with the ADK. Install it using:
+**Important**: The ADK's `ToolboxToolset` class requires the `toolbox-adk` package, which is not automatically installed with the ADK. Install it using:
 
 ```bash
-pip install toolbox-core
+pip install google-adk[toolbox]
 ```
 
 ### 4. Create Database (Optional)

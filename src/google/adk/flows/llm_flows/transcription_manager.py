@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,9 +15,9 @@
 from __future__ import annotations
 
 import logging
-import time
 from typing import TYPE_CHECKING
 
+from google.adk.platform import time as platform_time
 from google.genai import types
 
 from ...events.event import Event
@@ -89,7 +89,7 @@ class TranscriptionManager:
           author=author,
           input_transcription=transcription if is_input else None,
           output_transcription=transcription if not is_input else None,
-          timestamp=time.time(),
+          timestamp=platform_time.get_time(),
       )
 
       # Save transcription event to session

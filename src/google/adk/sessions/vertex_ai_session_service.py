@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING
 from typing import Union
 
 from google.genai import types
+from google.genai.errors import ClientError
 from typing_extensions import override
 
 if TYPE_CHECKING:
@@ -32,6 +33,7 @@ if TYPE_CHECKING:
 from . import _session_util
 from ..events.event import Event
 from ..events.event_actions import EventActions
+from ..events.event_actions import EventCompaction
 from ..utils.vertex_ai_utils import get_express_mode_api_key
 from .base_session_service import BaseSessionService
 from .base_session_service import GetSessionConfig
@@ -155,33 +157,41 @@ class VertexAiSessionService(BaseSessionService):
             )
         }
 
-      get_session_response, events_iterator = await asyncio.gather(
-          api_client.agent_engines.sessions.get(name=session_resource_name),
-          api_client.agent_engines.sessions.events.list(
-              name=session_resource_name,
-              **list_events_kwargs,
-          ),
-      )
+      try:
+        get_session_response, events_iterator = await asyncio.gather(
+            api_client.agent_engines.sessions.get(name=session_resource_name),
+            api_client.agent_engines.sessions.events.list(
+                name=session_resource_name,
+                **list_events_kwargs,
+            ),
+        )
+      except ClientError as e:
+        if e.code == 404:
+          logger.debug(
+              'Session %s not found in Vertex AI Agent Engine.',
+              session_resource_name,
+          )
+          return None
+        raise
+      if get_session_response.user_id != user_id:
+        raise ValueError(
+            f'Session {session_id} does not belong to user {user_id}.'
+        )
 
-    if get_session_response.user_id != user_id:
-      raise ValueError(
-          f'Session {session_id} does not belong to user {user_id}.'
+      update_timestamp = get_session_response.update_time.timestamp()
+      session = Session(
+          app_name=app_name,
+          user_id=user_id,
+          id=session_id,
+          state=getattr(get_session_response, 'session_state', None) or {},
+          last_update_time=update_timestamp,
       )
-
-    update_timestamp = get_session_response.update_time.timestamp()
-    session = Session(
-        app_name=app_name,
-        user_id=user_id,
-        id=session_id,
-        state=getattr(get_session_response, 'session_state', None) or {},
-        last_update_time=update_timestamp,
-    )
-    # Preserve the entire event stream that Vertex returns rather than trying
-    # to discard events written milliseconds after the session resource was
-    # updated. Clock skew between those writes can otherwise drop tool_result
-    # events and permanently break the replayed conversation.
-    async for event in events_iterator:
-      session.events.append(_from_api_event(event))
+      # Preserve the entire event stream that Vertex returns rather than trying
+      # to discard events written milliseconds after the session resource was
+      # updated. Clock skew between those writes can otherwise drop tool_result
+      # events and permanently break the replayed conversation.
+      async for event in events_iterator:
+        session.events.append(_from_api_event(event))
 
     if config:
       # Filter events based on num_recent_events.
@@ -206,7 +216,7 @@ class VertexAiSessionService(BaseSessionService):
           config=config,
       )
 
-      for api_session in sessions_iterator:
+      async for api_session in sessions_iterator:
         sessions.append(
             Session(
                 app_name=app_name,
@@ -258,8 +268,9 @@ class VertexAiSessionService(BaseSessionService):
               k: json.loads(v.model_dump_json(exclude_none=True, by_alias=True))
               for k, v in event.actions.requested_auth_configs.items()
           },
-          # TODO: add requested_tool_confirmations, compaction, agent_state once
+          # TODO: add requested_tool_confirmations, agent_state once
           # they are available in the API.
+          # Note: compaction is stored via event_metadata.custom_metadata.
       }
     if event.error_code:
       config['error_code'] = event.error_code
@@ -282,6 +293,19 @@ class VertexAiSessionService(BaseSessionService):
       metadata_dict['grounding_metadata'] = event.grounding_metadata.model_dump(
           exclude_none=True, mode='json'
       )
+    # Store compaction data in custom_metadata since the Vertex AI service
+    # does not yet support the compaction field.
+    # TODO: Stop writing to custom_metadata once the Vertex AI service
+    # supports the compaction field natively in EventActions.
+    if event.actions and event.actions.compaction:
+      compaction_dict = event.actions.compaction.model_dump(
+          exclude_none=True, mode='json'
+      )
+      existing_custom = metadata_dict.get('custom_metadata') or {}
+      metadata_dict['custom_metadata'] = {
+          **existing_custom,
+          '_compaction': compaction_dict,
+      }
     config['event_metadata'] = metadata_dict
 
     async with self._get_api_client() as api_client:
@@ -338,16 +362,6 @@ class VertexAiSessionService(BaseSessionService):
 def _from_api_event(api_event_obj: vertexai.types.SessionEvent) -> Event:
   """Converts an API event object to an Event object."""
   actions = getattr(api_event_obj, 'actions', None)
-  if actions:
-    actions_dict = actions.model_dump(exclude_none=True, mode='python')
-    rename_map = {'transfer_agent': 'transfer_to_agent'}
-    renamed_actions_dict = {
-        rename_map.get(k, k): v for k, v in actions_dict.items()
-    }
-    event_actions = EventActions.model_validate(renamed_actions_dict)
-  else:
-    event_actions = EventActions()
-
   event_metadata = getattr(api_event_obj, 'event_metadata', None)
   if event_metadata:
     long_running_tool_ids_list = getattr(
@@ -361,6 +375,16 @@ def _from_api_event(api_event_obj: vertexai.types.SessionEvent) -> Event:
     interrupted = getattr(event_metadata, 'interrupted', None)
     branch = getattr(event_metadata, 'branch', None)
     custom_metadata = getattr(event_metadata, 'custom_metadata', None)
+    # Extract compaction data stored in custom_metadata.
+    # NOTE: This read path must be kept permanently because sessions
+    # written before native compaction support store compaction data
+    # in custom_metadata under the '_compaction' key.
+    compaction_data = None
+    if custom_metadata and '_compaction' in custom_metadata:
+      custom_metadata = dict(custom_metadata)  # avoid mutating the API response
+      compaction_data = custom_metadata.pop('_compaction')
+      if not custom_metadata:
+        custom_metadata = None
     grounding_metadata = _session_util.decode_model(
         getattr(event_metadata, 'grounding_metadata', None),
         types.GroundingMetadata,
@@ -372,7 +396,25 @@ def _from_api_event(api_event_obj: vertexai.types.SessionEvent) -> Event:
     interrupted = None
     branch = None
     custom_metadata = None
+    compaction_data = None
     grounding_metadata = None
+
+  if actions:
+    actions_dict = actions.model_dump(exclude_none=True, mode='python')
+    rename_map = {'transfer_agent': 'transfer_to_agent'}
+    renamed_actions_dict = {
+        rename_map.get(k, k): v for k, v in actions_dict.items()
+    }
+    if compaction_data:
+      renamed_actions_dict['compaction'] = compaction_data
+    event_actions = EventActions.model_validate(renamed_actions_dict)
+  else:
+    if compaction_data:
+      event_actions = EventActions(
+          compaction=EventCompaction.model_validate(compaction_data)
+      )
+    else:
+      event_actions = EventActions()
 
   return Event(
       id=api_event_obj.name.split('/')[-1],

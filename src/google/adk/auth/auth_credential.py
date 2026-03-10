@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -18,12 +18,14 @@ from enum import Enum
 from typing import Any
 from typing import Dict
 from typing import List
+from typing import Literal
 from typing import Optional
 
 from pydantic import alias_generators
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
+from pydantic import model_validator
 
 
 class BaseModelWithConfig(BaseModel):
@@ -60,6 +62,7 @@ class HttpAuth(BaseModelWithConfig):
   # Examples: 'basic', 'bearer'
   scheme: str
   credentials: HttpCredentials
+  additional_headers: Optional[Dict[str, str]] = None
 
 
 class OAuth2Auth(BaseModelWithConfig):
@@ -77,9 +80,18 @@ class OAuth2Auth(BaseModelWithConfig):
   auth_code: Optional[str] = None
   access_token: Optional[str] = None
   refresh_token: Optional[str] = None
+  id_token: Optional[str] = None
   expires_at: Optional[int] = None
   expires_in: Optional[int] = None
   audience: Optional[str] = None
+  token_endpoint_auth_method: Optional[
+      Literal[
+          "client_secret_basic",
+          "client_secret_post",
+          "client_secret_jwt",
+          "private_key_jwt",
+      ]
+  ] = "client_secret_basic"
 
 
 class ServiceAccountCredential(BaseModelWithConfig):
@@ -134,11 +146,45 @@ class ServiceAccountCredential(BaseModelWithConfig):
 
 
 class ServiceAccount(BaseModelWithConfig):
-  """Represents Google Service Account configuration."""
+  """Represents Google Service Account configuration.
+
+  Attributes:
+    service_account_credential: The service account credential (JSON key).
+    scopes: The OAuth2 scopes to request. Optional; when omitted with
+        ``use_default_credential=True``, defaults to the cloud-platform scope.
+    use_default_credential: Whether to use Application Default Credentials.
+    use_id_token: Whether to exchange for an ID token instead of an access
+        token. Required for service-to-service authentication with Cloud Run,
+        Cloud Functions, and other Google Cloud services that require identity
+        verification. When True, ``audience`` must also be set.
+    audience: The target audience for the ID token, typically the URL of the
+        receiving service (e.g. ``https://my-service-xyz.run.app``). Required
+        when ``use_id_token`` is True.
+  """
 
   service_account_credential: Optional[ServiceAccountCredential] = None
-  scopes: List[str]
+  scopes: Optional[List[str]] = None
   use_default_credential: Optional[bool] = False
+  use_id_token: Optional[bool] = False
+  audience: Optional[str] = None
+
+  @model_validator(mode="after")
+  def _validate_config(self) -> ServiceAccount:
+    if (
+        not self.use_default_credential
+        and self.service_account_credential is None
+    ):
+      raise ValueError(
+          "service_account_credential is required when"
+          " use_default_credential is False."
+      )
+    if self.use_id_token and not self.audience:
+      raise ValueError(
+          "audience is required when use_id_token is True. Set it to the"
+          " URL of the target service"
+          " (e.g. 'https://my-service.run.app')."
+      )
+    return self
 
 
 class AuthCredentialTypes(str, Enum):

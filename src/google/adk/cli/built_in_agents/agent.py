@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,9 +13,10 @@
 # limitations under the License.
 
 """Agent Builder Assistant instance for ADK web testing."""
+
 from __future__ import annotations
 
-from .agent_builder_assistant import AgentBuilderAssistant
+from .adk_agent_builder_assistant import AgentBuilderAssistant
 
 # Create the agent instance using the factory
 # The root_agent variable is what ADK looks for when loading agents

@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -18,9 +18,9 @@ from google.adk.evaluation.app_details import AgentDetails
 from google.adk.evaluation.app_details import AppDetails
 from google.adk.evaluation.evaluation_generator import EvaluationGenerator
 from google.adk.evaluation.request_intercepter_plugin import _RequestIntercepterPlugin
-from google.adk.evaluation.user_simulator import NextUserMessage
-from google.adk.evaluation.user_simulator import Status as UserSimulatorStatus
-from google.adk.evaluation.user_simulator import UserSimulator
+from google.adk.evaluation.simulation.user_simulator import NextUserMessage
+from google.adk.evaluation.simulation.user_simulator import Status as UserSimulatorStatus
+from google.adk.evaluation.simulation.user_simulator import UserSimulator
 from google.adk.events.event import Event
 from google.adk.models.llm_request import LlmRequest
 from google.genai import types
@@ -353,8 +353,10 @@ class TestGenerateInferencesForSingleUserInvocation:
 
     events = [
         event
-        async for event in EvaluationGenerator._generate_inferences_for_single_user_invocation(
-            runner, "test_user", "test_session", user_content
+        async for event in (
+            EvaluationGenerator._generate_inferences_for_single_user_invocation(
+                runner, "test_user", "test_session", user_content
+            )
         )
     ]
 

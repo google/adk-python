@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -22,6 +22,19 @@ from typing import Optional
 from packaging.version import InvalidVersion
 from packaging.version import Version
 
+from .env_utils import is_env_enabled
+
+_DISABLE_GEMINI_MODEL_ID_CHECK_ENV_VAR = 'ADK_DISABLE_GEMINI_MODEL_ID_CHECK'
+
+
+def is_gemini_model_id_check_disabled() -> bool:
+  """Returns True when Gemini model-id validation should be bypassed.
+
+  This opt-in environment variable is intended for internal usage where model
+  ids may not follow the public ``gemini-*`` naming convention.
+  """
+  return is_env_enabled(_DISABLE_GEMINI_MODEL_ID_CHECK_ENV_VAR)
+
 
 def extract_model_name(model_string: str) -> str:
   """Extract the actual model name from either simple or path-based format.
@@ -34,12 +47,17 @@ def extract_model_name(model_string: str) -> str:
     The extracted model name (e.g., "gemini-2.5-pro")
   """
   # Pattern for path-based model names
-  path_pattern = (
-      r'^projects/[^/]+/locations/[^/]+/publishers/[^/]+/models/(.+)$'
+  # Need to support both Vertex/Gemini and Apigee model paths.
+  path_patterns = (
+      r'^projects/[^/]+/locations/[^/]+/publishers/[^/]+/models/(.+)$',
+      r'^apigee/(?:[^/]+/)?(?:[^/]+/)?(.+)$',
   )
-  match = re.match(path_pattern, model_string)
-  if match:
-    return match.group(1)
+  # Check against all path-based patterns
+  for pattern in path_patterns:
+    match = re.match(pattern, model_string)
+    if match:
+      # Return the captured group (the model name)
+      return match.group(1)
 
   # Handle 'models/' prefixed names like "models/gemini-2.5-pro"
   if model_string.startswith('models/'):

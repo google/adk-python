@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -24,8 +24,9 @@ from typing import Type
 from typing_extensions import override
 
 from ..events.event import Event
+from ..features import experimental
+from ..features import FeatureName
 from ..utils.context_utils import Aclosing
-from ..utils.feature_decorator import experimental
 from .base_agent import BaseAgent
 from .base_agent import BaseAgentState
 from .base_agent_config import BaseAgentConfig
@@ -36,7 +37,7 @@ from .sequential_agent_config import SequentialAgentConfig
 logger = logging.getLogger('google_adk.' + __name__)
 
 
-@experimental
+@experimental(FeatureName.AGENT_STATE)
 class SequentialAgentState(BaseAgentState):
   """State for SequentialAgent."""
 

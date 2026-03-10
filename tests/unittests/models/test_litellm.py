@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -10,32 +10,49 @@
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
-# limitations under the Licens
+# limitations under the License
 
+import contextlib
 import json
+import logging
+import os
+import sys
+import tempfile
+import unittest
+from unittest.mock import ANY
 from unittest.mock import AsyncMock
 from unittest.mock import Mock
 import warnings
 
-from google.adk.models.lite_llm import _build_function_declaration_log
+from google.adk.models.lite_llm import _append_fallback_user_content_if_missing
 from google.adk.models.lite_llm import _content_to_message_param
+from google.adk.models.lite_llm import _enforce_strict_openai_schema
+from google.adk.models.lite_llm import _extract_reasoning_value
+from google.adk.models.lite_llm import _FILE_ID_REQUIRED_PROVIDERS
 from google.adk.models.lite_llm import _FINISH_REASON_MAPPING
 from google.adk.models.lite_llm import _function_declaration_to_tool_param
 from google.adk.models.lite_llm import _get_completion_inputs
 from google.adk.models.lite_llm import _get_content
+from google.adk.models.lite_llm import _get_provider_from_model
 from google.adk.models.lite_llm import _message_to_generate_content_response
+from google.adk.models.lite_llm import _MISSING_TOOL_RESULT_MESSAGE
 from google.adk.models.lite_llm import _model_response_to_chunk
+from google.adk.models.lite_llm import _model_response_to_generate_content_response
 from google.adk.models.lite_llm import _parse_tool_calls_from_text
+from google.adk.models.lite_llm import _redirect_litellm_loggers_to_stdout
+from google.adk.models.lite_llm import _schema_to_dict
 from google.adk.models.lite_llm import _split_message_content_and_tool_calls
 from google.adk.models.lite_llm import _to_litellm_response_format
 from google.adk.models.lite_llm import _to_litellm_role
 from google.adk.models.lite_llm import FunctionChunk
 from google.adk.models.lite_llm import LiteLlm
 from google.adk.models.lite_llm import LiteLLMClient
+from google.adk.models.lite_llm import ReasoningChunk
 from google.adk.models.lite_llm import TextChunk
 from google.adk.models.lite_llm import UsageMetadataChunk
 from google.adk.models.llm_request import LlmRequest
 from google.genai import types
+import litellm
 from litellm import ChatCompletionAssistantMessage
 from litellm import ChatCompletionMessageToolCall
 from litellm import Function
@@ -43,6 +60,7 @@ from litellm.types.utils import ChatCompletionDeltaToolCall
 from litellm.types.utils import Choices
 from litellm.types.utils import Delta
 from litellm.types.utils import ModelResponse
+from litellm.types.utils import ModelResponseStream
 from litellm.types.utils import StreamingChoices
 from pydantic import BaseModel
 from pydantic import Field
@@ -115,7 +133,7 @@ FILE_BYTES_TEST_CASES = [
 ]
 
 STREAMING_MODEL_RESPONSE = [
-    ModelResponse(
+    ModelResponseStream(
         model="test_model",
         choices=[
             StreamingChoices(
@@ -127,7 +145,7 @@ STREAMING_MODEL_RESPONSE = [
             )
         ],
     ),
-    ModelResponse(
+    ModelResponseStream(
         model="test_model",
         choices=[
             StreamingChoices(
@@ -139,7 +157,7 @@ STREAMING_MODEL_RESPONSE = [
             )
         ],
     ),
-    ModelResponse(
+    ModelResponseStream(
         model="test_model",
         choices=[
             StreamingChoices(
@@ -151,7 +169,7 @@ STREAMING_MODEL_RESPONSE = [
             )
         ],
     ),
-    ModelResponse(
+    ModelResponseStream(
         model="test_model",
         choices=[
             StreamingChoices(
@@ -173,7 +191,7 @@ STREAMING_MODEL_RESPONSE = [
             )
         ],
     ),
-    ModelResponse(
+    ModelResponseStream(
         model="test_model",
         choices=[
             StreamingChoices(
@@ -195,7 +213,7 @@ STREAMING_MODEL_RESPONSE = [
             )
         ],
     ),
-    ModelResponse(
+    ModelResponseStream(
         model="test_model",
         choices=[
             StreamingChoices(
@@ -227,12 +245,14 @@ class _ModelDumpOnly:
     return self._schema
 
 
-def test_get_completion_inputs_formats_pydantic_schema_for_litellm():
+async def test_get_completion_inputs_formats_pydantic_schema_for_litellm():
   llm_request = LlmRequest(
       config=types.GenerateContentConfig(response_schema=_StructuredOutput)
   )
 
-  _, _, response_format, _ = _get_completion_inputs(llm_request)
+  _, _, response_format, _ = await _get_completion_inputs(
+      llm_request, model="gemini/gemini-2.0-flash"
+  )
 
   assert response_format == {
       "type": "json_object",
@@ -249,7 +269,12 @@ def test_to_litellm_response_format_passes_preformatted_dict():
       },
   }
 
-  assert _to_litellm_response_format(response_format) == response_format
+  assert (
+      _to_litellm_response_format(
+          response_format, model="gemini/gemini-2.0-flash"
+      )
+      == response_format
+  )
 
 
 def test_to_litellm_response_format_wraps_json_schema_dict():
@@ -258,7 +283,9 @@ def test_to_litellm_response_format_wraps_json_schema_dict():
       "properties": {"foo": {"type": "string"}},
   }
 
-  formatted = _to_litellm_response_format(schema)
+  formatted = _to_litellm_response_format(
+      schema, model="gemini/gemini-2.0-flash"
+  )
   assert formatted["type"] == "json_object"
   assert formatted["response_schema"] == schema
 
@@ -266,7 +293,9 @@ def test_to_litellm_response_format_wraps_json_schema_dict():
 def test_to_litellm_response_format_handles_model_dump_object():
   schema_obj = _ModelDumpOnly()
 
-  formatted = _to_litellm_response_format(schema_obj)
+  formatted = _to_litellm_response_format(
+      schema_obj, model="gemini/gemini-2.0-flash"
+  )
 
   assert formatted["type"] == "json_object"
   assert formatted["response_schema"] == schema_obj.model_dump()
@@ -279,15 +308,374 @@ def test_to_litellm_response_format_handles_genai_schema_instance():
       required=["foo"],
   )
 
-  formatted = _to_litellm_response_format(schema_instance)
+  formatted = _to_litellm_response_format(
+      schema_instance, model="gemini/gemini-2.0-flash"
+  )
   assert formatted["type"] == "json_object"
   assert formatted["response_schema"] == schema_instance.model_dump(
       exclude_none=True, mode="json"
   )
 
 
+def test_to_litellm_response_format_uses_json_schema_for_openai_model():
+  """Test that OpenAI models use json_schema format instead of response_schema."""
+  formatted = _to_litellm_response_format(
+      _StructuredOutput, model="gpt-4o-mini"
+  )
+
+  assert formatted["type"] == "json_schema"
+  assert "json_schema" in formatted
+  assert formatted["json_schema"]["name"] == "_StructuredOutput"
+  assert formatted["json_schema"]["strict"] is True
+  assert formatted["json_schema"]["schema"]["additionalProperties"] is False
+  assert "additionalProperties" in formatted["json_schema"]["schema"]
+
+
+def test_to_litellm_response_format_uses_response_schema_for_gemini_model():
+  """Test that Gemini models continue to use response_schema format."""
+  formatted = _to_litellm_response_format(
+      _StructuredOutput, model="gemini/gemini-2.0-flash"
+  )
+
+  assert formatted["type"] == "json_object"
+  assert "response_schema" in formatted
+  assert formatted["response_schema"] == _StructuredOutput.model_json_schema()
+
+
+def test_to_litellm_response_format_uses_response_schema_for_vertex_gemini():
+  """Test that Vertex AI Gemini models use response_schema format."""
+  formatted = _to_litellm_response_format(
+      _StructuredOutput, model="vertex_ai/gemini-2.0-flash"
+  )
+
+  assert formatted["type"] == "json_object"
+  assert "response_schema" in formatted
+  assert formatted["response_schema"] == _StructuredOutput.model_json_schema()
+
+
+def test_to_litellm_response_format_uses_json_schema_for_azure_openai():
+  """Test that Azure OpenAI models use json_schema format."""
+  formatted = _to_litellm_response_format(
+      _StructuredOutput, model="azure/gpt-4o"
+  )
+
+  assert formatted["type"] == "json_schema"
+  assert "json_schema" in formatted
+  assert formatted["json_schema"]["name"] == "_StructuredOutput"
+  assert formatted["json_schema"]["strict"] is True
+  assert formatted["json_schema"]["schema"]["additionalProperties"] is False
+  assert "additionalProperties" in formatted["json_schema"]["schema"]
+
+
+def test_to_litellm_response_format_uses_json_schema_for_anthropic():
+  """Test that Anthropic models use json_schema format."""
+  formatted = _to_litellm_response_format(
+      _StructuredOutput, model="anthropic/claude-3-5-sonnet"
+  )
+
+  assert formatted["type"] == "json_schema"
+  assert "json_schema" in formatted
+  assert formatted["json_schema"]["name"] == "_StructuredOutput"
+  assert formatted["json_schema"]["strict"] is True
+  assert formatted["json_schema"]["schema"]["additionalProperties"] is False
+  assert "additionalProperties" in formatted["json_schema"]["schema"]
+
+
+def test_to_litellm_response_format_with_dict_schema_for_openai():
+  """Test dict schema with OpenAI model uses json_schema format."""
+  schema = {
+      "type": "object",
+      "properties": {"foo": {"type": "string"}},
+  }
+
+  formatted = _to_litellm_response_format(schema, model="gpt-4o")
+
+  assert formatted["type"] == "json_schema"
+  assert formatted["json_schema"]["name"] == "response"
+  assert formatted["json_schema"]["strict"] is True
+  assert formatted["json_schema"]["schema"]["additionalProperties"] is False
+
+
+class _InnerModel(BaseModel):
+  value: str = Field(description="A value")
+  optional_field: str | None = Field(default=None, description="Optional")
+
+
+class _OuterModel(BaseModel):
+  inner: _InnerModel = Field(description="Nested model")
+  name: str
+
+
+class _WithList(BaseModel):
+  items: list[_InnerModel] = Field(description="List of items")
+  label: str
+
+
+def test_enforce_strict_openai_schema_adds_additional_properties_recursively():
+  """additionalProperties: false must appear on all object schemas."""
+  schema = _OuterModel.model_json_schema()
+
+  _enforce_strict_openai_schema(schema)
+
+  # Root level
+  assert schema["additionalProperties"] is False
+  # Nested model in $defs
+  inner_def = schema["$defs"]["_InnerModel"]
+  assert inner_def["additionalProperties"] is False
+
+
+def test_enforce_strict_openai_schema_marks_all_properties_required():
+  """All properties must appear in 'required', including optional fields."""
+  schema = _InnerModel.model_json_schema()
+
+  _enforce_strict_openai_schema(schema)
+
+  assert sorted(schema["required"]) == ["optional_field", "value"]
+
+
+def test_enforce_strict_openai_schema_strips_ref_sibling_keywords():
+  """$ref nodes must have no sibling keywords like 'description'."""
+  schema = _OuterModel.model_json_schema()
+  # Pydantic v2 generates {"$ref": "...", "description": "..."} for nested models
+  inner_prop = schema["properties"]["inner"]
+  assert "$ref" in inner_prop, "Expected Pydantic to generate a $ref property"
+  assert len(inner_prop) > 1, "Expected sibling keywords alongside $ref"
+
+  _enforce_strict_openai_schema(schema)
+
+  inner_prop = schema["properties"]["inner"]
+  assert list(inner_prop.keys()) == ["$ref"]
+
+
+def test_enforce_strict_openai_schema_handles_array_items():
+  """Array item schemas should also be recursively transformed."""
+  schema = _WithList.model_json_schema()
+
+  _enforce_strict_openai_schema(schema)
+
+  assert schema["additionalProperties"] is False
+  inner_def = schema["$defs"]["_InnerModel"]
+  assert inner_def["additionalProperties"] is False
+  assert sorted(inner_def["required"]) == ["optional_field", "value"]
+
+
+def test_enforce_strict_openai_schema_preserves_anyof_and_default():
+  """anyOf structure and default value for Optional fields must be preserved."""
+  schema = _InnerModel.model_json_schema()
+
+  _enforce_strict_openai_schema(schema)
+
+  opt_prop = schema["properties"]["optional_field"]
+  assert opt_prop["anyOf"] == [{"type": "string"}, {"type": "null"}]
+  assert opt_prop["default"] is None
+
+
+def test_to_litellm_response_format_dict_input_not_mutated():
+  """Passing a raw dict should not mutate the caller's original dict."""
+  schema = {
+      "type": "object",
+      "properties": {
+          "nested": {
+              "type": "object",
+              "properties": {"x": {"type": "string"}},
+          }
+      },
+  }
+  import copy
+
+  original = copy.deepcopy(schema)
+
+  _to_litellm_response_format(schema, model="gpt-4o")
+
+  assert schema == original, "Caller's input dict was mutated"
+
+
+def test_to_litellm_response_format_instance_input_for_openai():
+  """Passing a BaseModel instance should produce a valid strict schema."""
+  instance = _OuterModel(
+      inner=_InnerModel(value="test", optional_field=None), name="foo"
+  )
+
+  formatted = _to_litellm_response_format(instance, model="gpt-4o")
+
+  assert formatted["type"] == "json_schema"
+  schema = formatted["json_schema"]["schema"]
+  assert schema["additionalProperties"] is False
+  inner_def = schema["$defs"]["_InnerModel"]
+  assert inner_def["additionalProperties"] is False
+  assert sorted(inner_def["required"]) == ["optional_field", "value"]
+
+
+def test_to_litellm_response_format_nested_pydantic_for_openai():
+  """Nested Pydantic model should produce a valid OpenAI strict schema."""
+  formatted = _to_litellm_response_format(_OuterModel, model="gpt-4o")
+
+  assert formatted["type"] == "json_schema"
+  assert formatted["json_schema"]["strict"] is True
+
+  schema = formatted["json_schema"]["schema"]
+  assert schema["additionalProperties"] is False
+  assert sorted(schema["required"]) == ["inner", "name"]
+
+  # $defs inner model must also be strict
+  inner_def = schema["$defs"]["_InnerModel"]
+  assert inner_def["additionalProperties"] is False
+  assert sorted(inner_def["required"]) == ["optional_field", "value"]
+
+
+def test_to_litellm_response_format_nested_pydantic_for_gemini_unchanged():
+  """Gemini models should NOT get the strict OpenAI transformations."""
+  formatted = _to_litellm_response_format(
+      _OuterModel, model="gemini/gemini-2.0-flash"
+  )
+
+  assert formatted["type"] == "json_object"
+  schema = formatted["response_schema"]
+  # Gemini path should pass through the raw Pydantic schema untouched
+  assert schema == _OuterModel.model_json_schema()
+
+
+async def test_get_completion_inputs_uses_openai_format_for_openai_model():
+  """Test that _get_completion_inputs produces OpenAI-compatible format."""
+  llm_request = LlmRequest(
+      model="gpt-4o-mini",
+      config=types.GenerateContentConfig(response_schema=_StructuredOutput),
+  )
+
+  _, _, response_format, _ = await _get_completion_inputs(
+      llm_request, model="gpt-4o-mini"
+  )
+
+  assert response_format["type"] == "json_schema"
+  assert "json_schema" in response_format
+  assert response_format["json_schema"]["name"] == "_StructuredOutput"
+  assert response_format["json_schema"]["strict"] is True
+  assert (
+      response_format["json_schema"]["schema"]["additionalProperties"] is False
+  )
+
+
+async def test_get_completion_inputs_uses_gemini_format_for_gemini_model():
+  """Test that _get_completion_inputs produces Gemini-compatible format."""
+  llm_request = LlmRequest(
+      model="gemini/gemini-2.0-flash",
+      config=types.GenerateContentConfig(response_schema=_StructuredOutput),
+  )
+
+  _, _, response_format, _ = await _get_completion_inputs(
+      llm_request, model="gemini/gemini-2.0-flash"
+  )
+
+  assert response_format["type"] == "json_object"
+  assert "response_schema" in response_format
+
+
+async def test_get_completion_inputs_uses_passed_model_for_response_format():
+  """Test that _get_completion_inputs uses the passed model parameter for response format.
+
+  This verifies that when llm_request.model is None, the explicit model parameter
+  is used to determine the correct response format (Gemini vs OpenAI).
+  """
+  llm_request = LlmRequest(
+      model=None,  # No model in request
+      config=types.GenerateContentConfig(response_schema=_StructuredOutput),
+  )
+
+  # Pass OpenAI model explicitly - should use json_schema format
+  _, _, response_format, _ = await _get_completion_inputs(
+      llm_request, model="gpt-4o-mini"
+  )
+
+  assert response_format["type"] == "json_schema"
+  assert "json_schema" in response_format
+  assert response_format["json_schema"]["name"] == "_StructuredOutput"
+  assert response_format["json_schema"]["strict"] is True
+  assert (
+      response_format["json_schema"]["schema"]["additionalProperties"] is False
+  )
+
+
+async def test_get_completion_inputs_uses_passed_model_for_gemini_format():
+  """Test that _get_completion_inputs uses passed model for Gemini response format.
+
+  This verifies that when self.model is a Gemini model and passed explicitly,
+  the response format uses the Gemini-specific format.
+  """
+  llm_request = LlmRequest(
+      model=None,  # No model in request
+      config=types.GenerateContentConfig(response_schema=_StructuredOutput),
+  )
+
+  # Pass Gemini model explicitly - should use response_schema format
+  _, _, response_format, _ = await _get_completion_inputs(
+      llm_request, model="gemini/gemini-2.0-flash"
+  )
+
+  assert response_format["type"] == "json_object"
+  assert "response_schema" in response_format
+
+
+@pytest.mark.asyncio
+async def test_get_completion_inputs_inserts_missing_tool_results():
+  user_content = types.Content(
+      role="user", parts=[types.Part.from_text(text="Hi")]
+  )
+  assistant_content = types.Content(
+      role="assistant",
+      parts=[
+          types.Part.from_text(text="Calling tool."),
+          types.Part.from_function_call(
+              name="get_weather", args={"location": "Seoul"}
+          ),
+      ],
+  )
+  assistant_content.parts[1].function_call.id = "tool_call_1"
+  followup_user = types.Content(
+      role="user", parts=[types.Part.from_text(text="Next question.")]
+  )
+
+  llm_request = LlmRequest(
+      contents=[user_content, assistant_content, followup_user]
+  )
+  messages, _, _, _ = await _get_completion_inputs(
+      llm_request, model="openai/gpt-4o"
+  )
+
+  assert [message["role"] for message in messages] == [
+      "user",
+      "assistant",
+      "tool",
+      "user",
+  ]
+  tool_message = messages[2]
+  assert tool_message["tool_call_id"] == "tool_call_1"
+  assert tool_message["content"] == _MISSING_TOOL_RESULT_MESSAGE
+
+
+def test_schema_to_dict_filters_none_enum_values():
+  # Use model_construct to bypass strict enum validation.
+  top_level_schema = types.Schema.model_construct(
+      type=types.Type.STRING,
+      enum=["ACTIVE", None, "INACTIVE"],
+  )
+  nested_schema = types.Schema.model_construct(
+      type=types.Type.OBJECT,
+      properties={
+          "status": types.Schema.model_construct(
+              type=types.Type.STRING, enum=["READY", None, "DONE"]
+          ),
+      },
+  )
+
+  assert _schema_to_dict(top_level_schema)["enum"] == ["ACTIVE", "INACTIVE"]
+  assert _schema_to_dict(nested_schema)["properties"]["status"]["enum"] == [
+      "READY",
+      "DONE",
+  ]
+
+
 MULTIPLE_FUNCTION_CALLS_STREAM = [
-    ModelResponse(
+    ModelResponseStream(
         choices=[
             StreamingChoices(
                 finish_reason=None,
@@ -308,7 +696,7 @@ MULTIPLE_FUNCTION_CALLS_STREAM = [
             )
         ]
     ),
-    ModelResponse(
+    ModelResponseStream(
         choices=[
             StreamingChoices(
                 finish_reason=None,
@@ -329,7 +717,7 @@ MULTIPLE_FUNCTION_CALLS_STREAM = [
             )
         ]
     ),
-    ModelResponse(
+    ModelResponseStream(
         choices=[
             StreamingChoices(
                 finish_reason=None,
@@ -350,7 +738,7 @@ MULTIPLE_FUNCTION_CALLS_STREAM = [
             )
         ]
     ),
-    ModelResponse(
+    ModelResponseStream(
         choices=[
             StreamingChoices(
                 finish_reason=None,
@@ -371,7 +759,7 @@ MULTIPLE_FUNCTION_CALLS_STREAM = [
             )
         ]
     ),
-    ModelResponse(
+    ModelResponseStream(
         choices=[
             StreamingChoices(
                 finish_reason="tool_calls",
@@ -382,7 +770,7 @@ MULTIPLE_FUNCTION_CALLS_STREAM = [
 
 
 STREAM_WITH_EMPTY_CHUNK = [
-    ModelResponse(
+    ModelResponseStream(
         choices=[
             StreamingChoices(
                 finish_reason=None,
@@ -403,7 +791,7 @@ STREAM_WITH_EMPTY_CHUNK = [
             )
         ]
     ),
-    ModelResponse(
+    ModelResponseStream(
         choices=[
             StreamingChoices(
                 finish_reason=None,
@@ -425,7 +813,7 @@ STREAM_WITH_EMPTY_CHUNK = [
         ]
     ),
     # This is the problematic empty chunk that should be ignored.
-    ModelResponse(
+    ModelResponseStream(
         choices=[
             StreamingChoices(
                 finish_reason=None,
@@ -446,7 +834,7 @@ STREAM_WITH_EMPTY_CHUNK = [
             )
         ]
     ),
-    ModelResponse(
+    ModelResponseStream(
         choices=[StreamingChoices(finish_reason="tool_calls", delta=Delta())]
     ),
 ]
@@ -482,7 +870,7 @@ def mock_response():
 # indices all 0
 # finish_reason stop instead of tool_calls
 NON_COMPLIANT_MULTIPLE_FUNCTION_CALLS_STREAM = [
-    ModelResponse(
+    ModelResponseStream(
         choices=[
             StreamingChoices(
                 finish_reason=None,
@@ -503,7 +891,7 @@ NON_COMPLIANT_MULTIPLE_FUNCTION_CALLS_STREAM = [
             )
         ]
     ),
-    ModelResponse(
+    ModelResponseStream(
         choices=[
             StreamingChoices(
                 finish_reason=None,
@@ -524,7 +912,7 @@ NON_COMPLIANT_MULTIPLE_FUNCTION_CALLS_STREAM = [
             )
         ]
     ),
-    ModelResponse(
+    ModelResponseStream(
         choices=[
             StreamingChoices(
                 finish_reason=None,
@@ -545,7 +933,7 @@ NON_COMPLIANT_MULTIPLE_FUNCTION_CALLS_STREAM = [
             )
         ]
     ),
-    ModelResponse(
+    ModelResponseStream(
         choices=[
             StreamingChoices(
                 finish_reason=None,
@@ -566,7 +954,7 @@ NON_COMPLIANT_MULTIPLE_FUNCTION_CALLS_STREAM = [
             )
         ]
     ),
-    ModelResponse(
+    ModelResponseStream(
         choices=[
             StreamingChoices(
                 finish_reason="stop",
@@ -628,54 +1016,6 @@ class MockLLMClient(LiteLLMClient):
     return self.completion_mock(
         model=model, messages=messages, tools=tools, stream=stream, **kwargs
     )
-
-
-def test_build_function_declaration_log():
-  """Test that _build_function_declaration_log formats function declarations correctly."""
-  # Test case 1: Function with parameters and response
-  func_decl1 = types.FunctionDeclaration(
-      name="test_func1",
-      description="Test function 1",
-      parameters=types.Schema(
-          type=types.Type.OBJECT,
-          properties={
-              "param1": types.Schema(
-                  type=types.Type.STRING, description="param1 desc"
-              )
-          },
-      ),
-      response=types.Schema(type=types.Type.BOOLEAN, description="return bool"),
-  )
-  log1 = _build_function_declaration_log(func_decl1)
-  assert log1 == (
-      "test_func1: {'param1': {'description': 'param1 desc', 'type':"
-      " <Type.STRING: 'STRING'>}} -> {'description': 'return bool', 'type':"
-      " <Type.BOOLEAN: 'BOOLEAN'>}"
-  )
-
-  # Test case 2: Function with JSON schema parameters and response
-  func_decl2 = types.FunctionDeclaration(
-      name="test_func2",
-      description="Test function 2",
-      parameters_json_schema={
-          "type": "object",
-          "properties": {"param2": {"type": "integer"}},
-      },
-      response_json_schema={"type": "string"},
-  )
-  log2 = _build_function_declaration_log(func_decl2)
-  assert log2 == (
-      "test_func2: {'type': 'object', 'properties': {'param2': {'type':"
-      " 'integer'}}} -> {'type': 'string'}"
-  )
-
-  # Test case 3: Function with no parameters and no response
-  func_decl3 = types.FunctionDeclaration(
-      name="test_func3",
-      description="Test function 3",
-  )
-  log3 = _build_function_declaration_log(func_decl3)
-  assert log3 == "test_func3: {} -> None"
 
 
 @pytest.mark.asyncio
@@ -792,6 +1132,28 @@ async def test_generate_content_async_adds_fallback_user_message(
   assert llm_request.contents[-1].parts[0].text == (
       "Handle the requests as specified in the System Instruction."
   )
+
+
+def test_append_fallback_user_content_ignores_function_response_parts():
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role="user",
+              parts=[
+                  types.Part.from_function_response(
+                      name="add", response={"result": 6}
+                  )
+              ],
+          )
+      ]
+  )
+
+  _append_fallback_user_content_if_missing(llm_request)
+
+  assert len(llm_request.contents) == 1
+  assert len(llm_request.contents[0].parts) == 1
+  assert llm_request.contents[0].parts[0].function_response is not None
+  assert llm_request.contents[0].parts[0].text is None
 
 
 litellm_append_user_content_test_cases = [
@@ -1220,7 +1582,7 @@ async def test_generate_content_async_with_system_instruction(
 
   _, kwargs = mock_acompletion.call_args
   assert kwargs["model"] == "test_model"
-  assert kwargs["messages"][0]["role"] == "developer"
+  assert kwargs["messages"][0]["role"] == "system"
   assert kwargs["messages"][0]["content"] == "Test system instruction"
   assert kwargs["messages"][1]["role"] == "user"
   assert kwargs["messages"][1]["content"] == "Test prompt"
@@ -1318,17 +1680,155 @@ async def test_generate_content_async_with_usage_metadata(
   mock_acompletion.assert_called_once()
 
 
-def test_content_to_message_param_user_message():
+@pytest.mark.asyncio
+async def test_generate_content_async_ollama_chat_flattens_content(
+    mock_acompletion, mock_completion
+):
+  llm_client = MockLLMClient(mock_acompletion, mock_completion)
+  lite_llm_instance = LiteLlm(
+      model="ollama_chat/qwen2.5:7b", llm_client=llm_client
+  )
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role="user",
+              parts=[
+                  types.Part.from_text(text="Describe this image."),
+                  types.Part.from_bytes(
+                      data=b"test_image", mime_type="image/png"
+                  ),
+              ],
+          )
+      ]
+  )
+
+  async for _ in lite_llm_instance.generate_content_async(llm_request):
+    pass
+
+  mock_acompletion.assert_called_once_with(
+      model="ollama_chat/qwen2.5:7b",
+      messages=ANY,
+      tools=ANY,
+      response_format=ANY,
+  )
+  _, kwargs = mock_acompletion.call_args
+  message_content = kwargs["messages"][0]["content"]
+  assert isinstance(message_content, str)
+  assert "Describe this image." in message_content
+
+
+@pytest.mark.asyncio
+async def test_generate_content_async_custom_provider_flattens_content(
+    mock_acompletion, mock_completion
+):
+  llm_client = MockLLMClient(mock_acompletion, mock_completion)
+  lite_llm_instance = LiteLlm(
+      model="qwen2.5:7b",
+      llm_client=llm_client,
+      custom_llm_provider="ollama_chat",
+  )
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role="user",
+              parts=[
+                  types.Part.from_text(text="Describe this image."),
+                  types.Part.from_bytes(
+                      data=b"test_image", mime_type="image/png"
+                  ),
+              ],
+          )
+      ]
+  )
+
+  async for _ in lite_llm_instance.generate_content_async(llm_request):
+    pass
+
+  mock_acompletion.assert_called_once()
+  _, kwargs = mock_acompletion.call_args
+  assert kwargs["custom_llm_provider"] == "ollama_chat"
+  assert kwargs["model"] == "qwen2.5:7b"
+  message_content = kwargs["messages"][0]["content"]
+  assert isinstance(message_content, str)
+  assert "Describe this image." in message_content
+
+
+def test_flatten_ollama_content_accepts_tuple_blocks():
+  from google.adk.models.lite_llm import _flatten_ollama_content
+
+  content = (
+      {"type": "text", "text": "first"},
+      {"type": "text", "text": "second"},
+  )
+  flattened = _flatten_ollama_content(content)
+  assert flattened == "first\nsecond"
+
+
+@pytest.mark.parametrize(
+    "content, expected",
+    [
+        (None, None),
+        ("hello", "hello"),
+        (
+            [
+                {"type": "text", "text": "first"},
+                {"type": "text", "text": "second"},
+            ],
+            "first\nsecond",
+        ),
+        (
+            [
+                {"type": "text", "text": "Describe this image."},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "http://example.com"},
+                },
+            ],
+            "Describe this image.",
+        ),
+    ],
+)
+def test_flatten_ollama_content_returns_str_or_none(content, expected):
+  from google.adk.models.lite_llm import _flatten_ollama_content
+
+  flattened = _flatten_ollama_content(content)
+  assert flattened == expected
+  assert flattened is None or isinstance(flattened, str)
+
+
+def test_flatten_ollama_content_serializes_non_text_blocks_to_json():
+  from google.adk.models.lite_llm import _flatten_ollama_content
+
+  blocks = [
+      {"type": "image_url", "image_url": {"url": "http://example.com"}},
+  ]
+  flattened = _flatten_ollama_content(blocks)
+  assert isinstance(flattened, str)
+  assert json.loads(flattened) == blocks
+
+
+def test_flatten_ollama_content_serializes_dict_to_json():
+  from google.adk.models.lite_llm import _flatten_ollama_content
+
+  content = {"type": "image_url", "image_url": {"url": "http://example.com"}}
+  flattened = _flatten_ollama_content(content)
+  assert isinstance(flattened, str)
+  assert json.loads(flattened) == content
+
+
+@pytest.mark.asyncio
+async def test_content_to_message_param_user_message():
   content = types.Content(
       role="user", parts=[types.Part.from_text(text="Test prompt")]
   )
-  message = _content_to_message_param(content)
+  message = await _content_to_message_param(content)
   assert message["role"] == "user"
   assert message["content"] == "Test prompt"
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize("file_uri,mime_type", FILE_URI_TEST_CASES)
-def test_content_to_message_param_user_message_with_file_uri(
+async def test_content_to_message_param_user_message_with_file_uri(
     file_uri, mime_type
 ):
   file_part = types.Part.from_uri(file_uri=file_uri, mime_type=mime_type)
@@ -1340,18 +1840,19 @@ def test_content_to_message_param_user_message_with_file_uri(
       ],
   )
 
-  message = _content_to_message_param(content)
-  assert message["role"] == "user"
-  assert isinstance(message["content"], list)
-  assert message["content"][0]["type"] == "text"
-  assert message["content"][0]["text"] == "Summarize this file."
-  assert message["content"][1]["type"] == "file"
-  assert message["content"][1]["file"]["file_id"] == file_uri
-  assert "format" not in message["content"][1]["file"]
+  message = await _content_to_message_param(content)
+  assert message == {
+      "role": "user",
+      "content": [
+          {"type": "text", "text": "Summarize this file."},
+          {"type": "file", "file": {"file_id": file_uri, "format": mime_type}},
+      ],
+  }
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize("file_uri,mime_type", FILE_URI_TEST_CASES)
-def test_content_to_message_param_user_message_file_uri_only(
+async def test_content_to_message_param_user_message_file_uri_only(
     file_uri, mime_type
 ):
   file_part = types.Part.from_uri(file_uri=file_uri, mime_type=mime_type)
@@ -1362,15 +1863,93 @@ def test_content_to_message_param_user_message_file_uri_only(
       ],
   )
 
-  message = _content_to_message_param(content)
-  assert message["role"] == "user"
-  assert isinstance(message["content"], list)
-  assert message["content"][0]["type"] == "file"
-  assert message["content"][0]["file"]["file_id"] == file_uri
-  assert "format" not in message["content"][0]["file"]
+  message = await _content_to_message_param(content)
+  assert message == {
+      "role": "user",
+      "content": [
+          {"type": "file", "file": {"file_id": file_uri, "format": mime_type}},
+      ],
+  }
 
 
-def test_content_to_message_param_multi_part_function_response():
+@pytest.mark.asyncio
+async def test_content_to_message_param_user_message_file_uri_without_mime_type():
+  """Test handling of file_data without mime_type (GcsArtifactService scenario).
+
+  When using GcsArtifactService, artifacts may have file_uri (gs://...) but
+  without mime_type set. LiteLLM's Vertex AI backend requires the format
+  field to be present, so we infer MIME type from the URI extension or use
+  a default fallback to ensure compatibility.
+
+  See: https://github.com/google/adk-python/issues/3787
+  """
+  file_part = types.Part(
+      file_data=types.FileData(
+          file_uri="gs://agent-artifact-bucket/app/user/session/artifact/0"
+      )
+  )
+  content = types.Content(
+      role="user",
+      parts=[
+          types.Part.from_text(text="Analyze this file."),
+          file_part,
+      ],
+  )
+
+  message = await _content_to_message_param(content)
+  assert message == {
+      "role": "user",
+      "content": [
+          {"type": "text", "text": "Analyze this file."},
+          {
+              "type": "file",
+              "file": {
+                  "file_id": (
+                      "gs://agent-artifact-bucket/app/user/session/artifact/0"
+                  ),
+                  "format": "application/octet-stream",
+              },
+          },
+      ],
+  }
+
+
+@pytest.mark.asyncio
+async def test_content_to_message_param_user_message_file_uri_infer_mime_type():
+  """Test MIME type inference from file_uri extension.
+
+  When file_data has a file_uri with a recognizable extension but no explicit
+  mime_type, the MIME type should be inferred from the extension.
+
+  See: https://github.com/google/adk-python/issues/3787
+  """
+  file_part = types.Part(
+      file_data=types.FileData(
+          file_uri="gs://bucket/path/to/document.pdf",
+      )
+  )
+  content = types.Content(
+      role="user",
+      parts=[file_part],
+  )
+
+  message = await _content_to_message_param(content)
+  assert message == {
+      "role": "user",
+      "content": [
+          {
+              "type": "file",
+              "file": {
+                  "file_id": "gs://bucket/path/to/document.pdf",
+                  "format": "application/pdf",
+              },
+          },
+      ],
+  }
+
+
+@pytest.mark.asyncio
+async def test_content_to_message_param_multi_part_function_response():
   part1 = types.Part.from_function_response(
       name="function_one",
       response={"result": "result_one"},
@@ -1387,7 +1966,7 @@ def test_content_to_message_param_multi_part_function_response():
       role="tool",
       parts=[part1, part2],
   )
-  messages = _content_to_message_param(content)
+  messages = await _content_to_message_param(content)
   assert isinstance(messages, list)
   assert len(messages) == 2
 
@@ -1400,16 +1979,148 @@ def test_content_to_message_param_multi_part_function_response():
   assert messages[1]["content"] == '{"value": 123}'
 
 
-def test_content_to_message_param_assistant_message():
+@pytest.mark.asyncio
+async def test_content_to_message_param_function_response_with_extra_parts():
+  tool_part = types.Part.from_function_response(
+      name="load_image",
+      response={"status": "success"},
+  )
+  tool_part.function_response.id = "tool_call_1"
+
+  text_part = types.Part.from_text(text="[Image: img_123.png]")
+  image_bytes = b"test_image_data"
+  image_part = types.Part.from_bytes(data=image_bytes, mime_type="image/png")
+
+  content = types.Content(
+      role="user",
+      parts=[tool_part, text_part, image_part],
+  )
+
+  messages = await _content_to_message_param(content)
+  assert isinstance(messages, list)
+  assert messages == [
+      {
+          "role": "tool",
+          "tool_call_id": "tool_call_1",
+          "content": '{"status": "success"}',
+      },
+      {
+          "role": "user",
+          "content": [
+              {"type": "text", "text": "[Image: img_123.png]"},
+              {
+                  "type": "image_url",
+                  "image_url": {
+                      "url": "data:image/png;base64,dGVzdF9pbWFnZV9kYXRh"
+                  },
+              },
+          ],
+      },
+  ]
+
+
+@pytest.mark.asyncio
+async def test_content_to_message_param_function_response_preserves_string():
+  """Tests that string responses are used directly without double-serialization.
+
+  The google.genai FunctionResponse.response field is typed as dict, but
+  _content_to_message_param defensively handles string responses to avoid
+  double-serialization. This test verifies that behavior by mocking a
+  function_response with a string response attribute.
+  """
+  response_payload = '{"type": "files", "count": 2}'
+
+  # Create a Part with a dict response, then mock the response to be a string
+  # to simulate edge cases where response might be set directly as a string
+  part = types.Part.from_function_response(
+      name="list_files",
+      response={"placeholder": "will be mocked"},
+  )
+
+  # Mock the response attribute to return a string
+  # Using Mock without spec_set to allow setting response to a string,
+  # which simulates the edge case we're testing
+  mock_function_response = Mock(spec=types.FunctionResponse)
+  mock_function_response.response = response_payload
+  mock_function_response.id = "tool_call_1"
+  part.function_response = mock_function_response
+
+  content = types.Content(
+      role="tool",
+      parts=[part],
+  )
+  message = await _content_to_message_param(content)
+
+  assert message["role"] == "tool"
+  assert message["tool_call_id"] == "tool_call_1"
+  assert message["content"] == response_payload
+
+
+@pytest.mark.asyncio
+async def test_content_to_message_param_assistant_message():
   content = types.Content(
       role="assistant", parts=[types.Part.from_text(text="Test response")]
   )
-  message = _content_to_message_param(content)
+  message = await _content_to_message_param(content)
   assert message["role"] == "assistant"
   assert message["content"] == "Test response"
 
 
-def test_content_to_message_param_function_call():
+@pytest.mark.asyncio
+async def test_content_to_message_param_user_filters_thought_parts():
+  thought_part = types.Part.from_text(text="internal reasoning")
+  thought_part.thought = True
+  content_part = types.Part.from_text(text="visible content")
+  content = types.Content(role="user", parts=[thought_part, content_part])
+
+  message = await _content_to_message_param(content)
+
+  assert message["role"] == "user"
+  assert message["content"] == "visible content"
+
+
+@pytest.mark.asyncio
+async def test_content_to_message_param_assistant_thought_message():
+  part = types.Part.from_text(text="internal reasoning")
+  part.thought = True
+  content = types.Content(role="assistant", parts=[part])
+
+  message = await _content_to_message_param(content)
+
+  assert message["role"] == "assistant"
+  assert message["content"] is None
+  assert message["reasoning_content"] == "internal reasoning"
+
+
+@pytest.mark.asyncio
+async def test_content_to_message_param_model_thought_message():
+  part = types.Part.from_text(text="internal reasoning")
+  part.thought = True
+  content = types.Content(role="model", parts=[part])
+
+  message = await _content_to_message_param(content)
+
+  assert message["role"] == "assistant"
+  assert message["content"] is None
+  assert message["reasoning_content"] == "internal reasoning"
+
+
+@pytest.mark.asyncio
+async def test_content_to_message_param_assistant_thought_and_content_message():
+  thought_part = types.Part.from_text(text="internal reasoning")
+  thought_part.thought = True
+  content_part = types.Part.from_text(text="visible content")
+  content = types.Content(role="assistant", parts=[thought_part, content_part])
+
+  message = await _content_to_message_param(content)
+
+  assert message["role"] == "assistant"
+  assert message["content"] == "visible content"
+  assert message["reasoning_content"] == "internal reasoning"
+
+
+@pytest.mark.asyncio
+async def test_content_to_message_param_function_call():
   content = types.Content(
       role="assistant",
       parts=[
@@ -1420,7 +2131,7 @@ def test_content_to_message_param_function_call():
       ],
   )
   content.parts[1].function_call.id = "test_tool_call_id"
-  message = _content_to_message_param(content)
+  message = await _content_to_message_param(content)
   assert message["role"] == "assistant"
   assert message["content"] == "test response"
 
@@ -1431,7 +2142,8 @@ def test_content_to_message_param_function_call():
   assert tool_call["function"]["arguments"] == '{"test_arg": "test_value"}'
 
 
-def test_content_to_message_param_multipart_content():
+@pytest.mark.asyncio
+async def test_content_to_message_param_multipart_content():
   """Test handling of multipart content where final_content is a list with text objects."""
   content = types.Content(
       role="assistant",
@@ -1440,7 +2152,7 @@ def test_content_to_message_param_multipart_content():
           types.Part.from_bytes(data=b"test_image_data", mime_type="image/png"),
       ],
   )
-  message = _content_to_message_param(content)
+  message = await _content_to_message_param(content)
   assert message["role"] == "assistant"
   # When content is a list and the first element is a text object with type "text",
   # it should extract the text (for providers like ollama_chat that don't handle lists well)
@@ -1449,23 +2161,26 @@ def test_content_to_message_param_multipart_content():
   assert message["tool_calls"] is None
 
 
-def test_content_to_message_param_single_text_object_in_list():
+@pytest.mark.asyncio
+async def test_content_to_message_param_single_text_object_in_list(mocker):
   """Test extraction of text from single text object in list (for ollama_chat compatibility)."""
-  from unittest.mock import patch
+  from google.adk.models import lite_llm
 
   # Mock _get_content to return a list with single text object
-  with patch("google.adk.models.lite_llm._get_content") as mock_get_content:
-    mock_get_content.return_value = [{"type": "text", "text": "single text"}]
+  async def mock_get_content(*args, **kwargs):
+    return [{"type": "text", "text": "single text"}]
 
-    content = types.Content(
-        role="assistant",
-        parts=[types.Part.from_text(text="single text")],
-    )
-    message = _content_to_message_param(content)
-    assert message["role"] == "assistant"
-    # Should extract the text from the single text object
-    assert message["content"] == "single text"
-    assert message["tool_calls"] is None
+  mocker.patch.object(lite_llm, "_get_content", side_effect=mock_get_content)
+
+  content = types.Content(
+      role="assistant",
+      parts=[types.Part.from_text(text="single text")],
+  )
+  message = await _content_to_message_param(content)
+  assert message["role"] == "assistant"
+  # Should extract the text from the single text object
+  assert message["content"] == "single text"
+  assert message["tool_calls"] is None
 
 
 def test_message_to_generate_content_response_text():
@@ -1535,6 +2250,175 @@ def test_message_to_generate_content_response_with_model():
   assert response.model_version == "gemini-2.5-pro"
 
 
+def test_message_to_generate_content_response_reasoning_content():
+  message = {
+      "role": "assistant",
+      "content": "Visible text",
+      "reasoning_content": "Hidden chain",
+  }
+  response = _message_to_generate_content_response(message)
+
+  assert len(response.content.parts) == 2
+  thought_part = response.content.parts[0]
+  text_part = response.content.parts[1]
+  assert thought_part.text == "Hidden chain"
+  assert thought_part.thought is True
+  assert text_part.text == "Visible text"
+
+
+def test_model_response_to_generate_content_response_reasoning_content():
+  model_response = ModelResponse(
+      model="thinking-model",
+      choices=[{
+          "message": {
+              "role": "assistant",
+              "content": "Answer",
+              "reasoning_content": "Step-by-step",
+          },
+          "finish_reason": "stop",
+      }],
+  )
+
+  response = _model_response_to_generate_content_response(model_response)
+
+  assert response.content.parts[0].text == "Step-by-step"
+  assert response.content.parts[0].thought is True
+  assert response.content.parts[1].text == "Answer"
+
+
+def test_message_to_generate_content_response_reasoning_field():
+  """Test that the 'reasoning' field is supported (LM Studio, vLLM)."""
+  message = {
+      "role": "assistant",
+      "content": "Final answer",
+      "reasoning": "Thinking process",
+  }
+  response = _message_to_generate_content_response(message)
+
+  assert len(response.content.parts) == 2
+  thought_part = response.content.parts[0]
+  text_part = response.content.parts[1]
+  assert thought_part.text == "Thinking process"
+  assert thought_part.thought is True
+  assert text_part.text == "Final answer"
+
+
+def test_model_response_to_generate_content_response_reasoning_field():
+  """Test that 'reasoning' field is supported in ModelResponse."""
+  model_response = ModelResponse(
+      model="test-model",
+      choices=[{
+          "message": {
+              "role": "assistant",
+              "content": "Result",
+              "reasoning": "Chain of thought",
+          },
+          "finish_reason": "stop",
+      }],
+  )
+
+  response = _model_response_to_generate_content_response(model_response)
+
+  assert response.content.parts[0].text == "Chain of thought"
+  assert response.content.parts[0].thought is True
+  assert response.content.parts[1].text == "Result"
+
+
+def test_reasoning_content_takes_precedence_over_reasoning():
+  """Test that 'reasoning_content' is prioritized over 'reasoning'."""
+  message = {
+      "role": "assistant",
+      "content": "Answer",
+      "reasoning_content": "LiteLLM standard reasoning",
+      "reasoning": "Alternative reasoning",
+  }
+  response = _message_to_generate_content_response(message)
+
+  assert len(response.content.parts) == 2
+  thought_part = response.content.parts[0]
+  assert thought_part.text == "LiteLLM standard reasoning"
+  assert thought_part.thought is True
+
+
+def test_extract_reasoning_value_from_reasoning_content():
+  """Test extraction from reasoning_content (LiteLLM standard)."""
+  message = ChatCompletionAssistantMessage(
+      role="assistant",
+      content="Answer",
+      reasoning_content="LiteLLM reasoning",
+  )
+  result = _extract_reasoning_value(message)
+  assert result == "LiteLLM reasoning"
+
+
+def test_extract_reasoning_value_from_reasoning():
+  """Test extraction from reasoning (LM Studio, vLLM)."""
+
+  class MockMessage:
+
+    def __init__(self):
+      self.role = "assistant"
+      self.content = "Answer"
+      self.reasoning = "Alternative reasoning"
+
+    def get(self, key, default=None):
+      return getattr(self, key, default)
+
+  message = MockMessage()
+  result = _extract_reasoning_value(message)
+  assert result == "Alternative reasoning"
+
+
+def test_extract_reasoning_value_dict_reasoning_content():
+  """Test extraction from dict with reasoning_content field."""
+  message = {
+      "role": "assistant",
+      "content": "Answer",
+      "reasoning_content": "Dict reasoning content",
+  }
+  result = _extract_reasoning_value(message)
+  assert result == "Dict reasoning content"
+
+
+def test_extract_reasoning_value_dict_reasoning():
+  """Test extraction from dict with reasoning field."""
+  message = {
+      "role": "assistant",
+      "content": "Answer",
+      "reasoning": "Dict reasoning",
+  }
+  result = _extract_reasoning_value(message)
+  assert result == "Dict reasoning"
+
+
+def test_extract_reasoning_value_dict_prefers_reasoning_content():
+  """Test that reasoning_content takes precedence over reasoning in dicts."""
+  message = {
+      "role": "assistant",
+      "content": "Answer",
+      "reasoning_content": "Primary",
+      "reasoning": "Secondary",
+  }
+  result = _extract_reasoning_value(message)
+  assert result == "Primary"
+
+
+def test_extract_reasoning_value_none_message():
+  """Test that None message returns None."""
+  result = _extract_reasoning_value(None)
+  assert result is None
+
+
+def test_extract_reasoning_value_no_reasoning_fields():
+  """Test that None is returned when no reasoning fields exist."""
+  message = {
+      "role": "assistant",
+      "content": "Answer only",
+  }
+  result = _extract_reasoning_value(message)
+  assert result is None
+
+
 def test_parse_tool_calls_from_text_multiple_calls():
   text = (
       '{"name":"alpha","arguments":{"value":1}}\n'
@@ -1594,49 +2478,86 @@ def test_split_message_content_prefers_existing_structured_calls():
   assert tool_calls == [tool_call]
 
 
-def test_get_content_text():
+@pytest.mark.asyncio
+async def test_get_content_does_not_filter_thought_parts():
+  """Test that _get_content does not drop thought parts.
+
+  Thought filtering is handled by the caller (e.g., _content_to_message_param)
+  to avoid duplicating logic across helpers.
+  """
+  thought_part = types.Part(text="Internal reasoning...", thought=True)
+  regular_part = types.Part.from_text(text="Visible response")
+
+  content = await _get_content([thought_part, regular_part])
+
+  assert content == [
+      {"type": "text", "text": "Internal reasoning..."},
+      {"type": "text", "text": "Visible response"},
+  ]
+
+
+@pytest.mark.asyncio
+async def test_get_content_all_thought_parts():
+  """Test that thought parts convert like regular text parts."""
+  thought_part1 = types.Part(text="First reasoning...", thought=True)
+  thought_part2 = types.Part(text="Second reasoning...", thought=True)
+
+  content = await _get_content([thought_part1, thought_part2])
+
+  assert content == [
+      {"type": "text", "text": "First reasoning..."},
+      {"type": "text", "text": "Second reasoning..."},
+  ]
+
+
+@pytest.mark.asyncio
+async def test_get_content_text():
   parts = [types.Part.from_text(text="Test text")]
-  content = _get_content(parts)
+  content = await _get_content(parts)
   assert content == "Test text"
 
 
-def test_get_content_text_inline_data_single_part():
+@pytest.mark.asyncio
+async def test_get_content_text_inline_data_single_part():
   parts = [
       types.Part.from_bytes(
           data="Inline text".encode("utf-8"), mime_type="text/plain"
       )
   ]
-  content = _get_content(parts)
+  content = await _get_content(parts)
   assert content == "Inline text"
 
 
-def test_get_content_text_inline_data_multiple_parts():
+@pytest.mark.asyncio
+async def test_get_content_text_inline_data_multiple_parts():
   parts = [
       types.Part.from_bytes(
           data="First part".encode("utf-8"), mime_type="text/plain"
       ),
       types.Part.from_text(text="Second part"),
   ]
-  content = _get_content(parts)
+  content = await _get_content(parts)
   assert content[0]["type"] == "text"
   assert content[0]["text"] == "First part"
   assert content[1]["type"] == "text"
   assert content[1]["text"] == "Second part"
 
 
-def test_get_content_text_inline_data_fallback_decoding():
+@pytest.mark.asyncio
+async def test_get_content_text_inline_data_fallback_decoding():
   parts = [
       types.Part.from_bytes(data=b"\xff", mime_type="text/plain"),
   ]
-  content = _get_content(parts)
+  content = await _get_content(parts)
   assert content == "ÿ"
 
 
-def test_get_content_image():
+@pytest.mark.asyncio
+async def test_get_content_image():
   parts = [
       types.Part.from_bytes(data=b"test_image_data", mime_type="image/png")
   ]
-  content = _get_content(parts)
+  content = await _get_content(parts)
   assert content[0]["type"] == "image_url"
   assert (
       content[0]["image_url"]["url"]
@@ -1645,11 +2566,12 @@ def test_get_content_image():
   assert "format" not in content[0]["image_url"]
 
 
-def test_get_content_video():
+@pytest.mark.asyncio
+async def test_get_content_video():
   parts = [
       types.Part.from_bytes(data=b"test_video_data", mime_type="video/mp4")
   ]
-  content = _get_content(parts)
+  content = await _get_content(parts)
   assert content[0]["type"] == "video_url"
   assert (
       content[0]["video_url"]["url"]
@@ -1658,31 +2580,353 @@ def test_get_content_video():
   assert "format" not in content[0]["video_url"]
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "file_data,mime_type,expected_base64", FILE_BYTES_TEST_CASES
 )
-def test_get_content_file_bytes(file_data, mime_type, expected_base64):
+async def test_get_content_file_bytes(file_data, mime_type, expected_base64):
   parts = [types.Part.from_bytes(data=file_data, mime_type=mime_type)]
-  content = _get_content(parts)
+  content = await _get_content(parts)
   assert content[0]["type"] == "file"
   assert content[0]["file"]["file_data"] == expected_base64
   assert "format" not in content[0]["file"]
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize("file_uri,mime_type", FILE_URI_TEST_CASES)
-def test_get_content_file_uri(file_uri, mime_type):
+async def test_get_content_file_uri(file_uri, mime_type):
   parts = [types.Part.from_uri(file_uri=file_uri, mime_type=mime_type)]
-  content = _get_content(parts)
-  assert content[0]["type"] == "file"
-  assert content[0]["file"]["file_id"] == file_uri
-  assert "format" not in content[0]["file"]
+  content = await _get_content(parts)
+  assert content[0] == {
+      "type": "file",
+      "file": {"file_id": file_uri, "format": mime_type},
+  }
 
 
-def test_get_content_audio():
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "provider,model",
+    [
+        ("openai", "openai/gpt-4o"),
+        ("azure", "azure/gpt-4"),
+    ],
+)
+async def test_get_content_file_uri_file_id_required_falls_back_to_text(
+    provider, model
+):
+  parts = [
+      types.Part(
+          file_data=types.FileData(
+              file_uri="gs://bucket/path/to/document.pdf",
+              mime_type="application/pdf",
+              display_name="document.pdf",
+          )
+      )
+  ]
+  content = await _get_content(parts, provider=provider, model=model)
+  assert content == [
+      {"type": "text", "text": '[File reference: "document.pdf"]'}
+  ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "provider,model",
+    [
+        ("openai", "openai/gpt-4o"),
+        ("azure", "azure/gpt-4"),
+    ],
+)
+@pytest.mark.parametrize(
+    "file_uri,mime_type,expected_type",
+    [
+        pytest.param(
+            "https://example.com/image.png",
+            "image/png",
+            "image_url",
+            id="image",
+        ),
+        pytest.param(
+            "https://example.com/video.mp4",
+            "video/mp4",
+            "video_url",
+            id="video",
+        ),
+        pytest.param(
+            "https://example.com/audio.mp3",
+            "audio/mpeg",
+            "audio_url",
+            id="audio",
+        ),
+    ],
+)
+async def test_get_content_file_uri_media_url_file_id_required_uses_url_type(
+    provider, model, file_uri, mime_type, expected_type
+):
+  parts = [
+      types.Part(
+          file_data=types.FileData(
+              file_uri=file_uri,
+              mime_type=mime_type,
+          )
+      )
+  ]
+  content = await _get_content(parts, provider=provider, model=model)
+  assert content == [{
+      "type": expected_type,
+      expected_type: {"url": file_uri},
+  }]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "provider,model",
+    [
+        ("openai", "openai/gpt-4o"),
+        ("azure", "azure/gpt-4"),
+    ],
+)
+async def test_get_content_file_uri_file_id_required_preserves_file_id(
+    provider, model
+):
+  parts = [
+      types.Part(
+          file_data=types.FileData(
+              file_uri="file-abc123",
+              mime_type="application/pdf",
+          )
+      )
+  ]
+  content = await _get_content(parts, provider=provider, model=model)
+  assert content == [{"type": "file", "file": {"file_id": "file-abc123"}}]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "provider,model",
+    [
+        ("openai", "openai/gpt-4o"),
+        ("azure", "azure/gpt-4"),
+    ],
+)
+async def test_get_content_file_uri_http_pdf_file_id_required_falls_back_to_text(
+    provider, model
+):
+  file_uri = "https://example.com/document.pdf"
+  parts = [
+      types.Part(
+          file_data=types.FileData(
+              file_uri=file_uri,
+              mime_type="application/pdf",
+              display_name="document.pdf",
+          )
+      )
+  ]
+  content = await _get_content(parts, provider=provider, model=model)
+  assert content == [
+      {"type": "text", "text": '[File reference: "document.pdf"]'}
+  ]
+
+
+@pytest.mark.asyncio
+async def test_get_content_file_uri_http_pdf_non_file_id_provider_uses_file():
+  file_uri = "https://example.com/document.pdf"
+  parts = [
+      types.Part(
+          file_data=types.FileData(
+              file_uri=file_uri,
+              mime_type="application/pdf",
+          )
+      )
+  ]
+  content = await _get_content(
+      parts, provider="vertex_ai", model="vertex_ai/gemini-2.5-flash"
+  )
+  assert content == [{
+      "type": "file",
+      "file": {"file_id": file_uri, "format": "application/pdf"},
+  }]
+
+
+@pytest.mark.asyncio
+async def test_get_content_file_uri_anthropic_falls_back_to_text():
+  parts = [
+      types.Part(
+          file_data=types.FileData(
+              file_uri="gs://bucket/path/to/document.pdf",
+              mime_type="application/pdf",
+              display_name="document.pdf",
+          )
+      )
+  ]
+  content = await _get_content(
+      parts, provider="anthropic", model="anthropic/claude-3-5"
+  )
+  assert content == [
+      {"type": "text", "text": '[File reference: "document.pdf"]'}
+  ]
+
+
+@pytest.mark.asyncio
+async def test_get_content_file_uri_anthropic_openai_file_id_falls_back_to_text():
+  parts = [types.Part(file_data=types.FileData(file_uri="file-abc123"))]
+  content = await _get_content(
+      parts, provider="anthropic", model="anthropic/claude-3-5"
+  )
+  assert content == [
+      {"type": "text", "text": '[File reference: "file-abc123"]'}
+  ]
+
+
+@pytest.mark.asyncio
+async def test_get_content_file_uri_vertex_ai_non_gemini_falls_back_to_text():
+  parts = [
+      types.Part(
+          file_data=types.FileData(
+              file_uri="gs://bucket/path/to/document.pdf",
+              mime_type="application/pdf",
+              display_name="document.pdf",
+          )
+      )
+  ]
+  content = await _get_content(
+      parts, provider="vertex_ai", model="vertex_ai/claude-3-5"
+  )
+  assert content == [
+      {"type": "text", "text": '[File reference: "document.pdf"]'}
+  ]
+
+
+@pytest.mark.asyncio
+async def test_get_content_file_uri_vertex_ai_gemini_keeps_file_block():
+  parts = [
+      types.Part(
+          file_data=types.FileData(
+              file_uri="gs://bucket/path/to/document.pdf",
+              mime_type="application/pdf",
+          )
+      )
+  ]
+  content = await _get_content(
+      parts, provider="vertex_ai", model="vertex_ai/gemini-2.5-flash"
+  )
+  assert content == [{
+      "type": "file",
+      "file": {
+          "file_id": "gs://bucket/path/to/document.pdf",
+          "format": "application/pdf",
+      },
+  }]
+
+
+@pytest.mark.asyncio
+async def test_get_content_file_uri_infer_mime_type():
+  """Test MIME type inference from file_uri extension.
+
+  When file_data has a file_uri with a recognizable extension but no explicit
+  mime_type, the MIME type should be inferred from the extension.
+
+  See: https://github.com/google/adk-python/issues/3787
+  """
+  # Use Part constructor directly to test MIME type inference in _get_content
+  # (types.Part.from_uri does its own inference, so we bypass it)
+  parts = [
+      types.Part(
+          file_data=types.FileData(file_uri="gs://bucket/path/to/document.pdf")
+      )
+  ]
+  content = await _get_content(parts)
+  assert content[0] == {
+      "type": "file",
+      "file": {
+          "file_id": "gs://bucket/path/to/document.pdf",
+          "format": "application/pdf",
+      },
+  }
+
+
+@pytest.mark.asyncio
+async def test_get_content_file_uri_versioned_infer_mime_type():
+  """Test MIME type inference from versioned artifact URIs."""
+  parts = [
+      types.Part(
+          file_data=types.FileData(
+              file_uri="gs://bucket/path/to/document.pdf/0"
+          )
+      )
+  ]
+  content = await _get_content(parts)
+  assert content[0]["file"]["format"] == "application/pdf"
+
+
+@pytest.mark.asyncio
+async def test_get_content_file_uri_infers_from_display_name():
+  """Test MIME type inference from display_name when URI lacks extension."""
+  parts = [
+      types.Part(
+          file_data=types.FileData(
+              file_uri="gs://bucket/artifact/0",
+              display_name="document.pdf",
+          )
+      )
+  ]
+  content = await _get_content(parts)
+  assert content[0]["file"]["format"] == "application/pdf"
+
+
+@pytest.mark.asyncio
+async def test_get_content_file_uri_default_mime_type():
+  """Test that file_uri without extension uses default MIME type.
+
+  When file_data has a file_uri without a recognizable extension and no explicit
+  mime_type, a default MIME type should be used to ensure compatibility with
+  LiteLLM backends.
+
+  See: https://github.com/google/adk-python/issues/3787
+  """
+  # Use Part constructor directly to create file_data without mime_type
+  # (types.Part.from_uri requires a valid mime_type when it can't infer)
+  parts = [
+      types.Part(file_data=types.FileData(file_uri="gs://bucket/artifact/0"))
+  ]
+  content = await _get_content(parts)
+  assert content[0] == {
+      "type": "file",
+      "file": {
+          "file_id": "gs://bucket/artifact/0",
+          "format": "application/octet-stream",
+      },
+  }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "uri,expected_mime_type",
+    [
+        ("gs://bucket/file.pdf", "application/pdf"),
+        ("gs://bucket/path/to/document.json", "application/json"),
+        ("gs://bucket/image.png", "image/png"),
+        ("gs://bucket/image.jpg", "image/jpeg"),
+        ("gs://bucket/audio.mp3", "audio/mpeg"),
+        ("gs://bucket/video.mp4", "video/mp4"),
+    ],
+)
+async def test_get_content_file_uri_mime_type_inference(
+    uri, expected_mime_type
+):
+  """Test MIME type inference from various file extensions."""
+  # Use Part constructor directly to test MIME type inference in _get_content
+  parts = [types.Part(file_data=types.FileData(file_uri=uri))]
+  content = await _get_content(parts)
+  assert content[0]["file"]["format"] == expected_mime_type
+
+
+@pytest.mark.asyncio
+async def test_get_content_audio():
   parts = [
       types.Part.from_bytes(data=b"test_audio_data", mime_type="audio/mpeg")
   ]
-  content = _get_content(parts)
+  content = await _get_content(parts)
   assert content[0]["type"] == "audio_url"
   assert (
       content[0]["audio_url"]["url"]
@@ -1709,7 +2953,12 @@ def test_to_litellm_role():
                             "content": "this is a test",
                         }
                     }
-                ]
+                ],
+                usage={
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0,
+                },
             ),
             [TextChunk(text="this is a test")],
             UsageMetadataChunk(
@@ -1739,7 +2988,7 @@ def test_to_litellm_role():
             "stop",
         ),
         (
-            ModelResponse(
+            ModelResponseStream(
                 choices=[
                     StreamingChoices(
                         finish_reason=None,
@@ -1761,13 +3010,20 @@ def test_to_litellm_role():
                 ]
             ),
             [FunctionChunk(id="1", name="test_function", args='{"key": "va')],
-            UsageMetadataChunk(
-                prompt_tokens=0, completion_tokens=0, total_tokens=0
-            ),
             None,
+            # LiteLLM 1.81+ defaults finish_reason to "stop" for partial chunks,
+            # older versions return None. Both are valid for streaming chunks.
+            (None, "stop"),
         ),
         (
-            ModelResponse(choices=[{"finish_reason": "tool_calls"}]),
+            ModelResponse(
+                choices=[{"finish_reason": "tool_calls"}],
+                usage={
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0,
+                },
+            ),
             [None],
             UsageMetadataChunk(
                 prompt_tokens=0, completion_tokens=0, total_tokens=0
@@ -1775,7 +3031,14 @@ def test_to_litellm_role():
             "tool_calls",
         ),
         (
-            ModelResponse(choices=[{}]),
+            ModelResponse(
+                choices=[{}],
+                usage={
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0,
+                },
+            ),
             [None],
             UsageMetadataChunk(
                 prompt_tokens=0, completion_tokens=0, total_tokens=0
@@ -1845,6 +3108,40 @@ def test_to_litellm_role():
             ),
             "tool_calls",
         ),
+        (
+            ModelResponseStream(
+                choices=[
+                    StreamingChoices(
+                        finish_reason=None,
+                        delta=Delta(role="assistant", content="Hello"),
+                    )
+                ],
+                usage=None,
+            ),
+            [TextChunk(text="Hello")],
+            None,
+            (None, "stop"),
+        ),
+        (
+            ModelResponseStream(
+                choices=[
+                    StreamingChoices(
+                        finish_reason="stop",
+                        delta=Delta(
+                            role="assistant", reasoning_content="thinking..."
+                        ),
+                    )
+                ],
+                usage=None,
+            ),
+            [
+                ReasoningChunk(
+                    parts=[types.Part(text="thinking...", thought=True)]
+                )
+            ],
+            None,
+            "stop",
+        ),
     ],
 )
 def test_model_response_to_chunk(
@@ -1868,7 +3165,10 @@ def test_model_response_to_chunk(
     else:
       assert isinstance(chunk, type(expected_chunk))
       assert chunk == expected_chunk
-    assert finished == expected_finished
+    if isinstance(expected_finished, tuple):
+      assert finished in expected_finished
+    else:
+      assert finished == expected_finished
 
   if expected_usage_chunk is None:
     assert usage_chunk is None
@@ -1877,15 +3177,48 @@ def test_model_response_to_chunk(
     assert usage_chunk == expected_usage_chunk
 
 
+def test_model_response_to_chunk_does_not_mutate_delta_object():
+  """Verify that _model_response_to_chunk doesn't mutate the Delta object.
+
+  In real streaming responses, LiteLLM's StreamingChoices only has 'delta'
+  (message is explicitly popped in StreamingChoices constructor). The delta
+  object itself carries reasoning_content when present.
+  """
+  delta = Delta(
+      role="assistant", content="Hello", reasoning_content="thinking..."
+  )
+  response = ModelResponseStream(
+      choices=[StreamingChoices(delta=delta, finish_reason=None)]
+  )
+
+  chunks = [chunk for chunk, _ in _model_response_to_chunk(response) if chunk]
+
+  assert (
+      ReasoningChunk(parts=[types.Part(text="thinking...", thought=True)])
+      in chunks
+  )
+  assert TextChunk(text="Hello") in chunks
+
+  # Verify we don't accidentally mutate the original delta object.
+  assert delta.content == "Hello"
+  assert delta.reasoning_content == "thinking..."
+
+
+def test_model_response_to_chunk_rejects_dict_response():
+  with pytest.raises(TypeError):
+    list(_model_response_to_chunk({"choices": []}))
+
+
 @pytest.mark.asyncio
 async def test_acompletion_additional_args(mock_acompletion, mock_client):
   lite_llm_instance = LiteLlm(
       # valid args
-      model="test_model",
+      model="vertex_ai/test_model",
       llm_client=mock_client,
       api_key="test_key",
       api_base="some://url",
       api_version="2024-09-12",
+      headers={"custom": "header"},  # Add custom header to test merge
       # invalid args (ignored)
       stream=True,
       messages=[{"role": "invalid", "content": "invalid"}],
@@ -1912,13 +3245,43 @@ async def test_acompletion_additional_args(mock_acompletion, mock_client):
 
   _, kwargs = mock_acompletion.call_args
 
-  assert kwargs["model"] == "test_model"
+  assert kwargs["model"] == "vertex_ai/test_model"
   assert kwargs["messages"][0]["role"] == "user"
   assert kwargs["messages"][0]["content"] == "Test prompt"
   assert kwargs["tools"][0]["function"]["name"] == "test_function"
   assert "stream" not in kwargs
   assert "llm_client" not in kwargs
   assert kwargs["api_base"] == "some://url"
+  assert "headers" in kwargs
+  assert kwargs["headers"]["custom"] == "header"
+  assert "x-goog-api-client" in kwargs["headers"]
+  assert "user-agent" in kwargs["headers"]
+
+
+@pytest.mark.asyncio
+async def test_acompletion_additional_args_non_vertex(
+    mock_acompletion, mock_client
+):
+  """Test that tracking headers are not added for non-Vertex AI models."""
+  lite_llm_instance = LiteLlm(
+      model="openai/gpt-4o",
+      llm_client=mock_client,
+      api_key="test_key",
+      headers={"custom": "header"},
+  )
+
+  async for _ in lite_llm_instance.generate_content_async(
+      LLM_REQUEST_WITH_FUNCTION_DECLARATION
+  ):
+    pass
+
+  mock_acompletion.assert_called_once()
+  _, kwargs = mock_acompletion.call_args
+  assert kwargs["model"] == "openai/gpt-4o"
+  assert "headers" in kwargs
+  assert kwargs["headers"]["custom"] == "header"
+  assert "x-goog-api-client" not in kwargs["headers"]
+  assert "user-agent" not in kwargs["headers"]
 
 
 @pytest.mark.asyncio
@@ -2031,6 +3394,7 @@ async def test_generate_content_async_stream(
       "test_arg": "test_value"
   }
   assert responses[3].content.parts[-1].function_call.id == "test_tool_call_id"
+  assert responses[3].finish_reason == types.FinishReason.STOP
   assert responses[3].model_version == "test_model"
   mock_completion.assert_called_once()
 
@@ -2052,13 +3416,62 @@ async def test_generate_content_async_stream(
 
 
 @pytest.mark.asyncio
+async def test_generate_content_async_stream_sets_finish_reason(
+    mock_completion, lite_llm_instance
+):
+  mock_completion.return_value = iter([
+      ModelResponseStream(
+          model="test_model",
+          choices=[
+              StreamingChoices(
+                  finish_reason=None,
+                  delta=Delta(role="assistant", content="Hello "),
+              )
+          ],
+      ),
+      ModelResponseStream(
+          model="test_model",
+          choices=[
+              StreamingChoices(
+                  finish_reason=None,
+                  delta=Delta(role="assistant", content="world"),
+              )
+          ],
+      ),
+      ModelResponseStream(
+          model="test_model",
+          choices=[StreamingChoices(finish_reason="stop", delta=Delta())],
+      ),
+  ])
+
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role="user", parts=[types.Part.from_text(text="Test prompt")]
+          )
+      ],
+  )
+
+  responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          llm_request, stream=True
+      )
+  ]
+
+  assert responses[-1].partial is False
+  assert responses[-1].finish_reason == types.FinishReason.STOP
+  assert responses[-1].content.parts[0].text == "Hello world"
+
+
+@pytest.mark.asyncio
 async def test_generate_content_async_stream_with_usage_metadata(
     mock_completion, lite_llm_instance
 ):
 
   streaming_model_response_with_usage_metadata = [
       *STREAMING_MODEL_RESPONSE,
-      ModelResponse(
+      ModelResponseStream(
           usage={
               "prompt_tokens": 10,
               "completion_tokens": 5,
@@ -2095,6 +3508,7 @@ async def test_generate_content_async_stream_with_usage_metadata(
       "test_arg": "test_value"
   }
   assert responses[3].content.parts[-1].function_call.id == "test_tool_call_id"
+  assert responses[3].finish_reason == types.FinishReason.STOP
 
   assert responses[3].usage_metadata.prompt_token_count == 10
   assert responses[3].usage_metadata.candidates_token_count == 5
@@ -2126,7 +3540,7 @@ async def test_generate_content_async_stream_with_usage_metadata(
   """Tests that cached prompt tokens are propagated in streaming mode."""
   streaming_model_response_with_usage_metadata = [
       *STREAMING_MODEL_RESPONSE,
-      ModelResponse(
+      ModelResponseStream(
           usage={
               "prompt_tokens": 10,
               "completion_tokens": 5,
@@ -2334,7 +3748,7 @@ async def test_generate_content_async_stream_with_empty_chunk(
 
 
 @pytest.mark.asyncio
-def test_get_completion_inputs_generation_params():
+async def test_get_completion_inputs_generation_params():
   # Test that generation_params are extracted and mapped correctly
   req = LlmRequest(
       contents=[
@@ -2350,9 +3764,10 @@ def test_get_completion_inputs_generation_params():
           frequency_penalty=0.2,
       ),
   )
-  from google.adk.models.lite_llm import _get_completion_inputs
 
-  _, _, _, generation_params = _get_completion_inputs(req)
+  _, _, _, generation_params = await _get_completion_inputs(
+      req, model="gpt-4o-mini"
+  )
   assert generation_params["temperature"] == 0.33
   assert generation_params["max_completion_tokens"] == 123
   assert generation_params["top_p"] == 0.88
@@ -2366,7 +3781,7 @@ def test_get_completion_inputs_generation_params():
 
 
 @pytest.mark.asyncio
-def test_get_completion_inputs_empty_generation_params():
+async def test_get_completion_inputs_empty_generation_params():
   # Test that generation_params is None when no generation parameters are set
   req = LlmRequest(
       contents=[
@@ -2374,14 +3789,15 @@ def test_get_completion_inputs_empty_generation_params():
       ],
       config=types.GenerateContentConfig(),
   )
-  from google.adk.models.lite_llm import _get_completion_inputs
 
-  _, _, _, generation_params = _get_completion_inputs(req)
+  _, _, _, generation_params = await _get_completion_inputs(
+      req, model="gpt-4o-mini"
+  )
   assert generation_params is None
 
 
 @pytest.mark.asyncio
-def test_get_completion_inputs_minimal_config():
+async def test_get_completion_inputs_minimal_config():
   # Test that generation_params is None when config has no generation parameters
   req = LlmRequest(
       contents=[
@@ -2391,14 +3807,15 @@ def test_get_completion_inputs_minimal_config():
           system_instruction="test instruction"  # Non-generation parameter
       ),
   )
-  from google.adk.models.lite_llm import _get_completion_inputs
 
-  _, _, _, generation_params = _get_completion_inputs(req)
+  _, _, _, generation_params = await _get_completion_inputs(
+      req, model="gpt-4o-mini"
+  )
   assert generation_params is None
 
 
 @pytest.mark.asyncio
-def test_get_completion_inputs_partial_generation_params():
+async def test_get_completion_inputs_partial_generation_params():
   # Test that generation_params is correctly built even with only some parameters
   req = LlmRequest(
       contents=[
@@ -2409,9 +3826,10 @@ def test_get_completion_inputs_partial_generation_params():
           # Only temperature is set, others are None/default
       ),
   )
-  from google.adk.models.lite_llm import _get_completion_inputs
 
-  _, _, _, generation_params = _get_completion_inputs(req)
+  _, _, _, generation_params = await _get_completion_inputs(
+      req, model="gpt-4o-mini"
+  )
   assert generation_params is not None
   assert generation_params["temperature"] == 0.7
   # Should only contain the temperature parameter
@@ -2603,7 +4021,7 @@ async def test_finish_reason_propagation(
 async def test_finish_reason_unknown_maps_to_other(
     mock_acompletion, lite_llm_instance
 ):
-  """Test that unknown finish_reason values map to FinishReason.OTHER."""
+  """Test that unmapped finish_reason values map to FinishReason.OTHER."""
   mock_response = ModelResponse(
       choices=[
           Choices(
@@ -2611,7 +4029,9 @@ async def test_finish_reason_unknown_maps_to_other(
                   role="assistant",
                   content="Test response",
               ),
-              finish_reason="unknown_reason_type",
+              # LiteLLM validates finish_reason to a known set. Use a value that
+              # LiteLLM accepts but ADK does not explicitly map.
+              finish_reason="eos",
           )
       ]
   )
@@ -2632,3 +4052,260 @@ async def test_finish_reason_unknown_maps_to_other(
     assert response.finish_reason == types.FinishReason.OTHER
 
   mock_acompletion.assert_called_once()
+
+
+# Tests for provider detection and file_id support
+
+
+@pytest.mark.parametrize(
+    "model_string, expected_provider",
+    [
+        # Standard provider/model format
+        ("openai/gpt-4o", "openai"),
+        ("azure/gpt-4", "azure"),
+        ("groq/llama3-70b", "groq"),
+        ("anthropic/claude-3", "anthropic"),
+        ("vertex_ai/gemini-pro", "vertex_ai"),
+        # Fallback heuristics
+        ("gpt-4o", "openai"),
+        ("o1-preview", "openai"),
+        ("azure-gpt-4", "azure"),
+        # Unknown models
+        ("custom-model", ""),
+        ("", ""),
+        (None, ""),
+    ],
+)
+def test_get_provider_from_model(model_string, expected_provider):
+  """Test provider extraction from model strings."""
+  assert _get_provider_from_model(model_string) == expected_provider
+
+
+@pytest.mark.parametrize(
+    "provider, expected_in_list",
+    [
+        ("openai", True),
+        ("azure", True),
+        ("anthropic", False),
+        ("vertex_ai", False),
+    ],
+)
+def test_file_id_required_providers(provider, expected_in_list):
+  """Test that the correct providers require file_id."""
+  assert (provider in _FILE_ID_REQUIRED_PROVIDERS) == expected_in_list
+
+
+@pytest.mark.asyncio
+async def test_get_content_pdf_openai_uses_file_id(mocker):
+  """Test that PDF files use file_id for OpenAI provider."""
+  mock_file_response = mocker.create_autospec(litellm.FileObject)
+  mock_file_response.id = "file-abc123"
+  mock_acreate_file = AsyncMock(return_value=mock_file_response)
+  mocker.patch.object(litellm, "acreate_file", new=mock_acreate_file)
+
+  parts = [
+      types.Part.from_bytes(data=b"test_pdf_data", mime_type="application/pdf")
+  ]
+  content = await _get_content(parts, provider="openai")
+
+  assert content[0]["type"] == "file"
+  assert content[0]["file"]["file_id"] == "file-abc123"
+  assert "file_data" not in content[0]["file"]
+
+  mock_acreate_file.assert_called_once_with(
+      file=b"test_pdf_data",
+      purpose="assistants",
+      custom_llm_provider="openai",
+  )
+
+
+@pytest.mark.asyncio
+async def test_get_content_pdf_non_openai_uses_file_data():
+  """Test that PDF files use file_data for non-OpenAI providers."""
+  parts = [
+      types.Part.from_bytes(data=b"test_pdf_data", mime_type="application/pdf")
+  ]
+  content = await _get_content(parts, provider="anthropic")
+
+  assert content[0]["type"] == "file"
+  assert "file_data" in content[0]["file"]
+  assert content[0]["file"]["file_data"].startswith(
+      "data:application/pdf;base64,"
+  )
+  assert "file_id" not in content[0]["file"]
+
+
+@pytest.mark.asyncio
+async def test_get_content_pdf_azure_uses_file_id(mocker):
+  """Test that PDF files use file_id for Azure provider."""
+  mock_file_response = mocker.create_autospec(litellm.FileObject)
+  mock_file_response.id = "file-xyz789"
+  mock_acreate_file = AsyncMock(return_value=mock_file_response)
+  mocker.patch.object(litellm, "acreate_file", new=mock_acreate_file)
+
+  parts = [
+      types.Part.from_bytes(data=b"test_pdf_data", mime_type="application/pdf")
+  ]
+  content = await _get_content(parts, provider="azure")
+
+  assert content[0]["type"] == "file"
+  assert content[0]["file"]["file_id"] == "file-xyz789"
+
+  mock_acreate_file.assert_called_once_with(
+      file=b"test_pdf_data",
+      purpose="assistants",
+      custom_llm_provider="azure",
+  )
+
+
+@pytest.mark.asyncio
+async def test_get_completion_inputs_openai_file_upload(mocker):
+  """Test that _get_completion_inputs uploads files for OpenAI models."""
+  mock_file_response = mocker.create_autospec(litellm.FileObject)
+  mock_file_response.id = "file-uploaded123"
+  mock_acreate_file = AsyncMock(return_value=mock_file_response)
+  mocker.patch.object(litellm, "acreate_file", new=mock_acreate_file)
+
+  pdf_part = types.Part.from_bytes(
+      data=b"test_pdf_content", mime_type="application/pdf"
+  )
+  llm_request = LlmRequest(
+      model="openai/gpt-4o",
+      contents=[
+          types.Content(
+              role="user",
+              parts=[
+                  types.Part.from_text(text="Analyze this PDF"),
+                  pdf_part,
+              ],
+          )
+      ],
+      config=types.GenerateContentConfig(tools=[]),
+  )
+
+  messages, tools, response_format, generation_params = (
+      await _get_completion_inputs(llm_request, model="openai/gpt-4o")
+  )
+
+  assert len(messages) == 1
+  assert messages[0]["role"] == "user"
+  content = messages[0]["content"]
+  assert len(content) == 2
+  assert content[0]["type"] == "text"
+  assert content[0]["text"] == "Analyze this PDF"
+  assert content[1]["type"] == "file"
+  assert content[1]["file"]["file_id"] == "file-uploaded123"
+
+  mock_acreate_file.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_get_completion_inputs_non_openai_no_file_upload(mocker):
+  """Test that _get_completion_inputs does not upload files for non-OpenAI models."""
+  mock_acreate_file = AsyncMock()
+  mocker.patch.object(litellm, "acreate_file", new=mock_acreate_file)
+
+  pdf_part = types.Part.from_bytes(
+      data=b"test_pdf_content", mime_type="application/pdf"
+  )
+  llm_request = LlmRequest(
+      model="anthropic/claude-3-opus",
+      contents=[
+          types.Content(
+              role="user",
+              parts=[
+                  types.Part.from_text(text="Analyze this PDF"),
+                  pdf_part,
+              ],
+          )
+      ],
+      config=types.GenerateContentConfig(tools=[]),
+  )
+
+  messages, tools, response_format, generation_params = (
+      await _get_completion_inputs(llm_request, model="anthropic/claude-3-opus")
+  )
+
+  assert len(messages) == 1
+  content = messages[0]["content"]
+  assert content[1]["type"] == "file"
+  assert "file_data" in content[1]["file"]
+  assert "file_id" not in content[1]["file"]
+
+  mock_acreate_file.assert_not_called()
+
+
+class TestRedirectLitellmLoggersToStdout(unittest.TestCase):
+  """Tests for _redirect_litellm_loggers_to_stdout function."""
+
+  def test_redirects_stderr_handler_to_stdout(self):
+    """Test that handlers pointing to stderr are redirected to stdout."""
+    test_logger = logging.getLogger("LiteLLM")
+    # Create a handler pointing to stderr
+    handler = logging.StreamHandler(sys.stderr)
+    test_logger.addHandler(handler)
+
+    try:
+      self.assertIs(handler.stream, sys.stderr)
+
+      _redirect_litellm_loggers_to_stdout()
+
+      self.assertIs(handler.stream, sys.stdout)
+    finally:
+      # Clean up
+      test_logger.removeHandler(handler)
+
+  def test_preserves_stdout_handler(self):
+    """Test that handlers already pointing to stdout are not modified."""
+    test_logger = logging.getLogger("LiteLLM Proxy")
+    # Create a handler already pointing to stdout
+    handler = logging.StreamHandler(sys.stdout)
+    test_logger.addHandler(handler)
+
+    try:
+      _redirect_litellm_loggers_to_stdout()
+
+      self.assertIs(handler.stream, sys.stdout)
+    finally:
+      # Clean up
+      test_logger.removeHandler(handler)
+
+  def test_does_not_affect_non_stream_handlers(self):
+    """Test that non-StreamHandler handlers are not affected."""
+    test_logger = logging.getLogger("LiteLLM Router")
+    # Create a FileHandler (not a StreamHandler)
+    with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+      temp_file_name = temp_file.name
+    with contextlib.closing(
+        logging.FileHandler(temp_file_name)
+    ) as file_handler:
+      test_logger.addHandler(file_handler)
+
+      try:
+        _redirect_litellm_loggers_to_stdout()
+        # FileHandler should not be modified (it doesn't point to stderr or stdout)
+        self.assertEqual(file_handler.baseFilename, temp_file_name)
+      finally:
+        # Clean up
+        test_logger.removeHandler(file_handler)
+    os.unlink(temp_file_name)
+
+
+@pytest.mark.parametrize(
+    "logger_name",
+    ["LiteLLM", "LiteLLM Proxy", "LiteLLM Router"],
+    ids=["LiteLLM", "LiteLLM Proxy", "LiteLLM Router"],
+)
+def test_handles_litellm_logger_names(logger_name):
+  """Test that LiteLLM logger names are processed."""
+  test_logger = logging.getLogger(logger_name)
+  handler = logging.StreamHandler(sys.stderr)
+  test_logger.addHandler(handler)
+
+  try:
+    _redirect_litellm_loggers_to_stdout()
+
+    assert handler.stream is sys.stdout
+  finally:
+    # Clean up
+    test_logger.removeHandler(handler)
