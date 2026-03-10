@@ -63,3 +63,13 @@ try:
 except Exception:
   # Gemma3Ollama requires LiteLLM: pip install google-adk[extensions]
   pass
+
+# Optionally register KerasHubLlm if keras-hub is installed
+try:
+  from .kerashub_llm import KerasHubLlm
+
+  LLMRegistry.register(KerasHubLlm)
+  __all__.append('KerasHubLlm')
+except Exception:
+  # KerasHub support requires: pip install keras keras-hub
+  pass
