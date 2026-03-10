@@ -14,14 +14,20 @@
 
 """Example agent demonstrating the use of SkillToolset with GCS.
 
+Set the following environment variables before running:
+SAMPLE_SKILLS_SANDBOX_RESOURCE_NAME="projects/{PROJECT_NUMBER}/locations/{LOCATION}/reasoningEngines/{ENGINE_ID}/sandboxEnvironments/{SANDBOX_ID}"
+SAMPLE_SKILLS_AGENT_ENGINE_RESOURCE_NAME="projects/{PROJECT_NUMBER}/locations/{LOCATION}/reasoningEngines/{ENGINE_ID}"
+
 Go to parent directory and run with `adk web --host=0.0.0.0`.
 """
 
 import asyncio
 import logging
+import os
 
 from google.adk import Agent
 from google.adk import Runner
+from google.adk.code_executors.agent_engine_sandbox_code_executor import AgentEngineSandboxCodeExecutor
 from google.adk.plugins import LoggingPlugin
 from google.adk.skills import list_skills_in_gcs_dir
 from google.adk.skills import load_skill_from_gcs_dir
@@ -62,6 +68,12 @@ root_agent = Agent(
     tools=[
         my_skill_toolset,
     ],
+    code_executor=AgentEngineSandboxCodeExecutor(
+        sandbox_resource_name=os.getenv("SAMPLE_SKILLS_SANDBOX_RESOURCE_NAME"),
+        agent_engine_resource_name=os.getenv(
+            "SAMPLE_SKILLS_AGENT_ENGINE_RESOURCE_NAME"
+        ),
+    ),
 )
 
 
