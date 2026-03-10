@@ -16,8 +16,8 @@ import asyncio
 import os
 
 # Set Kaggle credentials for model access
-os.environ['KAGGLE_USERNAME'] = 'divyasss'
-os.environ['KAGGLE_KEY'] = '5530b7417df9081efa79b26f6ed713fb'
+os.environ['KAGGLE_USERNAME'] = 'your_kaggle_username'
+os.environ['KAGGLE_KEY'] = 'your_kaggle_key'
 
 # Set Keras backend before any keras imports
 os.environ['KERAS_BACKEND'] = 'jax'
