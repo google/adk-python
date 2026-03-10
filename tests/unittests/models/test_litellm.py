@@ -1655,6 +1655,7 @@ async def test_generate_content_async_with_usage_metadata(
           "completion_tokens": 5,
           "total_tokens": 15,
           "cached_tokens": 8,
+          "completion_tokens_details": {"reasoning_tokens": 5},
       },
   )
   mock_acompletion.return_value = mock_response_with_usage_metadata
@@ -1676,6 +1677,7 @@ async def test_generate_content_async_with_usage_metadata(
     assert response.usage_metadata.candidates_token_count == 5
     assert response.usage_metadata.total_token_count == 15
     assert response.usage_metadata.cached_content_token_count == 8
+    assert response.usage_metadata.thoughts_token_count == 5
 
   mock_acompletion.assert_called_once()
 
@@ -3476,6 +3478,7 @@ async def test_generate_content_async_stream_with_usage_metadata(
               "prompt_tokens": 10,
               "completion_tokens": 5,
               "total_tokens": 15,
+              "completion_tokens_details": {"reasoning_tokens": 5},
           },
           choices=[
               StreamingChoices(
@@ -3513,6 +3516,7 @@ async def test_generate_content_async_stream_with_usage_metadata(
   assert responses[3].usage_metadata.prompt_token_count == 10
   assert responses[3].usage_metadata.candidates_token_count == 5
   assert responses[3].usage_metadata.total_token_count == 15
+  assert responses[3].usage_metadata.thoughts_token_count == 5
 
   mock_completion.assert_called_once()
 
@@ -3546,6 +3550,7 @@ async def test_generate_content_async_stream_with_usage_metadata(
               "completion_tokens": 5,
               "total_tokens": 15,
               "cached_tokens": 8,
+              "completion_tokens_details": {"reasoning_tokens": 5},
           },
           choices=[
               StreamingChoices(
@@ -3570,6 +3575,7 @@ async def test_generate_content_async_stream_with_usage_metadata(
   assert responses[3].usage_metadata.candidates_token_count == 5
   assert responses[3].usage_metadata.total_token_count == 15
   assert responses[3].usage_metadata.cached_content_token_count == 8
+  assert responses[3].usage_metadata.thoughts_token_count == 5
 
 
 @pytest.mark.asyncio

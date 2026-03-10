@@ -428,6 +428,7 @@ class UsageMetadataChunk(BaseModel):
   completion_tokens: int
   total_tokens: int
   cached_prompt_tokens: int = 0
+  reasoning_tokens: int = 0
 
 
 class LiteLLMClient:
@@ -597,6 +598,41 @@ def _extract_cached_prompt_tokens(usage: Any) -> int:
         return value
   except (TypeError, AttributeError) as e:
     logger.debug("Error extracting cached prompt tokens: %s", e)
+
+  return 0
+
+
+def _extract_reasoning_tokens(usage: Any) -> int:
+  """Extracts reasoning tokens from LiteLLM usage.
+
+  Providers expose reasoning token metrics under completion_tokens_details.
+
+  Args:
+    usage: Usage dictionary or object from LiteLLM response.
+
+  Returns:
+    Integer number of reasoning tokens if present; otherwise 0.
+  """
+  try:
+    usage_dict = usage
+    if hasattr(usage, "model_dump"):
+      usage_dict = usage.model_dump()
+    elif isinstance(usage, str):
+      try:
+        usage_dict = json.loads(usage)
+      except json.JSONDecodeError:
+        return 0
+
+    if not isinstance(usage_dict, dict):
+      return 0
+
+    details = usage_dict.get("completion_tokens_details")
+    if isinstance(details, dict):
+      value = details.get("reasoning_tokens")
+      if isinstance(value, int):
+        return value
+  except (TypeError, AttributeError) as e:
+    logger.debug("Error extracting reasoning tokens: %s", e)
 
   return 0
 
@@ -1393,6 +1429,7 @@ def _model_response_to_chunk(
           completion_tokens=usage.get("completion_tokens", 0) or 0,
           total_tokens=usage.get("total_tokens", 0) or 0,
           cached_prompt_tokens=_extract_cached_prompt_tokens(usage),
+          reasoning_tokens=_extract_reasoning_tokens(usage),
       ), None
     except AttributeError as e:
       raise TypeError(
@@ -1442,13 +1479,14 @@ def _model_response_to_generate_content_response(
           finish_reason_str, types.FinishReason.OTHER
       )
   if response.get("usage", None):
+    usage_dict = response["usage"]
+    reasoning_tokens = _extract_reasoning_tokens(usage_dict)
     llm_response.usage_metadata = types.GenerateContentResponseUsageMetadata(
-        prompt_token_count=response["usage"].get("prompt_tokens", 0),
-        candidates_token_count=response["usage"].get("completion_tokens", 0),
-        total_token_count=response["usage"].get("total_tokens", 0),
-        cached_content_token_count=_extract_cached_prompt_tokens(
-            response["usage"]
-        ),
+        prompt_token_count=usage_dict.get("prompt_tokens", 0),
+        candidates_token_count=usage_dict.get("completion_tokens", 0),
+        total_token_count=usage_dict.get("total_tokens", 0),
+        cached_content_token_count=_extract_cached_prompt_tokens(usage_dict),
+        thoughts_token_count=reasoning_tokens if reasoning_tokens else None,
     )
   return llm_response
 
@@ -2134,6 +2172,9 @@ class LiteLlm(BaseLlm):
                 candidates_token_count=chunk.completion_tokens,
                 total_token_count=chunk.total_tokens,
                 cached_content_token_count=chunk.cached_prompt_tokens,
+                thoughts_token_count=chunk.reasoning_tokens
+                if chunk.reasoning_tokens
+                else None,
             )
 
           # LiteLLM 1.81+ can set finish_reason="stop" on partial chunks. Only
