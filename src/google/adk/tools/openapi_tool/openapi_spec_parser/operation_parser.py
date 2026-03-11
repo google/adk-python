@@ -30,6 +30,7 @@ from fastapi.openapi.models import Schema
 from ..._gemini_schema_util import _to_snake_case
 from ..common.common import ApiParameter
 from ..common.common import PydocHelper
+from ..common.common import rename_python_keywords
 
 
 class OperationParser:
@@ -42,13 +43,21 @@ class OperationParser:
   """
 
   def __init__(
-      self, operation: Union[Operation, Dict[str, Any], str], should_parse=True
+      self,
+      operation: Union[Operation, Dict[str, Any], str],
+      should_parse: bool = True,
+      *,
+      preserve_property_names: bool = False,
   ):
     """Initializes the OperationParser with an OpenApiOperation.
 
     Args:
         operation: The OpenApiOperation object or a dictionary to process.
         should_parse: Whether to parse the operation during initialization.
+        preserve_property_names: If True, preserve the original property names
+          from the OpenAPI spec instead of converting them to snake_case.
+          Useful for APIs that expect camelCase or other non-snake_case
+          parameter names.
     """
     if isinstance(operation, dict):
       self._operation = Operation.model_validate(operation)
@@ -57,6 +66,7 @@ class OperationParser:
     else:
       self._operation = operation
 
+    self._preserve_property_names = preserve_property_names
     self._params: List[ApiParameter] = []
     self._return_value: Optional[ApiParameter] = None
     if should_parse:
@@ -71,11 +81,23 @@ class OperationParser:
       operation: Union[Operation, Dict[str, Any]],
       params: List[ApiParameter],
       return_value: Optional[ApiParameter] = None,
+      *,
+      preserve_property_names: bool = False,
   ) -> 'OperationParser':
-    parser = cls(operation, should_parse=False)
+    parser = cls(
+        operation,
+        should_parse=False,
+        preserve_property_names=preserve_property_names,
+    )
     parser._params = params
     parser._return_value = return_value
     return parser
+
+  def _get_py_name(self, original_name: str) -> str:
+    """Determines the Python parameter name based on preserve_property_names."""
+    if self._preserve_property_names:
+      return rename_python_keywords(original_name)
+    return ''
 
   def _process_operation_parameters(self):
     """Processes parameters from the OpenAPI operation."""
@@ -99,6 +121,7 @@ class OperationParser:
                 param_schema=schema,
                 description=description,
                 required=required,
+                py_name=self._get_py_name(original_name),
             )
         )
 
@@ -126,6 +149,7 @@ class OperationParser:
                   param_location='body',
                   param_schema=prop_details,
                   description=prop_details.description,
+                  py_name=self._get_py_name(prop_name),
               )
           )
 

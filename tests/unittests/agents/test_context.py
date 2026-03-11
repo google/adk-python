@@ -21,6 +21,7 @@ from google.adk.auth import auth_handler
 from google.adk.auth.auth_credential import AuthCredential
 from google.adk.auth.auth_credential import AuthCredentialTypes
 from google.adk.auth.auth_tool import AuthConfig
+from google.adk.events.ui_widget import UiWidget
 from google.adk.memory.base_memory_service import SearchMemoryResponse
 from google.adk.memory.memory_entry import MemoryEntry
 from google.adk.tools.tool_confirmation import ToolConfirmation
@@ -547,3 +548,74 @@ class TestContextMemoryMethods:
               )
           ]
       )
+
+
+class TestContextAddUiWidget:
+  """Test render_ui_widget method in Context."""
+
+  def test_render_ui_widget(self, mock_invocation_context):
+    """Test that render_ui_widget appends a widget to actions."""
+
+    context = Context(mock_invocation_context)
+    widget = UiWidget(
+        id="w1",
+        provider="mcp",
+        payload={"resource_uri": "ui://test-app"},
+    )
+
+    context.render_ui_widget(widget)
+
+    assert context.actions.render_ui_widgets is not None
+    assert len(context.actions.render_ui_widgets) == 1
+    assert context.actions.render_ui_widgets[0] is widget
+
+  def test_render_ui_widget_multiple(self, mock_invocation_context):
+    """Test that calling render_ui_widget twice yields two widgets."""
+
+    context = Context(mock_invocation_context)
+    w1 = UiWidget(
+        id="w1",
+        provider="mcp",
+        payload={"resource_uri": "ui://app-1"},
+    )
+    w2 = UiWidget(
+        id="w2",
+        provider="mcp",
+        payload={"resource_uri": "ui://app-2"},
+    )
+
+    context.render_ui_widget(w1)
+    context.render_ui_widget(w2)
+
+    assert len(context.actions.render_ui_widgets) == 2
+    assert context.actions.render_ui_widgets[0] is w1
+    assert context.actions.render_ui_widgets[1] is w2
+
+  def test_render_ui_widget_duplicate(self, mock_invocation_context):
+    """Test that duplicate widgets by id are not added."""
+
+    context = Context(mock_invocation_context)
+    w1 = UiWidget(
+        id="w1",
+        provider="mcp",
+        payload={"resource_uri": "ui://app-1"},
+    )
+    w2 = UiWidget(
+        id="w1",
+        provider="mcp",
+        payload={"resource_uri": "ui://app-1-mod"},
+    )
+
+    context.render_ui_widget(w1)
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            f"UI widget with ID '{w1.id}' already exists in the current event"
+            " actions."
+        ),
+    ):
+      context.render_ui_widget(w2)
+
+    assert len(context.actions.render_ui_widgets) == 1
+    assert context.actions.render_ui_widgets[0] is w1

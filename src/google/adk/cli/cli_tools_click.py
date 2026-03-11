@@ -959,6 +959,133 @@ def cli_eval(
       pretty_print_eval_result(eval_result)
 
 
+@main.command("optimize", cls=HelpfulCommand)
+@click.argument(
+    "agent_module_file_path",
+    type=click.Path(
+        exists=True, dir_okay=True, file_okay=False, resolve_path=True
+    ),
+)
+@click.option(
+    "--sampler_config_file_path",
+    type=click.Path(exists=True, dir_okay=False, resolve_path=True),
+    required=True,
+    help="The path to the local eval sampler config file.",
+)
+@click.option(
+    "--optimizer_config_file_path",
+    type=click.Path(exists=True, dir_okay=False, resolve_path=True),
+    help=(
+        "Optional. The path to the GEPA optimizer config file. If not provided,"
+        " the default config will be used."
+    ),
+)
+@click.option(
+    "--print_detailed_results",
+    is_flag=True,
+    show_default=True,
+    default=False,
+    help=(
+        "Optional. Set to enable detailed printing of GEPA optimization"
+        " results to the console."
+    ),
+)
+@click.option(
+    "--log_level",
+    type=LOG_LEVELS,
+    show_default=True,
+    default="INFO",
+    help="Optional. Set the logging level",
+)
+def cli_optimize(
+    agent_module_file_path: str,
+    sampler_config_file_path: str,
+    optimizer_config_file_path: str,
+    print_detailed_results: bool,
+    log_level: str = "INFO",
+):
+  """Optimizes the root agent instructions using the GEPA optimizer.
+
+  AGENT_MODULE_FILE_PATH: The path to the __init__.py file that contains a
+  module by the name "agent". "agent" module contains a root_agent.
+
+  SAMPLER_CONFIG_FILE_PATH: The path to the config for the LocalEvalSampler,
+  which contains the eval config and the eval sets to use for training and
+  validation during optimization.
+
+  OPTIMIZER_CONFIG_FILE_PATH: Optional. The path to the config for the
+  GEPARootAgentPromptOptimizer. If not provided, the default config will be
+  used.
+
+  PRINT_DETAILED_RESULTS: Optional. Enables printing detailed results exposed by
+  the GEPA optimizer to the console.
+
+  LOG_LEVEL: Optional. Set the logging level.
+  """
+  envs.load_dotenv_for_agent(agent_module_file_path, ".")
+  logs.setup_adk_logger(getattr(logging, log_level.upper()))
+
+  try:
+    from ..evaluation.custom_metric_evaluator import _CustomMetricEvaluator
+    from ..evaluation.local_eval_sets_manager import LocalEvalSetsManager
+    from ..optimization.gepa_root_agent_prompt_optimizer import GEPARootAgentPromptOptimizer
+    from ..optimization.gepa_root_agent_prompt_optimizer import GEPARootAgentPromptOptimizerConfig
+    from ..optimization.local_eval_sampler import LocalEvalSampler
+    from ..optimization.local_eval_sampler import LocalEvalSamplerConfig
+    from .cli_eval import _collect_eval_results
+    from .cli_eval import _collect_inferences
+    from .cli_eval import get_root_agent
+  except ModuleNotFoundError as mnf:
+    raise click.ClickException(MISSING_EVAL_DEPENDENCIES_MESSAGE) from mnf
+
+  with open(sampler_config_file_path, "r", encoding="utf-8") as f:
+    content = f.read()
+    sampler_config = LocalEvalSamplerConfig.model_validate_json(content)
+
+  if optimizer_config_file_path:
+    with open(optimizer_config_file_path, "r", encoding="utf-8") as f:
+      content = f.read()
+      optimizer_config = GEPARootAgentPromptOptimizerConfig.model_validate_json(
+          content
+      )
+  else:
+    optimizer_config = GEPARootAgentPromptOptimizerConfig()
+
+  root_agent = get_root_agent(agent_module_file_path)
+  app_name = os.path.basename(agent_module_file_path)
+  agents_dir = os.path.dirname(agent_module_file_path)
+  if app_name != sampler_config.app_name:
+    raise click.ClickException(
+        f"App name in the agent module file path ({app_name}) does not match"
+        f" the app name in the sampler config file ({sampler_config.app_name})."
+    )
+  eval_sets_manager = LocalEvalSetsManager(agents_dir=agents_dir)
+
+  sampler = LocalEvalSampler(sampler_config, eval_sets_manager)
+  optimizer = GEPARootAgentPromptOptimizer(optimizer_config)
+
+  optimization_result = asyncio.run(optimizer.optimize(root_agent, sampler))
+  best_idx = optimization_result.gepa_result["best_idx"]
+
+  click.echo("=" * 80)
+  click.echo("Optimized root agent instructions:")
+  click.echo("-" * 80)
+  click.echo(
+      optimization_result.optimized_agents[best_idx].optimized_agent.instruction
+  )
+
+  if print_detailed_results:
+    click.echo("=" * 80)
+    if optimization_result.gepa_result:
+      click.echo("Detailed GEPA optimization metrics:")
+      click.echo("-" * 80)
+      click.echo(json.dumps(optimization_result.gepa_result, indent=2))
+    else:
+      click.echo("Detailed GEPA optimization metrics are not available.")
+
+  click.echo("=" * 80)
+
+
 @main.group("eval_set")
 def eval_set():
   """Manage Eval Sets."""

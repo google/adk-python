@@ -115,12 +115,6 @@ class BaseAgent(BaseModel):
   Agent name cannot be "user", since it's reserved for end-user's input.
   """
 
-  version: str = ''
-  """The agent's version.
-
-  Version of the agent being invoked. Used to identify the Agent involved in telemetry.
-  """
-
   description: str = ''
   """Description about the agent's capability.
 
@@ -141,6 +135,12 @@ class BaseAgent(BaseModel):
   """
   sub_agents: list[BaseAgent] = Field(default_factory=list)
   """The sub-agents of this agent."""
+
+  version: str = ''
+  """The agent's version.
+
+  Version of the agent being invoked. Used to identify the Agent involved in telemetry.
+  """
 
   before_agent_callback: Optional[BeforeAgentCallback] = None
   """Callback or list of callbacks to be invoked before the agent run.

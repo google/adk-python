@@ -428,6 +428,7 @@ class UsageMetadataChunk(BaseModel):
   completion_tokens: int
   total_tokens: int
   cached_prompt_tokens: int = 0
+  reasoning_tokens: int = 0
 
 
 class LiteLLMClient:
@@ -597,6 +598,41 @@ def _extract_cached_prompt_tokens(usage: Any) -> int:
         return value
   except (TypeError, AttributeError) as e:
     logger.debug("Error extracting cached prompt tokens: %s", e)
+
+  return 0
+
+
+def _extract_reasoning_tokens(usage: Any) -> int:
+  """Extracts reasoning tokens from LiteLLM usage.
+
+  Providers expose reasoning token metrics under completion_tokens_details.
+
+  Args:
+    usage: Usage dictionary or object from LiteLLM response.
+
+  Returns:
+    Integer number of reasoning tokens if present; otherwise 0.
+  """
+  try:
+    usage_dict = usage
+    if hasattr(usage, "model_dump"):
+      usage_dict = usage.model_dump()
+    elif isinstance(usage, str):
+      try:
+        usage_dict = json.loads(usage)
+      except json.JSONDecodeError:
+        return 0
+
+    if not isinstance(usage_dict, dict):
+      return 0
+
+    details = usage_dict.get("completion_tokens_details")
+    if isinstance(details, dict):
+      value = details.get("reasoning_tokens")
+      if isinstance(value, int):
+        return value
+  except (TypeError, AttributeError) as e:
+    logger.debug("Error extracting reasoning tokens: %s", e)
 
   return 0
 
@@ -1393,6 +1429,7 @@ def _model_response_to_chunk(
           completion_tokens=usage.get("completion_tokens", 0) or 0,
           total_tokens=usage.get("total_tokens", 0) or 0,
           cached_prompt_tokens=_extract_cached_prompt_tokens(usage),
+          reasoning_tokens=_extract_reasoning_tokens(usage),
       ), None
     except AttributeError as e:
       raise TypeError(
@@ -1442,13 +1479,14 @@ def _model_response_to_generate_content_response(
           finish_reason_str, types.FinishReason.OTHER
       )
   if response.get("usage", None):
+    usage_dict = response["usage"]
+    reasoning_tokens = _extract_reasoning_tokens(usage_dict)
     llm_response.usage_metadata = types.GenerateContentResponseUsageMetadata(
-        prompt_token_count=response["usage"].get("prompt_tokens", 0),
-        candidates_token_count=response["usage"].get("completion_tokens", 0),
-        total_token_count=response["usage"].get("total_tokens", 0),
-        cached_content_token_count=_extract_cached_prompt_tokens(
-            response["usage"]
-        ),
+        prompt_token_count=usage_dict.get("prompt_tokens", 0),
+        candidates_token_count=usage_dict.get("completion_tokens", 0),
+        total_token_count=usage_dict.get("total_tokens", 0),
+        cached_content_token_count=_extract_cached_prompt_tokens(usage_dict),
+        thoughts_token_count=reasoning_tokens if reasoning_tokens else None,
     )
   return llm_response
 
@@ -1498,6 +1536,15 @@ def _message_to_generate_content_response(
       partial=is_partial,
       model_version=model_version,
   )
+
+
+def _finish_reason_to_error_message(
+    finish_reason: types.FinishReason,
+) -> str:
+  """Returns an error message for non-stop finish reasons."""
+  if finish_reason == types.FinishReason.MAX_TOKENS:
+    return "Maximum tokens reached"
+  return f"Finished with {finish_reason}"
 
 
 def _enforce_strict_openai_schema(schema: dict[str, Any]) -> None:
@@ -2000,8 +2047,15 @@ class LiteLlm(BaseLlm):
           *, model_version: str, finish_reason: str
       ) -> LlmResponse:
         tool_calls = []
+        has_incomplete_tool_call_args = False
         for index, func_data in function_calls.items():
           if func_data["id"]:
+            if finish_reason == "length":
+              try:
+                json.loads(func_data["args"] or "{}")
+              except json.JSONDecodeError:
+                has_incomplete_tool_call_args = True
+                continue
             tool_calls.append(
                 ChatCompletionMessageToolCall(
                     type="function",
@@ -2013,6 +2067,19 @@ class LiteLlm(BaseLlm):
                     ),
                 )
             )
+
+        if has_incomplete_tool_call_args:
+          return LlmResponse(
+              error_code=types.FinishReason.MAX_TOKENS,
+              error_message=(
+                  "Tool call arguments were truncated while streaming and"
+                  " could not be parsed as valid JSON. Increase"
+                  " `max_output_tokens` and retry."
+              ),
+              finish_reason=types.FinishReason.MAX_TOKENS,
+              model_version=model_version,
+          )
+
         llm_response = _message_to_generate_content_response(
             ChatCompletionAssistantMessage(
                 role="assistant",
@@ -2022,7 +2089,13 @@ class LiteLlm(BaseLlm):
             model_version=model_version,
             thought_parts=list(reasoning_parts) if reasoning_parts else None,
         )
-        llm_response.finish_reason = _map_finish_reason(finish_reason)
+        mapped_finish_reason = _map_finish_reason(finish_reason)
+        llm_response.finish_reason = mapped_finish_reason
+        if mapped_finish_reason != types.FinishReason.STOP:
+          llm_response.error_code = mapped_finish_reason
+          llm_response.error_message = _finish_reason_to_error_message(
+              mapped_finish_reason
+          )
         return llm_response
 
       def _finalize_text_response(
@@ -2037,7 +2110,13 @@ class LiteLlm(BaseLlm):
             model_version=model_version,
             thought_parts=list(reasoning_parts) if reasoning_parts else None,
         )
-        llm_response.finish_reason = _map_finish_reason(finish_reason)
+        mapped_finish_reason = _map_finish_reason(finish_reason)
+        llm_response.finish_reason = mapped_finish_reason
+        if mapped_finish_reason != types.FinishReason.STOP:
+          llm_response.error_code = mapped_finish_reason
+          llm_response.error_message = _finish_reason_to_error_message(
+              mapped_finish_reason
+          )
         return llm_response
 
       def _reset_stream_buffers() -> None:
@@ -2093,13 +2172,17 @@ class LiteLlm(BaseLlm):
                 candidates_token_count=chunk.completion_tokens,
                 total_token_count=chunk.total_tokens,
                 cached_content_token_count=chunk.cached_prompt_tokens,
+                thoughts_token_count=chunk.reasoning_tokens
+                if chunk.reasoning_tokens
+                else None,
             )
 
           # LiteLLM 1.81+ can set finish_reason="stop" on partial chunks. Only
-          # finalize tool calls on an explicit tool_calls finish_reason, or on a
-          # stop-only chunk (no content/tool deltas).
+          # finalize tool calls on an explicit tool_calls/length finish_reason,
+          # or on a stop-only chunk (no content/tool deltas).
           if function_calls and (
               finish_reason == "tool_calls"
+              or finish_reason == "length"
               or (finish_reason == "stop" and chunk is None)
           ):
             aggregated_llm_response_with_tool_call = (
@@ -2109,16 +2192,14 @@ class LiteLlm(BaseLlm):
                 )
             )
             _reset_stream_buffers()
-          elif (
-              finish_reason == "stop"
-              and (text or reasoning_parts)
-              and chunk is None
-              and not function_calls
+          elif (text or reasoning_parts) and (
+              finish_reason == "length"
+              or (
+                  finish_reason == "stop"
+                  and chunk is None
+                  and not function_calls
+              )
           ):
-            # Only aggregate text response when we have a true stop signal
-            # chunk is None means no content in this chunk, just finish signal.
-            # LiteLLM 1.81+ sets finish_reason="stop" on partial chunks with
-            # content.
             aggregated_llm_response = _finalize_text_response(
                 model_version=part.model,
                 finish_reason=finish_reason,
