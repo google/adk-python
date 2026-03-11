@@ -94,6 +94,8 @@ class StorageSession(Base):
   update_time: Mapped[datetime] = mapped_column(
       PreciseTimestamp, default=func.now(), onupdate=func.now()
   )
+  # New column for optimistic concurrency control
+  event_sequence: Mapped[int] = mapped_column(default=0)
 
   storage_events: Mapped[list[StorageEvent]] = relationship(
       "StorageEvent",
@@ -102,8 +104,10 @@ class StorageSession(Base):
       cascade="all, delete-orphan",
   )
 
+  __mapper_args__ = {"version_id_col": event_sequence} # Add mapper args for versioning
+
   def __repr__(self):
-    return f"<StorageSession(id={self.id}, update_time={self.update_time})>"
+    return f"<StorageSession(id={self.id}, update_time={self.update_time}, event_sequence={self.event_sequence})>"
 
   @property
   def update_timestamp_tz(self) -> float:
@@ -133,6 +137,7 @@ class StorageSession(Base):
       state: dict[str, Any] | None = None,
       events: list[Event] | None = None,
       is_sqlite: bool = False,
+      event_sequence: int = 0, # Add event_sequence parameter
   ) -> Session:
     """Converts the storage session to a session object."""
     if state is None:
@@ -147,6 +152,7 @@ class StorageSession(Base):
         state=state,
         events=events,
         last_update_time=self.get_update_timestamp(is_sqlite=is_sqlite),
+        event_sequence=event_sequence, # Pass event_sequence
     )
 
 

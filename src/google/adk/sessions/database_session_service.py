@@ -36,6 +36,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from sqlalchemy.ext.asyncio import AsyncEngine
 from sqlalchemy.ext.asyncio import AsyncSession as DatabaseSessionFactory
 from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.orm.exc import StaleDataError # Import StaleDataError
 from sqlalchemy.pool import StaticPool
 from typing_extensions import override
 
@@ -148,8 +149,10 @@ class DatabaseSessionService(BaseSessionService):
         engine_kwargs.setdefault("poolclass", StaticPool)
         connect_args = dict(engine_kwargs.get("connect_args", {}))
         connect_args.setdefault("check_same_thread", False)
-        # Enforce SERIALIZABLE isolation for SQLite to prevent race conditions.
-        connect_args.setdefault("isolation_level", "SERIALIZABLE")
+        # For SQLite, use "IMMEDIATE" or "EXCLUSIVE" for stronger isolation,
+        # as "SERIALIZABLE" is not supported. "IMMEDIATE" will begin a
+        # transaction immediately, preventing other connections from writing.
+        connect_args.setdefault("isolation_level", "IMMEDIATE")
         engine_kwargs["connect_args"] = connect_args
       elif url.get_backend_name() != _SQLITE_DIALECT:
         engine_kwargs.setdefault("pool_pre_ping", True)
@@ -205,7 +208,7 @@ class DatabaseSessionService(BaseSessionService):
     On normal exit the caller is responsible for committing; on any exception
     the transaction is explicitly rolled back before the error propagates,
     preventing connection-pool exhaustion from lingering invalid transactions.
-    """<
+    """
     async with self.database_session_factory() as sql_session:
       try:
         yield sql_session
@@ -369,9 +372,6 @@ class DatabaseSessionService(BaseSessionService):
       if is_sqlite or is_postgresql:
         now = now.replace(tzinfo=None)
 
-      # Initialize event_sequence for new sessions
-      session_state["event_sequence"] = 0
-
       storage_session = schema.StorageSession(
           app_name=app_name,
           user_id=user_id,
@@ -379,6 +379,7 @@ class DatabaseSessionService(BaseSessionService):
           state=session_state,
           create_time=now,
           update_time=now,
+          event_sequence=0, # Explicitly set for new sessions
       )
       sql_session.add(storage_session)
       await sql_session.commit()
@@ -388,7 +389,7 @@ class DatabaseSessionService(BaseSessionService):
           storage_app_state.state, storage_user_state.state, session_state
       )
       session = storage_session.to_session(
-          state=merged_state, is_sqlite=is_sqlite, event_sequence=0
+          state=merged_state, is_sqlite=is_sqlite, event_sequence=storage_session.event_sequence
       )
     return session
 
@@ -443,7 +444,8 @@ class DatabaseSessionService(BaseSessionService):
       app_state = storage_app_state.state if storage_app_state else {}
       user_state = storage_user_state.state if storage_user_state else {}
       session_state = storage_session.state
-      event_sequence = session_state.get("event_sequence", 0)
+      # event_sequence is now a direct attribute of storage_session
+      event_sequence = storage_session.event_sequence
 
       # Merge states
       merged_state = _merge_state(app_state, user_state, session_state)
@@ -502,7 +504,7 @@ class DatabaseSessionService(BaseSessionService):
         user_state = user_states_map.get(storage_session.user_id, {})
         merged_state = _merge_state(app_state, user_state, session_state)
         # Pass event_sequence to to_session if it exists in state
-        event_sequence = session_state.get("event_sequence", 0)
+        event_sequence = storage_session.event_sequence
         sessions.append(
             storage_session.to_session(state=merged_state, is_sqlite=is_sqlite, event_sequence=event_sequence)
         )
@@ -570,40 +572,15 @@ class DatabaseSessionService(BaseSessionService):
         if storage_session is None:
           raise ValueError(f"Session {session.id} not found.")
 
-        # Get the current event_sequence from storage.
-        stored_event_sequence = storage_session.state.get("event_sequence", 0)
-        next_event_sequence = stored_event_sequence + 1
+        # When using version_id_col, SQLAlchemy automatically handles the
+        # event_sequence increment and optimistic concurrency check during commit.
+        # We just need to update the storage_session object's state and its
+        # event_sequence (which will be incremented by SQLAlchemy upon flush/commit).
 
-        # Atomically update the event_sequence in the database.
-        # This update includes a WHERE clause that checks the current
-        # event_sequence, ensuring optimistic concurrency control.
-        # If another writer has already updated the session, the rowcount
-        # will be 0, indicating a conflict.
-        update_session_stmt = (
-            update(schema.StorageSession)
-            .where(
-                schema.StorageSession.app_name == session.app_name,
-                schema.StorageSession.user_id == session.user_id,
-                schema.StorageSession.id == session.id,
-                schema.StorageSession.state["event_sequence"]
-                == stored_event_sequence,
-            )
-            .values(
-                state=storage_session.state | {"event_sequence": next_event_sequence}
-            )
-        )
-        update_result = await sql_session.execute(update_session_stmt)
-
-        if update_result.rowcount == 0:
-          raise ValueError(
-              "The session has been modified by another writer. "
-              "Please reload the session before appending events."
-          )
-
-        # Update the in-memory storage_session to reflect the database change
-        # This is important for subsequent ORM operations within the same session
-        # and for the final session.event_sequence update.
-        storage_session.state["event_sequence"] = next_event_sequence
+        # Update event_sequence in the storage_session object before commit.
+        # SQLAlchemy's version_id_col will use this value for the WHERE clause.
+        # It will also increment it after a successful commit.
+        storage_session.event_sequence = session.event_sequence
 
         storage_app_state = await _select_required_state(
             sql_session=sql_session,
@@ -644,10 +621,7 @@ class DatabaseSessionService(BaseSessionService):
               storage_user_state.state | state_deltas["user"]
           )
         if state_deltas["session"]:
-          # Note: storage_session.state["event_sequence"] was already updated
-          # by the explicit UPDATE statement above.
-          # We need to ensure other session state changes are merged.
-          # The | operator for dictionaries correctly merges.
+          # Merge other session state changes.
           storage_session.state = (
               storage_session.state | state_deltas["session"]
           )
@@ -661,14 +635,22 @@ class DatabaseSessionService(BaseSessionService):
         storage_session.update_time = update_time
         sql_session.add(schema.StorageEvent.from_event(session, event))
 
-        await sql_session.commit()
+        try:
+            await sql_session.commit()
+            # Update in-memory session's event_sequence after successful commit
+            # SQLAlchemy's version_id_col increments storage_session.event_sequence
+            # upon successful commit.
+            session.event_sequence = storage_session.event_sequence
+        except StaleDataError as e: # Catch StaleDataError for optimistic concurrency
+            raise ValueError(
+                "The session has been modified by another writer. "
+                "Please reload the session before appending events."
+            ) from e
 
         # Update timestamp with commit time
         session.last_update_time = storage_session.get_update_timestamp(
             is_sqlite
         )
-        # Update in-memory session's event_sequence after successful commit
-        session.event_sequence = next_event_sequence
 
     # Also update the in-memory session (handled by super().append_event)
     # This call might also update last_update_time, but event_sequence is explicitly handled now.
