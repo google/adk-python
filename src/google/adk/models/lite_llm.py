@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import copy
 import importlib.util
 import json
@@ -142,6 +143,11 @@ _MISSING_TOOL_RESULT_MESSAGE = (
     "Error: Missing tool result (tool execution may have been interrupted "
     "before a response was recorded)."
 )
+
+# Separator LiteLLM uses to embed thought_signature in tool call IDs.
+# Gemini's thoughtSignature requirement is documented here:
+# https://ai.google.dev/gemini-api/docs/thought-signatures
+_THOUGHT_SIGNATURE_SEPARATOR = "__thought__"
 
 _LITELLM_IMPORTED = False
 _LITELLM_GLOBAL_SYMBOLS = (
@@ -602,6 +608,27 @@ def _extract_cached_prompt_tokens(usage: Any) -> int:
   return 0
 
 
+def _decode_thought_signature(value: Any) -> Optional[bytes]:
+  """Safely decodes a thought_signature value to bytes.
+
+  Args:
+    value: A base64 string or raw bytes thought_signature.
+
+  Returns:
+    The decoded bytes, or None if decoding fails.
+  """
+  if isinstance(value, bytes):
+    return value
+  try:
+    return base64.b64decode(value, validate=True)
+  except (binascii.Error, TypeError, ValueError):
+    logger.debug(
+        "Failed to decode thought_signature of type %s.",
+        type(value).__name__,
+    )
+    return None
+
+
 def _extract_reasoning_tokens(usage: Any) -> int:
   """Extracts reasoning tokens from LiteLLM usage.
 
@@ -635,6 +662,64 @@ def _extract_reasoning_tokens(usage: Any) -> int:
     logger.debug("Error extracting reasoning tokens: %s", e)
 
   return 0
+
+
+def _extract_thought_signature_from_tool_call(
+    tool_call: ChatCompletionMessageToolCall,
+) -> Optional[bytes]:
+  """Extracts thought_signature from a litellm tool call if present.
+
+  Gemini thinking models attach a thought_signature to function call parts.
+  See https://ai.google.dev/gemini-api/docs/thought-signatures.
+  This signature may appear in several locations depending on the
+  provider path:
+  1. extra_content.google.thought_signature (OpenAI-compatible API).
+  2. provider_specific_fields on the tool call or function (Vertex).
+  3. Embedded in the tool call ID via __thought__ separator.
+
+  Args:
+    tool_call: A litellm tool call object.
+
+  Returns:
+    The thought_signature as bytes, or None if not present.
+  """
+  # Check extra_content.google.thought_signature (OpenAI format)
+  extra_content = tool_call.get("extra_content")
+  if isinstance(extra_content, dict):
+    google_fields = extra_content.get("google")
+    if isinstance(google_fields, dict):
+      signature = google_fields.get("thought_signature")
+      if signature:
+        return _decode_thought_signature(signature)
+
+  # Check provider_specific_fields on the tool call
+  provider_fields = tool_call.get("provider_specific_fields")
+  if isinstance(provider_fields, dict):
+    signature = provider_fields.get("thought_signature")
+    if signature:
+      return _decode_thought_signature(signature)
+
+  # Check provider_specific_fields on the function
+  function = tool_call.get("function")
+  if function:
+    func_provider_fields = None
+    if isinstance(function, dict):
+      func_provider_fields = function.get("provider_specific_fields")
+    elif hasattr(function, "provider_specific_fields"):
+      func_provider_fields = function.provider_specific_fields
+    if isinstance(func_provider_fields, dict):
+      signature = func_provider_fields.get("thought_signature")
+      if signature:
+        return _decode_thought_signature(signature)
+
+  # Check if thought signature is embedded in the tool call ID
+  tool_call_id = tool_call.get("id") or ""
+  if _THOUGHT_SIGNATURE_SEPARATOR in tool_call_id:
+    parts = tool_call_id.split(_THOUGHT_SIGNATURE_SEPARATOR, 1)
+    if len(parts) == 2:
+      return _decode_thought_signature(parts[1])
+
+  return None
 
 
 async def _content_to_message_param(
@@ -706,16 +791,31 @@ async def _content_to_message_param(
     reasoning_parts: list[types.Part] = []
     for part in content.parts:
       if part.function_call:
-        tool_calls.append(
-            ChatCompletionAssistantToolCall(
-                type="function",
-                id=part.function_call.id,
-                function=Function(
-                    name=part.function_call.name,
-                    arguments=_safe_json_serialize(part.function_call.args),
-                ),
-            )
-        )
+        tool_call_id = part.function_call.id or ""
+        tool_call_dict: ChatCompletionAssistantToolCall = {
+            "type": "function",
+            "id": tool_call_id,
+            "function": {
+                "name": part.function_call.name,
+                "arguments": _safe_json_serialize(part.function_call.args),
+            },
+        }
+        # Preserve thought_signature for Gemini thinking models.
+        # LiteLLM's Gemini prompt conversion reads provider_specific_fields,
+        # while the OpenAI-compatible Gemini endpoint path expects the
+        # extra_content.google.thought_signature payload to survive.
+        # See https://ai.google.dev/gemini-api/docs/thought-signatures.
+        if part.thought_signature:
+          sig = part.thought_signature
+          if isinstance(sig, bytes):
+            sig = base64.b64encode(sig).decode("utf-8")
+          tool_call_dict["provider_specific_fields"] = {
+              "thought_signature": sig
+          }
+          tool_call_dict["extra_content"] = {
+              "google": {"thought_signature": sig}
+          }
+        tool_calls.append(tool_call_dict)
       elif part.thought:
         reasoning_parts.append(part)
       else:
@@ -1524,11 +1624,14 @@ def _message_to_generate_content_response(
   if tool_calls:
     for tool_call in tool_calls:
       if tool_call.type == "function":
+        thought_signature = _extract_thought_signature_from_tool_call(tool_call)
         part = types.Part.from_function_call(
             name=tool_call.function.name,
             args=json.loads(tool_call.function.arguments or "{}"),
         )
         part.function_call.id = tool_call.id
+        if thought_signature:
+          part.thought_signature = thought_signature
         parts.append(part)
 
   return LlmResponse(
