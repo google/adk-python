@@ -517,13 +517,11 @@ class BigQueryLoggerConfig:
   # for Apache Iceberg.  Requires ``connection_id`` to be set as well.
   # Format: "gs://bucket/path_to_table/"
   #
-  # NOTE: Data is written via the BigQuery legacy streaming API
-  # (insertAll / insert_rows_json) because the Storage Write API does
-  # not yet support BigLake Iceberg tables.  Rows are immediately
-  # queryable within BigQuery, but Iceberg metadata (used by
-  # open-source engines such as Spark/Trino) may take up to ~90 minutes
-  # to refresh.  If near-real-time cross-engine visibility is required,
-  # consider a DML/load-job ingestion path instead.
+  # Data is written via the Storage Write API v2 using proto format.
+  # Rows are immediately queryable within BigQuery, but Iceberg
+  # metadata (used by open-source engines such as Spark/Trino) may
+  # take up to ~90 minutes to refresh.  If near-real-time cross-engine
+  # visibility is required, consider a DML/load-job ingestion path.
   biglake_storage_uri: Optional[str] = None
   # Whether to apply time-based partitioning for BigLake Iceberg tables.
   # BigLake Iceberg time partitioning is a preview feature and may not be
@@ -876,6 +874,115 @@ class TraceManager:
 # ==============================================================================
 _SHUTDOWN_SENTINEL = object()
 
+# Proto type mapping for BigLake schema (populated lazily).
+_BQ_TYPE_TO_PROTO: dict[str, int] = {}
+
+
+def _get_bq_type_to_proto() -> dict[str, int]:
+  """Returns the BQ type → proto field type mapping, lazily initialised."""
+  if _BQ_TYPE_TO_PROTO:
+    return _BQ_TYPE_TO_PROTO
+  from google.protobuf import descriptor_pb2
+
+  T = descriptor_pb2.FieldDescriptorProto
+  _BQ_TYPE_TO_PROTO.update({
+      "STRING": T.TYPE_STRING,
+      "TIMESTAMP": T.TYPE_INT64,
+      "BOOLEAN": T.TYPE_BOOL,
+      "BOOL": T.TYPE_BOOL,
+      "INTEGER": T.TYPE_INT64,
+      "INT64": T.TYPE_INT64,
+      "FLOAT": T.TYPE_DOUBLE,
+      "FLOAT64": T.TYPE_DOUBLE,
+  })
+  return _BQ_TYPE_TO_PROTO
+
+
+def _bq_schema_to_descriptor_proto(
+    schema: list[bigquery.SchemaField],
+    message_name: str = "EventRow",
+) -> "descriptor_pb2.DescriptorProto":
+  """Converts a flat BQ schema to a proto2 DescriptorProto.
+
+  Only the narrow set of types used by the flattened BigLake schema
+  is supported.  RECORD, JSON, REPEATED mode, and unmapped types
+  raise ``ValueError``.
+
+  Args:
+      schema: Flat list of BigQuery SchemaField objects.
+      message_name: Name for the generated message type.
+
+  Returns:
+      A DescriptorProto describing the message.
+  """
+  from google.protobuf import descriptor_pb2
+
+  type_map = _get_bq_type_to_proto()
+  desc = descriptor_pb2.DescriptorProto(name=message_name)
+
+  for i, field in enumerate(schema, start=1):
+    if field.mode == "REPEATED":
+      raise ValueError(
+          "REPEATED mode not supported for proto descriptor:"
+          f" field={field.name}"
+      )
+    bq_type = field.field_type.upper()
+    if bq_type in ("RECORD", "STRUCT"):
+      raise ValueError(
+          "RECORD/STRUCT type not supported for proto descriptor:"
+          f" field={field.name}"
+      )
+    if bq_type == "JSON":
+      raise ValueError(
+          f"JSON type not supported for proto descriptor: field={field.name}"
+      )
+    proto_type = type_map.get(bq_type)
+    if proto_type is None:
+      raise ValueError(
+          f"Unsupported BQ type '{bq_type}' for proto descriptor:"
+          f" field={field.name}"
+      )
+    desc.field.add(
+        name=field.name,
+        number=i,
+        type=proto_type,
+        label=descriptor_pb2.FieldDescriptorProto.LABEL_OPTIONAL,
+    )
+
+  return desc
+
+
+def _make_proto_message_class(
+    descriptor_proto: "descriptor_pb2.DescriptorProto",
+):
+  """Creates a runtime protobuf message class from a DescriptorProto.
+
+  Uses a fresh DescriptorPool (not the global default) and proto2
+  syntax so that unset optional fields are truly absent from the
+  serialised bytes (BigQuery interprets absence as NULL).
+
+  Args:
+      descriptor_proto: The message descriptor.
+
+  Returns:
+      A protobuf message class.
+  """
+  from google.protobuf import descriptor_pb2
+  from google.protobuf import descriptor_pool
+  from google.protobuf import message_factory
+
+  file_proto = descriptor_pb2.FileDescriptorProto(
+      name="dynamic.proto",
+      syntax="proto2",
+  )
+  file_proto.message_type.add().CopyFrom(descriptor_proto)
+
+  pool = descriptor_pool.DescriptorPool()
+  pool.Add(file_proto)
+  desc = pool.FindMessageTypeByName(descriptor_proto.name)
+
+  return message_factory.GetMessageClass(desc)
+
 
 class BatchProcessor:
   """Handles asynchronous batching and writing of events to BigQuery."""
@@ -1224,32 +1331,34 @@ class BatchProcessor:
         pass
 
 
-class LegacyStreamingBatchProcessor:
-  """Batches and writes events via the legacy streaming API.
+class ProtoBatchProcessor:
+  """Batches and writes events to BigQuery using proto serialization.
 
-  Used for BigLake Iceberg tables where the Storage Write API v2
-  (Arrow format) is not supported.  Uses ``client.insert_rows_json()``
-  which handles Iceberg's internal identity columns transparently.
+  Used for BigLake Iceberg tables where the Arrow format is not
+  supported.  Mirrors ``BatchProcessor`` structurally but serializes
+  rows as proto2 messages instead of Arrow record batches.
   """
 
   def __init__(
       self,
-      bq_client: bigquery.Client,
-      full_table_id: str,
+      write_client: BigQueryWriteAsyncClient,
+      proto_descriptor: "descriptor_pb2.DescriptorProto",
+      message_class,
+      write_stream: str,
       batch_size: int,
       flush_interval: float,
       retry_config: RetryConfig,
       queue_max_size: int,
       shutdown_timeout: float,
-      executor: ThreadPoolExecutor,
   ):
-    self.bq_client = bq_client
-    self.full_table_id = full_table_id
+    self.write_client = write_client
+    self._proto_descriptor = proto_descriptor
+    self._message_class = message_class
+    self.write_stream = write_stream
     self.batch_size = batch_size
     self.flush_interval = flush_interval
     self.retry_config = retry_config
     self.shutdown_timeout = shutdown_timeout
-    self._executor = executor
     self._queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(
         maxsize=queue_max_size
     )
@@ -1274,41 +1383,32 @@ class LegacyStreamingBatchProcessor:
     except asyncio.QueueFull:
       logger.warning("BigQuery log queue full, dropping event.")
 
-  @staticmethod
-  def _prepare_rows_json(
-      rows: list[dict[str, Any]],
-  ) -> list[dict[str, Any]]:
-    """Converts row dicts to JSON-serializable format for BigLake.
-
-    BigLake Iceberg STRING columns cannot accept dict/list values
-    directly via ``insert_rows_json``.  This method serializes all
-    non-scalar Python values (dict, list) to JSON strings and
-    converts datetime objects to ISO format.
+  def _prepare_proto_rows(self, rows: list[dict[str, Any]]) -> list[bytes]:
+    """Serializes row dicts to proto2 wire-format bytes.
 
     Args:
         rows: list of row dictionaries.
 
     Returns:
-        list of JSON-serializable row dictionaries.
+        list of serialized proto bytes.
     """
-    prepared = []
+    serialized = []
     for row in rows:
-      out = {}
-      for key, value in row.items():
+      msg = self._message_class()
+      for field_name, value in row.items():
+        if value is None:
+          continue  # unset = NULL in proto2 with LABEL_OPTIONAL
         if isinstance(value, datetime):
-          out[key] = value.isoformat()
+          # BQ TIMESTAMP via proto expects microseconds since epoch
+          value = int(value.timestamp() * 1_000_000)
         elif isinstance(value, (dict, list)):
-          try:
-            out[key] = json.dumps(value)
-          except (TypeError, ValueError):
-            out[key] = str(value)
-        else:
-          out[key] = value
-      prepared.append(out)
-    return prepared
+          value = json.dumps(value)
+        setattr(msg, field_name, value)
+      serialized.append(msg.SerializeToString())
+    return serialized
 
   async def _batch_writer(self) -> None:
-    """Worker task that batches and writes rows via legacy streaming."""
+    """Worker task that batches and writes rows to BigQuery."""
     while not self._shutdown or not self._queue.empty():
       batch = []
       try:
@@ -1348,11 +1448,11 @@ class LegacyStreamingBatchProcessor:
       except asyncio.TimeoutError:
         continue
       except asyncio.CancelledError:
-        logger.info("Legacy streaming batch writer task cancelled.")
+        logger.info("Proto batch writer task cancelled.")
         break
       except Exception as e:
         logger.error(
-            "Error in legacy streaming batch writer: %s",
+            "Error in proto batch writer loop: %s",
             e,
             exc_info=True,
         )
@@ -1365,48 +1465,101 @@ class LegacyStreamingBatchProcessor:
           break
 
   async def _write_rows_with_retry(self, rows: list[dict[str, Any]]) -> None:
-    """Writes rows via insert_rows_json with retry logic."""
+    """Writes a batch of rows to BigQuery with retry logic."""
     attempt = 0
     delay = self.retry_config.initial_delay
-    prepared = self._prepare_rows_json(rows)
-    loop = asyncio.get_running_loop()
+
+    try:
+      serialized_rows = self._prepare_proto_rows(rows)
+      req = bq_storage_types.AppendRowsRequest(
+          write_stream=self.write_stream,
+          trace_id=f"google-adk-bq-logger/{__version__}",
+      )
+      proto_data = bq_storage_types.AppendRowsRequest.ProtoData(
+          writer_schema=bq_storage_types.ProtoSchema(
+              proto_descriptor=self._proto_descriptor
+          ),
+          rows=bq_storage_types.ProtoRows(serialized_rows=serialized_rows),
+      )
+      req.proto_rows = proto_data
+    except Exception as e:
+      logger.error(
+          "Failed to prepare proto batch (Data Loss): %s",
+          e,
+          exc_info=True,
+      )
+      return
 
     while attempt <= self.retry_config.max_retries:
       try:
 
-        def do_insert():
-          return self.bq_client.insert_rows_json(self.full_table_id, prepared)
+        async def requests_iter():
+          yield req
 
-        errors = await loop.run_in_executor(self._executor, do_insert)
-        if not errors:
+        async def perform_write():
+          responses = await self.write_client.append_rows(requests_iter())
+          async for response in responses:
+            error = getattr(response, "error", None)
+            error_code = getattr(error, "code", None)
+            if error_code and error_code != 0:
+              error_message = getattr(error, "message", "Unknown error")
+              logger.warning(
+                  "BigQuery Write API returned error code %s: %s",
+                  error_code,
+                  error_message,
+              )
+              if error_code in [
+                  _GRPC_DEADLINE_EXCEEDED,
+                  _GRPC_INTERNAL,
+                  _GRPC_UNAVAILABLE,
+              ]:
+                raise ServiceUnavailable(error_message)
+
+              if "schema mismatch" in error_message.lower():
+                logger.error(
+                    "BigQuery Schema Mismatch: %s. This usually"
+                    " means the table schema does not match the"
+                    " expected schema.",
+                    error_message,
+                )
+              else:
+                logger.error(
+                    "Non-retryable BigQuery error: %s",
+                    error_message,
+                )
+                row_errors = getattr(response, "row_errors", [])
+                if row_errors:
+                  for row_error in row_errors:
+                    logger.error("Row error details: %s", row_error)
+                logger.error("Row content causing error: %s", rows)
+              return
           return
-        logger.error(
-            "BigQuery legacy streaming insert errors: %s",
-            errors,
-        )
+
+        await asyncio.wait_for(perform_write(), timeout=30.0)
         return
 
       except (
           ServiceUnavailable,
           TooManyRequests,
           InternalServerError,
+          asyncio.TimeoutError,
       ) as e:
         attempt += 1
         if attempt > self.retry_config.max_retries:
           logger.error(
-              "BigQuery legacy streaming batch dropped"
-              " after %s attempts. Last error: %s",
+              "BigQuery Proto Batch Dropped after %s attempts. Last error: %s",
               self.retry_config.max_retries + 1,
               e,
           )
           return
+
         sleep_time = min(
             delay * (1 + random.random()),
             self.retry_config.max_delay,
         )
         logger.warning(
-            "BigQuery legacy streaming write failed"
-            " (Attempt %s), retrying in %.2fs... Error: %s",
+            "BigQuery proto write failed (Attempt %s), retrying"
+            " in %.2fs... Error: %s",
             attempt,
             sleep_time,
             e,
@@ -1415,7 +1568,7 @@ class LegacyStreamingBatchProcessor:
         delay *= self.retry_config.multiplier
       except Exception as e:
         logger.error(
-            "Unexpected BigQuery legacy streaming error (Dropping batch): %s",
+            "Unexpected BigQuery Write API error (Dropping batch): %s",
             e,
             exc_info=True,
         )
@@ -1424,9 +1577,7 @@ class LegacyStreamingBatchProcessor:
   async def shutdown(self, timeout: float = 5.0) -> None:
     """Shuts down the processor, draining the queue."""
     self._shutdown = True
-    logger.info(
-        "LegacyStreamingBatchProcessor shutting down, draining queue..."
-    )
+    logger.info("ProtoBatchProcessor shutting down, draining queue...")
 
     try:
       self._queue.put_nowait(_SHUTDOWN_SENTINEL)
@@ -1438,8 +1589,7 @@ class LegacyStreamingBatchProcessor:
         await asyncio.wait_for(self._batch_processor_task, timeout=timeout)
       except asyncio.TimeoutError:
         logger.warning(
-            "LegacyStreamingBatchProcessor shutdown timed"
-            " out, cancelling worker."
+            "ProtoBatchProcessor shutdown timed out, cancelling worker."
         )
         self._batch_processor_task.cancel()
         try:
@@ -1447,10 +1597,7 @@ class LegacyStreamingBatchProcessor:
         except asyncio.CancelledError:
           pass
       except Exception as e:
-        logger.error(
-            "Error during LegacyStreamingBatchProcessor shutdown: %s",
-            e,
-        )
+        logger.error("Error during ProtoBatchProcessor shutdown: %s", e)
 
   async def close(self) -> None:
     """Closes the processor and flushes remaining items."""
@@ -1461,8 +1608,7 @@ class LegacyStreamingBatchProcessor:
       await asyncio.wait_for(self._queue.join(), timeout=self.shutdown_timeout)
     except (asyncio.TimeoutError, asyncio.CancelledError):
       logger.warning(
-          "Timeout waiting for legacy streaming batch"
-          " queue to empty on shutdown."
+          "Timeout waiting for proto batch queue to empty on shutdown."
       )
     if self._batch_processor_task and not self._batch_processor_task.done():
       self._batch_processor_task.cancel()
@@ -2201,6 +2347,38 @@ class AnalyticsTableBackend(abc.ABC):
     ...
 
 
+async def _create_write_client(
+    plugin: "BigQueryAgentAnalyticsPlugin",
+    loop: asyncio.AbstractEventLoop,
+) -> BigQueryWriteAsyncClient:
+  """Creates a BigQueryWriteAsyncClient with proper credentials."""
+
+  def get_credentials():
+    creds, project_id = google.auth.default(
+        scopes=["https://www.googleapis.com/auth/cloud-platform"]
+    )
+    return creds, project_id
+
+  creds, project_id = await loop.run_in_executor(
+      plugin._executor, get_credentials
+  )
+  quota_project_id = getattr(creds, "quota_project_id", None)
+  options = (
+      client_options.ClientOptions(quota_project_id=quota_project_id)
+      if quota_project_id
+      else None
+  )
+  client_info = gapic_client_info.ClientInfo(
+      user_agent=f"google-adk-bq-logger/{__version__}"
+  )
+
+  return BigQueryWriteAsyncClient(
+      credentials=creds,
+      client_info=client_info,
+      client_options=options,
+  )
+
+
 class NativeBigQueryBackend(AnalyticsTableBackend):
   """Backend for native BigQuery tables using Storage Write API."""
 
@@ -2228,30 +2406,7 @@ class NativeBigQueryBackend(AnalyticsTableBackend):
   ) -> _LoopState:
     plugin = self._plugin
 
-    def get_credentials():
-      creds, project_id = google.auth.default(
-          scopes=["https://www.googleapis.com/auth/cloud-platform"]
-      )
-      return creds, project_id
-
-    creds, project_id = await loop.run_in_executor(
-        plugin._executor, get_credentials
-    )
-    quota_project_id = getattr(creds, "quota_project_id", None)
-    options = (
-        client_options.ClientOptions(quota_project_id=quota_project_id)
-        if quota_project_id
-        else None
-    )
-    client_info = gapic_client_info.ClientInfo(
-        user_agent=f"google-adk-bq-logger/{__version__}"
-    )
-
-    write_client = BigQueryWriteAsyncClient(
-        credentials=creds,
-        client_info=client_info,
-        client_options=options,
-    )
+    write_client = await _create_write_client(plugin, loop)
 
     if not plugin._write_stream_name:
       plugin._write_stream_name = (
@@ -2312,19 +2467,34 @@ class BigLakeIcebergBackend(AnalyticsTableBackend):
       self, loop: asyncio.AbstractEventLoop
   ) -> _LoopState:
     plugin = self._plugin
-    batch_processor = LegacyStreamingBatchProcessor(
-        bq_client=plugin.client,
-        full_table_id=plugin.full_table_id,
+
+    write_client = await _create_write_client(plugin, loop)
+
+    if not plugin._write_stream_name:
+      plugin._write_stream_name = (
+          f"projects/{plugin.project_id}"
+          f"/datasets/{plugin.dataset_id}"
+          f"/tables/{plugin.table_id}/_default"
+      )
+
+    # Build proto descriptor from the flattened BigLake schema
+    proto_desc = _bq_schema_to_descriptor_proto(plugin._schema)
+    message_class = _make_proto_message_class(proto_desc)
+
+    batch_processor = ProtoBatchProcessor(
+        write_client=write_client,
+        proto_descriptor=proto_desc,
+        message_class=message_class,
+        write_stream=plugin._write_stream_name,
         batch_size=plugin.config.batch_size,
         flush_interval=plugin.config.batch_flush_interval,
         retry_config=plugin.config.retry_config,
         queue_max_size=plugin.config.queue_max_size,
         shutdown_timeout=plugin.config.shutdown_timeout,
-        executor=plugin._executor,
     )
     await batch_processor.start()
 
-    writer = LegacyStreamingWriter(batch_processor)
+    writer = StorageWriteApiWriter(write_client, batch_processor)
     return _LoopState(writer=writer)
 
 
@@ -2359,12 +2529,12 @@ class EventWriter(abc.ABC):
 
 
 class StorageWriteApiWriter(EventWriter):
-  """Writer for native BigQuery tables using Storage Write API."""
+  """Writer for BigQuery tables using Storage Write API."""
 
   def __init__(
       self,
       write_client: BigQueryWriteAsyncClient,
-      batch_processor: BatchProcessor,
+      batch_processor: Union[BatchProcessor, "ProtoBatchProcessor"],
   ):
     self._write_client = write_client
     self._batch_processor = batch_processor
@@ -2388,31 +2558,6 @@ class StorageWriteApiWriter(EventWriter):
   @property
   def write_stream(self) -> Optional[str]:
     return self._batch_processor.write_stream
-
-  def atexit_processor(self) -> Any | None:
-    return self._batch_processor
-
-
-class LegacyStreamingWriter(EventWriter):
-  """Writer for BigLake Iceberg tables using legacy streaming."""
-
-  def __init__(
-      self,
-      batch_processor: LegacyStreamingBatchProcessor,
-  ):
-    self._batch_processor = batch_processor
-
-  async def append(self, row: dict[str, Any]) -> None:
-    await self._batch_processor.append(row)
-
-  async def flush(self) -> None:
-    await self._batch_processor.flush()
-
-  async def shutdown(self, timeout: float) -> None:
-    await self._batch_processor.shutdown(timeout=timeout)
-
-  async def close(self) -> None:
-    await self._batch_processor.close()
 
   def atexit_processor(self) -> Any | None:
     return self._batch_processor
@@ -2536,7 +2681,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
   @property
   def _batch_processor_prop(
       self,
-  ) -> Optional["Union[BatchProcessor, LegacyStreamingBatchProcessor]"]:
+  ) -> Optional["Union[BatchProcessor, ProtoBatchProcessor]"]:
     """The batch processor for the current event loop.
 
     Compatibility surface — routes through the writer's
@@ -2675,7 +2820,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
 
   @staticmethod
   def _atexit_cleanup(
-      batch_processor: "Union[BatchProcessor, LegacyStreamingBatchProcessor]",
+      batch_processor: "Union[BatchProcessor, ProtoBatchProcessor]",
   ) -> None:
     """Clean up batch processor on script exit.
 

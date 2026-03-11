@@ -6791,8 +6791,8 @@ class TestBigLakeIceberg:
     assert result[3].name == "r"
     assert result[3].mode == "NULLABLE"
 
-  def test_biglake_uses_legacy_streaming_processor(self):
-    """BigLake Iceberg uses LegacyStreamingBatchProcessor."""
+  def test_biglake_uses_proto_batch_processor(self):
+    """BigLake Iceberg uses ProtoBatchProcessor."""
     plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
         project_id=PROJECT_ID,
         dataset_id=DATASET_ID,
@@ -6818,14 +6818,20 @@ class TestBigLakeIceberg:
         from concurrent.futures import ThreadPoolExecutor
 
         plugin._executor = ThreadPoolExecutor(max_workers=1)
-      state = await plugin._get_loop_state()
+
+      with mock.patch(
+          "google.adk.plugins.bigquery_agent_analytics_plugin"
+          "._create_write_client",
+          new=mock.AsyncMock(),
+      ):
+        state = await plugin._get_loop_state()
       assert isinstance(
           state.writer,
-          bigquery_agent_analytics_plugin.LegacyStreamingWriter,
+          bigquery_agent_analytics_plugin.StorageWriteApiWriter,
       )
       assert isinstance(
           state.writer.atexit_processor(),
-          bigquery_agent_analytics_plugin.LegacyStreamingBatchProcessor,
+          bigquery_agent_analytics_plugin.ProtoBatchProcessor,
       )
       await state.writer.shutdown(timeout=5.0)
 
@@ -6840,66 +6846,101 @@ class TestBigLakeIceberg:
     assert not plugin.is_biglake
 
   @pytest.mark.asyncio
-  async def test_legacy_processor_prepare_rows_json(self):
-    """LegacyStreamingBatchProcessor serializes non-scalar values."""
+  async def test_proto_processor_prepare_proto_rows(self):
+    """ProtoBatchProcessor serializes rows to proto bytes."""
     from datetime import datetime
     from datetime import timezone
 
-    rows = [
-        {
-            "timestamp": datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
-            "event_type": "TEST",
-            "content": '{"key": "value"}',
-            "latency_ms": {"total_ms": 123},
-            "content_parts": [{"text": "hello", "idx": 0}],
-            "count": 42,
-            "empty_list": [],
-            "none_val": None,
-        },
+    schema = [
+        bigquery.SchemaField("timestamp", "TIMESTAMP"),
+        bigquery.SchemaField("event_type", "STRING"),
+        bigquery.SchemaField("count", "INTEGER"),
+        bigquery.SchemaField("flag", "BOOLEAN"),
     ]
-    prepared = bigquery_agent_analytics_plugin.LegacyStreamingBatchProcessor._prepare_rows_json(
-        rows
+    desc = bigquery_agent_analytics_plugin._bq_schema_to_descriptor_proto(
+        schema
     )
-    assert len(prepared) == 1
-    row = prepared[0]
-    assert row["timestamp"] == "2026-01-01T12:00:00+00:00"
-    assert row["event_type"] == "TEST"
-    # Already a string — stays as-is
-    assert row["content"] == '{"key": "value"}'
-    # Dict → JSON string
-    assert row["latency_ms"] == '{"total_ms": 123}'
-    # List of dicts → JSON string
-    assert row["content_parts"] == '[{"text": "hello", "idx": 0}]'
-    # Scalars unchanged
-    assert row["count"] == 42
-    # Empty list → JSON string "[]"
-    assert row["empty_list"] == "[]"
-    # None stays None
-    assert row["none_val"] is None
+    msg_class = bigquery_agent_analytics_plugin._make_proto_message_class(desc)
 
-  @pytest.mark.asyncio
-  async def test_legacy_processor_write_calls_insert_rows_json(self):
-    """LegacyStreamingBatchProcessor calls insert_rows_json."""
-    from concurrent.futures import ThreadPoolExecutor
-
-    mock_client = mock.MagicMock(spec=bigquery.Client)
-    mock_client.insert_rows_json.return_value = []
-
-    processor = bigquery_agent_analytics_plugin.LegacyStreamingBatchProcessor(
-        bq_client=mock_client,
-        full_table_id="proj.ds.tbl",
+    processor = bigquery_agent_analytics_plugin.ProtoBatchProcessor(
+        write_client=mock.MagicMock(),
+        proto_descriptor=desc,
+        message_class=msg_class,
+        write_stream="projects/p/datasets/d/tables/t/_default",
         batch_size=10,
         flush_interval=1.0,
         retry_config=bigquery_agent_analytics_plugin.RetryConfig(),
         queue_max_size=100,
         shutdown_timeout=5.0,
-        executor=ThreadPoolExecutor(max_workers=1),
     )
-    rows = [{"event_type": "TEST", "content": "hello"}]
+
+    ts = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+    rows = [
+        {
+            "timestamp": ts,
+            "event_type": "TEST",
+            "count": 42,
+            "flag": True,
+        },
+    ]
+    serialized = processor._prepare_proto_rows(rows)
+    assert len(serialized) == 1
+    assert isinstance(serialized[0], bytes)
+
+    # Deserialize and verify
+    msg = msg_class()
+    msg.ParseFromString(serialized[0])
+    assert msg.timestamp == int(ts.timestamp() * 1_000_000)
+    assert msg.event_type == "TEST"
+    assert msg.count == 42
+    assert msg.flag is True
+
+  @pytest.mark.asyncio
+  async def test_proto_processor_write_calls_append_rows(self):
+    """ProtoBatchProcessor calls append_rows with proto_rows."""
+    schema = [
+        bigquery.SchemaField("event_type", "STRING"),
+    ]
+    desc = bigquery_agent_analytics_plugin._bq_schema_to_descriptor_proto(
+        schema
+    )
+    msg_class = bigquery_agent_analytics_plugin._make_proto_message_class(desc)
+
+    # Build a mock write_client that records the request
+    mock_response = mock.MagicMock()
+    mock_response.error = mock.MagicMock(code=0)
+
+    async def fake_append_rows(requests_iter):
+      async for req in requests_iter:
+        captured["req"] = req
+
+      async def resp_gen():
+        yield mock_response
+
+      return resp_gen()
+
+    captured = {}
+    mock_wc = mock.MagicMock()
+    mock_wc.append_rows = mock.AsyncMock(side_effect=fake_append_rows)
+
+    processor = bigquery_agent_analytics_plugin.ProtoBatchProcessor(
+        write_client=mock_wc,
+        proto_descriptor=desc,
+        message_class=msg_class,
+        write_stream="projects/p/datasets/d/tables/t/_default",
+        batch_size=10,
+        flush_interval=1.0,
+        retry_config=bigquery_agent_analytics_plugin.RetryConfig(),
+        queue_max_size=100,
+        shutdown_timeout=5.0,
+    )
+    rows = [{"event_type": "TEST"}]
     await processor._write_rows_with_retry(rows)
-    mock_client.insert_rows_json.assert_called_once()
-    call_args = mock_client.insert_rows_json.call_args
-    assert call_args[0][0] == "proj.ds.tbl"
+    mock_wc.append_rows.assert_called_once()
+    req = captured["req"]
+    # Should use proto_rows, not arrow_rows
+    assert req.proto_rows.rows.serialized_rows
+    assert not req.arrow_rows.rows.serialized_record_batch
 
   def test_biglake_lazy_setup_skips_arrow_schema(self):
     """BigLake lazy setup does not create Arrow schema."""
@@ -6928,12 +6969,200 @@ class TestBigLakeIceberg:
 
       if plugin._executor is None:
         plugin._executor = ThreadPoolExecutor(max_workers=1)
-      state = await plugin._get_loop_state()
+
+      with mock.patch(
+          "google.adk.plugins.bigquery_agent_analytics_plugin"
+          "._create_write_client",
+          new=mock.AsyncMock(),
+      ):
+        state = await plugin._get_loop_state()
       # Arrow schema should not have been created for BigLake
       assert plugin.arrow_schema is None
       await state.writer.shutdown(timeout=5.0)
 
     asyncio.run(run())
+
+
+class TestProtoDescriptorHelpers:
+  """Tests for proto descriptor generation helpers."""
+
+  def test_bq_schema_to_descriptor_proto(self):
+    """Descriptor has correct field types and sequential numbers."""
+    schema = [
+        bigquery.SchemaField("name", "STRING"),
+        bigquery.SchemaField("ts", "TIMESTAMP"),
+        bigquery.SchemaField("flag", "BOOLEAN"),
+        bigquery.SchemaField("count", "INTEGER"),
+        bigquery.SchemaField("score", "FLOAT"),
+    ]
+    desc = bigquery_agent_analytics_plugin._bq_schema_to_descriptor_proto(
+        schema
+    )
+    from google.protobuf import descriptor_pb2
+
+    T = descriptor_pb2.FieldDescriptorProto
+    assert len(desc.field) == 5
+    assert desc.field[0].name == "name"
+    assert desc.field[0].type == T.TYPE_STRING
+    assert desc.field[0].number == 1
+    assert desc.field[1].name == "ts"
+    assert desc.field[1].type == T.TYPE_INT64
+    assert desc.field[1].number == 2
+    assert desc.field[2].name == "flag"
+    assert desc.field[2].type == T.TYPE_BOOL
+    assert desc.field[2].number == 3
+    assert desc.field[3].name == "count"
+    assert desc.field[3].type == T.TYPE_INT64
+    assert desc.field[3].number == 4
+    assert desc.field[4].name == "score"
+    assert desc.field[4].type == T.TYPE_DOUBLE
+    assert desc.field[4].number == 5
+
+  def test_bq_schema_to_descriptor_proto_rejects_json(self):
+    """ValueError for JSON field type."""
+    schema = [bigquery.SchemaField("data", "JSON")]
+    with pytest.raises(ValueError, match="JSON"):
+      bigquery_agent_analytics_plugin._bq_schema_to_descriptor_proto(schema)
+
+  def test_bq_schema_to_descriptor_proto_rejects_record(self):
+    """ValueError for RECORD field type."""
+    schema = [
+        bigquery.SchemaField(
+            "nested",
+            "RECORD",
+            fields=[bigquery.SchemaField("x", "STRING")],
+        )
+    ]
+    with pytest.raises(ValueError, match="RECORD"):
+      bigquery_agent_analytics_plugin._bq_schema_to_descriptor_proto(schema)
+
+  def test_make_proto_message_class(self):
+    """Message class can be instantiated and round-tripped."""
+    schema = [
+        bigquery.SchemaField("name", "STRING"),
+        bigquery.SchemaField("count", "INTEGER"),
+    ]
+    desc = bigquery_agent_analytics_plugin._bq_schema_to_descriptor_proto(
+        schema
+    )
+    cls = bigquery_agent_analytics_plugin._make_proto_message_class(desc)
+    msg = cls()
+    msg.name = "test"
+    msg.count = 42
+    raw = msg.SerializeToString()
+    msg2 = cls()
+    msg2.ParseFromString(raw)
+    assert msg2.name == "test"
+    assert msg2.count == 42
+
+  def test_proto_descriptor_uses_proto2_syntax(self):
+    """Generated FileDescriptorProto uses proto2 and LABEL_OPTIONAL."""
+    from google.protobuf import descriptor_pb2
+
+    schema = [bigquery.SchemaField("val", "STRING")]
+    desc = bigquery_agent_analytics_plugin._bq_schema_to_descriptor_proto(
+        schema
+    )
+    # All fields should be LABEL_OPTIONAL
+    for f in desc.field:
+      assert f.label == descriptor_pb2.FieldDescriptorProto.LABEL_OPTIONAL
+    # Verify proto2 semantics: HasField works on unset scalars
+    # (proto3 would raise ValueError for scalar HasField)
+    cls = bigquery_agent_analytics_plugin._make_proto_message_class(desc)
+    msg = cls()
+    assert not msg.HasField("val")
+    msg.val = "test"
+    assert msg.HasField("val")
+
+  @pytest.mark.asyncio
+  async def test_proto_processor_serializes_timestamp_as_micros(self):
+    """datetime → int64 microseconds conversion."""
+    from datetime import datetime
+    from datetime import timezone
+
+    schema = [bigquery.SchemaField("ts", "TIMESTAMP")]
+    desc = bigquery_agent_analytics_plugin._bq_schema_to_descriptor_proto(
+        schema
+    )
+    cls = bigquery_agent_analytics_plugin._make_proto_message_class(desc)
+    processor = bigquery_agent_analytics_plugin.ProtoBatchProcessor(
+        write_client=mock.MagicMock(),
+        proto_descriptor=desc,
+        message_class=cls,
+        write_stream="projects/p/datasets/d/tables/t/_default",
+        batch_size=10,
+        flush_interval=1.0,
+        retry_config=bigquery_agent_analytics_plugin.RetryConfig(),
+        queue_max_size=100,
+        shutdown_timeout=5.0,
+    )
+    ts = datetime(2026, 6, 15, 10, 30, 0, tzinfo=timezone.utc)
+    rows = [{"ts": ts}]
+    serialized = processor._prepare_proto_rows(rows)
+    msg = cls()
+    msg.ParseFromString(serialized[0])
+    assert msg.ts == int(ts.timestamp() * 1_000_000)
+
+  @pytest.mark.asyncio
+  async def test_proto_processor_skips_none_fields(self):
+    """None fields are not set on the proto message."""
+    schema = [
+        bigquery.SchemaField("name", "STRING"),
+        bigquery.SchemaField("count", "INTEGER"),
+    ]
+    desc = bigquery_agent_analytics_plugin._bq_schema_to_descriptor_proto(
+        schema
+    )
+    cls = bigquery_agent_analytics_plugin._make_proto_message_class(desc)
+    processor = bigquery_agent_analytics_plugin.ProtoBatchProcessor(
+        write_client=mock.MagicMock(),
+        proto_descriptor=desc,
+        message_class=cls,
+        write_stream="projects/p/datasets/d/tables/t/_default",
+        batch_size=10,
+        flush_interval=1.0,
+        retry_config=bigquery_agent_analytics_plugin.RetryConfig(),
+        queue_max_size=100,
+        shutdown_timeout=5.0,
+    )
+    rows = [{"name": "hello", "count": None}]
+    serialized = processor._prepare_proto_rows(rows)
+    msg = cls()
+    msg.ParseFromString(serialized[0])
+    assert msg.name == "hello"
+    # count should not be set (proto2 LABEL_OPTIONAL)
+    assert not msg.HasField("count")
+
+  @pytest.mark.asyncio
+  async def test_create_write_client_helper(self):
+    """_create_write_client returns a BigQueryWriteAsyncClient."""
+    mock_plugin = mock.MagicMock()
+    mock_plugin._executor = None
+
+    mock_creds = mock.MagicMock()
+    mock_creds.quota_project_id = "quota-proj"
+
+    with (
+        mock.patch(
+            "google.auth.default",
+            return_value=(mock_creds, "project-id"),
+        ),
+        mock.patch(
+            "google.adk.plugins.bigquery_agent_analytics_plugin"
+            ".BigQueryWriteAsyncClient"
+        ) as mock_client_cls,
+    ):
+      loop = asyncio.get_running_loop()
+      result = await bigquery_agent_analytics_plugin._create_write_client(
+          mock_plugin, loop
+      )
+      mock_client_cls.assert_called_once()
+      call_kwargs = mock_client_cls.call_args
+      assert call_kwargs.kwargs["credentials"] is mock_creds
+      assert (
+          call_kwargs.kwargs["client_options"].quota_project_id == "quota-proj"
+      )
+      assert result is mock_client_cls.return_value
 
 
 class TestAnalyticsTableBackend:
@@ -7091,8 +7320,8 @@ class TestEventWriterPhase2:
 
     asyncio.run(run())
 
-  def test_biglake_backend_returns_legacy_streaming_writer(self):
-    """BigLake backend creates a LegacyStreamingWriter."""
+  def test_biglake_backend_returns_storage_write_api_writer(self):
+    """BigLake backend creates a StorageWriteApiWriter."""
     plugin = self._make_plugin(
         connection_id="us-central1.my-conn",
         biglake_storage_uri="gs://bucket/path/",
@@ -7113,10 +7342,16 @@ class TestEventWriterPhase2:
 
       if plugin._executor is None:
         plugin._executor = ThreadPoolExecutor(max_workers=1)
-      state = await plugin._get_loop_state()
+
+      with mock.patch(
+          "google.adk.plugins.bigquery_agent_analytics_plugin"
+          "._create_write_client",
+          new=mock.AsyncMock(),
+      ):
+        state = await plugin._get_loop_state()
       assert isinstance(
           state.writer,
-          bigquery_agent_analytics_plugin.LegacyStreamingWriter,
+          bigquery_agent_analytics_plugin.StorageWriteApiWriter,
       )
       await state.writer.shutdown(timeout=5.0)
 
@@ -7211,18 +7446,6 @@ class TestEventWriterPhase2:
 
     mock_wc.transport.close.assert_awaited_once()
 
-  @pytest.mark.asyncio
-  async def test_legacy_streaming_writer_close_no_write_client(self):
-    """LegacyStreamingWriter.close() works without a write client."""
-    mock_bp = mock.AsyncMock(
-        spec=bigquery_agent_analytics_plugin.LegacyStreamingBatchProcessor
-    )
-
-    writer = bigquery_agent_analytics_plugin.LegacyStreamingWriter(mock_bp)
-    await writer.close()
-
-    mock_bp.close.assert_awaited_once()
-
   def test_atexit_registration_uses_writer_processor(self):
     """atexit registers the processor from writer.atexit_processor()."""
     plugin = self._make_plugin(
@@ -7245,7 +7468,14 @@ class TestEventWriterPhase2:
 
       if plugin._executor is None:
         plugin._executor = ThreadPoolExecutor(max_workers=1)
-      with mock.patch("atexit.register") as mock_atexit:
+      with (
+          mock.patch("atexit.register") as mock_atexit,
+          mock.patch(
+              "google.adk.plugins.bigquery_agent_analytics_plugin"
+              "._create_write_client",
+              new=mock.AsyncMock(),
+          ),
+      ):
         state = await plugin._get_loop_state()
         mock_atexit.assert_called_once()
         # The second arg should be a weakref proxy to the processor
