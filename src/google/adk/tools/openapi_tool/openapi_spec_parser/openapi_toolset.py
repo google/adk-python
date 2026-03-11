@@ -77,6 +77,7 @@ class OpenAPIToolset(BaseToolset):
       header_provider: Optional[
           Callable[[ReadonlyContext], Dict[str, str]]
       ] = None,
+      preserve_property_names: bool = False,
   ):
     """Initializes the OpenAPIToolset.
 
@@ -129,11 +130,17 @@ class OpenAPIToolset(BaseToolset):
         an argument, allowing dynamic header generation based on the current
         context. Useful for adding custom headers like correlation IDs,
         authentication tokens, or other request metadata.
+      preserve_property_names: If True, preserve the original property names
+        from the OpenAPI spec instead of converting them to snake_case. This
+        is useful when calling APIs that expect camelCase or other
+        non-snake_case parameter names in the request. Defaults to False for
+        backward compatibility.
     """
     super().__init__(tool_filter=tool_filter, tool_name_prefix=tool_name_prefix)
     self._header_provider = header_provider
     self._auth_scheme = auth_scheme
     self._auth_credential = auth_credential
+    self._preserve_property_names = preserve_property_names
     # Store auth config as instance variable so ADK can populate
     # exchanged_auth_credential in-place before calling get_tools()
     self._auth_config: Optional[AuthConfig] = (
@@ -219,7 +226,10 @@ class OpenAPIToolset(BaseToolset):
 
   def _parse(self, openapi_spec_dict: Dict[str, Any]) -> List[RestApiTool]:
     """Parse OpenAPI spec into a list of RestApiTool."""
-    operations = OpenApiSpecParser().parse(openapi_spec_dict)
+    parser = OpenApiSpecParser(
+        preserve_property_names=self._preserve_property_names
+    )
+    operations = parser.parse(openapi_spec_dict)
 
     tools = []
     for o in operations:

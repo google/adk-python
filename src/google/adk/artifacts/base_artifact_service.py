@@ -21,6 +21,7 @@ from typing import Any
 from typing import Optional
 from typing import Union
 
+from google.adk.platform import time as platform_time
 from google.genai import types
 from pydantic import alias_generators
 from pydantic import BaseModel
@@ -51,7 +52,7 @@ class ArtifactVersion(BaseModel):
       description="Optional user-supplied metadata stored with the artifact.",
   )
   create_time: float = Field(
-      default_factory=lambda: datetime.now().timestamp(),
+      default_factory=lambda: platform_time.get_time(),
       description=(
           "Unix timestamp (seconds) when the version record was created."
       ),

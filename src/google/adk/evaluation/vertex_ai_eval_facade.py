@@ -14,24 +14,22 @@
 
 from __future__ import annotations
 
+import abc
 import math
 import os
 from typing import Optional
-from typing import TYPE_CHECKING
 
 from google.genai import types as genai_types
 import pandas as pd
 from typing_extensions import override
 
+from ..dependencies.vertexai import vertexai
 from .eval_case import ConversationScenario
 from .eval_case import Invocation
 from .evaluator import EvalStatus
 from .evaluator import EvaluationResult
 from .evaluator import Evaluator
 from .evaluator import PerInvocationResult
-
-if TYPE_CHECKING:
-  from vertexai import types as vertexai_types
 
 _ERROR_MESSAGE_SUFFIX = """
 You should specify both project id and location. This metric uses Vertex Gen AI
@@ -58,12 +56,89 @@ class _VertexAiEvalFacade(Evaluator):
   def __init__(
       self,
       threshold: float,
-      metric_name: vertexai_types.PrebuiltMetric,
+      metric_name: vertexai.types.PrebuiltMetric,
       expected_invocations_required=False,
   ):
     self._threshold = threshold
     self._metric_name = metric_name
     self._expected_invocations_required = expected_invocations_required
+
+    project_id = os.environ.get("GOOGLE_CLOUD_PROJECT", None)
+    location = os.environ.get("GOOGLE_CLOUD_LOCATION", None)
+    api_key = os.environ.get("GOOGLE_API_KEY", None)
+
+    if api_key:
+      self._client = vertexai.Client(api_key=api_key)
+    elif project_id or location:
+      if not project_id:
+        raise ValueError("Missing project id." + _ERROR_MESSAGE_SUFFIX)
+      if not location:
+        raise ValueError("Missing location." + _ERROR_MESSAGE_SUFFIX)
+      self._client = vertexai.Client(project=project_id, location=location)
+    else:
+      raise ValueError(
+          "Either API Key or Google cloud Project id and location should be"
+          " specified."
+      )
+
+  @abc.abstractmethod
+  def evaluate_invocations(
+      self,
+      actual_invocations: list[Invocation],
+      expected_invocations: Optional[list[Invocation]] = None,
+      conversation_scenario: Optional[ConversationScenario] = None,
+  ) -> EvaluationResult:
+    """Returns EvaluationResult after performing evaluations using actual and expected invocations.
+
+    Args:
+      actual_invocations: These are the invocations that are obtained from the
+        agent under test.
+      expected_invocations: An optional list of invocations, if specified,
+        usually act as a benchmark/golden response. If these are specified
+        usually the expectation is that the length of this list and actual
+        invocation is the same.
+      conversation_scenario: An optional conversation scenario for multi-turn
+        conversations.
+    """
+
+  def _get_text(self, content: Optional[genai_types.Content]) -> str:
+    if content and content.parts:
+      return "\n".join([p.text for p in content.parts if p.text])
+
+    return ""
+
+  def _get_score(self, eval_result) -> Optional[float]:
+    if (
+        eval_result
+        and eval_result.summary_metrics
+        and isinstance(eval_result.summary_metrics[0].mean_score, float)
+        and not math.isnan(eval_result.summary_metrics[0].mean_score)
+    ):
+      return eval_result.summary_metrics[0].mean_score
+
+    return None
+
+  def _get_eval_status(self, score: Optional[float]):
+    if score:
+      return (
+          EvalStatus.PASSED if score >= self._threshold else EvalStatus.FAILED
+      )
+
+    return EvalStatus.NOT_EVALUATED
+
+  def _perform_eval(self, dataset, metrics):
+    """This method hides away the call to external service.
+
+    Primarily helps with unit testing.
+    """
+    return self._client.evals.evaluate(
+        dataset=dataset,
+        metrics=metrics,
+    )
+
+
+class _SingleTurnVertexAiEvalFacade(_VertexAiEvalFacade):
+  """A facade for single turn metrics exposed in Vertex Gen AI Eval SDK."""
 
   @override
   def evaluate_invocations(
@@ -97,8 +172,11 @@ class _VertexAiEvalFacade(Evaluator):
           "response": response,
       }
 
-      eval_case_result = _VertexAiEvalFacade._perform_eval(
-          dataset=pd.DataFrame([eval_case]), metrics=[self._metric_name]
+      dataset = vertexai.types.EvaluationDataset(
+          eval_dataset_df=pd.DataFrame([eval_case])
+      )
+      eval_case_result = self._perform_eval(
+          dataset=dataset, metrics=[self._metric_name]
       )
       score = self._get_score(eval_case_result)
       per_invocation_results.append(
@@ -125,59 +203,3 @@ class _VertexAiEvalFacade(Evaluator):
       )
 
     return EvaluationResult()
-
-  def _get_text(self, content: Optional[genai_types.Content]) -> str:
-    if content and content.parts:
-      return "\n".join([p.text for p in content.parts if p.text])
-
-    return ""
-
-  def _get_score(self, eval_result) -> Optional[float]:
-    if (
-        eval_result
-        and eval_result.summary_metrics
-        and isinstance(eval_result.summary_metrics[0].mean_score, float)
-        and not math.isnan(eval_result.summary_metrics[0].mean_score)
-    ):
-      return eval_result.summary_metrics[0].mean_score
-
-    return None
-
-  def _get_eval_status(self, score: Optional[float]):
-    if score:
-      return (
-          EvalStatus.PASSED if score >= self._threshold else EvalStatus.FAILED
-      )
-
-    return EvalStatus.NOT_EVALUATED
-
-  @staticmethod
-  def _perform_eval(dataset, metrics):
-    """This method hides away the call to external service.
-
-    Primarily helps with unit testing.
-    """
-    project_id = os.environ.get("GOOGLE_CLOUD_PROJECT", None)
-    location = os.environ.get("GOOGLE_CLOUD_LOCATION", None)
-    api_key = os.environ.get("GOOGLE_API_KEY", None)
-
-    from ..dependencies.vertexai import vertexai
-
-    if api_key:
-      client = vertexai.Client(api_key=api_key)
-    elif project_id or location:
-      if not project_id:
-        raise ValueError("Missing project id." + _ERROR_MESSAGE_SUFFIX)
-      if not location:
-        raise ValueError("Missing location." + _ERROR_MESSAGE_SUFFIX)
-      client = vertexai.Client(project=project_id, location=location)
-    else:
-      raise ValueError(
-          "Either API Key or Google cloud Project id and location should be"
-          " specified."
-      )
-
-    return client.evals.evaluate(
-        dataset=vertexai.types.EvaluationDataset(eval_dataset_df=dataset),
-        metrics=metrics,
-    )

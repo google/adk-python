@@ -1655,6 +1655,7 @@ async def test_generate_content_async_with_usage_metadata(
           "completion_tokens": 5,
           "total_tokens": 15,
           "cached_tokens": 8,
+          "completion_tokens_details": {"reasoning_tokens": 5},
       },
   )
   mock_acompletion.return_value = mock_response_with_usage_metadata
@@ -1676,6 +1677,7 @@ async def test_generate_content_async_with_usage_metadata(
     assert response.usage_metadata.candidates_token_count == 5
     assert response.usage_metadata.total_token_count == 15
     assert response.usage_metadata.cached_content_token_count == 8
+    assert response.usage_metadata.thoughts_token_count == 5
 
   mock_acompletion.assert_called_once()
 
@@ -3476,6 +3478,7 @@ async def test_generate_content_async_stream_with_usage_metadata(
               "prompt_tokens": 10,
               "completion_tokens": 5,
               "total_tokens": 15,
+              "completion_tokens_details": {"reasoning_tokens": 5},
           },
           choices=[
               StreamingChoices(
@@ -3513,6 +3516,7 @@ async def test_generate_content_async_stream_with_usage_metadata(
   assert responses[3].usage_metadata.prompt_token_count == 10
   assert responses[3].usage_metadata.candidates_token_count == 5
   assert responses[3].usage_metadata.total_token_count == 15
+  assert responses[3].usage_metadata.thoughts_token_count == 5
 
   mock_completion.assert_called_once()
 
@@ -3546,6 +3550,7 @@ async def test_generate_content_async_stream_with_usage_metadata(
               "completion_tokens": 5,
               "total_tokens": 15,
               "cached_tokens": 8,
+              "completion_tokens_details": {"reasoning_tokens": 5},
           },
           choices=[
               StreamingChoices(
@@ -3570,6 +3575,7 @@ async def test_generate_content_async_stream_with_usage_metadata(
   assert responses[3].usage_metadata.candidates_token_count == 5
   assert responses[3].usage_metadata.total_token_count == 15
   assert responses[3].usage_metadata.cached_content_token_count == 8
+  assert responses[3].usage_metadata.thoughts_token_count == 5
 
 
 @pytest.mark.asyncio
@@ -3745,6 +3751,159 @@ async def test_generate_content_async_stream_with_empty_chunk(
   assert function_call.name == "test_function"
   assert function_call.id == "call_abc"
   assert function_call.args == {"test_arg": "value"}
+
+
+@pytest.mark.asyncio
+async def test_streaming_tool_call_truncated_by_max_tokens(
+    mock_completion, lite_llm_instance
+):
+  """Tests that truncated tool calls with finish_reason='length' yield an error LlmResponse."""
+  stream_chunks = [
+      ModelResponseStream(
+          choices=[
+              StreamingChoices(
+                  finish_reason=None,
+                  delta=Delta(
+                      role="assistant",
+                      tool_calls=[
+                          ChatCompletionDeltaToolCall(
+                              type="function",
+                              id="call_123",
+                              function=Function(
+                                  name="test_function",
+                                  arguments='{"test_arg":',
+                              ),
+                              index=0,
+                          )
+                      ],
+                  ),
+              )
+          ]
+      ),
+      # finish_reason="length" arrives before args are complete
+      ModelResponseStream(
+          choices=[StreamingChoices(finish_reason="length", delta=Delta())]
+      ),
+  ]
+  mock_completion.return_value = iter(stream_chunks)
+
+  responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+      )
+  ]
+
+  assert len(responses) == 1
+  error_response = responses[0]
+  assert error_response.error_code == types.FinishReason.MAX_TOKENS
+  assert error_response.finish_reason == types.FinishReason.MAX_TOKENS
+  assert "truncated" in error_response.error_message
+  assert "max_output_tokens" in error_response.error_message
+
+
+@pytest.mark.asyncio
+async def test_streaming_tool_call_complete_with_length_finish_reason(
+    mock_completion, lite_llm_instance
+):
+  """Tests that complete tool calls with finish_reason='length' are yielded normally."""
+  stream_chunks = [
+      ModelResponseStream(
+          choices=[
+              StreamingChoices(
+                  finish_reason=None,
+                  delta=Delta(
+                      role="assistant",
+                      tool_calls=[
+                          ChatCompletionDeltaToolCall(
+                              type="function",
+                              id="call_456",
+                              function=Function(
+                                  name="test_function",
+                                  arguments='{"test_arg": "value"}',
+                              ),
+                              index=0,
+                          )
+                      ],
+                  ),
+              )
+          ]
+      ),
+      # finish_reason="length" but tool call args are valid JSON
+      ModelResponseStream(
+          choices=[StreamingChoices(finish_reason="length", delta=Delta())]
+      ),
+  ]
+  mock_completion.return_value = iter(stream_chunks)
+
+  responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          LLM_REQUEST_WITH_FUNCTION_DECLARATION, stream=True
+      )
+  ]
+
+  assert len(responses) == 1
+  final_response = responses[0]
+  assert final_response.content.role == "model"
+  assert len(final_response.content.parts) == 1
+
+  function_call = final_response.content.parts[0].function_call
+  assert function_call.name == "test_function"
+  assert function_call.id == "call_456"
+  assert function_call.args == {"test_arg": "value"}
+  assert final_response.finish_reason == types.FinishReason.MAX_TOKENS
+  assert final_response.error_code == types.FinishReason.MAX_TOKENS
+
+
+@pytest.mark.asyncio
+async def test_streaming_text_truncated_by_max_tokens(
+    mock_completion, lite_llm_instance
+):
+  """Tests that text responses with finish_reason='length' set MAX_TOKENS error."""
+  stream_chunks = [
+      ModelResponseStream(
+          choices=[
+              StreamingChoices(
+                  finish_reason=None,
+                  delta=Delta(
+                      role="assistant",
+                      content="Hello, I am",
+                  ),
+              )
+          ]
+      ),
+      # finish_reason="length" on text-only response
+      ModelResponseStream(
+          choices=[StreamingChoices(finish_reason="length", delta=Delta())]
+      ),
+  ]
+  mock_completion.return_value = iter(stream_chunks)
+
+  llm_request = LlmRequest(
+      contents=[
+          types.Content(
+              role="user", parts=[types.Part.from_text(text="Say hello")]
+          )
+      ],
+  )
+
+  responses = [
+      response
+      async for response in lite_llm_instance.generate_content_async(
+          llm_request, stream=True
+      )
+  ]
+
+  # First response is the partial text chunk, second is the aggregated response
+  partial_responses = [r for r in responses if r.partial]
+  aggregated_responses = [r for r in responses if not r.partial]
+
+  assert len(aggregated_responses) == 1
+  aggregated = aggregated_responses[0]
+  assert aggregated.finish_reason == types.FinishReason.MAX_TOKENS
+  assert aggregated.error_code == types.FinishReason.MAX_TOKENS
+  assert "Maximum tokens reached" in aggregated.error_message
 
 
 @pytest.mark.asyncio

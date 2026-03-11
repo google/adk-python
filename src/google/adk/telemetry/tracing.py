@@ -56,6 +56,7 @@ from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_A
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_AI_USAGE_OUTPUT_TOKENS
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GenAiSystemValues
 from opentelemetry.semconv._incubating.attributes.user_attributes import USER_ID
+from opentelemetry.semconv.attributes.error_attributes import ERROR_TYPE
 from opentelemetry.semconv.schemas import Schemas
 from opentelemetry.trace import Span
 from opentelemetry.util.types import AnyValue
@@ -81,6 +82,8 @@ OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT = (
 )
 
 USER_CONTENT_ELIDED = '<elided>'
+
+GEN_AI_AGENT_VERSION = 'gen_ai.agent.version'
 
 # Needed to avoid circular imports
 if TYPE_CHECKING:
@@ -113,7 +116,8 @@ def _safe_json_serialize(obj) -> str:
     obj: The object to serialize.
 
   Returns:
-    The JSON-serialized object string or <non-serializable> if the object cannot be serialized.
+    The JSON-serialized object string or <non-serializable> if the object cannot
+    be serialized.
   """
 
   try:
@@ -155,6 +159,7 @@ def trace_agent_invocation(
   span.set_attribute(GEN_AI_AGENT_DESCRIPTION, agent.description)
 
   span.set_attribute(GEN_AI_AGENT_NAME, agent.name)
+  span.set_attribute(GEN_AI_AGENT_VERSION, agent.version)
   span.set_attribute(GEN_AI_CONVERSATION_ID, ctx.session.id)
 
 
@@ -162,6 +167,7 @@ def trace_tool_call(
     tool: BaseTool,
     args: dict[str, Any],
     function_response_event: Event | None,
+    error: Exception | None = None,
 ):
   """Traces tool call.
 
@@ -169,6 +175,7 @@ def trace_tool_call(
     tool: The tool that was called.
     args: The arguments to the tool call.
     function_response_event: The event with the function response details.
+    error: The exception raised during tool execution, if any.
   """
   span = trace.get_current_span()
 
@@ -179,6 +186,12 @@ def trace_tool_call(
 
   # e.g. FunctionTool
   span.set_attribute(GEN_AI_TOOL_TYPE, tool.__class__.__name__)
+
+  if error is not None:
+    if hasattr(error, 'error_type') and error.error_type is not None:
+      span.set_attribute(ERROR_TYPE, str(error.error_type))
+    else:
+      span.set_attribute(ERROR_TYPE, type(error).__name__)
 
   # Setting empty llm request and response (as UI expect these) while not
   # applicable for tool_response.
@@ -321,6 +334,17 @@ def trace_call_llm(
           'gen_ai.request.max_tokens',
           llm_request.config.max_output_tokens,
       )
+    try:
+      if (
+          llm_request.config.thinking_config
+          and llm_request.config.thinking_config.thinking_budget is not None
+      ):
+        span.set_attribute(
+            'gen_ai.usage.experimental.reasoning_tokens_limit',
+            llm_request.config.thinking_config.thinking_budget,
+        )
+    except AttributeError:
+      pass
 
   try:
     llm_response_json = llm_response.model_dump_json(exclude_none=True)
@@ -346,6 +370,22 @@ def trace_call_llm(
           'gen_ai.usage.output_tokens',
           llm_response.usage_metadata.candidates_token_count,
       )
+    try:
+      if llm_response.usage_metadata.thoughts_token_count is not None:
+        span.set_attribute(
+            'gen_ai.usage.experimental.reasoning_tokens',
+            llm_response.usage_metadata.thoughts_token_count,
+        )
+    except AttributeError:
+      pass
+    try:
+      if llm_response.usage_metadata.system_instruction_tokens is not None:
+        span.set_attribute(
+            'gen_ai.usage.experimental.system_instruction_tokens',
+            llm_response.usage_metadata.system_instruction_tokens,
+        )
+    except AttributeError:
+      pass
   if llm_response.finish_reason:
     try:
       finish_reason_str = llm_response.finish_reason.value.lower()
@@ -455,6 +495,7 @@ def use_generate_content_span(
       USER_ID: invocation_context.session.user_id,
       'gcp.vertex.agent.event_id': model_response_event.id,
       'gcp.vertex.agent.invocation_id': invocation_context.invocation_id,
+      GEN_AI_AGENT_VERSION: invocation_context.agent.version,
   }
   if (
       _is_gemini_agent(invocation_context.agent)
@@ -489,6 +530,7 @@ async def use_inference_span(
       USER_ID: invocation_context.session.user_id,
       'gcp.vertex.agent.event_id': model_response_event.id,
       'gcp.vertex.agent.invocation_id': invocation_context.invocation_id,
+      GEN_AI_AGENT_VERSION: invocation_context.agent.version,
   }
   if (
       _is_gemini_agent(invocation_context.agent)

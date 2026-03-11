@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import re
+from typing import Any
 from typing import Optional
 import unicodedata
 
@@ -29,7 +30,7 @@ _NAME_PATTERN = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 
 
 class Frontmatter(BaseModel):
-  """L1 skill content: metadata parsed from SKILL.md frontmatter for skill discovery.
+  """L1 skill content: metadata parsed from SKILL.md for skill discovery.
 
   Attributes:
       name: Skill name in kebab-case (required).
@@ -37,11 +38,13 @@ class Frontmatter(BaseModel):
         (required).
       license: License for the skill (optional).
       compatibility: Compatibility information for the skill (optional).
-      allowed_tools: Tool patterns the skill requires (optional, experimental).
-        Accepts both ``allowed_tools`` and the YAML-friendly ``allowed-tools``
-        key.
+      allowed_tools: A space-delimited list of tools that are pre-approved to
+        run (optional, experimental). Accepts both ``allowed_tools`` and the
+        YAML-friendly ``allowed-tools`` key. For more details, see
+        https://agentskills.io/specification#allowed-tools-field.
       metadata: Key-value pairs for client-specific properties (defaults to
-        empty dict).
+        empty dict). For example, to include additional tools, use the
+        ``adk_additional_tools`` key with a list of tools.
   """
 
   model_config = ConfigDict(
@@ -58,7 +61,16 @@ class Frontmatter(BaseModel):
       alias="allowed-tools",
       serialization_alias="allowed-tools",
   )
-  metadata: dict[str, str] = {}
+  metadata: dict[str, Any] = {}
+
+  @field_validator("metadata")
+  @classmethod
+  def _validate_metadata(cls, v: dict[str, Any]) -> dict[str, Any]:
+    if "adk_additional_tools" in v:
+      tools = v["adk_additional_tools"]
+      if not isinstance(tools, list):
+        raise ValueError("adk_additional_tools must be a list of strings")
+    return v
 
   @field_validator("name")
   @classmethod
@@ -105,7 +117,7 @@ class Script(BaseModel):
 
 
 class Resources(BaseModel):
-  """L3 skill content: additional instructions, assets, and scripts, loaded as needed.
+  """L3 skill content: additional instructions, assets, and scripts.
 
   Attributes:
       references: Additional markdown files with instructions, workflows, or
@@ -115,29 +127,29 @@ class Resources(BaseModel):
       scripts: Executable scripts that can be run via bash.
   """
 
-  references: dict[str, str] = {}
-  assets: dict[str, str] = {}
+  references: dict[str, str | bytes] = {}
+  assets: dict[str, str | bytes] = {}
   scripts: dict[str, Script] = {}
 
-  def get_reference(self, reference_id: str) -> Optional[str]:
+  def get_reference(self, reference_id: str) -> Optional[str | bytes]:
     """Get content of a reference file.
 
     Args:
         reference_id: Unique path or name of the reference file.
 
     Returns:
-        Reference content as string, or None if not found
+        Reference content as string or bytes, or None if not found
     """
     return self.references.get(reference_id)
 
-  def get_asset(self, asset_id: str) -> Optional[str]:
+  def get_asset(self, asset_id: str) -> Optional[str | bytes]:
     """Get content of an asset file.
 
     Args:
         asset_id: Unique path or name of the asset file.
 
     Returns:
-        Asset content as string, or None if not found
+        Asset content as string or bytes, or None if not found
     """
     return self.assets.get(asset_id)
 
