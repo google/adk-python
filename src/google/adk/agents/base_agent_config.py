@@ -55,6 +55,10 @@ class BaseAgentConfig(BaseModel):
 
   name: str = Field(description='Required. The name of the agent.')
 
+  version: str = Field(
+      default='', description='Optional. The version of the agent.'
+  )
+
   description: str = Field(
       default='', description='Optional. The description of the agent.'
   )
