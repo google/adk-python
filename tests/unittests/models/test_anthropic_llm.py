@@ -281,6 +281,220 @@ function_declaration_test_cases = [
         ),
     ),
     (
+        "function_with_nested_object_parameter",
+        types.FunctionDeclaration(
+            name="update_profile",
+            description="Updates a user profile.",
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "profile": types.Schema(
+                        type=types.Type.OBJECT,
+                        description="The profile data",
+                        properties={
+                            "name": types.Schema(
+                                type=types.Type.STRING,
+                                description="Full name",
+                            ),
+                            "address": types.Schema(
+                                type=types.Type.OBJECT,
+                                description="Mailing address",
+                                properties={
+                                    "city": types.Schema(
+                                        type=types.Type.STRING,
+                                    ),
+                                    "state": types.Schema(
+                                        type=types.Type.STRING,
+                                    ),
+                                },
+                            ),
+                        },
+                    ),
+                },
+                required=["profile"],
+            ),
+        ),
+        anthropic_types.ToolParam(
+            name="update_profile",
+            description="Updates a user profile.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "profile": {
+                        "type": "object",
+                        "description": "The profile data",
+                        "properties": {
+                            "name": {
+                                "type": "string",
+                                "description": "Full name",
+                            },
+                            "address": {
+                                "type": "object",
+                                "description": "Mailing address",
+                                "properties": {
+                                    "city": {"type": "string"},
+                                    "state": {"type": "string"},
+                                },
+                            },
+                        },
+                    },
+                },
+                "required": ["profile"],
+            },
+        ),
+    ),
+    (
+        "function_with_any_of_parameter",
+        types.FunctionDeclaration(
+            name="set_value",
+            description="Sets a value that can be a string or integer.",
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "value": types.Schema(
+                        description="A string or integer value",
+                        any_of=[
+                            types.Schema(type=types.Type.STRING),
+                            types.Schema(type=types.Type.INTEGER),
+                        ],
+                    ),
+                },
+                required=["value"],
+            ),
+        ),
+        anthropic_types.ToolParam(
+            name="set_value",
+            description="Sets a value that can be a string or integer.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "value": {
+                        "description": "A string or integer value",
+                        "anyOf": [
+                            {"type": "string"},
+                            {"type": "integer"},
+                        ],
+                    },
+                },
+                "required": ["value"],
+            },
+        ),
+    ),
+    (
+        "function_with_additional_properties_parameter",
+        types.FunctionDeclaration(
+            name="store_metadata",
+            description="Stores arbitrary key-value metadata.",
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "metadata": types.Schema(
+                        type=types.Type.OBJECT,
+                        description="Arbitrary metadata",
+                        additional_properties=types.Schema(
+                            type=types.Type.STRING,
+                        ),
+                    ),
+                },
+                required=["metadata"],
+            ),
+        ),
+        anthropic_types.ToolParam(
+            name="store_metadata",
+            description="Stores arbitrary key-value metadata.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "metadata": {
+                        "type": "object",
+                        "description": "Arbitrary metadata",
+                        "additionalProperties": {"type": "string"},
+                    },
+                },
+                "required": ["metadata"],
+            },
+        ),
+    ),
+    (
+        "function_with_parameters_json_schema_combinators",
+        types.FunctionDeclaration(
+            name="validate_payload",
+            description="Validates a payload with schema combinators.",
+            parameters_json_schema={
+                "type": "OBJECT",
+                "properties": {
+                    "choice": {
+                        "oneOf": [
+                            {"type": "STRING"},
+                            {"type": "INTEGER"},
+                        ],
+                    },
+                    "config": {
+                        "allOf": [
+                            {
+                                "type": "OBJECT",
+                                "properties": {
+                                    "enabled": {"type": "BOOLEAN"},
+                                },
+                            },
+                        ],
+                    },
+                    "blocked": {
+                        "not": {
+                            "type": "NULL",
+                        },
+                    },
+                    "tuple_value": {
+                        "type": "ARRAY",
+                        "items": [
+                            {"type": "STRING"},
+                            {"type": "INTEGER"},
+                        ],
+                    },
+                },
+                "required": ["choice"],
+            },
+        ),
+        anthropic_types.ToolParam(
+            name="validate_payload",
+            description="Validates a payload with schema combinators.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "choice": {
+                        "oneOf": [
+                            {"type": "string"},
+                            {"type": "integer"},
+                        ],
+                    },
+                    "config": {
+                        "allOf": [
+                            {
+                                "type": "object",
+                                "properties": {
+                                    "enabled": {"type": "boolean"},
+                                },
+                            },
+                        ],
+                    },
+                    "blocked": {
+                        "not": {
+                            "type": "null",
+                        },
+                    },
+                    "tuple_value": {
+                        "type": "array",
+                        "items": [
+                            {"type": "string"},
+                            {"type": "integer"},
+                        ],
+                    },
+                },
+                "required": ["choice"],
+            },
+        ),
+    ),
+    (
         "function_with_parameters_json_schema",
         types.FunctionDeclaration(
             name="search_database",

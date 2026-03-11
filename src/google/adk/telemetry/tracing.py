@@ -334,6 +334,17 @@ def trace_call_llm(
           'gen_ai.request.max_tokens',
           llm_request.config.max_output_tokens,
       )
+    try:
+      if (
+          llm_request.config.thinking_config
+          and llm_request.config.thinking_config.thinking_budget is not None
+      ):
+        span.set_attribute(
+            'gen_ai.usage.experimental.reasoning_tokens_limit',
+            llm_request.config.thinking_config.thinking_budget,
+        )
+    except AttributeError:
+      pass
 
   try:
     llm_response_json = llm_response.model_dump_json(exclude_none=True)
@@ -359,6 +370,22 @@ def trace_call_llm(
           'gen_ai.usage.output_tokens',
           llm_response.usage_metadata.candidates_token_count,
       )
+    try:
+      if llm_response.usage_metadata.thoughts_token_count is not None:
+        span.set_attribute(
+            'gen_ai.usage.experimental.reasoning_tokens',
+            llm_response.usage_metadata.thoughts_token_count,
+        )
+    except AttributeError:
+      pass
+    try:
+      if llm_response.usage_metadata.system_instruction_tokens is not None:
+        span.set_attribute(
+            'gen_ai.usage.experimental.system_instruction_tokens',
+            llm_response.usage_metadata.system_instruction_tokens,
+        )
+    except AttributeError:
+      pass
   if llm_response.finish_reason:
     try:
       finish_reason_str = llm_response.finish_reason.value.lower()
