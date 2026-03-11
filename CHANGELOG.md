@@ -2,6 +2,15 @@
 
 ## [1.27.0](https://github.com/google/adk-python/compare/v1.26.0...v1.27.0) (2026-03-11)
 
+### Highlights
+
+* **[Web]**
+ TODO: Yifan
+  * **Updated human in the loop**: developers now can respond to long running functions directly in chat
+  * **Render artifacts when resuming**: 
+  * **Fix some light mode styles**
+  * **Fix token level streaming**
+  
 
 ### Features
 
@@ -47,13 +56,10 @@
 
 ### Bug Fixes
 
-* Add a script to the sample skills agent ([8ad8bc9](https://github.com/google/adk-python/commit/8ad8bc9b69e27f09ec67db14fc92d15c3c78bd53))
-* Add usage field to ModelResponse in LiteLLM tests ([245b2b9](https://github.com/google/adk-python/commit/245b2b9874246b678774572988f53c6b7da7d4e2))
 * Allow artifact services to accept dictionary representations of types.Part ([b004da5](https://github.com/google/adk-python/commit/b004da50270475adc9e1d7afe4064ca1d10c560a)), closes [#2886](https://github.com/google/adk-python/issues/2886)
-* Change Mypy workflow trigger to manual dispatch ([d0825d8](https://github.com/google/adk-python/commit/d0825d817e39a9bd2e2fbb7ccd8690cf60593d14))
 * Decode image data from ComputerUse tool response into image blobs ([d7cfd8f](https://github.com/google/adk-python/commit/d7cfd8fe4def2198c113ff1993ef39cd519908a1))
 * Expand LiteLLM reasoning extraction to include 'reasoning' field ([9468487](https://github.com/google/adk-python/commit/94684874e436c2959cfc90ec346010a6f4fddc49)), closes [#3694](https://github.com/google/adk-python/issues/3694)
-* filter non-agent directoris from list_agents() ([3b5937f](https://github.com/google/adk-python/commit/3b5937f022adf9286dc41e01e3618071a23eb992))
+* Filter non-agent directories from list_agents() ([3b5937f](https://github.com/google/adk-python/commit/3b5937f022adf9286dc41e01e3618071a23eb992))
 * Fix Type Error by initializing user_content as a Content object ([2addf6b](https://github.com/google/adk-python/commit/2addf6b9dacfe87344aeec0101df98d99c23bdb1))
 * Handle length finish reason in LiteLLM responses ([4c6096b](https://github.com/google/adk-python/commit/4c6096baa1b0bed8533397287a5c11a0c4cb9101)), closes [#4482](https://github.com/google/adk-python/issues/4482)
 * In SaveFilesAsArtifactsPlugin, write the artifact delta to state then event actions so that the plugin works with ADK Web UI's artifacts panel ([d6f31be](https://github.com/google/adk-python/commit/d6f31be554d9b7ee15fd9c95ae655b2265fb1f32))
@@ -82,8 +88,6 @@
 
 * extract reusable functions from hitl and auth preprocessor ([c59afc2](https://github.com/google/adk-python/commit/c59afc21cbed27d1328872cdc2b0e182ab2ca6c8))
 * Rename base classes and TypeVars in optimization data types ([9154ef5](https://github.com/google/adk-python/commit/9154ef59d29eb37538914e9967c4392cc2a24237))
-* use McpTool instead of MCPTool to resolve deprecation warnings ([175d638](https://github.com/google/adk-python/commit/175d6381c5e97ad865485427c6337324b55bb367))
-* use McpTool instead of MCPTool to resolve deprecation warnings ([af1c318](https://github.com/google/adk-python/commit/af1c3187428c2cb0cc1ce99cb652ce7d76084c6c))
 
 ## [1.26.0](https://github.com/google/adk-python/compare/v1.25.1...v1.26.0) (2026-02-26)
 
