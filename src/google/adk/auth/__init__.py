@@ -20,3 +20,4 @@ from .auth_schemes import AuthScheme
 from .auth_schemes import AuthSchemeType
 from .auth_schemes import OpenIdConnectWithConfig
 from .auth_tool import AuthConfig
+from .base_auth_provider import BaseAuthProvider
