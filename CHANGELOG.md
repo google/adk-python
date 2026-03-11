@@ -17,11 +17,10 @@
   * Enable output schema with tools for LiteLlm models ([89df5fc](https://github.com/google/adk-python/commit/89df5fcf883b599cf7bfe40bde35b8d86ab0146b)), closes [#3969](https://github.com/google/adk-python/issues/3969)
 
 * **[Web]**
-TODO: Yifan
   * Updated human in the loop**: developers now can respond to long running functions directly in chat
   * Render artifacts when resuming**: 
   * Fix some light mode styles**
-  * Fix token level streaming**
+  * Fix token level streaming not working properly**
 
 * **[Observability]**
   * **telemetry:** add new gen_ai.agent.version span attribute ([ffe97ec](https://github.com/google/adk-python/commit/ffe97ec5ad7229c0b4ba573f33eb0edb8bb2877a))
