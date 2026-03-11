@@ -1,58 +1,64 @@
 # Changelog
 
-## [1.27.0](https://github.com/google/adk-python/compare/v1.26.0...v1.27.0) (2026-03-11)
-
-### Highlights
-
-* **[Web]**
- TODO: Yifan
-  * **Updated human in the loop**: developers now can respond to long running functions directly in chat
-  * **Render artifacts when resuming**: 
-  * **Fix some light mode styles**
-  * **Fix token level streaming**
-  
+## [1.27.0](https://github.com/google/adk-python/compare/v1.26.0...v1.27.0) (2026-03-11)  
 
 ### Features
+* **[Core]**
+  * Introduce A2A request interceptors in RemoteA2aAgent ([6f772d2](https://github.com/google/adk-python/commit/6f772d2b0841446bc168ccf405b59eb17c1d671a))
+  * Add UiWidget to EventActions for supporting new experimental UI Widgets feature ([530ff06](https://github.com/google/adk-python/commit/530ff06ece61a93855a53235e85af18b46b2a6a0))
+  * **auth:** Add pluggable support for auth integrations using AuthProviderRegistry within CredentialManager ([d004074](https://github.com/google/adk-python/commit/d004074c90525442a69cebe226440bb318abad29))
+  * Support all `types.SchemaUnion` as output_schema in LLM Agent ([63f450e](https://github.com/google/adk-python/commit/63f450e0231f237ee1af37f17420d37b15426d48))
+  * durable runtime support ([07fdd23](https://github.com/google/adk-python/commit/07fdd23c9c3f5046aa668fb480840f67f13bf271))
+  * **runners:** pass GetSessionConfig through Runner to session service ([eff724a](https://github.com/google/adk-python/commit/eff724ac9aef2a203607f772c473703f21c09a72))
 
-* Add `adk optimize` command ([b18d7a1](https://github.com/google/adk-python/commit/b18d7a140f8e18e03255b07e6d89948427790095))
-* Add code execution in the sample agent ([a86aa8b](https://github.com/google/adk-python/commit/a86aa8b03d13320a777c16c6bb065f850a5a6d86))
-* add Dataplex Catalog search tool to BigQuery ADK ([82c2eef](https://github.com/google/adk-python/commit/82c2eefb27313c5b11b9e9382f626f543c53a29e))
-* Add gcs filesystem support for Skills. It supports skills in text and pdf format, also has some sample agents ([6edcb97](https://github.com/google/adk-python/commit/6edcb975827dbd543a40ae3a402d2389327df603))
-* Add GEPA root agent prompt optimizer ([4e3e2cb](https://github.com/google/adk-python/commit/4e3e2cb58858e08a79bc6119ad49b6c049dbc0d0))
-* Add interface between optimization infra and LocalEvalService ([7b7ddda](https://github.com/google/adk-python/commit/7b7ddda46ca701952f002b2807b89dbef5322414))
-* Add list_skills_in_dir to skills utils ([327b3af](https://github.com/google/adk-python/commit/327b3affd2d0a192f5a072b90fdb4aae7575be90))
-* add missing token usage span attributes during model usage ([77bf325](https://github.com/google/adk-python/commit/77bf325d2bf556621c3276f74ee2816fce2a7085))
-* Add param support to Bigtable execute_sql ([5702a4b](https://github.com/google/adk-python/commit/5702a4b1f59b17fd8b290fc125c349240b0953d7))
-* Add RunSkillScriptTool to SkillToolset ([636f68f](https://github.com/google/adk-python/commit/636f68fbee700aa47f01e2cfd746859353b3333d))
-* Add streaming support for Anthropic models ([5770cd3](https://github.com/google/adk-python/commit/5770cd3776c8805086ece34d747e589e36916a34)), closes [#3250](https://github.com/google/adk-python/issues/3250)
-* Add support for ADK tools in SkillToolset ([44a5e6b](https://github.com/google/adk-python/commit/44a5e6bdb8e8f02891e72b65ef883f108c506f6a))
-* Add support for MCP App UI widgets in MCPTool ([86db35c](https://github.com/google/adk-python/commit/86db35c338adaafb41e156311465e71e17edf35e))
-* Add support for PDF documents in Anthropic LLM ([4c8ba74](https://github.com/google/adk-python/commit/4c8ba74fcb07014db187ef8db8246ff966379aa9))
-* Add UiWidget to EventActions for supporting new experimental UI Widgets feature ([530ff06](https://github.com/google/adk-python/commit/530ff06ece61a93855a53235e85af18b46b2a6a0))
-* **auth:** Add pluggable support for auth integrations using AuthProviderRegistry within CredentialManager ([d004074](https://github.com/google/adk-python/commit/d004074c90525442a69cebe226440bb318abad29))
-* **bigtable:** add Bigtable cluster metadata tools ([34c560e](https://github.com/google/adk-python/commit/34c560e66e7ad379f586bbcd45a9460dc059bee2))
-* durable runtime support ([07fdd23](https://github.com/google/adk-python/commit/07fdd23c9c3f5046aa668fb480840f67f13bf271))
-* Enable output schema with tools for LiteLlm models ([89df5fc](https://github.com/google/adk-python/commit/89df5fcf883b599cf7bfe40bde35b8d86ab0146b)), closes [#3969](https://github.com/google/adk-python/issues/3969)
-* Enhance BigQuery plugin schema upgrades and error reporting ([bcf38fa](https://github.com/google/adk-python/commit/bcf38fa2bac2f0d1ab74e07e01eb5160bad1d6dc))
-* Enhance BQ plugin with fork safety, auto views, and trace continuity ([80c5a24](https://github.com/google/adk-python/commit/80c5a245557cd75870e72bff0ecfaafbd37fdbc7))
-* execute-type param addition in GkeCodeExecutor ([9c45166](https://github.com/google/adk-python/commit/9c451662819a6c7de71be71d12ea715b2fe74135))
-* Handle Conflict Errors in BigQuery Agent Analytics Plugin ([372c76b](https://github.com/google/adk-python/commit/372c76b857daa1102e76d755c0758f1515d6f180))
-* Introduce A2A request interceptors in RemoteA2aAgent ([6f772d2](https://github.com/google/adk-python/commit/6f772d2b0841446bc168ccf405b59eb17c1d671a))
-* limit number of user-provided BigQuery job labels and reserve internal prefixes ([8c4ff74](https://github.com/google/adk-python/commit/8c4ff74e7d70cf940f54f6d7735f001495ce75d5))
-* New implementation of A2aAgentExecutor and A2A-ADK conversion ([87ffc55](https://github.com/google/adk-python/commit/87ffc55640dea1185cf67e6f9b78f70b30867bcc))
-* New implementation of RemoteA2aAgent and A2A-ADK conversion ([6770e41](https://github.com/google/adk-python/commit/6770e419f5e200f4c7ad26587e1f769693ef4da0))
-* **otel:** add `gen_ai.tool.definitions` to experimental semconv ([4dd4d5e](https://github.com/google/adk-python/commit/4dd4d5ecb6a1dadbc41389dac208616f6d21bc6e))
-* **otel:** add experimental semantic convention and emit `gen_ai.client.inference.operation.details` event ([19718e9](https://github.com/google/adk-python/commit/19718e9c174af7b1287b627e6b23a609db1ee5e2))
-* **runners:** pass GetSessionConfig through Runner to session service ([eff724a](https://github.com/google/adk-python/commit/eff724ac9aef2a203607f772c473703f21c09a72))
-* **skill:** Add BashTool ([8a31612](https://github.com/google/adk-python/commit/8a3161202e4bac0bb8e8801b100f4403c1c75646))
-* Support all `types.SchemaUnion` as output_schema in LLM Agent ([63f450e](https://github.com/google/adk-python/commit/63f450e0231f237ee1af37f17420d37b15426d48))
-* **telemetry:** add new gen_ai.agent.version span attribute ([ffe97ec](https://github.com/google/adk-python/commit/ffe97ec5ad7229c0b4ba573f33eb0edb8bb2877a))
-* **telemetry:** add new gen_ai.agent.version span attribute ([a61ccf3](https://github.com/google/adk-python/commit/a61ccf36a2e19a9cb4151c3b73bbf6618c1af451))
-* **telemetry:** capture tool execution error code in OpenTelemetry spans ([e0a6c6d](https://github.com/google/adk-python/commit/e0a6c6db6f8e2db161f8b86b9f11030f0cec807a))
-* **tools:** add preserve_property_names option to OpenAPIToolset ([078b516](https://github.com/google/adk-python/commit/078b5163ff47acec69b1c8e105f62eb7b74f5548))
-* Update docstring for BigQuery search tool ([52b2f27](https://github.com/google/adk-python/commit/52b2f278b210e4da74e32c5fff60581d6b2e9cea))
-* Warn when accessing DEFAULT_SKILL_SYSTEM_INSTRUCTION ([35366f4](https://github.com/google/adk-python/commit/35366f4e2a0575090fe12cd85f51e8116a1cd0d3))
+* **[Models]**
+  * Add support for PDF documents in Anthropic LLM ([4c8ba74](https://github.com/google/adk-python/commit/4c8ba74fcb07014db187ef8db8246ff966379aa9))
+  * Add streaming support for Anthropic models ([5770cd3](https://github.com/google/adk-python/commit/5770cd3776c8805086ece34d747e589e36916a34)), closes [#3250](https://github.com/google/adk-python/issues/3250)
+  * Enable output schema with tools for LiteLlm models ([89df5fc](https://github.com/google/adk-python/commit/89df5fcf883b599cf7bfe40bde35b8d86ab0146b)), closes [#3969](https://github.com/google/adk-python/issues/3969)
 
+* **[Web]**
+TODO: Yifan
+  * Updated human in the loop**: developers now can respond to long running functions directly in chat
+  * Render artifacts when resuming**: 
+  * Fix some light mode styles**
+  * Fix token level streaming**
+
+* **[Observability]**
+  * **telemetry:** add new gen_ai.agent.version span attribute ([ffe97ec](https://github.com/google/adk-python/commit/ffe97ec5ad7229c0b4ba573f33eb0edb8bb2877a))
+  * **otel:** add `gen_ai.tool.definitions` to experimental semconv ([4dd4d5e](https://github.com/google/adk-python/commit/4dd4d5ecb6a1dadbc41389dac208616f6d21bc6e))
+  * **otel:** add experimental semantic convention and emit `gen_ai.client.inference.operation.details` event ([19718e9](https://github.com/google/adk-python/commit/19718e9c174af7b1287b627e6b23a609db1ee5e2))
+  * add missing token usage span attributes during model usage ([77bf325](https://github.com/google/adk-python/commit/77bf325d2bf556621c3276f74ee2816fce2a7085))
+  * capture tool execution error code in OpenTelemetry spans ([e0a6c6d](https://github.com/google/adk-python/commit/e0a6c6db6f8e2db161f8b86b9f11030f0cec807a))
+ 
+* **[Tools]**
+  * Warn when accessing DEFAULT_SKILL_SYSTEM_INSTRUCTION ([35366f4](https://github.com/google/adk-python/commit/35366f4e2a0575090fe12cd85f51e8116a1cd0d3))
+  * add preserve_property_names option to OpenAPIToolset ([078b516](https://github.com/google/adk-python/commit/078b5163ff47acec69b1c8e105f62eb7b74f5548))
+  * Add gcs filesystem support for Skills. It supports skills in text and pdf format, also has some sample agents ([6edcb97](https://github.com/google/adk-python/commit/6edcb975827dbd543a40ae3a402d2389327df603))
+  * Add list_skills_in_dir to skills utils ([327b3af](https://github.com/google/adk-python/commit/327b3affd2d0a192f5a072b90fdb4aae7575be90))
+  * Add support for MCP App UI widgets in MCPTool ([86db35c](https://github.com/google/adk-python/commit/86db35c338adaafb41e156311465e71e17edf35e))
+  * add Dataplex Catalog search tool to BigQuery ADK ([82c2eef](https://github.com/google/adk-python/commit/82c2eefb27313c5b11b9e9382f626f543c53a29e))
+  * Add RunSkillScriptTool to SkillToolset ([636f68f](https://github.com/google/adk-python/commit/636f68fbee700aa47f01e2cfd746859353b3333d))
+  * Add support for ADK tools in SkillToolset ([44a5e6b](https://github.com/google/adk-python/commit/44a5e6bdb8e8f02891e72b65ef883f108c506f6a))
+  * limit number of user-provided BigQuery job labels and reserve internal prefixes ([8c4ff74](https://github.com/google/adk-python/commit/8c4ff74e7d70cf940f54f6d7735f001495ce75d5))
+  * Add param support to Bigtable execute_sql ([5702a4b](https://github.com/google/adk-python/commit/5702a4b1f59b17fd8b290fc125c349240b0953d7))
+  * **bigtable:** add Bigtable cluster metadata tools ([34c560e](https://github.com/google/adk-python/commit/34c560e66e7ad379f586bbcd45a9460dc059bee2))
+  * execute-type param addition in GkeCodeExecutor ([9c45166](https://github.com/google/adk-python/commit/9c451662819a6c7de71be71d12ea715b2fe74135))
+  * **skill:** Add BashTool ([8a31612](https://github.com/google/adk-python/commit/8a3161202e4bac0bb8e8801b100f4403c1c75646))
+
+
+* **[Optimization]**
+  * Add `adk optimize` command ([b18d7a1](https://github.com/google/adk-python/commit/b18d7a140f8e18e03255b07e6d89948427790095))
+  * Add interface between optimization infra and LocalEvalService ([7b7ddda](https://github.com/google/adk-python/commit/7b7ddda46ca701952f002b2807b89dbef5322414))
+  * Add GEPA root agent prompt optimizer ([4e3e2cb](https://github.com/google/adk-python/commit/4e3e2cb58858e08a79bc6119ad49b6c049dbc0d0))
+
+* **[Integrations]**
+  * Enhance BigQuery plugin schema upgrades and error reporting ([bcf38fa](https://github.com/google/adk-python/commit/bcf38fa2bac2f0d1ab74e07e01eb5160bad1d6dc))
+  * Enhance BQ plugin with fork safety, auto views, and trace continuity ([80c5a24](https://github.com/google/adk-python/commit/80c5a245557cd75870e72bff0ecfaafbd37fdbc7))
+  * Handle Conflict Errors in BigQuery Agent Analytics Plugin ([372c76b](https://github.com/google/adk-python/commit/372c76b857daa1102e76d755c0758f1515d6f180))
+
+* **[A2A]**
+  * New implementation of A2aAgentExecutor and A2A-ADK conversion ([87ffc55](https://github.com/google/adk-python/commit/87ffc55640dea1185cf67e6f9b78f70b30867bcc))
+  * New implementation of RemoteA2aAgent and A2A-ADK conversion ([6770e41](https://github.com/google/adk-python/commit/6770e419f5e200f4c7ad26587e1f769693ef4da0))
 
 ### Bug Fixes
 
