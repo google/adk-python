@@ -82,6 +82,7 @@ class TrajectoryEvaluator(Evaluator):
         )
         self._threshold = criterion.threshold
         self._match_type = criterion.match_type
+        self._ignore_args = criterion.ignore_args
       except ValidationError as e:
         expected_criterion_type_error = ValueError(
             f"`{eval_metric.metric_name}` metric expects a criterion of type"
@@ -91,9 +92,11 @@ class TrajectoryEvaluator(Evaluator):
     elif eval_metric:
       self._threshold = eval_metric.threshold
       self._match_type = ToolTrajectoryCriterion.MatchType.EXACT
+      self._ignore_args = False
     else:
       self._threshold = threshold
       self._match_type = ToolTrajectoryCriterion.MatchType.EXACT
+      self._ignore_args = False
 
   @override
   def evaluate_invocations(
@@ -191,9 +194,8 @@ class TrajectoryEvaluator(Evaluator):
     try:
       current_expected = next(expected_it)
       for actual in actual_tool_calls:
-        if (
-            actual.name == current_expected.name
-            and actual.args == current_expected.args
+        if actual.name == current_expected.name and (
+            self._ignore_args or actual.args == current_expected.args
         ):
           current_expected = next(expected_it)
     except StopIteration:
@@ -229,7 +231,9 @@ class TrajectoryEvaluator(Evaluator):
     for expected in expected_tool_calls:
       found = False
       for i, actual in enumerate(actual_tool_calls_copy):
-        if actual.name == expected.name and actual.args == expected.args:
+        if actual.name == expected.name and (
+            self._ignore_args or actual.args == expected.args
+        ):
           actual_tool_calls_copy.pop(i)
           found = True
           break
@@ -260,7 +264,9 @@ class TrajectoryEvaluator(Evaluator):
       return False
 
     for actual, expected in zip(actual_tool_calls, expected_tool_calls):
-      if actual.name != expected.name or actual.args != expected.args:
+      if actual.name != expected.name or (
+          not self._ignore_args and actual.args != expected.args
+      ):
         return False
 
     return True
