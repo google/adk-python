@@ -28,45 +28,29 @@ if TYPE_CHECKING:
     from .parallel_agent import ParallelAgent
     from .run_config import RunConfig
     from .sequential_agent import SequentialAgent
+else:
+    import importlib
 
-def __getattr__(name: str):
-    if name == 'BaseAgent':
-        from .base_agent import BaseAgent
-        return BaseAgent
-    if name == 'Context':
-        from .context import Context
-        return Context
-    if name == 'InvocationContext':
-        from .invocation_context import InvocationContext
-        return InvocationContext
-    if name == 'LiveRequest':
-        from .live_request_queue import LiveRequest
-        return LiveRequest
-    if name == 'LiveRequestQueue':
-        from .live_request_queue import LiveRequestQueue
-        return LiveRequestQueue
-    if name == 'Agent':
-        from .llm_agent import Agent
-        return Agent
-    if name == 'LlmAgent':
-        from .llm_agent import LlmAgent
-        return LlmAgent
-    if name == 'LoopAgent':
-        from .loop_agent import LoopAgent
-        return LoopAgent
-    if name == 'McpInstructionProvider':
-        from .mcp_instruction_provider import McpInstructionProvider
-        return McpInstructionProvider
-    if name == 'ParallelAgent':
-        from .parallel_agent import ParallelAgent
-        return ParallelAgent
-    if name == 'RunConfig':
-        from .run_config import RunConfig
-        return RunConfig
-    if name == 'SequentialAgent':
-        from .sequential_agent import SequentialAgent
-        return SequentialAgent
-    raise AttributeError(f"module {__name__} has no attribute {name}")
+    _LAZY_IMPORTS = {
+        "BaseAgent": ".base_agent",
+        "Context": ".context",
+        "InvocationContext": ".invocation_context",
+        "LiveRequest": ".live_request_queue",
+        "LiveRequestQueue": ".live_request_queue",
+        "Agent": ".llm_agent",
+        "LlmAgent": ".llm_agent",
+        "LoopAgent": ".loop_agent",
+        "McpInstructionProvider": ".mcp_instruction_provider",
+        "ParallelAgent": ".parallel_agent",
+        "RunConfig": ".run_config",
+        "SequentialAgent": ".sequential_agent",
+    }
+
+    def __getattr__(name: str):
+        if name in _LAZY_IMPORTS:
+            module = importlib.import_module(_LAZY_IMPORTS[name], __name__)
+            return getattr(module, name)
+        raise AttributeError(f"module {__name__} has no attribute {name}")
 
 __all__ = [
     'Agent',

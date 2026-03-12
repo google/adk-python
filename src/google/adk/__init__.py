@@ -20,16 +20,18 @@ if TYPE_CHECKING:
     from .agents.llm_agent import Agent
     from .runners import Runner
 else:
+    import importlib
+
+    _LAZY_IMPORTS = {
+        "Agent": ".agents.llm_agent",
+        "Context": ".agents.context",
+        "Runner": ".runners",
+    }
+
     def __getattr__(name: str):
-        if name == "Agent":
-            from .agents.llm_agent import Agent
-            return Agent
-        if name == "Context":
-            from .agents.context import Context
-            return Context
-        if name == "Runner":
-            from .runners import Runner
-            return Runner
+        if name in _LAZY_IMPORTS:
+            module = importlib.import_module(_LAZY_IMPORTS[name], __name__)
+            return getattr(module, name)
         raise AttributeError(f"module {__name__} has no attribute {name}")
 
 from . import version
