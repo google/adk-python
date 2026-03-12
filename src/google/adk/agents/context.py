@@ -31,6 +31,7 @@ if TYPE_CHECKING:
   from ..auth.auth_tool import AuthConfig
   from ..events.event import Event
   from ..events.event_actions import EventActions
+  from ..events.ui_widget import UiWidget
   from ..memory.base_memory_service import SearchMemoryResponse
   from ..memory.memory_entry import MemoryEntry
   from ..sessions.state import State
@@ -410,3 +411,29 @@ class Context(ReadonlyContext):
         user_id=self._invocation_context.user_id,
         query=query,
     )
+
+  # ============================================================================
+  # UI Widget methods
+  # ============================================================================
+
+  def render_ui_widget(self, ui_widget: UiWidget) -> None:
+    """Adds a UI widget to the current event's actions for the UI to render.
+
+    UI widgets provide rendering payload/metadata that the UI Host uses to
+    display rich interactive components (e.g., MCP App iframes) alongside agent
+    responses.
+
+    Args:
+      ui_widget: A ``UiWidget`` instance.
+    """
+    if self._event_actions.render_ui_widgets is None:
+      self._event_actions.render_ui_widgets = []
+
+    for existing_widget in self._event_actions.render_ui_widgets:
+      if existing_widget.id == ui_widget.id:
+        raise ValueError(
+            f"UI widget with ID '{ui_widget.id}' already exists in the current"
+            " event actions."
+        )
+
+    self._event_actions.render_ui_widgets.append(ui_widget)

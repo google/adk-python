@@ -627,3 +627,25 @@ async def test_api_key_injection_openai(model):
   )
   client = apigee_llm._completions_http_client
   assert client._headers['Authorization'] == 'Bearer sk-test-key'
+
+
+def test_parse_response_usage_metadata():
+  """Tests that CompletionsHTTPClient parses usage metadata correctly including reasoning tokens."""
+  client = CompletionsHTTPClient(base_url='http://test')
+  response_dict = {
+      'choices': [{
+          'message': {'role': 'assistant', 'content': 'hello'},
+          'finish_reason': 'stop',
+      }],
+      'usage': {
+          'prompt_tokens': 10,
+          'completion_tokens': 5,
+          'total_tokens': 15,
+          'completion_tokens_details': {'reasoning_tokens': 4},
+      },
+  }
+  llm_response = client._parse_response(response_dict)
+  assert llm_response.usage_metadata.prompt_token_count == 10
+  assert llm_response.usage_metadata.candidates_token_count == 5
+  assert llm_response.usage_metadata.total_token_count == 15
+  assert llm_response.usage_metadata.thoughts_token_count == 4
