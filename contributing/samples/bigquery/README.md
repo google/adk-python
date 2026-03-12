@@ -55,6 +55,9 @@ distributed via the `google.adk.tools.bigquery` module. These tools include:
   `ARIMA_PLUS` model and then querying it with
   `ML.DETECT_ANOMALIES` to detect time series data anomalies.
 
+11. `search_catalog`
+  Searches for data entries across projects using the Dataplex Catalog. This allows discovery of datasets, tables, and other assets.
+
 ## How to use
 
 Set up environment variables in your `.env` file for using
@@ -159,3 +162,4 @@ the necessary access tokens to call BigQuery APIs on their behalf.
 * which tables exist in the ml_datasets dataset?
 * show more details about the penguins table
 * compute penguins population per island.
+* are there any tables related to animals in project <your_project_id>?
