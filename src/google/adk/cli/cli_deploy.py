@@ -22,6 +22,8 @@ import stat
 import subprocess
 import sys
 import traceback
+from typing import Any
+from typing import Callable
 from typing import Final
 from typing import Optional
 import warnings
@@ -37,7 +39,7 @@ _AGENT_ENGINE_REQUIREMENT: Final[str] = (
 )
 
 
-def _on_rm_error(func, path, exc_info):
+def _on_rm_error(func: Callable[..., Any], path: str, exc_info: Any) -> None:
   """Error handler for shutil.rmtree to handle read-only files on Windows."""
   os.chmod(path, stat.S_IWRITE)
   func(path)
