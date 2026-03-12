@@ -452,6 +452,7 @@ def test_to_gke_happy_path(
       allow_origins=["http://localhost:3000", "https://my-app.com"],
       session_service_uri="sqlite:///",
       artifact_service_uri="gs://gke-bucket",
+      python_version="3.12",
   )
 
   dockerfile_path = tmp_path / "Dockerfile"
@@ -459,6 +460,7 @@ def test_to_gke_happy_path(
   dockerfile_content = dockerfile_path.read_text()
   assert "CMD adk web --port=9090" in dockerfile_content
   assert "RUN pip install google-adk==1.2.0" in dockerfile_content
+  assert "FROM python:3.12-slim" in dockerfile_content
 
   assert len(run_recorder.calls) == 3, "Expected 3 subprocess calls"
 
