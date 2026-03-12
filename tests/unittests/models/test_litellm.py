@@ -2235,11 +2235,13 @@ def test_message_to_generate_content_response_tool_call_with_thought_signature()
       tool_calls=[
           ChatCompletionMessageToolCall(
               type="function",
-              id=f"test_tool_call_id__thought__{encoded_signature}",
+              id="test_tool_call_id",
               function=Function(
                   name="test_function",
                   arguments='{"test_arg": "test_value"}',
               ),
+              provider_specific_fields={"thought_signature": encoded_signature},
+              extra_content={"google": {"thought_signature": encoded_signature}},
           )
       ],
   )
@@ -2269,13 +2271,17 @@ async def test_content_to_message_param_embeds_thought_signature_in_tool_call():
   tool_calls = message["tool_calls"]
   assert tool_calls is not None
   assert len(tool_calls) == 1
-  assert tool_calls[0][
-      "id"
-  ] == "test_tool_call_id__thought__" + base64.b64encode(
-      b"gemini_signature"
-  ).decode(
-      "utf-8"
-  )
+  assert tool_calls[0]["id"] == "test_tool_call_id"
+  assert tool_calls[0]["provider_specific_fields"] == {
+      "thought_signature": base64.b64encode(b"gemini_signature").decode("utf-8")
+  }
+  assert tool_calls[0]["extra_content"] == {
+      "google": {
+          "thought_signature": base64.b64encode(b"gemini_signature").decode(
+              "utf-8"
+          )
+      }
+  }
 
 
 def test_message_to_generate_content_response_inline_tool_call_text():
