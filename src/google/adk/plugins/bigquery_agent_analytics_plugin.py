@@ -2307,6 +2307,11 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       )
       try:
         self.client.query(sql).result()
+      except cloud_exceptions.Conflict:
+        logger.debug(
+            "View %s was updated concurrently by another process.",
+            view_name,
+        )
       except Exception as e:
         logger.error(
             "Failed to create view %s: %s",

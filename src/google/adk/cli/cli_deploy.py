@@ -1061,12 +1061,20 @@ def to_agent_engine(
 
     import vertexai
 
+    from ..utils._google_client_headers import get_tracking_headers
+
     if project and region:
       click.echo('Initializing Vertex AI...')
-      client = vertexai.Client(project=project, location=region)
+      client = vertexai.Client(
+          project=project,
+          location=region,
+          http_options={'headers': get_tracking_headers()},
+      )
     elif api_key:
       click.echo('Initializing Vertex AI in Express Mode with API key...')
-      client = vertexai.Client(api_key=api_key)
+      client = vertexai.Client(
+          api_key=api_key, http_options={'headers': get_tracking_headers()}
+      )
     else:
       click.echo(
           'No project/region or api_key provided. '
