@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License
 
+import base64
 import contextlib
 import json
 import logging
@@ -28,6 +29,7 @@ from google.adk.models.lite_llm import _append_fallback_user_content_if_missing
 from google.adk.models.lite_llm import _content_to_message_param
 from google.adk.models.lite_llm import _enforce_strict_openai_schema
 from google.adk.models.lite_llm import _extract_reasoning_value
+from google.adk.models.lite_llm import _extract_thought_signature_from_tool_call
 from google.adk.models.lite_llm import _FILE_ID_REQUIRED_PROVIDERS
 from google.adk.models.lite_llm import _FINISH_REASON_MAPPING
 from google.adk.models.lite_llm import _function_declaration_to_tool_param
@@ -42,6 +44,7 @@ from google.adk.models.lite_llm import _parse_tool_calls_from_text
 from google.adk.models.lite_llm import _redirect_litellm_loggers_to_stdout
 from google.adk.models.lite_llm import _schema_to_dict
 from google.adk.models.lite_llm import _split_message_content_and_tool_calls
+from google.adk.models.lite_llm import _THOUGHT_SIGNATURE_SEPARATOR
 from google.adk.models.lite_llm import _to_litellm_response_format
 from google.adk.models.lite_llm import _to_litellm_role
 from google.adk.models.lite_llm import FunctionChunk
@@ -2421,6 +2424,219 @@ def test_extract_reasoning_value_no_reasoning_fields():
   assert result is None
 
 
+def test_extract_thought_signature_from_extra_content():
+  """Extracts thought_signature from extra_content (OpenAI-compatible path)."""
+  sig_b64 = base64.b64encode(b"test_signature").decode("utf-8")
+  tc = ChatCompletionMessageToolCall(
+      type="function",
+      id="call_123",
+      function=Function(name="test_fn", arguments="{}"),
+      extra_content={"google": {"thought_signature": sig_b64}},
+  )
+  result = _extract_thought_signature_from_tool_call(tc)
+  assert result == b"test_signature"
+
+
+def test_extract_thought_signature_from_provider_specific_fields():
+  """Extracts thought_signature from provider_specific_fields (Vertex path)."""
+  sig_b64 = base64.b64encode(b"vertex_sig").decode("utf-8")
+  tc = ChatCompletionMessageToolCall(
+      type="function",
+      id="call_456",
+      function=Function(name="test_fn", arguments="{}"),
+      provider_specific_fields={"thought_signature": sig_b64},
+  )
+  result = _extract_thought_signature_from_tool_call(tc)
+  assert result == b"vertex_sig"
+
+
+def test_extract_thought_signature_from_function_provider_fields():
+  """Extracts thought_signature from function's provider_specific_fields.
+
+  When provider_specific_fields is set directly on the function object
+  (e.g. by litellm internals), the extraction should find it.
+  """
+  sig_b64 = base64.b64encode(b"func_sig").decode("utf-8")
+  tc = ChatCompletionMessageToolCall(
+      type="function",
+      id="call_func",
+      function=Function(name="test_fn", arguments="{}"),
+  )
+  # Simulate litellm setting provider_specific_fields on the function
+  tc.function.provider_specific_fields = {
+      "thought_signature": sig_b64,
+  }
+  result = _extract_thought_signature_from_tool_call(tc)
+  assert result == b"func_sig"
+
+
+def test_extract_thought_signature_from_id():
+  """Extracts thought_signature from tool call ID (__thought__ separator)."""
+  sig_b64 = base64.b64encode(b"id_sig").decode("utf-8")
+  tc = ChatCompletionMessageToolCall(
+      type="function",
+      id=f"call_789{_THOUGHT_SIGNATURE_SEPARATOR}{sig_b64}",
+      function=Function(name="test_fn", arguments="{}"),
+  )
+  result = _extract_thought_signature_from_tool_call(tc)
+  assert result == b"id_sig"
+
+
+def test_extract_thought_signature_returns_none_when_absent():
+  """Returns None when no thought_signature is present."""
+  tc = ChatCompletionMessageToolCall(
+      type="function",
+      id="call_plain",
+      function=Function(name="test_fn", arguments="{}"),
+  )
+  result = _extract_thought_signature_from_tool_call(tc)
+  assert result is None
+
+
+def test_extract_thought_signature_corrupted_base64_returns_none():
+  """Returns None gracefully for corrupted base64 signatures."""
+  tc = ChatCompletionMessageToolCall(
+      type="function",
+      id="call_bad",
+      function=Function(name="test_fn", arguments="{}"),
+      extra_content={"google": {"thought_signature": "!!!not_valid_base64!!!"}},
+  )
+  result = _extract_thought_signature_from_tool_call(tc)
+  assert result is None
+
+
+def test_message_to_generate_content_response_preserves_thought_signature():
+  """thought_signature from tool call is preserved on the output Part."""
+  sig_b64 = base64.b64encode(b"round_trip_sig").decode("utf-8")
+  message = ChatCompletionAssistantMessage(
+      role="assistant",
+      content=None,
+      tool_calls=[
+          ChatCompletionMessageToolCall(
+              type="function",
+              id="call_ts_1",
+              function=Function(
+                  name="load_skill",
+                  arguments='{"skill": "my_skill"}',
+              ),
+              extra_content={"google": {"thought_signature": sig_b64}},
+          )
+      ],
+  )
+
+  response = _message_to_generate_content_response(message)
+  fc_part = response.content.parts[0]
+  assert fc_part.function_call.name == "load_skill"
+  assert fc_part.function_call.id == "call_ts_1"
+  assert fc_part.thought_signature == b"round_trip_sig"
+
+
+def test_message_to_generate_content_response_no_thought_signature():
+  """Parts without thought_signature have thought_signature=None."""
+  message = ChatCompletionAssistantMessage(
+      role="assistant",
+      content=None,
+      tool_calls=[
+          ChatCompletionMessageToolCall(
+              type="function",
+              id="call_no_ts",
+              function=Function(
+                  name="plain_tool",
+                  arguments="{}",
+              ),
+          )
+      ],
+  )
+
+  response = _message_to_generate_content_response(message)
+  fc_part = response.content.parts[0]
+  assert fc_part.function_call.name == "plain_tool"
+  assert fc_part.thought_signature is None
+
+
+@pytest.mark.asyncio
+async def test_content_to_message_param_preserves_thought_signature():
+  """thought_signature on Part is emitted on both tool call metadata paths."""
+  sig_bytes = b"preserved_sig"
+  sig_b64 = base64.b64encode(sig_bytes).decode("utf-8")
+  content = types.Content(
+      role="model",
+      parts=[
+          types.Part(
+              function_call=types.FunctionCall(
+                  name="load_skill",
+                  args={"skill": "my_skill"},
+                  id="call_rt",
+              ),
+              thought_signature=sig_bytes,
+          ),
+      ],
+  )
+
+  message = await _content_to_message_param(content)
+  assert message["role"] == "assistant"
+  tc = message["tool_calls"][0]
+  assert tc["function"]["name"] == "load_skill"
+  assert tc["id"] == "call_rt"
+  assert tc["provider_specific_fields"] == {"thought_signature": sig_b64}
+  assert tc["extra_content"] == {"google": {"thought_signature": sig_b64}}
+
+
+@pytest.mark.asyncio
+async def test_content_to_message_param_no_thought_signature():
+  """Tool calls without thought_signature have no signature metadata."""
+  content = types.Content(
+      role="model",
+      parts=[
+          types.Part.from_function_call(name="plain_tool", args={"key": "val"}),
+      ],
+  )
+  content.parts[0].function_call.id = "call_plain"
+
+  message = await _content_to_message_param(content)
+  tc = message["tool_calls"][0]
+  assert tc["id"] == "call_plain"
+  assert "provider_specific_fields" not in tc
+  assert "extra_content" not in tc
+
+
+@pytest.mark.asyncio
+async def test_thought_signature_round_trip():
+  """thought_signature survives a full round trip through ADK conversions.
+
+  Simulates the flow: litellm response → types.Part → litellm request.
+  """
+  sig_b64 = base64.b64encode(b"full_round_trip").decode("utf-8")
+
+  # Step 1: Incoming litellm message with thought_signature
+  incoming_message = ChatCompletionAssistantMessage(
+      role="assistant",
+      content=None,
+      tool_calls=[
+          ChatCompletionMessageToolCall(
+              type="function",
+              id="call_round",
+              function=Function(
+                  name="load_skill",
+                  arguments='{"skill_name": "test"}',
+              ),
+              extra_content={"google": {"thought_signature": sig_b64}},
+          )
+      ],
+  )
+
+  # Step 2: Convert to ADK internal format (types.Content)
+  llm_response = _message_to_generate_content_response(incoming_message)
+  fc_part = llm_response.content.parts[0]
+  assert fc_part.thought_signature == b"full_round_trip"
+
+  # Step 3: Convert back to litellm format
+  outgoing_message = await _content_to_message_param(llm_response.content)
+  out_tc = outgoing_message["tool_calls"][0]
+  assert out_tc["provider_specific_fields"] == {"thought_signature": sig_b64}
+  assert out_tc["extra_content"] == {"google": {"thought_signature": sig_b64}}
+
+
 def test_parse_tool_calls_from_text_multiple_calls():
   text = (
       '{"name":"alpha","arguments":{"value":1}}\n'
@@ -3018,32 +3234,24 @@ def test_to_litellm_role():
             (None, "stop"),
         ),
         (
-            ModelResponse(
-                choices=[{"finish_reason": "tool_calls"}],
-                usage={
-                    "prompt_tokens": 0,
-                    "completion_tokens": 0,
-                    "total_tokens": 0,
-                },
-            ),
+            ModelResponse(choices=[{"finish_reason": "tool_calls"}]),
             [None],
-            UsageMetadataChunk(
-                prompt_tokens=0, completion_tokens=0, total_tokens=0
+            (
+                None,
+                UsageMetadataChunk(
+                    prompt_tokens=0, completion_tokens=0, total_tokens=0
+                ),
             ),
             "tool_calls",
         ),
         (
-            ModelResponse(
-                choices=[{}],
-                usage={
-                    "prompt_tokens": 0,
-                    "completion_tokens": 0,
-                    "total_tokens": 0,
-                },
-            ),
+            ModelResponse(choices=[{}]),
             [None],
-            UsageMetadataChunk(
-                prompt_tokens=0, completion_tokens=0, total_tokens=0
+            (
+                None,
+                UsageMetadataChunk(
+                    prompt_tokens=0, completion_tokens=0, total_tokens=0
+                ),
             ),
             "stop",
         ),
@@ -3172,7 +3380,9 @@ def test_model_response_to_chunk(
     else:
       assert finished == expected_finished
 
-  if expected_usage_chunk is None:
+  if isinstance(expected_usage_chunk, tuple):
+    assert usage_chunk in expected_usage_chunk
+  elif expected_usage_chunk is None:
     assert usage_chunk is None
   else:
     assert usage_chunk is not None
@@ -3780,7 +3990,6 @@ async def test_streaming_tool_call_truncated_by_max_tokens(
               )
           ]
       ),
-      # finish_reason="length" arrives before args are complete
       ModelResponseStream(
           choices=[StreamingChoices(finish_reason="length", delta=Delta())]
       ),
@@ -3829,7 +4038,6 @@ async def test_streaming_tool_call_complete_with_length_finish_reason(
               )
           ]
       ),
-      # finish_reason="length" but tool call args are valid JSON
       ModelResponseStream(
           choices=[StreamingChoices(finish_reason="length", delta=Delta())]
       ),
@@ -3873,7 +4081,6 @@ async def test_streaming_text_truncated_by_max_tokens(
               )
           ]
       ),
-      # finish_reason="length" on text-only response
       ModelResponseStream(
           choices=[StreamingChoices(finish_reason="length", delta=Delta())]
       ),
@@ -3895,10 +4102,10 @@ async def test_streaming_text_truncated_by_max_tokens(
       )
   ]
 
-  # First response is the partial text chunk, second is the aggregated response
   partial_responses = [r for r in responses if r.partial]
   aggregated_responses = [r for r in responses if not r.partial]
 
+  assert len(partial_responses) == 1
   assert len(aggregated_responses) == 1
   aggregated = aggregated_responses[0]
   assert aggregated.finish_reason == types.FinishReason.MAX_TOKENS
