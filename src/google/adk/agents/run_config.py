@@ -28,6 +28,8 @@ from pydantic import Field
 from pydantic import field_validator
 from pydantic import model_validator
 
+from ..sessions.base_session_service import GetSessionConfig
+
 logger = logging.getLogger('google_adk.' + __name__)
 
 
@@ -318,6 +320,26 @@ class RunConfig(BaseModel):
 
   custom_metadata: Optional[dict[str, Any]] = None
   """Custom metadata for the current invocation."""
+
+  get_session_config: Optional[GetSessionConfig] = None
+  """Configuration for controlling which events are fetched when loading
+  a session.
+
+  When set, the Runner will pass this configuration to the session service's
+  ``get_session`` method, allowing the caller to limit the events returned
+  (e.g. via ``num_recent_events`` or ``after_timestamp``).  This is especially
+  useful in combination with ``EventsCompactionConfig`` to avoid loading the
+  full event history on every invocation.
+
+  Example::
+
+      from google.adk.agents.run_config import RunConfig
+      from google.adk.sessions.base_session_service import GetSessionConfig
+
+      run_config = RunConfig(
+          get_session_config=GetSessionConfig(num_recent_events=50),
+      )
+  """
 
   @model_validator(mode='before')
   @classmethod

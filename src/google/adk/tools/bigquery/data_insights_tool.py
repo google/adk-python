@@ -133,7 +133,7 @@ def ask_data_insights(
         "Content-Type": "application/json",
         "X-Goog-API-Client": _GDA_CLIENT_ID,
     }
-    ca_url = f"https://geminidataanalytics.googleapis.com/v1alpha/projects/{project_id}/locations/{location}:chat"
+    ca_url = f"https://geminidataanalytics.googleapis.com/v1beta/projects/{project_id}/locations/{location}:chat"
 
     instructions = """**INSTRUCTIONS - FOLLOW THESE RULES:**
     1.  **CONTENT:** Your answer should present the supporting data and then provide a conclusion based on that data, including relevant details and observations where possible.
