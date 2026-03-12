@@ -702,8 +702,11 @@ class SkillToolset(BaseToolset):
     self._script_timeout = script_timeout
 
     self._provided_tools_by_name = {}
+    self._provided_toolsets = []
     for tool_union in additional_tools or []:
-      if isinstance(tool_union, BaseTool):
+      if isinstance(tool_union, BaseToolset):
+        self._provided_toolsets.append(tool_union)
+      elif isinstance(tool_union, BaseTool):
         self._provided_tools_by_name[tool_union.name] = tool_union
       elif callable(tool_union):
         ft = FunctionTool(tool_union)
@@ -754,11 +757,22 @@ class SkillToolset(BaseToolset):
     if not additional_tool_names:
       return []
 
+    # Collect all candidate tools from both individual tools and toolsets
+    candidate_tools = self._provided_tools_by_name.copy()
+    if self._provided_toolsets:
+      ts_results = await asyncio.gather(*(
+          ts.get_tools_with_prefix(readonly_context)
+          for ts in self._provided_toolsets
+      ))
+      for ts_tools in ts_results:
+        for t in ts_tools:
+          candidate_tools[t.name] = t
+
     resolved_tools = []
     existing_tool_names = {t.name for t in self._tools}
     for name in additional_tool_names:
-      if name in self._provided_tools_by_name:
-        tool = self._provided_tools_by_name[name]
+      if name in candidate_tools:
+        tool = candidate_tools[name]
         if tool.name in existing_tool_names:
           logger.error(
               "Tool name collision: tool '%s' already exists.", tool.name

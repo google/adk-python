@@ -48,7 +48,10 @@ def search_catalog(
     dataset_ids_filter: list[str] | None = None,
     types_filter: list[str] | None = None,
 ) -> dict[str, Any]:
-  """Searches for BigQuery assets within Dataplex.
+  """Finds BigQuery datasets and tables using natural language semantic search via Dataplex.
+
+  Use this tool to discover BigQuery assets when you don't know the exact names.
+  It's ideal for searching based on topics, descriptions, or questions about the data.
 
   Args:
       prompt: The base search query (natural language or keywords).
