@@ -35,6 +35,7 @@ import uvicorn
 from . import cli_create
 from . import cli_deploy
 from .. import version
+from ..agents.run_config import StreamingMode
 from ..evaluation.constants import MISSING_EVAL_DEPENDENCIES_MESSAGE
 from ..features import FeatureName
 from ..features import override_feature_enabled
@@ -230,10 +231,21 @@ def conformance():
         exists=True, dir_okay=True, file_okay=False, resolve_path=True
     ),
 )
+@click.argument(
+    "streaming-mode",
+    type=click.Choice(
+        [str(m.value) for m in StreamingMode], case_sensitive=False
+    ),
+    callback=lambda ctx, param, value: next(
+        (m for m in StreamingMode if str(m.value).lower() == value.lower()),
+        value,
+    ),
+)
 @click.pass_context
 def cli_conformance_record(
     ctx,
     paths: tuple[str, ...],
+    streaming_mode: StreamingMode,
 ):
   """Generate ADK conformance test YAML files from TestCaseInput specifications.
 
@@ -273,7 +285,7 @@ def cli_conformance_record(
 
   # Default to tests/ directory if no paths provided
   test_paths = [Path(p) for p in paths] if paths else [Path("tests").resolve()]
-  asyncio.run(run_conformance_record(test_paths))
+  asyncio.run(run_conformance_record(test_paths, streaming_mode))
 
 
 @conformance.command("test", cls=HelpfulCommand)
@@ -309,6 +321,20 @@ def cli_conformance_record(
         " directory."
     ),
 )
+@click.option(
+    "--streaming-mode",
+    type=click.Choice(
+        [str(m.value) for m in StreamingMode], case_sensitive=False
+    ),
+    callback=lambda ctx, param, value: next(
+        (m for m in StreamingMode if str(m.value).lower() == value.lower()),
+        value,
+    )
+    if value is not None
+    else None,
+    required=False,
+    default=None,
+)
 @click.pass_context
 def cli_conformance_test(
     ctx,
@@ -316,6 +342,7 @@ def cli_conformance_test(
     mode: str,
     generate_report: bool,
     report_dir: Optional[str] = None,
+    streaming_mode: Optional[StreamingMode] = None,
 ):
   """Run conformance tests to verify agent behavior consistency.
 
@@ -342,9 +369,11 @@ def cli_conformance_test(
   \b
   category/
     test_name/
-      spec.yaml                    # Test specification
-      generated-recordings.yaml    # Recorded interactions (replay mode)
-      generated-session.yaml       # Session data (replay mode)
+      spec.yaml                     # Test specification
+      generated-recordings.yaml     # Recorded interactions (replay mode)
+      generated-session.yaml        # Session data (replay mode)
+      generated-recordings-sse.yaml # Recorded SSE interactions (replay mode)
+      generated-session-sse.yaml    # SSE Session data (replay mode)
 
   REPORT GENERATION:
 
@@ -377,7 +406,6 @@ def cli_conformance_test(
   # Generate a test report in a specific directory
   adk conformance test --generate_report --report_dir=reports
   """
-
   try:
     from .conformance.cli_test import run_conformance_test
   except ImportError as e:
@@ -403,6 +431,7 @@ def cli_conformance_test(
           mode=mode.lower(),
           generate_report=generate_report,
           report_dir=report_dir,
+          streaming_mode=streaming_mode,
       )
   )
 
