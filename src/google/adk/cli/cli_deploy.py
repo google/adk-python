@@ -63,7 +63,7 @@ def _ensure_agent_engine_dependency(requirements_txt_path: str) -> None:
 
 
 _DOCKERFILE_TEMPLATE: Final[str] = """
-FROM python:3.11-slim
+FROM python:{python_version}-slim
 WORKDIR /app
 
 # Create a non-root user
@@ -590,6 +590,7 @@ def _get_service_option_by_adk_version(
     artifact_uri: Optional[str],
     memory_uri: Optional[str],
     use_local_storage: Optional[bool] = None,
+    python_version: str = '3.11'
 ) -> str:
   """Returns service option string based on adk_version."""
   parsed_version = parse(adk_version)
@@ -638,6 +639,7 @@ def to_cloud_run(
     log_level: str,
     verbosity: str,
     adk_version: str,
+    python_version: str = '3.11',
     allow_origins: Optional[list[str]] = None,
     session_service_uri: Optional[str] = None,
     artifact_service_uri: Optional[str] = None,
@@ -732,6 +734,7 @@ def to_cloud_run(
         otel_to_cloud_option='--otel_to_cloud' if otel_to_cloud else '',
         allow_origins_option=allow_origins_option,
         adk_version=adk_version,
+        python_version=python_version,
         host_option=host_option,
         a2a_option=a2a_option,
     )
@@ -1164,6 +1167,7 @@ def to_gke(
     with_ui: bool,
     log_level: str,
     adk_version: str,
+    python_version: str = '3.11',
     allow_origins: Optional[list[str]] = None,
     session_service_uri: Optional[str] = None,
     artifact_service_uri: Optional[str] = None,
@@ -1261,6 +1265,7 @@ def to_gke(
         otel_to_cloud_option='--otel_to_cloud' if otel_to_cloud else '',
         allow_origins_option=allow_origins_option,
         adk_version=adk_version,
+        python_version=python_version,
         host_option=host_option,
         a2a_option='--a2a' if a2a else '',
     )

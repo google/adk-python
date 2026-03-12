@@ -1757,6 +1757,16 @@ def cli_api_server(
     ),
 )
 @click.option(
+    "--python_version",
+    type=str,
+    default="3.11",
+    show_default=True,
+    help=(
+        "Optional. The Python version used in the Docker base image."
+        " (default: 3.11)"
+    ),
+)
+@click.option(
     "--a2a",
     is_flag=True,
     show_default=True,
@@ -1799,6 +1809,7 @@ def cli_deploy_cloud_run(
     session_db_url: Optional[str] = None,  # Deprecated
     artifact_storage_uri: Optional[str] = None,  # Deprecated
     a2a: bool = False,
+    python_version: str = '3.11',
 ):
   """Deploys an agent to Cloud Run.
 
@@ -1871,6 +1882,7 @@ def cli_deploy_cloud_run(
         log_level=log_level,
         verbosity=verbosity,
         adk_version=adk_version,
+        python_version=python_version,
         session_service_uri=session_service_uri,
         artifact_service_uri=artifact_service_uri,
         memory_service_uri=memory_service_uri,
@@ -2261,6 +2273,16 @@ def cli_deploy_agent_engine(
         " version in the dev environment)"
     ),
 )
+@click.option(
+    "--python_version",
+    type=str,
+    default="3.11",
+    show_default=True,
+    help=(
+        "Optional. The Python version used in the Docker base image."
+        " (default: 3.11)"
+    ),
+)
 @adk_services_options(default_use_local_storage=False)
 @click.argument(
     "agent",
@@ -2286,6 +2308,7 @@ def cli_deploy_gke(
     artifact_service_uri: Optional[str] = None,
     memory_service_uri: Optional[str] = None,
     use_local_storage: bool = False,
+    python_version: str = '3.11'
 ):
   """Deploys an agent to GKE.
 
@@ -2312,6 +2335,7 @@ def cli_deploy_gke(
         with_ui=with_ui,
         log_level=log_level,
         adk_version=adk_version,
+        python_version=python_version,
         session_service_uri=session_service_uri,
         artifact_service_uri=artifact_service_uri,
         memory_service_uri=memory_service_uri,
