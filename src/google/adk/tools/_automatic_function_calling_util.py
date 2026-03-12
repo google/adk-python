@@ -392,6 +392,15 @@ def from_function_with_options(
         type='OBJECT',
         properties=parameters_json_schema,
     )
+    # Determine required fields from the function signature directly.
+    # _get_required_fields() relies on nullable/default metadata in Schema
+    # objects, which is not preserved by the json_schema fallback path.
+    declaration.parameters.required = [
+        name
+        for name, param in inspect.signature(func).parameters.items()
+        if name in parameters_json_schema
+        and param.default is inspect.Parameter.empty
+    ]
 
   if variant == GoogleLLMVariant.GEMINI_API:
     return declaration

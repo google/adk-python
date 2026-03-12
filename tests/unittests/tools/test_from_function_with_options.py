@@ -319,3 +319,41 @@ def test_from_function_with_async_generator_complex_yield_type_vertex():
   # VERTEX_AI should extract yield type (Dict[str, str]) from AsyncGenerator
   assert declaration.response is not None
   assert declaration.response.type == types.Type.OBJECT
+
+
+def test_from_function_with_options_required_fields_with_complex_union():
+  """Test that required fields are set when complex union types trigger the json_schema fallback.
+
+  Regression test for https://github.com/google/adk-python/issues/4798
+
+  When a function has parameters with types that cause
+  _parse_schema_from_parameter to raise ValueError (e.g. list[str] | None),
+  from_function_with_options falls back to the parameters_json_schema path.
+  This fallback must still set the `required` field for parameters that have
+  no default value.
+  """
+
+  def tool_with_complex_types(
+      query: str,
+      mode: str = 'default',
+      tags: list[str] | None = None,
+  ) -> str:
+    """A tool with a required param and a complex union type param."""
+    return query
+
+  declaration = _automatic_function_calling_util.from_function_with_options(
+      tool_with_complex_types, GoogleLLMVariant.GEMINI_API
+  )
+
+  assert declaration.name == 'tool_with_complex_types'
+  assert declaration.parameters is not None
+  assert declaration.parameters.type == 'OBJECT'
+  assert 'query' in declaration.parameters.properties
+  assert 'mode' in declaration.parameters.properties
+  assert 'tags' in declaration.parameters.properties
+  # The critical assertion: `query` must be in required because it has no default
+  assert declaration.parameters.required is not None
+  assert 'query' in declaration.parameters.required
+  # `mode` and `tags` have defaults, so they must NOT be required
+  assert 'mode' not in declaration.parameters.required
+  assert 'tags' not in declaration.parameters.required
