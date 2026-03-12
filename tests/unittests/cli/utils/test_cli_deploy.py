@@ -671,10 +671,10 @@ class TestValidateAgentImport:
     (tmp_path / ".env").write_text("_ADK_TEST_DEPLOY_VAR=from_dotenv\n")
 
     try:
-        # Should not raise because .env is loaded before import
-        cli_deploy._validate_agent_import(
-            str(tmp_path), "root_agent", is_config_agent=False
-        )
+      # Should not raise because .env is loaded before import
+      cli_deploy._validate_agent_import(
+          str(tmp_path), "root_agent", is_config_agent=False
+      )
     finally:
-        # Clean up the env var
-        os.environ.pop("_ADK_TEST_DEPLOY_VAR", None)
+      # Clean up the env var
+      os.environ.pop("_ADK_TEST_DEPLOY_VAR", None)
