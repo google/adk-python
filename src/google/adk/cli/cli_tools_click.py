@@ -1809,7 +1809,7 @@ def cli_deploy_cloud_run(
     session_db_url: Optional[str] = None,  # Deprecated
     artifact_storage_uri: Optional[str] = None,  # Deprecated
     a2a: bool = False,
-    python_version: str = '3.11',
+    python_version: str = "3.11",
 ):
   """Deploys an agent to Cloud Run.
 
@@ -2308,7 +2308,7 @@ def cli_deploy_gke(
     artifact_service_uri: Optional[str] = None,
     memory_service_uri: Optional[str] = None,
     use_local_storage: bool = False,
-    python_version: str = '3.11'
+    python_version: str = "3.11",
 ):
   """Deploys an agent to GKE.
 
