@@ -29,7 +29,7 @@ if TYPE_CHECKING:
 
 def generate_markdown_report(
     version_data: dict[str, Any],
-    summary: _ConformanceTestSummary,
+    summaries: list[_ConformanceTestSummary],
     report_dir: Optional[str],
 ) -> None:
   """Generates a Markdown report of the test results."""
@@ -44,46 +44,94 @@ def generate_markdown_report(
     report_path = Path(report_dir) / report_name
     report_path.parent.mkdir(parents=True, exist_ok=True)
 
+  # Collect all test results
+  test_results = {}
+  test_descriptions = {}
+  streaming_modes = []
+
+  for summary in summaries:
+    mode_name = (
+        str(summary.streaming_mode.value)
+        if summary.streaming_mode.value is not None
+        else "none"
+    )
+    streaming_modes.append(mode_name)
+    for result in summary.results:
+      key = (result.category, result.name)
+      if key not in test_results:
+        test_results[key] = {}
+      test_results[key][mode_name] = result
+      if result.description:
+        test_descriptions[key] = result.description
+
+  streaming_modes.sort()
+
   with open(report_path, "w") as f:
     f.write("# ADK Python Conformance Test Report\n\n")
-
-    # Summary
     f.write("## Summary\n\n")
     f.write(f"- **ADK Version**: {server_version}\n")
-    f.write(f"- **Language**: {language} {language_version}\n")
-    f.write(f"- **Total Tests**: {summary.total_tests}\n")
-    f.write(f"- **Passed**: {summary.passed_tests}\n")
-    f.write(f"- **Failed**: {summary.failed_tests}\n")
-    f.write(f"- **Success Rate**: {summary.success_rate:.1f}%\n\n")
+    f.write(f"- **Language**: {language} {language_version}\n\n")
+
+    f.write(
+        "| Streaming Mode | Total Tests | Passed | Failed | Success Rate |\n"
+    )
+    f.write("| :--- | :--- | :--- | :--- | :--- |\n")
+
+    for summary in summaries:
+      mode_name = (
+          str(summary.streaming_mode.value)
+          if summary.streaming_mode.value is not None
+          else "none"
+      )
+      f.write(
+          f"| {mode_name} | {summary.total_tests} |"
+          f" {summary.passed_tests} | {summary.failed_tests} |"
+          f" {summary.success_rate:.1f}% |\n"
+      )
+    f.write("\n")
 
     # Table
     f.write("## Test Results\n\n")
-    f.write("| Status | Category | Test Name | Description |\n")
-    f.write("| :--- | :--- | :--- | :--- |\n")
+    headers = ["Category", "Test Name", "Description"] + streaming_modes
+    f.write("| " + " | ".join(headers) + " |\n")
+    f.write("| " + " | ".join([":---"] * len(headers)) + " |\n")
 
-    for result in summary.results:
-      status_icon = "✅ PASS" if result.success else "❌ FAIL"
-      description = (
-          result.description.replace("\n", " ") if result.description else ""
+    sorted_keys = sorted(test_results.keys())
+    for category, name in sorted_keys:
+      description = test_descriptions.get((category, name), "").replace(
+          "\n", " "
       )
-      f.write(
-          f"| {status_icon} | {result.category} | {result.name} |"
-          f" {description} |\n"
-      )
+      row = [category, name, description]
+      for mode in streaming_modes:
+        result = test_results[(category, name)].get(mode)
+        if result:
+          status_icon = "✅ PASS" if result.success else "❌ FAIL"
+        else:
+          status_icon = "N/A"
+        row.append(status_icon)
+      f.write("| " + " | ".join(row) + " |\n")
 
     f.write("\n")
 
     # Failed Tests Details
-    if summary.failed_tests > 0:
+    has_failures = any(s.failed_tests > 0 for s in summaries)
+    if has_failures:
       f.write("## Failed Tests Details\n\n")
-      for result in summary.results:
-        if not result.success:
-          f.write(f"### {result.category}/{result.name}\n\n")
-          if result.description:
-            f.write(f"**Description**: {result.description}\n\n")
-          f.write("**Error**:\n")
-          f.write("```\n")
-          f.write(f"{result.error_message}\n")
-          f.write("```\n\n")
+      for summary in summaries:
+        if summary.failed_tests > 0:
+          mode_name = (
+              str(summary.streaming_mode.value)
+              if summary.streaming_mode.value is not None
+              else "none"
+          )
+          for result in summary.results:
+            if not result.success:
+              f.write(f"### {result.category}/{result.name} ({mode_name})\n\n")
+              if result.description:
+                f.write(f"**Description**: {result.description}\n\n")
+              f.write("**Error**:\n")
+              f.write("```\n")
+              f.write(f"{result.error_message}\n")
+              f.write("```\n\n")
 
   click.secho(f"\nReport generated at: {report_path.resolve()}", fg="blue")
