@@ -590,7 +590,6 @@ def _get_service_option_by_adk_version(
     artifact_uri: Optional[str],
     memory_uri: Optional[str],
     use_local_storage: Optional[bool] = None,
-    python_version: str = '3.11',
 ) -> str:
   """Returns service option string based on adk_version."""
   parsed_version = parse(adk_version)
