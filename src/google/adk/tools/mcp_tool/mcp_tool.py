@@ -21,6 +21,7 @@ import logging
 from typing import Any
 from typing import Callable
 from typing import Dict
+from typing import List
 from typing import Optional
 from typing import Protocol
 from typing import runtime_checkable
@@ -39,6 +40,7 @@ from ...agents.readonly_context import ReadonlyContext
 from ...auth.auth_credential import AuthCredential
 from ...auth.auth_schemes import AuthScheme
 from ...auth.auth_tool import AuthConfig
+from ...events.ui_widget import UiWidget
 from ...features import FeatureName
 from ...features import is_feature_enabled
 from ...utils.context_utils import find_context_parameter
@@ -212,6 +214,48 @@ class McpTool(BaseAuthenticatedTool):
     """Returns the raw MCP tool."""
     return self._mcp_tool
 
+  @property
+  def visibility(self) -> List[str]:
+    """Returns the visibility if this MCP tool meta has one."""
+    meta = getattr(self.raw_mcp_tool, "meta", None)
+    if not meta or not isinstance(meta, dict):
+      return []
+
+    # Format: meta.ui.visibility
+    ui = meta.get("ui", {})
+    if isinstance(ui, dict):
+      return ui.get("visibility", [])
+    return []
+
+  @property
+  def mcp_app_resource_uri(self) -> Optional[str]:
+    """Returns the MCP App UI resource URI if this tool has one.
+
+    MCP Apps declare a UI resource via `meta.ui.resourceUri` in the tool
+    definition. This property extracts that URI, supporting both the nested
+    format (`{"ui": {"resourceUri": "ui://..."}}`) and the flat format
+    (`{"ui/resourceUri": "ui://..."}`).
+
+    Returns:
+        The `ui://` resource URI string, or None if not present.
+    """
+    meta = getattr(self.raw_mcp_tool, "meta", None)
+    if not meta or not isinstance(meta, dict):
+      return None
+    # Nested format: meta.ui.resourceUri (preferred)
+    ui = meta.get("ui")
+    if isinstance(ui, dict):
+      uri = ui.get("resourceUri")
+      if isinstance(uri, str) and uri.startswith("ui://"):
+        return uri
+    # Flat format: meta["ui/resourceUri"] (deprecated)
+    # Reference:
+    # https://github.com/modelcontextprotocol/ext-apps/blob/main/specification/2026-01-26/apps.mdx
+    uri = meta.get("ui/resourceUri")
+    if isinstance(uri, str) and uri.startswith("ui://"):
+      return uri
+    return None
+
   async def _invoke_callable(
       self, target: Callable[..., Any], args_to_call: dict[str, Any]
   ) -> Any:
@@ -335,7 +379,22 @@ class McpTool(BaseAuthenticatedTool):
         progress_callback=resolved_callback,
         meta=meta_trace_context,
     )
-    return response.model_dump(exclude_none=True, mode="json")
+    result = response.model_dump(exclude_none=True, mode="json")
+
+    # Push UI widget to the event actions if the tool supports it.
+    if self.mcp_app_resource_uri:
+      tool_context.render_ui_widget(
+          UiWidget(
+              id=tool_context.function_call_id,
+              provider="mcp",
+              payload={
+                  "resource_uri": self.mcp_app_resource_uri,
+                  "tool": self._mcp_tool,
+                  "tool_args": args,
+              },
+          )
+      )
+    return result
 
   def _resolve_progress_callback(
       self, tool_context: ToolContext

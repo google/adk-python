@@ -110,8 +110,12 @@ def get_structured_model_response(function_response_event: Event) -> str | None:
 
   for func_response in function_response_event.get_function_responses():
     if func_response.name == 'set_model_response':
-      # Convert dict to JSON string
-      return json.dumps(func_response.response, ensure_ascii=False)
+      # Extract the actual result from the wrapped response.
+      # Tool results are wrapped as {'result': ...} when not already a dict.
+      response = func_response.response
+      if isinstance(response, dict) and 'result' in response:
+        response = response['result']
+      return json.dumps(response, ensure_ascii=False)
 
   return None
 

@@ -20,10 +20,13 @@ from unittest import mock
 
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.agents.llm_agent import LlmAgent
+from google.adk.errors.tool_execution_error import ToolErrorType
+from google.adk.errors.tool_execution_error import ToolExecutionError
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.telemetry.tracing import ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS
+from google.adk.telemetry.tracing import GEN_AI_AGENT_VERSION
 from google.adk.telemetry.tracing import trace_agent_invocation
 from google.adk.telemetry.tracing import trace_call_llm
 from google.adk.telemetry.tracing import trace_inference_result
@@ -119,6 +122,33 @@ async def test_trace_agent_invocation(mock_span_fixture):
       mock.call('gen_ai.operation.name', 'invoke_agent'),
       mock.call('gen_ai.agent.description', agent.description),
       mock.call('gen_ai.agent.name', agent.name),
+      mock.call(GEN_AI_AGENT_VERSION, ''),
+      mock.call(
+          'gen_ai.conversation.id',
+          invocation_context.session.id,
+      ),
+  ]
+  mock_span_fixture.set_attribute.assert_has_calls(
+      expected_calls, any_order=True
+  )
+  assert mock_span_fixture.set_attribute.call_count == len(expected_calls)
+
+
+@pytest.mark.asyncio
+async def test_trace_agent_invocation_with_version(mock_span_fixture):
+  """Test trace_agent_invocation sets span attributes correctly when version is provided."""
+  agent = LlmAgent(name='test_llm_agent', model='gemini-pro')
+  agent.description = 'Test agent description'
+  agent.version = '1.0.0'
+  invocation_context = await _create_invocation_context(agent)
+
+  trace_agent_invocation(mock_span_fixture, agent, invocation_context)
+
+  expected_calls = [
+      mock.call('gen_ai.operation.name', 'invoke_agent'),
+      mock.call('gen_ai.agent.description', agent.description),
+      mock.call('gen_ai.agent.name', agent.name),
+      mock.call(GEN_AI_AGENT_VERSION, agent.version),
       mock.call(
           'gen_ai.conversation.id',
           invocation_context.session.id,
@@ -150,6 +180,7 @@ async def test_trace_call_llm(monkeypatch, mock_span_fixture):
       config=types.GenerateContentConfig(
           top_p=0.95,
           max_output_tokens=1024,
+          thinking_config=types.ThinkingConfig(thinking_budget=10),
       ),
   )
   llm_response = LlmResponse(
@@ -159,8 +190,18 @@ async def test_trace_call_llm(monkeypatch, mock_span_fixture):
           total_token_count=100,
           prompt_token_count=50,
           candidates_token_count=50,
+          thoughts_token_count=10,
       ),
   )
+  # We dynamically assign system_instruction_tokens rather than passing it
+  # to the GenerateContentResponseUsageMetadata constructor to ensure backward
+  # compatibility with older versions of the google-genai SDK that do not have
+  # this property defined in their Pydantic models.
+  try:
+    llm_response.usage_metadata.system_instruction_tokens = 5
+  except Exception:
+    pass
+
   trace_call_llm(invocation_context, 'test_event_id', llm_request, llm_response)
 
   expected_calls = [
@@ -170,9 +211,16 @@ async def test_trace_call_llm(monkeypatch, mock_span_fixture):
       mock.call('gcp.vertex.agent.llm_response', mock.ANY),
       mock.call('gen_ai.usage.input_tokens', 50),
       mock.call('gen_ai.usage.output_tokens', 50),
+      mock.call('gen_ai.usage.experimental.reasoning_tokens_limit', 10),
+      mock.call('gen_ai.usage.experimental.reasoning_tokens', 10),
       mock.call('gen_ai.response.finish_reasons', ['stop']),
   ]
-  assert mock_span_fixture.set_attribute.call_count == 12
+  if hasattr(llm_response.usage_metadata, 'system_instruction_tokens'):
+    expected_calls.append(
+        mock.call('gen_ai.usage.experimental.system_instruction_tokens', 5)
+    )
+
+  assert mock_span_fixture.set_attribute.call_count == len(expected_calls) + 5
   mock_span_fixture.set_attribute.assert_has_calls(
       expected_calls, any_order=True
   )
@@ -767,6 +815,7 @@ async def test_generate_content_span(
 
   mock_span.set_attributes.assert_called_once_with({
       GEN_AI_AGENT_NAME: invocation_context.agent.name,
+      GEN_AI_AGENT_VERSION: '',
       GEN_AI_CONVERSATION_ID: invocation_context.session.id,
       USER_ID: invocation_context.session.user_id,
       'gcp.vertex.agent.event_id': 'event-123',
@@ -1087,6 +1136,7 @@ async def test_generate_content_span_with_experimental_semconv(
 
   mock_span.set_attributes.assert_called_once_with({
       GEN_AI_AGENT_NAME: invocation_context.agent.name,
+      GEN_AI_AGENT_VERSION: '',
       GEN_AI_CONVERSATION_ID: invocation_context.session.id,
       USER_ID: invocation_context.session.user_id,
       'gcp.vertex.agent.event_id': 'event-123',
@@ -1175,3 +1225,92 @@ async def test_generate_content_span_with_experimental_semconv(
   assert attributes[GEN_AI_AGENT_NAME] == invocation_context.agent.name
   assert GEN_AI_CONVERSATION_ID in attributes
   assert attributes[GEN_AI_CONVERSATION_ID] == invocation_context.session.id
+
+
+def test_trace_tool_call_with_tool_execution_error(
+    monkeypatch, mock_span_fixture, mock_tool_fixture
+):
+  monkeypatch.setattr(
+      'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
+  )
+
+  test_args: Dict[str, Any] = {'param_a': 'value_a'}
+  test_error = ToolExecutionError(
+      message='Internal server error',
+      error_type=ToolErrorType.INTERNAL_SERVER_ERROR,
+  )
+
+  trace_tool_call(
+      tool=mock_tool_fixture,
+      args=test_args,
+      function_response_event=None,
+      error=test_error,
+  )
+
+  expected_calls = [
+      mock.call('gen_ai.operation.name', 'execute_tool'),
+      mock.call('gen_ai.tool.name', mock_tool_fixture.name),
+      mock.call('gen_ai.tool.description', mock_tool_fixture.description),
+      mock.call('gen_ai.tool.type', 'BaseTool'),
+      mock.call('error.type', 'INTERNAL_SERVER_ERROR'),
+      mock.call('gcp.vertex.agent.tool_call_args', json.dumps(test_args)),
+      mock.call(
+          'gcp.vertex.agent.tool_response', '{"result": "<not specified>"}'
+      ),
+      mock.call('gcp.vertex.agent.llm_request', '{}'),
+      mock.call('gcp.vertex.agent.llm_response', '{}'),
+      mock.call('gen_ai.tool.call.id', '<not specified>'),
+  ]
+
+  mock_span_fixture.set_attribute.assert_has_calls(
+      expected_calls, any_order=True
+  )
+
+
+def test_trace_tool_call_with_timeout_error(
+    monkeypatch, mock_span_fixture, mock_tool_fixture
+):
+  monkeypatch.setattr(
+      'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
+  )
+
+  test_args: Dict[str, Any] = {'param_a': 'value_a'}
+  test_error = ToolExecutionError(
+      message='Request timed out',
+      error_type=ToolErrorType.REQUEST_TIMEOUT,
+  )
+
+  trace_tool_call(
+      tool=mock_tool_fixture,
+      args=test_args,
+      function_response_event=None,
+      error=test_error,
+  )
+
+  assert (
+      mock.call('error.type', 'REQUEST_TIMEOUT')
+      in mock_span_fixture.set_attribute.call_args_list
+  )
+
+
+def test_trace_tool_call_with_standard_error(
+    monkeypatch, mock_span_fixture, mock_tool_fixture
+):
+  monkeypatch.setattr(
+      'opentelemetry.trace.get_current_span', lambda: mock_span_fixture
+  )
+
+  test_args: Dict[str, Any] = {'param': 1}
+  test_error = ValueError('Invalid arguments')
+
+  trace_tool_call(
+      tool=mock_tool_fixture,
+      args=test_args,
+      function_response_event=None,
+      error=test_error,
+  )
+
+  assert (
+      mock.call('error.type', 'ValueError')
+      in mock_span_fixture.set_attribute.call_args_list
+  )

@@ -31,7 +31,7 @@ from ..models.registry import LLMRegistry
 from ..utils.context_utils import Aclosing
 from ..utils.feature_decorator import experimental
 from .agent_optimizer import AgentOptimizer
-from .data_types import BaseAgentWithScores
+from .data_types import AgentWithScores
 from .data_types import OptimizerResult
 from .data_types import UnstructuredSamplingResult
 from .sampler import Sampler
@@ -79,7 +79,7 @@ class GEPARootAgentPromptOptimizerConfig(BaseModel):
   )
 
 
-class GEPARootAgentPromptOptimizerResult(OptimizerResult[BaseAgentWithScores]):
+class GEPARootAgentPromptOptimizerResult(OptimizerResult[AgentWithScores]):
   """The final result of the GEPARootAgentPromptOptimizer."""
 
   gepa_result: Optional[dict[str, Any]] = Field(
@@ -190,7 +190,7 @@ def _create_agent_gepa_adapter_class():
 
 @experimental
 class GEPARootAgentPromptOptimizer(
-    AgentOptimizer[UnstructuredSamplingResult, BaseAgentWithScores]
+    AgentOptimizer[UnstructuredSamplingResult, AgentWithScores]
 ):
   """An optimizer that improves the root agent prompt using the GEPA framework."""
 
@@ -308,7 +308,7 @@ class GEPARootAgentPromptOptimizer(
     scores = gepa_results.val_aggregate_scores
 
     optimized_agents = [
-        BaseAgentWithScores(
+        AgentWithScores(
             optimized_agent=initial_agent.clone(
                 update={"instruction": optimized_prompt},
             ),
