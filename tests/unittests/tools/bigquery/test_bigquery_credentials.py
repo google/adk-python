@@ -47,7 +47,7 @@ class TestBigQueryCredentials:
     assert config.client_secret is None
     assert config.scopes == [
         "https://www.googleapis.com/auth/bigquery",
-        "https://www.googleapis.com/auth/dataplex",
+        "https://www.googleapis.com/auth/dataplex.read-write",
     ]
 
   def test_valid_credentials_object_oauth2_credentials(self):
@@ -90,7 +90,7 @@ class TestBigQueryCredentials:
     assert config.client_secret == "test_client_secret"
     assert config.scopes == [
         "https://www.googleapis.com/auth/bigquery",
-        "https://www.googleapis.com/auth/dataplex",
+        "https://www.googleapis.com/auth/dataplex.read-write",
     ]
 
   def test_valid_client_id_secret_pair_w_scope(self):
@@ -135,7 +135,7 @@ class TestBigQueryCredentials:
     assert config.client_secret == "test_client_secret"
     assert config.scopes == [
         "https://www.googleapis.com/auth/bigquery",
-        "https://www.googleapis.com/auth/dataplex",
+        "https://www.googleapis.com/auth/dataplex.read-write",
     ]
 
   def test_missing_client_secret_raises_error(self):
