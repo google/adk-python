@@ -1,5 +1,11 @@
 # Changelog
 
+
+## [1.27.1](https://github.com/google/adk-python/compare/v1.26.0...v1.27.0) (2026-03-13)
+### Bug Fixes
+  * Rolling back change to fix issue affecting LlmAgent creation due to missing version field ([0e18f81](https://github.com/google/adk-python/commit/0e18f81a5cd0d0392ded653b1a63a236449a2685))
+
+
 ## [1.27.0](https://github.com/google/adk-python/compare/v1.26.0...v1.27.0) (2026-03-12)  
 
 ### Features
