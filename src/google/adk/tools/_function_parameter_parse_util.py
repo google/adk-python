@@ -287,8 +287,10 @@ def _parse_schema_from_parameter(
       schema.default = param.default
     _raise_if_schema_unsupported(variant, schema)
     return schema
-  if isinstance(param.annotation, _GenericAlias) or isinstance(
-      param.annotation, typing_types.GenericAlias
+  if (
+      isinstance(param.annotation, _GenericAlias)
+      or isinstance(param.annotation, typing_types.GenericAlias)
+      or isinstance(param.annotation, typing_types.UnionType)
   ):
     origin = get_origin(param.annotation)
     args = get_args(param.annotation)
@@ -330,7 +332,7 @@ def _parse_schema_from_parameter(
         schema.default = param.default
       _raise_if_schema_unsupported(variant, schema)
       return schema
-    if origin is Union:
+    if origin in (Union, typing_types.UnionType):
       schema.any_of = []
       schema.type = types.Type.OBJECT
       unique_types = set()

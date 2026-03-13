@@ -529,3 +529,25 @@ async def test_run_async_with_context_type_annotation(mock_tool_context):
 
   assert result["query"] == "hello"
   assert result["context_type"] == "Context"
+
+
+def test_get_declaration_with_pipe_union_optional_list():
+  """Test that pipe-union syntax (list[str] | None) parses correctly."""
+
+  def func_with_pipe_union(
+      required: list[str],
+      optional_list: list[str] | None = None,
+      optional_str: str | None = None,
+  ) -> dict:
+    """Function using Python 3.10+ pipe union syntax."""
+    return {}
+
+  tool = FunctionTool(func_with_pipe_union)
+  decl = tool._get_declaration()
+  assert decl is not None
+  params = decl.parameters.properties
+  assert params["required"].type.name == "ARRAY"
+  assert params["optional_list"].type.name == "ARRAY"
+  assert params["optional_list"].nullable is True
+  assert params["optional_str"].type.name == "STRING"
+  assert params["optional_str"].nullable is True
