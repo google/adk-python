@@ -748,9 +748,13 @@ class BaseLlmFlow(ABC):
       self, invocation_context: InvocationContext
   ) -> AsyncGenerator[Event, None]:
     """Runs the flow."""
+    turn_id = 0
     while True:
+      turn_id += 1
       last_event = None
-      async with Aclosing(self._run_one_step_async(invocation_context)) as agen:
+      async with Aclosing(
+          self._run_one_step_async(invocation_context, turn_id=turn_id)
+      ) as agen:
         async for event in agen:
           last_event = event
           yield event
@@ -762,6 +766,8 @@ class BaseLlmFlow(ABC):
   async def _run_one_step_async(
       self,
       invocation_context: InvocationContext,
+      *,
+      turn_id: int = 0,
   ) -> AsyncGenerator[Event, None]:
     """One step means one LLM call."""
     llm_request = LlmRequest()
@@ -822,6 +828,7 @@ class BaseLlmFlow(ABC):
         invocation_id=invocation_context.invocation_id,
         author=invocation_context.agent.name,
         branch=invocation_context.branch,
+        turn_id=turn_id,
     )
     async with Aclosing(
         self._call_llm_async(

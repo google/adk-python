@@ -67,6 +67,18 @@ class Event(LlmResponse):
   conversation history.
   """
 
+  turn_id: Optional[int] = None
+  """Groups all streaming chunks that belong to the same LLM call.
+
+  Within a single invocation the LLM may be called multiple times (e.g. text →
+  tool call → text). Each call is a "turn" and every event produced by that
+  call shares the same ``turn_id``, while ``id`` changes on every yield.
+  Consumers can use this field to trivially group partial chunks by turn.
+
+  The value is a 1-based counter that increments with each LLM call inside
+  ``run_async``.
+  """
+
   # The following are computed fields.
   # Do not assign the ID. It will be assigned by the session.
   id: str = ''
