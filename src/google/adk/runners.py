@@ -910,9 +910,6 @@ class Runner:
               invocation_context=invocation_context, event=event
           )
           if modified_event:
-            _apply_run_config_custom_metadata(
-                modified_event, invocation_context.run_config
-            )
             yield modified_event
           else:
             yield event
