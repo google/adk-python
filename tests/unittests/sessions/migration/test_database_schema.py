@@ -72,6 +72,13 @@ async def test_new_db_uses_latest_schema(tmp_path):
     event_col_names = {c['name'] for c in event_cols}
     assert 'event_data' in event_col_names
     assert 'actions' not in event_col_names
+
+    # Verify composite index on events table
+    event_indexes = await conn.run_sync(
+        lambda sync_conn: inspect(sync_conn).get_indexes('events')
+    )
+    idx_names = {idx['name'] for idx in event_indexes}
+    assert 'idx_events_app_user_session_ts' in idx_names
   await engine.dispose()
 
 
