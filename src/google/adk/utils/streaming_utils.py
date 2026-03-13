@@ -268,6 +268,11 @@ class StreamingResponseAggregator:
       # Only merge consecutive text parts of the same type (thought or regular)
       if llm_response.content and llm_response.content.parts:
         for part in llm_response.content.parts:
+          # Skip empty text parts (text="") that some models return
+          # alongside function_call parts. These carry no content and
+          # can cause the flow layer to treat them as a final response.
+          if part.text == '' and not part.thought:
+            continue
           if part.text:
             # Check if we need to flush the current buffer first
             # (when text type changes from thought to regular or vice versa)
@@ -297,6 +302,19 @@ class StreamingResponseAggregator:
       return
 
     # ========== Non-Progressive SSE Streaming (old behavior) ==========
+
+    # Strip empty text parts (text="") that some models return alongside
+    # function_call parts in the same streaming response. Without this,
+    # the empty-text part is yielded as a non-partial response, which
+    # downstream (base_llm_flow) treats as a final answer — preventing
+    # the tool-result continuation call from ever being made.
+    if llm_response.content and llm_response.content.parts:
+      llm_response.content.parts = [
+          p
+          for p in llm_response.content.parts
+          if not (p.text == '' and not p.thought)
+      ]
+
     if (
         llm_response.content
         and llm_response.content.parts

@@ -304,3 +304,103 @@ class TestStreamingResponseAggregator:
         await run_test()
     else:
       await run_test()
+
+  @pytest.mark.asyncio
+  async def test_empty_text_with_function_call_non_progressive(self):
+    """Empty text="" parts should be stripped so they don't become false final responses.
+
+    Some Gemini models return function_call + text="" in a single streaming
+    response. Without stripping, the empty-text chunk is yielded as a
+    non-partial LlmResponse, which base_llm_flow interprets as a final answer
+    and never makes the second LLM call after tool execution.
+    """
+    with temporary_feature_override(
+        FeatureName.PROGRESSIVE_SSE_STREAMING, False
+    ):
+      aggregator = streaming_utils.StreamingResponseAggregator()
+
+      # Chunk 1: function_call
+      response_fc = types.GenerateContentResponse(
+          candidates=[
+              types.Candidate(
+                  content=types.Content(
+                      parts=[
+                          types.Part.from_function_call(
+                              name="list_directory",
+                              args={"path": "/tmp"},
+                          )
+                      ]
+                  )
+              )
+          ]
+      )
+      # Chunk 2: empty text (the problematic part)
+      response_empty = types.GenerateContentResponse(
+          candidates=[
+              types.Candidate(
+                  content=types.Content(parts=[types.Part(text="")]),
+                  finish_reason=types.FinishReason.STOP,
+              )
+          ]
+      )
+
+      results_fc = []
+      async for r in aggregator.process_response(response_fc):
+        results_fc.append(r)
+
+      results_empty = []
+      async for r in aggregator.process_response(response_empty):
+        results_empty.append(r)
+
+      # The function_call chunk should be yielded (not partial — it has no text)
+      assert len(results_fc) == 1
+      fc_parts = results_fc[0].content.parts
+      assert any(p.function_call for p in fc_parts)
+
+      # The empty-text chunk should have its empty text part stripped.
+      # It must NOT contain a text="" part that could be mistaken for a
+      # final answer.
+      assert len(results_empty) == 1
+      for p in results_empty[0].content.parts:
+        if p.text is not None:
+          assert p.text != '', (
+              "Empty text part was not stripped — this causes the flow layer "
+              "to treat it as a final response and skip tool execution"
+          )
+
+  @pytest.mark.asyncio
+  async def test_empty_text_with_function_call_progressive(self):
+    """Progressive mode should also ignore empty text="" parts."""
+    with temporary_feature_override(
+        FeatureName.PROGRESSIVE_SSE_STREAMING, True
+    ):
+      aggregator = streaming_utils.StreamingResponseAggregator()
+
+      # Single response with function_call + empty text
+      response = types.GenerateContentResponse(
+          candidates=[
+              types.Candidate(
+                  content=types.Content(
+                      parts=[
+                          types.Part.from_function_call(
+                              name="run_shell",
+                              args={"command": "ls"},
+                          ),
+                          types.Part(text=""),
+                      ]
+                  ),
+                  finish_reason=types.FinishReason.STOP,
+              )
+          ]
+      )
+
+      async for _ in aggregator.process_response(response):
+        pass
+
+      closed = aggregator.close()
+      assert closed is not None
+      # Should have the function_call but NOT the empty text
+      assert any(p.function_call for p in closed.content.parts)
+      for p in closed.content.parts:
+        if p.text is not None:
+          assert p.text != '', "Empty text part leaked into progressive aggregation"
