@@ -36,7 +36,7 @@ jobs:
       - name: Run Analyzing Script
         env:
           GITHUB_TOKEN: ${{ secrets.ADK_TRIAGE_AGENT }}
-          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY_FOR_DOCS_AGENTS }}
           GOOGLE_GENAI_USE_VERTEXAI: 0
           DOC_OWNER: 'google'
           CODE_OWNER: 'google'
