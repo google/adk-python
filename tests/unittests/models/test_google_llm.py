@@ -22,14 +22,18 @@ from google.adk import version as adk_version
 from google.adk.agents.context_cache_config import ContextCacheConfig
 from google.adk.models.cache_metadata import CacheMetadata
 from google.adk.models.gemini_llm_connection import GeminiLlmConnection
+from google.adk.models.google_llm import (
+    _RESOURCE_EXHAUSTED_POSSIBLE_FIX_MESSAGE,
+)
 from google.adk.models.google_llm import _build_function_declaration_log
 from google.adk.models.google_llm import _build_request_log
-from google.adk.models.google_llm import _RESOURCE_EXHAUSTED_POSSIBLE_FIX_MESSAGE
 from google.adk.models.google_llm import _ResourceExhaustedError
 from google.adk.models.google_llm import Gemini
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
-from google.adk.utils._client_labels_utils import _AGENT_ENGINE_TELEMETRY_ENV_VARIABLE_NAME
+from google.adk.utils._client_labels_utils import (
+    _AGENT_ENGINE_TELEMETRY_ENV_VARIABLE_NAME,
+)
 from google.adk.utils._client_labels_utils import _AGENT_ENGINE_TELEMETRY_TAG
 from google.adk.utils._google_client_headers import get_tracking_headers
 from google.adk.utils.variant_utils import GoogleLLMVariant
@@ -658,7 +662,7 @@ def test_live_api_client_uses_initializer_location(monkeypatch):
       "google.cloud.aiplatform.initializer.global_config", mock_config
   ):
     client = gemini._live_api_client
-    assert client._api_client._location == "us-central1"
+    assert client._api_client.location == "us-central1"
 
 
 @pytest.mark.asyncio
