@@ -693,9 +693,11 @@ class BaseLlmFlow(ABC):
         return invocation_context.agent.name
 
     try:
+      turn_id = 0
       while True:
         async with Aclosing(llm_connection.receive()) as agen:
           async for llm_response in agen:
+            turn_id += 1
             if llm_response.live_session_resumption_update:
               logger.info(
                   'Update session resumption handle:'
@@ -708,6 +710,7 @@ class BaseLlmFlow(ABC):
                 id=Event.new_id(),
                 invocation_id=invocation_context.invocation_id,
                 author=get_author_for_event(llm_response),
+                turn_id=turn_id,
             )
 
             async with Aclosing(
@@ -748,9 +751,13 @@ class BaseLlmFlow(ABC):
       self, invocation_context: InvocationContext
   ) -> AsyncGenerator[Event, None]:
     """Runs the flow."""
+    turn_id = 0
     while True:
+      turn_id += 1
       last_event = None
-      async with Aclosing(self._run_one_step_async(invocation_context)) as agen:
+      async with Aclosing(
+          self._run_one_step_async(invocation_context, turn_id=turn_id)
+      ) as agen:
         async for event in agen:
           last_event = event
           yield event
@@ -762,6 +769,8 @@ class BaseLlmFlow(ABC):
   async def _run_one_step_async(
       self,
       invocation_context: InvocationContext,
+      *,
+      turn_id: int = 0,
   ) -> AsyncGenerator[Event, None]:
     """One step means one LLM call."""
     llm_request = LlmRequest()
@@ -822,6 +831,7 @@ class BaseLlmFlow(ABC):
         invocation_id=invocation_context.invocation_id,
         author=invocation_context.agent.name,
         branch=invocation_context.branch,
+        turn_id=turn_id,
     )
     async with Aclosing(
         self._call_llm_async(
