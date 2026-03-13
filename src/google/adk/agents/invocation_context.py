@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 from typing import cast
 from typing import Optional
@@ -177,6 +178,14 @@ class InvocationContext(BaseModel):
   """Whether to end this invocation.
 
   Set to True in callbacks or tools to terminate this invocation."""
+
+  stop_event: Optional[asyncio.Event] = None
+  """An optional event that consumers can set to stop generation mid-stream.
+
+  When set (``stop_event.set()``), the SSE streaming flow will stop yielding
+  new chunks and return cleanly.  This is useful for implementing a "stop
+  generating" button in chat UIs.
+  """
 
   live_request_queue: Optional[LiveRequestQueue] = None
   """The queue to receive live requests."""

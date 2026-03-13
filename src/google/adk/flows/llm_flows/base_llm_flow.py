@@ -749,6 +749,8 @@ class BaseLlmFlow(ABC):
   ) -> AsyncGenerator[Event, None]:
     """Runs the flow."""
     while True:
+      if invocation_context.stop_event and invocation_context.stop_event.is_set():
+        break
       last_event = None
       async with Aclosing(self._run_one_step_async(invocation_context)) as agen:
         async for event in agen:
@@ -829,6 +831,8 @@ class BaseLlmFlow(ABC):
         )
     ) as agen:
       async for llm_response in agen:
+        if invocation_context.stop_event and invocation_context.stop_event.is_set():
+          return
         # Postprocess after calling the LLM.
         async with Aclosing(
             self._postprocess_async(
