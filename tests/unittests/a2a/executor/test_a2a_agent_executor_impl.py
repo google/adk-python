@@ -29,6 +29,7 @@ from a2a.types import TextPart
 from google.adk.a2a.converters.request_converter import AgentRunRequest
 from google.adk.a2a.converters.utils import _get_adk_metadata_key
 from google.adk.a2a.executor.a2a_agent_executor_impl import _A2aAgentExecutor as A2aAgentExecutor
+from google.adk.a2a.executor.a2a_agent_executor_impl import _NEW_A2A_ADK_INTEGRATION_EXTENSION
 from google.adk.a2a.executor.a2a_agent_executor_impl import A2aAgentExecutorConfig
 from google.adk.a2a.executor.config import ExecuteInterceptor
 from google.adk.events.event import Event
@@ -77,7 +78,7 @@ class TestA2aAgentExecutor:
         _get_adk_metadata_key("app_name"): "test-app",
         _get_adk_metadata_key("user_id"): "test-user",
         _get_adk_metadata_key("session_id"): "test-session",
-        _get_adk_metadata_key("agent_executor_v2"): True,
+        _NEW_A2A_ADK_INTEGRATION_EXTENSION: {"adk_agent_executor_v2": True},
     }
 
   async def _create_async_generator(self, items):
