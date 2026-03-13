@@ -64,7 +64,9 @@ def test_apply_thinking_config_overwrites_existing(planner, caplog):
       )
   )
 
-  with caplog.at_level(logging.DEBUG):
+  with caplog.at_level(
+      logging.DEBUG, logger='google_adk.google.adk.planners.built_in_planner'
+  ):
     planner.apply_thinking_config(llm_request)
 
   assert llm_request.config.thinking_config == planner.thinking_config
