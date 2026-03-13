@@ -89,12 +89,8 @@ class TrajectoryEvaluator(Evaluator):
             f" `{TrajectoryEvaluator.criterion_type}`."
         )
         raise expected_criterion_type_error from e
-    elif eval_metric:
-      self._threshold = eval_metric.threshold
-      self._match_type = ToolTrajectoryCriterion.MatchType.EXACT
-      self._ignore_args = False
     else:
-      self._threshold = threshold
+      self._threshold = eval_metric.threshold if eval_metric else threshold
       self._match_type = ToolTrajectoryCriterion.MatchType.EXACT
       self._ignore_args = False
 

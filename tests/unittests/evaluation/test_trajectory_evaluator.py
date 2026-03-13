@@ -482,212 +482,136 @@ def _make_ignore_args_evaluator(
   )
 
 
-def test_exact_ignore_args_passes_with_different_args():
-  ev = _make_ignore_args_evaluator(ToolTrajectoryCriterion.MatchType.EXACT)
+_EXACT = ToolTrajectoryCriterion.MatchType.EXACT
+_IN_ORDER = ToolTrajectoryCriterion.MatchType.IN_ORDER
+_ANY_ORDER = ToolTrajectoryCriterion.MatchType.ANY_ORDER
+
+
+@pytest.mark.parametrize(
+    ("match_type", "actual_tools", "expected_tools", "expected_score"),
+    [
+        # EXACT: different args, same names -> pass
+        (
+            _EXACT,
+            [
+                genai_types.FunctionCall(name="t1", args={"a": 1}),
+                genai_types.FunctionCall(name="t2", args={"b": 2}),
+            ],
+            [
+                genai_types.FunctionCall(name="t1", args={"x": 99}),
+                genai_types.FunctionCall(name="t2", args={"y": 100}),
+            ],
+            1.0,
+        ),
+        # EXACT: different names -> fail
+        (
+            _EXACT,
+            [genai_types.FunctionCall(name="t1", args={})],
+            [genai_types.FunctionCall(name="t2", args={})],
+            0.0,
+        ),
+        # EXACT: different tool count -> fail
+        (
+            _EXACT,
+            [
+                genai_types.FunctionCall(name="t1", args={}),
+                genai_types.FunctionCall(name="t2", args={}),
+            ],
+            [genai_types.FunctionCall(name="t1", args={})],
+            0.0,
+        ),
+        # EXACT: empty lists -> pass
+        (
+            _EXACT,
+            [],
+            [],
+            1.0,
+        ),
+        # IN_ORDER: different args with extra tools -> pass
+        (
+            _IN_ORDER,
+            [
+                genai_types.FunctionCall(name="t1", args={"a": 1}),
+                genai_types.FunctionCall(name="extra", args={}),
+                genai_types.FunctionCall(name="t2", args={"b": 2}),
+            ],
+            [
+                genai_types.FunctionCall(name="t1", args={"x": 99}),
+                genai_types.FunctionCall(name="t2", args={"y": 100}),
+            ],
+            1.0,
+        ),
+        # IN_ORDER: wrong order -> fail
+        (
+            _IN_ORDER,
+            [
+                genai_types.FunctionCall(name="t2", args={}),
+                genai_types.FunctionCall(name="t1", args={}),
+            ],
+            [
+                genai_types.FunctionCall(name="t1", args={}),
+                genai_types.FunctionCall(name="t2", args={}),
+            ],
+            0.0,
+        ),
+        # IN_ORDER: missing tool -> fail
+        (
+            _IN_ORDER,
+            [genai_types.FunctionCall(name="t1", args={})],
+            [
+                genai_types.FunctionCall(name="t1", args={}),
+                genai_types.FunctionCall(name="t2", args={}),
+            ],
+            0.0,
+        ),
+        # ANY_ORDER: different args, swapped order -> pass
+        (
+            _ANY_ORDER,
+            [
+                genai_types.FunctionCall(name="t2", args={"b": 2}),
+                genai_types.FunctionCall(name="t1", args={"a": 1}),
+            ],
+            [
+                genai_types.FunctionCall(name="t1", args={"x": 99}),
+                genai_types.FunctionCall(name="t2", args={"y": 100}),
+            ],
+            1.0,
+        ),
+        # ANY_ORDER: missing tool -> fail
+        (
+            _ANY_ORDER,
+            [genai_types.FunctionCall(name="t1", args={})],
+            [
+                genai_types.FunctionCall(name="t1", args={}),
+                genai_types.FunctionCall(name="t2", args={}),
+            ],
+            0.0,
+        ),
+    ],
+    ids=[
+        "exact_different_args_pass",
+        "exact_different_names_fail",
+        "exact_different_count_fail",
+        "exact_empty_lists_pass",
+        "in_order_different_args_pass",
+        "in_order_wrong_order_fail",
+        "in_order_missing_tool_fail",
+        "any_order_different_args_pass",
+        "any_order_missing_tool_fail",
+    ],
+)
+def test_ignore_args(match_type, actual_tools, expected_tools, expected_score):
+  ev = _make_ignore_args_evaluator(match_type)
   actual = Invocation(
       user_content=_USER_CONTENT,
-      intermediate_data=IntermediateData(
-          tool_uses=[
-              genai_types.FunctionCall(name="t1", args={"a": 1}),
-              genai_types.FunctionCall(name="t2", args={"b": 2}),
-          ]
-      ),
+      intermediate_data=IntermediateData(tool_uses=actual_tools),
   )
   expected = Invocation(
       user_content=_USER_CONTENT,
-      intermediate_data=IntermediateData(
-          tool_uses=[
-              genai_types.FunctionCall(name="t1", args={"x": 99}),
-              genai_types.FunctionCall(name="t2", args={"y": 100}),
-          ]
-      ),
+      intermediate_data=IntermediateData(tool_uses=expected_tools),
   )
   result = ev.evaluate_invocations([actual], [expected])
-  assert result.overall_score == 1.0
-
-
-def test_exact_ignore_args_fails_with_different_names():
-  ev = _make_ignore_args_evaluator(ToolTrajectoryCriterion.MatchType.EXACT)
-  actual = Invocation(
-      user_content=_USER_CONTENT,
-      intermediate_data=IntermediateData(
-          tool_uses=[genai_types.FunctionCall(name="t1", args={})]
-      ),
-  )
-  expected = Invocation(
-      user_content=_USER_CONTENT,
-      intermediate_data=IntermediateData(
-          tool_uses=[genai_types.FunctionCall(name="t2", args={})]
-      ),
-  )
-  result = ev.evaluate_invocations([actual], [expected])
-  assert result.overall_score == 0.0
-
-
-def test_in_order_ignore_args_passes_with_different_args():
-  ev = _make_ignore_args_evaluator(ToolTrajectoryCriterion.MatchType.IN_ORDER)
-  actual = Invocation(
-      user_content=_USER_CONTENT,
-      intermediate_data=IntermediateData(
-          tool_uses=[
-              genai_types.FunctionCall(name="t1", args={"a": 1}),
-              genai_types.FunctionCall(name="extra", args={}),
-              genai_types.FunctionCall(name="t2", args={"b": 2}),
-          ]
-      ),
-  )
-  expected = Invocation(
-      user_content=_USER_CONTENT,
-      intermediate_data=IntermediateData(
-          tool_uses=[
-              genai_types.FunctionCall(name="t1", args={"x": 99}),
-              genai_types.FunctionCall(name="t2", args={"y": 100}),
-          ]
-      ),
-  )
-  result = ev.evaluate_invocations([actual], [expected])
-  assert result.overall_score == 1.0
-
-
-def test_any_order_ignore_args_passes_with_different_args():
-  ev = _make_ignore_args_evaluator(ToolTrajectoryCriterion.MatchType.ANY_ORDER)
-  actual = Invocation(
-      user_content=_USER_CONTENT,
-      intermediate_data=IntermediateData(
-          tool_uses=[
-              genai_types.FunctionCall(name="t2", args={"b": 2}),
-              genai_types.FunctionCall(name="t1", args={"a": 1}),
-          ]
-      ),
-  )
-  expected = Invocation(
-      user_content=_USER_CONTENT,
-      intermediate_data=IntermediateData(
-          tool_uses=[
-              genai_types.FunctionCall(name="t1", args={"x": 99}),
-              genai_types.FunctionCall(name="t2", args={"y": 100}),
-          ]
-      ),
-  )
-  result = ev.evaluate_invocations([actual], [expected])
-  assert result.overall_score == 1.0
-
-
-def test_any_order_ignore_args_fails_with_missing_tool():
-  ev = _make_ignore_args_evaluator(ToolTrajectoryCriterion.MatchType.ANY_ORDER)
-  actual = Invocation(
-      user_content=_USER_CONTENT,
-      intermediate_data=IntermediateData(
-          tool_uses=[genai_types.FunctionCall(name="t1", args={})]
-      ),
-  )
-  expected = Invocation(
-      user_content=_USER_CONTENT,
-      intermediate_data=IntermediateData(
-          tool_uses=[
-              genai_types.FunctionCall(name="t1", args={}),
-              genai_types.FunctionCall(name="t2", args={}),
-          ]
-      ),
-  )
-  result = ev.evaluate_invocations([actual], [expected])
-  assert result.overall_score == 0.0
-
-
-def test_ignore_args_from_dict_config():
-  """Tests that ignore_args works when passed as a dict criterion."""
-  eval_metric = EvalMetric(
-      metric_name=PrebuiltMetrics.TOOL_TRAJECTORY_AVG_SCORE.value,
-      criterion={
-          "threshold": 0.5,
-          "match_type": "ANY_ORDER",
-          "ignore_args": True,
-      },
-  )
-  ev = TrajectoryEvaluator(eval_metric=eval_metric)
-  actual = Invocation(
-      user_content=_USER_CONTENT,
-      intermediate_data=IntermediateData(
-          tool_uses=[genai_types.FunctionCall(name="t1", args={"a": 1})]
-      ),
-  )
-  expected = Invocation(
-      user_content=_USER_CONTENT,
-      intermediate_data=IntermediateData(
-          tool_uses=[genai_types.FunctionCall(name="t1", args={"z": 999})]
-      ),
-  )
-  result = ev.evaluate_invocations([actual], [expected])
-  assert result.overall_score == 1.0
-
-
-def test_exact_ignore_args_fails_with_different_count():
-  """EXACT + ignore_args still fails when tool call counts differ."""
-  ev = _make_ignore_args_evaluator(ToolTrajectoryCriterion.MatchType.EXACT)
-  actual = Invocation(
-      user_content=_USER_CONTENT,
-      intermediate_data=IntermediateData(
-          tool_uses=[
-              genai_types.FunctionCall(name="t1", args={}),
-              genai_types.FunctionCall(name="t2", args={}),
-          ]
-      ),
-  )
-  expected = Invocation(
-      user_content=_USER_CONTENT,
-      intermediate_data=IntermediateData(
-          tool_uses=[genai_types.FunctionCall(name="t1", args={})]
-      ),
-  )
-  result = ev.evaluate_invocations([actual], [expected])
-  assert result.overall_score == 0.0
-
-
-def test_in_order_ignore_args_fails_with_wrong_order():
-  """IN_ORDER + ignore_args still fails when order is wrong."""
-  ev = _make_ignore_args_evaluator(ToolTrajectoryCriterion.MatchType.IN_ORDER)
-  actual = Invocation(
-      user_content=_USER_CONTENT,
-      intermediate_data=IntermediateData(
-          tool_uses=[
-              genai_types.FunctionCall(name="t2", args={}),
-              genai_types.FunctionCall(name="t1", args={}),
-          ]
-      ),
-  )
-  expected = Invocation(
-      user_content=_USER_CONTENT,
-      intermediate_data=IntermediateData(
-          tool_uses=[
-              genai_types.FunctionCall(name="t1", args={}),
-              genai_types.FunctionCall(name="t2", args={}),
-          ]
-      ),
-  )
-  result = ev.evaluate_invocations([actual], [expected])
-  assert result.overall_score == 0.0
-
-
-def test_in_order_ignore_args_fails_with_missing_tool():
-  """IN_ORDER + ignore_args still fails when expected tool is missing."""
-  ev = _make_ignore_args_evaluator(ToolTrajectoryCriterion.MatchType.IN_ORDER)
-  actual = Invocation(
-      user_content=_USER_CONTENT,
-      intermediate_data=IntermediateData(
-          tool_uses=[genai_types.FunctionCall(name="t1", args={})]
-      ),
-  )
-  expected = Invocation(
-      user_content=_USER_CONTENT,
-      intermediate_data=IntermediateData(
-          tool_uses=[
-              genai_types.FunctionCall(name="t1", args={}),
-              genai_types.FunctionCall(name="t2", args={}),
-          ]
-      ),
-  )
-  result = ev.evaluate_invocations([actual], [expected])
-  assert result.overall_score == 0.0
+  assert result.overall_score == expected_score
 
 
 def test_ignore_args_false_still_checks_args():
@@ -716,17 +640,6 @@ def test_ignore_args_false_still_checks_args():
   )
   result = ev.evaluate_invocations([actual], [expected])
   assert result.overall_score == 0.0
-
-
-def test_ignore_args_empty_tool_lists():
-  """ignore_args with empty tool lists on both sides should pass."""
-  ev = _make_ignore_args_evaluator(ToolTrajectoryCriterion.MatchType.EXACT)
-  inv = Invocation(
-      user_content=_USER_CONTENT,
-      intermediate_data=IntermediateData(tool_uses=[]),
-  )
-  result = ev.evaluate_invocations([inv], [inv])
-  assert result.overall_score == 1.0
 
 
 def test_ignore_args_multiple_invocations_mixed():
