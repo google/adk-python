@@ -750,6 +750,11 @@ class BaseLlmFlow(ABC):
     """Runs the flow."""
     turn_id = 0
     while True:
+      if (
+          invocation_context.stop_event
+          and invocation_context.stop_event.is_set()
+      ):
+        break
       turn_id += 1
       last_event = None
       async with Aclosing(
@@ -836,6 +841,11 @@ class BaseLlmFlow(ABC):
         )
     ) as agen:
       async for llm_response in agen:
+        if (
+            invocation_context.stop_event
+            and invocation_context.stop_event.is_set()
+        ):
+          return
         # Postprocess after calling the LLM.
         async with Aclosing(
             self._postprocess_async(
