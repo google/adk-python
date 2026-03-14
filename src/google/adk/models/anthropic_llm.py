@@ -147,10 +147,9 @@ def part_to_message_block(
       else:
         content = str(result)
     elif response_data:
-      # Fallback: serialize the entire response dict as JSON so that tools
-      # returning arbitrary key structures (e.g. load_skill returning
-      # {"skill_name", "instructions", "frontmatter"}) are not silently
-      # dropped.
+      # Fallback: serialize the entire non-standard response dict as JSON so
+      # tools returning arbitrary key structures (e.g. SkillToolset with
+      # skill_name/instructions/frontmatter) are not silently dropped.
       content = json.dumps(response_data)
 
     return anthropic_types.ToolResultBlockParam(
