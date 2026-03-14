@@ -811,6 +811,14 @@ def trace_generate_content_result(span: Span | None, llm_response: LlmResponse):
       span.set_attribute(
           GEN_AI_USAGE_OUTPUT_TOKENS, usage_metadata.candidates_token_count
       )
+    try:
+      if usage_metadata.thoughts_token_count is not None:
+        span.set_attribute(
+            'gen_ai.usage.experimental.reasoning_tokens',
+            usage_metadata.thoughts_token_count,
+        )
+    except AttributeError:
+      pass
 
   otel_logger.emit(
       LogRecord(
@@ -854,6 +862,14 @@ def trace_inference_result(
       span.set_attribute(
           GEN_AI_USAGE_OUTPUT_TOKENS, usage_metadata.candidates_token_count
       )
+    try:
+      if usage_metadata.thoughts_token_count is not None:
+        span.set_attribute(
+            'gen_ai.usage.experimental.reasoning_tokens',
+            usage_metadata.thoughts_token_count,
+        )
+    except AttributeError:
+      pass
 
   if is_experimental_semconv() and isinstance(gc_span, GenerateContentSpan):
     set_operation_details_attributes_from_response(

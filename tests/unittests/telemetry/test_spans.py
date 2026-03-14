@@ -1397,3 +1397,54 @@ def test_safe_json_serialize_no_whitespaces_circular_dict_returns_not_serializab
   obj = {}
   obj['self'] = obj
   assert _safe_json_serialize_no_whitespaces(obj) == '<not serializable>'
+
+
+def test_trace_inference_result_with_thinking_tokens(mock_span_fixture):
+  """Test trace_inference_result exports thoughts_token_count."""
+  llm_response = LlmResponse(
+      turn_complete=True,
+      finish_reason=types.FinishReason.STOP,
+      usage_metadata=types.GenerateContentResponseUsageMetadata(
+          total_token_count=110,
+          prompt_token_count=50,
+          candidates_token_count=10,
+          thoughts_token_count=50,
+      ),
+  )
+
+  trace_inference_result(mock_span_fixture, llm_response)
+
+  mock_span_fixture.set_attribute.assert_any_call(GEN_AI_USAGE_INPUT_TOKENS, 50)
+  mock_span_fixture.set_attribute.assert_any_call(
+      GEN_AI_USAGE_OUTPUT_TOKENS, 10
+  )
+  mock_span_fixture.set_attribute.assert_any_call(
+      'gen_ai.usage.experimental.reasoning_tokens', 50
+  )
+
+
+def test_trace_inference_result_without_thinking_tokens(mock_span_fixture):
+  """Test trace_inference_result works when thoughts_token_count is None."""
+  llm_response = LlmResponse(
+      turn_complete=True,
+      finish_reason=types.FinishReason.STOP,
+      usage_metadata=types.GenerateContentResponseUsageMetadata(
+          total_token_count=60,
+          prompt_token_count=50,
+          candidates_token_count=10,
+      ),
+  )
+
+  trace_inference_result(mock_span_fixture, llm_response)
+
+  mock_span_fixture.set_attribute.assert_any_call(GEN_AI_USAGE_INPUT_TOKENS, 50)
+  mock_span_fixture.set_attribute.assert_any_call(
+      GEN_AI_USAGE_OUTPUT_TOKENS, 10
+  )
+  # Verify reasoning_tokens is NOT set when thoughts_token_count is None
+  reasoning_calls = [
+      call
+      for call in mock_span_fixture.set_attribute.call_args_list
+      if call.args[0] == 'gen_ai.usage.experimental.reasoning_tokens'
+  ]
+  assert len(reasoning_calls) == 0
