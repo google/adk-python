@@ -490,18 +490,13 @@ async def _execute_single_function_call_async(
     tool = _get_tool(function_call, tools_dict)
   except ValueError as tool_error:
     tool = BaseTool(name=function_call.name, description='Tool not found')
-    error_response = await _run_on_tool_error_callbacks(
-        tool=tool,
-        tool_args=function_args,
-        tool_context=tool_context,
-        error=tool_error,
-    )
-    if error_response is not None:
-      return __build_response_event(
-          tool, error_response, tool_context, invocation_context
-      )
-    else:
-      raise tool_error
+    # Fall through to _run_with_trace so that before_tool_callback and the
+    # OTel span are created *before* on_tool_error_callback fires.  This
+    # keeps the callback lifecycle balanced (push/pop) and prevents plugins
+    # like BigQueryAgentAnalyticsPlugin from corrupting their span stacks.
+    _tool_lookup_error: Exception = tool_error
+  else:
+    _tool_lookup_error = None
 
   async def _run_with_trace():
     nonlocal function_args
@@ -525,6 +520,22 @@ async def _execute_single_function_call_async(
           function_response = await function_response
         if function_response:
           break
+
+    # Step 2.5: If the tool was not found (hallucinated), surface the error
+    # *after* before_tool_callback so the lifecycle stays balanced.
+    if _tool_lookup_error is not None:
+      error_response = await _run_on_tool_error_callbacks(
+          tool=tool,
+          tool_args=function_args,
+          tool_context=tool_context,
+          error=_tool_lookup_error,
+      )
+      if error_response is not None:
+        return __build_response_event(
+            tool, error_response, tool_context, invocation_context
+        )
+      else:
+        raise _tool_lookup_error
 
     # Step 3: Otherwise, proceed calling the tool normally.
     if function_response is None:
@@ -721,17 +732,9 @@ async def _execute_single_function_call_live(
     tool = _get_tool(function_call, tools_dict)
   except ValueError as tool_error:
     tool = BaseTool(name=function_call.name, description='Tool not found')
-    error_response = await _run_on_tool_error_callbacks(
-        tool=tool,
-        tool_args=function_args,
-        tool_context=tool_context,
-        error=tool_error,
-    )
-    if error_response is not None:
-      return __build_response_event(
-          tool, error_response, tool_context, invocation_context
-      )
-    raise tool_error
+    _tool_lookup_error: Exception = tool_error
+  else:
+    _tool_lookup_error = None
 
   async def _run_with_trace():
     nonlocal function_args
@@ -760,6 +763,21 @@ async def _execute_single_function_call_live(
           function_response = await function_response
         if function_response:
           break
+
+    # Step 2.5: If the tool was not found (hallucinated), surface the error
+    # *after* before_tool_callback so the lifecycle stays balanced.
+    if _tool_lookup_error is not None:
+      error_response = await _run_on_tool_error_callbacks(
+          tool=tool,
+          tool_args=function_args,
+          tool_context=tool_context,
+          error=_tool_lookup_error,
+      )
+      if error_response is not None:
+        return __build_response_event(
+            tool, error_response, tool_context, invocation_context
+        )
+      raise _tool_lookup_error
 
     # Step 3: Otherwise, proceed calling the tool normally.
     if function_response is None:
