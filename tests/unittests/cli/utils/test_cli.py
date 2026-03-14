@@ -354,7 +354,143 @@ async def test_run_cli_accepts_memory_scheme(
       save_session=False,
       session_service_uri="memory://",
       artifact_service_uri="memory://",
+      memory_service_uri="memory://",
   )
+
+
+@pytest.mark.asyncio
+async def test_run_cli_invalid_memory_uri_surfaces_value_error(
+    fake_agent, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """run_cli should let ValueError propagate for invalid memory service URIs."""
+  parent_dir, folder_name = fake_agent
+  input_json = {"state": {}, "queries": []}
+  input_path = tmp_path / "invalid_memory_uri.json"
+  input_path.write_text(json.dumps(input_json))
+
+  def _raise_invalid_memory_uri(
+      *,
+      base_dir: Path | str,
+      memory_service_uri: str | None = None,
+  ) -> object:
+    del base_dir, memory_service_uri
+    raise ValueError("Unsupported memory service URI: unknown://x")
+
+  monkeypatch.setattr(
+      cli, "create_memory_service_from_options", _raise_invalid_memory_uri
+  )
+
+  with pytest.raises(ValueError, match="Unsupported memory service URI"):
+    await cli.run_cli(
+        agent_parent_dir=str(parent_dir),
+        agent_folder_name=folder_name,
+        input_file=str(input_path),
+        saved_session_file=None,
+        save_session=False,
+        memory_service_uri="unknown://x",
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_cli_passes_memory_service_to_input_file(
+    fake_agent, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """run_cli should construct and pass the configured memory service."""
+  parent_dir, folder_name = fake_agent
+  input_json = {"state": {}, "queries": []}
+  input_path = tmp_path / "memory_input.json"
+  input_path.write_text(json.dumps(input_json))
+
+  memory_service_sentinel = object()
+  captured_factory_args: dict[str, Any] = {}
+  captured_memory_service: dict[str, Any] = {}
+
+  def _memory_factory(
+      *,
+      base_dir: Path | str,
+      memory_service_uri: str | None = None,
+  ) -> object:
+    captured_factory_args["base_dir"] = base_dir
+    captured_factory_args["memory_service_uri"] = memory_service_uri
+    return memory_service_sentinel
+
+  async def _run_input_file(
+      app_name: str,
+      user_id: str,
+      agent_or_app: BaseAgent | App,
+      artifact_service: Any,
+      session_service: Any,
+      credential_service: InMemoryCredentialService,
+      input_path: str,
+      memory_service: Any = None,
+  ) -> object:
+    del app_name, user_id, agent_or_app, artifact_service
+    del session_service, credential_service, input_path
+    captured_memory_service["value"] = memory_service
+    return object()
+
+  monkeypatch.setattr(
+      cli, "create_memory_service_from_options", _memory_factory
+  )
+  monkeypatch.setattr(cli, "run_input_file", _run_input_file)
+
+  await cli.run_cli(
+      agent_parent_dir=str(parent_dir),
+      agent_folder_name=folder_name,
+      input_file=str(input_path),
+      saved_session_file=None,
+      save_session=False,
+      memory_service_uri="memory://",
+  )
+
+  assert Path(captured_factory_args["base_dir"]) == parent_dir.resolve()
+  assert captured_factory_args["memory_service_uri"] == "memory://"
+  assert captured_memory_service["value"] is memory_service_sentinel
+
+
+@pytest.mark.asyncio
+async def test_run_cli_loads_dotenv_before_memory_service_creation(
+    fake_agent, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """run_cli should load agent .env values before creating memory service."""
+  parent_dir, folder_name = fake_agent
+  input_json = {"state": {}, "queries": []}
+  input_path = tmp_path / "dotenv_order_input.json"
+  input_path.write_text(json.dumps(input_json))
+
+  call_order: list[str] = []
+
+  def _load_dotenv_for_agent(agent_name: str, agents_dir: str) -> None:
+    del agent_name, agents_dir
+    call_order.append("load_dotenv")
+
+  def _memory_factory(
+      *,
+      base_dir: Path | str,
+      memory_service_uri: str | None = None,
+  ) -> object:
+    del base_dir, memory_service_uri
+    call_order.append("create_memory")
+    return object()
+
+  monkeypatch.setenv("ADK_DISABLE_LOAD_DOTENV", "0")
+  monkeypatch.setattr(cli.envs, "load_dotenv_for_agent", _load_dotenv_for_agent)
+  monkeypatch.setattr(
+      cli, "create_memory_service_from_options", _memory_factory
+  )
+
+  await cli.run_cli(
+      agent_parent_dir=str(parent_dir),
+      agent_folder_name=folder_name,
+      input_file=str(input_path),
+      saved_session_file=None,
+      save_session=False,
+      memory_service_uri="memory://",
+  )
+
+  assert "create_memory" in call_order
+  assert "load_dotenv" in call_order
+  assert call_order.index("load_dotenv") < call_order.index("create_memory")
 
 
 @pytest.mark.asyncio

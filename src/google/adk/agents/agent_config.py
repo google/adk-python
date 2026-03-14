@@ -16,14 +16,14 @@ from __future__ import annotations
 
 from typing import Annotated
 from typing import Any
-from typing import get_args
 from typing import Union
 
 from pydantic import Discriminator
 from pydantic import RootModel
 from pydantic import Tag
 
-from ..utils.feature_decorator import experimental
+from ..features import experimental
+from ..features import FeatureName
 from .base_agent_config import BaseAgentConfig
 from .llm_agent_config import LlmAgentConfig
 from .loop_agent_config import LoopAgentConfig
@@ -68,6 +68,6 @@ ConfigsUnion = Annotated[
 
 # Use a RootModel to represent the agent directly at the top level.
 # The `discriminator` is applied to the union within the RootModel.
-@experimental
+@experimental(FeatureName.AGENT_CONFIG)
 class AgentConfig(RootModel[ConfigsUnion]):
   """The config for the YAML schema to create an agent."""

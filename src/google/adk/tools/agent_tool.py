@@ -29,6 +29,8 @@ from ..agents.common_configs import AgentRefConfig
 from ..features import FeatureName
 from ..features import is_feature_enabled
 from ..memory.in_memory_memory_service import InMemoryMemoryService
+from ..utils._schema_utils import SchemaType
+from ..utils._schema_utils import validate_schema
 from ..utils.context_utils import Aclosing
 from ._forwarding_artifact_service import ForwardingArtifactService
 from .base_tool import BaseTool
@@ -68,7 +70,7 @@ def _get_input_schema(agent: BaseAgent) -> Optional[type[BaseModel]]:
   return None
 
 
-def _get_output_schema(agent: BaseAgent) -> Optional[type[BaseModel]]:
+def _get_output_schema(agent: BaseAgent) -> Optional[SchemaType]:
   """Extracts the output_schema from an agent.
 
   For LlmAgent, returns its output_schema directly.

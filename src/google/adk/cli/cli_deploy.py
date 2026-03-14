@@ -867,8 +867,12 @@ def to_agent_engine(
     absolutize_imports (bool): Optional. Default is True. Whether to absolutize
       imports. If True, all relative imports will be converted to absolute
       import statements.
-    project (str): Optional. Google Cloud project id.
-    region (str): Optional. Google Cloud region.
+    project (str): Optional. Google Cloud project id for the deployed agent. If
+      not specified, the project from the `GOOGLE_CLOUD_PROJECT` environment
+      variable will be used. It will be ignored if `api_key` is specified.
+    region (str): Optional. Google Cloud region for the deployed agent. If not
+      specified, the region from the `GOOGLE_CLOUD_LOCATION` environment
+      variable will be used. It will be ignored if `api_key` is specified.
     display_name (str): Optional. The display name of the Agent Engine.
     description (str): Optional. The description of the Agent Engine.
     requirements_file (str): Optional. The filepath to the `requirements.txt`
@@ -882,10 +886,9 @@ def to_agent_engine(
       to use. If not specified, the `.agent_engine_config.json` file in the
       `agent_folder` will be used.
     skip_agent_import_validation (bool): Optional. Default is True. If True,
-      skip the
-      pre-deployment import validation of `agent.py`. This can be useful when
-      the local environment does not have the same dependencies as the
-      deployment environment.
+      skip the pre-deployment import validation of `agent.py`. This can be
+      useful when the local environment does not have the same dependencies as
+      the deployment environment.
   """
   app_name = os.path.basename(agent_folder)
   display_name = display_name or app_name
@@ -1014,7 +1017,7 @@ def to_agent_engine(
             project = env_project
             click.echo(f'{project=} set by GOOGLE_CLOUD_PROJECT in {env_file}')
       if 'GOOGLE_CLOUD_LOCATION' in env_vars:
-        env_region = env_vars.pop('GOOGLE_CLOUD_LOCATION')
+        env_region = env_vars.get('GOOGLE_CLOUD_LOCATION')
         if env_region:
           if region:
             click.secho(
@@ -1058,12 +1061,20 @@ def to_agent_engine(
 
     import vertexai
 
+    from ..utils._google_client_headers import get_tracking_headers
+
     if project and region:
       click.echo('Initializing Vertex AI...')
-      client = vertexai.Client(project=project, location=region)
+      client = vertexai.Client(
+          project=project,
+          location=region,
+          http_options={'headers': get_tracking_headers()},
+      )
     elif api_key:
       click.echo('Initializing Vertex AI in Express Mode with API key...')
-      client = vertexai.Client(api_key=api_key)
+      client = vertexai.Client(
+          api_key=api_key, http_options={'headers': get_tracking_headers()}
+      )
     else:
       click.echo(
           'No project/region or api_key provided. '

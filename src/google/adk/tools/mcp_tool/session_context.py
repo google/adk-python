@@ -22,6 +22,8 @@ from typing import AsyncContextManager
 from typing import Optional
 
 from mcp import ClientSession
+from mcp import SamplingCapability
+from mcp.client.session import SamplingFnT
 
 logger = logging.getLogger('google_adk.' + __name__)
 
@@ -54,6 +56,9 @@ class SessionContext:
       timeout: Optional[float],
       sse_read_timeout: Optional[float],
       is_stdio: bool = False,
+      *,
+      sampling_callback: Optional[SamplingFnT] = None,
+      sampling_capabilities: Optional[SamplingCapability] = None,
   ):
     """
     Args:
@@ -63,6 +68,9 @@ class SessionContext:
         sse_read_timeout: Timeout in seconds for reading data from the MCP SSE
             server.
         is_stdio: Whether this is a stdio connection (affects read timeout).
+        sampling_callback: Optional callback to handle sampling requests from the
+            MCP server.
+        sampling_capabilities: Optional capabilities for sampling.
     """
     self._client = client
     self._timeout = timeout
@@ -73,6 +81,8 @@ class SessionContext:
     self._close_event = asyncio.Event()
     self._task: Optional[asyncio.Task] = None
     self._task_lock = asyncio.Lock()
+    self._sampling_callback = sampling_callback
+    self._sampling_capabilities = sampling_capabilities
 
   @property
   def session(self) -> Optional[ClientSession]:
@@ -165,6 +175,8 @@ class SessionContext:
                   read_timeout_seconds=timedelta(seconds=self._timeout)
                   if self._timeout is not None
                   else None,
+                  sampling_callback=self._sampling_callback,
+                  sampling_capabilities=self._sampling_capabilities,
               )
           )
         else:
@@ -176,6 +188,8 @@ class SessionContext:
                   read_timeout_seconds=timedelta(seconds=self._sse_read_timeout)
                   if self._sse_read_timeout is not None
                   else None,
+                  sampling_callback=self._sampling_callback,
+                  sampling_capabilities=self._sampling_capabilities,
               )
           )
         await asyncio.wait_for(session.initialize(), timeout=self._timeout)

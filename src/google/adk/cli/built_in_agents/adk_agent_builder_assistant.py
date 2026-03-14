@@ -13,6 +13,7 @@
 # limitations under the License.
 
 """Agent factory for creating Agent Builder Assistant with embedded schema."""
+
 from __future__ import annotations
 
 from pathlib import Path

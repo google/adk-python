@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import typing
+from typing import Any
 from typing import AsyncGenerator
 
 from typing_extensions import override
@@ -40,9 +41,7 @@ class _AgentTransferLlmRequestProcessor(BaseLlmRequestProcessor):
   async def run_async(
       self, invocation_context: InvocationContext, llm_request: LlmRequest
   ) -> AsyncGenerator[Event, None]:
-    from ...agents.llm_agent import LlmAgent
-
-    if not isinstance(invocation_context.agent, LlmAgent):
+    if not hasattr(invocation_context.agent, 'disallow_transfer_to_parent'):
       return
 
     transfer_targets = _get_transfer_targets(invocation_context.agent)
@@ -73,7 +72,8 @@ class _AgentTransferLlmRequestProcessor(BaseLlmRequestProcessor):
 request_processor = _AgentTransferLlmRequestProcessor()
 
 
-def _build_target_agents_info(target_agent: BaseAgent) -> str:
+def _build_target_agents_info(target_agent: Any) -> str:
+  # TODO: Refactor the annotation of the parameters
   return f"""
 Agent name: {target_agent.name}
 Agent description: {target_agent.description}
@@ -83,38 +83,30 @@ Agent description: {target_agent.description}
 line_break = '\n'
 
 
-def _build_transfer_instructions(
+def _build_transfer_instruction_body(
     tool_name: str,
-    agent: 'LlmAgent',
-    target_agents: list['BaseAgent'],
+    target_agents: list[Any],
 ) -> str:
-  """Build instructions for agent transfer.
+  """Build the core transfer instruction text.
+  TODO: Refactor the annotation of the parameters
 
-  This function generates the instruction text that guides the LLM on how to
-  use the transfer tool to delegate to other agents.
+  This is the agent-tree-agnostic portion of transfer instructions. It
+  works with any objects having ``.name`` and ``.description`` attributes
 
   Args:
-    tool_name: The name of the transfer tool (e.g., 'transfer_to_agent').
-    agent: The current agent that may initiate transfers.
-    target_agents: List of agents that can be transferred to.
+    tool_name: The name of the transfer tool (e.g. 'transfer_to_agent').
+    target_agents: Objects with ``.name`` and ``.description``.
 
   Returns:
     Instruction text for the LLM about agent transfers.
   """
-  # Build list of available agent names for the NOTE
-  # target_agents already includes parent agent if applicable,
-  # so no need to add it again
-  available_agent_names = [target_agent.name for target_agent in target_agents]
-
-  # Sort for consistency
+  available_agent_names = [t.name for t in target_agents]
   available_agent_names.sort()
-
-  # Format agent names with backticks for clarity
   formatted_agent_names = ', '.join(
       f'`{name}`' for name in available_agent_names
   )
 
-  si = f"""
+  return f"""
 You have a list of other agents to transfer to:
 
 {line_break.join([
@@ -133,6 +125,27 @@ call.
 {formatted_agent_names}.
 """
 
+
+def _build_transfer_instructions(
+    tool_name: str,
+    agent: 'LlmAgent',
+    target_agents: list['BaseAgent'],
+) -> str:
+  """Build instructions for agent transfer (agent-tree variant).
+
+  Delegates to ``_build_transfer_instruction_body`` for the core text,
+  then appends parent-agent-specific instructions if applicable.
+
+  Args:
+    tool_name: The name of the transfer tool (e.g. 'transfer_to_agent').
+    agent: The current agent that may initiate transfers.
+    target_agents: List of agents that can be transferred to.
+
+  Returns:
+    Instruction text for the LLM about agent transfers.
+  """
+  si = _build_transfer_instruction_body(tool_name, target_agents)
+
   if agent.parent_agent and not agent.disallow_transfer_to_parent:
     si += f"""
 If neither you nor the other agents are best for the question, transfer to your parent agent {agent.parent_agent.name}.
@@ -141,12 +154,12 @@ If neither you nor the other agents are best for the question, transfer to your 
 
 
 def _get_transfer_targets(agent: LlmAgent) -> list[BaseAgent]:
-  from ...agents.llm_agent import LlmAgent
-
   result = []
   result.extend(agent.sub_agents)
 
-  if not agent.parent_agent or not isinstance(agent.parent_agent, LlmAgent):
+  if not agent.parent_agent or not hasattr(
+      agent.parent_agent, 'disallow_transfer_to_parent'
+  ):
     return result
 
   if not agent.disallow_transfer_to_parent:

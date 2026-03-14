@@ -35,6 +35,7 @@ import uvicorn
 from . import cli_create
 from . import cli_deploy
 from .. import version
+from ..agents.run_config import StreamingMode
 from ..evaluation.constants import MISSING_EVAL_DEPENDENCIES_MESSAGE
 from ..features import FeatureName
 from ..features import override_feature_enabled
@@ -230,10 +231,21 @@ def conformance():
         exists=True, dir_okay=True, file_okay=False, resolve_path=True
     ),
 )
+@click.argument(
+    "streaming-mode",
+    type=click.Choice(
+        [str(m.value) for m in StreamingMode], case_sensitive=False
+    ),
+    callback=lambda ctx, param, value: next(
+        (m for m in StreamingMode if str(m.value).lower() == value.lower()),
+        value,
+    ),
+)
 @click.pass_context
 def cli_conformance_record(
     ctx,
     paths: tuple[str, ...],
+    streaming_mode: StreamingMode,
 ):
   """Generate ADK conformance test YAML files from TestCaseInput specifications.
 
@@ -273,7 +285,7 @@ def cli_conformance_record(
 
   # Default to tests/ directory if no paths provided
   test_paths = [Path(p) for p in paths] if paths else [Path("tests").resolve()]
-  asyncio.run(run_conformance_record(test_paths))
+  asyncio.run(run_conformance_record(test_paths, streaming_mode))
 
 
 @conformance.command("test", cls=HelpfulCommand)
@@ -294,11 +306,43 @@ def cli_conformance_record(
         " runs evaluation-based verification."
     ),
 )
+@click.option(
+    "--generate_report",
+    is_flag=True,
+    show_default=True,
+    default=False,
+    help="Optional. Whether to generate a Markdown report of the test results.",
+)
+@click.option(
+    "--report_dir",
+    type=click.Path(file_okay=False, dir_okay=True, resolve_path=True),
+    help=(
+        "Optional. Directory to store the generated report. Defaults to current"
+        " directory."
+    ),
+)
+@click.option(
+    "--streaming-mode",
+    type=click.Choice(
+        [str(m.value) for m in StreamingMode], case_sensitive=False
+    ),
+    callback=lambda ctx, param, value: next(
+        (m for m in StreamingMode if str(m.value).lower() == value.lower()),
+        value,
+    )
+    if value is not None
+    else None,
+    required=False,
+    default=None,
+)
 @click.pass_context
 def cli_conformance_test(
     ctx,
     paths: tuple[str, ...],
     mode: str,
+    generate_report: bool,
+    report_dir: Optional[str] = None,
+    streaming_mode: Optional[StreamingMode] = None,
 ):
   """Run conformance tests to verify agent behavior consistency.
 
@@ -309,7 +353,7 @@ def cli_conformance_test(
   - Contain a spec.yaml file directly (single test case)
   - Contain subdirectories with spec.yaml files (multiple test cases)
 
-  If no paths are provided, defaults to searching the 'tests' folder.
+  If no paths are provided, defaults to searching for the 'tests' folder.
 
   TEST MODES:
 
@@ -325,9 +369,16 @@ def cli_conformance_test(
   \b
   category/
     test_name/
-      spec.yaml                    # Test specification
-      generated-recordings.yaml    # Recorded interactions (replay mode)
-      generated-session.yaml       # Session data (replay mode)
+      spec.yaml                     # Test specification
+      generated-recordings.yaml     # Recorded interactions (replay mode)
+      generated-session.yaml        # Session data (replay mode)
+      generated-recordings-sse.yaml # Recorded SSE interactions (replay mode)
+      generated-session-sse.yaml    # SSE Session data (replay mode)
+
+  REPORT GENERATION:
+
+  Use --generate_report to create a Markdown report of test results.
+  Use --report_dir to specify where the report should be saved.
 
   EXAMPLES:
 
@@ -346,8 +397,15 @@ def cli_conformance_test(
   \b
   # Run in live mode (when available)
   adk conformance test --mode=live tests/core
-  """
 
+  \b
+  # Generate a test report
+  adk conformance test --generate_report
+
+  \b
+  # Generate a test report in a specific directory
+  adk conformance test --generate_report --report_dir=reports
+  """
   try:
     from .conformance.cli_test import run_conformance_test
   except ImportError as e:
@@ -363,10 +421,19 @@ def cli_conformance_test(
     )
     ctx.exit(1)
 
-  # Convert to Path objects, use default if empty (paths are already resolved by Click)
+  # Convert to Path objects, use default if empty (paths are already resolved
+  # by Click)
   test_paths = [Path(p) for p in paths] if paths else [Path("tests").resolve()]
 
-  asyncio.run(run_conformance_test(test_paths=test_paths, mode=mode.lower()))
+  asyncio.run(
+      run_conformance_test(
+          test_paths=test_paths,
+          mode=mode.lower(),
+          generate_report=generate_report,
+          report_dir=report_dir,
+          streaming_mode=streaming_mode,
+      )
+  )
 
 
 @main.command("create", cls=HelpfulCommand)
@@ -459,6 +526,7 @@ def adk_services_options(*, default_use_local_storage: bool = True):
             Optional. The URI of the session service.
             If set, ADK uses this service.
 
+            \b
             If unset, ADK chooses a default session service (see
             --use_local_storage).
             - Use 'agentengine://<agent_engine>' to connect to Agent Engine
@@ -478,6 +546,7 @@ def adk_services_options(*, default_use_local_storage: bool = True):
             Optional. The URI of the artifact service.
             If set, ADK uses this service.
 
+            \b
             If unset, ADK chooses a default artifact service (see
             --use_local_storage).
             - Use 'gs://<bucket_name>' to connect to the GCS artifact service.
@@ -503,6 +572,7 @@ def adk_services_options(*, default_use_local_storage: bool = True):
         "--memory_service_uri",
         type=str,
         help=textwrap.dedent("""\
+            \b
             Optional. The URI of the memory service.
             - Use 'rag://<rag_corpus_id>' to connect to Vertex AI Rag Memory Service.
             - Use 'agentengine://<agent_engine>' to connect to Agent Engine
@@ -604,14 +674,6 @@ def cli_run(
   """
   logs.log_to_tmp_folder()
 
-  # Validation warning for memory_service_uri (not supported for adk run)
-  if memory_service_uri:
-    click.secho(
-        "WARNING: --memory_service_uri is not supported for adk run.",
-        fg="yellow",
-        err=True,
-    )
-
   agent_parent_folder = os.path.dirname(agent)
   agent_folder_name = os.path.basename(agent)
 
@@ -625,6 +687,7 @@ def cli_run(
           session_id=session_id,
           session_service_uri=session_service_uri,
           artifact_service_uri=artifact_service_uri,
+          memory_service_uri=memory_service_uri,
           use_local_storage=use_local_storage,
       )
   )
@@ -923,6 +986,133 @@ def cli_eval(
           "********************************************************************"
       )
       pretty_print_eval_result(eval_result)
+
+
+@main.command("optimize", cls=HelpfulCommand)
+@click.argument(
+    "agent_module_file_path",
+    type=click.Path(
+        exists=True, dir_okay=True, file_okay=False, resolve_path=True
+    ),
+)
+@click.option(
+    "--sampler_config_file_path",
+    type=click.Path(exists=True, dir_okay=False, resolve_path=True),
+    required=True,
+    help="The path to the local eval sampler config file.",
+)
+@click.option(
+    "--optimizer_config_file_path",
+    type=click.Path(exists=True, dir_okay=False, resolve_path=True),
+    help=(
+        "Optional. The path to the GEPA optimizer config file. If not provided,"
+        " the default config will be used."
+    ),
+)
+@click.option(
+    "--print_detailed_results",
+    is_flag=True,
+    show_default=True,
+    default=False,
+    help=(
+        "Optional. Set to enable detailed printing of GEPA optimization"
+        " results to the console."
+    ),
+)
+@click.option(
+    "--log_level",
+    type=LOG_LEVELS,
+    show_default=True,
+    default="INFO",
+    help="Optional. Set the logging level",
+)
+def cli_optimize(
+    agent_module_file_path: str,
+    sampler_config_file_path: str,
+    optimizer_config_file_path: str,
+    print_detailed_results: bool,
+    log_level: str = "INFO",
+):
+  """Optimizes the root agent instructions using the GEPA optimizer.
+
+  AGENT_MODULE_FILE_PATH: The path to the __init__.py file that contains a
+  module by the name "agent". "agent" module contains a root_agent.
+
+  SAMPLER_CONFIG_FILE_PATH: The path to the config for the LocalEvalSampler,
+  which contains the eval config and the eval sets to use for training and
+  validation during optimization.
+
+  OPTIMIZER_CONFIG_FILE_PATH: Optional. The path to the config for the
+  GEPARootAgentPromptOptimizer. If not provided, the default config will be
+  used.
+
+  PRINT_DETAILED_RESULTS: Optional. Enables printing detailed results exposed by
+  the GEPA optimizer to the console.
+
+  LOG_LEVEL: Optional. Set the logging level.
+  """
+  envs.load_dotenv_for_agent(agent_module_file_path, ".")
+  logs.setup_adk_logger(getattr(logging, log_level.upper()))
+
+  try:
+    from ..evaluation.custom_metric_evaluator import _CustomMetricEvaluator
+    from ..evaluation.local_eval_sets_manager import LocalEvalSetsManager
+    from ..optimization.gepa_root_agent_prompt_optimizer import GEPARootAgentPromptOptimizer
+    from ..optimization.gepa_root_agent_prompt_optimizer import GEPARootAgentPromptOptimizerConfig
+    from ..optimization.local_eval_sampler import LocalEvalSampler
+    from ..optimization.local_eval_sampler import LocalEvalSamplerConfig
+    from .cli_eval import _collect_eval_results
+    from .cli_eval import _collect_inferences
+    from .cli_eval import get_root_agent
+  except ModuleNotFoundError as mnf:
+    raise click.ClickException(MISSING_EVAL_DEPENDENCIES_MESSAGE) from mnf
+
+  with open(sampler_config_file_path, "r", encoding="utf-8") as f:
+    content = f.read()
+    sampler_config = LocalEvalSamplerConfig.model_validate_json(content)
+
+  if optimizer_config_file_path:
+    with open(optimizer_config_file_path, "r", encoding="utf-8") as f:
+      content = f.read()
+      optimizer_config = GEPARootAgentPromptOptimizerConfig.model_validate_json(
+          content
+      )
+  else:
+    optimizer_config = GEPARootAgentPromptOptimizerConfig()
+
+  root_agent = get_root_agent(agent_module_file_path)
+  app_name = os.path.basename(agent_module_file_path)
+  agents_dir = os.path.dirname(agent_module_file_path)
+  if app_name != sampler_config.app_name:
+    raise click.ClickException(
+        f"App name in the agent module file path ({app_name}) does not match"
+        f" the app name in the sampler config file ({sampler_config.app_name})."
+    )
+  eval_sets_manager = LocalEvalSetsManager(agents_dir=agents_dir)
+
+  sampler = LocalEvalSampler(sampler_config, eval_sets_manager)
+  optimizer = GEPARootAgentPromptOptimizer(optimizer_config)
+
+  optimization_result = asyncio.run(optimizer.optimize(root_agent, sampler))
+  best_idx = optimization_result.gepa_result["best_idx"]
+
+  click.echo("=" * 80)
+  click.echo("Optimized root agent instructions:")
+  click.echo("-" * 80)
+  click.echo(
+      optimization_result.optimized_agents[best_idx].optimized_agent.instruction
+  )
+
+  if print_detailed_results:
+    click.echo("=" * 80)
+    if optimization_result.gepa_result:
+      click.echo("Detailed GEPA optimization metrics:")
+      click.echo("-" * 80)
+      click.echo(json.dumps(optimization_result.gepa_result, indent=2))
+    else:
+      click.echo("Detailed GEPA optimization metrics are not available.")
+
+  click.echo("=" * 80)
 
 
 @main.group("eval_set")
@@ -1378,6 +1568,14 @@ def cli_web(
 @fast_api_common_options()
 @adk_services_options(default_use_local_storage=True)
 @deprecated_adk_services_options()
+@click.option(
+    "--auto_create_session",
+    is_flag=True,
+    default=False,
+    help=(
+        "Automatically create a session if it doesn't exist when calling /run."
+    ),
+)
 def cli_api_server(
     agents_dir: str,
     eval_storage_uri: Optional[str] = None,
@@ -1398,6 +1596,7 @@ def cli_api_server(
     a2a: bool = False,
     reload_agents: bool = False,
     extra_plugins: Optional[list[str]] = None,
+    auto_create_session: bool = False,
 ):
   """Starts a FastAPI server for agents.
 
@@ -1430,6 +1629,7 @@ def cli_api_server(
           url_prefix=url_prefix,
           reload_agents=reload_agents,
           extra_plugins=extra_plugins,
+          auto_create_session=auto_create_session,
       ),
       host=host,
       port=port,
@@ -1491,14 +1691,20 @@ def cli_api_server(
     is_flag=True,
     show_default=True,
     default=False,
-    help="Optional. Whether to enable Cloud Trace for cloud run.",
+    help=(
+        "Optional. Whether to enable Cloud Trace export for Cloud Run"
+        " deployments."
+    ),
 )
 @click.option(
     "--otel_to_cloud",
     is_flag=True,
     show_default=True,
     default=False,
-    help="Optional. Whether to enable OpenTelemetry for Agent Engine.",
+    help=(
+        "Optional. Whether to enable OpenTelemetry export to GCP for Cloud Run"
+        " deployments."
+    ),
 )
 @click.option(
     "--with_ui",
@@ -1917,9 +2123,11 @@ def cli_deploy_agent_engine(
 
   Example:
 
+    \b
     # With Express Mode API Key
     adk deploy agent_engine --api_key=[api_key] my_agent
 
+    \b
     # With Google Cloud Project and Region
     adk deploy agent_engine --project=[project] --region=[region]
       --display_name=[app_name] my_agent

@@ -27,6 +27,7 @@ from typing import AsyncGenerator
 from typing import Optional
 from typing import TYPE_CHECKING
 
+from google.adk.platform import time as platform_time
 from google.genai import types
 from typing_extensions import override
 
@@ -120,9 +121,7 @@ class _CodeExecutionRequestProcessor(BaseLlmRequestProcessor):
   async def run_async(
       self, invocation_context: InvocationContext, llm_request: LlmRequest
   ) -> AsyncGenerator[Event, None]:
-    from ...agents.llm_agent import LlmAgent
-
-    if not isinstance(invocation_context.agent, LlmAgent):
+    if not hasattr(invocation_context.agent, 'code_executor'):
       return
     if not invocation_context.agent.code_executor:
       return
@@ -175,9 +174,7 @@ async def _run_pre_processor(
     llm_request: LlmRequest,
 ) -> AsyncGenerator[Event, None]:
   """Pre-process the user message by adding the user message to the Colab notebook."""
-  from ...agents.llm_agent import LlmAgent
-
-  if not isinstance(invocation_context.agent, LlmAgent):
+  if not hasattr(invocation_context.agent, 'code_executor'):
     return
 
   agent = invocation_context.agent
@@ -292,7 +289,9 @@ async def _run_post_processor(
         if part.inline_data.display_name:
           file_name = part.inline_data.display_name
         else:
-          now = datetime.datetime.now().astimezone()
+          now = datetime.datetime.fromtimestamp(
+              platform_time.get_time()
+          ).astimezone()
           timestamp = now.strftime('%Y%m%d_%H%M%S')
           file_extension = part.inline_data.mime_type.split('/')[-1]
           file_name = f'{timestamp}.{file_extension}'

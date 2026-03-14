@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 import textwrap
 from typing import Optional
@@ -24,14 +25,17 @@ from typing import Optional
 import click
 from google.genai import types
 
+from ...agents.run_config import StreamingMode
 from ..adk_web_server import RunAgentRequest
+from ._generate_markdown_utils import generate_markdown_report
 from ._generated_file_utils import load_recorded_session
 from ._generated_file_utils import load_test_case
 from ._replay_validators import compare_events
 from ._replay_validators import compare_session
 from .adk_web_server_client import AdkWebServerClient
 from .test_case import TestCase
-from .test_case import TestSpec
+
+_SUPPORTED_STREAMING_MODES = [StreamingMode.NONE, StreamingMode.SSE]
 
 
 @dataclass
@@ -42,6 +46,7 @@ class _TestResult:
   name: str
   success: bool
   error_message: Optional[str] = None
+  description: Optional[str] = None
 
 
 @dataclass
@@ -52,6 +57,7 @@ class _ConformanceTestSummary:
   passed_tests: int
   failed_tests: int
   results: list[_TestResult]
+  streaming_mode: StreamingMode
 
   @property
   def success_rate(self) -> float:
@@ -62,7 +68,7 @@ class _ConformanceTestSummary:
 
 
 class ConformanceTestRunner:
-  """Runs conformance tests in replay mode."""
+  """Runs conformance tests."""
 
   def __init__(
       self,
@@ -70,11 +76,13 @@ class ConformanceTestRunner:
       client: AdkWebServerClient,
       mode: str = "replay",
       user_id: str = "adk_conformance_test_user",
+      streaming_mode: StreamingMode = StreamingMode.NONE,
   ):
     self.test_paths = test_paths
     self.mode = mode
     self.client = client
     self.user_id = user_id
+    self.streaming_mode = streaming_mode
 
   def _discover_test_cases(self) -> list[TestCase]:
     """Discover test cases from specified folder paths."""
@@ -89,11 +97,15 @@ class ConformanceTestRunner:
         category = test_case_dir.parent.name
         name = test_case_dir.name
 
+        if self.streaming_mode == StreamingMode.SSE:
+          recordings_file = test_case_dir / "generated-recordings-sse.yaml"
+        elif self.streaming_mode == StreamingMode.NONE:
+          recordings_file = test_case_dir / "generated-recordings.yaml"
+        else:
+          raise ValueError(f"Unsupported streaming mode: {self.streaming_mode}")
+
         # Skip if recordings missing in replay mode
-        if (
-            self.mode == "replay"
-            and not (test_case_dir / "generated-recordings.yaml").exists()
-        ):
+        if self.mode == "replay" and not recordings_file.exists():
           click.secho(
               f"Skipping {category}/{name}: no recordings",
               fg="yellow",
@@ -114,7 +126,9 @@ class ConformanceTestRunner:
     return sorted(test_cases, key=lambda tc: (tc.category, tc.name))
 
   async def _run_user_messages(
-      self, session_id: str, test_case: TestCase
+      self,
+      session_id: str,
+      test_case: TestCase,
   ) -> None:
     """Run all user messages for a test case."""
     function_call_name_to_id_map = {}
@@ -159,7 +173,7 @@ class ConformanceTestRunner:
           user_id=self.user_id,
           session_id=session_id,
           new_message=content,
-          streaming=False,
+          streaming=self.streaming_mode == StreamingMode.SSE,
           state_delta=user_message.state_delta,
       )
 
@@ -193,16 +207,18 @@ class ConformanceTestRunner:
           name=test_case.name,
           success=False,
           error_message="No final session available for comparison",
+          description=test_case.test_spec.description,
       )
 
     # Load recorded session data for comparison
-    recorded_session = load_recorded_session(test_case.dir)
+    recorded_session = load_recorded_session(test_case.dir, self.streaming_mode)
     if not recorded_session:
       return _TestResult(
           category=test_case.category,
           name=test_case.name,
           success=False,
           error_message="No recorded session found for replay comparison",
+          description=test_case.test_spec.description,
       )
 
     # Compare events and session
@@ -224,6 +240,7 @@ class ConformanceTestRunner:
         name=test_case.name,
         success=success,
         error_message="\n\n".join(error_messages) if error_messages else None,
+        description=test_case.test_spec.description,
     )
 
   async def _run_test_case_replay(self, test_case: TestCase) -> _TestResult:
@@ -245,6 +262,7 @@ class ConformanceTestRunner:
             name=test_case.name,
             success=False,
             error_message=f"Replay verification failed: {e}",
+            description=test_case.test_spec.description,
         )
 
       # Validate results and return test result
@@ -265,6 +283,7 @@ class ConformanceTestRunner:
           name=test_case.name,
           success=False,
           error_message=f"Test setup failed: {e}",
+          description=test_case.test_spec.description,
       )
 
   async def run_all_tests(self) -> _ConformanceTestSummary:
@@ -277,10 +296,11 @@ class ConformanceTestRunner:
           passed_tests=0,
           failed_tests=0,
           results=[],
+          streaming_mode=self.streaming_mode,
       )
 
     click.echo(f"""
-Found {len(test_cases)} test cases to run in {self.mode} mode
+Found {len(test_cases)} test cases to run in {self.mode} mode for streaming mode {self.streaming_mode}.
 """)
 
     results: list[_TestResult] = []
@@ -294,7 +314,8 @@ Found {len(test_cases)} test cases to run in {self.mode} mode
             category=test_case.category,
             name=test_case.name,
             success=False,
-            error_message="Live mode not yet implemented",
+            error_message="Live mode is not implemented yet",
+            description=test_case.test_spec.description,
         )
       results.append(result)
       _print_test_case_result(result)
@@ -305,21 +326,36 @@ Found {len(test_cases)} test cases to run in {self.mode} mode
         passed_tests=passed,
         failed_tests=len(results) - passed,
         results=results,
+        streaming_mode=self.streaming_mode,
     )
 
 
 async def run_conformance_test(
     test_paths: list[Path],
     mode: str = "replay",
+    generate_report: bool = False,
+    report_dir: Optional[str] = None,
+    streaming_mode: Optional[StreamingMode] = None,
 ) -> None:
   """Run conformance tests."""
   _print_test_header(mode)
 
+  test_summaries: list[_ConformanceTestSummary] = []
   async with AdkWebServerClient() as client:
-    runner = ConformanceTestRunner(test_paths, client, mode)
-    summary = await runner.run_all_tests()
+    modes_to_run = _SUPPORTED_STREAMING_MODES
+    if streaming_mode and streaming_mode in _SUPPORTED_STREAMING_MODES:
+      modes_to_run = [streaming_mode]
+    for current_streaming_mode in modes_to_run:
+      runner = ConformanceTestRunner(
+          test_paths, client, mode, streaming_mode=current_streaming_mode
+      )
+      test_summaries.append(await runner.run_all_tests())
 
-  _print_test_summary(summary)
+    if generate_report:
+      version_data = await client.get_version_data()
+      generate_markdown_report(version_data, test_summaries, report_dir)
+
+  _print_test_summary(test_summaries)
 
 
 def _print_test_header(mode: str) -> None:
@@ -347,36 +383,38 @@ def _print_test_result_details(result: _TestResult) -> None:
     click.secho(indented_message, fg="red", err=True)
 
 
-def _print_test_summary(summary: _ConformanceTestSummary) -> None:
+def _print_test_summary(summaries: list[_ConformanceTestSummary]) -> None:
   """Print the conformance test summary results."""
-  # Print summary
-  click.echo("\n" + "=" * 50)
-  click.echo("CONFORMANCE TEST SUMMARY")
-  click.echo("=" * 50)
+  for summary in summaries:
+    click.echo("\n" + "=" * 50)
+    click.echo(
+        f"CONFORMANCE TEST SUMMARY FOR STREAMING MODE: {summary.streaming_mode}"
+    )
+    click.echo("=" * 50)
 
-  if summary.total_tests == 0:
-    click.secho("No tests were run.", fg="yellow")
-    return
+    if summary.total_tests == 0:
+      click.secho("No tests were run.", fg="yellow")
+      return
 
-  click.echo(f"Total tests: {summary.total_tests}")
-  click.secho(f"Passed: {summary.passed_tests}", fg="green")
+    click.echo(f"Total tests: {summary.total_tests}")
+    click.secho(f"Passed: {summary.passed_tests}", fg="green")
 
-  if summary.failed_tests > 0:
-    click.secho(f"Failed: {summary.failed_tests}", fg="red")
-  else:
-    click.echo(f"Failed: {summary.failed_tests}")
+    if summary.failed_tests > 0:
+      click.secho(f"Failed: {summary.failed_tests}", fg="red")
+    else:
+      click.echo(f"Failed: {summary.failed_tests}")
 
-  click.echo(f"Success rate: {summary.success_rate:.1f}%")
+    click.echo(f"Success rate: {summary.success_rate:.1f}%")
 
-  # List failed tests
-  failed_tests = [r for r in summary.results if not r.success]
-  if failed_tests:
-    click.echo("\nFailed tests:")
-    for result in failed_tests:
-      _print_test_result_details(result)
+    # List failed tests
+    failed_tests = [r for r in summary.results if not r.success]
+    if failed_tests:
+      click.echo("\nFailed tests:")
+      for result in failed_tests:
+        _print_test_result_details(result)
 
-  # Exit with error code if any tests failed
-  if summary.failed_tests > 0:
-    raise click.ClickException(f"{summary.failed_tests} test(s) failed")
-  else:
-    click.secho("\nAll tests passed! 🎉", fg="green")
+    # Exit with error code if any tests failed
+    if summary.failed_tests > 0:
+      raise click.ClickException(f"{summary.failed_tests} test(s) failed")
+    else:
+      click.secho("\nAll tests passed! 🎉", fg="green")
