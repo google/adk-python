@@ -26,7 +26,6 @@ from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.telemetry.tracing import ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS
-from google.adk.telemetry.tracing import GEN_AI_AGENT_VERSION
 from google.adk.telemetry.tracing import trace_agent_invocation
 from google.adk.telemetry.tracing import trace_call_llm
 from google.adk.telemetry.tracing import trace_inference_result
@@ -122,33 +121,6 @@ async def test_trace_agent_invocation(mock_span_fixture):
       mock.call('gen_ai.operation.name', 'invoke_agent'),
       mock.call('gen_ai.agent.description', agent.description),
       mock.call('gen_ai.agent.name', agent.name),
-      mock.call(GEN_AI_AGENT_VERSION, ''),
-      mock.call(
-          'gen_ai.conversation.id',
-          invocation_context.session.id,
-      ),
-  ]
-  mock_span_fixture.set_attribute.assert_has_calls(
-      expected_calls, any_order=True
-  )
-  assert mock_span_fixture.set_attribute.call_count == len(expected_calls)
-
-
-@pytest.mark.asyncio
-async def test_trace_agent_invocation_with_version(mock_span_fixture):
-  """Test trace_agent_invocation sets span attributes correctly when version is provided."""
-  agent = LlmAgent(name='test_llm_agent', model='gemini-pro')
-  agent.description = 'Test agent description'
-  agent.version = '1.0.0'
-  invocation_context = await _create_invocation_context(agent)
-
-  trace_agent_invocation(mock_span_fixture, agent, invocation_context)
-
-  expected_calls = [
-      mock.call('gen_ai.operation.name', 'invoke_agent'),
-      mock.call('gen_ai.agent.description', agent.description),
-      mock.call('gen_ai.agent.name', agent.name),
-      mock.call(GEN_AI_AGENT_VERSION, agent.version),
       mock.call(
           'gen_ai.conversation.id',
           invocation_context.session.id,
@@ -815,7 +787,6 @@ async def test_generate_content_span(
 
   mock_span.set_attributes.assert_called_once_with({
       GEN_AI_AGENT_NAME: invocation_context.agent.name,
-      GEN_AI_AGENT_VERSION: '',
       GEN_AI_CONVERSATION_ID: invocation_context.session.id,
       USER_ID: invocation_context.session.user_id,
       'gcp.vertex.agent.event_id': 'event-123',
@@ -1136,7 +1107,6 @@ async def test_generate_content_span_with_experimental_semconv(
 
   mock_span.set_attributes.assert_called_once_with({
       GEN_AI_AGENT_NAME: invocation_context.agent.name,
-      GEN_AI_AGENT_VERSION: '',
       GEN_AI_CONVERSATION_ID: invocation_context.session.id,
       USER_ID: invocation_context.session.user_id,
       'gcp.vertex.agent.event_id': 'event-123',
