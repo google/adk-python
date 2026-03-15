@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import copy
 import importlib.util
 import json
@@ -142,6 +143,11 @@ _MISSING_TOOL_RESULT_MESSAGE = (
     "Error: Missing tool result (tool execution may have been interrupted "
     "before a response was recorded)."
 )
+
+# Separator LiteLLM uses to embed thought_signature in tool call IDs.
+# Gemini's thoughtSignature requirement is documented here:
+# https://ai.google.dev/gemini-api/docs/thought-signatures
+_THOUGHT_SIGNATURE_SEPARATOR = "__thought__"
 
 _LITELLM_IMPORTED = False
 _LITELLM_GLOBAL_SYMBOLS = (
@@ -428,6 +434,7 @@ class UsageMetadataChunk(BaseModel):
   completion_tokens: int
   total_tokens: int
   cached_prompt_tokens: int = 0
+  reasoning_tokens: int = 0
 
 
 class LiteLLMClient:
@@ -601,6 +608,120 @@ def _extract_cached_prompt_tokens(usage: Any) -> int:
   return 0
 
 
+def _decode_thought_signature(value: Any) -> Optional[bytes]:
+  """Safely decodes a thought_signature value to bytes.
+
+  Args:
+    value: A base64 string or raw bytes thought_signature.
+
+  Returns:
+    The decoded bytes, or None if decoding fails.
+  """
+  if isinstance(value, bytes):
+    return value
+  try:
+    return base64.b64decode(value, validate=True)
+  except (binascii.Error, TypeError, ValueError):
+    logger.debug(
+        "Failed to decode thought_signature of type %s.",
+        type(value).__name__,
+    )
+    return None
+
+
+def _extract_reasoning_tokens(usage: Any) -> int:
+  """Extracts reasoning tokens from LiteLLM usage.
+
+  Providers expose reasoning token metrics under completion_tokens_details.
+
+  Args:
+    usage: Usage dictionary or object from LiteLLM response.
+
+  Returns:
+    Integer number of reasoning tokens if present; otherwise 0.
+  """
+  try:
+    usage_dict = usage
+    if hasattr(usage, "model_dump"):
+      usage_dict = usage.model_dump()
+    elif isinstance(usage, str):
+      try:
+        usage_dict = json.loads(usage)
+      except json.JSONDecodeError:
+        return 0
+
+    if not isinstance(usage_dict, dict):
+      return 0
+
+    details = usage_dict.get("completion_tokens_details")
+    if isinstance(details, dict):
+      value = details.get("reasoning_tokens")
+      if isinstance(value, int):
+        return value
+  except (TypeError, AttributeError) as e:
+    logger.debug("Error extracting reasoning tokens: %s", e)
+
+  return 0
+
+
+def _extract_thought_signature_from_tool_call(
+    tool_call: ChatCompletionMessageToolCall,
+) -> Optional[bytes]:
+  """Extracts thought_signature from a litellm tool call if present.
+
+  Gemini thinking models attach a thought_signature to function call parts.
+  See https://ai.google.dev/gemini-api/docs/thought-signatures.
+  This signature may appear in several locations depending on the
+  provider path:
+  1. extra_content.google.thought_signature (OpenAI-compatible API).
+  2. provider_specific_fields on the tool call or function (Vertex).
+  3. Embedded in the tool call ID via __thought__ separator.
+
+  Args:
+    tool_call: A litellm tool call object.
+
+  Returns:
+    The thought_signature as bytes, or None if not present.
+  """
+  # Check extra_content.google.thought_signature (OpenAI format)
+  extra_content = tool_call.get("extra_content")
+  if isinstance(extra_content, dict):
+    google_fields = extra_content.get("google")
+    if isinstance(google_fields, dict):
+      signature = google_fields.get("thought_signature")
+      if signature:
+        return _decode_thought_signature(signature)
+
+  # Check provider_specific_fields on the tool call
+  provider_fields = tool_call.get("provider_specific_fields")
+  if isinstance(provider_fields, dict):
+    signature = provider_fields.get("thought_signature")
+    if signature:
+      return _decode_thought_signature(signature)
+
+  # Check provider_specific_fields on the function
+  function = tool_call.get("function")
+  if function:
+    func_provider_fields = None
+    if isinstance(function, dict):
+      func_provider_fields = function.get("provider_specific_fields")
+    elif hasattr(function, "provider_specific_fields"):
+      func_provider_fields = function.provider_specific_fields
+    if isinstance(func_provider_fields, dict):
+      signature = func_provider_fields.get("thought_signature")
+      if signature:
+        return _decode_thought_signature(signature)
+
+  # Check if thought signature is embedded in the tool call ID
+  tool_call_id = tool_call.get("id") or ""
+  if _THOUGHT_SIGNATURE_SEPARATOR in tool_call_id:
+    parts = tool_call_id.split(_THOUGHT_SIGNATURE_SEPARATOR, 1)
+    if len(parts) == 2:
+      return _decode_thought_signature(parts[1])
+
+  return None
+
+
 async def _content_to_message_param(
     content: types.Content,
     *,
@@ -670,16 +791,31 @@ async def _content_to_message_param(
     reasoning_parts: list[types.Part] = []
     for part in content.parts:
       if part.function_call:
-        tool_calls.append(
-            ChatCompletionAssistantToolCall(
-                type="function",
-                id=part.function_call.id,
-                function=Function(
-                    name=part.function_call.name,
-                    arguments=_safe_json_serialize(part.function_call.args),
-                ),
-            )
-        )
+        tool_call_id = part.function_call.id or ""
+        tool_call_dict: ChatCompletionAssistantToolCall = {
+            "type": "function",
+            "id": tool_call_id,
+            "function": {
+                "name": part.function_call.name,
+                "arguments": _safe_json_serialize(part.function_call.args),
+            },
+        }
+        # Preserve thought_signature for Gemini thinking models.
+        # LiteLLM's Gemini prompt conversion reads provider_specific_fields,
+        # while the OpenAI-compatible Gemini endpoint path expects the
+        # extra_content.google.thought_signature payload to survive.
+        # See https://ai.google.dev/gemini-api/docs/thought-signatures.
+        if part.thought_signature:
+          sig = part.thought_signature
+          if isinstance(sig, bytes):
+            sig = base64.b64encode(sig).decode("utf-8")
+          tool_call_dict["provider_specific_fields"] = {
+              "thought_signature": sig
+          }
+          tool_call_dict["extra_content"] = {
+              "google": {"thought_signature": sig}
+          }
+        tool_calls.append(tool_call_dict)
       elif part.thought:
         reasoning_parts.append(part)
       else:
@@ -1393,6 +1529,7 @@ def _model_response_to_chunk(
           completion_tokens=usage.get("completion_tokens", 0) or 0,
           total_tokens=usage.get("total_tokens", 0) or 0,
           cached_prompt_tokens=_extract_cached_prompt_tokens(usage),
+          reasoning_tokens=_extract_reasoning_tokens(usage),
       ), None
     except AttributeError as e:
       raise TypeError(
@@ -1442,13 +1579,14 @@ def _model_response_to_generate_content_response(
           finish_reason_str, types.FinishReason.OTHER
       )
   if response.get("usage", None):
+    usage_dict = response["usage"]
+    reasoning_tokens = _extract_reasoning_tokens(usage_dict)
     llm_response.usage_metadata = types.GenerateContentResponseUsageMetadata(
-        prompt_token_count=response["usage"].get("prompt_tokens", 0),
-        candidates_token_count=response["usage"].get("completion_tokens", 0),
-        total_token_count=response["usage"].get("total_tokens", 0),
-        cached_content_token_count=_extract_cached_prompt_tokens(
-            response["usage"]
-        ),
+        prompt_token_count=usage_dict.get("prompt_tokens", 0),
+        candidates_token_count=usage_dict.get("completion_tokens", 0),
+        total_token_count=usage_dict.get("total_tokens", 0),
+        cached_content_token_count=_extract_cached_prompt_tokens(usage_dict),
+        thoughts_token_count=reasoning_tokens if reasoning_tokens else None,
     )
   return llm_response
 
@@ -1486,11 +1624,14 @@ def _message_to_generate_content_response(
   if tool_calls:
     for tool_call in tool_calls:
       if tool_call.type == "function":
+        thought_signature = _extract_thought_signature_from_tool_call(tool_call)
         part = types.Part.from_function_call(
             name=tool_call.function.name,
             args=json.loads(tool_call.function.arguments or "{}"),
         )
         part.function_call.id = tool_call.id
+        if thought_signature:
+          part.thought_signature = thought_signature
         parts.append(part)
 
   return LlmResponse(
@@ -1498,6 +1639,15 @@ def _message_to_generate_content_response(
       partial=is_partial,
       model_version=model_version,
   )
+
+
+def _finish_reason_to_error_message(
+    finish_reason: types.FinishReason,
+) -> str:
+  """Returns an error message for non-stop finish reasons."""
+  if finish_reason == types.FinishReason.MAX_TOKENS:
+    return "Maximum tokens reached"
+  return f"Finished with {finish_reason}"
 
 
 def _enforce_strict_openai_schema(schema: dict[str, Any]) -> None:
@@ -2000,8 +2150,15 @@ class LiteLlm(BaseLlm):
           *, model_version: str, finish_reason: str
       ) -> LlmResponse:
         tool_calls = []
+        has_incomplete_tool_call_args = False
         for index, func_data in function_calls.items():
           if func_data["id"]:
+            if finish_reason == "length":
+              try:
+                json.loads(func_data["args"] or "{}")
+              except json.JSONDecodeError:
+                has_incomplete_tool_call_args = True
+                continue
             tool_calls.append(
                 ChatCompletionMessageToolCall(
                     type="function",
@@ -2013,6 +2170,19 @@ class LiteLlm(BaseLlm):
                     ),
                 )
             )
+
+        if has_incomplete_tool_call_args:
+          return LlmResponse(
+              error_code=types.FinishReason.MAX_TOKENS,
+              error_message=(
+                  "Tool call arguments were truncated while streaming and"
+                  " could not be parsed as valid JSON. Increase"
+                  " `max_output_tokens` and retry."
+              ),
+              finish_reason=types.FinishReason.MAX_TOKENS,
+              model_version=model_version,
+          )
+
         llm_response = _message_to_generate_content_response(
             ChatCompletionAssistantMessage(
                 role="assistant",
@@ -2022,7 +2192,13 @@ class LiteLlm(BaseLlm):
             model_version=model_version,
             thought_parts=list(reasoning_parts) if reasoning_parts else None,
         )
-        llm_response.finish_reason = _map_finish_reason(finish_reason)
+        mapped_finish_reason = _map_finish_reason(finish_reason)
+        llm_response.finish_reason = mapped_finish_reason
+        if mapped_finish_reason != types.FinishReason.STOP:
+          llm_response.error_code = mapped_finish_reason
+          llm_response.error_message = _finish_reason_to_error_message(
+              mapped_finish_reason
+          )
         return llm_response
 
       def _finalize_text_response(
@@ -2037,7 +2213,13 @@ class LiteLlm(BaseLlm):
             model_version=model_version,
             thought_parts=list(reasoning_parts) if reasoning_parts else None,
         )
-        llm_response.finish_reason = _map_finish_reason(finish_reason)
+        mapped_finish_reason = _map_finish_reason(finish_reason)
+        llm_response.finish_reason = mapped_finish_reason
+        if mapped_finish_reason != types.FinishReason.STOP:
+          llm_response.error_code = mapped_finish_reason
+          llm_response.error_message = _finish_reason_to_error_message(
+              mapped_finish_reason
+          )
         return llm_response
 
       def _reset_stream_buffers() -> None:
@@ -2093,13 +2275,17 @@ class LiteLlm(BaseLlm):
                 candidates_token_count=chunk.completion_tokens,
                 total_token_count=chunk.total_tokens,
                 cached_content_token_count=chunk.cached_prompt_tokens,
+                thoughts_token_count=chunk.reasoning_tokens
+                if chunk.reasoning_tokens
+                else None,
             )
 
           # LiteLLM 1.81+ can set finish_reason="stop" on partial chunks. Only
-          # finalize tool calls on an explicit tool_calls finish_reason, or on a
-          # stop-only chunk (no content/tool deltas).
+          # finalize tool calls on an explicit tool_calls/length finish_reason,
+          # or on a stop-only chunk (no content/tool deltas).
           if function_calls and (
               finish_reason == "tool_calls"
+              or finish_reason == "length"
               or (finish_reason == "stop" and chunk is None)
           ):
             aggregated_llm_response_with_tool_call = (
@@ -2109,16 +2295,14 @@ class LiteLlm(BaseLlm):
                 )
             )
             _reset_stream_buffers()
-          elif (
-              finish_reason == "stop"
-              and (text or reasoning_parts)
-              and chunk is None
-              and not function_calls
+          elif (text or reasoning_parts) and (
+              finish_reason == "length"
+              or (
+                  finish_reason == "stop"
+                  and chunk is None
+                  and not function_calls
+              )
           ):
-            # Only aggregate text response when we have a true stop signal
-            # chunk is None means no content in this chunk, just finish signal.
-            # LiteLLM 1.81+ sets finish_reason="stop" on partial chunks with
-            # content.
             aggregated_llm_response = _finalize_text_response(
                 model_version=part.model,
                 finish_reason=finish_reason,
