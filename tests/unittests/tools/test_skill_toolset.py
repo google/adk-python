@@ -15,6 +15,7 @@
 import logging
 from unittest import mock
 
+from google.adk.agents.readonly_context import ReadonlyContext
 from google.adk.code_executors.base_code_executor import BaseCodeExecutor
 from google.adk.code_executors.code_execution_utils import CodeExecutionResult
 from google.adk.models import llm_request as llm_request_model
@@ -1290,24 +1291,51 @@ async def test_execute_script_binary_content_packaged():
 
 
 @pytest.mark.asyncio
-async def test_skill_toolset_dynamic_tool_resolution(mock_skill1):
-  # Set up a skill with additional_tools in metadata
+async def test_skill_toolset_dynamic_tool_resolution(mock_skill1, mock_skill2):
+  # Set up skills with additional_tools in metadata
   mock_skill1.frontmatter.metadata = {
-      "adk_additional_tools": ["my_custom_tool", "my_func"]
+      "adk_additional_tools": ["my_custom_tool", "my_func", "shared_tool"]
   }
   mock_skill1.name = "skill1"
+
+  mock_skill2.frontmatter.metadata = {
+      "adk_additional_tools": [
+          "skill2_tool",
+          "shared_tool",
+          "prefixed_mock_tool",
+      ]
+  }
+  mock_skill2.name = "skill2"
 
   # Prepare additional tools
   custom_tool = mock.create_autospec(skill_toolset.BaseTool, instance=True)
   custom_tool.name = "my_custom_tool"
 
+  skill2_tool = mock.create_autospec(skill_toolset.BaseTool, instance=True)
+  skill2_tool.name = "skill2_tool"
+
+  shared_tool = mock.create_autospec(skill_toolset.BaseTool, instance=True)
+  shared_tool.name = "shared_tool"
+
   def my_func():
     """My function description."""
     pass
 
+  # Setup prefixed toolset
+  mock_tool = mock.create_autospec(skill_toolset.BaseTool, instance=True)
+  mock_tool.name = "prefixed_mock_tool"
+  prefixed_set = mock.create_autospec(skill_toolset.BaseToolset, instance=True)
+  prefixed_set.get_tools_with_prefix.return_value = [mock_tool]
+
   toolset = skill_toolset.SkillToolset(
-      [mock_skill1],
-      additional_tools=[custom_tool, my_func],
+      [mock_skill1, mock_skill2],
+      additional_tools=[
+          custom_tool,
+          skill2_tool,
+          shared_tool,
+          my_func,
+          prefixed_set,
+      ],
   )
 
   ctx = _make_tool_context_with_agent()
@@ -1315,15 +1343,34 @@ async def test_skill_toolset_dynamic_tool_resolution(mock_skill1):
   tools = await toolset.get_tools(readonly_context=ctx)
   assert len(tools) == 4
 
-  # Activate skill
+  # Activate skills
   load_tool = skill_toolset.LoadSkillTool(toolset)
   await load_tool.run_async(args={"name": "skill1"}, tool_context=ctx)
+  await load_tool.run_async(args={"name": "skill2"}, tool_context=ctx)
 
   # Dynamic tools should now be resolved
   tools = await toolset.get_tools(readonly_context=ctx)
   tool_names = {t.name for t in tools}
+
+  # Core tools
+  assert "list_skills" in tool_names
+  assert "load_skill" in tool_names
+  assert "load_skill_resource" in tool_names
+  assert "run_skill_script" in tool_names
+
+  # Skill 1 tools
   assert "my_custom_tool" in tool_names
   assert "my_func" in tool_names
+
+  # Skill 2 tools
+  assert "skill2_tool" in tool_names
+
+  # Shared tool (should only appear once)
+  assert "shared_tool" in tool_names
+  assert len([t for t in tools if t.name == "shared_tool"]) == 1
+
+  # Prefixed toolset tool
+  assert "prefixed_mock_tool" in tool_names
 
   # Check specific tool resolution details
   my_func_tool = next(t for t in tools if t.name == "my_func")

@@ -83,8 +83,6 @@ OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT = (
 
 USER_CONTENT_ELIDED = '<elided>'
 
-GEN_AI_AGENT_VERSION = 'gen_ai.agent.version'
-
 # Needed to avoid circular imports
 if TYPE_CHECKING:
   from ..agents.base_agent import BaseAgent
@@ -159,7 +157,6 @@ def trace_agent_invocation(
   span.set_attribute(GEN_AI_AGENT_DESCRIPTION, agent.description)
 
   span.set_attribute(GEN_AI_AGENT_NAME, agent.name)
-  span.set_attribute(GEN_AI_AGENT_VERSION, agent.version)
   span.set_attribute(GEN_AI_CONVERSATION_ID, ctx.session.id)
 
 
@@ -334,6 +331,17 @@ def trace_call_llm(
           'gen_ai.request.max_tokens',
           llm_request.config.max_output_tokens,
       )
+    try:
+      if (
+          llm_request.config.thinking_config
+          and llm_request.config.thinking_config.thinking_budget is not None
+      ):
+        span.set_attribute(
+            'gen_ai.usage.experimental.reasoning_tokens_limit',
+            llm_request.config.thinking_config.thinking_budget,
+        )
+    except AttributeError:
+      pass
 
   try:
     llm_response_json = llm_response.model_dump_json(exclude_none=True)
@@ -359,6 +367,22 @@ def trace_call_llm(
           'gen_ai.usage.output_tokens',
           llm_response.usage_metadata.candidates_token_count,
       )
+    try:
+      if llm_response.usage_metadata.thoughts_token_count is not None:
+        span.set_attribute(
+            'gen_ai.usage.experimental.reasoning_tokens',
+            llm_response.usage_metadata.thoughts_token_count,
+        )
+    except AttributeError:
+      pass
+    try:
+      if llm_response.usage_metadata.system_instruction_tokens is not None:
+        span.set_attribute(
+            'gen_ai.usage.experimental.system_instruction_tokens',
+            llm_response.usage_metadata.system_instruction_tokens,
+        )
+    except AttributeError:
+      pass
   if llm_response.finish_reason:
     try:
       finish_reason_str = llm_response.finish_reason.value.lower()
@@ -468,7 +492,6 @@ def use_generate_content_span(
       USER_ID: invocation_context.session.user_id,
       'gcp.vertex.agent.event_id': model_response_event.id,
       'gcp.vertex.agent.invocation_id': invocation_context.invocation_id,
-      GEN_AI_AGENT_VERSION: invocation_context.agent.version,
   }
   if (
       _is_gemini_agent(invocation_context.agent)
@@ -503,7 +526,6 @@ async def use_inference_span(
       USER_ID: invocation_context.session.user_id,
       'gcp.vertex.agent.event_id': model_response_event.id,
       'gcp.vertex.agent.invocation_id': invocation_context.invocation_id,
-      GEN_AI_AGENT_VERSION: invocation_context.agent.version,
   }
   if (
       _is_gemini_agent(invocation_context.agent)

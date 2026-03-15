@@ -154,6 +154,7 @@ async def test_receive_transcript_finished(
   msg.server_content.output_transcription = (
       finished_tx if tx_direction == 'output' else None
   )
+  msg.server_content.grounding_metadata = None
 
   async def gen():
     yield msg
@@ -202,6 +203,7 @@ async def test_receive_usage_metadata_and_server_content(
   mock_server_content.input_transcription = None
   mock_server_content.output_transcription = None
   mock_server_content.turn_complete = False
+  mock_server_content.grounding_metadata = None
 
   mock_message = mock.AsyncMock()
   mock_message.usage_metadata = usage_metadata
@@ -261,6 +263,7 @@ async def test_receive_transcript_finished_on_interrupt(
   message1.server_content.output_transcription = None
   message1.server_content.turn_complete = False
   message1.server_content.generation_complete = False
+  message1.server_content.grounding_metadata = None
   message1.tool_call = None
   message1.session_resumption_update = None
 
@@ -275,6 +278,7 @@ async def test_receive_transcript_finished_on_interrupt(
   )
   message2.server_content.turn_complete = False
   message2.server_content.generation_complete = False
+  message2.server_content.grounding_metadata = None
   message2.tool_call = None
   message2.session_resumption_update = None
 
@@ -287,6 +291,7 @@ async def test_receive_transcript_finished_on_interrupt(
   message3.server_content.output_transcription = None
   message3.server_content.turn_complete = False
   message3.server_content.generation_complete = False
+  message3.server_content.grounding_metadata = None
   message3.tool_call = None
   message3.session_resumption_update = None
 
@@ -335,6 +340,7 @@ async def test_receive_transcript_finished_on_generation_complete(
   message1.server_content.output_transcription = None
   message1.server_content.turn_complete = False
   message1.server_content.generation_complete = False
+  message1.server_content.grounding_metadata = None
   message1.tool_call = None
   message1.session_resumption_update = None
 
@@ -349,6 +355,7 @@ async def test_receive_transcript_finished_on_generation_complete(
   )
   message2.server_content.turn_complete = False
   message2.server_content.generation_complete = False
+  message2.server_content.grounding_metadata = None
   message2.tool_call = None
   message2.session_resumption_update = None
 
@@ -361,6 +368,7 @@ async def test_receive_transcript_finished_on_generation_complete(
   message3.server_content.output_transcription = None
   message3.server_content.turn_complete = False
   message3.server_content.generation_complete = True
+  message3.server_content.grounding_metadata = None
   message3.tool_call = None
   message3.session_resumption_update = None
 
@@ -408,6 +416,7 @@ async def test_receive_transcript_finished_on_turn_complete(
   message1.server_content.output_transcription = None
   message1.server_content.turn_complete = False
   message1.server_content.generation_complete = False
+  message1.server_content.grounding_metadata = None
   message1.tool_call = None
   message1.session_resumption_update = None
 
@@ -422,6 +431,7 @@ async def test_receive_transcript_finished_on_turn_complete(
   )
   message2.server_content.turn_complete = False
   message2.server_content.generation_complete = False
+  message2.server_content.grounding_metadata = None
   message2.tool_call = None
   message2.session_resumption_update = None
 
@@ -434,6 +444,7 @@ async def test_receive_transcript_finished_on_turn_complete(
   message3.server_content.output_transcription = None
   message3.server_content.turn_complete = True
   message3.server_content.generation_complete = False
+  message3.server_content.grounding_metadata = None
   message3.tool_call = None
   message3.session_resumption_update = None
 
@@ -480,6 +491,7 @@ async def test_receive_handles_input_transcription_fragments(
   message1.server_content.output_transcription = None
   message1.server_content.turn_complete = False
   message1.server_content.generation_complete = False
+  message1.server_content.grounding_metadata = None
   message1.tool_call = None
   message1.session_resumption_update = None
 
@@ -494,6 +506,7 @@ async def test_receive_handles_input_transcription_fragments(
   message2.server_content.output_transcription = None
   message2.server_content.turn_complete = False
   message2.server_content.generation_complete = False
+  message2.server_content.grounding_metadata = None
   message2.tool_call = None
   message2.session_resumption_update = None
 
@@ -508,6 +521,7 @@ async def test_receive_handles_input_transcription_fragments(
   message3.server_content.output_transcription = None
   message3.server_content.turn_complete = False
   message3.server_content.generation_complete = False
+  message3.server_content.grounding_metadata = None
   message3.tool_call = None
   message3.session_resumption_update = None
 
@@ -549,6 +563,7 @@ async def test_receive_handles_output_transcription_fragments(
   )
   message1.server_content.turn_complete = False
   message1.server_content.generation_complete = False
+  message1.server_content.grounding_metadata = None
   message1.tool_call = None
   message1.session_resumption_update = None
 
@@ -563,6 +578,7 @@ async def test_receive_handles_output_transcription_fragments(
   )
   message2.server_content.turn_complete = False
   message2.server_content.generation_complete = False
+  message2.server_content.grounding_metadata = None
   message2.tool_call = None
   message2.session_resumption_update = None
 
@@ -577,6 +593,7 @@ async def test_receive_handles_output_transcription_fragments(
   )
   message3.server_content.turn_complete = False
   message3.server_content.generation_complete = False
+  message3.server_content.grounding_metadata = None
   message3.tool_call = None
   message3.session_resumption_update = None
 
@@ -774,3 +791,175 @@ async def test_send_history_filters_various_audio_mime_types(
 
   # No content should be sent since the only part is audio
   mock_gemini_session.send.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_receive_grounding_metadata_standalone(
+    gemini_connection, mock_gemini_session
+):
+  """Test receive handles standalone grounding metadata correctly."""
+  grounding_metadata = types.GroundingMetadata(
+      web_search_queries=['stock price of google'],
+      search_entry_point=types.SearchEntryPoint(
+          rendered_content='<p>Google</p>'
+      ),
+  )
+  mock_server_content = mock.create_autospec(
+      types.LiveServerContent, instance=True
+  )
+  mock_server_content.model_turn = None
+  mock_server_content.grounding_metadata = grounding_metadata
+  mock_server_content.turn_complete = False
+  mock_server_content.interrupted = False
+  mock_server_content.input_transcription = None
+  mock_server_content.output_transcription = None
+
+  mock_message = mock.create_autospec(types.LiveServerMessage, instance=True)
+  mock_message.usage_metadata = None
+  mock_message.server_content = mock_server_content
+  mock_message.tool_call = None
+  mock_message.session_resumption_update = None
+
+  async def mock_receive_generator():
+    yield mock_message
+
+  receive_mock = mock.Mock(return_value=mock_receive_generator())
+  mock_gemini_session.receive = receive_mock
+
+  responses = [resp async for resp in gemini_connection.receive()]
+
+  assert len(responses) == 1
+  assert responses[0].grounding_metadata == grounding_metadata
+  assert responses[0].content is None
+
+
+@pytest.mark.asyncio
+async def test_receive_grounding_metadata_with_content(
+    gemini_connection, mock_gemini_session
+):
+  """Test receive handles grounding metadata attached to regular content."""
+  grounding_metadata = types.GroundingMetadata(
+      web_search_queries=['stock price of google'],
+      search_entry_point=types.SearchEntryPoint(
+          rendered_content='<p>Google</p>'
+      ),
+  )
+  mock_content = types.Content(
+      role='model', parts=[types.Part.from_text(text='response text')]
+  )
+  mock_server_content = mock.create_autospec(
+      types.LiveServerContent, instance=True
+  )
+  mock_server_content.model_turn = mock_content
+  mock_server_content.grounding_metadata = grounding_metadata
+  mock_server_content.turn_complete = False
+  mock_server_content.interrupted = False
+  mock_server_content.input_transcription = None
+  mock_server_content.output_transcription = None
+
+  mock_message = mock.create_autospec(types.LiveServerMessage, instance=True)
+  mock_message.usage_metadata = None
+  mock_message.server_content = mock_server_content
+  mock_message.tool_call = None
+  mock_message.session_resumption_update = None
+
+  async def mock_receive_generator():
+    yield mock_message
+
+  receive_mock = mock.Mock(return_value=mock_receive_generator())
+  mock_gemini_session.receive = receive_mock
+
+  responses = [resp async for resp in gemini_connection.receive()]
+
+  assert len(responses) == 1
+  assert responses[0].grounding_metadata == grounding_metadata
+  assert responses[0].content == mock_content
+
+
+@pytest.mark.asyncio
+async def test_receive_tool_call_and_grounding_metadata_with_native_audio(
+    mock_gemini_session,
+):
+  """Test receive handles tool call followed by grounding metadata."""
+  connection = GeminiLlmConnection(
+      mock_gemini_session,
+      api_backend=GoogleLLMVariant.VERTEX_AI,
+      model_version='gemini-live-2.5-flash-native-audio',
+  )
+
+  # 1. Message with tool call (e.g., enterprise_web_search)
+  mock_tool_call_msg = mock.create_autospec(
+      types.LiveServerMessage, instance=True
+  )
+  mock_tool_call_msg.usage_metadata = None
+  mock_tool_call_msg.server_content = None
+  mock_tool_call_msg.session_resumption_update = None
+
+  function_call = types.FunctionCall(
+      name='enterprise_web_search',
+      args={'query': 'Google stock price today'},
+  )
+  mock_tool_call = mock.create_autospec(types.LiveServerToolCall, instance=True)
+  mock_tool_call.function_calls = [function_call]
+  mock_tool_call_msg.tool_call = mock_tool_call
+
+  # 2. Message with grounding metadata and audio content (native audio model)
+  grounding_metadata = types.GroundingMetadata(
+      web_search_queries=['Google stock price today'],
+      search_entry_point=types.SearchEntryPoint(
+          rendered_content='<p>Google</p>'
+      ),
+  )
+  audio_blob = types.Blob(data=b'\x00\xFF', mime_type='audio/pcm')
+  mock_content = types.Content(
+      role='model', parts=[types.Part(inline_data=audio_blob)]
+  )
+
+  mock_server_content = mock.create_autospec(
+      types.LiveServerContent, instance=True
+  )
+  mock_server_content.model_turn = mock_content
+  mock_server_content.grounding_metadata = grounding_metadata
+  mock_server_content.turn_complete = False
+  mock_server_content.interrupted = False
+  mock_server_content.input_transcription = None
+  mock_server_content.output_transcription = None
+
+  mock_metadata_msg = mock.create_autospec(
+      types.LiveServerMessage, instance=True
+  )
+  mock_metadata_msg.usage_metadata = None
+  mock_metadata_msg.server_content = mock_server_content
+  mock_metadata_msg.tool_call = None
+  mock_metadata_msg.session_resumption_update = None
+
+  async def mock_receive_generator():
+    yield mock_tool_call_msg
+    yield mock_metadata_msg
+
+  receive_mock = mock.Mock(return_value=mock_receive_generator())
+  mock_gemini_session.receive = receive_mock
+
+  responses = [resp async for resp in connection.receive()]
+
+  assert len(responses) == 2
+
+  # First response: the tool call
+  assert responses[0].content is not None
+  assert responses[0].content.parts is not None
+  assert responses[0].content.parts[0].function_call is not None
+  assert (
+      responses[0].content.parts[0].function_call.name
+      == 'enterprise_web_search'
+  )
+  assert responses[0].content.parts[0].function_call.args == {
+      'query': 'Google stock price today'
+  }
+  assert responses[0].grounding_metadata is None
+
+  # Second response: the audio content and grounding metadata
+  assert responses[1].grounding_metadata == grounding_metadata
+  assert responses[1].content == mock_content
+  assert responses[1].content is not None
+  assert responses[1].content.parts is not None
+  assert responses[1].content.parts[0].inline_data == audio_blob

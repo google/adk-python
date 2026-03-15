@@ -66,6 +66,7 @@ class TestA2aAgentExecutor:
     self.mock_context.current_task = None
     self.mock_context.task_id = "test-task-id"
     self.mock_context.context_id = "test-context-id"
+    self.mock_context.requested_extensions = []
 
     self.mock_event_queue = Mock(spec=EventQueue)
 

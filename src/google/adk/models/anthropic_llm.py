@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import base64
+import copy
 import dataclasses
 from functools import cached_property
 import json
@@ -250,22 +251,60 @@ def message_to_generate_content_response(
   )
 
 
-def _update_type_string(value_dict: dict[str, Any]):
-  """Updates 'type' field to expected JSON schema format."""
-  if "type" in value_dict:
-    value_dict["type"] = value_dict["type"].lower()
+def _update_type_string(value: Any):
+  """Lowercases nested JSON schema type strings for Anthropic compatibility."""
+  if isinstance(value, list):
+    for item in value:
+      _update_type_string(item)
+    return
 
-  if "items" in value_dict:
-    # 'type' field could exist for items as well, this would be the case if
-    # items represent primitive types.
-    _update_type_string(value_dict["items"])
+  if not isinstance(value, dict):
+    return
 
-    if "properties" in value_dict["items"]:
-      # There could be properties as well on the items, especially if the items
-      # are complex object themselves. We recursively traverse each individual
-      # property as well and fix the "type" value.
-      for _, value in value_dict["items"]["properties"].items():
-        _update_type_string(value)
+  schema_type = value.get("type")
+  if isinstance(schema_type, str):
+    value["type"] = schema_type.lower()
+
+  for dict_key in (
+      "$defs",
+      "defs",
+      "dependentSchemas",
+      "patternProperties",
+      "properties",
+  ):
+    child_dict = value.get(dict_key)
+    if isinstance(child_dict, dict):
+      for child_value in child_dict.values():
+        _update_type_string(child_value)
+
+  for single_key in (
+      "additionalProperties",
+      "additional_properties",
+      "contains",
+      "else",
+      "if",
+      "items",
+      "not",
+      "propertyNames",
+      "then",
+      "unevaluatedProperties",
+  ):
+    child_value = value.get(single_key)
+    if isinstance(child_value, (dict, list)):
+      _update_type_string(child_value)
+
+  for list_key in (
+      "allOf",
+      "all_of",
+      "anyOf",
+      "any_of",
+      "oneOf",
+      "one_of",
+      "prefixItems",
+  ):
+    child_list = value.get(list_key)
+    if isinstance(child_list, list):
+      _update_type_string(child_list)
 
 
 def function_declaration_to_tool_param(
@@ -276,16 +315,15 @@ def function_declaration_to_tool_param(
 
   # Use parameters_json_schema if available, otherwise convert from parameters
   if function_declaration.parameters_json_schema:
-    input_schema = function_declaration.parameters_json_schema
+    input_schema = copy.deepcopy(function_declaration.parameters_json_schema)
+    _update_type_string(input_schema)
   else:
     properties = {}
     required_params = []
     if function_declaration.parameters:
       if function_declaration.parameters.properties:
         for key, value in function_declaration.parameters.properties.items():
-          value_dict = value.model_dump(exclude_none=True)
-          _update_type_string(value_dict)
-          properties[key] = value_dict
+          properties[key] = value.model_dump(by_alias=True, exclude_none=True)
       if function_declaration.parameters.required:
         required_params = function_declaration.parameters.required
 
@@ -295,6 +333,7 @@ def function_declaration_to_tool_param(
     }
     if required_params:
       input_schema["required"] = required_params
+    _update_type_string(input_schema)
 
   return anthropic_types.ToolParam(
       name=function_declaration.name,
