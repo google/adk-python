@@ -1756,7 +1756,7 @@ def cli_api_server(
         " version in the dev environment)"
     ),
 )
-@click.option(
+@click.option( # type: ignore[untyped-decorator]
     "--python_version",
     type=str,
     default="3.11",
@@ -2273,7 +2273,7 @@ def cli_deploy_agent_engine(
         " version in the dev environment)"
     ),
 )
-@click.option(
+@click.option( # type: ignore[untyped-decorator]
     "--python_version",
     type=str,
     default="3.11",
