@@ -46,6 +46,8 @@ class Event(LlmResponse):
 
   invocation_id: str = ''
   """The invocation ID of the event. Should be non-empty before appending to a session."""
+  turn_id: Optional[str] = None
+  """Stable identifier for a single LLM response turn."""
   author: str
   """'user' or the name of the agent, indicating who appended the event to the
   session."""
