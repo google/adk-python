@@ -1,0 +1,144 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: Database Migration Tests
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/google/adk/sessions/**'
+      - 'src/google/adk/cli/cli_tools_click.py'
+      - 'tests/**/sessions/**'
+      - '.github/workflows/test-migrations.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src/google/adk/sessions/**'
+      - 'src/google/adk/cli/cli_tools_click.py'
+      - 'tests/**/sessions/**'
+      - '.github/workflows/test-migrations.yml'
+
+jobs:
+  unit-tests:
+    name: Unit Tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v6
+
+    - name: Setup uv and Python
+      uses: astral-sh/setup-uv@v7
+      with:
+        enable-cache: true
+        cache-dependency-glob: "uv.lock"
+
+    - name: Install dependencies
+      run: uv sync --python ${{ matrix.python-version }} --extra test
+
+    - name: Run migration unit tests
+      run: uv run pytest tests/unittests/sessions/migration/ -v
+
+  integration-tests-postgres:
+    name: Integration (PostgreSQL ${{ matrix.postgres-version }}, Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        postgres-version: ["15", "16", "17"]
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+
+    services:
+      postgres:
+        image: postgres:${{ matrix.postgres-version }}
+        env:
+          POSTGRES_USER: testuser
+          POSTGRES_PASSWORD: testpass
+          POSTGRES_DB: test_adk
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v6
+
+    - name: Setup uv and Python
+      uses: astral-sh/setup-uv@v7
+      with:
+        enable-cache: true
+        cache-dependency-glob: "uv.lock"
+
+    - name: Install dependencies
+      run: |
+        uv sync --python ${{ matrix.python-version }} --extra test
+        uv pip install psycopg2-binary
+
+    - name: Run integration tests (PostgreSQL)
+      env:
+        TEST_POSTGRES_URL: postgresql://testuser:testpass@localhost:5432/test_adk
+      run: uv run pytest tests/integration/sessions/test_database_migration_integration.py -v
+
+  integration-tests-mysql:
+    name: Integration (MySQL ${{ matrix.mysql-version }}, Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        mysql-version: ["8.0", "8.4", "9.2"]
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+
+    services:
+      mysql:
+        image: mysql:${{ matrix.mysql-version }}
+        env:
+          MYSQL_ROOT_PASSWORD: testpass
+          MYSQL_DATABASE: test_adk
+          MYSQL_USER: testuser
+          MYSQL_PASSWORD: testpass
+        options: >-
+          --health-cmd "mysqladmin ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 3306:3306
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v6
+
+    - name: Setup uv and Python
+      uses: astral-sh/setup-uv@v7
+      with:
+        enable-cache: true
+        cache-dependency-glob: "uv.lock"
+
+    - name: Install dependencies
+      run: |
+        uv sync --python ${{ matrix.python-version }} --extra test
+        uv pip install mysqlclient
+
+    - name: Run integration tests (MySQL)
+      env:
+        TEST_MYSQL_URL: mysql://testuser:testpass@localhost:3306/test_adk
+      run: uv run pytest tests/integration/sessions/test_database_migration_integration.py -v

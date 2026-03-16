@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Optional
 
 from sqlalchemy import create_engine as create_sync_engine
 from sqlalchemy import inspect
@@ -27,6 +28,42 @@ SCHEMA_VERSION_KEY = "schema_version"
 SCHEMA_VERSION_0_PICKLE = "0"
 SCHEMA_VERSION_1_JSON = "1"
 LATEST_SCHEMA_VERSION = SCHEMA_VERSION_1_JSON
+
+
+def get_alembic_revision(inspector, connection) -> Optional[str]:
+  """Return the current Alembic revision from the database, or None.
+
+  Args:
+    inspector: A SQLAlchemy inspector bound to the connection.
+    connection: An active SQLAlchemy connection.
+
+  Returns:
+    The revision string if ``alembic_version`` exists and has a row,
+    ``None`` otherwise.
+  """
+  if not inspector.has_table("alembic_version"):
+    return None
+  try:
+    row = connection.execute(
+        text("SELECT version_num FROM alembic_version")
+    ).fetchone()
+    return row[0] if row else None
+  except Exception as e:
+    logger.debug("Could not read alembic_version: %s", e)
+    return None
+
+
+def is_alembic_managed(inspector, connection) -> bool:
+  """Return True if the database has Alembic tracking.
+
+  A database is Alembic-managed when the ``alembic_version`` table
+  exists **and** contains a revision.
+
+  Args:
+    inspector: A SQLAlchemy inspector bound to the connection.
+    connection: An active SQLAlchemy connection.
+  """
+  return get_alembic_revision(inspector, connection) is not None
 
 
 def _get_schema_version_impl(inspector, connection) -> str:
@@ -61,12 +98,12 @@ def _get_schema_version_impl(inspector, connection) -> str:
       cols = {c["name"] for c in inspector.get_columns("events")}
       if "actions" in cols and "event_data" not in cols:
         logger.warning(
-            "The database is using the legacy v0 schema, which uses Pickle to"
-            " serialize event actions. The v0 schema will not be supported"
-            " going forward and will be deprecated in a few rollouts. Please"
-            " migrate to the v1 schema which uses JSON serialization for event"
-            " data. You can use `adk migrate session` command to migrate your"
-            " database."
+            "The database is using the legacy v0 schema, which uses"
+            " Pickle to serialize event actions. The v0 schema is"
+            " deprecated. Upgrade to the latest ADK version and run"
+            " 'adk migrate upgrade' to migrate automatically, or set"
+            " ADK_AUTO_MIGRATE_DB=true for automatic migration on"
+            " startup."
         )
         return SCHEMA_VERSION_0_PICKLE
     except Exception as e:
@@ -80,6 +117,36 @@ def get_db_schema_version_from_connection(connection) -> str:
   """Gets DB schema version from a DB connection."""
   inspector = inspect(connection)
   return _get_schema_version_impl(inspector, connection)
+
+
+def is_alembic_managed_from_url(db_url: str) -> bool:
+  """Check whether the database at *db_url* is Alembic-managed.
+
+  Opens a short-lived synchronous connection, checks for the
+  ``alembic_version`` table, and disposes the engine.
+
+  Args:
+    db_url: The database URL (async drivers are converted to sync).
+
+  Returns:
+    ``True`` if the database has an ``alembic_version`` table with a
+    revision, ``False`` otherwise.
+  """
+  engine = None
+  try:
+    engine = create_sync_engine(to_sync_url(db_url))
+    with engine.connect() as conn:
+      inspector = inspect(conn)
+      return is_alembic_managed(inspector, conn)
+  except Exception:
+    logger.debug(
+        "Could not check Alembic status for %s; assuming unmanaged.",
+        db_url,
+    )
+    return False
+  finally:
+    if engine:
+      engine.dispose()
 
 
 def to_sync_url(db_url: str) -> str:
