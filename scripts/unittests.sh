@@ -102,7 +102,7 @@ for version in "${versions_to_run[@]}"; do
 
     # 3. perform the unit tests
     echo "Setting up test environment in $VENV_DIR..."
-    uv sync --extra test --active
+    uv sync --extra test --active --frozen
 
     echo "Running unit tests..."
     TEST_EXIT_CODE=0
