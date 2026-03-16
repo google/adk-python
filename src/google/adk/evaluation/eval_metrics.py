@@ -63,6 +63,10 @@ class PrebuiltMetrics(Enum):
 
   MULTI_TURN_TASK_SUCCESS_V1 = "multi_turn_task_success_v1"
 
+  MULTI_TURN_TRAJECTORY_QUALITY_V1 = "multi_turn_trajectory_quality_v1"
+
+  MULTI_TURN_TOOL_USE_QUALITY_V1 = "multi_turn_tool_use_quality_v1"
+
 
 MetricName: TypeAlias = Union[str, PrebuiltMetrics]
 Threshold: TypeAlias = float
