@@ -94,6 +94,24 @@ class SafetyEvaluatorV1MetricInfoProvider(MetricInfoProvider):
     )
 
 
+class MultiTurnTaskSuccessV1MetricInfoProvider(MetricInfoProvider):
+  """Metric info provider for MultiTurnTaskSuccessV1."""
+
+  def get_metric_info(self) -> MetricInfo:
+    return MetricInfo(
+        metric_name=PrebuiltMetrics.MULTI_TURN_TASK_SUCCESS_V1.value,
+        description=(
+            "Evaluates if the agent was able to achieve the goal or goals of"
+            " the conversation."
+            " Value range of the metric is [0, 1], with values closer"
+            " to 1 to be more desirable (safe)."
+        ),
+        metric_value_info=MetricValueInfo(
+            interval=Interval(min_value=0.0, max_value=1.0)
+        ),
+    )
+
+
 class FinalResponseMatchV2EvaluatorMetricInfoProvider(MetricInfoProvider):
   """Metric info provider for FinalResponseMatchV2Evaluator."""
 

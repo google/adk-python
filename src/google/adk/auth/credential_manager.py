@@ -24,6 +24,7 @@ from ..tools.openapi_tool.auth.credential_exchangers.service_account_exchanger i
 from ..utils.feature_decorator import experimental
 from .auth_credential import AuthCredential
 from .auth_credential import AuthCredentialTypes
+from .auth_provider_registry import AuthProviderRegistry
 from .auth_schemes import AuthSchemeType
 from .auth_schemes import ExtendedOAuth2
 from .auth_schemes import OpenIdConnectWithConfig
@@ -81,6 +82,7 @@ class CredentialManager:
       auth_config: AuthConfig,
   ):
     self._auth_config = auth_config
+    self._auth_provider_registry = AuthProviderRegistry()
     self._exchanger_registry = CredentialExchangerRegistry()
     self._refresher_registry = CredentialRefresherRegistry()
     self._discovery_manager = OAuth2DiscoveryManager()
@@ -136,6 +138,29 @@ class CredentialManager:
       self, context: CallbackContext
   ) -> Optional[AuthCredential]:
     """Load and prepare authentication credential through a structured workflow."""
+
+    # First, check if a registered auth provider is available before attempting
+    # to retrieve tokens natively.
+    provider = self._auth_provider_registry.get_provider(
+        self._auth_config.auth_scheme
+    )
+    if provider:
+      provided_credential = await provider.get_auth_credential(
+          self._auth_config, context
+      )
+      if not provided_credential:
+        raise ValueError("AuthProvider did not return a credential.")
+      # Handle special case for OAuth2 user consent flow.
+      if (
+          provided_credential.oauth2
+          and not provided_credential.oauth2.access_token
+          and provided_credential.oauth2.auth_uri
+      ):
+        # User consent is required. We save the auth uri and return None
+        # to signal the need for user consent.
+        self._auth_config.exchanged_auth_credential = provided_credential
+        return None
+      return provided_credential
 
     # Step 1: Validate credential configuration
     await self._validate_credential()
