@@ -764,9 +764,9 @@ class BaseLlmFlow(ABC):
         break
 
   async def _run_one_step_async(
-      self,
-      invocation_context: InvocationContext,
-  ) -> AsyncGenerator[Event, None]:
+    self,
+    invocation_context: InvocationContext,
+) -> AsyncGenerator[Event, None]:
     """One step means one LLM call."""
     llm_request = LlmRequest()
 
@@ -787,16 +787,10 @@ class BaseLlmFlow(ABC):
     )
 
     # Long running tool calls should have been handled before this point.
-    # If there are still long running tool calls, it means the agent is paused
-    # before, and its branch hasn't been resumed yet.
     if (
         invocation_context.is_resumable
         and events
         and len(events) > 1
-        # TODO: here we are using the last 2 events to decide whether to pause
-        # the invocation. But this is just being optimistic, we should find a
-        # way to pause when the long running tool call is followed by more than
-        # one text responses.
         and (
             invocation_context.should_pause_invocation(events[-1])
             or invocation_context.should_pause_invocation(events[-2])
@@ -810,6 +804,9 @@ class BaseLlmFlow(ABC):
         and events[-1].get_function_calls()
     ):
       model_response_event = events[-1]
+      if not model_response_event.turn_id:
+        model_response_event.turn_id = Event.new_id()
+
       async with Aclosing(
           self._postprocess_handle_function_calls_async(
               invocation_context, model_response_event, llm_request
@@ -817,13 +814,17 @@ class BaseLlmFlow(ABC):
       ) as agen:
         async for event in agen:
           event.id = Event.new_id()
+          if not event.turn_id:
+            event.turn_id = model_response_event.turn_id
           yield event
-        return
+      return
 
     # Calls the LLM.
+    turn_id = Event.new_id()
     model_response_event = Event(
         id=Event.new_id(),
         invocation_id=invocation_context.invocation_id,
+        turn_id=turn_id,
         author=invocation_context.agent.name,
         branch=invocation_context.branch,
     )
@@ -840,6 +841,7 @@ class BaseLlmFlow(ABC):
                 llm_request,
                 llm_response,
                 model_response_event,
+                turn_id=turn_id,
             )
         ) as agen:
           async for event in agen:
@@ -886,6 +888,7 @@ class BaseLlmFlow(ABC):
       llm_request: LlmRequest,
       llm_response: LlmResponse,
       model_response_event: Event,
+      turn_id: str,
   ) -> AsyncGenerator[Event, None]:
     """Postprocess after calling the LLM.
 
@@ -919,6 +922,7 @@ class BaseLlmFlow(ABC):
     model_response_event = self._finalize_model_response_event(
         llm_request, llm_response, model_response_event
     )
+    model_response_event.turn_id = turn_id
     yield model_response_event
 
     # Handles function calls.
@@ -1022,6 +1026,7 @@ class BaseLlmFlow(ABC):
       function_response_event = await functions.handle_function_calls_live(
           invocation_context, model_response_event, llm_request.tools_dict
       )
+      function_response_event.turn_id = model_response_event.turn_id
       # Always yield the function response event first
       yield function_response_event
 
@@ -1035,6 +1040,7 @@ class BaseLlmFlow(ABC):
                 invocation_context, json_response
             )
         )
+        final_event.turn_id = model_response_event.turn_id
         yield final_event
 
   async def _postprocess_run_processors_async(
@@ -1056,16 +1062,20 @@ class BaseLlmFlow(ABC):
     if function_response_event := await functions.handle_function_calls_async(
         invocation_context, function_call_event, llm_request.tools_dict
     ):
+      function_response_event.turn_id = function_call_event.turn_id
+
       auth_event = functions.generate_auth_event(
           invocation_context, function_response_event
       )
       if auth_event:
+        auth_event.turn_id = function_call_event.turn_id
         yield auth_event
 
       tool_confirmation_event = functions.generate_request_confirmation_event(
           invocation_context, function_call_event, function_response_event
       )
       if tool_confirmation_event:
+        tool_confirmation_event.turn_id = function_call_event.turn_id
         yield tool_confirmation_event
 
       # Always yield the function response event first
@@ -1081,6 +1091,7 @@ class BaseLlmFlow(ABC):
                 invocation_context, json_response
             )
         )
+        final_event.turn_id = function_call_event.turn_id
         yield final_event
       transfer_to_agent = function_response_event.actions.transfer_to_agent
       if transfer_to_agent:
