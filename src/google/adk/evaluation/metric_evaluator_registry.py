@@ -27,12 +27,14 @@ from .final_response_match_v2 import FinalResponseMatchV2Evaluator
 from .hallucinations_v1 import HallucinationsV1Evaluator
 from .metric_info_providers import FinalResponseMatchV2EvaluatorMetricInfoProvider
 from .metric_info_providers import HallucinationsV1EvaluatorMetricInfoProvider
+from .metric_info_providers import MultiTurnTaskSuccessV1MetricInfoProvider
 from .metric_info_providers import PerTurnUserSimulatorQualityV1MetricInfoProvider
 from .metric_info_providers import ResponseEvaluatorMetricInfoProvider
 from .metric_info_providers import RubricBasedFinalResponseQualityV1EvaluatorMetricInfoProvider
 from .metric_info_providers import RubricBasedToolUseV1EvaluatorMetricInfoProvider
 from .metric_info_providers import SafetyEvaluatorV1MetricInfoProvider
 from .metric_info_providers import TrajectoryEvaluatorMetricInfoProvider
+from .multi_turn_task_success_evaluator import MultiTurnTaskSuccessV1Evaluator
 from .response_evaluator import ResponseEvaluator
 from .rubric_based_final_response_quality_v1 import RubricBasedFinalResponseQualityV1Evaluator
 from .rubric_based_tool_use_quality_v1 import RubricBasedToolUseV1Evaluator
@@ -125,6 +127,10 @@ def _get_default_metric_evaluator_registry() -> MetricEvaluatorRegistry:
   metric_evaluator_registry.register_evaluator(
       metric_info=SafetyEvaluatorV1MetricInfoProvider().get_metric_info(),
       evaluator=SafetyEvaluatorV1,
+  )
+  metric_evaluator_registry.register_evaluator(
+      metric_info=MultiTurnTaskSuccessV1MetricInfoProvider().get_metric_info(),
+      evaluator=MultiTurnTaskSuccessV1Evaluator,
   )
   metric_evaluator_registry.register_evaluator(
       metric_info=FinalResponseMatchV2EvaluatorMetricInfoProvider().get_metric_info(),
