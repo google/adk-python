@@ -432,3 +432,59 @@ def test_on_tool_error_callback_tool_error_modify_tool_response():
       ),
       ('root_agent', 'response1'),
   ]
+
+
+def test_hallucinated_tool_calls_before_tool_callback():
+  """Test that before_tool_callback is called even for hallucinated (non-existent) tools.
+
+  This ensures balanced lifecycle callbacks (before/error) so that plugins
+  relying on push/pop semantics (e.g., TraceManager span stack) are not
+  corrupted. See https://github.com/google/adk-python/issues/4775.
+  """
+  callback_order = []
+
+  def tracking_before_tool_callback(
+      tool: BaseTool,
+      args: dict[str, Any],
+      tool_context: ToolContext,
+  ):
+    callback_order.append(('before_tool', tool.name))
+    return None
+
+  def tracking_on_tool_error_callback(
+      tool: BaseTool,
+      args: dict[str, Any],
+      tool_context: ToolContext,
+      error: Exception,
+  ):
+    callback_order.append(('on_tool_error', tool.name))
+    return {'error': str(error)}
+
+  responses = [
+      types.Part.from_function_call(
+          name='hallucinated_tool',
+          args={'input_str': 'test'},
+      ),
+      'response1',
+  ]
+  mock_model = testing_utils.MockModel.create(responses=responses)
+  agent = Agent(
+      name='root_agent',
+      model=mock_model,
+      before_tool_callback=tracking_before_tool_callback,
+      on_tool_error_callback=tracking_on_tool_error_callback,
+      tools=[simple_function],
+  )
+
+  runner = testing_utils.InMemoryRunner(agent)
+  events = testing_utils.simplify_events(runner.run('test'))
+
+  # Verify the callback order: before_tool must be called before on_tool_error
+  assert len(callback_order) == 2
+  assert callback_order[0][0] == 'before_tool'
+  assert callback_order[0][1] == 'hallucinated_tool'
+  assert callback_order[1][0] == 'on_tool_error'
+  assert callback_order[1][1] == 'hallucinated_tool'
+
+  # Verify the response event is still produced
+  assert events[-1] == ('root_agent', 'response1')

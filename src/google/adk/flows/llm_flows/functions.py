@@ -480,22 +480,12 @@ async def _execute_single_function_call_async(
       invocation_context, function_call, tool_confirmation
   )
 
+  tool_not_found_error = None
   try:
     tool = _get_tool(function_call, tools_dict)
   except ValueError as tool_error:
     tool = BaseTool(name=function_call.name, description='Tool not found')
-    error_response = await _run_on_tool_error_callbacks(
-        tool=tool,
-        tool_args=function_args,
-        tool_context=tool_context,
-        error=tool_error,
-    )
-    if error_response is not None:
-      return __build_response_event(
-          tool, error_response, tool_context, invocation_context
-      )
-    else:
-      raise tool_error
+    tool_not_found_error = tool_error
 
   async def _run_with_trace():
     nonlocal function_args
@@ -519,6 +509,21 @@ async def _execute_single_function_call_async(
           function_response = await function_response
         if function_response:
           break
+
+    # Step 2.5: If the tool was not found (hallucinated tool), handle the
+    # error after before_tool_callback has run to maintain balanced
+    # lifecycle callbacks (push/pop invariant for trace spans).
+    if tool_not_found_error is not None:
+      error_response = await _run_on_tool_error_callbacks(
+          tool=tool,
+          tool_args=function_args,
+          tool_context=tool_context,
+          error=tool_not_found_error,
+      )
+      if error_response is not None:
+        function_response = error_response
+      else:
+        raise tool_not_found_error
 
     # Step 3: Otherwise, proceed calling the tool normally.
     if function_response is None:
@@ -711,21 +716,12 @@ async def _execute_single_function_call_live(
 
   tool_context = _create_tool_context(invocation_context, function_call)
 
+  tool_not_found_error = None
   try:
     tool = _get_tool(function_call, tools_dict)
   except ValueError as tool_error:
     tool = BaseTool(name=function_call.name, description='Tool not found')
-    error_response = await _run_on_tool_error_callbacks(
-        tool=tool,
-        tool_args=function_args,
-        tool_context=tool_context,
-        error=tool_error,
-    )
-    if error_response is not None:
-      return __build_response_event(
-          tool, error_response, tool_context, invocation_context
-      )
-    raise tool_error
+    tool_not_found_error = tool_error
 
   async def _run_with_trace():
     nonlocal function_args
@@ -742,6 +738,21 @@ async def _execute_single_function_call_live(
             tool=tool, tool_args=function_args, tool_context=tool_context
         )
     )
+
+    # If the tool was not found (hallucinated tool), handle the error after
+    # before_tool_callback has run to maintain balanced lifecycle callbacks
+    # (push/pop invariant for trace spans).
+    if tool_not_found_error is not None:
+      error_response = await _run_on_tool_error_callbacks(
+          tool=tool,
+          tool_args=function_args,
+          tool_context=tool_context,
+          error=tool_not_found_error,
+      )
+      if error_response is not None:
+        function_response = error_response
+      else:
+        raise tool_not_found_error
 
     # Step 2: If no overrides are provided from the plugins, further run the
     # canonical callback.
