@@ -12,20 +12,4 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from __future__ import annotations
-
-import warnings
-
-from google.adk.integrations.crewai import CrewaiTool
-from google.adk.integrations.crewai import CrewaiToolConfig
-
-warnings.warn(
-    "google.adk.tools.crewai_tool is moved to google.adk.integrations.crewai",
-    DeprecationWarning,
-    stacklevel=2,
-)
-
-__all__ = [
-    "CrewaiTool",
-    "CrewaiToolConfig",
-]
+from . import agent
