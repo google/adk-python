@@ -28,7 +28,14 @@ def load_web_page(url: str) -> str:
   Returns:
       str: The text content of the url.
   """
-  from bs4 import BeautifulSoup
+  try:
+    from bs4 import BeautifulSoup
+    import lxml  # noqa: F401 -- verify lxml is available for the parser
+  except ImportError as e:
+    raise ImportError(
+        'load_web_page requires the "beautifulsoup4" and "lxml" packages. '
+        'Install them with: pip install google-adk[extensions]'
+    ) from e
 
   # Set allow_redirects=False to prevent SSRF attacks via redirection.
   response = requests.get(url, allow_redirects=False)
