@@ -15,9 +15,10 @@
 from __future__ import annotations
 
 from typing import Any
+from typing import cast
 from typing import Optional
-import uuid
 
+from google.adk.platform import uuid as platform_uuid
 from google.genai import types
 from pydantic import BaseModel
 from pydantic import ConfigDict
@@ -413,4 +414,4 @@ class InvocationContext(BaseModel):
 
 
 def new_invocation_context_id() -> str:
-  return "e-" + str(uuid.uuid4())
+  return "e-" + cast(str, platform_uuid.new_uuid())

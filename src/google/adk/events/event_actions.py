@@ -25,6 +25,7 @@ from pydantic import Field
 
 from ..auth.auth_tool import AuthConfig
 from ..tools.tool_confirmation import ToolConfirmation
+from .ui_widget import UiWidget
 
 
 class EventCompaction(BaseModel):
@@ -108,3 +109,6 @@ class EventActions(BaseModel):
 
   rewind_before_invocation_id: Optional[str] = None
   """The invocation id to rewind to. This is only set for rewind event."""
+
+  render_ui_widgets: Optional[list[UiWidget]] = None
+  """List of UI widgets to be rendered by the UI."""

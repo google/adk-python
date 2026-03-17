@@ -25,6 +25,7 @@ from pydantic import Field
 
 from ..agents.context_cache_config import ContextCacheConfig
 from ..tools.base_tool import BaseTool
+from ..utils._schema_utils import SchemaType
 from .cache_metadata import CacheMetadata
 
 
@@ -273,12 +274,27 @@ class LlmRequest(BaseModel):
         # No existing tool with function_declarations, create new one
         self.config.tools.append(types.Tool(function_declarations=declarations))
 
-  def set_output_schema(self, base_model: type[BaseModel]) -> None:
+  def set_output_schema(
+      self,
+      output_schema: Optional[SchemaType] = None,
+      *,
+      base_model: Optional[SchemaType] = None,
+  ) -> None:
     """Sets the output schema for the request.
 
     Args:
-      base_model: The pydantic base model to set the output schema to.
+      output_schema: The output schema to set. Supports all types from
+        SchemaUnion:
+        - type[BaseModel]: A pydantic model class (e.g., MySchema)
+        - list[type[BaseModel]]: A generic list type (e.g., list[MySchema])
+        - list[primitive]: e.g., list[str], list[int]
+        - dict: Raw dict schemas
+        - Schema: Google's Schema type
+      base_model: Deprecated alias for output_schema. Use output_schema instead.
     """
+    schema = output_schema or base_model
+    if schema is None:
+      raise ValueError("Either output_schema or base_model must be provided.")
 
-    self.config.response_schema = base_model
+    self.config.response_schema = schema
     self.config.response_mime_type = "application/json"

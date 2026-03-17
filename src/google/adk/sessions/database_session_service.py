@@ -25,6 +25,7 @@ from typing import Optional
 from typing import TypeAlias
 from typing import TypeVar
 
+from google.adk.platform import time as platform_time
 from sqlalchemy import delete
 from sqlalchemy import event
 from sqlalchemy import select
@@ -362,7 +363,7 @@ class DatabaseSessionService(BaseSessionService):
         storage_user_state.state = storage_user_state.state | user_state_delta
 
       # Store the session
-      now = datetime.now(timezone.utc)
+      now = datetime.fromtimestamp(platform_time.get_time(), tz=timezone.utc)
       is_sqlite = self.db_engine.dialect.name == _SQLITE_DIALECT
       is_postgresql = self.db_engine.dialect.name == _POSTGRESQL_DIALECT
       if is_sqlite or is_postgresql:
@@ -522,6 +523,9 @@ class DatabaseSessionService(BaseSessionService):
     if event.partial:
       return event
 
+    # Apply temp state to in-memory session before trimming, so that
+    # subsequent agents within the same invocation can read temp values.
+    self._apply_temp_state(session, event)
     # Trim temp state before persisting
     event = self._trim_temp_delta_state(event)
 
@@ -531,6 +535,16 @@ class DatabaseSessionService(BaseSessionService):
     schema = self._get_schema_classes()
     is_sqlite = self.db_engine.dialect.name == _SQLITE_DIALECT
     use_row_level_locking = self._supports_row_level_locking()
+
+    state_delta = (
+        event.actions.state_delta
+        if event.actions and event.actions.state_delta
+        else {}
+    )
+    state_deltas = _session_util.extract_state_delta(state_delta)
+    has_app_delta = bool(state_deltas["app"])
+    has_user_delta = bool(state_deltas["user"])
+
     async with self._with_session_lock(
         app_name=session.app_name,
         user_id=session.user_id,
@@ -554,7 +568,7 @@ class DatabaseSessionService(BaseSessionService):
             sql_session=sql_session,
             state_model=schema.StorageAppState,
             predicates=(schema.StorageAppState.app_name == session.app_name,),
-            use_row_level_locking=use_row_level_locking,
+            use_row_level_locking=use_row_level_locking and has_app_delta,
             missing_message=(
                 "App state missing for app_name="
                 f"{session.app_name!r}. Session state tables should be "
@@ -568,7 +582,7 @@ class DatabaseSessionService(BaseSessionService):
                 schema.StorageUserState.app_name == session.app_name,
                 schema.StorageUserState.user_id == session.user_id,
             ),
-            use_row_level_locking=use_row_level_locking,
+            use_row_level_locking=use_row_level_locking and has_user_delta,
             missing_message=(
                 "User state missing for app_name="
                 f"{session.app_name!r}, user_id={session.user_id!r}. "
@@ -599,23 +613,19 @@ class DatabaseSessionService(BaseSessionService):
           storage_events = [e async for e in result]
           session.events = [e.to_event() for e in storage_events]
 
-        # Extract state delta
-        if event.actions and event.actions.state_delta:
-          state_deltas = _session_util.extract_state_delta(
-              event.actions.state_delta
+        # Merge pre-extracted state deltas into storage.
+        if has_app_delta:
+          storage_app_state.state = (
+              storage_app_state.state | state_deltas["app"]
           )
-          app_state_delta = state_deltas["app"]
-          user_state_delta = state_deltas["user"]
-          session_state_delta = state_deltas["session"]
-          # Merge state and update storage
-          if app_state_delta:
-            storage_app_state.state = storage_app_state.state | app_state_delta
-          if user_state_delta:
-            storage_user_state.state = (
-                storage_user_state.state | user_state_delta
-            )
-          if session_state_delta:
-            storage_session.state = storage_session.state | session_state_delta
+        if has_user_delta:
+          storage_user_state.state = (
+              storage_user_state.state | state_deltas["user"]
+          )
+        if state_deltas["session"]:
+          storage_session.state = (
+              storage_session.state | state_deltas["session"]
+          )
 
         if is_sqlite:
           update_time = datetime.fromtimestamp(

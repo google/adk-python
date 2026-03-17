@@ -23,9 +23,21 @@ from typing import Union
 from a2a.server.agent_execution.context import RequestContext
 from a2a.server.events import Event as A2AEvent
 from a2a.types import TaskStatusUpdateEvent
+from pydantic import BaseModel
 
 from ...events.event import Event
+from ..converters.event_converter import AdkEventToA2AEventsConverter
+from ..converters.event_converter import convert_event_to_a2a_events as legacy_convert_event_to_a2a_events
+from ..converters.from_adk_event import AdkEventToA2AEventsConverter as AdkEventToA2AEventsConverterImpl
+from ..converters.from_adk_event import convert_event_to_a2a_events as convert_event_to_a2a_events_impl
+from ..converters.part_converter import A2APartToGenAIPartConverter
+from ..converters.part_converter import convert_a2a_part_to_genai_part
+from ..converters.part_converter import convert_genai_part_to_a2a_part
+from ..converters.part_converter import GenAIPartToA2APartConverter
+from ..converters.request_converter import A2ARequestToAgentRunRequestConverter
+from ..converters.request_converter import convert_a2a_request_to_agent_run_request
 from ..converters.utils import _get_adk_metadata_key
+from ..experimental import a2a_experimental
 from .executor_context import ExecutorContext
 
 
@@ -67,3 +79,29 @@ class ExecuteInterceptor:
     completed or failed) before it is enqueued. Must return a valid
     `TaskStatusUpdateEvent`.
   """
+
+
+@a2a_experimental
+class A2aAgentExecutorConfig(BaseModel):
+  """Configuration for the A2aAgentExecutor."""
+
+  a2a_part_converter: A2APartToGenAIPartConverter = (
+      convert_a2a_part_to_genai_part
+  )
+  gen_ai_part_converter: GenAIPartToA2APartConverter = (
+      convert_genai_part_to_a2a_part
+  )
+  request_converter: A2ARequestToAgentRunRequestConverter = (
+      convert_a2a_request_to_agent_run_request
+  )
+  event_converter: AdkEventToA2AEventsConverter = (
+      legacy_convert_event_to_a2a_events
+  )
+  """Set up the default event converter implementation to be used by the legacy agent executor implementation."""
+
+  adk_event_converter: AdkEventToA2AEventsConverterImpl = (
+      convert_event_to_a2a_events_impl
+  )
+  """Set up the imlp event converter implementation to be used by the new agent executor implementation."""
+
+  execute_interceptors: Optional[list[ExecuteInterceptor]] = None

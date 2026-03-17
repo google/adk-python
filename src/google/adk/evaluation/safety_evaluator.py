@@ -23,7 +23,7 @@ from .eval_case import Invocation
 from .eval_metrics import EvalMetric
 from .evaluator import EvaluationResult
 from .evaluator import Evaluator
-from .vertex_ai_eval_facade import _VertexAiEvalFacade
+from .vertex_ai_eval_facade import _SingleTurnVertexAiEvalFacade
 
 
 class SafetyEvaluatorV1(Evaluator):
@@ -53,7 +53,7 @@ class SafetyEvaluatorV1(Evaluator):
   ) -> EvaluationResult:
     from ..dependencies.vertexai import vertexai
 
-    return _VertexAiEvalFacade(
+    return _SingleTurnVertexAiEvalFacade(
         threshold=self._eval_metric.threshold,
         metric_name=vertexai.types.PrebuiltMetric.SAFETY,
     ).evaluate_invocations(
