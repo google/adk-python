@@ -22,6 +22,7 @@ import tempfile
 import unittest
 from unittest.mock import ANY
 from unittest.mock import AsyncMock
+from unittest.mock import MagicMock
 from unittest.mock import Mock
 import warnings
 
@@ -4388,19 +4389,25 @@ async def test_finish_reason_unknown_maps_to_other(
     mock_acompletion, lite_llm_instance
 ):
   """Test that unmapped finish_reason values map to FinishReason.OTHER."""
-  mock_response = ModelResponse(
-      choices=[
-          Choices(
-              message=ChatCompletionAssistantMessage(
-                  role="assistant",
-                  content="Test response",
-              ),
-              # LiteLLM validates finish_reason to a known set. Use a value that
-              # LiteLLM accepts but ADK does not explicitly map.
-              finish_reason="eos",
-          )
-      ]
-  )
+  # LiteLLM's Choices model normalizes finish_reason values (e.g., "eos" ->
+  # "stop") before ADK processes them. To test ADK's own fallback mapping,
+  # construct a mock response that bypasses LiteLLM's normalization and
+  # returns a raw unmapped finish_reason string.
+  mock_choice = MagicMock()
+  mock_choice.get = lambda key, default=None: {
+      "message": ChatCompletionAssistantMessage(
+          role="assistant",
+          content="Test response",
+      ),
+      "finish_reason": "totally_unknown_reason",
+  }.get(key, default)
+
+  mock_response = MagicMock()
+  mock_response.get = lambda key, default=None: {
+      "choices": [mock_choice],
+  }.get(key, default)
+  mock_response.model = "test_model"
+
   mock_acompletion.return_value = mock_response
 
   llm_request = LlmRequest(
