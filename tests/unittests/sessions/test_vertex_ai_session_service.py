@@ -911,3 +911,131 @@ async def test_append_event_with_compaction_and_custom_metadata():
   # User custom_metadata is preserved without the internal _compaction key
   assert appended_event.custom_metadata == {'user_key': 'user_value'}
   assert '_compaction' not in (appended_event.custom_metadata or {})
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
+async def test_append_event_with_usage_metadata():
+  """usage_metadata round-trips through append_event and get_session."""
+  session_service = mock_vertex_ai_session_service()
+  session = await session_service.get_session(
+      app_name='123', user_id='user', session_id='1'
+  )
+  assert session is not None
+
+  event_to_append = Event(
+      invocation_id='usage_invocation',
+      author='model',
+      timestamp=1734005536.0,
+      usage_metadata=genai_types.GenerateContentResponseUsageMetadata(
+          prompt_token_count=150,
+          candidates_token_count=50,
+          total_token_count=200,
+      ),
+  )
+
+  await session_service.append_event(session, event_to_append)
+
+  retrieved_session = await session_service.get_session(
+      app_name='123', user_id='user', session_id='1'
+  )
+  assert retrieved_session is not None
+
+  appended_event = retrieved_session.events[-1]
+  assert appended_event.usage_metadata is not None
+  assert appended_event.usage_metadata.prompt_token_count == 150
+  assert appended_event.usage_metadata.candidates_token_count == 50
+  assert appended_event.usage_metadata.total_token_count == 200
+  # custom_metadata should remain None when only usage_metadata was stored
+  assert appended_event.custom_metadata is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
+async def test_append_event_with_usage_metadata_and_custom_metadata():
+  """Both usage_metadata and user custom_metadata survive the round-trip."""
+  session_service = mock_vertex_ai_session_service()
+  session = await session_service.get_session(
+      app_name='123', user_id='user', session_id='1'
+  )
+  assert session is not None
+
+  event_to_append = Event(
+      invocation_id='usage_and_meta_invocation',
+      author='model',
+      timestamp=1734005537.0,
+      usage_metadata=genai_types.GenerateContentResponseUsageMetadata(
+          prompt_token_count=300,
+          total_token_count=400,
+      ),
+      custom_metadata={'my_key': 'my_value'},
+  )
+
+  await session_service.append_event(session, event_to_append)
+
+  retrieved_session = await session_service.get_session(
+      app_name='123', user_id='user', session_id='1'
+  )
+  assert retrieved_session is not None
+
+  appended_event = retrieved_session.events[-1]
+  # usage_metadata is restored
+  assert appended_event.usage_metadata is not None
+  assert appended_event.usage_metadata.prompt_token_count == 300
+  assert appended_event.usage_metadata.total_token_count == 400
+  # User custom_metadata is preserved without internal keys
+  assert appended_event.custom_metadata == {'my_key': 'my_value'}
+  assert '_usage_metadata' not in (appended_event.custom_metadata or {})
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
+async def test_append_event_with_usage_metadata_and_compaction():
+  """usage_metadata, compaction, and user custom_metadata all coexist."""
+  session_service = mock_vertex_ai_session_service()
+  session = await session_service.get_session(
+      app_name='123', user_id='user', session_id='1'
+  )
+  assert session is not None
+
+  compaction = EventCompaction(
+      start_timestamp=500.0,
+      end_timestamp=600.0,
+      compacted_content=genai_types.Content(
+          parts=[genai_types.Part(text='compacted')]
+      ),
+  )
+  event_to_append = Event(
+      invocation_id='all_three_invocation',
+      author='model',
+      timestamp=1734005538.0,
+      actions=EventActions(compaction=compaction),
+      usage_metadata=genai_types.GenerateContentResponseUsageMetadata(
+          prompt_token_count=1000,
+          candidates_token_count=250,
+          total_token_count=1250,
+      ),
+      custom_metadata={'extra': 'info'},
+  )
+
+  await session_service.append_event(session, event_to_append)
+
+  retrieved_session = await session_service.get_session(
+      app_name='123', user_id='user', session_id='1'
+  )
+  assert retrieved_session is not None
+
+  appended_event = retrieved_session.events[-1]
+  # Compaction is restored
+  assert appended_event.actions.compaction is not None
+  assert appended_event.actions.compaction.start_timestamp == 500.0
+  assert appended_event.actions.compaction.end_timestamp == 600.0
+  # usage_metadata is restored
+  assert appended_event.usage_metadata is not None
+  assert appended_event.usage_metadata.prompt_token_count == 1000
+  assert appended_event.usage_metadata.candidates_token_count == 250
+  assert appended_event.usage_metadata.total_token_count == 1250
+  # User custom_metadata is preserved without internal keys
+  assert appended_event.custom_metadata == {'extra': 'info'}
+  assert '_compaction' not in (appended_event.custom_metadata or {})
+  assert '_usage_metadata' not in (appended_event.custom_metadata or {})
