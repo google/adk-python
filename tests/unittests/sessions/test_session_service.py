@@ -1186,8 +1186,7 @@ async def test_public_prepare_tables_eager_initialization():
   """Calling the public prepare_tables() eagerly initializes tables so that
   the first real database operation does not pay the setup cost.
   """
-  service = DatabaseSessionService('sqlite+aiosqlite:///:memory:')
-  try:
+  async with DatabaseSessionService('sqlite+aiosqlite:///:memory:') as service:
     # Before calling prepare_tables, tables are not created.
     assert not service._tables_created
     assert service._db_schema_version is None
@@ -1204,8 +1203,6 @@ async def test_public_prepare_tables_eager_initialization():
         app_name='app', user_id='user', session_id='s1'
     )
     assert session.id == 's1'
-  finally:
-    await service.close()
 
 
 @pytest.mark.asyncio
