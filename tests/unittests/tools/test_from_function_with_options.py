@@ -334,7 +334,7 @@ def test_required_fields_set_in_json_schema_fallback():
 
   def complex_tool(
       query: str,
-      mode: str = "default",
+      mode: str = 'default',
       tags: list[str] | None = None,
   ) -> str:
     """A tool where one param has a complex union type."""
