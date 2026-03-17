@@ -15,7 +15,9 @@
 import time
 from unittest.mock import Mock
 from unittest.mock import patch
+from urllib.parse import parse_qs
 
+from authlib.integrations.requests_client import OAuth2Session
 from authlib.oauth2.rfc6749 import OAuth2Token
 from fastapi.openapi.models import OAuth2
 from fastapi.openapi.models import OAuthFlowClientCredentials
@@ -25,9 +27,37 @@ from google.adk.auth.auth_credential import AuthCredentialTypes
 from google.adk.auth.auth_credential import OAuth2Auth
 from google.adk.auth.auth_schemes import OAuthGrantType
 from google.adk.auth.auth_schemes import OpenIdConnectWithConfig
+from google.adk.auth.exchanger import oauth2_credential_exchanger
 from google.adk.auth.exchanger.base_credential_exchanger import CredentialExchangeError
 from google.adk.auth.exchanger.oauth2_credential_exchanger import OAuth2CredentialExchanger
 import pytest
+
+
+class _TokenBodyCapturingOAuth2Session(OAuth2Session):
+  """A mock OAuth2Session that captures the final token request body."""
+
+  def __init__(self, *args, **kwargs):
+    super().__init__(*args, **kwargs)
+    self.request_body = ""
+
+  def _fetch_token(
+      self,
+      url=None,
+      body="",
+      auth=None,
+      method="POST",
+      headers=None,
+      **kwargs,
+  ):
+    if auth is not None:
+      _, _, body = auth.prepare(method, url, headers or {}, body)
+    self.request_body = body
+    return OAuth2Token({
+        "access_token": "new_access_token",
+        "refresh_token": "new_refresh_token",
+        "expires_at": int(time.time()) + 3600,
+        "expires_in": 3600,
+    })
 
 
 class TestOAuth2CredentialExchanger:
@@ -343,8 +373,52 @@ class TestOAuth2CredentialExchanger:
         authorization_response="https://example.com/callback?code=auth_code",  # Normalized URI
         code="auth_code",
         grant_type=OAuthGrantType.AUTHORIZATION_CODE,
-        client_id="test_client_id",
     )
+
+  async def test_exchange_client_secret_post_has_single_client_id(self):
+    """Test exchange lets Authlib add client_id only once for body auth."""
+    scheme = OpenIdConnectWithConfig(
+        type_="openIdConnect",
+        openId_connect_url=(
+            "https://example.com/.well-known/openid_configuration"
+        ),
+        authorization_endpoint="https://example.com/auth",
+        token_endpoint="https://example.com/token",
+        scopes=["openid"],
+    )
+    credential = AuthCredential(
+        auth_type=AuthCredentialTypes.OPEN_ID_CONNECT,
+        oauth2=OAuth2Auth(
+            client_id="test_client_id",
+            client_secret="test_client_secret",
+            token_endpoint_auth_method="client_secret_post",
+            auth_response_uri="https://example.com/callback?code=auth_code",
+            auth_code="auth_code",
+        ),
+    )
+
+    client = _TokenBodyCapturingOAuth2Session(
+        credential.oauth2.client_id,
+        credential.oauth2.client_secret,
+        token_endpoint_auth_method="client_secret_post",
+    )
+
+    with patch.object(
+        oauth2_credential_exchanger,
+        "create_oauth2_session",
+        autospec=True,
+        return_value=(client, "https://example.com/token"),
+    ):
+      exchanger = OAuth2CredentialExchanger()
+      exchange_result = await exchanger.exchange(credential, scheme)
+
+    request_params = parse_qs(client.request_body)
+
+    assert exchange_result.was_exchanged
+    assert request_params["grant_type"] == [OAuthGrantType.AUTHORIZATION_CODE]
+    assert request_params["code"] == ["auth_code"]
+    assert request_params["client_id"] == ["test_client_id"]
+    assert request_params["client_secret"] == ["test_client_secret"]
 
   async def test_determine_grant_type_client_credentials(self):
     """Test grant type determination for client credentials."""

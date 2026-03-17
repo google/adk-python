@@ -18,13 +18,13 @@ import pytest
 
 # Skip entire module if Python < 3.10 (must be before crewai_tool import)
 pytest.importorskip(
-    "google.adk.tools.crewai_tool", reason="Requires Python 3.10+"
+    "google.adk.integrations.crewai.crewai_tool", reason="Requires Python 3.10+"
 )
 
 from google.adk.agents.context import Context
 from google.adk.agents.invocation_context import InvocationContext
+from google.adk.integrations.crewai import CrewaiTool
 from google.adk.sessions.session import Session
-from google.adk.tools.crewai_tool import CrewaiTool
 from google.adk.tools.tool_context import ToolContext
 
 
