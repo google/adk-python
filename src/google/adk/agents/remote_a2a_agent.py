@@ -54,6 +54,8 @@ except ImportError:
   AGENT_CARD_WELL_KNOWN_PATH = "/.well-known/agent.json"
 
 from ..a2a.agent.config import A2aRemoteAgentConfig
+from ..a2a.agent.interceptors.new_integration_extension import _NEW_A2A_ADK_INTEGRATION_EXTENSION
+from ..a2a.agent.interceptors.new_integration_extension import _new_integration_extension_interceptor
 from ..a2a.agent.utils import execute_after_request_interceptors
 from ..a2a.agent.utils import execute_before_request_interceptors
 from ..a2a.converters.event_converter import convert_a2a_message_to_event
@@ -135,6 +137,7 @@ class RemoteA2aAgent(BaseAgent):
       ] = None,
       full_history_when_stateless: bool = False,
       config: Optional[A2aRemoteAgentConfig] = None,
+      use_legacy: bool = True,
       **kwargs: Any,
   ) -> None:
     """Initialize RemoteA2aAgent.
@@ -156,6 +159,8 @@ class RemoteA2aAgent(BaseAgent):
         request. If False, the default behavior of sending only events since the
         last reply from the agent will be used.
       config: Optional configuration object.
+      use_legacy: If false, send request to the server including the extension
+        indicating that the server should use the new implementation.
       **kwargs: Additional arguments passed to BaseAgent
 
     Raises:
@@ -184,6 +189,13 @@ class RemoteA2aAgent(BaseAgent):
     self._a2a_request_meta_provider = a2a_request_meta_provider
     self._full_history_when_stateless = full_history_when_stateless
     self._config = config or A2aRemoteAgentConfig()
+
+    if not use_legacy:
+      if self._config.request_interceptors is None:
+        self._config.request_interceptors = []
+      self._config.request_interceptors.append(
+          _new_integration_extension_interceptor
+      )
 
     # Validate and store agent card reference
     if isinstance(agent_card, AgentCard):
@@ -669,9 +681,7 @@ class RemoteA2aAgent(BaseAgent):
         else:
           metadata = a2a_response.metadata
 
-        if metadata and metadata.get(
-            _get_adk_metadata_key("agent_executor_v2")
-        ):
+        if metadata and metadata.get(_NEW_A2A_ADK_INTEGRATION_EXTENSION):
           event = await self._handle_a2a_response_v2(a2a_response, ctx)
         else:
           event = await self._handle_a2a_response(a2a_response, ctx)

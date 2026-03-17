@@ -58,10 +58,9 @@ restore_venv() {
         deactivate
     fi
 
-    if [[ -d ".unittest_venv" ]]; then
-        echo "Cleaning up .unittest_venv..."
-        rm -rf .unittest_venv
-    fi
+    echo "Cleaning up temporary directories..."
+    [[ -n "${VENV_DIR:-}" ]] && rm -rf "$VENV_DIR"
+    [[ -n "${UV_CACHE_DIR:-}" ]] && rm -rf "$UV_CACHE_DIR"
 
     if [[ -n "$ORIGINAL_VENV" ]]; then
         echo "Reactivating pre-existing venv: $ORIGINAL_VENV"
@@ -71,6 +70,15 @@ restore_venv() {
 
 # Ensure the environment is restored when the script exits.
 trap restore_venv EXIT
+
+# Temporary directory for the virtual environment.
+VENV_DIR=$(mktemp -d "${TMPDIR:-/tmp}/unittest_venv.XXXXXX")
+
+# Move uv cache to temp to prevent workspace bloat and IDE performance issues.
+export UV_CACHE_DIR=$(mktemp -d "${TMPDIR:-/tmp}/uv_cache.XXXXXX")
+
+# Force 'copy' mode; hardlinks (uv default) fail on many virtual filesystems.
+export UV_LINK_MODE=copy
 
 # 1. deactivate the current venv
 if [[ -n "${VIRTUAL_ENV:-}" ]]; then
@@ -88,13 +96,13 @@ for version in "${versions_to_run[@]}"; do
     echo "=================================================="
 
     # 2. create a unittest_venv just for unit tests
-    echo "Creating/Using unittest_venv for python${version} in .unittest_venv..."
-    uv venv --python "${version}" .unittest_venv --clear
-    source .unittest_venv/bin/activate
+    echo "Creating/Using unittest_venv for python${version} in $VENV_DIR..."
+    uv venv --python "${version}" "$VENV_DIR" --clear
+    source "$VENV_DIR/bin/activate"
 
     # 3. perform the unit tests
-    echo "Setting up test environment in .unittest_venv..."
-    uv sync --extra test --active
+    echo "Setting up test environment in $VENV_DIR..."
+    uv sync --extra test --active --frozen
 
     echo "Running unit tests..."
     TEST_EXIT_CODE=0
