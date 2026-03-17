@@ -31,6 +31,7 @@ from google.adk.telemetry.tracing import ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS
 from google.adk.telemetry.tracing import GCP_MCP_SERVER_DESTINATION_ID
 from google.adk.telemetry.tracing import trace_agent_invocation
 from google.adk.telemetry.tracing import trace_call_llm
+from google.adk.telemetry.tracing import trace_generate_content_result
 from google.adk.telemetry.tracing import trace_inference_result
 from google.adk.telemetry.tracing import trace_merged_tool_calls
 from google.adk.telemetry.tracing import trace_send_data
@@ -1436,6 +1437,59 @@ def test_trace_inference_result_without_thinking_tokens(mock_span_fixture):
   )
 
   trace_inference_result(mock_span_fixture, llm_response)
+
+  mock_span_fixture.set_attribute.assert_any_call(GEN_AI_USAGE_INPUT_TOKENS, 50)
+  mock_span_fixture.set_attribute.assert_any_call(
+      GEN_AI_USAGE_OUTPUT_TOKENS, 10
+  )
+  # Verify reasoning_tokens is NOT set when thoughts_token_count is None
+  reasoning_calls = [
+      call
+      for call in mock_span_fixture.set_attribute.call_args_list
+      if call.args[0] == 'gen_ai.usage.experimental.reasoning_tokens'
+  ]
+  assert len(reasoning_calls) == 0
+
+
+def test_trace_generate_content_result_with_thinking_tokens(mock_span_fixture):
+  """Test trace_generate_content_result exports thoughts_token_count."""
+  llm_response = LlmResponse(
+      turn_complete=True,
+      finish_reason=types.FinishReason.STOP,
+      usage_metadata=types.GenerateContentResponseUsageMetadata(
+          total_token_count=110,
+          prompt_token_count=50,
+          candidates_token_count=10,
+          thoughts_token_count=50,
+      ),
+  )
+
+  trace_generate_content_result(mock_span_fixture, llm_response)
+
+  mock_span_fixture.set_attribute.assert_any_call(GEN_AI_USAGE_INPUT_TOKENS, 50)
+  mock_span_fixture.set_attribute.assert_any_call(
+      GEN_AI_USAGE_OUTPUT_TOKENS, 10
+  )
+  mock_span_fixture.set_attribute.assert_any_call(
+      'gen_ai.usage.experimental.reasoning_tokens', 50
+  )
+
+
+def test_trace_generate_content_result_without_thinking_tokens(
+    mock_span_fixture,
+):
+  """Test trace_generate_content_result works when thoughts_token_count is None."""
+  llm_response = LlmResponse(
+      turn_complete=True,
+      finish_reason=types.FinishReason.STOP,
+      usage_metadata=types.GenerateContentResponseUsageMetadata(
+          total_token_count=60,
+          prompt_token_count=50,
+          candidates_token_count=10,
+      ),
+  )
+
+  trace_generate_content_result(mock_span_fixture, llm_response)
 
   mock_span_fixture.set_attribute.assert_any_call(GEN_AI_USAGE_INPUT_TOKENS, 50)
   mock_span_fixture.set_attribute.assert_any_call(

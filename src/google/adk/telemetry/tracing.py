@@ -843,28 +843,30 @@ def trace_inference_result(
   gc_span = None
   if isinstance(span, GenerateContentSpan):
     gc_span = span
-    span = gc_span.span
+    otel_span = gc_span.span
+  else:
+    otel_span = span
 
-  if span is None:
+  if otel_span is None:
     return
 
   if llm_response.partial:
     return
 
   if finish_reason := llm_response.finish_reason:
-    span.set_attribute(GEN_AI_RESPONSE_FINISH_REASONS, [finish_reason.lower()])
+    otel_span.set_attribute(GEN_AI_RESPONSE_FINISH_REASONS, [finish_reason.lower()])
   if usage_metadata := llm_response.usage_metadata:
     if usage_metadata.prompt_token_count is not None:
-      span.set_attribute(
+      otel_span.set_attribute(
           GEN_AI_USAGE_INPUT_TOKENS, usage_metadata.prompt_token_count
       )
     if usage_metadata.candidates_token_count is not None:
-      span.set_attribute(
+      otel_span.set_attribute(
           GEN_AI_USAGE_OUTPUT_TOKENS, usage_metadata.candidates_token_count
       )
     try:
       if usage_metadata.thoughts_token_count is not None:
-        span.set_attribute(
+        otel_span.set_attribute(
             'gen_ai.usage.experimental.reasoning_tokens',
             usage_metadata.thoughts_token_count,
         )
