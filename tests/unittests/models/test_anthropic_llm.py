@@ -764,6 +764,17 @@ def test_part_to_message_block_with_non_standard_response():
   )
   part.function_response.id = "test_skill_id"
 
+  result = part_to_message_block(part)
+
+  assert isinstance(result, dict)
+  assert result["tool_use_id"] == "test_skill_id"
+  assert result["type"] == "tool_result"
+  assert not result["is_error"]
+  parsed = json.loads(result["content"])
+  assert parsed["skill_name"] == "search_docs"
+  assert parsed["instructions"] == "Use the search API to find documents."
+  assert parsed["frontmatter"] == {"version": "1.0"}
+
 
 def test_part_to_message_block_with_pdf_document():
   """Test that part_to_message_block handles PDF document parts."""
@@ -775,16 +786,6 @@ def test_part_to_message_block_with_pdf_document():
   result = part_to_message_block(part)
 
   assert isinstance(result, dict)
-  assert result["tool_use_id"] == "test_skill_id"
-  assert result["type"] == "tool_result"
-  assert not result["is_error"]
-  # Content must be non-empty and contain the original data
-  parsed = json.loads(result["content"])
-  assert parsed["skill_name"] == "search_docs"
-  assert parsed["instructions"] == "Use the search API to find documents."
-  assert parsed["frontmatter"] == {"version": "1.0"}
-
-
   assert result["type"] == "document"
   assert result["source"]["type"] == "base64"
   assert result["source"]["media_type"] == "application/pdf"
