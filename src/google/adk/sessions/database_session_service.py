@@ -252,12 +252,17 @@ class DatabaseSessionService(BaseSessionService):
         else:
           self._session_lock_ref_count[lock_key] = remaining
 
-  async def _prepare_tables(self):
+  async def prepare_tables(self):
     """Ensure database tables are ready for use.
 
     This method is called lazily before each database operation. It checks the
     DB schema version to use and creates the tables (including setting the
     schema version metadata) if needed.
+
+    It can also be called eagerly right after construction to pay the
+    table-creation cost upfront (e.g. during application startup) instead of
+    on the first database operation.  It is safe to call more than once and
+    is recommended for latency-sensitive applications.
     """
     # Early return if tables are already created
     if self._tables_created:
@@ -323,7 +328,7 @@ class DatabaseSessionService(BaseSessionService):
     # 3. Add the object to the table
     # 4. Build the session object with generated id
     # 5. Return the session
-    await self._prepare_tables()
+    await self.prepare_tables()
     schema = self._get_schema_classes()
     async with self._rollback_on_exception_session() as sql_session:
       if session_id and await sql_session.get(
@@ -398,7 +403,7 @@ class DatabaseSessionService(BaseSessionService):
       session_id: str,
       config: Optional[GetSessionConfig] = None,
   ) -> Optional[Session]:
-    await self._prepare_tables()
+    await self.prepare_tables()
     # 1. Get the storage session entry from session table
     # 2. Get all the events based on session id and filtering config
     # 3. Convert and return the session
@@ -456,7 +461,7 @@ class DatabaseSessionService(BaseSessionService):
   async def list_sessions(
       self, *, app_name: str, user_id: Optional[str] = None
   ) -> ListSessionsResponse:
-    await self._prepare_tables()
+    await self.prepare_tables()
     schema = self._get_schema_classes()
     async with self._rollback_on_exception_session() as sql_session:
       stmt = select(schema.StorageSession).filter(
@@ -506,7 +511,7 @@ class DatabaseSessionService(BaseSessionService):
   async def delete_session(
       self, app_name: str, user_id: str, session_id: str
   ) -> None:
-    await self._prepare_tables()
+    await self.prepare_tables()
     schema = self._get_schema_classes()
     async with self._rollback_on_exception_session() as sql_session:
       stmt = delete(schema.StorageSession).where(
@@ -519,7 +524,7 @@ class DatabaseSessionService(BaseSessionService):
 
   @override
   async def append_event(self, session: Session, event: Event) -> Event:
-    await self._prepare_tables()
+    await self.prepare_tables()
     if event.partial:
       return event
 

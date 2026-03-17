@@ -1080,10 +1080,10 @@ async def test_service_recovers_after_multiple_failures():
 
 @pytest.mark.asyncio
 async def test_concurrent_prepare_tables_no_race_condition():
-  """Verifies that concurrent calls to _prepare_tables wait for table creation.
+  """Verifies that concurrent calls to prepare_tables wait for table creation.
   Reproduces the race condition from
   https://github.com/google/adk-python/issues/4445: when concurrent requests
-  arrive at startup, _prepare_tables must not return before tables exist.
+  arrive at startup, prepare_tables must not return before tables exist.
   Previously, the early-return guard checked _db_schema_version (set during
   schema detection) instead of _tables_created, so a second request could
   slip through after schema detection but before table creation finished.
@@ -1096,7 +1096,7 @@ async def test_concurrent_prepare_tables_no_race_condition():
 
     # Launch several concurrent create_session calls, each with a unique
     # app_name to avoid IntegrityError on the shared app_states row.
-    # Each will call _prepare_tables internally.  If the race condition
+    # Each will call prepare_tables internally.  If the race condition
     # exists, some of these will fail because the "sessions" table doesn't
     # exist yet.
     num_concurrent = 5
@@ -1114,7 +1114,7 @@ async def test_concurrent_prepare_tables_no_race_condition():
     for i, result in enumerate(results):
       assert not isinstance(result, BaseException), (
           f'Concurrent create_session #{i} raised {result!r}; tables were'
-          ' likely not ready due to the _prepare_tables race condition.'
+          ' likely not ready due to the prepare_tables race condition.'
       )
 
     # All sessions should be retrievable.
@@ -1133,7 +1133,7 @@ async def test_concurrent_prepare_tables_no_race_condition():
 async def test_prepare_tables_serializes_schema_detection_and_creation():
   """Verifies schema detection and table creation happen atomically under one
   lock, so concurrent callers cannot observe a partially-initialized state.
-  After _prepare_tables completes, both _db_schema_version and _tables_created
+  After prepare_tables completes, both _db_schema_version and _tables_created
   must be set.
   """
   service = DatabaseSessionService('sqlite+aiosqlite:///:memory:')
@@ -1141,9 +1141,9 @@ async def test_prepare_tables_serializes_schema_detection_and_creation():
     assert not service._tables_created
     assert service._db_schema_version is None
 
-    await service._prepare_tables()
+    await service.prepare_tables()
 
-    # Both must be set after a single _prepare_tables call.
+    # Both must be set after a single prepare_tables call.
     assert service._tables_created
     assert service._db_schema_version is not None
 
@@ -1159,20 +1159,47 @@ async def test_prepare_tables_serializes_schema_detection_and_creation():
 
 @pytest.mark.asyncio
 async def test_prepare_tables_idempotent_after_creation():
-  """Calling _prepare_tables multiple times is safe and idempotent.
+  """Calling prepare_tables multiple times is safe and idempotent.
   After tables are created, subsequent calls should return immediately via
   the fast path without errors.
   """
   service = DatabaseSessionService('sqlite+aiosqlite:///:memory:')
   try:
-    await service._prepare_tables()
+    await service.prepare_tables()
     assert service._tables_created
 
     # Call again — should be a no-op via the fast path.
-    await service._prepare_tables()
+    await service.prepare_tables()
     assert service._tables_created
 
     # Service should still work.
+    session = await service.create_session(
+        app_name='app', user_id='user', session_id='s1'
+    )
+    assert session.id == 's1'
+  finally:
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_public_prepare_tables_eager_initialization():
+  """Calling the public prepare_tables() eagerly initializes tables so that
+  the first real database operation does not pay the setup cost.
+  """
+  service = DatabaseSessionService('sqlite+aiosqlite:///:memory:')
+  try:
+    # Before calling prepare_tables, tables are not created.
+    assert not service._tables_created
+    assert service._db_schema_version is None
+
+    # Eagerly prepare tables via the public API.
+    await service.prepare_tables()
+
+    # Tables should now be ready.
+    assert service._tables_created
+    assert service._db_schema_version is not None
+
+    # Subsequent operations should work without any additional setup cost.
     session = await service.create_session(
         app_name='app', user_id='user', session_id='s1'
     )
