@@ -486,6 +486,7 @@ async def _execute_single_function_call_async(
       invocation_context, function_call, tool_confirmation
   )
 
+  _tool_lookup_error: Exception | None = None
   try:
     tool = _get_tool(function_call, tools_dict)
   except ValueError as tool_error:
@@ -494,9 +495,7 @@ async def _execute_single_function_call_async(
     # OTel span are created *before* on_tool_error_callback fires.  This
     # keeps the callback lifecycle balanced (push/pop) and prevents plugins
     # like BigQueryAgentAnalyticsPlugin from corrupting their span stacks.
-    _tool_lookup_error: Exception = tool_error
-  else:
-    _tool_lookup_error = None
+    _tool_lookup_error = tool_error
 
   async def _run_with_trace():
     nonlocal function_args
@@ -728,13 +727,12 @@ async def _execute_single_function_call_live(
 
   tool_context = _create_tool_context(invocation_context, function_call)
 
+  _tool_lookup_error: Exception | None = None
   try:
     tool = _get_tool(function_call, tools_dict)
   except ValueError as tool_error:
     tool = BaseTool(name=function_call.name, description='Tool not found')
-    _tool_lookup_error: Exception = tool_error
-  else:
-    _tool_lookup_error = None
+    _tool_lookup_error = tool_error
 
   async def _run_with_trace():
     nonlocal function_args
