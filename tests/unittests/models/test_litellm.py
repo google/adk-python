@@ -4836,13 +4836,11 @@ async def test_content_to_message_param_anthropic_outputs_thinking_blocks():
       content, model="anthropic/claude-4-sonnet"
   )
   assert result["role"] == "assistant"
-  assert result["thinking_blocks"] == [
-      {
-          "type": "thinking",
-          "thinking": "deep thought",
-          "signature": "sig_round_trip",
-      }
-  ]
+  assert result["thinking_blocks"] == [{
+      "type": "thinking",
+      "thinking": "deep thought",
+      "signature": "sig_round_trip",
+  }]
   assert result.get("reasoning_content") is None
   assert result["content"] == "Hello!"
 

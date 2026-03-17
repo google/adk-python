@@ -428,9 +428,9 @@ def _convert_reasoning_value_to_parts(reasoning_value: Any) -> List[types.Part]:
             signature = block.get("signature")
             if signature:
               decoded_signature = _decode_thought_signature(signature)
-              part.thought_signature = (
-                  decoded_signature or str(signature).encode("utf-8")
-              )
+              part.thought_signature = decoded_signature or str(
+                  signature
+              ).encode("utf-8")
             parts.append(part)
           continue
       # Fall back to text extraction for non-thinking-block items.
