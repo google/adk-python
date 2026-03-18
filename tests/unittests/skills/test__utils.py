@@ -340,3 +340,57 @@ def test_list_skills_in_dir_missing_base_path(tmp_path):
 
   skills = list_skills_in_dir(tmp_path / "nonexistent")
   assert skills == {}
+
+
+# --- Underscore directory / kebab-case name compatibility tests ---
+
+
+def test_load_skill_underscore_dir_kebab_name(tmp_path):
+  """Tests loading a skill from underscore dir with kebab-case name."""
+  skill_dir = tmp_path / "my_skill"
+  skill_dir.mkdir()
+
+  skill_md = """---
+name: my-skill
+description: A skill
+---
+Body
+"""
+  (skill_dir / "SKILL.md").write_text(skill_md)
+
+  skill = _load_skill_from_dir(skill_dir)
+  assert skill.name == "my-skill"
+
+
+def test_validate_skill_dir_underscore_dir_kebab_name(tmp_path):
+  """Tests validate_skill_dir accepts underscore dir with kebab name."""
+  skill_dir = tmp_path / "my_skill"
+  skill_dir.mkdir()
+
+  skill_md = """---
+name: my-skill
+description: A skill
+---
+Body
+"""
+  (skill_dir / "SKILL.md").write_text(skill_md)
+
+  problems = _validate_skill_dir(skill_dir)
+  assert problems == []
+
+
+def test_list_skills_underscore_dir(tmp_path):
+  """Tests listing skills with underscore directory names."""
+  skills_dir = tmp_path / "skills"
+  skills_dir.mkdir()
+
+  skill_dir = skills_dir / "my_skill"
+  skill_dir.mkdir()
+  (skill_dir / "SKILL.md").write_text(
+      "---\nname: my-skill\ndescription: desc\n---\nbody"
+  )
+
+  skills = list_skills_in_dir(skills_dir)
+  assert len(skills) == 1
+  assert "my_skill" in skills
+  assert skills["my_skill"].name == "my-skill"
