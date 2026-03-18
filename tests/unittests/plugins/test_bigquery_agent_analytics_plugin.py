@@ -17,6 +17,7 @@ import asyncio
 import contextlib
 import dataclasses
 import json
+import os
 from unittest import mock
 
 from google.adk.agents import base_agent
@@ -1734,6 +1735,7 @@ class TestBigQueryAgentAnalyticsPlugin:
     _assert_common_fields(log_entry, "LLM_ERROR")
     assert log_entry["content"] is None
     assert log_entry["error_message"] == "LLM failed"
+    assert log_entry["status"] == "ERROR"
 
   @pytest.mark.asyncio
   async def test_on_tool_error_callback_logs_correctly(
@@ -1761,6 +1763,7 @@ class TestBigQueryAgentAnalyticsPlugin:
     assert content_dict["tool"] == "MyTool"
     assert content_dict["args"] == {"param": "value"}
     assert log_entry["error_message"] == "Tool timed out"
+    assert log_entry["status"] == "ERROR"
 
   @pytest.mark.asyncio
   async def test_table_creation_options(
@@ -4829,7 +4832,6 @@ class TestForkSafety:
     # _ensure_started should detect PID mismatch and reset
     await plugin._ensure_started()
     # After reset + re-init, _init_pid should match current
-    import os
 
     assert plugin._init_pid == os.getpid()
     assert plugin._started is True
@@ -4884,8 +4886,6 @@ class TestForkSafety:
     assert plugin._schema == ["kept"]
     assert plugin.arrow_schema == "kept_arrow"
 
-    import os
-
     assert plugin._init_pid == os.getpid()
 
   def test_getstate_resets_pid(self):
@@ -4918,6 +4918,134 @@ class TestForkSafety:
     await new_plugin._ensure_started()
     assert new_plugin._started is True
     await new_plugin.shutdown()
+
+
+class TestForkGrpcSafety:
+  """Tests for gRPC fork safety enhancements."""
+
+  def _make_plugin(self):
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig()
+    return bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        project_id=PROJECT_ID,
+        dataset_id=DATASET_ID,
+        table_id=TABLE_ID,
+        config=config,
+    )
+
+  def test_grpc_fork_env_var_set(self):
+    """GRPC_ENABLE_FORK_SUPPORT should be '1' after import."""
+
+    assert os.environ.get("GRPC_ENABLE_FORK_SUPPORT") == "1"
+
+  def test_register_at_fork_resets_all_instances(self):
+    """_after_fork_in_child resets all living plugin instances."""
+    p1 = self._make_plugin()
+    p2 = self._make_plugin()
+    p1._started = True
+    p2._started = True
+    p1._init_pid = -1
+    p2._init_pid = -1
+
+    bigquery_agent_analytics_plugin._after_fork_in_child()
+
+    assert p1._started is False
+    assert p2._started is False
+    assert p1._init_pid == os.getpid()
+    assert p2._init_pid == os.getpid()
+
+  def test_dead_plugin_removed_from_live_set(self):
+    """WeakSet should not hold dead plugin references."""
+    p = self._make_plugin()
+    assert p in bigquery_agent_analytics_plugin._LIVE_PLUGINS
+    pid = id(p)
+    del p
+    # After deletion, the WeakSet should no longer contain it.
+    for alive in bigquery_agent_analytics_plugin._LIVE_PLUGINS:
+      assert id(alive) != pid
+
+  def test_reset_closes_inherited_sync_transports(self):
+    """_reset_runtime_state closes inherited sync gRPC channels."""
+    plugin = self._make_plugin()
+    mock_channel = mock.MagicMock()
+    mock_channel.close.return_value = None  # sync close
+    mock_transport = mock.MagicMock()
+    mock_transport._grpc_channel = mock_channel
+    mock_wc = mock.MagicMock()
+    mock_wc.transport = mock_transport
+
+    mock_loop_state = mock.MagicMock()
+    mock_loop_state.write_client = mock_wc
+
+    plugin._loop_state_by_loop = {mock.MagicMock(): mock_loop_state}
+    plugin._init_pid = -1
+
+    plugin._reset_runtime_state()
+
+    mock_channel.close.assert_called_once()
+
+  def test_reset_discards_async_channel_close_coroutine(self):
+    """Async channel close() returns a coroutine; must not warn."""
+    import warnings
+
+    plugin = self._make_plugin()
+
+    async def _async_close():
+      pass
+
+    mock_channel = mock.MagicMock()
+    mock_channel.close.return_value = _async_close()
+    mock_transport = mock.MagicMock()
+    mock_transport._grpc_channel = mock_channel
+    mock_wc = mock.MagicMock()
+    mock_wc.transport = mock_transport
+
+    mock_loop_state = mock.MagicMock()
+    mock_loop_state.write_client = mock_wc
+
+    plugin._loop_state_by_loop = {mock.MagicMock(): mock_loop_state}
+    plugin._init_pid = -1
+
+    with warnings.catch_warnings():
+      warnings.simplefilter("error", RuntimeWarning)
+      # Must not raise RuntimeWarning for unawaited coroutine
+      plugin._reset_runtime_state()
+
+    mock_channel.close.assert_called_once()
+
+  def test_transport_close_exception_swallowed(self):
+    """close() raising should not prevent reset from completing."""
+    plugin = self._make_plugin()
+    mock_channel = mock.MagicMock()
+    mock_channel.close.side_effect = RuntimeError("broken channel")
+    mock_transport = mock.MagicMock()
+    mock_transport._grpc_channel = mock_channel
+    mock_wc = mock.MagicMock()
+    mock_wc.transport = mock_transport
+
+    mock_loop_state = mock.MagicMock()
+    mock_loop_state.write_client = mock_wc
+
+    plugin._loop_state_by_loop = {mock.MagicMock(): mock_loop_state}
+    plugin._init_pid = -1
+
+    # Should not raise
+    plugin._reset_runtime_state()
+
+    assert plugin._started is False
+    assert plugin._loop_state_by_loop == {}
+
+  def test_reset_logs_fork_warning(self):
+    """_reset_runtime_state logs a warning with 'Fork detected'."""
+    plugin = self._make_plugin()
+    plugin._init_pid = -1
+
+    with mock.patch.object(
+        bigquery_agent_analytics_plugin.logger, "warning"
+    ) as mock_warn:
+      plugin._reset_runtime_state()
+
+    mock_warn.assert_called_once()
+    assert "Fork detected" in mock_warn.call_args[0][0]
 
 
 # ==============================================================================
@@ -6057,3 +6185,270 @@ class TestAfterRunCleanupExceptionSafety:
       assert bigquery_agent_analytics_plugin._root_agent_name_ctx.get() is None
 
     provider.shutdown()
+
+
+class TestStringSystemPromptTruncation:
+  """Tests that a string system prompt is truncated in parse()."""
+
+  @pytest.mark.asyncio
+  async def test_long_string_system_prompt_is_truncated(self):
+    """A string system_instruction exceeding max_content_length is truncated."""
+    parser = bigquery_agent_analytics_plugin.HybridContentParser(
+        offloader=None,
+        trace_id="test-trace",
+        span_id="test-span",
+        max_length=50,
+    )
+    long_prompt = "A" * 200
+    llm_request = llm_request_lib.LlmRequest(
+        model="gemini-pro",
+        contents=[types.Content(parts=[types.Part(text="Hi")])],
+        config=types.GenerateContentConfig(
+            system_instruction=long_prompt,
+        ),
+    )
+    payload, _, is_truncated = await parser.parse(llm_request)
+    assert is_truncated
+    assert len(payload["system_prompt"]) < 200
+    assert "TRUNCATED" in payload["system_prompt"]
+
+
+class TestSessionStateTruncation:
+  """Tests that session state is truncated in _enrich_attributes."""
+
+  @pytest.mark.asyncio
+  async def test_oversized_session_state_is_truncated(
+      self,
+      mock_auth_default,
+      mock_bq_client,
+      mock_write_client,
+      mock_to_arrow_schema,
+      mock_asyncio_to_thread,
+      mock_session,
+      invocation_context,
+  ):
+    """Session state with large values is truncated."""
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        max_content_length=30,
+    )
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        project_id=PROJECT_ID,
+        dataset_id=DATASET_ID,
+        table_id=TABLE_ID,
+        config=config,
+    )
+    await plugin._ensure_started()
+
+    # Set a large session state value.
+    large_value = "X" * 200
+    type(mock_session).state = mock.PropertyMock(
+        return_value={"big_key": large_value}
+    )
+
+    callback_ctx = CallbackContext(invocation_context=invocation_context)
+    event_data = bigquery_agent_analytics_plugin.EventData()
+    attrs = plugin._enrich_attributes(event_data, callback_ctx)
+    state = attrs["session_metadata"]["state"]
+    assert len(state["big_key"]) < 200
+    assert "TRUNCATED" in state["big_key"]
+    await plugin.shutdown()
+
+
+class TestSchemaUpgradeNestedFields:
+  """Tests for nested RECORD field detection in schema upgrade."""
+
+  def _make_plugin(self):
+    config = bigquery_agent_analytics_plugin.BigQueryLoggerConfig(
+        auto_schema_upgrade=True,
+    )
+    with mock.patch("google.cloud.bigquery.Client"):
+      plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+          project_id=PROJECT_ID,
+          dataset_id=DATASET_ID,
+          table_id=TABLE_ID,
+          config=config,
+      )
+    plugin.client = mock.MagicMock()
+    plugin.full_table_id = f"{PROJECT_ID}.{DATASET_ID}.{TABLE_ID}"
+    return plugin
+
+  def test_nested_field_detected(self):
+    """A new sub-field in a RECORD triggers an upgrade."""
+    plugin = self._make_plugin()
+
+    existing_record = bigquery.SchemaField(
+        "metadata",
+        "RECORD",
+        fields=[
+            bigquery.SchemaField("key", "STRING"),
+        ],
+    )
+    desired_record = bigquery.SchemaField(
+        "metadata",
+        "RECORD",
+        fields=[
+            bigquery.SchemaField("key", "STRING"),
+            bigquery.SchemaField("value", "STRING"),
+        ],
+    )
+    plugin._schema = [
+        bigquery.SchemaField("timestamp", "TIMESTAMP"),
+        desired_record,
+    ]
+
+    existing = mock.MagicMock(spec=bigquery.Table)
+    existing.schema = [
+        bigquery.SchemaField("timestamp", "TIMESTAMP"),
+        existing_record,
+    ]
+    existing.labels = {}
+    plugin.client.get_table.return_value = existing
+    plugin._ensure_schema_exists()
+
+    plugin.client.update_table.assert_called_once()
+    updated_table = plugin.client.update_table.call_args[0][0]
+    # Find the metadata field and check it has both sub-fields.
+    metadata_field = next(
+        f for f in updated_table.schema if f.name == "metadata"
+    )
+    sub_names = {sf.name for sf in metadata_field.fields}
+    assert "key" in sub_names
+    assert "value" in sub_names
+
+  def test_version_label_not_stamped_on_failure(self):
+    """A failed update_table does not persist the version label."""
+    plugin = self._make_plugin()
+    plugin._schema = [
+        bigquery.SchemaField("timestamp", "TIMESTAMP"),
+        bigquery.SchemaField("new_col", "STRING"),
+    ]
+
+    existing = mock.MagicMock(spec=bigquery.Table)
+    existing.schema = [
+        bigquery.SchemaField("timestamp", "TIMESTAMP"),
+    ]
+    existing.labels = {}
+    plugin.client.get_table.return_value = existing
+    plugin.client.update_table.side_effect = Exception("network error")
+
+    # Should not raise.
+    plugin._ensure_schema_exists()
+
+    # The label is set on the table object before update_table is
+    # called, but since update_table failed the label was never
+    # persisted remotely.  On the next run the stored_version will
+    # still be None (from the real BQ table) so the upgrade retries.
+    # We verify that update_table was actually attempted.
+    plugin.client.update_table.assert_called_once()
+
+  def test_nested_upgrade_preserves_policy_tags(self):
+    """RECORD field metadata (e.g. policy_tags) is preserved on upgrade."""
+    from google.cloud.bigquery import schema as bq_schema
+
+    plugin = self._make_plugin()
+
+    existing_record = bigquery.SchemaField(
+        "metadata",
+        "RECORD",
+        policy_tags=bq_schema.PolicyTagList(
+            names=["projects/p/locations/us/taxonomies/t/policyTags/pt"]
+        ),
+        fields=[
+            bigquery.SchemaField("key", "STRING"),
+        ],
+    )
+    desired_record = bigquery.SchemaField(
+        "metadata",
+        "RECORD",
+        fields=[
+            bigquery.SchemaField("key", "STRING"),
+            bigquery.SchemaField("value", "STRING"),
+        ],
+    )
+    plugin._schema = [
+        bigquery.SchemaField("timestamp", "TIMESTAMP"),
+        desired_record,
+    ]
+
+    existing = mock.MagicMock(spec=bigquery.Table)
+    existing.schema = [
+        bigquery.SchemaField("timestamp", "TIMESTAMP"),
+        existing_record,
+    ]
+    existing.labels = {}
+    plugin.client.get_table.return_value = existing
+    plugin._ensure_schema_exists()
+
+    plugin.client.update_table.assert_called_once()
+    updated_table = plugin.client.update_table.call_args[0][0]
+    metadata_field = next(
+        f for f in updated_table.schema if f.name == "metadata"
+    )
+    # Sub-fields were merged.
+    sub_names = {sf.name for sf in metadata_field.fields}
+    assert "key" in sub_names
+    assert "value" in sub_names
+    # policy_tags preserved from the existing field.
+    assert metadata_field.policy_tags is not None
+    assert (
+        "projects/p/locations/us/taxonomies/t/policyTags/pt"
+        in metadata_field.policy_tags.names
+    )
+
+
+class TestMultiLoopShutdownDrainsOtherLoops:
+  """Tests that shutdown() drains batch processors on other loops."""
+
+  @pytest.mark.asyncio
+  async def test_other_loop_batch_processor_drained(
+      self,
+      mock_auth_default,
+      mock_bq_client,
+      mock_write_client,
+      mock_to_arrow_schema,
+      mock_asyncio_to_thread,
+  ):
+    """Shutdown drains batch_processor.shutdown on non-current loops."""
+    plugin = bigquery_agent_analytics_plugin.BigQueryAgentAnalyticsPlugin(
+        project_id=PROJECT_ID,
+        dataset_id=DATASET_ID,
+        table_id=TABLE_ID,
+    )
+    await plugin._ensure_started()
+
+    # Create a mock "other" loop with a mock batch processor.
+    other_loop = mock.MagicMock(spec=asyncio.AbstractEventLoop)
+    other_loop.is_closed.return_value = False
+
+    mock_other_bp = mock.AsyncMock()
+    mock_other_write_client = mock.MagicMock()
+    mock_other_write_client.transport = mock.AsyncMock()
+
+    other_state = bigquery_agent_analytics_plugin._LoopState(
+        write_client=mock_other_write_client,
+        batch_processor=mock_other_bp,
+    )
+    plugin._loop_state_by_loop[other_loop] = other_state
+
+    # Patch run_coroutine_threadsafe to verify it's called for
+    # the other loop's batch_processor.  Close the coroutine arg
+    # to avoid "coroutine was never awaited" RuntimeWarning.
+    mock_future = mock.MagicMock()
+    mock_future.result.return_value = None
+
+    def _fake_run_coroutine_threadsafe(coro, loop):
+      coro.close()
+      return mock_future
+
+    with mock.patch.object(
+        asyncio,
+        "run_coroutine_threadsafe",
+        side_effect=_fake_run_coroutine_threadsafe,
+    ) as mock_rcts:
+      await plugin.shutdown()
+
+      # Verify run_coroutine_threadsafe was called with
+      # the other loop.
+      mock_rcts.assert_called()
+      call_args = mock_rcts.call_args
+      assert call_args[0][1] is other_loop

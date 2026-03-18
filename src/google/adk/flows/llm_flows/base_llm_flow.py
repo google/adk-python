@@ -16,14 +16,13 @@ from __future__ import annotations
 
 from abc import ABC
 import asyncio
-import datetime
 import inspect
 import logging
 from typing import AsyncGenerator
-from typing import cast
 from typing import Optional
 from typing import TYPE_CHECKING
 
+from google.adk.platform import time as platform_time
 from google.genai import types
 from websockets.exceptions import ConnectionClosed
 from websockets.exceptions import ConnectionClosedOK
@@ -36,7 +35,6 @@ from ...agents.invocation_context import InvocationContext
 from ...agents.live_request_queue import LiveRequestQueue
 from ...agents.readonly_context import ReadonlyContext
 from ...agents.run_config import StreamingMode
-from ...agents.transcription_entry import TranscriptionEntry
 from ...auth.auth_handler import AuthHandler
 from ...auth.auth_tool import AuthConfig
 from ...auth.credential_manager import CredentialManager
@@ -49,12 +47,10 @@ from ...telemetry.tracing import trace_call_llm
 from ...telemetry.tracing import trace_send_data
 from ...telemetry.tracing import tracer
 from ...tools.base_toolset import BaseToolset
-from ...tools.google_search_tool import google_search
 from ...tools.tool_context import ToolContext
 from ...utils.context_utils import Aclosing
 from .audio_cache_manager import AudioCacheManager
 from .functions import build_auth_request_event
-from .functions import REQUEST_EUC_FUNCTION_CALL_NAME
 
 # Prefix used by toolset auth credential IDs
 TOOLSET_AUTH_CREDENTIAL_ID_PREFIX = '_adk_toolset_auth_'
@@ -845,7 +841,7 @@ class BaseLlmFlow(ABC):
           async for event in agen:
             # Update the mutable event id to avoid conflict
             model_response_event.id = Event.new_id()
-            model_response_event.timestamp = datetime.datetime.now().timestamp()
+            model_response_event.timestamp = platform_time.get_time()
             yield event
 
   async def _preprocess_async(
@@ -1289,6 +1285,33 @@ class BaseLlmFlow(ABC):
 
   def __get_llm(self, invocation_context: InvocationContext) -> BaseLlm:
     agent = invocation_context.agent
+
+    # Check for conformance test replay mode
+    if config := invocation_context.session.state.get('_adk_replay_config'):
+      from ...cli.conformance._conformance_test_google_llm import _ConformanceTestGemini
+
+      # Models are stateless, so the current replay state is cached in the
+      # session state to maintain the state across model calls
+      # key: (agent_name, user_message_index)
+      # value: replay index
+      user_message_index = config.get('user_message_index')
+      replay_indexes = config.get('_adk_replay_indexes', {})
+      if (agent.name, user_message_index) not in replay_indexes:
+        replay_indexes[(agent.name, user_message_index)] = 0
+      current_replay_index = replay_indexes[(agent.name, user_message_index)]
+
+      config['current_replay_index'] = current_replay_index
+      config['agent_name'] = agent.name
+      model = _ConformanceTestGemini(
+          config=config,
+      )
+
+      replay_indexes[(agent.name, user_message_index)] = (
+          current_replay_index + 1
+      )
+      config['_adk_replay_indexes'] = replay_indexes
+      return model
+
     if not hasattr(agent, 'canonical_model'):
       raise TypeError(
           'Expected agent to have canonical_model attribute,'

@@ -62,8 +62,8 @@ bigtable_toolset = BigtableToolset(
     credentials_config=credentials_config, bigtable_tool_settings=tool_settings
 )
 
-_BIGTABLE_PROJECT_ID = "google.com:cloud-bigtable-dev"
-_BIGTABLE_INSTANCE_ID = "annenguyen-bus-instance"
+_BIGTABLE_PROJECT_ID = ""
+_BIGTABLE_INSTANCE_ID = ""
 
 
 def search_hotels_by_location(

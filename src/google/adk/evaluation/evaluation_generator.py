@@ -280,7 +280,7 @@ class EvaluationGenerator:
     invocations = []
     for invocation_id, events in events_by_invocation_id.items():
       final_response = None
-      user_content = ""
+      user_content = Content(parts=[])
       invocation_timestamp = 0
       app_details = None
       if (
