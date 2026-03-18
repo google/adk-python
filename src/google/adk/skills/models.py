@@ -76,6 +76,9 @@ class Frontmatter(BaseModel):
   @classmethod
   def _validate_name(cls, v: str) -> str:
     v = unicodedata.normalize("NFKC", v)
+    # Normalize underscores to hyphens so snake_case directory names
+    # work transparently (Python cannot import modules with hyphens).
+    v = v.replace("_", "-")
     if len(v) > 64:
       raise ValueError("name must be at most 64 characters")
     if not _NAME_PATTERN.match(v):
