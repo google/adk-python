@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 from typing import Any
+from typing import cast
 from typing import Optional
 
 from google.genai.types import Content
@@ -48,7 +49,7 @@ def _make_json_serializable(obj: Any) -> Any:
     return f'<not serializable: {type(obj).__name__}>'
 
 
-class EventCompaction(BaseModel):
+class EventCompaction(BaseModel):  # type: ignore[misc]
   """The compaction of the events."""
 
   model_config = ConfigDict(
@@ -68,7 +69,7 @@ class EventCompaction(BaseModel):
   """The compacted content of the events."""
 
 
-class EventActions(BaseModel):
+class EventActions(BaseModel):  # type: ignore[misc]
   """Represents the actions attached to an event."""
 
   model_config = ConfigDict(
@@ -87,9 +88,9 @@ class EventActions(BaseModel):
   state_delta: dict[str, object] = Field(default_factory=dict)
   """Indicates that the event is updating the state with the given delta."""
 
-  @field_serializer('state_delta', mode='plain')
+  @field_serializer('state_delta', mode='plain')  # type: ignore[misc, untyped-decorator]
   def _serialize_state_delta(self, value: dict[str, object]) -> dict[str, Any]:
-    return _make_json_serializable(value)
+    return cast(dict[str, Any], _make_json_serializable(value))
 
   artifact_delta: dict[str, int] = Field(default_factory=dict)
   """Indicates that the event is updating an artifact. key is the filename,
@@ -131,13 +132,13 @@ class EventActions(BaseModel):
   """The agent state at the current event, used for checkpoint and resume. This
   should only be set by ADK workflow."""
 
-  @field_serializer('agent_state', mode='plain')
+  @field_serializer('agent_state', mode='plain')  # type: ignore[misc, untyped-decorator]
   def _serialize_agent_state(
       self, value: Optional[dict[str, Any]]
   ) -> Optional[dict[str, Any]]:
     if value is None:
       return None
-    return _make_json_serializable(value)
+    return cast(dict[str, Any], _make_json_serializable(value))
 
   rewind_before_invocation_id: Optional[str] = None
   """The invocation id to rewind to. This is only set for rewind event."""
