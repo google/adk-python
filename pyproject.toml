@@ -137,6 +137,7 @@ test = [
   "pytest>=9.0.0,<10.0.0",
   "python-multipart>=0.0.9",
   "rouge-score>=0.1.2",
+  "slack-bolt>=1.22.0",
   "tabulate>=0.9.0",
   # go/keep-sorted end
 ]
@@ -170,6 +171,8 @@ extensions = [
 otel-gcp = ["opentelemetry-instrumentation-google-genai>=0.6b0, <1.0.0"]
 
 toolbox = ["toolbox-adk>=0.7.0, <0.8.0"]
+
+slack = ["slack-bolt>=1.22.0"]
 
 [tool.pyink]
 # Format py files following Google style-guide
