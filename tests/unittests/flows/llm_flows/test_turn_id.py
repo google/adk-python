@@ -15,7 +15,7 @@
 """Tests for the turn_id field on streaming events."""
 
 from typing import AsyncGenerator
-from typing import override
+from typing_extensions import override
 
 from google.adk.agents.llm_agent import Agent
 from google.adk.flows.llm_flows.base_llm_flow import BaseLlmFlow
@@ -125,9 +125,7 @@ async def test_different_llm_calls_get_different_turn_ids():
       content=types.Content(
           role='model',
           parts=[
-              types.Part.from_function_call(
-                  name='my_tool', args={'x': '1'}
-              )
+              types.Part.from_function_call(name='my_tool', args={'x': '1'})
           ],
       ),
       partial=False,
@@ -164,6 +162,7 @@ async def test_different_llm_calls_get_different_turn_ids():
   assert len(events_with_turn_id) >= 2
   turn_ids = sorted({e.turn_id for e in events_with_turn_id})
   # Must have consecutive integer turn_ids from separate LLM calls
-  assert turn_ids == [1, 2], (
-      f'Expected turn_ids [1, 2] for two LLM calls, got: {turn_ids}'
-  )
+  assert turn_ids == [
+      1,
+      2,
+  ], f'Expected turn_ids [1, 2] for two LLM calls, got: {turn_ids}'
