@@ -958,7 +958,9 @@ class TestEventData:
     assert final[0].output == {'answer': 'hello'}
     assert final[0].actions.state_delta['result'] == {'answer': 'hello'}
 
-  @pytest.mark.skip(reason='event.output not set for task mode with output_schema yet')
+  @pytest.mark.skip(
+      reason='event.output not set for task mode with output_schema yet'
+  )
   @pytest.mark.asyncio
   async def test_sets_event_data_task_mode_with_output_schema(self):
     """task mode agent with output_schema sets event.output."""
