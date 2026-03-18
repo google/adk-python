@@ -16,6 +16,8 @@ from __future__ import annotations
 
 """Tool for web browse."""
 
+from urllib.parse import urlparse
+
 import requests
 
 
@@ -30,8 +32,20 @@ def load_web_page(url: str) -> str:
   """
   from bs4 import BeautifulSoup
 
-  # Set allow_redirects=False to prevent SSRF attacks via redirection.
-  response = requests.get(url, allow_redirects=False)
+  parsed = urlparse(url)
+  if parsed.scheme not in ('http', 'https'):
+    return (
+        f'Invalid URL scheme: {parsed.scheme}. Only http and https are'
+        ' supported.'
+    )
+
+  try:
+    # Set allow_redirects=False to prevent SSRF attacks via redirection.
+    response = requests.get(url, allow_redirects=False, timeout=10)
+  except requests.exceptions.Timeout:
+    return f'Request timed out when fetching url: {url}'
+  except requests.exceptions.ConnectionError:
+    return f'Connection error when fetching url: {url}'
 
   if response.status_code == 200:
     soup = BeautifulSoup(response.content, 'lxml')
