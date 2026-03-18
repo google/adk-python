@@ -22,6 +22,8 @@ needed during workflow execution.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import sys
 from typing import Any
 from typing import AsyncGenerator
 from typing import Callable
@@ -49,6 +51,29 @@ from .utils._node_path_utils import is_descendant
 from .utils._node_path_utils import is_direct_child
 from .utils._node_path_utils import join_paths
 from .utils._workflow_hitl_utils import create_request_input_event
+
+if sys.version_info >= (3, 11):
+  _timeout_context = asyncio.timeout
+else:
+  try:
+    from async_timeout import timeout as _timeout_context
+  except ImportError:
+
+    @contextlib.asynccontextmanager
+    async def _timeout_context(delay):
+      """Fallback for Python <3.11 without async_timeout."""
+      if delay is None:
+        yield
+        return
+      task = asyncio.current_task()
+      loop = asyncio.get_running_loop()
+      handle = loop.call_later(delay, task.cancel)
+      try:
+        yield
+      except asyncio.CancelledError:
+        raise TimeoutError(f'Node timed out after {delay}s') from None
+      finally:
+        handle.cancel()
 
 
 def _schedule_node(
@@ -336,7 +361,7 @@ async def _node_runner(
   try:
     timeout = getattr(node, 'timeout', None)
     data_event_count = 0
-    async with asyncio.timeout(timeout):
+    async with _timeout_context(timeout):
       async for event in _execute_node(
           node=node,
           ctx=run_state.ctx,
@@ -409,7 +434,7 @@ async def _node_runner(
             has_output=has_output,
         )
     )
-  except TimeoutError:
+  except (TimeoutError, asyncio.TimeoutError):
     await run_state.event_queue.put(
         _NodeCompletion(
             node_name=node_name,
