@@ -149,8 +149,10 @@ def _load_skill_from_dir(skill_dir: Union[str, pathlib.Path]) -> models.Skill:
   # Use model_validate to handle aliases like allowed-tools
   frontmatter = models.Frontmatter.model_validate(parsed)
 
-  # Validate that skill name matches the directory name
-  if skill_dir.name != frontmatter.name:
+  # Validate that skill name matches the directory name.
+  # Allow underscore directories to match kebab-case frontmatter names,
+  # since Python cannot import modules whose names contain hyphens.
+  if skill_dir.name.replace("_", "-") != frontmatter.name:
     raise ValueError(
         f"Skill name '{frontmatter.name}' does not match directory"
         f" name '{skill_dir.name}'."
@@ -222,7 +224,7 @@ def _validate_skill_dir(
     problems.append(f"Frontmatter validation error: {e}")
     return problems
 
-  if skill_dir.name != frontmatter.name:
+  if skill_dir.name.replace("_", "-") != frontmatter.name:
     problems.append(
         f"Skill name '{frontmatter.name}' does not match directory"
         f" name '{skill_dir.name}'."
@@ -281,7 +283,7 @@ def _list_skills_in_dir(
     skill_id = skill_dir.name
     try:
       frontmatter = _read_skill_properties(skill_dir)
-      if skill_id != frontmatter.name:
+      if skill_id.replace("_", "-") != frontmatter.name:
         raise ValueError(
             f"Skill name '{frontmatter.name}' does not match directory"
             f" name '{skill_id}'."
@@ -387,7 +389,7 @@ def _load_skill_from_gcs_dir(
 
   # Validate that skill name matches the directory name
   skill_name_expected = skill_id.strip("/").split("/")[-1]
-  if skill_name_expected != frontmatter.name:
+  if skill_name_expected.replace("_", "-") != frontmatter.name:
     raise ValueError(
         f"Skill name '{frontmatter.name}' does not match directory"
         f" name '{skill_name_expected}'."
