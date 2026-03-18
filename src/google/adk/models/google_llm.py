@@ -54,7 +54,7 @@ _EXCLUDED_PART_FIELD = {'inline_data': {'data'}}
 _RESOURCE_EXHAUSTED_POSSIBLE_FIX_MESSAGE = """
 On how to mitigate this issue, please refer to:
 
-https://google.github.io/adk-docs/agents/models/#error-code-429-resource_exhausted
+https://google.github.io/adk-docs/agents/models/google-gemini/#error-code-429-resource_exhausted
 """
 
 
