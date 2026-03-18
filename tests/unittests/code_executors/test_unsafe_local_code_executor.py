@@ -121,3 +121,13 @@ class TestUnsafeLocalCodeExecutor:
 
     assert result.stderr == ""
     assert result.stdout == "hi ada\n"
+
+  def test_execute_code_timeout(
+      self, mock_invocation_context: InvocationContext
+  ):
+    executor = UnsafeLocalCodeExecutor(timeout_seconds=1)
+    code_input = CodeExecutionInput(code="import time\ntime.sleep(2)")
+    result = executor.execute_code(mock_invocation_context, code_input)
+
+    assert result.stdout == ""
+    assert "Code execution timed out after 1 seconds." in result.stderr

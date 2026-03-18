@@ -1088,6 +1088,48 @@ class TestRestApiTool:
       else:
         assert call_kwargs["verify"] == expected_verify_in_call
 
+  async def test_request_uses_no_default_timeout(
+      self,
+      mock_tool_context,
+      sample_endpoint,
+      sample_operation,
+      sample_auth_scheme,
+      sample_auth_credential,
+  ):
+    """Test that _request creates AsyncClient with timeout=None.
+
+    httpx defaults to a 5-second timeout, which is too short for many
+    real-world API calls. Verify that we explicitly disable the timeout
+    to match the previous requests-library behavior (no timeout).
+    Regression test for https://github.com/google/adk-python/issues/4431.
+    """
+    mock_response = mock.create_autospec(requests.Response, instance=True)
+    mock_response.json.return_value = {"result": "success"}
+    mock_response.configure_mock(status_code=200)
+
+    mock_client = mock.create_autospec(
+        httpx.AsyncClient, instance=True, spec_set=True
+    )
+    mock_client.request = AsyncMock(return_value=mock_response)
+
+    tool = RestApiTool(
+        name="test_tool",
+        description="Test Tool",
+        endpoint=sample_endpoint,
+        operation=sample_operation,
+        auth_scheme=sample_auth_scheme,
+        auth_credential=sample_auth_credential,
+    )
+
+    with patch.object(
+        httpx, "AsyncClient", return_value=mock_client, autospec=True
+    ) as mock_async_client:
+      await tool.call(args={}, tool_context=mock_tool_context)
+
+      assert mock_async_client.called
+      _, call_kwargs = mock_async_client.call_args
+      assert call_kwargs["timeout"] is None
+
   async def test_call_with_configure_verify(
       self,
       mock_tool_context,
