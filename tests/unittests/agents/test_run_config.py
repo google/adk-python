@@ -15,8 +15,10 @@
 import sys
 from unittest.mock import ANY
 from unittest.mock import patch
+import warnings
 
 from google.adk.agents.run_config import RunConfig
+from google.genai import types
 import pytest
 
 
@@ -64,3 +66,26 @@ def test_audio_transcription_configs_are_not_shared_between_instances():
   assert (
       config1.input_audio_transcription is not config2.input_audio_transcription
   )
+
+
+def test_response_modalities_accepts_enum():
+  config = RunConfig(response_modalities=[types.Modality.AUDIO])
+  assert config.response_modalities == [types.Modality.AUDIO]
+  assert isinstance(config.response_modalities[0], types.Modality)
+
+
+def test_response_modalities_coerces_string_to_enum():
+  config = RunConfig(response_modalities=["AUDIO"])
+  assert config.response_modalities == [types.Modality.AUDIO]
+  assert isinstance(config.response_modalities[0], types.Modality)
+
+
+def test_response_modalities_serialization_no_warning():
+  config = RunConfig(response_modalities=[types.Modality.AUDIO])
+  with warnings.catch_warnings(record=True) as w:
+    warnings.simplefilter("always")
+    config.model_dump()
+    pydantic_warnings = [
+        x for x in w if "PydanticSerializationUnexpectedValue" in str(x.message)
+    ]
+    assert len(pydantic_warnings) == 0
