@@ -29,8 +29,8 @@ from typing import Generator
 from typing import Optional
 from typing import TYPE_CHECKING
 
-import google.auth
 from google.adk import version as adk_version
+import google.auth
 from google.genai import types
 import httpx
 import tenacity
