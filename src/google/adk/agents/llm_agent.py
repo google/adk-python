@@ -331,7 +331,9 @@ class LlmAgent(_Mesh, BaseLlmAgent):
       return
 
     set_output_key = bool(self.output_key)
-    set_event_output = self.mode == 'single_turn' or (self.mode == 'task' and self.output_schema)
+    set_event_output = self.mode == 'single_turn' or (
+        self.mode == 'task' and self.output_schema
+    )
 
     if not set_output_key and not set_event_output:
       return
