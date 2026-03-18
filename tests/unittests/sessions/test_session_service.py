@@ -657,28 +657,27 @@ async def test_append_event_to_stale_session():
     assert len(original_session.events) == 1
     assert 'sk2' not in original_session.state
 
-    # Appending another event to stale original_session
+    # Appending another event to stale original_session should be rejected.
     event3 = Event(
         invocation_id='inv3',
         author='user',
         timestamp=current_time + 3,
         actions=EventActions(state_delta={'sk3': 'v3'}),
     )
-    await session_service.append_event(original_session, event3)
+    with pytest.raises(ValueError, match='modified in storage'):
+      await session_service.append_event(original_session, event3)
 
-    # If we fetch session from DB, it should contain all 3 events and all state
-    # changes.
+    # If we fetch session from DB, it should only contain the committed events.
     session_final = await session_service.get_session(
         app_name=app_name, user_id=user_id, session_id=original_session.id
     )
-    assert len(session_final.events) == 3
+    assert len(session_final.events) == 2
     assert session_final.state.get('sk1') == 'v1'
     assert session_final.state.get('sk2') == 'v2'
-    assert session_final.state.get('sk3') == 'v3'
+    assert session_final.state.get('sk3') is None
     assert [e.invocation_id for e in session_final.events] == [
         'inv1',
         'inv2',
-        'inv3',
     ]
 
 
@@ -738,7 +737,7 @@ async def test_append_event_raises_if_user_state_row_missing():
 
 
 @pytest.mark.asyncio
-async def test_append_event_concurrent_stale_sessions_preserve_all_state():
+async def test_append_event_concurrent_stale_sessions_reject_stale_writer():
   session_service = get_session_service(
       service_type=SessionServiceType.DATABASE
   )
@@ -771,19 +770,103 @@ async def test_append_event_concurrent_stale_sessions_preserve_all_state():
           actions=EventActions(state_delta={f'sk{i}-2': f'v{i}-2'}),
       )
 
-      await asyncio.gather(
+      results = await asyncio.gather(
           session_service.append_event(stale_session_1, event_1),
           session_service.append_event(stale_session_2, event_2),
+          return_exceptions=True,
       )
+      errors = [result for result in results if isinstance(result, Exception)]
+      successes = [
+          result for result in results if not isinstance(result, Exception)
+      ]
+      assert len(successes) == 1
+      assert len(errors) == 1
+      assert isinstance(errors[0], ValueError)
+      assert 'modified in storage' in str(errors[0])
 
     session_final = await session_service.get_session(
         app_name=app_name, user_id=user_id, session_id=session.id
     )
 
     for i in range(iteration_count):
-      assert session_final.state.get(f'sk{i}-1') == f'v{i}-1'
-      assert session_final.state.get(f'sk{i}-2') == f'v{i}-2'
-    assert len(session_final.events) == iteration_count * 2
+      event_values = {
+          session_final.state.get(f'sk{i}-1'),
+          session_final.state.get(f'sk{i}-2'),
+      }
+      assert event_values & {f'v{i}-1', f'v{i}-2'}
+      assert None in event_values
+    assert len(session_final.events) == iteration_count
+
+
+@pytest.mark.asyncio
+async def test_append_event_allows_timestamp_drift_for_current_session():
+  service = DatabaseSessionService('sqlite+aiosqlite:///:memory:')
+  try:
+    session = await service.create_session(
+        app_name='my_app', user_id='user', session_id='s1'
+    )
+    event1 = Event(
+        invocation_id='inv1',
+        author='user',
+        timestamp=session.last_update_time + 10,
+    )
+    await service.append_event(session, event1)
+
+    # Simulate a float round-trip mismatch without changing the persisted
+    # session revision.
+    session.last_update_time -= 0.0001
+
+    event2 = Event(
+        invocation_id='inv2',
+        author='user',
+        timestamp=event1.timestamp + 10,
+    )
+    await service.append_event(session, event2)
+
+    refreshed_session = await service.get_session(
+        app_name='my_app', user_id='user', session_id=session.id
+    )
+    assert [event.invocation_id for event in refreshed_session.events] == [
+        'inv1',
+        'inv2',
+    ]
+  finally:
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_append_event_allows_markerless_current_session():
+  service = DatabaseSessionService('sqlite+aiosqlite:///:memory:')
+  try:
+    session = await service.create_session(
+        app_name='my_app', user_id='user', session_id='s1'
+    )
+    event1 = Event(
+        invocation_id='inv1',
+        author='user',
+        timestamp=session.last_update_time + 10,
+    )
+    await service.append_event(session, event1)
+
+    session._storage_update_marker = None
+    session.last_update_time -= 0.0001
+
+    event2 = Event(
+        invocation_id='inv2',
+        author='user',
+        timestamp=event1.timestamp + 10,
+    )
+    await service.append_event(session, event2)
+
+    refreshed_session = await service.get_session(
+        app_name='my_app', user_id='user', session_id=session.id
+    )
+    assert [event.invocation_id for event in refreshed_session.events] == [
+        'inv1',
+        'inv2',
+    ]
+  finally:
+    await service.close()
 
 
 @pytest.mark.asyncio
