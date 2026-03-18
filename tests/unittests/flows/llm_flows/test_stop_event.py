@@ -16,7 +16,7 @@
 
 import asyncio
 from typing import AsyncGenerator
-from typing import override
+from typing_extensions import override
 
 from google.adk.agents.llm_agent import Agent
 from google.adk.flows.llm_flows.base_llm_flow import BaseLlmFlow
@@ -145,9 +145,7 @@ async def test_stop_event_prevents_next_llm_call():
       content=types.Content(
           role='model',
           parts=[
-              types.Part.from_function_call(
-                  name='my_tool', args={'x': '1'}
-              )
+              types.Part.from_function_call(name='my_tool', args={'x': '1'})
           ],
       ),
       partial=False,
