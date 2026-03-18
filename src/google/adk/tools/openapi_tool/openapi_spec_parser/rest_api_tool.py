@@ -571,6 +571,7 @@ class RestApiTool(BaseTool):
 
 async def _request(**request_params) -> httpx.Response:
   async with httpx.AsyncClient(
-      verify=request_params.pop("verify", True)
+      verify=request_params.pop("verify", True),
+      timeout=None,
   ) as client:
     return await client.request(**request_params)
