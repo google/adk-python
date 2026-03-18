@@ -99,9 +99,16 @@ def test_name_consecutive_hyphens():
     models.Frontmatter(name="my--skill", description="desc")
 
 
-def test_name_invalid_chars_underscore():
-  with pytest.raises(ValidationError, match="lowercase kebab-case"):
-    models.Frontmatter(name="my_skill", description="desc")
+def test_name_underscore_normalized_to_kebab():
+  """Tests that underscores in name are normalized to hyphens."""
+  fm = models.Frontmatter(name="my_skill", description="desc")
+  assert fm.name == "my-skill"
+
+
+def test_name_mixed_underscore_hyphen():
+  """Tests mixed underscores and hyphens are normalized."""
+  fm = models.Frontmatter(name="my_cool-skill", description="desc")
+  assert fm.name == "my-cool-skill"
 
 
 def test_name_invalid_chars_ampersand():
