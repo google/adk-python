@@ -16,7 +16,12 @@ from __future__ import annotations
 
 """Tool for web browse."""
 
+from urllib.parse import urlparse
+
 import requests
+
+# Default timeout in seconds for HTTP requests.
+_DEFAULT_TIMEOUT_SECONDS = 10
 
 
 def load_web_page(url: str) -> str:
@@ -30,8 +35,21 @@ def load_web_page(url: str) -> str:
   """
   from bs4 import BeautifulSoup
 
-  # Set allow_redirects=False to prevent SSRF attacks via redirection.
-  response = requests.get(url, allow_redirects=False)
+  parsed = urlparse(url)
+  if parsed.scheme not in ('http', 'https'):
+    return (
+        f'Invalid URL scheme: {parsed.scheme}. Only http and https are allowed.'
+    )
+
+  try:
+    # Set allow_redirects=False to prevent SSRF attacks via redirection.
+    response = requests.get(
+        url, allow_redirects=False, timeout=_DEFAULT_TIMEOUT_SECONDS
+    )
+  except requests.exceptions.Timeout:
+    return f'Request timed out while fetching url: {url}'
+  except requests.exceptions.ConnectionError:
+    return f'Connection error while fetching url: {url}'
 
   if response.status_code == 200:
     soup = BeautifulSoup(response.content, 'lxml')
