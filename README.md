@@ -51,7 +51,7 @@ ______________________________________________________________________
 pip install google-adk==2.0.0a1
 ```
 
-**Requirements:** Python 3.10+ (Python 3.11+ recommended).
+**Requirements:** Python 3.11+.
 
 ## Quick Start
 

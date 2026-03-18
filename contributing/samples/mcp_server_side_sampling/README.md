@@ -22,7 +22,7 @@ The flow is as follows:
 
 ### Prerequisites
 
-- Python 3.10+
+- Python 3.11+
 - `google-adk` library installed.
 - A configured OpenAI API key.
 

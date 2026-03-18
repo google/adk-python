@@ -10,7 +10,7 @@ Set up the local development environment for ADK Python.
 
 Check the following before proceeding:
 
-1. **Python 3.10+** (3.11+ strongly recommended)
+1. **Python 3.11+**
 
    ```bash
    python3 --version

@@ -169,7 +169,7 @@ automatically discover and load agents without additional configuration.
 
 **Minimum requirements:**
 
-- Python 3.10+ (**Python 3.11+ strongly recommended** for best performance)
+- Python 3.11+
 - `uv` package manager (**required** - faster than pip/venv)
 
 **Install uv if not already installed:** `bash curl -LsSf
