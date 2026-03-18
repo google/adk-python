@@ -37,6 +37,7 @@ class FeatureName(str, Enum):
   COMPUTER_USE = "COMPUTER_USE"
   DATA_AGENT_TOOL_CONFIG = "DATA_AGENT_TOOL_CONFIG"
   DATA_AGENT_TOOLSET = "DATA_AGENT_TOOLSET"
+  ENVIRONMENT_SIMULATION = "ENVIRONMENT_SIMULATION"
   GOOGLE_CREDENTIALS_CONFIG = "GOOGLE_CREDENTIALS_CONFIG"
   GOOGLE_TOOL = "GOOGLE_TOOL"
   JSON_SCHEMA_FOR_FUNC_DECL = "JSON_SCHEMA_FOR_FUNC_DECL"
@@ -45,6 +46,7 @@ class FeatureName(str, Enum):
   PUBSUB_TOOLSET = "PUBSUB_TOOLSET"
   SKILL_TOOLSET = "SKILL_TOOLSET"
   SPANNER_TOOLSET = "SPANNER_TOOLSET"
+  SPANNER_ADMIN_TOOLSET = "SPANNER_ADMIN_TOOLSET"
   SPANNER_TOOL_SETTINGS = "SPANNER_TOOL_SETTINGS"
   SPANNER_VECTOR_STORE = "SPANNER_VECTOR_STORE"
   TOOL_CONFIG = "TOOL_CONFIG"
@@ -115,6 +117,9 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
     FeatureName.DATA_AGENT_TOOLSET: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
+    FeatureName.ENVIRONMENT_SIMULATION: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
     FeatureName.GOOGLE_CREDENTIALS_CONFIG: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
@@ -134,6 +139,9 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
     FeatureName.SKILL_TOOLSET: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
+    FeatureName.SPANNER_ADMIN_TOOLSET: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
     FeatureName.SPANNER_TOOLSET: FeatureConfig(

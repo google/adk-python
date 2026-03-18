@@ -6,7 +6,10 @@
 #
 #     http://www.apache.org/licenses/LICENSE-2.0
 #
-# Unless required by applicable law of a-specific language governing permissions and
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
 # limitations under the License.
 
 import logging
@@ -14,31 +17,31 @@ from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
-from google.adk.tools.agent_simulator.agent_simulator_config import AgentSimulatorConfig
-from google.adk.tools.agent_simulator.agent_simulator_config import InjectedError
-from google.adk.tools.agent_simulator.agent_simulator_config import InjectionConfig
-from google.adk.tools.agent_simulator.agent_simulator_config import MockStrategy
-from google.adk.tools.agent_simulator.agent_simulator_config import ToolSimulationConfig
-from google.adk.tools.agent_simulator.agent_simulator_engine import AgentSimulatorEngine
+from google.adk.tools.environment_simulation.environment_simulation_config import EnvironmentSimulationConfig
+from google.adk.tools.environment_simulation.environment_simulation_config import InjectedError
+from google.adk.tools.environment_simulation.environment_simulation_config import InjectionConfig
+from google.adk.tools.environment_simulation.environment_simulation_config import MockStrategy
+from google.adk.tools.environment_simulation.environment_simulation_config import ToolSimulationConfig
+from google.adk.tools.environment_simulation.environment_simulation_engine import EnvironmentSimulationEngine
 from google.genai import types as genai_types
 import pytest
 
 
 @patch(
-    "google.adk.tools.agent_simulator.agent_simulator_engine.ToolConnectionAnalyzer"
+    "google.adk.tools.environment_simulation.environment_simulation_engine.ToolConnectionAnalyzer"
 )
 @patch(
-    "google.adk.tools.agent_simulator.agent_simulator_engine._create_mock_strategy"
+    "google.adk.tools.environment_simulation.environment_simulation_engine._create_mock_strategy"
 )
 @pytest.mark.asyncio
-class TestAgentSimulatorEngineSimulate:
-  """Test cases for the simulate method of AgentSimulatorEngine."""
+class TestEnvironmentSimulationEngineSimulate:
+  """Test cases for the simulate method of EnvironmentSimulationEngine."""
 
   async def test_simulate_no_op_for_unconfigured_tool(
       self, mock_create_strategy, mock_analyzer
   ):
     """Test that simulate returns None for a tool not in the config."""
-    config = AgentSimulatorConfig(
+    config = EnvironmentSimulationConfig(
         tool_simulation_configs=[
             ToolSimulationConfig(
                 tool_name="configured_tool",
@@ -48,7 +51,7 @@ class TestAgentSimulatorEngineSimulate:
         simulation_model="test-model",
         simulation_model_configuration=genai_types.GenerateContentConfig(),
     )
-    engine = AgentSimulatorEngine(config)
+    engine = EnvironmentSimulationEngine(config)
     mock_tool = MagicMock()
     mock_tool.name = "unconfigured_tool"
     result = await engine.simulate(mock_tool, {}, MagicMock())
@@ -58,7 +61,7 @@ class TestAgentSimulatorEngineSimulate:
       self, mock_create_strategy, mock_analyzer
   ):
     """Test that an injection is applied when match_args match."""
-    config = AgentSimulatorConfig(
+    config = EnvironmentSimulationConfig(
         tool_simulation_configs=[
             ToolSimulationConfig(
                 tool_name="test_tool",
@@ -73,7 +76,7 @@ class TestAgentSimulatorEngineSimulate:
         simulation_model="test-model",
         simulation_model_configuration=genai_types.GenerateContentConfig(),
     )
-    engine = AgentSimulatorEngine(config)
+    engine = EnvironmentSimulationEngine(config)
     mock_tool = MagicMock()
     mock_tool.name = "test_tool"
     result = await engine.simulate(mock_tool, {"param": "value"}, MagicMock())
@@ -86,7 +89,7 @@ class TestAgentSimulatorEngineSimulate:
     mock_strategy_instance = MagicMock()
     mock_strategy_instance.mock = AsyncMock(return_value={"mocked": True})
     mock_create_strategy.return_value = mock_strategy_instance
-    config = AgentSimulatorConfig(
+    config = EnvironmentSimulationConfig(
         tool_simulation_configs=[
             ToolSimulationConfig(
                 tool_name="test_tool",
@@ -102,7 +105,7 @@ class TestAgentSimulatorEngineSimulate:
         simulation_model="test-model",
         simulation_model_configuration=genai_types.GenerateContentConfig(),
     )
-    engine = AgentSimulatorEngine(config)
+    engine = EnvironmentSimulationEngine(config)
     mock_tool = MagicMock()
     mock_tool.name = "test_tool"
     result = await engine.simulate(
@@ -120,7 +123,7 @@ class TestAgentSimulatorEngineSimulate:
       self, mock_create_strategy, mock_analyzer, caplog
   ):
     """Test for no-op and warning when no injection hits and mock strategy is unspecified."""
-    config = AgentSimulatorConfig(
+    config = EnvironmentSimulationConfig(
         tool_simulation_configs=[
             ToolSimulationConfig(
                 tool_name="test_tool",
@@ -136,12 +139,14 @@ class TestAgentSimulatorEngineSimulate:
         simulation_model="test-model",
         simulation_model_configuration=genai_types.GenerateContentConfig(),
     )
-    engine = AgentSimulatorEngine(config)
+    engine = EnvironmentSimulationEngine(config)
     mock_tool = MagicMock()
     mock_tool.name = "test_tool"
 
-    caplog.set_level(logging.WARNING, logger="agent_simulator_logger")
-    with caplog.at_level(logging.WARNING, logger="agent_simulator_logger"):
+    caplog.set_level(logging.WARNING, logger="environment_simulation_logger")
+    with caplog.at_level(
+        logging.WARNING, logger="environment_simulation_logger"
+    ):
       result = await engine.simulate(
           mock_tool, {"param": "different_value"}, MagicMock()
       )
@@ -161,7 +166,7 @@ class TestAgentSimulatorEngineSimulate:
     mock_strategy_instance = MagicMock()
     mock_strategy_instance.mock = AsyncMock(return_value={"mocked": True})
     mock_create_strategy.return_value = mock_strategy_instance
-    config_mocked = AgentSimulatorConfig(
+    config_mocked = EnvironmentSimulationConfig(
         tool_simulation_configs=[
             ToolSimulationConfig(
                 tool_name="test_tool",
@@ -178,7 +183,7 @@ class TestAgentSimulatorEngineSimulate:
         simulation_model="test-model",
         simulation_model_configuration=genai_types.GenerateContentConfig(),
     )
-    engine_mocked = AgentSimulatorEngine(config_mocked)
+    engine_mocked = EnvironmentSimulationEngine(config_mocked)
     mock_tool = MagicMock()
     mock_tool.name = "test_tool"
 
@@ -195,7 +200,7 @@ class TestAgentSimulatorEngineSimulate:
     mock_strategy_instance.mock.reset_mock()
 
     # With seed=100, random.random() is < 0.5, so this WILL be injected.
-    config_injected = AgentSimulatorConfig(
+    config_injected = EnvironmentSimulationConfig(
         tool_simulation_configs=[
             ToolSimulationConfig(
                 tool_name="test_tool",
@@ -212,7 +217,7 @@ class TestAgentSimulatorEngineSimulate:
         simulation_model="test-model",
         simulation_model_configuration=genai_types.GenerateContentConfig(),
     )
-    engine_injected = AgentSimulatorEngine(config_injected)
+    engine_injected = EnvironmentSimulationEngine(config_injected)
     result2 = await engine_injected.simulate(mock_tool, {}, MagicMock())
     assert result2 == {"injected": True}
     mock_create_strategy.assert_not_called()
