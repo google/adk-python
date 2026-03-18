@@ -46,7 +46,7 @@ def _decode_page_token(token: Optional[str]) -> int:
     return 0
   try:
     return max(0, int(base64.b64decode(token).decode()))
-  except (ValueError, Exception):
+  except (ValueError, TypeError):
     return 0
 
 
