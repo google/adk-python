@@ -363,7 +363,7 @@ class TestStreamingResponseAggregator:
       assert len(results_empty) == 1
       for p in results_empty[0].content.parts:
         if p.text is not None:
-          assert p.text != '', (
+          assert p.text != "", (
               "Empty text part was not stripped — this causes the flow layer "
               "to treat it as a final response and skip tool execution"
           )
@@ -403,4 +403,6 @@ class TestStreamingResponseAggregator:
       assert any(p.function_call for p in closed.content.parts)
       for p in closed.content.parts:
         if p.text is not None:
-          assert p.text != '', "Empty text part leaked into progressive aggregation"
+          assert (
+              p.text != ""
+          ), "Empty text part leaked into progressive aggregation"
