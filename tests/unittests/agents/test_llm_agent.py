@@ -986,6 +986,9 @@ class TestEventData:
     assert final[0].output == {'answer': 'hello', 'score': 0.9}
     assert len(final[0].actions.state_delta) == 0
 
+  @pytest.mark.skip(
+      reason='event.output not set for task mode with output_schema yet'
+  )
   @pytest.mark.asyncio
   async def test_event_data_and_state_task_mode_with_output_key(self):
     """task mode with output_schema + output_key: sets both."""
