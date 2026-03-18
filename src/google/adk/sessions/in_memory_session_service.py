@@ -28,6 +28,9 @@ from ..events.event import Event
 from .base_session_service import BaseSessionService
 from .base_session_service import GetSessionConfig
 from .base_session_service import ListSessionsResponse
+from .base_session_service import _decode_page_token
+from .base_session_service import _encode_page_token
+from .base_session_service import _resolve_page_size
 from .session import Session
 from .state import State
 
@@ -220,18 +223,43 @@ class InMemorySessionService(BaseSessionService):
 
   @override
   async def list_sessions(
-      self, *, app_name: str, user_id: Optional[str] = None
+      self,
+      *,
+      app_name: str,
+      user_id: Optional[str] = None,
+      page_size: Optional[int] = None,
+      page_token: Optional[str] = None,
   ) -> ListSessionsResponse:
-    return self._list_sessions_impl(app_name=app_name, user_id=user_id)
+    return self._list_sessions_impl(
+        app_name=app_name,
+        user_id=user_id,
+        page_size=page_size,
+        page_token=page_token,
+    )
 
   def list_sessions_sync(
-      self, *, app_name: str, user_id: Optional[str] = None
+      self,
+      *,
+      app_name: str,
+      user_id: Optional[str] = None,
+      page_size: Optional[int] = None,
+      page_token: Optional[str] = None,
   ) -> ListSessionsResponse:
     logger.warning('Deprecated. Please migrate to the async method.')
-    return self._list_sessions_impl(app_name=app_name, user_id=user_id)
+    return self._list_sessions_impl(
+        app_name=app_name,
+        user_id=user_id,
+        page_size=page_size,
+        page_token=page_token,
+    )
 
   def _list_sessions_impl(
-      self, *, app_name: str, user_id: Optional[str] = None
+      self,
+      *,
+      app_name: str,
+      user_id: Optional[str] = None,
+      page_size: Optional[int] = None,
+      page_token: Optional[str] = None,
   ) -> ListSessionsResponse:
     empty_response = ListSessionsResponse()
     if app_name not in self.sessions:
@@ -239,23 +267,40 @@ class InMemorySessionService(BaseSessionService):
     if user_id is not None and user_id not in self.sessions[app_name]:
       return empty_response
 
-    sessions_without_events = []
+    all_sessions = []
 
     if user_id is None:
-      for user_id in self.sessions[app_name]:
-        for session_id in self.sessions[app_name][user_id]:
-          session = self.sessions[app_name][user_id][session_id]
+      for uid in self.sessions[app_name]:
+        for session_id in self.sessions[app_name][uid]:
+          session = self.sessions[app_name][uid][session_id]
           copied_session = copy.deepcopy(session)
           copied_session.events = []
-          copied_session = self._merge_state(app_name, user_id, copied_session)
-          sessions_without_events.append(copied_session)
+          copied_session = self._merge_state(app_name, uid, copied_session)
+          all_sessions.append(copied_session)
     else:
       for session in self.sessions[app_name][user_id].values():
         copied_session = copy.deepcopy(session)
         copied_session.events = []
         copied_session = self._merge_state(app_name, user_id, copied_session)
-        sessions_without_events.append(copied_session)
-    return ListSessionsResponse(sessions=sessions_without_events)
+        all_sessions.append(copied_session)
+
+    # Sort by last_update_time descending (most recently updated first)
+    all_sessions.sort(
+        key=lambda s: s.last_update_time if s.last_update_time else 0,
+        reverse=True,
+    )
+
+    effective_page_size = _resolve_page_size(page_size)
+    offset = _decode_page_token(page_token)
+
+    page = all_sessions[offset : offset + effective_page_size]
+    has_next_page = (offset + effective_page_size) < len(all_sessions)
+    next_page_token = (
+        _encode_page_token(offset + effective_page_size)
+        if has_next_page
+        else None
+    )
+    return ListSessionsResponse(sessions=page, next_page_token=next_page_token)
 
   @override
   async def delete_session(
