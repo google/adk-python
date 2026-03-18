@@ -11,19 +11,3 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
-from __future__ import annotations
-
-import warnings
-
-from google.adk.tools.environment_simulation.tool_connection_map import StatefulParameter
-from google.adk.tools.environment_simulation.tool_connection_map import ToolConnectionMap
-
-warnings.warn(
-    "google.adk.tools.agent_simulator.tool_connection_map is moved to"
-    " google.adk.tools.environment_simulation.tool_connection_map",
-    DeprecationWarning,
-    stacklevel=2,
-)
-
-__all__ = ["StatefulParameter", "ToolConnectionMap"]
