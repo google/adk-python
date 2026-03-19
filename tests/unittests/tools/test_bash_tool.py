@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
 from unittest import mock
 
 from google.adk.tools import bash_tool
@@ -201,9 +202,14 @@ class TestExecuteBashTool:
   @pytest.mark.asyncio
   async def test_timeout(self, workspace, tool_context_confirmed):
     tool = bash_tool.ExecuteBashTool(workspace=workspace)
-    with mock.patch(
-        "google.adk.tools.bash_tool.subprocess.run",
-        side_effect=__import__("subprocess").TimeoutExpired("cmd", 30),
+    mock_process = mock.AsyncMock()
+    with mock.patch.object(
+        asyncio,
+        "create_subprocess_exec",
+        autospec=True,
+        return_value=mock_process,
+    ), mock.patch.object(
+        asyncio, "wait_for", autospec=True, side_effect=asyncio.TimeoutError
     ):
       result = await tool.run_async(
           args={"command": "python scripts/do_thing.py"},
@@ -211,6 +217,7 @@ class TestExecuteBashTool:
       )
     assert "error" in result
     assert "timed out" in result["error"].lower()
+    mock_process.kill.assert_called_once()
 
   @pytest.mark.asyncio
   async def test_cwd_is_workspace(self, workspace, tool_context_confirmed):
