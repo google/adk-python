@@ -180,8 +180,10 @@ class LlmBackedUserSimulator(UserSimulator):
         user_persona=self._user_persona,
     )
 
+    config_model = self._config.model
+    model_str = config_model if isinstance(config_model, str) else config_model.model
     llm_request = LlmRequest(
-        model=self._config.model,
+        model=model_str,
         config=self._config.model_configuration,
         contents=[
             genai_types.Content(

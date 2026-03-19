@@ -327,8 +327,10 @@ class PerTurnUserSimulatorQualityV1(Evaluator):
         previous_invocations=invocation_history,
     )
 
+    judge_model = self._llm_options.judge_model
+    model_str = judge_model if isinstance(judge_model, str) else judge_model.model
     llm_request = LlmRequest(
-        model=self._llm_options.judge_model,
+        model=model_str,
         contents=[
             genai_types.Content(
                 parts=[genai_types.Part(text=auto_rater_prompt)],
