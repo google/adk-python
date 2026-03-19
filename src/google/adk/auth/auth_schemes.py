@@ -26,6 +26,7 @@ from fastapi.openapi.models import SecurityScheme
 from fastapi.openapi.models import SecuritySchemeType
 from pydantic import Field
 
+from ..integrations._iam_connectors.gcp_iam_connector_auth import GcpIamConnectorAuth
 from ..utils.feature_decorator import experimental
 
 
@@ -42,8 +43,9 @@ class OpenIdConnectWithConfig(SecurityBase):
   scopes: Optional[List[str]] = None
 
 
-# AuthSchemes contains SecuritySchemes from OpenAPI 3.0 and an extra flattened OpenIdConnectWithConfig.
-AuthScheme = Union[SecurityScheme, OpenIdConnectWithConfig]
+# AuthSchemes contains SecuritySchemes from OpenAPI 3.0, an extra flattened
+# OpenIdConnectWithConfig, and GCP managed auth.
+AuthScheme = Union[SecurityScheme, OpenIdConnectWithConfig, GcpIamConnectorAuth]
 
 
 class OAuthGrantType(str, Enum):

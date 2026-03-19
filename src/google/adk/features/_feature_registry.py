@@ -38,6 +38,7 @@ class FeatureName(str, Enum):
   DATA_AGENT_TOOL_CONFIG = "DATA_AGENT_TOOL_CONFIG"
   DATA_AGENT_TOOLSET = "DATA_AGENT_TOOLSET"
   ENVIRONMENT_SIMULATION = "ENVIRONMENT_SIMULATION"
+  GCP_IAM_CONNECTOR_AUTH = "GCP_IAM_CONNECTOR_AUTH"
   GOOGLE_CREDENTIALS_CONFIG = "GOOGLE_CREDENTIALS_CONFIG"
   GOOGLE_TOOL = "GOOGLE_TOOL"
   JSON_SCHEMA_FOR_FUNC_DECL = "JSON_SCHEMA_FOR_FUNC_DECL"
@@ -125,6 +126,9 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
     ),
     FeatureName.GOOGLE_TOOL: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
+    ),
+    FeatureName.GCP_IAM_CONNECTOR_AUTH: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=False
     ),
     FeatureName.JSON_SCHEMA_FOR_FUNC_DECL: FeatureConfig(
         FeatureStage.WIP, default_on=False

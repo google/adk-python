@@ -20,6 +20,10 @@ from typing import Optional
 from fastapi.openapi.models import OAuth2
 
 from ..agents.callback_context import CallbackContext
+from ..features import FeatureName
+from ..features import is_feature_enabled
+from ..integrations._iam_connectors.gcp_auth_provider import GcpAuthProvider
+from ..integrations._iam_connectors.gcp_iam_connector_auth import GcpIamConnectorAuth
 from ..tools.openapi_tool.auth.credential_exchangers.service_account_exchanger import ServiceAccountCredentialExchanger
 from ..utils.feature_decorator import experimental
 from .auth_credential import AuthCredential
@@ -86,6 +90,12 @@ class CredentialManager:
     self._exchanger_registry = CredentialExchangerRegistry()
     self._refresher_registry = CredentialRefresherRegistry()
     self._discovery_manager = OAuth2DiscoveryManager()
+
+    # Register auth providers
+    if is_feature_enabled(FeatureName.GCP_IAM_CONNECTOR_AUTH):
+      self._auth_provider_registry.register(
+          GcpIamConnectorAuth, GcpAuthProvider()
+      )
 
     # Register default exchangers and refreshers
     from .exchanger.oauth2_credential_exchanger import OAuth2CredentialExchanger
