@@ -903,7 +903,7 @@ async def _content_to_message_param(
         if part.text and part.thought_signature:
           sig = part.thought_signature
           if isinstance(sig, bytes):
-            sig = sig.decode("utf-8")
+            sig = base64.b64encode(sig).decode("utf-8")
           thinking_blocks.append({
               "type": "thinking",
               "thinking": part.text,

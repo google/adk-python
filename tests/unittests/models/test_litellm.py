@@ -4820,7 +4820,7 @@ def test_convert_reasoning_value_to_parts_flat_string_unchanged():
 
 @pytest.mark.asyncio
 async def test_content_to_message_param_anthropic_outputs_thinking_blocks():
-  """For Anthropic models, thinking_blocks are output instead of reasoning_content."""
+  """Anthropic model messages base64-encode thought signatures."""
   content = types.Content(
       role="model",
       parts=[
@@ -4839,10 +4839,45 @@ async def test_content_to_message_param_anthropic_outputs_thinking_blocks():
   assert result["thinking_blocks"] == [{
       "type": "thinking",
       "thinking": "deep thought",
-      "signature": "sig_round_trip",
+      "signature": "c2lnX3JvdW5kX3RyaXA=",
   }]
   assert result.get("reasoning_content") is None
   assert result["content"] == "Hello!"
+
+
+@pytest.mark.asyncio
+async def test_content_to_message_param_anthropic_model_round_trip_preserves_signature():
+  """Decoded signatures are re-encoded when rebuilding Anthropic messages."""
+  response_message = {
+      "role": "assistant",
+      "content": "Final answer",
+      "thinking_blocks": [{
+          "type": "thinking",
+          "thinking": "Let me reason...",
+          "signature": "c2lnX2E=",
+      }],
+  }
+
+  parts = _convert_reasoning_value_to_parts(
+      _extract_reasoning_value(response_message)
+  )
+  content = types.Content(
+      role="model",
+      parts=parts + [types.Part(text="Final answer")],
+  )
+
+  result = await _content_to_message_param(
+      content,
+      provider="anthropic",
+      model="anthropic/claude-4-sonnet",
+  )
+
+  assert result["thinking_blocks"] == [{
+      "type": "thinking",
+      "thinking": "Let me reason...",
+      "signature": "c2lnX2E=",
+  }]
+  assert result.get("reasoning_content") is None
 
 
 @pytest.mark.asyncio
