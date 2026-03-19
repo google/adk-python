@@ -14,14 +14,28 @@
 
 from .base_plugin import BasePlugin
 from .debug_logging_plugin import DebugLoggingPlugin
+from .governance_plugin import AuditEvent
+from .governance_plugin import AuditHandler
+from .governance_plugin import DelegationScope
+from .governance_plugin import GovernancePlugin
+from .governance_plugin import PolicyDecision
+from .governance_plugin import PolicyEvaluator
+from .governance_plugin import ToolPolicy
 from .logging_plugin import LoggingPlugin
 from .plugin_manager import PluginManager
 from .reflect_retry_tool_plugin import ReflectAndRetryToolPlugin
 
 __all__ = [
+    'AuditEvent',
+    'AuditHandler',
     'BasePlugin',
     'DebugLoggingPlugin',
+    'DelegationScope',
+    'GovernancePlugin',
     'LoggingPlugin',
     'PluginManager',
+    'PolicyDecision',
+    'PolicyEvaluator',
     'ReflectAndRetryToolPlugin',
+    'ToolPolicy',
 ]
