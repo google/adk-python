@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -17,7 +17,6 @@
 from __future__ import annotations
 
 from typing import AsyncGenerator
-from typing import Generator
 from typing import Optional
 from typing import TYPE_CHECKING
 
@@ -35,7 +34,6 @@ if TYPE_CHECKING:
   from ...models.llm_request import LlmRequest
   from ...models.llm_response import LlmResponse
   from ...planners.base_planner import BasePlanner
-  from ...planners.built_in_planner import BuiltInPlanner
 
 
 class _NlPlanningRequestProcessor(BaseLlmRequestProcessor):
@@ -52,14 +50,13 @@ class _NlPlanningRequestProcessor(BaseLlmRequestProcessor):
 
     if isinstance(planner, BuiltInPlanner):
       planner.apply_thinking_config(llm_request)
+    elif isinstance(planner, PlanReActPlanner):
+      if planning_instruction := planner.build_planning_instruction(
+          ReadonlyContext(invocation_context), llm_request
+      ):
+        llm_request.append_instructions([planning_instruction])
 
-    planning_instruction = planner.build_planning_instruction(
-        ReadonlyContext(invocation_context), llm_request
-    )
-    if planning_instruction:
-      llm_request.append_instructions([planning_instruction])
-
-    _remove_thought_from_request(llm_request)
+      _remove_thought_from_request(llm_request)
 
     # Maintain async generator behavior
     if False:  # Ensures it behaves as a generator
@@ -75,6 +72,8 @@ class _NlPlanningResponse(BaseLlmResponseProcessor):
   async def run_async(
       self, invocation_context: InvocationContext, llm_response: LlmResponse
   ) -> AsyncGenerator[Event, None]:
+    from ...planners.built_in_planner import BuiltInPlanner
+
     if (
         not llm_response
         or not llm_response.content
@@ -83,7 +82,7 @@ class _NlPlanningResponse(BaseLlmResponseProcessor):
       return
 
     planner = _get_planner(invocation_context)
-    if not planner:
+    if not planner or isinstance(planner, BuiltInPlanner):
       return
 
     # Postprocess the LLM response.
@@ -110,11 +109,10 @@ response_processor = _NlPlanningResponse()
 def _get_planner(
     invocation_context: InvocationContext,
 ) -> Optional[BasePlanner]:
-  from ...agents.llm_agent import Agent
   from ...planners.base_planner import BasePlanner
 
   agent = invocation_context.agent
-  if not isinstance(agent, Agent):
+  if not hasattr(agent, 'planner'):
     return None
   if not agent.planner:
     return None

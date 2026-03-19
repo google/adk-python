@@ -1,0 +1,5 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/google/adk-python/refs/heads/main/src/google/adk/agents/config_schemas/AgentConfig.json
+name: work_agent
+description: Work agent
+instruction: |
+  You are a work agent. You are responsible for answering questions about work.

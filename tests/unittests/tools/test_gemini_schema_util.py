@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -65,9 +65,16 @@ class TestToGeminiSchema:
             "nonnullable_string": {"type": ["string"]},
             "nullable_string": {"type": ["string", "null"]},
             "nullable_number": {"type": ["null", "integer"]},
+            "nullable_object": {"type": ["object", "null"]},
             "object_nullable": {"type": "null"},
             "multi_types_nullable": {"type": ["string", "null", "integer"]},
+            "only_null": {"type": "null"},
             "empty_default_object": {},
+            "empty_list_type": {"type": []},
+            "multi_type_with_array_nullable": {
+                "type": ["string", "array", "null"]
+            },
+            "multi_type_with_array_nonnullable": {"type": ["integer", "array"]},
         },
     }
     gemini_schema = _to_gemini_schema(openapi_schema)
@@ -84,14 +91,40 @@ class TestToGeminiSchema:
     assert gemini_schema.properties["nullable_number"].type == Type.INTEGER
     assert gemini_schema.properties["nullable_number"].nullable
 
+    assert gemini_schema.properties["nullable_object"].type == Type.OBJECT
+    assert gemini_schema.properties["nullable_object"].nullable
+
     assert gemini_schema.properties["object_nullable"].type == Type.OBJECT
     assert gemini_schema.properties["object_nullable"].nullable
 
     assert gemini_schema.properties["multi_types_nullable"].type == Type.STRING
     assert gemini_schema.properties["multi_types_nullable"].nullable
 
+    assert gemini_schema.properties["only_null"].type == Type.OBJECT
+    assert gemini_schema.properties["only_null"].nullable
+
+    assert gemini_schema.properties["multi_types_nullable"].type == Type.STRING
+    assert gemini_schema.properties["multi_types_nullable"].nullable
+
     assert gemini_schema.properties["empty_default_object"].type == Type.OBJECT
     assert gemini_schema.properties["empty_default_object"].nullable is None
+
+    assert gemini_schema.properties["empty_list_type"].type == Type.OBJECT
+    assert not gemini_schema.properties["empty_list_type"].nullable
+
+    assert (
+        gemini_schema.properties["multi_type_with_array_nullable"].type
+        == Type.ARRAY
+    )
+    assert gemini_schema.properties["multi_type_with_array_nullable"].nullable
+
+    assert (
+        gemini_schema.properties["multi_type_with_array_nonnullable"].type
+        == Type.ARRAY
+    )
+    assert not gemini_schema.properties[
+        "multi_type_with_array_nonnullable"
+    ].nullable
 
   def test_to_gemini_schema_nested_objects(self):
     openapi_schema = {
@@ -137,6 +170,20 @@ class TestToGeminiSchema:
     gemini_schema = _to_gemini_schema(openapi_schema)
     assert gemini_schema.items.properties["name"].type == Type.STRING
 
+  def test_to_gemini_schema_array_without_items_gets_default(self):
+    openapi_schema = {"type": "array"}
+    gemini_schema = _to_gemini_schema(openapi_schema)
+    assert gemini_schema.type == Type.ARRAY
+    assert not gemini_schema.nullable
+    assert gemini_schema.items.type == Type.STRING
+
+  def test_to_gemini_schema_nullable_array_without_items_gets_default(self):
+    openapi_schema = {"type": ["array", "null"]}
+    gemini_schema = _to_gemini_schema(openapi_schema)
+    assert gemini_schema.type == Type.ARRAY
+    assert gemini_schema.nullable
+    assert gemini_schema.items.type == Type.STRING
+
   def test_to_gemini_schema_any_of(self):
     openapi_schema = {
         "anyOf": [{"type": "string"}, {"type": "integer"}],
@@ -145,6 +192,14 @@ class TestToGeminiSchema:
     assert len(gemini_schema.any_of) == 2
     assert gemini_schema.any_of[0].type == Type.STRING
     assert gemini_schema.any_of[1].type == Type.INTEGER
+
+  def test_to_gemini_schema_any_of_nullable(self):
+    openapi_schema = {
+        "anyOf": [{"type": "string"}, {"type": "null"}],
+    }
+    gemini_schema = _to_gemini_schema(openapi_schema)
+    assert gemini_schema.type == Type.STRING
+    assert gemini_schema.nullable
 
   def test_to_gemini_schema_general_list(self):
     openapi_schema = {
@@ -223,6 +278,64 @@ class TestToGeminiSchema:
     gemini_schema = _to_gemini_schema(openapi_schema)
     assert gemini_schema.type == Type.STRING
     assert not gemini_schema.format
+
+  def test_to_gemini_schema_nested_dict_with_defs_and_ref(self):
+    """Test that nested dict with $defs and $refs is converted correctly."""
+    openapi_schema = {
+        "$defs": {
+            "DeviceEnum": {
+                "enum": ["GLOBAL", "desktop", "mobile"],
+                "title": "DeviceEnum",
+                "type": "string",
+            },
+            "DomainPayload": {
+                "properties": {
+                    "adDomain": {
+                        "description": "List of one or many domains.",
+                        "items": {"type": "string"},
+                        "title": "Addomain",
+                        "type": "array",
+                    },
+                    "device": {
+                        "$ref": "#/$defs/DeviceEnum",
+                        "default": "GLOBAL",
+                        "description": (
+                            "Filter by device. All devices are returned by"
+                            " default."
+                        ),
+                    },
+                },
+                "required": ["adDomain"],
+                "title": "DomainPayload",
+                "type": "object",
+            },
+        },
+        "properties": {"payload": {"$ref": "#/$defs/DomainPayload"}},
+        "required": ["payload"],
+        "title": "query_domainsArguments",
+        "type": "object",
+    }
+    gemini_schema = _to_gemini_schema(openapi_schema)
+    assert gemini_schema.type == Type.OBJECT
+    assert gemini_schema.properties["payload"].type == Type.OBJECT
+    assert (
+        gemini_schema.properties["payload"].properties["adDomain"].type
+        == Type.ARRAY
+    )
+    assert (
+        gemini_schema.properties["payload"].properties["adDomain"].items.type
+        == Type.STRING
+    )
+    assert (
+        gemini_schema.properties["payload"].properties["device"].type
+        == Type.STRING
+    )
+    assert gemini_schema.properties["payload"].properties["device"].enum == [
+        "GLOBAL",
+        "desktop",
+        "mobile",
+    ]
+    assert gemini_schema.properties["payload"].required == ["adDomain"]
 
   def test_sanitize_integer_formats(self):
     """Test that int32 and int64 formats are preserved for integer types"""
@@ -466,6 +579,20 @@ class TestToGeminiSchema:
         "null",
     ]
 
+  def test_sanitize_schema_formats_for_gemini_with_list_property_value(self):
+    schema = {
+        "type": "object",
+        "properties": {
+            "required": ["sql"],
+            "sql": {"type": "string"},
+        },
+    }
+
+    sanitized = _sanitize_schema_formats_for_gemini(schema)
+
+    assert sanitized["properties"]["required"] == ["sql"]
+    assert sanitized["properties"]["sql"]["type"] == "string"
+
   def test_sanitize_schema_formats_for_gemini_nullable(self):
     openapi_schema = {
         "properties": {
@@ -475,8 +602,10 @@ class TestToGeminiSchema:
                 "type": "string",
             },
             "next_page_token": {
-                "anyOf": [{"type": "string"}, {"type": "null"}],
-                "default": None,
+                "any_of": [
+                    {"type": "string"},
+                    {"type": ["object", "null"]},
+                ],
                 "description": (
                     "The nextPageToken to fetch the next page of results."
                 ),
@@ -510,6 +639,96 @@ class TestToGeminiSchema:
         "title": "list_alerts_by_caseArguments",
         "type": "object",
     }
+
+  def test_to_gemini_schema_properties_is_none(self):
+    """Tests schema conversion when 'properties' field is None."""
+    openapi_schema = {"type": "object", "properties": None}
+    gemini_schema = _to_gemini_schema(openapi_schema)
+    assert isinstance(gemini_schema, Schema)
+    assert gemini_schema.type == Type.OBJECT
+    assert gemini_schema.properties is None
+
+  def test_to_gemini_schema_boolean_true_property(self):
+    """Tests that a JSON Schema boolean `true` property is handled.
+
+    JSON Schema allows `true` as a schema meaning "accept any value".
+    Some MCP servers use this pattern for fields whose content is not
+    further constrained.
+    """
+    openapi_schema = {
+        "type": "object",
+        "properties": {
+            "items": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "refId": {"type": "string"},
+                        "model": True,  # JSON Schema boolean schema
+                    },
+                },
+            }
+        },
+    }
+    gemini_schema = _to_gemini_schema(openapi_schema)
+    assert isinstance(gemini_schema, Schema)
+    items_schema = gemini_schema.properties["items"]
+    assert items_schema.type == Type.ARRAY
+    # `model: true` should be converted to an object schema
+    model_schema = items_schema.items.properties["model"]
+    assert model_schema.type == Type.OBJECT
+
+  def test_to_gemini_schema_boolean_false_property(self):
+    """Tests that a JSON Schema boolean `false` property does not raise.
+
+    `false` means "no value is valid" in JSON Schema, which has no Gemini
+    equivalent. Conversion falls back to an object schema to avoid crashing;
+    the result is semantically imprecise but safe.
+    """
+    openapi_schema = {
+        "type": "object",
+        "properties": {
+            "anything": False,  # JSON Schema boolean schema (reject all)
+        },
+    }
+    # Should not raise even though `false` has no Gemini equivalent.
+    gemini_schema = _to_gemini_schema(openapi_schema)
+    assert isinstance(gemini_schema, Schema)
+    assert gemini_schema.properties["anything"] is not None
+
+  def test_to_gemini_schema_boolean_true_in_array_items_properties(self):
+    """Regression test: boolean `true` schema inside array item properties.
+
+    Some MCP servers use `"field": true` in an array item's properties to
+    indicate an unconstrained field, which is valid JSON Schema.
+    """
+    openapi_schema = {
+        "type": "object",
+        "properties": {
+            "title": {"type": "string"},
+            "data": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "datasourceUid": {"type": "string"},
+                        "model": True,
+                        "queryType": {"type": "string"},
+                        "refId": {"type": "string"},
+                    },
+                },
+            },
+        },
+        "required": ["title", "data"],
+    }
+    # Should not raise a ValidationError
+    gemini_schema = _to_gemini_schema(openapi_schema)
+    assert isinstance(gemini_schema, Schema)
+    assert gemini_schema.type == Type.OBJECT
+    data_schema = gemini_schema.properties["data"]
+    assert data_schema.type == Type.ARRAY
+    model_schema = data_schema.items.properties["model"]
+    assert model_schema.type == Type.OBJECT
 
 
 class TestToSnakeCase:

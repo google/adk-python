@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -114,6 +114,6 @@ def pytest_generate_tests(metafunc: Metafunc):
 def _is_explicitly_marked(mark_name: str, metafunc: Metafunc) -> bool:
   if hasattr(metafunc.function, 'pytestmark'):
     for mark in metafunc.function.pytestmark:
-      if mark.name == 'parametrize' and mark.args[0] == mark_name:
+      if mark.name == 'parametrize' and mark_name in mark.args[0]:
         return True
   return False

@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,29 +12,49 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 import logging
 from typing import AsyncGenerator
+from typing import Union
 
-from google.genai import live
 from google.genai import types
 
+from ..utils.content_utils import filter_audio_parts
+from ..utils.context_utils import Aclosing
+from ..utils.variant_utils import GoogleLLMVariant
 from .base_llm_connection import BaseLlmConnection
 from .llm_response import LlmResponse
 
 logger = logging.getLogger('google_adk.' + __name__)
 
+RealtimeInput = Union[types.Blob, types.ActivityStart, types.ActivityEnd]
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+  from google.genai import live
+
 
 class GeminiLlmConnection(BaseLlmConnection):
   """The Gemini model connection."""
 
-  def __init__(self, gemini_session: live.AsyncSession):
+  def __init__(
+      self,
+      gemini_session: live.AsyncSession,
+      api_backend: GoogleLLMVariant = GoogleLLMVariant.VERTEX_AI,
+      model_version: str | None = None,
+  ):
     self._gemini_session = gemini_session
+    self._input_transcription_text: str = ''
+    self._output_transcription_text: str = ''
+    self._api_backend = api_backend
+    self._model_version = model_version
 
   async def send_history(self, history: list[types.Content]):
     """Sends the conversation history to the gemini model.
 
     You call this method right after setting up the model connection.
-    The model will respond if the last content is from user, otherwise it will
+    The model will respond if the last content is from user; otherwise, it will
     wait for new user input before responding.
 
     Args:
@@ -44,14 +64,22 @@ class GeminiLlmConnection(BaseLlmConnection):
     # TODO: Remove this filter and translate unary contents to streaming
     # contents properly.
 
-    # We ignore any audio from user during the agent transfer phase
+    # Filter out audio parts from history because:
+    # 1. audio has already been transcribed.
+    # 2. sending audio via connection.send or connection.send_live_content is
+    # not supported by LIVE API (session will be corrupted).
+    # This method is called when:
+    # 1. Agent transfer to a new agent
+    # 2. Establishing a new live connection with previous ADK session history
+
     contents = [
-        content
+        filtered
         for content in history
-        if content.parts and content.parts[0].text
+        if (filtered := filter_audio_parts(content)) is not None
     ]
 
     if contents:
+      logger.debug('Sending history to live connection: %s', contents)
       await self._gemini_session.send(
           input=types.LiveClientContent(
               turns=contents,
@@ -91,21 +119,30 @@ class GeminiLlmConnection(BaseLlmConnection):
           )
       )
 
-  async def send_realtime(self, blob: types.Blob):
+  async def send_realtime(self, input: RealtimeInput):
     """Sends a chunk of audio or a frame of video to the model in realtime.
 
     Args:
-      blob: The blob to send to the model.
+      input: The input to send to the model.
     """
+    if isinstance(input, types.Blob):
+      # The blob is binary and is very large. So let's not log it.
+      logger.debug('Sending LLM Blob.')
+      await self._gemini_session.send_realtime_input(media=input)
 
-    input_blob = blob.model_dump()
-    logger.debug('Sending LLM Blob: %s', input_blob)
-    await self._gemini_session.send(input=input_blob)
+    elif isinstance(input, types.ActivityStart):
+      logger.debug('Sending LLM activity start signal.')
+      await self._gemini_session.send_realtime_input(activity_start=input)
+    elif isinstance(input, types.ActivityEnd):
+      logger.debug('Sending LLM activity end signal.')
+      await self._gemini_session.send_realtime_input(activity_end=input)
+    else:
+      raise ValueError('Unsupported input type: %s' % type(input))
 
   def __build_full_text_response(self, text: str):
     """Builds a full text response.
 
-    The text should not partial and the returned LlmResponse is not be
+    The text should not be partial and the returned LlmResponse is not
     partial.
 
     Args:
@@ -129,83 +166,175 @@ class GeminiLlmConnection(BaseLlmConnection):
     """
 
     text = ''
-    async for message in self._gemini_session.receive():
-      logger.debug('Got LLM Live message: %s', message)
-      if message.server_content:
-        content = message.server_content.model_turn
-        if content and content.parts:
-          llm_response = LlmResponse(
-              content=content, interrupted=message.server_content.interrupted
+    async with Aclosing(self._gemini_session.receive()) as agen:
+      # TODO(b/440101573): Reuse StreamingResponseAggregator to accumulate
+      # partial content and emit responses as needed.
+      async for message in agen:
+        logger.debug('Got LLM Live message: %s', message)
+        if message.usage_metadata:
+          # Tracks token usage data per model.
+          yield LlmResponse(
+              usage_metadata=message.usage_metadata,
+              model_version=self._model_version,
           )
-          if content.parts[0].text:
-            text += content.parts[0].text
-            llm_response.partial = True
-          # don't yield the merged text event when receiving audio data
-          elif text and not content.parts[0].inline_data:
-            yield self.__build_full_text_response(text)
-            text = ''
-          yield llm_response
-        if (
-            message.server_content.input_transcription
-            and message.server_content.input_transcription.text
-        ):
-          user_text = message.server_content.input_transcription.text
-          parts = [
-              types.Part.from_text(
-                  text=user_text,
-              )
-          ]
-          llm_response = LlmResponse(
-              content=types.Content(role='user', parts=parts)
-          )
-          yield llm_response
-        if (
-            message.server_content.output_transcription
-            and message.server_content.output_transcription.text
-        ):
-          # TODO: Right now, we just support output_transcription without
-          # changing interface and data protocol. Later, we can consider to
-          # support output_transcription as a separate field in LlmResponse.
+        if message.server_content:
+          content = message.server_content.model_turn
 
-          # Transcription is always considered as partial event
-          # We rely on other control signals to determine when to yield the
-          # full text response(turn_complete, interrupted, or tool_call).
-          text += message.server_content.output_transcription.text
-          parts = [
-              types.Part.from_text(
-                  text=message.server_content.output_transcription.text
-              )
-          ]
-          llm_response = LlmResponse(
-              content=types.Content(role='model', parts=parts), partial=True
-          )
-          yield llm_response
+          # Standalone grounding_metadata event (when content is empty)
+          if (
+              not (content and content.parts)
+              and message.server_content.grounding_metadata
+              and not message.server_content.turn_complete
+          ):
+            yield LlmResponse(
+                grounding_metadata=message.server_content.grounding_metadata,
+                interrupted=message.server_content.interrupted,
+                model_version=self._model_version,
+            )
 
-        if message.server_content.turn_complete:
+          if content and content.parts:
+            llm_response = LlmResponse(
+                content=content,
+                interrupted=message.server_content.interrupted,
+                model_version=self._model_version,
+            )
+            # grounding_metadata is yielded again at turn_complete,
+            # so avoid duplicating it here if turn_complete is true.
+            if not message.server_content.turn_complete:
+              llm_response.grounding_metadata = (
+                  message.server_content.grounding_metadata
+              )
+            if content.parts[0].text:
+              text += content.parts[0].text
+              llm_response.partial = True
+            # don't yield the merged text event when receiving audio data
+            elif text and not content.parts[0].inline_data:
+              yield self.__build_full_text_response(text)
+              text = ''
+            yield llm_response
+          # Note: in some cases, tool_call may arrive before
+          # generation_complete, causing transcription to appear after
+          # tool_call in the session log.
+          if message.server_content.input_transcription:
+            if message.server_content.input_transcription.text:
+              self._input_transcription_text += (
+                  message.server_content.input_transcription.text
+              )
+              yield LlmResponse(
+                  input_transcription=types.Transcription(
+                      text=message.server_content.input_transcription.text,
+                      finished=False,
+                  ),
+                  partial=True,
+                  model_version=self._model_version,
+              )
+            # finished=True and partial transcription may happen in the same
+            # message.
+            if message.server_content.input_transcription.finished:
+              yield LlmResponse(
+                  input_transcription=types.Transcription(
+                      text=self._input_transcription_text,
+                      finished=True,
+                  ),
+                  partial=False,
+                  model_version=self._model_version,
+              )
+              self._input_transcription_text = ''
+          if message.server_content.output_transcription:
+            if message.server_content.output_transcription.text:
+              self._output_transcription_text += (
+                  message.server_content.output_transcription.text
+              )
+              yield LlmResponse(
+                  output_transcription=types.Transcription(
+                      text=message.server_content.output_transcription.text,
+                      finished=False,
+                  ),
+                  partial=True,
+                  model_version=self._model_version,
+              )
+            if message.server_content.output_transcription.finished:
+              yield LlmResponse(
+                  output_transcription=types.Transcription(
+                      text=self._output_transcription_text,
+                      finished=True,
+                  ),
+                  partial=False,
+                  model_version=self._model_version,
+              )
+              self._output_transcription_text = ''
+          # The Gemini API might not send a transcription finished signal.
+          # Instead, we rely on generation_complete, turn_complete or
+          # interrupted signals to flush any pending transcriptions.
+          if self._api_backend == GoogleLLMVariant.GEMINI_API and (
+              message.server_content.interrupted
+              or message.server_content.turn_complete
+              or message.server_content.generation_complete
+          ):
+            if self._input_transcription_text:
+              yield LlmResponse(
+                  input_transcription=types.Transcription(
+                      text=self._input_transcription_text,
+                      finished=True,
+                  ),
+                  partial=False,
+                  model_version=self._model_version,
+              )
+              self._input_transcription_text = ''
+            if self._output_transcription_text:
+              yield LlmResponse(
+                  output_transcription=types.Transcription(
+                      text=self._output_transcription_text,
+                      finished=True,
+                  ),
+                  partial=False,
+                  model_version=self._model_version,
+              )
+              self._output_transcription_text = ''
+          if message.server_content.turn_complete:
+            if text:
+              yield self.__build_full_text_response(text)
+              text = ''
+            yield LlmResponse(
+                turn_complete=True,
+                interrupted=message.server_content.interrupted,
+                grounding_metadata=message.server_content.grounding_metadata,
+                model_version=self._model_version,
+            )
+            break
+          # in case of empty content or parts, we still surface it
+          # in case it's an interrupted message, we merge the previous partial
+          # text. Other we don't merge. because content can be none when model
+          # safety threshold is triggered
+          if message.server_content.interrupted:
+            if text:
+              yield self.__build_full_text_response(text)
+              text = ''
+            else:
+              yield LlmResponse(
+                  interrupted=message.server_content.interrupted,
+                  model_version=self._model_version,
+              )
+        if message.tool_call:
           if text:
             yield self.__build_full_text_response(text)
             text = ''
+          parts = [
+              types.Part(function_call=function_call)
+              for function_call in message.tool_call.function_calls
+          ]
           yield LlmResponse(
-              turn_complete=True, interrupted=message.server_content.interrupted
+              content=types.Content(role='model', parts=parts),
+              model_version=self._model_version,
           )
-          break
-        # in case of empty content or parts, we sill surface it
-        # in case it's an interrupted message, we merge the previous partial
-        # text. Other we don't merge. because content can be none when model
-        # safety threshold is triggered
-        if message.server_content.interrupted and text:
-          yield self.__build_full_text_response(text)
-          text = ''
-        yield LlmResponse(interrupted=message.server_content.interrupted)
-      if message.tool_call:
-        if text:
-          yield self.__build_full_text_response(text)
-          text = ''
-        parts = [
-            types.Part(function_call=function_call)
-            for function_call in message.tool_call.function_calls
-        ]
-        yield LlmResponse(content=types.Content(role='model', parts=parts))
+        if message.session_resumption_update:
+          logger.debug('Received session resumption message: %s', message)
+          yield (
+              LlmResponse(
+                  live_session_resumption_update=message.session_resumption_update,
+                  model_version=self._model_version,
+              )
+          )
 
   async def close(self):
     """Closes the llm server connection."""

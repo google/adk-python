@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,9 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 from google.genai import types
 from typing_extensions import override
-from vertexai.preview import example_stores
 
 from .base_example_provider import BaseExampleProvider
 from .example import Example
@@ -35,6 +36,8 @@ class VertexAiExampleStore(BaseExampleProvider):
 
   @override
   def get_examples(self, query: str) -> list[Example]:
+    from ..dependencies.vertexai import example_stores
+
     example_store = example_stores.ExampleStore(self.examples_store_name)
     # Retrieve relevant examples.
     request = {
@@ -56,7 +59,9 @@ class VertexAiExampleStore(BaseExampleProvider):
         continue
       expected_contents = [
           content.content
-          for content in result.example.stored_contents_example.contents_example.expected_contents
+          for content in (
+              result.example.stored_contents_example.contents_example.expected_contents
+          )
       ]
       expected_output = []
       for content in expected_contents:
@@ -80,7 +85,9 @@ class VertexAiExampleStore(BaseExampleProvider):
                     name=part.function_response.name,
                     response={
                         key: value
-                        for key, value in part.function_response.response.items()
+                        for key, value in (
+                            part.function_response.response.items()
+                        )
                     },
                 )
             )

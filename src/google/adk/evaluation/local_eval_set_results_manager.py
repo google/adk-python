@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,13 +14,14 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import os
-import time
 
 from typing_extensions import override
 
+from ..errors.not_found_error import NotFoundError
+from ._eval_set_results_manager_utils import create_eval_set_result
+from ._eval_set_results_manager_utils import parse_eval_set_result_json
 from .eval_result import EvalCaseResult
 from .eval_result import EvalSetResult
 from .eval_set_results_manager import EvalSetResultsManager
@@ -29,10 +30,6 @@ logger = logging.getLogger("google_adk." + __name__)
 
 _ADK_EVAL_HISTORY_DIR = ".adk/eval_history"
 _EVAL_SET_RESULT_FILE_EXTENSION = ".evalset_result.json"
-
-
-def _sanitize_eval_set_result_name(eval_set_result_name: str) -> str:
-  return eval_set_result_name.replace("/", "_")
 
 
 class LocalEvalSetResultsManager(EvalSetResultsManager):
@@ -49,29 +46,21 @@ class LocalEvalSetResultsManager(EvalSetResultsManager):
       eval_case_results: list[EvalCaseResult],
   ) -> None:
     """Creates and saves a new EvalSetResult given eval_case_results."""
-    timestamp = time.time()
-    eval_set_result_id = app_name + "_" + eval_set_id + "_" + str(timestamp)
-    eval_set_result_name = _sanitize_eval_set_result_name(eval_set_result_id)
-    eval_set_result = EvalSetResult(
-        eval_set_result_id=eval_set_result_id,
-        eval_set_result_name=eval_set_result_name,
-        eval_set_id=eval_set_id,
-        eval_case_results=eval_case_results,
-        creation_timestamp=timestamp,
+    eval_set_result = create_eval_set_result(
+        app_name, eval_set_id, eval_case_results
     )
     # Write eval result file, with eval_set_result_name.
     app_eval_history_dir = self._get_eval_history_dir(app_name)
     if not os.path.exists(app_eval_history_dir):
       os.makedirs(app_eval_history_dir)
     # Convert to json and write to file.
-    eval_set_result_json = eval_set_result.model_dump_json()
     eval_set_result_file_path = os.path.join(
         app_eval_history_dir,
-        eval_set_result_name + _EVAL_SET_RESULT_FILE_EXTENSION,
+        eval_set_result.eval_set_result_name + _EVAL_SET_RESULT_FILE_EXTENSION,
     )
     logger.info("Writing eval result to file: %s", eval_set_result_file_path)
-    with open(eval_set_result_file_path, "w") as f:
-      f.write(json.dumps(eval_set_result_json, indent=2))
+    with open(eval_set_result_file_path, "w", encoding="utf-8") as f:
+      f.write(eval_set_result.model_dump_json(indent=2))
 
   @override
   def get_eval_set_result(
@@ -87,12 +76,10 @@ class LocalEvalSetResultsManager(EvalSetResultsManager):
         + _EVAL_SET_RESULT_FILE_EXTENSION
     )
     if not os.path.exists(maybe_eval_result_file_path):
-      raise ValueError(
-          f"Eval set result `{eval_set_result_id}` does not exist."
-      )
-    with open(maybe_eval_result_file_path, "r") as file:
-      eval_result_data = json.load(file)
-    return EvalSetResult.model_validate_json(eval_result_data)
+      raise NotFoundError(f"Eval set result `{eval_set_result_id}` not found.")
+    with open(maybe_eval_result_file_path, "r", encoding="utf-8") as file:
+      eval_result_data = file.read()
+    return parse_eval_set_result_json(eval_result_data)
 
   @override
   def list_eval_set_results(self, app_name: str) -> list[str]:

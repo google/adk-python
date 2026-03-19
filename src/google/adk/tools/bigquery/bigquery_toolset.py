@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -21,15 +21,21 @@ from typing import Union
 from google.adk.agents.readonly_context import ReadonlyContext
 from typing_extensions import override
 
+from . import data_insights_tool
 from . import metadata_tool
 from . import query_tool
+from . import search_tool
+from ...features import experimental
+from ...features import FeatureName
 from ...tools.base_tool import BaseTool
 from ...tools.base_toolset import BaseToolset
 from ...tools.base_toolset import ToolPredicate
+from ...tools.google_tool import GoogleTool
 from .bigquery_credentials import BigQueryCredentialsConfig
-from .bigquery_tool import BigQueryTool
+from .config import BigQueryToolConfig
 
 
+@experimental(FeatureName.BIG_QUERY_TOOLSET)
 class BigQueryToolset(BaseToolset):
   """BigQuery Toolset contains tools for interacting with BigQuery data and metadata."""
 
@@ -38,9 +44,13 @@ class BigQueryToolset(BaseToolset):
       *,
       tool_filter: Optional[Union[ToolPredicate, List[str]]] = None,
       credentials_config: Optional[BigQueryCredentialsConfig] = None,
+      bigquery_tool_config: Optional[BigQueryToolConfig] = None,
   ):
+    super().__init__(tool_filter=tool_filter)
     self._credentials_config = credentials_config
-    self.tool_filter = tool_filter
+    self._tool_settings = (
+        bigquery_tool_config if bigquery_tool_config else BigQueryToolConfig()
+    )
 
   def _is_tool_selected(
       self, tool: BaseTool, readonly_context: ReadonlyContext
@@ -62,16 +72,23 @@ class BigQueryToolset(BaseToolset):
   ) -> List[BaseTool]:
     """Get tools from the toolset."""
     all_tools = [
-        BigQueryTool(
+        GoogleTool(
             func=func,
-            credentials=self._credentials_config,
+            credentials_config=self._credentials_config,
+            tool_settings=self._tool_settings,
         )
         for func in [
             metadata_tool.get_dataset_info,
             metadata_tool.get_table_info,
             metadata_tool.list_dataset_ids,
             metadata_tool.list_table_ids,
-            query_tool.execute_sql,
+            metadata_tool.get_job_info,
+            query_tool.get_execute_sql(self._tool_settings),
+            query_tool.forecast,
+            query_tool.analyze_contribution,
+            query_tool.detect_anomalies,
+            data_insights_tool.ask_data_insights,
+            search_tool.search_catalog,
         ]
     ]
 

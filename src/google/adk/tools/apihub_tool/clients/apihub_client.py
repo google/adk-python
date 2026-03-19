@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -11,6 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+from __future__ import annotations
 
 from abc import ABC
 from abc import abstractmethod
@@ -25,6 +27,7 @@ from urllib.parse import parse_qs
 from urllib.parse import urlparse
 
 from google.auth import default as default_service_credential
+from google.auth.exceptions import DefaultCredentialsError
 from google.auth.transport.requests import Request
 from google.oauth2 import service_account
 import requests
@@ -35,7 +38,7 @@ class BaseAPIHubClient(ABC):
 
   @abstractmethod
   def get_spec_content(self, resource_name: str) -> str:
-    """From a given resource name, get the soec in the API Hub."""
+    """From a given resource name, get the spec in the API Hub."""
     raise NotImplementedError()
 
 
@@ -324,8 +327,10 @@ class APIHubClient(BaseAPIHubClient):
         raise ValueError(f"Invalid service account JSON: {e}") from e
     else:
       try:
-        credentials, _ = default_service_credential()
-      except:
+        credentials, _ = default_service_credential(
+            scopes=["https://www.googleapis.com/auth/cloud-platform"]
+        )
+      except DefaultCredentialsError:
         credentials = None
 
     if not credentials:

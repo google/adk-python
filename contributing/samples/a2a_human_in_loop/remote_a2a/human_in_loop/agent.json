@@ -1,0 +1,29 @@
+{
+  "capabilities": {},
+  "defaultInputModes": ["text/plain"],
+  "defaultOutputModes": ["application/json"],
+  "description": "A reimbursement agent that handles employee expense reimbursement requests. Automatically approves amounts under $100 and requires manager approval for larger amounts using long-running tools for human-in-the-loop workflows.",
+  "name": "reimbursement_agent",
+  "skills": [
+    {
+      "id": "automatic_reimbursement",
+      "name": "Automatic Reimbursement",
+      "description": "Automatically process and approve reimbursements under $100",
+      "tags": ["reimbursement", "automation", "finance"]
+    },
+    {
+      "id": "approval_workflow",
+      "name": "Approval Workflow",
+      "description": "Request manager approval for reimbursements over $100 using long-running tools",
+      "tags": ["approval", "workflow", "human-in-loop"]
+    },
+    {
+      "id": "expense_processing",
+      "name": "Expense Processing",
+      "description": "Process employee expense claims and handle reimbursement logic",
+      "tags": ["expenses", "processing", "employee-services"]
+    }
+  ],
+  "url": "http://localhost:8001/a2a/human_in_loop",
+  "version": "1.0.0"
+}

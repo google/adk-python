@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,28 +12,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 from typing import Any
 
 from pydantic import alias_generators
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
+from pydantic import PrivateAttr
 
 from ..events.event import Event
 
 
 class Session(BaseModel):
-  """Represents a series of interactions between a user and agents.
-
-  Attributes:
-    id: The unique identifier of the session.
-    app_name: The name of the app.
-    user_id: The id of the user.
-    state: The state of the session.
-    events: The events of the session, e.g. user input, model response, function
-      call/response, etc.
-    last_update_time: The last update time of the session.
-  """
+  """Represents a series of interactions between a user and agents."""
 
   model_config = ConfigDict(
       extra='forbid',
@@ -56,3 +49,6 @@ class Session(BaseModel):
   call/response, etc."""
   last_update_time: float = 0.0
   """The last update time of the session."""
+
+  _storage_update_marker: str | None = PrivateAttr(default=None)
+  """Internal storage revision marker used for stale-session detection."""

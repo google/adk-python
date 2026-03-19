@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -20,7 +20,7 @@ from dotenv import load_dotenv
 from google.adk.agents.run_config import RunConfig
 from google.adk.cli.utils import logs
 from google.adk.runners import InMemoryRunner
-from google.adk.sessions import Session
+from google.adk.sessions.session import Session
 from google.genai import types
 
 load_dotenv(override=True)
@@ -70,12 +70,22 @@ async def main():
       if event.content.parts and event.content.parts[0].text:
         print(f'** {event.author}: {event.content.parts[0].text}')
 
+  async def check_rolls_in_state(rolls_size: int):
+    session = await runner.session_service.get_session(
+        app_name=app_name, user_id=user_id_1, session_id=session_11.id
+    )
+    assert len(session.state['rolls']) == rolls_size
+    for roll in session.state['rolls']:
+      assert roll > 0 and roll <= 100
+
   start_time = time.time()
   print('Start time:', start_time)
   print('------------------------------------')
   await run_prompt(session_11, 'Hi')
   await run_prompt(session_11, 'Roll a die with 100 sides')
+  await check_rolls_in_state(1)
   await run_prompt(session_11, 'Roll a die again with 100 sides.')
+  await check_rolls_in_state(2)
   await run_prompt(session_11, 'What numbers did I got?')
   await run_prompt_bytes(session_11, 'Hi bytes')
   print(

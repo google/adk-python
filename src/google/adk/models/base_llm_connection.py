@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -11,6 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+from __future__ import annotations
 
 from abc import abstractmethod
 from typing import AsyncGenerator
@@ -28,7 +30,7 @@ class BaseLlmConnection:
     """Sends the conversation history to the model.
 
     You call this method right after setting up the model connection.
-    The model will respond if the last content is from user, otherwise it will
+    The model will respond if the last content is from user; otherwise, it will
     wait for new user input before responding.
 
     Args:
@@ -70,7 +72,8 @@ class BaseLlmConnection:
     Yields:
       LlmResponse: The model response.
     """
-    pass
+    # We need to yield here to help type checkers infer the correct type.
+    yield
 
   @abstractmethod
   async def close(self):

@@ -1,0 +1,17 @@
+{
+  "capabilities": {},
+  "defaultInputModes": ["text/plain"],
+  "defaultOutputModes": ["application/json"],
+  "description": "An agent specialized in checking whether numbers are prime. It can efficiently determine the primality of individual numbers or lists of numbers.",
+  "name": "check_prime_agent",
+  "skills": [
+    {
+      "id": "prime_checking",
+      "name": "Prime Number Checking",
+      "description": "Check if numbers in a list are prime using efficient mathematical algorithms",
+      "tags": ["mathematical", "computation", "prime", "numbers"]
+    }
+  ],
+  "url": "http://localhost:8001/a2a/check_prime_agent",
+  "version": "1.0.0"
+}

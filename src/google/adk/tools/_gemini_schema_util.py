@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -74,42 +74,106 @@ def _to_snake_case(text: str) -> str:
   return text
 
 
-def _sanitize_schema_type(schema: dict[str, Any]) -> dict[str, Any]:
-  if ("type" not in schema or not schema["type"]) and schema.keys().isdisjoint(
-      schema
-  ):
+def _sanitize_schema_type(
+    schema: dict[str, Any], preserve_null_type: bool = False
+) -> dict[str, Any]:
+  if not schema:
     schema["type"] = "object"
   if isinstance(schema.get("type"), list):
-    nullable = False
-    non_null_type = None
-    for t in schema["type"]:
-      if t == "null":
-        nullable = True
-      elif not non_null_type:
-        non_null_type = t
-    if not non_null_type:
-      non_null_type = "object"
+    types_no_null = [t for t in schema["type"] if t != "null"]
+    nullable = len(types_no_null) != len(schema["type"])
+    if "array" in types_no_null:
+      non_null_type = "array"
+    else:
+      non_null_type = types_no_null[0] if types_no_null else "object"
     if nullable:
       schema["type"] = [non_null_type, "null"]
     else:
       schema["type"] = non_null_type
-  elif schema.get("type") == "null":
+  elif schema.get("type") == "null" and not preserve_null_type:
     schema["type"] = ["object", "null"]
+
+  schema_type = schema.get("type")
+  is_array = schema_type == "array" or (
+      isinstance(schema_type, list) and "array" in schema_type
+  )
+  if is_array:
+    schema.setdefault("items", {"type": "string"})
 
   return schema
 
 
+def _dereference_schema(schema: dict[str, Any]) -> dict[str, Any]:
+  """Resolves $ref pointers in a JSON schema."""
+
+  defs = schema.get("$defs", {})
+
+  def _resolve_refs(sub_schema: Any) -> Any:
+    if isinstance(sub_schema, dict):
+      if "$ref" in sub_schema:
+        ref_key = sub_schema["$ref"].split("/")[-1]
+        if ref_key in defs:
+          # Found the reference, replace it with the definition.
+          resolved = defs[ref_key].copy()
+          # Merge properties from the reference, allowing overrides.
+          sub_schema_copy = sub_schema.copy()
+          del sub_schema_copy["$ref"]
+          resolved.update(sub_schema_copy)
+          # Recursively resolve refs in the newly inserted part.
+          return _resolve_refs(resolved)
+        else:
+          # Reference not found, return as is.
+          return sub_schema
+      else:
+        # No $ref, so traverse deeper into the dictionary.
+        return {key: _resolve_refs(value) for key, value in sub_schema.items()}
+    elif isinstance(sub_schema, list):
+      # Traverse into lists.
+      return [_resolve_refs(item) for item in sub_schema]
+    else:
+      # Not a dict or list, return as is.
+      return sub_schema
+
+  dereferenced_schema = _resolve_refs(schema)
+  # Remove the definitions block after resolving.
+  if "$defs" in dereferenced_schema:
+    del dereferenced_schema["$defs"]
+  return dereferenced_schema
+
+
 def _sanitize_schema_formats_for_gemini(
-    schema: dict[str, Any],
-) -> dict[str, Any]:
-  """Filters the schema to only include fields that are supported by JSONSchema."""
+    schema: Any, preserve_null_type: bool = False
+) -> Any:
+  """Filters schemas to only include fields supported by JSONSchema."""
+  if isinstance(schema, list):
+    return [
+        _sanitize_schema_formats_for_gemini(
+            item, preserve_null_type=preserve_null_type
+        )
+        for item in schema
+    ]
+  # JSON Schema allows boolean schemas: `true` (accept any value) and `false`
+  # (reject all values). Gemini has no equivalent for either. `true` is
+  # approximated as an unconstrained object schema; `false` has no meaningful
+  # Gemini representation and is also mapped to an object schema as a safe
+  # fallback so that schema conversion does not crash.
+  if isinstance(schema, bool):
+    return {"type": "object"}
+  if not isinstance(schema, dict):
+    return schema
+
   supported_fields: set[str] = set(_ExtendedJSONSchema.model_fields.keys())
-  schema_field_names: set[str] = {"items"}  # 'additional_properties' to come
+  # Gemini rejects schemas that include `additionalProperties`, so drop it.
+  supported_fields.discard("additional_properties")
+  schema_field_names: set[str] = {"items"}
   list_schema_field_names: set[str] = {
       "any_of",  # 'one_of', 'all_of', 'not' to come
   }
-  snake_case_schema = {}
-  dict_schema_field_names: tuple[str] = ("properties",)  # 'defs' to come
+  snake_case_schema: dict[str, Any] = {}
+  dict_schema_field_names: tuple[str, ...] = (
+      "properties",
+      "defs",
+  )
   for field_name, field_value in schema.items():
     field_name = _to_snake_case(field_name)
     if field_name in schema_field_names:
@@ -117,10 +181,14 @@ def _sanitize_schema_formats_for_gemini(
           field_value
       )
     elif field_name in list_schema_field_names:
+      should_preserve = field_name in ("any_of", "one_of")
       snake_case_schema[field_name] = [
-          _sanitize_schema_formats_for_gemini(value) for value in field_value
+          _sanitize_schema_formats_for_gemini(
+              value, preserve_null_type=should_preserve
+          )
+          for value in field_value
       ]
-    elif field_name in dict_schema_field_names:
+    elif field_name in dict_schema_field_names and field_value is not None:
       snake_case_schema[field_name] = {
           key: _sanitize_schema_formats_for_gemini(value)
           for key, value in field_value.items()
@@ -140,19 +208,20 @@ def _sanitize_schema_formats_for_gemini(
     elif field_name in supported_fields and field_value is not None:
       snake_case_schema[field_name] = field_value
 
-  return _sanitize_schema_type(snake_case_schema)
+  return _sanitize_schema_type(snake_case_schema, preserve_null_type)
 
 
 def _to_gemini_schema(openapi_schema: dict[str, Any]) -> Schema:
-  """Converts an OpenAPI schema dictionary to a Gemini Schema object."""
+  """Converts an OpenAPI v3.1. schema dictionary to a Gemini Schema object."""
   if openapi_schema is None:
     return None
 
   if not isinstance(openapi_schema, dict):
     raise TypeError("openapi_schema must be a dictionary")
 
-  openapi_schema = _sanitize_schema_formats_for_gemini(openapi_schema)
+  dereferenced_schema = _dereference_schema(openapi_schema)
+  sanitized_schema = _sanitize_schema_formats_for_gemini(dereferenced_schema)
   return Schema.from_json_schema(
-      json_schema=_ExtendedJSONSchema.model_validate(openapi_schema),
+      json_schema=_ExtendedJSONSchema.model_validate(sanitized_schema),
       api_option=get_google_llm_variant(),
   )

@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -11,13 +11,14 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 from __future__ import annotations
 
-from datetime import datetime
-import random
-import string
+from typing import cast
 from typing import Optional
 
+from google.adk.platform import time as platform_time
+from google.adk.platform import uuid as platform_uuid
 from google.genai import types
 from pydantic import alias_generators
 from pydantic import ConfigDict
@@ -32,18 +33,6 @@ class Event(LlmResponse):
 
   It is used to store the content of the conversation, as well as the actions
   taken by the agents like function calls, etc.
-
-  Attributes:
-    invocation_id: The invocation ID of the event.
-    author: "user" or the name of the agent, indicating who appended the event
-      to the session.
-    actions: The actions taken by the agent.
-    long_running_tool_ids: The ids of the long running function calls.
-    branch: The branch of the event.
-    id: The unique identifier of the event.
-    timestamp: The timestamp of the event.
-    is_final_response: Whether the event is the final response of the agent.
-    get_function_calls: Returns the function calls in the event.
   """
 
   model_config = ConfigDict(
@@ -55,9 +44,8 @@ class Event(LlmResponse):
   )
   """The pydantic model config."""
 
-  # TODO: revert to be required after spark migration
   invocation_id: str = ''
-  """The invocation ID of the event."""
+  """The invocation ID of the event. Should be non-empty before appending to a session."""
   author: str
   """'user' or the name of the agent, indicating who appended the event to the
   session."""
@@ -83,7 +71,7 @@ class Event(LlmResponse):
   # Do not assign the ID. It will be assigned by the session.
   id: str = ''
   """The unique identifier of the event."""
-  timestamp: float = Field(default_factory=lambda: datetime.now().timestamp())
+  timestamp: float = Field(default_factory=lambda: platform_time.get_time())
   """The timestamp of the event."""
 
   def model_post_init(self, __context):
@@ -93,7 +81,13 @@ class Event(LlmResponse):
       self.id = Event.new_id()
 
   def is_final_response(self) -> bool:
-    """Returns whether the event is the final response of the agent."""
+    """Returns whether the event is the final response of an agent.
+
+    NOTE: This method is ONLY for use by Agent Development Kit.
+
+    Note that when multiple agents participate in one invocation, there could be
+    one event has `is_final_response()` as True for each participating agent.
+    """
     if self.actions.skip_summarization or self.long_running_tool_ids:
       return True
     return (
@@ -131,6 +125,5 @@ class Event(LlmResponse):
     return False
 
   @staticmethod
-  def new_id():
-    characters = string.ascii_letters + string.digits
-    return ''.join(random.choice(characters) for _ in range(8))
+  def new_id() -> str:
+    return cast(str, platform_uuid.new_uuid())

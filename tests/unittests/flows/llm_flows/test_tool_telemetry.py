@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -17,10 +17,10 @@ from typing import Dict
 from typing import Optional
 from unittest import mock
 
-from google.adk import telemetry
-from google.adk.agents import Agent
+from google.adk.agents.llm_agent import Agent
 from google.adk.events.event import Event
 from google.adk.flows.llm_flows.functions import handle_function_calls_async
+from google.adk.telemetry import tracing
 from google.adk.tools.function_tool import FunctionTool
 from google.genai import types
 
@@ -65,7 +65,7 @@ async def test_simple_function_with_mocked_tracer(monkeypatch):
   mock_start_as_current_span_func.return_value = returned_context_manager_mock
 
   monkeypatch.setattr(
-      telemetry.tracer, 'start_as_current_span', mock_start_as_current_span_func
+      tracing.tracer, 'start_as_current_span', mock_start_as_current_span_func
   )
 
   mock_adk_trace_tool_call = mock.Mock()

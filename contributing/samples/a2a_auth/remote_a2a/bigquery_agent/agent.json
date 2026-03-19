@@ -1,0 +1,29 @@
+{
+  "capabilities": {},
+  "defaultInputModes": ["text/plain"],
+  "defaultOutputModes": ["application/json"],
+  "description": "A Google BigQuery agent that helps manage users' data on Google BigQuery. Can list, get, and create datasets, as well as manage tables within datasets. Supports OAuth authentication for secure access to BigQuery resources.",
+  "name": "bigquery_agent",
+  "skills": [
+    {
+      "id": "dataset_management",
+      "name": "Dataset Management",
+      "description": "List, get details, and create BigQuery datasets",
+      "tags": ["bigquery", "datasets", "google-cloud"]
+    },
+    {
+      "id": "table_management",
+      "name": "Table Management",
+      "description": "List, get details, and create BigQuery tables within datasets",
+      "tags": ["bigquery", "tables", "google-cloud"]
+    },
+    {
+      "id": "oauth_authentication",
+      "name": "OAuth Authentication",
+      "description": "Secure authentication with Google BigQuery using OAuth",
+      "tags": ["authentication", "oauth", "security"]
+    }
+  ],
+  "url": "http://localhost:8001/a2a/bigquery_agent",
+  "version": "1.0.0"
+}

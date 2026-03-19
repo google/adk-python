@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,25 +16,27 @@
 import os
 
 from google.adk.agents.llm_agent import LlmAgent
+from google.adk.agents.mcp_instruction_provider import McpInstructionProvider
+from google.adk.tools.mcp_tool.mcp_session_manager import SseConnectionParams
 from google.adk.tools.mcp_tool.mcp_toolset import MCPToolset
-from google.adk.tools.mcp_tool.mcp_toolset import SseServerParams
 
 _allowed_path = os.path.dirname(os.path.abspath(__file__))
 
-root_agent = LlmAgent(
-    model='gemini-2.0-flash',
-    name='enterprise_assistant',
-    instruction=f"""\
-Help user accessing their file systems.
+connection_params = SseConnectionParams(
+    url='http://localhost:3000/sse',
+    headers={'Accept': 'text/event-stream'},
+)
 
-Allowed directory: {_allowed_path}
-    """,
+root_agent = LlmAgent(
+    model='gemini-2.5-flash',
+    name='enterprise_assistant',
+    instruction=McpInstructionProvider(
+        connection_params=connection_params,
+        prompt_name='file_system_prompt',
+    ),
     tools=[
         MCPToolset(
-            connection_params=SseServerParams(
-                url='http://localhost:3000/sse',
-                headers={'Accept': 'text/event-stream'},
-            ),
+            connection_params=connection_params,
             # don't want agent to do write operation
             # you can also do below
             # tool_filter=lambda tool, ctx=None: tool.name
@@ -53,6 +55,7 @@ Allowed directory: {_allowed_path}
                 'get_file_info',
                 'list_allowed_directories',
             ],
+            require_confirmation=True,
         )
     ],
 )

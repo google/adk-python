@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>IDP Admin Portal</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.7/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body {
+            background-color: #f8f9fa;
+        }
+        .container {
+            max-width: 960px;
+            margin-top: 50px;
+        }
+        .card {
+            border-radius: 1rem;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+        }
+        pre {
+            background-color: #e9ecef;
+            border-radius: 0.25rem;
+            padding: 1rem;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="card p-4">
+            <h1 class="text-center mb-4">IDP Administration Portal</h1>
+            <div id="alert-container"></div>
+
+            <!-- OpenID Configuration Section -->
+            <section class="mb-5">
+                <h2>OpenID Configuration</h2>
+                <form id="configForm">
+                    <div class="mb-3">
+                        <label for="issuer" class="form-label">Issuer</label>
+                        <input type="text" class="form-control" id="issuer" value="{{ openid_config.issuer }}">
+                    </div>
+                    <div class="mb-3">
+                        <label for="authorization_endpoint" class="form-label">Authorization Endpoint</label>
+                        <input type="text" class="form-control" id="authorization_endpoint" value="{{ openid_config.authorization_endpoint }}">
+                    </div>
+                    <div class="mb-3">
+                        <label for="token_endpoint" class="form-label">Token Endpoint</label>
+                        <input type="text" class="form-control" id="token_endpoint" value="{{ openid_config.token_endpoint }}">
+                    </div>
+                    <div class="mb-3">
+                        <label for="jwks_uri" class="form-label">JWKS URI</label>
+                        <input type="text" class="form-control" id="jwks_uri" value="{{ openid_config.jwks_uri }}">
+                    </div>
+                    <button type="submit" class="btn btn-primary">Update Configuration</button>
+                </form>
+            </section>
+
+            <hr>
+
+            <!-- Registries Section -->
+            <div class="row mt-4">
+                <!-- User Registry -->
+                <div class="col-md-6">
+                    <h2>User Registry</h2>
+                    <pre><code id="userRegistry">{{ user_registry }}</code></pre>
+                    <h4 class="mt-4">Add New User</h4>
+                    <form id="addUserForm">
+                        <div class="mb-3">
+                            <label for="username" class="form-label">Username</label>
+                            <input type="text" class="form-control" id="username" required>
+                        </div>
+                        <div class="mb-3">
+                            <label for="password" class="form-label">Password</label>
+                            <input type="password" class="form-control" id="password" required>
+                        </div>
+                         <div class="mb-3">
+                            <label for="sub" class="form-label">Subject (sub)</label>
+                            <input type="text" class="form-control" id="sub" required>
+                        </div>
+                        <div class="mb-3">
+                            <label for="email" class="form-label">Email</label>
+                            <input type="email" class="form-control" id="email">
+                        </div>
+                        <div class="mb-3">
+                            <label for="profile" class="form-label">Profile</label>
+                            <input type="text" class="form-control" id="profile">
+                        </div>
+                        <button type="submit" class="btn btn-success">Add User</button>
+                    </form>
+                </div>
+                <!-- Client Registry -->
+                <div class="col-md-6">
+                    <h2>Client Registry</h2>
+                    <pre><code id="clientRegistry">{{ client_registry }}</code></pre>
+                    <h4 class="mt-4">Add New Client</h4>
+                    <form id="addClientForm">
+                        <div class="mb-3">
+                            <label for="client_id" class="form-label">Client ID</label>
+                            <input type="text" class="form-control" id="client_id" required>
+                        </div>
+                         <div class="mb-3">
+                            <label for="client_name" class="form-label">Client Name</label>
+                            <input type="text" class="form-control" id="client_name" required>
+                        </div>
+                        <div class="mb-3">
+                            <label for="client_secret" class="form-label">Client Secret</label>
+                            <input type="text" class="form-control" id="client_secret">
+                        </div>
+                        <div class="mb-3">
+                            <label for="redirect_uri" class="form-label">Redirect URIs (space-separated)</label>
+                            <input type="text" class="form-control" id="redirect_uri">
+                        </div>
+                         <div class="mb-3">
+                            <label for="allowed_scopes" class="form-label">Allowed Scopes (space-separated)</label>
+                            <input type="text" class="form-control" id="allowed_scopes">
+                        </div>
+                        <div class="mb-3">
+                            <label for="response_types" class="form-label">Response Types (space-separated)</label>
+                            <input type="text" class="form-control" id="response_types">
+                        </div>
+                        <div class="mb-3">
+                            <label for="grant_types" class="form-label">Grant Types (space-separated)</label>
+                            <input type="text" class="form-control" id="grant_types">
+                        </div>
+                        <button type="submit" class="btn btn-success">Add Client</button>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const alertContainer = document.getElementById('alert-container');
+
+        function showAlert(message, type = 'success') {
+            const wrapper = document.createElement('div');
+            wrapper.innerHTML = [
+                `<div class="alert alert-${type} alert-dismissible" role="alert">`,
+                `   <div>${message}</div>`,
+                '   <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>',
+                '</div>'
+            ].join('');
+            alertContainer.append(wrapper);
+        }
+
+        // Update Config
+        document.getElementById('configForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const data = {
+                issuer: document.getElementById('issuer').value,
+                authorization_endpoint: document.getElementById('authorization_endpoint').value,
+                token_endpoint: document.getElementById('token_endpoint').value,
+                jwks_uri: document.getElementById('jwks_uri').value
+            };
+            
+            const response = await fetch('/admin/update-config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data)
+            });
+            const result = await response.json();
+            showAlert(result.message, result.success ? 'success' : 'danger');
+        });
+
+        // Add User
+        document.getElementById('addUserForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const data = {
+                username: document.getElementById('username').value,
+                password: document.getElementById('password').value,
+                sub: document.getElementById('sub').value,
+                email: document.getElementById('email').value,
+                profile: document.getElementById('profile').value,
+            };
+
+            const response = await fetch('/admin/add-user', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data)
+            });
+            const result = await response.json();
+            showAlert(result.message, result.success ? 'success' : 'danger');
+            if (result.success) location.reload();
+        });
+
+        // Add Client
+        document.getElementById('addClientForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const data = {
+                client_id: document.getElementById('client_id').value,
+                client_name: document.getElementById('client_name').value,
+                client_secret: document.getElementById('client_secret').value,
+                redirect_uri: document.getElementById('redirect_uri').value,
+                allowed_scopes: document.getElementById('allowed_scopes').value,
+                response_types: document.getElementById('response_types').value,
+                grant_types: document.getElementById('grant_types').value,
+            };
+
+            const response = await fetch('/admin/add-client', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data)
+            });
+            const result = await response.json();
+            showAlert(result.message, result.success ? 'success' : 'danger');
+            if (result.success) location.reload();
+        });
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.7/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>

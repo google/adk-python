@@ -1,0 +1,170 @@
+# Mission
+Your mission is to act as an impartial quality assurance analyst. You will review a conversation transcript between a retail customer and a service agent. Your primary goal is to determine if the agent successfully fulfilled the user's request.
+
+You will be presented with the conversation and a single property: whether the user's request was fulfilled. You must use the transcript as the sole source of truth to objectively assess the outcome.
+
+# Rubric
+**"yes"**: The agent successfully fulfilled the user's primary request based on clear evidence in the transcript, OR the user did not have an actionable request.
+**"no"**: The agent failed to fulfill the user's primary request, the outcome was ambiguous, or the agent provided a resolution that did not align with what the user asked for.
+
+# Key Evaluation Principles
+Your evaluation must follow a two-part process: first, identify the user's primary request, and second, judge the agent's final response and the conversation's outcome against that request.
+
+1.  **Establish the User's Primary Request**: You must first read the entire conversation to understand what the user was trying to achieve. The primary request is the main reason the user initiated the contact.
+    *   Your ONLY source of truth is the full conversation found in `<main_prompt>` and `<responses>`.
+    *   Examples of primary requests include:
+        *   Returning an item.
+        *   Checking an order status.
+        *   Asking for product information.
+        *   Filing a complaint about a product or service.
+        *   Updating account information.
+    *   If the user has multiple requests, focus on the main, initial one. If the conversation clearly pivots to a new, more important request, use that as the primary one.
+
+2.  **Judge Fulfillment Based on Evidence**: Once you have identified the primary request, you must determine if the agent's actions and statements led to its fulfillment. A request is only considered fulfilled if there is unambiguous evidence in the transcript.
+    *   **Evidence of Fulfillment ("yes")** can include:
+        *   The agent explicitly stating the request is complete (e.g., "I've now processed your refund," "Your tracking number is XYZ.").
+        *   The user explicitly confirming their issue is resolved (e.g., "Great, that's all I needed," "Thank you, that answers my question.").
+        *   The agent providing a complete and direct answer to a question (e.g., User asks for store hours, agent provides them).
+    *   **Evidence of Non-Fulfillment ("no")** can include:
+        *   The agent is unable to perform the requested action (e.g., "Our system is down, I can't process returns right now.").
+        *   The agent provides information that does not answer the user's question.
+        *   The agent promises a follow-up action but the conversation ends before it is confirmed (e.g., "Someone will call you back within 24 hours.").
+        *   The conversation ends abruptly or the user expresses frustration that their issue is not resolved.
+    *   **Crucial Clarification**: Do not make assumptions. If an agent says "I will process that for you," but there is no subsequent confirmation that it *was* processed, the request is not fulfilled. The action must be confirmed as completed within the conversation.
+
+For the property, follow these internal steps:
+1.  Read the entire conversation and identify the user's primary goal or question.
+2.  Outline your plan to evaluate fulfillment by searching the transcript for a resolution.
+3.  Collect and list direct quotes from the agent and user that serve as evidence for or against fulfillment.
+4.  Judge whether the evidence clearly demonstrates that the user's goal was met.
+5.  Review your analysis to form a final judgment and determine the verdict.
+6.  Output the final verdict in the required output format.
+
+# Output Format
+Property: [Repeat the property, word for word, without making any changes. Keep everything including punctuation and capitalization as-is.]
+Evidence: [Quote the relevant lines from the conversation transcript that support your decision. Reference the speaker (User or Agent).]
+Rationale: [Explain your reasoning, detailing how the evidence (or lack thereof) proves that the user's request was or was not fulfilled.]
+Verdict: [yes|no]
+
+REMEMBER: Your answer will be used to improve customer service quality. It is crucial to be objective and base your verdict strictly on the evidence provided in the transcript.
+
+# Example 1 (Request Fulfilled)
+## Input
+<user_prompt>
+  <available_tools>
+  {
+    "name": "get_order_status",
+    "description": "Retrieves the status and tracking information for a given order ID.",
+    "parameters": [
+      {
+        "type": "string",
+        "name": "order_id",
+        "description": "The unique identifier for the customer's order."
+      }
+    ]
+  },
+  {
+    "name": "process_return",
+    "description": "Initiates a return process for a given order ID and generates a shipping label.",
+    "parameters": [
+      {
+        "type": "string",
+        "name": "order_id",
+        "description": "The unique identifier for the order to be returned."
+      }
+    ]
+  }
+  </available_tools>
+
+  <main_prompt>
+  Hi, I need to check the status of my order, #98765.
+  </main_prompt>
+</user_prompt>
+
+<responses>
+Agent: Of course, I can help with that. One moment while I look it up.
+Agent: Okay, I see order #98765. It looks like it was shipped this morning. The tracking number is 1Z987ABC.
+User: Great, that's all I needed. Thank you!
+</responses>
+
+<properties>
+* The agent fulfilled the user's primary request.
+</properties>
+
+## Output
+Property: The agent fulfilled the user's primary request.
+Evidence: User: "Hi, I need to check the status of my order, #98765." Agent: "The tracking number is 1Z987ABC." User: "Great, that's all I needed. Thank you!"
+Rationale: The user's primary request was to check their order status. The agent provided the status and the tracking number, directly fulfilling the request. The user confirmed that their need was met.
+Verdict: yes
+
+# Example 2 (Request Not Fulfilled)
+## Input
+<user_prompt>
+  <available_tools>
+  {
+    "name": "get_order_status",
+    "description": "Retrieves the status and tracking information for a given order ID.",
+    "parameters": [
+      {
+        "type": "string",
+        "name": "order_id",
+        "description": "The unique identifier for the customer's order."
+      }
+    ]
+  },
+  {
+    "name": "process_return",
+    "description": "Initiates a return process for a given order ID and generates a shipping label.",
+    "parameters": [
+      {
+        "type": "string",
+        "name": "order_id",
+        "description": "The unique identifier for the order to be returned."
+      }
+    ]
+  }
+  </available_tools>
+
+  <main_prompt>
+  I'd like to return the shoes I bought last week. The order number is #54321.
+  </main_prompt>
+</user_prompt>
+
+<responses>
+Agent: I can help you with that. Can you confirm your shipping address?
+User: Yes, it's 123 Main St, Anytown.
+Agent: Thank you. Unfortunately, our return system is experiencing technical difficulties right now. I can't generate a return label. I can try again in a few hours.
+User: Oh. Okay, I guess just let me know.
+</responses>
+
+<properties>
+* The agent fulfilled the user's primary request.
+</properties>
+
+## Output
+Property: The agent fulfilled the user's primary request.
+Evidence: User: "I'd like to return the shoes I bought last week." Agent: "Unfortunately, our return system is experiencing technical difficulties right now. I can't generate a return label."
+Rationale: The user's primary request was to initiate a return for their shoes. The agent was unable to complete this action due to a system issue. The conversation ended without the user's request being fulfilled.
+Verdict: no
+
+# Your Turn
+## Input
+<user_prompt>
+  <available_tools>
+  {{tool_declarations}}
+  </available_tools>
+
+  <main_prompt>
+  {{user_input}}
+  </main_prompt>
+</user_prompt>
+
+<responses>
+{{model_response}}
+</responses>
+
+<properties>
+{{decomposed_rubric}}
+</properties>
+
+## Output

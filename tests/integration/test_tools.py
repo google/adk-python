@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -106,12 +106,12 @@ def test_complex_function_calls_success(agent_runner: TestRunner):
     [{"agent": tool_agent.agent.root_agent}],
     indirect=True,
 )
-def test_repetive_call_success(agent_runner: TestRunner):
+def test_repetitive_call_success(agent_runner: TestRunner):
   _call_function_and_assert(
       agent_runner,
-      "repetive_call_1",
+      "repetitive_call_1",
       "test",
-      "test_repetive",
+      "test_repetitive",
   )
 
 

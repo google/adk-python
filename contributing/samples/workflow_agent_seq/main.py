@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -20,7 +20,7 @@ import agent
 from dotenv import load_dotenv
 from google.adk.cli.utils import logs
 from google.adk.runners import InMemoryRunner
-from google.adk.sessions import Session
+from google.adk.sessions.session import Session
 from google.genai import types
 
 load_dotenv(override=True)

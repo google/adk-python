@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -19,12 +19,15 @@ from __future__ import annotations
 import base64
 import copy
 import dataclasses
+import datetime
+import logging
 import os
 import re
 from typing import AsyncGenerator
 from typing import Optional
 from typing import TYPE_CHECKING
 
+from google.adk.platform import time as platform_time
 from google.genai import types
 from typing_extensions import override
 
@@ -39,11 +42,14 @@ from ...code_executors.code_executor_context import CodeExecutorContext
 from ...events.event import Event
 from ...events.event_actions import EventActions
 from ...models.llm_response import LlmResponse
+from ...utils.context_utils import Aclosing
 from ._base_llm_processor import BaseLlmRequestProcessor
 from ._base_llm_processor import BaseLlmResponseProcessor
 
 if TYPE_CHECKING:
   from ...models.llm_request import LlmRequest
+
+logger = logging.getLogger('google_adk.' + __name__)
 
 
 @dataclasses.dataclass
@@ -115,15 +121,16 @@ class _CodeExecutionRequestProcessor(BaseLlmRequestProcessor):
   async def run_async(
       self, invocation_context: InvocationContext, llm_request: LlmRequest
   ) -> AsyncGenerator[Event, None]:
-    from ...agents.llm_agent import LlmAgent
-
-    if not isinstance(invocation_context.agent, LlmAgent):
+    if not hasattr(invocation_context.agent, 'code_executor'):
       return
     if not invocation_context.agent.code_executor:
       return
 
-    async for event in _run_pre_processor(invocation_context, llm_request):
-      yield event
+    async with Aclosing(
+        _run_pre_processor(invocation_context, llm_request)
+    ) as agen:
+      async for event in agen:
+        yield event
 
     # Convert the code execution parts to text parts.
     if not isinstance(invocation_context.agent.code_executor, BaseCodeExecutor):
@@ -152,8 +159,11 @@ class _CodeExecutionResponseProcessor(BaseLlmResponseProcessor):
     if llm_response.partial:
       return
 
-    async for event in _run_post_processor(invocation_context, llm_response):
-      yield event
+    async with Aclosing(
+        _run_post_processor(invocation_context, llm_response)
+    ) as agen:
+      async for event in agen:
+        yield event
 
 
 response_processor = _CodeExecutionResponseProcessor()
@@ -164,9 +174,7 @@ async def _run_pre_processor(
     llm_request: LlmRequest,
 ) -> AsyncGenerator[Event, None]:
   """Pre-process the user message by adding the user message to the Colab notebook."""
-  from ...agents.llm_agent import LlmAgent
-
-  if not isinstance(invocation_context.agent, LlmAgent):
+  if not hasattr(invocation_context.agent, 'code_executor'):
     return
 
   agent = invocation_context.agent
@@ -194,7 +202,7 @@ async def _run_pre_processor(
   # [Step 1] Extract data files from the session_history and store them in
   # memory. Meanwhile, mutate the inline data file to text part in session
   # history from all turns.
-  all_input_files = _extrac_and_replace_inline_files(
+  all_input_files = _extract_and_replace_inline_files(
       code_executor_context, llm_request
   )
 
@@ -237,6 +245,7 @@ async def _run_pre_processor(
             ),
         ),
     )
+    logger.debug('Executed code:\n```\n%s\n```', code_str)
     # Update the processing results to code executor context.
     code_executor_context.update_code_execution_result(
         invocation_context.invocation_id,
@@ -268,6 +277,45 @@ async def _run_post_processor(
     return
 
   if isinstance(code_executor, BuiltInCodeExecutor):
+    event_actions = EventActions()
+
+    # If an image is generated, save it to the artifact service and add it to
+    # the event actions.
+    for part in llm_response.content.parts:
+      if part.inline_data and part.inline_data.mime_type.startswith('image/'):
+        if invocation_context.artifact_service is None:
+          raise ValueError('Artifact service is not initialized.')
+
+        if part.inline_data.display_name:
+          file_name = part.inline_data.display_name
+        else:
+          now = datetime.datetime.fromtimestamp(
+              platform_time.get_time()
+          ).astimezone()
+          timestamp = now.strftime('%Y%m%d_%H%M%S')
+          file_extension = part.inline_data.mime_type.split('/')[-1]
+          file_name = f'{timestamp}.{file_extension}'
+
+        version = await invocation_context.artifact_service.save_artifact(
+            app_name=invocation_context.app_name,
+            user_id=invocation_context.user_id,
+            session_id=invocation_context.session.id,
+            filename=file_name,
+            artifact=types.Part.from_bytes(
+                data=part.inline_data.data,
+                mime_type=part.inline_data.mime_type,
+            ),
+        )
+        event_actions.artifact_delta[file_name] = version
+        part.inline_data = None
+        part.text = f'Saved as artifact: {file_name}. '
+
+    yield Event(
+        invocation_id=invocation_context.invocation_id,
+        author=agent.name,
+        branch=invocation_context.branch,
+        actions=event_actions,
+    )
     return
 
   code_executor_context = CodeExecutorContext(invocation_context.session.state)
@@ -307,6 +355,7 @@ async def _run_post_processor(
           ),
       ),
   )
+  logger.debug('Executed code:\n```\n%s\n```', code_str)
   code_executor_context.update_code_execution_result(
       invocation_context.invocation_id,
       code_str,
@@ -322,7 +371,7 @@ async def _run_post_processor(
   llm_response.content = None
 
 
-def _extrac_and_replace_inline_files(
+def _extract_and_replace_inline_files(
     code_executor_context: CodeExecutorContext,
     llm_request: LlmRequest,
 ) -> list[File]:
@@ -353,7 +402,7 @@ def _extrac_and_replace_inline_files(
           text='\nAvailable file: `%s`\n' % file_name
       )
 
-      # Add the inlne data as input file to the code executor context.
+      # Add the inline data as input file to the code executor context.
       file = File(
           name=file_name,
           content=CodeExecutionUtils.get_encoded_file_content(
@@ -420,7 +469,7 @@ async def _post_process_code_execution_result(
         session_id=invocation_context.session.id,
         filename=output_file.name,
         artifact=types.Part.from_bytes(
-            data=base64.b64decode(output_file.content),
+            data=get_content_as_bytes(output_file.content),
             mime_type=output_file.mime_type,
         ),
     )
@@ -433,6 +482,25 @@ async def _post_process_code_execution_result(
       content=result_content,
       actions=event_actions,
   )
+
+
+def get_content_as_bytes(output_content: str | bytes) -> bytes:
+  """Converts output_content to bytes.
+
+  - If output_content is already bytes, it's returned as is.
+  - If output_content is a string: convert base64-decoded to bytes.
+
+  Args:
+    output_content: The content, which can be a str or bytes.
+
+  Returns:
+    The content as a bytes object.
+  """
+  if isinstance(output_content, bytes):
+    # Already bytes, no conversion needed.
+    return output_content
+
+  return base64.b64decode(output_content)
 
 
 def _get_data_file_preprocessing_code(file: File) -> Optional[str]:

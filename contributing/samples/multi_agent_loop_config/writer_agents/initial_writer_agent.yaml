@@ -1,0 +1,13 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/google/adk-python/refs/heads/main/src/google/adk/agents/config_schemas/AgentConfig.json
+agent_class: LlmAgent
+name: InitialWriterAgent
+model: gemini-2.0-flash
+description: Writes the initial document draft based on the topic, aiming for some initial substance.
+instruction: |
+  You are a Creative Writing Assistant tasked with starting a story.
+
+  Write the *first draft* of a short story (aim for 1-2 sentences).
+  Base the content *only* on the topic provided by user. Try to introduce a specific element (like a character, a setting detail, or a starting action) to make it engaging.
+
+  Output *only* the story/document text. Do not add introductions or explanations.
+output_key: current_document

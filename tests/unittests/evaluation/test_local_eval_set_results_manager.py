@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -19,24 +19,16 @@ import os
 import shutil
 import tempfile
 import time
-from unittest.mock import patch
 
+from google.adk.errors.not_found_error import NotFoundError
+from google.adk.evaluation._eval_set_results_manager_utils import _sanitize_eval_set_result_name
 from google.adk.evaluation.eval_result import EvalCaseResult
 from google.adk.evaluation.eval_result import EvalSetResult
 from google.adk.evaluation.evaluator import EvalStatus
 from google.adk.evaluation.local_eval_set_results_manager import _ADK_EVAL_HISTORY_DIR
 from google.adk.evaluation.local_eval_set_results_manager import _EVAL_SET_RESULT_FILE_EXTENSION
-from google.adk.evaluation.local_eval_set_results_manager import _sanitize_eval_set_result_name
 from google.adk.evaluation.local_eval_set_results_manager import LocalEvalSetResultsManager
 import pytest
-
-
-def test_sanitize_eval_set_result_name():
-  assert _sanitize_eval_set_result_name("app/name") == "app_name"
-  assert _sanitize_eval_set_result_name("app_name") == "app_name"
-  assert _sanitize_eval_set_result_name("app/name/with/slashes") == (
-      "app_name_with_slashes"
-  )
 
 
 class TestLocalEvalSetResultsManager:
@@ -75,12 +67,11 @@ class TestLocalEvalSetResultsManager:
         eval_case_results=self.eval_case_results,
         creation_timestamp=self.timestamp,
     )
-
-  def teardown(self):
+    yield
     shutil.rmtree(self.temp_dir)
 
-  @patch("time.time")
-  def test_save_eval_set_result(self, mock_time):
+  def test_save_eval_set_result(self, mocker):
+    mock_time = mocker.patch("time.time")
     mock_time.return_value = self.timestamp
     self.manager.save_eval_set_result(
         self.app_name, self.eval_set_id, self.eval_case_results
@@ -94,14 +85,15 @@ class TestLocalEvalSetResultsManager:
     )
     assert os.path.exists(expected_file_path)
     with open(expected_file_path, "r") as f:
-      actual_eval_set_result_json = json.load(f)
+      actual_eval_set_result_data = json.load(f)
 
-    # need to convert eval_set_result to json
-    expected_eval_set_result_json = self.eval_set_result.model_dump_json()
-    assert expected_eval_set_result_json == actual_eval_set_result_json
+    # Verify the file contains a proper JSON object (not double-encoded)
+    # Use mode='json' to serialize enums to their values for comparison
+    expected_eval_set_result_data = self.eval_set_result.model_dump(mode="json")
+    assert expected_eval_set_result_data == actual_eval_set_result_data
 
-  @patch("time.time")
-  def test_get_eval_set_result(self, mock_time):
+  def test_get_eval_set_result(self, mocker):
+    mock_time = mocker.patch("time.time")
     mock_time.return_value = self.timestamp
     self.manager.save_eval_set_result(
         self.app_name, self.eval_set_id, self.eval_case_results
@@ -111,17 +103,33 @@ class TestLocalEvalSetResultsManager:
     )
     assert retrieved_result == self.eval_set_result
 
-  @patch("time.time")
-  def test_get_eval_set_result_not_found(self, mock_time):
+  def test_get_eval_set_result_double_encoded_legacy(self):
+    eval_history_dir = os.path.join(
+        self.agents_dir, self.app_name, _ADK_EVAL_HISTORY_DIR
+    )
+    os.makedirs(eval_history_dir, exist_ok=True)
+    eval_set_result_file_path = os.path.join(
+        eval_history_dir,
+        self.eval_set_result_name + _EVAL_SET_RESULT_FILE_EXTENSION,
+    )
+    double_encoded_json = json.dumps(self.eval_set_result.model_dump_json())
+    with open(eval_set_result_file_path, "w", encoding="utf-8") as f:
+      f.write(double_encoded_json)
+
+    retrieved_result = self.manager.get_eval_set_result(
+        self.app_name, self.eval_set_result_name
+    )
+    assert retrieved_result == self.eval_set_result
+
+  def test_get_eval_set_result_not_found(self, mocker):
+    mock_time = mocker.patch("time.time")
     mock_time.return_value = self.timestamp
 
-    with pytest.raises(ValueError) as e:
+    with pytest.raises(NotFoundError) as e:
       self.manager.get_eval_set_result(self.app_name, "non_existent_id")
 
-    assert "does not exist" in str(e.value)
-
-  @patch("time.time")
-  def test_list_eval_set_results(self, mock_time):
+  def test_list_eval_set_results(self, mocker):
+    mock_time = mocker.patch("time.time")
     mock_time.return_value = self.timestamp
     # Save two eval set results for the same app
     self.manager.save_eval_set_result(

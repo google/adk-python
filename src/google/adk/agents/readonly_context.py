@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -22,7 +22,9 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
   from google.genai import types
 
+  from ..sessions.session import Session
   from .invocation_context import InvocationContext
+  from .run_config import RunConfig
 
 
 class ReadonlyContext:
@@ -52,3 +54,18 @@ class ReadonlyContext:
   def state(self) -> MappingProxyType[str, Any]:
     """The state of the current session. READONLY field."""
     return MappingProxyType(self._invocation_context.session.state)
+
+  @property
+  def session(self) -> Session:
+    """The current session for this invocation."""
+    return self._invocation_context.session
+
+  @property
+  def user_id(self) -> str:
+    """The id of the user. READONLY field."""
+    return self._invocation_context.user_id
+
+  @property
+  def run_config(self) -> Optional[RunConfig]:
+    """The run config of the current invocation. READONLY field."""
+    return self._invocation_context.run_config

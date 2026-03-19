@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -19,6 +19,9 @@ from typing import TYPE_CHECKING
 from google.genai import types
 from typing_extensions import override
 
+from ..utils.model_name_utils import is_gemini_1_model
+from ..utils.model_name_utils import is_gemini_model
+from ..utils.model_name_utils import is_gemini_model_id_check_disabled
 from .base_tool import BaseTool
 from .tool_context import ToolContext
 
@@ -29,12 +32,17 @@ if TYPE_CHECKING:
 class EnterpriseWebSearchTool(BaseTool):
   """A Gemini 2+ built-in tool using web grounding for Enterprise compliance.
 
+  NOTE: This tool is not the same as Vertex AI Search, which is used to be
+  called "Enterprise Search".
+
   See the documentation for more details:
   https://cloud.google.com/vertex-ai/generative-ai/docs/grounding/web-grounding-enterprise.
+
+
   """
 
   def __init__(self):
-    """Initializes the Vertex AI Search tool."""
+    """Initializes the Enterprise Web Search tool."""
     # Name and description are not used because this is a model built-in tool.
     super().__init__(
         name='enterprise_web_search', description='enterprise_web_search'
@@ -47,19 +55,24 @@ class EnterpriseWebSearchTool(BaseTool):
       tool_context: ToolContext,
       llm_request: LlmRequest,
   ) -> None:
-    if llm_request.model and llm_request.model.startswith('gemini-'):
-      if llm_request.model.startswith('gemini-1') and llm_request.config.tools:
+    model_check_disabled = is_gemini_model_id_check_disabled()
+    llm_request.config = llm_request.config or types.GenerateContentConfig()
+    llm_request.config.tools = llm_request.config.tools or []
+
+    if is_gemini_model(llm_request.model) or model_check_disabled:
+      if is_gemini_1_model(llm_request.model) and llm_request.config.tools:
         raise ValueError(
-            'Enterprise web search tool can not be used with other tools in'
+            'Enterprise Web Search tool cannot be used with other tools in'
             ' Gemini 1.x.'
         )
-      llm_request.config = llm_request.config or types.GenerateContentConfig()
-      llm_request.config.tools = llm_request.config.tools or []
       llm_request.config.tools.append(
           types.Tool(enterprise_web_search=types.EnterpriseWebSearch())
       )
     else:
       raise ValueError(
-          'Enterprise web search tool is not supported for model'
+          'Enterprise Web Search tool is not supported for model'
           f' {llm_request.model}'
       )
+
+
+enterprise_web_search_tool = EnterpriseWebSearchTool()

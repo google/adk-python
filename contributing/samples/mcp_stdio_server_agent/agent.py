@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,13 +16,14 @@
 import os
 
 from google.adk.agents.llm_agent import LlmAgent
+from google.adk.tools.mcp_tool import StdioConnectionParams
 from google.adk.tools.mcp_tool.mcp_toolset import MCPToolset
-from google.adk.tools.mcp_tool.mcp_toolset import StdioServerParameters
+from mcp import StdioServerParameters
 
 _allowed_path = os.path.dirname(os.path.abspath(__file__))
 
 root_agent = LlmAgent(
-    model='gemini-2.0-flash',
+    model='gemini-2.5-flash',
     name='enterprise_assistant',
     instruction=f"""\
 Help user accessing their file systems.
@@ -31,13 +32,16 @@ Allowed directory: {_allowed_path}
     """,
     tools=[
         MCPToolset(
-            connection_params=StdioServerParameters(
-                command='npx',
-                args=[
-                    '-y',  # Arguments for the command
-                    '@modelcontextprotocol/server-filesystem',
-                    _allowed_path,
-                ],
+            connection_params=StdioConnectionParams(
+                server_params=StdioServerParameters(
+                    command='npx',
+                    args=[
+                        '-y',  # Arguments for the command
+                        '@modelcontextprotocol/server-filesystem',
+                        _allowed_path,
+                    ],
+                ),
+                timeout=5,
             ),
             # don't want agent to do write operation
             # you can also do below

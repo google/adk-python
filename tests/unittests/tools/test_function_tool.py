@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,8 +14,22 @@
 
 from unittest.mock import MagicMock
 
+from google.adk.agents.context import Context
+from google.adk.agents.invocation_context import InvocationContext
+from google.adk.sessions.session import Session
 from google.adk.tools.function_tool import FunctionTool
+from google.adk.tools.tool_confirmation import ToolConfirmation
+from google.adk.tools.tool_context import ToolContext
 import pytest
+
+
+@pytest.fixture
+def mock_tool_context() -> ToolContext:
+  """Fixture that provides a mock ToolContext for testing."""
+  mock_invocation_context = MagicMock(spec=InvocationContext)
+  mock_invocation_context.session = MagicMock(spec=Session)
+  mock_invocation_context.session.state = MagicMock()
+  return ToolContext(invocation_context=mock_invocation_context)
 
 
 def function_for_testing_with_no_args():
@@ -26,14 +40,14 @@ def function_for_testing_with_no_args():
 async def async_function_for_testing_with_1_arg_and_tool_context(
     arg1, tool_context
 ):
-  """Async function for testing with 1 arge and tool context."""
+  """Async function for testing with 1 arg and tool context."""
   assert arg1
   assert tool_context
   return arg1
 
 
 async def async_function_for_testing_with_2_arg_and_no_tool_context(arg1, arg2):
-  """Async function for testing with 2 arge and no tool context."""
+  """Async function for testing with 2 args and no tool context."""
   assert arg1
   assert arg2
   return arg1
@@ -52,7 +66,7 @@ class AsyncCallableWith2ArgsAndNoToolContext:
 
 
 def function_for_testing_with_1_arg_and_tool_context(arg1, tool_context):
-  """Function for testing with 1 arge and tool context."""
+  """Function for testing with 1 arg and tool context."""
   assert arg1
   assert tool_context
   return arg1
@@ -68,7 +82,7 @@ class AsyncCallableWith1ArgAndToolContext:
 
 
 def function_for_testing_with_2_arg_and_no_tool_context(arg1, arg2):
-  """Function for testing with 2 arge and no tool context."""
+  """Function for testing with 2 args and no tool context."""
   assert arg1
   assert arg2
   return arg1
@@ -187,9 +201,11 @@ async def test_run_async_1_missing_arg_sync_func():
   args = {"arg1": "test_value_1"}
   result = await tool.run_async(args=args, tool_context=MagicMock())
   assert result == {
-      "error": """Invoking `function_for_testing_with_2_arg_and_no_tool_context()` failed as the following mandatory input parameters are not present:
+      "error": (
+          """Invoking `function_for_testing_with_2_arg_and_no_tool_context()` failed as the following mandatory input parameters are not present:
 arg2
 You could retry calling this tool, but it is IMPORTANT for you to provide all the mandatory parameters."""
+      )
   }
 
 
@@ -200,9 +216,11 @@ async def test_run_async_1_missing_arg_async_func():
   args = {"arg2": "test_value_1"}
   result = await tool.run_async(args=args, tool_context=MagicMock())
   assert result == {
-      "error": """Invoking `async_function_for_testing_with_2_arg_and_no_tool_context()` failed as the following mandatory input parameters are not present:
+      "error": (
+          """Invoking `async_function_for_testing_with_2_arg_and_no_tool_context()` failed as the following mandatory input parameters are not present:
 arg1
 You could retry calling this tool, but it is IMPORTANT for you to provide all the mandatory parameters."""
+      )
   }
 
 
@@ -213,11 +231,13 @@ async def test_run_async_3_missing_arg_sync_func():
   args = {"arg2": "test_value_1"}
   result = await tool.run_async(args=args, tool_context=MagicMock())
   assert result == {
-      "error": """Invoking `function_for_testing_with_4_arg_and_no_tool_context()` failed as the following mandatory input parameters are not present:
+      "error": (
+          """Invoking `function_for_testing_with_4_arg_and_no_tool_context()` failed as the following mandatory input parameters are not present:
 arg1
 arg3
 arg4
 You could retry calling this tool, but it is IMPORTANT for you to provide all the mandatory parameters."""
+      )
   }
 
 
@@ -228,11 +248,13 @@ async def test_run_async_3_missing_arg_async_func():
   args = {"arg3": "test_value_1"}
   result = await tool.run_async(args=args, tool_context=MagicMock())
   assert result == {
-      "error": """Invoking `async_function_for_testing_with_4_arg_and_no_tool_context()` failed as the following mandatory input parameters are not present:
+      "error": (
+          """Invoking `async_function_for_testing_with_4_arg_and_no_tool_context()` failed as the following mandatory input parameters are not present:
 arg1
 arg2
 arg4
 You could retry calling this tool, but it is IMPORTANT for you to provide all the mandatory parameters."""
+      )
   }
 
 
@@ -243,12 +265,14 @@ async def test_run_async_missing_all_arg_sync_func():
   args = {}
   result = await tool.run_async(args=args, tool_context=MagicMock())
   assert result == {
-      "error": """Invoking `function_for_testing_with_4_arg_and_no_tool_context()` failed as the following mandatory input parameters are not present:
+      "error": (
+          """Invoking `function_for_testing_with_4_arg_and_no_tool_context()` failed as the following mandatory input parameters are not present:
 arg1
 arg2
 arg3
 arg4
 You could retry calling this tool, but it is IMPORTANT for you to provide all the mandatory parameters."""
+      )
   }
 
 
@@ -259,18 +283,20 @@ async def test_run_async_missing_all_arg_async_func():
   args = {}
   result = await tool.run_async(args=args, tool_context=MagicMock())
   assert result == {
-      "error": """Invoking `async_function_for_testing_with_4_arg_and_no_tool_context()` failed as the following mandatory input parameters are not present:
+      "error": (
+          """Invoking `async_function_for_testing_with_4_arg_and_no_tool_context()` failed as the following mandatory input parameters are not present:
 arg1
 arg2
 arg3
 arg4
 You could retry calling this tool, but it is IMPORTANT for you to provide all the mandatory parameters."""
+      )
   }
 
 
 @pytest.mark.asyncio
 async def test_run_async_with_optional_args_not_set_sync_func():
-  """Test that run_async calls the function for sync funciton with optional args not set."""
+  """Test that run_async calls the function for sync function with optional args not set."""
 
   def func_with_optional_args(arg1, arg2=None, *, arg3, arg4=None, **kwargs):
     return f"{arg1},{arg3}"
@@ -283,7 +309,7 @@ async def test_run_async_with_optional_args_not_set_sync_func():
 
 @pytest.mark.asyncio
 async def test_run_async_with_optional_args_not_set_async_func():
-  """Test that run_async calls the function for async funciton with optional args not set."""
+  """Test that run_async calls the function for async function with optional args not set."""
 
   async def async_func_with_optional_args(
       arg1, arg2=None, *, arg3, arg4=None, **kwargs
@@ -294,3 +320,212 @@ async def test_run_async_with_optional_args_not_set_async_func():
   args = {"arg1": "test_value_1", "arg3": "test_value_3"}
   result = await tool.run_async(args=args, tool_context=MagicMock())
   assert result == "test_value_1,test_value_3"
+
+
+@pytest.mark.asyncio
+async def test_run_async_with_unexpected_argument():
+  """Test that run_async filters out unexpected arguments."""
+
+  def sample_func(expected_arg: str):
+    return {"received_arg": expected_arg}
+
+  tool = FunctionTool(sample_func)
+  mock_invocation_context = MagicMock(spec=InvocationContext)
+  mock_invocation_context.session = MagicMock(spec=Session)
+  # Add the missing state attribute to the session mock
+  mock_invocation_context.session.state = MagicMock()
+  tool_context_mock = ToolContext(invocation_context=mock_invocation_context)
+
+  result = await tool.run_async(
+      args={"expected_arg": "hello", "parameters": "should_be_filtered"},
+      tool_context=tool_context_mock,
+  )
+  assert result == {"received_arg": "hello"}
+
+
+@pytest.mark.asyncio
+async def test_run_async_with_tool_context_and_unexpected_argument():
+  """Test that run_async handles tool_context and filters out unexpected arguments."""
+
+  def sample_func_with_context(expected_arg: str, tool_context: ToolContext):
+    return {"received_arg": expected_arg, "context_present": bool(tool_context)}
+
+  tool = FunctionTool(sample_func_with_context)
+  mock_invocation_context = MagicMock(spec=InvocationContext)
+  mock_invocation_context.session = MagicMock(spec=Session)
+  # Add the missing state attribute to the session mock
+  mock_invocation_context.session.state = MagicMock()
+  mock_tool_context = ToolContext(invocation_context=mock_invocation_context)
+
+  result = await tool.run_async(
+      args={
+          "expected_arg": "world",
+          "parameters": "should_also_be_filtered",
+      },
+      tool_context=mock_tool_context,
+  )
+  assert result == {
+      "received_arg": "world",
+      "context_present": True,
+  }
+
+
+@pytest.mark.asyncio
+async def test_run_async_with_require_confirmation():
+  """Test that run_async handles require_confirmation flag."""
+
+  def sample_func(arg1: str):
+    return {"received_arg": arg1}
+
+  tool = FunctionTool(sample_func, require_confirmation=True)
+  mock_invocation_context = MagicMock(spec=InvocationContext)
+  mock_invocation_context.session = MagicMock(spec=Session)
+  mock_invocation_context.session.state = MagicMock()
+  mock_invocation_context.agent = MagicMock()
+  mock_invocation_context.agent.name = "test_agent"
+  tool_context_mock = ToolContext(invocation_context=mock_invocation_context)
+  tool_context_mock.function_call_id = "test_function_call_id"
+
+  # First call, should request confirmation
+  result = await tool.run_async(
+      args={"arg1": "hello"},
+      tool_context=tool_context_mock,
+  )
+  assert result == {
+      "error": "This tool call requires confirmation, please approve or reject."
+  }
+  assert tool_context_mock._event_actions.requested_tool_confirmations[
+      "test_function_call_id"
+  ].hint == (
+      "Please approve or reject the tool call sample_func() by responding with"
+      " a FunctionResponse with an expected ToolConfirmation payload."
+  )
+
+  # Second call, user rejects
+  tool_context_mock.tool_confirmation = ToolConfirmation(confirmed=False)
+  result = await tool.run_async(
+      args={"arg1": "hello"},
+      tool_context=tool_context_mock,
+  )
+  assert result == {"error": "This tool call is rejected."}
+
+  # Third call, user approves
+  tool_context_mock.tool_confirmation = ToolConfirmation(confirmed=True)
+  result = await tool.run_async(
+      args={"arg1": "hello"},
+      tool_context=tool_context_mock,
+  )
+  assert result == {"received_arg": "hello"}
+
+
+@pytest.mark.asyncio
+async def test_run_async_parameter_filtering(mock_tool_context):
+  """Test that parameter filtering works correctly for functions with explicit parameters."""
+
+  def explicit_params_func(arg1: str, arg2: int):
+    """Function with explicit parameters (no **kwargs)."""
+    return {"arg1": arg1, "arg2": arg2}
+
+  tool = FunctionTool(explicit_params_func)
+
+  # Test that unexpected parameters are still filtered out for non-kwargs functions
+  result = await tool.run_async(
+      args={
+          "arg1": "test",
+          "arg2": 42,
+          "unexpected_param": "should_be_filtered",
+      },
+      tool_context=mock_tool_context,
+  )
+
+  assert result == {"arg1": "test", "arg2": 42}
+  # Explicitly verify that unexpected_param was filtered out and not passed to the function
+  assert "unexpected_param" not in result
+
+
+def test_context_param_detection_with_context_type():
+  """Test that FunctionTool detects context parameter by Context type annotation."""
+
+  def my_tool(query: str, ctx: Context) -> str:
+    return query
+
+  tool = FunctionTool(my_tool)
+  assert tool._context_param_name == "ctx"
+  assert tool._ignore_params == ["ctx", "input_stream"]
+
+
+def test_context_param_detection_with_tool_context_type():
+  """Test that FunctionTool detects context parameter by ToolContext type annotation."""
+
+  def my_tool(query: str, tool_context: ToolContext) -> str:
+    return query
+
+  tool = FunctionTool(my_tool)
+  assert tool._context_param_name == "tool_context"
+  assert tool._ignore_params == ["tool_context", "input_stream"]
+
+
+def test_context_param_detection_with_custom_name():
+  """Test that FunctionTool detects context parameter with any name if type is Context."""
+
+  def my_tool(query: str, my_custom_context: Context) -> str:
+    return query
+
+  tool = FunctionTool(my_tool)
+  assert tool._context_param_name == "my_custom_context"
+  assert tool._ignore_params == ["my_custom_context", "input_stream"]
+
+
+def test_context_param_detection_fallback_to_name():
+  """Test that FunctionTool falls back to 'tool_context' name when no type annotation."""
+
+  def my_tool(query: str, tool_context) -> str:
+    return query
+
+  tool = FunctionTool(my_tool)
+  assert tool._context_param_name == "tool_context"
+  assert tool._ignore_params == ["tool_context", "input_stream"]
+
+
+def test_context_param_detection_no_context():
+  """Test that FunctionTool defaults to 'tool_context' when no context param exists."""
+
+  def my_tool(query: str, count: int) -> str:
+    return query
+
+  tool = FunctionTool(my_tool)
+  assert tool._context_param_name == "tool_context"
+  assert tool._ignore_params == ["tool_context", "input_stream"]
+
+
+@pytest.mark.asyncio
+async def test_run_async_with_custom_context_param_name(mock_tool_context):
+  """Test that run_async correctly injects context with custom parameter name."""
+
+  def my_tool(query: str, ctx: Context) -> dict:
+    return {"query": query, "has_context": ctx is not None}
+
+  tool = FunctionTool(my_tool)
+  result = await tool.run_async(
+      args={"query": "test"},
+      tool_context=mock_tool_context,
+  )
+
+  assert result == {"query": "test", "has_context": True}
+
+
+@pytest.mark.asyncio
+async def test_run_async_with_context_type_annotation(mock_tool_context):
+  """Test that run_async works with Context type annotation."""
+
+  async def async_tool(query: str, context: Context) -> dict:
+    return {"query": query, "context_type": type(context).__name__}
+
+  tool = FunctionTool(async_tool)
+  result = await tool.run_async(
+      args={"query": "hello"},
+      tool_context=mock_tool_context,
+  )
+
+  assert result["query"] == "hello"
+  assert result["context_type"] == "Context"

@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -19,11 +19,11 @@ from typing import Union
 
 import agent
 from dotenv import load_dotenv
-from google.adk.agents import Agent
-from google.adk.events import Event
+from google.adk.agents.llm_agent import Agent
+from google.adk.events.event import Event
 from google.adk.runners import Runner
-from google.adk.sessions import InMemorySessionService
-from google.adk.tools import LongRunningFunctionTool
+from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.tools.long_running_tool import LongRunningFunctionTool
 from google.genai import types
 from opentelemetry import trace
 from opentelemetry.exporter.cloud_trace import CloudTraceSpanExporter
@@ -113,8 +113,8 @@ async def main():
       updated_tool_output_data = {
           "status": "approved",
           "ticketId": ticket_id,
-          "approver_feedback": "Approved by manager at " + str(
-              asyncio.get_event_loop().time()
+          "approver_feedback": (
+              "Approved by manager at " + str(asyncio.get_event_loop().time())
           ),
       }
 

@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -11,6 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+from __future__ import annotations
 
 import logging
 from typing import List
@@ -26,6 +28,7 @@ from ...auth.auth_credential import AuthCredentialTypes
 from ...auth.auth_credential import ServiceAccount
 from ...auth.auth_credential import ServiceAccountCredential
 from ...auth.auth_schemes import AuthScheme
+from ...auth.auth_tool import AuthConfig
 from ..base_toolset import BaseToolset
 from ..base_toolset import ToolPredicate
 from ..openapi_tool.auth.auth_helpers import service_account_scheme_credential
@@ -42,54 +45,51 @@ logger = logging.getLogger("google_adk." + __name__)
 # TODO(cheliu): Apply a common toolset interface
 class ApplicationIntegrationToolset(BaseToolset):
   """ApplicationIntegrationToolset generates tools from a given Application
-
   Integration or Integration Connector resource.
-  Example Usage:
-  ```
-  # Get all available tools for an integration with api trigger
-  application_integration_toolset = ApplicationIntegrationToolset(
 
-      project="test-project",
-      location="us-central1"
-      integration="test-integration",
-      triggers=["api_trigger/test_trigger"],
-      service_account_credentials={...},
-  )
+  Example Usage::
 
-  # Get all available tools for a connection using entity operations and
-  # actions
-  # Note: Find the list of supported entity operations and actions for a
-  connection
-  # using integration connector apis:
-  #
-  https://cloud.google.com/integration-connectors/docs/reference/rest/v1/projects.locations.connections.connectionSchemaMetadata
-  application_integration_toolset = ApplicationIntegrationToolset(
-      project="test-project",
-      location="us-central1"
-      connection="test-connection",
-      entity_operations=["EntityId1": ["LIST","CREATE"], "EntityId2": []],
-      #empty list for actions means all operations on the entity are supported
-      actions=["action1"],
-      service_account_credentials={...},
-  )
+    # Get all available tools for an integration with api trigger
+    application_integration_toolset = ApplicationIntegrationToolset(
+        project="test-project",
+        location="us-central1"
+        integration="test-integration",
+        triggers=["api_trigger/test_trigger"],
+        service_account_credentials={...},
+    )
 
-  # Feed the toolset to agent
-  agent = LlmAgent(tools=[
-      ...,
-      application_integration_toolset,
-  ])
-  ```
+    # Get all available tools for a connection using entity operations and
+    # actions
+    # Note: Find the list of supported entity operations and actions for a
+    # connection using integration connector apis:
+    # https://cloud.google.com/integration-connectors/docs/reference/rest/v1/projects.locations.connections.connectionSchemaMetadata
+    application_integration_toolset = ApplicationIntegrationToolset(
+        project="test-project",
+        location="us-central1"
+        connection="test-connection",
+        entity_operations=["EntityId1": ["LIST","CREATE"], "EntityId2": []],
+        #empty list for actions means all operations on the entity are supported
+        actions=["action1"],
+        service_account_credentials={...},
+    )
+
+    # Feed the toolset to agent
+    agent = LlmAgent(tools=[
+        ...,
+        application_integration_toolset,
+    ])
   """
 
   def __init__(
       self,
       project: str,
       location: str,
+      connection_template_override: Optional[str] = None,
       integration: Optional[str] = None,
       triggers: Optional[List[str]] = None,
       connection: Optional[str] = None,
       entity_operations: Optional[str] = None,
-      actions: Optional[str] = None,
+      actions: Optional[list[str]] = None,
       # Optional parameter for the toolset. This is prepended to the generated
       # tool/python function name.
       tool_name_prefix: Optional[str] = "",
@@ -106,6 +106,8 @@ class ApplicationIntegrationToolset(BaseToolset):
     Args:
         project: The GCP project ID.
         location: The GCP location.
+        connection_template_override: Overrides `ExecuteConnection` default
+          integration name.
         integration: The integration name.
         triggers: The list of trigger names in the integration.
         connection: The connection name.
@@ -122,29 +124,40 @@ class ApplicationIntegrationToolset(BaseToolset):
 
     Raises:
         ValueError: If none of the following conditions are met:
-            - `integration` is provided.
-            - `connection` is provided and at least one of `entity_operations`
-              or `actions` is provided.
+          - ``integration`` is provided.
+          - ``connection`` is provided and at least one of ``entity_operations``
+            or ``actions`` is provided.
         Exception: If there is an error during the initialization of the
-            integration or connection client.
+          integration or connection client.
     """
     super().__init__(tool_filter=tool_filter)
     self.project = project
     self.location = location
+    self._connection_template_override = connection_template_override
     self._integration = integration
     self._triggers = triggers
     self._connection = connection
     self._entity_operations = entity_operations
     self._actions = actions
-    self._tool_name_prefix = tool_name_prefix
     self._tool_instructions = tool_instructions
     self._service_account_json = service_account_json
     self._auth_scheme = auth_scheme
     self._auth_credential = auth_credential
+    # Store auth config as instance variable so ADK can populate
+    # exchanged_auth_credential in-place before calling get_tools()
+    self._auth_config: Optional[AuthConfig] = (
+        AuthConfig(
+            auth_scheme=auth_scheme,
+            raw_auth_credential=auth_credential,
+        )
+        if auth_scheme
+        else None
+    )
 
     integration_client = IntegrationClient(
         project,
         location,
+        connection_template_override,
         integration,
         triggers,
         connection,
@@ -276,3 +289,13 @@ class ApplicationIntegrationToolset(BaseToolset):
   async def close(self) -> None:
     if self._openapi_toolset:
       await self._openapi_toolset.close()
+
+  @override
+  def get_auth_config(self) -> Optional[AuthConfig]:
+    """Returns the auth config for this toolset.
+
+    ADK will populate exchanged_auth_credential on this config before calling
+    get_tools(). The toolset can then access the ready-to-use credential via
+    self._auth_config.exchanged_auth_credential.
+    """
+    return self._auth_config

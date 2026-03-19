@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,36 +14,78 @@
 
 import os
 
-from google.adk.agents import llm_agent
-from google.adk.tools.bigquery import BigQueryCredentialsConfig
-from google.adk.tools.bigquery import BigQueryToolset
+from google.adk.agents.llm_agent import LlmAgent
+from google.adk.auth.auth_credential import AuthCredentialTypes
+from google.adk.tools.bigquery.bigquery_credentials import BigQueryCredentialsConfig
+from google.adk.tools.bigquery.bigquery_toolset import BigQueryToolset
+from google.adk.tools.bigquery.config import BigQueryToolConfig
+from google.adk.tools.bigquery.config import WriteMode
 import google.auth
 
-RUN_WITH_ADC = False
+# Define the desired credential type.
+# By default use Application Default Credentials (ADC) from the local
+# environment, which can be set up by following
+# https://cloud.google.com/docs/authentication/provide-credentials-adc.
+CREDENTIALS_TYPE = None
+
+# Define an appropriate application name
+BIGQUERY_AGENT_NAME = "adk_sample_bigquery_agent"
 
 
-if RUN_WITH_ADC:
-  # Initialize the tools to use the application default credentials.
-  application_default_credentials, _ = google.auth.default()
-  credentials_config = BigQueryCredentialsConfig(
-      credentials=application_default_credentials
-  )
-else:
-  # Initiaze the tools to do interactive OAuth
+# Define BigQuery tool config with write mode set to allowed. Note that this is
+# only to demonstrate the full capability of the BigQuery tools. In production
+# you may want to change to BLOCKED (default write mode, effectively makes the
+# tool read-only) or PROTECTED (only allows writes in the anonymous dataset of a
+# BigQuery session) write mode.
+tool_config = BigQueryToolConfig(
+    write_mode=WriteMode.ALLOWED,
+    application_name=BIGQUERY_AGENT_NAME,
+    max_query_result_rows=50,
+)
+
+if CREDENTIALS_TYPE == AuthCredentialTypes.OAUTH2:
+  # Initialize the tools to do interactive OAuth
   # The environment variables OAUTH_CLIENT_ID and OAUTH_CLIENT_SECRET
   # must be set
   credentials_config = BigQueryCredentialsConfig(
       client_id=os.getenv("OAUTH_CLIENT_ID"),
       client_secret=os.getenv("OAUTH_CLIENT_SECRET"),
   )
+elif CREDENTIALS_TYPE == AuthCredentialTypes.SERVICE_ACCOUNT:
+  # Initialize the tools to use the credentials in the service account key.
+  # If this flow is enabled, make sure to replace the file path with your own
+  # service account key file
+  # https://cloud.google.com/iam/docs/service-account-creds#user-managed-keys
+  creds, _ = google.auth.load_credentials_from_file("service_account_key.json")
+  credentials_config = BigQueryCredentialsConfig(credentials=creds)
+elif CREDENTIALS_TYPE == AuthCredentialTypes.HTTP:
+  # Initialize the tools to use the externally provided access token. One such
+  # use case is creating an authorization resource `AUTH_ID` in Gemini
+  # Enterprise and using it to register an ADK agent deployed to Vertex AI
+  # Agent Engine with Gemini Enterprise. See for more details:
+  # https://docs.cloud.google.com/gemini/enterprise/docs/register-and-manage-an-adk-agent.
+  # This access token will be passed to the agent via the tool context, with
+  # the key `AUTH_ID`.
+  credentials_config = BigQueryCredentialsConfig(
+      external_access_token_key="AUTH_ID"
+  )
+else:
+  # Initialize the tools to use the application default credentials.
+  # https://cloud.google.com/docs/authentication/provide-credentials-adc
+  application_default_credentials, _ = google.auth.default()
+  credentials_config = BigQueryCredentialsConfig(
+      credentials=application_default_credentials
+  )
 
-bigquery_toolset = BigQueryToolset(credentials_config=credentials_config)
+bigquery_toolset = BigQueryToolset(
+    credentials_config=credentials_config, bigquery_tool_config=tool_config
+)
 
 # The variable name `root_agent` determines what your root agent is for the
 # debug CLI
-root_agent = llm_agent.Agent(
-    model="gemini-2.0-flash",
-    name="hello_agent",
+root_agent = LlmAgent(
+    model="gemini-2.5-flash",
+    name=BIGQUERY_AGENT_NAME,
     description=(
         "Agent to answer questions about BigQuery data and models and execute"
         " SQL queries."

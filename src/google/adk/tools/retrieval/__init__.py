@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,24 +13,44 @@
 # limitations under the License.
 
 from .base_retrieval_tool import BaseRetrievalTool
-from .files_retrieval import FilesRetrieval
-from .llama_index_retrieval import LlamaIndexRetrieval
 
 __all__ = [
-    'BaseRetrievalTool',
-    'FilesRetrieval',
-    'LlamaIndexRetrieval',
+    "BaseRetrievalTool",
+    "FilesRetrieval",
+    "LlamaIndexRetrieval",
+    "VertexAiRagRetrieval",
 ]
 
-try:
-  from .vertex_ai_rag_retrieval import VertexAiRagRetrieval
 
-  __all__.append('VertexAiRagRetrieval')
-except ImportError:
-  import logging
+def __getattr__(name: str):
+  if name == "FilesRetrieval":
+    try:
+      from .files_retrieval import FilesRetrieval
 
-  logger = logging.getLogger('google_adk.' + __name__)
-  logger.debug(
-      'The Vertex sdk is not installed. If you want to use the Vertex RAG with'
-      ' agents, please install it. If not, you can ignore this warning.'
-  )
+      return FilesRetrieval
+    except ImportError as e:
+      raise ImportError(
+          "FilesRetrieval requires additional dependencies. "
+          'Please install with: pip install "google-adk[extensions]"'
+      ) from e
+  elif name == "LlamaIndexRetrieval":
+    try:
+      from .llama_index_retrieval import LlamaIndexRetrieval
+
+      return LlamaIndexRetrieval
+    except ImportError as e:
+      raise ImportError(
+          "LlamaIndexRetrieval requires additional dependencies. "
+          'Please install with: pip install "google-adk[extensions]"'
+      ) from e
+  elif name == "VertexAiRagRetrieval":
+    try:
+      from .vertex_ai_rag_retrieval import VertexAiRagRetrieval
+
+      return VertexAiRagRetrieval
+    except ImportError as e:
+      raise ImportError(
+          "VertexAiRagRetrieval requires additional dependencies. "
+          'Please install with: pip install "google-adk[extensions]"'
+      ) from e
+  raise AttributeError(f"module '{__name__}' has no attribute '{name}'")

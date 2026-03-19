@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,11 +13,13 @@
 # limitations under the License.
 
 from .base_artifact_service import BaseArtifactService
+from .file_artifact_service import FileArtifactService
 from .gcs_artifact_service import GcsArtifactService
 from .in_memory_artifact_service import InMemoryArtifactService
 
 __all__ = [
     'BaseArtifactService',
+    'FileArtifactService',
     'GcsArtifactService',
     'InMemoryArtifactService',
 ]

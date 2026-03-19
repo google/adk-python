@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,12 +15,14 @@ import logging
 
 from .base_memory_service import BaseMemoryService
 from .in_memory_memory_service import InMemoryMemoryService
+from .vertex_ai_memory_bank_service import VertexAiMemoryBankService
 
 logger = logging.getLogger('google_adk.' + __name__)
 
 __all__ = [
     'BaseMemoryService',
     'InMemoryMemoryService',
+    'VertexAiMemoryBankService',
 ]
 
 try:
@@ -29,7 +31,7 @@ try:
   __all__.append('VertexAiRagMemoryService')
 except ImportError:
   logger.debug(
-      'The Vertex sdk is not installed. If you want to use the'
+      'The Vertex SDK is not installed. If you want to use the'
       ' VertexAiRagMemoryService please install it. If not, you can ignore this'
       ' warning.'
   )

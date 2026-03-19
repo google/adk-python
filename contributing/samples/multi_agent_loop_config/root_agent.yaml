@@ -1,0 +1,7 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/google/adk-python/refs/heads/main/src/google/adk/agents/config_schemas/AgentConfig.json
+agent_class: SequentialAgent
+name: IterativeWritingPipeline
+description: Iterative writing pipeline agent.
+sub_agents:
+  - config_path: writer_agents/initial_writer_agent.yaml
+  - config_path: loop_agent.yaml

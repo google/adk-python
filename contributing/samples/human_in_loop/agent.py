@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,8 +15,8 @@
 from typing import Any
 
 from google.adk import Agent
-from google.adk.tools import ToolContext
 from google.adk.tools.long_running_tool import LongRunningFunctionTool
+from google.adk.tools.tool_context import ToolContext
 from google.genai import types
 
 
@@ -39,7 +39,7 @@ def ask_for_approval(
 
 
 root_agent = Agent(
-    model='gemini-1.5-flash',
+    model='gemini-2.5-flash',
     name='reimbursement_agent',
     instruction="""
       You are an agent whose job is to handle the reimbursement process for

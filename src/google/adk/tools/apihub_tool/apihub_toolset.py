@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -24,6 +24,7 @@ import yaml
 from ...agents.readonly_context import ReadonlyContext
 from ...auth.auth_credential import AuthCredential
 from ...auth.auth_schemes import AuthScheme
+from ...auth.auth_tool import AuthConfig
 from .._gemini_schema_util import _to_snake_case
 from ..base_toolset import BaseToolset
 from ..base_toolset import ToolPredicate
@@ -35,27 +36,25 @@ from .clients.apihub_client import APIHubClient
 class APIHubToolset(BaseToolset):
   """APIHubTool generates tools from a given API Hub resource.
 
-  Examples:
+  Examples::
 
-  ```
-  apihub_toolset = APIHubToolset(
-      apihub_resource_name="projects/test-project/locations/us-central1/apis/test-api",
-      service_account_json="...",
-      tool_filter=lambda tool, ctx=None: tool.name in ('my_tool',
-      'my_other_tool')
-  )
+    apihub_toolset = APIHubToolset(
+        apihub_resource_name="projects/test-project/locations/us-central1/apis/test-api",
+        service_account_json="...",
+        tool_filter=lambda tool, ctx=None: tool.name in ('my_tool',
+        'my_other_tool')
+    )
 
-  # Get all available tools
-  agent = LlmAgent(tools=apihub_toolset)
-
-  ```
+    # Get all available tools
+    agent = LlmAgent(tools=apihub_toolset)
 
   **apihub_resource_name** is the resource name from API Hub. It must include
-    API name, and can optionally include API version and spec name.
-    - If apihub_resource_name includes a spec resource name, the content of that
-      spec will be used for generating the tools.
-    - If apihub_resource_name includes only an api or a version name, the
-      first spec of the first version of that API will be used.
+  API name, and can optionally include API version and spec name.
+
+  - If apihub_resource_name includes a spec resource name, the content of that
+    spec will be used for generating the tools.
+  - If apihub_resource_name includes only an api or a version name, the
+    first spec of the first version of that API will be used.
   """
 
   def __init__(
@@ -78,44 +77,45 @@ class APIHubToolset(BaseToolset):
   ):
     """Initializes the APIHubTool with the given parameters.
 
-    Examples:
-    ```
-    apihub_toolset = APIHubToolset(
-        apihub_resource_name="projects/test-project/locations/us-central1/apis/test-api",
-        service_account_json="...",
-    )
+    Examples::
 
-    # Get all available tools
-    agent = LlmAgent(tools=[apihub_toolset])
+      apihub_toolset = APIHubToolset(
+          apihub_resource_name="projects/test-project/locations/us-central1/apis/test-api",
+          service_account_json="...",
+      )
 
-    apihub_toolset = APIHubToolset(
-        apihub_resource_name="projects/test-project/locations/us-central1/apis/test-api",
-        service_account_json="...",
-        tool_filter = ['my_tool']
-    )
-    # Get a specific tool
-    agent = LlmAgent(tools=[
-        ...,
-        apihub_toolset,
-    ])
-    ```
+      # Get all available tools
+      agent = LlmAgent(tools=[apihub_toolset])
+
+      apihub_toolset = APIHubToolset(
+          apihub_resource_name="projects/test-project/locations/us-central1/apis/test-api",
+          service_account_json="...",
+          tool_filter = ['my_tool']
+      )
+      # Get a specific tool
+      agent = LlmAgent(tools=[
+          ...,
+          apihub_toolset,
+      ])
 
     **apihub_resource_name** is the resource name from API Hub. It must include
     API name, and can optionally include API version and spec name.
+
     - If apihub_resource_name includes a spec resource name, the content of that
       spec will be used for generating the tools.
     - If apihub_resource_name includes only an api or a version name, the
       first spec of the first version of that API will be used.
 
     Example:
+
     * projects/xxx/locations/us-central1/apis/apiname/...
     * https://console.cloud.google.com/apigee/api-hub/apis/apiname?project=xxx
 
     Args:
         apihub_resource_name: The resource name of the API in API Hub.
-          Example: `projects/test-project/locations/us-central1/apis/test-api`.
-        access_token: Google Access token. Generate with gcloud cli `gcloud auth
-          auth print-access-token`. Used for fetching API Specs from API Hub.
+          Example: ``projects/test-project/locations/us-central1/apis/test-api``.
+        access_token: Google Access token. Generate with gcloud cli
+          ``gcloud auth print-access-token``. Used for fetching API Specs from API Hub.
         service_account_json: The service account config as a json string.
           Required if not using default service credential. It is used for
           creating the API Hub client and fetching the API Specs from API Hub.
@@ -145,6 +145,16 @@ class APIHubToolset(BaseToolset):
     self._openapi_toolset = None
     self._auth_scheme = auth_scheme
     self._auth_credential = auth_credential
+    # Store auth config as instance variable so ADK can populate
+    # exchanged_auth_credential in-place before calling get_tools()
+    self._auth_config: Optional[AuthConfig] = (
+        AuthConfig(
+            auth_scheme=auth_scheme,
+            raw_auth_credential=auth_credential,
+        )
+        if auth_scheme
+        else None
+    )
 
     if not self._lazy_load_spec:
       self._prepare_toolset()
@@ -189,3 +199,13 @@ class APIHubToolset(BaseToolset):
   async def close(self):
     if self._openapi_toolset:
       await self._openapi_toolset.close()
+
+  @override
+  def get_auth_config(self) -> Optional[AuthConfig]:
+    """Returns the auth config for this toolset.
+
+    ADK will populate exchanged_auth_credential on this config before calling
+    get_tools(). The toolset can then access the ready-to-use credential via
+    self._auth_config.exchanged_auth_credential.
+    """
+    return self._auth_config

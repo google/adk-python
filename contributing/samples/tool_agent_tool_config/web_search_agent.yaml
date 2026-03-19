@@ -1,0 +1,7 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/google/adk-python/refs/heads/main/src/google/adk/agents/config_schemas/AgentConfig.json
+name: web_search_agent
+model: gemini-2.0-flash
+description: 'an agent whose job it is to perform web search and return the results.'
+instruction: You are an agent whose job is to perform web search and return the results.
+tools:
+  - name: google_search

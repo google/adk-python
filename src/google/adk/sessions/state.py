@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,11 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 from typing import Any
 
 
 class State:
-  """A state dict that maintain the current value and the pending-commit delta."""
+  """A state dict that maintains the current value and the pending-commit delta."""
 
   APP_PREFIX = "app:"
   USER_PREFIX = "user:"
@@ -47,6 +49,14 @@ class State:
   def __contains__(self, key: str) -> bool:
     """Whether the state dict contains the given key."""
     return key in self._value or key in self._delta
+
+  def setdefault(self, key: str, default: Any = None) -> Any:
+    """Gets the value of a key, or sets it to a default if the key doesn't exist."""
+    if key in self:
+      return self[key]
+    else:
+      self[key] = default
+      return default
 
   def has_delta(self) -> bool:
     """Whether the state has pending delta."""

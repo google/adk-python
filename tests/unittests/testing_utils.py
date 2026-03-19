@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,6 +16,7 @@ import asyncio
 import contextlib
 from typing import AsyncGenerator
 from typing import Generator
+from typing import Optional
 from typing import Union
 
 from google.adk.agents.invocation_context import InvocationContext
@@ -23,20 +24,36 @@ from google.adk.agents.live_request_queue import LiveRequestQueue
 from google.adk.agents.llm_agent import Agent
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.agents.run_config import RunConfig
-from google.adk.artifacts import InMemoryArtifactService
+from google.adk.apps.app import App
+from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.adk.events.event import Event
 from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
 from google.adk.models.base_llm import BaseLlm
 from google.adk.models.base_llm_connection import BaseLlmConnection
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
+from google.adk.plugins.base_plugin import BasePlugin
+from google.adk.plugins.plugin_manager import PluginManager
 from google.adk.runners import InMemoryRunner as AfInMemoryRunner
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.sessions.session import Session
+from google.adk.utils.context_utils import Aclosing
 from google.genai import types
 from google.genai.types import Part
 from typing_extensions import override
+
+
+def create_test_agent(name: str = 'test_agent') -> LlmAgent:
+  """Create a simple test agent for use in unit tests.
+
+  Args:
+    name: The name of the test agent.
+
+  Returns:
+    A configured LlmAgent instance suitable for testing.
+  """
+  return LlmAgent(name=name)
 
 
 class UserContent(types.Content):
@@ -56,7 +73,12 @@ class ModelContent(types.Content):
     super().__init__(role='model', parts=parts)
 
 
-async def create_invocation_context(agent: Agent, user_content: str = ''):
+async def create_invocation_context(
+    agent: Agent,
+    user_content: str = '',
+    run_config: RunConfig = None,
+    plugins: list[BasePlugin] = [],
+):
   invocation_id = 'test_id'
   artifact_service = InMemoryArtifactService()
   session_service = InMemorySessionService()
@@ -65,6 +87,7 @@ async def create_invocation_context(agent: Agent, user_content: str = ''):
       artifact_service=artifact_service,
       session_service=session_service,
       memory_service=memory_service,
+      plugin_manager=PluginManager(plugins=plugins),
       invocation_id=invocation_id,
       agent=agent,
       session=await session_service.create_session(
@@ -73,7 +96,7 @@ async def create_invocation_context(agent: Agent, user_content: str = ''):
       user_content=types.Content(
           role='user', parts=[types.Part.from_text(text=user_content)]
       ),
-      run_config=RunConfig(),
+      run_config=run_config or RunConfig(),
   )
   if user_content:
     append_user_content(
@@ -98,7 +121,32 @@ def append_user_content(
 # Extracts the contents from the events and transform them into a list of
 # (author, simplified_content) tuples.
 def simplify_events(events: list[Event]) -> list[(str, types.Part)]:
-  return [(event.author, simplify_content(event.content)) for event in events]
+  return [
+      (event.author, simplify_content(event.content))
+      for event in events
+      if event.content
+  ]
+
+
+END_OF_AGENT = 'end_of_agent'
+
+
+# Extracts the contents from the events and transform them into a list of
+# (author, simplified_content OR AgentState OR "end_of_agent") tuples.
+#
+# Could be used to compare events for testing resumability.
+def simplify_resumable_app_events(
+    events: list[Event],
+) -> list[(str, Union[types.Part, str])]:
+  results = []
+  for event in events:
+    if event.content:
+      results.append((event.author, simplify_content(event.content)))
+    elif event.actions.end_of_agent:
+      results.append((event.author, END_OF_AGENT))
+    elif event.actions.agent_state is not None:
+      results.append((event.author, event.actions.agent_state))
+  return results
 
 
 # Simplifies the contents into a list of (author, simplified_content) tuples.
@@ -141,19 +189,26 @@ class TestInMemoryRunner(AfInMemoryRunner):
       self, new_message: types.ContentUnion
   ) -> list[Event]:
 
-    session = await self.session_service.create_session(
-        app_name='InMemoryRunner', user_id='test_user'
-    )
-    collected_events = []
-
-    async for event in self.run_async(
-        user_id=session.user_id,
-        session_id=session.id,
-        new_message=get_user_content(new_message),
-    ):
+    collected_events: list[Event] = []
+    async for event in self.run_async_with_new_session_agen(new_message):
       collected_events.append(event)
 
     return collected_events
+
+  async def run_async_with_new_session_agen(
+      self, new_message: types.ContentUnion
+  ) -> AsyncGenerator[Event, None]:
+    session = await self.session_service.create_session(
+        app_name='InMemoryRunner', user_id='test_user'
+    )
+    agen = self.run_async(
+        user_id=session.user_id,
+        session_id=session.id,
+        new_message=get_user_content(new_message),
+    )
+    async with Aclosing(agen):
+      async for event in agen:
+        yield event
 
 
 class InMemoryRunner:
@@ -161,29 +216,52 @@ class InMemoryRunner:
 
   def __init__(
       self,
-      root_agent: Union[Agent, LlmAgent],
+      root_agent: Optional[Union[Agent, LlmAgent]] = None,
       response_modalities: list[str] = None,
+      plugins: list[BasePlugin] = [],
+      app: Optional[App] = None,
   ):
-    self.root_agent = root_agent
-    self.runner = Runner(
-        app_name='test_app',
-        agent=root_agent,
-        artifact_service=InMemoryArtifactService(),
-        session_service=InMemorySessionService(),
-        memory_service=InMemoryMemoryService(),
-    )
+    """Initializes the InMemoryRunner.
+
+    Args:
+      root_agent: The root agent to run, won't be used if app is provided.
+      response_modalities: The response modalities of the runner.
+      plugins: The plugins to use in the runner, won't be used if app is
+        provided.
+      app: The app to use in the runner.
+    """
+    if not app:
+      self.app_name = 'test_app'
+      self.root_agent = root_agent
+      self.runner = Runner(
+          app_name='test_app',
+          agent=root_agent,
+          artifact_service=InMemoryArtifactService(),
+          session_service=InMemorySessionService(),
+          memory_service=InMemoryMemoryService(),
+          plugins=plugins,
+      )
+    else:
+      self.app_name = app.name
+      self.root_agent = app.root_agent
+      self.runner = Runner(
+          app=app,
+          artifact_service=InMemoryArtifactService(),
+          session_service=InMemorySessionService(),
+          memory_service=InMemoryMemoryService(),
+      )
     self.session_id = None
 
   @property
   def session(self) -> Session:
     if not self.session_id:
       session = self.runner.session_service.create_session_sync(
-          app_name='test_app', user_id='test_user'
+          app_name=self.app_name, user_id='test_user'
       )
       self.session_id = session.id
       return session
     return self.runner.session_service.get_session_sync(
-        app_name='test_app', user_id='test_user', session_id=self.session_id
+        app_name=self.app_name, user_id='test_user', session_id=self.session_id
     )
 
   def run(self, new_message: types.ContentUnion) -> list[Event]:
@@ -195,23 +273,31 @@ class InMemoryRunner:
         )
     )
 
-  async def run_async(self, new_message: types.ContentUnion) -> list[Event]:
+  async def run_async(
+      self,
+      new_message: Optional[types.ContentUnion] = None,
+      invocation_id: Optional[str] = None,
+  ) -> list[Event]:
     events = []
     async for event in self.runner.run_async(
         user_id=self.session.user_id,
         session_id=self.session.id,
-        new_message=get_user_content(new_message),
+        invocation_id=invocation_id,
+        new_message=get_user_content(new_message) if new_message else None,
     ):
       events.append(event)
     return events
 
-  def run_live(self, live_request_queue: LiveRequestQueue) -> list[Event]:
+  def run_live(
+      self, live_request_queue: LiveRequestQueue, run_config: RunConfig = None
+  ) -> list[Event]:
     collected_responses = []
 
     async def consume_responses(session: Session):
       run_res = self.runner.run_live(
           session=session,
           live_request_queue=live_request_queue,
+          run_config=run_config or RunConfig(),
       )
 
       async for response in run_res:
@@ -234,6 +320,7 @@ class MockModel(BaseLlm):
 
   requests: list[LlmRequest] = []
   responses: list[LlmResponse]
+  error: Union[Exception, None] = None
   response_index: int = -1
 
   @classmethod
@@ -242,7 +329,10 @@ class MockModel(BaseLlm):
       responses: Union[
           list[types.Part], list[LlmResponse], list[str], list[list[types.Part]]
       ],
+      error: Union[Exception, None] = None,
   ):
+    if error and not responses:
+      return cls(responses=[], error=error)
     if not responses:
       return cls(responses=[])
     elif isinstance(responses[0], LlmResponse):
@@ -265,13 +355,16 @@ class MockModel(BaseLlm):
 
       return cls(responses=responses)
 
-  @staticmethod
-  def supported_models() -> list[str]:
+  @classmethod
+  @override
+  def supported_models(cls) -> list[str]:
     return ['mock']
 
   def generate_content(
       self, llm_request: LlmRequest, stream: bool = False
   ) -> Generator[LlmResponse, None, None]:
+    if self.error is not None:
+      raise self.error
     # Increasement of the index has to happen before the yield.
     self.response_index += 1
     self.requests.append(llm_request)
@@ -282,6 +375,8 @@ class MockModel(BaseLlm):
   async def generate_content_async(
       self, llm_request: LlmRequest, stream: bool = False
   ) -> AsyncGenerator[LlmResponse, None]:
+    if self.error is not None:
+      raise self.error
     # Increasement of the index has to happen before the yield.
     self.response_index += 1
     self.requests.append(llm_request)
@@ -290,6 +385,7 @@ class MockModel(BaseLlm):
   @contextlib.asynccontextmanager
   async def connect(self, llm_request: LlmRequest) -> BaseLlmConnection:
     """Creates a live connection to the LLM."""
+    self.requests.append(llm_request)
     yield MockLlmConnection(self.responses)
 
 
@@ -313,6 +409,10 @@ class MockLlmConnection(BaseLlmConnection):
   async def receive(self) -> AsyncGenerator[LlmResponse, None]:
     """Yield each of the pre-defined LlmResponses."""
     for response in self.llm_responses:
+      # Yield control to allow other tasks (like send_task) to run first.
+      # This ensures user content gets persisted before the mock response
+      # is yielded.
+      await asyncio.sleep(0)
       yield response
 
   async def close(self):

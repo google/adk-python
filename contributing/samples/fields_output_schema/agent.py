@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,15 +16,26 @@ from google.adk import Agent
 from pydantic import BaseModel
 
 
-class WeahterData(BaseModel):
+class WeatherData(BaseModel):
   temperature: str
   humidity: str
   wind_speed: str
 
 
+def get_current_year() -> str:
+  """Get the current year.
+
+  Returns:
+    The current year as a string
+  """
+  from datetime import datetime
+
+  return str(datetime.now().year)
+
+
 root_agent = Agent(
     name='root_agent',
-    model='gemini-2.0-flash',
+    model='gemini-2.5-flash',
     instruction="""\
 Answer user's questions based on the data you have.
 
@@ -43,6 +54,7 @@ Here are the data you have for Cupertino
 * wind_speed: 13 mph
 
 """,
-    output_schema=WeahterData,
+    output_schema=list[WeatherData],
     output_key='weather_data',
+    tools=[get_current_year],
 )

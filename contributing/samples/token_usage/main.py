@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -20,10 +20,10 @@ import agent
 from dotenv import load_dotenv
 from google.adk import Runner
 from google.adk.agents.run_config import RunConfig
-from google.adk.artifacts import InMemoryArtifactService
+from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.adk.cli.utils import logs
-from google.adk.sessions import InMemorySessionService
-from google.adk.sessions import Session
+from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.sessions.session import Session
 from google.genai import types
 
 load_dotenv(override=True)
@@ -72,8 +72,8 @@ async def main():
         )
         total_tokens += event.usage_metadata.total_token_count or 0
         print(
-            'Turn tokens:'
-            f' {event.usage_metadata.total_token_count} (prompt={event.usage_metadata.prompt_token_count},'
+            f'Turn tokens: {event.usage_metadata.total_token_count}'
+            f' (prompt={event.usage_metadata.prompt_token_count},'
             f' candidates={event.usage_metadata.candidates_token_count})'
         )
 

@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -20,8 +20,8 @@ from typing import List
 from typing import Optional
 from unittest import mock
 
-from google.adk.agents import Agent
 from google.adk.agents.callback_context import CallbackContext
+from google.adk.agents.llm_agent import Agent
 from google.adk.events.event import Event
 from google.adk.flows.llm_flows.functions import handle_function_calls_async
 from google.adk.tools.function_tool import FunctionTool

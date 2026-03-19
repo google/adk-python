@@ -1,5 +1,5 @@
 #!/bin/bash
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -52,16 +52,16 @@ echo '---------------------------------------'
 echo '|  Auto-formatting src/...'
 echo '---------------------------------------'
 
-find -L src/ -type f -name "*.py" -exec pyink --config pyproject.toml {} +
+find -L src/ -not -path "*/.*" -type f -name "*.py" -exec pyink --config pyproject.toml {} +
 
 echo '---------------------------------------'
 echo '|  Auto-formatting tests/...'
 echo '---------------------------------------'
 
-find -L tests/ -type f -name "*.py" -exec pyink --config pyproject.toml {} +
+find -L tests/ -not -path "*/.*" -type f -name "*.py" -exec pyink --config pyproject.toml {} +
 
 echo '---------------------------------------'
 echo '|  Auto-formatting contributing/...'
 echo '---------------------------------------'
 
-find -L contributing/ -type f -name "*.py" -exec pyink --config pyproject.toml {} +
+find -L contributing/ -not -path "*/.*" -type f -name "*.py" -exec pyink --config pyproject.toml {} +

@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,8 +15,8 @@
 from __future__ import annotations
 
 import copy
+import logging
 from typing import AsyncGenerator
-from typing import Generator
 from typing import Optional
 
 from google.genai import types
@@ -27,7 +27,11 @@ from ...events.event import Event
 from ...models.llm_request import LlmRequest
 from ._base_llm_processor import BaseLlmRequestProcessor
 from .functions import remove_client_function_call_id
+from .functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
 from .functions import REQUEST_EUC_FUNCTION_CALL_NAME
+from .functions import REQUEST_INPUT_FUNCTION_CALL_NAME
+
+logger = logging.getLogger('google_adk.' + __name__)
 
 
 class _ContentLlmRequestProcessor(BaseLlmRequestProcessor):
@@ -37,18 +41,42 @@ class _ContentLlmRequestProcessor(BaseLlmRequestProcessor):
   async def run_async(
       self, invocation_context: InvocationContext, llm_request: LlmRequest
   ) -> AsyncGenerator[Event, None]:
-    from ...agents.llm_agent import LlmAgent
+    from ...models.google_llm import Gemini
 
     agent = invocation_context.agent
-    if not isinstance(agent, LlmAgent):
-      return
+    preserve_function_call_ids = False
+    if hasattr(agent, 'canonical_model'):
+      canonical_model = agent.canonical_model
+      preserve_function_call_ids = (
+          isinstance(canonical_model, Gemini)
+          and canonical_model.use_interactions_api
+      )
 
-    if agent.include_contents != 'none':
+    # Preserve all contents that were added by instruction processor
+    # (since llm_request.contents will be completely reassigned below)
+    instruction_related_contents = llm_request.contents
+
+    if agent.include_contents == 'default':
+      # Include full conversation history
       llm_request.contents = _get_contents(
           invocation_context.branch,
           invocation_context.session.events,
           agent.name,
+          preserve_function_call_ids=preserve_function_call_ids,
       )
+    else:
+      # Include current turn context only (no conversation history)
+      llm_request.contents = _get_current_turn_contents(
+          invocation_context.branch,
+          invocation_context.session.events,
+          agent.name,
+          preserve_function_call_ids=preserve_function_call_ids,
+      )
+
+    # Add instruction-related contents to proper position in conversation
+    await _add_instructions_to_user_content(
+        invocation_context, llm_request, instruction_related_contents
+    )
 
     # Maintain async generator behavior
     if False:  # Ensures it behaves as a generator
@@ -63,7 +91,7 @@ def _rearrange_events_for_async_function_responses_in_history(
 ) -> list[Event]:
   """Rearrange the async function_response events in the history."""
 
-  function_call_id_to_response_events_index: dict[str, list[Event]] = {}
+  function_call_id_to_response_events_index: dict[str, int] = {}
   for i, event in enumerate(events):
     function_responses = event.get_function_responses()
     if function_responses:
@@ -120,12 +148,13 @@ def _rearrange_events_for_latest_function_response(
   Returns:
     A list of events with the latest function_response rearranged.
   """
-  if not events:
+  if len(events) < 2:
+    # No need to process, since there is no function_call.
     return events
 
   function_responses = events[-1].get_function_responses()
   if not function_responses:
-    # No need to process, since the latest event is not fuction_response.
+    # No need to process, since the latest event is not function_response.
     return events
 
   function_responses_ids = set()
@@ -149,15 +178,30 @@ def _rearrange_events_for_latest_function_response(
       for function_call in function_calls:
         if function_call.id in function_responses_ids:
           function_call_event_idx = idx
-          break
-        if function_call_event_idx != -1:
-          # in case the last response event only have part of the responses
-          # for the function calls in the function call event
-          for function_call in function_calls:
-            function_responses_ids.add(function_call.id)
+          function_call_ids = {
+              function_call.id for function_call in function_calls
+          }
+          # last response event should only contain the responses for the
+          # function calls in the same function call event
+          if not function_responses_ids.issubset(function_call_ids):
+            raise ValueError(
+                'Last response event should only contain the responses for the'
+                ' function calls in the same function call event. Function'
+                f' call ids found : {function_call_ids}, function response'
+                f' ids provided: {function_responses_ids}'
+            )
+          # collect all function responses from the function call event to
+          # the last response event
+          function_responses_ids = function_call_ids
           break
 
   if function_call_event_idx == -1:
+    logger.debug(
+        'No function call event found for function responses ids: %s in'
+        ' event list: %s',
+        function_responses_ids,
+        events,
+    )
     raise ValueError(
         'No function call event found for function responses ids:'
         f' {function_responses_ids}'
@@ -185,57 +229,345 @@ def _rearrange_events_for_latest_function_response(
   return result_events
 
 
-def _get_contents(
-    current_branch: Optional[str], events: list[Event], agent_name: str = ''
-) -> list[types.Content]:
-  """Get the contents for the LLM request.
+def _is_part_invisible(p: types.Part) -> bool:
+  """Returns whether a part is invisible for LLM context.
+
+  A part is invisible if:
+  - It has no meaningful content (text, inline_data, file_data, function_call,
+    function_response, executable_code, or code_execution_result), OR
+  - It is marked as a thought AND does not contain function_call or
+    function_response
+
+  Function calls and responses are never invisible, even if marked as thought,
+  because they represent actions that need to be executed or results that need
+  to be processed.
+
+  Args:
+    p: The part to check.
+  """
+  # Function calls and responses are never invisible, even if marked as thought
+  if p.function_call or p.function_response:
+    return False
+
+  return p.thought or not (
+      p.text
+      or p.inline_data
+      or p.file_data
+      or p.executable_code
+      or p.code_execution_result
+  )
+
+
+def _contains_empty_content(event: Event) -> bool:
+  """Check if an event should be skipped due to missing or empty content.
+
+  This can happen to the events that only changed session state.
+  When both content and transcriptions are empty, the event will be considered
+  as empty. The content is considered empty if none of its parts contain text,
+  inline data, file data, function call, function response, executable code, or
+  code execution result. Parts with only thoughts are also considered empty.
+
+  Args:
+    event: The event to check.
+
+  Returns:
+    True if the event should be skipped, False otherwise.
+  """
+  if event.actions and event.actions.compaction:
+    return False
+
+  return (
+      not event.content
+      or not event.content.role
+      or not event.content.parts
+      or all(_is_part_invisible(p) for p in event.content.parts)
+  ) and (not event.output_transcription and not event.input_transcription)
+
+
+def _should_include_event_in_context(
+    current_branch: Optional[str], event: Event
+) -> bool:
+  """Determines if an event should be included in the LLM context.
+
+  This filters out events that are considered empty (e.g., no text, function
+  calls, or transcriptions), do not belong to the current agent's branch, or
+  are internal events like authentication or confirmation requests.
 
   Args:
     current_branch: The current branch of the agent.
-    events: A list of events.
-    agent_name: The name of the agent.
+    event: The event to filter.
 
   Returns:
-    A list of contents.
+    True if the event should be included in the context, False otherwise.
   """
-  filtered_events = []
-  # Parse the events, leaving the contents and the function calls and
-  # responses from the current agent.
-  for event in events:
+  return not (
+      _contains_empty_content(event)
+      or not _is_event_belongs_to_branch(current_branch, event)
+      or _is_adk_framework_event(event)
+      or _is_auth_event(event)
+      or _is_request_confirmation_event(event)
+      or _is_request_input_event(event)
+  )
+
+
+def _process_compaction_events(events: list[Event]) -> list[Event]:
+  """Processes events by applying compaction.
+
+  Identifies compacted ranges and filters out events that are covered by
+  compaction summaries.
+
+  Args:
+    events: A list of events to process.
+
+  Returns:
+    A list of events with compaction applied.
+  """
+  # Example:
+  # [event_1(ts=1), event_2(ts=2), compaction_1(1-2), event_3(ts=4),
+  #  compaction_2(2-4), event_4(ts=6)].
+  #
+  # Overlaps are resolved by keeping only non-subsumed compaction summaries.
+  # A summary event is materialized at its compaction end timestamp, and raw
+  # events inside any kept compaction range are filtered out.
+  compaction_infos: list[tuple[int, float, float]] = []
+  for i, event in enumerate(events):
+    if not (event.actions and event.actions.compaction):
+      continue
+    compaction = event.actions.compaction
     if (
-        not event.content
-        or not event.content.role
-        or not event.content.parts
-        or event.content.parts[0].text == ''
+        compaction.start_timestamp is None
+        or compaction.end_timestamp is None
+        or compaction.compacted_content is None
     ):
-      # Skip events without content, or generated neither by user nor by model
-      # or has empty text.
-      # E.g. events purely for mutating session states.
       continue
-    if not _is_event_belongs_to_branch(current_branch, event):
-      # Skip events not belong to current branch.
-      continue
-    if _is_auth_event(event):
-      # skip auth event
-      continue
-    filtered_events.append(
-        _convert_foreign_event(event)
-        if _is_other_agent_reply(agent_name, event)
-        else event
+    compaction_infos.append(
+        (i, compaction.start_timestamp, compaction.end_timestamp)
     )
 
+  subsumed_compaction_event_indexes: set[int] = set()
+  for event_index, start_ts, end_ts in compaction_infos:
+    for other_index, other_start, other_end in compaction_infos:
+      if other_index == event_index:
+        continue
+      if other_start <= start_ts and other_end >= end_ts:
+        if (
+            other_start < start_ts
+            or other_end > end_ts
+            or other_index > event_index
+        ):
+          subsumed_compaction_event_indexes.add(event_index)
+          break
+
+  compaction_ranges: list[tuple[float, float]] = []
+  processed_items: list[tuple[float, int, Event]] = []
+
+  for i, event in enumerate(events):
+    if event.actions and event.actions.compaction:
+      if i in subsumed_compaction_event_indexes:
+        continue
+      compaction = event.actions.compaction
+      if (
+          compaction.start_timestamp is None
+          or compaction.end_timestamp is None
+          or compaction.compacted_content is None
+      ):
+        continue
+      compaction_ranges.append(
+          (compaction.start_timestamp, compaction.end_timestamp)
+      )
+      processed_items.append((
+          compaction.end_timestamp,
+          i,
+          Event(
+              timestamp=compaction.end_timestamp,
+              author='model',
+              content=compaction.compacted_content,
+              branch=event.branch,
+              invocation_id=event.invocation_id,
+              actions=event.actions,
+          ),
+      ))
+
+  def _is_timestamp_compacted(ts: float) -> bool:
+    for start_ts, end_ts in compaction_ranges:
+      if start_ts <= ts <= end_ts:
+        return True
+    return False
+
+  for i, event in enumerate(events):
+    if event.actions and event.actions.compaction:
+      continue
+    if _is_timestamp_compacted(event.timestamp):
+      continue
+    processed_items.append((event.timestamp, i, event))
+
+  # Keep chronological order and a stable tie-breaker for equal timestamps.
+  processed_items.sort(key=lambda item: (item[0], item[1]))
+  return [event for _, _, event in processed_items]
+
+
+def _get_contents(
+    current_branch: Optional[str],
+    events: list[Event],
+    agent_name: str = '',
+    *,
+    preserve_function_call_ids: bool = False,
+) -> list[types.Content]:
+  """Get the contents for the LLM request.
+
+  Applies filtering, rearrangement, and content processing to events.
+
+  Args:
+    current_branch: The current branch of the agent.
+    events: Events to process.
+    agent_name: The name of the agent.
+    preserve_function_call_ids: Whether to preserve function call ids.
+
+  Returns:
+    A list of processed contents.
+  """
+  accumulated_input_transcription = ''
+  accumulated_output_transcription = ''
+
+  # Filter out events that are annulled by a rewind.
+  # By iterating backward, when a rewind event is found, we skip all events
+  # from that point back to the `rewind_before_invocation_id`, thus removing
+  # them from the history used for the LLM request.
+  rewind_filtered_events = []
+  i = len(events) - 1
+  while i >= 0:
+    event = events[i]
+    if event.actions and event.actions.rewind_before_invocation_id:
+      rewind_invocation_id = event.actions.rewind_before_invocation_id
+      for j in range(0, i, 1):
+        if events[j].invocation_id == rewind_invocation_id:
+          i = j
+          break
+    else:
+      rewind_filtered_events.append(event)
+    i -= 1
+  rewind_filtered_events.reverse()
+
+  # Parse the events, leaving the contents and the function calls and
+  # responses from the current agent.
+  raw_filtered_events = [
+      e
+      for e in rewind_filtered_events
+      if _should_include_event_in_context(current_branch, e)
+  ]
+
+  has_compaction_events = any(
+      e.actions and e.actions.compaction for e in raw_filtered_events
+  )
+
+  if has_compaction_events:
+    events_to_process = _process_compaction_events(raw_filtered_events)
+  else:
+    events_to_process = raw_filtered_events
+
+  filtered_events = []
+  # aggregate transcription events
+  for i in range(len(events_to_process)):
+    event = events_to_process[i]
+    if not event.content:
+      # Convert transcription into normal event
+      if event.input_transcription and event.input_transcription.text:
+        accumulated_input_transcription += event.input_transcription.text
+        if (
+            i != len(events_to_process) - 1
+            and events_to_process[i + 1].input_transcription
+            and events_to_process[i + 1].input_transcription.text
+        ):
+          continue
+        event = event.model_copy(deep=True)
+        event.input_transcription = None
+        event.content = types.Content(
+            role='user',
+            parts=[types.Part(text=accumulated_input_transcription)],
+        )
+        accumulated_input_transcription = ''
+      elif event.output_transcription and event.output_transcription.text:
+        accumulated_output_transcription += event.output_transcription.text
+        if (
+            i != len(events_to_process) - 1
+            and events_to_process[i + 1].output_transcription
+            and events_to_process[i + 1].output_transcription.text
+        ):
+          continue
+        event = event.model_copy(deep=True)
+        event.output_transcription = None
+        event.content = types.Content(
+            role='model',
+            parts=[types.Part(text=accumulated_output_transcription)],
+        )
+        accumulated_output_transcription = ''
+
+    if _is_other_agent_reply(agent_name, event):
+      if converted_event := _present_other_agent_message(event):
+        filtered_events.append(converted_event)
+    else:
+      filtered_events.append(event)
+
+  # Rearrange events for proper function call/response pairing
   result_events = _rearrange_events_for_latest_function_response(
       filtered_events
   )
   result_events = _rearrange_events_for_async_function_responses_in_history(
       result_events
   )
+
+  # Convert events to contents
   contents = []
   for event in result_events:
     content = copy.deepcopy(event.content)
-    remove_client_function_call_id(content)
-    contents.append(content)
+    if content:
+      if not preserve_function_call_ids:
+        remove_client_function_call_id(content)
+      contents.append(content)
   return contents
+
+
+def _get_current_turn_contents(
+    current_branch: Optional[str],
+    events: list[Event],
+    agent_name: str = '',
+    *,
+    preserve_function_call_ids: bool = False,
+) -> list[types.Content]:
+  """Get contents for the current turn only (no conversation history).
+
+  When include_contents='none', we want to include:
+  - The current user input
+  - Tool calls and responses from the current turn
+  But exclude conversation history from previous turns.
+
+  In multi-agent scenarios, the "current turn" for an agent starts from an
+  actual user or from another agent.
+
+  Args:
+    current_branch: The current branch of the agent.
+    events: A list of all session events.
+    agent_name: The name of the agent.
+    preserve_function_call_ids: Whether to preserve function call ids.
+
+  Returns:
+    A list of contents for the current turn only, preserving context needed
+    for proper tool execution while excluding conversation history.
+  """
+  # Find the latest event that starts the current turn and process from there
+  for i in range(len(events) - 1, -1, -1):
+    event = events[i]
+    if _should_include_event_in_context(current_branch, event) and (
+        event.author == 'user' or _is_other_agent_reply(agent_name, event)
+    ):
+      return _get_contents(
+          current_branch,
+          events[i:],
+          agent_name,
+          preserve_function_call_ids=preserve_function_call_ids,
+      )
+
+  return []
 
 
 def _is_other_agent_reply(current_agent_name: str, event: Event) -> bool:
@@ -247,19 +579,18 @@ def _is_other_agent_reply(current_agent_name: str, event: Event) -> bool:
   )
 
 
-def _convert_foreign_event(event: Event) -> Event:
-  """Converts an event authored by another agent as a user-content event.
+def _present_other_agent_message(event: Event) -> Optional[Event]:
+  """Presents another agent's message as user context for the current agent.
 
-  This is to provide another agent's output as context to the current agent, so
-  that current agent can continue to respond, such as summarizing previous
-  agent's reply, etc.
+  Reformats the event with role='user' and adds '[agent_name] said:' prefix
+  to provide context without confusion about authorship.
 
   Args:
-    event: The event to convert.
+    event: The event from another agent to present as context.
 
   Returns:
-    The converted event.
-
+    Event reformatted as user-role context with agent attribution, or None
+    if no meaningful content remains after filtering.
   """
   if not event.content or not event.content.parts:
     return event
@@ -268,7 +599,10 @@ def _convert_foreign_event(event: Event) -> Event:
   content.role = 'user'
   content.parts = [types.Part(text='For context:')]
   for part in event.content.parts:
-    if part.text:
+    if part.thought:
+      # Exclude thoughts from the context.
+      continue
+    elif part.text is not None and part.text.strip():
       content.parts.append(
           types.Part(text=f'[{event.author}] said: {part.text}')
       )
@@ -291,9 +625,19 @@ def _convert_foreign_event(event: Event) -> Event:
               )
           )
       )
-    # Fallback to the original part for non-text and non-functionCall parts.
-    else:
+    elif (
+        part.inline_data
+        or part.file_data
+        or part.executable_code
+        or part.code_execution_result
+    ):
       content.parts.append(part)
+    else:
+      continue
+
+  # Return None when only "For context:" remains.
+  if len(content.parts) == 1:
+    return None
 
   return Event(
       timestamp=event.timestamp,
@@ -318,10 +662,7 @@ def _merge_function_response_events(
         list is in increasing order of timestamp; 2. the first event is the
         initial function_response event; 3. all later events should contain at
         least one function_response part that related to the function_call
-        event. (Note, 3. may not be true when aync function return some
-        intermediate response, there could also be some intermediate model
-        response event without any function_response and such event will be
-        ignored.)
+        event.
       Caveat: This implementation doesn't support when a parallel function_call
         event contains async function_call of the same name.
 
@@ -373,24 +714,141 @@ def _merge_function_response_events(
 def _is_event_belongs_to_branch(
     invocation_branch: Optional[str], event: Event
 ) -> bool:
-  """Event belongs to a branch, when event.branch is prefix of the invocation branch."""
+  """Check if an event belongs to the current branch.
+
+  This is for event context segregation between agents. E.g. agent A shouldn't
+  see output of agent B.
+  """
   if not invocation_branch or not event.branch:
     return True
-  return invocation_branch.startswith(event.branch)
+  # We use dot to delimit branch nodes. To avoid simple prefix match
+  # (e.g. agent_0 unexpectedly matching agent_00), require either perfect branch
+  # match, or match prefix with an additional explicit '.'
+  return invocation_branch == event.branch or invocation_branch.startswith(
+      f'{event.branch}.'
+  )
+
+
+def _is_function_call_event(event: Event, function_name: str) -> bool:
+  """Checks if an event is a function call/response for a given function name."""
+  if not event.content or not event.content.parts:
+    return False
+  for part in event.content.parts:
+    if part.function_call and part.function_call.name == function_name:
+      return True
+    if part.function_response and part.function_response.name == function_name:
+      return True
+  return False
 
 
 def _is_auth_event(event: Event) -> bool:
-  if not event.content.parts:
+  """Checks if the event is an authentication event."""
+  return _is_function_call_event(event, REQUEST_EUC_FUNCTION_CALL_NAME)
+
+
+def _is_request_confirmation_event(event: Event) -> bool:
+  """Checks if the event is a request confirmation event."""
+  return _is_function_call_event(event, REQUEST_CONFIRMATION_FUNCTION_CALL_NAME)
+
+
+def _is_adk_framework_event(event: Event) -> bool:
+  """Checks if the event is an ADK framework event."""
+  return _is_function_call_event(event, 'adk_framework')
+
+
+def _is_request_input_event(event: Event) -> bool:
+  """Checks if the event is a request input event."""
+  return _is_function_call_event(event, REQUEST_INPUT_FUNCTION_CALL_NAME)
+
+
+def _is_live_model_audio_event_with_inline_data(event: Event) -> bool:
+  """Check if the event is a live/bidi audio event with inline data.
+
+  There are two possible cases and we only care about the second case:
+  content=Content(
+    parts=[
+      Part(
+        file_data=FileData(
+          file_uri='artifact://live_bidi_streaming_multi_agent/user/cccf0b8b-4a30-449a-890e-e8b8deb661a1/_adk_live/adk_live_audio_storage_input_audio_1756092402277.pcm#1',
+          mime_type='audio/pcm'
+        )
+      ),
+    ],
+    role='user'
+  )
+  content=Content(
+    parts=[
+      Part(
+        inline_data=Blob(
+          data=b'\x01\x00\x00...',
+          mime_type='audio/pcm;rate=24000'
+        )
+      ),
+    ],
+    role='model'
+  ) grounding_metadata=None partial=None turn_complete=None finish_reason=None
+  error_code=None error_message=None ...
+  """
+  if not event.content or not event.content.parts:
     return False
   for part in event.content.parts:
     if (
-        part.function_call
-        and part.function_call.name == REQUEST_EUC_FUNCTION_CALL_NAME
-    ):
-      return True
-    if (
-        part.function_response
-        and part.function_response.name == REQUEST_EUC_FUNCTION_CALL_NAME
+        part.inline_data
+        and part.inline_data.mime_type
+        and part.inline_data.mime_type.startswith('audio/')
     ):
       return True
   return False
+
+
+def _content_contains_function_response(content: types.Content) -> bool:
+  """Checks whether the content includes any function response parts."""
+  if not content.parts:
+    return False
+  for part in content.parts:
+    if part.function_response:
+      return True
+  return False
+
+
+async def _add_instructions_to_user_content(
+    invocation_context: InvocationContext,
+    llm_request: LlmRequest,
+    instruction_contents: list,
+) -> None:
+  """Insert instruction-related contents at proper position in conversation.
+
+  This function inserts instruction-related contents (passed as parameter) at
+  the
+  proper position in the conversation flow, specifically before the last
+  continuous
+  batch of user content to maintain conversation context.
+
+  Args:
+    invocation_context: The invocation context
+    llm_request: The LLM request to modify
+    instruction_contents: List of instruction-related contents to insert
+  """
+  if not instruction_contents:
+    return
+
+  # Find the insertion point: before the last continuous batch of user content
+  # Walk backwards to find the first non-user content, then insert after it
+  insert_index = len(llm_request.contents)
+
+  if llm_request.contents:
+    for i in range(len(llm_request.contents) - 1, -1, -1):
+      content = llm_request.contents[i]
+      if content.role != 'user':
+        insert_index = i + 1
+        break
+      if _content_contains_function_response(content):
+        insert_index = i + 1
+        break
+      insert_index = i
+  else:
+    # No contents remaining, just append at the end
+    insert_index = 0
+
+  # Insert all instruction contents at the proper position using efficient slicing
+  llm_request.contents[insert_index:insert_index] = instruction_contents

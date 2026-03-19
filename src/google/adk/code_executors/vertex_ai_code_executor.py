@@ -1,4 +1,4 @@
-# Copyright 2025 Google LLC
+# Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,20 +12,23 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import datetime
+from __future__ import annotations
+
+import logging
 import mimetypes
 import os
 from typing import Any
 from typing import Optional
 
 from typing_extensions import override
-from vertexai.preview.extensions import Extension
 
 from ..agents.invocation_context import InvocationContext
 from .base_code_executor import BaseCodeExecutor
 from .code_execution_utils import CodeExecutionInput
 from .code_execution_utils import CodeExecutionResult
 from .code_execution_utils import File
+
+logger = logging.getLogger('google_adk.' + __name__)
 
 _SUPPORTED_IMAGE_TYPES = ['png', 'jpg', 'jpeg']
 _SUPPORTED_DATA_FILE_TYPES = ['csv']
@@ -84,12 +87,16 @@ Total columns: {df.shape[1]}
 
 def _get_code_interpreter_extension(resource_name: str = None):
   """Returns: Load or create the code interpreter extension."""
+  from vertexai.preview.extensions import Extension
+
   if not resource_name:
     resource_name = os.environ.get('CODE_INTERPRETER_EXTENSION_NAME')
   if resource_name:
     new_code_interpreter = Extension(resource_name)
   else:
-    print('No CODE_INTERPRETER_ID found in the environment. Create a new one.')
+    logger.info(
+        'No CODE_INTERPRETER_ID found in the environment. Create a new one.'
+    )
     new_code_interpreter = Extension.from_hub('code_interpreter')
     os.environ['CODE_INTERPRETER_EXTENSION_NAME'] = (
         new_code_interpreter.gca_resource.name
@@ -146,6 +153,7 @@ class VertexAiCodeExecutor(BaseCodeExecutor):
         code_execution_input.input_files,
         code_execution_input.execution_id,
     )
+    logger.debug('Executed code:\n```\n%s\n```', code_execution_input.code)
 
     # Save output file as artifacts.
     saved_files = []
@@ -181,11 +189,13 @@ class VertexAiCodeExecutor(BaseCodeExecutor):
         )
 
     # Collect the final result.
-    return CodeExecutionResult(
+    result = CodeExecutionResult(
         stdout=code_execution_result.get('execution_result', ''),
         stderr=code_execution_result.get('execution_error', ''),
         output_files=saved_files,
     )
+    logger.debug('Code execution result: %s', result)
+    return result
 
   def _execute_code_interpreter(
       self,
