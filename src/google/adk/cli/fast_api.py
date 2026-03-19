@@ -260,7 +260,7 @@ def get_fast_api_app(
   memory_service = InMemoryMemoryService()
 
   # Build the Session service
-  agent_engine_id = ""
+  agent_engine_id = "myapp"
   if session_db_url:
     if session_db_url.startswith("agentengine://"):
       # Create vertex session service
@@ -746,7 +746,7 @@ def get_fast_api_app(
     )
     if not session:
       raise HTTPException(status_code=404, detail="Session not found")
-    runner = await _get_runner_async(req.app_name)
+    runner = await _get_runner_async(app_name)
     events = [
         event
         async for event in runner.run_async(
@@ -773,7 +773,7 @@ def get_fast_api_app(
     async def event_generator():
       try:
         stream_mode = StreamingMode.SSE if req.streaming else StreamingMode.NONE
-        runner = await _get_runner_async(req.app_name)
+        runner = await _get_runner_async(app_name)
         async for event in runner.run_async(
             user_id=req.user_id,
             session_id=req.session_id,
