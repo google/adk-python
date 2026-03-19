@@ -21,7 +21,6 @@ from datetime import timezone
 import logging
 from typing import Any
 from typing import AsyncIterator
-from typing import Optional
 from typing import TypeAlias
 from typing import TypeVar
 
@@ -178,11 +177,14 @@ class DatabaseSessionService(BaseSessionService):
       ) from e
 
     self.db_engine: AsyncEngine = db_engine
-
     # DB session factory method
     self.database_session_factory: async_sessionmaker[
         DatabaseSessionFactory
     ] = async_sessionmaker(bind=self.db_engine, expire_on_commit=False)
+    read_only_engine = self.db_engine.execution_options(read_only=True)
+    self._read_only_database_session_factory: async_sessionmaker[
+        DatabaseSessionFactory
+    ] = async_sessionmaker(bind=read_only_engine, expire_on_commit=False)
 
     # Flag to indicate if tables are created
     self._tables_created = False
@@ -201,9 +203,18 @@ class DatabaseSessionService(BaseSessionService):
   def _get_schema_classes(self) -> _SchemaClasses:
     return _SchemaClasses(self._db_schema_version)
 
+  def _get_database_session_factory(
+      self, *, read_only: bool = False
+  ) -> async_sessionmaker[DatabaseSessionFactory]:
+    if read_only:
+      return self._read_only_database_session_factory
+    return self.database_session_factory
+
   @asynccontextmanager
   async def _rollback_on_exception_session(
       self,
+      *,
+      read_only: bool = False,
   ) -> AsyncIterator[DatabaseSessionFactory]:
     """Yields a database session with guaranteed rollback on errors.
 
@@ -211,7 +222,8 @@ class DatabaseSessionService(BaseSessionService):
     the transaction is explicitly rolled back before the error propagates,
     preventing connection-pool exhaustion from lingering invalid transactions.
     """
-    async with self.database_session_factory() as sql_session:
+    session_factory = self._get_database_session_factory(read_only=read_only)
+    async with session_factory() as sql_session:
       try:
         yield sql_session
       except BaseException:
@@ -441,7 +453,9 @@ class DatabaseSessionService(BaseSessionService):
     # 2. Get all the events based on session id and filtering config
     # 3. Convert and return the session
     schema = self._get_schema_classes()
-    async with self._rollback_on_exception_session() as sql_session:
+    async with self._rollback_on_exception_session(
+        read_only=True
+    ) as sql_session:
       storage_session = await sql_session.get(
           schema.StorageSession, (app_name, user_id, session_id)
       )
@@ -496,7 +510,9 @@ class DatabaseSessionService(BaseSessionService):
   ) -> ListSessionsResponse:
     await self._prepare_tables()
     schema = self._get_schema_classes()
-    async with self._rollback_on_exception_session() as sql_session:
+    async with self._rollback_on_exception_session(
+        read_only=True
+    ) as sql_session:
       stmt = select(schema.StorageSession).filter(
           schema.StorageSession.app_name == app_name
       )
