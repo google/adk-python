@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import asyncio
+from contextlib import asynccontextmanager
 from datetime import datetime
 from datetime import timezone
 import enum
@@ -151,6 +152,74 @@ def test_database_session_service_respects_pool_pre_ping_override():
   assert captured_kwargs.get('pool_pre_ping') is False
 
 
+def test_database_session_service_creates_read_only_engine_for_spanner():
+  captured_binds = []
+  fake_engine = mock.Mock()
+  fake_engine.dialect.name = 'spanner+spanner'
+  fake_engine.sync_engine = mock.Mock()
+  read_only_engine = mock.Mock()
+  fake_engine.execution_options.return_value = read_only_engine
+
+  def fake_async_sessionmaker(*, bind, expire_on_commit, **kwargs):
+    del expire_on_commit
+    del kwargs
+    captured_binds.append(bind)
+    return mock.Mock()
+
+  with (
+      mock.patch.object(
+          database_session_service,
+          'create_async_engine',
+          return_value=fake_engine,
+      ),
+      mock.patch.object(
+          database_session_service,
+          'async_sessionmaker',
+          side_effect=fake_async_sessionmaker,
+      ),
+  ):
+    database_session_service.DatabaseSessionService(
+        'spanner+spanner:///projects/test/instances/test/databases/test'
+    )
+
+  assert captured_binds == [fake_engine, read_only_engine]
+  fake_engine.execution_options.assert_called_once_with(read_only=True)
+
+
+def test_database_session_service_creates_read_only_engine_for_other_dialects():
+  captured_binds = []
+  fake_engine = mock.Mock()
+  fake_engine.dialect.name = 'postgresql'
+  fake_engine.sync_engine = mock.Mock()
+  read_only_engine = mock.Mock()
+  fake_engine.execution_options.return_value = read_only_engine
+
+  def fake_async_sessionmaker(*, bind, expire_on_commit, **kwargs):
+    del expire_on_commit
+    del kwargs
+    captured_binds.append(bind)
+    return mock.Mock()
+
+  with (
+      mock.patch.object(
+          database_session_service,
+          'create_async_engine',
+          return_value=fake_engine,
+      ),
+      mock.patch.object(
+          database_session_service,
+          'async_sessionmaker',
+          side_effect=fake_async_sessionmaker,
+      ),
+  ):
+    database_session_service.DatabaseSessionService(
+        'postgresql+psycopg2://user:pass@localhost:5432/db'
+    )
+
+  assert captured_binds == [fake_engine, read_only_engine]
+  fake_engine.execution_options.assert_called_once_with(read_only=True)
+
+
 @pytest.mark.asyncio
 async def test_sqlite_session_service_accepts_sqlite_urls(
     tmp_path, monkeypatch
@@ -196,6 +265,67 @@ async def test_get_empty_session(session_service):
   assert not await session_service.get_session(
       app_name='my_app', user_id='test_user', session_id='123'
   )
+
+
+@pytest.mark.asyncio
+async def test_database_session_service_get_session_uses_read_only_factory():
+  service = DatabaseSessionService('sqlite+aiosqlite:///:memory:')
+  service._prepare_tables = mock.AsyncMock()
+
+  read_only_session = mock.AsyncMock()
+  read_only_session.get = mock.AsyncMock(return_value=None)
+
+  @asynccontextmanager
+  async def fake_read_only_session():
+    yield read_only_session
+
+  service.database_session_factory = mock.Mock(
+      side_effect=AssertionError('write session factory should not be used')
+  )
+  service._read_only_database_session_factory = mock.Mock(
+      return_value=fake_read_only_session()
+  )
+
+  session = await service.get_session(
+      app_name='my_app', user_id='test_user', session_id='123'
+  )
+
+  assert session is None
+  service._read_only_database_session_factory.assert_called_once_with()
+  service.database_session_factory.assert_not_called()
+
+  await service.close()
+
+
+@pytest.mark.asyncio
+async def test_database_session_service_list_sessions_uses_read_only_factory():
+  service = DatabaseSessionService('sqlite+aiosqlite:///:memory:')
+  service._prepare_tables = mock.AsyncMock()
+
+  read_only_session = mock.AsyncMock()
+  empty_result = mock.Mock()
+  empty_result.scalars.return_value.all.return_value = []
+  read_only_session.execute = mock.AsyncMock(return_value=empty_result)
+  read_only_session.get = mock.AsyncMock(return_value=None)
+
+  @asynccontextmanager
+  async def fake_read_only_session():
+    yield read_only_session
+
+  service.database_session_factory = mock.Mock(
+      side_effect=AssertionError('write session factory should not be used')
+  )
+  service._read_only_database_session_factory = mock.Mock(
+      return_value=fake_read_only_session()
+  )
+
+  response = await service.list_sessions(app_name='my_app', user_id='test_user')
+
+  assert response.sessions == []
+  service._read_only_database_session_factory.assert_called_once_with()
+  service.database_session_factory.assert_not_called()
+
+  await service.close()
 
 
 @pytest.mark.asyncio
