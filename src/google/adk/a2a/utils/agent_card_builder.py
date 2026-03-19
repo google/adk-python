@@ -88,8 +88,8 @@ class AgentCardBuilder:
       )
       all_skills = primary_skills + sub_agent_skills
 
-      if self._security_schemes and self._default_skill_security:
-        _validate_skill_security_references(all_skills, self._security_schemes)
+      if self._default_skill_security:
+        _validate_skill_security_references(all_skills, self._security_schemes or {})
 
       return AgentCard(
           name=self._agent.name,
@@ -379,9 +379,10 @@ def _validate_skill_security_references(
   """
   scheme_names = set(security_schemes.keys())
   for skill in skills:
-    if not skill.security:
+    skill_security = getattr(skill, 'security', None)
+    if not skill_security:
       continue
-    for requirement in skill.security:
+    for requirement in skill_security:
       for ref_name in requirement:
         if ref_name not in scheme_names:
           logger.warning(
