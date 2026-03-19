@@ -203,13 +203,16 @@ class TestExecuteBashTool:
   async def test_timeout(self, workspace, tool_context_confirmed):
     tool = bash_tool.ExecuteBashTool(workspace=workspace)
     mock_process = mock.AsyncMock()
-    with mock.patch.object(
-        asyncio,
-        "create_subprocess_exec",
-        autospec=True,
-        return_value=mock_process,
-    ), mock.patch.object(
-        asyncio, "wait_for", autospec=True, side_effect=asyncio.TimeoutError
+    with (
+        mock.patch.object(
+            asyncio,
+            "create_subprocess_exec",
+            autospec=True,
+            return_value=mock_process,
+        ),
+        mock.patch.object(
+            asyncio, "wait_for", autospec=True, side_effect=asyncio.TimeoutError
+        ),
     ):
       result = await tool.run_async(
           args={"command": "python scripts/do_thing.py"},
