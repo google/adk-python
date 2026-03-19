@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 from typing import ClassVar
 from typing import Optional
+from typing import Union
 
 from google.genai import types as genai_types
 from pydantic import Field
@@ -48,9 +49,12 @@ _STOP_SIGNAL = "</finished>"
 class LlmBackedUserSimulatorConfig(BaseUserSimulatorConfig):
   """Contains configurations required by an LLM backed user simulator."""
 
-  model: str = Field(
+  model: Union[str, BaseLlm] = Field(
       default="gemini-2.5-flash",
-      description="The model to use for user simulation.",
+      description=(
+          "The model to use for user simulation. It can be a model name"
+          " string or a BaseLlm instance for custom/self-hosted models."
+      ),
   )
 
   model_configuration: genai_types.GenerateContentConfig = Field(

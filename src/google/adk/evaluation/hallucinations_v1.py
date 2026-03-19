@@ -295,7 +295,7 @@ class HallucinationsV1Evaluator(Evaluator):
     self.segmenter_prompt = _HALLUCINATIONS_V1_SEGMENTER_PROMPT
     self.sentence_validator_prompt = _HALLUCINATIONS_V1_VALIDATOR_PROMPT
     judge_model = self._judge_model_options.judge_model
-    self._model = judge_model.model if isinstance(judge_model, BaseLlm) else judge_model
+    self._model = judge_model if isinstance(judge_model, str) else judge_model.model
     self._model_config = (
         self._judge_model_options.judge_model_config
         or genai_types.GenerateContentConfig()
