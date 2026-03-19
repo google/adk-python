@@ -260,7 +260,7 @@ def get_fast_api_app(
   memory_service = InMemoryMemoryService()
 
   # Build the Session service
-  agent_engine_id = "myapp"
+  agent_engine_id = ""
   if session_db_url:
     if session_db_url.startswith("agentengine://"):
       # Create vertex session service
