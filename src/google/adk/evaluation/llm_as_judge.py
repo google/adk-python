@@ -136,8 +136,10 @@ class LlmAsJudge(Evaluator):
     per_invocation_results = []
     for actual, expected in zip(actual_invocations, expected_invocations):
       auto_rater_prompt = self.format_auto_rater_prompt(actual, expected)
+      judge_model = self._judge_model_options.judge_model
+      model_str = judge_model.model if isinstance(judge_model, BaseLlm) else judge_model
       llm_request = LlmRequest(
-          model=self._judge_model_options.judge_model,
+          model=model_str,
           contents=[
               genai_types.Content(
                   parts=[genai_types.Part(text=auto_rater_prompt)],
@@ -181,7 +183,9 @@ class LlmAsJudge(Evaluator):
     return EvaluationResult()
 
   def _setup_auto_rater(self) -> BaseLlm:
-    model_id = self._judge_model_options.judge_model
+    judge_model = self._judge_model_options.judge_model
+    if isinstance(judge_model, BaseLlm):
+      return judge_model
     llm_registry = LLMRegistry()
-    llm_class = llm_registry.resolve(model_id)
-    return llm_class(model=model_id)
+    llm_class = llm_registry.resolve(judge_model)
+    return llm_class(model=judge_model)

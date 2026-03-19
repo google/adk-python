@@ -198,10 +198,12 @@ class PerTurnUserSimulatorQualityV1(Evaluator):
     return self._aggregate_conversation_results(results)
 
   def _setup_llm(self) -> BaseLlm:
-    model_id = self._llm_options.judge_model
+    judge_model = self._llm_options.judge_model
+    if isinstance(judge_model, BaseLlm):
+      return judge_model
     llm_registry = LLMRegistry()
-    llm_class = llm_registry.resolve(model_id)
-    return llm_class(model=model_id)
+    llm_class = llm_registry.resolve(judge_model)
+    return llm_class(model=judge_model)
 
   def _format_llm_prompt(
       self,

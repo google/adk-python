@@ -28,6 +28,8 @@ from pydantic import field_validator
 from pydantic.json_schema import SkipJsonSchema
 from typing_extensions import TypeAlias
 
+from google.adk.models.base_llm import BaseLlm
+
 from .common import EvalBaseModel
 from .eval_case import Invocation
 from .eval_rubrics import Rubric
@@ -75,10 +77,11 @@ Threshold: TypeAlias = float
 class JudgeModelOptions(EvalBaseModel):
   """Options for an eval metric's judge model."""
 
-  judge_model: str = Field(
+  judge_model: Union[str, BaseLlm] = Field(
       default="gemini-2.5-flash",
       description=(
-          "The judge model to use for evaluation. It can be a model name."
+          "The judge model to use for evaluation. It can be a model name"
+          " string or a BaseLlm instance for custom/self-hosted models."
       ),
   )
 

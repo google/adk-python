@@ -24,6 +24,7 @@ from pydantic import field_validator
 from typing_extensions import override
 
 from ...events.event import Event
+from ...models.base_llm import BaseLlm
 from ...models.llm_request import LlmRequest
 from ...models.registry import LLMRegistry
 from ...utils.context_utils import Aclosing
@@ -124,9 +125,12 @@ class LlmBackedUserSimulator(UserSimulator):
     super().__init__(config, config_type=LlmBackedUserSimulator.config_type)
     self._conversation_scenario = conversation_scenario
     self._invocation_count = 0
-    llm_registry = LLMRegistry()
-    llm_class = llm_registry.resolve(self._config.model)
-    self._llm = llm_class(model=self._config.model)
+    if isinstance(self._config.model, BaseLlm):
+      self._llm = self._config.model
+    else:
+      llm_registry = LLMRegistry()
+      llm_class = llm_registry.resolve(self._config.model)
+      self._llm = llm_class(model=self._config.model)
     self._user_persona = self._conversation_scenario.user_persona
 
   @classmethod

@@ -294,17 +294,20 @@ class HallucinationsV1Evaluator(Evaluator):
     self._judge_model = self._setup_auto_rater()
     self.segmenter_prompt = _HALLUCINATIONS_V1_SEGMENTER_PROMPT
     self.sentence_validator_prompt = _HALLUCINATIONS_V1_VALIDATOR_PROMPT
-    self._model = self._judge_model_options.judge_model
+    judge_model = self._judge_model_options.judge_model
+    self._model = judge_model.model if isinstance(judge_model, BaseLlm) else judge_model
     self._model_config = (
         self._judge_model_options.judge_model_config
         or genai_types.GenerateContentConfig()
     )
 
   def _setup_auto_rater(self) -> BaseLlm:
-    model_id = self._judge_model_options.judge_model
+    judge_model = self._judge_model_options.judge_model
+    if isinstance(judge_model, BaseLlm):
+      return judge_model
     llm_registry = LLMRegistry()
-    llm_class = llm_registry.resolve(model_id)
-    return llm_class(model=model_id)
+    llm_class = llm_registry.resolve(judge_model)
+    return llm_class(model=judge_model)
 
   def _create_context_for_step(
       self,
