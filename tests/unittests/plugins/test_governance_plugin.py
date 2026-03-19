@@ -24,6 +24,7 @@ from unittest.mock import PropertyMock
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.agents.invocation_context import InvocationContext
+from google.adk.plugins.governance_plugin import _get_session_id
 from google.adk.plugins.governance_plugin import _hash_dict
 from google.adk.plugins.governance_plugin import AuditAction
 from google.adk.plugins.governance_plugin import AuditEvent
@@ -563,7 +564,7 @@ class TestUtilities:
     h1 = _hash_dict(d)
     h2 = _hash_dict(d)
     assert h1 == h2
-    assert len(h1) == 16
+    assert len(h1) == 64  # Full SHA-256 hex digest
 
   def test_hash_dict_different_for_different_input(self):
     assert _hash_dict({"a": 1}) != _hash_dict({"a": 2})
@@ -573,4 +574,4 @@ class TestUtilities:
     # a hash rather than crashing.
     result = _hash_dict(object())
     assert isinstance(result, str)
-    assert len(result) == 16
+    assert len(result) == 64

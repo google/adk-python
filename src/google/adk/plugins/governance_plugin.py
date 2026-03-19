@@ -123,7 +123,6 @@ class AuditAction(str, Enum):
   TOOL_CALL_ERROR = "tool_call_error"
   AGENT_DELEGATION = "agent_delegation"
   AGENT_DELEGATION_DENIED = "agent_delegation_denied"
-  MODEL_REQUEST = "model_request"
   INVOCATION_START = "invocation_start"
   INVOCATION_END = "invocation_end"
 
@@ -445,7 +444,7 @@ class GovernancePlugin(BasePlugin):
               agent_name=agent_name,
               policy_decision=decision,
               invocation_id=inv_id,
-              session_id=callback_context._invocation_context.session.id,
+              session_id=_get_session_id(callback_context),
           )
       )
       logger.warning(
@@ -466,7 +465,7 @@ class GovernancePlugin(BasePlugin):
             agent_name=agent_name,
             policy_decision=decision,
             invocation_id=inv_id,
-            session_id=callback_context._invocation_context.session.id,
+            session_id=_get_session_id(callback_context),
         )
     )
     return None
@@ -565,7 +564,7 @@ class GovernancePlugin(BasePlugin):
             tool_name=tool_name,
             policy_decision=PolicyDecision.allow(),
             invocation_id=inv_id,
-            session_id=tool_context._invocation_context.session.id,
+            session_id=_get_session_id(tool_context),
             args_hash=_hash_dict(tool_args),
         )
     )
@@ -594,7 +593,7 @@ class GovernancePlugin(BasePlugin):
             agent_name=tool_context.agent_name,
             tool_name=tool_name,
             invocation_id=tool_context.invocation_id,
-            session_id=tool_context._invocation_context.session.id,
+            session_id=_get_session_id(tool_context),
             args_hash=_hash_dict(tool_args),
             result_hash=_hash_dict(result),
         )
@@ -617,7 +616,7 @@ class GovernancePlugin(BasePlugin):
             agent_name=tool_context.agent_name,
             tool_name=tool.name,
             invocation_id=tool_context.invocation_id,
-            session_id=tool_context._invocation_context.session.id,
+            session_id=_get_session_id(tool_context),
             args_hash=_hash_dict(tool_args),
             metadata={"error": str(error)},
         )
@@ -643,7 +642,7 @@ class GovernancePlugin(BasePlugin):
             tool_name=tool_name,
             policy_decision=decision,
             invocation_id=invocation_id,
-            session_id=tool_context._invocation_context.session.id,
+            session_id=_get_session_id(tool_context),
             args_hash=_hash_dict(tool_args),
         )
     )
@@ -669,10 +668,25 @@ class GovernancePlugin(BasePlugin):
 # ---------------------------------------------------------------------------
 
 
+def _get_session_id(context: Any) -> str:
+  """Extract session ID from a context object without relying on private attrs.
+
+  Tries public attributes first, falls back to internal access.
+  """
+  # Try public session access patterns
+  if hasattr(context, "session") and hasattr(context.session, "id"):
+    return context.session.id
+  # Fallback for contexts that wrap an invocation context
+  inv_ctx = getattr(context, "_invocation_context", None)
+  if inv_ctx and hasattr(inv_ctx, "session"):
+    return inv_ctx.session.id
+  return ""
+
+
 def _hash_dict(d: Any) -> str:
   """Produce a stable SHA-256 hash of a dictionary for audit purposes."""
   try:
     serialized = json.dumps(d, sort_keys=True, default=str)
-    return hashlib.sha256(serialized.encode()).hexdigest()[:16]
+    return hashlib.sha256(serialized.encode()).hexdigest()
   except (TypeError, ValueError):
     return ""
