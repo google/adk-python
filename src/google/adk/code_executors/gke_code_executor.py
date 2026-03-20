@@ -30,12 +30,12 @@ from .code_execution_utils import CodeExecutionInput
 from .code_execution_utils import CodeExecutionResult
 
 try:
-  from agentic_sandbox import SandboxClient
+  from k8s_agent_sandbox import SandboxClient
 except ImportError:
   SandboxClient = None
 
 if TYPE_CHECKING:
-  from agentic_sandbox import SandboxClient
+  from k8s_agent_sandbox import SandboxClient
 
 # Expose these for tests to monkeypatch.
 client = k8s.client
