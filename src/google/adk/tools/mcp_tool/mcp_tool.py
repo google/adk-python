@@ -373,8 +373,8 @@ class McpTool(BaseAuthenticatedTool):
     # Resolve progress callback (may be a factory that needs runtime context)
     resolved_callback = self._resolve_progress_callback(tool_context)
 
-    response = await session.call_tool(
-        self._mcp_tool.name,
+    response = await self._call_tool_with_health_check(
+        session=session,
         arguments=args,
         progress_callback=resolved_callback,
         meta=meta_trace_context,
@@ -395,6 +395,93 @@ class McpTool(BaseAuthenticatedTool):
           )
       )
     return result
+
+  async def _call_tool_with_health_check(
+      self,
+      *,
+      session,
+      arguments: dict[str, Any],
+      progress_callback,
+      meta,
+  ) -> Any:
+    """Calls an MCP tool while monitoring session health.
+
+    When the MCP server returns a non-2xx HTTP response, the underlying
+    transport can crash in a background task without propagating the error
+    to the pending send_request() call. This causes send_request() to hang
+    until the read timeout (~5 minutes) expires.
+
+    This method races the tool call against a health check that polls the
+    session's stream state. If the session disconnects mid-call, we fail
+    fast with a ConnectionError instead of hanging.
+
+    Args:
+        session: The MCP ClientSession to use.
+        arguments: The arguments to pass to the tool.
+        progress_callback: Optional progress callback.
+        meta: Optional trace context metadata.
+
+    Returns:
+        The tool call response.
+
+    Raises:
+        ConnectionError: If the session disconnects during the tool call.
+    """
+
+    async def _health_check():
+      """Polls session stream health and raises if disconnected."""
+      # Small initial delay to let the call_tool start
+      await asyncio.sleep(0.1)
+      while True:
+        try:
+          if self._mcp_session_manager._is_session_disconnected(session):
+            raise ConnectionError(
+                'MCP session disconnected during tool call. This typically'
+                ' happens when the MCP server returns a non-2xx HTTP'
+                ' response (e.g. 403 Forbidden). Check the server URL'
+                ' and authentication configuration.'
+            )
+        except (AttributeError, TypeError):
+          # If stream attributes are not accessible, skip the check.
+          # This can happen with certain transport implementations.
+          pass
+        await asyncio.sleep(0.5)
+
+    health_task = asyncio.create_task(_health_check())
+    tool_task = asyncio.create_task(
+        session.call_tool(
+            self._mcp_tool.name,
+            arguments=arguments,
+            progress_callback=progress_callback,
+            meta=meta,
+        )
+    )
+
+    try:
+      done, pending = await asyncio.wait(
+          [tool_task, health_task],
+          return_when=asyncio.FIRST_COMPLETED,
+      )
+
+      # Cancel whichever task didn't finish
+      for task in pending:
+        task.cancel()
+        try:
+          await task
+        except (asyncio.CancelledError, Exception):
+          pass
+
+      # If the tool call finished first, return its result
+      if tool_task in done:
+        return tool_task.result()
+
+      # Health check finished first (i.e., session disconnected)
+      # Re-raise the ConnectionError from the health check
+      health_task.result()
+    except asyncio.CancelledError:
+      tool_task.cancel()
+      health_task.cancel()
+      raise
 
   def _resolve_progress_callback(
       self, tool_context: ToolContext

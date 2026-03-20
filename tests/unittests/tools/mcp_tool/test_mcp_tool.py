@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
 import inspect
 from unittest.mock import AsyncMock
 from unittest.mock import Mock
@@ -1127,3 +1128,87 @@ class TestMCPTool:
         mcp_session_manager=self.mock_session_manager,
     )
     assert tool2.mcp_app_resource_uri is None
+
+  @pytest.mark.asyncio
+  async def test_call_tool_with_health_check_disconnected_session(self):
+    """Test that a disconnected session is detected quickly during tool call.
+
+    When the MCP server returns a non-2xx HTTP response, the transport can
+    crash in a background task without propagating the error to the pending
+    send_request(). This test verifies that the health check detects the
+    closed streams and raises a ConnectionError instead of hanging.
+
+    Regression test for https://github.com/google/adk-python/issues/4901
+    """
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+    )
+
+    # Create a mock session with streams that start open then close
+    mock_session = AsyncMock()
+    mock_read_stream = Mock()
+    mock_write_stream = Mock()
+    mock_read_stream._closed = False
+    mock_write_stream._closed = False
+    mock_session._read_stream = mock_read_stream
+    mock_session._write_stream = mock_write_stream
+
+    # Make call_tool hang indefinitely (simulating the bug)
+    hang_event = asyncio.Event()
+
+    async def hanging_call_tool(*args, **kwargs):
+      await hang_event.wait()
+
+    mock_session.call_tool = hanging_call_tool
+
+    # After a short delay, simulate the transport crashing by closing streams
+    async def simulate_transport_crash():
+      await asyncio.sleep(0.2)
+      mock_read_stream._closed = True
+
+    crash_task = asyncio.create_task(simulate_transport_crash())
+
+    with pytest.raises(ConnectionError, match='MCP session disconnected'):
+      await tool._call_tool_with_health_check(
+          session=mock_session,
+          arguments={"param1": "test"},
+          progress_callback=None,
+          meta=None,
+      )
+
+    crash_task.cancel()
+    try:
+      await crash_task
+    except asyncio.CancelledError:
+      pass
+
+  @pytest.mark.asyncio
+  async def test_call_tool_with_health_check_success(self):
+    """Test that healthy sessions return tool results normally."""
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+    )
+
+    mock_session = AsyncMock()
+    mock_read_stream = Mock()
+    mock_write_stream = Mock()
+    mock_read_stream._closed = False
+    mock_write_stream._closed = False
+    mock_session._read_stream = mock_read_stream
+    mock_session._write_stream = mock_write_stream
+
+    mcp_response = CallToolResult(
+        content=[TextContent(type="text", text="success")]
+    )
+    mock_session.call_tool = AsyncMock(return_value=mcp_response)
+
+    result = await tool._call_tool_with_health_check(
+        session=mock_session,
+        arguments={"param1": "test"},
+        progress_callback=None,
+        meta=None,
+    )
+
+    assert result == mcp_response
