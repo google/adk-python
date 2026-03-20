@@ -23,6 +23,7 @@ from typing import Optional
 from typing import TYPE_CHECKING
 
 from google.adk.platform import time as platform_time
+from google.genai import errors as genai_errors
 from google.genai import types
 from websockets.exceptions import ConnectionClosed
 from websockets.exceptions import ConnectionClosedOK
@@ -743,6 +744,13 @@ class BaseLlmFlow(ABC):
         await asyncio.sleep(0)
     except ConnectionClosedOK:
       pass
+    except genai_errors.APIError as e:
+      # google-genai >= 1.62.0 converts ConnectionClosedOK into APIError with
+      # WebSocket close code 1000 (RFC 6455 Normal Closure). Treat it the same
+      # as ConnectionClosedOK so that a clean session close does not propagate
+      # as an unexpected error.
+      if e.code != 1000:
+        raise
 
   async def run_async(
       self, invocation_context: InvocationContext
