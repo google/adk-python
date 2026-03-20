@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import json
+import os
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
@@ -249,3 +250,101 @@ class TestAgentEngineSandboxCodeExecutor:
         name=created_sandbox_name,
         input_data={"code": 'print("hello world")'},
     )
+
+  def test_init_with_agent_engine_resource_name(self):
+    """Tests init when only agent_engine_resource_name is provided."""
+    agent_engine_name = (
+        "projects/123/locations/us-central1/reasoningEngines/456"
+    )
+
+    executor = AgentEngineSandboxCodeExecutor(
+        agent_engine_resource_name=agent_engine_name
+    )
+
+    # Verify the engine name is set, and sandbox remains None.
+    assert executor.agent_engine_resource_name == agent_engine_name
+    assert executor.sandbox_resource_name is None
+    assert executor._project_id == "123"
+    assert executor._location == "us-central1"
+
+  @patch("vertexai.Client")
+  @patch.dict(
+      os.environ,
+      {
+          "GOOGLE_CLOUD_PROJECT": "test-project-456",
+          "GOOGLE_CLOUD_LOCATION": "us-central1",
+      },
+  )
+  def test_execute_code_with_auto_create_agent_engine(
+      self, mock_vertexai_client, mock_invocation_context
+  ):
+    """Tests that Agent Engine is created lazily in execute_code."""
+    # Setup Mocks
+    mock_api_client = MagicMock()
+    mock_vertexai_client.return_value = mock_api_client
+
+    # Mock Engine Creation
+    mock_created_engine = MagicMock()
+    mock_created_engine.api_resource.name = "projects/test-project-456/locations/us-central1/reasoningEngines/auto-created-ae-1"
+    mock_api_client.agent_engines.create.return_value = mock_created_engine
+
+    # Mock create operation to return a sandbox resource name
+    operation_mock = MagicMock()
+    created_sandbox_name = "projects/test-project-456/locations/us-central1/reasoningEngines/auto-created-ae-1/sandboxEnvironments/789"
+    operation_mock.response.name = created_sandbox_name
+    mock_api_client.agent_engines.sandboxes.create.return_value = operation_mock
+
+    # Mock execute_code response
+    mock_response = MagicMock()
+    mock_json_output = MagicMock()
+    mock_json_output.mime_type = "application/json"
+    mock_json_output.data = json.dumps(
+        {"stdout": "created sandbox run", "stderr": ""}
+    ).encode("utf-8")
+    mock_json_output.metadata = None
+    mock_response.outputs = [mock_json_output]
+    mock_api_client.agent_engines.sandboxes.execute_code.return_value = (
+        mock_response
+    )
+
+    # Execute
+    executor = AgentEngineSandboxCodeExecutor()
+    code_input = CodeExecutionInput(code='print("hello world")')
+    executor.execute_code(mock_invocation_context, code_input)
+
+    # Assert
+    mock_api_client.agent_engines.create.assert_called_once()
+    assert (
+        executor.agent_engine_resource_name
+        == "projects/test-project-456/locations/us-central1/reasoningEngines/auto-created-ae-1"
+    )
+    assert executor.sandbox_resource_name is None
+    mock_api_client.agent_engines.sandboxes.create.assert_called_once()
+    assert (
+        mock_invocation_context.session.state["sandbox_name"]
+        == created_sandbox_name
+    )
+
+  @patch("vertexai.Client")
+  @patch.dict(
+      os.environ,
+      {
+          "GOOGLE_CLOUD_PROJECT": "test-project-456",
+          "GOOGLE_CLOUD_LOCATION": "us-central1",
+      },
+  )
+  def test_execute_code_auto_create_agent_engine_fails(
+      self, mock_vertexai_client, mock_invocation_context
+  ):
+    """Tests error handling when auto-creating Agent Engine fails."""
+    mock_api_client = MagicMock()
+    mock_vertexai_client.return_value = mock_api_client
+    mock_api_client.agent_engines.create.side_effect = Exception(
+        "Failed to auto-create Agent Engine"
+    )
+
+    executor = AgentEngineSandboxCodeExecutor()
+    code_input = CodeExecutionInput(code='print("hello world")')
+
+    with pytest.raises(Exception, match="Failed to auto-create Agent Engine"):
+      executor.execute_code(mock_invocation_context, code_input)
