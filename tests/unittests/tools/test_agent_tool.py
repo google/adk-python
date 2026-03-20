@@ -1164,3 +1164,114 @@ class TestAgentToolWithCompositeAgents:
 
     # Should fall back to 'request' parameter
     assert declaration.parameters.properties['request'].type == 'STRING'
+
+
+def test_event_callback_receives_intermediate_events():
+  """Test that event_callback is called with each intermediate event."""
+  collected_events = []
+
+  def on_event(event):
+    collected_events.append(event)
+
+  mock_model = testing_utils.MockModel.create(
+      responses=[
+          function_call_no_schema,
+          'response1',
+          'response2',
+      ]
+  )
+
+  tool_agent = Agent(
+      name='tool_agent',
+      model=mock_model,
+  )
+
+  root_agent = Agent(
+      name='root_agent',
+      model=mock_model,
+      tools=[AgentTool(agent=tool_agent, event_callback=on_event)],
+  )
+
+  runner = testing_utils.InMemoryRunner(root_agent)
+
+  assert testing_utils.simplify_events(runner.run('test1')) == [
+      ('root_agent', function_call_no_schema),
+      ('root_agent', function_response_no_schema),
+      ('root_agent', 'response2'),
+  ]
+
+  # The callback should have received the intermediate events from tool_agent
+  assert len(collected_events) > 0
+  # At least one event should have content (the tool_agent's response)
+  content_events = [e for e in collected_events if e.content]
+  assert len(content_events) > 0
+
+
+def test_event_callback_none_by_default():
+  """Test that AgentTool works normally without event_callback (default None)."""
+  mock_model = testing_utils.MockModel.create(
+      responses=[
+          function_call_no_schema,
+          'response1',
+          'response2',
+      ]
+  )
+
+  tool_agent = Agent(
+      name='tool_agent',
+      model=mock_model,
+  )
+
+  # No event_callback specified — should work identically to before
+  root_agent = Agent(
+      name='root_agent',
+      model=mock_model,
+      tools=[AgentTool(agent=tool_agent)],
+  )
+
+  runner = testing_utils.InMemoryRunner(root_agent)
+
+  assert testing_utils.simplify_events(runner.run('test1')) == [
+      ('root_agent', function_call_no_schema),
+      ('root_agent', function_response_no_schema),
+      ('root_agent', 'response2'),
+  ]
+
+
+def test_event_callback_with_state_delta():
+  """Test that event_callback receives events alongside state forwarding."""
+  collected_events = []
+
+  def on_event(event):
+    collected_events.append(event)
+
+  mock_model = testing_utils.MockModel.create(
+      responses=[
+          function_call_no_schema,
+          '{"custom_output": "response1"}',
+          'response2',
+      ]
+  )
+
+  tool_agent = Agent(
+      name='tool_agent',
+      model=mock_model,
+      instruction='input: {state_1}',
+      before_agent_callback=change_state_callback,
+  )
+
+  root_agent = Agent(
+      name='root_agent',
+      model=mock_model,
+      tools=[AgentTool(agent=tool_agent, event_callback=on_event)],
+  )
+
+  runner = testing_utils.InMemoryRunner(root_agent)
+  runner.session.state['state_1'] = 'state1_value'
+
+  runner.run('test1')
+
+  # State should still be forwarded correctly
+  assert runner.session.state['state_1'] == 'changed_value'
+  # And the callback should have received events
+  assert len(collected_events) > 0

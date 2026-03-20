@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 from typing import Any
+from typing import Callable
 from typing import Optional
 from typing import TYPE_CHECKING
 
@@ -105,6 +106,10 @@ class AgentTool(BaseTool):
       to the agent's runner. When True (default), the agent will inherit all
       plugins from its parent. Set to False to run the agent with an isolated
       plugin environment.
+    event_callback: An optional callback invoked with each intermediate event
+      produced by the sub-agent during execution. This enables observability
+      into sub-agent behavior (tool calls, thoughts, state deltas, etc.)
+      without requiring subclassing. The default is None (no callback).
   """
 
   def __init__(
@@ -113,10 +118,12 @@ class AgentTool(BaseTool):
       skip_summarization: bool = False,
       *,
       include_plugins: bool = True,
+      event_callback: Callable[..., None] | None = None,
   ):
     self.agent = agent
     self.skip_summarization: bool = skip_summarization
     self.include_plugins = include_plugins
+    self.event_callback = event_callback
 
     super().__init__(name=agent.name, description=agent.description)
 
@@ -258,6 +265,9 @@ class AgentTool(BaseTool):
           tool_context.state.update(event.actions.state_delta)
         if event.content:
           last_content = event.content
+        # Forward intermediate events to callback for observability.
+        if self.event_callback is not None:
+          self.event_callback(event)
 
     # Clean up runner resources (especially MCP sessions)
     # to avoid "Attempted to exit cancel scope in a different task" errors
