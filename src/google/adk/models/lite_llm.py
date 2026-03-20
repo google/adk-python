@@ -1025,7 +1025,9 @@ async def _content_to_message_param(
       ):
         reasoning_texts.append(_decode_inline_text_data(part.inline_data.data))
 
-    reasoning_content = _NEW_LINE.join(text for text in reasoning_texts if text)
+    # Preserve reasoning deltas exactly as received. Injecting separators
+    # between fragments can corrupt provider-streamed thinking text.
+    reasoning_content = "".join(text for text in reasoning_texts if text)
     return ChatCompletionAssistantMessage(
         role=role,
         content=final_content,

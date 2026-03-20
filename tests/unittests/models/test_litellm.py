@@ -2208,6 +2208,38 @@ async def test_content_to_message_param_assistant_thought_and_content_message():
 
 
 @pytest.mark.asyncio
+async def test_content_to_message_param_preserves_chunked_reasoning_deltas():
+  thought_part_1 = types.Part.from_text(text="Hel")
+  thought_part_1.thought = True
+  thought_part_2 = types.Part.from_text(text="lo")
+  thought_part_2.thought = True
+  content = types.Content(
+      role="assistant", parts=[thought_part_1, thought_part_2]
+  )
+
+  message = await _content_to_message_param(content)
+
+  assert message["role"] == "assistant"
+  assert message["content"] is None
+  assert message["reasoning_content"] == "Hello"
+
+
+@pytest.mark.asyncio
+async def test_content_to_message_param_preserves_reasoning_newlines():
+  thought_part_1 = types.Part.from_text(text="line 1\n")
+  thought_part_1.thought = True
+  thought_part_2 = types.Part.from_text(text="line 2")
+  thought_part_2.thought = True
+  content = types.Content(
+      role="assistant", parts=[thought_part_1, thought_part_2]
+  )
+
+  message = await _content_to_message_param(content)
+
+  assert message["reasoning_content"] == "line 1\nline 2"
+
+
+@pytest.mark.asyncio
 async def test_content_to_message_param_function_call():
   content = types.Content(
       role="assistant",
