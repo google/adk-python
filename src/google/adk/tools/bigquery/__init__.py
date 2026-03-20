@@ -27,10 +27,14 @@ definition. The rationales to have customized tool are:
    execute_sql can't arbitrarily mutate existing data.
 """
 
+from __future__ import annotations
+
 import sys
 
+# Eagerly register existing sub-modules that were previously physical
+# files at this path.  This preserves backward compatibility for imports
+# like ``from google.adk.tools.bigquery.config import BigQueryToolConfig``.
 from google.adk.integration.bigquery import bigquery_credentials
-from google.adk.integration.bigquery import bigquery_skill
 from google.adk.integration.bigquery import bigquery_toolset
 from google.adk.integration.bigquery import client
 from google.adk.integration.bigquery import config
@@ -38,13 +42,8 @@ from google.adk.integration.bigquery import data_insights_tool
 from google.adk.integration.bigquery import metadata_tool
 from google.adk.integration.bigquery import query_tool
 
-# Register canonical modules under the alias path so that imports like
-# ``from google.adk.tools.bigquery.client import get_bigquery_client``
-# resolve to the *same* module object where the real code lives.  This
-# ensures mock.patch.object works correctly in tests.
 _CANONICAL_MODULES = {
     "bigquery_credentials": bigquery_credentials,
-    "bigquery_skill": bigquery_skill,
     "bigquery_toolset": bigquery_toolset,
     "client": client,
     "config": config,
@@ -56,13 +55,26 @@ _CANONICAL_MODULES = {
 for _name, _mod in _CANONICAL_MODULES.items():
   sys.modules[f"{__name__}.{_name}"] = _mod
 
-# Re-export top-level names for convenience.
-from google.adk.integration.bigquery import BigQueryCredentialsConfig
-from google.adk.integration.bigquery import BigQueryToolset
-from google.adk.integration.bigquery import get_bigquery_skill
+# Re-export top-level names that were previously importable from here.
+from google.adk.integration.bigquery.bigquery_credentials import BigQueryCredentialsConfig
+from google.adk.integration.bigquery.bigquery_toolset import BigQueryToolset
 
 __all__ = [
     "BigQueryCredentialsConfig",
     "BigQueryToolset",
     "get_bigquery_skill",
 ]
+
+
+def __getattr__(name: str):
+  """Lazy access for the skill loader (avoids coupling to toolset deps)."""
+  if name == "get_bigquery_skill":
+    from google.adk.integration.bigquery.bigquery_skill import get_bigquery_skill
+
+    return get_bigquery_skill
+  if name == "bigquery_skill":
+    from google.adk.integration.bigquery import bigquery_skill
+
+    sys.modules[f"{__name__}.bigquery_skill"] = bigquery_skill
+    return bigquery_skill
+  raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

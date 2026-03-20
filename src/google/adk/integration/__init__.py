@@ -13,3 +13,5 @@
 # limitations under the License.
 
 """ADK integrations — toolset skills and guided workflows."""
+
+from __future__ import annotations

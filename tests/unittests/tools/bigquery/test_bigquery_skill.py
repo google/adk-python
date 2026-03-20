@@ -16,9 +16,9 @@ from __future__ import annotations
 
 import re
 
+from google.adk.integration.bigquery.bigquery_skill import _SKILL_DIR
+from google.adk.integration.bigquery.bigquery_skill import get_bigquery_skill
 from google.adk.skills._utils import _validate_skill_dir
-from google.adk.tools.bigquery.bigquery_skill import _SKILL_DIR
-from google.adk.tools.bigquery.bigquery_skill import get_bigquery_skill
 from google.adk.tools.skill_toolset import ListSkillsTool
 from google.adk.tools.skill_toolset import LoadSkillResourceTool
 from google.adk.tools.skill_toolset import LoadSkillTool
