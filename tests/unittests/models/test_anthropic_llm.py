@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import base64
 import json
 import os
 import sys
@@ -280,6 +281,220 @@ function_declaration_test_cases = [
         ),
     ),
     (
+        "function_with_nested_object_parameter",
+        types.FunctionDeclaration(
+            name="update_profile",
+            description="Updates a user profile.",
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "profile": types.Schema(
+                        type=types.Type.OBJECT,
+                        description="The profile data",
+                        properties={
+                            "name": types.Schema(
+                                type=types.Type.STRING,
+                                description="Full name",
+                            ),
+                            "address": types.Schema(
+                                type=types.Type.OBJECT,
+                                description="Mailing address",
+                                properties={
+                                    "city": types.Schema(
+                                        type=types.Type.STRING,
+                                    ),
+                                    "state": types.Schema(
+                                        type=types.Type.STRING,
+                                    ),
+                                },
+                            ),
+                        },
+                    ),
+                },
+                required=["profile"],
+            ),
+        ),
+        anthropic_types.ToolParam(
+            name="update_profile",
+            description="Updates a user profile.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "profile": {
+                        "type": "object",
+                        "description": "The profile data",
+                        "properties": {
+                            "name": {
+                                "type": "string",
+                                "description": "Full name",
+                            },
+                            "address": {
+                                "type": "object",
+                                "description": "Mailing address",
+                                "properties": {
+                                    "city": {"type": "string"},
+                                    "state": {"type": "string"},
+                                },
+                            },
+                        },
+                    },
+                },
+                "required": ["profile"],
+            },
+        ),
+    ),
+    (
+        "function_with_any_of_parameter",
+        types.FunctionDeclaration(
+            name="set_value",
+            description="Sets a value that can be a string or integer.",
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "value": types.Schema(
+                        description="A string or integer value",
+                        any_of=[
+                            types.Schema(type=types.Type.STRING),
+                            types.Schema(type=types.Type.INTEGER),
+                        ],
+                    ),
+                },
+                required=["value"],
+            ),
+        ),
+        anthropic_types.ToolParam(
+            name="set_value",
+            description="Sets a value that can be a string or integer.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "value": {
+                        "description": "A string or integer value",
+                        "anyOf": [
+                            {"type": "string"},
+                            {"type": "integer"},
+                        ],
+                    },
+                },
+                "required": ["value"],
+            },
+        ),
+    ),
+    (
+        "function_with_additional_properties_parameter",
+        types.FunctionDeclaration(
+            name="store_metadata",
+            description="Stores arbitrary key-value metadata.",
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "metadata": types.Schema(
+                        type=types.Type.OBJECT,
+                        description="Arbitrary metadata",
+                        additional_properties=types.Schema(
+                            type=types.Type.STRING,
+                        ),
+                    ),
+                },
+                required=["metadata"],
+            ),
+        ),
+        anthropic_types.ToolParam(
+            name="store_metadata",
+            description="Stores arbitrary key-value metadata.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "metadata": {
+                        "type": "object",
+                        "description": "Arbitrary metadata",
+                        "additionalProperties": {"type": "string"},
+                    },
+                },
+                "required": ["metadata"],
+            },
+        ),
+    ),
+    (
+        "function_with_parameters_json_schema_combinators",
+        types.FunctionDeclaration(
+            name="validate_payload",
+            description="Validates a payload with schema combinators.",
+            parameters_json_schema={
+                "type": "OBJECT",
+                "properties": {
+                    "choice": {
+                        "oneOf": [
+                            {"type": "STRING"},
+                            {"type": "INTEGER"},
+                        ],
+                    },
+                    "config": {
+                        "allOf": [
+                            {
+                                "type": "OBJECT",
+                                "properties": {
+                                    "enabled": {"type": "BOOLEAN"},
+                                },
+                            },
+                        ],
+                    },
+                    "blocked": {
+                        "not": {
+                            "type": "NULL",
+                        },
+                    },
+                    "tuple_value": {
+                        "type": "ARRAY",
+                        "items": [
+                            {"type": "STRING"},
+                            {"type": "INTEGER"},
+                        ],
+                    },
+                },
+                "required": ["choice"],
+            },
+        ),
+        anthropic_types.ToolParam(
+            name="validate_payload",
+            description="Validates a payload with schema combinators.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "choice": {
+                        "oneOf": [
+                            {"type": "string"},
+                            {"type": "integer"},
+                        ],
+                    },
+                    "config": {
+                        "allOf": [
+                            {
+                                "type": "object",
+                                "properties": {
+                                    "enabled": {"type": "boolean"},
+                                },
+                            },
+                        ],
+                    },
+                    "blocked": {
+                        "not": {
+                            "type": "null",
+                        },
+                    },
+                    "tuple_value": {
+                        "type": "array",
+                        "items": [
+                            {"type": "string"},
+                            {"type": "integer"},
+                        ],
+                    },
+                },
+                "required": ["choice"],
+            },
+        ),
+    ),
+    (
         "function_with_parameters_json_schema",
         types.FunctionDeclaration(
             name="search_database",
@@ -526,6 +741,40 @@ def test_part_to_message_block_with_multiple_content_items():
   assert result["content"] == "First part\nSecond part"
 
 
+def test_part_to_message_block_with_pdf_document():
+  """Test that part_to_message_block handles PDF document parts."""
+  pdf_data = b"%PDF-1.4 fake pdf content"
+  part = Part(
+      inline_data=types.Blob(mime_type="application/pdf", data=pdf_data)
+  )
+
+  result = part_to_message_block(part)
+
+  assert isinstance(result, dict)
+  assert result["type"] == "document"
+  assert result["source"]["type"] == "base64"
+  assert result["source"]["media_type"] == "application/pdf"
+  assert result["source"]["data"] == base64.b64encode(pdf_data).decode()
+
+
+def test_part_to_message_block_with_pdf_mime_type_parameters():
+  """Test that PDF parts with MIME type parameters are handled correctly."""
+  pdf_data = b"%PDF-1.4 fake pdf content"
+  part = Part(
+      inline_data=types.Blob(
+          mime_type="application/pdf; name=doc.pdf", data=pdf_data
+      )
+  )
+
+  result = part_to_message_block(part)
+
+  assert isinstance(result, dict)
+  assert result["type"] == "document"
+  assert result["source"]["type"] == "base64"
+  assert result["source"]["media_type"] == "application/pdf; name=doc.pdf"
+  assert result["source"]["data"] == base64.b64encode(pdf_data).decode()
+
+
 content_to_message_param_test_cases = [
     (
         "user_role_with_text_and_image",
@@ -542,7 +791,7 @@ content_to_message_param_test_cases = [
         ),
         "user",
         2,  # Expected content length
-        False,  # Should not log warning
+        None,  # No warning expected
     ),
     (
         "model_role_with_text_and_image",
@@ -559,7 +808,7 @@ content_to_message_param_test_cases = [
         ),
         "assistant",
         1,  # Image filtered out, only text remains
-        True,  # Should log warning
+        "Image data is not supported in Claude for assistant turns.",
     ),
     (
         "assistant_role_with_text_and_image",
@@ -576,30 +825,62 @@ content_to_message_param_test_cases = [
         ),
         "assistant",
         1,  # Image filtered out, only text remains
-        True,  # Should log warning
+        "Image data is not supported in Claude for assistant turns.",
+    ),
+    (
+        "user_role_with_text_and_document",
+        Content(
+            role="user",
+            parts=[
+                Part.from_text(text="Summarize this document."),
+                Part(
+                    inline_data=types.Blob(
+                        mime_type="application/pdf", data=b"fake_pdf_data"
+                    )
+                ),
+            ],
+        ),
+        "user",
+        2,  # Both text and document included
+        None,  # No warning expected
+    ),
+    (
+        "model_role_with_text_and_document",
+        Content(
+            role="model",
+            parts=[
+                Part.from_text(text="Here is the summary."),
+                Part(
+                    inline_data=types.Blob(
+                        mime_type="application/pdf", data=b"fake_pdf_data"
+                    )
+                ),
+            ],
+        ),
+        "assistant",
+        1,  # Document filtered out, only text remains
+        "PDF data is not supported in Claude for assistant turns.",
     ),
 ]
 
 
 @pytest.mark.parametrize(
-    "_, content, expected_role, expected_content_length, should_log_warning",
+    "_, content, expected_role, expected_content_length, expected_warning",
     content_to_message_param_test_cases,
     ids=[case[0] for case in content_to_message_param_test_cases],
 )
-def test_content_to_message_param_with_images(
-    _, content, expected_role, expected_content_length, should_log_warning
+def test_content_to_message_param(
+    _, content, expected_role, expected_content_length, expected_warning
 ):
-  """Test content_to_message_param handles images correctly based on role."""
+  """Test content_to_message_param handles images and documents based on role."""
   with mock.patch("google.adk.models.anthropic_llm.logger") as mock_logger:
     result = content_to_message_param(content)
 
     assert result["role"] == expected_role
     assert len(result["content"]) == expected_content_length
 
-    if should_log_warning:
-      mock_logger.warning.assert_called_once_with(
-          "Image data is not supported in Claude for assistant turns."
-      )
+    if expected_warning:
+      mock_logger.warning.assert_called_once_with(expected_warning)
     else:
       mock_logger.warning.assert_not_called()
 
@@ -696,6 +977,87 @@ def test_part_to_message_block_nested_dict_result():
   parsed = json.loads(result["content"])
   assert parsed["has_more"] is False
   assert parsed["results"][0]["tags"] == ["a", "b"]
+
+
+# --- Tests for arbitrary dict fallback (e.g. SkillToolset load_skill) ---
+
+
+def test_part_to_message_block_arbitrary_dict_serialized_as_json():
+  """Dicts with keys other than 'content'/'result' should be JSON-serialized.
+
+  This covers tools like load_skill that return arbitrary key structures
+  such as {"skill_name": ..., "instructions": ..., "frontmatter": ...}.
+  """
+  response_part = types.Part.from_function_response(
+      name="load_skill",
+      response={
+          "skill_name": "my_skill",
+          "instructions": "Step 1: do this. Step 2: do that.",
+          "frontmatter": {"version": "1.0", "tags": ["a", "b"]},
+      },
+  )
+  response_part.function_response.id = "test_id"
+
+  result = part_to_message_block(response_part)
+
+  assert result["type"] == "tool_result"
+  assert result["tool_use_id"] == "test_id"
+  assert not result["is_error"]
+  parsed = json.loads(result["content"])
+  assert parsed["skill_name"] == "my_skill"
+  assert parsed["instructions"] == "Step 1: do this. Step 2: do that."
+  assert parsed["frontmatter"]["version"] == "1.0"
+
+
+def test_part_to_message_block_run_skill_script_response():
+  """run_skill_script response keys (stdout/stderr/status) should not be dropped."""
+  response_part = types.Part.from_function_response(
+      name="run_skill_script",
+      response={
+          "skill_name": "my_skill",
+          "script_path": "scripts/setup.py",
+          "stdout": "Done.",
+          "stderr": "",
+          "status": "success",
+      },
+  )
+  response_part.function_response.id = "test_id_2"
+
+  result = part_to_message_block(response_part)
+
+  parsed = json.loads(result["content"])
+  assert parsed["status"] == "success"
+  assert parsed["stdout"] == "Done."
+
+
+def test_part_to_message_block_error_response_not_dropped():
+  """Error dicts like {"error": ..., "error_code": ...} should be serialized."""
+  response_part = types.Part.from_function_response(
+      name="load_skill",
+      response={
+          "error": "Skill 'missing' not found.",
+          "error_code": "SKILL_NOT_FOUND",
+      },
+  )
+  response_part.function_response.id = "test_id_3"
+
+  result = part_to_message_block(response_part)
+
+  parsed = json.loads(result["content"])
+  assert parsed["error_code"] == "SKILL_NOT_FOUND"
+
+
+def test_part_to_message_block_empty_response_stays_empty():
+  """An empty response dict should still produce an empty content string."""
+  response_part = types.Part.from_function_response(
+      name="some_tool",
+      response={},
+  )
+  response_part.function_response.id = "test_id_4"
+
+  result = part_to_message_block(response_part)
+
+  assert result["content"] == ""
 
 
 # --- Tests for Bug #1: Streaming support ---

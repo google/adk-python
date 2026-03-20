@@ -25,9 +25,18 @@ from typing import Union
 from a2a.client.middleware import ClientCallContext
 from a2a.server.events import Event as A2AEvent
 from a2a.types import Message as A2AMessage
-from a2a.types import MessageSendConfiguration
 from pydantic import BaseModel
 
+from ...a2a.converters.part_converter import A2APartToGenAIPartConverter
+from ...a2a.converters.part_converter import convert_a2a_part_to_genai_part
+from ...a2a.converters.to_adk_event import A2AArtifactUpdateToEventConverter
+from ...a2a.converters.to_adk_event import A2AMessageToEventConverter
+from ...a2a.converters.to_adk_event import A2AStatusUpdateToEventConverter
+from ...a2a.converters.to_adk_event import A2ATaskToEventConverter
+from ...a2a.converters.to_adk_event import convert_a2a_artifact_update_to_event
+from ...a2a.converters.to_adk_event import convert_a2a_message_to_event
+from ...a2a.converters.to_adk_event import convert_a2a_status_update_to_event
+from ...a2a.converters.to_adk_event import convert_a2a_task_to_event
 from ...agents.invocation_context import InvocationContext
 from ...events.event import Event
 
@@ -71,6 +80,31 @@ class RequestInterceptor(BaseModel):
 
 
 class A2aRemoteAgentConfig(BaseModel):
-  """Configuration for the RemoteA2aAgent."""
+  """Configuration for A2A remote agents."""
+
+  # Converts standard A2A Messages into ADK Event.
+  a2a_message_converter: A2AMessageToEventConverter = (
+      convert_a2a_message_to_event
+  )
+
+  # Converts an A2A Task into an ADK Event.
+  a2a_task_converter: A2ATaskToEventConverter = convert_a2a_task_to_event
+
+  # Converts A2A TaskStatusUpdateEvents into ADK Event.
+  a2a_status_update_converter: A2AStatusUpdateToEventConverter = (
+      convert_a2a_status_update_to_event
+  )
+
+  # Converts A2A TaskArtifactUpdateEvents into ADK Event.
+  a2a_artifact_update_converter: A2AArtifactUpdateToEventConverter = (
+      convert_a2a_artifact_update_to_event
+  )
+
+  # A low-level hook that converts individual A2A Message Parts
+  # into native ADK/GenAI Part objects.
+  # This is utilized internally by the other converters.
+  a2a_part_converter: A2APartToGenAIPartConverter = (
+      convert_a2a_part_to_genai_part
+  )
 
   request_interceptors: Optional[list[RequestInterceptor]] = None

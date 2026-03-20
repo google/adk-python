@@ -83,9 +83,9 @@ def test_spanner_vector_store_settings_invalid_vector_length():
 
 
 @pytest.mark.parametrize(
-    "settings_args, expected_rows, expected_mode",
+    "settings_args, expected_rows, expected_mode, expected_role",
     [
-        ({}, 50, QueryResultMode.DEFAULT),
+        ({}, 50, QueryResultMode.DEFAULT, None),
         (
             {
                 "capabilities": [Capabilities.DATA_READ],
@@ -94,12 +94,22 @@ def test_spanner_vector_store_settings_invalid_vector_length():
             },
             100,
             QueryResultMode.DICT_LIST,
+            None,
+        ),
+        (
+            {"database_role": "test-role"},
+            50,
+            QueryResultMode.DEFAULT,
+            "test-role",
         ),
     ],
 )
-def test_spanner_tool_settings(settings_args, expected_rows, expected_mode):
+def test_spanner_tool_settings(
+    settings_args, expected_rows, expected_mode, expected_role
+):
   """Test SpannerToolSettings with different values."""
   settings = SpannerToolSettings(**settings_args)
   assert settings.capabilities == [Capabilities.DATA_READ]
   assert settings.max_executed_query_result_rows == expected_rows
   assert settings.query_result_mode == expected_mode
+  assert settings.database_role == expected_role

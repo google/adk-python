@@ -32,8 +32,8 @@ import json
 import pickle
 from typing import Any
 from typing import Optional
-import uuid
 
+from google.adk.platform import uuid as platform_uuid
 from google.genai import types
 from sqlalchemy import Boolean
 from sqlalchemy import ForeignKeyConstraint
@@ -109,7 +109,7 @@ class StorageSession(Base):
   id: Mapped[str] = mapped_column(
       String(DEFAULT_MAX_KEY_LENGTH),
       primary_key=True,
-      default=lambda: str(uuid.uuid4()),
+      default=platform_uuid.new_uuid,
   )
 
   state: Mapped[MutableDict[str, Any]] = mapped_column(
@@ -154,6 +154,13 @@ class StorageSession(Base):
       return self.update_time.replace(tzinfo=timezone.utc).timestamp()
     return self.update_time.timestamp()
 
+  def get_update_marker(self) -> str:
+    """Returns a stable revision marker for optimistic concurrency checks."""
+    update_time = self.update_time
+    if update_time.tzinfo is not None:
+      update_time = update_time.astimezone(timezone.utc)
+    return update_time.isoformat(timespec="microseconds")
+
   def to_session(
       self,
       state: dict[str, Any] | None = None,
@@ -166,7 +173,7 @@ class StorageSession(Base):
     if events is None:
       events = []
 
-    return Session(
+    session = Session(
         app_name=self.app_name,
         user_id=self.user_id,
         id=self.id,
@@ -174,6 +181,8 @@ class StorageSession(Base):
         events=events,
         last_update_time=self.get_update_timestamp(is_sqlite=is_sqlite),
     )
+    session._storage_update_marker = self.get_update_marker()
+    return session
 
 
 class StorageEvent(Base):

@@ -17,7 +17,10 @@ from __future__ import annotations
 from contextlib import redirect_stdout
 import io
 import logging
+import multiprocessing
+import queue
 import re
+import traceback
 from typing import Any
 
 from pydantic import Field
@@ -29,6 +32,20 @@ from .code_execution_utils import CodeExecutionInput
 from .code_execution_utils import CodeExecutionResult
 
 logger = logging.getLogger('google_adk.' + __name__)
+
+
+def _execute_in_process(
+    code: str, globals_: dict[str, Any], result_queue: multiprocessing.Queue
+) -> None:
+  """Executes code in a separate process and puts result in queue."""
+  stdout = io.StringIO()
+  error = None
+  try:
+    with redirect_stdout(stdout):
+      exec(code, globals_, globals_)
+  except BaseException:
+    error = traceback.format_exc()
+  result_queue.put((stdout.getvalue(), error))
 
 
 def _prepare_globals(code: str, globals_: dict[str, Any]) -> None:
@@ -65,19 +82,33 @@ class UnsafeLocalCodeExecutor(BaseCodeExecutor):
   ) -> CodeExecutionResult:
     logger.debug('Executing code:\n```\n%s\n```', code_execution_input.code)
     # Execute the code.
+    globals_ = {}
+    _prepare_globals(code_execution_input.code, globals_)
+
+    ctx = multiprocessing.get_context('spawn')
+    result_queue = ctx.Queue()
+    process = ctx.Process(
+        target=_execute_in_process,
+        args=(code_execution_input.code, globals_, result_queue),
+        daemon=True,
+    )
+    process.start()
+
     output = ''
     error = ''
     try:
-      globals_ = {}
-      _prepare_globals(code_execution_input.code, globals_)
-      stdout = io.StringIO()
-      with redirect_stdout(stdout):
-        exec(code_execution_input.code, globals_, globals_)
-      output = stdout.getvalue()
-    except Exception as e:
-      error = str(e)
+      output, err = result_queue.get(timeout=self.timeout_seconds)
+      process.join()
+      if err:
+        error = err
+    except queue.Empty:
+      process.terminate()
+      process.join()
+      error = f'Code execution timed out after {self.timeout_seconds} seconds.'
 
     # Collect the final result.
+    result_queue.close()
+    result_queue.join_thread()
     return CodeExecutionResult(
         stdout=output,
         stderr=error,

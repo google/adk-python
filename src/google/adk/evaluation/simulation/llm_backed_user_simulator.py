@@ -190,7 +190,11 @@ class LlmBackedUserSimulator(UserSimulator):
     async with Aclosing(self._llm.generate_content_async(llm_request)) as agen:
       async for llm_response in agen:
         generated_content: genai_types.Content = llm_response.content
-        if not generated_content.parts:
+        if (
+            not generated_content
+            or not hasattr(generated_content, "parts")
+            or not generated_content.parts
+        ):
           continue
         for part in generated_content.parts:
           if part.text and not part.thought:
