@@ -241,6 +241,20 @@ class AgentRegistry:
   def get_remote_a2a_agent(self, agent_name: str) -> RemoteA2aAgent:
     """Creates a RemoteA2aAgent instance for a registered A2A Agent."""
     agent_info = self.get_agent_info(agent_name)
+
+    # Try to use the full agent card if available
+    card = agent_info.get("card", {})
+    card_content = card.get("content")
+    if card.get("type") == "A2A_AGENT_CARD" and card_content:
+      agent_card = AgentCard(**card_content)
+      # Clean the name to be a valid identifier
+      name = self._clean_name(agent_card.name)
+      return RemoteA2aAgent(
+          name=name,
+          agent_card=agent_card,
+          description=agent_card.description,
+      )
+
     name = self._clean_name(agent_info.get("displayName", agent_name))
     description = agent_info.get("description", "")
     version = agent_info.get("version", "")

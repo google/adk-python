@@ -16,10 +16,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import pathlib
 import shlex
-import subprocess
 from typing import Any
 from typing import Optional
 
@@ -132,19 +132,22 @@ class ExecuteBashTool(BaseTool):
     elif not tool_context.tool_confirmation.confirmed:
       return {"error": "This tool call is rejected."}
 
+    process = await asyncio.create_subprocess_exec(
+        *shlex.split(command),
+        cwd=str(self._workspace),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
     try:
-      result = subprocess.run(
-          shlex.split(command),
-          shell=False,
-          cwd=str(self._workspace),
-          capture_output=True,
-          text=True,
-          timeout=30,
-      )
+      stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=30)
       return {
-          "stdout": result.stdout,
-          "stderr": result.stderr,
-          "returncode": result.returncode,
+          "stdout": stdout.decode(),
+          "stderr": stderr.decode(),
+          "returncode": process.returncode,
       }
-    except subprocess.TimeoutExpired:
+    except asyncio.TimeoutError:
+      try:
+        process.kill()
+      except ProcessLookupError:
+        pass
       return {"error": "Command timed out after 30 seconds."}
