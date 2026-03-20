@@ -29,13 +29,6 @@ from .state import State
 _MAX_PAGE_SIZE = 100
 
 
-def _resolve_page_size(page_size: Optional[int]) -> Optional[int]:
-  """Clamp *page_size* to [1, _MAX_PAGE_SIZE], or None for unlimited."""
-  if page_size is None:
-    return None
-  return max(1, min(page_size, _MAX_PAGE_SIZE))
-
-
 def _encode_page_token(offset: int) -> str:
   return base64.b64encode(str(offset).encode()).decode()
 
@@ -47,6 +40,33 @@ def _decode_page_token(token: Optional[str]) -> int:
     return max(0, int(base64.b64decode(token).decode()))
   except (ValueError, TypeError):
     return 0
+
+
+class SessionPagination(BaseModel):
+  """Pagination configuration for ``list_sessions``.
+
+  When passed to ``list_sessions``, only ``page_size`` results are returned
+  per call. When omitted, all sessions are returned at once (no pagination).
+  """
+
+  page_size: int = 20
+  """Maximum number of sessions per page (1–100, clamped automatically)."""
+
+  page_token: Optional[str] = None
+  """Opaque token returned by a previous call to fetch the next page."""
+
+  page_offset: Optional[int] = None
+  """Optional 0-based starting offset. Takes precedence over ``page_token``."""
+
+  @property
+  def effective_page_size(self) -> int:
+    return max(1, min(self.page_size, _MAX_PAGE_SIZE))
+
+  @property
+  def offset(self) -> int:
+    if self.page_offset is not None:
+      return max(0, self.page_offset)
+    return _decode_page_token(self.page_token)
 
 
 class GetSessionConfig(BaseModel):
@@ -111,8 +131,7 @@ class BaseSessionService(abc.ABC):
       *,
       app_name: str,
       user_id: Optional[str] = None,
-      page_size: Optional[int] = None,
-      page_token: Optional[str] = None,
+      pagination: Optional[SessionPagination] = None,
   ) -> ListSessionsResponse:
     """Lists sessions, optionally filtered by user, with pagination.
 
@@ -120,10 +139,8 @@ class BaseSessionService(abc.ABC):
       app_name: The name of the app.
       user_id: The ID of the user. If not provided, lists all sessions for all
         users.
-      page_size: Maximum number of sessions to return per page. If not
-        provided, all sessions are returned (no pagination). Maximum 100.
-      page_token: Token returned from a previous ``list_sessions`` call to
-        fetch the next page.
+      pagination: Optional pagination configuration. If not provided, all
+        sessions are returned at once.
 
     Returns:
       A ListSessionsResponse containing the sessions and an optional

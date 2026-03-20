@@ -25,6 +25,7 @@ from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
 from google.adk.sessions import database_session_service
 from google.adk.sessions.base_session_service import GetSessionConfig
+from google.adk.sessions.base_session_service import SessionPagination
 from google.adk.sessions.database_session_service import DatabaseSessionService
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.sessions.sqlite_session_service import SqliteSessionService
@@ -1519,7 +1520,9 @@ async def test_list_sessions_custom_page_size(session_service):
     )
 
   response = await session_service.list_sessions(
-      app_name=app_name, user_id=user_id, page_size=3
+      app_name=app_name,
+      user_id=user_id,
+      pagination=SessionPagination(page_size=3),
   )
   assert len(response.sessions) == 3
   assert response.next_page_token is not None
@@ -1537,7 +1540,9 @@ async def test_list_sessions_page_size_clamped_to_max(session_service):
     )
 
   response = await session_service.list_sessions(
-      app_name=app_name, user_id=user_id, page_size=999
+      app_name=app_name,
+      user_id=user_id,
+      pagination=SessionPagination(page_size=999),
   )
   # Only 5 sessions exist, so all are returned and no next page.
   assert len(response.sessions) == 5
@@ -1563,8 +1568,9 @@ async def test_list_sessions_iterate_all_pages(session_service):
     response = await session_service.list_sessions(
         app_name=app_name,
         user_id=user_id,
-        page_size=page_size,
-        page_token=page_token,
+        pagination=SessionPagination(
+            page_size=page_size, page_token=page_token
+        ),
     )
     collected_ids.extend(s.id for s in response.sessions)
     if response.next_page_token is None:
@@ -1586,7 +1592,9 @@ async def test_list_sessions_no_next_token_when_exact_fit(session_service):
     )
 
   response = await session_service.list_sessions(
-      app_name=app_name, user_id=user_id, page_size=5
+      app_name=app_name,
+      user_id=user_id,
+      pagination=SessionPagination(page_size=5),
   )
   assert len(response.sessions) == 5
   assert response.next_page_token is None
@@ -1604,7 +1612,7 @@ async def test_list_sessions_empty_result(session_service):
 
 @pytest.mark.asyncio
 async def test_list_sessions_backward_compatible_no_args(session_service):
-  """Calling list_sessions without pagination args still works (backward compat)."""
+  """Calling list_sessions without pagination returns all sessions."""
   app_name = 'compat_app'
   user_id = 'user'
 
@@ -1637,8 +1645,65 @@ async def test_list_sessions_ordered_by_update_time_desc(session_service):
   )
 
   response = await session_service.list_sessions(
-      app_name=app_name, user_id=user_id, page_size=100
+      app_name=app_name,
+      user_id=user_id,
+      pagination=SessionPagination(page_size=100),
   )
   ids = [s.id for s in response.sessions]
   # Most recently created (and thus updated) should come first.
   assert ids == ['s2', 's1', 's0']
+
+
+@pytest.mark.asyncio
+async def test_list_sessions_page_offset_skips_to_position(session_service):
+  """page_offset allows jumping directly to a specific position."""
+  app_name = 'offset_app'
+  user_id = 'user'
+
+  for i in range(10):
+    await session_service.create_session(
+        app_name=app_name, user_id=user_id, session_id=f's{i}'
+    )
+
+  # Skip the first 5 sessions, get next 3
+  response = await session_service.list_sessions(
+      app_name=app_name,
+      user_id=user_id,
+      pagination=SessionPagination(page_size=3, page_offset=5),
+  )
+  assert len(response.sessions) == 3
+  assert response.next_page_token is not None
+
+
+@pytest.mark.asyncio
+async def test_list_sessions_page_offset_overrides_page_token(session_service):
+  """page_offset takes precedence over page_token."""
+  app_name = 'offset_override_app'
+  user_id = 'user'
+
+  for i in range(10):
+    await session_service.create_session(
+        app_name=app_name, user_id=user_id, session_id=f's{i}'
+    )
+
+  # Get first page to obtain a page_token
+  first_response = await session_service.list_sessions(
+      app_name=app_name,
+      user_id=user_id,
+      pagination=SessionPagination(page_size=3),
+  )
+  token = first_response.next_page_token
+  assert token is not None
+
+  # Pass both page_token and page_offset — offset should win
+  response = await session_service.list_sessions(
+      app_name=app_name,
+      user_id=user_id,
+      pagination=SessionPagination(
+          page_size=3, page_token=token, page_offset=0
+      ),
+  )
+  # Should get the same first page as if starting from 0
+  assert [s.id for s in response.sessions] == [
+      s.id for s in first_response.sessions
+  ]

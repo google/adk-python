@@ -35,9 +35,8 @@ from ..events.event import Event
 from .base_session_service import BaseSessionService
 from .base_session_service import GetSessionConfig
 from .base_session_service import ListSessionsResponse
-from .base_session_service import _decode_page_token
+from .base_session_service import SessionPagination
 from .base_session_service import _encode_page_token
-from .base_session_service import _resolve_page_size
 from .session import Session
 from .state import State
 
@@ -299,29 +298,27 @@ class SqliteSessionService(BaseSessionService):
       *,
       app_name: str,
       user_id: Optional[str] = None,
-      page_size: Optional[int] = None,
-      page_token: Optional[str] = None,
+      pagination: Optional[SessionPagination] = None,
   ) -> ListSessionsResponse:
-    effective_page_size = _resolve_page_size(page_size)
-    offset = _decode_page_token(page_token)
-
     sessions_list = []
     async with self._get_db_connection() as db:
       # Fetch sessions with ORDER BY and optional LIMIT / OFFSET
-      if effective_page_size is not None:
+      if pagination is not None:
+        page_size = pagination.effective_page_size
+        offset = pagination.offset
         if user_id:
           session_rows = await db.execute_fetchall(
               "SELECT id, user_id, state, update_time FROM sessions WHERE"
               " app_name=? AND user_id=?"
               " ORDER BY update_time DESC LIMIT ? OFFSET ?",
-              (app_name, user_id, effective_page_size + 1, offset),
+              (app_name, user_id, page_size + 1, offset),
           )
         else:
           session_rows = await db.execute_fetchall(
               "SELECT id, user_id, state, update_time FROM sessions WHERE"
               " app_name=?"
               " ORDER BY update_time DESC LIMIT ? OFFSET ?",
-              (app_name, effective_page_size + 1, offset),
+              (app_name, page_size + 1, offset),
           )
       else:
         if user_id:
@@ -340,11 +337,11 @@ class SqliteSessionService(BaseSessionService):
           )
 
       has_next_page = (
-          effective_page_size is not None
-          and len(session_rows) > effective_page_size
+          pagination is not None
+          and len(session_rows) > pagination.effective_page_size
       )
       if has_next_page:
-        session_rows = session_rows[:effective_page_size]
+        session_rows = session_rows[: pagination.effective_page_size]
 
       # Fetch app state
       app_state = await self._get_app_state(db, app_name)
@@ -381,7 +378,7 @@ class SqliteSessionService(BaseSessionService):
         )
 
     next_page_token = (
-        _encode_page_token(offset + effective_page_size)
+        _encode_page_token(pagination.offset + pagination.effective_page_size)
         if has_next_page
         else None
     )

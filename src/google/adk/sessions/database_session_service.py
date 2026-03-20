@@ -43,9 +43,8 @@ from ..events.event import Event
 from .base_session_service import BaseSessionService
 from .base_session_service import GetSessionConfig
 from .base_session_service import ListSessionsResponse
-from .base_session_service import _decode_page_token
+from .base_session_service import SessionPagination
 from .base_session_service import _encode_page_token
-from .base_session_service import _resolve_page_size
 from .migration import _schema_check_utils
 from .schemas.v0 import Base as BaseV0
 from .schemas.v0 import StorageAppState as StorageAppStateV0
@@ -513,14 +512,10 @@ class DatabaseSessionService(BaseSessionService):
       *,
       app_name: str,
       user_id: Optional[str] = None,
-      page_size: Optional[int] = None,
-      page_token: Optional[str] = None,
+      pagination: Optional[SessionPagination] = None,
   ) -> ListSessionsResponse:
     await self._prepare_tables()
     schema = self._get_schema_classes()
-
-    effective_page_size = _resolve_page_size(page_size)
-    offset = _decode_page_token(page_token)
 
     async with self._rollback_on_exception_session(
         read_only=True
@@ -532,18 +527,21 @@ class DatabaseSessionService(BaseSessionService):
         stmt = stmt.filter(schema.StorageSession.user_id == user_id)
 
       stmt = stmt.order_by(schema.StorageSession.update_time.desc())
-      if effective_page_size is not None:
+      if pagination is not None:
+        page_size = pagination.effective_page_size
+        offset = pagination.offset
         # Fetch one extra row to determine if there is a next page.
-        stmt = stmt.offset(offset).limit(effective_page_size + 1)
+        stmt = stmt.offset(offset).limit(page_size + 1)
 
       result = await sql_session.execute(stmt)
       results = list(result.scalars().all())
 
       has_next_page = (
-          effective_page_size is not None and len(results) > effective_page_size
+          pagination is not None
+          and len(results) > pagination.effective_page_size
       )
       if has_next_page:
-        results = results[:effective_page_size]
+        results = results[: pagination.effective_page_size]
 
       # Fetch app state from storage
       storage_app_state = await sql_session.get(
@@ -579,7 +577,7 @@ class DatabaseSessionService(BaseSessionService):
         )
 
       next_page_token = (
-          _encode_page_token(offset + effective_page_size)
+          _encode_page_token(pagination.offset + pagination.effective_page_size)
           if has_next_page
           else None
       )

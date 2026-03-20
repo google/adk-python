@@ -28,9 +28,8 @@ from ..events.event import Event
 from .base_session_service import BaseSessionService
 from .base_session_service import GetSessionConfig
 from .base_session_service import ListSessionsResponse
-from .base_session_service import _decode_page_token
+from .base_session_service import SessionPagination
 from .base_session_service import _encode_page_token
-from .base_session_service import _resolve_page_size
 from .session import Session
 from .state import State
 
@@ -227,14 +226,12 @@ class InMemorySessionService(BaseSessionService):
       *,
       app_name: str,
       user_id: Optional[str] = None,
-      page_size: Optional[int] = None,
-      page_token: Optional[str] = None,
+      pagination: Optional[SessionPagination] = None,
   ) -> ListSessionsResponse:
     return self._list_sessions_impl(
         app_name=app_name,
         user_id=user_id,
-        page_size=page_size,
-        page_token=page_token,
+        pagination=pagination,
     )
 
   def list_sessions_sync(
@@ -242,15 +239,13 @@ class InMemorySessionService(BaseSessionService):
       *,
       app_name: str,
       user_id: Optional[str] = None,
-      page_size: Optional[int] = None,
-      page_token: Optional[str] = None,
+      pagination: Optional[SessionPagination] = None,
   ) -> ListSessionsResponse:
     logger.warning('Deprecated. Please migrate to the async method.')
     return self._list_sessions_impl(
         app_name=app_name,
         user_id=user_id,
-        page_size=page_size,
-        page_token=page_token,
+        pagination=pagination,
     )
 
   def _list_sessions_impl(
@@ -258,8 +253,7 @@ class InMemorySessionService(BaseSessionService):
       *,
       app_name: str,
       user_id: Optional[str] = None,
-      page_size: Optional[int] = None,
-      page_token: Optional[str] = None,
+      pagination: Optional[SessionPagination] = None,
   ) -> ListSessionsResponse:
     empty_response = ListSessionsResponse()
     if app_name not in self.sessions:
@@ -290,18 +284,16 @@ class InMemorySessionService(BaseSessionService):
         reverse=True,
     )
 
-    effective_page_size = _resolve_page_size(page_size)
-    offset = _decode_page_token(page_token)
-
-    if effective_page_size is None:
+    if pagination is None:
       return ListSessionsResponse(sessions=all_sessions)
 
-    page = all_sessions[offset : offset + effective_page_size]
-    has_next_page = (offset + effective_page_size) < len(all_sessions)
+    page_size = pagination.effective_page_size
+    offset = pagination.offset
+
+    page = all_sessions[offset : offset + page_size]
+    has_next_page = (offset + page_size) < len(all_sessions)
     next_page_token = (
-        _encode_page_token(offset + effective_page_size)
-        if has_next_page
-        else None
+        _encode_page_token(offset + page_size) if has_next_page else None
     )
     return ListSessionsResponse(sessions=page, next_page_token=next_page_token)
 
