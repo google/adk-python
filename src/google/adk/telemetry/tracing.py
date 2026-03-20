@@ -645,14 +645,47 @@ def _set_common_generate_content_attributes(
   span.set_attributes(common_attributes)
 
 
+def _safe_detach(token: object) -> None:
+  """Detach an OTel context token, tolerating cross-context cleanup.
+
+  ``ContextVar.reset(token)`` raises ``ValueError`` when called from a
+  different ``contextvars.Context`` than the one that produced the token.
+  This happens when an async generator is closed by asyncio's asyncgen
+  finalizer hook — scheduled via ``call_soon`` in the event-loop's base
+  context — rather than in the task context where the span was originally
+  opened.
+
+  ``otel_context.detach()`` already catches the ``ValueError`` internally and
+  logs it at ERROR level, making the error undetectable at the call site.
+  We therefore call ``_RUNTIME_CONTEXT.detach()`` directly so we can absorb
+  the ``ValueError`` silently without emitting a spurious ERROR log.
+
+  Span data is fully preserved; only the context-variable state restoration
+  is skipped, which is acceptable for a generator that is being discarded.
+
+  See: https://github.com/google/adk-python/issues/4894
+  """
+  from opentelemetry.context import _RUNTIME_CONTEXT  # pylint: disable=import-outside-toplevel
+
+  try:
+    _RUNTIME_CONTEXT.detach(token)
+  except ValueError:
+    logger.debug(
+        'OTel context token from a different Context during generator cleanup'
+        ' (generator cancelled mid-flight). Span data is preserved.'
+    )
+
+
 @contextmanager
 def _use_native_generate_content_span_stable_semconv(
     llm_request: LlmRequest,
     common_attributes: Mapping[str, AttributeValue],
 ) -> Iterator[GenerateContentSpan]:
-  with tracer.start_as_current_span(
-      f"generate_content {llm_request.model or ''}"
-  ) as span:
+  # Use manual span management instead of start_as_current_span() so that
+  # _safe_detach() can handle GeneratorExit cleanup from a different context.
+  span = tracer.start_span(f"generate_content {llm_request.model or ''}")
+  token = otel_context.attach(trace.set_span_in_context(span))
+  try:
     span.set_attribute(GEN_AI_SYSTEM, _guess_gemini_system_name())
     _set_common_generate_content_attributes(
         span, llm_request, common_attributes
@@ -680,6 +713,10 @@ def _use_native_generate_content_span_stable_semconv(
       )
 
     yield gc_span
+  finally:
+    _safe_detach(token)
+    if span.is_recording():
+      span.end()
 
 
 @asynccontextmanager
@@ -694,10 +731,10 @@ async def _use_native_generate_content_span(
       yield gc_span
     return
 
-  with tracer.start_as_current_span(
-      f"generate_content {llm_request.model or ''}"
-  ) as span:
-
+  # Manual span management — see _safe_detach() for rationale.
+  span = tracer.start_span(f"generate_content {llm_request.model or ''}")
+  token = otel_context.attach(trace.set_span_in_context(span))
+  try:
     _set_common_generate_content_attributes(
         span, llm_request, common_attributes
     )
@@ -707,6 +744,10 @@ async def _use_native_generate_content_span(
         gc_span.operation_details_attributes, llm_request
     )
     yield gc_span
+  finally:
+    _safe_detach(token)
+    if span.is_recording():
+      span.end()
 
 
 class GenerateContentSpan:
