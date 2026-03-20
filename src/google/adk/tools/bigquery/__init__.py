@@ -25,6 +25,13 @@ definition. The rationales to have customized tool are:
    etc.
 4. We want to provide extra access guardrails in those tools. For example,
    execute_sql can't arbitrarily mutate existing data.
+
+Note: ``get_bigquery_skill`` is intentionally NOT re-exported here.
+This alias package eagerly registers toolset sub-modules for backward
+compatibility, which pulls in heavy dependencies (dataplex_v1, etc.).
+Import the skill loader from the canonical location instead::
+
+    from google.adk.integration.bigquery import get_bigquery_skill
 """
 
 from __future__ import annotations
@@ -62,19 +69,4 @@ from google.adk.integration.bigquery.bigquery_toolset import BigQueryToolset
 __all__ = [
     "BigQueryCredentialsConfig",
     "BigQueryToolset",
-    "get_bigquery_skill",
 ]
-
-
-def __getattr__(name: str):
-  """Lazy access for the skill loader (avoids coupling to toolset deps)."""
-  if name == "get_bigquery_skill":
-    from google.adk.integration.bigquery.bigquery_skill import get_bigquery_skill
-
-    return get_bigquery_skill
-  if name == "bigquery_skill":
-    from google.adk.integration.bigquery import bigquery_skill
-
-    sys.modules[f"{__name__}.bigquery_skill"] = bigquery_skill
-    return bigquery_skill
-  raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
