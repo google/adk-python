@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import abc
+import base64
 from typing import Any
 from typing import Optional
 
@@ -25,12 +26,55 @@ from ..events.event import Event
 from .session import Session
 from .state import State
 
+_MAX_EVENT_PAGE_SIZE = 1000
+
+
+def _encode_event_page_token(offset: int) -> str:
+  return base64.b64encode(str(offset).encode()).decode()
+
+
+def _decode_event_page_token(token: Optional[str]) -> int:
+  if not token:
+    return 0
+  try:
+    return max(0, int(base64.b64decode(token).decode()))
+  except (ValueError, TypeError):
+    return 0
+
+
+class EventPagination(BaseModel):
+  """Pagination configuration for events in ``get_session``.
+
+  When passed via ``GetSessionConfig.event_pagination``, only ``page_size``
+  events are returned per call. When omitted, all events are returned.
+  """
+
+  page_size: int = 100
+  """Maximum number of events per page (1–1000, clamped automatically)."""
+
+  page_token: Optional[str] = None
+  """Opaque token returned by a previous call to fetch the next page."""
+
+  page_offset: Optional[int] = None
+  """Optional 0-based starting offset. Takes precedence over ``page_token``."""
+
+  @property
+  def effective_page_size(self) -> int:
+    return max(1, min(self.page_size, _MAX_EVENT_PAGE_SIZE))
+
+  @property
+  def offset(self) -> int:
+    if self.page_offset is not None:
+      return max(0, self.page_offset)
+    return _decode_event_page_token(self.page_token)
+
 
 class GetSessionConfig(BaseModel):
   """The configuration of getting a session."""
 
   num_recent_events: Optional[int] = None
   after_timestamp: Optional[float] = None
+  event_pagination: Optional[EventPagination] = None
 
 
 class ListSessionsResponse(BaseModel):

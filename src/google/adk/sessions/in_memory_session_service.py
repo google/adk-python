@@ -28,6 +28,7 @@ from ..events.event import Event
 from .base_session_service import BaseSessionService
 from .base_session_service import GetSessionConfig
 from .base_session_service import ListSessionsResponse
+from .base_session_service import _encode_event_page_token
 from .session import Session
 from .state import State
 
@@ -178,18 +179,34 @@ class InMemorySessionService(BaseSessionService):
     copied_session = copy.deepcopy(session)
 
     if config:
-      if config.num_recent_events:
-        copied_session.events = copied_session.events[
-            -config.num_recent_events :
-        ]
-      if config.after_timestamp:
-        i = len(copied_session.events) - 1
-        while i >= 0:
-          if copied_session.events[i].timestamp < config.after_timestamp:
-            break
-          i -= 1
-        if i >= 0:
-          copied_session.events = copied_session.events[i + 1 :]
+      if config.event_pagination is not None:
+        ep = config.event_pagination
+        offset = ep.offset
+        page_size = ep.effective_page_size
+        all_events = copied_session.events
+        if config.after_timestamp:
+          all_events = [
+              e for e in all_events if e.timestamp >= config.after_timestamp
+          ]
+        page = all_events[offset : offset + page_size]
+        has_next = (offset + page_size) < len(all_events)
+        copied_session.events = page
+        copied_session.next_event_page_token = (
+            _encode_event_page_token(offset + page_size) if has_next else None
+        )
+      else:
+        if config.num_recent_events:
+          copied_session.events = copied_session.events[
+              -config.num_recent_events :
+          ]
+        if config.after_timestamp:
+          i = len(copied_session.events) - 1
+          while i >= 0:
+            if copied_session.events[i].timestamp < config.after_timestamp:
+              break
+            i -= 1
+          if i >= 0:
+            copied_session.events = copied_session.events[i + 1 :]
 
     # Return a copy of the session object with merged state.
     return self._merge_state(app_name, user_id, copied_session)

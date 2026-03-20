@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 from typing import Any
+from typing import Optional
 
 from pydantic import alias_generators
 from pydantic import BaseModel
@@ -49,6 +50,9 @@ class Session(BaseModel):
   call/response, etc."""
   last_update_time: float = 0.0
   """The last update time of the session."""
+  next_event_page_token: Optional[str] = None
+  """Token for fetching the next page of events, set when event_pagination
+  is used in GetSessionConfig."""
 
   _storage_update_marker: str | None = PrivateAttr(default=None)
   """Internal storage revision marker used for stale-session detection."""

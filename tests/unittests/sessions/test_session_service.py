@@ -23,6 +23,7 @@ from google.adk.errors.already_exists_error import AlreadyExistsError
 from google.adk.events.event import Event
 from google.adk.events.event_actions import EventActions
 from google.adk.sessions import database_session_service
+from google.adk.sessions.base_session_service import EventPagination
 from google.adk.sessions.base_session_service import GetSessionConfig
 from google.adk.sessions.database_session_service import DatabaseSessionService
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
@@ -1351,3 +1352,122 @@ async def test_append_event_locks_only_scopes_with_deltas(
   finally:
     database_session_service._select_required_state = original_fn
     await service.close()
+
+
+# ---------------------------------------------------------------------------
+# Event pagination tests
+# ---------------------------------------------------------------------------
+
+
+async def _create_session_with_events(
+    session_service, app_name, user_id, sid, n
+):
+  """Helper: create a session and append n events to it."""
+  session = await session_service.create_session(
+      app_name=app_name, user_id=user_id, session_id=sid
+  )
+  for i in range(n):
+    event = Event(
+        invocation_id=f'inv_{i}',
+        author='test',
+        content=types.Content(
+            role='model', parts=[types.Part.from_text(text=f'msg_{i}')]
+        ),
+    )
+    await session_service.append_event(session, event)
+  return session
+
+
+@pytest.mark.asyncio
+async def test_event_pagination_returns_page(session_service):
+  """EventPagination limits the number of events returned."""
+  app = 'evt_page_app'
+  uid = 'user'
+  await _create_session_with_events(session_service, app, uid, 's1', 10)
+
+  session = await session_service.get_session(
+      app_name=app,
+      user_id=uid,
+      session_id='s1',
+      config=GetSessionConfig(event_pagination=EventPagination(page_size=3)),
+  )
+  assert len(session.events) == 3
+  assert session.next_event_page_token is not None
+
+
+@pytest.mark.asyncio
+async def test_event_pagination_iterate_all(session_service):
+  """Iterating pages collects all events exactly once."""
+  app = 'evt_iter_app'
+  uid = 'user'
+  total = 7
+  await _create_session_with_events(session_service, app, uid, 's1', total)
+
+  collected = []
+  page_token = None
+  while True:
+    session = await session_service.get_session(
+        app_name=app,
+        user_id=uid,
+        session_id='s1',
+        config=GetSessionConfig(
+            event_pagination=EventPagination(page_size=3, page_token=page_token)
+        ),
+    )
+    collected.extend(session.events)
+    if session.next_event_page_token is None:
+      break
+    page_token = session.next_event_page_token
+
+  assert len(collected) == total
+
+
+@pytest.mark.asyncio
+async def test_event_pagination_no_token_when_exact_fit(session_service):
+  """When events == page_size, no next token is returned."""
+  app = 'evt_exact_app'
+  uid = 'user'
+  await _create_session_with_events(session_service, app, uid, 's1', 5)
+
+  session = await session_service.get_session(
+      app_name=app,
+      user_id=uid,
+      session_id='s1',
+      config=GetSessionConfig(event_pagination=EventPagination(page_size=5)),
+  )
+  assert len(session.events) == 5
+  assert session.next_event_page_token is None
+
+
+@pytest.mark.asyncio
+async def test_event_pagination_page_offset(session_service):
+  """page_offset skips to a specific position in the event list."""
+  app = 'evt_offset_app'
+  uid = 'user'
+  await _create_session_with_events(session_service, app, uid, 's1', 10)
+
+  session = await session_service.get_session(
+      app_name=app,
+      user_id=uid,
+      session_id='s1',
+      config=GetSessionConfig(
+          event_pagination=EventPagination(page_size=3, page_offset=7)
+      ),
+  )
+  assert len(session.events) == 3
+  assert session.next_event_page_token is None
+
+
+@pytest.mark.asyncio
+async def test_no_event_pagination_returns_all(session_service):
+  """Without event_pagination, all events are returned (backward compat)."""
+  app = 'evt_nopage_app'
+  uid = 'user'
+  total = 8
+  await _create_session_with_events(session_service, app, uid, 's1', total)
+
+  session = await session_service.get_session(
+      app_name=app, user_id=uid, session_id='s1'
+  )
+  assert len(session.events) == total
+  assert session.next_event_page_token is None

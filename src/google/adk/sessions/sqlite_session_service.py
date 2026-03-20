@@ -35,6 +35,7 @@ from ..events.event import Event
 from .base_session_service import BaseSessionService
 from .base_session_service import GetSessionConfig
 from .base_session_service import ListSessionsResponse
+from .base_session_service import _encode_event_page_token
 from .session import Session
 from .state import State
 
@@ -259,11 +260,19 @@ class SqliteSessionService(BaseSessionService):
         query_parts.append("AND timestamp >= ?")
         params.append(config.after_timestamp)
 
-      query_parts.append("ORDER BY timestamp DESC")
+      event_pagination = config.event_pagination if config else None
 
-      if config and config.num_recent_events:
-        query_parts.append("LIMIT ?")
-        params.append(config.num_recent_events)
+      if event_pagination is not None:
+        query_parts.append("ORDER BY timestamp ASC")
+        offset = event_pagination.offset
+        page_size = event_pagination.effective_page_size
+        query_parts.append("LIMIT ? OFFSET ?")
+        params.extend([page_size + 1, offset])
+      else:
+        query_parts.append("ORDER BY timestamp DESC")
+        if config and config.num_recent_events:
+          query_parts.append("LIMIT ?")
+          params.append(config.num_recent_events)
 
       event_rows = await db.execute_fetchall(" ".join(query_parts), params)
       storage_events_data = [row["event_data"] for row in event_rows]
@@ -275,11 +284,25 @@ class SqliteSessionService(BaseSessionService):
       # Merge states
       merged_state = _merge_state(app_state, user_state, session_state)
 
-      # Deserialize events and reverse to chronological order
-      events = [
-          Event.model_validate_json(event_data)
-          for event_data in reversed(storage_events_data)
-      ]
+      # Compute pagination token and deserialize events
+      next_event_page_token = None
+      if event_pagination is not None:
+        if len(storage_events_data) > event_pagination.effective_page_size:
+          storage_events_data = storage_events_data[
+              : event_pagination.effective_page_size
+          ]
+          next_event_page_token = _encode_event_page_token(
+              event_pagination.offset + event_pagination.effective_page_size
+          )
+        events = [
+            Event.model_validate_json(event_data)
+            for event_data in storage_events_data
+        ]
+      else:
+        events = [
+            Event.model_validate_json(event_data)
+            for event_data in reversed(storage_events_data)
+        ]
 
       return Session(
           app_name=app_name,
@@ -288,6 +311,7 @@ class SqliteSessionService(BaseSessionService):
           state=merged_state,
           events=events,
           last_update_time=last_update_time,
+          next_event_page_token=next_event_page_token,
       )
 
   @override

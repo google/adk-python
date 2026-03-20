@@ -44,6 +44,7 @@ from ..events.event import Event
 from .base_session_service import BaseSessionService
 from .base_session_service import GetSessionConfig
 from .base_session_service import ListSessionsResponse
+from .base_session_service import _encode_event_page_token
 from .migration import _schema_check_utils
 from .schemas.v0 import Base as BaseV0
 from .schemas.v0 import StorageAppState as StorageAppStateV0
@@ -459,13 +460,35 @@ class DatabaseSessionService(BaseSessionService):
         after_dt = datetime.fromtimestamp(config.after_timestamp)
         stmt = stmt.filter(schema.StorageEvent.timestamp >= after_dt)
 
-      stmt = stmt.order_by(schema.StorageEvent.timestamp.desc())
+      event_pagination = config.event_pagination if config else None
 
-      if config and config.num_recent_events:
-        stmt = stmt.limit(config.num_recent_events)
+      if event_pagination is not None:
+        # Paginated: order ASC, apply offset/limit
+        stmt = stmt.order_by(schema.StorageEvent.timestamp.asc())
+        offset = event_pagination.offset
+        page_size = event_pagination.effective_page_size
+        stmt = stmt.offset(offset).limit(page_size + 1)
+      else:
+        stmt = stmt.order_by(schema.StorageEvent.timestamp.desc())
+        if config and config.num_recent_events:
+          stmt = stmt.limit(config.num_recent_events)
 
       result = await sql_session.execute(stmt)
-      storage_events = result.scalars().all()
+      storage_events = list(result.scalars().all())
+
+      # Compute next_event_page_token for pagination
+      next_event_page_token = None
+      if event_pagination is not None:
+        if len(storage_events) > event_pagination.effective_page_size:
+          storage_events = storage_events[
+              : event_pagination.effective_page_size
+          ]
+          next_event_page_token = _encode_event_page_token(
+              event_pagination.offset + event_pagination.effective_page_size
+          )
+        events = [e.to_event() for e in storage_events]
+      else:
+        events = [e.to_event() for e in reversed(storage_events)]
 
       # Fetch states from storage
       storage_app_state = await sql_session.get(
@@ -483,11 +506,11 @@ class DatabaseSessionService(BaseSessionService):
       merged_state = _merge_state(app_state, user_state, session_state)
 
       # Convert storage session to session
-      events = [e.to_event() for e in reversed(storage_events)]
       is_sqlite = self.db_engine.dialect.name == _SQLITE_DIALECT
       session = storage_session.to_session(
           state=merged_state, events=events, is_sqlite=is_sqlite
       )
+      session.next_event_page_token = next_event_page_token
     return session
 
   @override
