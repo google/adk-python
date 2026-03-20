@@ -17,11 +17,8 @@ from __future__ import annotations
 import re
 
 from google.adk.skills._utils import _validate_skill_dir
-from google.adk.tools.bigquery import BigQueryCredentialsConfig
-from google.adk.tools.bigquery import BigQueryToolset
 from google.adk.tools.bigquery.bigquery_skill import _SKILL_DIR
 from google.adk.tools.bigquery.bigquery_skill import get_bigquery_skill
-from google.adk.tools.google_tool import GoogleTool
 from google.adk.tools.skill_toolset import ListSkillsTool
 from google.adk.tools.skill_toolset import LoadSkillResourceTool
 from google.adk.tools.skill_toolset import LoadSkillTool
@@ -107,43 +104,3 @@ def test_skill_frontmatter_has_metadata():
   skill = get_bigquery_skill()
   assert "author" in skill.frontmatter.metadata
   assert "version" in skill.frontmatter.metadata
-
-
-@pytest.mark.asyncio
-async def test_bigquery_toolset_load_skills_flag():
-  """Verify load_skills=True adds skill tools alongside BQ tools."""
-  credentials_config = BigQueryCredentialsConfig(
-      client_id="abc", client_secret="def"
-  )
-  toolset = BigQueryToolset(
-      credentials_config=credentials_config,
-      load_skills=True,
-  )
-  tools = await toolset.get_tools()
-
-  # 10 BQ tools + 4 skill tools = 14
-  assert len(tools) == 14
-
-  bq_tools = [t for t in tools if isinstance(t, GoogleTool)]
-  assert len(bq_tools) == 10
-
-  skill_tool_types = {type(t) for t in tools if not isinstance(t, GoogleTool)}
-  assert skill_tool_types == {
-      ListSkillsTool,
-      LoadSkillTool,
-      LoadSkillResourceTool,
-      RunSkillScriptTool,
-  }
-
-
-@pytest.mark.asyncio
-async def test_bigquery_toolset_load_skills_default_false():
-  """Verify load_skills defaults to False (no skill tools)."""
-  credentials_config = BigQueryCredentialsConfig(
-      client_id="abc", client_secret="def"
-  )
-  toolset = BigQueryToolset(credentials_config=credentials_config)
-  tools = await toolset.get_tools()
-
-  assert len(tools) == 10
-  assert all(isinstance(t, GoogleTool) for t in tools)

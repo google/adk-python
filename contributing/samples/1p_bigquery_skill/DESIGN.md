@@ -87,48 +87,31 @@ root_agent = LlmAgent(
 )
 ```
 
-## After (single flag):
+## After:
 
 ```py
 from google.adk.agents.llm_agent import LlmAgent
-from google.adk.integration.bigquery import BigQueryToolset
-
-bigquery_toolset = BigQueryToolset(credentials_config=creds, load_skills=True)
-
-root_agent = LlmAgent(
-    model="gemini-2.5-flash",
-    name="analyst",
-    instruction="You are a data analyst. Use your tools and skills.",
-    tools=[bigquery_toolset],
-)
-```
-
-## After (explicit, composable):
-
-```py
-from google.adk.agents.llm_agent import LlmAgent
-from google.adk.integration.bigquery import BigQueryToolset
-from google.adk.integration.bigquery import get_bigquery_skill
+from google.adk.integration.bigquery import BigQueryToolset, get_bigquery_skill
 from google.adk.tools.skill_toolset import SkillToolset
 
+# Initialize tools and skills separately
 bigquery_toolset = BigQueryToolset(credentials_config=creds)
-bq_skill_toolset = SkillToolset(skills=[get_bigquery_skill(), my_custom_skill])
+skill_toolset = SkillToolset(skills=[get_bigquery_skill()])
 
 root_agent = LlmAgent(
     model="gemini-2.5-flash",
     name="analyst",
     instruction="You are a data analyst. Use your tools and skills.",
-    tools=[bigquery_toolset, bq_skill_toolset],
+    tools=[bigquery_toolset, skill_toolset],  # Explicitly provided
 )
 ```
 
-The `load_skills=True` flag is the simplest path for the common case. The explicit `SkillToolset` pattern is available when you need to combine the 1P skill with custom skills.
+The detailed guidance is now encapsulated within the skill, accessible through standard skill tools.
 
 ## Composability:
 
 Both approaches are available. Developers can mix and match:
 
-* `BigQueryToolset(load_skills=True)` — single-line, includes 1P skill.
 * `BigQueryToolset()` + `SkillToolset(skills=[...])` — full control over which skills are loaded.
 * `BigQueryToolset()` alone — no skills, tools only.
 
@@ -158,8 +141,9 @@ All toolset code has moved to `google.adk.integration.bigquery` as the canonical
 
 # Alternatives Considered
 
-* **Embedding guidance in Toolset:** Would tightly coupled tools with specific workflows, reducing flexibility.  
+* **Embedding guidance in Toolset:** Would tightly coupled tools with specific workflows, reducing flexibility.
 * **New API/Class for 1P Skills:** Would increase API surface area unnecessarily, as existing `SkillToolset` fits the need perfectly.
+* **Automatic Loading via Flag (`load_skills=True`):** Considered to provide a shorter UX. However, this was rejected to avoid architectural complexity regarding the "Singleton" nature of `SkillToolset`. Explicit binding prevents issues where multiple toolsets might try to initialize or merge conflicting `SkillToolset` instances, ensuring the developer has full visibility into the agent's tool list.
 
 The proposed approach is a minimalist design, maximizing reuse of existing components.
 
