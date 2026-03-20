@@ -14,6 +14,8 @@
 
 """Unit tests for skill models."""
 
+from google.adk.features import FeatureName
+from google.adk.features._feature_registry import temporary_feature_override
 from google.adk.skills import models
 from pydantic import ValidationError
 import pytest
@@ -99,14 +101,37 @@ def test_name_consecutive_hyphens():
     models.Frontmatter(name="my--skill", description="desc")
 
 
-def test_name_invalid_chars_underscore():
+def test_name_underscore_rejected_by_default():
   with pytest.raises(ValidationError, match="lowercase kebab-case"):
     models.Frontmatter(name="my_skill", description="desc")
 
 
+def test_name_valid_underscore_preserved_with_flag():
+  with temporary_feature_override(FeatureName.SNAKE_CASE_SKILL_NAME, True):
+    fm = models.Frontmatter(name="my_skill", description="desc")
+    assert fm.name == "my_skill"
+
+
 def test_name_invalid_chars_ampersand():
-  with pytest.raises(ValidationError, match="lowercase kebab-case"):
+  with pytest.raises(
+      ValidationError, match="name must be lowercase kebab-case"
+  ):
     models.Frontmatter(name="skill&name", description="desc")
+
+
+def test_name_mixed_delimiters_rejected_by_default():
+  with pytest.raises(
+      ValidationError, match="name must be lowercase kebab-case"
+  ):
+    models.Frontmatter(name="my-skill_1", description="desc")
+
+
+def test_name_mixed_delimiters_rejected_with_flag():
+  with temporary_feature_override(FeatureName.SNAKE_CASE_SKILL_NAME, True):
+    with pytest.raises(
+        ValidationError, match="Mixing hyphens and underscores is not allowed"
+    ):
+      models.Frontmatter(name="my-skill_1", description="desc")
 
 
 def test_name_valid_passes():
