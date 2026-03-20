@@ -1679,7 +1679,7 @@ class AdkWebServer:
       # detachment.
       if not runner.auto_create_session:
         session = await self.session_service.get_session(
-            app_name=req.app_name,
+            app_name=runner.app_name,
             user_id=req.user_id,
             session_id=req.session_id,
         )
