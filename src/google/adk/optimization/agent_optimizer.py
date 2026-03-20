@@ -19,21 +19,21 @@ from abc import abstractmethod
 from typing import Generic
 
 from ..agents.llm_agent import Agent
-from .data_types import AgentWithScores
+from .data_types import AgentWithScoresT
 from .data_types import OptimizerResult
-from .data_types import SamplingResult
+from .data_types import SamplingResultT
 from .sampler import Sampler
 
 
-class AgentOptimizer(ABC, Generic[SamplingResult, AgentWithScores]):
+class AgentOptimizer(ABC, Generic[SamplingResultT, AgentWithScoresT]):
   """Base class for agent optimizers."""
 
   @abstractmethod
   async def optimize(
       self,
       initial_agent: Agent,
-      sampler: Sampler[SamplingResult],
-  ) -> OptimizerResult[AgentWithScores]:
+      sampler: Sampler[SamplingResultT],
+  ) -> OptimizerResult[AgentWithScoresT]:
     """Runs the optimizer.
 
     Args:
