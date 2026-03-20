@@ -532,13 +532,16 @@ class DatabaseSessionService(BaseSessionService):
         stmt = stmt.filter(schema.StorageSession.user_id == user_id)
 
       stmt = stmt.order_by(schema.StorageSession.update_time.desc())
-      # Fetch one extra row to determine if there is a next page.
-      stmt = stmt.offset(offset).limit(effective_page_size + 1)
+      if effective_page_size is not None:
+        # Fetch one extra row to determine if there is a next page.
+        stmt = stmt.offset(offset).limit(effective_page_size + 1)
 
       result = await sql_session.execute(stmt)
       results = list(result.scalars().all())
 
-      has_next_page = len(results) > effective_page_size
+      has_next_page = (
+          effective_page_size is not None and len(results) > effective_page_size
+      )
       if has_next_page:
         results = results[:effective_page_size]
 

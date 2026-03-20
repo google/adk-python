@@ -26,14 +26,13 @@ from ..events.event import Event
 from .session import Session
 from .state import State
 
-_DEFAULT_PAGE_SIZE = 20
 _MAX_PAGE_SIZE = 100
 
 
-def _resolve_page_size(page_size: Optional[int]) -> int:
-  """Clamp *page_size* to [1, _MAX_PAGE_SIZE], defaulting to _DEFAULT_PAGE_SIZE."""
+def _resolve_page_size(page_size: Optional[int]) -> Optional[int]:
+  """Clamp *page_size* to [1, _MAX_PAGE_SIZE], or None for unlimited."""
   if page_size is None:
-    return _DEFAULT_PAGE_SIZE
+    return None
   return max(1, min(page_size, _MAX_PAGE_SIZE))
 
 
@@ -121,8 +120,8 @@ class BaseSessionService(abc.ABC):
       app_name: The name of the app.
       user_id: The ID of the user. If not provided, lists all sessions for all
         users.
-      page_size: Maximum number of sessions to return per page. Defaults to 20,
-        maximum 100.
+      page_size: Maximum number of sessions to return per page. If not
+        provided, all sessions are returned (no pagination). Maximum 100.
       page_token: Token returned from a previous ``list_sessions`` call to
         fetch the next page.
 

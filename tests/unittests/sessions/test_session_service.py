@@ -1489,8 +1489,8 @@ async def test_append_event_locks_only_scopes_with_deltas(
 
 
 @pytest.mark.asyncio
-async def test_list_sessions_default_pagination(session_service):
-  """Without explicit page_size, the first 20 sessions are returned."""
+async def test_list_sessions_default_returns_all(session_service):
+  """Without explicit page_size, all sessions are returned (no pagination)."""
   app_name = 'pagination_app'
   user_id = 'user'
   num_sessions = 25
@@ -1503,8 +1503,8 @@ async def test_list_sessions_default_pagination(session_service):
   response = await session_service.list_sessions(
       app_name=app_name, user_id=user_id
   )
-  assert len(response.sessions) == 20
-  assert response.next_page_token is not None
+  assert len(response.sessions) == num_sessions
+  assert response.next_page_token is None
 
 
 @pytest.mark.asyncio

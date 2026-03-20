@@ -293,6 +293,9 @@ class InMemorySessionService(BaseSessionService):
     effective_page_size = _resolve_page_size(page_size)
     offset = _decode_page_token(page_token)
 
+    if effective_page_size is None:
+      return ListSessionsResponse(sessions=all_sessions)
+
     page = all_sessions[offset : offset + effective_page_size]
     has_next_page = (offset + effective_page_size) < len(all_sessions)
     next_page_token = (

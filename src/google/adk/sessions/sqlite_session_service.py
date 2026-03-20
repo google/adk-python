@@ -307,23 +307,42 @@ class SqliteSessionService(BaseSessionService):
 
     sessions_list = []
     async with self._get_db_connection() as db:
-      # Fetch sessions with ORDER BY / LIMIT / OFFSET
-      if user_id:
-        session_rows = await db.execute_fetchall(
-            "SELECT id, user_id, state, update_time FROM sessions WHERE"
-            " app_name=? AND user_id=?"
-            " ORDER BY update_time DESC LIMIT ? OFFSET ?",
-            (app_name, user_id, effective_page_size + 1, offset),
-        )
+      # Fetch sessions with ORDER BY and optional LIMIT / OFFSET
+      if effective_page_size is not None:
+        if user_id:
+          session_rows = await db.execute_fetchall(
+              "SELECT id, user_id, state, update_time FROM sessions WHERE"
+              " app_name=? AND user_id=?"
+              " ORDER BY update_time DESC LIMIT ? OFFSET ?",
+              (app_name, user_id, effective_page_size + 1, offset),
+          )
+        else:
+          session_rows = await db.execute_fetchall(
+              "SELECT id, user_id, state, update_time FROM sessions WHERE"
+              " app_name=?"
+              " ORDER BY update_time DESC LIMIT ? OFFSET ?",
+              (app_name, effective_page_size + 1, offset),
+          )
       else:
-        session_rows = await db.execute_fetchall(
-            "SELECT id, user_id, state, update_time FROM sessions WHERE"
-            " app_name=?"
-            " ORDER BY update_time DESC LIMIT ? OFFSET ?",
-            (app_name, effective_page_size + 1, offset),
-        )
+        if user_id:
+          session_rows = await db.execute_fetchall(
+              "SELECT id, user_id, state, update_time FROM sessions WHERE"
+              " app_name=? AND user_id=?"
+              " ORDER BY update_time DESC",
+              (app_name, user_id),
+          )
+        else:
+          session_rows = await db.execute_fetchall(
+              "SELECT id, user_id, state, update_time FROM sessions WHERE"
+              " app_name=?"
+              " ORDER BY update_time DESC",
+              (app_name,),
+          )
 
-      has_next_page = len(session_rows) > effective_page_size
+      has_next_page = (
+          effective_page_size is not None
+          and len(session_rows) > effective_page_size
+      )
       if has_next_page:
         session_rows = session_rows[:effective_page_size]
 
