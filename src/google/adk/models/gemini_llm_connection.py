@@ -179,10 +179,31 @@ class GeminiLlmConnection(BaseLlmConnection):
           )
         if message.server_content:
           content = message.server_content.model_turn
+
+          # Standalone grounding_metadata event (when content is empty)
+          if (
+              not (content and content.parts)
+              and message.server_content.grounding_metadata
+              and not message.server_content.turn_complete
+          ):
+            yield LlmResponse(
+                grounding_metadata=message.server_content.grounding_metadata,
+                interrupted=message.server_content.interrupted,
+                model_version=self._model_version,
+            )
+
           if content and content.parts:
             llm_response = LlmResponse(
-                content=content, interrupted=message.server_content.interrupted
+                content=content,
+                interrupted=message.server_content.interrupted,
+                model_version=self._model_version,
             )
+            # grounding_metadata is yielded again at turn_complete,
+            # so avoid duplicating it here if turn_complete is true.
+            if not message.server_content.turn_complete:
+              llm_response.grounding_metadata = (
+                  message.server_content.grounding_metadata
+              )
             if content.parts[0].text:
               text += content.parts[0].text
               llm_response.partial = True
@@ -205,6 +226,7 @@ class GeminiLlmConnection(BaseLlmConnection):
                       finished=False,
                   ),
                   partial=True,
+                  model_version=self._model_version,
               )
             # finished=True and partial transcription may happen in the same
             # message.
@@ -215,6 +237,7 @@ class GeminiLlmConnection(BaseLlmConnection):
                       finished=True,
                   ),
                   partial=False,
+                  model_version=self._model_version,
               )
               self._input_transcription_text = ''
           if message.server_content.output_transcription:
@@ -228,6 +251,7 @@ class GeminiLlmConnection(BaseLlmConnection):
                       finished=False,
                   ),
                   partial=True,
+                  model_version=self._model_version,
               )
             if message.server_content.output_transcription.finished:
               yield LlmResponse(
@@ -236,6 +260,7 @@ class GeminiLlmConnection(BaseLlmConnection):
                       finished=True,
                   ),
                   partial=False,
+                  model_version=self._model_version,
               )
               self._output_transcription_text = ''
           # The Gemini API might not send a transcription finished signal.
@@ -253,6 +278,7 @@ class GeminiLlmConnection(BaseLlmConnection):
                       finished=True,
                   ),
                   partial=False,
+                  model_version=self._model_version,
               )
               self._input_transcription_text = ''
             if self._output_transcription_text:
@@ -262,6 +288,7 @@ class GeminiLlmConnection(BaseLlmConnection):
                       finished=True,
                   ),
                   partial=False,
+                  model_version=self._model_version,
               )
               self._output_transcription_text = ''
           if message.server_content.turn_complete:
@@ -271,9 +298,11 @@ class GeminiLlmConnection(BaseLlmConnection):
             yield LlmResponse(
                 turn_complete=True,
                 interrupted=message.server_content.interrupted,
+                grounding_metadata=message.server_content.grounding_metadata,
+                model_version=self._model_version,
             )
             break
-          # in case of empty content or parts, we sill surface it
+          # in case of empty content or parts, we still surface it
           # in case it's an interrupted message, we merge the previous partial
           # text. Other we don't merge. because content can be none when model
           # safety threshold is triggered
@@ -282,7 +311,10 @@ class GeminiLlmConnection(BaseLlmConnection):
               yield self.__build_full_text_response(text)
               text = ''
             else:
-              yield LlmResponse(interrupted=message.server_content.interrupted)
+              yield LlmResponse(
+                  interrupted=message.server_content.interrupted,
+                  model_version=self._model_version,
+              )
         if message.tool_call:
           if text:
             yield self.__build_full_text_response(text)
@@ -291,12 +323,16 @@ class GeminiLlmConnection(BaseLlmConnection):
               types.Part(function_call=function_call)
               for function_call in message.tool_call.function_calls
           ]
-          yield LlmResponse(content=types.Content(role='model', parts=parts))
+          yield LlmResponse(
+              content=types.Content(role='model', parts=parts),
+              model_version=self._model_version,
+          )
         if message.session_resumption_update:
           logger.debug('Received session resumption message: %s', message)
           yield (
               LlmResponse(
-                  live_session_resumption_update=message.session_resumption_update
+                  live_session_resumption_update=message.session_resumption_update,
+                  model_version=self._model_version,
               )
           )
 

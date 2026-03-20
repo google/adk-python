@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import asyncio
+from contextlib import asynccontextmanager
 from datetime import datetime
 from datetime import timezone
 import enum
@@ -151,6 +152,74 @@ def test_database_session_service_respects_pool_pre_ping_override():
   assert captured_kwargs.get('pool_pre_ping') is False
 
 
+def test_database_session_service_creates_read_only_engine_for_spanner():
+  captured_binds = []
+  fake_engine = mock.Mock()
+  fake_engine.dialect.name = 'spanner+spanner'
+  fake_engine.sync_engine = mock.Mock()
+  read_only_engine = mock.Mock()
+  fake_engine.execution_options.return_value = read_only_engine
+
+  def fake_async_sessionmaker(*, bind, expire_on_commit, **kwargs):
+    del expire_on_commit
+    del kwargs
+    captured_binds.append(bind)
+    return mock.Mock()
+
+  with (
+      mock.patch.object(
+          database_session_service,
+          'create_async_engine',
+          return_value=fake_engine,
+      ),
+      mock.patch.object(
+          database_session_service,
+          'async_sessionmaker',
+          side_effect=fake_async_sessionmaker,
+      ),
+  ):
+    database_session_service.DatabaseSessionService(
+        'spanner+spanner:///projects/test/instances/test/databases/test'
+    )
+
+  assert captured_binds == [fake_engine, read_only_engine]
+  fake_engine.execution_options.assert_called_once_with(read_only=True)
+
+
+def test_database_session_service_creates_read_only_engine_for_other_dialects():
+  captured_binds = []
+  fake_engine = mock.Mock()
+  fake_engine.dialect.name = 'postgresql'
+  fake_engine.sync_engine = mock.Mock()
+  read_only_engine = mock.Mock()
+  fake_engine.execution_options.return_value = read_only_engine
+
+  def fake_async_sessionmaker(*, bind, expire_on_commit, **kwargs):
+    del expire_on_commit
+    del kwargs
+    captured_binds.append(bind)
+    return mock.Mock()
+
+  with (
+      mock.patch.object(
+          database_session_service,
+          'create_async_engine',
+          return_value=fake_engine,
+      ),
+      mock.patch.object(
+          database_session_service,
+          'async_sessionmaker',
+          side_effect=fake_async_sessionmaker,
+      ),
+  ):
+    database_session_service.DatabaseSessionService(
+        'postgresql+psycopg2://user:pass@localhost:5432/db'
+    )
+
+  assert captured_binds == [fake_engine, read_only_engine]
+  fake_engine.execution_options.assert_called_once_with(read_only=True)
+
+
 @pytest.mark.asyncio
 async def test_sqlite_session_service_accepts_sqlite_urls(
     tmp_path, monkeypatch
@@ -196,6 +265,67 @@ async def test_get_empty_session(session_service):
   assert not await session_service.get_session(
       app_name='my_app', user_id='test_user', session_id='123'
   )
+
+
+@pytest.mark.asyncio
+async def test_database_session_service_get_session_uses_read_only_factory():
+  service = DatabaseSessionService('sqlite+aiosqlite:///:memory:')
+  service._prepare_tables = mock.AsyncMock()
+
+  read_only_session = mock.AsyncMock()
+  read_only_session.get = mock.AsyncMock(return_value=None)
+
+  @asynccontextmanager
+  async def fake_read_only_session():
+    yield read_only_session
+
+  service.database_session_factory = mock.Mock(
+      side_effect=AssertionError('write session factory should not be used')
+  )
+  service._read_only_database_session_factory = mock.Mock(
+      return_value=fake_read_only_session()
+  )
+
+  session = await service.get_session(
+      app_name='my_app', user_id='test_user', session_id='123'
+  )
+
+  assert session is None
+  service._read_only_database_session_factory.assert_called_once_with()
+  service.database_session_factory.assert_not_called()
+
+  await service.close()
+
+
+@pytest.mark.asyncio
+async def test_database_session_service_list_sessions_uses_read_only_factory():
+  service = DatabaseSessionService('sqlite+aiosqlite:///:memory:')
+  service._prepare_tables = mock.AsyncMock()
+
+  read_only_session = mock.AsyncMock()
+  empty_result = mock.Mock()
+  empty_result.scalars.return_value.all.return_value = []
+  read_only_session.execute = mock.AsyncMock(return_value=empty_result)
+  read_only_session.get = mock.AsyncMock(return_value=None)
+
+  @asynccontextmanager
+  async def fake_read_only_session():
+    yield read_only_session
+
+  service.database_session_factory = mock.Mock(
+      side_effect=AssertionError('write session factory should not be used')
+  )
+  service._read_only_database_session_factory = mock.Mock(
+      return_value=fake_read_only_session()
+  )
+
+  response = await service.list_sessions(app_name='my_app', user_id='test_user')
+
+  assert response.sessions == []
+  service._read_only_database_session_factory.assert_called_once_with()
+  service.database_session_factory.assert_not_called()
+
+  await service.close()
 
 
 @pytest.mark.asyncio
@@ -418,16 +548,41 @@ async def test_temp_state_is_not_persisted_in_state_or_events(session_service):
   )
   await session_service.append_event(session=session, event=event)
 
-  # Refetch session and check state and event
-  session_got = await session_service.get_session(
-      app_name=app_name, user_id=user_id, session_id='s1'
-  )
-  # Check session state does not contain temp keys
-  assert session_got.state.get('sk') == 'v2'
-  assert 'temp:k1' not in session_got.state
+  # Temp state IS available in the in-memory session (same invocation)
+  assert session.state.get('temp:k1') == 'v1'
+  assert session.state.get('sk') == 'v2'
+
   # Check event as stored in session does not contain temp keys in state_delta
-  assert 'temp:k1' not in session_got.events[0].actions.state_delta
-  assert session_got.events[0].actions.state_delta.get('sk') == 'v2'
+  assert 'temp:k1' not in event.actions.state_delta
+  assert event.actions.state_delta.get('sk') == 'v2'
+
+
+@pytest.mark.asyncio
+async def test_temp_state_visible_across_sequential_events(session_service):
+  """Temp state set by one event should be readable before the next event.
+
+  This simulates a SequentialAgent where agent-1 writes output_key='temp:out'
+  and agent-2 needs to read it from session.state within the same invocation.
+  """
+  app_name = 'my_app'
+  user_id = 'u1'
+  session = await session_service.create_session(
+      app_name=app_name, user_id=user_id, session_id='s_seq'
+  )
+
+  # Agent-1 writes temp state
+  event1 = Event(
+      invocation_id='inv1',
+      author='agent1',
+      actions=EventActions(state_delta={'temp:output': 'result_from_a1'}),
+  )
+  await session_service.append_event(session=session, event=event1)
+
+  # Agent-2 should be able to read temp state from the same session object
+  assert session.state.get('temp:output') == 'result_from_a1'
+
+  # But the event delta should NOT contain the temp key (not persisted)
+  assert 'temp:output' not in event1.actions.state_delta
 
 
 @pytest.mark.asyncio
@@ -544,6 +699,7 @@ async def test_append_event_complete(session_service):
       ),
       citation_metadata=types.CitationMetadata(),
       custom_metadata={'custom_key': 'custom_value'},
+      timestamp=1700000000.123,
       input_transcription=types.Transcription(
           text='input transcription',
           finished=True,
@@ -631,28 +787,27 @@ async def test_append_event_to_stale_session():
     assert len(original_session.events) == 1
     assert 'sk2' not in original_session.state
 
-    # Appending another event to stale original_session
+    # Appending another event to stale original_session should be rejected.
     event3 = Event(
         invocation_id='inv3',
         author='user',
         timestamp=current_time + 3,
         actions=EventActions(state_delta={'sk3': 'v3'}),
     )
-    await session_service.append_event(original_session, event3)
+    with pytest.raises(ValueError, match='modified in storage'):
+      await session_service.append_event(original_session, event3)
 
-    # If we fetch session from DB, it should contain all 3 events and all state
-    # changes.
+    # If we fetch session from DB, it should only contain the committed events.
     session_final = await session_service.get_session(
         app_name=app_name, user_id=user_id, session_id=original_session.id
     )
-    assert len(session_final.events) == 3
+    assert len(session_final.events) == 2
     assert session_final.state.get('sk1') == 'v1'
     assert session_final.state.get('sk2') == 'v2'
-    assert session_final.state.get('sk3') == 'v3'
+    assert session_final.state.get('sk3') is None
     assert [e.invocation_id for e in session_final.events] == [
         'inv1',
         'inv2',
-        'inv3',
     ]
 
 
@@ -712,7 +867,7 @@ async def test_append_event_raises_if_user_state_row_missing():
 
 
 @pytest.mark.asyncio
-async def test_append_event_concurrent_stale_sessions_preserve_all_state():
+async def test_append_event_concurrent_stale_sessions_reject_stale_writer():
   session_service = get_session_service(
       service_type=SessionServiceType.DATABASE
   )
@@ -745,19 +900,103 @@ async def test_append_event_concurrent_stale_sessions_preserve_all_state():
           actions=EventActions(state_delta={f'sk{i}-2': f'v{i}-2'}),
       )
 
-      await asyncio.gather(
+      results = await asyncio.gather(
           session_service.append_event(stale_session_1, event_1),
           session_service.append_event(stale_session_2, event_2),
+          return_exceptions=True,
       )
+      errors = [result for result in results if isinstance(result, Exception)]
+      successes = [
+          result for result in results if not isinstance(result, Exception)
+      ]
+      assert len(successes) == 1
+      assert len(errors) == 1
+      assert isinstance(errors[0], ValueError)
+      assert 'modified in storage' in str(errors[0])
 
     session_final = await session_service.get_session(
         app_name=app_name, user_id=user_id, session_id=session.id
     )
 
     for i in range(iteration_count):
-      assert session_final.state.get(f'sk{i}-1') == f'v{i}-1'
-      assert session_final.state.get(f'sk{i}-2') == f'v{i}-2'
-    assert len(session_final.events) == iteration_count * 2
+      event_values = {
+          session_final.state.get(f'sk{i}-1'),
+          session_final.state.get(f'sk{i}-2'),
+      }
+      assert event_values & {f'v{i}-1', f'v{i}-2'}
+      assert None in event_values
+    assert len(session_final.events) == iteration_count
+
+
+@pytest.mark.asyncio
+async def test_append_event_allows_timestamp_drift_for_current_session():
+  service = DatabaseSessionService('sqlite+aiosqlite:///:memory:')
+  try:
+    session = await service.create_session(
+        app_name='my_app', user_id='user', session_id='s1'
+    )
+    event1 = Event(
+        invocation_id='inv1',
+        author='user',
+        timestamp=session.last_update_time + 10,
+    )
+    await service.append_event(session, event1)
+
+    # Simulate a float round-trip mismatch without changing the persisted
+    # session revision.
+    session.last_update_time -= 0.0001
+
+    event2 = Event(
+        invocation_id='inv2',
+        author='user',
+        timestamp=event1.timestamp + 10,
+    )
+    await service.append_event(session, event2)
+
+    refreshed_session = await service.get_session(
+        app_name='my_app', user_id='user', session_id=session.id
+    )
+    assert [event.invocation_id for event in refreshed_session.events] == [
+        'inv1',
+        'inv2',
+    ]
+  finally:
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_append_event_allows_markerless_current_session():
+  service = DatabaseSessionService('sqlite+aiosqlite:///:memory:')
+  try:
+    session = await service.create_session(
+        app_name='my_app', user_id='user', session_id='s1'
+    )
+    event1 = Event(
+        invocation_id='inv1',
+        author='user',
+        timestamp=session.last_update_time + 10,
+    )
+    await service.append_event(session, event1)
+
+    session._storage_update_marker = None
+    session.last_update_time -= 0.0001
+
+    event2 = Event(
+        invocation_id='inv2',
+        author='user',
+        timestamp=event1.timestamp + 10,
+    )
+    await service.append_event(session, event2)
+
+    refreshed_session = await service.get_session(
+        app_name='my_app', user_id='user', session_id=session.id
+    )
+    assert [event.invocation_id for event in refreshed_session.events] == [
+        'inv1',
+        'inv2',
+    ]
+  finally:
+    await service.close()
 
 
 @pytest.mark.asyncio
@@ -1152,4 +1391,93 @@ async def test_prepare_tables_idempotent_after_creation():
     )
     assert session.id == 's1'
   finally:
+    await service.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'state_delta, expect_app_lock, expect_user_lock',
+    [
+        pytest.param(
+            None,
+            False,
+            False,
+            id='no_state_delta',
+        ),
+        pytest.param(
+            {'session_key': 'v'},
+            False,
+            False,
+            id='session_only_delta',
+        ),
+        pytest.param(
+            {'app:key': 'v'},
+            True,
+            False,
+            id='app_delta_only',
+        ),
+        pytest.param(
+            {'user:key': 'v'},
+            False,
+            True,
+            id='user_delta_only',
+        ),
+        pytest.param(
+            {'app:a': '1', 'user:b': '2', 'sk': '3'},
+            True,
+            True,
+            id='all_scopes',
+        ),
+    ],
+)
+async def test_append_event_locks_only_scopes_with_deltas(
+    state_delta, expect_app_lock, expect_user_lock
+):
+  """FOR UPDATE should only be requested for state scopes that have deltas."""
+  service = DatabaseSessionService('sqlite+aiosqlite:///:memory:')
+
+  lock_requests = []
+  original_fn = database_session_service._select_required_state
+
+  async def tracking_fn(**kwargs):
+    lock_requests.append({
+        'model': kwargs['state_model'].__tablename__,
+        'use_row_level_locking': kwargs['use_row_level_locking'],
+    })
+    return await original_fn(**kwargs)
+
+  try:
+    session = await service.create_session(
+        app_name='app', user_id='user', session_id='s1'
+    )
+
+    database_session_service._select_required_state = tracking_fn
+    lock_requests.clear()
+
+    event_kwargs = {'invocation_id': 'inv', 'author': 'user'}
+    if state_delta is not None:
+      event_kwargs['actions'] = EventActions(state_delta=state_delta)
+    event = Event(**event_kwargs)
+    await service.append_event(session, event)
+
+    app_req = next(
+        (r for r in lock_requests if r['model'] == 'app_states'), None
+    )
+    user_req = next(
+        (r for r in lock_requests if r['model'] == 'user_states'), None
+    )
+
+    # SQLite doesn't support row-level locking so use_row_level_locking is
+    # always False. The important check is that locking is not requested
+    # when there is no delta (it must never be True without a delta).
+    if not expect_app_lock:
+      assert (
+          app_req is None or not app_req['use_row_level_locking']
+      ), 'app_states should not be locked without an app: delta'
+    if not expect_user_lock:
+      assert (
+          user_req is None or not user_req['use_row_level_locking']
+      ), 'user_states should not be locked without a user: delta'
+  finally:
+    database_session_service._select_required_state = original_fn
     await service.close()

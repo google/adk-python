@@ -122,7 +122,9 @@ class BaseAgent(BaseModel):
   One-line description is enough and preferred.
   """
 
-  parent_agent: Optional[BaseAgent] = Field(default=None, init=False)
+  parent_agent: Optional[BaseAgent] = Field(
+      default=None, init=False, exclude=True
+  )
   """The parent agent of this agent.
 
   Note that an agent can ONLY be added as sub-agent once.

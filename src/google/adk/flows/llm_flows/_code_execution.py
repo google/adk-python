@@ -27,6 +27,7 @@ from typing import AsyncGenerator
 from typing import Optional
 from typing import TYPE_CHECKING
 
+from google.adk.platform import time as platform_time
 from google.genai import types
 from typing_extensions import override
 
@@ -288,7 +289,9 @@ async def _run_post_processor(
         if part.inline_data.display_name:
           file_name = part.inline_data.display_name
         else:
-          now = datetime.datetime.now().astimezone()
+          now = datetime.datetime.fromtimestamp(
+              platform_time.get_time()
+          ).astimezone()
           timestamp = now.strftime('%Y%m%d_%H%M%S')
           file_extension = part.inline_data.mime_type.split('/')[-1]
           file_name = f'{timestamp}.{file_extension}'

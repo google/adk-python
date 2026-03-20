@@ -21,6 +21,7 @@ import logging
 from typing import Any
 from typing import Callable
 from typing import Dict
+from typing import List
 from typing import Optional
 from typing import Protocol
 from typing import runtime_checkable
@@ -39,8 +40,10 @@ from ...agents.readonly_context import ReadonlyContext
 from ...auth.auth_credential import AuthCredential
 from ...auth.auth_schemes import AuthScheme
 from ...auth.auth_tool import AuthConfig
+from ...events.ui_widget import UiWidget
 from ...features import FeatureName
 from ...features import is_feature_enabled
+from ...utils.context_utils import find_context_parameter
 from .._gemini_schema_util import _to_gemini_schema
 from ..base_authenticated_tool import BaseAuthenticatedTool
 from ..tool_context import ToolContext
@@ -211,6 +214,48 @@ class McpTool(BaseAuthenticatedTool):
     """Returns the raw MCP tool."""
     return self._mcp_tool
 
+  @property
+  def visibility(self) -> List[str]:
+    """Returns the visibility if this MCP tool meta has one."""
+    meta = getattr(self.raw_mcp_tool, "meta", None)
+    if not meta or not isinstance(meta, dict):
+      return []
+
+    # Format: meta.ui.visibility
+    ui = meta.get("ui", {})
+    if isinstance(ui, dict):
+      return ui.get("visibility", [])
+    return []
+
+  @property
+  def mcp_app_resource_uri(self) -> Optional[str]:
+    """Returns the MCP App UI resource URI if this tool has one.
+
+    MCP Apps declare a UI resource via `meta.ui.resourceUri` in the tool
+    definition. This property extracts that URI, supporting both the nested
+    format (`{"ui": {"resourceUri": "ui://..."}}`) and the flat format
+    (`{"ui/resourceUri": "ui://..."}`).
+
+    Returns:
+        The `ui://` resource URI string, or None if not present.
+    """
+    meta = getattr(self.raw_mcp_tool, "meta", None)
+    if not meta or not isinstance(meta, dict):
+      return None
+    # Nested format: meta.ui.resourceUri (preferred)
+    ui = meta.get("ui")
+    if isinstance(ui, dict):
+      uri = ui.get("resourceUri")
+      if isinstance(uri, str) and uri.startswith("ui://"):
+        return uri
+    # Flat format: meta["ui/resourceUri"] (deprecated)
+    # Reference:
+    # https://github.com/modelcontextprotocol/ext-apps/blob/main/specification/2026-01-26/apps.mdx
+    uri = meta.get("ui/resourceUri")
+    if isinstance(uri, str) and uri.startswith("ui://"):
+      return uri
+    return None
+
   async def _invoke_callable(
       self, target: Callable[..., Any], args_to_call: dict[str, Any]
   ) -> Any:
@@ -242,14 +287,18 @@ class McpTool(BaseAuthenticatedTool):
             for param in signature.parameters.values()
         )
 
-        if "tool_context" in valid_params or has_kwargs:
-          args_to_call["tool_context"] = tool_context
+        # Detect context parameter by type or fallback to 'tool_context' name
+        context_param = (
+            find_context_parameter(self._require_confirmation) or "tool_context"
+        )
+        if context_param in valid_params or has_kwargs:
+          args_to_call[context_param] = tool_context
 
         # Filter args_to_call only if there's no **kwargs
         if not has_kwargs:
-          # Add tool_context to valid_params if it was added to args_to_call
-          if "tool_context" in args_to_call:
-            valid_params.add("tool_context")
+          # Add context param to valid_params if it was added to args_to_call
+          if context_param in args_to_call:
+            valid_params.add(context_param)
           args_to_call = {
               k: v for k, v in args_to_call.items() if k in valid_params
           }
@@ -264,10 +313,6 @@ class McpTool(BaseAuthenticatedTool):
 
     if require_confirmation:
       if not tool_context.tool_confirmation:
-        args_to_show = args.copy()
-        if "tool_context" in args_to_show:
-          args_to_show.pop("tool_context")
-
         tool_context.request_confirmation(
             hint=(
                 f"Please approve or reject the tool call {self.name}() by"
@@ -334,7 +379,22 @@ class McpTool(BaseAuthenticatedTool):
         progress_callback=resolved_callback,
         meta=meta_trace_context,
     )
-    return response.model_dump(exclude_none=True, mode="json")
+    result = response.model_dump(exclude_none=True, mode="json")
+
+    # Push UI widget to the event actions if the tool supports it.
+    if self.mcp_app_resource_uri:
+      tool_context.render_ui_widget(
+          UiWidget(
+              id=tool_context.function_call_id,
+              provider="mcp",
+              payload={
+                  "resource_uri": self.mcp_app_resource_uri,
+                  "tool": self._mcp_tool,
+                  "tool_args": args,
+              },
+          )
+      )
+    return result
 
   def _resolve_progress_callback(
       self, tool_context: ToolContext
