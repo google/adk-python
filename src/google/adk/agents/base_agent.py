@@ -136,12 +136,6 @@ class BaseAgent(BaseModel):
   sub_agents: list[BaseAgent] = Field(default_factory=list)
   """The sub-agents of this agent."""
 
-  version: str = ''
-  """The agent's version.
-
-  Version of the agent being invoked. Used to identify the Agent involved in telemetry.
-  """
-
   before_agent_callback: Optional[BeforeAgentCallback] = None
   """Callback or list of callbacks to be invoked before the agent run.
 
@@ -686,7 +680,6 @@ class BaseAgent(BaseModel):
 
     kwargs: Dict[str, Any] = {
         'name': config.name,
-        'version': config.version,
         'description': config.description,
     }
     if config.sub_agents:

@@ -146,6 +146,12 @@ def part_to_message_block(
         content = json.dumps(result)
       else:
         content = str(result)
+    elif response_data:
+      # Fallback: serialize the entire response dict as JSON so that tools
+      # returning arbitrary key structures (e.g. load_skill returning
+      # {"skill_name", "instructions", "frontmatter"}) are not silently
+      # dropped.
+      content = json.dumps(response_data)
 
     return anthropic_types.ToolResultBlockParam(
         tool_use_id=part.function_response.id or "",

@@ -21,7 +21,7 @@ from .._google_credentials import BaseGoogleCredentialsConfig
 BIGQUERY_TOKEN_CACHE_KEY = "bigquery_token_cache"
 BIGQUERY_SCOPES = [
     "https://www.googleapis.com/auth/bigquery",
-    "https://www.googleapis.com/auth/dataplex",
+    "https://www.googleapis.com/auth/dataplex.read-write",
 ]
 BIGQUERY_DEFAULT_SCOPE = ["https://www.googleapis.com/auth/bigquery"]
 

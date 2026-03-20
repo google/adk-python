@@ -29,7 +29,9 @@ from typing import TypeVar
 from typing import Union
 import warnings
 
+from mcp import SamplingCapability
 from mcp import StdioServerParameters
+from mcp.client.session import SamplingFnT
 from mcp.shared.session import ProgressFnT
 from mcp.types import ListResourcesResult
 from mcp.types import ListToolsResult
@@ -114,6 +116,8 @@ class McpToolset(BaseToolset):
           Union[ProgressFnT, ProgressCallbackFactory]
       ] = None,
       use_mcp_resources: Optional[bool] = False,
+      sampling_callback: Optional[SamplingFnT] = None,
+      sampling_capabilities: Optional[SamplingCapability] = None,
   ):
     """Initializes the McpToolset.
 
@@ -150,9 +154,15 @@ class McpToolset(BaseToolset):
       use_mcp_resources: Whether the agent should have access to MCP resources.
         This will add a `load_mcp_resource` tool to the toolset and include
         available resources in the agent context. Defaults to False.
+      sampling_callback: Optional callback to handle sampling requests from the
+        MCP server.
+      sampling_capabilities: Optional capabilities for sampling.
     """
 
     super().__init__(tool_filter=tool_filter, tool_name_prefix=tool_name_prefix)
+
+    self._sampling_callback = sampling_callback
+    self._sampling_capabilities = sampling_capabilities
 
     if not connection_params:
       raise ValueError("Missing connection params in McpToolset.")
@@ -166,6 +176,8 @@ class McpToolset(BaseToolset):
     self._mcp_session_manager = MCPSessionManager(
         connection_params=self._connection_params,
         errlog=self._errlog,
+        sampling_callback=self._sampling_callback,
+        sampling_capabilities=self._sampling_capabilities,
     )
     self._auth_scheme = auth_scheme
     self._auth_credential = auth_credential
