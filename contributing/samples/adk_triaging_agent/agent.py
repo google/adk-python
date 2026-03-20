@@ -42,6 +42,9 @@ LABEL_TO_OWNER = {
     "workflow": "DeanChensj",
 }
 
+
+LABEL_TO_GTECH = ["llalitkumarrr","surajksharma07","klateefa"]
+
 LABEL_GUIDELINES = """
       Label rubric and disambiguation rules:
       - "documentation": Tutorials, README content, reference docs, or samples.
@@ -121,15 +124,17 @@ def list_untriaged_issues(issue_count: int) -> dict[str, Any]:
 
     existing_component_labels = issue_labels & component_labels
     has_component = bool(existing_component_labels)
-    has_planned = "planned" in issue_labels
+    # has_planned = "planned" in issue_labels
 
     # Determine what actions are needed
     needs_component_label = not has_component
-    needs_owner = has_planned and not assignees
+    # needs_owner = has_planned and not assignees
+    needs_owner = not assignees
+
 
     # Include issue if it needs any action
     if needs_component_label or needs_owner:
-      issue["has_planned_label"] = has_planned
+      # issue["has_planned_label"] = has_planned
       issue["has_component_label"] = has_component
       issue["existing_component_label"] = (
           list(existing_component_labels)[0]
@@ -174,6 +179,41 @@ def add_label_to_issue(issue_number: int, label: str) -> dict[str, Any]:
       "status": "success",
       "message": response,
       "applied_label": label,
+  }
+
+
+def assign_gtech_owner_to_issue(issue_number: int) -> dict[str, Any]:
+  """Assign an owner from the GTech team to the given issue number.
+  This is go to option irrespective of component label or planned label, as long as the issue needs an owner.
+
+  All unassigned issues will be considered for GTech ownership. Unassigned issues will seperated in two categories: issues with type "Bug" and issues with type "Feature". Then bug issues and feature issues will be equally assigned to the Gtech members in such a way that every day all members get equal number of bug and feature issues.
+  
+  Args:
+    issue_number: issue number of the GitHub issue.
+
+  Returns:
+    The status of this request, with the assigned owner when successful.
+  """
+  print(
+      f"Attempting to assign GTech owner to issue #{issue_number}"
+  )
+
+ 
+  owner = LABEL_TO_GTECH[issue_number % len(LABEL_TO_GTECH)]
+  assignee_url = (
+      f"{GITHUB_BASE_URL}/repos/{OWNER}/{REPO}/issues/{issue_number}/assignees"
+  )
+  assignee_payload = {"assignees": [owner]}
+
+  try:
+    response = post_request(assignee_url, assignee_payload)
+  except requests.exceptions.RequestException as e:
+    return error_response(f"Error: {e}")
+
+  return {
+      "status": "success",
+      "message": response,
+      "assigned_owner": owner,
   }
 
 
@@ -264,7 +304,7 @@ root_agent = Agent(
       For each issue, perform ONLY the required actions based on the flags:
 
       1. **If `needs_component_label` is true**:
-         - Use `add_label_to_issue` to add the appropriate component label
+         - Use `assign_gtech_owner_to_issue` to add the appropriate component label
          - Use `change_issue_type` to set the issue type:
            - Bug report → "Bug"
            - Feature request → "Feature"
@@ -294,7 +334,8 @@ root_agent = Agent(
     tools=[
         list_untriaged_issues,
         add_label_to_issue,
-        add_owner_to_issue,
+        # add_owner_to_issue,
+        assign_gtech_owner_to_issue,
         change_issue_type,
     ],
 )
