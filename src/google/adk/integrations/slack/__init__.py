@@ -12,9 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .agent_registry import _ProtocolType
-from .agent_registry import AgentRegistry
+from .slack_runner import SlackRunner
 
-__all__ = [
-    'AgentRegistry',
-]
+__all__ = ["SlackRunner"]

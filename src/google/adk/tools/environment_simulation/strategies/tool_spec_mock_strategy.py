@@ -22,6 +22,8 @@ from typing import Any
 from typing import Dict
 from typing import Optional
 
+from google.adk.features import experimental
+from google.adk.features import FeatureName
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.registry import LLMRegistry
 from google.adk.tools.base_tool import BaseTool
@@ -88,10 +90,6 @@ def _find_value_by_key(data: Any, target_key: str) -> Optional[Any]:
       if result is not None:
         return result
   return None
-
-
-from google.adk.features import FeatureName
-from google.adk.features import experimental
 
 
 @experimental(FeatureName.ENVIRONMENT_SIMULATION)
