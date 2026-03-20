@@ -23,6 +23,7 @@ from pydantic import Field
 from pydantic import model_validator
 from typing_extensions import TypeAlias
 
+from ..events.event import Event
 from .app_details import AppDetails
 from .common import EvalBaseModel
 from .conversation_scenarios import ConversationScenario
@@ -123,6 +124,14 @@ class SessionInput(EvalBaseModel):
 
   state: SessionState = Field(default_factory=dict)
   """The state of the session."""
+
+  events: Optional[list[Event]] = None
+  """Optional list of events to seed the session with prior conversation history.
+
+  When provided, these events are appended to the session after creation but
+  before inference begins. This enables eval cases to test agent behavior that
+  depends on prior context without scoring the context turns.
+  """
 
 
 StaticConversation: TypeAlias = list[Invocation]
