@@ -979,6 +979,87 @@ def test_part_to_message_block_nested_dict_result():
   assert parsed["results"][0]["tags"] == ["a", "b"]
 
 
+# --- Tests for arbitrary dict fallback (e.g. SkillToolset load_skill) ---
+
+
+def test_part_to_message_block_arbitrary_dict_serialized_as_json():
+  """Dicts with keys other than 'content'/'result' should be JSON-serialized.
+
+  This covers tools like load_skill that return arbitrary key structures
+  such as {"skill_name": ..., "instructions": ..., "frontmatter": ...}.
+  """
+  response_part = types.Part.from_function_response(
+      name="load_skill",
+      response={
+          "skill_name": "my_skill",
+          "instructions": "Step 1: do this. Step 2: do that.",
+          "frontmatter": {"version": "1.0", "tags": ["a", "b"]},
+      },
+  )
+  response_part.function_response.id = "test_id"
+
+  result = part_to_message_block(response_part)
+
+  assert result["type"] == "tool_result"
+  assert result["tool_use_id"] == "test_id"
+  assert not result["is_error"]
+  parsed = json.loads(result["content"])
+  assert parsed["skill_name"] == "my_skill"
+  assert parsed["instructions"] == "Step 1: do this. Step 2: do that."
+  assert parsed["frontmatter"]["version"] == "1.0"
+
+
+def test_part_to_message_block_run_skill_script_response():
+  """run_skill_script response keys (stdout/stderr/status) should not be dropped."""
+  response_part = types.Part.from_function_response(
+      name="run_skill_script",
+      response={
+          "skill_name": "my_skill",
+          "script_path": "scripts/setup.py",
+          "stdout": "Done.",
+          "stderr": "",
+          "status": "success",
+      },
+  )
+  response_part.function_response.id = "test_id_2"
+
+  result = part_to_message_block(response_part)
+
+  parsed = json.loads(result["content"])
+  assert parsed["status"] == "success"
+  assert parsed["stdout"] == "Done."
+
+
+def test_part_to_message_block_error_response_not_dropped():
+  """Error dicts like {"error": ..., "error_code": ...} should be serialized."""
+  response_part = types.Part.from_function_response(
+      name="load_skill",
+      response={
+          "error": "Skill 'missing' not found.",
+          "error_code": "SKILL_NOT_FOUND",
+      },
+  )
+  response_part.function_response.id = "test_id_3"
+
+  result = part_to_message_block(response_part)
+
+  parsed = json.loads(result["content"])
+  assert parsed["error_code"] == "SKILL_NOT_FOUND"
+
+
+def test_part_to_message_block_empty_response_stays_empty():
+  """An empty response dict should still produce an empty content string."""
+  response_part = types.Part.from_function_response(
+      name="some_tool",
+      response={},
+  )
+  response_part.function_response.id = "test_id_4"
+
+  result = part_to_message_block(response_part)
+
+  assert result["content"] == ""
+
+
 # --- Tests for Bug #1: Streaming support ---
 
 
