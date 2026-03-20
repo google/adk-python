@@ -379,18 +379,18 @@ class RemoteA2aAgent(BaseAgent):
 
   def _construct_message_parts_from_session(
       self, ctx: InvocationContext
-  ) -> tuple[list[A2APart], Optional[str]]:
+  ) -> tuple[list[A2APart], Optional[str], Optional[str]]:
     """Construct A2A message parts from session events.
 
     Args:
       ctx: The invocation context
 
     Returns:
-      List of A2A parts extracted from session events, context ID,
-      request metadata
+      List of A2A parts extracted from session events, context ID, and task ID
     """
     message_parts: list[A2APart] = []
     context_id = None
+    task_id = None
 
     events_to_process = []
     for event in reversed(ctx.session.events):
@@ -400,6 +400,18 @@ class RemoteA2aAgent(BaseAgent):
         if event.custom_metadata:
           metadata = event.custom_metadata
           context_id = metadata.get(A2A_METADATA_PREFIX + "context_id")
+          
+          # Only set task_id if the task state is input-required or auth-required
+          response_dict = metadata.get(A2A_METADATA_PREFIX + "response")
+          if isinstance(response_dict, dict):
+            status_dict = response_dict.get("status")
+            if isinstance(status_dict, dict):
+              task_state_val = status_dict.get("state")
+              if task_state_val in (
+                  TaskState.input_required,
+                  TaskState.auth_required,
+              ):
+                task_id = metadata.get(A2A_METADATA_PREFIX + "task_id")
         # Historical note: this behavior originally always applied, regardless
         # of whether the agent was stateful or stateless. However, only stateful
         # agents can be expected to have previous events in the remote session.
@@ -427,7 +439,7 @@ class RemoteA2aAgent(BaseAgent):
         else:
           logger.warning("Failed to convert part to A2A format: %s", part)
 
-    return message_parts, context_id
+    return message_parts, context_id, task_id
 
   async def _handle_a2a_response(
       self, a2a_response: A2AClientEvent | A2AMessage, ctx: InvocationContext
@@ -624,7 +636,7 @@ class RemoteA2aAgent(BaseAgent):
     # Create A2A request for function response or regular message
     a2a_request = self._create_a2a_request_for_user_function_response(ctx)
     if not a2a_request:
-      message_parts, context_id = self._construct_message_parts_from_session(
+      message_parts, context_id, task_id = self._construct_message_parts_from_session(
           ctx
       )
 
@@ -645,6 +657,7 @@ class RemoteA2aAgent(BaseAgent):
           parts=message_parts,
           role="user",
           context_id=context_id,
+          task_id=task_id,
       )
 
     logger.debug(build_a2a_request_log(a2a_request))
