@@ -259,10 +259,26 @@ def get_fast_api_app(
         web_assets_dir=ANGULAR_DIST_PATH,
     )
 
+  # Build allowed origins for WebSocket CSRF protection.
+  ws_allowed_origins: Optional[set[str]] = {f"http://{host}:{port}"}
+  if host in ("0.0.0.0", "127.0.0.1", "localhost", "::1", "::"):
+    ws_allowed_origins.update({
+        f"http://localhost:{port}",
+        f"http://127.0.0.1:{port}",
+    })
+  if allow_origins:
+    for origin in allow_origins:
+      if origin == "*":
+        ws_allowed_origins = None
+        break
+      if not origin.startswith("regex:"):
+        ws_allowed_origins.add(origin)
+
   app = adk_web_server.get_fast_api_app(
       lifespan=lifespan,
       allow_origins=allow_origins,
       otel_to_cloud=otel_to_cloud,
+      ws_allowed_origins=ws_allowed_origins,
       **extra_fast_api_args,
   )
 

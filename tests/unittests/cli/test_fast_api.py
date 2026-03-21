@@ -25,6 +25,7 @@ from unittest.mock import MagicMock
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.run_config import RunConfig
 from google.adk.apps.app import App
@@ -1656,6 +1657,54 @@ def test_builder_save_rejects_traversal(builder_test_client, tmp_path):
   assert response.json() is False
   assert not (tmp_path / "escape.yaml").exists()
   assert not (tmp_path / "app" / "tmp" / "escape.yaml").exists()
+
+
+@pytest.fixture
+def csrf_test_client(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """TestClient with WebSocket origin checking enabled (no allow_origins='*')."""
+  return _create_test_client(
+      mock_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+      allow_origins=None,
+  )
+
+
+def test_ws_rejects_cross_origin(csrf_test_client, create_test_session):
+  """WebSocket connections with a foreign Origin must be rejected."""
+  info = create_test_session
+  with pytest.raises(WebSocketDisconnect) as exc_info:
+    with csrf_test_client.websocket_connect(
+        f"/run_live?app_name={info['app_name']}&user_id={info['user_id']}&session_id={info['session_id']}",
+        headers={"Origin": "http://evil.com"},
+    ):
+      pass
+  assert exc_info.value.code == 1008
+
+
+def test_ws_allows_same_origin(csrf_test_client, create_test_session):
+  """WebSocket connections from the server's own origin must not be rejected."""
+  info = create_test_session
+  try:
+    with csrf_test_client.websocket_connect(
+        f"/run_live?app_name={info['app_name']}&user_id={info['user_id']}&session_id={info['session_id']}",
+        headers={"Origin": "http://127.0.0.1:8000"},
+    ):
+      pass
+  except WebSocketDisconnect as e:
+    # Must not be rejected with 1008 (origin check).
+    # Other close codes (e.g. 1011 from dummy runner) are fine.
+    assert e.code != 1008
 
 
 def test_agent_run_resume_without_message_success(

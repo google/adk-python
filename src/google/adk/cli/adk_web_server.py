@@ -692,6 +692,7 @@ class AdkWebServer:
       register_processors: Callable[[TracerProvider], None] = lambda o: None,
       otel_to_cloud: bool = False,
       with_ui: bool = False,
+      ws_allowed_origins: Optional[set[str]] = None,
   ):
     """Creates a FastAPI app for the ADK web server.
 
@@ -1802,6 +1803,13 @@ class AdkWebServer:
         enable_affective_dialog: bool | None = Query(default=None),
         enable_session_resumption: bool | None = Query(default=None),
     ) -> None:
+      # Validate Origin header to prevent cross-origin WebSocket hijacking.
+      if ws_allowed_origins is not None:
+        origin = websocket.headers.get("origin")
+        if origin and origin not in ws_allowed_origins:
+          await websocket.close(code=1008, reason="Origin not allowed")
+          return
+
       await websocket.accept()
 
       session = await self.session_service.get_session(
