@@ -16,6 +16,7 @@ from unittest import mock
 
 from google.adk.tools import discovery_engine_search_tool
 from google.adk.tools.discovery_engine_search_tool import DiscoveryEngineSearchTool
+from google.adk.tools.discovery_engine_search_tool import SearchResultMode
 from google.api_core import exceptions
 from google.cloud import discoveryengine_v1beta as discoveryengine
 import pytest
@@ -128,8 +129,9 @@ class TestDiscoveryEngineSearchTool:
           client_options=mock_client_options.ClientOptions.return_value,
       )
 
-  @mock.patch(
-      "google.cloud.discoveryengine_v1beta.SearchServiceClient",
+  @mock.patch.object(
+      discoveryengine,
+      "SearchServiceClient",
   )
   def test_discovery_engine_search_api_error(self, mock_search_client):
     """Test discovery engine search with API error."""
@@ -143,8 +145,9 @@ class TestDiscoveryEngineSearchTool:
     assert result["status"] == "error"
     assert result["error_message"] == "None API error"
 
-  @mock.patch(
-      "google.cloud.discoveryengine_v1beta.SearchServiceClient",
+  @mock.patch.object(
+      discoveryengine,
+      "SearchServiceClient",
   )
   def test_discovery_engine_search_no_results(self, mock_search_client):
     """Test discovery engine search with no results."""
@@ -156,3 +159,164 @@ class TestDiscoveryEngineSearchTool:
 
     assert result["status"] == "success"
     assert not result["results"]
+
+  def test_init_default_search_result_mode(self):
+    """Test default search result mode is None (auto-detect)."""
+    tool = DiscoveryEngineSearchTool(data_store_id="test_data_store")
+    assert tool._search_result_mode is None
+
+  def test_init_with_documents_mode(self):
+    """Test initialization with DOCUMENTS search result mode."""
+    tool = DiscoveryEngineSearchTool(
+        data_store_id="test_data_store",
+        search_result_mode=SearchResultMode.DOCUMENTS,
+    )
+    assert tool._search_result_mode == SearchResultMode.DOCUMENTS
+
+  @mock.patch.object(
+      discoveryengine,
+      "SearchServiceClient",
+  )
+  def test_discovery_engine_search_documents_structured(
+      self, mock_search_client
+  ):
+    """Test DOCUMENTS mode with structured data."""
+    mock_doc = discoveryengine.Document(
+        name="projects/p/locations/l/doc1",
+        id="doc1",
+        struct_data={
+            "title": "Jira Issue",
+            "uri": "https://jira.example.com/123",
+            "summary": "Bug fix for login",
+        },
+    )
+    mock_response = discoveryengine.SearchResponse()
+    mock_response.results = [
+        discoveryengine.SearchResponse.SearchResult(document=mock_doc)
+    ]
+    mock_search_client.return_value.search.return_value = mock_response
+
+    tool = DiscoveryEngineSearchTool(
+        data_store_id="test_data_store",
+        search_result_mode=SearchResultMode.DOCUMENTS,
+    )
+    result = tool.discovery_engine_search("test query")
+
+    assert result["status"] == "success"
+    assert len(result["results"]) == 1
+    assert result["results"][0]["title"] == "Jira Issue"
+    assert result["results"][0]["url"] == "https://jira.example.com/123"
+    assert "Bug fix for login" in result["results"][0]["content"]
+
+  @mock.patch.object(
+      discoveryengine,
+      "SearchServiceClient",
+  )
+  def test_discovery_engine_search_documents_unstructured(
+      self, mock_search_client
+  ):
+    """Test DOCUMENTS mode with unstructured data."""
+    mock_doc = discoveryengine.Document(
+        name="projects/p/locations/l/doc2",
+        id="doc2",
+        derived_struct_data={
+            "title": "Web Page",
+            "link": "https://example.com",
+            "snippets": [{"snippet": "Relevant text here"}],
+        },
+    )
+    mock_response = discoveryengine.SearchResponse()
+    mock_response.results = [
+        discoveryengine.SearchResponse.SearchResult(document=mock_doc)
+    ]
+    mock_search_client.return_value.search.return_value = mock_response
+
+    tool = DiscoveryEngineSearchTool(
+        data_store_id="test_data_store",
+        search_result_mode=SearchResultMode.DOCUMENTS,
+    )
+    result = tool.discovery_engine_search("test query")
+
+    assert result["status"] == "success"
+    assert len(result["results"]) == 1
+    assert result["results"][0]["title"] == "Web Page"
+    assert result["results"][0]["url"] == "https://example.com"
+    assert "Relevant text here" in result["results"][0]["content"]
+
+  @mock.patch.object(
+      discoveryengine,
+      "SearchServiceClient",
+  )
+  def test_discovery_engine_search_documents_no_results(
+      self, mock_search_client
+  ):
+    """Test DOCUMENTS mode with no results."""
+    mock_response = discoveryengine.SearchResponse()
+    mock_search_client.return_value.search.return_value = mock_response
+
+    tool = DiscoveryEngineSearchTool(
+        data_store_id="test_data_store",
+        search_result_mode=SearchResultMode.DOCUMENTS,
+    )
+    result = tool.discovery_engine_search("test query")
+
+    assert result["status"] == "success"
+    assert not result["results"]
+
+  @mock.patch.object(
+      discoveryengine,
+      "SearchServiceClient",
+  )
+  def test_auto_detect_falls_back_to_documents(self, mock_search_client):
+    """Test auto-detect retries with DOCUMENTS on structured store error."""
+    structured_error = exceptions.InvalidArgument(
+        "`content_search_spec.search_result_mode` must be set to"
+        " SearchRequest.ContentSearchSpec.SearchResultMode.DOCUMENTS"
+        " when the engine contains structured data store."
+    )
+    mock_doc = discoveryengine.Document(
+        name="projects/p/locations/l/doc1",
+        id="doc1",
+        struct_data={
+            "title": "Jira Issue",
+            "uri": "https://jira.example.com/123",
+            "summary": "Bug fix",
+        },
+    )
+    mock_doc_response = discoveryengine.SearchResponse()
+    mock_doc_response.results = [
+        discoveryengine.SearchResponse.SearchResult(document=mock_doc)
+    ]
+    mock_search_client.return_value.search.side_effect = [
+        structured_error,
+        mock_doc_response,
+    ]
+
+    tool = DiscoveryEngineSearchTool(data_store_id="test_data_store")
+    result = tool.discovery_engine_search("test query")
+
+    assert result["status"] == "success"
+    assert len(result["results"]) == 1
+    assert result["results"][0]["title"] == "Jira Issue"
+    assert mock_search_client.return_value.search.call_count == 2
+    # Mode should be persisted so subsequent calls skip the retry.
+    assert tool._search_result_mode == SearchResultMode.DOCUMENTS
+
+  @mock.patch.object(
+      discoveryengine,
+      "SearchServiceClient",
+  )
+  def test_auto_detect_does_not_retry_on_unrelated_error(
+      self, mock_search_client
+  ):
+    """Test auto-detect does not retry on unrelated API errors."""
+    mock_search_client.return_value.search.side_effect = (
+        exceptions.GoogleAPICallError("Permission denied")
+    )
+
+    tool = DiscoveryEngineSearchTool(data_store_id="test_data_store")
+    result = tool.discovery_engine_search("test query")
+
+    assert result["status"] == "error"
+    assert "Permission denied" in result["error_message"]
+    assert mock_search_client.return_value.search.call_count == 1
