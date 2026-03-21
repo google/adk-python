@@ -757,9 +757,7 @@ async def test_generate_content_span(
   model_response_event = mock.MagicMock()
   model_response_event.id = 'event-123'
 
-  mock_span = (
-      mock_tracer.start_as_current_span.return_value.__enter__.return_value
-  )
+  mock_span = mock_tracer.start_span.return_value
 
   # Act
   async with use_inference_span(
@@ -770,9 +768,7 @@ async def test_generate_content_span(
     trace_inference_result(gc_span, llm_response)
 
   # Assert Span
-  mock_tracer.start_as_current_span.assert_called_once_with(
-      'generate_content some-model'
-  )
+  mock_tracer.start_span.assert_called_once_with('generate_content some-model')
 
   mock_span.set_attribute.assert_any_call(GEN_AI_SYSTEM, 'test_system')
   mock_span.set_attribute.assert_any_call(
@@ -962,9 +958,7 @@ async def test_generate_content_span_with_experimental_semconv(
   model_response_event = mock.MagicMock()
   model_response_event.id = 'event-123'
 
-  mock_span = (
-      mock_tracer.start_as_current_span.return_value.__enter__.return_value
-  )
+  mock_span = mock_tracer.start_span.return_value
 
   # Act
   async with use_inference_span(
@@ -1091,9 +1085,7 @@ async def test_generate_content_span_with_experimental_semconv(
       ' standalone mcp tool","parameters":null,"type":"function"}]'
   )
   # Assert Span
-  mock_tracer.start_as_current_span.assert_called_once_with(
-      'generate_content some-model'
-  )
+  mock_tracer.start_span.assert_called_once_with('generate_content some-model')
 
   mock_span.set_attribute.assert_any_call(
       GEN_AI_OPERATION_NAME, 'generate_content'

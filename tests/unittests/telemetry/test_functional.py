@@ -75,6 +75,7 @@ def span_exporter(monkeypatch: pytest.MonkeyPatch) -> InMemorySpanExporter:
     monkeypatch.setattr(
         tracer, 'start_as_current_span', real_tracer.start_as_current_span
     )
+    monkeypatch.setattr(tracer, 'start_span', real_tracer.start_span)
 
   do_replace(tracing.tracer)
   do_replace(base_agent.tracer)

@@ -31,6 +31,8 @@ from typing import TypeVar
 from typing import Union
 
 from google.genai import types
+from opentelemetry import context as _otel_context
+from opentelemetry import trace as _otel_trace_api
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
@@ -43,8 +45,6 @@ from ..events.event_actions import EventActions
 from ..features import experimental
 from ..features import FeatureName
 from ..telemetry import tracing
-from opentelemetry import context as _otel_context
-from opentelemetry import trace as _otel_trace_api
 from ..telemetry.tracing import _safe_detach as _safe_detach_span
 from ..telemetry.tracing import tracer
 from ..utils.context_utils import Aclosing

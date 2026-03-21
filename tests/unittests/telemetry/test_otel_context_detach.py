@@ -33,22 +33,18 @@ See: https://github.com/google/adk-python/issues/4894
 """
 
 import asyncio
-import logging
 from contextlib import contextmanager
+import logging
 from unittest.mock import MagicMock
 
-import pytest
+from google.adk.telemetry.tracing import _safe_detach
 from opentelemetry import context as otel_context
 from opentelemetry import trace
 from opentelemetry.context import _RUNTIME_CONTEXT
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
-from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
-    InMemorySpanExporter,
-)
-
-from google.adk.telemetry.tracing import _safe_detach
-
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+import pytest
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -138,9 +134,9 @@ class TestSafeDetach:
     _safe_detach(token_holder['token'])
     token_holder['span'].end()
 
-    assert detach_errors == [], (
-        '_safe_detach() must not log ERROR for cross-context tokens'
-    )
+    assert (
+        detach_errors == []
+    ), '_safe_detach() must not log ERROR for cross-context tokens'
 
   def test_should_log_debug_for_cross_context_token(self, caplog):
     """Cross-context cleanup should emit a DEBUG message, not ERROR.
@@ -166,10 +162,12 @@ class TestSafeDetach:
       _safe_detach(token_holder['token'])
 
     token_holder['span'].end()
-    debug_msgs = [r.getMessage() for r in caplog.records if r.levelno == logging.DEBUG]
-    assert any('different Context' in m for m in debug_msgs), (
-        f'Expected a DEBUG log about cross-context token, got: {debug_msgs}'
-    )
+    debug_msgs = [
+        r.getMessage() for r in caplog.records if r.levelno == logging.DEBUG
+    ]
+    assert any(
+        'different Context' in m for m in debug_msgs
+    ), f'Expected a DEBUG log about cross-context token, got: {debug_msgs}'
 
 
 # ---------------------------------------------------------------------------
@@ -186,9 +184,7 @@ class TestGenerateContentSpanCrossContextClose:
   ):
     """_use_native_generate_content_span_stable_semconv: no ERROR on cancel."""
     from google.adk.models.llm_request import LlmRequest
-    from google.adk.telemetry.tracing import (
-        _use_native_generate_content_span_stable_semconv,
-    )
+    from google.adk.telemetry.tracing import _use_native_generate_content_span_stable_semconv
     from google.genai import types
 
     llm_request = LlmRequest(
@@ -213,9 +209,9 @@ class TestGenerateContentSpanCrossContextClose:
 
     await asyncio.create_task(close_from_task())
 
-    assert detach_errors == [], (
-        'Stable semconv span must not log ERROR when closed from different Task'
-    )
+    assert (
+        detach_errors == []
+    ), 'Stable semconv span must not log ERROR when closed from different Task'
 
   @pytest.mark.asyncio
   async def test_async_span_no_error_on_cross_context_close(
@@ -242,9 +238,9 @@ class TestGenerateContentSpanCrossContextClose:
     # Close from a different asyncio Task
     await asyncio.create_task(gen.aclose())
 
-    assert detach_errors == [], (
-        'Async span must not log ERROR when closed from different Task'
-    )
+    assert (
+        detach_errors == []
+    ), 'Async span must not log ERROR when closed from different Task'
 
   @pytest.mark.asyncio
   async def test_span_data_preserved_after_cross_context_close(
@@ -252,9 +248,7 @@ class TestGenerateContentSpanCrossContextClose:
   ):
     """Span attributes must be exported even when context detach is skipped."""
     from google.adk.models.llm_request import LlmRequest
-    from google.adk.telemetry.tracing import (
-        _use_native_generate_content_span_stable_semconv,
-    )
+    from google.adk.telemetry.tracing import _use_native_generate_content_span_stable_semconv
     from google.genai import types
 
     llm_request = LlmRequest(
@@ -279,7 +273,9 @@ class TestGenerateContentSpanCrossContextClose:
     await asyncio.create_task(close_from_task())
 
     finished = span_exporter.get_finished_spans()
-    assert len(finished) == 1, 'Span must be exported even on cross-context close'
+    assert (
+        len(finished) == 1
+    ), 'Span must be exported even on cross-context close'
     assert 'generate_content' in finished[0].name
 
 
@@ -306,10 +302,9 @@ class TestBaseAgentSpanCrossContextClose:
     from ..testing_utils import create_invocation_context
 
     class _OneEventAgent(BaseAgent):
+
       @override
-      async def _run_async_impl(
-          self, ctx
-      ) -> AsyncGenerator[Event, None]:
+      async def _run_async_impl(self, ctx) -> AsyncGenerator[Event, None]:
         yield Event(
             author=self.name,
             invocation_id=ctx.invocation_id,
@@ -328,7 +323,8 @@ class TestBaseAgentSpanCrossContextClose:
     await asyncio.create_task(gen.aclose())
 
     assert detach_errors == [], (
-        'invoke_agent span in run_async must not log ERROR on cross-context close'
+        'invoke_agent span in run_async must not log ERROR on cross-context'
+        ' close'
     )
 
   @pytest.mark.asyncio
@@ -346,16 +342,13 @@ class TestBaseAgentSpanCrossContextClose:
     from ..testing_utils import create_invocation_context
 
     class _StubAgent(BaseAgent):
+
       @override
-      async def _run_async_impl(
-          self, ctx
-      ) -> AsyncGenerator[Event, None]:
+      async def _run_async_impl(self, ctx) -> AsyncGenerator[Event, None]:
         yield Event(
             author=self.name,
             invocation_id=ctx.invocation_id,
-            content=types.Content(
-                role='model', parts=[types.Part(text='ok')]
-            ),
+            content=types.Content(role='model', parts=[types.Part(text='ok')]),
         )
 
     agent = _StubAgent(name='stub_agent')
@@ -367,6 +360,6 @@ class TestBaseAgentSpanCrossContextClose:
 
     finished = span_exporter.get_finished_spans()
     span_names = [s.name for s in finished]
-    assert any('invoke_agent' in n for n in span_names), (
-        f'Expected invoke_agent span in exports, got: {span_names}'
-    )
+    assert any(
+        'invoke_agent' in n for n in span_names
+    ), f'Expected invoke_agent span in exports, got: {span_names}'
