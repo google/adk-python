@@ -16,25 +16,25 @@ from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
-from google.adk.tools.agent_simulator import AgentSimulatorFactory
-from google.adk.tools.agent_simulator.agent_simulator_config import AgentSimulatorConfig
-from google.adk.tools.agent_simulator.agent_simulator_config import MockStrategy
-from google.adk.tools.agent_simulator.agent_simulator_config import ToolSimulationConfig
-from google.adk.tools.agent_simulator.agent_simulator_plugin import AgentSimulatorPlugin
+from google.adk.tools.environment_simulation import EnvironmentSimulationFactory
+from google.adk.tools.environment_simulation.environment_simulation_config import EnvironmentSimulationConfig
+from google.adk.tools.environment_simulation.environment_simulation_config import MockStrategy
+from google.adk.tools.environment_simulation.environment_simulation_config import ToolSimulationConfig
+from google.adk.tools.environment_simulation.environment_simulation_plugin import EnvironmentSimulationPlugin
 import pytest
 
 
 @pytest.mark.asyncio
 @patch(
-    "google.adk.tools.agent_simulator.agent_simulator_factory.AgentSimulatorEngine"
+    "google.adk.tools.environment_simulation.environment_simulation_factory.EnvironmentSimulationEngine"
 )
-class TestAgentSimulatorFactory:
-  """Test cases for the AgentSimulator factory class."""
+class TestEnvironmentSimulationFactory:
+  """Test cases for the EnvironmentSimulation factory class."""
 
   @pytest.fixture
   def mock_config(self):
-    """Fixture for a basic AgentSimulatorConfig."""
-    return AgentSimulatorConfig(
+    """Fixture for a basic EnvironmentSimulationConfig."""
+    return EnvironmentSimulationConfig(
         tool_simulation_configs=[
             ToolSimulationConfig(
                 tool_name="test_tool",
@@ -49,7 +49,7 @@ class TestAgentSimulatorFactory:
     mock_engine_instance.simulate = AsyncMock(return_value=None)
     mock_engine_class.return_value = mock_engine_instance
 
-    callback = AgentSimulatorFactory.create_callback(mock_config)
+    callback = EnvironmentSimulationFactory.create_callback(mock_config)
     assert callable(callback)
     await callback(MagicMock(), {}, MagicMock())
 
@@ -57,13 +57,13 @@ class TestAgentSimulatorFactory:
     mock_engine_instance.simulate.assert_awaited_once()
 
   @patch(
-      "google.adk.tools.agent_simulator.agent_simulator_factory.AgentSimulatorPlugin"
+      "google.adk.tools.environment_simulation.environment_simulation_factory.EnvironmentSimulationPlugin"
   )
   def test_create_plugin(
       self, mock_plugin_class, mock_engine_class, mock_config
   ):
-    """Test that create_plugin returns a valid AgentSimulatorPlugin instance."""
-    plugin = AgentSimulatorFactory.create_plugin(mock_config)
+    """Test that create_plugin returns a valid EnvironmentSimulationPlugin instance."""
+    plugin = EnvironmentSimulationFactory.create_plugin(mock_config)
     mock_engine_class.assert_called_once_with(mock_config)
     mock_plugin_class.assert_called_once_with(mock_engine_class.return_value)
     assert plugin == mock_plugin_class.return_value
