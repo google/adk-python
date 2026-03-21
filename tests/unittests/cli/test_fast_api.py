@@ -1560,15 +1560,17 @@ def test_patch_memory(test_app, create_test_session, mock_memory_service):
   logger.info("Add session to memory test completed successfully")
 
 
-def test_builder_final_save_preserves_tools_and_cleans_tmp(
+def test_builder_final_save_preserves_yaml_and_cleans_tmp(
     builder_test_client, tmp_path
 ):
   files = [
-      ("files", ("app/__init__.py", b"from . import agent\n", "text/plain")),
-      ("files", ("app/tools.py", b"def tool():\n  return 1\n", "text/plain")),
       (
           "files",
           ("app/root_agent.yaml", b"name: app\n", "application/x-yaml"),
+      ),
+      (
+          "files",
+          ("app/tools.yaml", b"tool: search\n", "application/x-yaml"),
       ),
   ]
   response = builder_test_client.post("/builder/save?tmp=true", files=files)
@@ -1589,7 +1591,7 @@ def test_builder_final_save_preserves_tools_and_cleans_tmp(
   assert response.status_code == 200
   assert response.json() is True
 
-  assert (tmp_path / "app" / "tools.py").is_file()
+  assert (tmp_path / "app" / "tools.yaml").is_file()
   assert not (tmp_path / "app" / "tmp" / "app").exists()
   tmp_dir = tmp_path / "app" / "tmp"
   assert not tmp_dir.exists() or not any(tmp_dir.iterdir())
@@ -1656,6 +1658,25 @@ def test_builder_save_rejects_traversal(builder_test_client, tmp_path):
   assert response.json() is False
   assert not (tmp_path / "escape.yaml").exists()
   assert not (tmp_path / "app" / "tmp" / "escape.yaml").exists()
+
+
+def test_builder_save_rejects_non_yaml(builder_test_client, tmp_path):
+  """Uploading non-YAML files (e.g. .py) must be rejected to prevent RCE."""
+  response = builder_test_client.post(
+      "/builder/save?tmp=true",
+      files=[("files", ("app/agent.py", b"import os\n", "text/plain"))],
+  )
+  assert response.status_code == 200
+  assert response.json() is False
+  assert not (tmp_path / "app" / "tmp" / "app" / "agent.py").exists()
+
+  response = builder_test_client.post(
+      "/builder/save",
+      files=[("files", ("app/__init__.py", b"", "text/plain"))],
+  )
+  assert response.status_code == 200
+  assert response.json() is False
+  assert not (tmp_path / "app" / "__init__.py").exists()
 
 
 def test_agent_run_resume_without_message_success(

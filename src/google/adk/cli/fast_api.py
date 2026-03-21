@@ -284,6 +284,8 @@ def get_fast_api_app(
   def _has_parent_reference(path: str) -> bool:
     return any(part == ".." for part in path.split("/"))
 
+  _ALLOWED_UPLOAD_EXTENSIONS = {".yaml", ".yml"}
+
   def _parse_upload_filename(filename: Optional[str]) -> tuple[str, str]:
     if not filename:
       raise ValueError("Upload filename is missing.")
@@ -297,6 +299,11 @@ def get_fast_api_app(
       raise ValueError(f"Absolute upload path rejected: {filename!r}")
     if _has_parent_reference(rel_path):
       raise ValueError(f"Path traversal rejected: {filename!r}")
+    ext = os.path.splitext(rel_path)[1].lower()
+    if ext not in _ALLOWED_UPLOAD_EXTENSIONS:
+      raise ValueError(
+          f"File type not allowed: {ext!r} (only .yaml/.yml accepted)"
+      )
     return app_name, rel_path
 
   def _parse_file_path(file_path: str) -> str:
