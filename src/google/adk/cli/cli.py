@@ -21,6 +21,7 @@ from typing import Union
 import asyncio
 import sys
 import threading
+import traceback
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
@@ -141,12 +142,12 @@ async def run_interactively(
     input_queue = asyncio.Queue()
     _EOF_SENTINEL = object()
     
-    def _prompt_user(new_line: bool = False):
+    def _prompt_user(new_line: bool = False) -> None:
       prompt = '\n[user]: ' if new_line else '[user]: '
       sys.stdout.write(prompt)
       sys.stdout.flush()
     
-    async def _handle_reload():
+    async def _handle_reload() -> None:
       nonlocal runner
       click.secho('\nChanges detected, reloading agent...', fg='yellow')
       if not (agent_loader and agent_folder_name):
@@ -171,14 +172,13 @@ async def run_interactively(
       except Exception as e:
         click.secho(f'Error reloading agent: {e}', fg='red')
 
-    def _read_input():
+    def _read_input() -> None:
       try:
         while True:
           line = sys.stdin.readline()
           if not line: break
           loop.call_soon_threadsafe(input_queue.put_nowait, line)
       except Exception:
-        import traceback
         print("[ERROR] Exception in stdin reader thread:", file=sys.stderr)
         traceback.print_exc(file=sys.stderr)
       finally:
