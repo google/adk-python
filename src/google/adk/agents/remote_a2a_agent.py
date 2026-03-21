@@ -379,7 +379,7 @@ class RemoteA2aAgent(BaseAgent):
 
   def _construct_message_parts_from_session(
       self, ctx: InvocationContext
-  ) -> tuple[list[A2APart], Optional[str]]:
+  ) -> tuple[list[A2APart], Optional[str] , Optional[str]]:
     """Construct A2A message parts from session events.
 
     Args:
@@ -391,6 +391,7 @@ class RemoteA2aAgent(BaseAgent):
     """
     message_parts: list[A2APart] = []
     context_id = None
+    task_id = None 
 
     events_to_process = []
     for event in reversed(ctx.session.events):
@@ -400,6 +401,14 @@ class RemoteA2aAgent(BaseAgent):
         if event.custom_metadata:
           metadata = event.custom_metadata
           context_id = metadata.get(A2A_METADATA_PREFIX + "context_id")
+          response_meta = metadata.get(A2A_METADATA_PREFIX + "response",{})
+          task_state = None 
+          if isinstance(response_meta,dict):
+            status = response_meta.get("status",{})
+            if isinstance(status,dict):
+              task_state= status.get("status")
+          if task_state in ("input-required","auth-required"):
+            task_id = metadata.get(A2A_METADATA_PREFIX + "task_id")
         # Historical note: this behavior originally always applied, regardless
         # of whether the agent was stateful or stateless. However, only stateful
         # agents can be expected to have previous events in the remote session.
@@ -427,7 +436,7 @@ class RemoteA2aAgent(BaseAgent):
         else:
           logger.warning("Failed to convert part to A2A format: %s", part)
 
-    return message_parts, context_id
+    return message_parts, context_id, task_id
 
   async def _handle_a2a_response(
       self, a2a_response: A2AClientEvent | A2AMessage, ctx: InvocationContext
