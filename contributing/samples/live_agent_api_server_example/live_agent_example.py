@@ -168,6 +168,7 @@ def init_pyaudio_playback():
       try:
         pya_interface_instance.terminate()
       except:
+       # TODO: be more specific about exception type
         pass
     pya_interface_instance = None
     pya_output_stream_instance = None
