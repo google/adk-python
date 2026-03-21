@@ -181,7 +181,9 @@ class LlmBackedUserSimulator(UserSimulator):
     )
 
     config_model = self._config.model
-    model_str = config_model if isinstance(config_model, str) else config_model.model
+    model_str = (
+        config_model if isinstance(config_model, str) else config_model.model
+    )
     llm_request = LlmRequest(
         model=model_str,
         config=self._config.model_configuration,

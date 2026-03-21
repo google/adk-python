@@ -328,7 +328,9 @@ class PerTurnUserSimulatorQualityV1(Evaluator):
     )
 
     judge_model = self._llm_options.judge_model
-    model_str = judge_model if isinstance(judge_model, str) else judge_model.model
+    model_str = (
+        judge_model if isinstance(judge_model, str) else judge_model.model
+    )
     llm_request = LlmRequest(
         model=model_str,
         contents=[

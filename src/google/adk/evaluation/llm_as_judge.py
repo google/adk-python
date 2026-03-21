@@ -137,7 +137,9 @@ class LlmAsJudge(Evaluator):
     for actual, expected in zip(actual_invocations, expected_invocations):
       auto_rater_prompt = self.format_auto_rater_prompt(actual, expected)
       judge_model = self._judge_model_options.judge_model
-      model_str = judge_model if isinstance(judge_model, str) else judge_model.model
+      model_str = (
+          judge_model if isinstance(judge_model, str) else judge_model.model
+      )
       llm_request = LlmRequest(
           model=model_str,
           contents=[

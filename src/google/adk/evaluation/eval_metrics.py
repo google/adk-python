@@ -19,6 +19,7 @@ from enum import Enum
 from typing import Optional
 from typing import Union
 
+from google.adk.models.base_llm import BaseLlm
 from google.genai import types as genai_types
 from pydantic import alias_generators
 from pydantic import BaseModel
@@ -27,8 +28,6 @@ from pydantic import Field
 from pydantic import field_validator
 from pydantic.json_schema import SkipJsonSchema
 from typing_extensions import TypeAlias
-
-from google.adk.models.base_llm import BaseLlm
 
 from .common import EvalBaseModel
 from .eval_case import Invocation
