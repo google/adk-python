@@ -174,7 +174,23 @@ part before or alongside your code PR.
 
     **NOTE**: for convenience, installing all extra deps as a starting point.
 
-5.  **Run unit tests:**
+5.  **Install pre-commit hooks (optional but recommended):**
+
+    [pre-commit](https://pre-commit.com/) automatically runs formatting and
+    linting checks before each commit, helping catch issues early.
+
+    ```shell
+    pip install pre-commit
+    pre-commit install
+    ```
+
+    To run all hooks manually against all files:
+
+    ```shell
+    pre-commit run --all-files
+    ```
+
+6.  **Run unit tests:**
 
     ```shell
     pytest ./tests/unittests
@@ -200,7 +216,7 @@ part before or alongside your code PR.
     -   Run the unit tests
     -   Restore the full development environment (`--all-extras`)
 
-6.  **Auto-format the code:**
+7.  **Auto-format the code:**
 
     **NOTE**: We use `isort` and `pyink` for styles. Use the included
     autoformat.sh to auto-format.
@@ -209,13 +225,13 @@ part before or alongside your code PR.
     ./autoformat.sh
     ```
 
-7.  **Build the wheel file:**
+8.  **Build the wheel file:**
 
     ```shell
     uv build
     ```
 
-8.  **Test the locally built wheel file:** Have a simple testing folder setup as
+9.  **Test the locally built wheel file:** Have a simple testing folder setup as
     mentioned in the
     [quickstart](https://google.github.io/adk-docs/get-started/quickstart/).
 
@@ -228,7 +244,7 @@ part before or alongside your code PR.
     ```
 
     ```shell
-    command -v deactivate >/dev/null 2>&1 && deactivate
+    command -v deactivate > /dev/null 2>&1 && deactivate
     ```
 
     ```shell
