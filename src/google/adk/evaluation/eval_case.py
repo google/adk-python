@@ -125,7 +125,7 @@ class SessionInput(EvalBaseModel):
   state: SessionState = Field(default_factory=dict)
   """The state of the session."""
 
-  events: Optional[list[Event]] = None
+  conversation_history: Optional[list[Event]] = None
   """Optional list of events to seed the session with prior conversation history.
 
   When provided, these events are appended to the session after creation but

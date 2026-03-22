@@ -567,8 +567,8 @@ class EvaluationGenerator:
 
     # Seed session with prior conversation history so that eval turns
     # run with realistic prior context without being scored.
-    if initial_session and initial_session.events:
-      for event in initial_session.events:
+    if initial_session and initial_session.conversation_history:
+      for event in initial_session.conversation_history:
         await session_service.append_event(session=session, event=event)
 
     if not artifact_service:
