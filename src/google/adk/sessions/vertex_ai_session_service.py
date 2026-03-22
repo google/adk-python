@@ -312,10 +312,6 @@ class VertexAiSessionService(BaseSessionService):
             else None
         ),
     }
-    if event.usage_metadata:
-      metadata_dict['usage_metadata'] = event.usage_metadata.model_dump(
-          exclude_none=True, mode='json'
-      )
     if event.cache_metadata:
       metadata_dict['cache_metadata'] = event.cache_metadata.model_dump(
           exclude_none=True, mode='json'
@@ -490,10 +486,6 @@ def _from_api_event(api_event_obj: vertexai.types.SessionEvent) -> Event:
         getattr(event_metadata, 'grounding_metadata', None),
         types.GroundingMetadata,
     )
-    usage_metadata = _session_util.decode_model(
-        getattr(event_metadata, 'usage_metadata', None),
-        types.GenerateContentResponseUsageMetadata,
-    )
     cache_metadata = _session_util.decode_model(
         getattr(event_metadata, 'cache_metadata', None),
         CacheMetadata,
@@ -508,7 +500,6 @@ def _from_api_event(api_event_obj: vertexai.types.SessionEvent) -> Event:
     compaction_data = None
     usage_metadata_data = None
     grounding_metadata = None
-    usage_metadata = None
     cache_metadata = None
 
   if actions:
@@ -558,7 +549,6 @@ def _from_api_event(api_event_obj: vertexai.types.SessionEvent) -> Event:
       branch=branch,
       custom_metadata=custom_metadata,
       grounding_metadata=grounding_metadata,
-      usage_metadata=usage_metadata,
       cache_metadata=cache_metadata,
       long_running_tool_ids=long_running_tool_ids,
       usage_metadata=usage_metadata,
