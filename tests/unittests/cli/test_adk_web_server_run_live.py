@@ -203,3 +203,90 @@ def test_run_live_defaults_and_individual_options(
         run_config.session_resumption.transparent
         is expected_session_resumption_transparent
     )
+
+
+def _make_app(allow_origins=None):
+  """Helper to create a test FastAPI app with optional allow_origins."""
+  session_service = InMemorySessionService()
+  asyncio.run(
+      session_service.create_session(
+          app_name="test_app",
+          user_id="user",
+          session_id="session",
+          state={},
+      )
+  )
+
+  runner = _CapturingRunner()
+  adk_web_server = AdkWebServer(
+      agent_loader=_DummyAgentLoader(),
+      session_service=session_service,
+      memory_service=types.SimpleNamespace(),
+      artifact_service=types.SimpleNamespace(),
+      credential_service=types.SimpleNamespace(),
+      eval_sets_manager=types.SimpleNamespace(),
+      eval_set_results_manager=types.SimpleNamespace(),
+      agents_dir=".",
+  )
+
+  async def _get_runner_async(_self, _app_name: str):
+    return runner
+
+  adk_web_server.get_runner_async = _get_runner_async.__get__(adk_web_server)  # pytype: disable=attribute-error
+
+  fast_api_app = adk_web_server.get_fast_api_app(
+      setup_observer=lambda _observer, _server: None,
+      tear_down_observer=lambda _observer, _server: None,
+      allow_origins=allow_origins,
+  )
+  return TestClient(fast_api_app)
+
+
+def test_websocket_rejects_cross_origin_without_config():
+  """WebSocket without allow_origins config rejects cross-origin requests.
+
+  Regression test for https://github.com/google/adk-python/issues/4947
+  """
+  client = _make_app(allow_origins=None)
+  url = "/run_live?app_name=test_app&user_id=user&session_id=session&modalities=TEXT"
+
+  # Simulate a cross-origin request by manually providing an Origin header
+  with pytest.raises(Exception) as exc_info:
+    client.websocket_connect(url, headers={"origin": "http://evil.com"})
+
+  # Connection should be rejected (1008 or connection error)
+  assert "1008" in str(exc_info.value) or "WebSocket" in str(type(exc_info.value).__name__)
+
+
+def test_websocket_accepts_same_origin_without_config():
+  """WebSocket without allow_origins accepts requests without Origin header (non-browser clients)."""
+  client = _make_app(allow_origins=None)
+  url = "/run_live?app_name=test_app&user_id=user&session_id=session&modalities=TEXT"
+
+  # No Origin header = non-browser client = allowed
+  with client.websocket_connect(url) as ws:
+    _ = ws.receive_text()
+
+
+def test_websocket_accepts_configured_origin():
+  """WebSocket accepts when origin matches the configured allow_origins list."""
+  client = _make_app(allow_origins=["http://localhost:8000"])
+  url = "/run_live?app_name=test_app&user_id=user&session_id=session&modalities=TEXT"
+
+  with client.websocket_connect(
+      url, headers={"origin": "http://localhost:8000"}
+  ) as ws:
+    _ = ws.receive_text()
+
+
+def test_websocket_rejects_unlisted_origin():
+  """WebSocket rejects when origin is not in the configured allow_origins list."""
+  client = _make_app(allow_origins=["http://localhost:8000"])
+  url = "/run_live?app_name=test_app&user_id=user&session_id=session&modalities=TEXT"
+
+  with pytest.raises(Exception) as exc_info:
+    client.websocket_connect(
+        url, headers={"origin": "http://evil.com"}
+    )
+
+  assert "1008" in str(exc_info.value) or "WebSocket" in str(type(exc_info.value).__name__)

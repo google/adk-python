@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from contextlib import asynccontextmanager
 import importlib
 import json
@@ -757,16 +758,25 @@ class AdkWebServer:
     # Run the FastAPI server.
     app = FastAPI(lifespan=internal_lifespan)
 
+    # Store parsed allow_origins for WebSocket Origin validation
+    # (CORS middleware doesn't apply to WebSocket upgrades)
+    _ws_allowed_origins: tuple[list[str], Optional[re.Pattern[str]], bool] = (
+        [],
+        None,
+        False,
+    )
     if allow_origins:
-      literal_origins, combined_regex = _parse_cors_origins(allow_origins)
+      literal_origins, combined_regex_str = _parse_cors_origins(allow_origins)
+      compiled_regex = re.compile(combined_regex_str) if combined_regex_str else None
       app.add_middleware(
           CORSMiddleware,
           allow_origins=literal_origins,
-          allow_origin_regex=combined_regex,
+          allow_origin_regex=combined_regex_str,
           allow_credentials=True,
           allow_methods=["*"],
           allow_headers=["*"],
       )
+      _ws_allowed_origins = (literal_origins, compiled_regex, True)
 
     @app.get("/health")
     async def health() -> dict[str, str]:
@@ -1802,6 +1812,24 @@ class AdkWebServer:
         enable_affective_dialog: bool | None = Query(default=None),
         enable_session_resumption: bool | None = Query(default=None),
     ) -> None:
+      # Validate Origin header to prevent cross-origin WebSocket hijacking.
+      # WebSocket connections are not protected by CORS, so we must validate
+      # the Origin ourselves. See https://github.com/google/adk-python/issues/4947
+      origin = websocket.headers.get("origin")
+      literal_origins, compiled_regex, origins_configured = _ws_allowed_origins
+      if origins_configured:
+        # CORS origins were configured: allow only listed origins
+        allowed = origin in literal_origins or (
+            compiled_regex and origin and compiled_regex.match(origin)
+        )
+      elif origin:
+        # No CORS config: only allow same-origin requests
+        allowed = False
+      else:
+        allowed = True  # No Origin header (non-browser client)
+      if not allowed:
+        await websocket.close(code=1008, reason="Origin not allowed")
+        return
       await websocket.accept()
 
       session = await self.session_service.get_session(
