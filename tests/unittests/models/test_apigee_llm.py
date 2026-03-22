@@ -34,6 +34,16 @@ VERTEX_BASE_MODEL_ID = 'gemini-pro'
 PROXY_URL = 'https://test.apigee.net'
 
 
+@pytest.fixture(autouse=True)
+def mock_google_auth_default():
+  """Mocks google.auth.default to avoid requiring real credentials in tests."""
+  with mock.patch(
+      'google.adk.models.apigee_llm.google.auth.default'
+  ) as mock_auth:
+    mock_auth.return_value = (mock.Mock(), 'test-project')
+    yield mock_auth
+
+
 @pytest.fixture
 def llm_request():
   """Provides a sample LlmRequest for testing."""
@@ -654,13 +664,12 @@ def test_parse_response_usage_metadata():
 
 @pytest.mark.asyncio
 @mock.patch('google.genai.Client')
-@mock.patch('google.adk.models.apigee_llm.google.auth.default')
 async def test_api_client_requests_userinfo_email_scope(
-    mock_auth_default, mock_client_constructor, llm_request
+    mock_client_constructor, llm_request, mock_google_auth_default
 ):
   """Tests that api_client requests userinfo.email scope for Apigee Gateway tokeninfo."""
   mock_credentials = mock.Mock()
-  mock_auth_default.return_value = (mock_credentials, 'test-project')
+  mock_google_auth_default.return_value = (mock_credentials, 'test-project')
 
   mock_client_instance = mock.Mock()
   mock_client_instance.aio.models.generate_content = AsyncMock(
@@ -683,7 +692,7 @@ async def test_api_client_requests_userinfo_email_scope(
   )
   _ = [resp async for resp in apigee_llm.generate_content_async(llm_request)]
 
-  mock_auth_default.assert_called_once_with(scopes=_APIGEE_SCOPES)
+  mock_google_auth_default.assert_called_once_with(scopes=_APIGEE_SCOPES)
 
   _, kwargs = mock_client_constructor.call_args
   assert kwargs['credentials'] is mock_credentials
