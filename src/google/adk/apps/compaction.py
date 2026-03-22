@@ -232,6 +232,10 @@ def _events_to_compact_for_token_threshold(
         event_retention_size=event_retention_size,
     )
     events_to_compact = candidate_events[:split_index]
+  pending_ids = _pending_function_call_ids(events)
+  events_to_compact = _truncate_events_before_pending_function_call(
+      events_to_compact, pending_ids
+  )
   if not events_to_compact:
     return []
 
@@ -271,6 +275,39 @@ def _event_function_response_ids(event: Event) -> set[str]:
     if function_response.id:
       function_response_ids.add(function_response.id)
   return function_response_ids
+
+
+def _pending_function_call_ids(events: list[Event]) -> set[str]:
+  """Returns function call IDs that have no matching response in the session.
+
+  Scans the session once, collecting function call IDs and response IDs, then
+  returns the call IDs that are not covered by any response. Events containing
+  these IDs represent pending (unanswered) function calls that must not be
+  compacted.
+  """
+  all_call_ids: set[str] = set()
+  all_response_ids: set[str] = set()
+  for event in events:
+    all_call_ids.update(_event_function_call_ids(event))
+    all_response_ids.update(_event_function_response_ids(event))
+
+  return all_call_ids - all_response_ids
+
+
+def _has_pending_function_call(event: Event, pending_ids: set[str]) -> bool:
+  """Returns True if the event contains any pending function call."""
+  call_ids = _event_function_call_ids(event)
+  return bool(call_ids and not call_ids.isdisjoint(pending_ids))
+
+
+def _truncate_events_before_pending_function_call(
+    events: list[Event], pending_ids: set[str]
+) -> list[Event]:
+  """Returns the leading contiguous events that avoid pending function calls."""
+  for index, event in enumerate(events):
+    if _has_pending_function_call(event, pending_ids):
+      return events[:index]
+  return events
 
 
 def _safe_token_compaction_split_index(
@@ -553,6 +590,10 @@ async def _run_compaction_for_sliding_window(
           for e in events_to_compact
           if not (e.actions and e.actions.compaction)
       ]
+      pending_ids = _pending_function_call_ids(events)
+      events_to_compact = _truncate_events_before_pending_function_call(
+          events_to_compact, pending_ids
+      )
 
   if not events_to_compact:
     return None
