@@ -38,8 +38,8 @@ from google.adk.models.lite_llm import _function_declaration_to_tool_param
 from google.adk.models.lite_llm import _get_completion_inputs
 from google.adk.models.lite_llm import _get_content
 from google.adk.models.lite_llm import _get_provider_from_model
-from google.adk.models.lite_llm import _is_anthropic_provider
 from google.adk.models.lite_llm import _is_anthropic_model
+from google.adk.models.lite_llm import _is_anthropic_provider
 from google.adk.models.lite_llm import _message_to_generate_content_response
 from google.adk.models.lite_llm import _MISSING_TOOL_RESULT_MESSAGE
 from google.adk.models.lite_llm import _model_response_to_chunk
