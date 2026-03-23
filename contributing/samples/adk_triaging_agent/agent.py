@@ -214,7 +214,7 @@ def assign_gtech_owner_to_issue(issue_number: int) -> dict[str, Any]:
 
   try:
     response = post_request(assignee_url, assignee_payload)
-    print("successfully assigned this issue to :"gtech_assignee)
+    print("successfully assigned this issue to :",gtech_assignee)
     print("url to post assignee",url)
   except requests.exceptions.RequestException as e:
     return error_response(f"Error: {e}")
