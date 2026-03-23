@@ -200,13 +200,22 @@ def assign_gtech_owner_to_issue(issue_number: int) -> dict[str, Any]:
 
  
   gtech_assignee = LABEL_TO_GTECH[issue_number % len(LABEL_TO_GTECH)]
+  if not gtech_assignee:
+    return {
+        "status": "warning",
+        "message": f"No gtech_assignee found, will add any assignee",
+    }  
   assignee_url = (
       f"{GITHUB_BASE_URL}/repos/{OWNER}/{REPO}/issues/{issue_number}/assignees"
   )
   assignee_payload = {"assignees": [gtech_assignee]}
+  print("assignee_payload:",assignee_payload)  
+
 
   try:
     response = post_request(assignee_url, assignee_payload)
+    print("successfully assigned this issue to :"gtech_assignee)
+    print("url to post assignee",url)
   except requests.exceptions.RequestException as e:
     return error_response(f"Error: {e}")
 
