@@ -311,7 +311,7 @@ root_agent = Agent(
            - Otherwise → do not change the issue type
 
       2. **If `needs_owner` is true**:
-         - Use `assign_gtech_owner_to_issue` to assign an owner based on the component label
+         - Use `assign_gtech_owner_to_issue` to assign an owner.
 
 
       Do NOT add a component label if `needs_component_label` is false.
