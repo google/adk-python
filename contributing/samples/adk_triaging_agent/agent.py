@@ -43,7 +43,7 @@ LABEL_TO_OWNER = {
 }
 
 
-LABEL_TO_GTECH = ["klateefa","llalitkumarrr","surajksharma07"]
+LABEL_TO_GTECH = ["klateefa", "llalitkumarrr", "surajksharma07"]
 
 LABEL_GUIDELINES = """
       Label rubric and disambiguation rules:
@@ -131,7 +131,6 @@ def list_untriaged_issues(issue_count: int) -> dict[str, Any]:
     # needs_owner = has_planned and not assignees
     needs_owner = not assignees
 
-
     # Include issue if it needs any action
     if needs_component_label or needs_owner:
       # issue["has_planned_label"] = has_planned
@@ -194,11 +193,7 @@ def assign_gtech_owner_to_issue(issue_number: int) -> dict[str, Any]:
   Returns:
     The status of this request, with the assigned owner when successful.
   """
-  print(
-      f"Attempting to assign GTech owner to issue #{issue_number}"
-  )
-
- 
+  print(f"Attempting to assign GTech owner to issue #{issue_number}")
   gtech_assignee = LABEL_TO_GTECH[issue_number % len(LABEL_TO_GTECH)]
   if not gtech_assignee:
     return {
@@ -208,12 +203,9 @@ def assign_gtech_owner_to_issue(issue_number: int) -> dict[str, Any]:
   assignee_url = (
       f"{GITHUB_BASE_URL}/repos/{OWNER}/{REPO}/issues/{issue_number}/assignees"
   )
-  assignee_payload = {"assignees": [gtech_assignee]}
-
 
   try:
     response = post_request(assignee_url, assignee_payload)
-    print("successfully assigned this issue to :",gtech_assignee)
   except requests.exceptions.RequestException as e:
     return error_response(f"Error: {e}")
 
@@ -340,7 +332,6 @@ root_agent = Agent(
     tools=[
         list_untriaged_issues,
         add_label_to_issue,
-        # add_owner_to_issue,
         assign_gtech_owner_to_issue,
         change_issue_type,
     ],
