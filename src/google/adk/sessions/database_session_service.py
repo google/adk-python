@@ -540,7 +540,7 @@ class DatabaseSessionService(BaseSessionService):
           pagination is not None
           and len(results) > pagination.effective_page_size
       )
-      if has_next_page:
+      if has_next_page and pagination is not None:
         results = results[: pagination.effective_page_size]
 
       # Fetch app state from storage
@@ -578,7 +578,7 @@ class DatabaseSessionService(BaseSessionService):
 
       next_page_token = (
           _encode_page_token(pagination.offset + pagination.effective_page_size)
-          if has_next_page
+          if has_next_page and pagination is not None
           else None
       )
       return ListSessionsResponse(

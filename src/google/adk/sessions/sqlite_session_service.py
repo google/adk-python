@@ -340,7 +340,7 @@ class SqliteSessionService(BaseSessionService):
           pagination is not None
           and len(session_rows) > pagination.effective_page_size
       )
-      if has_next_page:
+      if has_next_page and pagination is not None:
         session_rows = session_rows[: pagination.effective_page_size]
 
       # Fetch app state
@@ -379,7 +379,7 @@ class SqliteSessionService(BaseSessionService):
 
     next_page_token = (
         _encode_page_token(pagination.offset + pagination.effective_page_size)
-        if has_next_page
+        if has_next_page and pagination is not None
         else None
     )
     return ListSessionsResponse(
