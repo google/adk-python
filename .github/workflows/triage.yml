@@ -43,7 +43,7 @@ jobs:
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           GOOGLE_GENAI_USE_VERTEXAI: 0
           OWNER: ${{ secrets.REPOSITORY_OWNER }}
-          REPO: ${{ github.event.repository.name }}
+          REPO: ${{ secrets.REPO_NAME }}
           INTERACTIVE: 0
           EVENT_NAME: ${{ github.event_name }} # 'issues', 'schedule', etc.
           ISSUE_NUMBER: ${{ github.event.issue.number }}
