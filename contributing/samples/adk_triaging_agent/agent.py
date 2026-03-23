@@ -150,7 +150,6 @@ def list_untriaged_issues(issue_count: int) -> dict[str, Any]:
 
 def add_label_to_issue(issue_number: int, label: str) -> dict[str, Any]:
   """Add the specified component label to the given issue number.
-
   Args:
     issue_number: issue number of the GitHub issue.
     label: label to assign
@@ -203,7 +202,6 @@ def assign_gtech_owner_to_issue(issue_number: int) -> dict[str, Any]:
   assignee_url = (
       f"{GITHUB_BASE_URL}/repos/{OWNER}/{REPO}/issues/{issue_number}/assignees"
   )
-
   try:
     response = post_request(assignee_url, assignee_payload)
   except requests.exceptions.RequestException as e:
