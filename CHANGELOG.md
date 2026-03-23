@@ -1,6 +1,42 @@
 # Changelog
 
 
+## [1.28.0](https://github.com/google/adk-python/compare/v1.27.1...v1.28.0) (2026-03-23)
+
+
+### Features
+
+* Add a new extension for the new version of ADK-A2A integration ([6f0dcb3](https://github.com/google/adk-python/commit/6f0dcb3e26dd82fed1a8564c17a47eec03b04617))
+* Add database_role property to SpannerToolSettings and use it in execute_sql to support fine grained access controls ([360e0f7](https://github.com/google/adk-python/commit/360e0f7ebaba7a682f7230c259b474ace7ff6d13))
+* Add MultiTurn Task success metric ([9a75c06](https://github.com/google/adk-python/commit/9a75c06873b79fbd206b3712231c0280fb2f87ca))
+* Add MultiTurn Task trajectory and tool trajectory metrics ([38bfb44](https://github.com/google/adk-python/commit/38bfb4475406d63af3111775950d9c25acf17ed2))
+* Add Spanner Admin Toolset ([28618a8](https://github.com/google/adk-python/commit/28618a8dcbee9c4faeec6653a5d978d0330f39bb))
+* Add SSE streaming support to conformance tests ([c910961](https://github.com/google/adk-python/commit/c910961501ef559814f54c22aca1609fd3227b80))
+* Add support for Anthropic's thinking_blocks format in LiteLLM integration ([fc45fa6](https://github.com/google/adk-python/commit/fc45fa68d75fbf5276bf5951929026285a8bb4af)), closes [#4801](https://github.com/google/adk-python/issues/4801)
+* Add support for timeout to UnsafeLocalCodeExecutor ([71d26ef](https://github.com/google/adk-python/commit/71d26ef7b90fe25a5093e4ccdf74b103e64fac67))
+* Enhance AgentEngineSandboxCodeExecutor sample to automatically provision an Agent Engine if neither agent_engine_resource_name nor sandbox_resource_name is provided ([6c34694](https://github.com/google/adk-python/commit/6c34694da64968bc766a7e5e860c0ed9acbc69c2))
+* **mcp:** add sampling callback support for MCP sessions ([8f82697](https://github.com/google/adk-python/commit/8f826972cc06ef250c1f020e34b9d1cdbd0788c4))
+* Support new embedding model in files retrieval ([faafac9](https://github.com/google/adk-python/commit/faafac9bb33b45174f04746055fc655b12d3e7f7))
+
+
+### Bug Fixes
+
+* **bigquery:** use valid dataplex OAuth scope ([4010716](https://github.com/google/adk-python/commit/4010716470fc83918dc367c5971342ff551401c8))
+* **deps:** bump google-genai minimum to &gt;=1.64.0 for gemini-embedding-2-preview ([f8270c8](https://github.com/google/adk-python/commit/f8270c826bc807da99b4126e98ee1c505f4ed7c3))
+* Fix IDE hangs by moving test venv and cache to /tmp ([6f6fd95](https://github.com/google/adk-python/commit/6f6fd955f6dab50c98859294328a98f32181dc27))
+* **models:** update 429 docs link for Gemini ([a231c72](https://github.com/google/adk-python/commit/a231c729e6526a2035b4630796f3dc8a658bb203))
+* Prevent uv.lock modifications in unittests.sh ([e6476c9](https://github.com/google/adk-python/commit/e6476c9790eaa8f3a6ae8165351f8fe38bf9bd1e))
+* Remove redundant client_id from fetch_token call ([50d6f35](https://github.com/google/adk-python/commit/50d6f35139b56aa5b9fb06ee53b911269c222ffe)), closes [#4782](https://github.com/google/adk-python/issues/4782)
+* Store and retrieve usage_metadata in Vertex AI custom_metadata ([b318eee](https://github.com/google/adk-python/commit/b318eee979b1625d3d23ad98825c88f54016a12f))
+* Support resolving string annotations for `find_context_parameter` ([22fc332](https://github.com/google/adk-python/commit/22fc332c95b7deca95240b33406513bcc95c6e03))
+* **telemetery:** Rolling back change to fix issue affecting LlmAgent creation due to missing version field ([0e18f81](https://github.com/google/adk-python/commit/0e18f81a5cd0d0392ded653b1a63a236449a2685))
+
+
+### Documentation
+
+* Feat/Issue Monitoring Agent ([780093f](https://github.com/google/adk-python/commit/780093f389bfbffce965c89ca888d49f992219c1))
+* Use a dedicated API key for docs agents ([51c19cb](https://github.com/google/adk-python/commit/51c19cbc13c422dffd764ed0d7c664deed9e58b3))
+
 ## [1.27.1](https://github.com/google/adk-python/compare/v1.26.0...v1.27.0) (2026-03-13)
 ### Bug Fixes
   * Rolling back change to fix issue affecting LlmAgent creation due to missing version field ([0e18f81](https://github.com/google/adk-python/commit/0e18f81a5cd0d0392ded653b1a63a236449a2685))
