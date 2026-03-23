@@ -185,7 +185,7 @@ def assign_gtech_owner_to_issue(issue_number: int) -> dict[str, Any]:
   This is go to option irrespective of component label or planned label, as long as the issue needs an owner.
 
   All unassigned issues will be considered for GTech ownership. Unassigned issues will seperated in two categories: issues with type "Bug" and issues with type "Feature". Then bug issues and feature issues will be equally assigned to the Gtech members in such a way that every day all members get equal number of bug and feature issues.
-  
+
   Args:
     issue_number: issue number of the GitHub issue.
 
@@ -198,7 +198,7 @@ def assign_gtech_owner_to_issue(issue_number: int) -> dict[str, Any]:
     return {
         "status": "warning",
         "message": f"No gtech_assignee found, will add any assignee",
-    }  
+    }
   assignee_url = (
       f"{GITHUB_BASE_URL}/repos/{OWNER}/{REPO}/issues/{issue_number}/assignees"
   )
