@@ -1966,8 +1966,7 @@ class TestRemoteA2aAgentExecution:
         with patch.object(
             self.agent, "_construct_message_parts_from_session"
         ) as mock_construct:
-          mock_construct.return_value =([], None, None)  
-          # Tuple with empty parts and no context_id
+          mock_construct.return_value =([], None, None)  # Tuple with empty parts and no context_id
 
           events = []
           async for event in self.agent._run_async_impl(self.mock_context):
