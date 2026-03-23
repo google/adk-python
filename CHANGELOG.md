@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.28.0](https://github.com/google/adk-python/compare/v1.27.0...v1.28.0) (2026-03-23)
+
+
+### Bug Fixes
+
+* add protection for arbitrary module imports ([276adfb](https://github.com/google/adk-python/commit/276adfb7ad552213c0201a3c95efbc9876bf3b66)), closes [#4947](https://github.com/google/adk-python/issues/4947)
+* **bigquery:** use valid dataplex OAuth scope ([1111e3a](https://github.com/google/adk-python/commit/1111e3a90d13f716cf1bee7ad37299fa715505d5))
+* Store and retrieve usage_metadata in Vertex AI custom_metadata ([52351ae](https://github.com/google/adk-python/commit/52351ae2efd6d8f5ecafc4bda622f5115aef3795))
+* **telemetery:** Rolling back change to fix issue affecting LlmAgent creation due to missing version field ([9dd5e66](https://github.com/google/adk-python/commit/9dd5e66191708a38f0371f866800c59041f9662e))
+
 ## [1.27.0](https://github.com/google/adk-python/compare/v1.26.0...v1.27.0) (2026-03-12)  
 
 ### Features
