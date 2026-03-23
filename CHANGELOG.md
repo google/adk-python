@@ -1,14 +1,18 @@
 # Changelog
 
-## [1.28.0](https://github.com/google/adk-python/compare/v1.27.0...v1.28.0) (2026-03-23)
-
-
+## [1.27.3](https://github.com/google/adk-python/compare/v1.27.2...v1.27.3) (2026-03-23)
 ### Bug Fixes
+  * add protection for arbitrary module imports ([276adfb](https://github.com/google/adk-python/commit/276adfb7ad552213c0201a3c95efbc9876bf3b66))
 
-* add protection for arbitrary module imports ([276adfb](https://github.com/google/adk-python/commit/276adfb7ad552213c0201a3c95efbc9876bf3b66)), closes [#4947](https://github.com/google/adk-python/issues/4947)
-* **bigquery:** use valid dataplex OAuth scope ([1111e3a](https://github.com/google/adk-python/commit/1111e3a90d13f716cf1bee7ad37299fa715505d5))
-* Store and retrieve usage_metadata in Vertex AI custom_metadata ([52351ae](https://github.com/google/adk-python/commit/52351ae2efd6d8f5ecafc4bda622f5115aef3795))
-* **telemetery:** Rolling back change to fix issue affecting LlmAgent creation due to missing version field ([9dd5e66](https://github.com/google/adk-python/commit/9dd5e66191708a38f0371f866800c59041f9662e))
+## [1.27.2](https://github.com/google/adk-python/compare/v1.27.1...v1.27.2) (2026-03-17)
+### Bug Fixes
+  * Use valid dataplex OAuth scope for BigQueryToolset ([4010716](https://github.com/google/adk-python/commit/4010716470fc83918dc367c5971342ff551401c8))
+  * Store and retrieve usage_metadata in Vertex AI custom_metadata ([b318eee](https://github.com/google/adk-python/commit/b318eee979b1625d3d23ad98825c88f54016a12f))
+
+## [1.27.1](https://github.com/google/adk-python/compare/v1.27.0...v1.27.1) (2026-03-13)
+### Bug Fixes
+  * Rolling back change to fix issue affecting LlmAgent creation due to missing version field ([0e18f81](https://github.com/google/adk-python/commit/0e18f81a5cd0d0392ded653b1a63a236449a2685))
+
 
 ## [1.27.0](https://github.com/google/adk-python/compare/v1.26.0...v1.27.0) (2026-03-12)  
 
