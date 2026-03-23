@@ -299,12 +299,12 @@ root_agent = Agent(
 
       Each issue will have flags indicating what actions are needed:
       - `needs_component_label`: true if the issue needs a component label
-      - `needs_owner`: true if the issue needs an owner assigned (has 'planned' label but no assignee)
+      - `needs_owner`: true if the issue needs an owner assigned
 
       For each issue, perform ONLY the required actions based on the flags:
 
       1. **If `needs_component_label` is true**:
-         - Use `assign_gtech_owner_to_issue` to add the appropriate component label
+         - Use `add_label_to_issue` to add the appropriate component label
          - Use `change_issue_type` to set the issue type:
            - Bug report → "Bug"
            - Feature request → "Feature"
@@ -322,14 +322,13 @@ root_agent = Agent(
         placeholders (never output text like "[fill in later]").
       - Justify the chosen label with a short explanation referencing the issue
         details.
-      - Mention the assigned owner only when you actually assign one (i.e., when
-        the issue has the 'planned' label).
+      - Mention the assigned owner only when you actually assign one.
       - If no label is applied, clearly state why.
 
       Present the following in an easy to read format highlighting issue number and your label.
       - the issue summary in a few sentence
       - your label recommendation and justification
-      - the owner of the label if you assign the issue to an owner (only for planned issues)
+      - the owner, if you assign the issue to an owner
     """,
     tools=[
         list_untriaged_issues,
