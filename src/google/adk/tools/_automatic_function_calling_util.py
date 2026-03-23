@@ -18,6 +18,7 @@ import collections.abc
 import inspect
 from types import FunctionType
 import typing
+from typing import Annotated
 from typing import Any
 from typing import Callable
 from typing import Dict
@@ -31,6 +32,7 @@ import pydantic
 from pydantic import BaseModel
 from pydantic import create_model
 from pydantic import fields as pydantic_fields
+from pydantic.fields import FieldInfo
 
 from . import _function_parameter_parse_util
 from . import _function_tool_declarations
@@ -39,62 +41,116 @@ from ..features import is_feature_enabled
 from ..utils.variant_utils import GoogleLLMVariant
 
 _py_type_2_schema_type = {
-    'str': types.Type.STRING,
-    'int': types.Type.INTEGER,
-    'float': types.Type.NUMBER,
-    'bool': types.Type.BOOLEAN,
-    'string': types.Type.STRING,
-    'integer': types.Type.INTEGER,
-    'number': types.Type.NUMBER,
-    'boolean': types.Type.BOOLEAN,
-    'list': types.Type.ARRAY,
-    'array': types.Type.ARRAY,
-    'tuple': types.Type.ARRAY,
-    'object': types.Type.OBJECT,
-    'Dict': types.Type.OBJECT,
-    'List': types.Type.ARRAY,
-    'Tuple': types.Type.ARRAY,
-    'Any': types.Type.TYPE_UNSPECIFIED,
+    "str": types.Type.STRING,
+    "int": types.Type.INTEGER,
+    "float": types.Type.NUMBER,
+    "bool": types.Type.BOOLEAN,
+    "string": types.Type.STRING,
+    "integer": types.Type.INTEGER,
+    "number": types.Type.NUMBER,
+    "boolean": types.Type.BOOLEAN,
+    "list": types.Type.ARRAY,
+    "array": types.Type.ARRAY,
+    "tuple": types.Type.ARRAY,
+    "object": types.Type.OBJECT,
+    "Dict": types.Type.OBJECT,
+    "List": types.Type.ARRAY,
+    "Tuple": types.Type.ARRAY,
+    "Any": types.Type.TYPE_UNSPECIFIED,
 }
 
 
+def _extract_field_info_from_annotated(
+    annotation: Any,
+) -> Optional[FieldInfo]:
+  """Extract pydantic FieldInfo from Annotated[T, Field(...)] if present.
+
+  Args:
+    annotation: The type annotation to inspect.
+
+  Returns:
+    The FieldInfo instance if found in Annotated metadata, None otherwise.
+  """
+  if get_origin(annotation) is Annotated:
+    for metadata in get_args(annotation)[1:]:
+      if isinstance(metadata, FieldInfo):
+        return metadata
+  return None
+
+
+def _extract_base_type_from_annotated(annotation: Any) -> Any:
+  """Extract the base type from Annotated[T, ...].
+
+  Args:
+    annotation: The type annotation to unwrap.
+
+  Returns:
+    The base type T if annotation is Annotated[T, ...], otherwise the original
+    annotation.
+  """
+  if get_origin(annotation) is Annotated:
+    return get_args(annotation)[0]
+  return annotation
+
+
 def _get_fields_dict(func: Callable) -> Dict:
+  """Build a dictionary of field definitions for Pydantic model creation.
+
+  This function extracts parameter information from a callable and creates
+  field definitions compatible with Pydantic's create_model. It supports
+  parameter descriptions via Annotated[T, Field(description=...)] syntax.
+
+  Args:
+    func: The callable to extract parameters from.
+
+  Returns:
+    A dictionary mapping parameter names to (type, FieldInfo) tuples.
+  """
   param_signature = dict(inspect.signature(func).parameters)
-  fields_dict = {
-      name: (
-          # 1. We infer the argument type here: use Any rather than None so
-          # it will not try to auto-infer the type based on the default value.
-          (
-              param.annotation
-              if param.annotation != inspect.Parameter.empty
-              else Any
-          ),
-          pydantic.Field(
-              # 2. We do not support default values for now.
-              default=(
-                  param.default
-                  if param.default != inspect.Parameter.empty
-                  # ! Need to use Undefined instead of None
-                  else pydantic_fields.PydanticUndefined
-              ),
-              # 3. Do not support parameter description for now.
-              description=None,
-          ),
-      )
-      for name, param in param_signature.items()
-      # We do not support *args or **kwargs
-      if param.kind
-      in (
-          inspect.Parameter.POSITIONAL_OR_KEYWORD,
-          inspect.Parameter.KEYWORD_ONLY,
-          inspect.Parameter.POSITIONAL_ONLY,
-      )
-  }
+  fields_dict = {}
+
+  for name, param in param_signature.items():
+    # We do not support *args or **kwargs
+    if param.kind not in (
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        inspect.Parameter.KEYWORD_ONLY,
+        inspect.Parameter.POSITIONAL_ONLY,
+    ):
+      continue
+
+    annotation = (
+        param.annotation if param.annotation != inspect.Parameter.empty else Any
+    )
+
+    # Extract FieldInfo from Annotated[T, Field(...)] if present
+    field_info = _extract_field_info_from_annotated(annotation)
+
+    # Extract the base type from Annotated[T, ...] for the model field
+    base_type = _extract_base_type_from_annotated(annotation)
+
+    # Determine the default value
+    default = (
+        param.default
+        if param.default != inspect.Parameter.empty
+        else pydantic_fields.PydanticUndefined
+    )
+
+    # Get description from FieldInfo if available
+    description = field_info.description if field_info else None
+
+    fields_dict[name] = (
+        base_type,
+        pydantic.Field(
+            default=default,
+            description=description,
+        ),
+    )
+
   return fields_dict
 
 
 def _annotate_nullable_fields(schema: Dict):
-  for _, property_schema in schema.get('properties', {}).items():
+  for _, property_schema in schema.get("properties", {}).items():
     # for Optional[T], the pydantic schema is:
     # {
     #   "type": "object",
@@ -109,45 +165,45 @@ def _annotate_nullable_fields(schema: Dict):
     #     ]
     #   }
     # }
-    for type_ in property_schema.get('anyOf', []):
-      if type_.get('type') == 'null':
-        property_schema['nullable'] = True
-        property_schema['anyOf'].remove(type_)
+    for type_ in property_schema.get("anyOf", []):
+      if type_.get("type") == "null":
+        property_schema["nullable"] = True
+        property_schema["anyOf"].remove(type_)
         break
 
 
 def _annotate_required_fields(schema: Dict):
   required = [
       field_name
-      for field_name, field_schema in schema.get('properties', {}).items()
-      if not field_schema.get('nullable') and 'default' not in field_schema
+      for field_name, field_schema in schema.get("properties", {}).items()
+      if not field_schema.get("nullable") and "default" not in field_schema
   ]
-  schema['required'] = required
+  schema["required"] = required
 
 
 def _remove_any_of(schema: Dict):
-  for _, property_schema in schema.get('properties', {}).items():
-    union_types = property_schema.pop('anyOf', None)
+  for _, property_schema in schema.get("properties", {}).items():
+    union_types = property_schema.pop("anyOf", None)
     # Take the first non-null type.
     if union_types:
       for type_ in union_types:
-        if type_.get('type') != 'null':
+        if type_.get("type") != "null":
           property_schema.update(type_)
 
 
 def _remove_default(schema: Dict):
-  for _, property_schema in schema.get('properties', {}).items():
-    property_schema.pop('default', None)
+  for _, property_schema in schema.get("properties", {}).items():
+    property_schema.pop("default", None)
 
 
 def _remove_nullable(schema: Dict):
-  for _, property_schema in schema.get('properties', {}).items():
-    property_schema.pop('nullable', None)
+  for _, property_schema in schema.get("properties", {}).items():
+    property_schema.pop("nullable", None)
 
 
 def _remove_title(schema: Dict):
-  for _, property_schema in schema.get('properties', {}).items():
-    property_schema.pop('title', None)
+  for _, property_schema in schema.get("properties", {}).items():
+    property_schema.pop("title", None)
 
 
 def _get_pydantic_schema(func: Callable) -> Dict:
@@ -155,7 +211,7 @@ def _get_pydantic_schema(func: Callable) -> Dict:
 
   fields_dict = _get_fields_dict(func)
   # Remove context parameter (detected by type or fallback to 'tool_context' name)
-  context_param = find_context_parameter(func) or 'tool_context'
+  context_param = find_context_parameter(func) or "tool_context"
   if context_param in fields_dict.keys():
     fields_dict.pop(context_param)
   return pydantic.create_model(func.__name__, **fields_dict).model_json_schema()
@@ -173,24 +229,24 @@ def _process_pydantic_schema(vertexai: bool, schema: Dict) -> Dict:
 
 
 def _map_pydantic_type_to_property_schema(property_schema: Dict):
-  if 'type' in property_schema:
-    property_schema['type'] = _py_type_2_schema_type.get(
-        property_schema['type'], 'TYPE_UNSPECIFIED'
+  if "type" in property_schema:
+    property_schema["type"] = _py_type_2_schema_type.get(
+        property_schema["type"], "TYPE_UNSPECIFIED"
     )
-    if property_schema['type'] == 'ARRAY':
-      _map_pydantic_type_to_property_schema(property_schema['items'])
-  for type_ in property_schema.get('anyOf', []):
-    if 'type' in type_:
-      type_['type'] = _py_type_2_schema_type.get(
-          type_['type'], 'TYPE_UNSPECIFIED'
+    if property_schema["type"] == "ARRAY":
+      _map_pydantic_type_to_property_schema(property_schema["items"])
+  for type_ in property_schema.get("anyOf", []):
+    if "type" in type_:
+      type_["type"] = _py_type_2_schema_type.get(
+          type_["type"], "TYPE_UNSPECIFIED"
       )
       # TODO: To investigate. Unclear why a Type is needed with 'anyOf' to
       # avoid google.genai.errors.ClientError: 400 INVALID_ARGUMENT.
-      property_schema['type'] = type_['type']
+      property_schema["type"] = type_["type"]
 
 
 def _map_pydantic_type_to_schema_type(schema: Dict):
-  for _, property_schema in schema.get('properties', {}).items():
+  for _, property_schema in schema.get("properties", {}).items():
     _map_pydantic_type_to_property_schema(property_schema)
 
 
@@ -266,13 +322,13 @@ def build_function_declaration_for_langchain(
     vertexai: bool, name, description, func, param_pydantic_schema
 ) -> types.FunctionDeclaration:
   param_pydantic_schema = _process_pydantic_schema(
-      vertexai, {'properties': param_pydantic_schema}
-  )['properties']
+      vertexai, {"properties": param_pydantic_schema}
+  )["properties"]
   param_copy = param_pydantic_schema.copy()
-  required_fields = param_copy.pop('required', [])
+  required_fields = param_copy.pop("required", [])
   before_param_pydantic_schema = {
-      'properties': param_copy,
-      'required': required_fields,
+      "properties": param_copy,
+      "required": required_fields,
   }
   return build_function_declaration_util(
       vertexai, name, description, func, before_param_pydantic_schema
@@ -295,10 +351,10 @@ def build_function_declaration_util(
     vertexai: bool, name, description, func, before_param_pydantic_schema
 ) -> types.FunctionDeclaration:
   _map_pydantic_type_to_schema_type(before_param_pydantic_schema)
-  properties = before_param_pydantic_schema.get('properties', {})
+  properties = before_param_pydantic_schema.get("properties", {})
   function_declaration = types.FunctionDeclaration(
       parameters=types.Schema(
-          type='OBJECT',
+          type="OBJECT",
           properties=properties,
       )
       if properties
@@ -317,7 +373,7 @@ def build_function_declaration_util(
 def from_function_with_options(
     func: Callable,
     variant: GoogleLLMVariant = GoogleLLMVariant.GEMINI_API,
-) -> 'types.FunctionDeclaration':
+) -> "types.FunctionDeclaration":
 
   parameters_properties = {}
   parameters_json_schema = {}
@@ -379,7 +435,7 @@ def from_function_with_options(
   )
   if parameters_properties:
     declaration.parameters = types.Schema(
-        type='OBJECT',
+        type="OBJECT",
         properties=parameters_properties,
     )
     declaration.parameters.required = (
@@ -389,7 +445,7 @@ def from_function_with_options(
     )
   elif parameters_json_schema:
     declaration.parameters = types.Schema(
-        type='OBJECT',
+        type="OBJECT",
         properties=parameters_json_schema,
     )
 
@@ -416,7 +472,7 @@ def from_function_with_options(
   if return_annotation is inspect._empty:
     # Functions with no return annotation can return any type
     return_value = inspect.Parameter(
-        'return_value',
+        "return_value",
         inspect.Parameter.POSITIONAL_OR_KEYWORD,
         annotation=typing.Any,
     )
@@ -433,11 +489,11 @@ def from_function_with_options(
   if (
       return_annotation is None
       or return_annotation is type(None)
-      or (isinstance(return_annotation, str) and return_annotation == 'None')
+      or (isinstance(return_annotation, str) and return_annotation == "None")
   ):
     # Create a response schema for None/null return
     return_value = inspect.Parameter(
-        'return_value',
+        "return_value",
         inspect.Parameter.POSITIONAL_OR_KEYWORD,
         annotation=None,
     )
@@ -451,13 +507,13 @@ def from_function_with_options(
     return declaration
 
   return_value = inspect.Parameter(
-      'return_value',
+      "return_value",
       inspect.Parameter.POSITIONAL_OR_KEYWORD,
       annotation=return_annotation,
   )
   if isinstance(return_value.annotation, str):
     return_value = return_value.replace(
-        annotation=typing.get_type_hints(func)['return']
+        annotation=typing.get_type_hints(func)["return"]
     )
 
   response_schema: Optional[types.Schema] = None
