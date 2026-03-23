@@ -15,7 +15,7 @@ jobs:
     # - New issues (need component labeling)
     # - Issues labeled with "planned" (need owner assignment)
     if: >-
-      github.repository == 'llalitkumarrr/adk-python' && (
+      github.repository == 'google/adk-python' && (
         github.event_name == 'schedule' ||
         github.event.action == 'opened' 
       )
