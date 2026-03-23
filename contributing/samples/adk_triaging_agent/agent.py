@@ -43,7 +43,7 @@ LABEL_TO_OWNER = {
 }
 
 
-LABEL_TO_GTECH = ["llalitkumarrr","surajksharma07","klateefa"]
+LABEL_TO_GTECH = ["klateefa","llalitkumarrr","surajksharma07"]
 
 LABEL_GUIDELINES = """
       Label rubric and disambiguation rules:
@@ -199,11 +199,11 @@ def assign_gtech_owner_to_issue(issue_number: int) -> dict[str, Any]:
   )
 
  
-  owner = LABEL_TO_GTECH[issue_number % len(LABEL_TO_GTECH)]
+  gtech_assignee = LABEL_TO_GTECH[issue_number % len(LABEL_TO_GTECH)]
   assignee_url = (
       f"{GITHUB_BASE_URL}/repos/{OWNER}/{REPO}/issues/{issue_number}/assignees"
   )
-  assignee_payload = {"assignees": [owner]}
+  assignee_payload = {"assignees": [gtech_assignee]}
 
   try:
     response = post_request(assignee_url, assignee_payload)
@@ -213,7 +213,7 @@ def assign_gtech_owner_to_issue(issue_number: int) -> dict[str, Any]:
   return {
       "status": "success",
       "message": response,
-      "assigned_owner": owner,
+      "assigned_owner": gtech_assignee,
   }
 
 
