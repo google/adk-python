@@ -27,6 +27,8 @@ from typing import Optional
 
 import click
 from fastapi import FastAPI
+from fastapi import HTTPException
+from fastapi import Request
 from fastapi import UploadFile
 from fastapi.responses import FileResponse
 from fastapi.responses import PlainTextResponse
@@ -266,6 +268,30 @@ def get_fast_api_app(
       **extra_fast_api_args,
   )
 
+  _builder_allowed_origins: set[str] = {f"http://{host}:{port}"}
+  if host in ("0.0.0.0", "127.0.0.1", "localhost", "::1", "::"):
+    _builder_allowed_origins.update({
+        f"http://localhost:{port}",
+        f"http://127.0.0.1:{port}",
+    })
+  _builder_origin_check_enabled = True
+  if allow_origins:
+    for origin in allow_origins:
+      if origin == "*":
+        _builder_origin_check_enabled = False
+        break
+      if not origin.startswith("regex:"):
+        _builder_allowed_origins.add(origin)
+
+  def _check_origin(request: Request) -> None:
+    if not _builder_origin_check_enabled:
+      return
+    origin = request.headers.get("origin")
+    if origin and origin not in _builder_allowed_origins:
+      raise HTTPException(
+          status_code=403, detail=f"Origin not allowed: {origin}"
+      )
+
   agents_base_path = (Path.cwd() / agents_dir).resolve()
 
   def _get_app_root(app_name: str) -> Path:
@@ -406,8 +432,11 @@ def get_fast_api_app(
 
   @app.post("/builder/save", response_model_exclude_none=True)
   async def builder_build(
-      files: list[UploadFile], tmp: Optional[bool] = False
+      request: Request,
+      files: list[UploadFile],
+      tmp: Optional[bool] = False,
   ) -> bool:
+    _check_origin(request)
     try:
       if tmp:
         app_names = set()
@@ -472,7 +501,8 @@ def get_fast_api_app(
       return False
 
   @app.post("/builder/app/{app_name}/cancel", response_model_exclude_none=True)
-  async def builder_cancel(app_name: str) -> bool:
+  async def builder_cancel(request: Request, app_name: str) -> bool:
+    _check_origin(request)
     return cleanup_tmp(app_name)
 
   @app.get(

@@ -1658,6 +1658,59 @@ def test_builder_save_rejects_traversal(builder_test_client, tmp_path):
   assert not (tmp_path / "app" / "tmp" / "escape.yaml").exists()
 
 
+@pytest.fixture
+def csrf_test_client(
+    tmp_path,
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  return _create_test_client(
+      mock_session_service,
+      mock_artifact_service,
+      mock_memory_service,
+      mock_agent_loader,
+      mock_eval_sets_manager,
+      mock_eval_set_results_manager,
+      allow_origins=None,
+  )
+
+
+def test_builder_save_rejects_cross_origin(csrf_test_client):
+  response = csrf_test_client.post(
+      "/builder/save",
+      files=[
+          ("files", ("app/agent.yaml", b"name: test\n", "application/x-yaml"))
+      ],
+      headers={"Origin": "http://evil.com"},
+  )
+  assert response.status_code == 403
+
+
+def test_builder_save_allows_same_origin(csrf_test_client):
+  response = csrf_test_client.post(
+      "/builder/save",
+      files=[
+          ("files", ("app/agent.yaml", b"name: test\n", "application/x-yaml"))
+      ],
+      headers={"Origin": "http://127.0.0.1:8000"},
+  )
+  assert response.status_code != 403
+
+
+def test_builder_save_allows_no_origin(csrf_test_client):
+  response = csrf_test_client.post(
+      "/builder/save",
+      files=[
+          ("files", ("app/agent.yaml", b"name: test\n", "application/x-yaml"))
+      ],
+  )
+  assert response.status_code != 403
+
+
 def test_agent_run_resume_without_message_success(
     test_app, create_test_session
 ):
