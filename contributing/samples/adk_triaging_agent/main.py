@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 import asyncio
 import time
 
@@ -56,7 +57,6 @@ async def fetch_specific_issue_details(issue_number: int):
 
     # Determine what actions are needed
     needs_component_label = not has_component
-    # needs_owner = has_planned and not has_assignee
     needs_owner = not has_assignee
 
     if needs_component_label or needs_owner:
