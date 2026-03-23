@@ -1481,3 +1481,68 @@ async def test_append_event_locks_only_scopes_with_deltas(
   finally:
     database_session_service._select_required_state = original_fn
     await service.close()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_create_session_no_unique_violation():
+  """Concurrent create_session calls for the same app_name must not raise.
+
+  Regression test for https://github.com/google/adk-python/issues/4954.
+  Before the fix, the SELECT-then-INSERT pattern on app_states/user_states
+  caused UniqueViolation when multiple tasks raced to initialise the same
+  app_name on a fresh database.
+  """
+  service = DatabaseSessionService('sqlite+aiosqlite:///:memory:')
+  try:
+    app_name = 'race_test_app'
+    num_concurrent = 10
+
+    # Spawn many concurrent create_session calls for the same app_name
+    # but different user_ids — all will try to INSERT the same app_states row.
+    sessions = await asyncio.gather(
+        *[
+            service.create_session(
+                app_name=app_name,
+                user_id=f'user_{i}',
+            )
+            for i in range(num_concurrent)
+        ]
+    )
+
+    # All sessions should have been created successfully (no exceptions)
+    assert len(sessions) == num_concurrent
+    for i, session in enumerate(sessions):
+      assert session.app_name == app_name
+      assert session.user_id == f'user_{i}'
+  finally:
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_create_session_same_user_no_unique_violation():
+  """Concurrent create_session for same app_name AND user_id must not raise.
+
+  This tests the user_states race condition (same composite key).
+  """
+  service = DatabaseSessionService('sqlite+aiosqlite:///:memory:')
+  try:
+    app_name = 'race_test_app'
+    user_id = 'shared_user'
+    num_concurrent = 10
+
+    sessions = await asyncio.gather(
+        *[
+            service.create_session(
+                app_name=app_name,
+                user_id=user_id,
+            )
+            for i in range(num_concurrent)
+        ]
+    )
+
+    assert len(sessions) == num_concurrent
+    for session in sessions:
+      assert session.app_name == app_name
+      assert session.user_id == user_id
+  finally:
+    await service.close()

@@ -28,6 +28,8 @@ from google.adk.platform import time as platform_time
 from sqlalchemy import delete
 from sqlalchemy import event
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import ArgumentError
 from sqlalchemy.ext.asyncio import async_sessionmaker
@@ -359,6 +361,70 @@ class DatabaseSessionService(BaseSessionService):
     latest_storage_event_id = result.scalar_one_or_none()
     return latest_storage_event_id == session.events[-1].id
 
+  async def _ensure_state_rows(
+      self,
+      *,
+      sql_session: DatabaseSessionFactory,
+      schema: _SchemaClasses,
+      app_name: str,
+      user_id: str,
+  ) -> None:
+    """Ensure app_states and user_states rows exist, creating them atomically.
+
+    Uses INSERT ... ON CONFLICT DO NOTHING (PostgreSQL/SQLite) to avoid
+    UniqueViolation errors when multiple concurrent create_session calls
+    race to insert the same app_name or (app_name, user_id) row.
+    """
+    dialect_name = self.db_engine.dialect.name
+
+    if dialect_name == _POSTGRESQL_DIALECT:
+      app_stmt = (
+          pg_insert(schema.StorageAppState)
+          .values(app_name=app_name, state={})
+          .on_conflict_do_nothing(index_elements=["app_name"])
+      )
+      user_stmt = (
+          pg_insert(schema.StorageUserState)
+          .values(app_name=app_name, user_id=user_id, state={})
+          .on_conflict_do_nothing(
+              index_elements=["app_name", "user_id"]
+          )
+      )
+    elif dialect_name == _SQLITE_DIALECT:
+      app_stmt = (
+          sqlite_insert(schema.StorageAppState)
+          .values(app_name=app_name, state={})
+          .on_conflict_do_nothing()
+      )
+      user_stmt = (
+          sqlite_insert(schema.StorageUserState)
+          .values(app_name=app_name, user_id=user_id, state={})
+          .on_conflict_do_nothing()
+      )
+    else:
+      # Fallback for other dialects: use the original get-then-add pattern.
+      # This is not race-safe but maintains backward compatibility.
+      storage_app_state = await sql_session.get(
+          schema.StorageAppState, (app_name)
+      )
+      if not storage_app_state:
+        sql_session.add(
+            schema.StorageAppState(app_name=app_name, state={})
+        )
+      storage_user_state = await sql_session.get(
+          schema.StorageUserState, (app_name, user_id)
+      )
+      if not storage_user_state:
+        sql_session.add(
+            schema.StorageUserState(
+                app_name=app_name, user_id=user_id, state={}
+            )
+        )
+      return
+
+    await sql_session.execute(app_stmt)
+    await sql_session.execute(user_stmt)
+
   @override
   async def create_session(
       self,
@@ -382,23 +448,23 @@ class DatabaseSessionService(BaseSessionService):
         raise AlreadyExistsError(
             f"Session with id {session_id} already exists."
         )
-      # Fetch app and user states from storage
+      # Ensure app and user state rows exist using INSERT ... ON CONFLICT
+      # DO NOTHING to avoid race conditions under concurrent
+      # create_session calls for the same app_name/user_id.
+      await self._ensure_state_rows(
+          sql_session=sql_session,
+          schema=schema,
+          app_name=app_name,
+          user_id=user_id,
+      )
+
+      # Fetch the (now guaranteed to exist) state rows
       storage_app_state = await sql_session.get(
           schema.StorageAppState, (app_name)
       )
       storage_user_state = await sql_session.get(
           schema.StorageUserState, (app_name, user_id)
       )
-
-      # Create state tables if not exist
-      if not storage_app_state:
-        storage_app_state = schema.StorageAppState(app_name=app_name, state={})
-        sql_session.add(storage_app_state)
-      if not storage_user_state:
-        storage_user_state = schema.StorageUserState(
-            app_name=app_name, user_id=user_id, state={}
-        )
-        sql_session.add(storage_user_state)
 
       # Extract state deltas
       state_deltas = _session_util.extract_state_delta(state)
