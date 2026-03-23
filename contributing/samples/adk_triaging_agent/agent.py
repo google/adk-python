@@ -209,13 +209,11 @@ def assign_gtech_owner_to_issue(issue_number: int) -> dict[str, Any]:
       f"{GITHUB_BASE_URL}/repos/{OWNER}/{REPO}/issues/{issue_number}/assignees"
   )
   assignee_payload = {"assignees": [gtech_assignee]}
-  print("assignee_payload:",assignee_payload)  
 
 
   try:
     response = post_request(assignee_url, assignee_payload)
     print("successfully assigned this issue to :",gtech_assignee)
-    print("url to post assignee",assignee_url)
   except requests.exceptions.RequestException as e:
     return error_response(f"Error: {e}")
 
