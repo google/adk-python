@@ -282,6 +282,9 @@ class VertexAiSessionService(BaseSessionService):
               k: json.loads(v.model_dump_json(exclude_none=True, by_alias=True))
               for k, v in event.actions.requested_auth_configs.items()
           },
+          'rewind_before_invocation_id': (
+              event.actions.rewind_before_invocation_id
+          ),
           # TODO: add requested_tool_confirmations, agent_state once
           # they are available in the API.
           # Note: compaction is stored via event_metadata.custom_metadata.

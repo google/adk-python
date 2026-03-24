@@ -831,6 +831,33 @@ async def test_append_event():
 
 @pytest.mark.asyncio
 @pytest.mark.usefixtures('mock_get_api_client')
+async def test_append_event_with_rewind():
+  """rewind_before_invocation_id round-trips through append_event and get_session."""
+  session_service = mock_vertex_ai_session_service()
+  session = await session_service.get_session(
+      app_name='123', user_id='user', session_id='1'
+  )
+  event_to_append = Event(
+      invocation_id='rewind_invocation',
+      author='model',
+      timestamp=1734005533.0,
+      actions=EventActions(
+          rewind_before_invocation_id='target_invocation',
+      ),
+  )
+
+  await session_service.append_event(session, event_to_append)
+
+  retrieved_session = await session_service.get_session(
+      app_name='123', user_id='user', session_id='1'
+  )
+
+  appended_event = retrieved_session.events[-1]
+  assert appended_event.actions.rewind_before_invocation_id == 'target_invocation'
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_get_api_client')
 async def test_append_event_with_compaction():
   """Compaction data round-trips through append_event and get_session."""
   session_service = mock_vertex_ai_session_service()
