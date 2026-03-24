@@ -291,9 +291,20 @@ class BaseAgent(BaseModel):
       if ctx.end_invocation:
         return
 
-      async with Aclosing(self._run_async_impl(ctx)) as agen:
-        async for event in agen:
-          yield event
+      try:
+        async with Aclosing(self._run_async_impl(ctx)) as agen:
+          async for event in agen:
+            yield event
+      except Exception as agent_error:
+        # Notify plugins that this agent run failed before re-raising.
+        # after_agent_callback is intentionally skipped so plugins can
+        # distinguish a clean completion from a fatal failure.
+        await ctx.plugin_manager.run_on_agent_error_callback(
+            agent=self,
+            callback_context=CallbackContext(ctx),
+            error=agent_error,
+        )
+        raise
 
       if ctx.end_invocation:
         return
@@ -323,9 +334,18 @@ class BaseAgent(BaseModel):
       if ctx.end_invocation:
         return
 
-      async with Aclosing(self._run_live_impl(ctx)) as agen:
-        async for event in agen:
-          yield event
+      try:
+        async with Aclosing(self._run_live_impl(ctx)) as agen:
+          async for event in agen:
+            yield event
+      except Exception as agent_error:
+        # Notify plugins that this live agent run failed before re-raising.
+        await ctx.plugin_manager.run_on_agent_error_callback(
+            agent=self,
+            callback_context=CallbackContext(ctx),
+            error=agent_error,
+        )
+        raise
 
       if event := await self._handle_after_agent_callback(ctx):
         yield event

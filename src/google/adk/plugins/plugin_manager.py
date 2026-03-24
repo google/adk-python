@@ -52,6 +52,8 @@ PluginCallbackName = Literal[
     "after_model_callback",
     "on_tool_error_callback",
     "on_model_error_callback",
+    "on_agent_error_callback",
+    "on_run_error_callback",
 ]
 
 logger = logging.getLogger("google_adk." + __name__)
@@ -257,6 +259,46 @@ class PluginManager:
         error=error,
     )
 
+  async def run_on_agent_error_callback(
+      self,
+      *,
+      agent: BaseAgent,
+      callback_context: CallbackContext,
+      error: Exception,
+  ) -> None:
+    """Runs the ``on_agent_error_callback`` for all plugins.
+
+    All registered plugins are notified even if an earlier plugin raises —
+    failures in individual plugins are logged but do not prevent subsequent
+    plugins from being called.  The original agent error is never suppressed
+    by this method.
+    """
+    await self._run_error_callbacks(
+        "on_agent_error_callback",
+        agent=agent,
+        callback_context=callback_context,
+        error=error,
+    )
+
+  async def run_on_run_error_callback(
+      self,
+      *,
+      invocation_context: InvocationContext,
+      error: Exception,
+  ) -> None:
+    """Runs the ``on_run_error_callback`` for all plugins.
+
+    All registered plugins are notified even if an earlier plugin raises —
+    failures in individual plugins are logged but do not prevent subsequent
+    plugins from being called.  The original runner error is never suppressed
+    by this method.
+    """
+    await self._run_error_callbacks(
+        "on_run_error_callback",
+        invocation_context=invocation_context,
+        error=error,
+    )
+
   async def _run_callbacks(
       self, callback_name: PluginCallbackName, **kwargs: Any
   ) -> Optional[Any]:
@@ -305,6 +347,41 @@ class PluginManager:
         raise RuntimeError(error_message) from e
 
     return None
+
+  async def _run_error_callbacks(
+      self, callback_name: PluginCallbackName, **kwargs: Any
+  ) -> None:
+    """Executes an error-notification callback for **all** registered plugins.
+
+    Unlike ``_run_callbacks``, this method does **not** stop on the first
+    non-``None`` return value.  Error callbacks are pure observers — every
+    plugin deserves a chance to record the failure even if an earlier plugin
+    in the chain itself encounters an error.
+
+    Individual plugin failures are logged but do not prevent subsequent
+    plugins from being called, and they do not propagate to the caller.  The
+    underlying framework error that triggered this notification is always
+    re-raised by the caller independently.
+
+    Args:
+      callback_name: The name of the error callback method to execute.
+      **kwargs: Keyword arguments forwarded to each plugin's callback.
+    """
+    for plugin in self.plugins:
+      callback_method = getattr(plugin, callback_name)
+      try:
+        await callback_method(**kwargs)
+      except Exception as e:
+        # Log but continue — a broken observability plugin must not hide the
+        # original error from the framework or prevent other plugins from
+        # receiving the notification.
+        logger.error(
+            "Error in plugin '%s' during '%s' callback: %s",
+            plugin.name,
+            callback_name,
+            e,
+            exc_info=True,
+        )
 
   async def close(self) -> None:
     """Calls the close method on all registered plugins concurrently.

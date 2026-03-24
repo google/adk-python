@@ -370,3 +370,63 @@ class BasePlugin(ABC):
       allows the original error to be raised.
     """
     pass
+
+  async def on_agent_error_callback(
+      self,
+      *,
+      agent: BaseAgent,
+      callback_context: CallbackContext,
+      error: Exception,
+  ) -> None:
+    """Callback executed when an unhandled exception escapes an agent's run.
+
+    This callback fires when an exception propagates out of the agent's
+    ``_run_async_impl`` or ``_run_live_impl`` before ``after_agent_callback``
+    has had a chance to execute.  It is intended purely for observability
+    (logging, metrics, tracing) — the original exception is always re-raised
+    after all registered plugins have been notified.
+
+    Unlike ``on_tool_error_callback`` and ``on_model_error_callback``, this
+    callback cannot swallow or replace the error; it always returns ``None``.
+
+    Args:
+      agent: The agent instance whose execution raised the exception.
+      callback_context: The callback context for the failed agent invocation.
+      error: The exception that was raised.
+
+    Returns:
+      None.  The return value is ignored; the exception is re-raised by the
+      framework regardless.
+    """
+    pass
+
+  async def on_run_error_callback(
+      self,
+      *,
+      invocation_context: InvocationContext,
+      error: Exception,
+  ) -> None:
+    """Callback executed when an unhandled exception escapes a runner invocation.
+
+    This callback fires when an exception propagates out of the runner's main
+    execution loop before ``after_run_callback`` has had a chance to execute.
+    It is intended purely for observability (logging, metrics, tracing) — the
+    original exception is always re-raised after all registered plugins have
+    been notified.
+
+    This fills the gap where a fatal error (e.g. an unrecoverable model crash
+    or tool exception) would otherwise cause the invocation to disappear from
+    observability sinks without ever emitting a terminal event.
+
+    Unlike ``on_tool_error_callback`` and ``on_model_error_callback``, this
+    callback cannot swallow or replace the error; it always returns ``None``.
+
+    Args:
+      invocation_context: The context for the entire invocation.
+      error: The exception that escaped the runner's execution loop.
+
+    Returns:
+      None.  The return value is ignored; the exception is re-raised by the
+      framework regardless.
+    """
+    pass
