@@ -765,14 +765,15 @@ class Runner:
             version=vt,
         )
         if loaded and loaded.inline_data:
-          artifact = types.Part(
-              inline_data=types.Blob(
-                  mime_type=loaded.inline_data.mime_type,
-                  data=loaded.inline_data.data,
-              )
-          )
+          artifact = loaded
         else:
           # Fallback: artifact couldn't be loaded, mark as empty.
+          logger.warning(
+              'Could not load artifact %s version %s for rewind;'
+              ' replacing with empty blob.',
+              filename,
+              vt,
+          )
           artifact = types.Part(
               inline_data=types.Blob(
                   mime_type='application/octet-stream', data=b''
