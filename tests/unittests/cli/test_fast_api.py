@@ -1866,6 +1866,138 @@ def test_a2a_disabled_by_default(test_app):
   logger.info("A2A disabled by default test passed")
 
 
+def test_a2a_uses_in_memory_task_store_by_default(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+    temp_agents_dir_with_a2a,
+    monkeypatch,
+):
+  """Test that InMemoryTaskStore is created when no task_store is provided."""
+  with (
+      patch("signal.signal", return_value=None),
+      patch(
+          "google.adk.cli.fast_api.create_session_service_from_options",
+          return_value=mock_session_service,
+      ),
+      patch(
+          "google.adk.cli.fast_api.create_artifact_service_from_options",
+          return_value=mock_artifact_service,
+      ),
+      patch(
+          "google.adk.cli.fast_api.create_memory_service_from_options",
+          return_value=mock_memory_service,
+      ),
+      patch(
+          "google.adk.cli.fast_api.AgentLoader",
+          return_value=mock_agent_loader,
+      ),
+      patch(
+          "google.adk.cli.fast_api.LocalEvalSetsManager",
+          return_value=mock_eval_sets_manager,
+      ),
+      patch(
+          "google.adk.cli.fast_api.LocalEvalSetResultsManager",
+          return_value=mock_eval_set_results_manager,
+      ),
+      patch("a2a.server.tasks.InMemoryTaskStore") as mock_task_store_class,
+      patch("a2a.server.tasks.InMemoryPushNotificationConfigStore"),
+      patch("google.adk.a2a.executor.a2a_agent_executor.A2aAgentExecutor"),
+      patch("a2a.server.request_handlers.DefaultRequestHandler"),
+      patch("a2a.server.apps.A2AStarletteApplication") as mock_a2a_app,
+  ):
+    mock_a2a_app.return_value.routes.return_value = []
+    monkeypatch.chdir(temp_agents_dir_with_a2a)
+
+    _ = get_fast_api_app(
+        agents_dir=".",
+        web=True,
+        session_service_uri="",
+        artifact_service_uri="",
+        memory_service_uri="",
+        allow_origins=["*"],
+        a2a=True,
+        host="127.0.0.1",
+        port=8000,
+    )
+
+    mock_task_store_class.assert_called_once()
+
+
+def test_a2a_custom_task_store_bypasses_in_memory_default(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+    temp_agents_dir_with_a2a,
+    monkeypatch,
+):
+  """Test that a custom task_store is forwarded and InMemoryTaskStore is not created."""
+  custom_task_store = MagicMock()
+
+  with (
+      patch("signal.signal", return_value=None),
+      patch(
+          "google.adk.cli.fast_api.create_session_service_from_options",
+          return_value=mock_session_service,
+      ),
+      patch(
+          "google.adk.cli.fast_api.create_artifact_service_from_options",
+          return_value=mock_artifact_service,
+      ),
+      patch(
+          "google.adk.cli.fast_api.create_memory_service_from_options",
+          return_value=mock_memory_service,
+      ),
+      patch(
+          "google.adk.cli.fast_api.AgentLoader",
+          return_value=mock_agent_loader,
+      ),
+      patch(
+          "google.adk.cli.fast_api.LocalEvalSetsManager",
+          return_value=mock_eval_sets_manager,
+      ),
+      patch(
+          "google.adk.cli.fast_api.LocalEvalSetResultsManager",
+          return_value=mock_eval_set_results_manager,
+      ),
+      patch("a2a.server.tasks.InMemoryTaskStore") as mock_task_store_class,
+      patch("a2a.server.tasks.InMemoryPushNotificationConfigStore"),
+      patch("google.adk.a2a.executor.a2a_agent_executor.A2aAgentExecutor"),
+      patch(
+          "a2a.server.request_handlers.DefaultRequestHandler"
+      ) as mock_handler,
+      patch("a2a.server.apps.A2AStarletteApplication") as mock_a2a_app,
+  ):
+    mock_a2a_app.return_value.routes.return_value = []
+    monkeypatch.chdir(temp_agents_dir_with_a2a)
+
+    _ = get_fast_api_app(
+        agents_dir=".",
+        web=True,
+        session_service_uri="",
+        artifact_service_uri="",
+        memory_service_uri="",
+        allow_origins=["*"],
+        a2a=True,
+        a2a_task_store=custom_task_store,
+        host="127.0.0.1",
+        port=8000,
+    )
+
+    # InMemoryTaskStore must NOT be instantiated when a custom store is supplied
+    mock_task_store_class.assert_not_called()
+
+    # The custom store must be passed through to DefaultRequestHandler
+    call_kwargs = mock_handler.call_args.kwargs
+    assert call_kwargs["task_store"] is custom_task_store
+
+
 def test_patch_memory(test_app, create_test_session, mock_memory_service):
   """Test adding a session to memory."""
   info = create_test_session
