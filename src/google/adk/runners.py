@@ -754,15 +754,30 @@ class Runner:
         )
       else:
         # Artifact version changed after rewind point. Restore to version at
-        # rewind point.
-        artifact_uri = artifact_util.get_artifact_uri(
+        # rewind point by loading the actual bytes (inline_data) rather than
+        # constructing a file_data reference, since GcsArtifactService and
+        # FileArtifactService do not support saving file_data parts.
+        loaded = await self.artifact_service.load_artifact(
             app_name=self.app_name,
             user_id=session.user_id,
             session_id=session.id,
             filename=filename,
             version=vt,
         )
-        artifact = types.Part(file_data=types.FileData(file_uri=artifact_uri))
+        if loaded and loaded.inline_data:
+          artifact = types.Part(
+              inline_data=types.Blob(
+                  mime_type=loaded.inline_data.mime_type,
+                  data=loaded.inline_data.data,
+              )
+          )
+        else:
+          # Fallback: artifact couldn't be loaded, mark as empty.
+          artifact = types.Part(
+              inline_data=types.Blob(
+                  mime_type='application/octet-stream', data=b''
+              )
+          )
       await self.artifact_service.save_artifact(
           app_name=self.app_name,
           user_id=session.user_id,
