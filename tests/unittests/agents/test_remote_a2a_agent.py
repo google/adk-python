@@ -1996,7 +1996,8 @@ class TestRemoteA2aAgentExecution:
           mock_construct.return_value = (
               [mock_a2a_part],
               "context-123",
-          )  # Tuple with parts and context_id
+              None,
+          )  # Tuple with parts and context_id , no task_id
 
           # Mock A2A client
           mock_a2a_client = create_autospec(spec=A2AClient, instance=True)
@@ -2068,6 +2069,7 @@ class TestRemoteA2aAgentExecution:
           mock_construct.return_value = (
               [mock_a2a_part],
               "context-123",
+              None,
           )  # Tuple with parts and context_id
 
           # Mock A2A client that throws an exception
@@ -2135,6 +2137,7 @@ class TestRemoteA2aAgentExecution:
           mock_construct.return_value = (
               [mock_a2a_part],
               "context-123",
+              None,
           )  # Tuple with parts and context_id
 
           # Mock A2A client
@@ -2270,6 +2273,7 @@ class TestRemoteA2aAgentExecutionFromFactory:
           mock_construct.return_value = (
               [mock_a2a_part],
               "context-123",
+              None,
           )  # Tuple with parts and context_id
 
           # Mock A2A client
@@ -2344,6 +2348,7 @@ class TestRemoteA2aAgentExecutionFromFactory:
           mock_construct.return_value = (
               [mock_a2a_part],
               "context-123",
+              None,
           )  # Tuple with parts and context_id
 
           # Mock A2A client that throws an exception
