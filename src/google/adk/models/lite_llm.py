@@ -185,7 +185,12 @@ def _ensure_litellm_imported() -> None:
 
   import litellm as litellm_module
 
-  litellm_module.add_function_to_prompt = True
+  # Do NOT set litellm.add_function_to_prompt = True globally.
+  # That flag injects tool definitions into the system prompt as text,
+  # which breaks models that support native tool calling (Groq, OpenAI,
+  # Anthropic). Those models then output XML-style function tags instead
+  # of proper tool_calls JSON, causing "tool_use_failed" errors.
+  # See: https://github.com/google/adk-python/issues/XXXX
 
   globals()["litellm"] = litellm_module
   for symbol in _LITELLM_GLOBAL_SYMBOLS:
