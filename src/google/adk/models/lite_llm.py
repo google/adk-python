@@ -233,6 +233,16 @@ def _get_provider_from_model(model: str) -> str:
   return ""
 
 
+# Providers that route to Anthropic's API and require thinking blocks
+# embedded directly in the message content list.
+_ANTHROPIC_PROVIDERS = frozenset({"anthropic", "bedrock", "vertex_ai"})
+
+
+def _is_anthropic_provider(provider: str) -> bool:
+  """Returns True if the provider routes to an Anthropic model endpoint."""
+  return provider.lower() in _ANTHROPIC_PROVIDERS if provider else False
+
+
 # Default MIME type when none can be inferred
 _DEFAULT_MIME_TYPE = "application/octet-stream"
 
@@ -399,26 +409,34 @@ def _is_thinking_blocks_format(reasoning_value: Any) -> bool:
 def _convert_reasoning_value_to_parts(reasoning_value: Any) -> List[types.Part]:
   """Converts provider reasoning payloads into Gemini thought parts.
 
-  Handles Anthropic thinking_blocks (list of dicts with type/thinking/signature)
-  by preserving the signature on each part's thought_signature field. This is
-  required for Anthropic to maintain thinking across tool call boundaries.
+  Handles two formats:
+  - Anthropic thinking_blocks with 'thinking' and optional 'signature' fields.
+  - A plain string or nested structure (OpenAI/Azure/Ollama) via
+    _iter_reasoning_texts.
   """
-  if _is_thinking_blocks_format(reasoning_value):
+  if isinstance(reasoning_value, list):
     parts: List[types.Part] = []
     for block in reasoning_value:
-      if not isinstance(block, dict):
-        continue
-      block_type = block.get("type", "")
-      if block_type == "redacted":
-        continue
-      thinking_text = block.get("thinking", "")
-      signature = block.get("signature", "")
-      if not thinking_text:
-        continue
-      part = types.Part(text=thinking_text, thought=True)
-      if signature:
-        part.thought_signature = signature.encode("utf-8")
-      parts.append(part)
+      if isinstance(block, dict):
+        block_type = block.get("type", "")
+        if block_type == "redacted":
+          continue
+        if block_type == "thinking":
+          thinking_text = block.get("thinking", "")
+          if thinking_text:
+            part = types.Part(text=thinking_text, thought=True)
+            signature = block.get("signature")
+            if signature:
+              decoded_signature = _decode_thought_signature(signature)
+              part.thought_signature = decoded_signature or str(
+                  signature
+              ).encode("utf-8")
+            parts.append(part)
+          continue
+      # Fall back to text extraction for non-thinking-block items.
+      for text in _iter_reasoning_texts(block):
+        if text:
+          parts.append(types.Part(text=text, thought=True))
     return parts
   return [
       types.Part(text=text, thought=True)
@@ -430,16 +448,16 @@ def _convert_reasoning_value_to_parts(reasoning_value: Any) -> List[types.Part]:
 def _extract_reasoning_value(message: Message | Delta | None) -> Any:
   """Fetches the reasoning payload from a LiteLLM message.
 
-  Checks for 'thinking_blocks' (Anthropic structured format with signatures),
-  'reasoning_content' (LiteLLM standard, used by Azure/Foundry, Ollama via
-  LiteLLM) and 'reasoning' (used by LM Studio, vLLM).
-  Prioritizes 'thinking_blocks' when present (Anthropic models), then
-  'reasoning_content', then 'reasoning'.
+  Checks for 'thinking_blocks' (Anthropic thinking with signatures),
+  'reasoning_content' (LiteLLM standard, used by Azure/Foundry,
+  Ollama via LiteLLM), and 'reasoning' (used by LM Studio, vLLM).
+  Prioritizes 'thinking_blocks' when the key is present, as they contain
+  the signature required for Anthropic's extended thinking API.
   """
   if message is None:
     return None
-  # Anthropic models return thinking_blocks with type/thinking/signature fields.
-  # This must be preserved to maintain thinking across tool call boundaries.
+  # Prefer thinking_blocks (Anthropic) — they carry per-block signatures
+  # needed for multi-turn conversations with extended thinking.
   thinking_blocks = message.get("thinking_blocks")
   if thinking_blocks is not None:
     return thinking_blocks
@@ -885,7 +903,7 @@ async def _content_to_message_param(
         if part.text and part.thought_signature:
           sig = part.thought_signature
           if isinstance(sig, bytes):
-            sig = sig.decode("utf-8")
+            sig = base64.b64encode(sig).decode("utf-8")
           thinking_blocks.append({
               "type": "thinking",
               "thinking": part.text,
@@ -911,6 +929,33 @@ async def _content_to_message_param(
           and part.inline_data.mime_type.startswith("text/")
       ):
         reasoning_texts.append(_decode_inline_text_data(part.inline_data.data))
+
+    # Anthropic/Bedrock providers require thinking blocks to be embedded
+    # directly in the message content list. LiteLLM's prompt template for
+    # Anthropic drops the top-level reasoning_content field, so thinking
+    # blocks disappear from multi-turn histories and the model stops
+    # producing them after the first turn. Signatures are required by the
+    # Anthropic API for thinking blocks in multi-turn conversations.
+    if reasoning_parts and _is_anthropic_provider(provider):
+      content_list = []
+      for part in reasoning_parts:
+        if part.text:
+          block = {"type": "thinking", "thinking": part.text}
+          if part.thought_signature:
+            sig = part.thought_signature
+            if isinstance(sig, bytes):
+              sig = base64.b64encode(sig).decode("utf-8")
+            block["signature"] = sig
+          content_list.append(block)
+      if isinstance(final_content, list):
+        content_list.extend(final_content)
+      elif final_content:
+        content_list.append({"type": "text", "text": final_content})
+      return ChatCompletionAssistantMessage(
+          role=role,
+          content=content_list or None,
+          tool_calls=tool_calls or None,
+      )
 
     reasoning_content = _NEW_LINE.join(text for text in reasoning_texts if text)
     return ChatCompletionAssistantMessage(
