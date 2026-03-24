@@ -2438,5 +2438,191 @@ async def test_independent_telemetry_context(
   assert captured_visual_builder_values.get("yaml_app_after_sleep") == True
 
 
+# ---------------------------------------------------------------------------
+# OpenTelemetry FastAPI instrumentation tests
+# ---------------------------------------------------------------------------
+
+_OTEL_ENV_ENABLED = "google.adk.cli.adk_web_server._otel_env_vars_enabled"
+_SETUP_TELEMETRY = "google.adk.cli.adk_web_server._setup_telemetry"
+_FASTAPI_INSTRUMENTOR = "opentelemetry.instrumentation.fastapi.FastAPIInstrumentor"
+
+
+def _make_otel_test_client(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+    **app_kwargs,
+):
+  """Like _create_test_client but suppresses real OTel provider setup."""
+  defaults = dict(
+      agents_dir=".",
+      web=False,
+      session_service_uri="",
+      artifact_service_uri="",
+      memory_service_uri="",
+      a2a=False,
+      host="127.0.0.1",
+      port=8000,
+  )
+  defaults.update(app_kwargs)
+  with (
+      patch.object(signal, "signal", autospec=True, return_value=None),
+      patch.object(
+          fast_api_module,
+          "create_session_service_from_options",
+          autospec=True,
+          return_value=mock_session_service,
+      ),
+      patch.object(
+          fast_api_module,
+          "create_artifact_service_from_options",
+          autospec=True,
+          return_value=mock_artifact_service,
+      ),
+      patch.object(
+          fast_api_module,
+          "create_memory_service_from_options",
+          autospec=True,
+          return_value=mock_memory_service,
+      ),
+      patch.object(
+          fast_api_module,
+          "AgentLoader",
+          autospec=True,
+          return_value=mock_agent_loader,
+      ),
+      patch.object(
+          fast_api_module,
+          "LocalEvalSetsManager",
+          autospec=True,
+          return_value=mock_eval_sets_manager,
+      ),
+      patch.object(
+          fast_api_module,
+          "LocalEvalSetResultsManager",
+          autospec=True,
+          return_value=mock_eval_set_results_manager,
+      ),
+      # Suppress real OTel provider / exporter setup so tests stay isolated.
+      patch(_SETUP_TELEMETRY),
+  ):
+    app = get_fast_api_app(**defaults)
+    return TestClient(app)
+
+
+def test_fastapi_instrumented_when_otlp_env_var_set(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """FastAPIInstrumentor.instrument_app is called when an OTLP env var is set."""
+  with (
+      patch(_OTEL_ENV_ENABLED, return_value=True),
+      patch(_FASTAPI_INSTRUMENTOR) as mock_instrumentor_cls,
+  ):
+    _make_otel_test_client(
+        mock_session_service,
+        mock_artifact_service,
+        mock_memory_service,
+        mock_agent_loader,
+        mock_eval_sets_manager,
+        mock_eval_set_results_manager,
+    )
+
+  mock_instrumentor_cls.instrument_app.assert_called_once()
+
+
+def test_fastapi_instrumented_when_otel_to_cloud_enabled(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """FastAPIInstrumentor.instrument_app is called when otel_to_cloud=True."""
+  with (
+      # otel_to_cloud=True triggers the instrumentation regardless of env vars.
+      patch(_OTEL_ENV_ENABLED, return_value=False),
+      patch(_FASTAPI_INSTRUMENTOR) as mock_instrumentor_cls,
+  ):
+    _make_otel_test_client(
+        mock_session_service,
+        mock_artifact_service,
+        mock_memory_service,
+        mock_agent_loader,
+        mock_eval_sets_manager,
+        mock_eval_set_results_manager,
+        otel_to_cloud=True,
+    )
+
+  mock_instrumentor_cls.instrument_app.assert_called_once()
+
+
+def test_fastapi_not_instrumented_without_otel_config(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """FastAPIInstrumentor.instrument_app is NOT called when OTel is not configured."""
+  with (
+      patch(_OTEL_ENV_ENABLED, return_value=False),
+      patch(_FASTAPI_INSTRUMENTOR) as mock_instrumentor_cls,
+  ):
+    _make_otel_test_client(
+        mock_session_service,
+        mock_artifact_service,
+        mock_memory_service,
+        mock_agent_loader,
+        mock_eval_sets_manager,
+        mock_eval_set_results_manager,
+        otel_to_cloud=False,
+    )
+
+  mock_instrumentor_cls.instrument_app.assert_not_called()
+
+
+def test_missing_fastapi_instrumentor_does_not_prevent_startup(
+    mock_session_service,
+    mock_artifact_service,
+    mock_memory_service,
+    mock_agent_loader,
+    mock_eval_sets_manager,
+    mock_eval_set_results_manager,
+):
+  """App starts normally when opentelemetry-instrumentation-fastapi is absent."""
+  import sys
+
+  # Simulate the package not being installed by removing it from sys.modules
+  # and making the import raise ImportError.
+  with (
+      patch(_OTEL_ENV_ENABLED, return_value=True),
+      patch.dict(
+          sys.modules,
+          {"opentelemetry.instrumentation.fastapi": None},
+      ),
+  ):
+    client = _make_otel_test_client(
+        mock_session_service,
+        mock_artifact_service,
+        mock_memory_service,
+        mock_agent_loader,
+        mock_eval_sets_manager,
+        mock_eval_set_results_manager,
+    )
+
+  response = client.get("/health")
+  assert response.status_code == 200
+
+
 if __name__ == "__main__":
   pytest.main(["-xvs", __file__])

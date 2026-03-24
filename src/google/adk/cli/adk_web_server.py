@@ -955,6 +955,27 @@ class AdkWebServer:
     # Run the FastAPI server.
     app = FastAPI(lifespan=internal_lifespan)
 
+    # When an OTel pipeline is active, instrument the ASGI layer so that
+    # inbound W3C traceparent headers are extracted and agent spans are
+    # correctly parented to the caller's trace.  Without this, every request
+    # starts a new trace root even though the TracerProvider and W3C propagator
+    # are already configured.  Applied before other middleware so that
+    # security/CORS wrappers are outermost in the stack (Starlette applies
+    # middleware in reverse-registration order).
+    if otel_to_cloud or _otel_env_vars_enabled():
+      try:
+        from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor  # pylint: disable=g-import-not-at-top
+
+        FastAPIInstrumentor.instrument_app(app)
+        logger.debug("FastAPI OpenTelemetry instrumentation enabled.")
+      except ImportError:
+        logger.debug(
+            "opentelemetry-instrumentation-fastapi is not installed; inbound"
+            " traceparent headers will not be propagated into agent spans."
+            " Install it alongside the OTel extras: pip install"
+            " opentelemetry-instrumentation-fastapi"
+        )
+
     has_configured_allowed_origins = bool(allow_origins)
     if allow_origins:
       literal_origins, combined_regex = _parse_cors_origins(allow_origins)

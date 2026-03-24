@@ -131,7 +131,10 @@ optional-dependencies.extensions = [
   "pypika>=0.50",                                                    # For crewai->chromadb dependency
   "toolbox-adk>=1,<2",                                               # For tools.toolbox_toolset.ToolboxToolset
 ]
-optional-dependencies.otel-gcp = [ "opentelemetry-instrumentation-google-genai>=0.6b0,<1" ]
+optional-dependencies.otel-gcp = [
+  "opentelemetry-instrumentation-fastapi>=0.48b0,<1",
+  "opentelemetry-instrumentation-google-genai>=0.6b0,<1",
+]
 optional-dependencies.slack = [ "slack-bolt>=1.22" ]
 optional-dependencies.test = [
   "a2a-sdk>=0.3,<0.4",
@@ -156,6 +159,22 @@ optional-dependencies.test = [
   "rouge-score>=0.1.2",
   "slack-bolt>=1.22",
   "tabulate>=0.9",
+=======
+
+otel-gcp = [
+  # go/keep-sorted start
+  "opentelemetry-instrumentation-fastapi>=0.48b0, <1.0.0",
+  "opentelemetry-instrumentation-google-genai>=0.6b0, <1.0.0",
+  # go/keep-sorted end
+]
+
+toolbox = ["toolbox-adk>=1.0.0, <2.0.0"]
+
+slack = ["slack-bolt>=1.22.0"]
+
+agent-identity = [
+  "google-cloud-iamconnectorcredentials>=0.1.0, <0.2.0",
+>>>>>>> ef47fe4c (fix(tracing): instrument FastAPI ASGI layer for inbound traceparent propagation)
 ]
 optional-dependencies.toolbox = [ "toolbox-adk>=1,<2" ]
 urls.changelog = "https://github.com/google/adk-python/blob/main/CHANGELOG.md"
