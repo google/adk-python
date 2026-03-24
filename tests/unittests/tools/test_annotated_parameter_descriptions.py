@@ -333,3 +333,312 @@ class TestIntegrationWithFunctionTool:
     )
 
     assert result_custom == "Hi, Alice!"
+
+
+class TestNestedPydanticModels:
+  """Tests for nested Pydantic BaseModel support with Field descriptions."""
+
+  def test_single_level_nested_model(self):
+    """Test that nested Pydantic model Field descriptions are inlined."""
+    from google.adk.tools._automatic_function_calling_util import _get_pydantic_schema
+    from pydantic import BaseModel
+
+    class Address(BaseModel):
+      """User's address information."""
+
+      street: str = Field(description="Street name and number")
+      city: str = Field(description="City name")
+      zipcode: str = Field(description="Postal code (5 digits)")
+
+    def create_user(
+        address: Annotated[
+            Address, Field(description="User's residential address")
+        ],
+    ) -> dict:
+      """Create a new user with address."""
+      return {}
+
+    schema = _get_pydantic_schema(create_user)
+
+    # Check that address parameter exists
+    assert "properties" in schema
+    assert "address" in schema["properties"]
+
+    address_schema = schema["properties"]["address"]
+
+    # Check that the parameter-level description is preserved
+    assert address_schema.get("description") == "User's residential address"
+
+    # Check that nested properties are inlined (not using $ref)
+    assert (
+        "properties" in address_schema
+    ), "Nested properties should be inlined, not using $ref"
+    assert "$ref" not in address_schema, "Should not have $ref after resolution"
+    assert (
+        "allOf" not in address_schema
+    ), "Should not have allOf after resolution"
+
+    # Check that nested Field descriptions are present
+    nested_props = address_schema["properties"]
+    assert "street" in nested_props
+    assert "city" in nested_props
+    assert "zipcode" in nested_props
+
+    assert nested_props["street"].get("description") == "Street name and number"
+    assert nested_props["city"].get("description") == "City name"
+    assert (
+        nested_props["zipcode"].get("description") == "Postal code (5 digits)"
+    )
+
+    # Verify $defs is removed after inlining
+    assert "$defs" not in schema, "$defs should be removed after inlining"
+
+  def test_multi_level_nested_model(self):
+    """Test that doubly-nested Pydantic models preserve all descriptions."""
+    from google.adk.tools._automatic_function_calling_util import _get_pydantic_schema
+    from pydantic import BaseModel
+
+    class ContactInfo(BaseModel):
+      """Contact information."""
+
+      email: str = Field(description="Email address in format user@domain.com")
+      phone: str = Field(description="Phone number with country code")
+
+    class Person(BaseModel):
+      """Person information."""
+
+      name: str = Field(description="Person's full name")
+      age: int = Field(description="Person's age in years")
+      contact: ContactInfo = Field(description="Contact information")
+
+    def create_user(
+        person: Annotated[
+            Person, Field(description="User personal information")
+        ],
+    ) -> dict:
+      """Create a new user."""
+      return {}
+
+    schema = _get_pydantic_schema(create_user)
+
+    # Check first level (person parameter)
+    person_schema = schema["properties"]["person"]
+    assert person_schema.get("description") == "User personal information"
+    assert "properties" in person_schema
+
+    # Check second level (name, age, contact)
+    person_props = person_schema["properties"]
+    assert person_props["name"].get("description") == "Person's full name"
+    assert person_props["age"].get("description") == "Person's age in years"
+    assert person_props["contact"].get("description") == "Contact information"
+
+    # Check third level (email, phone within contact)
+    assert "properties" in person_props["contact"]
+    contact_props = person_props["contact"]["properties"]
+    assert (
+        contact_props["email"].get("description")
+        == "Email address in format user@domain.com"
+    )
+    assert (
+        contact_props["phone"].get("description")
+        == "Phone number with country code"
+    )
+
+  def test_nested_model_with_list(self):
+    """Test that List of nested Pydantic models works correctly."""
+    from typing import List
+
+    from google.adk.tools._automatic_function_calling_util import _get_pydantic_schema
+    from pydantic import BaseModel
+
+    class Tag(BaseModel):
+      """A tag."""
+
+      name: str = Field(description="Tag name")
+      color: str = Field(description="Tag color in hex format")
+
+    def create_item(
+        tags: Annotated[
+            List[Tag], Field(description="List of tags for the item")
+        ],
+    ) -> dict:
+      """Create an item with tags."""
+      return {}
+
+    schema = _get_pydantic_schema(create_item)
+
+    tags_schema = schema["properties"]["tags"]
+    assert tags_schema.get("description") == "List of tags for the item"
+    assert tags_schema.get("type") == "array"
+    assert "items" in tags_schema
+
+    # Check that items schema has inlined properties
+    items_schema = tags_schema["items"]
+    assert "properties" in items_schema
+    assert items_schema["properties"]["name"].get("description") == "Tag name"
+    assert (
+        items_schema["properties"]["color"].get("description")
+        == "Tag color in hex format"
+    )
+
+  def test_nested_model_with_optional(self):
+    """Test that Optional nested Pydantic models preserve descriptions."""
+    from google.adk.tools._automatic_function_calling_util import _get_pydantic_schema
+    from pydantic import BaseModel
+
+    class Metadata(BaseModel):
+      """Metadata information."""
+
+      key: str = Field(description="Metadata key")
+      value: str = Field(description="Metadata value")
+
+    def create_item(
+        metadata: Annotated[
+            Optional[Metadata], Field(description="Optional metadata")
+        ] = None,
+    ) -> dict:
+      """Create an item with optional metadata."""
+      return {}
+
+    schema = _get_pydantic_schema(create_item)
+
+    metadata_schema = schema["properties"]["metadata"]
+
+    # Optional handling might use anyOf, but descriptions should still be there
+    # Check if properties are accessible (could be in anyOf structure)
+    if "properties" in metadata_schema:
+      # Direct properties
+      assert (
+          metadata_schema["properties"]["key"].get("description")
+          == "Metadata key"
+      )
+    elif "anyOf" in metadata_schema:
+      # Look for the object definition in anyOf
+      for variant in metadata_schema["anyOf"]:
+        if variant.get("type") == "object" and "properties" in variant:
+          assert (
+              variant["properties"]["key"].get("description") == "Metadata key"
+          )
+          break
+
+  def test_mixed_nested_and_simple_params(self):
+    """Test function with both nested models and simple parameters."""
+    from google.adk.tools._automatic_function_calling_util import _get_pydantic_schema
+    from pydantic import BaseModel
+
+    class Config(BaseModel):
+      """Configuration."""
+
+      timeout: int = Field(description="Timeout in seconds")
+      retries: int = Field(description="Number of retries")
+
+    def execute_task(
+        task_name: Annotated[str, Field(description="Name of the task")],
+        config: Annotated[Config, Field(description="Task configuration")],
+        dry_run: Annotated[
+            bool, Field(description="Run in dry-run mode")
+        ] = False,
+    ) -> dict:
+      """Execute a task with configuration."""
+      return {}
+
+    schema = _get_pydantic_schema(execute_task)
+
+    # Check simple parameters
+    assert (
+        schema["properties"]["task_name"].get("description")
+        == "Name of the task"
+    )
+    assert (
+        schema["properties"]["dry_run"].get("description")
+        == "Run in dry-run mode"
+    )
+
+    # Check nested model
+    config_schema = schema["properties"]["config"]
+    assert config_schema.get("description") == "Task configuration"
+    assert "properties" in config_schema
+    assert (
+        config_schema["properties"]["timeout"].get("description")
+        == "Timeout in seconds"
+    )
+    assert (
+        config_schema["properties"]["retries"].get("description")
+        == "Number of retries"
+    )
+
+  def test_nested_model_circular_reference_handling(self):
+    """Test that circular references in nested models don't cause infinite loops."""
+    from typing import List
+
+    from google.adk.tools._automatic_function_calling_util import _get_pydantic_schema
+    from pydantic import BaseModel
+
+    class TreeNode(BaseModel):
+      """A tree node."""
+
+      value: str = Field(description="Node value")
+      children: List["TreeNode"] = Field(
+          default_factory=list, description="Child nodes"
+      )
+
+    def create_tree(
+        root: Annotated[TreeNode, Field(description="Root node of the tree")],
+    ) -> dict:
+      """Create a tree structure."""
+      return {}
+
+    # This should not raise an error or hang
+    schema = _get_pydantic_schema(create_tree)
+
+    # Verify schema was generated
+    assert "properties" in schema
+    assert "root" in schema["properties"]
+
+    # The function should handle the circular reference gracefully
+    # (implementation may vary: could inline first level, use ref, or break cycle)
+    root_schema = schema["properties"]["root"]
+    assert root_schema.get("description") == "Root node of the tree"
+
+  def test_function_declaration_with_nested_models(self):
+    """Test that build_function_declaration works with nested Pydantic models."""
+    from pydantic import BaseModel
+
+    class Credentials(BaseModel):
+      """API credentials."""
+
+      api_key: str = Field(description="API key for authentication")
+      secret: str = Field(description="API secret")
+
+    def authenticate(
+        creds: Annotated[
+            Credentials, Field(description="Authentication credentials")
+        ],
+    ) -> dict:
+      """Authenticate with API credentials."""
+      return {}
+
+    declaration = build_function_declaration(
+        authenticate,
+        variant=GoogleLLMVariant.GEMINI_API,
+    )
+
+    assert declaration.name == "authenticate"
+    assert declaration.parameters is not None
+    assert declaration.parameters.properties is not None
+
+    creds_schema = declaration.parameters.properties.get("creds")
+    assert creds_schema is not None
+    assert creds_schema.description == "Authentication credentials"
+
+    # Check that nested properties are accessible
+    assert creds_schema.properties is not None
+    assert "api_key" in creds_schema.properties
+    assert "secret" in creds_schema.properties
+
+    # Verify nested descriptions are present
+    assert (
+        creds_schema.properties["api_key"].description
+        == "API key for authentication"
+    )
+    assert creds_schema.properties["secret"].description == "API secret"

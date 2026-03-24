@@ -93,6 +93,146 @@ def _extract_base_type_from_annotated(annotation: Any) -> Any:
   return annotation
 
 
+def _resolve_pydantic_refs(schema: Dict[str, Any]) -> Dict[str, Any]:
+  """Resolve $ref pointers in Pydantic JSON schema and inline nested objects.
+
+  Pydantic generates JSON schemas with $ref pointers to $defs for nested
+  BaseModel classes. This function resolves these references and inlines
+  nested properties so that Field descriptions from nested models are
+  directly accessible in the schema sent to the LLM.
+
+  This is similar to the reference resolution in openapi_spec_parser.py but
+  optimized for Pydantic v2 schema structure (handles allOf wrappers).
+
+  Args:
+    schema: Pydantic model_json_schema() output with $defs.
+
+  Returns:
+    Schema with all $ref resolved and nested properties inlined. The $defs
+    section is removed as all definitions are now inlined.
+
+  Example:
+    Input:
+      {
+        "properties": {
+          "user": {"allOf": [{"$ref": "#/$defs/Person"}], "description": "User"}
+        },
+        "$defs": {
+          "Person": {"properties": {"name": {"description": "Name"}}}
+        }
+      }
+
+    Output:
+      {
+        "properties": {
+          "user": {
+            "type": "object",
+            "description": "User",
+            "properties": {"name": {"description": "Name"}}
+          }
+        }
+      }
+  """
+  import copy
+
+  schema = copy.deepcopy(schema)
+  defs = schema.get("$defs", {})
+
+  def resolve_ref(ref_string: str) -> Optional[Dict]:
+    """Resolve a $ref string like '#/$defs/Person'."""
+    if not ref_string.startswith("#/$defs/"):
+      return None
+    def_name = ref_string.split("/")[-1]
+    return defs.get(def_name)
+
+  def resolve_property(
+      prop_schema: Dict, seen_refs: Optional[set] = None
+  ) -> Dict:
+    """Recursively resolve $ref in a property schema.
+
+    Args:
+      prop_schema: A property schema that may contain $ref or allOf with $ref.
+      seen_refs: Set of already-visited $ref strings to prevent circular refs.
+
+    Returns:
+      Property schema with all $ref resolved and nested properties inlined.
+    """
+    if seen_refs is None:
+      seen_refs = set()
+
+    prop_schema = copy.deepcopy(prop_schema)
+
+    # Handle allOf wrapper (Pydantic v2 pattern: {"allOf": [{"$ref": "..."}]})
+    if "allOf" in prop_schema and len(prop_schema["allOf"]) == 1:
+      ref_item = prop_schema["allOf"][0]
+      if "$ref" in ref_item:
+        ref_string = ref_item["$ref"]
+
+        # Prevent circular references
+        if ref_string in seen_refs:
+          # Return schema without allOf to break the cycle
+          return {k: v for k, v in prop_schema.items() if k != "allOf"}
+
+        seen_refs_copy = seen_refs.copy()
+        seen_refs_copy.add(ref_string)
+
+        resolved = resolve_ref(ref_string)
+        if resolved:
+          resolved = copy.deepcopy(resolved)
+
+          # Preserve parameter-level description (takes precedence over model docstring)
+          param_description = prop_schema.get("description")
+
+          # Recursively resolve nested properties within the resolved definition
+          if "properties" in resolved:
+            for nested_name, nested_schema in resolved["properties"].items():
+              resolved["properties"][nested_name] = resolve_property(
+                  nested_schema, seen_refs_copy
+              )
+
+          # If there was a parameter-level description, keep it
+          # (e.g., "User info" instead of model's docstring "Person model")
+          if param_description:
+            resolved["description"] = param_description
+
+          return resolved
+
+    # Handle direct $ref (less common in Pydantic v2, but supported for completeness)
+    elif "$ref" in prop_schema:
+      ref_string = prop_schema["$ref"]
+      if ref_string not in seen_refs:
+        seen_refs_copy = seen_refs.copy()
+        seen_refs_copy.add(ref_string)
+        resolved = resolve_ref(ref_string)
+        if resolved:
+          return resolve_property(copy.deepcopy(resolved), seen_refs_copy)
+
+    # Recursively resolve nested properties (for already-inlined objects)
+    if "properties" in prop_schema:
+      for nested_name in list(prop_schema["properties"].keys()):
+        prop_schema["properties"][nested_name] = resolve_property(
+            prop_schema["properties"][nested_name], seen_refs
+        )
+
+    # Handle arrays with items that might have refs
+    if "items" in prop_schema:
+      prop_schema["items"] = resolve_property(prop_schema["items"], seen_refs)
+
+    return prop_schema
+
+  # Resolve all top-level properties
+  if "properties" in schema:
+    for prop_name in list(schema["properties"].keys()):
+      schema["properties"][prop_name] = resolve_property(
+          schema["properties"][prop_name]
+      )
+
+  # Clean up $defs since all definitions are now inlined
+  schema.pop("$defs", None)
+
+  return schema
+
+
 def _get_fields_dict(func: Callable) -> Dict:
   """Build a dictionary of field definitions for Pydantic model creation.
 
@@ -214,7 +354,15 @@ def _get_pydantic_schema(func: Callable) -> Dict:
   context_param = find_context_parameter(func) or "tool_context"
   if context_param in fields_dict.keys():
     fields_dict.pop(context_param)
-  return pydantic.create_model(func.__name__, **fields_dict).model_json_schema()
+
+  schema = pydantic.create_model(
+      func.__name__, **fields_dict
+  ).model_json_schema()
+
+  # Resolve $ref for nested Pydantic models to inline Field descriptions
+  schema = _resolve_pydantic_refs(schema)
+
+  return schema
 
 
 def _process_pydantic_schema(vertexai: bool, schema: Dict) -> Dict:
