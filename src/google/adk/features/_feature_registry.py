@@ -37,6 +37,7 @@ class FeatureName(str, Enum):
   COMPUTER_USE = "COMPUTER_USE"
   DATA_AGENT_TOOL_CONFIG = "DATA_AGENT_TOOL_CONFIG"
   DATA_AGENT_TOOLSET = "DATA_AGENT_TOOLSET"
+  ENVIRONMENT_SIMULATION = "ENVIRONMENT_SIMULATION"
   GOOGLE_CREDENTIALS_CONFIG = "GOOGLE_CREDENTIALS_CONFIG"
   GOOGLE_TOOL = "GOOGLE_TOOL"
   JSON_SCHEMA_FOR_FUNC_DECL = "JSON_SCHEMA_FOR_FUNC_DECL"
@@ -51,6 +52,7 @@ class FeatureName(str, Enum):
   TOOL_CONFIG = "TOOL_CONFIG"
   TOOL_CONFIRMATION = "TOOL_CONFIRMATION"
   PLUGGABLE_AUTH = "PLUGGABLE_AUTH"
+  SNAKE_CASE_SKILL_NAME = "SNAKE_CASE_SKILL_NAME"
 
 
 class FeatureStage(Enum):
@@ -116,6 +118,9 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
     FeatureName.DATA_AGENT_TOOLSET: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
+    FeatureName.ENVIRONMENT_SIMULATION: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=True
+    ),
     FeatureName.GOOGLE_CREDENTIALS_CONFIG: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
     ),
@@ -157,6 +162,9 @@ _FEATURE_REGISTRY: dict[FeatureName, FeatureConfig] = {
     ),
     FeatureName.PLUGGABLE_AUTH: FeatureConfig(
         FeatureStage.EXPERIMENTAL, default_on=True
+    ),
+    FeatureName.SNAKE_CASE_SKILL_NAME: FeatureConfig(
+        FeatureStage.EXPERIMENTAL, default_on=False
     ),
 }
 

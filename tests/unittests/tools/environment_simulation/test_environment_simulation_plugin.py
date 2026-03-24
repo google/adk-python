@@ -16,24 +16,24 @@ from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
-from google.adk.tools.agent_simulator.agent_simulator_plugin import AgentSimulatorPlugin
+from google.adk.tools.environment_simulation.environment_simulation_plugin import EnvironmentSimulationPlugin
 import pytest
 
 
 @pytest.mark.asyncio
-class TestAgentSimulatorPlugin:
-  """Test cases for the AgentSimulatorPlugin."""
+class TestEnvironmentSimulationPlugin:
+  """Test cases for the EnvironmentSimulationPlugin."""
 
   @pytest.fixture
   def mock_simulator_engine(self):
-    """Fixture for a mock AgentSimulatorEngine."""
+    """Fixture for a mock EnvironmentSimulationEngine."""
     engine = MagicMock()
     engine.simulate = AsyncMock()
     return engine
 
   async def test_before_tool_callback(self, mock_simulator_engine):
     """Test that the before_tool_callback calls the engine's simulate method."""
-    plugin = AgentSimulatorPlugin(mock_simulator_engine)
+    plugin = EnvironmentSimulationPlugin(mock_simulator_engine)
 
     mock_tool = MagicMock()
     mock_args = {}
