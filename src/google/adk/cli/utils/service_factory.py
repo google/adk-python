@@ -202,7 +202,7 @@ def create_session_service_from_options(
     fallback_kwargs = dict(kwargs)
     fallback_kwargs.pop("agents_dir", None)
     logger.info(
-        "Falling back to DatabaseSessionService for URI: %s",
+        "Using DatabaseSessionService for URI: %s",
         _redact_uri_for_log(session_service_uri),
     )
     return DatabaseSessionService(db_url=session_service_uri, **fallback_kwargs)
