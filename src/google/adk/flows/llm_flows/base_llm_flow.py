@@ -65,12 +65,38 @@ logger = logging.getLogger('google_adk.' + __name__)
 
 _ADK_AGENT_NAME_LABEL_KEY = 'adk_agent_name'
 
+# Maximum number of retries when the model returns an empty response.
+# This prevents infinite loops when the model repeatedly returns empty content
+# (e.g. after tool execution with some models like Claude).
+_MAX_EMPTY_RESPONSE_RETRIES = 2
+
 # Timing configuration
 DEFAULT_TRANSFER_AGENT_DELAY = 1.0
 DEFAULT_TASK_COMPLETION_DELAY = 1.0
 
 # Statistics configuration
 DEFAULT_ENABLE_CACHE_STATISTICS = False
+
+
+def _has_meaningful_content(event: Event) -> bool:
+  """Returns whether the event has content that is meaningful to the user.
+
+  An event with no content, empty parts, or only empty/whitespace text parts
+  is not meaningful. This is used to detect cases where the model returns an
+  empty response after tool execution (observed with Claude and some Gemini
+  preview models), which should trigger a re-prompt instead of ending the
+  agent loop.
+  """
+  if not event.content or not event.content.parts:
+    return False
+  for part in event.content.parts:
+    if part.function_call or part.function_response:
+      return True
+    if part.text and part.text.strip():
+      return True
+    if part.inline_data:
+      return True
+  return False
 
 
 def _finalize_model_response_event(
@@ -748,15 +774,29 @@ class BaseLlmFlow(ABC):
       self, invocation_context: InvocationContext
   ) -> AsyncGenerator[Event, None]:
     """Runs the flow."""
+    empty_response_count = 0
     while True:
       last_event = None
       async with Aclosing(self._run_one_step_async(invocation_context)) as agen:
         async for event in agen:
           last_event = event
           yield event
-      if not last_event or last_event.is_final_response() or last_event.partial:
+      if not last_event or last_event.partial:
         if last_event and last_event.partial:
           logger.warning('The last event is partial, which is not expected.')
+        break
+      if last_event.is_final_response():
+        if (
+            not _has_meaningful_content(last_event)
+            and empty_response_count < _MAX_EMPTY_RESPONSE_RETRIES
+        ):
+          empty_response_count += 1
+          logger.warning(
+              'Model returned an empty response (attempt %d/%d), re-prompting.',
+              empty_response_count,
+              _MAX_EMPTY_RESPONSE_RETRIES,
+          )
+          continue
         break
 
   async def _run_one_step_async(
