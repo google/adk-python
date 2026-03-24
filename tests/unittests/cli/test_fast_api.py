@@ -1876,7 +1876,7 @@ def test_a2a_uses_in_memory_task_store_by_default(
     temp_agents_dir_with_a2a,
     monkeypatch,
 ):
-  """Test that InMemoryTaskStore is created when no task_store is provided."""
+  """Test that InMemoryTaskStore is used when no task store is provided."""
   with (
       patch("signal.signal", return_value=None),
       patch(
@@ -1909,7 +1909,9 @@ def test_a2a_uses_in_memory_task_store_by_default(
       patch("a2a.server.request_handlers.DefaultRequestHandler"),
       patch("a2a.server.apps.A2AStarletteApplication") as mock_a2a_app,
   ):
-    mock_a2a_app.return_value.routes.return_value = []
+    mock_a2a_app_instance = MagicMock()
+    mock_a2a_app_instance.routes.return_value = []
+    mock_a2a_app.return_value = mock_a2a_app_instance
     monkeypatch.chdir(temp_agents_dir_with_a2a)
 
     _ = get_fast_api_app(
@@ -1927,7 +1929,7 @@ def test_a2a_uses_in_memory_task_store_by_default(
     mock_task_store_class.assert_called_once()
 
 
-def test_a2a_custom_task_store_bypasses_in_memory_default(
+def test_a2a_custom_task_store_is_used(
     mock_session_service,
     mock_artifact_service,
     mock_memory_service,
@@ -1937,7 +1939,7 @@ def test_a2a_custom_task_store_bypasses_in_memory_default(
     temp_agents_dir_with_a2a,
     monkeypatch,
 ):
-  """Test that a custom task_store is forwarded and InMemoryTaskStore is not created."""
+  """Test that a custom task store is forwarded to DefaultRequestHandler."""
   custom_task_store = MagicMock()
 
   with (
@@ -1974,7 +1976,9 @@ def test_a2a_custom_task_store_bypasses_in_memory_default(
       ) as mock_handler,
       patch("a2a.server.apps.A2AStarletteApplication") as mock_a2a_app,
   ):
-    mock_a2a_app.return_value.routes.return_value = []
+    mock_a2a_app_instance = MagicMock()
+    mock_a2a_app_instance.routes.return_value = []
+    mock_a2a_app.return_value = mock_a2a_app_instance
     monkeypatch.chdir(temp_agents_dir_with_a2a)
 
     _ = get_fast_api_app(
@@ -1990,12 +1994,8 @@ def test_a2a_custom_task_store_bypasses_in_memory_default(
         port=8000,
     )
 
-    # InMemoryTaskStore must NOT be instantiated when a custom store is supplied
     mock_task_store_class.assert_not_called()
-
-    # The custom store must be passed through to DefaultRequestHandler
-    call_kwargs = mock_handler.call_args.kwargs
-    assert call_kwargs["task_store"] is custom_task_store
+    assert mock_handler.call_args.kwargs["task_store"] is custom_task_store
 
 
 def test_patch_memory(test_app, create_test_session, mock_memory_service):

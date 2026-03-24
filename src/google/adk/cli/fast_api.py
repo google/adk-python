@@ -131,22 +131,11 @@ def get_fast_api_app(
     web: Whether to enable the web UI and serve its assets.
     a2a: Whether to enable Agent-to-Agent (A2A) protocol support.
     a2a_task_store: Optional A2A TaskStore instance. Defaults to
-      InMemoryTaskStore when a2a=True. Pass a DatabaseTaskStore (from the
-      a2a-sdk) for persistence across server restarts and horizontal replicas.
-      Example::
-
-          from a2a.server.tasks import DatabaseTaskStore
-          from sqlalchemy.ext.asyncio import create_async_engine
-
-          engine = create_async_engine("postgresql+asyncpg://user:pw@host/db")
-          app = get_fast_api_app(
-              agents_dir="agents/", web=True, a2a=True,
-              a2a_task_store=DatabaseTaskStore(engine),
-          )
-
-    a2a_push_config_store: Optional A2A PushNotificationConfigStore instance.
-      Defaults to InMemoryPushNotificationConfigStore when a2a=True. Pass a
-      DatabasePushNotificationConfigStore for persistence across restarts.
+      InMemoryTaskStore. Pass a custom store (e.g. DatabaseTaskStore) to
+      persist task state across restarts or share it across replicas.
+    a2a_push_config_store: Optional A2A PushNotificationConfigStore.
+      Defaults to InMemoryPushNotificationConfigStore. Pass a custom store
+      for persistence across restarts.
     host: Host address for the server (defaults to 127.0.0.1).
     port: Port number for the server (defaults to 8000).
     url_prefix: Optional prefix for all URL routes.
@@ -619,6 +608,8 @@ def get_fast_api_app(
     if base_path.exists() and base_path.is_dir():
       if a2a_task_store is None:
         a2a_task_store = InMemoryTaskStore()
+      if a2a_push_config_store is None:
+        a2a_push_config_store = InMemoryPushNotificationConfigStore()
 
       def create_a2a_runner_loader(captured_app_name: str):
         """Factory function to create A2A runner with proper closure."""
@@ -646,16 +637,10 @@ def get_fast_api_app(
               runner=create_a2a_runner_loader(app_name),
           )
 
-          push_config_store = (
-              a2a_push_config_store
-              if a2a_push_config_store is not None
-              else InMemoryPushNotificationConfigStore()
-          )
-
           request_handler = DefaultRequestHandler(
               agent_executor=agent_executor,
               task_store=a2a_task_store,
-              push_config_store=push_config_store,
+              push_config_store=a2a_push_config_store,
           )
 
           with (p / "agent.json").open("r", encoding="utf-8") as f:
