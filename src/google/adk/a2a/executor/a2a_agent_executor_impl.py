@@ -39,6 +39,7 @@ from typing_extensions import override
 
 from ...runners import Runner
 from ...utils.context_utils import Aclosing
+from ..agent.interceptors.new_integration_extension import _NEW_A2A_ADK_INTEGRATION_EXTENSION
 from ..converters.from_adk_event import create_error_status_event
 from ..converters.long_running_functions import handle_user_input
 from ..converters.long_running_functions import LongRunningFunctions
@@ -306,5 +307,5 @@ class _A2aAgentExecutor(AgentExecutor):
         _get_adk_metadata_key('session_id'): executor_context.session_id,
         # TODO: Remove this metadata once the new agent executor
         # is fully adopted.
-        _get_adk_metadata_key('agent_executor_v2'): True,
+        _NEW_A2A_ADK_INTEGRATION_EXTENSION: {'adk_agent_executor_v2': True},
     }
