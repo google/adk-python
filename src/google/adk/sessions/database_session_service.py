@@ -28,7 +28,9 @@ from typing import TypeVar
 from google.adk.platform import time as platform_time
 from sqlalchemy import delete
 from sqlalchemy import event
+from sqlalchemy import MetaData
 from sqlalchemy import select
+from sqlalchemy.engine import Connection
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import ArgumentError
 from sqlalchemy.ext.asyncio import async_sessionmaker
@@ -60,6 +62,11 @@ from .session import Session
 from .state import State
 
 logger = logging.getLogger("google_adk." + __name__)
+
+_STALE_SESSION_ERROR_MESSAGE = (
+    "The session has been modified in storage since it was loaded. "
+    "Please reload the session before appending more events."
+)
 
 _SQLITE_DIALECT = "sqlite"
 _MARIADB_DIALECT = "mariadb"
@@ -100,6 +107,22 @@ def _set_sqlite_pragma(dbapi_connection, connection_record):
   cursor = dbapi_connection.cursor()
   cursor.execute("PRAGMA foreign_keys=ON")
   cursor.close()
+
+
+def _ensure_schema_indexes_exist(
+    connection: Connection, metadata: MetaData
+) -> None:
+  """Ensures indexes declared in metadata exist for existing tables."""
+  logger.debug("Ensuring schema indexes exist for metadata tables.")
+  for table in metadata.sorted_tables:
+    for index in sorted(table.indexes, key=lambda item: item.name or ""):
+      index.create(bind=connection, checkfirst=True)
+
+
+def _setup_database_schema(connection: Connection, metadata: MetaData) -> None:
+  """Ensures tables and indexes declared in metadata exist."""
+  metadata.create_all(bind=connection)
+  _ensure_schema_indexes_exist(connection, metadata)
 
 
 def _merge_state(
@@ -173,11 +196,14 @@ class DatabaseSessionService(BaseSessionService):
       ) from e
 
     self.db_engine: AsyncEngine = db_engine
-
     # DB session factory method
     self.database_session_factory: async_sessionmaker[
         DatabaseSessionFactory
     ] = async_sessionmaker(bind=self.db_engine, expire_on_commit=False)
+    read_only_engine = self.db_engine.execution_options(read_only=True)
+    self._read_only_database_session_factory: async_sessionmaker[
+        DatabaseSessionFactory
+    ] = async_sessionmaker(bind=read_only_engine, expire_on_commit=False)
 
     # Flag to indicate if tables are created
     self._tables_created = False
@@ -196,9 +222,18 @@ class DatabaseSessionService(BaseSessionService):
   def _get_schema_classes(self) -> _SchemaClasses:
     return _SchemaClasses(self._db_schema_version)
 
+  def _get_database_session_factory(
+      self, *, read_only: bool = False
+  ) -> async_sessionmaker[DatabaseSessionFactory]:
+    if read_only:
+      return self._read_only_database_session_factory
+    return self.database_session_factory
+
   @asynccontextmanager
   async def _rollback_on_exception_session(
       self,
+      *,
+      read_only: bool = False,
   ) -> AsyncIterator[DatabaseSessionFactory]:
     """Yields a database session with guaranteed rollback on errors.
 
@@ -206,7 +241,8 @@ class DatabaseSessionService(BaseSessionService):
     the transaction is explicitly rolled back before the error propagates,
     preventing connection-pool exhaustion from lingering invalid transactions.
     """
-    async with self.database_session_factory() as sql_session:
+    session_factory = self._get_database_session_factory(read_only=read_only)
+    async with session_factory() as sql_session:
       try:
         yield sql_session
       except BaseException:
@@ -284,11 +320,11 @@ class DatabaseSessionService(BaseSessionService):
           # Uncomment to recreate DB every time
           # await conn.run_sync(BaseV1.metadata.drop_all)
           logger.debug("Using V1 schema tables...")
-          await conn.run_sync(BaseV1.metadata.create_all)
+          await conn.run_sync(_setup_database_schema, BaseV1.metadata)
         else:
           # await conn.run_sync(BaseV0.metadata.drop_all)
           logger.debug("Using V0 schema tables...")
-          await conn.run_sync(BaseV0.metadata.create_all)
+          await conn.run_sync(_setup_database_schema, BaseV0.metadata)
 
       if self._db_schema_version == _schema_check_utils.LATEST_SCHEMA_VERSION:
         async with self._rollback_on_exception_session() as sql_session:
@@ -308,6 +344,39 @@ class DatabaseSessionService(BaseSessionService):
             await sql_session.commit()
 
       self._tables_created = True
+
+  async def _session_matches_storage_revision(
+      self,
+      *,
+      sql_session: DatabaseSessionFactory,
+      schema: _SchemaClasses,
+      session: Session,
+  ) -> bool:
+    """Returns whether a marker-less session still matches stored events."""
+    if not session.events:
+      stmt = (
+          select(schema.StorageEvent.id)
+          .filter(schema.StorageEvent.app_name == session.app_name)
+          .filter(schema.StorageEvent.session_id == session.id)
+          .filter(schema.StorageEvent.user_id == session.user_id)
+          .limit(1)
+      )
+      result = await sql_session.execute(stmt)
+      return result.scalar_one_or_none() is None
+
+    stmt = (
+        select(schema.StorageEvent.id)
+        .filter(schema.StorageEvent.app_name == session.app_name)
+        .filter(schema.StorageEvent.session_id == session.id)
+        .filter(schema.StorageEvent.user_id == session.user_id)
+        .order_by(
+            schema.StorageEvent.timestamp.desc(), schema.StorageEvent.id.desc()
+        )
+        .limit(1)
+    )
+    result = await sql_session.execute(stmt)
+    latest_storage_event_id = result.scalar_one_or_none()
+    return latest_storage_event_id == session.events[-1].id
 
   @override
   async def create_session(
@@ -403,7 +472,9 @@ class DatabaseSessionService(BaseSessionService):
     # 2. Get all the events based on session id and filtering config
     # 3. Convert and return the session
     schema = self._get_schema_classes()
-    async with self._rollback_on_exception_session() as sql_session:
+    async with self._rollback_on_exception_session(
+        read_only=True
+    ) as sql_session:
       storage_session = await sql_session.get(
           schema.StorageSession, (app_name, user_id, session_id)
       )
@@ -458,7 +529,9 @@ class DatabaseSessionService(BaseSessionService):
   ) -> ListSessionsResponse:
     await self._prepare_tables()
     schema = self._get_schema_classes()
-    async with self._rollback_on_exception_session() as sql_session:
+    async with self._rollback_on_exception_session(
+        read_only=True
+    ) as sql_session:
       stmt = select(schema.StorageSession).filter(
           schema.StorageSession.app_name == app_name
       )
@@ -529,9 +602,9 @@ class DatabaseSessionService(BaseSessionService):
     # Trim temp state before persisting
     event = self._trim_temp_delta_state(event)
 
-    # 1. Check if timestamp is stale
-    # 2. Update session attributes based on event config
-    # 3. Store event to table
+    # 1. Validate the session has not gone stale.
+    # 2. Update session attributes based on event config.
+    # 3. Store the new event.
     schema = self._get_schema_classes()
     is_sqlite = self.db_engine.dialect.name == _SQLITE_DIALECT
     use_row_level_locking = self._supports_row_level_locking()
@@ -563,6 +636,8 @@ class DatabaseSessionService(BaseSessionService):
         storage_session = storage_session_result.scalars().one_or_none()
         if storage_session is None:
           raise ValueError(f"Session {session.id} not found.")
+        storage_update_time = storage_session.get_update_timestamp(is_sqlite)
+        storage_update_marker = storage_session.get_update_marker()
 
         storage_app_state = await _select_required_state(
             sql_session=sql_session,
@@ -591,27 +666,27 @@ class DatabaseSessionService(BaseSessionService):
             ),
         )
 
-        if (
-            storage_session.get_update_timestamp(is_sqlite)
-            > session.last_update_time
-        ):
-          # Reload the session from storage if it has been updated since it was
-          # loaded.
-          app_state = storage_app_state.state
-          user_state = storage_user_state.state
-          session_state = storage_session.state
-          session.state = _merge_state(app_state, user_state, session_state)
-
-          stmt = (
-              select(schema.StorageEvent)
-              .filter(schema.StorageEvent.app_name == session.app_name)
-              .filter(schema.StorageEvent.session_id == session.id)
-              .filter(schema.StorageEvent.user_id == session.user_id)
-              .order_by(schema.StorageEvent.timestamp.asc())
-          )
-          result = await sql_session.stream_scalars(stmt)
-          storage_events = [e async for e in result]
-          session.events = [e.to_event() for e in storage_events]
+        if session._storage_update_marker is not None:
+          # Sessions loaded by DatabaseSessionService carry an exact storage
+          # revision marker, so stale-writer detection can use that marker
+          # instead of relying on rounded timestamps.
+          if session._storage_update_marker != storage_update_marker:
+            raise ValueError(_STALE_SESSION_ERROR_MESSAGE)
+          # Keep the float timestamp synchronized with the exact storage value
+          # so tiny round-trip differences do not trigger false stale checks on
+          # the next append.
+          session.last_update_time = storage_update_time
+        elif storage_update_time > session.last_update_time:
+          # Backward-compatible fallback for marker-less session objects, such
+          # as older in-memory sessions or manually constructed Session values.
+          # Only reject when storage has actually advanced beyond the in-memory
+          # revision represented by session.events.
+          if not await self._session_matches_storage_revision(
+              sql_session=sql_session, schema=schema, session=session
+          ):
+            raise ValueError(_STALE_SESSION_ERROR_MESSAGE)
+          session.last_update_time = storage_update_time
+        session._storage_update_marker = storage_update_marker
 
         # Merge pre-extracted state deltas into storage.
         if has_app_delta:
@@ -642,6 +717,7 @@ class DatabaseSessionService(BaseSessionService):
         session.last_update_time = storage_session.get_update_timestamp(
             is_sqlite
         )
+        session._storage_update_marker = storage_session.get_update_marker()
 
     # Also update the in-memory session
     await super().append_event(session=session, event=event)

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import abc
 from typing import List
+from typing import Optional
 
 from pydantic import BaseModel
 
@@ -41,6 +42,7 @@ class BaseCodeExecutor(BaseModel):
       code blocks.
     execution_result_delimiters: The delimiters to format the code execution
       result.
+    timeout_seconds: The fallback timeout in seconds for the code execution.
   """
 
   optimize_data_file: bool = False
@@ -73,6 +75,9 @@ class BaseCodeExecutor(BaseModel):
 
   execution_result_delimiters: tuple[str, str] = ('```tool_output\n', '\n```')
   """The delimiters to format the code execution result."""
+
+  timeout_seconds: Optional[int] = None
+  """The timeout in seconds for the code execution."""
 
   @abc.abstractmethod
   def execute_code(
