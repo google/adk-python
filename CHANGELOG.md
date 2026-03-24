@@ -1,8 +1,6 @@
 # Changelog
 
-## [1.28.0](https://github.com/google/adk-python/compare/v1.27.3...v1.28.0) (2026-03-24)
-
-
+## [1.27.4](https://github.com/google/adk-python/compare/v1.27.3...v1.27.4) (2026-03-24)
 ### Bug Fixes
 
 * Exclude compromised LiteLLM versions from dependencies pin to 1.82.6 ([fa5e707](https://github.com/google/adk-python/commit/fa5e707c11ad748e7db2f653b526d9bdc4b7d405))
