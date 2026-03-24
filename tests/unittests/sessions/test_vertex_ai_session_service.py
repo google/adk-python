@@ -853,7 +853,9 @@ async def test_append_event_with_rewind():
   )
 
   appended_event = retrieved_session.events[-1]
-  assert appended_event.actions.rewind_before_invocation_id == 'target_invocation'
+  assert (
+      appended_event.actions.rewind_before_invocation_id == 'target_invocation'
+  )
 
 
 @pytest.mark.asyncio
