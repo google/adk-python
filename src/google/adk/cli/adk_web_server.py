@@ -20,6 +20,7 @@ import importlib
 import json
 import logging
 import os
+import re
 import sys
 import time
 import traceback
@@ -136,6 +137,158 @@ def _parse_cors_origins(
 
   combined_regex = "|".join(regex_patterns) if regex_patterns else None
   return literal_origins, combined_regex
+
+
+def _is_origin_allowed(
+    origin: str,
+    allowed_literal_origins: list[str],
+    allowed_origin_regex: Optional[re.Pattern[str]],
+) -> bool:
+  """Check whether the given origin matches the allowed origins."""
+  if "*" in allowed_literal_origins:
+    return True
+  if origin in allowed_literal_origins:
+    return True
+  if allowed_origin_regex is not None:
+    return allowed_origin_regex.fullmatch(origin) is not None
+  return False
+
+
+def _normalize_origin_scheme(scheme: str) -> str:
+  """Normalize request schemes to the browser Origin scheme space."""
+  if scheme == "ws":
+    return "http"
+  if scheme == "wss":
+    return "https"
+  return scheme
+
+
+def _strip_optional_quotes(value: str) -> str:
+  """Strip a single pair of wrapping quotes from a header value."""
+  if len(value) >= 2 and value[0] == '"' and value[-1] == '"':
+    return value[1:-1]
+  return value
+
+
+def _get_scope_header(
+    scope: dict[str, Any], header_name: bytes
+) -> Optional[str]:
+  """Return the first matching header value from an ASGI scope."""
+  for candidate_name, candidate_value in scope.get("headers", []):
+    if candidate_name == header_name:
+      return candidate_value.decode("latin-1").split(",", 1)[0].strip()
+  return None
+
+
+def _get_request_origin(scope: dict[str, Any]) -> Optional[str]:
+  """Compute the effective origin for the current HTTP/WebSocket request."""
+  forwarded = _get_scope_header(scope, b"forwarded")
+  if forwarded is not None:
+    proto = None
+    host = None
+    for element in forwarded.split(",", 1)[0].split(";"):
+      if "=" not in element:
+        continue
+      name, value = element.split("=", 1)
+      if name.strip().lower() == "proto":
+        proto = _strip_optional_quotes(value.strip())
+      elif name.strip().lower() == "host":
+        host = _strip_optional_quotes(value.strip())
+    if proto is not None and host is not None:
+      return f"{_normalize_origin_scheme(proto)}://{host}"
+
+  host = _get_scope_header(scope, b"x-forwarded-host")
+  if host is None:
+    host = _get_scope_header(scope, b"host")
+  if host is None:
+    return None
+
+  proto = _get_scope_header(scope, b"x-forwarded-proto")
+  if proto is None:
+    proto = scope.get("scheme", "http")
+  return f"{_normalize_origin_scheme(proto)}://{host}"
+
+
+def _is_request_origin_allowed(
+    origin: str,
+    scope: dict[str, Any],
+    allowed_literal_origins: list[str],
+    allowed_origin_regex: Optional[re.Pattern[str]],
+    has_configured_allowed_origins: bool,
+) -> bool:
+  """Validate an Origin header against explicit config or same-origin."""
+  if has_configured_allowed_origins and _is_origin_allowed(
+      origin, allowed_literal_origins, allowed_origin_regex
+  ):
+    return True
+
+  request_origin = _get_request_origin(scope)
+  if request_origin is None:
+    return False
+  return origin == request_origin
+
+
+_SAFE_HTTP_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
+
+class _OriginCheckMiddleware:
+  """ASGI middleware that blocks cross-origin state-changing requests."""
+
+  def __init__(
+      self,
+      app: Any,
+      has_configured_allowed_origins: bool,
+      allowed_origins: list[str],
+      allowed_origin_regex: Optional[re.Pattern[str]],
+  ) -> None:
+    self._app = app
+    self._has_configured_allowed_origins = has_configured_allowed_origins
+    self._allowed_origins = allowed_origins
+    self._allowed_origin_regex = allowed_origin_regex
+
+  async def __call__(
+      self,
+      scope: dict[str, Any],
+      receive: Any,
+      send: Any,
+  ) -> None:
+    if scope["type"] != "http":
+      await self._app(scope, receive, send)
+      return
+
+    method = scope.get("method", "GET")
+    if method in _SAFE_HTTP_METHODS:
+      await self._app(scope, receive, send)
+      return
+
+    origin = _get_scope_header(scope, b"origin")
+    if origin is None:
+      await self._app(scope, receive, send)
+      return
+
+    if _is_request_origin_allowed(
+        origin,
+        scope,
+        self._allowed_origins,
+        self._allowed_origin_regex,
+        self._has_configured_allowed_origins,
+    ):
+      await self._app(scope, receive, send)
+      return
+
+    response_body = b"Forbidden: origin not allowed"
+    await send({
+        "type": "http.response.start",
+        "status": 403,
+        "headers": [
+            (b"content-type", b"text/plain"),
+            (b"content-length", str(len(response_body)).encode()),
+        ],
+    })
+    await send({
+        "type": "http.response.body",
+        "body": response_body,
+    })
 
 
 class ApiServerSpanExporter(export_lib.SpanExporter):
@@ -757,8 +910,12 @@ class AdkWebServer:
     # Run the FastAPI server.
     app = FastAPI(lifespan=internal_lifespan)
 
+    has_configured_allowed_origins = bool(allow_origins)
     if allow_origins:
       literal_origins, combined_regex = _parse_cors_origins(allow_origins)
+      compiled_origin_regex = (
+          re.compile(combined_regex) if combined_regex is not None else None
+      )
       app.add_middleware(
           CORSMiddleware,
           allow_origins=literal_origins,
@@ -767,6 +924,16 @@ class AdkWebServer:
           allow_methods=["*"],
           allow_headers=["*"],
       )
+    else:
+      literal_origins = []
+      compiled_origin_regex = None
+
+    app.add_middleware(
+        _OriginCheckMiddleware,
+        has_configured_allowed_origins=has_configured_allowed_origins,
+        allowed_origins=literal_origins,
+        allowed_origin_regex=compiled_origin_regex,
+    )
 
     @app.get("/health")
     async def health() -> dict[str, str]:
@@ -1802,14 +1969,23 @@ class AdkWebServer:
         enable_affective_dialog: bool | None = Query(default=None),
         enable_session_resumption: bool | None = Query(default=None),
     ) -> None:
+      ws_origin = websocket.headers.get("origin")
+      if ws_origin is not None and not _is_request_origin_allowed(
+          ws_origin,
+          websocket.scope,
+          literal_origins,
+          compiled_origin_regex,
+          has_configured_allowed_origins,
+      ):
+        await websocket.close(code=1008, reason="Origin not allowed")
+        return
+
       await websocket.accept()
 
       session = await self.session_service.get_session(
           app_name=app_name, user_id=user_id, session_id=session_id
       )
       if not session:
-        # Accept first so that the client is aware of connection establishment,
-        # then close with a specific code.
         await websocket.close(code=1002, reason="Session not found")
         return
 

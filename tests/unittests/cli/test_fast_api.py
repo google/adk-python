@@ -593,7 +593,7 @@ def builder_test_client(
         session_service_uri="",
         artifact_service_uri="",
         memory_service_uri="",
-        allow_origins=["*"],
+        allow_origins=None,
         a2a=False,
         host="127.0.0.1",
         port=8000,
@@ -1593,6 +1593,46 @@ def test_builder_final_save_preserves_tools_and_cleans_tmp(
   assert not (tmp_path / "app" / "tmp" / "app").exists()
   tmp_dir = tmp_path / "app" / "tmp"
   assert not tmp_dir.exists() or not any(tmp_dir.iterdir())
+
+
+def test_builder_save_rejects_cross_origin_post(builder_test_client, tmp_path):
+  response = builder_test_client.post(
+      "/builder/save?tmp=true",
+      headers={"origin": "https://evil.com"},
+      files=[(
+          "files",
+          ("app/root_agent.yaml", b"name: app\n", "application/x-yaml"),
+      )],
+  )
+
+  assert response.status_code == 403
+  assert response.text == "Forbidden: origin not allowed"
+  assert not (tmp_path / "app" / "tmp" / "app").exists()
+
+
+def test_builder_save_allows_same_origin_post(builder_test_client, tmp_path):
+  response = builder_test_client.post(
+      "/builder/save?tmp=true",
+      headers={"origin": "http://testserver"},
+      files=[(
+          "files",
+          ("app/root_agent.yaml", b"name: app\n", "application/x-yaml"),
+      )],
+  )
+
+  assert response.status_code == 200
+  assert response.json() is True
+  assert (tmp_path / "app" / "tmp" / "app" / "root_agent.yaml").is_file()
+
+
+def test_builder_get_allows_cross_origin_get(builder_test_client):
+  response = builder_test_client.get(
+      "/builder/app/missing?tmp=true",
+      headers={"origin": "https://evil.com"},
+  )
+
+  assert response.status_code == 200
+  assert response.text == ""
 
 
 def test_builder_cancel_deletes_tmp_idempotent(builder_test_client, tmp_path):
