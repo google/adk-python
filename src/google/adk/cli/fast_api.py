@@ -266,150 +266,192 @@ def get_fast_api_app(
       **extra_fast_api_args,
   )
 
-  agents_base_path = (Path.cwd() / agents_dir).resolve()
+  # --- Builder endpoints (agent editor UI) ---
+  # Only register when the web UI is enabled.  In headless / production
+  # deployments (e.g. `adk deploy cloud_run`) these endpoints are unnecessary
+  # and expose an attack surface that allows arbitrary file writes under the
+  # agents directory.
+  # See https://github.com/google/adk-python/issues/4947
+  if web:
+    agents_base_path = (Path.cwd() / agents_dir).resolve()
 
-  def _get_app_root(app_name: str) -> Path:
-    if app_name in ("", ".", ".."):
-      raise ValueError(f"Invalid app name: {app_name!r}")
-    if Path(app_name).name != app_name or "\\" in app_name:
-      raise ValueError(f"Invalid app name: {app_name!r}")
-    app_root = (agents_base_path / app_name).resolve()
-    if not app_root.is_relative_to(agents_base_path):
-      raise ValueError(f"Invalid app name: {app_name!r}")
-    return app_root
+    def _get_app_root(app_name: str) -> Path:
+      if app_name in ("", ".", ".."):
+        raise ValueError(f"Invalid app name: {app_name!r}")
+      if Path(app_name).name != app_name or "\\" in app_name:
+        raise ValueError(f"Invalid app name: {app_name!r}")
+      app_root = (agents_base_path / app_name).resolve()
+      if not app_root.is_relative_to(agents_base_path):
+        raise ValueError(f"Invalid app name: {app_name!r}")
+      return app_root
 
-  def _normalize_relative_path(path: str) -> str:
-    return path.replace("\\", "/").lstrip("/")
+    def _normalize_relative_path(path: str) -> str:
+      return path.replace("\\", "/").lstrip("/")
 
-  def _has_parent_reference(path: str) -> bool:
-    return any(part == ".." for part in path.split("/"))
+    def _has_parent_reference(path: str) -> bool:
+      return any(part == ".." for part in path.split("/"))
 
-  def _parse_upload_filename(filename: Optional[str]) -> tuple[str, str]:
-    if not filename:
-      raise ValueError("Upload filename is missing.")
-    filename = _normalize_relative_path(filename)
-    if "/" not in filename:
-      raise ValueError(f"Invalid upload filename: {filename!r}")
-    app_name, rel_path = filename.split("/", 1)
-    if not app_name or not rel_path:
-      raise ValueError(f"Invalid upload filename: {filename!r}")
-    if rel_path.startswith("/"):
-      raise ValueError(f"Absolute upload path rejected: {filename!r}")
-    if _has_parent_reference(rel_path):
-      raise ValueError(f"Path traversal rejected: {filename!r}")
-    return app_name, rel_path
+    _ALLOWED_UPLOAD_EXTENSIONS = frozenset({".yaml", ".yml"})
 
-  def _parse_file_path(file_path: str) -> str:
-    file_path = _normalize_relative_path(file_path)
-    if not file_path:
-      raise ValueError("file_path is missing.")
-    if file_path.startswith("/"):
-      raise ValueError(f"Absolute file_path rejected: {file_path!r}")
-    if _has_parent_reference(file_path):
-      raise ValueError(f"Path traversal rejected: {file_path!r}")
-    return file_path
+    def _parse_upload_filename(filename: Optional[str]) -> tuple[str, str]:
+      if not filename:
+        raise ValueError("Upload filename is missing.")
+      filename = _normalize_relative_path(filename)
+      if "/" not in filename:
+        raise ValueError(f"Invalid upload filename: {filename!r}")
+      app_name, rel_path = filename.split("/", 1)
+      if not app_name or not rel_path:
+        raise ValueError(f"Invalid upload filename: {filename!r}")
+      if rel_path.startswith("/"):
+        raise ValueError(f"Absolute upload path rejected: {filename!r}")
+      if _has_parent_reference(rel_path):
+        raise ValueError(f"Path traversal rejected: {filename!r}")
+      ext = os.path.splitext(rel_path)[1].lower()
+      if ext not in _ALLOWED_UPLOAD_EXTENSIONS:
+        raise ValueError(
+            f"File type not allowed: {rel_path!r}"
+            f" (allowed: {', '.join(sorted(_ALLOWED_UPLOAD_EXTENSIONS))})"
+        )
+      return app_name, rel_path
 
-  def _resolve_under_dir(root_dir: Path, rel_path: str) -> Path:
-    file_path = root_dir / rel_path
-    resolved_root_dir = root_dir.resolve()
-    resolved_file_path = file_path.resolve()
-    if not resolved_file_path.is_relative_to(resolved_root_dir):
-      raise ValueError(f"Path escapes root_dir: {rel_path!r}")
-    return file_path
+    def _parse_file_path(file_path: str) -> str:
+      file_path = _normalize_relative_path(file_path)
+      if not file_path:
+        raise ValueError("file_path is missing.")
+      if file_path.startswith("/"):
+        raise ValueError(f"Absolute file_path rejected: {file_path!r}")
+      if _has_parent_reference(file_path):
+        raise ValueError(f"Path traversal rejected: {file_path!r}")
+      return file_path
 
-  def _get_tmp_agent_root(app_root: Path, app_name: str) -> Path:
-    tmp_agent_root = app_root / "tmp" / app_name
-    resolved_tmp_agent_root = tmp_agent_root.resolve()
-    if not resolved_tmp_agent_root.is_relative_to(app_root):
-      raise ValueError(f"Invalid tmp path for app: {app_name!r}")
-    return tmp_agent_root
+    def _resolve_under_dir(root_dir: Path, rel_path: str) -> Path:
+      file_path = root_dir / rel_path
+      resolved_root_dir = root_dir.resolve()
+      resolved_file_path = file_path.resolve()
+      if not resolved_file_path.is_relative_to(resolved_root_dir):
+        raise ValueError(f"Path escapes root_dir: {rel_path!r}")
+      return file_path
 
-  def copy_dir_contents(source_dir: Path, dest_dir: Path) -> None:
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    for source_path in source_dir.iterdir():
-      if source_path.name == "tmp":
-        continue
+    def _get_tmp_agent_root(app_root: Path, app_name: str) -> Path:
+      tmp_agent_root = app_root / "tmp" / app_name
+      resolved_tmp_agent_root = tmp_agent_root.resolve()
+      if not resolved_tmp_agent_root.is_relative_to(app_root):
+        raise ValueError(f"Invalid tmp path for app: {app_name!r}")
+      return tmp_agent_root
 
-      dest_path = dest_dir / source_path.name
-      if source_path.is_dir():
-        if dest_path.exists() and dest_path.is_file():
-          dest_path.unlink()
-        shutil.copytree(source_path, dest_path, dirs_exist_ok=True)
-      elif source_path.is_file():
-        if dest_path.exists() and dest_path.is_dir():
-          shutil.rmtree(dest_path)
-        shutil.copy2(source_path, dest_path)
+    def copy_dir_contents(source_dir: Path, dest_dir: Path) -> None:
+      dest_dir.mkdir(parents=True, exist_ok=True)
+      for source_path in source_dir.iterdir():
+        if source_path.name == "tmp":
+          continue
 
-  def cleanup_tmp(app_name: str) -> bool:
-    try:
-      app_root = _get_app_root(app_name)
-    except ValueError as exc:
-      logger.exception("Error in cleanup_tmp: %s", exc)
-      return False
+        dest_path = dest_dir / source_path.name
+        if source_path.is_dir():
+          if dest_path.exists() and dest_path.is_file():
+            dest_path.unlink()
+          shutil.copytree(source_path, dest_path, dirs_exist_ok=True)
+        elif source_path.is_file():
+          if dest_path.exists() and dest_path.is_dir():
+            shutil.rmtree(dest_path)
+          shutil.copy2(source_path, dest_path)
 
-    try:
-      tmp_agent_root = _get_tmp_agent_root(app_root, app_name)
-    except ValueError as exc:
-      logger.exception("Error in cleanup_tmp: %s", exc)
-      return False
+    def cleanup_tmp(app_name: str) -> bool:
+      try:
+        app_root = _get_app_root(app_name)
+      except ValueError as exc:
+        logger.exception("Error in cleanup_tmp: %s", exc)
+        return False
 
-    try:
-      shutil.rmtree(tmp_agent_root)
-    except FileNotFoundError:
-      pass
-    except OSError as exc:
-      logger.exception("Error deleting tmp agent root: %s", exc)
-      return False
+      try:
+        tmp_agent_root = _get_tmp_agent_root(app_root, app_name)
+      except ValueError as exc:
+        logger.exception("Error in cleanup_tmp: %s", exc)
+        return False
 
-    tmp_dir = app_root / "tmp"
-    resolved_tmp_dir = tmp_dir.resolve()
-    if not resolved_tmp_dir.is_relative_to(app_root):
-      logger.error(
-          "Refusing to delete tmp outside app_root: %s", resolved_tmp_dir
-      )
-      return False
+      try:
+        shutil.rmtree(tmp_agent_root)
+      except FileNotFoundError:
+        pass
+      except OSError as exc:
+        logger.exception("Error deleting tmp agent root: %s", exc)
+        return False
 
-    try:
-      tmp_dir.rmdir()
-    except OSError:
-      pass
+      tmp_dir = app_root / "tmp"
+      resolved_tmp_dir = tmp_dir.resolve()
+      if not resolved_tmp_dir.is_relative_to(app_root):
+        logger.error(
+            "Refusing to delete tmp outside app_root: %s", resolved_tmp_dir
+        )
+        return False
 
-    return True
+      try:
+        tmp_dir.rmdir()
+      except OSError:
+        pass
 
-  def ensure_tmp_exists(app_name: str) -> bool:
-    try:
-      app_root = _get_app_root(app_name)
-    except ValueError as exc:
-      logger.exception("Error in ensure_tmp_exists: %s", exc)
-      return False
-
-    if not app_root.is_dir():
-      return False
-
-    try:
-      tmp_agent_root = _get_tmp_agent_root(app_root, app_name)
-    except ValueError as exc:
-      logger.exception("Error in ensure_tmp_exists: %s", exc)
-      return False
-
-    if tmp_agent_root.exists():
       return True
 
-    try:
-      tmp_agent_root.mkdir(parents=True, exist_ok=True)
-      copy_dir_contents(app_root, tmp_agent_root)
-    except OSError as exc:
-      logger.exception("Error in ensure_tmp_exists: %s", exc)
-      return False
+    def ensure_tmp_exists(app_name: str) -> bool:
+      try:
+        app_root = _get_app_root(app_name)
+      except ValueError as exc:
+        logger.exception("Error in ensure_tmp_exists: %s", exc)
+        return False
 
-    return True
+      if not app_root.is_dir():
+        return False
 
-  @app.post("/builder/save", response_model_exclude_none=True)
-  async def builder_build(
-      files: list[UploadFile], tmp: Optional[bool] = False
-  ) -> bool:
-    try:
-      if tmp:
+      try:
+        tmp_agent_root = _get_tmp_agent_root(app_root, app_name)
+      except ValueError as exc:
+        logger.exception("Error in ensure_tmp_exists: %s", exc)
+        return False
+
+      if tmp_agent_root.exists():
+        return True
+
+      try:
+        tmp_agent_root.mkdir(parents=True, exist_ok=True)
+        copy_dir_contents(app_root, tmp_agent_root)
+      except OSError as exc:
+        logger.exception("Error in ensure_tmp_exists: %s", exc)
+        return False
+
+      return True
+
+    @app.post("/builder/save", response_model_exclude_none=True)
+    async def builder_build(
+        files: list[UploadFile], tmp: Optional[bool] = False
+    ) -> bool:
+      try:
+        if tmp:
+          app_names = set()
+          uploads = []
+          for file in files:
+            app_name, rel_path = _parse_upload_filename(file.filename)
+            app_names.add(app_name)
+            uploads.append((rel_path, file))
+
+          if len(app_names) != 1:
+            logger.error(
+                "Exactly one app name is required, found: %s",
+                sorted(app_names),
+            )
+            return False
+
+          app_name = next(iter(app_names))
+          app_root = _get_app_root(app_name)
+          tmp_agent_root = _get_tmp_agent_root(app_root, app_name)
+          tmp_agent_root.mkdir(parents=True, exist_ok=True)
+
+          for rel_path, file in uploads:
+            destination_path = _resolve_under_dir(tmp_agent_root, rel_path)
+            destination_path.parent.mkdir(parents=True, exist_ok=True)
+            with destination_path.open("wb") as buffer:
+              shutil.copyfileobj(file.file, buffer)
+
+          return True
+
         app_names = set()
         uploads = []
         for file in files:
@@ -419,108 +461,85 @@ def get_fast_api_app(
 
         if len(app_names) != 1:
           logger.error(
-              "Exactly one app name is required, found: %s", sorted(app_names)
+              "Exactly one app name is required, found: %s",
+              sorted(app_names),
           )
           return False
 
         app_name = next(iter(app_names))
         app_root = _get_app_root(app_name)
+        app_root.mkdir(parents=True, exist_ok=True)
+
         tmp_agent_root = _get_tmp_agent_root(app_root, app_name)
-        tmp_agent_root.mkdir(parents=True, exist_ok=True)
+        if tmp_agent_root.is_dir():
+          copy_dir_contents(tmp_agent_root, app_root)
 
         for rel_path, file in uploads:
-          destination_path = _resolve_under_dir(tmp_agent_root, rel_path)
+          destination_path = _resolve_under_dir(app_root, rel_path)
           destination_path.parent.mkdir(parents=True, exist_ok=True)
           with destination_path.open("wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
 
-        return True
-
-      app_names = set()
-      uploads = []
-      for file in files:
-        app_name, rel_path = _parse_upload_filename(file.filename)
-        app_names.add(app_name)
-        uploads.append((rel_path, file))
-
-      if len(app_names) != 1:
-        logger.error(
-            "Exactly one app name is required, found: %s", sorted(app_names)
-        )
+        return cleanup_tmp(app_name)
+      except ValueError as exc:
+        logger.exception("Error in builder_build: %s", exc)
+        return False
+      except OSError as exc:
+        logger.exception("Error in builder_build: %s", exc)
         return False
 
-      app_name = next(iter(app_names))
-      app_root = _get_app_root(app_name)
-      app_root.mkdir(parents=True, exist_ok=True)
-
-      tmp_agent_root = _get_tmp_agent_root(app_root, app_name)
-      if tmp_agent_root.is_dir():
-        copy_dir_contents(tmp_agent_root, app_root)
-
-      for rel_path, file in uploads:
-        destination_path = _resolve_under_dir(app_root, rel_path)
-        destination_path.parent.mkdir(parents=True, exist_ok=True)
-        with destination_path.open("wb") as buffer:
-          shutil.copyfileobj(file.file, buffer)
-
+    @app.post(
+        "/builder/app/{app_name}/cancel", response_model_exclude_none=True
+    )
+    async def builder_cancel(app_name: str) -> bool:
       return cleanup_tmp(app_name)
-    except ValueError as exc:
-      logger.exception("Error in builder_build: %s", exc)
-      return False
-    except OSError as exc:
-      logger.exception("Error in builder_build: %s", exc)
-      return False
 
-  @app.post("/builder/app/{app_name}/cancel", response_model_exclude_none=True)
-  async def builder_cancel(app_name: str) -> bool:
-    return cleanup_tmp(app_name)
-
-  @app.get(
-      "/builder/app/{app_name}",
-      response_model_exclude_none=True,
-      response_class=PlainTextResponse,
-  )
-  async def get_agent_builder(
-      app_name: str,
-      file_path: Optional[str] = None,
-      tmp: Optional[bool] = False,
-  ):
-    try:
-      app_root = _get_app_root(app_name)
-    except ValueError as exc:
-      logger.exception("Error in get_agent_builder: %s", exc)
-      return ""
-
-    agent_dir = app_root
-    if tmp:
-      if not ensure_tmp_exists(app_name):
-        return ""
-      agent_dir = app_root / "tmp" / app_name
-
-    if not file_path:
-      rel_path = "root_agent.yaml"
-    else:
+    @app.get(
+        "/builder/app/{app_name}",
+        response_model_exclude_none=True,
+        response_class=PlainTextResponse,
+    )
+    async def get_agent_builder(
+        app_name: str,
+        file_path: Optional[str] = None,
+        tmp: Optional[bool] = False,
+    ):
       try:
-        rel_path = _parse_file_path(file_path)
+        app_root = _get_app_root(app_name)
       except ValueError as exc:
         logger.exception("Error in get_agent_builder: %s", exc)
         return ""
 
-    try:
-      agent_file_path = _resolve_under_dir(agent_dir, rel_path)
-    except ValueError as exc:
-      logger.exception("Error in get_agent_builder: %s", exc)
-      return ""
+      agent_dir = app_root
+      if tmp:
+        if not ensure_tmp_exists(app_name):
+          return ""
+        agent_dir = app_root / "tmp" / app_name
 
-    if not agent_file_path.is_file():
-      return ""
+      if not file_path:
+        rel_path = "root_agent.yaml"
+      else:
+        try:
+          rel_path = _parse_file_path(file_path)
+        except ValueError as exc:
+          logger.exception("Error in get_agent_builder: %s", exc)
+          return ""
 
-    return FileResponse(
-        path=agent_file_path,
-        media_type="application/x-yaml",
-        filename=file_path or f"{app_name}.yaml",
-        headers={"Cache-Control": "no-store"},
-    )
+      try:
+        agent_file_path = _resolve_under_dir(agent_dir, rel_path)
+      except ValueError as exc:
+        logger.exception("Error in get_agent_builder: %s", exc)
+        return ""
+
+      if not agent_file_path.is_file():
+        return ""
+
+      return FileResponse(
+          path=agent_file_path,
+          media_type="application/x-yaml",
+          filename=file_path or f"{app_name}.yaml",
+          headers={"Cache-Control": "no-store"},
+      )
 
   if a2a:
     from a2a.server.apps import A2AStarletteApplication
