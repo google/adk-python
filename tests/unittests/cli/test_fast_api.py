@@ -2444,7 +2444,9 @@ async def test_independent_telemetry_context(
 
 _OTEL_ENV_ENABLED = "google.adk.cli.adk_web_server._otel_env_vars_enabled"
 _SETUP_TELEMETRY = "google.adk.cli.adk_web_server._setup_telemetry"
-_FASTAPI_INSTRUMENTOR = "opentelemetry.instrumentation.fastapi.FastAPIInstrumentor"
+_FASTAPI_INSTRUMENTOR = (
+    "opentelemetry.instrumentation.fastapi.FastAPIInstrumentor"
+)
 
 
 def _make_otel_test_client(
