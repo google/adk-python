@@ -32,12 +32,12 @@ else:
     import importlib
 
     _LAZY_IMPORTS = {
+        "Agent": ".llm_agent",
         "BaseAgent": ".base_agent",
         "Context": ".context",
         "InvocationContext": ".invocation_context",
         "LiveRequest": ".live_request_queue",
         "LiveRequestQueue": ".live_request_queue",
-        "Agent": ".llm_agent",
         "LlmAgent": ".llm_agent",
         "LoopAgent": ".loop_agent",
         "McpInstructionProvider": ".mcp_instruction_provider",
@@ -56,13 +56,13 @@ __all__ = [
     'Agent',
     'BaseAgent',
     'Context',
+    'InvocationContext',
+    'LiveRequest',
+    'LiveRequestQueue',
     'LlmAgent',
     'LoopAgent',
     'McpInstructionProvider',
     'ParallelAgent',
-    'SequentialAgent',
-    'InvocationContext',
-    'LiveRequest',
-    'LiveRequestQueue',
     'RunConfig',
+    'SequentialAgent',
 ]
