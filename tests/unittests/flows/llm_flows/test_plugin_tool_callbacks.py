@@ -340,5 +340,205 @@ async def test_live_plugin_after_tool_callback_takes_priority(
   assert part.function_response.response == mock_plugin.after_tool_response
 
 
+@pytest.mark.asyncio
+async def test_hallucinated_tool_fires_before_and_error_callbacks(
+    mock_tool, mock_plugin
+):
+  """Regression test for https://github.com/google/adk-python/issues/4775.
+
+  When the LLM hallucinates a tool name, on_tool_error_callback used to fire
+  *before* before_tool_callback, corrupting plugin span stacks (e.g.
+  BigQueryAgentAnalyticsPlugin's TraceManager).  After the fix, both
+  callbacks should fire in order: before_tool → on_tool_error.
+  """
+  mock_plugin.enable_before_tool_callback = True
+  mock_plugin.enable_on_tool_error_callback = True
+
+  # Track callback invocation order
+  call_order = []
+  original_before = mock_plugin.before_tool_callback
+  original_error = mock_plugin.on_tool_error_callback
+
+  async def tracking_before(**kwargs):
+    call_order.append("before_tool")
+    return await original_before(**kwargs)
+
+  async def tracking_error(**kwargs):
+    call_order.append("on_tool_error")
+    return await original_error(**kwargs)
+
+  mock_plugin.before_tool_callback = tracking_before
+  mock_plugin.on_tool_error_callback = tracking_error
+
+  model = testing_utils.MockModel.create(responses=[])
+  agent = Agent(
+      name="agent",
+      model=model,
+      tools=[mock_tool],
+  )
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content="", plugins=[mock_plugin]
+  )
+
+  # Build function call for a non-existent tool (hallucinated name)
+  function_call = types.FunctionCall(
+      name="hallucinated_tool_xyz", args={"query": "test"}
+  )
+  content = types.Content(parts=[types.Part(function_call=function_call)])
+  event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=content,
+  )
+  tools_dict = {mock_tool.name: mock_tool}
+
+  result_event = await handle_function_calls_async(
+      invocation_context,
+      event,
+      tools_dict,
+  )
+
+  # on_tool_error_callback returned a response, so we should get an event
+  assert result_event is not None
+  part = result_event.content.parts[0]
+  assert part.function_response.response == mock_plugin.on_tool_error_response
+
+  # Verify that before_tool fired BEFORE on_tool_error
+  assert "before_tool" in call_order
+  assert "on_tool_error" in call_order
+  assert call_order.index("before_tool") < call_order.index("on_tool_error")
+
+
+@pytest.mark.asyncio
+async def test_hallucinated_tool_raises_when_no_error_callback(
+    mock_tool, mock_plugin
+):
+  """When a tool is hallucinated and no error callback handles it, ValueError
+  should propagate — but only after before_tool_callback has had a chance to
+  run (so plugin stacks remain balanced)."""
+  mock_plugin.enable_before_tool_callback = False
+  mock_plugin.enable_on_tool_error_callback = False
+
+  model = testing_utils.MockModel.create(responses=[])
+  agent = Agent(
+      name="agent",
+      model=model,
+      tools=[mock_tool],
+  )
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content="", plugins=[mock_plugin]
+  )
+
+  function_call = types.FunctionCall(name="nonexistent_tool", args={})
+  content = types.Content(parts=[types.Part(function_call=function_call)])
+  event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=content,
+  )
+  tools_dict = {mock_tool.name: mock_tool}
+
+  with pytest.raises(ValueError, match="nonexistent_tool"):
+    await handle_function_calls_async(
+        invocation_context,
+        event,
+        tools_dict,
+    )
+
+
+@pytest.mark.asyncio
+async def test_hallucinated_tool_fires_before_and_error_callbacks_live(
+    mock_tool, mock_plugin
+):
+  """Live path regression test for hallucinated tool callback ordering."""
+  mock_plugin.enable_before_tool_callback = True
+  mock_plugin.enable_on_tool_error_callback = True
+
+  call_order = []
+  original_before = mock_plugin.before_tool_callback
+  original_error = mock_plugin.on_tool_error_callback
+
+  async def tracking_before(**kwargs):
+    call_order.append("before_tool")
+    return await original_before(**kwargs)
+
+  async def tracking_error(**kwargs):
+    call_order.append("on_tool_error")
+    return await original_error(**kwargs)
+
+  mock_plugin.before_tool_callback = tracking_before
+  mock_plugin.on_tool_error_callback = tracking_error
+
+  model = testing_utils.MockModel.create(responses=[])
+  agent = Agent(
+      name="agent",
+      model=model,
+      tools=[mock_tool],
+  )
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content="", plugins=[mock_plugin]
+  )
+
+  function_call = types.FunctionCall(
+      name="hallucinated_tool_xyz", args={"query": "test"}
+  )
+  content = types.Content(parts=[types.Part(function_call=function_call)])
+  event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=content,
+  )
+  tools_dict = {mock_tool.name: mock_tool}
+
+  result_event = await handle_function_calls_live(
+      invocation_context,
+      event,
+      tools_dict,
+  )
+
+  assert result_event is not None
+  part = result_event.content.parts[0]
+  assert part.function_response.response == mock_plugin.on_tool_error_response
+
+  assert "before_tool" in call_order
+  assert "on_tool_error" in call_order
+  assert call_order.index("before_tool") < call_order.index("on_tool_error")
+
+
+@pytest.mark.asyncio
+async def test_hallucinated_tool_raises_when_no_error_callback_live(
+    mock_tool, mock_plugin
+):
+  """Live path should propagate ValueError for hallucinated tools."""
+  mock_plugin.enable_before_tool_callback = False
+  mock_plugin.enable_on_tool_error_callback = False
+
+  model = testing_utils.MockModel.create(responses=[])
+  agent = Agent(
+      name="agent",
+      model=model,
+      tools=[mock_tool],
+  )
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent, user_content="", plugins=[mock_plugin]
+  )
+
+  function_call = types.FunctionCall(name="nonexistent_tool", args={})
+  content = types.Content(parts=[types.Part(function_call=function_call)])
+  event = Event(
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+      content=content,
+  )
+  tools_dict = {mock_tool.name: mock_tool}
+
+  with pytest.raises(ValueError, match="nonexistent_tool"):
+    await handle_function_calls_live(
+        invocation_context,
+        event,
+        tools_dict,
+    )
+
+
 if __name__ == "__main__":
   pytest.main([__file__])
