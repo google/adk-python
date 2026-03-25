@@ -21,13 +21,16 @@ from datetime import timezone
 import logging
 from typing import Any
 from typing import AsyncIterator
+from typing import Optional
 from typing import TypeAlias
 from typing import TypeVar
 
 from google.adk.platform import time as platform_time
 from sqlalchemy import delete
 from sqlalchemy import event
+from sqlalchemy import MetaData
 from sqlalchemy import select
+from sqlalchemy.engine import Connection
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import ArgumentError
 from sqlalchemy.ext.asyncio import async_sessionmaker
@@ -104,6 +107,22 @@ def _set_sqlite_pragma(dbapi_connection, connection_record):
   cursor = dbapi_connection.cursor()
   cursor.execute("PRAGMA foreign_keys=ON")
   cursor.close()
+
+
+def _ensure_schema_indexes_exist(
+    connection: Connection, metadata: MetaData
+) -> None:
+  """Ensures indexes declared in metadata exist for existing tables."""
+  logger.debug("Ensuring schema indexes exist for metadata tables.")
+  for table in metadata.sorted_tables:
+    for index in sorted(table.indexes, key=lambda item: item.name or ""):
+      index.create(bind=connection, checkfirst=True)
+
+
+def _setup_database_schema(connection: Connection, metadata: MetaData) -> None:
+  """Ensures tables and indexes declared in metadata exist."""
+  metadata.create_all(bind=connection)
+  _ensure_schema_indexes_exist(connection, metadata)
 
 
 def _merge_state(
@@ -301,11 +320,11 @@ class DatabaseSessionService(BaseSessionService):
           # Uncomment to recreate DB every time
           # await conn.run_sync(BaseV1.metadata.drop_all)
           logger.debug("Using V1 schema tables...")
-          await conn.run_sync(BaseV1.metadata.create_all)
+          await conn.run_sync(_setup_database_schema, BaseV1.metadata)
         else:
           # await conn.run_sync(BaseV0.metadata.drop_all)
           logger.debug("Using V0 schema tables...")
-          await conn.run_sync(BaseV0.metadata.create_all)
+          await conn.run_sync(_setup_database_schema, BaseV0.metadata)
 
       if self._db_schema_version == _schema_check_utils.LATEST_SCHEMA_VERSION:
         async with self._rollback_on_exception_session() as sql_session:
