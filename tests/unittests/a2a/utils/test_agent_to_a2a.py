@@ -86,9 +86,7 @@ class TestToA2A:
     mock_card_builder_class.assert_called_once_with(
         agent=self.mock_agent, rpc_url="http://localhost:8000/"
     )
-    mock_app.add_event_handler.assert_called_once_with(
-        "startup", mock_app.add_event_handler.call_args[0][1]
-    )
+    mock_starlette_class.assert_called_once_with(lifespan=ANY)
 
   @patch("google.adk.a2a.utils.agent_to_a2a.A2aAgentExecutor")
   @patch("google.adk.a2a.utils.agent_to_a2a.DefaultRequestHandler")
@@ -122,7 +120,7 @@ class TestToA2A:
 
     # Assert
     assert result == mock_app
-    mock_starlette_class.assert_called_once()
+    mock_starlette_class.assert_called_once_with(lifespan=ANY)
     mock_task_store_class.assert_called_once()
     mock_agent_executor_class.assert_called_once_with(runner=custom_runner)
     mock_request_handler_class.assert_called_once_with(
@@ -132,9 +130,6 @@ class TestToA2A:
     )
     mock_card_builder_class.assert_called_once_with(
         agent=self.mock_agent, rpc_url="http://localhost:8000/"
-    )
-    mock_app.add_event_handler.assert_called_once_with(
-        "startup", mock_app.add_event_handler.call_args[0][1]
     )
 
   @patch("google.adk.a2a.utils.agent_to_a2a.A2aAgentExecutor")
@@ -402,12 +397,10 @@ class TestToA2A:
   @patch("google.adk.a2a.utils.agent_to_a2a.DefaultRequestHandler")
   @patch("google.adk.a2a.utils.agent_to_a2a.InMemoryTaskStore")
   @patch("google.adk.a2a.utils.agent_to_a2a.AgentCardBuilder")
-  @patch("google.adk.a2a.utils.agent_to_a2a.Starlette")
   @patch("google.adk.a2a.utils.agent_to_a2a.A2AStarletteApplication")
   async def test_setup_a2a_function_builds_agent_card_and_configures_routes(
       self,
       mock_a2a_app_class,
-      mock_starlette_class,
       mock_card_builder_class,
       mock_task_store_class,
       mock_request_handler_class,
@@ -415,8 +408,6 @@ class TestToA2A:
   ):
     """Test that the setup_a2a function builds agent card and configures A2A routes."""
     # Arrange
-    mock_app = Mock(spec=Starlette)
-    mock_starlette_class.return_value = mock_app
     mock_task_store = Mock(spec=InMemoryTaskStore)
     mock_task_store_class.return_value = mock_task_store
     mock_agent_executor = Mock(spec=A2aAgentExecutor)
@@ -430,16 +421,12 @@ class TestToA2A:
     mock_a2a_app = Mock(spec=A2AStarletteApplication)
     mock_a2a_app_class.return_value = mock_a2a_app
 
-    # Act
-    result = to_a2a(self.mock_agent)
+    # Act - don't mock Starlette so lifespan is wired correctly
+    app = to_a2a(self.mock_agent)
 
-    # Assert
-    assert result == mock_app
-    # Get the setup_a2a function that was added as startup handler
-    startup_handler = mock_app.add_event_handler.call_args[0][1]
-
-    # Call the setup_a2a function
-    await startup_handler()
+    # Run the lifespan to trigger setup_a2a
+    async with app.router.lifespan_context(app):
+      pass
 
     # Verify agent card was built
     mock_card_builder.build.assert_called_once()
@@ -451,18 +438,16 @@ class TestToA2A:
     )
 
     # Verify routes were added to the main app
-    mock_a2a_app.add_routes_to_app.assert_called_once_with(mock_app)
+    mock_a2a_app.add_routes_to_app.assert_called_once_with(app)
 
   @patch("google.adk.a2a.utils.agent_to_a2a.A2aAgentExecutor")
   @patch("google.adk.a2a.utils.agent_to_a2a.DefaultRequestHandler")
   @patch("google.adk.a2a.utils.agent_to_a2a.InMemoryTaskStore")
   @patch("google.adk.a2a.utils.agent_to_a2a.AgentCardBuilder")
-  @patch("google.adk.a2a.utils.agent_to_a2a.Starlette")
   @patch("google.adk.a2a.utils.agent_to_a2a.A2AStarletteApplication")
   async def test_setup_a2a_function_handles_agent_card_build_failure(
       self,
       mock_a2a_app_class,
-      mock_starlette_class,
       mock_card_builder_class,
       mock_task_store_class,
       mock_request_handler_class,
@@ -470,8 +455,6 @@ class TestToA2A:
   ):
     """Test that setup_a2a function properly handles agent card build failure."""
     # Arrange
-    mock_app = Mock(spec=Starlette)
-    mock_starlette_class.return_value = mock_app
     mock_task_store = Mock(spec=InMemoryTaskStore)
     mock_task_store_class.return_value = mock_task_store
     mock_agent_executor = Mock(spec=A2aAgentExecutor)
@@ -484,17 +467,13 @@ class TestToA2A:
     mock_a2a_app = Mock(spec=A2AStarletteApplication)
     mock_a2a_app_class.return_value = mock_a2a_app
 
-    # Act
-    result = to_a2a(self.mock_agent)
+    # Act - don't mock Starlette so lifespan is wired correctly
+    app = to_a2a(self.mock_agent)
 
-    # Assert
-    assert result == mock_app
-    # Get the setup_a2a function that was added as startup handler
-    startup_handler = mock_app.add_event_handler.call_args[0][1]
-
-    # Call the setup_a2a function and expect it to raise the exception
+    # Run the lifespan and expect it to raise during setup_a2a
     with pytest.raises(Exception, match="Build failed"):
-      await startup_handler()
+      async with app.router.lifespan_context(app):
+        pass
 
   @patch("google.adk.a2a.utils.agent_to_a2a.A2aAgentExecutor")
   @patch("google.adk.a2a.utils.agent_to_a2a.DefaultRequestHandler")
@@ -535,20 +514,19 @@ class TestToA2A:
     with pytest.raises(ValueError, match="Agent cannot be None or empty."):
       to_a2a(None)
 
-  def test_to_a2a_with_invalid_agent_type(self):
+  async def test_to_a2a_with_invalid_agent_type(self):
     """Test that to_a2a raises error when agent is not a BaseAgent."""
     # Arrange
     invalid_agent = "not an agent"
 
     # Act & Assert
-    # The error occurs during startup when building the agent card
+    # The error occurs during lifespan startup when building the agent card
     app = to_a2a(invalid_agent)
     with pytest.raises(
         AttributeError, match="'str' object has no attribute 'name'"
     ):
-      import asyncio
-
-      asyncio.run(app.router.on_startup[0]())
+      async with app.router.lifespan_context(app):
+        pass
 
   @patch("google.adk.a2a.utils.agent_to_a2a.A2aAgentExecutor")
   @patch("google.adk.a2a.utils.agent_to_a2a.DefaultRequestHandler")
@@ -764,12 +742,10 @@ class TestToA2A:
   @patch("google.adk.a2a.utils.agent_to_a2a.DefaultRequestHandler")
   @patch("google.adk.a2a.utils.agent_to_a2a.InMemoryTaskStore")
   @patch("google.adk.a2a.utils.agent_to_a2a.AgentCardBuilder")
-  @patch("google.adk.a2a.utils.agent_to_a2a.Starlette")
   @patch("google.adk.a2a.utils.agent_to_a2a.A2AStarletteApplication")
   async def test_to_a2a_with_custom_agent_card_object(
       self,
       mock_a2a_app_class,
-      mock_starlette_class,
       mock_card_builder_class,
       mock_task_store_class,
       mock_request_handler_class,
@@ -777,8 +753,6 @@ class TestToA2A:
   ):
     """Test to_a2a with custom AgentCard object."""
     # Arrange
-    mock_app = Mock(spec=Starlette)
-    mock_starlette_class.return_value = mock_app
     mock_task_store = Mock(spec=InMemoryTaskStore)
     mock_task_store_class.return_value = mock_task_store
     mock_agent_executor = Mock(spec=A2aAgentExecutor)
@@ -794,16 +768,12 @@ class TestToA2A:
     custom_agent_card = Mock(spec=AgentCard)
     custom_agent_card.name = "custom_agent"
 
-    # Act
-    result = to_a2a(self.mock_agent, agent_card=custom_agent_card)
+    # Act - don't mock Starlette so lifespan is wired correctly
+    app = to_a2a(self.mock_agent, agent_card=custom_agent_card)
 
-    # Assert
-    assert result == mock_app
-    # Get the setup_a2a function that was added as startup handler
-    startup_handler = mock_app.add_event_handler.call_args[0][1]
-
-    # Call the setup_a2a function
-    await startup_handler()
+    # Run the lifespan to trigger setup_a2a
+    async with app.router.lifespan_context(app):
+      pass
 
     # Verify the card builder build method was NOT called since we provided a card
     mock_card_builder.build.assert_not_called()
@@ -815,13 +785,12 @@ class TestToA2A:
     )
 
     # Verify routes were added to the main app
-    mock_a2a_app.add_routes_to_app.assert_called_once_with(mock_app)
+    mock_a2a_app.add_routes_to_app.assert_called_once_with(app)
 
   @patch("google.adk.a2a.utils.agent_to_a2a.A2aAgentExecutor")
   @patch("google.adk.a2a.utils.agent_to_a2a.DefaultRequestHandler")
   @patch("google.adk.a2a.utils.agent_to_a2a.InMemoryTaskStore")
   @patch("google.adk.a2a.utils.agent_to_a2a.AgentCardBuilder")
-  @patch("google.adk.a2a.utils.agent_to_a2a.Starlette")
   @patch("google.adk.a2a.utils.agent_to_a2a.A2AStarletteApplication")
   @patch("json.load")
   @patch("pathlib.Path.open")
@@ -832,7 +801,6 @@ class TestToA2A:
       mock_open,
       mock_json_load,
       mock_a2a_app_class,
-      mock_starlette_class,
       mock_card_builder_class,
       mock_task_store_class,
       mock_request_handler_class,
@@ -840,8 +808,6 @@ class TestToA2A:
   ):
     """Test to_a2a with agent card file path."""
     # Arrange
-    mock_app = Mock(spec=Starlette)
-    mock_starlette_class.return_value = mock_app
     mock_task_store = Mock(spec=InMemoryTaskStore)
     mock_task_store_class.return_value = mock_task_store
     mock_agent_executor = Mock(spec=A2aAgentExecutor)
@@ -877,16 +843,12 @@ class TestToA2A:
     }
     mock_json_load.return_value = agent_card_data
 
-    # Act
-    result = to_a2a(self.mock_agent, agent_card="/path/to/agent_card.json")
+    # Act - don't mock Starlette so lifespan is wired correctly
+    app = to_a2a(self.mock_agent, agent_card="/path/to/agent_card.json")
 
-    # Assert
-    assert result == mock_app
-    # Get the setup_a2a function that was added as startup handler
-    startup_handler = mock_app.add_event_handler.call_args[0][1]
-
-    # Call the setup_a2a function
-    await startup_handler()
+    # Run the lifespan to trigger setup_a2a
+    async with app.router.lifespan_context(app):
+      pass
 
     # Verify file was opened and JSON was loaded
     mock_path_class.assert_called_once_with("/path/to/agent_card.json")
@@ -939,3 +901,153 @@ class TestToA2A:
     # Act & Assert
     with pytest.raises(ValueError, match="Failed to load agent card from"):
       to_a2a(self.mock_agent, agent_card="/invalid/path.json")
+
+  @patch("google.adk.a2a.utils.agent_to_a2a.A2aAgentExecutor")
+  @patch("google.adk.a2a.utils.agent_to_a2a.DefaultRequestHandler")
+  @patch("google.adk.a2a.utils.agent_to_a2a.InMemoryTaskStore")
+  @patch("google.adk.a2a.utils.agent_to_a2a.AgentCardBuilder")
+  @patch("google.adk.a2a.utils.agent_to_a2a.A2AStarletteApplication")
+  async def test_to_a2a_with_lifespan(
+      self,
+      mock_a2a_app_class,
+      mock_card_builder_class,
+      mock_task_store_class,
+      mock_request_handler_class,
+      mock_agent_executor_class,
+  ):
+    """Test to_a2a with a custom lifespan context manager."""
+    from contextlib import asynccontextmanager
+
+    # Arrange
+    mock_task_store = Mock(spec=InMemoryTaskStore)
+    mock_task_store_class.return_value = mock_task_store
+    mock_agent_executor = Mock(spec=A2aAgentExecutor)
+    mock_agent_executor_class.return_value = mock_agent_executor
+    mock_request_handler = Mock(spec=DefaultRequestHandler)
+    mock_request_handler_class.return_value = mock_request_handler
+    mock_card_builder = Mock(spec=AgentCardBuilder)
+    mock_card_builder_class.return_value = mock_card_builder
+    mock_agent_card = Mock(spec=AgentCard)
+    mock_card_builder.build = AsyncMock(return_value=mock_agent_card)
+    mock_a2a_app = Mock(spec=A2AStarletteApplication)
+    mock_a2a_app_class.return_value = mock_a2a_app
+
+    startup_called = False
+    shutdown_called = False
+
+    @asynccontextmanager
+    async def custom_lifespan(app):
+      nonlocal startup_called, shutdown_called
+      startup_called = True
+      app.state.test_value = "hello"
+      yield
+      shutdown_called = True
+
+    # Act
+    app = to_a2a(self.mock_agent, lifespan=custom_lifespan)
+
+    # Run the lifespan
+    async with app.router.lifespan_context(app):
+      # Verify setup_a2a ran (routes added)
+      mock_a2a_app.add_routes_to_app.assert_called_once_with(app)
+      # Verify user lifespan startup ran
+      assert startup_called
+      assert app.state.test_value == "hello"
+
+    # Verify user lifespan shutdown ran
+    assert shutdown_called
+
+  @patch("google.adk.a2a.utils.agent_to_a2a.A2aAgentExecutor")
+  @patch("google.adk.a2a.utils.agent_to_a2a.DefaultRequestHandler")
+  @patch("google.adk.a2a.utils.agent_to_a2a.InMemoryTaskStore")
+  @patch("google.adk.a2a.utils.agent_to_a2a.AgentCardBuilder")
+  @patch("google.adk.a2a.utils.agent_to_a2a.A2AStarletteApplication")
+  async def test_to_a2a_without_lifespan(
+      self,
+      mock_a2a_app_class,
+      mock_card_builder_class,
+      mock_task_store_class,
+      mock_request_handler_class,
+      mock_agent_executor_class,
+  ):
+    """Test to_a2a without lifespan still runs setup_a2a."""
+    # Arrange
+    mock_task_store = Mock(spec=InMemoryTaskStore)
+    mock_task_store_class.return_value = mock_task_store
+    mock_agent_executor = Mock(spec=A2aAgentExecutor)
+    mock_agent_executor_class.return_value = mock_agent_executor
+    mock_request_handler = Mock(spec=DefaultRequestHandler)
+    mock_request_handler_class.return_value = mock_request_handler
+    mock_card_builder = Mock(spec=AgentCardBuilder)
+    mock_card_builder_class.return_value = mock_card_builder
+    mock_agent_card = Mock(spec=AgentCard)
+    mock_card_builder.build = AsyncMock(return_value=mock_agent_card)
+    mock_a2a_app = Mock(spec=A2AStarletteApplication)
+    mock_a2a_app_class.return_value = mock_a2a_app
+
+    # Act - no lifespan parameter
+    app = to_a2a(self.mock_agent)
+
+    # Run the lifespan
+    async with app.router.lifespan_context(app):
+      # Verify setup_a2a ran (routes added)
+      mock_a2a_app.add_routes_to_app.assert_called_once_with(app)
+
+  @patch("google.adk.a2a.utils.agent_to_a2a.A2aAgentExecutor")
+  @patch("google.adk.a2a.utils.agent_to_a2a.DefaultRequestHandler")
+  @patch("google.adk.a2a.utils.agent_to_a2a.InMemoryTaskStore")
+  @patch("google.adk.a2a.utils.agent_to_a2a.AgentCardBuilder")
+  @patch("google.adk.a2a.utils.agent_to_a2a.A2AStarletteApplication")
+  async def test_to_a2a_lifespan_setup_runs_before_user_lifespan(
+      self,
+      mock_a2a_app_class,
+      mock_card_builder_class,
+      mock_task_store_class,
+      mock_request_handler_class,
+      mock_agent_executor_class,
+  ):
+    """Test that A2A setup runs before user lifespan startup."""
+    from contextlib import asynccontextmanager
+
+    # Arrange
+    mock_task_store = Mock(spec=InMemoryTaskStore)
+    mock_task_store_class.return_value = mock_task_store
+    mock_agent_executor = Mock(spec=A2aAgentExecutor)
+    mock_agent_executor_class.return_value = mock_agent_executor
+    mock_request_handler = Mock(spec=DefaultRequestHandler)
+    mock_request_handler_class.return_value = mock_request_handler
+    mock_card_builder = Mock(spec=AgentCardBuilder)
+    mock_card_builder_class.return_value = mock_card_builder
+    mock_agent_card = Mock(spec=AgentCard)
+    mock_card_builder.build = AsyncMock(return_value=mock_agent_card)
+    mock_a2a_app = Mock(spec=A2AStarletteApplication)
+    mock_a2a_app_class.return_value = mock_a2a_app
+
+    call_order = []
+
+    original_add_routes = mock_a2a_app.add_routes_to_app
+
+    def track_add_routes(*args, **kwargs):
+      call_order.append("setup_a2a")
+      return original_add_routes(*args, **kwargs)
+
+    mock_a2a_app.add_routes_to_app = track_add_routes
+
+    @asynccontextmanager
+    async def custom_lifespan(app):
+      call_order.append("user_startup")
+      yield
+      call_order.append("user_shutdown")
+
+    # Act
+    app = to_a2a(self.mock_agent, lifespan=custom_lifespan)
+
+    async with app.router.lifespan_context(app):
+      pass
+
+    # Assert - A2A setup runs before user lifespan
+    assert call_order == [
+        "setup_a2a",
+        "user_startup",
+        "user_shutdown",
+    ]
