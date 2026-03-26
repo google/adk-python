@@ -12,5 +12,4 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# version: major.minor.patch
-__version__ = "1.27.4"
+"""A2A integration tests package."""
