@@ -23,6 +23,7 @@ from typing import Optional
 from typing import TYPE_CHECKING
 
 from google.adk.platform import time as platform_time
+from google.genai import errors as genai_errors
 from google.genai import types
 from websockets.exceptions import ConnectionClosed
 from websockets.exceptions import ConnectionClosedOK
@@ -500,8 +501,10 @@ class BaseLlmFlow(ABC):
             invocation_context.agent.name,
         )
         async with llm.connect(llm_request) as llm_connection:
-          if llm_request.contents:
+          if llm_request.contents and not invocation_context.live_session_resumption_handle:
             # Sends the conversation history to the model.
+            # Skip on reconnection — the server already has context via
+            # the session resumption handle.
             with tracer.start_as_current_span('send_data'):
               # Combine regular contents with audio/transcription from session
               logger.debug('Sending history to model: %s', llm_request.contents)
@@ -593,11 +596,22 @@ class BaseLlmFlow(ABC):
             except asyncio.CancelledError:
               pass
       except (ConnectionClosed, ConnectionClosedOK) as e:
-        # when the session timeout, it will just close and not throw exception.
-        # so this is for bad cases
+        if invocation_context.live_session_resumption_handle:
+          logger.info(
+              'Connection closed (%s), reconnecting with session handle.', e
+          )
+          continue
         logger.error('Connection closed: %s.', e)
         raise
       except Exception as e:
+        if (
+            invocation_context.live_session_resumption_handle
+            and isinstance(e, genai_errors.APIError)
+        ):
+          logger.info(
+              'Connection lost (%s), reconnecting with session handle.', e
+          )
+          continue
         logger.error(
             'An unexpected error occurred in live flow: %s', e, exc_info=True
         )

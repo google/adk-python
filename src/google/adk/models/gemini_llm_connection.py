@@ -335,6 +335,12 @@ class GeminiLlmConnection(BaseLlmConnection):
                   model_version=self._model_version,
               )
           )
+        if message.go_away:
+          logger.info('Received go_away from server: %s', message.go_away)
+          yield LlmResponse(
+              go_away=message.go_away,
+              model_version=self._model_version,
+          )
 
   async def close(self):
     """Closes the llm server connection."""
