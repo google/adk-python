@@ -1371,6 +1371,137 @@ async def test_prepare_tables_serializes_schema_detection_and_creation():
 
 
 @pytest.mark.asyncio
+async def test_get_or_create_state_returns_existing_row():
+  """_get_or_create_state returns an existing row without inserting."""
+  service = DatabaseSessionService('sqlite+aiosqlite:///:memory:')
+  try:
+    await service._prepare_tables()
+    schema = service._get_schema_classes()
+
+    # Pre-create the app_state row.
+    async with service.database_session_factory() as sql_session:
+      sql_session.add(schema.StorageAppState(app_name='app1', state={'k': 'v'}))
+      await sql_session.commit()
+
+    # _get_or_create_state should find and return it.
+    async with service.database_session_factory() as sql_session:
+      row = await database_session_service._get_or_create_state(
+          sql_session=sql_session,
+          state_model=schema.StorageAppState,
+          primary_key='app1',
+          defaults={'app_name': 'app1', 'state': {}},
+      )
+      assert row.app_name == 'app1'
+      assert row.state == {'k': 'v'}
+  finally:
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_get_or_create_state_creates_new_row():
+  """_get_or_create_state creates a row when none exists."""
+  service = DatabaseSessionService('sqlite+aiosqlite:///:memory:')
+  try:
+    await service._prepare_tables()
+    schema = service._get_schema_classes()
+
+    async with service.database_session_factory() as sql_session:
+      row = await database_session_service._get_or_create_state(
+          sql_session=sql_session,
+          state_model=schema.StorageAppState,
+          primary_key='new_app',
+          defaults={'app_name': 'new_app', 'state': {}},
+      )
+      await sql_session.commit()
+      assert row.app_name == 'new_app'
+      assert row.state == {}
+
+    # Verify the row was actually persisted.
+    async with service.database_session_factory() as sql_session:
+      persisted = await sql_session.get(schema.StorageAppState, 'new_app')
+      assert persisted is not None
+  finally:
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_get_or_create_state_handles_race_condition():
+  """_get_or_create_state recovers when a concurrent INSERT wins the race.
+
+  Simulates the race from https://github.com/google/adk-python/issues/4954:
+  the initial SELECT returns None (another caller hasn't committed yet), but
+  by the time we INSERT, the other caller has committed — so the INSERT fails
+  with IntegrityError and we fall back to re-fetching.
+  """
+  service = DatabaseSessionService('sqlite+aiosqlite:///:memory:')
+  try:
+    await service._prepare_tables()
+    schema = service._get_schema_classes()
+
+    # Pre-create the row to guarantee the INSERT will fail.
+    async with service.database_session_factory() as sql_session:
+      sql_session.add(schema.StorageAppState(app_name='race_app', state={}))
+      await sql_session.commit()
+
+    # Patch session.get to return None on the first call (simulating the
+    # race window), then fall through to the real implementation.
+    async with service.database_session_factory() as sql_session:
+      original_get = sql_session.get
+      call_count = 0
+
+      async def patched_get(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+          return None  # Simulate: row not yet visible
+        return await original_get(*args, **kwargs)
+
+      sql_session.get = patched_get
+
+      row = await database_session_service._get_or_create_state(
+          sql_session=sql_session,
+          state_model=schema.StorageAppState,
+          primary_key='race_app',
+          defaults={'app_name': 'race_app', 'state': {}},
+      )
+      assert row.app_name == 'race_app'
+      # The function should have called get twice: once before the INSERT
+      # (patched to return None) and once after the IntegrityError.
+      assert call_count == 2
+  finally:
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_create_session_sequential_same_app_name():
+  """Sequential create_session calls for the same app_name work correctly.
+
+  The second call reuses the existing app_states row.
+  """
+  service = DatabaseSessionService('sqlite+aiosqlite:///:memory:')
+  try:
+    s1 = await service.create_session(
+        app_name='shared', user_id='u1', session_id='s1'
+    )
+    s2 = await service.create_session(
+        app_name='shared', user_id='u2', session_id='s2'
+    )
+    assert s1.app_name == 'shared'
+    assert s2.app_name == 'shared'
+
+    got1 = await service.get_session(
+        app_name='shared', user_id='u1', session_id='s1'
+    )
+    got2 = await service.get_session(
+        app_name='shared', user_id='u2', session_id='s2'
+    )
+    assert got1 is not None
+    assert got2 is not None
+  finally:
+    await service.close()
+
+
+@pytest.mark.asyncio
 async def test_prepare_tables_idempotent_after_creation():
   """Calling _prepare_tables multiple times is safe and idempotent.
   After tables are created, subsequent calls should return immediately via

@@ -299,8 +299,6 @@ class TestAgentLoader:
         loader.load_agent(agent_name)
 
       exc_info.match(re.escape(expected_path))
-      exc_info.match(re.escape(f"{agent_name}{os.sep}root_agent.yaml"))
-      exc_info.match(re.escape(f"<agents_dir>{os.sep}"))
 
   def test_agent_loader_with_mocked_windows_path(self, monkeypatch):
     """Mock Path() to simulate Windows behavior and catch regressions.
@@ -333,19 +331,10 @@ class TestAgentLoader:
       with pytest.raises(ValueError) as exc_info:
         loader.load_agent("nonexistent_agent")
 
-      expected_msg_part_1 = "No root_agent found for 'nonexistent_agent'."
-      expected_msg_part_2 = (
-          "Searched in 'nonexistent_agent.agent.root_agent',"
-          " 'nonexistent_agent.root_agent' and"
-          " 'nonexistent_agent/root_agent.yaml'."
+      assert "Agent not found: 'nonexistent_agent'" in str(exc_info.value)
+      assert os.path.join(agents_dir, "nonexistent_agent") in str(
+          exc_info.value
       )
-      expected_msg_part_3 = (
-          f"Ensure '{agents_dir}/nonexistent_agent' is structured correctly"
-      )
-
-      assert expected_msg_part_1 in str(exc_info.value)
-      assert expected_msg_part_2 in str(exc_info.value)
-      assert expected_msg_part_3 in str(exc_info.value)
 
   def test_agent_without_root_agent_error(self):
     """Test that appropriate error is raised when agent has no root_agent."""
@@ -567,26 +556,16 @@ class TestAgentLoader:
     """Test that appropriate error is raised when YAML agent is not found."""
     with tempfile.TemporaryDirectory() as temp_dir:
       loader = AgentLoader(temp_dir)
-      agents_dir = temp_dir  # For use in the expected message string
+      agents_dir = temp_dir
 
       # Try to load nonexistent YAML agent
       with pytest.raises(ValueError) as exc_info:
         loader.load_agent("nonexistent_yaml_agent")
 
-      expected_msg_part_1 = "No root_agent found for 'nonexistent_yaml_agent'."
-      expected_msg_part_2 = (
-          "Searched in 'nonexistent_yaml_agent.agent.root_agent',"
-          " 'nonexistent_yaml_agent.root_agent' and"
-          " 'nonexistent_yaml_agent/root_agent.yaml'."
+      assert "Agent not found: 'nonexistent_yaml_agent'" in str(exc_info.value)
+      assert os.path.join(agents_dir, "nonexistent_yaml_agent") in str(
+          exc_info.value
       )
-      expected_msg_part_3 = (
-          f"Ensure '{agents_dir}/nonexistent_yaml_agent' is structured"
-          " correctly"
-      )
-
-      assert expected_msg_part_1 in str(exc_info.value)
-      assert expected_msg_part_2 in str(exc_info.value)
-      assert expected_msg_part_3 in str(exc_info.value)
 
   def test_yaml_agent_invalid_yaml_error(self):
     """Test that appropriate error is raised when YAML is invalid."""
@@ -778,20 +757,7 @@ class TestAgentLoader:
         with pytest.raises(ValueError) as exc_info:
           loader.load_agent("__nonexistent_special")
 
-        expected_msg_part_1 = "No root_agent found for '__nonexistent_special'."
-        expected_msg_part_2 = (
-            "Searched in 'nonexistent_special.agent.root_agent',"
-            " 'nonexistent_special.root_agent' and"
-            " 'nonexistent_special/root_agent.yaml'."
-        )
-        expected_msg_part_3 = (
-            f"Ensure '{special_agents_dir}/nonexistent_special' is structured"
-            " correctly"
-        )
-
-        assert expected_msg_part_1 in str(exc_info.value)
-        assert expected_msg_part_2 in str(exc_info.value)
-        assert expected_msg_part_3 in str(exc_info.value)
+        assert "Agent not found: '__nonexistent_special'" in str(exc_info.value)
 
       finally:
         # Restore original SPECIAL_AGENTS_DIR
@@ -1038,3 +1004,50 @@ class TestAgentLoader:
       assert "random_folder" not in agents
       assert "data" not in agents
       assert "tmp" not in agents
+
+  def test_validate_agent_name_rejects_dotted_paths(self):
+    """Agent names with dots are rejected to prevent arbitrary module imports."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+      loader = AgentLoader(temp_dir)
+      for name in ["os.path", "sys.modules", "subprocess.call"]:
+        with pytest.raises(ValueError, match="Invalid agent name"):
+          loader.load_agent(name)
+
+  def test_validate_agent_name_rejects_relative_imports(self):
+    """Agent names starting with dots are rejected."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+      loader = AgentLoader(temp_dir)
+      for name in ["..foo", ".bar", "...baz"]:
+        with pytest.raises(ValueError, match="Invalid agent name"):
+          loader.load_agent(name)
+
+  def test_validate_agent_name_rejects_path_separators(self):
+    """Agent names with slashes or special characters are rejected."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+      loader = AgentLoader(temp_dir)
+      for name in ["foo/bar", "foo\\bar", "foo-bar", "foo bar"]:
+        with pytest.raises(ValueError, match="Invalid agent name"):
+          loader.load_agent(name)
+
+  def test_validate_agent_name_allows_valid_names(self):
+    """Valid Python identifiers that exist on disk pass validation."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+      temp_path = Path(temp_dir)
+      for name in ["my_agent", "Agent1", "_private"]:
+        (temp_path / name).mkdir(exist_ok=True)
+      loader = AgentLoader(temp_dir)
+      for name in ["my_agent", "Agent1", "_private"]:
+        # Should not raise ValueError for name validation;
+        # may raise other errors because the agent has no root_agent
+        with pytest.raises(Exception) as exc_info:
+          loader.load_agent(name)
+        assert "Invalid agent name" not in str(exc_info.value)
+        assert "Agent not found" not in str(exc_info.value)
+
+  def test_validate_agent_name_rejects_nonexistent_agent(self):
+    """Valid identifiers that don't exist on disk are rejected before import."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+      loader = AgentLoader(temp_dir)
+      # 'subprocess' is a valid identifier but shouldn't be importable as an agent
+      with pytest.raises(ValueError, match="Agent not found"):
+        loader.load_agent("subprocess")
