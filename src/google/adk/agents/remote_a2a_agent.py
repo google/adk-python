@@ -401,14 +401,10 @@ class RemoteA2aAgent(BaseAgent):
         if event.custom_metadata:
           metadata = event.custom_metadata
           context_id = metadata.get(A2A_METADATA_PREFIX + "context_id")
-          response_meta = metadata.get(A2A_METADATA_PREFIX + "response", {})
-          task_state = None
-          if isinstance(response_meta, dict):
-            status = response_meta.get("status", {})
-            if isinstance(status, dict):
-              task_state = status.get("state")
-          if task_state in ("input-required", "auth-required"):
-            task_id = metadata.get(A2A_METADATA_PREFIX + "task_id")
+          # Always forward task_id if present. The remote agent (server) owns task
+          # lifecycle and will reject or ignore a stale task_id if the task is no
+          # longer open. Filtering by state client-side is error-prone.
+          task_id = metadata.get(A2A_METADATA_PREFIX + "task_id")
         # Historical note: this behavior originally always applied, regardless
         # of whether the agent was stateful or stateless. However, only stateful
         # agents can be expected to have previous events in the remote session.
