@@ -141,8 +141,12 @@ class ExecuteBashTool(BaseTool):
     try:
       stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=30)
       return {
-          "stdout": stdout.decode(),
-          "stderr": stderr.decode(),
+          "stdout": (
+              stdout.decode() if stdout is not None else "<No stdout captured>"
+          ),
+          "stderr": (
+              stderr.decode() if stderr is not None else "<No stderr captured>"
+          ),
           "returncode": process.returncode,
       }
     except asyncio.TimeoutError:
