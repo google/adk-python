@@ -1,8 +1,6 @@
 # Changelog
 
-## [1.28.0](https://github.com/google/adk-python/compare/v1.27.4...v1.28.0) (2026-03-26)
-
-
+## [1.27.5](https://github.com/google/adk-python/compare/v1.27.4...v1.27.5) (2026-03-26)
 ### Bug Fixes
 
 * Update eval extras to Vertex SDK package version with constrained LiteLLM upperbound ([77928a8](https://github.com/google/adk-python/commit/77928a81c39a955c2559b80d3ce137d6503b5264))
